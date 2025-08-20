@@ -56,7 +56,7 @@ downloads/
 htmlcov/
 
 # Docker
-.dockerignore
+# .dockerignore
 
 # Database
 *.db
