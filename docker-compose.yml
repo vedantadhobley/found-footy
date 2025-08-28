@@ -50,33 +50,6 @@ services:
       retries: 15
       start_period: 30s
 
-  # Create work pools with proper configuration
-  setup-pools:
-    build: .
-    command: >
-      sh -c "
-      echo '🔧 Setting up work pools...' &&
-      if ! prefect work-pool inspect fixtures-pool >/dev/null 2>&1; then
-        echo 'Creating fixtures-pool...' &&
-        prefect work-pool create fixtures-pool --type process
-      else
-        echo '✅ fixtures-pool already exists'
-      fi &&
-      if ! prefect work-pool inspect youtube-pool >/dev/null 2>&1; then
-        echo 'Creating youtube-pool...' &&
-        prefect work-pool create youtube-pool --type process
-      else
-        echo '✅ youtube-pool already exists'
-      fi &&
-      echo '✅ Work pools ready!'
-      "
-    environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-    depends_on:
-      prefect-server:
-        condition: service_healthy
-    restart: "no"
-
   # Your main Found Footy application
   app:
     build: .
@@ -88,49 +61,39 @@ services:
     depends_on:
       prefect-server:
         condition: service_healthy
-      setup-pools:
-        condition: service_completed_successfully
 
-  # Fixtures worker with proper environment
+  # Fixtures worker
   fixtures-worker:
     build: .
     command: prefect worker start --pool fixtures-pool --type process
     volumes:
-      - .:/app  # ✅ Mount the entire source code
-    working_dir: /app  # ✅ Set working directory
+      - .:/app
+    working_dir: /app
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - DATABASE_URL=postgresql://footy_user:footy_pass@app-postgres:5432/found_footy
-      - PYTHONPATH=/app  # ✅ Ensure Python can find modules
+      - PYTHONPATH=/app
     depends_on:
       prefect-server:
         condition: service_healthy
-      app-postgres:
-        condition: service_healthy
-      setup-pools:
-        condition: service_completed_successfully
       app:
         condition: service_completed_successfully
     restart: on-failure
 
-  # YouTube worker with proper environment
+  # YouTube worker
   youtube-worker:
     build: .
     command: prefect worker start --pool youtube-pool --type process
     volumes:
-      - .:/app  # ✅ Mount the entire source code
-    working_dir: /app  # ✅ Set working directory
+      - .:/app
+    working_dir: /app
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - DATABASE_URL=postgresql://footy_user:footy_pass@app-postgres:5432/found_footy
-      - PYTHONPATH=/app  # ✅ Ensure Python can find modules
+      - PYTHONPATH=/app
     depends_on:
       prefect-server:
         condition: service_healthy
-      app-postgres:
-        condition: service_healthy
-      setup-pools:
-        condition: service_completed_successfully
       app:
         condition: service_completed_successfully
     restart: on-failure

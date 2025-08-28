@@ -1,0 +1,68 @@
+name: found-footy
+prefect-version: 3.0.0
+
+# Build step - no custom build needed since we use pip install -e .
+build: null
+
+# Push step - no remote storage for local development  
+push: null
+
+# Pull step - code is already installed via pip install -e .
+pull: null
+
+# ✅ Define deployments in the main prefect.yaml
+deployments:
+  - name: fixtures-flow-daily
+    entrypoint: found_footy.flows.fixtures_flow:fixtures_flow
+    work_pool:
+      name: fixtures-pool
+    schedule:
+      cron: "5 0 * * *"
+      timezone: UTC
+    parameters: {}
+    tags:
+      - fixtures
+      - production
+      - daily
+    description: "Daily fixtures processing at 00:05 UTC"
+
+  - name: fixtures-flow-manual
+    entrypoint: found_footy.flows.fixtures_flow:fixtures_flow
+    work_pool:
+      name: fixtures-pool
+    parameters: {}
+    tags:
+      - fixtures
+      - production
+      - manual
+    description: "Manual fixtures processing for any date"
+
+  - name: youtube-flow
+    entrypoint: found_footy.flows.youtube_flow:youtube_flow
+    work_pool:
+      name: youtube-pool
+    parameters: {}
+    tags:
+      - youtube
+      - production
+      - highlights
+    description: "YouTube highlights search and processing"
+
+# # ✅ Add event automation to trigger YouTube flow
+# automations:
+#   - name: trigger-youtube-on-fixture-completion
+#     description: "Automatically trigger YouTube flow when a fixture completes"
+#     trigger:
+#       type: event
+#       match:
+#         prefect.resource.id: "fixture.*"
+#       expect:
+#         - fixture.completed
+#     actions:
+#       - type: run-deployment
+#         source: inferred
+#         deployment: youtube-flow
+#         parameters:
+#           team1: "{{ event.payload.home_team }}"
+#           team2: "{{ event.payload.away_team }}"
+#           match_date: "{{ event.occurred.strftime('%Y-%m-%d') }}"
