@@ -11,3 +11,5 @@ sqlalchemy==2.0.43
 typing-extensions==4.14.1
 urllib3==2.5.0
 yt-dlp==2024.8.6
+pymongo==4.14.1
+# prefect>=3.0.0

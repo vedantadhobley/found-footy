@@ -25,36 +25,38 @@ class FootyMongoStore:
     def _create_indexes(self):
         """Create database indexes for better query performance"""
         try:
+            # ✅ No need for fixture_id index since it's now _id
             # Fixture indexes
-            self.fixtures.create_index([("fixture_id", 1)], unique=True)
             self.fixtures.create_index([("status", 1)])
             self.fixtures.create_index([("fixture_date", 1)])
             self.fixtures.create_index([("home_team_name", 1)])
             self.fixtures.create_index([("away_team_name", 1)])
+            self.fixtures.create_index([("league_id", 1)])
             
             # Event indexes
             self.events.create_index([("fixture_id", 1)])
             self.events.create_index([("event_type", 1)])
             
-            # Team indexes
-            self.teams.create_index([("team_id", 1)], unique=True)
+            # ✅ No need for team_id index since it's now _id
+            # Team indexes  
             self.teams.create_index([("league_id", 1)])
+            self.teams.create_index([("season", 1)])
             
             print("✅ MongoDB indexes created successfully")
         except Exception as e:
             print(f"⚠️ Error creating indexes: {e}")
     
     def store_fixture(self, fixture_data: dict) -> bool:
-        """Store fixture data as MongoDB document"""
+        """Store fixture data with fixture_id as _id"""
         try:
             fixture_info = fixture_data["fixture"]
             teams_info = fixture_data["teams"]
             goals_info = fixture_data["goals"]
             league_info = fixture_data["league"]
             
-            # Create comprehensive document
+            # ✅ Use fixture_id as MongoDB _id
             document = {
-                "fixture_id": fixture_info["id"],
+                "_id": fixture_info["id"],  # ✅ Custom _id instead of fixture_id field
                 "home_team_id": teams_info["home"]["id"],
                 "home_team_name": teams_info["home"]["name"],
                 "away_team_id": teams_info["away"]["id"],
@@ -75,9 +77,9 @@ class FootyMongoStore:
                 "updated_at": datetime.now(timezone.utc)
             }
             
-            # Upsert (update or insert)
+            # ✅ Use _id for upsert
             result = self.fixtures.replace_one(
-                {"fixture_id": fixture_info["id"]}, 
+                {"_id": fixture_info["id"]}, 
                 document, 
                 upsert=True
             )
@@ -102,7 +104,11 @@ class FootyMongoStore:
                     player_info = event.get("player", {})
                     assist_info = event.get("assist", {}) or {}
                     
+                    # ✅ Create unique _id for events (composite key)
+                    event_id = f"{fixture_id}_{time_info.get('elapsed', 0)}_{player_info.get('id', 0)}_{event.get('type', 'Goal')}"
+                    
                     document = {
+                        "_id": event_id,  # ✅ Custom composite _id
                         "fixture_id": fixture_id,
                         "time_elapsed": time_info.get("elapsed"),
                         "time_extra": time_info.get("extra"),
@@ -123,16 +129,8 @@ class FootyMongoStore:
                         "created_at": datetime.now(timezone.utc)
                     }
                     
-                    # Create unique identifier for event
-                    event_key = {
-                        "fixture_id": fixture_id,
-                        "time_elapsed": time_info.get("elapsed"),
-                        "player_id": player_info.get("id"),
-                        "event_type": event.get("type")
-                    }
-                    
-                    # Upsert event
-                    self.events.replace_one(event_key, document, upsert=True)
+                    # ✅ Use _id for upsert
+                    self.events.replace_one({"_id": event_id}, document, upsert=True)
                     goal_events_stored += 1
             
             print(f"✅ Stored {goal_events_stored} goal events for fixture {fixture_id}")
@@ -143,9 +141,9 @@ class FootyMongoStore:
             return 0
     
     def get_fixture(self, fixture_id: int) -> Optional[dict]:
-        """Get fixture by ID"""
+        """Get fixture by ID - now using _id"""
         try:
-            return self.fixtures.find_one({"fixture_id": fixture_id})
+            return self.fixtures.find_one({"_id": fixture_id})
         except Exception as e:
             print(f"❌ Error getting fixture {fixture_id}: {e}")
             return None
@@ -181,11 +179,15 @@ class FootyMongoStore:
             return []
     
     def store_teams(self, teams_data: list, season: int) -> bool:
-        """Store teams data for a season"""
+        """Store teams data with team_id as _id"""
         try:
             for team_data in teams_data:
+                # ✅ Create composite _id for teams (team_id + season)
+                team_doc_id = f"{team_data['team_id']}_{season}"
+                
                 document = {
-                    "team_id": team_data["team_id"],
+                    "_id": team_doc_id,  # ✅ Custom composite _id
+                    "team_id": team_data["team_id"],  # Keep for backward compatibility
                     "team_name": team_data["team_name"],
                     "league_id": team_data["league_id"],
                     "league_name": team_data["league_name"],
@@ -194,7 +196,7 @@ class FootyMongoStore:
                 }
                 
                 self.teams.replace_one(
-                    {"team_id": team_data["team_id"], "season": season}, 
+                    {"_id": team_doc_id}, 
                     document, 
                     upsert=True
                 )
@@ -216,16 +218,16 @@ class FootyMongoStore:
             return set()
     
     def store_youtube_result(self, fixture_id: int, youtube_data: dict) -> bool:
-        """Store YouTube search results"""
+        """Store YouTube search results with fixture_id as _id"""
         try:
             document = {
-                "fixture_id": fixture_id,
+                "_id": fixture_id,  # ✅ Use fixture_id as _id
                 "search_results": youtube_data,
                 "stored_at": datetime.now(timezone.utc)
             }
             
             self.youtube_results.replace_one(
-                {"fixture_id": fixture_id}, 
+                {"_id": fixture_id}, 
                 document, 
                 upsert=True
             )

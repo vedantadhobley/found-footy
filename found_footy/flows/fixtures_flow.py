@@ -3,7 +3,7 @@ from prefect import flow, task, get_run_logger
 from prefect.events import emit_event
 import pendulum
 import time
-from found_footy.api import (
+from found_footy.api.mongo_api import (
     get_fixtures_by_date,
     get_fixture_details,
     get_fixture_events,
@@ -12,7 +12,7 @@ from found_footy.api import (
     store_fixture_events
 )
 
-# ✅ Sync wrapper functions
+# ✅ UPDATE: Use new MongoDB functions (same interface!)
 def sync_get_fixture_details(fixture_id):
     """Sync wrapper for getting fixture details"""
     return get_fixture_details(fixture_id)

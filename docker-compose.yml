@@ -58,8 +58,11 @@ services:
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - DATABASE_URL=postgresql://footy_user:footy_pass@app-postgres:5432/found_footy
+      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
     depends_on:
       prefect-server:
+        condition: service_healthy
+      mongodb:
         condition: service_healthy
 
   # Fixtures worker
@@ -72,9 +75,12 @@ services:
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - DATABASE_URL=postgresql://footy_user:footy_pass@app-postgres:5432/found_footy
+      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
       - PYTHONPATH=/app
     depends_on:
       prefect-server:
+        condition: service_healthy
+      mongodb:
         condition: service_healthy
       app:
         condition: service_completed_successfully
@@ -90,24 +96,73 @@ services:
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - DATABASE_URL=postgresql://footy_user:footy_pass@app-postgres:5432/found_footy
+      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
       - PYTHONPATH=/app
     depends_on:
       prefect-server:
+        condition: service_healthy
+      mongodb:
         condition: service_healthy
       app:
         condition: service_completed_successfully
     restart: on-failure
 
-  # Database admin interface
+  # ✅ FIXED: MongoDB with default logging (startup + warnings + errors, no network chatter)
+  mongodb:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: footy_admin
+      MONGO_INITDB_ROOT_PASSWORD: footy_secure_pass
+      MONGO_INITDB_DATABASE: found_footy
+    command: >
+      mongod
+      --setParameter logComponentVerbosity={network:{verbosity:0},storage:{verbosity:0}}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ✅ FIXED: mongo-express with explicit connection override
+  mongo-express:
+    image: mongo-express:latest
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: footy_admin
+      ME_CONFIG_MONGODB_ADMINPASSWORD: footy_secure_pass
+      ME_CONFIG_MONGODB_SERVER: mongodb   # ✅ Correct service name
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_MONGODB_URL: mongodb://footy_admin:footy_secure_pass@mongodb:27017/admin  # ✅ Override URL
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin123
+    ports:
+      - "8083:8081"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8081"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: on-failure
+
+  # Database admin interface (PostgreSQL)
   adminer:
     image: adminer
     restart: always
     ports:
-      - 8081:8080
+      - "8081:8080"  # ✅ Keep adminer on 8081 for PostgreSQL
     depends_on:
       app-postgres:
         condition: service_healthy
 
 volumes:
   prefect_postgres_data:
-  app_postgres_data:
+  app_postgres_data:  # Keep for legacy/migration
+  mongodb_data:       # ✅ NEW: MongoDB storage

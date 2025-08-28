@@ -15,7 +15,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
 ]
-# ✅ Use dynamic dependencies from requirements.txt
+# ✅ Keep dynamic dependencies from requirements.txt
 dynamic = ["dependencies"]
 
 [tool.setuptools.dynamic]
@@ -24,3 +24,7 @@ dependencies = {file = ["requirements.txt"]}
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["found_footy*"]
+
+# ✅ ADD: UV configuration to work with requirements.txt
+[tool.uv]
+dev-dependencies = []
