@@ -17,7 +17,8 @@ class FootyMongoStore:
         self.fixtures = self.db.fixtures
         self.events = self.db.events
         self.youtube_results = self.db.youtube_results
-        self.leagues = self.db.leagues  # ✅ NEW: League metadata collection
+        self.leagues = self.db.leagues  # ✅ Keep for backward compatibility
+        self.teams = self.db.teams      # ✅ NEW: Teams metadata collection
         
         # Create indexes for performance
         self._create_indexes()
@@ -30,18 +31,27 @@ class FootyMongoStore:
             self.fixtures.create_index([("fixture_date", 1)])
             self.fixtures.create_index([("home_team_name", 1)])
             self.fixtures.create_index([("away_team_name", 1)])
-            self.fixtures.create_index([("league_id", 1)])  # ✅ CRITICAL for league-based queries
-            self.fixtures.create_index([("league_id", 1), ("fixture_date", 1)])  # ✅ Compound index
+            self.fixtures.create_index([("home_team_id", 1)])  # ✅ NEW: Team ID indexes
+            self.fixtures.create_index([("away_team_id", 1)])  # ✅ NEW: Team ID indexes
+            self.fixtures.create_index([("league_id", 1)])
+            self.fixtures.create_index([("league_id", 1), ("fixture_date", 1)])
+            
+            # ✅ NEW: Compound indexes for team-based queries
+            self.fixtures.create_index([("home_team_id", 1), ("fixture_date", 1)])
+            self.fixtures.create_index([("away_team_id", 1), ("fixture_date", 1)])
             
             # Event indexes
             self.events.create_index([("fixture_id", 1)])
             self.events.create_index([("event_type", 1)])
             
-            # ✅ REMOVED: Team indexes - no longer needed!
-            
-            # League indexes
+            # League indexes (backward compatibility)
             self.leagues.create_index([("league_id", 1)], unique=True)
             self.leagues.create_index([("league_type", 1)])
+            
+            # ✅ NEW: Team indexes
+            self.teams.create_index([("team_id", 1)], unique=True)
+            self.teams.create_index([("country", 1)])
+            self.teams.create_index([("uefa_ranking", 1)])
             
             print("✅ MongoDB indexes created successfully")
         except Exception as e:
@@ -181,11 +191,16 @@ class FootyMongoStore:
             print(f"❌ Error searching fixtures by team: {e}")
             return []
     
-    # ✅ NEW: League-based fixture queries
-    def get_fixtures_by_leagues(self, league_ids: List[int], date_filter=None) -> List[dict]:
-        """Get fixtures by league IDs and optional date"""
+    # ✅ NEW: Team-based fixture queries
+    def get_fixtures_by_teams(self, team_ids: List[int], date_filter=None) -> List[dict]:
+        """Get fixtures by team IDs and optional date"""
         try:
-            query = {"league_id": {"$in": league_ids}}
+            query = {
+                "$or": [
+                    {"home_team_id": {"$in": team_ids}},
+                    {"away_team_id": {"$in": team_ids}}
+                ]
+            }
             
             if date_filter:
                 query["fixture_date"] = {
@@ -195,8 +210,51 @@ class FootyMongoStore:
             
             return list(self.fixtures.find(query))
         except Exception as e:
-            print(f"❌ Error getting fixtures by leagues: {e}")
+            print(f"❌ Error getting fixtures by teams: {e}")
             return []
+
+    def store_team_metadata(self, team_data: dict) -> bool:
+        """Store team metadata for future reference"""
+        try:
+            document = {
+                "_id": team_data["team_id"],
+                "team_id": team_data["team_id"],
+                "team_name": team_data["team_name"],
+                "country": team_data.get("country", "Unknown"),
+                "season": team_data.get("season"),
+                "uefa_ranking": team_data.get("uefa_ranking"),
+                "stored_at": datetime.now(timezone.utc)
+            }
+            
+            self.teams.replace_one(
+                {"_id": team_data["team_id"]}, 
+                document, 
+                upsert=True
+            )
+            
+            print(f"✅ Stored team metadata: {team_data['team_name']} (UEFA #{team_data.get('uefa_ranking', 'N/A')})")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error storing team metadata: {e}")
+            return False
+    
+    def get_available_teams(self) -> List[dict]:
+        """Get all available teams"""
+        try:
+            return list(self.teams.find({}).sort("uefa_ranking", 1))
+        except Exception as e:
+            print(f"❌ Error getting available teams: {e}")
+            return []
+
+    # ✅ BACKWARD COMPATIBILITY: Keep league methods
+    def get_fixtures_by_leagues(self, league_ids: List[int], date_filter=None) -> List[dict]:
+        """DEPRECATED: Use get_fixtures_by_teams instead"""
+        print("⚠️ WARNING: get_fixtures_by_leagues is deprecated. Using team-based approach.")
+        # Get all top 25 team IDs from teams collection
+        teams = self.get_available_teams()
+        team_ids = [team["team_id"] for team in teams]
+        return self.get_fixtures_by_teams(team_ids, date_filter)
     
     def store_league_metadata(self, league_data: dict) -> bool:
         """Store league metadata for future reference"""
@@ -261,10 +319,11 @@ class FootyMongoStore:
                 "fixtures_count": self.fixtures.count_documents({}),
                 "events_count": self.events.count_documents({}),
                 "leagues_count": self.leagues.count_documents({}),
+                "teams_count": self.teams.count_documents({}),  # ✅ NEW: Teams count
                 "youtube_results_count": self.youtube_results.count_documents({}),
                 "completed_fixtures": self.fixtures.count_documents({"status": {"$in": ["FT", "AET", "PEN"]}}),
-                "goal_events": self.events.count_documents({"event_type": "Goal"})
-                # ✅ REMOVED: teams_count - no longer tracked
+                "goal_events": self.events.count_documents({"event_type": "Goal"}),
+                "top_25_teams": self.teams.count_documents({"uefa_ranking": {"$lte": 25}})  # ✅ NEW
             }
         except Exception as e:
             print(f"❌ Error getting stats: {e}")

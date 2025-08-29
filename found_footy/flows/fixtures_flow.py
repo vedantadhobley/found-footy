@@ -5,14 +5,14 @@ import pendulum
 import time
 from typing import Optional
 from found_footy.api.mongo_api import (
-    get_fixtures_by_leagues,
+    get_fixtures_by_date,  # ✅ CHANGED: Use team-based function
     get_fixture_details,
     get_fixture_events,
-    populate_league_metadata,
+    populate_team_metadata,  # ✅ CHANGED: Use team metadata
     store_fixture_result,
     store_fixture_events,
-    parse_league_ids_parameter,
-    get_available_leagues
+    parse_team_ids_parameter,  # ✅ CHANGED: Parse team IDs
+    get_available_teams  # ✅ CHANGED: Get teams instead of leagues
 )
 
 # ✅ Import store directly for one-liner methods we removed
@@ -21,9 +21,9 @@ from found_footy.storage.mongo_store import FootyMongoStore
 # Create store instance for direct access
 store = FootyMongoStore()
 
-@task(name="fetch-fixtures-by-leagues")
-def fetch_fixtures_by_leagues(league_ids, date_str=None):
-    """Fetch fixtures by league IDs"""
+@task(name="fetch-fixtures-by-teams")
+def fetch_fixtures_by_teams(team_ids=None, date_str=None):
+    """Fetch fixtures by team IDs or all top 25 teams"""
     logger = get_run_logger()
     
     if date_str:
@@ -32,36 +32,43 @@ def fetch_fixtures_by_leagues(league_ids, date_str=None):
         from datetime import timezone
         query_date = datetime.now(timezone.utc).date()
     
-    # Parse league IDs
-    if isinstance(league_ids, str):
-        league_ids = parse_league_ids_parameter(league_ids)
-    
-    logger.info(f"⚽ Fetching fixtures for leagues {league_ids} on {query_date}")
-    
-    # Get available leagues for validation
-    available_leagues = get_available_leagues()
-    
-    valid_league_ids = []
-    for league_id in league_ids:
-        if league_id in available_leagues:
-            valid_league_ids.append(league_id)
-            logger.info(f"  🏆 {league_id}: {available_leagues[league_id]['name']}")
-        else:
-            logger.warning(f"  ⚠️ Unknown league ID: {league_id}")
-    
-    if not valid_league_ids:
-        logger.error("❌ No valid league IDs provided")
-        return []
-    
-    # Fetch fixtures
-    fixtures = get_fixtures_by_leagues(valid_league_ids, query_date)
+    # ✅ FIXED: Handle empty string as well as None
+    if team_ids and team_ids.strip():  # Check for non-empty string
+        # Parse team IDs if provided
+        if isinstance(team_ids, str):
+            team_ids = parse_team_ids_parameter(team_ids)
+        
+        logger.info(f"⚽ Fetching fixtures for specific teams {team_ids} on {query_date}")
+        
+        # Get available teams for validation
+        available_teams = get_available_teams()
+        
+        valid_team_ids = []
+        for team_id in team_ids:
+            if team_id in available_teams:
+                valid_team_ids.append(team_id)
+                logger.info(f"  ⚽ {team_id}: {available_teams[team_id]['name']} ({available_teams[team_id]['country']})")
+            else:
+                logger.warning(f"  ⚠️ Unknown team ID: {team_id}")
+        
+        if not valid_team_ids:
+            logger.error("❌ No valid team IDs provided")
+            return []
+        
+        # Use the specific API function for teams
+        from found_footy.api.mongo_api import get_fixtures_by_teams
+        fixtures = get_fixtures_by_teams(valid_team_ids, query_date)
+    else:
+        # Use all top 25 teams (when team_ids is None, empty string, or whitespace)
+        logger.info(f"⚽ Fetching fixtures for ALL top 25 UEFA teams on {query_date}")
+        fixtures = get_fixtures_by_date(query_date)
     
     if fixtures:
         logger.info(f"✅ Found {len(fixtures)} fixtures:")
         for fixture in fixtures:
             logger.info(f"  📅 {fixture['id']}: {fixture['home']} vs {fixture['away']} at {fixture['time']} ({fixture['league']})")
     else:
-        logger.warning(f"❌ No fixtures found for leagues {valid_league_ids} on {query_date}")
+        logger.warning(f"❌ No fixtures found for top 25 teams on {query_date}")
     
     return fixtures
 
@@ -154,7 +161,7 @@ def store_and_emit_task(fixture_id, status, match_info, fixture_data):
         except Exception as e:
             logger.warning(f"⚠️ Error storing events: {e}")
         
-        # Emit event for YouTube automation
+        # ✅ CHANGED: Emit event for Twitter automation instead of YouTube
         emit_event(
             event="fixture.completed",
             resource={"prefect.resource.id": f"fixture.{fixture_id}"},
@@ -173,14 +180,14 @@ def store_and_emit_task(fixture_id, status, match_info, fixture_data):
         )
         
         logger.info(f"📡 ✅ EMITTED fixture.completed event for {fixture_id}")
-        logger.info(f"🎬 YouTube flow will start with trace_id: fixture-{fixture_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
+        logger.info(f"🐦 Twitter flow will start with trace_id: fixture-{fixture_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
         
         return {
             "fixture_id": fixture_id,
             "stored": success,
             "event_emitted": True,
             "trace_id": f"fixture-{fixture_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
-            "youtube_trigger": "automated"
+            "twitter_trigger": "automated"
         }
         
     except Exception as e:
@@ -189,7 +196,7 @@ def store_and_emit_task(fixture_id, status, match_info, fixture_data):
 
 @task(name="monitor-single-fixture")
 def monitor_single_fixture_task(fixture):
-    """Monitor single fixture and trigger YouTube on completion"""
+    """Monitor single fixture and trigger Twitter on completion"""
     fixture_id = fixture["id"]
     fixture_time = fixture["time"]
     home_team = fixture["home"]
@@ -203,9 +210,9 @@ def monitor_single_fixture_task(fixture):
         monitor_result = monitor_fixture_sync(fixture_id, fixture_time)
         
         if monitor_result["result"] == "COMPLETED":
-            logger.info(f"✅ Fixture {fixture_id} completed - storing and triggering YouTube")
+            logger.info(f"✅ Fixture {fixture_id} completed - storing and triggering Twitter")
             
-            # Step 2: Store and emit event (triggers YouTube flow)
+            # Step 2: Store and emit event (triggers Twitter flow)
             store_result = store_and_emit_task(
                 monitor_result["fixture_id"],
                 monitor_result["status"], 
@@ -213,17 +220,17 @@ def monitor_single_fixture_task(fixture):
                 monitor_result["fixture_data"]
             )
             
-            logger.info(f"🚀 Task complete for {fixture_id} - YouTube flow should be running independently!")
+            logger.info(f"🚀 Task complete for {fixture_id} - Twitter flow should be running independently!")
             
             return {
                 "fixture_id": fixture_id,
-                "status": "completed_and_triggered_youtube",
+                "status": "completed_and_triggered_twitter",
                 "monitor_result": monitor_result,
                 "store_result": store_result
             }
             
         else:
-            logger.info(f"⚠️ Fixture {fixture_id} was {monitor_result['result']} - no YouTube trigger needed")
+            logger.info(f"⚠️ Fixture {fixture_id} was {monitor_result['result']} - no Twitter trigger needed")
             return {
                 "fixture_id": fixture_id,
                 "status": f"completed_as_{monitor_result['result'].lower()}",
@@ -240,33 +247,38 @@ def monitor_single_fixture_task(fixture):
         }
 
 @flow(name="fixtures-flow")
-def fixtures_flow(date_str: Optional[str] = None, league_ids: str = "[39,2,48,1]"):
+def fixtures_flow(date_str: Optional[str] = None, team_ids: str = ""):
     """
-    League-based fixtures monitoring with MongoDB reset on startup
+    Team-based fixtures monitoring with MongoDB reset on startup
     
     Parameters:
     - date_str: Date in YYYYMMDD format (optional, defaults to today)
-    - league_ids: JSON array or comma-separated string of league IDs
-                  Default: [39,2,48,1] (Premier League, Champions League, FA Cup, World Cup)
+    - team_ids: JSON array or comma-separated string of team IDs (optional, defaults to all top 25)
+                Examples: "[541,50,42]" (Real Madrid, Man City, Liverpool)
+                         "541,50,42" (comma-separated)
+                         "" (empty string = all top 25 teams)
     """
     logger = get_run_logger()
-    logger.info("🚀 Starting Found Footy Fixtures Flow (League-based)")
+    logger.info("🚀 Starting Found Footy Fixtures Flow (Team-based - Top 25 UEFA)")
     logger.info("🎯 Each fixture will be monitored independently")
-    logger.info("📡 Completed fixtures will trigger YouTube flows via events")
+    logger.info("📡 Completed fixtures will trigger Twitter flows via events")
     
-    # Parse league IDs
-    try:
-        parsed_league_ids = parse_league_ids_parameter(league_ids)
-        logger.info(f"🏆 Target leagues: {parsed_league_ids}")
-    except Exception as e:
-        logger.error(f"❌ Error parsing league_ids parameter: {e}")
-        parsed_league_ids = [39, 2, 48, 1]  # Default to active leagues only
-        logger.info(f"🔄 Using default leagues: {parsed_league_ids}")
+    # Parse team IDs (if provided and not empty)
+    parsed_team_ids = None
+    if team_ids and team_ids.strip():  # ✅ FIXED: Check for non-empty string
+        try:
+            parsed_team_ids = parse_team_ids_parameter(team_ids)
+            logger.info(f"⚽ Target teams: {parsed_team_ids}")
+        except Exception as e:
+            logger.error(f"❌ Error parsing team_ids parameter: {e}")
+            logger.info("🔄 Using all top 25 teams instead")
+    else:
+        logger.info("⚽ Using all top 25 UEFA teams")
     
-    # Reset MongoDB and populate league metadata
-    logger.info("🗑️ Resetting MongoDB and initializing league metadata...")
-    populate_league_metadata(reset_first=True)
-    logger.info("✅ MongoDB reset and league initialization complete")
+    # Reset MongoDB and populate team metadata
+    logger.info("🗑️ Resetting MongoDB and initializing team metadata...")
+    populate_team_metadata(reset_first=True)
+    logger.info("✅ MongoDB reset and team initialization complete")
     
     # Determine the target date for this run
     if date_str:
@@ -278,15 +290,15 @@ def fixtures_flow(date_str: Optional[str] = None, league_ids: str = "[39,2,48,1]
         target_date = today.strftime("%Y%m%d")
         logger.info(f"📅 Running for today's date: {target_date}")
     
-    # Fetch fixtures for the target date and leagues
-    fixtures = fetch_fixtures_by_leagues(parsed_league_ids, target_date)
+    # Fetch fixtures for the target date and teams
+    fixtures = fetch_fixtures_by_teams(parsed_team_ids, target_date)
     
     if not fixtures:
-        logger.warning("❌ No fixtures found for the specified date and leagues")
+        logger.warning("❌ No fixtures found for the specified date and teams")
         return {
             "fixtures_monitored": 0,
             "target_date": target_date,
-            "league_ids": parsed_league_ids,
+            "team_ids": parsed_team_ids or "all_top_25",
             "results": []
         }
     
@@ -301,15 +313,15 @@ def fixtures_flow(date_str: Optional[str] = None, league_ids: str = "[39,2,48,1]
     
     logger.info("🔥 ALL FIXTURE MONITORS LAUNCHED!")
     logger.info("📡 Flow exiting - tasks will emit events when fixtures complete")
-    logger.info("🎬 YouTube flows will start automatically via automation")
+    logger.info("🐦 Twitter flows will start automatically via automation")
     
     # Return immediately - let tasks run independently
     return {
         "fixtures_monitored": len(fixtures),
         "tasks_launched": len(task_futures),
         "target_date": target_date,
-        "league_ids": parsed_league_ids,
-        "processing_type": "league_based_monitoring_with_event_triggers",
+        "team_ids": parsed_team_ids or "all_top_25",
+        "processing_type": "team_based_monitoring_with_event_triggers",
         "flow_completed_at": datetime.now().isoformat(),
-        "note": "Fixture monitors running independently - YouTube flows triggered via events"
+        "note": "Fixture monitors running independently - Twitter flows triggered via events"
     }

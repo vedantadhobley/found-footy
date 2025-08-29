@@ -6,7 +6,7 @@ from prefect import get_client
 
 async def ensure_work_pools():
     """Ensure work pools exist before creating deployments using CLI"""
-    pools = ["fixtures-pool", "youtube-pool"]
+    pools = ["fixtures-pool", "twitter-pool"]  # ✅ CHANGED: twitter-pool instead of youtube-pool
     
     for pool_name in pools:
         try:
@@ -103,29 +103,29 @@ async def clean_all_automations():
     except Exception as e:
         print(f"⚠️ Error in automation cleanup: {e}")
 
-async def create_youtube_automation():
-    """Create the YouTube automation using the Prefect API"""
-    print("🤖 Creating YouTube automation using Prefect API...")
+async def create_twitter_automation():
+    """Create the Twitter automation using the Prefect API"""
+    print("🤖 Creating Twitter automation using Prefect API...")
     
     try:
         async with get_client() as client:
-            # Get the youtube-flow deployment
+            # Get the twitter-flow deployment
             deployments = await client.read_deployments()
-            youtube_deployment = None
+            twitter_deployment = None
             
             for deployment in deployments:
-                if deployment.name == "youtube-flow":
-                    youtube_deployment = deployment
+                if deployment.name == "twitter-flow":
+                    twitter_deployment = deployment
                     break
             
-            if not youtube_deployment:
-                print("❌ youtube-flow deployment not found! Cannot create automation.")
+            if not twitter_deployment:
+                print("❌ twitter-flow deployment not found! Cannot create automation.")
                 return False
             
-            # ✅ FIXED: Add required 'posture' field for Prefect 3
+            # ✅ UPDATED: Twitter automation instead of YouTube
             automation_data = {
-                "name": "trigger-youtube-on-fixture-completion",
-                "description": "Automatically trigger YouTube flow when a fixture completes",
+                "name": "trigger-twitter-on-fixture-completion",
+                "description": "Automatically trigger Twitter flow when a fixture completes",
                 "enabled": True,
                 "trigger": {
                     "type": "event",
@@ -133,14 +133,14 @@ async def create_youtube_automation():
                     "match": {
                         "prefect.resource.id": "fixture.*"
                     },
-                    "posture": "Reactive",  # ✅ CRITICAL: This was missing!
+                    "posture": "Reactive",
                     "threshold": 1,
                     "within": 0
                 },
                 "actions": [
                     {
                         "type": "run-deployment",
-                        "deployment_id": str(youtube_deployment.id),
+                        "deployment_id": str(twitter_deployment.id),
                         "parameters": {
                             "team1": "{{ event.payload.home_team }}",
                             "team2": "{{ event.payload.away_team }}",
@@ -150,13 +150,13 @@ async def create_youtube_automation():
                 ]
             }
             
-            # ✅ Use the client's HTTP session directly
+            # Use the client's HTTP session directly
             response = await client._client.post("/automations/", json=automation_data)
             
             if response.status_code == 201:
                 created_automation = response.json()
                 print(f"✅ Created automation: {created_automation['name']} (ID: {created_automation['id']})")
-                print("🎬 YouTube worker will now respond to fixture completion events!")
+                print("🐦 Twitter worker will now respond to fixture completion events!")
                 return True
             else:
                 print(f"❌ Failed to create automation via HTTP: {response.status_code} - {response.text}")
@@ -170,13 +170,13 @@ async def create_youtube_automation():
 
 def deploy_from_yaml():
     """Deploy using prefect.yaml project config - THE RIGHT WAY"""
-    print("🚀 Creating SIMPLIFIED deployments (only 2) using prefect.yaml...")
+    print("🚀 Creating SIMPLIFIED deployments (only 3) using prefect.yaml...")
     
-    # ✅ ADD: Reset MongoDB on container startup
+    # ✅ FIXED: Reset MongoDB with team metadata instead of league metadata
     print("🗑️ Resetting MongoDB on application startup...")
-    from found_footy.api.mongo_api import populate_league_metadata
-    populate_league_metadata(reset_first=True)
-    print("✅ MongoDB reset and league initialization complete")
+    from found_footy.api.mongo_api import populate_team_metadata
+    populate_team_metadata(reset_first=True)
+    print("✅ MongoDB reset and team initialization complete")
     
     # Ensure pools exist first
     import asyncio
@@ -196,7 +196,7 @@ def deploy_from_yaml():
     time.sleep(3)
     
     # ✅ Use the correct command: prefect deploy --all
-    print("🏗️ Deploying 2 simplified deployments from prefect.yaml...")
+    print("🏗️ Deploying 3 deployments from prefect.yaml...")
     
     result = subprocess.run([
         "prefect", "deploy", "--all"
@@ -206,39 +206,39 @@ def deploy_from_yaml():
         print("✅ All deployments created successfully from prefect.yaml!")
         print(f"📋 Output: {result.stdout}")
         
-        # ✅ CRITICAL: Create automation
-        print("🤖 Creating YouTube automation...")
-        automation_success = asyncio.run(create_youtube_automation())
+        # ✅ UPDATED: Create Twitter automation instead of YouTube
+        print("🤖 Creating Twitter automation...")
+        automation_success = asyncio.run(create_twitter_automation())
         
         if automation_success:
             print("✅ Setup complete with automation!")
         else:
             print("⚠️ Deployments created but automation failed")
         
-        # ✅ Show user what to do next
+        # ✅ UPDATED: Show Twitter flow info
         print("\n" + "="*60)
-        print("🎉 SETUP COMPLETE - 2 Simplified Deployments Created!")
+        print("🎉 SETUP COMPLETE - Team-Based Fixture Monitoring!")
         print("="*60)
         print("📋 Deployments created:")
         print("  1. fixtures-flow-daily    (scheduled, DISABLED by default)")
         print("  2. fixtures-flow-manual   (manual trigger)")
-        print("  3. youtube-flow          (auto-triggered by events)")
+        print("  3. twitter-flow          (auto-triggered by events)")
         print()
         print("🚀 Next steps:")
         print("  1. Go to Prefect UI: http://localhost:4200")
         print("  2. For daily monitoring:")
         print("     → Deployments → fixtures-flow-daily → Edit parameters")
-        print("     → Set league_ids (e.g., '[2]' for Champions League)")
+        print("     → Set team_ids (e.g., '[541,50,42]' for top teams)")
         print("     → Enable schedule when ready")
         print("  3. For immediate runs:")
         print("     → Deployments → fixtures-flow-manual → Run")
-        print("     → Set date_str and league_ids → Quick Run")
+        print("     → Set date_str and team_ids → Quick Run")
         print()
-        print("🏆 League ID examples:")
-        print("  • '[39]' - Premier League")  
-        print("  • '[2]' - Champions League")
-        print("  • '[39,2,48,1]' - All active leagues")  # ✅ UPDATED
-        print("  • '[48]' - FA Cup only")
+        print("⚽ Team ID examples (Top 25 UEFA 2026):")
+        print("  • '[541]' - Real Madrid only")  
+        print("  • '[50,42]' - Manchester City + Liverpool")
+        print("  • '[541,529,50,42]' - Real Madrid, Barcelona, Man City, Liverpool")
+        print("  • null/empty - All top 25 UEFA teams")
         print("="*60)
         
         return True
@@ -293,7 +293,7 @@ if __name__ == "__main__":
         
         print("✅ Setup complete!")
         print("🌐 Access Prefect UI at http://localhost:4200")
-        print("📝 Configure league_ids in deployment parameters")
+        print("📝 Configure team_ids in deployment parameters")
     else:
         print("❌ DEBUG: apply flag is False")
         print("Use --apply to create deployments")

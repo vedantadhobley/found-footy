@@ -10,7 +10,7 @@ push: null
 # Pull step - code is already installed via pip install -e .
 pull: null
 
-# ✅ SIMPLIFIED: Only 2 deployments
+# ✅ FIXED: Use empty string instead of null for team_ids
 deployments:
   # 1. Daily auto-runner (disabled by default, configurable in UI)
   - name: fixtures-flow-daily
@@ -22,20 +22,22 @@ deployments:
       timezone: UTC
       active: false  # ✅ DISABLED by default - enable in Prefect UI
     parameters:
-      league_ids: "[39,2,48,1]"  # ✅ UPDATED: Only active leagues
+      team_ids: ""  # ✅ FIXED: Empty string instead of null
     tags:
       - fixtures
       - scheduled
       - daily
-      - configurable
+      - teams
+      - top25-uefa
     description: |
-      Daily fixtures monitor (DISABLED by default)
+      Daily fixtures monitor for top 25 UEFA teams (DISABLED by default)
       
       ⚙️  Configure in Prefect UI:
       - Enable/disable schedule
-      - Change league_ids parameter for different competitions
+      - Change team_ids parameter for specific teams
       
-      🏆 Current active leagues: [39,2,48,1] (Premier League, Champions League, FA Cup, World Cup)
+      ⚽ Current approach: Top 25 UEFA ranked teams (2026)
+      Examples: "[541,50,42]" (Real Madrid, Man City, Liverpool)
 
   # 2. Instant manual runner
   - name: fixtures-flow-manual
@@ -43,34 +45,35 @@ deployments:
     work_pool:
       name: fixtures-pool
     parameters:
-      league_ids: "[39,2,48,1]"  # ✅ UPDATED: Only active leagues
+      team_ids: ""  # ✅ FIXED: Empty string instead of null
     tags:
       - fixtures
       - manual
       - instant
-      - configurable
+      - teams
+      - top25-uefa
     description: |
-      Manual fixtures runner - run immediately for any date/leagues
+      Manual fixtures runner - run immediately for any date/teams
       
       📅 Parameters:
       - date_str: "20250828" (YYYYMMDD format) or leave empty for today
-      - league_ids: JSON array or comma-separated string
+      - team_ids: JSON array or comma-separated string of team IDs
       
-      🏆 Current active leagues: [39,2,48,1]
-      - 39: Premier League
-      - 2: UEFA Champions League  
-      - 48: FA Cup
-      - 1: World Cup
+      ⚽ Top 25 UEFA teams (2026):
+      - 541: Real Madrid
+      - 50: Manchester City  
+      - 42: Liverpool
+      - 529: Barcelona
+      - empty string: All top 25 teams
 
-  # 3. YouTube flow (triggered by automation)
-  - name: youtube-flow
-    entrypoint: found_footy.flows.youtube_flow:youtube_flow
+  # 3. Twitter flow (unchanged)
+  - name: twitter-flow
+    entrypoint: found_footy.flows.twitter_flow:twitter_flow
     work_pool:
-      name: youtube-pool
-    # ✅ NO SCHEDULE - triggered by automation only
+      name: twitter-pool
     parameters: {}
     tags:
-      - youtube
+      - twitter
       - automated
-      - highlights
-    description: "YouTube highlights monitor (triggered automatically by fixture completion events)"
+      - social-media
+    description: "Twitter monitoring flow (triggered automatically by fixture completion events) - placeholder implementation"

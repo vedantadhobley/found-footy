@@ -68,10 +68,10 @@ services:
         condition: service_completed_successfully
     restart: on-failure
 
-  # YouTube worker
-  youtube-worker:
+  # ✅ CHANGED: Twitter worker instead of YouTube worker
+  twitter-worker:
     build: .
-    command: prefect worker start --pool youtube-pool --type process
+    command: prefect worker start --pool twitter-pool --type process
     volumes:
       - .:/app
     working_dir: /app

@@ -13,69 +13,81 @@ HEADERS = {
     "x-rapidapi-host": "api-football-v1.p.rapidapi.com"
 }
 
-# League configurations
-AVAILABLE_LEAGUES = {
-    # Domestic Leagues
-    39: {"name": "Premier League", "type": "domestic", "country": "England"},
-    # 140: {"name": "La Liga", "type": "domestic", "country": "Spain"},
-    # 78: {"name": "Bundesliga", "type": "domestic", "country": "Germany"},
-    # 61: {"name": "Ligue 1", "type": "domestic", "country": "France"},
-    # 135: {"name": "Serie A", "type": "domestic", "country": "Italy"},
-    
-    # European Competitions
-    2: {"name": "UEFA Champions League", "type": "international", "country": "Europe"},
-    # 3: {"name": "UEFA Europa League", "type": "international", "country": "Europe"},
-    # 848: {"name": "UEFA Europa Conference League", "type": "international", "country": "Europe"},
-    
-    # English Cups
-    48: {"name": "FA Cup", "type": "cup", "country": "England"},
-    # 45: {"name": "EFL Cup", "type": "cup", "country": "England"},
-    
-    # Spanish Cups
-    # 143: {"name": "Copa del Rey", "type": "cup", "country": "Spain"},
-    # 556: {"name": "Supercopa de España", "type": "cup", "country": "Spain"},
-    
-    # German Cups
-    # 81: {"name": "DFB Pokal", "type": "cup", "country": "Germany"},
-    
-    # French Cups
-    # 66: {"name": "Coupe de France", "type": "cup", "country": "France"},
-    
-    # Italian Cups
-    # 137: {"name": "Coppa Italia", "type": "cup", "country": "Italy"},
-    
-    # International
-    # 4: {"name": "UEFA Nations League", "type": "international", "country": "Europe"},
-    1: {"name": "World Cup", "type": "international", "country": "World"},
+# ✅ CHANGED: Top 25 UEFA ranked teams for 2026 season (replacing leagues)
+TOP_25_TEAMS_2026 = {
+    541: {"name": "Real Madrid", "country": "Spain"},
+    81: {"name": "Bayern Munich", "country": "Germany"},
+    110: {"name": "Inter Milan", "country": "Italy"},
+    50: {"name": "Manchester City", "country": "England"},
+    42: {"name": "Liverpool", "country": "England"},
+    85: {"name": "Paris Saint-Germain", "country": "France"},
+    98: {"name": "Bayer Leverkusen", "country": "Germany"},
+    83: {"name": "Borussia Dortmund", "country": "Germany"},
+    529: {"name": "Barcelona", "country": "Spain"},
+    211: {"name": "Benfica", "country": "Portugal"},
+    530: {"name": "Atletico Madrid", "country": "Spain"},
+    487: {"name": "Roma", "country": "Italy"},
+    49: {"name": "Chelsea", "country": "England"},
+    40: {"name": "Arsenal", "country": "England"},
+    91: {"name": "Eintracht Frankfurt", "country": "Germany"},
+    33: {"name": "Manchester United", "country": "England"},
+    499: {"name": "Atalanta", "country": "Italy"},
+    82: {"name": "Feyenoord", "country": "Netherlands"},
+    48: {"name": "West Ham United", "country": "England"},
+    121: {"name": "Club Brugge", "country": "Belgium"},
+    489: {"name": "AC Milan", "country": "Italy"},
+    79: {"name": "PSV Eindhoven", "country": "Netherlands"},
+    502: {"name": "Fiorentina", "country": "Italy"},
+    228: {"name": "Sporting CP", "country": "Portugal"},
+    47: {"name": "Tottenham Hotspur", "country": "England"}
 }
 
-# ✅ CORE API FUNCTIONS - These fetch from external API
-def get_fixtures_by_leagues(league_ids, query_date=date.today()):
-    """Get fixtures by league IDs directly from API"""
-    print(f"🔍 Fetching fixtures for leagues {league_ids} on {query_date}")
+# ✅ CORE API FUNCTIONS - Updated for team-based approach
+def get_fixtures_by_teams(team_ids, query_date=date.today()):
+    """Get fixtures by team IDs directly from API"""
+    print(f"🔍 Fetching fixtures for teams {team_ids} on {query_date}")
     
-    # Fetch fixtures from API filtered by date
+    # Fetch all fixtures from API for the date
     fixture_url = f"{BASE_URL}/fixtures?date={query_date}"
     response = requests.get(fixture_url, headers=HEADERS)
     fixtures = response.json().get("response", [])
 
     selected_fixtures = []
     for fixture in fixtures:
-        league_id = fixture["league"]["id"]
+        home_team_id = fixture["teams"]["home"]["id"]
+        away_team_id = fixture["teams"]["away"]["id"]
         
-        # Filter by league ID directly
-        if league_id in league_ids:
+        # Check if either team is in our target list
+        if home_team_id in team_ids or away_team_id in team_ids:
             selected_fixtures.append({
                 "id": fixture["fixture"]["id"],
                 "home": fixture["teams"]["home"]["name"],
+                "home_id": home_team_id,
                 "away": fixture["teams"]["away"]["name"],
+                "away_id": away_team_id,
                 "league": fixture["league"]["name"],
-                "league_id": league_id,
+                "league_id": fixture["league"]["id"],
                 "time": fixture["fixture"]["date"]
             })
     
-    print(f"✅ Found {len(selected_fixtures)} fixtures in specified leagues")
+    print(f"✅ Found {len(selected_fixtures)} fixtures involving target teams")
     return selected_fixtures
+
+def get_fixtures_by_date(query_date=date.today()):
+    """Get fixtures by date for top 25 teams - REIMPLEMENTED"""
+    print(f"🔍 Fetching fixtures for top 25 UEFA teams on {query_date}")
+    
+    # Use all top 25 team IDs
+    top_25_team_ids = list(TOP_25_TEAMS_2026.keys())
+    
+    return get_fixtures_by_teams(top_25_team_ids, query_date)
+
+# ✅ BACKWARD COMPATIBILITY: Keep league function but use teams internally
+def get_fixtures_by_leagues(league_ids, query_date=date.today()):
+    """DEPRECATED: Use get_fixtures_by_teams or get_fixtures_by_date instead"""
+    print("⚠️ WARNING: get_fixtures_by_leagues is deprecated. Using team-based approach instead.")
+    # Default to top 25 teams for backward compatibility
+    return get_fixtures_by_date(query_date)
 
 def get_fixture_details(fixture_ids):
     """Get fixture details from API"""
@@ -102,65 +114,68 @@ def store_fixture_events(fixture_id, events_data):
     """Store fixture events in MongoDB"""
     return store.store_fixture_events(fixture_id, events_data)
 
-def populate_league_metadata(reset_first=True):
-    """Populate league metadata in MongoDB with optional reset"""
+def populate_team_metadata(reset_first=True):
+    """Populate team metadata in MongoDB with optional reset"""
     if reset_first:
         print("🔄 Resetting MongoDB first...")
         store.reset_database()
     
-    print("🏆 Populating league metadata...")
+    print("⚽ Populating top 25 UEFA team metadata...")
     
-    for league_id, league_info in AVAILABLE_LEAGUES.items():
-        league_data = {
-            "league_id": league_id,
-            "league_name": league_info["name"],
-            "league_type": league_info["type"],
-            "country": league_info["country"],
-            "season": 2025
+    for team_id, team_info in TOP_25_TEAMS_2026.items():
+        team_data = {
+            "team_id": team_id,
+            "team_name": team_info["name"],
+            "country": team_info["country"],
+            "season": 2026,
+            "uefa_ranking": list(TOP_25_TEAMS_2026.keys()).index(team_id) + 1  # 1-25 ranking
         }
-        store.store_league_metadata(league_data)
+        store.store_team_metadata(team_data)
     
-    print(f"✅ Populated {len(AVAILABLE_LEAGUES)} leagues in metadata")
+    print(f"✅ Populated {len(TOP_25_TEAMS_2026)} teams in metadata")
 
-# ✅ HELPER FUNCTIONS - These provide useful abstractions
-def get_available_leagues():
-    """Get all available leagues - returns constant dict"""
-    return AVAILABLE_LEAGUES
+# ✅ UPDATED: Helper functions for teams
+def get_available_teams():
+    """Get all available top 25 teams - returns constant dict"""
+    return TOP_25_TEAMS_2026
 
-def get_leagues_by_type(league_type):
-    """Get leagues filtered by type (domestic, cup, international)"""
+def get_teams_by_country(country):
+    """Get teams filtered by country"""
     return {
-        league_id: league_info 
-        for league_id, league_info in AVAILABLE_LEAGUES.items() 
-        if league_info["type"] == league_type
+        team_id: team_info 
+        for team_id, team_info in TOP_25_TEAMS_2026.items() 
+        if team_info["country"].lower() == country.lower()
     }
 
-def parse_league_ids_parameter(league_ids_param):
-    """Parse league IDs from various input formats - used by flows"""
-    if isinstance(league_ids_param, str):
+def parse_team_ids_parameter(team_ids_param):
+    """Parse team IDs from various input formats - used by flows"""
+    if isinstance(team_ids_param, str):
         try:
             # Try parsing as JSON array
-            league_ids = json.loads(league_ids_param)
+            team_ids = json.loads(team_ids_param)
         except json.JSONDecodeError:
             # Try parsing as comma-separated string
-            league_ids = [int(x.strip()) for x in league_ids_param.split(",")]
-    elif isinstance(league_ids_param, list):
-        league_ids = [int(x) for x in league_ids_param]
+            team_ids = [int(x.strip()) for x in team_ids_param.split(",")]
+    elif isinstance(team_ids_param, list):
+        team_ids = [int(x) for x in team_ids_param]
     else:
-        league_ids = [int(league_ids_param)]
+        team_ids = [int(team_ids_param)]
     
-    return league_ids
+    return team_ids
 
-# ✅ REMOVED: Unnecessary one-liner wrappers
-# - reset_mongodb() → use store.reset_database() directly
-# - get_completed_fixtures_today() → use store.get_completed_fixtures() directly  
-# - search_fixtures_by_team() → use store.search_fixtures_by_team() directly
-# - get_database_stats() → use store.get_stats() directly
+# ✅ BACKWARD COMPATIBILITY: Keep league functions but redirect to teams
+def get_available_leagues():
+    """DEPRECATED: Use get_available_teams instead"""
+    print("⚠️ WARNING: get_available_leagues is deprecated. Use get_available_teams instead.")
+    return TOP_25_TEAMS_2026
 
-# ✅ DEPRECATED NOTICE
-def get_fixtures_by_date(query_date=date.today(), table="teams_2526"):
-    """DEPRECATED: Use get_fixtures_by_leagues instead"""
-    print("⚠️ WARNING: get_fixtures_by_date is deprecated. Use get_fixtures_by_leagues instead.")
-    # Default to currently active leagues for backward compatibility
-    default_leagues = [39, 2, 48, 1]  # ✅ UPDATED: Only active leagues
-    return get_fixtures_by_leagues(default_leagues, query_date)
+def parse_league_ids_parameter(league_ids_param):
+    """DEPRECATED: Use parse_team_ids_parameter instead"""
+    print("⚠️ WARNING: parse_league_ids_parameter is deprecated. Use parse_team_ids_parameter instead.")
+    return parse_team_ids_parameter(league_ids_param)
+
+# ✅ DEPRECATED: Keep for backward compatibility but use team approach
+def populate_league_metadata(reset_first=True):
+    """DEPRECATED: Use populate_team_metadata instead"""
+    print("⚠️ WARNING: populate_league_metadata is deprecated. Using populate_team_metadata instead.")
+    return populate_team_metadata(reset_first)
