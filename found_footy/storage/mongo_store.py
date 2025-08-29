@@ -16,8 +16,8 @@ class FootyMongoStore:
         # Collections
         self.fixtures = self.db.fixtures
         self.events = self.db.events
-        self.teams = self.db.teams
         self.youtube_results = self.db.youtube_results
+        self.leagues = self.db.leagues  # ✅ NEW: League metadata collection
         
         # Create indexes for performance
         self._create_indexes()
@@ -25,22 +25,23 @@ class FootyMongoStore:
     def _create_indexes(self):
         """Create database indexes for better query performance"""
         try:
-            # ✅ No need for fixture_id index since it's now _id
             # Fixture indexes
             self.fixtures.create_index([("status", 1)])
             self.fixtures.create_index([("fixture_date", 1)])
             self.fixtures.create_index([("home_team_name", 1)])
             self.fixtures.create_index([("away_team_name", 1)])
-            self.fixtures.create_index([("league_id", 1)])
+            self.fixtures.create_index([("league_id", 1)])  # ✅ CRITICAL for league-based queries
+            self.fixtures.create_index([("league_id", 1), ("fixture_date", 1)])  # ✅ Compound index
             
             # Event indexes
             self.events.create_index([("fixture_id", 1)])
             self.events.create_index([("event_type", 1)])
             
-            # ✅ No need for team_id index since it's now _id
-            # Team indexes  
-            self.teams.create_index([("league_id", 1)])
-            self.teams.create_index([("season", 1)])
+            # ✅ REMOVED: Team indexes - no longer needed!
+            
+            # League indexes
+            self.leagues.create_index([("league_id", 1)], unique=True)
+            self.leagues.create_index([("league_type", 1)])
             
             print("✅ MongoDB indexes created successfully")
         except Exception as e:
@@ -56,7 +57,7 @@ class FootyMongoStore:
             
             # ✅ Use fixture_id as MongoDB _id
             document = {
-                "_id": fixture_info["id"],  # ✅ Custom _id instead of fixture_id field
+                "_id": fixture_info["id"],
                 "home_team_id": teams_info["home"]["id"],
                 "home_team_name": teams_info["home"]["name"],
                 "away_team_id": teams_info["away"]["id"],
@@ -77,7 +78,6 @@ class FootyMongoStore:
                 "updated_at": datetime.now(timezone.utc)
             }
             
-            # ✅ Use _id for upsert
             result = self.fixtures.replace_one(
                 {"_id": fixture_info["id"]}, 
                 document, 
@@ -108,7 +108,7 @@ class FootyMongoStore:
                     event_id = f"{fixture_id}_{time_info.get('elapsed', 0)}_{player_info.get('id', 0)}_{event.get('type', 'Goal')}"
                     
                     document = {
-                        "_id": event_id,  # ✅ Custom composite _id
+                        "_id": event_id,
                         "fixture_id": fixture_id,
                         "time_elapsed": time_info.get("elapsed"),
                         "time_extra": time_info.get("extra"),
@@ -129,7 +129,6 @@ class FootyMongoStore:
                         "created_at": datetime.now(timezone.utc)
                     }
                     
-                    # ✅ Use _id for upsert
                     self.events.replace_one({"_id": event_id}, document, upsert=True)
                     goal_events_stored += 1
             
@@ -148,8 +147,8 @@ class FootyMongoStore:
             print(f"❌ Error getting fixture {fixture_id}: {e}")
             return None
     
-    def get_completed_fixtures(self, date_filter=None) -> List[dict]:
-        """Get completed fixtures, optionally filtered by date"""
+    def get_completed_fixtures(self, date_filter=None, league_ids=None) -> List[dict]:
+        """Get completed fixtures, optionally filtered by date and league IDs"""
         try:
             query = {"status": {"$in": ["FT", "AET", "PEN"]}}
             
@@ -158,6 +157,10 @@ class FootyMongoStore:
                     "$gte": datetime.combine(date_filter, datetime.min.time()),
                     "$lt": datetime.combine(date_filter, datetime.max.time())
                 }
+            
+            # ✅ NEW: Filter by league IDs
+            if league_ids:
+                query["league_id"] = {"$in": league_ids}
             
             return list(self.fixtures.find(query))
         except Exception as e:
@@ -178,50 +181,62 @@ class FootyMongoStore:
             print(f"❌ Error searching fixtures by team: {e}")
             return []
     
-    def store_teams(self, teams_data: list, season: int) -> bool:
-        """Store teams data with team_id as _id"""
+    # ✅ NEW: League-based fixture queries
+    def get_fixtures_by_leagues(self, league_ids: List[int], date_filter=None) -> List[dict]:
+        """Get fixtures by league IDs and optional date"""
         try:
-            for team_data in teams_data:
-                # ✅ Create composite _id for teams (team_id + season)
-                team_doc_id = f"{team_data['team_id']}_{season}"
-                
-                document = {
-                    "_id": team_doc_id,  # ✅ Custom composite _id
-                    "team_id": team_data["team_id"],  # Keep for backward compatibility
-                    "team_name": team_data["team_name"],
-                    "league_id": team_data["league_id"],
-                    "league_name": team_data["league_name"],
-                    "season": season,
-                    "stored_at": datetime.now(timezone.utc)
-                }
-                
-                self.teams.replace_one(
-                    {"_id": team_doc_id}, 
-                    document, 
-                    upsert=True
-                )
+            query = {"league_id": {"$in": league_ids}}
             
-            print(f"✅ Stored {len(teams_data)} teams for season {season}")
+            if date_filter:
+                query["fixture_date"] = {
+                    "$gte": datetime.combine(date_filter, datetime.min.time()),
+                    "$lt": datetime.combine(date_filter, datetime.max.time())
+                }
+            
+            return list(self.fixtures.find(query))
+        except Exception as e:
+            print(f"❌ Error getting fixtures by leagues: {e}")
+            return []
+    
+    def store_league_metadata(self, league_data: dict) -> bool:
+        """Store league metadata for future reference"""
+        try:
+            document = {
+                "_id": league_data["league_id"],
+                "league_id": league_data["league_id"],
+                "league_name": league_data["league_name"],
+                "league_type": league_data.get("league_type", "domestic"),  # domestic, cup, international
+                "country": league_data.get("country", "Unknown"),
+                "season": league_data.get("season"),
+                "stored_at": datetime.now(timezone.utc)
+            }
+            
+            self.leagues.replace_one(
+                {"_id": league_data["league_id"]}, 
+                document, 
+                upsert=True
+            )
+            
+            print(f"✅ Stored league metadata: {league_data['league_name']}")
             return True
             
         except Exception as e:
-            print(f"❌ Error storing teams: {e}")
+            print(f"❌ Error storing league metadata: {e}")
             return False
     
-    def get_team_ids(self, season: int) -> set:
-        """Get all team IDs for a season"""
+    def get_available_leagues(self) -> List[dict]:
+        """Get all available leagues"""
         try:
-            teams = self.teams.find({"season": season}, {"team_id": 1})
-            return {team["team_id"] for team in teams}
+            return list(self.leagues.find({}))
         except Exception as e:
-            print(f"❌ Error getting team IDs: {e}")
-            return set()
+            print(f"❌ Error getting available leagues: {e}")
+            return []
     
     def store_youtube_result(self, fixture_id: int, youtube_data: dict) -> bool:
         """Store YouTube search results with fixture_id as _id"""
         try:
             document = {
-                "_id": fixture_id,  # ✅ Use fixture_id as _id
+                "_id": fixture_id,
                 "search_results": youtube_data,
                 "stored_at": datetime.now(timezone.utc)
             }
@@ -245,11 +260,54 @@ class FootyMongoStore:
             return {
                 "fixtures_count": self.fixtures.count_documents({}),
                 "events_count": self.events.count_documents({}),
-                "teams_count": self.teams.count_documents({}),
+                "leagues_count": self.leagues.count_documents({}),
                 "youtube_results_count": self.youtube_results.count_documents({}),
                 "completed_fixtures": self.fixtures.count_documents({"status": {"$in": ["FT", "AET", "PEN"]}}),
                 "goal_events": self.events.count_documents({"event_type": "Goal"})
+                # ✅ REMOVED: teams_count - no longer tracked
             }
         except Exception as e:
             print(f"❌ Error getting stats: {e}")
             return {}
+    
+    def drop_all_collections(self):
+        """Drop all collections in the database for a fresh start"""
+        try:
+            collection_names = self.db.list_collection_names()
+            
+            if not collection_names:
+                print("ℹ️ No collections found to drop")
+                return True
+            
+            print(f"🗑️ Dropping {len(collection_names)} collections: {collection_names}")
+            
+            dropped_count = 0
+            for collection_name in collection_names:
+                self.db[collection_name].drop()
+                print(f"  ✅ Dropped: {collection_name}")
+                dropped_count += 1
+            
+            print(f"🧹 Successfully dropped {dropped_count} collections")
+            
+            # Recreate indexes after dropping collections
+            self._create_indexes()
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error dropping collections: {e}")
+            return False
+
+    def reset_database(self):
+        """Complete database reset - drop all collections and reinitialize"""
+        print("🔄 Performing complete MongoDB database reset...")
+        
+        # Drop all collections
+        success = self.drop_all_collections()
+        
+        if success:
+            print("✅ MongoDB reset complete - ready for fresh data")
+        else:
+            print("⚠️ MongoDB reset had issues - check logs")
+        
+        return success

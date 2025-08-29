@@ -1,5 +1,5 @@
 services:
-  # Core databases
+  # Core Prefect database only
   prefect-postgres:
     image: postgres:15
     environment:
@@ -12,22 +12,6 @@ services:
       - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U prefect -d prefect"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  app-postgres:
-    image: postgres:15
-    environment:
-      POSTGRES_USER: footy_user
-      POSTGRES_PASSWORD: footy_pass
-      POSTGRES_DB: found_footy
-    volumes:
-      - app_postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5433:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U footy_user -d found_footy"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -57,7 +41,6 @@ services:
       - .:/app
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
-      - DATABASE_URL=postgresql://footy_user:footy_pass@app-postgres:5432/found_footy
       - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
     depends_on:
       prefect-server:
@@ -74,7 +57,6 @@ services:
     working_dir: /app
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
-      - DATABASE_URL=postgresql://footy_user:footy_pass@app-postgres:5432/found_footy
       - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
       - PYTHONPATH=/app
     depends_on:
@@ -95,7 +77,6 @@ services:
     working_dir: /app
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
-      - DATABASE_URL=postgresql://footy_user:footy_pass@app-postgres:5432/found_footy
       - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
       - PYTHONPATH=/app
     depends_on:
@@ -107,7 +88,7 @@ services:
         condition: service_completed_successfully
     restart: on-failure
 
-  # ✅ FIXED: MongoDB with default logging (startup + warnings + errors, no network chatter)
+  # MongoDB only
   mongodb:
     image: mongo:7
     environment:
@@ -128,15 +109,15 @@ services:
       retries: 5
       start_period: 10s
 
-  # ✅ FIXED: mongo-express with explicit connection override
+  # MongoDB admin interface only
   mongo-express:
     image: mongo-express:latest
     environment:
       ME_CONFIG_MONGODB_ADMINUSERNAME: footy_admin
       ME_CONFIG_MONGODB_ADMINPASSWORD: footy_secure_pass
-      ME_CONFIG_MONGODB_SERVER: mongodb   # ✅ Correct service name
+      ME_CONFIG_MONGODB_SERVER: mongodb
       ME_CONFIG_MONGODB_PORT: 27017
-      ME_CONFIG_MONGODB_URL: mongodb://footy_admin:footy_secure_pass@mongodb:27017/admin  # ✅ Override URL
+      ME_CONFIG_MONGODB_URL: mongodb://footy_admin:footy_secure_pass@mongodb:27017/admin
       ME_CONFIG_BASICAUTH_USERNAME: admin
       ME_CONFIG_BASICAUTH_PASSWORD: admin123
     ports:
@@ -152,17 +133,6 @@ services:
       start_period: 30s
     restart: on-failure
 
-  # Database admin interface (PostgreSQL)
-  adminer:
-    image: adminer
-    restart: always
-    ports:
-      - "8081:8080"  # ✅ Keep adminer on 8081 for PostgreSQL
-    depends_on:
-      app-postgres:
-        condition: service_healthy
-
 volumes:
-  prefect_postgres_data:
-  app_postgres_data:  # Keep for legacy/migration
-  mongodb_data:       # ✅ NEW: MongoDB storage
+  prefect_postgres_data:  # Only Prefect needs PostgreSQL
+  mongodb_data:           # Application uses MongoDB

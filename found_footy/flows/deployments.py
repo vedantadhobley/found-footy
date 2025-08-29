@@ -41,7 +41,6 @@ async def ensure_work_pools():
 async def clean_all_deployments_api():
     """Clean up ALL existing deployments using Prefect client API"""
     print("🧹 CLEANING ALL EXISTING DEPLOYMENTS (using API)...")
-    print("💣 This will delete EVERY deployment in the system!")
     
     try:
         async with get_client() as client:
@@ -105,7 +104,7 @@ async def clean_all_automations():
         print(f"⚠️ Error in automation cleanup: {e}")
 
 async def create_youtube_automation():
-    """Create the YouTube automation using the Prefect API - FIXED"""
+    """Create the YouTube automation using the Prefect API"""
     print("🤖 Creating YouTube automation using Prefect API...")
     
     try:
@@ -167,78 +166,29 @@ async def create_youtube_automation():
         print(f"❌ Failed to create automation: {e}")
         import traceback
         traceback.print_exc()
-        
-        # ✅ FALLBACK: Try CLI approach with CORRECT flags
-        print("🔄 Trying CLI automation creation as fallback...")
-        return create_automation_cli()
-
-def create_automation_cli():
-    """Fallback: Create automation using CLI with CORRECT syntax"""
-    try:
-        # ✅ FIXED CLI command - use JSON file approach with posture field
-        automation_config = {
-            "name": "trigger-youtube-on-fixture-completion",
-            "description": "Automatically trigger YouTube flow when a fixture completes",
-            "enabled": True,
-            "trigger": {
-                "type": "event",
-                "expect": ["fixture.completed"],
-                "match": {
-                    "prefect.resource.id": "fixture.*"
-                },
-                "posture": "Reactive",  # ✅ CRITICAL: Added missing posture field
-                "threshold": 1,
-                "within": 0
-            },
-            "actions": [
-                {
-                    "type": "run-deployment",
-                    "source": "inferred",
-                    "deployment": "youtube-flow"
-                }
-            ]
-        }
-        
-        # Write config to temp file
-        import json
-        import tempfile
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            json.dump(automation_config, f, indent=2)
-            temp_file = f.name
-        
-        # ✅ Use correct CLI syntax
-        result = subprocess.run([
-            "prefect", "automation", "create", temp_file
-        ], capture_output=True, text=True, cwd="/app")
-        
-        # Clean up temp file
-        import os
-        os.unlink(temp_file)
-        
-        if result.returncode == 0:
-            print("✅ CLI automation created successfully!")
-            return True
-        else:
-            print(f"❌ CLI automation failed: {result.stderr}")
-            print(f"❌ CLI stdout: {result.stdout}")
-            return False
-            
-    except Exception as e:
-        print(f"❌ CLI automation error: {e}")
         return False
 
 def deploy_from_yaml():
     """Deploy using prefect.yaml project config - THE RIGHT WAY"""
-    print("🚀 Creating deployments using prefect.yaml project config...")
+    print("🚀 Creating SIMPLIFIED deployments (only 2) using prefect.yaml...")
+    
+    # ✅ ADD: Reset MongoDB on container startup
+    print("🗑️ Resetting MongoDB on application startup...")
+    from found_footy.api.mongo_api import populate_league_metadata
+    populate_league_metadata(reset_first=True)
+    print("✅ MongoDB reset and league initialization complete")
     
     # Ensure pools exist first
     import asyncio
     asyncio.run(ensure_work_pools())
     
-    # Clean existing deployments and automations
+    # Clean existing deployments and automations (Prefect only)
     asyncio.run(clean_all_deployments_api())
     asyncio.run(clean_all_automations())
+    
+    # NOTE: MongoDB reset happens automatically when fixtures_flow runs
+    # This keeps infrastructure concerns (Prefect) separate from data concerns (MongoDB)
+    print("ℹ️ MongoDB will be reset automatically when fixtures_flow starts")
     
     # Wait for cleanup
     print("⏳ Waiting 3 seconds for cleanup to complete...")
@@ -246,7 +196,7 @@ def deploy_from_yaml():
     time.sleep(3)
     
     # ✅ Use the correct command: prefect deploy --all
-    print("🏗️ Deploying all deployments from prefect.yaml...")
+    print("🏗️ Deploying 2 simplified deployments from prefect.yaml...")
     
     result = subprocess.run([
         "prefect", "deploy", "--all"
@@ -256,14 +206,40 @@ def deploy_from_yaml():
         print("✅ All deployments created successfully from prefect.yaml!")
         print(f"📋 Output: {result.stdout}")
         
-        # ✅ CRITICAL: Create automation with FIXED API/CLI calls
-        print("🤖 Creating YouTube automation with FIXED implementation...")
+        # ✅ CRITICAL: Create automation
+        print("🤖 Creating YouTube automation...")
         automation_success = asyncio.run(create_youtube_automation())
         
         if automation_success:
             print("✅ Setup complete with automation!")
         else:
             print("⚠️ Deployments created but automation failed")
+        
+        # ✅ Show user what to do next
+        print("\n" + "="*60)
+        print("🎉 SETUP COMPLETE - 2 Simplified Deployments Created!")
+        print("="*60)
+        print("📋 Deployments created:")
+        print("  1. fixtures-flow-daily    (scheduled, DISABLED by default)")
+        print("  2. fixtures-flow-manual   (manual trigger)")
+        print("  3. youtube-flow          (auto-triggered by events)")
+        print()
+        print("🚀 Next steps:")
+        print("  1. Go to Prefect UI: http://localhost:4200")
+        print("  2. For daily monitoring:")
+        print("     → Deployments → fixtures-flow-daily → Edit parameters")
+        print("     → Set league_ids (e.g., '[2]' for Champions League)")
+        print("     → Enable schedule when ready")
+        print("  3. For immediate runs:")
+        print("     → Deployments → fixtures-flow-manual → Run")
+        print("     → Set date_str and league_ids → Quick Run")
+        print()
+        print("🏆 League ID examples:")
+        print("  • '[39]' - Premier League")  
+        print("  • '[2]' - Champions League")
+        print("  • '[39,2,48,1]' - All active leagues")  # ✅ UPDATED
+        print("  • '[48]' - FA Cup only")
+        print("="*60)
         
         return True
     else:
@@ -303,7 +279,7 @@ if __name__ == "__main__":
         asyncio.run(clean_all_automations())
         print("✅ Clean-only completed!")
     elif args.apply:
-        print("📋 Creating deployments from YAML configs...")
+        print("📋 Creating SIMPLIFIED deployments from YAML configs...")
         # ✅ USE YAML DEPLOYMENT INSTEAD OF SERVE
         success = deploy_from_yaml()
         
@@ -317,7 +293,7 @@ if __name__ == "__main__":
         
         print("✅ Setup complete!")
         print("🌐 Access Prefect UI at http://localhost:4200")
-        print("🎛️ Enable 'fixtures-flow-daily' schedule from the UI when ready")
+        print("📝 Configure league_ids in deployment parameters")
     else:
         print("❌ DEBUG: apply flag is False")
         print("Use --apply to create deployments")

@@ -10,59 +10,67 @@ push: null
 # Pull step - code is already installed via pip install -e .
 pull: null
 
-# ✅ Define deployments in the main prefect.yaml
+# ✅ SIMPLIFIED: Only 2 deployments
 deployments:
+  # 1. Daily auto-runner (disabled by default, configurable in UI)
   - name: fixtures-flow-daily
     entrypoint: found_footy.flows.fixtures_flow:fixtures_flow
     work_pool:
       name: fixtures-pool
     schedule:
-      cron: "5 0 * * *"
+      cron: "5 0 * * *"  # Daily at 00:05 UTC
       timezone: UTC
-    parameters: {}
+      active: false  # ✅ DISABLED by default - enable in Prefect UI
+    parameters:
+      league_ids: "[39,2,48,1]"  # ✅ UPDATED: Only active leagues
     tags:
       - fixtures
-      - production
+      - scheduled
       - daily
-    description: "Daily fixtures processing at 00:05 UTC"
+      - configurable
+    description: |
+      Daily fixtures monitor (DISABLED by default)
+      
+      ⚙️  Configure in Prefect UI:
+      - Enable/disable schedule
+      - Change league_ids parameter for different competitions
+      
+      🏆 Current active leagues: [39,2,48,1] (Premier League, Champions League, FA Cup, World Cup)
 
+  # 2. Instant manual runner
   - name: fixtures-flow-manual
     entrypoint: found_footy.flows.fixtures_flow:fixtures_flow
     work_pool:
       name: fixtures-pool
-    parameters: {}
+    parameters:
+      league_ids: "[39,2,48,1]"  # ✅ UPDATED: Only active leagues
     tags:
       - fixtures
-      - production
       - manual
-    description: "Manual fixtures processing for any date"
+      - instant
+      - configurable
+    description: |
+      Manual fixtures runner - run immediately for any date/leagues
+      
+      📅 Parameters:
+      - date_str: "20250828" (YYYYMMDD format) or leave empty for today
+      - league_ids: JSON array or comma-separated string
+      
+      🏆 Current active leagues: [39,2,48,1]
+      - 39: Premier League
+      - 2: UEFA Champions League  
+      - 48: FA Cup
+      - 1: World Cup
 
+  # 3. YouTube flow (triggered by automation)
   - name: youtube-flow
     entrypoint: found_footy.flows.youtube_flow:youtube_flow
     work_pool:
       name: youtube-pool
+    # ✅ NO SCHEDULE - triggered by automation only
     parameters: {}
     tags:
       - youtube
-      - production
+      - automated
       - highlights
-    description: "YouTube highlights search and processing"
-
-# # ✅ Add event automation to trigger YouTube flow
-# automations:
-#   - name: trigger-youtube-on-fixture-completion
-#     description: "Automatically trigger YouTube flow when a fixture completes"
-#     trigger:
-#       type: event
-#       match:
-#         prefect.resource.id: "fixture.*"
-#       expect:
-#         - fixture.completed
-#     actions:
-#       - type: run-deployment
-#         source: inferred
-#         deployment: youtube-flow
-#         parameters:
-#           team1: "{{ event.payload.home_team }}"
-#           team2: "{{ event.payload.away_team }}"
-#           match_date: "{{ event.occurred.strftime('%Y-%m-%d') }}"
+    description: "YouTube highlights monitor (triggered automatically by fixture completion events)"

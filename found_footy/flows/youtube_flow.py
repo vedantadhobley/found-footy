@@ -22,7 +22,7 @@ def monitor_youtube(team1: str, team2: str, match_date: str):
     raise Exception(f"No highlights found yet - will retry in 30 minutes")
 
 @flow(name="youtube-flow")
-def youtube_flow(team1: str = "Arsenal", team2: str = "Chelsea", match_date: str = None, trace_id: str = None):
+def youtube_flow(team1: str = "Barcelona", team2: str = "Liverpool", match_date: str = None, trace_id: str = None):
     """Enhanced YouTube flow with tracing"""
     logger = get_run_logger()
     
