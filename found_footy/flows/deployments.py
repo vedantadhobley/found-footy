@@ -104,8 +104,8 @@ async def clean_all_automations():
         print(f"⚠️ Error in automation cleanup: {e}")
 
 async def create_twitter_automation():
-    """Create the Twitter automation using the Prefect API"""
-    print("🤖 Creating Twitter automation using Prefect API...")
+    """Create goal detection Twitter automation - ONE FLOW PER GOAL (not per fixture)"""
+    print("🤖 Creating Twitter automation for INDIVIDUAL GOAL EVENTS...")
     
     try:
         async with get_client() as client:
@@ -122,16 +122,16 @@ async def create_twitter_automation():
                 print("❌ twitter-flow deployment not found! Cannot create automation.")
                 return False
             
-            # ✅ UPDATED: Twitter automation instead of YouTube
-            automation_data = {
-                "name": "trigger-twitter-on-fixture-completion",
-                "description": "Automatically trigger Twitter flow when a fixture completes",
+            # ✅ FIX: Use unique goal event resource ID instead of fixture ID
+            goal_automation_data = {
+                "name": "trigger-twitter-on-goal-detected",
+                "description": "Automatically trigger Twitter flow for each individual goal detected",
                 "enabled": True,
                 "trigger": {
                     "type": "event",
-                    "expect": ["fixture.completed"],
+                    "expect": ["goal.detected"],
                     "match": {
-                        "prefect.resource.id": "fixture.*"
+                        "prefect.resource.id": "goal.*"  # ✅ CHANGED: Match goal events, not fixture events
                     },
                     "posture": "Reactive",
                     "threshold": 1,
@@ -144,22 +144,27 @@ async def create_twitter_automation():
                         "parameters": {
                             "team1": "{{ event.payload.home_team }}",
                             "team2": "{{ event.payload.away_team }}",
-                            "match_date": "{{ event.occurred.strftime('%Y-%m-%d') }}"
+                            "match_date": "{{ event.occurred.strftime('%Y-%m-%d') }}",
+                            "event_type": "goal",
+                            "score": "{{ event.payload.home_goals }}-{{ event.payload.away_goals }}",
+                            "trace_id": "{{ event.payload.trace_id }}",
+                            "goal_count": "{{ event.payload.new_goals_count }}",
+                            "fixture_id": "{{ event.payload.fixture_id }}"
                         }
                     }
                 ]
             }
             
-            # Use the client's HTTP session directly
-            response = await client._client.post("/automations/", json=automation_data)
+            # Create the goal automation
+            response = await client._client.post("/automations/", json=goal_automation_data)
             
             if response.status_code == 201:
                 created_automation = response.json()
-                print(f"✅ Created automation: {created_automation['name']} (ID: {created_automation['id']})")
-                print("🐦 Twitter worker will now respond to fixture completion events!")
+                print(f"✅ Created automation: {created_automation['name']}")
+                print("🐦 Twitter worker will now create ONE FLOW PER GOAL EVENT!")
                 return True
             else:
-                print(f"❌ Failed to create automation via HTTP: {response.status_code} - {response.text}")
+                print(f"❌ Failed to create goal automation: {response.status_code}")
                 return False
             
     except Exception as e:

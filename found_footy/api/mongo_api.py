@@ -97,6 +97,24 @@ def get_fixture_details(fixture_ids):
     response.raise_for_status()
     return response.json().get("response", [])
 
+def get_fixture_details_batch(fixture_ids_list):
+    """Get fixture details for multiple fixtures in a single API call"""
+    if not fixture_ids_list:
+        return []
+    
+    # ✅ FIX: Use hyphen-separated format for batch API calls
+    fixture_ids_str = "-".join(map(str, fixture_ids_list))
+    print(f"🔍 Batched API call for {len(fixture_ids_list)} fixtures: {fixture_ids_str}")
+    
+    url = f"{BASE_URL}/fixtures"
+    querystring = {"ids": fixture_ids_str}  # ✅ Changed from comma to hyphen format
+    response = requests.get(url, headers=HEADERS, params=querystring)
+    response.raise_for_status()
+    
+    results = response.json().get("response", [])
+    print(f"✅ Batched API call returned {len(results)} fixture details")
+    return results
+
 def get_fixture_events(fixture_id):
     """Get fixture events from API"""
     url = f"{BASE_URL}/fixtures/events"
@@ -104,6 +122,34 @@ def get_fixture_events(fixture_id):
     response = requests.get(url, headers=HEADERS, params=querystring)
     response.raise_for_status()
     return response.json().get("response", [])
+
+def get_fixture_events_batch(fixture_ids_list):
+    """Get fixture events for multiple fixtures - MULTIPLE API calls but batched processing"""
+    if not fixture_ids_list:
+        return {}
+    
+    print(f"🔍 Batched events API calls for {len(fixture_ids_list)} fixtures")
+    
+    # Unfortunately, the events API doesn't support multiple fixture IDs in one call
+    # So we make multiple calls but process them together
+    all_events = {}
+    
+    for fixture_id in fixture_ids_list:
+        try:
+            url = f"{BASE_URL}/fixtures/events"
+            querystring = {"fixture": str(fixture_id)}
+            response = requests.get(url, headers=HEADERS, params=querystring)
+            response.raise_for_status()
+            
+            events_data = response.json().get("response", [])
+            all_events[fixture_id] = events_data
+            
+        except Exception as e:
+            print(f"❌ Error getting events for fixture {fixture_id}: {e}")
+            all_events[fixture_id] = []
+    
+    print(f"✅ Batched events collection complete for {len(all_events)} fixtures")
+    return all_events
 
 # ✅ REQUIRED: These are used by flows and need to exist here
 def store_fixture_result(fixture_data):
@@ -114,7 +160,7 @@ def store_fixture_events(fixture_id, events_data):
     """Store fixture events in MongoDB"""
     return store.store_fixture_events(fixture_id, events_data)
 
-def populate_team_metadata(reset_first=True):
+def populate_team_metadata(reset_first=False):  # ✅ CHANGED: Default to False
     """Populate team metadata in MongoDB with optional reset"""
     if reset_first:
         print("🔄 Resetting MongoDB first...")

@@ -1,5 +1,5 @@
 from pymongo import MongoClient
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 import os
 
@@ -17,8 +17,9 @@ class FootyMongoStore:
         self.fixtures = self.db.fixtures
         self.events = self.db.events
         self.youtube_results = self.db.youtube_results
-        self.leagues = self.db.leagues  # ✅ Keep for backward compatibility
-        self.teams = self.db.teams      # ✅ NEW: Teams metadata collection
+        self.leagues = self.db.leagues
+        self.teams = self.db.teams
+        self.live_fixtures = self.db.live_fixtures  # ✅ NEW: Active monitoring collection
         
         # Create indexes for performance
         self._create_indexes()
@@ -31,12 +32,12 @@ class FootyMongoStore:
             self.fixtures.create_index([("fixture_date", 1)])
             self.fixtures.create_index([("home_team_name", 1)])
             self.fixtures.create_index([("away_team_name", 1)])
-            self.fixtures.create_index([("home_team_id", 1)])  # ✅ NEW: Team ID indexes
-            self.fixtures.create_index([("away_team_id", 1)])  # ✅ NEW: Team ID indexes
+            self.fixtures.create_index([("home_team_id", 1)])
+            self.fixtures.create_index([("away_team_id", 1)])
             self.fixtures.create_index([("league_id", 1)])
             self.fixtures.create_index([("league_id", 1), ("fixture_date", 1)])
             
-            # ✅ NEW: Compound indexes for team-based queries
+            # Compound indexes for team-based queries
             self.fixtures.create_index([("home_team_id", 1), ("fixture_date", 1)])
             self.fixtures.create_index([("away_team_id", 1), ("fixture_date", 1)])
             
@@ -48,15 +49,208 @@ class FootyMongoStore:
             self.leagues.create_index([("league_id", 1)], unique=True)
             self.leagues.create_index([("league_type", 1)])
             
-            # ✅ NEW: Team indexes
+            # Team indexes
             self.teams.create_index([("team_id", 1)], unique=True)
             self.teams.create_index([("country", 1)])
             self.teams.create_index([("uefa_ranking", 1)])
             
+            # ✅ NEW: Live fixtures indexes
+            self.live_fixtures.create_index([("fixture_id", 1)], unique=True)
+            self.live_fixtures.create_index([("status", 1)])
+            self.live_fixtures.create_index([("kickoff_time", 1)])
+            self.live_fixtures.create_index([("monitoring_status", 1)])
+            
             print("✅ MongoDB indexes created successfully")
         except Exception as e:
             print(f"⚠️ Error creating indexes: {e}")
+
+    # ✅ NEW: Live fixtures management methods
+    def add_fixture_to_live_monitoring(self, fixture_data: dict) -> bool:
+        """Add fixture to live monitoring collection"""
+        try:
+            fixture_id = fixture_data["id"]
+            
+            document = {
+                "_id": fixture_id,
+                "fixture_id": fixture_id,
+                "home_team": fixture_data["home"],
+                "home_team_id": fixture_data["home_id"],
+                "away_team": fixture_data["away"],
+                "away_team_id": fixture_data["away_id"],
+                "league": fixture_data["league"],
+                "league_id": fixture_data["league_id"],
+                "kickoff_time": datetime.fromisoformat(fixture_data["time"].replace('Z', '+00:00')),
+                "monitoring_status": "scheduled",  # scheduled, active, completed
+                "status": "NS",  # Not Started
+                "last_goals": {"home": 0, "away": 0},
+                "last_events_count": 0,
+                "added_to_monitoring": datetime.now(timezone.utc),
+                "last_api_check": None,
+                "last_api_data": None
+            }
+            
+            result = self.live_fixtures.replace_one(
+                {"_id": fixture_id}, 
+                document, 
+                upsert=True
+            )
+            
+            print(f"✅ Added to live monitoring: {fixture_data['home']} vs {fixture_data['away']}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error adding fixture to live monitoring: {e}")
+            return False
     
+    def get_fixtures_ready_for_monitoring(self, minutes_before_kickoff: int = 5) -> List[dict]:
+        """Get fixtures that should start monitoring (5 minutes before kickoff)"""
+        try:
+            now = datetime.now(timezone.utc)
+            monitoring_threshold = now + timedelta(minutes=minutes_before_kickoff)
+            
+            query = {
+                "monitoring_status": "scheduled",
+                "kickoff_time": {"$lte": monitoring_threshold}
+            }
+            
+            return list(self.live_fixtures.find(query))
+        except Exception as e:
+            print(f"❌ Error getting fixtures ready for monitoring: {e}")
+            return []
+    
+    def get_active_live_fixtures(self) -> List[dict]:
+        """Get all fixtures currently being monitored"""
+        try:
+            query = {"monitoring_status": "active"}
+            return list(self.live_fixtures.find(query))
+        except Exception as e:
+            print(f"❌ Error getting active live fixtures: {e}")
+            return []
+    
+    def activate_fixture_monitoring(self, fixture_id: int) -> bool:
+        """Activate monitoring for a fixture"""
+        try:
+            result = self.live_fixtures.update_one(
+                {"_id": fixture_id},
+                {
+                    "$set": {
+                        "monitoring_status": "active",
+                        "monitoring_started": datetime.now(timezone.utc)
+                    }
+                }
+            )
+            
+            if result.modified_count > 0:
+                print(f"✅ Activated monitoring for fixture {fixture_id}")
+                return True
+            else:
+                print(f"⚠️ Fixture {fixture_id} not found for activation")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error activating fixture monitoring: {e}")
+            return False
+    
+    def update_live_fixture_data(self, fixture_id: int, api_data: dict, events_data: list) -> dict:
+        """Update live fixture with latest API data and detect changes"""
+        try:
+            # Get current state
+            current_fixture = self.live_fixtures.find_one({"_id": fixture_id})
+            if not current_fixture:
+                print(f"⚠️ Live fixture {fixture_id} not found")
+                return {"changes_detected": False}
+            
+            # Extract current API data
+            fixture_details = api_data.get("fixture", {})
+            goals_data = api_data.get("goals", {"home": 0, "away": 0})
+            status = fixture_details.get("status", {}).get("short", "UNKNOWN")
+            
+            current_home_goals = goals_data.get("home") or 0
+            current_away_goals = goals_data.get("away") or 0
+            
+            # Get previous state
+            previous_home_goals = current_fixture.get("last_goals", {}).get("home", 0)
+            previous_away_goals = current_fixture.get("last_goals", {}).get("away", 0)
+            previous_events_count = current_fixture.get("last_events_count", 0)
+            
+            # Detect changes
+            changes_detected = {
+                "goals_changed": False,
+                "new_home_goals": 0,
+                "new_away_goals": 0,
+                "status_changed": False,
+                "new_events": [],
+                "fixture_completed": False
+            }
+            
+            # Check for goal changes
+            if current_home_goals > previous_home_goals or current_away_goals > previous_away_goals:
+                changes_detected["goals_changed"] = True
+                changes_detected["new_home_goals"] = current_home_goals - previous_home_goals
+                changes_detected["new_away_goals"] = current_away_goals - previous_away_goals
+                print(f"🚨 GOALS CHANGED for {fixture_id}: {previous_home_goals}-{previous_away_goals} → {current_home_goals}-{current_away_goals}")
+            
+            # Check for new events (goals specifically)
+            goal_events = [event for event in events_data if event.get("type") == "Goal"]
+            if len(goal_events) > previous_events_count:
+                new_goal_events = goal_events[previous_events_count:]
+                changes_detected["new_events"] = new_goal_events
+                print(f"⚽ NEW GOAL EVENTS for {fixture_id}: {len(new_goal_events)} new goals")
+            
+            # Check if fixture completed
+            if status in ["FT", "AET", "PEN"]:
+                changes_detected["fixture_completed"] = True
+                print(f"🏁 Fixture {fixture_id} completed with status {status}")
+            
+            # Update the live fixture record
+            update_data = {
+                "status": status,
+                "last_goals": {"home": current_home_goals, "away": current_away_goals},
+                "last_events_count": len(goal_events),
+                "last_api_check": datetime.now(timezone.utc),
+                "last_api_data": api_data
+            }
+            
+            # Mark as completed if finished
+            if changes_detected["fixture_completed"]:
+                update_data["monitoring_status"] = "completed"
+                update_data["completed_at"] = datetime.now(timezone.utc)
+            
+            self.live_fixtures.update_one(
+                {"_id": fixture_id},
+                {"$set": update_data}
+            )
+            
+            changes_detected["changes_detected"] = (
+                changes_detected["goals_changed"] or 
+                len(changes_detected["new_events"]) > 0 or 
+                changes_detected["fixture_completed"]
+            )
+            
+            return changes_detected
+            
+        except Exception as e:
+            print(f"❌ Error updating live fixture data: {e}")
+            return {"changes_detected": False}
+    
+    def remove_completed_fixtures_from_monitoring(self) -> int:
+        """Remove completed fixtures from live monitoring"""
+        try:
+            result = self.live_fixtures.delete_many({
+                "monitoring_status": "completed"
+            })
+            
+            deleted_count = result.deleted_count
+            if deleted_count > 0:
+                print(f"🧹 Removed {deleted_count} completed fixtures from live monitoring")
+            
+            return deleted_count
+            
+        except Exception as e:
+            print(f"❌ Error removing completed fixtures: {e}")
+            return 0
+
+    # ✅ Keep all existing methods...
     def store_fixture(self, fixture_data: dict) -> bool:
         """Store fixture data with fixture_id as _id"""
         try:
@@ -65,7 +259,6 @@ class FootyMongoStore:
             goals_info = fixture_data["goals"]
             league_info = fixture_data["league"]
             
-            # ✅ Use fixture_id as MongoDB _id
             document = {
                 "_id": fixture_info["id"],
                 "home_team_id": teams_info["home"]["id"],
@@ -79,11 +272,7 @@ class FootyMongoStore:
                 "league_id": league_info["id"],
                 "league_name": league_info["name"],
                 "venue": fixture_data.get("fixture", {}).get("venue", {}),
-                
-                # Store complete API response for future use
                 "raw_api_data": fixture_data,
-                
-                # Metadata
                 "stored_at": datetime.now(timezone.utc),
                 "updated_at": datetime.now(timezone.utc)
             }
@@ -319,11 +508,11 @@ class FootyMongoStore:
                 "fixtures_count": self.fixtures.count_documents({}),
                 "events_count": self.events.count_documents({}),
                 "leagues_count": self.leagues.count_documents({}),
-                "teams_count": self.teams.count_documents({}),  # ✅ NEW: Teams count
+                "teams_count": self.teams.count_documents({}),
                 "youtube_results_count": self.youtube_results.count_documents({}),
                 "completed_fixtures": self.fixtures.count_documents({"status": {"$in": ["FT", "AET", "PEN"]}}),
                 "goal_events": self.events.count_documents({"event_type": "Goal"}),
-                "top_25_teams": self.teams.count_documents({"uefa_ranking": {"$lte": 25}})  # ✅ NEW
+                "top_25_teams": self.teams.count_documents({"uefa_ranking": {"$lte": 25}})
             }
         except Exception as e:
             print(f"❌ Error getting stats: {e}")
@@ -347,10 +536,7 @@ class FootyMongoStore:
                 dropped_count += 1
             
             print(f"🧹 Successfully dropped {dropped_count} collections")
-            
-            # Recreate indexes after dropping collections
             self._create_indexes()
-            
             return True
             
         except Exception as e:
@@ -360,13 +546,9 @@ class FootyMongoStore:
     def reset_database(self):
         """Complete database reset - drop all collections and reinitialize"""
         print("🔄 Performing complete MongoDB database reset...")
-        
-        # Drop all collections
         success = self.drop_all_collections()
-        
         if success:
             print("✅ MongoDB reset complete - ready for fresh data")
         else:
             print("⚠️ MongoDB reset had issues - check logs")
-        
         return success
