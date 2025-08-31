@@ -10,49 +10,49 @@ push: null
 # Pull step - code is already installed via pip install -e .
 pull: null
 
-# ✅ FIXED: Use empty string instead of null for team_ids
 deployments:
-  # 1. Daily auto-runner (disabled by default)
+  # 1. Daily auto-runner
   - name: fixtures-flow-daily
     entrypoint: found_footy.flows.fixtures_flow:fixtures_flow
     work_pool:
       name: fixtures-pool
     schedule:
-      cron: "5 0 * * *"  # Daily at 00:05 UTC
+      cron: "5 0 * * *"
       timezone: UTC
-      active: false  # ✅ DISABLED by default
+      active: false
     parameters:
-      team_ids: ""
+      date_str: null  # ✅ CONSISTENT: Use null, code defaults to today
+      team_ids: null  # ✅ CONSISTENT: Use null, code defaults to all teams
     tags:
       - fixtures
       - scheduled
       - daily
-      - new-approach
-    description: "Daily fixtures setup + continuous monitor (DISABLED by default)"
+      - restructured
+    description: "Daily fixtures ingest + monitor (DISABLED by default)"
 
-  # 2. Instant manual runner
+  # 2. Manual runner - ✅ PRE-FILLED with current date
   - name: fixtures-flow-manual
     entrypoint: found_footy.flows.fixtures_flow:fixtures_flow
     work_pool:
       name: fixtures-pool
     parameters:
-      team_ids: ""
+      date_str: "20250831"  # ✅ PRE-FILLED: Today's date (will update this in deployment script)
+      team_ids: null  # ✅ CONSISTENT: Use null, defaults to all teams
     tags:
       - fixtures
       - manual
       - instant
-      - new-approach
-    description: "Manual fixtures setup + continuous monitor"
+      - restructured
+    description: "Manual fixtures ingest + monitor (pre-filled with today's date)"
 
-  # 3. Twitter flow (simplified)
+  # 3. Twitter flow - ✅ ALREADY CONSISTENT
   - name: twitter-flow
     entrypoint: found_footy.flows.twitter_flow:twitter_flow
     work_pool:
       name: twitter-pool
-    parameters: {}
+    parameters:
+      goal_id: null
     tags:
       - twitter
-      - simplified
-    description: "Simplified Twitter flow (triggered by goal detection)"
-
-  # ✅ REMOVED: batch-coordinator (no longer needed)
+      - restructured
+    description: "Twitter flow (triggered by goal detection)"

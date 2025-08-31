@@ -3,14 +3,14 @@ import sys
 import subprocess
 from pathlib import Path
 from prefect import get_client
+from datetime import datetime
 
 async def ensure_work_pools():
     """Ensure work pools exist before creating deployments using CLI"""
-    pools = ["fixtures-pool", "twitter-pool"]  # ✅ CHANGED: twitter-pool instead of youtube-pool
+    pools = ["fixtures-pool", "twitter-pool"]
     
     for pool_name in pools:
         try:
-            # Check if pool exists using CLI
             result = subprocess.run(
                 ["prefect", "work-pool", "inspect", pool_name], 
                 capture_output=True, 
@@ -21,7 +21,6 @@ async def ensure_work_pools():
                 print(f"✅ {pool_name} already exists")
             else:
                 print(f"🔧 Creating {pool_name}...")
-                # Create pool using CLI
                 create_result = subprocess.run(
                     ["prefect", "work-pool", "create", pool_name, "--type", "process"],
                     capture_output=True,
@@ -44,7 +43,6 @@ async def clean_all_deployments_api():
     
     try:
         async with get_client() as client:
-            # Get all deployments
             deployments = await client.read_deployments()
             
             if not deployments:
@@ -55,7 +53,6 @@ async def clean_all_deployments_api():
             for deployment in deployments:
                 print(f"  - {deployment.name}")
             
-            # Delete each deployment
             deleted_count = 0
             for deployment in deployments:
                 try:
@@ -77,7 +74,6 @@ async def clean_all_automations():
     
     try:
         async with get_client() as client:
-            # Get all automations
             automations = await client.read_automations()
             
             if not automations:
@@ -88,7 +84,6 @@ async def clean_all_automations():
             for automation in automations:
                 print(f"  - {automation.name}")
             
-            # Delete each automation
             deleted_count = 0
             for automation in automations:
                 try:
@@ -104,68 +99,57 @@ async def clean_all_automations():
         print(f"⚠️ Error in automation cleanup: {e}")
 
 async def create_twitter_automation():
-    """Create goal detection Twitter automation - ONE FLOW PER GOAL (not per fixture)"""
-    print("🤖 Creating Twitter automation for INDIVIDUAL GOAL EVENTS...")
+    """Create Twitter automation using Prefect 3 public API with dynamic deployment lookup"""
+    print("🤖 Creating Twitter automation using Prefect 3 public API...")
     
     try:
         async with get_client() as client:
-            # Get the twitter-flow deployment
-            deployments = await client.read_deployments()
-            twitter_deployment = None
-            
-            for deployment in deployments:
-                if deployment.name == "twitter-flow":
-                    twitter_deployment = deployment
-                    break
-            
-            if not twitter_deployment:
-                print("❌ twitter-flow deployment not found! Cannot create automation.")
+            # ✅ DYNAMIC: Lookup deployment by name instead of hardcoding ID
+            try:
+                deployment = await client.read_deployment_by_name("twitter-flow/twitter-flow")
+                print(f"✅ Found twitter-flow deployment: {deployment.id}")
+            except Exception as e:
+                print(f"❌ Could not find twitter-flow deployment: {e}")
+                
+                # List available deployments for debugging
+                try:
+                    deployments = await client.read_deployments()
+                    print(f"🔍 Available deployments ({len(deployments)}):")
+                    for dep in deployments:
+                        print(f"  - {dep.name} (flow: {dep.flow_name})")
+                except Exception as list_error:
+                    print(f"❌ Could not list deployments: {list_error}")
+                
                 return False
             
-            # ✅ FIX: Use unique goal event resource ID instead of fixture ID
-            goal_automation_data = {
-                "name": "trigger-twitter-on-goal-detected",
-                "description": "Automatically trigger Twitter flow for each individual goal detected",
-                "enabled": True,
-                "trigger": {
-                    "type": "event",
-                    "expect": ["goal.detected"],
-                    "match": {
-                        "prefect.resource.id": "goal.*"  # ✅ CHANGED: Match goal events, not fixture events
-                    },
-                    "posture": "Reactive",
-                    "threshold": 1,
-                    "within": 0
-                },
-                "actions": [
-                    {
-                        "type": "run-deployment",
-                        "deployment_id": str(twitter_deployment.id),
-                        "parameters": {
-                            "team1": "{{ event.payload.home_team }}",
-                            "team2": "{{ event.payload.away_team }}",
-                            "match_date": "{{ event.occurred.strftime('%Y-%m-%d') }}",
-                            "event_type": "goal",
-                            "score": "{{ event.payload.home_goals }}-{{ event.payload.away_goals }}",
-                            "trace_id": "{{ event.payload.trace_id }}",
-                            "goal_count": "{{ event.payload.new_goals_count }}",
-                            "fixture_id": "{{ event.payload.fixture_id }}"
-                        }
-                    }
-                ]
-            }
+            # ✅ USE PROPER PREFECT 3 PUBLIC API
+            from prefect.automations import Automation
+            from prefect.events.schemas.automations import EventTrigger
+            from prefect.events.actions import RunDeployment
             
-            # Create the goal automation
-            response = await client._client.post("/automations/", json=goal_automation_data)
+            automation = Automation(
+                name="goal-twitter-automation",
+                description="Run twitter-flow on goal.detected",
+                enabled=True,
+                trigger=EventTrigger(
+                    expect=["goal.detected"],
+                    match={"prefect.resource.id": "goal.*"},
+                    posture="Reactive",
+                    threshold=1,
+                    within=0,
+                ),
+                actions=[
+                    RunDeployment(
+                        deployment_id=deployment.id,
+                        parameters={"goal_id": "{{ event.payload.goal_id }}"},
+                    )
+                ],
+            )
             
-            if response.status_code == 201:
-                created_automation = response.json()
-                print(f"✅ Created automation: {created_automation['name']}")
-                print("🐦 Twitter worker will now create ONE FLOW PER GOAL EVENT!")
-                return True
-            else:
-                print(f"❌ Failed to create goal automation: {response.status_code}")
-                return False
+            created_automation = await automation.acreate()
+            print(f"✅ Created automation: {created_automation.name}")
+            print(f"🔗 Automation ID: {created_automation.id}")
+            return True
             
     except Exception as e:
         print(f"❌ Failed to create automation: {e}")
@@ -174,11 +158,30 @@ async def create_twitter_automation():
         return False
 
 def deploy_from_yaml():
-    """Deploy using prefect.yaml project config - THE RIGHT WAY"""
-    print("🚀 Creating SIMPLIFIED deployments (only 3) using prefect.yaml...")
+    """Deploy using prefect.yaml project config - with Python automation"""
+    print("🚀 Creating deployments using prefect.yaml...")
     
-    # ✅ FIXED: Reset MongoDB with team metadata instead of league metadata
-    print("🗑️ Resetting MongoDB on application startup...")
+    # ✅ UPDATE: Pre-fill today's date in prefect.yaml before deploying
+    print("📅 Pre-filling today's date in prefect.yaml...")
+    today_str = datetime.now().strftime("%Y%m%d")
+    
+    # Read prefect.yaml
+    prefect_yaml_path = Path("/app/prefect.yaml")
+    with open(prefect_yaml_path, 'r') as f:
+        yaml_content = f.read()
+    
+    # Replace the date_str placeholder with today's date - handle both old and new dates
+    import re
+    yaml_content = re.sub(r'"202508\d{2}"', f'"{today_str}"', yaml_content)
+    
+    # Write back
+    with open(prefect_yaml_path, 'w') as f:
+        f.write(yaml_content)
+    
+    print(f"✅ Pre-filled manual deployment with today's date: {today_str}")
+    
+    # Initialize team metadata
+    print("🗑️ Resetting MongoDB with team metadata...")
     from found_footy.api.mongo_api import populate_team_metadata
     populate_team_metadata(reset_first=True)
     print("✅ MongoDB reset and team initialization complete")
@@ -187,63 +190,62 @@ def deploy_from_yaml():
     import asyncio
     asyncio.run(ensure_work_pools())
     
-    # Clean existing deployments and automations (Prefect only)
+    # Clean existing deployments and automations
     asyncio.run(clean_all_deployments_api())
     asyncio.run(clean_all_automations())
     
-    # NOTE: MongoDB reset happens automatically when fixtures_flow runs
-    # This keeps infrastructure concerns (Prefect) separate from data concerns (MongoDB)
-    print("ℹ️ MongoDB will be reset automatically when fixtures_flow starts")
-    
     # Wait for cleanup
-    print("⏳ Waiting 3 seconds for cleanup to complete...")
+    print("⏳ Waiting 5 seconds for cleanup to complete...")
     import time
-    time.sleep(3)
+    time.sleep(5)
     
-    # ✅ Use the correct command: prefect deploy --all
-    print("🏗️ Deploying 3 deployments from prefect.yaml...")
+    # Deploy from YAML (deployments only)
+    print("🏗️ Deploying from prefect.yaml (deployments only)...")
     
     result = subprocess.run([
         "prefect", "deploy", "--all"
     ], capture_output=True, text=True, cwd="/app")
     
     if result.returncode == 0:
-        print("✅ All deployments created successfully from prefect.yaml!")
+        print("✅ All deployments created from prefect.yaml!")
         print(f"📋 Output: {result.stdout}")
         
-        # ✅ UPDATED: Create Twitter automation instead of YouTube
-        print("🤖 Creating Twitter automation...")
+        # Wait a bit for deployments to be fully registered
+        print("⏳ Waiting 3 seconds for deployments to register...")
+        time.sleep(3)
+        
+        # Create automation using Python
+        print("🤖 Creating automation using Python...")
         automation_success = asyncio.run(create_twitter_automation())
         
         if automation_success:
-            print("✅ Setup complete with automation!")
+            print("✅ Automation created successfully!")
         else:
-            print("⚠️ Deployments created but automation failed")
+            print("❌ Automation creation failed - check logs above")
         
-        # ✅ UPDATED: Show Twitter flow info
+        # Verify deployments were created
+        print("\n🔍 Verifying deployments...")
+        verify_result = subprocess.run([
+            "prefect", "deployment", "ls"
+        ], capture_output=True, text=True)
+        
+        if verify_result.returncode == 0:
+            print("📋 Current deployments:")
+            print(verify_result.stdout)
+        else:
+            print("❌ Failed to list deployments")
+        
         print("\n" + "="*60)
-        print("🎉 SETUP COMPLETE - Team-Based Fixture Monitoring!")
+        print("🎉 SETUP COMPLETE - Python Automation!")
         print("="*60)
-        print("📋 Deployments created:")
-        print("  1. fixtures-flow-daily    (scheduled, DISABLED by default)")
-        print("  2. fixtures-flow-manual   (manual trigger)")
-        print("  3. twitter-flow          (auto-triggered by events)")
+        print("📋 Created:")
+        print("  1. fixtures-flow-daily    (deployment)")
+        print("  2. fixtures-flow-manual   (deployment)")
+        print("  3. twitter-flow          (deployment)")
+        print("  4. goal-twitter-automation (automation - Python)")
         print()
-        print("🚀 Next steps:")
-        print("  1. Go to Prefect UI: http://localhost:4200")
-        print("  2. For daily monitoring:")
-        print("     → Deployments → fixtures-flow-daily → Edit parameters")
-        print("     → Set team_ids (e.g., '[541,50,42]' for top teams)")
-        print("     → Enable schedule when ready")
-        print("  3. For immediate runs:")
-        print("     → Deployments → fixtures-flow-manual → Run")
-        print("     → Set date_str and team_ids → Quick Run")
-        print()
-        print("⚽ Team ID examples (Top 25 UEFA 2026):")
-        print("  • '[541]' - Real Madrid only")  
-        print("  • '[50,42]' - Manchester City + Liverpool")
-        print("  • '[541,529,50,42]' - Real Madrid, Barcelona, Man City, Liverpool")
-        print("  • null/empty - All top 25 UEFA teams")
+        print("🧪 Test automation: python debug_events.py")
+        print("🌐 Access Prefect UI at http://localhost:4200")
         print("="*60)
         
         return True
@@ -284,8 +286,7 @@ if __name__ == "__main__":
         asyncio.run(clean_all_automations())
         print("✅ Clean-only completed!")
     elif args.apply:
-        print("📋 Creating SIMPLIFIED deployments from YAML configs...")
-        # ✅ USE YAML DEPLOYMENT INSTEAD OF SERVE
+        print("📋 Creating deployments from YAML configs...")
         success = deploy_from_yaml()
         
         if success and args.run_now:

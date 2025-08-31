@@ -2,6 +2,7 @@ from found_footy.storage.mongo_store import FootyMongoStore
 import requests
 from datetime import date, datetime
 import json
+import os
 
 # Initialize MongoDB store
 store = FootyMongoStore()
@@ -13,7 +14,7 @@ HEADERS = {
     "x-rapidapi-host": "api-football-v1.p.rapidapi.com"
 }
 
-# ✅ CHANGED: Top 25 UEFA ranked teams for 2026 season (replacing leagues)
+# ✅ Top 25 UEFA teams for 2026 season
 TOP_25_TEAMS_2026 = {
     541: {"name": "Real Madrid", "country": "Spain"},
     81: {"name": "Bayern Munich", "country": "Germany"},
@@ -42,129 +43,105 @@ TOP_25_TEAMS_2026 = {
     47: {"name": "Tottenham Hotspur", "country": "England"}
 }
 
-# ✅ CORE API FUNCTIONS - Updated for team-based approach
-def get_fixtures_by_teams(team_ids, query_date=date.today()):
-    """Get fixtures by team IDs directly from API"""
-    print(f"🔍 Fetching fixtures for teams {team_ids} on {query_date}")
+# ✅ NEW: API functions using exact endpoint names (after /v3/)
+def fixtures(date_param=None):
+    """Get fixtures - exact endpoint name from API"""
+    if date_param is None:
+        date_param = date.today().strftime("%Y-%m-%d")
+    elif isinstance(date_param, date):
+        date_param = date_param.strftime("%Y-%m-%d")
+    elif len(date_param) == 8:  # YYYYMMDD format
+        date_param = f"{date_param[:4]}-{date_param[4:6]}-{date_param[6:8]}"
     
-    # Fetch all fixtures from API for the date
-    fixture_url = f"{BASE_URL}/fixtures?date={query_date}"
-    response = requests.get(fixture_url, headers=HEADERS)
-    fixtures = response.json().get("response", [])
-
-    selected_fixtures = []
-    for fixture in fixtures:
-        home_team_id = fixture["teams"]["home"]["id"]
-        away_team_id = fixture["teams"]["away"]["id"]
-        
-        # Check if either team is in our target list
-        if home_team_id in team_ids or away_team_id in team_ids:
-            selected_fixtures.append({
-                "id": fixture["fixture"]["id"],
-                "home": fixture["teams"]["home"]["name"],
-                "home_id": home_team_id,
-                "away": fixture["teams"]["away"]["name"],
-                "away_id": away_team_id,
-                "league": fixture["league"]["name"],
-                "league_id": fixture["league"]["id"],
-                "time": fixture["fixture"]["date"]
-            })
-    
-    print(f"✅ Found {len(selected_fixtures)} fixtures involving target teams")
-    return selected_fixtures
-
-def get_fixtures_by_date(query_date=date.today()):
-    """Get fixtures by date for top 25 teams - REIMPLEMENTED"""
-    print(f"🔍 Fetching fixtures for top 25 UEFA teams on {query_date}")
-    
-    # Use all top 25 team IDs
-    top_25_team_ids = list(TOP_25_TEAMS_2026.keys())
-    
-    return get_fixtures_by_teams(top_25_team_ids, query_date)
-
-# ✅ BACKWARD COMPATIBILITY: Keep league function but use teams internally
-def get_fixtures_by_leagues(league_ids, query_date=date.today()):
-    """DEPRECATED: Use get_fixtures_by_teams or get_fixtures_by_date instead"""
-    print("⚠️ WARNING: get_fixtures_by_leagues is deprecated. Using team-based approach instead.")
-    # Default to top 25 teams for backward compatibility
-    return get_fixtures_by_date(query_date)
-
-def get_fixture_details(fixture_ids):
-    """Get fixture details from API"""
     url = f"{BASE_URL}/fixtures"
-    querystring = {"ids": str(fixture_ids)}
+    querystring = {"date": date_param}
+    
+    print(f"📡 API call: fixtures(date={date_param})")
+    
     response = requests.get(url, headers=HEADERS, params=querystring)
     response.raise_for_status()
-    return response.json().get("response", [])
+    
+    api_fixtures = response.json().get("response", [])
+    print(f"✅ API returned {len(api_fixtures)} fixtures")
+    
+    # Convert to simplified format
+    simplified_fixtures = []
+    for fixture in api_fixtures:
+        simplified_fixtures.append({
+            "id": fixture["fixture"]["id"],
+            "home": fixture["teams"]["home"]["name"],
+            "home_id": fixture["teams"]["home"]["id"],
+            "away": fixture["teams"]["away"]["name"],
+            "away_id": fixture["teams"]["away"]["id"],
+            "league": fixture["league"]["name"],
+            "league_id": fixture["league"]["id"],
+            "time": fixture["fixture"]["date"]
+        })
+    
+    return simplified_fixtures
 
-def get_fixture_details_batch(fixture_ids_list):
-    """Get fixture details for multiple fixtures in a single API call"""
+def fixtures_events(fixture_id):
+    """Get fixture events - exact endpoint name from API"""
+    url = f"{BASE_URL}/fixtures/events"
+    querystring = {"fixture": str(fixture_id)}
+    
+    print(f"📡 API call: fixtures/events(fixture={fixture_id})")
+    
+    response = requests.get(url, headers=HEADERS, params=querystring)
+    response.raise_for_status()
+    
+    events = response.json().get("response", [])
+    
+    # Filter only goal events (non-penalty shootout)
+    goal_events = []
+    for event in events:
+        if (event.get("type") == "Goal" and 
+            event.get("detail") not in ["Penalty Shootout"]):
+            goal_events.append(event)
+    
+    print(f"✅ API returned {len(goal_events)} goal events for fixture {fixture_id}")
+    return goal_events
+
+def fixtures_batch(fixture_ids_list):
+    """Get multiple fixtures in batch - using ids parameter"""
     if not fixture_ids_list:
         return []
     
-    # ✅ FIX: Use hyphen-separated format for batch API calls
+    # Use hyphen-separated format for batch calls
     fixture_ids_str = "-".join(map(str, fixture_ids_list))
-    print(f"🔍 Batched API call for {len(fixture_ids_list)} fixtures: {fixture_ids_str}")
     
     url = f"{BASE_URL}/fixtures"
-    querystring = {"ids": fixture_ids_str}  # ✅ Changed from comma to hyphen format
+    querystring = {"ids": fixture_ids_str}
+    
+    print(f"📡 API call: fixtures(ids={fixture_ids_str}) - batch of {len(fixture_ids_list)}")
+    
     response = requests.get(url, headers=HEADERS, params=querystring)
     response.raise_for_status()
     
     results = response.json().get("response", [])
-    print(f"✅ Batched API call returned {len(results)} fixture details")
+    print(f"✅ Batch API returned {len(results)} fixture details")
     return results
 
-def get_fixture_events(fixture_id):
-    """Get fixture events from API"""
-    url = f"{BASE_URL}/fixtures/events"
-    querystring = {"fixture": str(fixture_id)}
-    response = requests.get(url, headers=HEADERS, params=querystring)
-    response.raise_for_status()
-    return response.json().get("response", [])
-
-def get_fixture_events_batch(fixture_ids_list):
-    """Get fixture events for multiple fixtures - MULTIPLE API calls but batched processing"""
-    if not fixture_ids_list:
-        return {}
+# ✅ HELPER: Team filtering
+def filter_fixtures_by_teams(fixtures_list, team_ids):
+    """Filter fixtures to only include specified teams"""
+    filtered = []
+    for fixture in fixtures_list:
+        if fixture["home_id"] in team_ids or fixture["away_id"] in team_ids:
+            filtered.append(fixture)
     
-    print(f"🔍 Batched events API calls for {len(fixture_ids_list)} fixtures")
-    
-    # Unfortunately, the events API doesn't support multiple fixture IDs in one call
-    # So we make multiple calls but process them together
-    all_events = {}
-    
-    for fixture_id in fixture_ids_list:
-        try:
-            url = f"{BASE_URL}/fixtures/events"
-            querystring = {"fixture": str(fixture_id)}
-            response = requests.get(url, headers=HEADERS, params=querystring)
-            response.raise_for_status()
-            
-            events_data = response.json().get("response", [])
-            all_events[fixture_id] = events_data
-            
-        except Exception as e:
-            print(f"❌ Error getting events for fixture {fixture_id}: {e}")
-            all_events[fixture_id] = []
-    
-    print(f"✅ Batched events collection complete for {len(all_events)} fixtures")
-    return all_events
+    print(f"✅ Filtered to {len(filtered)} fixtures involving specified teams")
+    return filtered
 
-# ✅ REQUIRED: These are used by flows and need to exist here
-def store_fixture_result(fixture_data):
-    """Store fixture result in MongoDB"""
-    return store.store_fixture(fixture_data)
-
-def store_fixture_events(fixture_id, events_data):
-    """Store fixture events in MongoDB"""
-    return store.store_fixture_events(fixture_id, events_data)
-
-def populate_team_metadata(reset_first=False):  # ✅ CHANGED: Default to False
-    """Populate team metadata in MongoDB with optional reset"""
+# ✅ HELPER: Team metadata functions
+def populate_team_metadata(reset_first=True):
+    """Populate team metadata"""
+    from found_footy.storage.mongo_store import FootyMongoStore
+    store = FootyMongoStore()
+    
     if reset_first:
         print("🔄 Resetting MongoDB first...")
-        store.reset_database()
+        store.drop_all_collections()
     
     print("⚽ Populating top 25 UEFA team metadata...")
     
@@ -173,55 +150,49 @@ def populate_team_metadata(reset_first=False):  # ✅ CHANGED: Default to False
             "team_id": team_id,
             "team_name": team_info["name"],
             "country": team_info["country"],
-            "season": 2026,
-            "uefa_ranking": list(TOP_25_TEAMS_2026.keys()).index(team_id) + 1  # 1-25 ranking
+            "uefa_ranking": list(TOP_25_TEAMS_2026.keys()).index(team_id) + 1
         }
         store.store_team_metadata(team_data)
     
     print(f"✅ Populated {len(TOP_25_TEAMS_2026)} teams in metadata")
 
-# ✅ UPDATED: Helper functions for teams
 def get_available_teams():
-    """Get all available top 25 teams - returns constant dict"""
+    """Get available teams as constant dict"""
     return TOP_25_TEAMS_2026
-
-def get_teams_by_country(country):
-    """Get teams filtered by country"""
-    return {
-        team_id: team_info 
-        for team_id, team_info in TOP_25_TEAMS_2026.items() 
-        if team_info["country"].lower() == country.lower()
-    }
 
 def parse_team_ids_parameter(team_ids_param):
-    """Parse team IDs from various input formats - used by flows"""
-    if isinstance(team_ids_param, str):
-        try:
-            # Try parsing as JSON array
-            team_ids = json.loads(team_ids_param)
-        except json.JSONDecodeError:
-            # Try parsing as comma-separated string
-            team_ids = [int(x.strip()) for x in team_ids_param.split(",")]
-    elif isinstance(team_ids_param, list):
-        team_ids = [int(x) for x in team_ids_param]
-    else:
-        team_ids = [int(team_ids_param)]
+    """Parse team IDs from parameter - ensure it always returns a list"""
+    if team_ids_param is None or team_ids_param == "":
+        return []
     
-    return team_ids
-
-# ✅ BACKWARD COMPATIBILITY: Keep league functions but redirect to teams
-def get_available_leagues():
-    """DEPRECATED: Use get_available_teams instead"""
-    print("⚠️ WARNING: get_available_leagues is deprecated. Use get_available_teams instead.")
-    return TOP_25_TEAMS_2026
-
-def parse_league_ids_parameter(league_ids_param):
-    """DEPRECATED: Use parse_team_ids_parameter instead"""
-    print("⚠️ WARNING: parse_league_ids_parameter is deprecated. Use parse_team_ids_parameter instead.")
-    return parse_team_ids_parameter(league_ids_param)
-
-# ✅ DEPRECATED: Keep for backward compatibility but use team approach
-def populate_league_metadata(reset_first=True):
-    """DEPRECATED: Use populate_team_metadata instead"""
-    print("⚠️ WARNING: populate_league_metadata is deprecated. Using populate_team_metadata instead.")
-    return populate_team_metadata(reset_first)
+    # ✅ FIXED: Handle all possible input types
+    if isinstance(team_ids_param, str):
+        if team_ids_param.strip() == "":
+            return []
+        try:
+            # Try JSON parsing first
+            team_ids = json.loads(team_ids_param)
+            if isinstance(team_ids, int):
+                return [team_ids]  # Single integer in JSON
+            elif isinstance(team_ids, list):
+                return [int(x) for x in team_ids]  # List in JSON
+            else:
+                return []
+        except json.JSONDecodeError:
+            # Fall back to comma-separated parsing
+            try:
+                team_ids = [int(x.strip()) for x in team_ids_param.split(",") if x.strip()]
+                return team_ids
+            except ValueError:
+                print(f"⚠️ Could not parse team_ids: {team_ids_param}")
+                return []
+    
+    elif isinstance(team_ids_param, (list, tuple)):
+        return [int(x) for x in team_ids_param]
+    
+    elif isinstance(team_ids_param, int):
+        return [team_ids_param]  # ✅ Handle single integer
+    
+    else:
+        print(f"⚠️ Unexpected team_ids type: {type(team_ids_param)}")
+        return []
