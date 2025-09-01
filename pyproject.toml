@@ -5,17 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "found-footy"
 version = "0.1.0"
-description = "Football fixtures and YouTube highlights automation using Prefect"
-authors = [{name = "Your Name", email = "your.email@example.com"}]
+description = "Football fixtures and goal automation using Prefect"
+authors = [{name = "Vedanta Dhobley", email = "vedanta.dhobley@gmail.com"}]
 readme = "README.md"
 requires-python = ">=3.10"
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-]
-# ✅ Keep dynamic dependencies from requirements.txt
 dynamic = ["dependencies"]
 
 [tool.setuptools.dynamic]
@@ -24,7 +17,3 @@ dependencies = {file = ["requirements.txt"]}
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["found_footy*"]
-
-# ✅ ADD: UV configuration to work with requirements.txt
-[tool.uv]
-dev-dependencies = []

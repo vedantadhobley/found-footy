@@ -71,7 +71,9 @@ services:
   # ✅ CHANGED: Twitter worker instead of YouTube worker
   twitter-worker:
     build: .
-    command: prefect worker start --pool twitter-pool --type process
+    command: prefect worker start --pool twitter-pool --type process --limit 5  # ✅ Allow 5 concurrent runs per worker
+    deploy:
+      replicas: 3  # ✅ Run 3 worker instances = 15 concurrent goal processing
     volumes:
       - .:/app
     working_dir: /app

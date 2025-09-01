@@ -1,6 +1,9 @@
 import argparse
 import sys
 import subprocess
+import asyncio
+import time
+import re
 from pathlib import Path
 from prefect import get_client
 from datetime import datetime
@@ -99,12 +102,12 @@ async def clean_all_automations():
         print(f"⚠️ Error in automation cleanup: {e}")
 
 async def create_twitter_automation():
-    """Create Twitter automation using Prefect 3 public API with dynamic deployment lookup"""
+    """Create Twitter automation with timeline-friendly flow run names"""
     print("🤖 Creating Twitter automation using Prefect 3 public API...")
     
     try:
         async with get_client() as client:
-            # ✅ DYNAMIC: Lookup deployment by name instead of hardcoding ID
+            # Dynamic deployment lookup
             try:
                 deployment = await client.read_deployment_by_name("twitter-flow/twitter-flow")
                 print(f"✅ Found twitter-flow deployment: {deployment.id}")
@@ -122,14 +125,14 @@ async def create_twitter_automation():
                 
                 return False
             
-            # ✅ USE PROPER PREFECT 3 PUBLIC API
+            # Use Prefect 3 public API
             from prefect.automations import Automation
             from prefect.events.schemas.automations import EventTrigger
             from prefect.events.actions import RunDeployment
             
             automation = Automation(
                 name="goal-twitter-automation",
-                description="Run twitter-flow on goal.detected",
+                description="Run twitter-flow on goal.detected with timeline names",
                 enabled=True,
                 trigger=EventTrigger(
                     expect=["goal.detected"],
@@ -142,6 +145,10 @@ async def create_twitter_automation():
                     RunDeployment(
                         deployment_id=deployment.id,
                         parameters={"goal_id": "{{ event.payload.goal_id }}"},
+                        # ✅ TIMELINE: Enhanced flow run name with team, player, minute, and timestamp
+                        job_variables={
+                            "name": "⚽ {{ event.payload.team_name or 'Team' }}-{{ event.payload.player_name or 'Player' }}-{{ event.payload.minute or '0' }}min-{{ event.occurred.strftime('%H:%M:%S') }}"
+                        }
                     )
                 ],
             )
@@ -161,20 +168,18 @@ def deploy_from_yaml():
     """Deploy using prefect.yaml project config - with Python automation"""
     print("🚀 Creating deployments using prefect.yaml...")
     
-    # ✅ UPDATE: Pre-fill today's date in prefect.yaml before deploying
+    # Pre-fill today's date in prefect.yaml
     print("📅 Pre-filling today's date in prefect.yaml...")
     today_str = datetime.now().strftime("%Y%m%d")
     
-    # Read prefect.yaml
+    # Read and update prefect.yaml
     prefect_yaml_path = Path("/app/prefect.yaml")
     with open(prefect_yaml_path, 'r') as f:
         yaml_content = f.read()
     
-    # Replace the date_str placeholder with today's date - handle both old and new dates
-    import re
+    # Replace date with today's date
     yaml_content = re.sub(r'"202508\d{2}"', f'"{today_str}"', yaml_content)
     
-    # Write back
     with open(prefect_yaml_path, 'w') as f:
         f.write(yaml_content)
     
@@ -186,20 +191,15 @@ def deploy_from_yaml():
     populate_team_metadata(reset_first=True)
     print("✅ MongoDB reset and team initialization complete")
     
-    # Ensure pools exist first
-    import asyncio
+    # Setup sequence
     asyncio.run(ensure_work_pools())
-    
-    # Clean existing deployments and automations
     asyncio.run(clean_all_deployments_api())
     asyncio.run(clean_all_automations())
     
-    # Wait for cleanup
     print("⏳ Waiting 5 seconds for cleanup to complete...")
-    import time
     time.sleep(5)
     
-    # Deploy from YAML (deployments only)
+    # Deploy from YAML
     print("🏗️ Deploying from prefect.yaml (deployments only)...")
     
     result = subprocess.run([
@@ -210,11 +210,11 @@ def deploy_from_yaml():
         print("✅ All deployments created from prefect.yaml!")
         print(f"📋 Output: {result.stdout}")
         
-        # Wait a bit for deployments to be fully registered
+        # Wait for deployments to register
         print("⏳ Waiting 3 seconds for deployments to register...")
         time.sleep(3)
         
-        # Create automation using Python
+        # Create automation
         print("🤖 Creating automation using Python...")
         automation_success = asyncio.run(create_twitter_automation())
         
@@ -223,7 +223,7 @@ def deploy_from_yaml():
         else:
             print("❌ Automation creation failed - check logs above")
         
-        # Verify deployments were created
+        # Verify deployments
         print("\n🔍 Verifying deployments...")
         verify_result = subprocess.run([
             "prefect", "deployment", "ls"
@@ -258,7 +258,6 @@ def deploy_from_yaml():
 def run_immediate():
     """Run the fixtures flow immediately for today's date"""
     print("🏃 Running fixtures flow immediately for today...")
-    print("🔍 About to call fixtures_flow()...")
     try:
         from found_footy.flows.fixtures_flow import fixtures_flow
         result = fixtures_flow()
@@ -269,19 +268,14 @@ def run_immediate():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    print(f"🐛 DEBUG: Command line args: {sys.argv}")
-    
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true", help="Apply all deployments")
     parser.add_argument("--run-now", action="store_true", help="Also run immediately")
     parser.add_argument("--clean-only", action="store_true", help="Only clean deployments, don't recreate")
     args = parser.parse_args()
     
-    print(f"🐛 DEBUG: Parsed args - apply: {args.apply}, run_now: {args.run_now}, clean_only: {args.clean_only}")
-    
     if args.clean_only:
         print("🧹 CLEAN-ONLY MODE: Deleting all deployments...")
-        import asyncio
         asyncio.run(clean_all_deployments_api())
         asyncio.run(clean_all_automations())
         print("✅ Clean-only completed!")
@@ -290,18 +284,14 @@ if __name__ == "__main__":
         success = deploy_from_yaml()
         
         if success and args.run_now:
-            print("🚨 DEBUG: run_now flag is True, calling run_immediate()")
             run_immediate()
         elif not success:
             print("❌ Deployment failed, skipping immediate run")
-        else:
-            print("⚠️ DEBUG: run_now flag is False, skipping immediate run")
         
         print("✅ Setup complete!")
         print("🌐 Access Prefect UI at http://localhost:4200")
         print("📝 Configure team_ids in deployment parameters")
     else:
-        print("❌ DEBUG: apply flag is False")
         print("Use --apply to create deployments")
         print("Use --apply --run-now to also run immediately")
         print("Use --clean-only to just delete all deployments")

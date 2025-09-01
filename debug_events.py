@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Debug event emission and automation triggering"""
+
 import asyncio
 from prefect import get_client
+from datetime import datetime, timezone
 
 async def test_event_emission():
     """Test emitting a goal.detected event manually"""
@@ -41,34 +43,21 @@ async def check_automation_details():
         async with get_client() as client:
             automations = await client.read_automations()
             
-            twitter_automation = None
-            for automation in automations:
-                if "twitter" in automation.name.lower() or "goal" in automation.name.lower():
-                    twitter_automation = automation
-                    break
-            
-            if twitter_automation:
-                print(f"✅ Found automation: {twitter_automation.name}")
-                print(f"   ID: {twitter_automation.id}")
-                print(f"   Enabled: {twitter_automation.enabled}")
-                print(f"   Trigger type: {twitter_automation.trigger.get('type')}")
-                print(f"   Expected events: {twitter_automation.trigger.get('expect')}")
-                print(f"   Match criteria: {twitter_automation.trigger.get('match')}")
-                print(f"   Actions: {len(twitter_automation.actions)} actions")
-                
-                for i, action in enumerate(twitter_automation.actions):
-                    print(f"   Action {i+1}:")
-                    print(f"     Type: {action.get('type')}")
-                    print(f"     Deployment ID: {action.get('deployment_id')}")
-                    print(f"     Parameters: {action.get('parameters')}")
-                
-                return True
-            else:
-                print("❌ No automation found!")
+            if not automations:
+                print("❌ No automations found!")
                 return False
+            
+            for automation in automations:
+                print(f"🤖 Automation: {automation.name}")
+                print(f"   ID: {automation.id}")
+                print(f"   Enabled: {automation.enabled}")
+                print(f"   Trigger: {automation.trigger}")
+                print(f"   Actions: {len(automation.actions)}")
+                
+            return True
                 
     except Exception as e:
-        print(f"❌ Error checking automation: {e}")
+        print(f"❌ Error checking automations: {e}")
         return False
 
 async def check_recent_events():
@@ -77,31 +66,64 @@ async def check_recent_events():
     
     try:
         async with get_client() as client:
-            # Try to get recent events
-            try:
-                response = await client._client.post("/events/filter", json={
-                    "event": {"any_": ["goal.detected"]},
-                    "limit": 5,
-                    "order": "DESC"
-                })
-                
-                if response.status_code == 200:
-                    events = response.json()
-                    print(f"🎯 Found {len(events)} recent goal.detected events:")
-                    
-                    for event in events:
-                        print(f"   • Event ID: {event.get('id')}")
-                        print(f"     Occurred: {event.get('occurred')}")
-                        print(f"     Payload: {event.get('payload')}")
-                        print()
-                else:
-                    print(f"⚠️ Failed to fetch events: {response.status_code}")
-                    
-            except Exception as e:
-                print(f"⚠️ Could not fetch events (might not be supported): {e}")
+            # Get recent events (last 10)
+            events = await client.read_events(limit=10)
+            
+            if not events:
+                print("❌ No recent events found")
+                return
+            
+            print(f"📊 Found {len(events)} recent events:")
+            for event in events[-5:]:  # Show last 5
+                print(f"   {event.event} - {event.resource}")
                 
     except Exception as e:
         print(f"❌ Error checking events: {e}")
+
+async def timeline_viewer():
+    """Enhanced timeline viewer for goal processing"""
+    print("🕐 ENHANCED TIMELINE VIEWER - Watching for goal processing...")
+    print("="*80)
+    
+    last_check = datetime.now(timezone.utc)
+    
+    while True:
+        try:
+            async with get_client() as client:
+                # Get recent flow runs for both flows
+                flow_runs = await client.read_flow_runs(
+                    flow_filter={"name": {"any_": ["twitter-flow", "fixtures-flow"]}},
+                    limit=50,
+                    sort="EXPECTED_START_TIME_DESC"
+                )
+                
+                # Filter to new runs since last check
+                new_runs = [
+                    run for run in flow_runs 
+                    if run.created >= last_check
+                ]
+                
+                if new_runs:
+                    print(f"\n🚨 {len(new_runs)} NEW FLOWS DETECTED:")
+                    print(f"{'Time':<10} {'Type':<12} {'Status':<10} {'Name':<50}")
+                    print("-" * 85)
+                    
+                    for run in reversed(new_runs):  # Show in chronological order
+                        timestamp = run.created.strftime("%H:%M:%S")
+                        flow_type = "🐦 Twitter" if "twitter" in run.flow_name else "⚽ Fixtures"
+                        status_icon = "🟢" if run.state.is_completed() else "🟡" if run.state.is_running() else "🔴" if run.state.is_failed() else "⚪"
+                        status = run.state.name[:8]
+                        name = run.name[:45] + "..." if len(run.name) > 45 else run.name
+                        
+                        print(f"{timestamp:<10} {flow_type:<12} {status_icon} {status:<8} {name}")
+                
+                last_check = datetime.now(timezone.utc)
+                
+        except Exception as e:
+            print(f"❌ Timeline viewer error: {e}")
+        
+        # Check every 3 seconds for more responsive timeline
+        await asyncio.sleep(3)
 
 async def main():
     """Run all diagnostic checks"""
@@ -118,17 +140,9 @@ async def main():
     
     # Test manual event emission
     if automation_ok:
-        test_ok = await test_event_emission()
-        print()
-        
-        if test_ok:
-            print("⏳ Wait 30 seconds and check Prefect UI for twitter-flow run...")
-            print("🌐 Go to: http://localhost:4200/runs")
-            print("🔍 Look for flow run with goal_id 'test_12345_67_890'")
-        else:
-            print("❌ Test event emission failed - automation won't work")
+        await test_event_emission()
     else:
-        print("❌ Automation not found - cannot test")
+        print("❌ Skipping event test - no automations found")
     
     print("="*50)
 

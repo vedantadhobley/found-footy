@@ -11,7 +11,7 @@ push: null
 pull: null
 
 deployments:
-  # 1. Daily auto-runner
+  # 1. Daily auto-runner with enhanced naming
   - name: fixtures-flow-daily
     entrypoint: found_footy.flows.fixtures_flow:fixtures_flow
     work_pool:
@@ -21,31 +21,37 @@ deployments:
       timezone: UTC
       active: false
     parameters:
-      date_str: null  # ✅ CONSISTENT: Use null, code defaults to today
-      team_ids: null  # ✅ CONSISTENT: Use null, code defaults to all teams
+      date_str: null
+      team_ids: null
     tags:
       - fixtures
       - scheduled
       - daily
       - restructured
     description: "Daily fixtures ingest + monitor (DISABLED by default)"
+    # ✅ TIMELINE: Enhanced flow run name for scheduled runs
+    job_variables:
+      name: "📅 Daily-Fixtures-{{ now().strftime('%Y-%m-%d') }}"
 
-  # 2. Manual runner - ✅ PRE-FILLED with current date
+  # 2. Manual runner with enhanced naming
   - name: fixtures-flow-manual
     entrypoint: found_footy.flows.fixtures_flow:fixtures_flow
     work_pool:
       name: fixtures-pool
     parameters:
-      date_str: "20250831"  # ✅ PRE-FILLED: Today's date (will update this in deployment script)
-      team_ids: null  # ✅ CONSISTENT: Use null, defaults to all teams
+      date_str: "20250831"
+      team_ids: null
     tags:
       - fixtures
       - manual
       - instant
       - restructured
     description: "Manual fixtures ingest + monitor (pre-filled with today's date)"
+    # ✅ TIMELINE: Enhanced flow run name for manual runs
+    job_variables:
+      name: "🔧 Manual-Fixtures-{{ parameters.date_str or now().strftime('%Y%m%d') }}-{{ now().strftime('%H:%M') }}"
 
-  # 3. Twitter flow - ✅ ALREADY CONSISTENT
+  # 3. Twitter flow - will use automation-generated names
   - name: twitter-flow
     entrypoint: found_footy.flows.twitter_flow:twitter_flow
     work_pool:
@@ -55,4 +61,4 @@ deployments:
     tags:
       - twitter
       - restructured
-    description: "Twitter flow (triggered by goal detection)"
+    description: "Twitter flow (triggered by goal detection with timeline names)"

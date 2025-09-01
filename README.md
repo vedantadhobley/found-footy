@@ -1,96 +1,63 @@
-# Found Footy - Simplified Deployment Guide
+# Found Footy - Football Goal Automation
 
-## 🚀 Two Simple Deployments
+## 🚀 Architecture Overview
 
-### 1. `fixtures-flow-daily` - Scheduled Runner
-- **Purpose**: Automatic daily monitoring
-- **Schedule**: Daily at 00:05 UTC (DISABLED by default)
-- **Configuration**: Via Prefect UI parameters
+### Flows
+- **fixtures-flow**: Ingests fixtures and monitors for goals
+- **twitter-flow**: Processes individual goals (triggered by automation)
 
-**To use:**
-1. Go to Prefect UI → Deployments → `fixtures-flow-daily`
-2. Edit parameters → Change `league_ids` for your competitions
-3. Enable the schedule when ready
+### Collections (MongoDB)
+- **teams**: Team metadata
+- **fixtures_staging**: Future fixtures
+- **fixtures_active**: Live/ongoing fixtures  
+- **fixtures_processed**: Completed fixtures
+- **goals_active**: Unprocessed goals
+- **goals_processed**: Processed goals
 
-### 2. `fixtures-flow-manual` - Instant Runner  
-- **Purpose**: Run immediately for specific date/leagues
-- **Trigger**: Manual only
-- **Configuration**: Set parameters each time you run
+### Deployments
+1. **fixtures-flow-daily**: Scheduled daily runner (disabled by default)
+2. **fixtures-flow-manual**: Manual runner with pre-filled date
+3. **twitter-flow**: Goal processing (triggered by automation)
 
-**To use:**
-1. Go to Prefect UI → Deployments → `fixtures-flow-manual`
-2. Click "Run" → Set parameters → Start
+### Automation
+- **goal-twitter-automation**: Triggers twitter-flow when goals are detected
 
-## 🏆 League ID Quick Reference
+## 🚀 Quick Start
 
-| Competition | League ID | Parameter Example |
-|-------------|-----------|-------------------|
-| **English** | | |
-| Premier League | 39 | `"[39]"` |
-| FA Cup | 48 | `"[48]"` |
-| EFL Cup | 45 | `"[45]"` |
-| All English | | `"[39,48,45]"` |
-| **Spanish** | | |
-| La Liga | 140 | `"[140]"` |
-| Copa del Rey | 143 | `"[143]"` |
-| Supercopa | 556 | `"[556]"` |
-| All Spanish | | `"[140,143,556]"` |
-| **European** | | |
-| Champions League | 2 | `"[2]"` |
-| Europa League | 3 | `"[3]"` |
-| Conference League | 848 | `"[848]"` |
-| All European | | `"[2,3,848]"` |
-| **Major Domestic** | | |
-| Top 5 Leagues | | `"[39,140,78,61,135]"` |
+```bash
+# Deploy everything
+python -m found_footy.flows.deployments --apply
 
-## 📅 Date Format Examples
+# Test automation
+python debug_events.py
 
-- `null` or empty = Today's matches
-- `"20250828"` = Specific date (August 28, 2025)
-- `"20250215"` = February 15, 2025
-
-## 🎯 Common Use Cases
-
-### Daily Premier League Monitoring
-**Deployment**: `fixtures-flow-daily`
-**Parameters**: 
-```json
-{
-  "date_str": null,
-  "league_ids": "[39]"
-}
+# Access UI
+http://localhost:4200
 ```
-**Enable schedule in UI**
 
-### Champions League Match Day
-**Deployment**: `fixtures-flow-manual`  
-**Parameters**:
-```json
-{
-  "date_str": "20250212",
-  "league_ids": "[2]"
-}
-```
-**Run manually**
+## 🎯 How It Works
 
-### Weekend Multi-League
-**Deployment**: `fixtures-flow-manual`
-**Parameters**:
-```json
-{
-  "date_str": "20250215", 
-  "league_ids": "[39,140,78,61,135]"
-}
-```
-**Run manually**
+1. **fixtures-flow** ingests fixtures and monitors for goals
+2. When goals are detected, events are emitted
+3. **goal-twitter-automation** catches goal events
+4. **twitter-flow** processes individual goals
+5. Goals/fixtures move through active → processed collections
 
-### Cup Final Day
-**Deployment**: `fixtures-flow-manual`
-**Parameters**:
-```json
-{
-  "date_str": "20250517",
-  "league_ids": "[48,143,81]"
-}
+## 📋 Parameters
+
+### fixtures-flow
+- `date_str`: Date in YYYYMMDD format (null = today)
+- `team_ids`: Team IDs to monitor (null = all teams)
+
+### twitter-flow  
+- `goal_id`: Specific goal to process (provided by automation)
+
+## 🔧 Development
+
+```bash
+# Clean deployments
+python -m found_footy.flows.deployments --clean-only
+
+# Deploy and run immediately
+python -m found_footy.flows.deployments --apply --run-now
 ```
-**Run manually**

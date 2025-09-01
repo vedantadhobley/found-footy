@@ -29,9 +29,9 @@ def fixtures_advance(source_collection: str, destination_collection: str) -> int
     logger.info(f"✅ Advanced {count} fixtures")
     return count
 
-# ✅ HELPER METHOD: goal_trigger - FIXED to emit events for automation
+# ✅ HELPER METHOD: goal_trigger - Enhanced with timeline data
 def goal_trigger(fixture_id: int, new_goal_events: List[dict] = None):
-    """Helper method: Emit goal events for automation - FIXED payload structure"""
+    """Helper method: Emit goal events with enhanced timeline data for automation"""
     logger = get_run_logger()
     logger.info(f"⚽ Goal trigger for fixture {fixture_id}")
     
@@ -41,32 +41,47 @@ def goal_trigger(fixture_id: int, new_goal_events: List[dict] = None):
             return 0
         
         events_emitted = 0
+        current_time = datetime.now(timezone.utc)
         
         for goal_event in new_goal_events:
             minute = goal_event.get("time", {}).get("elapsed", 0)
             player_id = goal_event.get("player", {}).get("id", 0)
             goal_id = f"{fixture_id}_{minute}_{player_id}"
             
-            # ✅ FIXED: Emit event with correct payload structure
-            logger.info(f"📡 Emitting goal.detected event for goal {goal_id}")
+            # Extract team and player names for timeline
+            team_name = goal_event.get("team", {}).get("name", "Unknown Team")
+            player_name = goal_event.get("player", {}).get("name", "Unknown Player")
+            goal_type = goal_event.get("detail", "Goal")
+            
+            # ✅ TIMELINE: Enhanced event with rich data for custom flow run names
+            logger.info(f"📡 Emitting ENHANCED goal.detected event for goal {goal_id}")
             try:
                 from prefect.events import emit_event
                 
-                # ✅ CRITICAL: Make sure payload exactly matches what automation expects
                 emit_event(
                     event="goal.detected",
                     resource={"prefect.resource.id": f"goal.{goal_id}"},
                     payload={
-                        "goal_id": goal_id,  # ✅ This MUST be exactly this key name
+                        "goal_id": goal_id,  # ✅ Required for automation parameter
                         "fixture_id": fixture_id,
-                        "team_name": goal_event.get("team", {}).get("name"),
-                        "player_name": goal_event.get("player", {}).get("name"),
-                        "minute": minute,
-                        "goal_type": goal_event.get("detail", "Goal")
+                        "team_name": team_name,  # ✅ Enhanced: Clean team name for flow run
+                        "player_name": player_name,  # ✅ Enhanced: Clean player name for flow run  
+                        "minute": minute,  # ✅ Enhanced: Minute for flow run
+                        "goal_type": goal_type,
+                        "detected_at": current_time.isoformat(),  # ✅ Timeline: Detection timestamp
+                        "detection_time": current_time.strftime('%H:%M:%S'),  # ✅ Timeline: Time only for flow run
+                        # ✅ Enhanced: Additional context for timeline
+                        "team_short": team_name.replace(" ", "").replace("FC", "").replace("United", "Utd")[:10],  # Shortened team name
+                        "player_short": player_name.split()[-1] if " " in player_name else player_name,  # Last name only
+                        "is_penalty": "Penalty" in goal_type,
+                        "is_own_goal": "Own Goal" in goal_type
                     }
                 )
                 events_emitted += 1
-                logger.info(f"✅ Event emitted for goal {goal_id} - automation should trigger")
+                
+                # ✅ Timeline logging with rich details
+                logger.info(f"✅ TIMELINE EVENT: {current_time.strftime('%H:%M:%S')} | {team_name} | {player_name} ({minute}') | {goal_type}")
+                logger.info(f"🎯 Expected flow run name: ⚽ {team_name}-{player_name}-{minute}min-{current_time.strftime('%H:%M:%S')}")
                 
             except ImportError:
                 logger.error("❌ emit_event not available - automation will NOT work")
@@ -74,6 +89,10 @@ def goal_trigger(fixture_id: int, new_goal_events: List[dict] = None):
             except Exception as e:
                 logger.error(f"❌ Failed to emit event for goal {goal_id}: {e}")
                 return 0
+        
+        # ✅ Timeline summary
+        if events_emitted > 0:
+            logger.info(f"📊 TIMELINE SUMMARY: {events_emitted} goals detected for fixture {fixture_id} at {current_time.strftime('%H:%M:%S')}")
         
         logger.info(f"✅ Goal trigger complete: {events_emitted} events emitted for automation")
         return events_emitted

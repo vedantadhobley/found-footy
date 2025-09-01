@@ -1,17 +1,69 @@
-# Create/update .dockerignore file
-.venv/
-venv/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-.git/
+# Git files
+.git
 .gitignore
-README.md
-.pytest_cache/
-.coverage
-.nyc_output/
-node_modules/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# Logs
 *.log
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Testing
+.pytest_cache/
+.tox/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Local development files
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+tmp/
+temp/
