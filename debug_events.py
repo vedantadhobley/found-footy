@@ -28,7 +28,7 @@ async def test_event_emission():
         )
         
         print(f"✅ Test event emitted for goal {test_goal_id}")
-        print(f"🎯 Check Prefect UI for twitter-flow run with goal_id: {test_goal_id}")
+        print(f"🎯 Check Prefect UI for twitter-search-flow run with goal_id: {test_goal_id}")  # ✅ UPDATED
         return True
         
     except Exception as e:
@@ -92,7 +92,7 @@ async def timeline_viewer():
             async with get_client() as client:
                 # Get recent flow runs for both flows
                 flow_runs = await client.read_flow_runs(
-                    flow_filter={"name": {"any_": ["twitter-flow", "fixtures-flow"]}},
+                    flow_filter={"name": {"any_": ["twitter-search-flow", "fixtures-ingest-flow", "fixtures-advance-flow", "fixtures-monitor-flow"]}},  # ✅ UPDATED
                     limit=50,
                     sort="EXPECTED_START_TIME_DESC"
                 )
@@ -110,13 +110,21 @@ async def timeline_viewer():
                     
                     for run in reversed(new_runs):  # Show in chronological order
                         timestamp = run.created.strftime("%H:%M:%S")
-                        flow_type = "🐦 Twitter" if "twitter" in run.flow_name else "⚽ Fixtures"
+                        
+                        # ✅ UPDATED: Updated flow type detection
+                        if "twitter-search" in run.flow_name:
+                            flow_type = "🔍 Twitter"
+                        elif "fixtures" in run.flow_name:
+                            flow_type = "⚽ Fixtures"
+                        else:
+                            flow_type = "❓ Other"
+                        
                         status_icon = "🟢" if run.state.is_completed() else "🟡" if run.state.is_running() else "🔴" if run.state.is_failed() else "⚪"
                         status = run.state.name[:8]
                         name = run.name[:45] + "..." if len(run.name) > 45 else run.name
                         
                         print(f"{timestamp:<10} {flow_type:<12} {status_icon} {status:<8} {name}")
-                
+
                 last_check = datetime.now(timezone.utc)
                 
         except Exception as e:

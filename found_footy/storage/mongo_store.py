@@ -65,8 +65,8 @@ class FootyMongoStore:
             print(f"⚠️ Error creating indexes: {e}")
 
     # ✅ NEW: Helper method - fixtures_advance
-    def fixtures_advance(self, source_collection_name: str, destination_collection_name: str, fixture_id: int = None) -> int:
-        """📋 HELPER: Move fixtures between collections (optionally single fixture)"""
+    def fixtures_advance(self, source_collection_name: str, destination_collection_name: str, fixture_id: int = None) -> dict:
+        """📋 HELPER: Move fixtures between collections with consistent error handling"""
         try:
             source_collection = getattr(self, source_collection_name)
             destination_collection = getattr(self, destination_collection_name)
@@ -76,22 +76,22 @@ class FootyMongoStore:
             source_docs = list(source_collection.find(query))
             
             if not source_docs:
-                return 0
+                return {"status": "success", "advanced_count": 0, "message": "No documents found to advance"}
             
             # Move documents
             for doc in source_docs:
                 doc["advanced_at"] = datetime.now(timezone.utc)
                 destination_collection.replace_one({"_id": doc["_id"]}, doc, upsert=True)
-            
+        
             # Delete from source
             delete_result = source_collection.delete_many(query)
             
             print(f"📋 Advanced {len(source_docs)} fixtures: {source_collection_name} → {destination_collection_name}")
-            return len(source_docs)
+            return {"status": "success", "advanced_count": len(source_docs)}
         
         except Exception as e:
             print(f"❌ Error advancing fixtures: {e}")
-            return 0
+            return {"status": "error", "advanced_count": 0, "error": str(e)}
 
     # ✅ NEW: Bulk insert fixtures into staging/active
     def bulk_insert_fixtures_staging(self, fixtures_data: List[dict]) -> int:
@@ -321,12 +321,13 @@ class FootyMongoStore:
             print(f"❌ Error dropping collections: {e}")
             return False
 
+    # ✅ UPDATE: mongo_store.py - Split responsibilities
     def fixtures_delta(self, fixture_id: int, api_data: dict) -> dict:
-        """🔍 DELTA METHOD: Compare API fixture data vs stored → detect changes & trigger ALL cascading actions"""
+        """🔍 DELTA METHOD: Pure comparison function with proper completion status logic"""
         try:
             current_fixture = self.fixtures_active.find_one({"_id": fixture_id})
             if not current_fixture:
-                return {"goals_changed": False}
+                return {"status": "error", "goals_changed": False, "message": "Fixture not found"}
             
             # Extract current API state
             goals_data = api_data.get("goals", {"home": 0, "away": 0})
@@ -339,128 +340,157 @@ class FootyMongoStore:
             previous_home = current_fixture.get("goals", {}).get("home", 0)
             previous_away = current_fixture.get("goals", {}).get("away", 0)
             
-            # 🔍 DELTA: Detect changes
+            # 🔍 DELTA: Only detect changes - no side effects
             goals_changed = current_home > previous_home or current_away > previous_away
-            fixture_completed = status in ["FT", "AET", "PEN"]
             
-            result = {
+            # ✅ UPDATED: Comprehensive completion status logic based on "short" status
+            # COMPLETED: Move to fixtures_processed (fixture is dead/done)
+            completed_statuses = {
+                "FT",    # Match Finished (regular time)
+                "AET",   # Match Finished (after extra time)  
+                "PEN",   # Match Finished (after penalty shootout)
+                "P",     # Penalty In Progress (we don't care about shootouts)
+                "PST",   # Match Postponed (moved to another day)
+                "CANC",  # Match Cancelled (will not be played)
+                "ABD",   # Match Abandoned (may or may not be rescheduled)
+                "AWD",   # Technical Loss (not played)
+                "WO"     # WalkOver (not played)
+            }
+            
+            # ACTIVE: Keep in fixtures_active (still monitoring)
+            active_statuses = {
+                "TBD",   # Time To Be Defined (still scheduled)
+                "NS",    # Not Started (still scheduled)
+                "1H",    # First Half, Kick Off
+                "HT",    # Halftime
+                "2H",    # Second Half
+                "ET",    # Extra Time
+                "BT",    # Break Time
+                "SUSP",  # Match Suspended (may resume later)
+                "INT",   # Match Interrupted (should resume)
+                "LIVE"   # In Progress (rare but active)
+            }
+            
+            fixture_completed = status in completed_statuses
+            
+            # Log status decisions for debugging
+            if fixture_completed:
+                print(f"🏁 Fixture {fixture_id} marked as COMPLETED with status: {status}")
+            elif status in active_statuses:
+                print(f"🔄 Fixture {fixture_id} remains ACTIVE with status: {status}")
+            else:
+                print(f"⚠️ Fixture {fixture_id} has UNKNOWN status: {status} - treating as active")
+            
+            return {
+                "status": "success",
                 "goals_changed": goals_changed,
                 "fixture_completed": fixture_completed,
                 "total_goal_increase": (current_home - previous_home) + (current_away - previous_away),
                 "current_goals": {"home": current_home, "away": current_away},
                 "api_status": status,
-                "new_goal_events": []
+                "fixture_id": fixture_id,
+                "completion_reason": "completed_status" if fixture_completed else "active_status"
             }
-            
-            # ✅ CASCADE 1: If goals changed, handle goal processing
-            if goals_changed:
-                print(f"🚨 FIXTURES DELTA: Goals changed {previous_home}-{previous_away} → {current_home}-{current_away}")
-                
-                # Import here to avoid circular imports
-                from found_footy.api.mongo_api import fixtures_events
-                
-                # Get goal events for comparison
-                api_goal_events = fixtures_events(fixture_id)
-                
-                # Process new goals (this handles storage + events internally)
-                new_goal_events = self.goals_delta(fixture_id, api_goal_events, trigger_actions=True)
-                result["new_goal_events"] = new_goal_events
-            
-            # ✅ CASCADE 2: Always update fixture with latest API data (after goal processing)
-            fixtures_update_success = self.fixtures_update(fixture_id, result)
-            result["fixture_updated"] = fixtures_update_success
-            
-            return result
             
         except Exception as e:
             print(f"❌ Error in fixtures_delta for fixture {fixture_id}: {e}")
-            return {"goals_changed": False}
+            return {"status": "error", "goals_changed": False, "error": str(e)}
+
+    def handle_fixture_changes(self, fixture_id: int, delta_result: dict) -> dict:
+        """📝 HANDLER: Act on fixture changes with all side effects"""
+        try:
+            if delta_result["status"] != "success":
+                return delta_result
+            
+            results = {"goals_processed": 0, "fixture_updated": False, "events_emitted": 0}
+            
+            # Handle goal changes
+            if delta_result.get("goals_changed", False):
+                print(f"🚨 HANDLING: Goals changed for fixture {fixture_id}")
+                
+                # Get goal events for processing
+                from found_footy.api.mongo_api import fixtures_events
+                api_goal_events = fixtures_events(fixture_id)
+                
+                # Process new goals
+                new_goal_events = self.goals_delta(fixture_id, api_goal_events, trigger_actions=True)
+                results["goals_processed"] = len(new_goal_events)
+        
+            # Always update fixture with latest API data
+            fixture_update_success = self.fixtures_update(fixture_id, delta_result)
+            results["fixture_updated"] = fixture_update_success
+            
+            return {**delta_result, **results}
+        
+        except Exception as e:
+            print(f"❌ Error handling fixture changes for {fixture_id}: {e}")
+            return {"status": "error", "error": str(e)}
+
+    def goals_update(self, fixture_id: int, api_goal_events: List[dict]) -> int:
+        """Update goals for a fixture and store new goals in goals_active"""
+        try:
+            goals_stored = 0
+            
+            for goal_event in api_goal_events:
+                goal_stored = self.store_goal_active(fixture_id, goal_event)
+                if goal_stored:
+                    goals_stored += 1
+        
+            return goals_stored
+        
+        except Exception as e:
+            print(f"❌ Error updating goals for fixture {fixture_id}: {e}")
+            return 0
 
     def goals_delta(self, fixture_id: int, api_goal_events: List[dict], trigger_actions: bool = False) -> List[dict]:
-        """🔍 DELTA METHOD: Compare API goal events vs stored → find NEW goals & trigger actions"""
+        """Compare current goals with API goals and return new goals"""
         try:
-            # Get existing goal IDs for fast lookup
-            existing_goals = list(self.goals_active.find({"fixture_id": fixture_id}, {"minute": 1, "player_id": 1}))
-            existing_goal_ids = {f"{fixture_id}_{goal.get('minute', 0)}_{goal.get('player_id', 0)}" for goal in existing_goals}
-            
-            # Filter to new goals only
             new_goal_events = []
+        
             for goal_event in api_goal_events:
                 minute = goal_event.get("time", {}).get("elapsed", 0)
                 player_id = goal_event.get("player", {}).get("id", 0)
                 goal_id = f"{fixture_id}_{minute}_{player_id}"
-                
-                if goal_id not in existing_goal_ids:
+            
+                # Check if this goal already exists
+                existing_goal = self.goals_active.find_one({"_id": goal_id})
+                if not existing_goal:
                     new_goal_events.append(goal_event)
-            
-            print(f"🔍 GOALS DELTA: {len(api_goal_events)} API goals → {len(new_goal_events)} new goals")
-            
-            # ✅ CASCADE: If new goals found and actions enabled, trigger goal processing
-            if new_goal_events and trigger_actions:
-                print(f"🎯 GOALS DELTA: Triggering actions for {len(new_goal_events)} new goals")
                 
-                # ✅ TRIGGER 1: Store new goals first
-                stored_count = self.goals_update(fixture_id, new_goal_events)
-                
-                # ✅ TRIGGER 2: Emit events for automation
-                if stored_count > 0:
-                    # Import here to avoid circular imports
-                    from found_footy.flows.fixtures_flow import goal_trigger
-                    goal_trigger(fixture_id, new_goal_events)
-            
+                    if trigger_actions:
+                        # Store the new goal
+                        self.store_goal_active(fixture_id, goal_event)
+                        
+                        # Trigger automation event
+                        from found_footy.utils.events import goal_trigger
+                        goal_trigger(fixture_id, [goal_event])
+        
             return new_goal_events
-            
+        
         except Exception as e:
             print(f"❌ Error in goals_delta for fixture {fixture_id}: {e}")
             return []
 
     def fixtures_update(self, fixture_id: int, delta_result: dict) -> bool:
-        """📝 UPDATE METHOD: Apply changes to fixture based on delta result"""
+        """Update fixture with latest API data"""
         try:
-            if not delta_result.get("current_goals"):
-                print(f"⚠️ No update data provided for fixture {fixture_id}")
+            if delta_result["status"] != "success":
                 return False
             
-            # Build update data from delta result
             update_data = {
-                "status": "completed" if delta_result.get("fixture_completed", False) else "live",
-                "api_status": delta_result.get("api_status", "UNKNOWN"),
                 "goals": delta_result["current_goals"],
+                "status": delta_result["api_status"],
                 "last_checked": datetime.now(timezone.utc)
             }
-            
-            # Apply update
+        
             result = self.fixtures_active.update_one(
-                {"_id": fixture_id},
+                {"fixture_id": fixture_id},
                 {"$set": update_data}
             )
-            
-            if result.modified_count > 0:
-                print(f"✅ FIXTURES UPDATE: Updated fixture {fixture_id}")
-                return True
-            else:
-                print(f"⚠️ FIXTURES UPDATE: No changes made to fixture {fixture_id}")
-                return False
-            
+        
+            return result.modified_count > 0
+        
         except Exception as e:
-            print(f"❌ Error in fixtures_update for fixture {fixture_id}: {e}")
+            print(f"❌ Error updating fixture {fixture_id}: {e}")
             return False
 
-    def goals_update(self, fixture_id: int, goal_events: List[dict]) -> int:
-        """📝 UPDATE METHOD: Store new goal events in goals_active"""
-        if not goal_events:
-            return 0
-        
-        try:
-            stored_count = 0
-            for goal_event in goal_events:
-                success = self.store_goal_active(fixture_id, goal_event)
-                if success:
-                    stored_count += 1
-        
-            print(f"✅ GOALS UPDATE: Stored {stored_count} new goals for fixture {fixture_id}")
-            return stored_count
-            
-        except Exception as e:
-            print(f"❌ Error in goals_update for fixture {fixture_id}: {e}")
-            return 0

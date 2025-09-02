@@ -49,9 +49,9 @@ services:
         condition: service_healthy
 
   # Fixtures worker
-  fixtures-worker:
+  fixtures-worker-1:
     build: .
-    command: prefect worker start --pool fixtures-pool --type process
+    command: prefect worker start --pool fixtures-pool --type process --limit 10
     volumes:
       - .:/app
     working_dir: /app
@@ -68,12 +68,48 @@ services:
         condition: service_completed_successfully
     restart: on-failure
 
-  # ✅ CHANGED: Twitter worker instead of YouTube worker
-  twitter-worker:
+  fixtures-worker-2:
     build: .
-    command: prefect worker start --pool twitter-pool --type process --limit 5  # ✅ Allow 5 concurrent runs per worker
-    deploy:
-      replicas: 3  # ✅ Run 3 worker instances = 15 concurrent goal processing
+    command: prefect worker start --pool fixtures-pool --type process --limit 10
+    volumes:
+      - .:/app
+    working_dir: /app
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
+      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - PYTHONPATH=/app
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      app:
+        condition: service_completed_successfully
+    restart: on-failure
+
+  # Twitter worker
+  twitter-worker-1:
+    build: .
+    command: prefect worker start --pool twitter-pool --type process --limit 10
+    volumes:
+      - .:/app
+    working_dir: /app
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
+      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - PYTHONPATH=/app
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      app:
+        condition: service_completed_successfully
+    restart: on-failure
+
+  twitter-worker-2:
+    build: .
+    command: prefect worker start --pool twitter-pool --type process --limit 10
     volumes:
       - .:/app
     working_dir: /app

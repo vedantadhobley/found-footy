@@ -1,19 +1,14 @@
 name: found-footy
 prefect-version: 3.0.0
 
-# Build step - no custom build needed since we use pip install -e .
 build: null
-
-# Push step - no remote storage for local development  
 push: null
-
-# Pull step - code is already installed via pip install -e .
 pull: null
 
 deployments:
-  # 1. Daily auto-runner with enhanced naming
-  - name: fixtures-flow-daily
-    entrypoint: found_footy.flows.fixtures_flow:fixtures_flow
+  # 1. Independent Daily Ingest
+  - name: fixtures-ingest-daily
+    entrypoint: found_footy.flows.fixtures_flows:fixtures_ingest_flow
     work_pool:
       name: fixtures-pool
     schedule:
@@ -25,40 +20,64 @@ deployments:
       team_ids: null
     tags:
       - fixtures
-      - scheduled
+      - ingest
       - daily
-      - restructured
-    description: "Daily fixtures ingest + monitor (DISABLED by default)"
-    # ✅ TIMELINE: Enhanced flow run name for scheduled runs
-    job_variables:
-      name: "📅 Daily-Fixtures-{{ now().strftime('%Y-%m-%d') }}"
+    description: "Daily fixtures ingest with auto-scheduling"
 
-  # 2. Manual runner with enhanced naming
-  - name: fixtures-flow-manual
-    entrypoint: found_footy.flows.fixtures_flow:fixtures_flow
+  # 2. Independent Manual Ingest
+  - name: fixtures-ingest-manual
+    entrypoint: found_footy.flows.fixtures_flows:fixtures_ingest_flow
     work_pool:
       name: fixtures-pool
     parameters:
-      date_str: "20250831"
+      date_str: "20250902"
       team_ids: null
     tags:
       - fixtures
+      - ingest
       - manual
-      - instant
-      - restructured
-    description: "Manual fixtures ingest + monitor (pre-filled with today's date)"
-    # ✅ TIMELINE: Enhanced flow run name for manual runs
-    job_variables:
-      name: "🔧 Manual-Fixtures-{{ parameters.date_str or now().strftime('%Y%m%d') }}-{{ now().strftime('%H:%M') }}"
+    description: "Manual fixtures ingest (customizable date/teams)"
 
-  # 3. Twitter flow - will use automation-generated names
-  - name: twitter-flow
-    entrypoint: found_footy.flows.twitter_flow:twitter_flow
+  # 3. Universal Fixtures Advance Flow
+  - name: fixtures-advance-flow
+    entrypoint: found_footy.flows.fixtures_flows:fixtures_advance_flow
+    work_pool:
+      name: fixtures-pool
+    parameters:
+      source_collection: "fixtures_staging"      # ✅ NEW: Configurable
+      destination_collection: "fixtures_active"  # ✅ NEW: Configurable  
+      fixture_id: 0                             # ✅ Will be overridden when scheduled
+    tags:
+      - fixtures
+      - advance
+      - universal
+    description: "Universal fixture advancement - configurable source/destination"
+
+  # 4. Fixtures Monitor Flow - Always Running
+  - name: fixtures-monitor-flow
+    entrypoint: found_footy.flows.fixtures_flows:fixtures_monitor_flow
+    work_pool:
+      name: fixtures-pool
+    schedule:
+      cron: "*/3 * * * *"  # Every 3 minutes
+      timezone: UTC
+      active: true  # ✅ ALWAYS ACTIVE - Never stops
+    parameters: {}
+    tags:
+      - fixtures
+      - monitor
+      - always-running
+    description: "Always-running monitor - checks every 3 minutes, skips work when no active fixtures"
+
+  # 5. Twitter Search Flow
+  - name: twitter-search-flow
+    entrypoint: found_footy.flows.twitter_flows:twitter_search_flow
     work_pool:
       name: twitter-pool
     parameters:
       goal_id: null
     tags:
       - twitter
-      - restructured
-    description: "Twitter flow (triggered by goal detection with timeline names)"
+      - search
+      - automation
+    description: "First step of Twitter process - search and process individual goals"

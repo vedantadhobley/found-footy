@@ -107,12 +107,12 @@ async def create_twitter_automation():
     
     try:
         async with get_client() as client:
-            # Dynamic deployment lookup
+            # Dynamic deployment lookup  ✅ UPDATED
             try:
-                deployment = await client.read_deployment_by_name("twitter-flow/twitter-flow")
-                print(f"✅ Found twitter-flow deployment: {deployment.id}")
+                deployment = await client.read_deployment_by_name("twitter-search-flow/twitter-search-flow")
+                print(f"✅ Found twitter-search-flow deployment: {deployment.id}")
             except Exception as e:
-                print(f"❌ Could not find twitter-flow deployment: {e}")
+                print(f"❌ Could not find twitter-search-flow deployment: {e}")
                 
                 # List available deployments for debugging
                 try:
@@ -132,7 +132,7 @@ async def create_twitter_automation():
             
             automation = Automation(
                 name="goal-twitter-automation",
-                description="Run twitter-flow on goal.detected with timeline names",
+                description="Run twitter-search-flow on goal.detected with timeline names",  # ✅ UPDATED
                 enabled=True,
                 trigger=EventTrigger(
                     expect=["goal.detected"],
@@ -147,7 +147,7 @@ async def create_twitter_automation():
                         parameters={"goal_id": "{{ event.payload.goal_id }}"},
                         # ✅ TIMELINE: Enhanced flow run name with team, player, minute, and timestamp
                         job_variables={
-                            "name": "⚽ {{ event.payload.team_name or 'Team' }}-{{ event.payload.player_name or 'Player' }}-{{ event.payload.minute or '0' }}min-{{ event.occurred.strftime('%H:%M:%S') }}"
+                            "name": "🔍 {{ event.payload.team_name or 'Team' }}-{{ event.payload.player_name or 'Player' }}-{{ event.payload.minute or '0' }}min-{{ event.occurred.strftime('%H:%M:%S') }}"
                         }
                     )
                 ],
@@ -239,10 +239,12 @@ def deploy_from_yaml():
         print("🎉 SETUP COMPLETE - Python Automation!")
         print("="*60)
         print("📋 Created:")
-        print("  1. fixtures-flow-daily    (deployment)")
-        print("  2. fixtures-flow-manual   (deployment)")
-        print("  3. twitter-flow          (deployment)")
-        print("  4. goal-twitter-automation (automation - Python)")
+        print("  1. fixtures-ingest-daily    (deployment)")
+        print("  2. fixtures-ingest-manual   (deployment)")
+        print("  3. fixtures-advance-flow    (deployment)")
+        print("  4. fixtures-monitor-flow    (deployment)")
+        print("  5. twitter-search-flow      (deployment)")  # ✅ UPDATED
+        print("  6. goal-twitter-automation  (automation - Python)")
         print()
         print("🧪 Test automation: python debug_events.py")
         print("🌐 Access Prefect UI at http://localhost:4200")
@@ -259,8 +261,8 @@ def run_immediate():
     """Run the fixtures flow immediately for today's date"""
     print("🏃 Running fixtures flow immediately for today...")
     try:
-        from found_footy.flows.fixtures_flow import fixtures_flow
-        result = fixtures_flow()
+        from found_footy.flows.fixtures_flows import fixtures_ingest_flow  # ✅ FIXED
+        result = fixtures_ingest_flow()  # ✅ FIXED
         print(f"✅ Immediate run completed successfully: {result}")
     except Exception as e:
         print(f"❌ Immediate run failed: {e}")
