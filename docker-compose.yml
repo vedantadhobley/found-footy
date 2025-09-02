@@ -1,3 +1,8 @@
+networks:
+  found-footy-network:
+    driver: bridge
+    name: found-footy-network
+
 services:
   # Core Prefect database only
   prefect-postgres:
@@ -15,6 +20,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - found-footy-network
 
   # Prefect orchestration server
   prefect-server:
@@ -33,6 +40,8 @@ services:
       timeout: 5s
       retries: 15
       start_period: 30s
+    networks:
+      - found-footy-network
 
   # Your main Found Footy application
   app:
@@ -47,6 +56,8 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
+    networks:
+      - found-footy-network
 
   # Fixtures worker
   fixtures-worker-1:
@@ -67,6 +78,8 @@ services:
       app:
         condition: service_completed_successfully
     restart: on-failure
+    networks:
+      - found-footy-network
 
   fixtures-worker-2:
     build: .
@@ -86,6 +99,8 @@ services:
       app:
         condition: service_completed_successfully
     restart: on-failure
+    networks:
+      - found-footy-network
 
   # Twitter worker
   twitter-worker-1:
@@ -106,6 +121,8 @@ services:
       app:
         condition: service_completed_successfully
     restart: on-failure
+    networks:
+      - found-footy-network
 
   twitter-worker-2:
     build: .
@@ -125,6 +142,8 @@ services:
       app:
         condition: service_completed_successfully
     restart: on-failure
+    networks:
+      - found-footy-network
 
   # MongoDB only
   mongodb:
@@ -146,6 +165,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      - found-footy-network
 
   # MongoDB admin interface only
   mongo-express:
@@ -170,6 +191,8 @@ services:
       retries: 3
       start_period: 30s
     restart: on-failure
+    networks:
+      - found-footy-network
 
 volumes:
   prefect_postgres_data:  # Only Prefect needs PostgreSQL
