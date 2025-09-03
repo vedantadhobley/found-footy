@@ -6,7 +6,7 @@ push: null
 pull: null
 
 deployments:
-  # 1. Daily Ingest - ALL TEAMS (UEFA + FIFA)
+  # 1. Daily Ingest
   - name: fixtures-ingest-daily
     entrypoint: found_footy.flows.fixtures_flows:fixtures_ingest_flow
     work_pool:
@@ -30,14 +30,14 @@ deployments:
     work_pool:
       name: fixtures-pool
     parameters:
-      date_str: "20250902"
+      date_str: "20250903"
       team_ids: "{{ all_teams_2025_ids }}"
     tags:
       - fixtures
       - manual
-    description: "🎯 MANUAL: Mon Sep 02, 2025 - All Teams (UEFA + FIFA)"
+    description: "Manual fixtures ingest for Sep 03, 2025"
 
-  # 3. Universal Fixtures Advance Flow
+  # 3. Advance Flow
   - name: fixtures-advance-flow
     entrypoint: found_footy.flows.fixtures_flows:fixtures_advance_flow
     work_pool:
@@ -49,9 +49,9 @@ deployments:
     tags:
       - fixtures
       - advance
-    description: "Universal fixture advancement with contextual naming"
+    description: "Universal fixture advancement"
 
-  # 4. Fixtures Monitor Flow - Always Running
+  # 4. Monitor
   - name: fixtures-monitor-flow
     entrypoint: found_footy.flows.fixtures_flows:fixtures_monitor_flow
     work_pool:
@@ -64,9 +64,9 @@ deployments:
     tags:
       - fixtures
       - monitor
-    description: "Always-running monitor with timestamp context"
+    description: "Always-running monitor"
 
-  # 5. Twitter Search Flow
+  # 5. Twitter
   - name: twitter-search-flow
     entrypoint: found_footy.flows.twitter_flows:twitter_search_flow
     work_pool:
@@ -76,4 +76,4 @@ deployments:
     tags:
       - twitter
       - automation
-    description: "Event-driven Twitter processing with goal context"
+    description: "Event-driven Twitter processing"

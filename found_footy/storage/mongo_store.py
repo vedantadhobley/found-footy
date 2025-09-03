@@ -97,13 +97,27 @@ class FootyMongoStore:
             return {"status": "error", "advanced_count": 0, "error": str(e)}
 
     # ✅ NEW: Bulk insert fixtures into staging/active
-    def bulk_insert_fixtures_staging(self, fixtures_data: List[dict]) -> int:
-        """Bulk insert fixtures into staging collection"""
+    def bulk_insert_fixtures(self, fixtures_data: List[dict], collection_name: str) -> int:
+        """Universal bulk insert fixtures into any collection"""
         if not fixtures_data:
             return 0
         
         try:
-            print(f"💾 Bulk inserting {len(fixtures_data)} fixtures into staging...")
+            # Get the target collection
+            collection = getattr(self, collection_name.replace("fixtures_", ""))
+            
+            # Map collection names to their actual attributes
+            collection_map = {
+                "fixtures_staging": self.fixtures_staging,
+                "fixtures_active": self.fixtures_active,
+                "fixtures_processed": self.fixtures_processed
+            }
+            
+            target_collection = collection_map.get(collection_name)
+            if not target_collection:
+                raise ValueError(f"Unknown collection: {collection_name}")
+            
+            print(f"💾 Bulk inserting {len(fixtures_data)} fixtures into {collection_name}...")
             
             documents = []
             for fixture in fixtures_data:
@@ -111,6 +125,7 @@ class FootyMongoStore:
                 kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
                 fixture_date = kickoff_time.date()
                 
+                # Base document structure
                 doc = {
                     "_id": fixture["id"],
                     "fixture_id": fixture["id"],
@@ -128,10 +143,21 @@ class FootyMongoStore:
                         "id": fixture["league_id"],
                         "name": fixture["league"]
                     },
-                    "status": "scheduled",
                     "goals": {"home": 0, "away": 0},
                     "created_at": datetime.now(timezone.utc)
                 }
+                
+                # Collection-specific fields
+                if collection_name == "fixtures_staging":
+                    doc["status"] = "scheduled"
+                elif collection_name == "fixtures_active":
+                    doc["status"] = "live"
+                    doc["last_checked"] = None
+                elif collection_name == "fixtures_processed":
+                    doc["status"] = fixture.get("api_status", "completed")
+                    doc["completed_at"] = datetime.now(timezone.utc)
+                    doc["processing_note"] = "status_based_routing"
+                
                 documents.append(doc)
             
             # Use bulk write with upsert
@@ -140,69 +166,28 @@ class FootyMongoStore:
                 for doc in documents
             ]
             
-            result = self.fixtures_staging.bulk_write(bulk_operations)
+            result = target_collection.bulk_write(bulk_operations)
             inserted_count = result.upserted_count + result.modified_count
             
-            print(f"✅ Bulk insert staging complete: {inserted_count} fixtures")
+            print(f"✅ Bulk insert {collection_name} complete: {inserted_count} fixtures")
             return inserted_count
             
         except Exception as e:
-            print(f"❌ Error bulk inserting staging fixtures: {e}")
+            print(f"❌ Error bulk inserting into {collection_name}: {e}")
             return 0
 
+    # ✅ DEPRECATED: Remove individual methods (keep for backwards compatibility during transition)
+    def bulk_insert_fixtures_staging(self, fixtures_data: List[dict]) -> int:
+        """DEPRECATED: Use bulk_insert_fixtures(data, 'fixtures_staging') instead"""
+        return self.bulk_insert_fixtures(fixtures_data, "fixtures_staging")
+    
     def bulk_insert_fixtures_active(self, fixtures_data: List[dict]) -> int:
-        """Bulk insert fixtures into active collection"""
-        if not fixtures_data:
-            return 0
-        
-        try:
-            print(f"💾 Bulk inserting {len(fixtures_data)} fixtures into active...")
-            
-            documents = []
-            for fixture in fixtures_data:
-                # Convert date string to datetime for proper MongoDB storage
-                kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
-                fixture_date = kickoff_time.date()
-                
-                doc = {
-                    "_id": fixture["id"],
-                    "fixture_id": fixture["id"],
-                    "kickoff_time": kickoff_time,
-                    "date": datetime.combine(fixture_date, datetime.min.time()).replace(tzinfo=timezone.utc),
-                    "teams": {
-                        "home": fixture["home_id"],
-                        "away": fixture["away_id"]
-                    },
-                    "team_names": {
-                        "home": fixture["home"],
-                        "away": fixture["away"]
-                    },
-                    "league": {
-                        "id": fixture["league_id"],
-                        "name": fixture["league"]
-                    },
-                    "status": "live",
-                    "goals": {"home": 0, "away": 0},
-                    "last_checked": None,
-                    "created_at": datetime.now(timezone.utc)
-                }
-                documents.append(doc)
-            
-            # Use bulk write with upsert
-            bulk_operations = [
-                UpdateOne({"_id": doc["_id"]}, {"$set": doc}, upsert=True)
-                for doc in documents
-            ]
-            
-            result = self.fixtures_active.bulk_write(bulk_operations)
-            inserted_count = result.upserted_count + result.modified_count
-            
-            print(f"✅ Bulk insert active complete: {inserted_count} fixtures")
-            return inserted_count
-            
-        except Exception as e:
-            print(f"❌ Error bulk inserting active fixtures: {e}")
-            return 0
+        """DEPRECATED: Use bulk_insert_fixtures(data, 'fixtures_active') instead"""
+        return self.bulk_insert_fixtures(fixtures_data, "fixtures_active")
+    
+    def bulk_insert_fixtures_processed(self, fixtures_data: List[dict]) -> int:
+        """DEPRECATED: Use bulk_insert_fixtures(data, 'fixtures_processed') instead"""
+        return self.bulk_insert_fixtures(fixtures_data, "fixtures_processed")
 
     # ✅ NEW: Get all active fixtures for monitoring
     def get_all_active_fixtures(self) -> List[dict]:
@@ -328,7 +313,7 @@ class FootyMongoStore:
 
     # ✅ UPDATE: mongo_store.py - Split responsibilities
     def fixtures_delta(self, fixture_id: int, api_data: dict) -> dict:
-        """🔍 DELTA METHOD: Pure comparison function with proper completion status logic"""
+        """Pure comparison with centralized status logic from Prefect Variables"""
         try:
             current_fixture = self.fixtures_active.find_one({"_id": fixture_id})
             if not current_fixture:
@@ -345,46 +330,24 @@ class FootyMongoStore:
             previous_home = current_fixture.get("goals", {}).get("home", 0)
             previous_away = current_fixture.get("goals", {}).get("away", 0)
             
-            # 🔍 DELTA: Only detect changes - no side effects
+            # Delta detection
             goals_changed = current_home > previous_home or current_away > previous_away
             
-            # ✅ UPDATED: Comprehensive completion status logic based on "short" status
-            # COMPLETED: Move to fixtures_processed (fixture is dead/done)
-            completed_statuses = {
-                "FT",    # Match Finished (regular time)
-                "AET",   # Match Finished (after extra time)  
-                "PEN",   # Match Finished (after penalty shootout)
-                "P",     # Penalty In Progress (we don't care about shootouts)
-                "PST",   # Match Postponed (moved to another day)
-                "CANC",  # Match Cancelled (will not be played)
-                "ABD",   # Match Abandoned (may or may not be rescheduled)
-                "AWD",   # Technical Loss (not played)
-                "WO"     # WalkOver (not played)
-            }
+            # ✅ NEW: Use centralized status logic from Prefect Variables
+            try:
+                from found_footy.utils.fixture_status import is_fixture_completed
+                fixture_completed = is_fixture_completed(status)
+            except Exception as e:
+                print(f"⚠️ Could not load status config: {e}")
+                # Fallback to hardcoded logic
+                completed_statuses = {"FT", "AET", "PEN", "PST", "CANC", "ABD", "AWD", "WO"}
+                fixture_completed = status in completed_statuses
             
-            # ACTIVE: Keep in fixtures_active (still monitoring)
-            active_statuses = {
-                "TBD",   # Time To Be Defined (still scheduled)
-                "NS",    # Not Started (still scheduled)
-                "1H",    # First Half, Kick Off
-                "HT",    # Halftime
-                "2H",    # Second Half
-                "ET",    # Extra Time
-                "BT",    # Break Time
-                "SUSP",  # Match Suspended (may resume later)
-                "INT",   # Match Interrupted (should resume)
-                "LIVE"   # In Progress (rare but active)
-            }
-            
-            fixture_completed = status in completed_statuses
-            
-            # Log status decisions for debugging
+            # Enhanced logging for status decisions
             if fixture_completed:
-                print(f"🏁 Fixture {fixture_id} marked as COMPLETED with status: {status}")
-            elif status in active_statuses:
-                print(f"🔄 Fixture {fixture_id} remains ACTIVE with status: {status}")
+                print(f"🏁 Fixture {fixture_id} COMPLETED: {status} → moving to fixtures_processed")
             else:
-                print(f"⚠️ Fixture {fixture_id} has UNKNOWN status: {status} - treating as active")
+                print(f"🔄 Fixture {fixture_id} ACTIVE: {status} → continue monitoring")
             
             return {
                 "status": "success",
@@ -394,7 +357,7 @@ class FootyMongoStore:
                 "current_goals": {"home": current_home, "away": current_away},
                 "api_status": status,
                 "fixture_id": fixture_id,
-                "completion_reason": "completed_status" if fixture_completed else "active_status"
+                "completion_reason": f"status_{status}"
             }
             
         except Exception as e:

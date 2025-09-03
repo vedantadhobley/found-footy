@@ -18,11 +18,11 @@ COPY requirements.txt .
 # ✅ Install dependencies using uv
 RUN uv pip install --system -r requirements.txt
 
-# Copy application code
+# ✅ COPY AND FIX PERMISSIONS: Copy application code as root first
 COPY . .
 
-# ✅ Install the package in development mode
-RUN uv pip install --system -e .
+# ✅ FIX: Ensure appuser owns all files in /app
+RUN chown -R appuser:appuser /app
 
 # Create downloads directory with proper permissions
 RUN mkdir -p /app/downloads && chown -R appuser:appuser /app/downloads
@@ -30,5 +30,5 @@ RUN mkdir -p /app/downloads && chown -R appuser:appuser /app/downloads
 # Switch to non-root user
 USER appuser
 
-# Create deployments, then exit (workers will handle execution)
-CMD ["python", "-m", "found_footy.flows.deployments", "--apply"]
+# ✅ DEFAULT: Start worker (init container overrides this)
+CMD ["prefect", "worker", "start", "--pool", "default-pool", "--type", "process"]

@@ -45,14 +45,15 @@ def goal_trigger(fixture_id: int, new_goal_events: List[dict] = None):
                     resource={"prefect.resource.id": f"goal.{goal_id}"},
                     payload={
                         "goal_id": goal_id,
-                        "fixture_id": fixture_id,
+                        "fixture_id": str(fixture_id),
                         "team_name": team_name,
                         "player_name": player_name,
-                        "minute": str(minute),  # ✅ ENSURE STRING
+                        "minute": str(minute),
                         "goal_type": goal_type,
                         "opponent_name": opponent_name,
                         "home_team": home_team,
                         "away_team": away_team,
+                        "match_context": f"{home_team} vs {away_team}",  # ✅ ADD: Match context
                         "detected_at": current_time.isoformat(),
                     }
                 )

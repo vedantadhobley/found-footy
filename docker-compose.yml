@@ -43,30 +43,35 @@ services:
     networks:
       - found-footy-network
 
-  # Your main Found Footy application
-  app:
+  # ✅ NEW: Init container - runs setup then exits
+  found-footy-init:
     build: .
-    volumes:
-      - .:/app
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - PYTHONPATH=/app
     depends_on:
       prefect-server:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-    # ✅ CHANGE: Keep app running instead of exiting
+    # ✅ AUTOMATED SETUP: Run deployment creation with timeout
     command: >
       sh -c "
-        python -m found_footy.flows.deployments --apply &&
-        echo '✅ Deployments created, keeping container alive...' &&
-        tail -f /dev/null
+        echo '🚀 Found Footy Automated Setup Starting...' &&
+        echo '⏳ Waiting 10 seconds for services to stabilize...' &&
+        sleep 10 &&
+        echo '📋 Creating deployments and automations...' &&
+        timeout 300 python -m found_footy.flows.deployments --apply &&
+        echo '✅ Setup completed successfully!' &&
+        echo '🌐 Access Prefect UI at http://localhost:4200' &&
+        echo '📊 Check deployments and automations in the UI'
       "
     networks:
       - found-footy-network
+    restart: "no"  # ✅ IMPORTANT: Don't restart init container
 
-  # Fixtures worker
+  # ✅ UPDATED: Workers depend on successful init
   fixtures-worker-1:
     build: .
     command: prefect worker start --pool fixtures-pool --type process --limit 10
@@ -82,9 +87,9 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-      app:
-        condition: service_completed_successfully
-    restart: on-failure
+      found-footy-init:
+        condition: service_completed_successfully  # ✅ WAIT FOR INIT
+    restart: unless-stopped
     networks:
       - found-footy-network
 
@@ -103,9 +108,9 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-      app:
-        condition: service_completed_successfully
-    restart: on-failure
+      found-footy-init:
+        condition: service_completed_successfully  # ✅ WAIT FOR INIT
+    restart: unless-stopped
     networks:
       - found-footy-network
 
@@ -125,9 +130,9 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-      app:
-        condition: service_completed_successfully
-    restart: on-failure
+      found-footy-init:
+        condition: service_completed_successfully  # ✅ WAIT FOR INIT
+    restart: unless-stopped
     networks:
       - found-footy-network
 
@@ -146,9 +151,9 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-      app:
-        condition: service_completed_successfully
-    restart: on-failure
+      found-footy-init:
+        condition: service_completed_successfully  # ✅ WAIT FOR INIT
+    restart: unless-stopped
     networks:
       - found-footy-network
 

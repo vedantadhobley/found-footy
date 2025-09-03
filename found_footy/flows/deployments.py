@@ -102,27 +102,20 @@ async def clean_all_automations():
         print(f"⚠️ Error in automation cleanup: {e}")
 
 async def create_twitter_automation():
-    """Create Twitter automation with simplified naming"""
-    print("🤖 Creating Twitter automation using Prefect 3 public API...")
+    """Create Twitter automation with CORRECT flow_run_name template"""
+    print("🤖 Creating Twitter automation with rich player + teams naming...")
     
     try:
         async with get_client() as client:
-            # Dynamic deployment lookup  
-            try:
-                deployment = await client.read_deployment_by_name("twitter-search-flow/twitter-search-flow")
-                print(f"✅ Found twitter-search-flow deployment: {deployment.id}")
-            except Exception as e:
-                print(f"❌ Could not find twitter-search-flow deployment: {e}")
-                return False
+            deployment = await client.read_deployment_by_name("twitter-search-flow/twitter-search-flow")
             
-            # Use Prefect 3 public API
             from prefect.automations import Automation
             from prefect.events.schemas.automations import EventTrigger
             from prefect.events.actions import RunDeployment
             
             automation = Automation(
                 name="goal-twitter-automation",
-                description="Run twitter-search-flow for goal events",
+                description="Run twitter-search-flow with rich player + team context naming",
                 enabled=True,
                 trigger=EventTrigger(
                     expect=["goal.detected"],
@@ -134,9 +127,9 @@ async def create_twitter_automation():
                 actions=[
                     RunDeployment(
                         deployment_id=deployment.id,
-                        parameters={"goal_id": "{{ event.payload.goal_id }}"}
-                        # ✅ REMOVED: Complex flow_run_name templating
-                        # Flow will set its own name dynamically
+                        parameters={"goal_id": "{{ event.payload.goal_id }}"},
+                        # ✅ ENHANCED: Player name + teams + minute
+                        flow_run_name="⚽ {{ event.payload.player_name }} ({{ event.payload.minute }}') - {{ event.payload.match_context }}"
                     )
                 ],
             )
@@ -150,10 +143,10 @@ async def create_twitter_automation():
         return False
 
 def deploy_from_yaml():
-    """Deploy using prefect.yaml project config - with enhanced naming"""
+    """Deploy using prefect.yaml project config with all variable initialization"""
     print("🚀 Creating deployments using prefect.yaml...")
     
-    # Pre-fill today's date in prefect.yaml with rich context
+    # Pre-fill today's date in prefect.yaml
     print("📅 Pre-filling today's date in prefect.yaml...")
     today_str = datetime.now().strftime("%Y%m%d")
     today_readable = datetime.now().strftime("%a %b %d, %Y")
@@ -165,10 +158,8 @@ def deploy_from_yaml():
     
     # Replace date with today's date
     yaml_content = re.sub(r'"202508\d{2}"', f'"{today_str}"', yaml_content)
-    
-    # ✅ ENHANCED: Add rich description for manual deployment
     yaml_content = re.sub(
-        r'description: "Manual fixtures ingest - all teams"',
+        r'description: "Manual fixtures ingest for Sep 03, 2025"',
         f'description: "🎯 MANUAL: {today_readable} - All Teams (UEFA + FIFA)"',
         yaml_content
     )
@@ -178,22 +169,29 @@ def deploy_from_yaml():
     
     print(f"✅ Pre-filled manual deployment: {today_readable}")
     
-    # ✅ NEW: Initialize team variables first
-    print("🎯 Initializing team variables...")
+    # ✅ Initialize ALL variables
+    print("🎯 Initializing all Prefect Variables...")
     try:
+        # Team variables
         from team_variables_manager import create_team_variables, update_team_variables
         try:
             asyncio.run(create_team_variables())
         except Exception as create_error:
             if "already exists" in str(create_error):
-                print("♻️ Variables exist, updating...")
+                print("♻️ Team variables exist, updating...")
                 asyncio.run(update_team_variables())
             else:
                 raise create_error
-        print("✅ Team variables initialized successfully")
+        
+        # ✅ NEW: Fixture status variables
+        from found_footy.utils.fixture_status import create_fixture_status_variables
+        asyncio.run(create_fixture_status_variables())
+        
+        print("✅ All Prefect Variables initialized successfully")
+        
     except Exception as e:
-        print(f"⚠️ Error with team variables: {e}")
-        print("🔄 Continuing with legacy team initialization...")
+        print(f"⚠️ Error with variables: {e}")
+        print("🔄 Continuing with deployment...")
     
     # Initialize team metadata in MongoDB
     print("🗑️ Resetting MongoDB with enhanced team metadata...")

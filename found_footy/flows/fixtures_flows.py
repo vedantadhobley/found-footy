@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from prefect import flow, task, get_run_logger
 from prefect.deployments import run_deployment
-from prefect.runtime import flow_run  # ✅ THIS LINE IS MISSING IN YOUR FILE
 from typing import Optional, List
 from found_footy.api.mongo_api import (
     fixtures, 
@@ -14,6 +13,7 @@ from found_footy.api.mongo_api import (
 )
 from found_footy.utils.events import goal_trigger
 from found_footy.storage.mongo_store import FootyMongoStore
+from prefect.runtime import flow_run
 
 # Create store instance
 store = FootyMongoStore()
@@ -80,26 +80,78 @@ def fixtures_fetch_api_task(query_date, valid_team_ids):
 
 @task(name="fixtures-categorize-task")
 def fixtures_categorize_task(team_fixtures):
-    """Split fixtures into staging vs active based on kickoff time"""
+    """Categorize fixtures by FIFA status - pure status-driven routing"""
     logger = get_run_logger()
     
-    current_time = datetime.now(timezone.utc)
     staging_fixtures = []
     active_fixtures = []
+    completed_fixtures = []
+    
+    # ✅ NEW: Get statuses from Prefect Variables
+    try:
+        from found_footy.utils.fixture_status import get_fixture_statuses
+        status_config = get_fixture_statuses()
+        
+        completed_statuses = set(status_config["completed"])
+        active_statuses = set(status_config["active"])
+        staging_statuses = set(status_config["staging"])
+    except Exception as e:
+        logger.warning(f"⚠️ Could not load status config: {e}")
+        # Fallback to hardcoded values
+        completed_statuses = {"FT", "AET", "PEN", "PST", "CANC", "ABD", "AWD", "WO"}
+        active_statuses = {"1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"}
+        staging_statuses = {"TBD", "NS"}
+    
+    current_time = datetime.now(timezone.utc)
     
     for fixture in team_fixtures:
-        kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
+        # Get status from API call
+        try:
+            from found_footy.api.mongo_api import fixtures_batch
+            api_data_list = fixtures_batch([fixture["id"]])
+            
+            if api_data_list:
+                api_data = api_data_list[0]
+                status = api_data.get("fixture", {}).get("status", {}).get("short", "NS")
+            else:
+                status = "NS"  # Default to not started if API fails
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Could not get status for fixture {fixture['id']}: {e}")
+            status = "NS"  # Default to not started
         
-        if kickoff_time > current_time:
-            staging_fixtures.append(fixture)
+        fixture["api_status"] = status
+        
+        # ✅ STATUS-BASED ROUTING using centralized logic
+        if status in completed_statuses:
+            completed_fixtures.append(fixture)
+            logger.info(f"🏁 COMPLETED: {fixture['home']} vs {fixture['away']} (status: {status})")
+            
+        elif status in active_statuses:
+            active_fixtures.append(fixture)
+            logger.info(f"🔄 ACTIVE: {fixture['home']} vs {fixture['away']} (status: {status})")
+            
+        elif status in staging_statuses:
+            # ✅ ADDITIONAL CHECK: Only staging if kickoff is in future
+            kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
+            if kickoff_time > current_time:
+                staging_fixtures.append(fixture)
+                logger.info(f"📅 STAGING: {fixture['home']} vs {fixture['away']} (status: {status}, kickoff: {kickoff_time.strftime('%H:%M')})")
+            else:
+                # Status says NS but time passed - treat as active for monitoring
+                active_fixtures.append(fixture)
+                logger.info(f"🔄 ACTIVE (late start): {fixture['home']} vs {fixture['away']} (status: {status})")
+                
         else:
+            logger.warning(f"⚠️ UNKNOWN STATUS: {fixture['home']} vs {fixture['away']} (status: {status}) - treating as active")
             active_fixtures.append(fixture)
     
-    logger.info(f"📊 Categorized: {len(staging_fixtures)} staging, {len(active_fixtures)} active")
+    logger.info(f"📊 STATUS CATEGORIZATION: {len(staging_fixtures)} staging, {len(active_fixtures)} active, {len(completed_fixtures)} completed")
     
     return {
         "staging_fixtures": staging_fixtures,
-        "active_fixtures": active_fixtures
+        "active_fixtures": active_fixtures,
+        "completed_fixtures": completed_fixtures
     }
 
 @task(name="fixtures-schedule-advances-task", retries=3, retry_delay_seconds=10)
@@ -156,27 +208,6 @@ def fixtures_store_bulk_task(staging_fixtures, active_fixtures):
         "staging_count": staging_count,
         "active_count": active_count
     }
-
-@task(name="fixtures-active-goals-task")
-def fixtures_active_goals_task(active_fixtures):
-    """Process existing goals for active fixtures"""
-    logger = get_run_logger()
-    
-    total_goals_processed = 0
-    
-    for fixture in active_fixtures:
-        try:
-            api_goal_events = fixtures_events(fixture["id"])
-            if api_goal_events:
-                goals_stored = store.goals_update(fixture["id"], api_goal_events)
-                goal_trigger(fixture["id"], api_goal_events)
-                total_goals_processed += goals_stored
-                logger.info(f"⚽ Processed {goals_stored} goals for fixture {fixture['id']}")
-        except Exception as e:
-            logger.error(f"❌ Error processing goals for fixture {fixture['id']}: {e}")
-    
-    logger.info(f"✅ Total goals processed: {total_goals_processed}")
-    return total_goals_processed
 
 @task(name="fixtures-delta-task")
 def fixtures_delta_task():
@@ -267,46 +298,37 @@ def fixtures_monitor_task():
         except Exception as e:
             logger.error(f"❌ Error processing goals for fixture {fixture_id}: {e}")
     
-    # ✅ PROCESS COMPLETIONS: Handle completed fixtures with rich names
+    # ✅ PROCESS COMPLETIONS: Handle completed fixtures with CLEAN names
     for completed_fixture in delta_results["fixtures_completed"]:
         fixture_id = completed_fixture["fixture_id"]
         delta_result = completed_fixture["delta_result"]
         
         try:
-            # ✅ CRITICAL: Process any final goals BEFORE moving to completed
-            if delta_result.get("goals_changed", False):
-                logger.info(f"🚨 Processing final goals before completion for fixture {fixture_id}")
-                final_change_result = store.handle_fixture_changes(fixture_id, delta_result)
-                final_goals = final_change_result.get("goals_processed", 0)
-                total_goals_processed += final_goals
-                logger.info(f"⚽ Processed {final_goals} final goals before completion")
-            
-            # ✅ ENHANCED: Get fixture details for rich completion names
+            # ✅ GET: Fixture details for rich completion name
             fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
             if fixture:
                 home_team = fixture.get("team_names", {}).get("home", "Home")
                 away_team = fixture.get("team_names", {}).get("away", "Away")
-                match_name = f"{home_team} vs {away_team}"
-                completion_name = f"🏁 COMPLETED: {match_name} [#{fixture_id}]"
+                home_score = delta_result.get("current_goals", {}).get("home", 0)
+                away_score = delta_result.get("current_goals", {}).get("away", 0)
+                status = delta_result.get("api_status", "FT")
+                
+                # ✅ CLEAN: Team names + score + status only (no "Final Processing")
+                flow_run_name = f"🏁 {home_team} {home_score}-{away_score} {away_team} ({status})"
             else:
-                completion_name = f"🏁 COMPLETED: Match #{fixture_id}"
-            
-            # ✅ ADVANCE COMPLETED: Call universal advance flow with rich name
-            logger.info(f"📋 Calling fixtures-advance-flow for: {match_name if fixture else f'fixture {fixture_id}'}")
+                flow_run_name = f"🏁 Match #{fixture_id}"
             
             run_deployment(
                 name="fixtures-advance-flow/fixtures-advance-flow",
                 parameters={
                     "source_collection": "fixtures_active",
-                    "destination_collection": "fixtures_processed", 
+                    "destination_collection": "fixtures_processed",
                     "fixture_id": fixture_id
                 },
-                timeout=0,  # Run immediately
-                flow_run_name=completion_name  # ✅ RICH NAME
+                flow_run_name=flow_run_name  # ✅ CLEAN COMPLETION NAME
             )
             completed_fixtures_processed += 1
-            logger.info(f"✅ Scheduled completion flow: {match_name if fixture else f'fixture {fixture_id}'}")
-            
+            logger.info(f"✅ Scheduled completion flow for fixture {fixture_id}")
         except Exception as e:
             logger.error(f"❌ Failed to process completion for fixture {fixture_id}: {e}")
     
@@ -321,114 +343,58 @@ def fixtures_monitor_task():
 
 # ✅ FLOWS WITH CONSISTENT NAMING
 
-@flow(name="fixtures-ingest-flow")  # ✅ CONSISTENT NAMING
+@flow(name="fixtures-ingest-flow")
 def fixtures_ingest_flow(date_str: Optional[str] = None, team_ids: Optional[str] = None):
-    """Multi-task ingest flow - completely decoupled from monitoring"""
+    """Pure ingestion with status-based routing"""
     logger = get_run_logger()
     
-    # ✅ SET DYNAMIC FLOW NAME
-    try:
-        if date_str:
-            readable_date = datetime.strptime(date_str[:8], "%Y%m%d").strftime("%a %b %d")
-        else:
-            readable_date = datetime.now().strftime("%a %b %d")
-        
-        flow_run.name = f"📥 INGEST: {readable_date} - All Teams"
-        logger.info(f"📝 Set flow name: {flow_run.name}")
-    except Exception as e:
-        flow_run.name = "📥 INGEST: Date TBD - All Teams"
-        logger.warning(f"⚠️ Error setting flow name: {e}")
+    logger.info("📥 Starting Pure Fixtures Ingest Flow")
     
-    logger.info("📥 Starting Fixtures Ingest Flow")
-    
-    # Initialize team metadata (keep this here as it's a prerequisite)
+    # Initialize team metadata
     populate_team_metadata(reset_first=False)
     
-    # Task 1: Process and validate parameters
+    # Tasks with simplified names
     params = fixtures_process_parameters_task(team_ids, date_str)
-    
-    # Task 2: Fetch fixtures from API
     team_fixtures = fixtures_fetch_api_task(params["query_date"], params["valid_team_ids"])
     
-    # Early return if no fixtures
     if not team_fixtures:
-        return {
-            "status": "success",
-            "team_fixtures": 0,
-            "staging_fixtures": 0,
-            "active_fixtures": 0,
-            "goals_processed": 0,
-            "scheduled_advances": 0,
-            "monitoring_started": False
-        }
+        return {"status": "no_fixtures", "message": "No fixtures found"}
     
-    # Task 3: Categorize fixtures by time
+    # ✅ SIMPLIFIED NAME: fixtures-categorize-task
     categorized = fixtures_categorize_task(team_fixtures)
     
-    # Task 4: Schedule advance flows for staging fixtures
+    # Schedule advances for staging fixtures
     scheduled_advances = fixtures_schedule_advances_task(categorized["staging_fixtures"])
     
-    # Task 5: Store fixtures in database
-    storage_result = fixtures_store_bulk_task(categorized["staging_fixtures"], categorized["active_fixtures"])
+    # ✅ SIMPLIFIED NAME: fixtures-store-task
+    storage_result = fixtures_store_task(
+        categorized["staging_fixtures"], 
+        categorized["active_fixtures"],
+        categorized["completed_fixtures"]
+    )
     
-    # Task 6: Process existing goals for active fixtures
-    goals_processed = fixtures_active_goals_task(categorized["active_fixtures"])
-    
-    logger.info(f"✅ Ingest complete: {storage_result['active_count']} active, {scheduled_advances} advances scheduled")
+    logger.info("✅ Pure status-based ingestion complete - live monitoring only")
     
     return {
         "status": "success",
-        "team_fixtures": len(team_fixtures),
+        "approach": "pure_status_based_live_only",
         "staging_fixtures": storage_result["staging_count"],
         "active_fixtures": storage_result["active_count"],
-        "goals_processed": goals_processed,
+        "completed_fixtures": storage_result["completed_count"],
         "scheduled_advances": scheduled_advances,
-        "monitoring_status": "handled_by_cron_schedule",  # ✅ NEW
-        "completed_at": datetime.now(timezone.utc).isoformat()
+        "note": "Historical fixtures moved to completed - live monitoring only"
     }
 
-@flow(name="fixtures-advance-flow")  # ✅ CONSISTENT NAMING
+@flow(name="fixtures-advance-flow")
 def fixtures_advance_flow(
     source_collection: str = "fixtures_staging", 
     destination_collection: str = "fixtures_active",
     fixture_id: Optional[int] = None
 ):
-    """Universal fixture advancement flow"""
+    """PURE fixture advancement - no goal processing, monitor handles everything"""
     logger = get_run_logger()
     
-    # ✅ SET DYNAMIC FLOW NAME
-    try:
-        if fixture_id:
-            # Try to get fixture details for rich name
-            if source_collection == "fixtures_staging":
-                fixture = store.fixtures_staging.find_one({"fixture_id": fixture_id})
-            elif source_collection == "fixtures_active":
-                fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
-            else:
-                fixture = None
-            
-            if fixture:
-                home_team = fixture.get("team_names", {}).get("home", "Home")
-                away_team = fixture.get("team_names", {}).get("away", "Away")
-                match_name = f"{home_team} vs {away_team}"
-                
-                if destination_collection == "fixtures_active":
-                    flow_run.name = f"🚀 KICKOFF: {match_name} [#{fixture_id}]"
-                elif destination_collection == "fixtures_processed":
-                    flow_run.name = f"🏁 COMPLETED: {match_name} [#{fixture_id}]"
-                else:
-                    flow_run.name = f"🔄 ADVANCE: {match_name} [#{fixture_id}]"
-            else:
-                flow_run.name = f"🔄 ADVANCE: Match #{fixture_id}"
-        else:
-            flow_run.name = f"🔄 ADVANCE: {source_collection} → {destination_collection}"
-        
-        logger.info(f"📝 Set flow name: {flow_run.name}")
-    except Exception as e:
-        flow_run.name = f"🔄 ADVANCE: {source_collection} → {destination_collection}"
-        logger.warning(f"⚠️ Error setting flow name: {e}")
-    
-    logger.info(f"📋 Universal advancement: {source_collection} → {destination_collection}")
+    logger.info(f"📋 Pure advancement: {source_collection} → {destination_collection}")
     
     if fixture_id:
         logger.info(f"🎯 Processing specific fixture: {fixture_id}")
@@ -436,28 +402,15 @@ def fixtures_advance_flow(
     # Use the universal task
     advance_result = fixtures_advance_task(source_collection, destination_collection, fixture_id)
     
-    # ✅ SMART POST-PROCESSING: Different actions based on destination
+    # ✅ SIMPLIFIED: Pure advancement with status logging only
     if advance_result["status"] == "success" and advance_result["advanced_count"] > 0:
         
-        # 🎯 STAGING → ACTIVE: Check for existing goals
-        if destination_collection == "fixtures_active" and fixture_id:
-            logger.info(f"✅ Fixture {fixture_id} promoted to active - checking for existing goals")
-            try:
-                api_goal_events = fixtures_events(fixture_id)
-                if api_goal_events:
-                    goals_stored = store.goals_update(fixture_id, api_goal_events)
-                    goal_trigger(fixture_id, api_goal_events)
-                    logger.info(f"⚽ Processed {goals_stored} existing goals")
-            except Exception as e:
-                logger.error(f"❌ Error checking goals: {e}")
-        
-        # 🏁 ACTIVE → PROCESSED: Log completion
+        if destination_collection == "fixtures_active":
+            logger.info(f"✅ Fixture {fixture_id} promoted to active - monitor will detect live goals")
         elif destination_collection == "fixtures_processed":
-            logger.info(f"🏁 Completed fixture advancement to processed collection")
-        
-        # 📊 OTHER: Generic logging
+            logger.info(f"🏁 Fixture {fixture_id} archived to processed - no further monitoring")
         else:
-            logger.info(f"✅ Generic advancement completed: {advance_result['advanced_count']} fixtures")
+            logger.info(f"✅ Generic advancement: {advance_result['advanced_count']} fixtures")
     
     return {
         "status": advance_result["status"],
@@ -465,7 +418,7 @@ def fixtures_advance_flow(
         "destination_collection": destination_collection,
         "fixture_id": fixture_id,
         "advanced_count": advance_result.get("advanced_count", 0),
-        "advance_result": advance_result
+        "note": "Pure advancement - monitor handles all live goal detection"
     }
 
 @flow(name="fixtures-monitor-flow")
@@ -473,14 +426,12 @@ def fixtures_monitor_flow():
     """Always-running monitor - runs every 3 minutes"""
     logger = get_run_logger()
     
-    # ✅ SET DYNAMIC FLOW NAME WITH SCHEDULED TIME CONTEXT
+    # ✅ ADD: Set rich name with timestamp at runtime
     try:
         current_time = datetime.now().strftime("%H:%M:%S")
         flow_run.name = f"👁️ MONITOR: {current_time} - Active Check"
-        logger.info(f"📝 Set flow name: {flow_run.name}")
     except Exception as e:
-        flow_run.name = "👁️ MONITOR: Active Check"
-        logger.warning(f"⚠️ Error setting flow name: {e}")
+        logger.warning(f"Could not set flow name: {e}")
     
     # ✅ NEVER EXIT: Just skip work efficiently
     if store.check_collections_empty(["fixtures_active"]):
@@ -527,3 +478,96 @@ def fixtures_advance_task(source_collection: str, destination_collection: str, f
     except Exception as e:
         logger.error(f"❌ Error in fixtures-advance-task: {e}")
         return {"status": "error", "advanced_count": 0, "error": str(e)}
+
+@task(name="fixtures-categorize-task")
+def fixtures_categorize_task(team_fixtures):
+    """Categorize fixtures by FIFA status - pure status-driven routing"""
+    logger = get_run_logger()
+    
+    staging_fixtures = []
+    active_fixtures = []
+    completed_fixtures = []
+    
+    # ✅ NEW: Get statuses from Prefect Variables
+    try:
+        from found_footy.utils.fixture_status import get_fixture_statuses
+        status_config = get_fixture_statuses()
+        
+        completed_statuses = set(status_config["completed"])
+        active_statuses = set(status_config["active"])
+        staging_statuses = set(status_config["staging"])
+    except Exception as e:
+        logger.warning(f"⚠️ Could not load status config: {e}")
+        # Fallback to hardcoded values
+        completed_statuses = {"FT", "AET", "PEN", "PST", "CANC", "ABD", "AWD", "WO"}
+        active_statuses = {"1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"}
+        staging_statuses = {"TBD", "NS"}
+    
+    current_time = datetime.now(timezone.utc)
+    
+    for fixture in team_fixtures:
+        # Get status from API call
+        try:
+            from found_footy.api.mongo_api import fixtures_batch
+            api_data_list = fixtures_batch([fixture["id"]])
+            
+            if api_data_list:
+                api_data = api_data_list[0]
+                status = api_data.get("fixture", {}).get("status", {}).get("short", "NS")
+            else:
+                status = "NS"  # Default to not started if API fails
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Could not get status for fixture {fixture['id']}: {e}")
+            status = "NS"  # Default to not started
+        
+        fixture["api_status"] = status
+        
+        # ✅ STATUS-BASED ROUTING using centralized logic
+        if status in completed_statuses:
+            completed_fixtures.append(fixture)
+            logger.info(f"🏁 COMPLETED: {fixture['home']} vs {fixture['away']} (status: {status})")
+            
+        elif status in active_statuses:
+            active_fixtures.append(fixture)
+            logger.info(f"🔄 ACTIVE: {fixture['home']} vs {fixture['away']} (status: {status})")
+            
+        elif status in staging_statuses:
+            # ✅ ADDITIONAL CHECK: Only staging if kickoff is in future
+            kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
+            if kickoff_time > current_time:
+                staging_fixtures.append(fixture)
+                logger.info(f"📅 STAGING: {fixture['home']} vs {fixture['away']} (status: {status}, kickoff: {kickoff_time.strftime('%H:%M')})")
+            else:
+                # Status says NS but time passed - treat as active for monitoring
+                active_fixtures.append(fixture)
+                logger.info(f"🔄 ACTIVE (late start): {fixture['home']} vs {fixture['away']} (status: {status})")
+                
+        else:
+            logger.warning(f"⚠️ UNKNOWN STATUS: {fixture['home']} vs {fixture['away']} (status: {status}) - treating as active")
+            active_fixtures.append(fixture)
+    
+    logger.info(f"📊 STATUS CATEGORIZATION: {len(staging_fixtures)} staging, {len(active_fixtures)} active, {len(completed_fixtures)} completed")
+    
+    return {
+        "staging_fixtures": staging_fixtures,
+        "active_fixtures": active_fixtures,
+        "completed_fixtures": completed_fixtures
+    }
+
+@task(name="fixtures-store-task", retries=3, retry_delay_seconds=10)
+def fixtures_store_task(staging_fixtures, active_fixtures, completed_fixtures):
+    """Store fixtures in appropriate collections"""
+    logger = get_run_logger()
+    
+    staging_count = store.bulk_insert_fixtures(staging_fixtures, "fixtures_staging") if staging_fixtures else 0
+    active_count = store.bulk_insert_fixtures(active_fixtures, "fixtures_active") if active_fixtures else 0
+    completed_count = store.bulk_insert_fixtures(completed_fixtures, "fixtures_processed") if completed_fixtures else 0
+    
+    logger.info(f"💾 STORAGE: {staging_count} staging, {active_count} active, {completed_count} completed")
+    
+    return {
+        "staging_count": staging_count,
+        "active_count": active_count,
+        "completed_count": completed_count
+    }
