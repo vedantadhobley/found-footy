@@ -30,6 +30,9 @@ class FootyMongoStore:
             # Team indexes
             self.teams.create_index([("team_id", 1)], unique=True)
             self.teams.create_index([("country", 1)])
+            self.teams.create_index([("team_type", 1)])  # ✅ NEW: Index for team type
+            self.teams.create_index([("uefa_ranking", 1)])  # ✅ NEW: UEFA ranking
+            self.teams.create_index([("fifa_ranking", 1)])  # ✅ NEW: FIFA ranking
             
             # ✅ NEW: Staging fixtures indexes
             self.fixtures_staging.create_index([("fixture_id", 1)], unique=True)
@@ -284,14 +287,16 @@ class FootyMongoStore:
 
     # ✅ KEEP: Essential existing methods
     def store_team_metadata(self, team_data: dict) -> bool:
-        """Store team metadata"""
+        """Store team metadata with enhanced support for different team types"""
         try:
             document = {
                 "_id": team_data["team_id"],
                 "team_id": team_data["team_id"],
                 "name": team_data["team_name"],
                 "country": team_data.get("country", "Unknown"),
+                "team_type": team_data.get("team_type", "club"),  # ✅ NEW: Track team type
                 "uefa_ranking": team_data.get("uefa_ranking"),
+                "fifa_ranking": team_data.get("fifa_ranking"),    # ✅ NEW: FIFA ranking
                 "created_at": datetime.now(timezone.utc)
             }
             
@@ -493,4 +498,26 @@ class FootyMongoStore:
         except Exception as e:
             print(f"❌ Error updating fixture {fixture_id}: {e}")
             return False
+
+    def get_teams_by_type(self, team_type: str = "all") -> List[dict]:
+        """Get teams filtered by type"""
+        try:
+            if team_type == "all":
+                teams = list(self.teams.find({}))
+            else:
+                teams = list(self.teams.find({"team_type": team_type}))
+            
+            return teams
+        except Exception as e:
+            print(f"❌ Error getting teams by type: {e}")
+            return []
+
+    async def get_team_ids_from_variables(self, team_type="all") -> List[int]:
+        """Get team IDs from Prefect Variables"""
+        try:
+            from found_footy.api.mongo_api import get_team_ids_from_variables
+            return await get_team_ids_from_variables(team_type)
+        except Exception as e:
+            print(f"❌ Error getting team IDs from variables: {e}")
+            return self.get_team_ids()  # Fallback to database
 

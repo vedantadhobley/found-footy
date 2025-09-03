@@ -102,27 +102,17 @@ async def clean_all_automations():
         print(f"⚠️ Error in automation cleanup: {e}")
 
 async def create_twitter_automation():
-    """Create Twitter automation with timeline-friendly flow run names"""
+    """Create Twitter automation with simplified naming"""
     print("🤖 Creating Twitter automation using Prefect 3 public API...")
     
     try:
         async with get_client() as client:
-            # Dynamic deployment lookup  ✅ UPDATED
+            # Dynamic deployment lookup  
             try:
                 deployment = await client.read_deployment_by_name("twitter-search-flow/twitter-search-flow")
                 print(f"✅ Found twitter-search-flow deployment: {deployment.id}")
             except Exception as e:
                 print(f"❌ Could not find twitter-search-flow deployment: {e}")
-                
-                # List available deployments for debugging
-                try:
-                    deployments = await client.read_deployments()
-                    print(f"🔍 Available deployments ({len(deployments)}):")
-                    for dep in deployments:
-                        print(f"  - {dep.name} (flow: {dep.flow_name})")
-                except Exception as list_error:
-                    print(f"❌ Could not list deployments: {list_error}")
-                
                 return False
             
             # Use Prefect 3 public API
@@ -132,7 +122,7 @@ async def create_twitter_automation():
             
             automation = Automation(
                 name="goal-twitter-automation",
-                description="Run twitter-search-flow on goal.detected with timeline names",  # ✅ UPDATED
+                description="Run twitter-search-flow for goal events",
                 enabled=True,
                 trigger=EventTrigger(
                     expect=["goal.detected"],
@@ -144,33 +134,29 @@ async def create_twitter_automation():
                 actions=[
                     RunDeployment(
                         deployment_id=deployment.id,
-                        parameters={"goal_id": "{{ event.payload.goal_id }}"},
-                        # ✅ TIMELINE: Enhanced flow run name with team, player, minute, and timestamp
-                        job_variables={
-                            "name": "🔍 {{ event.payload.team_name or 'Team' }}-{{ event.payload.player_name or 'Player' }}-{{ event.payload.minute or '0' }}min-{{ event.occurred.strftime('%H:%M:%S') }}"
-                        }
+                        parameters={"goal_id": "{{ event.payload.goal_id }}"}
+                        # ✅ REMOVED: Complex flow_run_name templating
+                        # Flow will set its own name dynamically
                     )
                 ],
             )
             
             created_automation = await automation.acreate()
             print(f"✅ Created automation: {created_automation.name}")
-            print(f"🔗 Automation ID: {created_automation.id}")
             return True
             
     except Exception as e:
         print(f"❌ Failed to create automation: {e}")
-        import traceback
-        traceback.print_exc()
         return False
 
 def deploy_from_yaml():
-    """Deploy using prefect.yaml project config - with Python automation"""
+    """Deploy using prefect.yaml project config - with enhanced naming"""
     print("🚀 Creating deployments using prefect.yaml...")
     
-    # Pre-fill today's date in prefect.yaml
+    # Pre-fill today's date in prefect.yaml with rich context
     print("📅 Pre-filling today's date in prefect.yaml...")
     today_str = datetime.now().strftime("%Y%m%d")
+    today_readable = datetime.now().strftime("%a %b %d, %Y")
     
     # Read and update prefect.yaml
     prefect_yaml_path = Path("/app/prefect.yaml")
@@ -180,16 +166,40 @@ def deploy_from_yaml():
     # Replace date with today's date
     yaml_content = re.sub(r'"202508\d{2}"', f'"{today_str}"', yaml_content)
     
+    # ✅ ENHANCED: Add rich description for manual deployment
+    yaml_content = re.sub(
+        r'description: "Manual fixtures ingest - all teams"',
+        f'description: "🎯 MANUAL: {today_readable} - All Teams (UEFA + FIFA)"',
+        yaml_content
+    )
+    
     with open(prefect_yaml_path, 'w') as f:
         f.write(yaml_content)
     
-    print(f"✅ Pre-filled manual deployment with today's date: {today_str}")
+    print(f"✅ Pre-filled manual deployment: {today_readable}")
     
-    # Initialize team metadata
-    print("🗑️ Resetting MongoDB with team metadata...")
+    # ✅ NEW: Initialize team variables first
+    print("🎯 Initializing team variables...")
+    try:
+        from team_variables_manager import create_team_variables, update_team_variables
+        try:
+            asyncio.run(create_team_variables())
+        except Exception as create_error:
+            if "already exists" in str(create_error):
+                print("♻️ Variables exist, updating...")
+                asyncio.run(update_team_variables())
+            else:
+                raise create_error
+        print("✅ Team variables initialized successfully")
+    except Exception as e:
+        print(f"⚠️ Error with team variables: {e}")
+        print("🔄 Continuing with legacy team initialization...")
+    
+    # Initialize team metadata in MongoDB
+    print("🗑️ Resetting MongoDB with enhanced team metadata...")
     from found_footy.api.mongo_api import populate_team_metadata
-    populate_team_metadata(reset_first=True)
-    print("✅ MongoDB reset and team initialization complete")
+    populate_team_metadata(reset_first=True, include_national_teams=True)
+    print("✅ MongoDB reset and enhanced team initialization complete")
     
     # Setup sequence
     asyncio.run(ensure_work_pools())

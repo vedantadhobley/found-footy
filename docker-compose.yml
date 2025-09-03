@@ -56,6 +56,13 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
+    # ✅ CHANGE: Keep app running instead of exiting
+    command: >
+      sh -c "
+        python -m found_footy.flows.deployments --apply &&
+        echo '✅ Deployments created, keeping container alive...' &&
+        tail -f /dev/null
+      "
     networks:
       - found-footy-network
 

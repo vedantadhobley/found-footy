@@ -6,7 +6,7 @@ push: null
 pull: null
 
 deployments:
-  # 1. Independent Daily Ingest
+  # 1. Daily Ingest - ALL TEAMS (UEFA + FIFA)
   - name: fixtures-ingest-daily
     entrypoint: found_footy.flows.fixtures_flows:fixtures_ingest_flow
     work_pool:
@@ -17,26 +17,25 @@ deployments:
       active: false
     parameters:
       date_str: null
-      team_ids: null
+      team_ids: "{{ all_teams_2025_ids }}"
     tags:
       - fixtures
-      - ingest
       - daily
-    description: "Daily fixtures ingest with auto-scheduling"
+      - all-teams
+    description: "Daily fixtures ingest - all tracked teams (UEFA clubs + FIFA nationals)"
 
-  # 2. Independent Manual Ingest
+  # 2. Manual ingest
   - name: fixtures-ingest-manual
     entrypoint: found_footy.flows.fixtures_flows:fixtures_ingest_flow
     work_pool:
       name: fixtures-pool
     parameters:
       date_str: "20250902"
-      team_ids: null
+      team_ids: "{{ all_teams_2025_ids }}"
     tags:
       - fixtures
-      - ingest
       - manual
-    description: "Manual fixtures ingest (customizable date/teams)"
+    description: "🎯 MANUAL: Mon Sep 02, 2025 - All Teams (UEFA + FIFA)"
 
   # 3. Universal Fixtures Advance Flow
   - name: fixtures-advance-flow
@@ -44,14 +43,13 @@ deployments:
     work_pool:
       name: fixtures-pool
     parameters:
-      source_collection: "fixtures_staging"      # ✅ NEW: Configurable
-      destination_collection: "fixtures_active"  # ✅ NEW: Configurable  
-      fixture_id: 0                             # ✅ Will be overridden when scheduled
+      source_collection: "fixtures_staging"
+      destination_collection: "fixtures_active"
+      fixture_id: 0
     tags:
       - fixtures
       - advance
-      - universal
-    description: "Universal fixture advancement - configurable source/destination"
+    description: "Universal fixture advancement with contextual naming"
 
   # 4. Fixtures Monitor Flow - Always Running
   - name: fixtures-monitor-flow
@@ -59,15 +57,14 @@ deployments:
     work_pool:
       name: fixtures-pool
     schedule:
-      cron: "*/3 * * * *"  # Every 3 minutes
+      cron: "*/3 * * * *"
       timezone: UTC
-      active: true  # ✅ ALWAYS ACTIVE - Never stops
+      active: true
     parameters: {}
     tags:
       - fixtures
       - monitor
-      - always-running
-    description: "Always-running monitor - checks every 3 minutes, skips work when no active fixtures"
+    description: "Always-running monitor with timestamp context"
 
   # 5. Twitter Search Flow
   - name: twitter-search-flow
@@ -78,6 +75,5 @@ deployments:
       goal_id: null
     tags:
       - twitter
-      - search
       - automation
-    description: "First step of Twitter process - search and process individual goals"
+    description: "Event-driven Twitter processing with goal context"

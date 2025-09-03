@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from prefect import flow, task, get_run_logger
 from prefect.deployments import run_deployment
+from prefect.runtime import flow_run  # ✅ THIS LINE IS MISSING IN YOUR FILE
 from typing import Optional, List
 from found_footy.api.mongo_api import (
     fixtures, 
@@ -103,16 +104,24 @@ def fixtures_categorize_task(team_fixtures):
 
 @task(name="fixtures-schedule-advances-task", retries=3, retry_delay_seconds=10)
 def fixtures_schedule_advances_task(staging_fixtures):
-    """Schedule fixtures-advance-flow for each staging fixture with universal parameters"""
+    """Schedule fixtures-advance-flow for each staging fixture with rich names"""
     logger = get_run_logger()
     
     scheduled_advances = 0
     
     for fixture in staging_fixtures:
         kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
-        advance_time = kickoff_time - timedelta(minutes=3)  # ✅ CHANGED: 5 → 3 minutes
+        advance_time = kickoff_time - timedelta(minutes=3)
         
-        logger.info(f"📅 SCHEDULING universal fixtures-advance-flow for fixture {fixture['id']} at {advance_time.strftime('%H:%M:%S')}")
+        # ✅ ENHANCED: Rich contextual names for fixture advancement
+        home_team = fixture["home"]
+        away_team = fixture["away"]
+        match_name = f"{home_team} vs {away_team}"
+        kickoff_str = kickoff_time.strftime('%H:%M')
+        
+        flow_run_name = f"🚀 KICKOFF: {match_name} ({kickoff_str}) [#{fixture['id']}]"
+        
+        logger.info(f"📅 SCHEDULING advance for: {match_name}")
         
         try:
             run_deployment(
@@ -123,13 +132,13 @@ def fixtures_schedule_advances_task(staging_fixtures):
                     "fixture_id": fixture["id"]
                 },
                 scheduled_time=advance_time,
-                flow_run_name=f"Advance-{fixture['id']}-{kickoff_time.strftime('%H:%M')}"
+                flow_run_name=flow_run_name  # ✅ RICH NAME
             )
             scheduled_advances += 1
-            logger.info(f"✅ SCHEDULED universal fixtures-advance-flow for fixture {fixture['id']}")
+            logger.info(f"✅ SCHEDULED: {match_name}")
             
         except Exception as e:
-            logger.error(f"❌ Failed to schedule fixtures-advance-flow for fixture {fixture['id']}: {e}")
+            logger.error(f"❌ Failed to schedule {match_name}: {e}")
     
     return scheduled_advances
 
@@ -258,7 +267,7 @@ def fixtures_monitor_task():
         except Exception as e:
             logger.error(f"❌ Error processing goals for fixture {fixture_id}: {e}")
     
-    # ✅ PROCESS COMPLETIONS: Handle completed fixtures AFTER goals processed
+    # ✅ PROCESS COMPLETIONS: Handle completed fixtures with rich names
     for completed_fixture in delta_results["fixtures_completed"]:
         fixture_id = completed_fixture["fixture_id"]
         delta_result = completed_fixture["delta_result"]
@@ -272,8 +281,18 @@ def fixtures_monitor_task():
                 total_goals_processed += final_goals
                 logger.info(f"⚽ Processed {final_goals} final goals before completion")
             
-            # ✅ ADVANCE COMPLETED: Call universal advance flow
-            logger.info(f"📋 Calling fixtures-advance-flow for completed fixture {fixture_id}")
+            # ✅ ENHANCED: Get fixture details for rich completion names
+            fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
+            if fixture:
+                home_team = fixture.get("team_names", {}).get("home", "Home")
+                away_team = fixture.get("team_names", {}).get("away", "Away")
+                match_name = f"{home_team} vs {away_team}"
+                completion_name = f"🏁 COMPLETED: {match_name} [#{fixture_id}]"
+            else:
+                completion_name = f"🏁 COMPLETED: Match #{fixture_id}"
+            
+            # ✅ ADVANCE COMPLETED: Call universal advance flow with rich name
+            logger.info(f"📋 Calling fixtures-advance-flow for: {match_name if fixture else f'fixture {fixture_id}'}")
             
             run_deployment(
                 name="fixtures-advance-flow/fixtures-advance-flow",
@@ -283,10 +302,10 @@ def fixtures_monitor_task():
                     "fixture_id": fixture_id
                 },
                 timeout=0,  # Run immediately
-                flow_run_name=f"Complete-{fixture_id}-{datetime.now(timezone.utc).strftime('%H:%M:%S')}"
+                flow_run_name=completion_name  # ✅ RICH NAME
             )
             completed_fixtures_processed += 1
-            logger.info(f"✅ Scheduled completion flow for fixture {fixture_id}")
+            logger.info(f"✅ Scheduled completion flow: {match_name if fixture else f'fixture {fixture_id}'}")
             
         except Exception as e:
             logger.error(f"❌ Failed to process completion for fixture {fixture_id}: {e}")
@@ -306,6 +325,20 @@ def fixtures_monitor_task():
 def fixtures_ingest_flow(date_str: Optional[str] = None, team_ids: Optional[str] = None):
     """Multi-task ingest flow - completely decoupled from monitoring"""
     logger = get_run_logger()
+    
+    # ✅ SET DYNAMIC FLOW NAME
+    try:
+        if date_str:
+            readable_date = datetime.strptime(date_str[:8], "%Y%m%d").strftime("%a %b %d")
+        else:
+            readable_date = datetime.now().strftime("%a %b %d")
+        
+        flow_run.name = f"📥 INGEST: {readable_date} - All Teams"
+        logger.info(f"📝 Set flow name: {flow_run.name}")
+    except Exception as e:
+        flow_run.name = "📥 INGEST: Date TBD - All Teams"
+        logger.warning(f"⚠️ Error setting flow name: {e}")
+    
     logger.info("📥 Starting Fixtures Ingest Flow")
     
     # Initialize team metadata (keep this here as it's a prerequisite)
@@ -360,14 +393,41 @@ def fixtures_advance_flow(
     destination_collection: str = "fixtures_active",
     fixture_id: Optional[int] = None
 ):
-    """
-    🚀 UNIVERSAL FIXTURE ADVANCEMENT FLOW
-    
-    Can be used for:
-    - Scheduled advancement: fixtures_staging → fixtures_active (at kickoff-5min)
-    - Immediate completion: fixtures_active → fixtures_processed (when completed)
-    """
+    """Universal fixture advancement flow"""
     logger = get_run_logger()
+    
+    # ✅ SET DYNAMIC FLOW NAME
+    try:
+        if fixture_id:
+            # Try to get fixture details for rich name
+            if source_collection == "fixtures_staging":
+                fixture = store.fixtures_staging.find_one({"fixture_id": fixture_id})
+            elif source_collection == "fixtures_active":
+                fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
+            else:
+                fixture = None
+            
+            if fixture:
+                home_team = fixture.get("team_names", {}).get("home", "Home")
+                away_team = fixture.get("team_names", {}).get("away", "Away")
+                match_name = f"{home_team} vs {away_team}"
+                
+                if destination_collection == "fixtures_active":
+                    flow_run.name = f"🚀 KICKOFF: {match_name} [#{fixture_id}]"
+                elif destination_collection == "fixtures_processed":
+                    flow_run.name = f"🏁 COMPLETED: {match_name} [#{fixture_id}]"
+                else:
+                    flow_run.name = f"🔄 ADVANCE: {match_name} [#{fixture_id}]"
+            else:
+                flow_run.name = f"🔄 ADVANCE: Match #{fixture_id}"
+        else:
+            flow_run.name = f"🔄 ADVANCE: {source_collection} → {destination_collection}"
+        
+        logger.info(f"📝 Set flow name: {flow_run.name}")
+    except Exception as e:
+        flow_run.name = f"🔄 ADVANCE: {source_collection} → {destination_collection}"
+        logger.warning(f"⚠️ Error setting flow name: {e}")
+    
     logger.info(f"📋 Universal advancement: {source_collection} → {destination_collection}")
     
     if fixture_id:
@@ -410,8 +470,17 @@ def fixtures_advance_flow(
 
 @flow(name="fixtures-monitor-flow")
 def fixtures_monitor_flow():
-    """Always-running monitor - runs every 3 minutes, skips API calls when no work"""
+    """Always-running monitor - runs every 3 minutes"""
     logger = get_run_logger()
+    
+    # ✅ SET DYNAMIC FLOW NAME WITH SCHEDULED TIME CONTEXT
+    try:
+        current_time = datetime.now().strftime("%H:%M:%S")
+        flow_run.name = f"👁️ MONITOR: {current_time} - Active Check"
+        logger.info(f"📝 Set flow name: {flow_run.name}")
+    except Exception as e:
+        flow_run.name = "👁️ MONITOR: Active Check"
+        logger.warning(f"⚠️ Error setting flow name: {e}")
     
     # ✅ NEVER EXIT: Just skip work efficiently
     if store.check_collections_empty(["fixtures_active"]):

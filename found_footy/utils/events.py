@@ -4,13 +4,22 @@ from datetime import datetime, timezone
 from typing import List
 
 def goal_trigger(fixture_id: int, new_goal_events: List[dict] = None):
-    """Helper function: Emit goal events for automation"""
+    """Helper function: Emit goal events with rich context for automation"""
     logger = get_run_logger()
     logger.info(f"⚽ Goal trigger for fixture {fixture_id}")
     
     try:
         if not new_goal_events:
             return 0
+        
+        # ✅ NEW: Get fixture context for rich naming
+        from found_footy.storage.mongo_store import FootyMongoStore
+        store = FootyMongoStore()
+        fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
+        
+        # Extract team names for opponent context
+        home_team = fixture.get("team_names", {}).get("home", "Home") if fixture else "Home"
+        away_team = fixture.get("team_names", {}).get("away", "Away") if fixture else "Away"
         
         events_emitted = 0
         current_time = datetime.now(timezone.utc)
@@ -24,6 +33,9 @@ def goal_trigger(fixture_id: int, new_goal_events: List[dict] = None):
             player_name = goal_event.get("player", {}).get("name", "Unknown Player")
             goal_type = goal_event.get("detail", "Goal")
             
+            # ✅ ENHANCED: Determine opponent for context
+            opponent_name = away_team if team_name == home_team else home_team
+            
             logger.info(f"📡 Emitting goal.detected event for goal {goal_id}")
             try:
                 from prefect.events import emit_event
@@ -36,14 +48,17 @@ def goal_trigger(fixture_id: int, new_goal_events: List[dict] = None):
                         "fixture_id": fixture_id,
                         "team_name": team_name,
                         "player_name": player_name,
-                        "minute": minute,
+                        "minute": str(minute),  # ✅ ENSURE STRING
                         "goal_type": goal_type,
+                        "opponent_name": opponent_name,
+                        "home_team": home_team,
+                        "away_team": away_team,
                         "detected_at": current_time.isoformat(),
                     }
                 )
                 events_emitted += 1
                 
-                logger.info(f"✅ Event emitted: {team_name} | {player_name} ({minute}')")
+                logger.info(f"✅ Event emitted: {team_name} | {player_name} ({minute}') vs {opponent_name}")
                 
             except Exception as e:
                 logger.error(f"❌ Failed to emit event for goal {goal_id}: {e}")

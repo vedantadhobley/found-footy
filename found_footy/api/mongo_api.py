@@ -14,36 +14,145 @@ HEADERS = {
     "x-rapidapi-host": "api-football-v1.p.rapidapi.com"
 }
 
-# ✅ Top 25 UEFA teams for 2026 season
-TOP_25_TEAMS_2026 = {
-    541: {"name": "Real Madrid", "country": "Spain"},
-    81: {"name": "Bayern Munich", "country": "Germany"},
-    110: {"name": "Inter Milan", "country": "Italy"},
-    50: {"name": "Manchester City", "country": "England"},
-    42: {"name": "Liverpool", "country": "England"},
-    85: {"name": "Paris Saint-Germain", "country": "France"},
-    98: {"name": "Bayer Leverkusen", "country": "Germany"},
-    83: {"name": "Borussia Dortmund", "country": "Germany"},
-    529: {"name": "Barcelona", "country": "Spain"},
-    211: {"name": "Benfica", "country": "Portugal"},
-    530: {"name": "Atletico Madrid", "country": "Spain"},
-    487: {"name": "Roma", "country": "Italy"},
-    49: {"name": "Chelsea", "country": "England"},
-    40: {"name": "Arsenal", "country": "England"},
-    91: {"name": "Eintracht Frankfurt", "country": "Germany"},
-    33: {"name": "Manchester United", "country": "England"},
-    499: {"name": "Atalanta", "country": "Italy"},
-    82: {"name": "Feyenoord", "country": "Netherlands"},
-    48: {"name": "West Ham United", "country": "England"},
-    121: {"name": "Club Brugge", "country": "Belgium"},
-    489: {"name": "AC Milan", "country": "Italy"},
-    79: {"name": "PSV Eindhoven", "country": "Netherlands"},
-    502: {"name": "Fiorentina", "country": "Italy"},
-    228: {"name": "Sporting CP", "country": "Portugal"},
-    47: {"name": "Tottenham Hotspur", "country": "England"}
-}
+# ✅ NEW: Dynamic team loading from Prefect Variables
+async def get_teams_from_variables(team_type="all"):
+    """Get team data from Prefect Variables"""
+    try:
+        from prefect import get_client
+        
+        async with get_client() as client:
+            teams = {}
+            
+            if team_type in ["all", "uefa", "clubs"]:
+                try:
+                    uefa_var = await client.read_variable_by_name("uefa_25_2025")
+                    uefa_teams = json.loads(uefa_var.value)
+                    # Convert string keys to integers
+                    uefa_teams = {int(k): v for k, v in uefa_teams.items()}
+                    teams.update(uefa_teams)
+                except Exception as e:
+                    print(f"⚠️ Could not load UEFA teams: {e}")
+            
+            if team_type in ["all", "fifa", "national"]:
+                try:
+                    fifa_var = await client.read_variable_by_name("fifa_25_2025")
+                    fifa_teams = json.loads(fifa_var.value)
+                    # Convert string keys to integers
+                    fifa_teams = {int(k): v for k, v in fifa_teams.items()}
+                    teams.update(fifa_teams)
+                except Exception as e:
+                    print(f"⚠️ Could not load FIFA teams: {e}")
+            
+            return teams
+            
+    except Exception as e:
+        print(f"❌ Error loading teams from variables: {e}")
+        return {}
 
-# ✅ NEW: API functions using exact endpoint names (after /v3/)
+def get_teams_sync(team_type="all"):
+    """Synchronous wrapper for getting teams"""
+    import asyncio
+    try:
+        return asyncio.run(get_teams_from_variables(team_type))
+    except RuntimeError:
+        # Handle case where event loop is already running
+        import nest_asyncio
+        nest_asyncio.apply()
+        return asyncio.run(get_teams_from_variables(team_type))
+
+async def get_team_ids_from_variables(team_type="all"):
+    """Get team IDs list from Prefect Variables"""
+    try:
+        from prefect import get_client
+        
+        async with get_client() as client:
+            variable_name = {
+                "all": "all_teams_2025_ids",
+                "uefa": "uefa_25_2025_ids", 
+                "clubs": "uefa_25_2025_ids",
+                "fifa": "fifa_25_2025_ids",
+                "national": "fifa_25_2025_ids"
+            }.get(team_type, "all_teams_2025_ids")
+            
+            var = await client.read_variable_by_name(variable_name)
+            team_ids = [int(x.strip()) for x in var.value.split(",") if x.strip()]
+            return team_ids
+            
+    except Exception as e:
+        print(f"❌ Error loading team IDs: {e}")
+        return []
+
+def get_team_ids_sync(team_type="all"):
+    """Synchronous wrapper for getting team IDs"""
+    import asyncio
+    try:
+        return asyncio.run(get_team_ids_from_variables(team_type))
+    except RuntimeError:
+        import nest_asyncio
+        nest_asyncio.apply()
+        return asyncio.run(get_team_ids_from_variables(team_type))
+
+# ✅ UPDATED: Team metadata functions using Prefect Variables
+async def populate_team_metadata_async(reset_first=True, include_national_teams=True):
+    """Populate team metadata from Prefect Variables"""
+    from found_footy.storage.mongo_store import FootyMongoStore
+    store = FootyMongoStore()
+    
+    if reset_first:
+        print("🔄 Resetting MongoDB first...")
+        store.drop_all_collections()
+    
+    # Load UEFA teams
+    print("⚽ Populating UEFA club team metadata from variables...")
+    uefa_teams = await get_teams_from_variables("uefa")
+    
+    for team_id, team_info in uefa_teams.items():
+        team_data = {
+            "team_id": team_id,
+            "team_name": team_info["name"],
+            "country": team_info["country"],
+            "uefa_ranking": team_info["rank"],
+            "team_type": "club"
+        }
+        store.store_team_metadata(team_data)
+    
+    print(f"✅ Populated {len(uefa_teams)} UEFA club teams")
+    
+    # Load FIFA teams if requested
+    if include_national_teams:
+        print("🌍 Populating FIFA national team metadata from variables...")
+        fifa_teams = await get_teams_from_variables("fifa")
+        
+        for team_id, team_info in fifa_teams.items():
+            team_data = {
+                "team_id": team_id,
+                "team_name": team_info["name"],
+                "country": team_info["country"],
+                "fifa_ranking": team_info["rank"],
+                "team_type": "national"
+            }
+            store.store_team_metadata(team_data)
+        
+        print(f"✅ Populated {len(fifa_teams)} FIFA national teams")
+    
+    total_teams = len(uefa_teams) + (len(fifa_teams) if include_national_teams else 0)
+    print(f"🎯 Total teams tracked: {total_teams}")
+
+def populate_team_metadata(reset_first=True, include_national_teams=True):
+    """Synchronous wrapper for populate_team_metadata_async"""
+    import asyncio
+    try:
+        return asyncio.run(populate_team_metadata_async(reset_first, include_national_teams))
+    except RuntimeError:
+        import nest_asyncio
+        nest_asyncio.apply()
+        return asyncio.run(populate_team_metadata_async(reset_first, include_national_teams))
+
+def get_available_teams(team_type="all"):
+    """Get available teams by type from Prefect Variables"""
+    return get_teams_sync(team_type)
+
+# ✅ KEEP: All existing API functions unchanged
 def fixtures(date_param=None):
     """Get fixtures - exact endpoint name from API"""
     if date_param is None:
@@ -122,7 +231,6 @@ def fixtures_batch(fixture_ids_list):
     print(f"✅ Batch API returned {len(results)} fixture details")
     return results
 
-# ✅ HELPER: Team filtering
 def filter_fixtures_by_teams(fixtures_list, team_ids):
     """Filter fixtures to only include specified teams"""
     filtered = []
@@ -132,33 +240,6 @@ def filter_fixtures_by_teams(fixtures_list, team_ids):
     
     print(f"✅ Filtered to {len(filtered)} fixtures involving specified teams")
     return filtered
-
-# ✅ HELPER: Team metadata functions
-def populate_team_metadata(reset_first=True):
-    """Populate team metadata"""
-    from found_footy.storage.mongo_store import FootyMongoStore
-    store = FootyMongoStore()
-    
-    if reset_first:
-        print("🔄 Resetting MongoDB first...")
-        store.drop_all_collections()
-    
-    print("⚽ Populating top 25 UEFA team metadata...")
-    
-    for team_id, team_info in TOP_25_TEAMS_2026.items():
-        team_data = {
-            "team_id": team_id,
-            "team_name": team_info["name"],
-            "country": team_info["country"],
-            "uefa_ranking": list(TOP_25_TEAMS_2026.keys()).index(team_id) + 1
-        }
-        store.store_team_metadata(team_data)
-    
-    print(f"✅ Populated {len(TOP_25_TEAMS_2026)} teams in metadata")
-
-def get_available_teams():
-    """Get available teams as constant dict"""
-    return TOP_25_TEAMS_2026
 
 def parse_team_ids_parameter(team_ids_param):
     """Parse team IDs from parameter - ensure it always returns a list"""
