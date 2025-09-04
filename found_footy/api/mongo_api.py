@@ -3,6 +3,7 @@ import requests
 from datetime import date, datetime
 import json
 import os
+from prefect import task, get_run_logger
 
 # Initialize MongoDB store
 store = FootyMongoStore()
@@ -277,3 +278,19 @@ def parse_team_ids_parameter(team_ids_param):
     else:
         print(f"⚠️ Unexpected team_ids type: {type(team_ids_param)}")
         return []
+
+@task(name="fixtures-store-bulk-task", retries=3, retry_delay_seconds=10)
+def fixtures_store_bulk_task(staging_fixtures, active_fixtures):
+    """Bulk store fixtures in their respective collections"""
+    logger = get_run_logger()
+    
+    # ✅ FIX: Use new universal method
+    staging_count = store.bulk_insert_fixtures(staging_fixtures, "fixtures_staging") if staging_fixtures else 0
+    active_count = store.bulk_insert_fixtures(active_fixtures, "fixtures_active") if active_fixtures else 0
+    
+    logger.info(f"💾 Stored: {staging_count} staging, {active_count} active")
+    
+    return {
+        "staging_count": staging_count,
+        "active_count": active_count
+    }

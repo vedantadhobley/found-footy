@@ -103,10 +103,6 @@ class FootyMongoStore:
             return 0
         
         try:
-            # Get the target collection
-            collection = getattr(self, collection_name.replace("fixtures_", ""))
-            
-            # Map collection names to their actual attributes
             collection_map = {
                 "fixtures_staging": self.fixtures_staging,
                 "fixtures_active": self.fixtures_active,
@@ -114,7 +110,7 @@ class FootyMongoStore:
             }
             
             target_collection = collection_map.get(collection_name)
-            if not target_collection:
+            if target_collection is None:
                 raise ValueError(f"Unknown collection: {collection_name}")
             
             print(f"💾 Bulk inserting {len(fixtures_data)} fixtures into {collection_name}...")
@@ -143,27 +139,19 @@ class FootyMongoStore:
                         "id": fixture["league_id"],
                         "name": fixture["league"]
                     },
-                    "goals": {"home": 0, "away": 0},
+                    "status": fixture.get("status", "NS"),  # Default to Not Started
                     "created_at": datetime.now(timezone.utc)
                 }
                 
-                # Collection-specific fields
-                if collection_name == "fixtures_staging":
-                    doc["status"] = "scheduled"
-                elif collection_name == "fixtures_active":
-                    doc["status"] = "live"
-                    doc["last_checked"] = None
-                elif collection_name == "fixtures_processed":
-                    doc["status"] = fixture.get("api_status", "completed")
-                    doc["completed_at"] = datetime.now(timezone.utc)
-                    doc["processing_note"] = "status_based_routing"
-                
                 documents.append(doc)
             
-            # Use bulk write with upsert
+            # Use upsert operations to handle duplicates gracefully
             bulk_operations = [
-                UpdateOne({"_id": doc["_id"]}, {"$set": doc}, upsert=True)
-                for doc in documents
+                UpdateOne(
+                    {"fixture_id": doc["fixture_id"]},  # Filter
+                    {"$set": doc},                      # Update
+                    upsert=True                         # Insert if not exists
+                ) for doc in documents
             ]
             
             result = target_collection.bulk_write(bulk_operations)
@@ -175,19 +163,6 @@ class FootyMongoStore:
         except Exception as e:
             print(f"❌ Error bulk inserting into {collection_name}: {e}")
             return 0
-
-    # ✅ DEPRECATED: Remove individual methods (keep for backwards compatibility during transition)
-    def bulk_insert_fixtures_staging(self, fixtures_data: List[dict]) -> int:
-        """DEPRECATED: Use bulk_insert_fixtures(data, 'fixtures_staging') instead"""
-        return self.bulk_insert_fixtures(fixtures_data, "fixtures_staging")
-    
-    def bulk_insert_fixtures_active(self, fixtures_data: List[dict]) -> int:
-        """DEPRECATED: Use bulk_insert_fixtures(data, 'fixtures_active') instead"""
-        return self.bulk_insert_fixtures(fixtures_data, "fixtures_active")
-    
-    def bulk_insert_fixtures_processed(self, fixtures_data: List[dict]) -> int:
-        """DEPRECATED: Use bulk_insert_fixtures(data, 'fixtures_processed') instead"""
-        return self.bulk_insert_fixtures(fixtures_data, "fixtures_processed")
 
     # ✅ NEW: Get all active fixtures for monitoring
     def get_all_active_fixtures(self) -> List[dict]:

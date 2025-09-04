@@ -14,12 +14,14 @@ from found_footy.api.mongo_api import (
 from found_footy.utils.events import goal_trigger
 from found_footy.storage.mongo_store import FootyMongoStore
 from prefect.runtime import flow_run
+from found_footy.flows.flow_triggers import schedule_advance
 
 # Create store instance
 store = FootyMongoStore()
 
 # ✅ SPLIT INGEST INTO MULTIPLE TASKS
 
+# ✅ FIX: Complete the team_ids parsing logic
 @task(name="fixtures-process-parameters-task", retries=1, retry_delay_seconds=5)
 def fixtures_process_parameters_task(team_ids=None, date_str=None):
     """Parse and validate input parameters"""
@@ -44,9 +46,11 @@ def fixtures_process_parameters_task(team_ids=None, date_str=None):
         try:
             if isinstance(team_ids, str):
                 if team_ids.startswith('['):
+                    # JSON array format
                     import json
                     target_team_ids = json.loads(team_ids)
                 else:
+                    # Comma-separated format
                     target_team_ids = [int(x.strip()) for x in team_ids.split(",") if x.strip()]
             else:
                 target_team_ids = [int(x) for x in team_ids] if isinstance(team_ids, list) else [team_ids]
@@ -104,6 +108,7 @@ def fixtures_categorize_task(team_fixtures):
     
     current_time = datetime.now(timezone.utc)
     
+    # ✅ FIX: Complete the categorization logic
     for fixture in team_fixtures:
         # Get status from API call
         try:
@@ -119,8 +124,9 @@ def fixtures_categorize_task(team_fixtures):
         except Exception as e:
             logger.warning(f"⚠️ Could not get status for fixture {fixture['id']}: {e}")
             status = "NS"  # Default to not started
-        
+    
         fixture["api_status"] = status
+        fixture["status"] = status  # <-- ADD THIS LINE
         
         # ✅ STATUS-BASED ROUTING using centralized logic
         if status in completed_statuses:
@@ -154,60 +160,63 @@ def fixtures_categorize_task(team_fixtures):
         "completed_fixtures": completed_fixtures
     }
 
-@task(name="fixtures-schedule-advances-task", retries=3, retry_delay_seconds=10)
-def fixtures_schedule_advances_task(staging_fixtures):
-    """Schedule fixtures-advance-flow for each staging fixture with rich names"""
-    logger = get_run_logger()
-    
-    scheduled_advances = 0
-    
-    for fixture in staging_fixtures:
-        kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
-        advance_time = kickoff_time - timedelta(minutes=3)
-        
-        # ✅ ENHANCED: Rich contextual names for fixture advancement
-        home_team = fixture["home"]
-        away_team = fixture["away"]
-        match_name = f"{home_team} vs {away_team}"
-        kickoff_str = kickoff_time.strftime('%H:%M')
-        
-        flow_run_name = f"🚀 KICKOFF: {match_name} ({kickoff_str}) [#{fixture['id']}]"
-        
-        logger.info(f"📅 SCHEDULING advance for: {match_name}")
-        
-        try:
-            run_deployment(
-                name="fixtures-advance-flow/fixtures-advance-flow",
-                parameters={
-                    "source_collection": "fixtures_staging",
-                    "destination_collection": "fixtures_active",
-                    "fixture_id": fixture["id"]
-                },
-                scheduled_time=advance_time,
-                flow_run_name=flow_run_name  # ✅ RICH NAME
-            )
-            scheduled_advances += 1
-            logger.info(f"✅ SCHEDULED: {match_name}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to schedule {match_name}: {e}")
-    
-    return scheduled_advances
+# ✅ REMOVE: fixtures_store_bulk_task (this is the old 2-parameter version)
+# We don't need this anymore
 
-@task(name="fixtures-store-bulk-task", retries=3, retry_delay_seconds=10)
-def fixtures_store_bulk_task(staging_fixtures, active_fixtures):
-    """Bulk store fixtures in their respective collections"""
+# ✅ KEEP ONLY: fixtures_store_task (handles all 3 collections)
+@task(name="fixtures-store-task", retries=3, retry_delay_seconds=10)
+def fixtures_store_task(staging_fixtures, active_fixtures, completed_fixtures):
+    """Store fixtures in appropriate collections - handles all 3 types"""
     logger = get_run_logger()
     
-    staging_count = store.bulk_insert_fixtures_staging(staging_fixtures) if staging_fixtures else 0
-    active_count = store.bulk_insert_fixtures_active(active_fixtures) if active_fixtures else 0
+    staging_count = store.bulk_insert_fixtures(staging_fixtures, "fixtures_staging") if staging_fixtures else 0
+    active_count = store.bulk_insert_fixtures(active_fixtures, "fixtures_active") if active_fixtures else 0
+    completed_count = store.bulk_insert_fixtures(completed_fixtures, "fixtures_processed") if completed_fixtures else 0
     
-    logger.info(f"💾 Stored: {staging_count} staging, {active_count} active")
+    logger.info(f"💾 STORAGE: {staging_count} staging, {active_count} active, {completed_count} completed")
     
     return {
         "staging_count": staging_count,
-        "active_count": active_count
+        "active_count": active_count,
+        "completed_count": completed_count
     }
+
+# ✅ RENAME: fixtures_schedule_advances_task → fixtures_schedule_task
+@task(name="fixtures-schedule-task", retries=3, retry_delay_seconds=10)
+def fixtures_schedule_task(staging_fixtures):
+    """Schedule advance flows for staging fixtures - NON-BLOCKING"""
+    logger = get_run_logger()
+    scheduled_advances = 0
+
+    for i, fixture in enumerate(staging_fixtures):
+        logger.info(f"⏳ Processing fixture {i+1}/{len(staging_fixtures)}: {fixture['home']} vs {fixture['away']}")
+        try:
+            kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
+            advance_time = kickoff_time - timedelta(minutes=3)
+            
+            # Use subprocess to avoid blocking
+            import subprocess
+            fixture_id = fixture["id"]
+            home_team = fixture["home"]
+            away_team = fixture["away"]
+            
+            subprocess.Popen([
+                "prefect", "deployment", "run", 
+                "fixtures-advance-flow/fixtures-advance-flow",
+                "--param", f"source_collection=fixtures_staging",
+                "--param", f"destination_collection=fixtures_active", 
+                "--param", f"fixture_id={fixture_id}",
+                "--start-in", f"{int((advance_time - datetime.now(timezone.utc)).total_seconds())}s"
+            ])
+            
+            scheduled_advances += 1
+            logger.info(f"✅ Scheduled advance for: {fixture['home']} vs {fixture['away']} at {advance_time}")
+        except Exception as e:
+            logger.error(f"❌ Failed to schedule advance for {fixture['home']} vs {fixture['away']}: {e}")
+            continue
+
+    logger.info(f"📊 Total advances scheduled: {scheduled_advances} out of {len(staging_fixtures)} fixtures")
+    return scheduled_advances
 
 @task(name="fixtures-delta-task")
 def fixtures_delta_task():
@@ -312,8 +321,6 @@ def fixtures_monitor_task():
                 home_score = delta_result.get("current_goals", {}).get("home", 0)
                 away_score = delta_result.get("current_goals", {}).get("away", 0)
                 status = delta_result.get("api_status", "FT")
-                
-                # ✅ CLEAN: Team names + score + status only (no "Final Processing")
                 flow_run_name = f"🏁 {home_team} {home_score}-{away_score} {away_team} ({status})"
             else:
                 flow_run_name = f"🏁 Match #{fixture_id}"
@@ -325,7 +332,7 @@ def fixtures_monitor_task():
                     "destination_collection": "fixtures_processed",
                     "fixture_id": fixture_id
                 },
-                flow_run_name=flow_run_name  # ✅ CLEAN COMPLETION NAME
+                flow_run_name=flow_run_name
             )
             completed_fixtures_processed += 1
             logger.info(f"✅ Scheduled completion flow for fixture {fixture_id}")
@@ -345,36 +352,40 @@ def fixtures_monitor_task():
 
 @flow(name="fixtures-ingest-flow")
 def fixtures_ingest_flow(date_str: Optional[str] = None, team_ids: Optional[str] = None):
-    """Pure ingestion with status-based routing"""
     logger = get_run_logger()
-    
     logger.info("📥 Starting Pure Fixtures Ingest Flow")
-    
-    # Initialize team metadata
     populate_team_metadata(reset_first=False)
-    
-    # Tasks with simplified names
     params = fixtures_process_parameters_task(team_ids, date_str)
     team_fixtures = fixtures_fetch_api_task(params["query_date"], params["valid_team_ids"])
-    
     if not team_fixtures:
         return {"status": "no_fixtures", "message": "No fixtures found"}
-    
-    # ✅ SIMPLIFIED NAME: fixtures-categorize-task
     categorized = fixtures_categorize_task(team_fixtures)
-    
-    # Schedule advances for staging fixtures
-    scheduled_advances = fixtures_schedule_advances_task(categorized["staging_fixtures"])
-    
-    # ✅ SIMPLIFIED NAME: fixtures-store-task
     storage_result = fixtures_store_task(
         categorized["staging_fixtures"], 
         categorized["active_fixtures"],
         categorized["completed_fixtures"]
     )
-    
+
+    # ✅ CLEAN: Non-blocking scheduling using async client
+    scheduled_advances = 0
+    for fixture in categorized["staging_fixtures"]:
+        kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
+        advance_time = kickoff_time - timedelta(minutes=3)
+        try:
+            # ✅ This now uses clean async client approach
+            result = schedule_advance(
+                source="fixtures_staging",
+                destination="fixtures_active",
+                fixture_id=fixture["id"],
+                scheduled_time=advance_time
+            )
+            if result.get("status") == "scheduled":
+                scheduled_advances += 1
+                logger.info(f"✅ Scheduled advance for: {fixture['home']} vs {fixture['away']} at {advance_time}")
+        except Exception as e:
+            logger.error(f"❌ Failed to schedule advance for {fixture['home']} vs {fixture['away']}: {e}")
+
     logger.info("✅ Pure status-based ingestion complete - live monitoring only")
-    
     return {
         "status": "success",
         "approach": "pure_status_based_live_only",
@@ -421,17 +432,19 @@ def fixtures_advance_flow(
         "note": "Pure advancement - monitor handles all live goal detection"
     }
 
-@flow(name="fixtures-monitor-flow")
+@flow(name="fixtures-monitor-flow")  
 def fixtures_monitor_flow():
     """Always-running monitor - runs every 3 minutes"""
     logger = get_run_logger()
     
-    # ✅ ADD: Set rich name with timestamp at runtime
+    # ✅ SIMPLE: Direct flow name assignment
     try:
-        current_time = datetime.now().strftime("%H:%M:%S")
-        flow_run.name = f"👁️ MONITOR: {current_time} - Active Check"
+        from prefect.runtime import flow_run
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        flow_run.name = f"👁️ MONITOR: {timestamp} - Active Check"
+        logger.info(f"✅ Set flow name to: {flow_run.name}")
     except Exception as e:
-        logger.warning(f"Could not set flow name: {e}")
+        logger.warning(f"⚠️ Could not set flow name: {e}")
     
     # ✅ NEVER EXIT: Just skip work efficiently
     if store.check_collections_empty(["fixtures_active"]):
@@ -478,96 +491,3 @@ def fixtures_advance_task(source_collection: str, destination_collection: str, f
     except Exception as e:
         logger.error(f"❌ Error in fixtures-advance-task: {e}")
         return {"status": "error", "advanced_count": 0, "error": str(e)}
-
-@task(name="fixtures-categorize-task")
-def fixtures_categorize_task(team_fixtures):
-    """Categorize fixtures by FIFA status - pure status-driven routing"""
-    logger = get_run_logger()
-    
-    staging_fixtures = []
-    active_fixtures = []
-    completed_fixtures = []
-    
-    # ✅ NEW: Get statuses from Prefect Variables
-    try:
-        from found_footy.utils.fixture_status import get_fixture_statuses
-        status_config = get_fixture_statuses()
-        
-        completed_statuses = set(status_config["completed"])
-        active_statuses = set(status_config["active"])
-        staging_statuses = set(status_config["staging"])
-    except Exception as e:
-        logger.warning(f"⚠️ Could not load status config: {e}")
-        # Fallback to hardcoded values
-        completed_statuses = {"FT", "AET", "PEN", "PST", "CANC", "ABD", "AWD", "WO"}
-        active_statuses = {"1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"}
-        staging_statuses = {"TBD", "NS"}
-    
-    current_time = datetime.now(timezone.utc)
-    
-    for fixture in team_fixtures:
-        # Get status from API call
-        try:
-            from found_footy.api.mongo_api import fixtures_batch
-            api_data_list = fixtures_batch([fixture["id"]])
-            
-            if api_data_list:
-                api_data = api_data_list[0]
-                status = api_data.get("fixture", {}).get("status", {}).get("short", "NS")
-            else:
-                status = "NS"  # Default to not started if API fails
-                
-        except Exception as e:
-            logger.warning(f"⚠️ Could not get status for fixture {fixture['id']}: {e}")
-            status = "NS"  # Default to not started
-        
-        fixture["api_status"] = status
-        
-        # ✅ STATUS-BASED ROUTING using centralized logic
-        if status in completed_statuses:
-            completed_fixtures.append(fixture)
-            logger.info(f"🏁 COMPLETED: {fixture['home']} vs {fixture['away']} (status: {status})")
-            
-        elif status in active_statuses:
-            active_fixtures.append(fixture)
-            logger.info(f"🔄 ACTIVE: {fixture['home']} vs {fixture['away']} (status: {status})")
-            
-        elif status in staging_statuses:
-            # ✅ ADDITIONAL CHECK: Only staging if kickoff is in future
-            kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
-            if kickoff_time > current_time:
-                staging_fixtures.append(fixture)
-                logger.info(f"📅 STAGING: {fixture['home']} vs {fixture['away']} (status: {status}, kickoff: {kickoff_time.strftime('%H:%M')})")
-            else:
-                # Status says NS but time passed - treat as active for monitoring
-                active_fixtures.append(fixture)
-                logger.info(f"🔄 ACTIVE (late start): {fixture['home']} vs {fixture['away']} (status: {status})")
-                
-        else:
-            logger.warning(f"⚠️ UNKNOWN STATUS: {fixture['home']} vs {fixture['away']} (status: {status}) - treating as active")
-            active_fixtures.append(fixture)
-    
-    logger.info(f"📊 STATUS CATEGORIZATION: {len(staging_fixtures)} staging, {len(active_fixtures)} active, {len(completed_fixtures)} completed")
-    
-    return {
-        "staging_fixtures": staging_fixtures,
-        "active_fixtures": active_fixtures,
-        "completed_fixtures": completed_fixtures
-    }
-
-@task(name="fixtures-store-task", retries=3, retry_delay_seconds=10)
-def fixtures_store_task(staging_fixtures, active_fixtures, completed_fixtures):
-    """Store fixtures in appropriate collections"""
-    logger = get_run_logger()
-    
-    staging_count = store.bulk_insert_fixtures(staging_fixtures, "fixtures_staging") if staging_fixtures else 0
-    active_count = store.bulk_insert_fixtures(active_fixtures, "fixtures_active") if active_fixtures else 0
-    completed_count = store.bulk_insert_fixtures(completed_fixtures, "fixtures_processed") if completed_fixtures else 0
-    
-    logger.info(f"💾 STORAGE: {staging_count} staging, {active_count} active, {completed_count} completed")
-    
-    return {
-        "staging_count": staging_count,
-        "active_count": active_count,
-        "completed_count": completed_count
-    }

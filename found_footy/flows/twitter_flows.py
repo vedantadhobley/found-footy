@@ -49,8 +49,22 @@ def twitter_process_goal_task(goal_id: str):
 
 @flow(name="twitter-search-flow")
 def twitter_search_flow(goal_id: Optional[str] = None):
-    """First step of Twitter process - search and process individual goals"""
+    """Twitter flow with simple naming"""
     logger = get_run_logger()
+    
+    # ✅ SIMPLE: Direct naming without complex service
+    try:
+        if goal_id:
+            from prefect.runtime import flow_run
+            # Try to get goal details for name
+            goal_doc = store.goals_active.find_one({"_id": goal_id})
+            if goal_doc:
+                flow_run.name = f"⚽ {goal_doc['team_name']}: {goal_doc['player_name']} ({goal_doc['minute']}') [#{goal_doc['fixture_id']}]"
+            else:
+                flow_run.name = f"🔍 TWITTER: Goal {goal_id}"
+            logger.info(f"✅ Set flow name to: {flow_run.name}")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not set flow name: {e}")
     
     if not goal_id:
         logger.warning("⚠️ No goal_id provided to twitter_search_flow")
