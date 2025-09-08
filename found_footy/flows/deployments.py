@@ -101,7 +101,7 @@ async def clean_all_automations():
         print(f"⚠️ Error in automation cleanup: {e}")
 
 async def create_twitter_automation():
-    """Create Twitter automation with CORRECT flow_run_name template"""
+    """Create Twitter automation with ENHANCED naming template"""
     print("🤖 Creating Twitter automation with rich player + teams naming...")
     
     try:
@@ -127,14 +127,15 @@ async def create_twitter_automation():
                     RunDeployment(
                         deployment_id=deployment.id,
                         parameters={"goal_id": "{{ event.payload.goal_id }}"},
-                        # ✅ ENHANCED: Player name + teams + minute
-                        flow_run_name="⚽ {{ event.payload.player_name }} ({{ event.payload.minute }}') - {{ event.payload.match_context }}"
+                        # ✅ FIXED: Simplified template that should work reliably
+                        flow_run_name="⚽ GOAL: {{ event.payload.player_name }} ({{ event.payload.minute }}') for {{ event.payload.team_name }} vs {{ event.payload.opponent_name }} [#{{ event.payload.fixture_id }}]"
                     )
                 ],
             )
             
             created_automation = await automation.acreate()
             print(f"✅ Created automation: {created_automation.name}")
+            # print(f"📋 Template: ⚽ GOAL: Player (Min') for Team vs Opponent [#FixtureID]")
             return True
             
     except Exception as e:

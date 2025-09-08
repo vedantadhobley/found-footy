@@ -121,6 +121,9 @@ class FootyMongoStore:
                 kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
                 fixture_date = kickoff_time.date()
                 
+                # ✅ SMART: Use current scores if available, otherwise default to 0-0
+                current_goals = fixture.get("current_goals", {"home": 0, "away": 0})
+                
                 # Base document structure
                 doc = {
                     "_id": fixture["id"],
@@ -139,18 +142,21 @@ class FootyMongoStore:
                         "id": fixture["league_id"],
                         "name": fixture["league"]
                     },
-                    "status": fixture.get("status", "NS"),  # Default to Not Started
-                    "created_at": datetime.now(timezone.utc)
+                    "status": fixture.get("status", "NS"),
+                    # ✅ SIMPLE: Use API scores if available, default to 0-0
+                    "goals": current_goals,
+                    "created_at": datetime.now(timezone.utc),
+                    "last_checked": datetime.now(timezone.utc)
                 }
                 
                 documents.append(doc)
-            
+        
             # Use upsert operations to handle duplicates gracefully
             bulk_operations = [
                 UpdateOne(
-                    {"fixture_id": doc["fixture_id"]},  # Filter
-                    {"$set": doc},                      # Update
-                    upsert=True                         # Insert if not exists
+                    {"fixture_id": doc["fixture_id"]},
+                    {"$set": doc},
+                    upsert=True
                 ) for doc in documents
             ]
             
