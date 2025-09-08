@@ -6,7 +6,7 @@ import json
 from prefect import get_client
 from prefect.client.schemas.objects import Variable
 
-# ✅ UEFA Top 25 Teams 2025 (with rank order)
+# ✅ YOUR STATIC DATA - Add/remove teams here
 UEFA_25_2025 = {
     541: {"name": "Real Madrid", "country": "Spain", "rank": 1},
     157: {"name": "Bayern Munich", "country": "Germany", "rank": 2},
@@ -35,7 +35,6 @@ UEFA_25_2025 = {
     47: {"name": "Tottenham Hotspur", "country": "England", "rank": 25}
 }
 
-# ✅ FIFA Top 25 National Teams 2025 (with rank order)
 FIFA_25_2025 = {
     26: {"name": "Argentina", "country": "Argentina", "rank": 1},
     9: {"name": "Spain", "country": "Spain", "rank": 2},
@@ -69,139 +68,84 @@ async def create_team_variables():
     print("🚀 Creating Prefect Variables for team tracking...")
     
     async with get_client() as client:
-        try:
-            # ✅ UEFA Teams Variable
-            uefa_variable = Variable(
-                name="uefa_25_2025",
-                value=json.dumps(UEFA_25_2025, indent=2),
-                tags=["teams", "uefa", "clubs", "2025"]
-            )
-            
-            await client.create_variable(uefa_variable)
-            print("✅ Created variable: uefa_25_2025")
-            
-            # ✅ FIFA Teams Variable
-            fifa_variable = Variable(
-                name="fifa_25_2025", 
-                value=json.dumps(FIFA_25_2025, indent=2),
-                tags=["teams", "fifa", "national", "2025"]
-            )
-            
-            await client.create_variable(fifa_variable)
-            print("✅ Created variable: fifa_25_2025")
-            
-            # ✅ Team IDs Lists for easy deployment usage
-            uefa_ids = list(UEFA_25_2025.keys())
-            fifa_ids = list(FIFA_25_2025.keys())
-            all_ids = uefa_ids + fifa_ids
-            
-            uefa_ids_variable = Variable(
-                name="uefa_25_2025_ids",
-                value=",".join(map(str, uefa_ids)),
-                tags=["team-ids", "uefa", "deployment"]
-            )
-            
-            fifa_ids_variable = Variable(
-                name="fifa_25_2025_ids", 
-                value=",".join(map(str, fifa_ids)),
-                tags=["team-ids", "fifa", "deployment"]
-            )
-            
-            all_ids_variable = Variable(
-                name="all_teams_2025_ids",
-                value=",".join(map(str, all_ids)),
-                tags=["team-ids", "all", "deployment"]
-            )
-            
-            await client.create_variable(uefa_ids_variable)
-            await client.create_variable(fifa_ids_variable) 
-            await client.create_variable(all_ids_variable)
-            
-            print("✅ Created team ID variables: uefa_25_2025_ids, fifa_25_2025_ids, all_teams_2025_ids")
-            
-            print("\n🎯 Variables Summary:")
-            print(f"📊 UEFA Teams: {len(UEFA_25_2025)} clubs")
-            print(f"🌍 FIFA Teams: {len(FIFA_25_2025)} national teams")
-            print(f"📋 Total Teams: {len(all_ids)} teams tracked")
-            
-        except Exception as e:
-            print(f"❌ Error creating variables: {e}")
-            if "already exists" in str(e):
-                print("⚠️ Variables may already exist. Use --update to replace them.")
+        # UEFA Teams Variable
+        uefa_variable = Variable(
+            name="uefa_25_2025",
+            value=json.dumps(UEFA_25_2025, indent=2),
+            tags=["teams", "uefa", "clubs", "2025"]
+        )
+        
+        await client.create_variable(uefa_variable)
+        print("✅ Created variable: uefa_25_2025")
+        
+        # FIFA Teams Variable
+        fifa_variable = Variable(
+            name="fifa_25_2025", 
+            value=json.dumps(FIFA_25_2025, indent=2),
+            tags=["teams", "fifa", "national", "2025"]
+        )
+        
+        await client.create_variable(fifa_variable)
+        print("✅ Created variable: fifa_25_2025")
+        
+        # Team IDs Lists
+        uefa_ids = list(UEFA_25_2025.keys())
+        fifa_ids = list(FIFA_25_2025.keys())
+        all_ids = uefa_ids + fifa_ids
+        
+        uefa_ids_variable = Variable(
+            name="uefa_25_2025_ids",
+            value=",".join(map(str, uefa_ids)),
+            tags=["team-ids", "uefa", "deployment"]
+        )
+        
+        fifa_ids_variable = Variable(
+            name="fifa_25_2025_ids", 
+            value=",".join(map(str, fifa_ids)),
+            tags=["team-ids", "fifa", "deployment"]
+        )
+        
+        all_ids_variable = Variable(
+            name="all_teams_2025_ids",
+            value=",".join(map(str, all_ids)),
+            tags=["team-ids", "all", "deployment"]
+        )
+        
+        await client.create_variable(uefa_ids_variable)
+        await client.create_variable(fifa_ids_variable) 
+        await client.create_variable(all_ids_variable)
+        
+        print("✅ Created team ID variables")
+        print(f"📊 UEFA Teams: {len(UEFA_25_2025)} clubs")
+        print(f"🌍 FIFA Teams: {len(FIFA_25_2025)} national teams")
+        print(f"📋 Total Teams: {len(all_ids)} teams tracked")
 
 async def update_team_variables():
     """Update existing Prefect Variables"""
     print("🔄 Updating Prefect Variables for team tracking...")
     
     async with get_client() as client:
-        try:
-            # Update UEFA
-            await client.set_variable(name="uefa_25_2025", value=json.dumps(UEFA_25_2025, indent=2))
-            await client.set_variable(name="fifa_25_2025", value=json.dumps(FIFA_25_2025, indent=2))
-            
-            # Update ID lists
-            uefa_ids = list(UEFA_25_2025.keys())
-            fifa_ids = list(FIFA_25_2025.keys())
-            all_ids = uefa_ids + fifa_ids
-            
-            await client.set_variable(name="uefa_25_2025_ids", value=",".join(map(str, uefa_ids)))
-            await client.set_variable(name="fifa_25_2025_ids", value=",".join(map(str, fifa_ids)))
-            await client.set_variable(name="all_teams_2025_ids", value=",".join(map(str, all_ids)))
-            
-            print("✅ All team variables updated successfully")
-            
-        except Exception as e:
-            print(f"❌ Error updating variables: {e}")
+        # Update UEFA and FIFA
+        await client.set_variable(name="uefa_25_2025", value=json.dumps(UEFA_25_2025, indent=2))
+        await client.set_variable(name="fifa_25_2025", value=json.dumps(FIFA_25_2025, indent=2))
+        
+        # Update ID lists
+        uefa_ids = list(UEFA_25_2025.keys())
+        fifa_ids = list(FIFA_25_2025.keys())
+        all_ids = uefa_ids + fifa_ids
+        
+        await client.set_variable(name="uefa_25_2025_ids", value=",".join(map(str, uefa_ids)))
+        await client.set_variable(name="fifa_25_2025_ids", value=",".join(map(str, fifa_ids)))
+        await client.set_variable(name="all_teams_2025_ids", value=",".join(map(str, all_ids)))
+        
+        print("✅ All team variables updated successfully")
 
-async def list_team_variables():
-    """List all team-related variables"""
-    print("📋 Team Variables:")
-    
-    async with get_client() as client:
-        try:
-            variables = await client.read_variables()
-            team_variables = [v for v in variables if any(tag in v.tags for tag in ["teams", "team-ids"])]
-            
-            for var in team_variables:
-                print(f"  🔗 {var.name} (tags: {', '.join(var.tags)})")
-                if "ids" in var.name:
-                    ids_count = len(var.value.split(",")) if var.value else 0
-                    print(f"     📊 {ids_count} team IDs")
-                else:
-                    try:
-                        data = json.loads(var.value)
-                        print(f"     📊 {len(data)} teams")
-                    except:
-                        print(f"     📊 Value length: {len(var.value)}")
-                        
-        except Exception as e:
-            print(f"❌ Error listing variables: {e}")
-
-async def delete_team_variables():
-    """Delete all team variables"""
-    print("🗑️ Deleting team variables...")
-    
-    variable_names = [
-        "uefa_25_2025", "fifa_25_2025", 
-        "uefa_25_2025_ids", "fifa_25_2025_ids", "all_teams_2025_ids"
-    ]
-    
-    async with get_client() as client:
-        for name in variable_names:
-            try:
-                await client.delete_variable_by_name(name)
-                print(f"✅ Deleted: {name}")
-            except Exception as e:
-                print(f"⚠️ Could not delete {name}: {e}")
-
-def main():
+if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Manage team variables in Prefect")
     parser.add_argument("--create", action="store_true", help="Create team variables")
     parser.add_argument("--update", action="store_true", help="Update existing variables")
-    parser.add_argument("--list", action="store_true", help="List team variables")
-    parser.add_argument("--delete", action="store_true", help="Delete team variables")
     
     args = parser.parse_args()
     
@@ -209,14 +153,5 @@ def main():
         asyncio.run(create_team_variables())
     elif args.update:
         asyncio.run(update_team_variables())
-    elif args.delete:
-        asyncio.run(delete_team_variables())
-    elif args.list:
-        asyncio.run(list_team_variables())
     else:
-        print("Usage: python team_variables_manager.py [--create|--update|--list|--delete]")
-        print("\nExample:")
-        print("  python team_variables_manager.py --create")
-
-if __name__ == "__main__":
-    main()
+        print("Usage: python team_variables_manager.py [--create|--update]")

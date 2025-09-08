@@ -10,7 +10,7 @@ from datetime import datetime
 
 async def ensure_work_pools():
     """Ensure work pools exist before creating deployments using CLI"""
-    pools = ["fixtures-pool", "twitter-pool", "fixtures-monitor-pool"]  # ✅ ADD: monitor pool
+    pools = ["fixtures-pool", "twitter-pool", "fixtures-monitor-pool"]
     
     for pool_name in pools:
         try:
@@ -127,7 +127,6 @@ async def create_twitter_automation():
                     RunDeployment(
                         deployment_id=deployment.id,
                         parameters={"goal_id": "{{ event.payload.goal_id }}"},
-                        # ✅ FIXED: Simplified template that should work reliably
                         flow_run_name="⚽ GOAL: {{ event.payload.player_name }} ({{ event.payload.minute }}') for {{ event.payload.team_name }} vs {{ event.payload.opponent_name }} [#{{ event.payload.fixture_id }}]"
                     )
                 ],
@@ -135,50 +134,26 @@ async def create_twitter_automation():
             
             created_automation = await automation.acreate()
             print(f"✅ Created automation: {created_automation.name}")
-            # print(f"📋 Template: ⚽ GOAL: Player (Min') for Team vs Opponent [#FixtureID]")
             return True
             
     except Exception as e:
         print(f"❌ Failed to create automation: {e}")
         return False
 
-# ✅ FIX: deployments.py - Use correct template syntax
 def deploy_from_yaml():
-    """Deploy using prefect.yaml - CLEAN VERSION"""
+    """Deploy using prefect.yaml with 🔥 FRESH REBUILD"""
     print("🚀 Creating deployments using prefect.yaml...")
     
-    # ✅ REMOVE: All template modification code - it doesn't work
-    # Don't try to modify prefect.yaml
-    
-    # Initialize ALL variables
-    print("🎯 Initializing all Prefect Variables...")
+    # ✅ 🔥 FRESH REBUILD: Delete all variables and recreate
+    print("🔥 FRESH REBUILD: Deleting all variables and recreating...")
     try:
-        # Team variables
-        from team_variables_manager import create_team_variables, update_team_variables
-        try:
-            asyncio.run(create_team_variables())
-        except Exception as create_error:
-            if "already exists" in str(create_error):
-                print("♻️ Team variables exist, updating...")
-                asyncio.run(update_team_variables())
-            else:
-                raise create_error
-        
-        # Fixture status variables
-        from found_footy.utils.fixture_status import create_fixture_status_variables
-        asyncio.run(create_fixture_status_variables())
-        
-        print("✅ All Prefect Variables initialized successfully")
+        from found_footy.config.startup_config import sync_startup
+        sync_startup()
+        print("✅ Fresh rebuild completed successfully")
         
     except Exception as e:
-        print(f"⚠️ Error with variables: {e}")
+        print(f"⚠️ Error with fresh rebuild: {e}")
         print("🔄 Continuing with deployment...")
-    
-    # Initialize team metadata in MongoDB
-    print("🗑️ Resetting MongoDB with enhanced team metadata...")
-    from found_footy.api.mongo_api import populate_team_metadata
-    populate_team_metadata(reset_first=True, include_national_teams=True)
-    print("✅ MongoDB reset and enhanced team initialization complete")
     
     # Setup sequence
     asyncio.run(ensure_work_pools())
@@ -188,8 +163,8 @@ def deploy_from_yaml():
     print("⏳ Waiting 5 seconds for cleanup to complete...")
     time.sleep(5)
     
-    # Deploy from YAML (NO MODIFICATIONS)
-    print("🏗️ Deploying from prefect.yaml (deployments only)...")
+    # Deploy from YAML
+    print("🏗️ Deploying from prefect.yaml...")
     
     result = subprocess.run([
         "prefect", "deploy", "--all"
@@ -222,8 +197,8 @@ def run_immediate():
     """Run the fixtures flow immediately for today's date"""
     print("🏃 Running fixtures flow immediately for today...")
     try:
-        from found_footy.flows.fixtures_flows import fixtures_ingest_flow  # ✅ FIXED
-        result = fixtures_ingest_flow()  # ✅ FIXED
+        from found_footy.flows.fixtures_flows import fixtures_ingest_flow
+        result = fixtures_ingest_flow()
         print(f"✅ Immediate run completed successfully: {result}")
     except Exception as e:
         print(f"❌ Immediate run failed: {e}")
@@ -243,7 +218,7 @@ if __name__ == "__main__":
         asyncio.run(clean_all_automations())
         print("✅ Clean-only completed!")
     elif args.apply:
-        print("📋 Creating deployments from YAML configs...")
+        print("📋 Creating deployments with FRESH REBUILD...")
         success = deploy_from_yaml()
         
         if success and args.run_now:
@@ -253,8 +228,8 @@ if __name__ == "__main__":
         
         print("✅ Setup complete!")
         print("🌐 Access Prefect UI at http://localhost:4200")
-        print("📝 Configure team_ids in deployment parameters")
+        print("📝 All variables freshly rebuilt from source code")
     else:
-        print("Use --apply to create deployments")
+        print("Use --apply to create deployments with fresh rebuild")
         print("Use --apply --run-now to also run immediately")
         print("Use --clean-only to just delete all deployments")

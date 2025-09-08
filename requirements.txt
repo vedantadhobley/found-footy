@@ -8,7 +8,5 @@ requests==2.32.4
 six==1.16.0
 typing-extensions==4.14.1
 urllib3==2.5.0
-# yt-dlp==2024.8.6
 pymongo==4.14.1
-# ✅ REMOVED: psycopg2-binary and sqlalchemy - no longer needed
-# ✅ REMOVED: prefect (using base image)
+nest-asyncio==1.6.0

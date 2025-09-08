@@ -55,13 +55,15 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-    # ✅ AUTOMATED SETUP: Run deployment creation with timeout
+    # ✅ NEW: Uses centralized startup configuration
     command: >
       sh -c "
         echo '🚀 Found Footy Automated Setup Starting...' &&
         echo '⏳ Waiting 10 seconds for services to stabilize...' &&
         sleep 10 &&
-        echo '📋 Creating deployments and automations...' &&
+        echo '📋 Running centralized configuration sync...' &&
+        python -c 'from found_footy.config.startup_config import sync_startup; sync_startup()' &&
+        echo '🏗️ Creating deployments and automations...' &&
         timeout 300 python -m found_footy.flows.deployments --apply &&
         echo '✅ Setup completed successfully!' &&
         echo '🌐 Access Prefect UI at http://localhost:4200' &&
