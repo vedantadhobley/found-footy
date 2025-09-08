@@ -51,11 +51,24 @@ deployments:
       - advance
     description: "Universal fixture advancement"
 
-  # 4. Monitor
+  # NEW: Goal processing flow
+  - name: fixtures-goal-flow
+    entrypoint: found_footy.flows.fixtures_flows:fixtures_goal_flow
+    work_pool:
+      name: fixtures-pool
+    parameters:
+      fixture_id: 0
+      goal_events: []
+    tags:
+      - goals
+      - processing
+    description: "Dedicated goal event processing flow"
+
+  # Monitor - simple, no custom naming
   - name: fixtures-monitor-flow
     entrypoint: found_footy.flows.fixtures_flows:fixtures_monitor_flow
     work_pool:
-      name: fixtures-pool
+      name: fixtures-monitor-pool
     schedule:
       cron: "*/3 * * * *"
       timezone: UTC
@@ -64,9 +77,9 @@ deployments:
     tags:
       - fixtures
       - monitor
-    description: "Always-running monitor"
+    description: "Always-running monitor - default naming"
 
-  # 5. Twitter
+  # Twitter - name set by automation
   - name: twitter-search-flow
     entrypoint: found_footy.flows.twitter_flows:twitter_search_flow
     work_pool:

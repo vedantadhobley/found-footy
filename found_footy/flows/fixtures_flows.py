@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from prefect import flow, task, get_run_logger
 from prefect.deployments import run_deployment
 from typing import Optional, List
+import json
 from found_footy.api.mongo_api import (
     fixtures, 
     fixtures_batch, 
@@ -13,7 +14,6 @@ from found_footy.api.mongo_api import (
 )
 from found_footy.utils.events import goal_trigger
 from found_footy.storage.mongo_store import FootyMongoStore
-from prefect.runtime import flow_run
 from found_footy.flows.flow_triggers import schedule_advance
 
 # Create store instance
@@ -47,7 +47,6 @@ def fixtures_process_parameters_task(team_ids=None, date_str=None):
             if isinstance(team_ids, str):
                 if team_ids.startswith('['):
                     # JSON array format
-                    import json
                     target_team_ids = json.loads(team_ids)
                 else:
                     # Comma-separated format
@@ -247,7 +246,7 @@ def fixtures_delta_task():
             if not api_data:
                 continue
             
-            # ✅ EXISTING METHOD: Pure delta detection
+            # ✅ EXISTING METHOD: Pure delta detection (no side effects)
             delta_result = store.fixtures_delta(fixture_id, api_data)
             
             if delta_result.get("goals_changed", False):
@@ -278,42 +277,70 @@ def fixtures_delta_task():
         logger.error(f"❌ Bulk delta detection failed: {e}")
         return {"fixtures_with_changes": [], "fixtures_completed": [], "total_goals_detected": 0, "status": "error", "error": str(e)}
 
+# ✅ UPDATE: fixtures_monitor_task - Trigger separate goal flow
 @task(name="fixtures-monitor-task")
 def fixtures_monitor_task():
-    """Monitor active fixtures using bulk delta detection"""
+    """Monitor active fixtures - trigger separate goal flows"""
     logger = get_run_logger()
     
-    # ✅ BULK DELTA: Run delta detection on entire collection
     delta_results = fixtures_delta_task()
     
     if delta_results["status"] != "success":
         logger.error("❌ Delta detection failed")
         return {"status": "error", "delta_results": delta_results}
     
-    total_goals_processed = 0
+    goal_flows_triggered = 0
     completed_fixtures_processed = 0
     
-    # ✅ PROCESS GOALS: Handle all goal changes using existing store method
+    # Process goal changes
     for fixture_change in delta_results["fixtures_with_changes"]:
         fixture_id = fixture_change["fixture_id"]
         delta_result = fixture_change["delta_result"]
         
         try:
-            # ✅ EXISTING METHOD: Handle goal changes with side effects
-            change_result = store.handle_fixture_changes(fixture_id, delta_result)
-            goals_processed = change_result.get("goals_processed", 0)
-            total_goals_processed += goals_processed
-            logger.info(f"⚽ Processed {goals_processed} new goals for fixture {fixture_id}")
+            logger.info(f"🚨 Goals detected for fixture {fixture_id} - triggering dedicated goal flow")
+            
+            # Get complete goal events from API
+            complete_goal_events = fixtures_events(fixture_id)
+            
+            if complete_goal_events:
+                # ✅ FIX: Generate proper flow name
+                fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
+                if fixture:
+                    home_team = fixture.get("team_names", {}).get("home", "Home")
+                    away_team = fixture.get("team_names", {}).get("away", "Away")
+                    flow_run_name = f"⚽ GOALS: {home_team} vs {away_team} - {len(complete_goal_events)} events [#{fixture_id}]"
+                else:
+                    flow_run_name = f"⚽ GOALS: Fixture #{fixture_id} - {len(complete_goal_events)} events"
+                
+                run_deployment(
+                    name="fixtures-goal-flow/fixtures-goal-flow",
+                    parameters={
+                        "fixture_id": fixture_id,
+                        "goal_events": complete_goal_events
+                    },
+                    flow_run_name=flow_run_name
+                )
+                
+                goal_flows_triggered += 1
+                logger.info(f"✅ Triggered goal flow: {flow_run_name}")
+                
+                # ✅ FIX: Don't update fixture here - let the goal flow decide
+                # Remove this line: store.fixtures_update(fixture_id, delta_result)
+                # The fixture should only be updated if ALL goals are valid
+            else:
+                logger.warning(f"⚠️ No complete goal events found for fixture {fixture_id}")
+            
         except Exception as e:
-            logger.error(f"❌ Error processing goals for fixture {fixture_id}: {e}")
+            logger.error(f"❌ Error triggering goal flow for fixture {fixture_id}: {e}")
+            continue
     
-    # ✅ PROCESS COMPLETIONS: Handle completed fixtures with CLEAN names
+    # Process completions
     for completed_fixture in delta_results["fixtures_completed"]:
-        fixture_id = completed_fixture["fixture_id"]
+        fixture_id = completed_fixture["fixture_id"] 
         delta_result = completed_fixture["delta_result"]
         
         try:
-            # ✅ GET: Fixture details for rich completion name
             fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
             if fixture:
                 home_team = fixture.get("team_names", {}).get("home", "Home")
@@ -335,7 +362,8 @@ def fixtures_monitor_task():
                 flow_run_name=flow_run_name
             )
             completed_fixtures_processed += 1
-            logger.info(f"✅ Scheduled completion flow for fixture {fixture_id}")
+            logger.info(f"✅ Scheduled completion: {flow_run_name}")
+            
         except Exception as e:
             logger.error(f"❌ Failed to process completion for fixture {fixture_id}: {e}")
     
@@ -343,7 +371,7 @@ def fixtures_monitor_task():
         "status": "success",
         "active_fixtures": len(store.get_all_active_fixtures()),
         "goals_detected": delta_results["total_goals_detected"],
-        "goals_processed": total_goals_processed,
+        "goal_flows_triggered": goal_flows_triggered,
         "completed_fixtures": completed_fixtures_processed,
         "delta_results": delta_results
     }
@@ -353,6 +381,10 @@ def fixtures_monitor_task():
 @flow(name="fixtures-ingest-flow")
 def fixtures_ingest_flow(date_str: Optional[str] = None, team_ids: Optional[str] = None):
     logger = get_run_logger()
+    
+    # ✅ REMOVE: All runtime naming code - doesn't work in Prefect 3
+    # Don't try to set flow names at runtime
+    
     logger.info("📥 Starting Pure Fixtures Ingest Flow")
     populate_team_metadata(reset_first=False)
     params = fixtures_process_parameters_task(team_ids, date_str)
@@ -432,44 +464,29 @@ def fixtures_advance_flow(
         "note": "Pure advancement - monitor handles all live goal detection"
     }
 
+# ✅ FIX: Use correct flow_run context
+# ✅ CLEAN: fixtures_flows.py - Simple monitor, no naming
 @flow(name="fixtures-monitor-flow")  
 def fixtures_monitor_flow():
-    """Always-running monitor - runs every 3 minutes"""
+    """Monitor flow - uses default Prefect naming"""
     logger = get_run_logger()
     
-    # ✅ SIMPLE: Direct flow name assignment
-    try:
-        from prefect.runtime import flow_run
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        flow_run.name = f"👁️ MONITOR: {timestamp} - Active Check"
-        logger.info(f"✅ Set flow name to: {flow_run.name}")
-    except Exception as e:
-        logger.warning(f"⚠️ Could not set flow name: {e}")
+    # ✅ REMOVE: All naming attempts - let Prefect use defaults
     
-    # ✅ NEVER EXIT: Just skip work efficiently
     if store.check_collections_empty(["fixtures_active"]):
-        logger.info("⏸️ No active fixtures - skipping API calls (monitor continues)")
+        logger.info("⏸️ No active fixtures - skipping API calls")
         return {
             "status": "no_work_skipped", 
-            "reason": "no_active_fixtures",
-            "next_check": "3 minutes (automatic)",
-            "monitor_status": "running_continuously"
+            "reason": "no_active_fixtures"
         }
     
-    # ✅ DO WORK: Monitor active fixtures
     logger.info("🔍 Active fixtures found - performing monitoring")
     monitor_result = fixtures_monitor_task()
     
-    logger.info(f"✅ Monitor cycle complete: {monitor_result}")
-    
     return {
         "status": "work_completed", 
-        "monitor_result": monitor_result,
-        "next_check": "3 minutes (automatic)",
-        "monitor_status": "running_continuously"
+        "monitor_result": monitor_result
     }
-
-# ✅ ADD THIS MISSING METHOD:
 
 @task(name="fixtures-advance-task")
 def fixtures_advance_task(source_collection: str, destination_collection: str, fixture_id: Optional[int] = None):
@@ -491,3 +508,56 @@ def fixtures_advance_task(source_collection: str, destination_collection: str, f
     except Exception as e:
         logger.error(f"❌ Error in fixtures-advance-task: {e}")
         return {"status": "error", "advanced_count": 0, "error": str(e)}
+
+# ✅ FIX: Complete the goal flow
+@flow(name="fixtures-goal-flow")
+def fixtures_goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
+    """Dedicated goal processing flow - triggered by goal detection"""
+    logger = get_run_logger()
+    
+    if not goal_events:
+        logger.warning(f"⚠️ No goal events provided for fixture {fixture_id}")
+        return {"status": "no_goals", "fixture_id": fixture_id}
+    
+    logger.info(f"⚽ Processing {len(goal_events)} goal events for fixture {fixture_id}")
+    
+    goals_processed = []
+    goals_failed = []
+    
+    for goal_event in goal_events:
+        try:
+            player_name = goal_event.get("player", {}).get("name", "")
+            team_name = goal_event.get("team", {}).get("name", "")
+            minute = goal_event.get("time", {}).get("elapsed", 0)
+            
+            if not player_name or not team_name or minute <= 0:
+                logger.warning(f"⚠️ Skipping incomplete goal: player='{player_name}', team='{team_name}', minute={minute}")
+                goals_failed.append(goal_event)
+                continue
+            
+            # Store goal with validation
+            goal_stored = store.store_goal_active(fixture_id, goal_event)
+            
+            if goal_stored:
+                goals_processed.append(goal_event)
+                logger.info(f"✅ Stored goal: {team_name} - {player_name} ({minute}')")
+                
+                # ✅ FIX: Actually trigger the automation events
+                from found_footy.utils.events import goal_trigger
+                events_emitted = goal_trigger(fixture_id, [goal_event])
+                logger.info(f"📡 Emitted {events_emitted} events for goal")
+            else:
+                goals_failed.append(goal_event)
+                logger.warning(f"❌ Failed to store goal: {team_name} - {player_name} ({minute}')")
+                
+        except Exception as e:
+            logger.error(f"❌ Error processing goal: {e}")
+            goals_failed.append(goal_event)
+    
+    return {
+        "status": "success",
+        "fixture_id": fixture_id,
+        "goals_processed": len(goals_processed),
+        "goals_failed": len(goals_failed),
+        "valid_goals": goals_processed
+    }

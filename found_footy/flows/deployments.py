@@ -10,7 +10,7 @@ from datetime import datetime
 
 async def ensure_work_pools():
     """Ensure work pools exist before creating deployments using CLI"""
-    pools = ["fixtures-pool", "twitter-pool"]
+    pools = ["fixtures-pool", "twitter-pool", "fixtures-monitor-pool"]  # ✅ ADD: monitor pool
     
     for pool_name in pools:
         try:
@@ -34,7 +34,6 @@ async def ensure_work_pools():
                     print(f"✅ Created {pool_name}")
                 else:
                     print(f"❌ Failed to create {pool_name}: {create_result.stderr}")
-                    raise Exception(f"Failed to create work pool {pool_name}")
                     
         except Exception as e:
             print(f"❌ Error managing work pool {pool_name}: {e}")
@@ -142,34 +141,15 @@ async def create_twitter_automation():
         print(f"❌ Failed to create automation: {e}")
         return False
 
+# ✅ FIX: deployments.py - Use correct template syntax
 def deploy_from_yaml():
-    """Deploy using prefect.yaml project config with all variable initialization"""
+    """Deploy using prefect.yaml - CLEAN VERSION"""
     print("🚀 Creating deployments using prefect.yaml...")
     
-    # Pre-fill today's date in prefect.yaml
-    print("📅 Pre-filling today's date in prefect.yaml...")
-    today_str = datetime.now().strftime("%Y%m%d")
-    today_readable = datetime.now().strftime("%a %b %d, %Y")
+    # ✅ REMOVE: All template modification code - it doesn't work
+    # Don't try to modify prefect.yaml
     
-    # Read and update prefect.yaml
-    prefect_yaml_path = Path("/app/prefect.yaml")
-    with open(prefect_yaml_path, 'r') as f:
-        yaml_content = f.read()
-    
-    # Replace date with today's date
-    yaml_content = re.sub(r'"202508\d{2}"', f'"{today_str}"', yaml_content)
-    yaml_content = re.sub(
-        r'description: "Manual fixtures ingest for Sep 03, 2025"',
-        f'description: "🎯 MANUAL: {today_readable} - All Teams (UEFA + FIFA)"',
-        yaml_content
-    )
-    
-    with open(prefect_yaml_path, 'w') as f:
-        f.write(yaml_content)
-    
-    print(f"✅ Pre-filled manual deployment: {today_readable}")
-    
-    # ✅ Initialize ALL variables
+    # Initialize ALL variables
     print("🎯 Initializing all Prefect Variables...")
     try:
         # Team variables
@@ -183,7 +163,7 @@ def deploy_from_yaml():
             else:
                 raise create_error
         
-        # ✅ NEW: Fixture status variables
+        # Fixture status variables
         from found_footy.utils.fixture_status import create_fixture_status_variables
         asyncio.run(create_fixture_status_variables())
         
@@ -207,7 +187,7 @@ def deploy_from_yaml():
     print("⏳ Waiting 5 seconds for cleanup to complete...")
     time.sleep(5)
     
-    # Deploy from YAML
+    # Deploy from YAML (NO MODIFICATIONS)
     print("🏗️ Deploying from prefect.yaml (deployments only)...")
     
     result = subprocess.run([
@@ -216,7 +196,6 @@ def deploy_from_yaml():
     
     if result.returncode == 0:
         print("✅ All deployments created from prefect.yaml!")
-        print(f"📋 Output: {result.stdout}")
         
         # Wait for deployments to register
         print("⏳ Waiting 3 seconds for deployments to register...")
@@ -230,33 +209,6 @@ def deploy_from_yaml():
             print("✅ Automation created successfully!")
         else:
             print("❌ Automation creation failed - check logs above")
-        
-        # Verify deployments
-        print("\n🔍 Verifying deployments...")
-        verify_result = subprocess.run([
-            "prefect", "deployment", "ls"
-        ], capture_output=True, text=True)
-        
-        if verify_result.returncode == 0:
-            print("📋 Current deployments:")
-            print(verify_result.stdout)
-        else:
-            print("❌ Failed to list deployments")
-        
-        print("\n" + "="*60)
-        print("🎉 SETUP COMPLETE - Python Automation!")
-        print("="*60)
-        print("📋 Created:")
-        print("  1. fixtures-ingest-daily    (deployment)")
-        print("  2. fixtures-ingest-manual   (deployment)")
-        print("  3. fixtures-advance-flow    (deployment)")
-        print("  4. fixtures-monitor-flow    (deployment)")
-        print("  5. twitter-search-flow      (deployment)")  # ✅ UPDATED
-        print("  6. goal-twitter-automation  (automation - Python)")
-        print()
-        print("🧪 Test automation: python debug_events.py")
-        print("🌐 Access Prefect UI at http://localhost:4200")
-        print("="*60)
         
         return True
     else:

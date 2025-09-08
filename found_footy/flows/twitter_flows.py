@@ -47,33 +47,25 @@ def twitter_process_goal_task(goal_id: str):
         logger.error(f"❌ Error processing goal {goal_id}: {e}")
         return {"status": "error", "goal_id": goal_id, "error": str(e)}
 
+# ✅ FIX: twitter_flows.py - Remove runtime naming
 @flow(name="twitter-search-flow")
 def twitter_search_flow(goal_id: Optional[str] = None):
-    """Twitter flow with simple naming"""
+    """Twitter flow - name set by automation, no runtime changes needed"""
     logger = get_run_logger()
     
-    # ✅ SIMPLE: Direct naming without complex service
-    try:
-        if goal_id:
-            from prefect.runtime import flow_run
-            # Try to get goal details for name
-            goal_doc = store.goals_active.find_one({"_id": goal_id})
-            if goal_doc:
-                flow_run.name = f"⚽ {goal_doc['team_name']}: {goal_doc['player_name']} ({goal_doc['minute']}') [#{goal_doc['fixture_id']}]"
-            else:
-                flow_run.name = f"🔍 TWITTER: Goal {goal_id}"
-            logger.info(f"✅ Set flow name to: {flow_run.name}")
-    except Exception as e:
-        logger.warning(f"⚠️ Could not set flow name: {e}")
+    # ✅ REMOVE: All runtime naming - automation sets rich name already
+    # Flow run name comes from automation: "⚽ Player Name (67min) vs Opponent"
     
     if not goal_id:
-        logger.warning("⚠️ No goal_id provided to twitter_search_flow")
+        logger.warning("⚠️ No goal_id provided")
         return {"status": "error", "message": "No goal_id provided"}
     
-    # ✅ STEP 1: Process the specific goal
+    logger.info(f"🔍 Processing goal: {goal_id}")
+    
+    # Process the goal
     goal_result = twitter_process_goal_task(goal_id)
     
-    logger.info(f"✅ Twitter search flow completed for goal {goal_id}")
+    logger.info(f"✅ Twitter processing completed for goal {goal_id}")
     
     return {
         "goal_id": goal_id,

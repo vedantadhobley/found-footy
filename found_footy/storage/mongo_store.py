@@ -179,19 +179,47 @@ class FootyMongoStore:
 
     # ✅ UPDATED: Store goal with better duplicate handling
     def store_goal_active(self, fixture_id: int, goal_data: dict) -> bool:
-        """Store goal in goals_active collection with compound primary key"""
+        """Store goal in goals_active collection with ENHANCED validation"""
         try:
             minute = goal_data.get("time", {}).get("elapsed", 0)
             player_id = goal_data.get("player", {}).get("id", 0)
+            player_name = goal_data.get("player", {}).get("name", "")
+            team_name = goal_data.get("team", {}).get("name", "")
             
-            # Create unique compound key: fixture_id + minute + player_id
+            # ✅ ENHANCED VALIDATION: Reject incomplete goals
+            if not player_name:
+                print(f"❌ Goal rejected: Missing player name for fixture {fixture_id}")
+                return False
+            
+            if not team_name:
+                print(f"❌ Goal rejected: Missing team name for fixture {fixture_id}")
+                return False
+            
+            if minute <= 0:
+                print(f"❌ Goal rejected: Invalid minute {minute} for fixture {fixture_id}")
+                return False
+            
+            if player_id <= 0:
+                print(f"❌ Goal rejected: Invalid player ID {player_id} for fixture {fixture_id}")
+                return False
+            
             goal_id = f"{fixture_id}_{minute}_{player_id}"
             
-            # ✅ Check if goal already exists to avoid duplicates
-            existing_goal = self.goals_active.find_one({"_id": goal_id})
-            if existing_goal:
-                print(f"⚠️ Goal {goal_id} already exists in goals_active")
-                return False  # Don't create duplicate
+            # ✅ DOUBLE-CHECK: Prevent duplicates across BOTH collections
+            existing_active = self.goals_active.find_one({"_id": goal_id})
+            existing_processed = self.goals_processed.find_one({"_id": goal_id})
+            
+            if existing_active:
+                print(f"⚠️ Goal {goal_id} already exists in goals_active - skipping")
+                return False
+            
+            if existing_processed:
+                print(f"⚠️ Goal {goal_id} already processed in goals_processed - skipping")
+                return False
+            
+            # ✅ STORE: Goal with complete data
+            assist_name = goal_data.get("assist", {}).get("name", "")
+            assist_id = goal_data.get("assist", {}).get("id", 0) if goal_data.get("assist") else None
             
             document = {
                 "_id": goal_id,
@@ -199,24 +227,28 @@ class FootyMongoStore:
                 "minute": minute,
                 "minute_extra": goal_data.get("time", {}).get("extra"),
                 "team_id": goal_data.get("team", {}).get("id"),
-                "team_name": goal_data.get("team", {}).get("name"),
+                "team_name": team_name,
                 "player_id": player_id,
-                "player_name": goal_data.get("player", {}).get("name"),
-                "assist_id": goal_data.get("assist", {}).get("id"),
-                "assist_name": goal_data.get("assist", {}).get("name"),
+                "player_name": player_name,
+                "assist_id": assist_id,
+                "assist_name": assist_name if assist_name else None,
                 "goal_type": goal_data.get("detail", "Goal"),
                 "raw_goal_data": goal_data,
                 "created_at": datetime.now(timezone.utc),
-                "status": "pending_twitter"  # Track processing status
+                "status": "pending_twitter",
+                "data_quality": "complete"
             }
             
             result = self.goals_active.insert_one(document)
             
-            print(f"✅ Stored NEW goal in active: {document['team_name']} - {document['player_name']} ({minute}')")
+            print(f"✅ Stored COMPLETE goal: {team_name} - {player_name} ({minute}') [{goal_id}]")
+            if assist_name:
+                print(f"   🎯 Assist: {assist_name}")
+        
             return True
             
         except Exception as e:
-            print(f"❌ Error storing goal in active: {e}")
+            print(f"❌ Error storing goal: {e}")
             return False
 
     # ✅ NEW: Check if collections are empty
@@ -339,36 +371,134 @@ class FootyMongoStore:
             print(f"❌ Error in fixtures_delta for fixture {fixture_id}: {e}")
             return {"status": "error", "goals_changed": False, "error": str(e)}
 
+    # ✅ FIX: Complete the handle_fixture_changes method
     def handle_fixture_changes(self, fixture_id: int, delta_result: dict) -> dict:
-        """📝 HANDLER: Act on fixture changes with all side effects"""
+        """Enhanced handling with all-or-nothing validation"""
         try:
-            if delta_result["status"] != "success":
-                return delta_result
+            goals_processed = 0
+            goals_rejected = 0
             
-            results = {"goals_processed": 0, "fixture_updated": False, "events_emitted": 0}
-            
-            # Handle goal changes
             if delta_result.get("goals_changed", False):
-                print(f"🚨 HANDLING: Goals changed for fixture {fixture_id}")
+                print(f"🚨 Goals changed for fixture {fixture_id}")
                 
-                # Get goal events for processing
+                # Get complete goal events
                 from found_footy.api.mongo_api import fixtures_events
-                api_goal_events = fixtures_events(fixture_id)
+                complete_goal_events = fixtures_events(fixture_id)
                 
-                # Process new goals
-                new_goal_events = self.goals_delta(fixture_id, api_goal_events, trigger_actions=True)
-                results["goals_processed"] = len(new_goal_events)
-        
-            # Always update fixture with latest API data
-            fixture_update_success = self.fixtures_update(fixture_id, delta_result)
-            results["fixture_updated"] = fixture_update_success
+                # Enhanced validation with detailed rejection tracking
+                valid_goals = []
+                rejection_details = []  # Track rejection reasons
+                for i, goal_event in enumerate(complete_goal_events):
+                    player_name = goal_event.get("player", {}).get("name", "")
+                    team_name = goal_event.get("team", {}).get("name", "")
+                    minute = goal_event.get("time", {}).get("elapsed", 0)
+                    player_id = goal_event.get("player", {}).get("id", 0)
+                    
+                    if player_name and team_name and minute > 0 and player_id > 0:
+                        valid_goals.append(goal_event)
+                    else:
+                        goals_rejected += 1
+                        rejection_details.append({
+                            "goal_index": i,
+                            "missing_player": not player_name,
+                            "missing_team": not team_name,
+                            "invalid_minute": minute <= 0,
+                            "invalid_player_id": player_id <= 0,
+                            "minute": minute
+                        })
+                
+                goals_processed = len(valid_goals)
+                
+                # All-or-nothing decision logic
+                if goals_rejected == 0:
+                    # All goals valid - process normally
+                    new_goals = self.goals_delta(fixture_id, complete_goal_events, trigger_actions=True)
+                    self.fixtures_update(fixture_id, delta_result)
+                    print(f"✅ ALL VALID: Processed {goals_processed} complete goals")
+                    
+                else:
+                    # Some goals invalid - reject all and retry later
+                    print(f"⚠️ REJECTED UPDATE: {goals_rejected}/{len(complete_goal_events)} goals invalid")
+                    print(f"   📊 Valid goals: {goals_processed}, Invalid: {goals_rejected}")
+                    print(f"   🔄 Will retry in 3 minutes when API data may be complete")
+                    
+                    # Log specific rejection reasons for debugging
+                    for detail in rejection_details:
+                        missing_fields = []
+                        if detail["missing_player"]: missing_fields.append("player")
+                        if detail["missing_team"]: missing_fields.append("team")
+                        if detail["invalid_minute"]: missing_fields.append("minute")
+                        if detail["invalid_player_id"]: missing_fields.append("player_id")
+                        print(f"     Goal {detail['goal_index']}: Missing {', '.join(missing_fields)}")
+    
+            else:
+                # No goal changes - safe to update
+                self.fixtures_update(fixture_id, delta_result)
             
-            return {**delta_result, **results}
+            return {
+                "status": "success",
+                "goals_processed": goals_processed if goals_rejected == 0 else 0,
+                "goals_rejected": goals_rejected,
+                "rejection_details": rejection_details,
+                "fixture_updated": goals_rejected == 0,
+                "will_retry": goals_rejected > 0,
+                "retry_in_minutes": 3
+            }
+
+        except Exception as e:
+            print(f"❌ Error handling fixture changes: {e}")
+            return {"status": "error", "goals_processed": 0, "error": str(e)}
+
+    # ✅ FIX: Complete the goals_delta method in mongo_store.py
+    def goals_delta(self, fixture_id: int, api_goal_events: List[dict], trigger_actions: bool = False) -> List[dict]:
+        """Compare current goals with API goals and return new goals"""
+        try:
+            new_goal_events = []
+        
+            for goal_event in api_goal_events:
+                minute = goal_event.get("time", {}).get("elapsed", 0)
+                player_id = goal_event.get("player", {}).get("id", 0)
+                player_name = goal_event.get("player", {}).get("name", "")
+                team_name = goal_event.get("team", {}).get("name", "")
+                
+                # Enhanced validation: Skip goals with missing required data
+                if not player_name or not team_name or minute <= 0 or player_id <= 0:
+                    print(f"⚠️ Skipping incomplete goal data: player='{player_name}', team='{team_name}', minute={minute}, player_id={player_id}")
+                    continue
+                
+                goal_id = f"{fixture_id}_{minute}_{player_id}"
+                
+                # Check BOTH active AND processed collections for duplicates
+                existing_active = self.goals_active.find_one({"_id": goal_id})
+                existing_processed = self.goals_processed.find_one({"_id": goal_id})
+                
+                if existing_active:
+                    print(f"⚠️ Goal {goal_id} already exists in goals_active - skipping")
+                    continue
+                elif existing_processed:
+                    print(f"⚠️ Goal {goal_id} already processed in goals_processed - skipping")
+                    continue
+                else:
+                    # This is a genuinely new goal with complete data
+                    new_goal_events.append(goal_event)
+                    print(f"✅ NEW goal detected: {player_name} ({minute}') for {team_name}")
+                    
+                    # Only store and trigger if trigger_actions=True
+                    if trigger_actions:
+                        # Store the new goal
+                        goal_stored = self.store_goal_active(fixture_id, goal_event)
+                        if goal_stored:
+                            # Trigger automation event for this specific goal
+                            from found_footy.utils.events import goal_trigger
+                            goal_trigger(fixture_id, [goal_event])
+
+            return new_goal_events
         
         except Exception as e:
-            print(f"❌ Error handling fixture changes for {fixture_id}: {e}")
-            return {"status": "error", "error": str(e)}
+            print(f"❌ Error in goals_delta for fixture {fixture_id}: {e}")
+            return []
 
+    # ✅ FIX: Complete the goals_update method
     def goals_update(self, fixture_id: int, api_goal_events: List[dict]) -> int:
         """Update goals for a fixture and store new goals in goals_active"""
         try:
@@ -384,35 +514,6 @@ class FootyMongoStore:
         except Exception as e:
             print(f"❌ Error updating goals for fixture {fixture_id}: {e}")
             return 0
-
-    def goals_delta(self, fixture_id: int, api_goal_events: List[dict], trigger_actions: bool = False) -> List[dict]:
-        """Compare current goals with API goals and return new goals"""
-        try:
-            new_goal_events = []
-        
-            for goal_event in api_goal_events:
-                minute = goal_event.get("time", {}).get("elapsed", 0)
-                player_id = goal_event.get("player", {}).get("id", 0)
-                goal_id = f"{fixture_id}_{minute}_{player_id}"
-            
-                # Check if this goal already exists
-                existing_goal = self.goals_active.find_one({"_id": goal_id})
-                if not existing_goal:
-                    new_goal_events.append(goal_event)
-                
-                    if trigger_actions:
-                        # Store the new goal
-                        self.store_goal_active(fixture_id, goal_event)
-                        
-                        # Trigger automation event
-                        from found_footy.utils.events import goal_trigger
-                        goal_trigger(fixture_id, [goal_event])
-        
-            return new_goal_events
-        
-        except Exception as e:
-            print(f"❌ Error in goals_delta for fixture {fixture_id}: {e}")
-            return []
 
     def fixtures_update(self, fixture_id: int, delta_result: dict) -> bool:
         """Update fixture with latest API data"""

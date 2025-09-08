@@ -72,12 +72,10 @@ services:
     restart: "no"  # ✅ IMPORTANT: Don't restart init container
 
   # ✅ UPDATED: Workers depend on successful init
-  fixtures-worker-1:
+  # Single fixtures worker
+  fixtures-worker:
     build: .
-    command: prefect worker start --pool fixtures-pool --type process --limit 10
-    volumes:
-      - .:/app
-    working_dir: /app
+    command: prefect worker start --pool fixtures-pool --type process --limit 3
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
@@ -88,17 +86,15 @@ services:
       mongodb:
         condition: service_healthy
       found-footy-init:
-        condition: service_completed_successfully  # ✅ WAIT FOR INIT
+        condition: service_completed_successfully
     restart: unless-stopped
     networks:
       - found-footy-network
 
-  fixtures-worker-2:
+  # Single twitter worker
+  twitter-worker:
     build: .
-    command: prefect worker start --pool fixtures-pool --type process --limit 10
-    volumes:
-      - .:/app
-    working_dir: /app
+    command: prefect worker start --pool twitter-pool --type process --limit 2
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
@@ -109,18 +105,15 @@ services:
       mongodb:
         condition: service_healthy
       found-footy-init:
-        condition: service_completed_successfully  # ✅ WAIT FOR INIT
+        condition: service_completed_successfully
     restart: unless-stopped
     networks:
       - found-footy-network
 
-  # Twitter worker
-  twitter-worker-1:
+  # Single dedicated monitor worker  
+  fixtures-monitor-worker:
     build: .
-    command: prefect worker start --pool twitter-pool --type process --limit 10
-    volumes:
-      - .:/app
-    working_dir: /app
+    command: prefect worker start --pool fixtures-monitor-pool --type process --limit 1
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
@@ -131,28 +124,7 @@ services:
       mongodb:
         condition: service_healthy
       found-footy-init:
-        condition: service_completed_successfully  # ✅ WAIT FOR INIT
-    restart: unless-stopped
-    networks:
-      - found-footy-network
-
-  twitter-worker-2:
-    build: .
-    command: prefect worker start --pool twitter-pool --type process --limit 10
-    volumes:
-      - .:/app
-    working_dir: /app
-    environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
-      - PYTHONPATH=/app
-    depends_on:
-      prefect-server:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-      found-footy-init:
-        condition: service_completed_successfully  # ✅ WAIT FOR INIT
+        condition: service_completed_successfully
     restart: unless-stopped
     networks:
       - found-footy-network
