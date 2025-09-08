@@ -309,9 +309,18 @@ def fixtures_monitor_task():
                 if fixture:
                     home_team = fixture.get("team_names", {}).get("home", "Home")
                     away_team = fixture.get("team_names", {}).get("away", "Away")
-                    flow_run_name = f"⚽ GOALS: {home_team} vs {away_team} - {len(complete_goal_events)} events [#{fixture_id}]"
+                    
+                    # ✅ ADD: Extract current score from delta_result
+                    home_score = delta_result.get("current_goals", {}).get("home", 0)
+                    away_score = delta_result.get("current_goals", {}).get("away", 0)
+                    
+                    # ✅ ENHANCED: Include score in flow name
+                    flow_run_name = f"⚽ GOALS: {home_team} {home_score}-{away_score} {away_team} - {len(complete_goal_events)} events [#{fixture_id}]"
                 else:
-                    flow_run_name = f"⚽ GOALS: Fixture #{fixture_id} - {len(complete_goal_events)} events"
+                    # Fallback when fixture not found
+                    home_score = delta_result.get("current_goals", {}).get("home", 0)
+                    away_score = delta_result.get("current_goals", {}).get("away", 0)
+                    flow_run_name = f"⚽ GOALS: {home_score}-{away_score} - Fixture #{fixture_id} - {len(complete_goal_events)} events"
                 
                 run_deployment(
                     name="fixtures-goal-flow/fixtures-goal-flow",
