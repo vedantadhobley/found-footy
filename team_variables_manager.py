@@ -50,7 +50,7 @@ FIFA_25_2025 = {
     31: {"name": "Morocco", "country": "Morocco", "rank": 12},
     16: {"name": "Mexico", "country": "Mexico", "rank": 13},
     8: {"name": "Colombia", "country": "Colombia", "rank": 14},
-    1913: {"name": "USA", "country": "USA", "rank": 15},
+    2384: {"name": "USA", "country": "USA", "rank": 15},
     7: {"name": "Uruguay", "country": "Uruguay", "rank": 16},
     12: {"name": "Japan", "country": "Japan", "rank": 17},
     13: {"name": "Senegal", "country": "Senegal", "rank": 18},
