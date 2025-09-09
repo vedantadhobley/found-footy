@@ -58,7 +58,7 @@ FIFA_25_2025 = {
     22: {"name": "Iran", "country": "Iran", "rank": 20},
     21: {"name": "Denmark", "country": "Denmark", "rank": 21},
     775: {"name": "Austria", "country": "Austria", "rank": 22},
-    21343: {"name": "Korea DPR", "country": "Korea DPR", "rank": 23},
+    17: {"name": "South Korea", "country": "South Korea", "rank": 23},
     20: {"name": "Australia", "country": "Australia", "rank": 24},
     2382: {"name": "Ecuador", "country": "Ecuador", "rank": 25}
 }
