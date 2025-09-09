@@ -284,7 +284,7 @@ def fixtures_store_bulk_task(staging_fixtures, active_fixtures):
     """Bulk store fixtures in their respective collections"""
     logger = get_run_logger()
     
-    # ✅ FIX: Use new universal method
+    # ✅ UPDATED: Reference to fixtures_completed
     staging_count = store.bulk_insert_fixtures(staging_fixtures, "fixtures_staging") if staging_fixtures else 0
     active_count = store.bulk_insert_fixtures(active_fixtures, "fixtures_active") if active_fixtures else 0
     

@@ -11,7 +11,7 @@ async def schedule_fixtures_advance_async(source_collection, destination_collect
         async with get_client() as client:
             deployment = await client.read_deployment_by_name("fixtures-advance-flow/fixtures-advance-flow")
             
-            # ✅ ENHANCED: Use your flow naming service for rich context
+            # ✅ UPDATED: Uses correct collection name in naming
             flow_name = get_fixtures_advance_name(source_collection, destination_collection, fixture_id)
             
             if scheduled_time:

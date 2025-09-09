@@ -88,7 +88,7 @@ def fixtures_categorize_task(team_fixtures):
     
     staging_fixtures = []
     active_fixtures = []
-    completed_fixtures = []
+    completed_fixtures = []  # ✅ SEMANTIC: This variable name was already correct
     
     # ✅ NEW: Get statuses from Prefect Variables
     try:
@@ -181,10 +181,9 @@ def fixtures_store_task(staging_fixtures, active_fixtures, completed_fixtures):
     """Store fixtures in appropriate collections - handles all 3 types"""
     logger = get_run_logger()
     
-    # ✅ SIMPLE: Use existing method - it now handles current scores automatically
     staging_count = store.bulk_insert_fixtures(staging_fixtures, "fixtures_staging") if staging_fixtures else 0
     active_count = store.bulk_insert_fixtures(active_fixtures, "fixtures_active") if active_fixtures else 0
-    completed_count = store.bulk_insert_fixtures(completed_fixtures, "fixtures_processed") if completed_fixtures else 0
+    completed_count = store.bulk_insert_fixtures(completed_fixtures, "fixtures_completed") if completed_fixtures else 0  # ✅ RENAMED
     
     logger.info(f"💾 STORAGE: {staging_count} staging, {active_count} active, {completed_count} completed")
     
@@ -304,7 +303,7 @@ def fixtures_monitor_task():
         return {"status": "error", "delta_results": delta_results}
     
     goal_flows_triggered = 0
-    completed_fixtures_processed = 0
+    completed_fixtures_count = 0
     
     # ✅ CRITICAL: Only process fixtures that ACTUALLY have goal changes
     for fixture_change in delta_results["fixtures_with_changes"]:
@@ -373,20 +372,20 @@ def fixtures_monitor_task():
                 home_score = delta_result.get("current_goals", {}).get("home", 0)
                 away_score = delta_result.get("current_goals", {}).get("away", 0)
                 status = delta_result.get("api_status", "FT")
-                flow_run_name = f"🏁 {home_team} {home_score}-{away_score} {away_team} ({status})"
+                flow_run_name = f"🏁 COMPLETED: {home_team} {home_score}-{away_score} {away_team} ({status}) [#{fixture_id}]"
             else:
-                flow_run_name = f"🏁 Match #{fixture_id}"
+                flow_run_name = f"🏁 COMPLETED: Match #{fixture_id}"
             
             run_deployment(
                 name="fixtures-advance-flow/fixtures-advance-flow",
                 parameters={
                     "source_collection": "fixtures_active",
-                    "destination_collection": "fixtures_processed",
+                    "destination_collection": "fixtures_completed",  # ✅ RENAMED
                     "fixture_id": fixture_id
                 },
                 flow_run_name=flow_run_name
             )
-            completed_fixtures_processed += 1
+            completed_fixtures_count += 1
             logger.info(f"✅ Scheduled completion: {flow_run_name}")
             
         except Exception as e:
@@ -397,7 +396,7 @@ def fixtures_monitor_task():
         "active_fixtures": len(store.get_all_active_fixtures()),
         "goals_detected": delta_results["total_goals_detected"],
         "goal_flows_triggered": goal_flows_triggered,
-        "completed_fixtures": completed_fixtures_processed,
+        "completed_fixtures": completed_fixtures_count,
         "delta_results": delta_results
     }
 
@@ -463,18 +462,15 @@ def fixtures_advance_flow(
     if fixture_id:
         logger.info(f"🎯 Processing specific fixture: {fixture_id}")
     
-    # Use the universal task
     advance_result = fixtures_advance_task(source_collection, destination_collection, fixture_id)
     
-    # ✅ SIMPLIFIED: Pure advancement with status logging only
     if advance_result["status"] == "success" and advance_result["advanced_count"] > 0:
-        
         if destination_collection == "fixtures_active":
-            logger.info(f"✅ Fixture {fixture_id} promoted to active - monitor will detect live goals")
-        elif destination_collection == "fixtures_processed":
-            logger.info(f"🏁 Fixture {fixture_id} archived to processed - no further monitoring")
+            logger.info(f"🚀 KICKOFF: Moved {advance_result['advanced_count']} fixtures to active monitoring")
+        elif destination_collection == "fixtures_completed":  # ✅ RENAMED
+            logger.info(f"🏁 COMPLETION: Moved {advance_result['advanced_count']} fixtures to completed archive")
         else:
-            logger.info(f"✅ Generic advancement: {advance_result['advanced_count']} fixtures")
+            logger.info(f"🔄 ADVANCE: Moved {advance_result['advanced_count']} fixtures to {destination_collection}")
     
     return {
         "status": advance_result["status"],

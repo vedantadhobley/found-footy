@@ -56,7 +56,7 @@ class FlowNamingService:
                     
                     if destination_collection == "fixtures_active":
                         return f"🚀 KICKOFF: {match_name} [#{fixture_id}]"
-                    elif destination_collection == "fixtures_processed":
+                    elif destination_collection == "fixtures_completed":  # ✅ RENAMED
                         return f"🏁 COMPLETED: {match_name} [#{fixture_id}]"
                     else:
                         return f"🔄 ADVANCE: {match_name} [#{fixture_id}]"

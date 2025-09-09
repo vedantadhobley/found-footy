@@ -27,7 +27,7 @@ graph TB
     FFA --> FCT[fixtures-categorize-task<br/>STATUS-DRIVEN ROUTING]
     FCT --> |NS TBD + future time| STAGING[Store to fixtures_staging]
     FCT --> |1H 2H HT LIVE| ACTIVE[Store to fixtures_active]
-    FCT --> |FT AET PEN etc| COMPLETED[Store to fixtures_processed]
+    FCT --> |FT AET PEN etc| COMPLETED[Store to fixtures_completed]
     STAGING --> SCHED[📅 Scheduled Advancement<br/>3min before kickoff]
     
     %% Universal Advance Flow
@@ -43,7 +43,7 @@ graph TB
     FDT --> |Status completion| COMPLETE[fixtures-advance-flow]
     HANDLE --> |✅ Valid goals only| GTE[goal.detected events]
     HANDLE --> |❌ Invalid goals| RETRY[⏳ Retry in 3 minutes]
-    COMPLETE --> |active to processed| FP[(fixtures_processed)]
+    COMPLETE --> |active to completed| FP[(fixtures_completed)]
     
     %% Event-Driven Goal Processing
     GTE --> AUT[🤖 goal-twitter-automation]
@@ -124,9 +124,9 @@ graph LR
     subgraph "📊 Fixture Lifecycle"
         FS[fixtures_staging<br/>📅 Future matches<br/>Time-based advancement] 
         FA[fixtures_active<br/>🔄 Live monitoring<br/>Goal detection enabled]
-        FP[fixtures_processed<br/>🏁 Archived<br/>Historical data]
+        FC[fixtures_completed<br/>🏁 Archived<br/>Historical data]
         FS --> FA
-        FA --> FP
+        FA --> FC
     end
     
     subgraph "⚽ Goal Lifecycle with Validation" 
@@ -144,12 +144,12 @@ graph LR
     
     classDef staging fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
     classDef active fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px,color:#000
-    classDef processed fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
+    classDef completed fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
     classDef metadata fill:#e1f5fe,stroke:#01579b,stroke-width:2px,color:#000
     
     class FS,GA staging
     class FA,GP active
-    class FP processed
+    class FC completed
     class TS metadata
 ```
 

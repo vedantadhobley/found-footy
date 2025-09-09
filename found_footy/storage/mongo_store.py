@@ -13,11 +13,11 @@ class FootyMongoStore:
         self.client = MongoClient(connection_url)
         self.db = self.client.found_footy
         
-        # ✅ NEW: 6 collections architecture
+        # ✅ RENAMED: fixtures_processed → fixtures_completed
         self.teams = self.db.teams
         self.fixtures_staging = self.db.fixtures_staging
         self.fixtures_active = self.db.fixtures_active
-        self.fixtures_processed = self.db.fixtures_processed
+        self.fixtures_completed = self.db.fixtures_completed  # ✅ RENAMED
         self.goals_active = self.db.goals_active
         self.goals_processed = self.db.goals_processed
         
@@ -30,34 +30,34 @@ class FootyMongoStore:
             # Team indexes
             self.teams.create_index([("team_id", 1)], unique=True)
             self.teams.create_index([("country", 1)])
-            self.teams.create_index([("team_type", 1)])  # ✅ NEW: Index for team type
-            self.teams.create_index([("uefa_ranking", 1)])  # ✅ NEW: UEFA ranking
-            self.teams.create_index([("fifa_ranking", 1)])  # ✅ NEW: FIFA ranking
+            self.teams.create_index([("team_type", 1)])
+            self.teams.create_index([("uefa_ranking", 1)])
+            self.teams.create_index([("fifa_ranking", 1)])
             
-            # ✅ NEW: Staging fixtures indexes
+            # Staging fixtures indexes
             self.fixtures_staging.create_index([("fixture_id", 1)], unique=True)
             self.fixtures_staging.create_index([("kickoff_time", 1)])
             self.fixtures_staging.create_index([("teams.home", 1)])
             self.fixtures_staging.create_index([("teams.away", 1)])
             
-            # ✅ NEW: Active fixtures indexes
+            # Active fixtures indexes
             self.fixtures_active.create_index([("fixture_id", 1)], unique=True)
             self.fixtures_active.create_index([("status", 1)])
             self.fixtures_active.create_index([("teams.home", 1)])
             self.fixtures_active.create_index([("teams.away", 1)])
             
-            # ✅ NEW: Processed fixtures indexes
-            self.fixtures_processed.create_index([("fixture_id", 1)], unique=True)
-            self.fixtures_processed.create_index([("date", 1)])
-            self.fixtures_processed.create_index([("teams.home", 1)])
-            self.fixtures_processed.create_index([("teams.away", 1)])
+            # ✅ RENAMED: Completed fixtures indexes
+            self.fixtures_completed.create_index([("fixture_id", 1)], unique=True)
+            self.fixtures_completed.create_index([("date", 1)])
+            self.fixtures_completed.create_index([("teams.home", 1)])
+            self.fixtures_completed.create_index([("teams.away", 1)])
             
-            # ✅ FIXED: Active goals indexes - use compound key matching code logic
+            # Active goals indexes
             self.goals_active.create_index([("fixture_id", 1), ("minute", 1), ("player_id", 1)], unique=True)
             self.goals_active.create_index([("fixture_id", 1)])
             self.goals_active.create_index([("team_id", 1)])
             
-            # ✅ FIXED: Processed goals indexes - use compound key matching code logic  
+            # Processed goals indexes
             self.goals_processed.create_index([("fixture_id", 1), ("minute", 1), ("player_id", 1)], unique=True)
             self.goals_processed.create_index([("fixture_id", 1)])
             self.goals_processed.create_index([("team_id", 1)])
@@ -96,7 +96,7 @@ class FootyMongoStore:
             print(f"❌ Error advancing fixtures: {e}")
             return {"status": "error", "advanced_count": 0, "error": str(e)}
 
-    # ✅ NEW: Bulk insert fixtures into staging/active
+    # ✅ UPDATED: Bulk insert fixtures into staging/active
     def bulk_insert_fixtures(self, fixtures_data: List[dict], collection_name: str) -> int:
         """Universal bulk insert fixtures into any collection"""
         if not fixtures_data:
@@ -106,7 +106,7 @@ class FootyMongoStore:
             collection_map = {
                 "fixtures_staging": self.fixtures_staging,
                 "fixtures_active": self.fixtures_active,
-                "fixtures_processed": self.fixtures_processed
+                "fixtures_completed": self.fixtures_completed  # ✅ RENAMED
             }
             
             target_collection = collection_map.get(collection_name)
@@ -358,7 +358,7 @@ class FootyMongoStore:
             
             # Enhanced logging for status decisions
             if fixture_completed:
-                print(f"🏁 Fixture {fixture_id} COMPLETED: {status} → moving to fixtures_processed")
+                print(f"🏁 Fixture {fixture_id} COMPLETED: {status} → moving to fixtures_completed")
             else:
                 print(f"🔄 Fixture {fixture_id} ACTIVE: {status} → continue monitoring")
             
