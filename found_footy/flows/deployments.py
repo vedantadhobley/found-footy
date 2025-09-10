@@ -1,12 +1,8 @@
 import argparse
-import sys
 import subprocess
 import asyncio
 import time
-import re
-from pathlib import Path
 from prefect import get_client
-from datetime import datetime
 
 async def ensure_work_pools():
     """Ensure work pools exist before creating deployments using CLI"""
@@ -76,45 +72,12 @@ async def clean_all_deployments_api():
         print(f"⚠️ Error in API cleanup: {e}")
         print("✅ Continuing with deployment creation...")
 
-async def clean_all_automations():
-    """Clean up ALL existing automations"""
-    print("🤖 CLEANING ALL EXISTING AUTOMATIONS...")
-    
-    try:
-        async with get_client() as client:
-            automations = await client.read_automations()
-            
-            if not automations:
-                print("ℹ️ No automations found to delete")
-                return
-            
-            print(f"🎯 Found {len(automations)} automations to delete:")
-            for automation in automations:
-                print(f"  - {automation.name}")
-            
-            deleted_count = 0
-            for automation in automations:
-                try:
-                    await client.delete_automation(automation.id)
-                    print(f"✅ Deleted automation: {automation.name}")
-                    deleted_count += 1
-                except Exception as e:
-                    print(f"⚠️ Failed to delete automation {automation.name}: {e}")
-            
-            print(f"✅ Automation cleanup completed - deleted {deleted_count} automations")
-            
-    except Exception as e:
-        print(f"⚠️ Error in automation cleanup: {e}")
-
-# Update deploy_from_yaml() to skip automation
 def deploy_from_yaml():
     """Deploy using prefect.yaml - no automation needed"""
     print("🚀 Creating deployments using prefect.yaml...")
     
-    # Remove automation creation entirely from sequence
     asyncio.run(ensure_work_pools())
     asyncio.run(clean_all_deployments_api())
-    # ✅ REMOVED: No more automation creation
     
     print("⏳ Waiting 5 seconds for cleanup to complete...")
     time.sleep(5)
@@ -128,7 +91,7 @@ def deploy_from_yaml():
     
     if result.returncode == 0:
         print("✅ All deployments created from prefect.yaml!")
-        print("✅ Using direct Twitter flow triggering - no automation needed")
+        print("✅ Using direct flow triggering - no automation needed")
         return True
     else:
         print(f"❌ Failed to deploy from prefect.yaml:")
@@ -136,43 +99,25 @@ def deploy_from_yaml():
         print(f"   stderr: {result.stderr}")
         return False
 
-def run_immediate():
-    """Run the fixtures flow immediately for today's date"""
-    print("🏃 Running fixtures flow immediately for today...")
-    try:
-        from found_footy.flows.fixtures_flows import fixtures_ingest_flow
-        result = fixtures_ingest_flow()
-        print(f"✅ Immediate run completed successfully: {result}")
-    except Exception as e:
-        print(f"❌ Immediate run failed: {e}")
-        import traceback
-        traceback.print_exc()
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true", help="Apply all deployments")
-    parser.add_argument("--run-now", action="store_true", help="Also run immediately")
     parser.add_argument("--clean-only", action="store_true", help="Only clean deployments, don't recreate")
     args = parser.parse_args()
     
     if args.clean_only:
         print("🧹 CLEAN-ONLY MODE: Deleting all deployments...")
         asyncio.run(clean_all_deployments_api())
-        asyncio.run(clean_all_automations())
         print("✅ Clean-only completed!")
     elif args.apply:
-        print("📋 Creating deployments with FRESH REBUILD...")
+        print("📋 Creating deployments...")
         success = deploy_from_yaml()
         
-        if success and args.run_now:
-            run_immediate()
-        elif not success:
-            print("❌ Deployment failed, skipping immediate run")
-        
-        print("✅ Setup complete!")
-        print("🌐 Access Prefect UI at http://localhost:4200")
-        print("📝 All variables freshly rebuilt from source code")
+        if success:
+            print("✅ Setup complete!")
+            print("🌐 Access Prefect UI at http://localhost:4200")
+        else:
+            print("❌ Deployment failed")
     else:
-        print("Use --apply to create deployments with fresh rebuild")
-        print("Use --apply --run-now to also run immediately")
+        print("Use --apply to create deployments")
         print("Use --clean-only to just delete all deployments")

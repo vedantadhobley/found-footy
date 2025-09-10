@@ -43,7 +43,7 @@ services:
     networks:
       - found-footy-network
 
-  # ✅ NEW: Init container - runs setup then exits
+  # Init container - runs setup then exits
   app:
     build: .
     environment:
@@ -55,7 +55,6 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-    # ✅ NEW: Uses centralized startup configuration
     command: >
       sh -c "
         echo '🚀 Found Footy Automated Setup Starting...' &&
@@ -71,28 +70,9 @@ services:
       "
     networks:
       - found-footy-network
-    restart: "no"  # ✅ IMPORTANT: Don't restart init container
+    restart: "no"
 
-  # ✅ UPDATED: Workers depend on successful init
-  # Single fixtures worker
-  fixtures-worker:
-    build: .
-    command: prefect worker start --pool fixtures-pool --type process --limit 3
-    environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
-      - PYTHONPATH=/app
-    depends_on:
-      prefect-server:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-      app:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    networks:
-      - found-footy-network
-
+  # CLEAN: Domain-separated workers only
   # Ingest worker
   ingest-worker:
     build: .
@@ -169,7 +149,7 @@ services:
     networks:
       - found-footy-network
 
-  # Single twitter worker
+  # Twitter worker
   twitter-worker:
     build: .
     command: prefect worker start --pool twitter-pool --type process --limit 2
@@ -238,5 +218,5 @@ services:
       - found-footy-network
 
 volumes:
-  prefect_postgres_data:  # Only Prefect needs PostgreSQL
-  mongodb_data:           # Application uses MongoDB
+  prefect_postgres_data:
+  mongodb_data:

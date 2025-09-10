@@ -64,7 +64,7 @@ graph TB
     %% Data Collections
     FS[(fixtures_staging)] --> |Time-based advance| FA
     FA --> |Status-based complete| FC
-    GA[(goals_active<br/>Validation + Deduplication)] --> |Direct triggering| GP
+    GA[(goals_pending<br/>Validation + Deduplication)] --> |Direct triggering| GP
     TS[(teams<br/>Enhanced metadata)] --> ST3
     
     %% Worker Pool Isolation with Clear Logs
@@ -217,4 +217,3 @@ Our 6-collection MongoDB architecture with clear goal pipeline:
 | `fixtures_completed` | Archived completed matches | Final storage |
 | `goals_pending` | ✅ New goals awaiting Twitter posting | → `goals_processed` |
 | `goals_processed` | ✅ Goals posted to social media | Final storage |
-````
