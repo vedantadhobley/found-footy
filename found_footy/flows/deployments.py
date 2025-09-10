@@ -10,7 +10,13 @@ from datetime import datetime
 
 async def ensure_work_pools():
     """Ensure work pools exist before creating deployments using CLI"""
-    pools = ["fixtures-pool", "twitter-pool", "fixtures-monitor-pool"]
+    pools = [
+        "ingest-pool", 
+        "monitor-pool", 
+        "advance-pool", 
+        "goal-pool", 
+        "twitter-pool"
+    ]
     
     for pool_name in pools:
         try:
@@ -100,65 +106,15 @@ async def clean_all_automations():
     except Exception as e:
         print(f"⚠️ Error in automation cleanup: {e}")
 
-async def create_twitter_automation():
-    """Create Twitter automation with ENHANCED naming template"""
-    print("🤖 Creating Twitter automation with rich player + teams naming...")
-    
-    try:
-        async with get_client() as client:
-            deployment = await client.read_deployment_by_name("twitter-search-flow/twitter-search-flow")
-            
-            from prefect.automations import Automation
-            from prefect.events.schemas.automations import EventTrigger
-            from prefect.events.actions import RunDeployment
-            
-            automation = Automation(
-                name="goal-twitter-automation",
-                description="Run twitter-search-flow with rich player + team context naming",
-                enabled=True,
-                trigger=EventTrigger(
-                    expect=["goal.detected"],
-                    match={"prefect.resource.id": "goal.*"},
-                    posture="Reactive",
-                    threshold=1,
-                    within=0,
-                ),
-                actions=[
-                    RunDeployment(
-                        deployment_id=deployment.id,
-                        parameters={"goal_id": "{{ event.payload.goal_id }}"},
-                        flow_run_name="⚽ GOAL: {{ event.payload.player_name }} ({{ event.payload.minute }}') for {{ event.payload.team_name }} vs {{ event.payload.opponent_name }} [#{{ event.payload.fixture_id }}]"
-                    )
-                ],
-            )
-            
-            created_automation = await automation.acreate()
-            print(f"✅ Created automation: {created_automation.name}")
-            return True
-            
-    except Exception as e:
-        print(f"❌ Failed to create automation: {e}")
-        return False
-
+# Update deploy_from_yaml() to skip automation
 def deploy_from_yaml():
-    """Deploy using prefect.yaml with 🔥 FRESH REBUILD"""
+    """Deploy using prefect.yaml - no automation needed"""
     print("🚀 Creating deployments using prefect.yaml...")
     
-    # ✅ 🔥 FRESH REBUILD: Delete all variables and recreate
-    print("🔥 FRESH REBUILD: Deleting all variables and recreating...")
-    try:
-        from found_footy.config.startup_config import sync_startup
-        sync_startup()
-        print("✅ Fresh rebuild completed successfully")
-        
-    except Exception as e:
-        print(f"⚠️ Error with fresh rebuild: {e}")
-        print("🔄 Continuing with deployment...")
-    
-    # Setup sequence
+    # Remove automation creation entirely from sequence
     asyncio.run(ensure_work_pools())
     asyncio.run(clean_all_deployments_api())
-    asyncio.run(clean_all_automations())
+    # ✅ REMOVED: No more automation creation
     
     print("⏳ Waiting 5 seconds for cleanup to complete...")
     time.sleep(5)
@@ -172,20 +128,7 @@ def deploy_from_yaml():
     
     if result.returncode == 0:
         print("✅ All deployments created from prefect.yaml!")
-        
-        # Wait for deployments to register
-        print("⏳ Waiting 3 seconds for deployments to register...")
-        time.sleep(3)
-        
-        # Create automation
-        print("🤖 Creating automation using Python...")
-        automation_success = asyncio.run(create_twitter_automation())
-        
-        if automation_success:
-            print("✅ Automation created successfully!")
-        else:
-            print("❌ Automation creation failed - check logs above")
-        
+        print("✅ Using direct Twitter flow triggering - no automation needed")
         return True
     else:
         print(f"❌ Failed to deploy from prefect.yaml:")

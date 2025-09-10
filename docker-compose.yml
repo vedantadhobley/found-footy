@@ -44,7 +44,7 @@ services:
       - found-footy-network
 
   # ✅ NEW: Init container - runs setup then exits
-  found-footy-init:
+  app:
     build: .
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
@@ -87,7 +87,83 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-      found-footy-init:
+      app:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - found-footy-network
+
+  # Ingest worker
+  ingest-worker:
+    build: .
+    command: prefect worker start --pool ingest-pool --type process --limit 2
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
+      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - PYTHONPATH=/app
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      app:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - found-footy-network
+
+  # Monitor worker (dedicated)
+  monitor-worker:
+    build: .
+    command: prefect worker start --pool monitor-pool --type process --limit 1
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
+      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - PYTHONPATH=/app
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      app:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - found-footy-network
+
+  # Advance worker
+  advance-worker:
+    build: .
+    command: prefect worker start --pool advance-pool --type process --limit 2
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
+      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - PYTHONPATH=/app
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      app:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - found-footy-network
+
+  # Goal worker
+  goal-worker:
+    build: .
+    command: prefect worker start --pool goal-pool --type process --limit 3
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
+      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - PYTHONPATH=/app
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      app:
         condition: service_completed_successfully
     restart: unless-stopped
     networks:
@@ -106,26 +182,7 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-      found-footy-init:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    networks:
-      - found-footy-network
-
-  # Single dedicated monitor worker  
-  fixtures-monitor-worker:
-    build: .
-    command: prefect worker start --pool fixtures-monitor-pool --type process --limit 1
-    environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
-      - PYTHONPATH=/app
-    depends_on:
-      prefect-server:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-      found-footy-init:
+      app:
         condition: service_completed_successfully
     restart: unless-stopped
     networks:

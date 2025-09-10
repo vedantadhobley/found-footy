@@ -1,0 +1,62 @@
+# ✅ NEW: found_footy/flows/ingest_flow.py
+from datetime import datetime, timedelta, timezone
+from prefect import flow, get_run_logger
+from prefect.deployments import run_deployment
+from typing import Optional
+
+from found_footy.flows.shared_tasks import (
+    fixtures_process_parameters_task,
+    fixtures_fetch_api_task,
+    fixtures_categorize_task,
+    fixtures_store_task
+)
+from found_footy.api.mongo_api import populate_team_metadata
+from found_footy.flows.flow_triggers import schedule_advance
+
+@flow(name="ingest-flow")
+def ingest_flow(date_str: Optional[str] = None, team_ids: Optional[str] = None):
+    """Pure fixtures ingest flow with status-based routing"""
+    logger = get_run_logger()
+    
+    logger.info("📥 Starting Pure Fixtures Ingest Flow")
+    populate_team_metadata(reset_first=False)
+    
+    # Process parameters
+    params = fixtures_process_parameters_task(team_ids, date_str)
+    
+    # Fetch and categorize fixtures
+    team_fixtures = fixtures_fetch_api_task(params["query_date"], params["valid_team_ids"])
+    if not team_fixtures:
+        return {"status": "no_fixtures", "message": "No fixtures found"}
+    
+    categorized = fixtures_categorize_task(team_fixtures)
+    
+    # Store in appropriate collections
+    storage_result = fixtures_store_task(
+        categorized["staging_fixtures"], 
+        categorized["active_fixtures"],
+        categorized["completed_fixtures"]
+    )
+
+    # Non-blocking scheduling using async client
+    scheduled_advances = 0
+    for fixture in categorized["staging_fixtures"]:
+        kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
+        advance_time = kickoff_time - timedelta(minutes=3)
+        try:
+            result = schedule_advance("fixtures_staging", "fixtures_active", fixture["id"], advance_time)
+            if result["status"] in ["scheduled", "immediate"]:
+                scheduled_advances += 1
+                logger.info(f"✅ Scheduled advance for fixture {fixture['id']} at {advance_time}")
+        except Exception as e:
+            logger.error(f"❌ Failed to schedule advance for fixture {fixture['id']}: {e}")
+
+    return {
+        "status": "success",
+        "approach": "pure_status_based_live_only",
+        "staging_fixtures": storage_result["staging_count"],
+        "active_fixtures": storage_result["active_count"],
+        "completed_fixtures": storage_result["completed_count"],
+        "scheduled_advances": scheduled_advances,
+        "note": "Historical fixtures moved to completed - live monitoring only"
+    }

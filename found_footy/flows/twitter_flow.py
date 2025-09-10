@@ -1,3 +1,4 @@
+# ✅ UPDATED: found_footy/flows/twitter_flow.py
 from prefect import flow, task, get_run_logger
 from found_footy.storage.mongo_store import FootyMongoStore
 from datetime import datetime, timezone
@@ -13,24 +14,24 @@ def twitter_process_goal_task(goal_id: str):
     logger.info(f"🎯 Processing individual goal: {goal_id}")
     
     try:
-        goal_doc = store.goals_active.find_one({"_id": goal_id})
+        goal_doc = store.goals_pending.find_one({"_id": goal_id})  # ✅ UPDATED
         
         if not goal_doc:
-            logger.warning(f"⚠️ Goal {goal_id} not found in goals_active")
+            logger.warning(f"⚠️ Goal {goal_id} not found in goals_pending")  # ✅ UPDATED
             return {"status": "not_found", "goal_id": goal_id}
         
         logger.info(f"🚨 GOAL FOUND: {goal_doc['team_name']} - {goal_doc['player_name']} ({goal_doc['minute']}')")
         
-        # ✅ Simulate Twitter posting
+        # Simulate Twitter posting
         tweet_text = f"⚽ GOAL! {goal_doc['player_name']} scores for {goal_doc['team_name']} in the {goal_doc['minute']}' minute!"
         logger.info(f"🐦 TWITTER: {tweet_text}")
         
-        # ✅ Move goal from active to processed
+        # Move goal from pending to processed
         goal_doc["processed_at"] = datetime.now(timezone.utc)
         goal_doc["twitter_status"] = "posted"
         
         store.goals_processed.replace_one({"_id": goal_id}, goal_doc, upsert=True)
-        store.goals_active.delete_one({"_id": goal_id})
+        store.goals_pending.delete_one({"_id": goal_id})  # ✅ UPDATED
         
         logger.info(f"✅ Goal {goal_id} processed and moved to goals_processed")
         
@@ -47,14 +48,10 @@ def twitter_process_goal_task(goal_id: str):
         logger.error(f"❌ Error processing goal {goal_id}: {e}")
         return {"status": "error", "goal_id": goal_id, "error": str(e)}
 
-# ✅ FIX: twitter_flows.py - Remove runtime naming
-@flow(name="twitter-search-flow")
-def twitter_search_flow(goal_id: Optional[str] = None):
-    """Twitter flow - name set by automation, no runtime changes needed"""
+@flow(name="twitter-flow")
+def twitter_flow(goal_id: Optional[str] = None):
+    """Twitter flow - name set by direct triggering"""
     logger = get_run_logger()
-    
-    # ✅ REMOVE: All runtime naming - automation sets rich name already
-    # Flow run name comes from automation: "⚽ Player Name (67min) vs Opponent"
     
     if not goal_id:
         logger.warning("⚠️ No goal_id provided")

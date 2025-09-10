@@ -1,7 +1,7 @@
 """Main entry point for Found Footy"""
 
 import argparse
-from found_footy.flows.fixtures_flows import fixtures_ingest_flow  # ✅ FIXED
+from found_footy.flows.ingest_flow import ingest_flow  # ✅ UPDATED
 
 def main():
     """Main CLI entry point"""
@@ -15,7 +15,7 @@ def main():
     args = parser.parse_args()
 
     print("🚀 Running Found Footy fixtures flow...")
-    fixtures_ingest_flow(date_str=args.date)  # ✅ FIXED
+    ingest_flow(date_str=args.date)  # ✅ UPDATED
 
 if __name__ == "__main__":
     main()

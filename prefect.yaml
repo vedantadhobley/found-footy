@@ -7,10 +7,10 @@ pull: null
 
 deployments:
   # 1. Daily Ingest
-  - name: fixtures-ingest-daily
-    entrypoint: found_footy.flows.fixtures_flows:fixtures_ingest_flow
+  - name: ingest-daily
+    entrypoint: found_footy.flows.ingest_flow:ingest_flow
     work_pool:
-      name: fixtures-pool
+      name: ingest-pool
     schedule:
       cron: "5 0 * * *"
       timezone: UTC
@@ -19,74 +19,74 @@ deployments:
       date_str: null
       team_ids: "{{ all_teams_2025_ids }}"
     tags:
-      - fixtures
+      - ingest
       - daily
       - all-teams
-    description: "Daily fixtures ingest - all tracked teams (UEFA clubs + FIFA nationals)"
+    description: "Daily fixtures ingest - all tracked teams"
 
   # 2. Manual ingest
-  - name: fixtures-ingest-manual
-    entrypoint: found_footy.flows.fixtures_flows:fixtures_ingest_flow
+  - name: ingest-manual
+    entrypoint: found_footy.flows.ingest_flow:ingest_flow
     work_pool:
-      name: fixtures-pool
+      name: ingest-pool
     parameters:
-      date_str: "20250903"
+      date_str: null
       team_ids: "{{ all_teams_2025_ids }}"
     tags:
-      - fixtures
+      - ingest
       - manual
-    description: "Manual fixtures ingest for Sep 03, 2025"
+    description: "Manual fixtures ingest - defaults to today's date"
 
   # 3. Advance Flow
-  - name: fixtures-advance-flow
-    entrypoint: found_footy.flows.fixtures_flows:fixtures_advance_flow
+  - name: advance-flow
+    entrypoint: found_footy.flows.advance_flow:advance_flow
     work_pool:
-      name: fixtures-pool
+      name: advance-pool
     parameters:
       source_collection: "fixtures_staging"
       destination_collection: "fixtures_active"
       fixture_id: 0
     tags:
-      - fixtures
       - advance
-    description: "Universal fixture advancement"
+      - collections
+    description: "Universal fixture advancement between collections"
 
-  # NEW: Goal processing flow
-  - name: fixtures-goal-flow
-    entrypoint: found_footy.flows.fixtures_flows:fixtures_goal_flow
+  # 4. Goal processing flow
+  - name: goal-flow
+    entrypoint: found_footy.flows.goal_flow:goal_flow
     work_pool:
-      name: fixtures-pool
+      name: goal-pool
     parameters:
       fixture_id: 0
       goal_events: []
     tags:
       - goals
       - processing
-    description: "Dedicated goal event processing flow"
+    description: "Dedicated goal event processing with Twitter triggering"
 
-  # Monitor - simple, no custom naming
-  - name: fixtures-monitor-flow
-    entrypoint: found_footy.flows.fixtures_flows:fixtures_monitor_flow
+  # 5. Monitor flow
+  - name: monitor-flow
+    entrypoint: found_footy.flows.monitor_flow:monitor_flow
     work_pool:
-      name: fixtures-monitor-pool
+      name: monitor-pool
     schedule:
       cron: "*/3 * * * *"
       timezone: UTC
       active: true
     parameters: {}
     tags:
-      - fixtures
       - monitor
-    description: "Always-running monitor - default naming"
+      - live
+    description: "Live fixture monitoring - dedicated pool"
 
-  # Twitter - name set by automation
-  - name: twitter-search-flow
-    entrypoint: found_footy.flows.twitter_flows:twitter_search_flow
+  # 6. Twitter flow
+  - name: twitter-flow
+    entrypoint: found_footy.flows.twitter_flow:twitter_flow
     work_pool:
       name: twitter-pool
     parameters:
       goal_id: null
     tags:
       - twitter
-      - automation
-    description: "Event-driven Twitter processing"
+      - social
+    description: "Twitter goal processing with rich naming"

@@ -3,7 +3,7 @@ import asyncio
 from datetime import datetime
 from prefect import get_client
 from prefect.states import Scheduled
-from found_footy.flows.flow_naming import get_fixtures_advance_name  # ✅ ADD: Import your naming service
+from found_footy.flows.flow_naming import get_advance_flow_name  # ✅ UPDATED
 
 async def schedule_fixtures_advance_async(source_collection, destination_collection, fixture_id, scheduled_time=None):
     """NON-BLOCKING: Use async client with RICH team context naming"""
@@ -12,7 +12,7 @@ async def schedule_fixtures_advance_async(source_collection, destination_collect
             deployment = await client.read_deployment_by_name("fixtures-advance-flow/fixtures-advance-flow")
             
             # ✅ UPDATED: Uses correct collection name in naming
-            flow_name = get_fixtures_advance_name(source_collection, destination_collection, fixture_id)
+            flow_name = get_advance_flow_name(source_collection, destination_collection, fixture_id)  # ✅ UPDATED
             
             if scheduled_time:
                 flow_run = await client.create_flow_run_from_deployment(

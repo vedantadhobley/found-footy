@@ -13,12 +13,12 @@ class FootyMongoStore:
         self.client = MongoClient(connection_url)
         self.db = self.client.found_footy
         
-        # ✅ RENAMED: fixtures_processed → fixtures_completed
+        # ✅ UPDATED: Collection names
         self.teams = self.db.teams
         self.fixtures_staging = self.db.fixtures_staging
         self.fixtures_active = self.db.fixtures_active
-        self.fixtures_completed = self.db.fixtures_completed  # ✅ RENAMED
-        self.goals_active = self.db.goals_active
+        self.fixtures_completed = self.db.fixtures_completed
+        self.goals_pending = self.db.goals_pending  # ✅ RENAMED: goals_active → goals_pending
         self.goals_processed = self.db.goals_processed
         
         # Create indexes for performance
@@ -52,10 +52,10 @@ class FootyMongoStore:
             self.fixtures_completed.create_index([("teams.home", 1)])
             self.fixtures_completed.create_index([("teams.away", 1)])
             
-            # Active goals indexes
-            self.goals_active.create_index([("fixture_id", 1), ("minute", 1), ("player_id", 1)], unique=True)
-            self.goals_active.create_index([("fixture_id", 1)])
-            self.goals_active.create_index([("team_id", 1)])
+            # ✅ UPDATED: Pending goals indexes (renamed from active)
+            self.goals_pending.create_index([("fixture_id", 1), ("minute", 1), ("player_id", 1)], unique=True)
+            self.goals_pending.create_index([("fixture_id", 1)])
+            self.goals_pending.create_index([("team_id", 1)])
             
             # Processed goals indexes
             self.goals_processed.create_index([("fixture_id", 1), ("minute", 1), ("player_id", 1)], unique=True)
@@ -69,7 +69,7 @@ class FootyMongoStore:
 
     # ✅ NEW: Helper method - fixtures_advance
     def fixtures_advance(self, source_collection_name: str, destination_collection_name: str, fixture_id: int = None) -> dict:
-        """📋 HELPER: Move fixtures between collections with consistent error handling"""
+        """Move fixtures between collections with consistent error handling"""
         try:
             source_collection = getattr(self, source_collection_name)
             destination_collection = getattr(self, destination_collection_name)
@@ -79,11 +79,12 @@ class FootyMongoStore:
             source_docs = list(source_collection.find(query))
             
             if not source_docs:
-                return {"status": "success", "advanced_count": 0, "message": "No documents found to advance"}
+                print(f"⚠️ No documents found to advance from {source_collection_name}")
+                return {"status": "success", "advanced_count": 0}
             
             # Move documents
             for doc in source_docs:
-                doc["advanced_at"] = datetime.now(timezone.utc)
+                doc["moved_at"] = datetime.now(timezone.utc)
                 destination_collection.replace_one({"_id": doc["_id"]}, doc, upsert=True)
         
             # Delete from source
@@ -106,7 +107,7 @@ class FootyMongoStore:
             collection_map = {
                 "fixtures_staging": self.fixtures_staging,
                 "fixtures_active": self.fixtures_active,
-                "fixtures_completed": self.fixtures_completed  # ✅ RENAMED
+                "fixtures_completed": self.fixtures_completed
             }
             
             target_collection = collection_map.get(collection_name)
@@ -117,41 +118,31 @@ class FootyMongoStore:
             
             documents = []
             for fixture in fixtures_data:
-                # Convert date string to datetime for proper MongoDB storage
-                kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
-                fixture_date = kickoff_time.date()
-                
-                # ✅ SMART: Use current scores if available, otherwise default to 0-0
-                current_goals = fixture.get("current_goals", {"home": 0, "away": 0})
-                
-                # Base document structure
-                doc = {
+                document = {
                     "_id": fixture["id"],
                     "fixture_id": fixture["id"],
-                    "kickoff_time": kickoff_time,
-                    "date": datetime.combine(fixture_date, datetime.min.time()).replace(tzinfo=timezone.utc),
-                    "teams": {
-                        "home": fixture["home_id"],
-                        "away": fixture["away_id"]
-                    },
+                    "home_team_id": fixture["home_id"],
+                    "away_team_id": fixture["away_id"],
                     "team_names": {
                         "home": fixture["home"],
                         "away": fixture["away"]
                     },
-                    "league": {
-                        "id": fixture["league_id"],
-                        "name": fixture["league"]
+                    "teams": {
+                        "home": fixture["home_id"],
+                        "away": fixture["away_id"]
                     },
+                    "league": fixture["league"],
+                    "league_id": fixture["league_id"],
+                    "kickoff_time": datetime.fromisoformat(fixture["time"].replace('Z', '+00:00')),
+                    "raw_fixture_data": fixture,
                     "status": fixture.get("status", "NS"),
-                    # ✅ SIMPLE: Use API scores if available, default to 0-0
-                    "goals": current_goals,
-                    "created_at": datetime.now(timezone.utc),
-                    "last_checked": datetime.now(timezone.utc)
+                    "goals": fixture.get("current_goals", {"home": 0, "away": 0}),
+                    "last_checked": datetime.now(timezone.utc),
+                    "created_at": datetime.now(timezone.utc)
                 }
-                
-                documents.append(doc)
-        
-            # Use upsert operations to handle duplicates gracefully
+                documents.append(document)
+    
+            # ✅ FIX: This block was incorrectly indented - it should be at the same level as documents = []
             bulk_operations = [
                 UpdateOne(
                     {"fixture_id": doc["fixture_id"]},
@@ -184,46 +175,46 @@ class FootyMongoStore:
     # - diff_goal_events() → replaced by goals_delta()
 
     # ✅ UPDATED: Store goal with better duplicate handling
-    def store_goal_active(self, fixture_id: int, goal_data: dict) -> bool:
-        """Store goal in goals_active collection with ENHANCED validation"""
+    def store_goal_pending(self, fixture_id: int, goal_data: dict) -> bool:  # ✅ RENAMED METHOD
+        """Store goal in goals_pending collection with enhanced validation"""
         try:
             minute = goal_data.get("time", {}).get("elapsed", 0)
             player_id = goal_data.get("player", {}).get("id", 0)
             player_name = goal_data.get("player", {}).get("name", "")
             team_name = goal_data.get("team", {}).get("name", "")
             
-            # ✅ ENHANCED VALIDATION: Reject incomplete goals
+            # Enhanced validation
             if not player_name:
-                print(f"❌ Goal rejected: Missing player name for fixture {fixture_id}")
+                print(f"⚠️ Skipping goal - missing player name for fixture {fixture_id}")
                 return False
             
             if not team_name:
-                print(f"❌ Goal rejected: Missing team name for fixture {fixture_id}")
+                print(f"⚠️ Skipping goal - missing team name for fixture {fixture_id}")
                 return False
             
             if minute <= 0:
-                print(f"❌ Goal rejected: Invalid minute {minute} for fixture {fixture_id}")
+                print(f"⚠️ Skipping goal - invalid minute {minute} for fixture {fixture_id}")
                 return False
             
             if player_id <= 0:
-                print(f"❌ Goal rejected: Invalid player ID {player_id} for fixture {fixture_id}")
+                print(f"⚠️ Skipping goal - invalid player_id {player_id} for fixture {fixture_id}")
                 return False
             
             goal_id = f"{fixture_id}_{minute}_{player_id}"
             
-            # ✅ DOUBLE-CHECK: Prevent duplicates across BOTH collections
-            existing_active = self.goals_active.find_one({"_id": goal_id})
+            # Prevent duplicates across both collections
+            existing_pending = self.goals_pending.find_one({"_id": goal_id})  # ✅ UPDATED
             existing_processed = self.goals_processed.find_one({"_id": goal_id})
             
-            if existing_active:
-                print(f"⚠️ Goal {goal_id} already exists in goals_active - skipping")
+            if existing_pending:
+                print(f"⚠️ Goal {goal_id} already exists in goals_pending - skipping")
                 return False
             
             if existing_processed:
-                print(f"⚠️ Goal {goal_id} already processed in goals_processed - skipping")
+                print(f"⚠️ Goal {goal_id} already exists in goals_processed - skipping")
                 return False
             
-            # ✅ STORE: Goal with complete data
+            # Store goal with complete data
             assist_name = goal_data.get("assist", {}).get("name", "")
             assist_id = goal_data.get("assist", {}).get("id", 0) if goal_data.get("assist") else None
             
@@ -245,7 +236,7 @@ class FootyMongoStore:
                 "data_quality": "complete"
             }
             
-            result = self.goals_active.insert_one(document)
+            result = self.goals_pending.insert_one(document)  # ✅ UPDATED
             
             print(f"✅ Stored COMPLETE goal: {team_name} - {player_name} ({minute}') [{goal_id}]")
             if assist_name:
@@ -257,6 +248,11 @@ class FootyMongoStore:
             print(f"❌ Error storing goal: {e}")
             return False
 
+    # ✅ LEGACY: Keep old method name for backward compatibility
+    def store_goal_active(self, fixture_id: int, goal_data: dict) -> bool:
+        """Legacy method - calls store_goal_pending"""
+        return self.store_goal_pending(fixture_id, goal_data)
+
     # ✅ NEW: Check if collections are empty
     def check_collections_empty(self, collection_names: List[str]) -> bool:
         """Check if specified collections are empty"""
@@ -264,8 +260,8 @@ class FootyMongoStore:
             for collection_name in collection_names:
                 collection = getattr(self, collection_name)
                 if collection.count_documents({}) > 0:
-                    return False
-            
+                    return False  # ✅ COMPLETE: Found non-empty collection
+        
             print(f"✅ All specified collections are empty: {collection_names}")
             return True
             
@@ -316,7 +312,7 @@ class FootyMongoStore:
             collection_names = self.db.list_collection_names()
             for collection_name in collection_names:
                 self.db.drop_collection(collection_name)
-                print(f"🗑️ Dropped collection: {collection_name}")
+                print(f"✅ Dropped collection: {collection_name}")
             
             self._create_indexes()
             return True
@@ -330,7 +326,8 @@ class FootyMongoStore:
         try:
             current_fixture = self.fixtures_active.find_one({"_id": fixture_id})
             if not current_fixture:
-                return {"status": "error", "goals_changed": False, "message": "Fixture not found"}
+                print(f"⚠️ Fixture {fixture_id} not found in active collection")
+                return {"status": "not_found", "goals_changed": False}
             
             # Extract current API state
             goals_data = api_data.get("goals", {"home": 0, "away": 0})
@@ -351,16 +348,9 @@ class FootyMongoStore:
                 from found_footy.utils.fixture_status import is_fixture_completed
                 fixture_completed = is_fixture_completed(status)
             except Exception as e:
-                print(f"⚠️ Could not load status config: {e}")
-                # Fallback to hardcoded logic
-                completed_statuses = {"FT", "AET", "PEN", "PST", "CANC", "ABD", "AWD", "WO"}
-                fixture_completed = status in completed_statuses
-            
-            # Enhanced logging for status decisions
-            if fixture_completed:
-                print(f"🏁 Fixture {fixture_id} COMPLETED: {status} → moving to fixtures_completed")
-            else:
-                print(f"🔄 Fixture {fixture_id} ACTIVE: {status} → continue monitoring")
+                print(f"⚠️ Could not load status logic: {e}")
+                # Fallback to hardcoded completion statuses
+                fixture_completed = status in ["FT", "AET", "PEN", "PST", "CANC", "ABD", "AWD", "WO"]
             
             return {
                 "status": "success",
@@ -462,41 +452,36 @@ class FootyMongoStore:
             new_goal_events = []
         
             for goal_event in api_goal_events:
+                # ✅ KEEP: Check if goal already exists
                 minute = goal_event.get("time", {}).get("elapsed", 0)
                 player_id = goal_event.get("player", {}).get("id", 0)
-                player_name = goal_event.get("player", {}).get("name", "")
+                player_name = goal_event.get("player", {}).get("name", "")  # ✅ KEEP: Player name check
                 team_name = goal_event.get("team", {}).get("name", "")
                 
-                # Enhanced validation: Skip goals with missing required data
-                if not player_name or not team_name or minute <= 0 or player_id <= 0:
-                    print(f"⚠️ Skipping incomplete goal data: player='{player_name}', team='{team_name}', minute={minute}, player_id={player_id}")
+                # ✅ KEEP: Your validation logic
+                if not player_name:
+                    print(f"⚠️ Skipping goal with missing player name for fixture {fixture_id}")
+                    continue
+                    
+                if not team_name:
+                    print(f"⚠️ Skipping goal with missing team name for fixture {fixture_id}")
+                    continue
+                    
+                if minute <= 0:
+                    print(f"⚠️ Skipping goal with invalid minute {minute} for fixture {fixture_id}")
                     continue
                 
                 goal_id = f"{fixture_id}_{minute}_{player_id}"
                 
-                # Check BOTH active AND processed collections for duplicates
+                # Check both collections for duplicates
                 existing_active = self.goals_active.find_one({"_id": goal_id})
                 existing_processed = self.goals_processed.find_one({"_id": goal_id})
                 
-                if existing_active:
-                    print(f"⚠️ Goal {goal_id} already exists in goals_active - skipping")
-                    continue
-                elif existing_processed:
-                    print(f"⚠️ Goal {goal_id} already processed in goals_processed - skipping")
-                    continue
-                else:
-                    # This is a genuinely new goal with complete data
+                if not existing_active and not existing_processed:
                     new_goal_events.append(goal_event)
-                    print(f"✅ NEW goal detected: {player_name} ({minute}') for {team_name}")
-                    
-                    # Only store and trigger if trigger_actions=True
-                    if trigger_actions:
-                        # Store the new goal
-                        goal_stored = self.store_goal_active(fixture_id, goal_event)
-                        if goal_stored:
-                            # Trigger automation event for this specific goal
-                            from found_footy.utils.events import goal_trigger
-                            goal_trigger(fixture_id, [goal_event])
+                    print(f"✅ New goal detected: {goal_id} - {player_name} for {team_name}")
+                else:
+                    print(f"⚠️ Goal {goal_id} already exists - skipping")
 
             return new_goal_events
         
@@ -511,12 +496,12 @@ class FootyMongoStore:
             goals_stored = 0
             
             for goal_event in api_goal_events:
-                goal_stored = self.store_goal_active(fixture_id, goal_event)
-                if goal_stored:
+                # ✅ COMPLETE: Store each goal with full validation
+                if self.store_goal_active(fixture_id, goal_event):
                     goals_stored += 1
-        
+    
             return goals_stored
-        
+            
         except Exception as e:
             print(f"❌ Error updating goals for fixture {fixture_id}: {e}")
             return 0
@@ -525,6 +510,7 @@ class FootyMongoStore:
         """Update fixture with latest API data"""
         try:
             if delta_result["status"] != "success":
+                print(f"⚠️ Skipping update for fixture {fixture_id} - delta failed")
                 return False
             
             update_data = {
@@ -565,4 +551,3 @@ class FootyMongoStore:
         except Exception as e:
             print(f"❌ Error getting team IDs from variables: {e}")
             return self.get_team_ids()  # Fallback to database
-
