@@ -6,8 +6,7 @@ from .mongo_api import (
     fixtures_events,
     fixtures_batch,
     filter_fixtures_by_teams,
-    get_teams_from_variables,
-    get_team_ids_from_variables
+    parse_team_ids_parameter
 )
 
 __all__ = [
@@ -15,6 +14,5 @@ __all__ = [
     "fixtures_events", 
     "fixtures_batch",
     "filter_fixtures_by_teams",
-    "get_teams_from_variables",
-    "get_team_ids_from_variables"
+    "parse_team_ids_parameter"
 ]

@@ -1,17 +1,22 @@
-# ✅ NEW: found_footy/flows/advance_flow.py
 from prefect import flow, get_run_logger
 from typing import Optional
-
 from found_footy.flows.shared_tasks import fixtures_advance_task
+from found_footy.flows.flow_naming import runtime_advance_flow_name
 
-@flow(name="advance-flow")
+@flow(
+    name="advance-flow"
+    # ❌ NO flow_run_name here - will be set by triggering code
+)
 def advance_flow(
     source_collection: str = "fixtures_staging", 
     destination_collection: str = "fixtures_active",
     fixture_id: Optional[int] = None
 ):
-    """Pure fixture advancement - no goal processing, monitor handles everything"""
+    """Pure fixture advancement - runtime naming from parameters"""
     logger = get_run_logger()
+    
+    # ✅ Set name at runtime using current parameters
+    logger.info(f"🏷️ Flow name: {runtime_advance_flow_name()}")
     
     logger.info(f"📋 Pure advancement: {source_collection} → {destination_collection}")
     

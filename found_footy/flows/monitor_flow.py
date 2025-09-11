@@ -5,6 +5,7 @@ from typing import List
 
 from found_footy.flows.shared_tasks import fixtures_delta_task, store
 from found_footy.api.mongo_api import fixtures_events
+from found_footy.flows.flow_naming import generate_monitor_flow_name
 
 @task(name="fixtures-monitor-task")
 def fixtures_monitor_task():
@@ -116,9 +117,12 @@ def fixtures_monitor_task():
         "delta_results": delta_results
     }
 
-@flow(name="monitor-flow")  
+@flow(
+    name="monitor-flow",
+    flow_run_name=generate_monitor_flow_name  # ✅ Safe - runs immediately
+)
 def monitor_flow():
-    """Monitor flow - uses default Prefect naming"""
+    """Monitor flow - uses custom naming for all runs"""
     logger = get_run_logger()
     
     if store.check_collections_empty(["fixtures_active"]):

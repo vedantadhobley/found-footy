@@ -2,7 +2,6 @@
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from found_footy.storage.mongo_store import FootyMongoStore
-from found_footy.utils.team_data import get_team_by_id
 
 store = FootyMongoStore()
 
@@ -29,12 +28,23 @@ class FlowNamingService:
     
     @staticmethod
     def get_monitor_flow_name(timestamp: Optional[datetime] = None) -> str:
-        """Generate timestamped name for monitor flow"""
+        """Generate timestamped name for monitor flow with active fixture count"""
         try:
             if timestamp is None:
                 timestamp = datetime.now()
             time_str = timestamp.strftime("%H:%M:%S")
-            return f"👁️ MONITOR: {time_str} - Active Check"
+            
+            # Get active fixture count for richer naming
+            try:
+                active_count = store.fixtures_active.count_documents({})
+                if active_count > 0:
+                    return f"👁️ MONITOR: {time_str} - {active_count} active fixtures"
+                else:
+                    return f"👁️ MONITOR: {time_str} - No active fixtures"
+            except:
+                # Fallback if database is unavailable
+                return f"👁️ MONITOR: {time_str} - Active Check"
+                
         except:
             return "👁️ MONITOR: Active Check"
     
@@ -44,10 +54,10 @@ class FlowNamingService:
         destination_collection: str, 
         fixture_id: Optional[int] = None
     ) -> str:
-        """Generate contextual name for advance flow"""
+        """Generate contextual name for advance flow - RUNTIME EVALUATION"""
         try:
             if fixture_id:
-                # Try to get fixture details for rich name
+                # Try to get fixture details for rich name AT RUNTIME
                 fixture = None
                 if source_collection == "fixtures_staging":
                     fixture = store.fixtures_staging.find_one({"fixture_id": fixture_id})
@@ -147,7 +157,22 @@ class FlowNamingService:
         except Exception as e:
             return f"❌ ERROR: {flow_name} ({str(e)[:50]})"
 
-# Modern convenience functions that match flow names exactly
+# ✅ RUNTIME NAMING: Functions that get called at runtime
+def runtime_advance_flow_name():
+    """Runtime naming for advance flow - called when flow actually runs"""
+    from prefect.context import get_run_context
+    try:
+        context = get_run_context()
+        parameters = context.flow_run.parameters
+        return FlowNamingService.get_advance_flow_name(
+            parameters.get("source_collection", "unknown"),
+            parameters.get("destination_collection", "unknown"),
+            parameters.get("fixture_id")
+        )
+    except:
+        return "🔄 ADVANCE: Runtime naming"
+
+# ✅ IMMEDIATE NAMING: Functions for flows that run immediately
 def get_ingest_flow_name(date_str=None, team_count=None):
     return FlowNamingService.get_ingest_flow_name(date_str, team_count)
 
@@ -165,3 +190,10 @@ def get_goal_flow_name(fixture_id, goal_count=0):
 
 def generate_flow_run_name(flow_name, parameters):
     return FlowNamingService.generate_flow_run_name(flow_name, parameters)
+
+# ✅ @FLOW DECORATOR FUNCTIONS: Only for immediate execution flows
+def generate_ingest_flow_name():
+    return get_ingest_flow_name()
+
+def generate_monitor_flow_name():
+    return get_monitor_flow_name()

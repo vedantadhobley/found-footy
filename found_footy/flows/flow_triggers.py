@@ -9,9 +9,10 @@ async def schedule_fixtures_advance_async(source_collection, destination_collect
     """NON-BLOCKING: Use async client with RICH team context naming"""
     try:
         async with get_client() as client:
-            # ✅ FIXED: Correct deployment name from prefect.yaml
             deployment = await client.read_deployment_by_name("advance-flow/advance-flow")
             
+            # ✅ Generate name with CURRENT fixture data (for scheduled flows)
+            # This gets the team names NOW while we have the data
             flow_name = get_advance_flow_name(source_collection, destination_collection, fixture_id)
             
             if scheduled_time:
@@ -22,7 +23,7 @@ async def schedule_fixtures_advance_async(source_collection, destination_collect
                         "destination_collection": destination_collection,
                         "fixture_id": fixture_id
                     },
-                    name=flow_name,
+                    name=flow_name,  # ✅ Set rich name at scheduling time
                     state=Scheduled(scheduled_time=scheduled_time)
                 )
                 return {"status": "scheduled", "flow_run_id": str(flow_run.id)}
@@ -34,7 +35,7 @@ async def schedule_fixtures_advance_async(source_collection, destination_collect
                         "destination_collection": destination_collection,
                         "fixture_id": fixture_id
                     },
-                    name=flow_name
+                    name=flow_name  # ✅ Set rich name immediately
                 )
                 return {"status": "immediate", "flow_run_id": str(flow_run.id)}
                 

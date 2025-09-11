@@ -6,7 +6,10 @@ from typing import Optional, List
 from found_footy.flows.shared_tasks import store
 from found_footy.flows.flow_naming import get_twitter_flow_name  # ✅ UPDATED
 
-@flow(name="goal-flow")
+@flow(
+    name="goal-flow"
+    # ❌ NO flow_run_name here - will be set by triggering code
+)
 def goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
     """Dedicated goal processing flow - triggers Twitter directly"""
     logger = get_run_logger()

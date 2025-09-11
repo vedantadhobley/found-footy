@@ -11,8 +11,12 @@ from found_footy.flows.shared_tasks import (
     fixtures_store_task
 )
 from found_footy.flows.flow_triggers import schedule_advance
+from found_footy.flows.flow_naming import generate_ingest_flow_name
 
-@flow(name="ingest-flow")
+@flow(
+    name="ingest-flow",
+    flow_run_name=generate_ingest_flow_name  # ✅ Safe - runs immediately
+)
 def ingest_flow(date_str: Optional[str] = None, team_ids: Optional[str] = None):
     """Pure fixtures ingest flow with status-based routing"""
     logger = get_run_logger()

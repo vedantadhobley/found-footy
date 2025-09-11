@@ -1,5 +1,5 @@
 # ✅ FIXED: found_footy/storage/mongo_store.py - Add missing os import and complete methods
-import os  # ✅ ADDED: Missing import
+import os  # ✅ ADD: Missing import
 from pymongo import MongoClient, UpdateOne
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
@@ -203,7 +203,7 @@ class FootyMongoStore:
             for collection_name in collection_names:
                 collection = getattr(self, collection_name)
                 if collection.count_documents({}) > 0:
-                    return False  # ✅ FIXED: Missing return statement
+                    return False
         
             print(f"✅ All specified collections are empty: {collection_names}")
             return True
@@ -212,24 +212,10 @@ class FootyMongoStore:
             print(f"❌ Error checking collections: {e}")
             return False
 
-    def drop_all_collections(self):
-        """Drop all collections for fresh start"""
-        try:
-            collection_names = self.db.list_collection_names()
-            for collection_name in collection_names:
-                self.db.drop_collection(collection_name)
-                print(f"✅ Dropped collection: {collection_name}")
-            
-            self._create_indexes()
-            return True
-        except Exception as e:
-            print(f"❌ Error dropping collections: {e}")
-            return False
-
     def fixtures_delta(self, fixture_id: int, api_data: dict) -> dict:
         """Pure comparison with centralized status logic"""
         try:
-            current_fixture = self.fixtures_active.find_one({"_id": fixture_id})
+            current_fixture = self.fixtures_active.find_one({"fixture_id": fixture_id})
             if not current_fixture:
                 print(f"⚠️ Fixture {fixture_id} not found in active collection")
                 return {"status": "not_found", "goals_changed": False}
@@ -254,7 +240,7 @@ class FootyMongoStore:
                 fixture_completed = is_fixture_completed(status)
             except Exception as e:
                 print(f"⚠️ Could not load status logic: {e}")
-                fixture_completed = status in ["FT", "AET", "PEN", "PST", "CANC", "ABD", "AWD", "WO"]  # ✅ FIXED: Missing fallback
+                fixture_completed = status in {"FT", "AET", "PEN", "PST", "CANC", "ABD", "AWD", "WO"}
             
             return {
                 "status": "success",
@@ -275,7 +261,6 @@ class FootyMongoStore:
         """Update fixture with latest API data"""
         try:
             if delta_result["status"] != "success":
-                print(f"⚠️ Skipping update for fixture {fixture_id} - delta failed")  # ✅ FIXED: Missing print
                 return False
             
             update_data = {

@@ -48,7 +48,10 @@ def twitter_process_goal_task(goal_id: str):
         logger.error(f"❌ Error processing goal {goal_id}: {e}")
         return {"status": "error", "goal_id": goal_id, "error": str(e)}
 
-@flow(name="twitter-flow")
+@flow(
+    name="twitter-flow"
+    # ❌ NO flow_run_name here - will be set by triggering code
+)
 def twitter_flow(goal_id: Optional[str] = None):
     """Twitter flow - name set by direct triggering"""
     logger = get_run_logger()
