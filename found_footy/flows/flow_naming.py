@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from found_footy.storage.mongo_store import FootyMongoStore
+from found_footy.utils.team_data import get_team_by_id
 
 store = FootyMongoStore()
 
@@ -16,6 +17,10 @@ class FlowNamingService:
                 readable_date = datetime.strptime(date_str[:8], "%Y%m%d").strftime("%a %b %d")
             else:
                 readable_date = datetime.now().strftime("%a %b %d")
+            
+            if team_count is None:
+                from found_footy.utils.team_data import get_team_ids
+                team_count = len(get_team_ids())
             
             team_suffix = f" ({team_count} teams)" if team_count else " - All Teams"
             return f"📥 INGEST: {readable_date}{team_suffix}"
@@ -75,7 +80,7 @@ class FlowNamingService:
         try:
             if goal_id:
                 # Try to get goal details from database
-                goal_doc = store.goals_pending.find_one({"_id": goal_id})  # ✅ UPDATED: goals_pending
+                goal_doc = store.goals_pending.find_one({"_id": goal_id})
                 if goal_doc:
                     return f"⚽ {goal_doc['team_name']}: {goal_doc['player_name']} ({goal_doc['minute']}') [#{goal_doc['fixture_id']}]"
                 else:
@@ -142,7 +147,7 @@ class FlowNamingService:
         except Exception as e:
             return f"❌ ERROR: {flow_name} ({str(e)[:50]})"
 
-# ✅ UPDATED: Convenience functions match flow names
+# Modern convenience functions that match flow names exactly
 def get_ingest_flow_name(date_str=None, team_count=None):
     return FlowNamingService.get_ingest_flow_name(date_str, team_count)
 
@@ -160,16 +165,3 @@ def get_goal_flow_name(fixture_id, goal_count=0):
 
 def generate_flow_run_name(flow_name, parameters):
     return FlowNamingService.generate_flow_run_name(flow_name, parameters)
-
-# ✅ LEGACY: Keep old names for backward compatibility
-def get_fixtures_ingest_name(date_str=None, team_count=None):
-    return get_ingest_flow_name(date_str, team_count)
-
-def get_fixtures_monitor_name(timestamp=None):
-    return get_monitor_flow_name(timestamp)
-
-def get_fixtures_advance_name(source_collection, destination_collection, fixture_id=None):
-    return get_advance_flow_name(source_collection, destination_collection, fixture_id)
-
-def get_twitter_search_name(goal_id=None):
-    return get_twitter_flow_name(goal_id)

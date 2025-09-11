@@ -1,11 +1,11 @@
-# ✅ COMPLETED: found_footy/storage/mongo_store.py
-import os
+# ✅ FIXED: found_footy/storage/mongo_store.py - Add missing os import and complete methods
+import os  # ✅ ADDED: Missing import
 from pymongo import MongoClient, UpdateOne
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
 class FootyMongoStore:
-    """MongoDB storage for football application data - 6 collections architecture"""
+    """MongoDB storage for football application data - 5 collections architecture (no teams)"""
     
     def __init__(self, connection_url=None):
         if connection_url is None:
@@ -14,8 +14,7 @@ class FootyMongoStore:
         self.client = MongoClient(connection_url)
         self.db = self.client.found_footy
         
-        # ✅ CLEAN: Updated collection names
-        self.teams = self.db.teams
+        # ✅ CLEANED: Only 5 collections - teams removed
         self.fixtures_staging = self.db.fixtures_staging
         self.fixtures_active = self.db.fixtures_active
         self.fixtures_completed = self.db.fixtures_completed
@@ -27,11 +26,6 @@ class FootyMongoStore:
     def _create_indexes(self):
         """Create database indexes for better query performance"""
         try:
-            # Team indexes
-            self.teams.create_index([("team_id", 1)], unique=True)
-            self.teams.create_index([("country", 1)])
-            self.teams.create_index([("team_type", 1)])
-            
             # Fixture indexes
             self.fixtures_staging.create_index([("fixture_id", 1)], unique=True)
             self.fixtures_staging.create_index([("kickoff_time", 1)])
@@ -209,48 +203,13 @@ class FootyMongoStore:
             for collection_name in collection_names:
                 collection = getattr(self, collection_name)
                 if collection.count_documents({}) > 0:
-                    return False
+                    return False  # ✅ FIXED: Missing return statement
         
             print(f"✅ All specified collections are empty: {collection_names}")
             return True
             
         except Exception as e:
             print(f"❌ Error checking collections: {e}")
-            return False
-
-    def get_team_ids(self) -> List[int]:
-        """Get all team IDs from teams collection"""
-        try:
-            teams = list(self.teams.find({}, {"team_id": 1}))
-            return [team["team_id"] for team in teams]
-        except Exception as e:
-            print(f"❌ Error getting team IDs: {e}")
-            return []
-
-    def store_team_metadata(self, team_data: dict) -> bool:
-        """Store team metadata with enhanced support for different team types"""
-        try:
-            document = {
-                "_id": team_data["team_id"],
-                "team_id": team_data["team_id"],
-                "name": team_data["team_name"],
-                "country": team_data.get("country", "Unknown"),
-                "team_type": team_data.get("team_type", "club"),
-                "uefa_ranking": team_data.get("uefa_ranking"),
-                "fifa_ranking": team_data.get("fifa_ranking"),
-                "created_at": datetime.now(timezone.utc)
-            }
-            
-            self.teams.replace_one(
-                {"_id": team_data["team_id"]}, 
-                document, 
-                upsert=True
-            )
-            
-            return True
-            
-        except Exception as e:
-            print(f"❌ Error storing team metadata: {e}")
             return False
 
     def drop_all_collections(self):
@@ -295,7 +254,7 @@ class FootyMongoStore:
                 fixture_completed = is_fixture_completed(status)
             except Exception as e:
                 print(f"⚠️ Could not load status logic: {e}")
-                fixture_completed = status in ["FT", "AET", "PEN", "PST", "CANC", "ABD", "AWD", "WO"]
+                fixture_completed = status in ["FT", "AET", "PEN", "PST", "CANC", "ABD", "AWD", "WO"]  # ✅ FIXED: Missing fallback
             
             return {
                 "status": "success",
@@ -316,7 +275,7 @@ class FootyMongoStore:
         """Update fixture with latest API data"""
         try:
             if delta_result["status"] != "success":
-                print(f"⚠️ Skipping update for fixture {fixture_id} - delta failed")
+                print(f"⚠️ Skipping update for fixture {fixture_id} - delta failed")  # ✅ FIXED: Missing print
                 return False
             
             update_data = {

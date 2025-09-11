@@ -1,4 +1,4 @@
-# ✅ NEW: found_footy/flows/shared_tasks.py
+# ✅ UPDATED: found_footy/flows/shared_tasks.py - Use team data from variables
 from datetime import datetime, timedelta, timezone
 from prefect import task, get_run_logger
 from typing import Optional, List
@@ -7,19 +7,19 @@ import json
 from found_footy.api.mongo_api import (
     fixtures, 
     fixtures_batch, 
-    fixtures_events,  # ✅ ADD: This was missing
+    fixtures_events,
     filter_fixtures_by_teams,
-    populate_team_metadata,
     parse_team_ids_parameter
 )
 from found_footy.storage.mongo_store import FootyMongoStore
+from found_footy.utils.team_data import get_team_ids  # ✅ NEW IMPORT
 
 # Create store instance
 store = FootyMongoStore()
 
 @task(name="fixtures-process-parameters-task", retries=1, retry_delay_seconds=5)
 def fixtures_process_parameters_task(team_ids=None, date_str=None):
-    """Parse and validate input parameters"""
+    """Parse and validate input parameters using team data from Prefect Variables"""
     logger = get_run_logger()
     
     # Process date
@@ -37,8 +37,8 @@ def fixtures_process_parameters_task(team_ids=None, date_str=None):
             query_date = datetime.now(timezone.utc).date()
             logger.warning(f"⚠️ Invalid date format, using today: {query_date}")
     
-    # Process team IDs
-    available_team_ids = store.get_team_ids()
+    # ✅ UPDATED: Get team IDs from Prefect Variables instead of MongoDB
+    available_team_ids = get_team_ids()
     valid_team_ids = available_team_ids
     
     if team_ids and str(team_ids).strip() != "null":
@@ -52,7 +52,7 @@ def fixtures_process_parameters_task(team_ids=None, date_str=None):
         except Exception as e:
             logger.warning(f"⚠️ Error parsing team_ids: {e}, using all teams")
     
-    logger.info(f"⚽ Using {len(valid_team_ids)} teams")
+    logger.info(f"⚽ Using {len(valid_team_ids)} teams from Prefect Variables")
     
     return {
         "query_date": query_date,

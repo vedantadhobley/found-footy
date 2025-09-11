@@ -1,12 +1,9 @@
-from found_footy.storage.mongo_store import FootyMongoStore
+# ✅ FIXED: found_footy/api/mongo_api.py - Remove all team metadata functions
 import requests
 from datetime import date, datetime
 import json
 import os
 from prefect import task, get_run_logger
-
-# Initialize MongoDB store
-store = FootyMongoStore()
 
 # API configuration
 BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
@@ -15,145 +12,6 @@ HEADERS = {
     "x-rapidapi-host": "api-football-v1.p.rapidapi.com"
 }
 
-# ✅ NEW: Dynamic team loading from Prefect Variables
-async def get_teams_from_variables(team_type="all"):
-    """Get team data from Prefect Variables"""
-    try:
-        from prefect import get_client
-        
-        async with get_client() as client:
-            teams = {}
-            
-            if team_type in ["all", "uefa", "clubs"]:
-                try:
-                    uefa_var = await client.read_variable_by_name("uefa_25_2025")
-                    uefa_teams = json.loads(uefa_var.value)
-                    # Convert string keys to integers
-                    uefa_teams = {int(k): v for k, v in uefa_teams.items()}
-                    teams.update(uefa_teams)
-                except Exception as e:
-                    print(f"⚠️ Could not load UEFA teams: {e}")
-            
-            if team_type in ["all", "fifa", "national"]:
-                try:
-                    fifa_var = await client.read_variable_by_name("fifa_25_2025")
-                    fifa_teams = json.loads(fifa_var.value)
-                    # Convert string keys to integers
-                    fifa_teams = {int(k): v for k, v in fifa_teams.items()}
-                    teams.update(fifa_teams)
-                except Exception as e:
-                    print(f"⚠️ Could not load FIFA teams: {e}")
-            
-            return teams
-            
-    except Exception as e:
-        print(f"❌ Error loading teams from variables: {e}")
-        return {}
-
-def get_teams_sync(team_type="all"):
-    """Synchronous wrapper for getting teams"""
-    import asyncio
-    try:
-        return asyncio.run(get_teams_from_variables(team_type))
-    except RuntimeError:
-        # Handle case where event loop is already running
-        import nest_asyncio
-        nest_asyncio.apply()
-        return asyncio.run(get_teams_from_variables(team_type))
-
-async def get_team_ids_from_variables(team_type="all"):
-    """Get team IDs list from Prefect Variables"""
-    try:
-        from prefect import get_client
-        
-        async with get_client() as client:
-            variable_name = {
-                "all": "all_teams_2025_ids",
-                "uefa": "uefa_25_2025_ids", 
-                "clubs": "uefa_25_2025_ids",
-                "fifa": "fifa_25_2025_ids",
-                "national": "fifa_25_2025_ids"
-            }.get(team_type, "all_teams_2025_ids")
-            
-            var = await client.read_variable_by_name(variable_name)
-            team_ids = [int(x.strip()) for x in var.value.split(",") if x.strip()]
-            return team_ids
-            
-    except Exception as e:
-        print(f"❌ Error loading team IDs: {e}")
-        return []
-
-def get_team_ids_sync(team_type="all"):
-    """Synchronous wrapper for getting team IDs"""
-    import asyncio
-    try:
-        return asyncio.run(get_team_ids_from_variables(team_type))
-    except RuntimeError:
-        import nest_asyncio
-        nest_asyncio.apply()
-        return asyncio.run(get_team_ids_from_variables(team_type))
-
-# ✅ UPDATED: Team metadata functions using Prefect Variables
-async def populate_team_metadata_async(reset_first=True, include_national_teams=True):
-    """Populate team metadata from Prefect Variables"""
-    from found_footy.storage.mongo_store import FootyMongoStore
-    store = FootyMongoStore()
-    
-    if reset_first:
-        print("🔄 Resetting MongoDB first...")
-        store.drop_all_collections()
-    
-    # Load UEFA teams
-    print("⚽ Populating UEFA club team metadata from variables...")
-    uefa_teams = await get_teams_from_variables("uefa")
-    
-    for team_id, team_info in uefa_teams.items():
-        team_data = {
-            "team_id": team_id,
-            "team_name": team_info["name"],
-            "country": team_info["country"],
-            "uefa_ranking": team_info["rank"],
-            "team_type": "club"
-        }
-        store.store_team_metadata(team_data)
-    
-    print(f"✅ Populated {len(uefa_teams)} UEFA club teams")
-    
-    # Load FIFA teams if requested
-    if include_national_teams:
-        print("🌍 Populating FIFA national team metadata from variables...")
-        fifa_teams = await get_teams_from_variables("fifa")
-        
-        for team_id, team_info in fifa_teams.items():
-            team_data = {
-                "team_id": team_id,
-                "team_name": team_info["name"],
-                "country": team_info["country"],
-                "fifa_ranking": team_info["rank"],
-                "team_type": "national"
-            }
-            store.store_team_metadata(team_data)
-        
-        print(f"✅ Populated {len(fifa_teams)} FIFA national teams")
-    
-    total_teams = len(uefa_teams) + (len(fifa_teams) if include_national_teams else 0)
-    print(f"🎯 Total teams tracked: {total_teams}")
-
-def populate_team_metadata(reset_first=True, include_national_teams=True):
-    """Synchronous wrapper for populate_team_metadata_async"""
-    import asyncio
-    try:
-        return asyncio.run(populate_team_metadata_async(reset_first, include_national_teams))
-    except RuntimeError:
-        import nest_asyncio
-        nest_asyncio.apply()
-        return asyncio.run(populate_team_metadata_async(reset_first, include_national_teams))
-
-def get_available_teams(team_type="all"):
-    """Get available teams by type from Prefect Variables"""
-    return get_teams_sync(team_type)
-
-# ✅ KEEP: All existing API functions unchanged
 def fixtures(date_param=None):
     """Get fixtures - exact endpoint name from API"""
     if date_param is None:
@@ -247,7 +105,6 @@ def parse_team_ids_parameter(team_ids_param):
     if team_ids_param is None or team_ids_param == "":
         return []
     
-    # ✅ FIXED: Handle all possible input types
     if isinstance(team_ids_param, str):
         if team_ids_param.strip() == "":
             return []
@@ -273,24 +130,8 @@ def parse_team_ids_parameter(team_ids_param):
         return [int(x) for x in team_ids_param]
     
     elif isinstance(team_ids_param, int):
-        return [team_ids_param]  # ✅ Handle single integer
+        return [team_ids_param]
     
     else:
         print(f"⚠️ Unexpected team_ids type: {type(team_ids_param)}")
         return []
-
-@task(name="fixtures-store-bulk-task", retries=3, retry_delay_seconds=10)
-def fixtures_store_bulk_task(staging_fixtures, active_fixtures):
-    """Bulk store fixtures in their respective collections"""
-    logger = get_run_logger()
-    
-    # ✅ UPDATED: Reference to fixtures_completed
-    staging_count = store.bulk_insert_fixtures(staging_fixtures, "fixtures_staging") if staging_fixtures else 0
-    active_count = store.bulk_insert_fixtures(active_fixtures, "fixtures_active") if active_fixtures else 0
-    
-    logger.info(f"💾 Stored: {staging_count} staging, {active_count} active")
-    
-    return {
-        "staging_count": staging_count,
-        "active_count": active_count
-    }

@@ -11,12 +11,12 @@ async def register_all_modules():
     """Register all variable modules for automatic management"""
     print("📋 Registering variable modules...")
     
-    # 1. Team Variables Module
-    from team_variables_manager import create_team_variables, update_team_variables
+    # 1. Team Data Module - ✅ ENSURE THIS IS FIRST
+    from found_footy.utils.team_data import create_team_data_variables, update_team_data_variables
     variable_manager.register_module(
-        module_name="team_variables",
-        create_func=create_team_variables,
-        update_func=update_team_variables,
+        module_name="team_data",
+        create_func=create_team_data_variables,
+        update_func=update_team_data_variables,
         description="UEFA clubs and FIFA national teams with rankings"
     )
     
@@ -31,25 +31,6 @@ async def register_all_modules():
     
     print(f"✅ Registered {len(variable_manager.registered_modules)} variable modules")
 
-async def sync_mongodb_metadata():
-    """Sync team metadata to MongoDB after variables are updated"""
-    print("\n🗄️ MONGODB SYNC")
-    print("   Description: Populate team metadata from fresh Prefect Variables")
-    
-    try:
-        from found_footy.api.mongo_api import populate_team_metadata_async
-        await populate_team_metadata_async(reset_first=True, include_national_teams=True)
-        print("   ✅ MongoDB team metadata synchronized")
-    except Exception as e:
-        print(f"   ❌ MongoDB sync failed: {e}")
-        # Fallback
-        try:
-            from found_footy.api.mongo_api import populate_team_metadata
-            populate_team_metadata(reset_first=True, include_national_teams=True)
-            print("   ✅ MongoDB sync completed (fallback)")
-        except Exception as e2:
-            print(f"   ❌ MongoDB fallback also failed: {e2}")
-
 async def full_startup_sync():
     """🔥 FRESH REBUILD: Complete startup with delete + recreate approach"""
     print("🔥 FOUND FOOTY - FRESH VARIABLE REBUILD")
@@ -61,14 +42,11 @@ async def full_startup_sync():
     # Step 2: 🔥 FRESH REBUILD - Delete all and recreate
     await variable_manager.fresh_rebuild_all_variables()
     
-    # Step 3: Sync MongoDB with fresh data
-    await sync_mongodb_metadata()
-    
-    # Step 4: Verification
+    # Step 3: Verification
     print("\n🔍 VERIFICATION")
     await variable_manager.list_all_variables()
     
-    # Step 5: Verify Italy specifically
+    # Step 4: Verify Italy specifically
     print("\n🇮🇹 ITALY CHECK")
     try:
         from prefect import get_client
@@ -78,7 +56,7 @@ async def full_startup_sync():
             if 768 in team_ids:
                 print("   ✅ Italy (768) is NOW in fresh variables!")
             else:
-                print("   ❌ Italy (768) STILL missing - check team_variables_manager.py")
+                print("   ❌ Italy (768) STILL missing - check team_data.py")
     except Exception as e:
         print(f"   ❌ Italy check failed: {e}")
     

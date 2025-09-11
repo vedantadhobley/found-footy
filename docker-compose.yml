@@ -202,6 +202,8 @@ services:
       ME_CONFIG_MONGODB_URL: mongodb://footy_admin:footy_secure_pass@mongodb:27017/admin
       ME_CONFIG_BASICAUTH_USERNAME: admin
       ME_CONFIG_BASICAUTH_PASSWORD: admin123
+      ME_CONFIG_OPTIONS_EDITORTHEME: default  # Add this
+      ME_CONFIG_REQUEST_SIZE: 100kb  # Add this
     ports:
       - "8083:8081"
     depends_on:

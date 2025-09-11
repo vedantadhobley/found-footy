@@ -10,7 +10,6 @@ from found_footy.flows.shared_tasks import (
     fixtures_categorize_task,
     fixtures_store_task
 )
-from found_footy.api.mongo_api import populate_team_metadata
 from found_footy.flows.flow_triggers import schedule_advance
 
 @flow(name="ingest-flow")
@@ -19,7 +18,6 @@ def ingest_flow(date_str: Optional[str] = None, team_ids: Optional[str] = None):
     logger = get_run_logger()
     
     logger.info("📥 Starting Pure Fixtures Ingest Flow")
-    populate_team_metadata(reset_first=False)
     
     # Process parameters
     params = fixtures_process_parameters_task(team_ids, date_str)
@@ -58,5 +56,5 @@ def ingest_flow(date_str: Optional[str] = None, team_ids: Optional[str] = None):
         "active_fixtures": storage_result["active_count"],
         "completed_fixtures": storage_result["completed_count"],
         "scheduled_advances": scheduled_advances,
-        "note": "Historical fixtures moved to completed - live monitoring only"
+        "note": "All team data from Prefect Variables - no MongoDB dependency"
     }
