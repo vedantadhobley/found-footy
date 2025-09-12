@@ -200,7 +200,7 @@ services:
     networks:
       - found-footy-network
 
-  # MinIO S3-compatible storage
+  # MinIO S3-compatible storage with automatic bucket creation
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -210,9 +210,17 @@ services:
     environment:
       MINIO_ROOT_USER: footy_admin
       MINIO_ROOT_PASSWORD: footy_secure_pass
+      # ✅ FIX: Create bucket automatically
       MINIO_DEFAULT_BUCKETS: footy-videos
     volumes:
       - minio_data:/data
+      # ✅ ADD: Bucket initialization script
+      - ./scripts/create-buckets.sh:/create-buckets.sh:ro
+    entrypoint: >
+      sh -c "
+        mkdir -p /data/footy-videos &&
+        minio server /data --console-address ':9001'
+      "
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s

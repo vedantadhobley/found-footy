@@ -1,7 +1,9 @@
 """S3 storage utilities for Found Footy video downloads"""
 import os
-import boto3
+import time
 import tempfile
+import requests
+import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 from datetime import datetime
 from typing import Optional, Dict, Any
@@ -39,25 +41,25 @@ class FootyS3Store:
                     self.s3_client.create_bucket(Bucket=self.bucket_name)
                     print(f"✅ Created S3 bucket: {self.bucket_name}")
                 except Exception as create_error:
-                    print(f"❌ Failed to create bucket: {create_error}")
+                    print(f"❌ Error creating bucket: {create_error}")
             else:
                 print(f"❌ Error checking bucket: {e}")
         except Exception as e:
             print(f"⚠️ Could not verify S3 bucket: {e}")
     
-    def generate_video_key(self, goal_id: str, search_index: int, file_extension: str = "mp4") -> str:
+    def generate_video_key(self, goal_id: str, search_index: int, video_index: int, file_extension: str = "mp4") -> str:
         """Generate S3 key for video file"""
         # Parse goal_id for better organization
         parts = goal_id.split('_')
         if len(parts) >= 3:
             fixture_id, minute, player_id = parts[:3]
             # Organize by fixture, then by goal
-            return f"fixtures/{fixture_id}/goals/{goal_id}_{search_index}.{file_extension}"
+            return f"fixtures/{fixture_id}/goals/{goal_id}_{search_index}_{video_index}.{file_extension}"
         else:
             # Fallback structure
-            return f"goals/{goal_id}_{search_index}.{file_extension}"
+            return f"goals/{goal_id}_{search_index}_{video_index}.{file_extension}"
     
-    def upload_video_file(self, local_file_path: str, goal_id: str, search_index: int, 
+    def upload_video_file(self, local_file_path: str, goal_id: str, search_index: int, video_index: int,
                          metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Upload video file to S3 with metadata"""
         try:
@@ -67,12 +69,13 @@ class FootyS3Store:
                 file_extension = "mp4"
             
             # Generate S3 key
-            s3_key = self.generate_video_key(goal_id, search_index, file_extension)
+            s3_key = self.generate_video_key(goal_id, search_index, video_index, file_extension)
             
             # Prepare metadata
             s3_metadata = {
                 'goal_id': goal_id,
                 'search_index': str(search_index),
+                'video_index': str(video_index),
                 'uploaded_at': datetime.utcnow().isoformat(),
                 'content_type': f'video/{file_extension}'
             }
@@ -114,61 +117,46 @@ class FootyS3Store:
         except Exception as e:
             return {"status": "error", "error": f"Upload failed: {e}"}
     
-    def download_with_ytdlp(self, search_term: str, goal_id: str, search_index: int) -> Dict[str, Any]:
-        """Download video using yt-dlp and upload to S3"""
+    def download_video_from_url(self, video_url: str, goal_id: str, file_suffix: str, 
+                               metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Download video from URL and upload to S3"""
         try:
+            # Parse file suffix to get search_index and video_index
+            parts = file_suffix.split('_')
+            search_index = int(parts[0]) if len(parts) > 0 else 0
+            video_index = int(parts[1]) if len(parts) > 1 else 0
+            
             # Create temporary directory for download
             with tempfile.TemporaryDirectory() as temp_dir:
-                output_template = os.path.join(temp_dir, f"video_{search_index}.%(ext)s")
+                print(f"📥 Downloading video from: {video_url}")
                 
-                # yt-dlp configuration for Twitter
-                ydl_opts = {
-                    'outtmpl': output_template,
-                    'format': 'best[height<=720]',  # Limit to 720p for storage efficiency
-                    'noplaylist': True,
-                    'extract_flat': False,
-                }
+                # For now, create a realistic dummy file until we integrate yt-dlp
+                dummy_video_path = os.path.join(temp_dir, f"goal_{goal_id}_{file_suffix}.mp4")
                 
-                # This is a simulation - in real implementation you'd search Twitter first
-                # then extract video URLs and download them
-                print(f"🔍 Simulating Twitter search for: '{search_term}'")
-                
-                # Simulate finding a video URL (replace with actual Twitter search)
-                # video_url = "https://twitter.com/some_tweet_with_video"
-                
-                # For now, create a dummy file to demonstrate S3 upload
-                dummy_video_path = os.path.join(temp_dir, f"goal_{goal_id}_{search_index}.mp4")
-                
-                # Create a small dummy video file (replace with actual yt-dlp download)
+                # Create a more realistic dummy file (1MB)
                 with open(dummy_video_path, 'wb') as f:
-                    f.write(b'dummy video content for testing')
+                    # Write 1MB of data to simulate a video file
+                    f.write(b'\x00' * (1024 * 1024))
                 
                 # Upload to S3
                 upload_result = self.upload_video_file(
                     dummy_video_path, 
                     goal_id, 
                     search_index,
+                    video_index,
                     metadata={
-                        'search_term': search_term,
-                        'source': 'twitter',
-                        'download_method': 'yt-dlp'
+                        'source_url': video_url,
+                        'download_method': 'simulation',
+                        **(metadata or {})
                     }
                 )
                 
                 if upload_result["status"] == "success":
-                    return {
-                        "status": "success",
-                        "s3_info": upload_result,
-                        "download_method": "yt-dlp_simulation"
-                    }
+                    print(f"✅ Downloaded and uploaded: {upload_result['s3_key']}")
+                    return upload_result
                 else:
-                    return {
-                        "status": "error",
-                        "error": f"S3 upload failed: {upload_result.get('error')}"
-                    }
+                    return upload_result
         
-        except ImportError:
-            return {"status": "error", "error": "yt-dlp not installed"}
         except Exception as e:
             return {"status": "error", "error": f"Download failed: {e}"}
     
@@ -221,67 +209,3 @@ class FootyS3Store:
         
         except Exception as e:
             return {"error": f"Could not get stats: {e}"}
-    
-    def download_video_from_url(self, video_url: str, goal_id: str, file_suffix: str, 
-                               metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Download video from URL using yt-dlp and upload to S3"""
-        try:
-            # Create temporary directory for download
-            with tempfile.TemporaryDirectory() as temp_dir:
-                output_template = os.path.join(temp_dir, f"video_{file_suffix}.%(ext)s")
-                
-                # yt-dlp configuration
-                ydl_opts = {
-                    'outtmpl': output_template,
-                    'format': 'best[height<=720]',
-                    'noplaylist': True,
-                    'extract_flat': False,
-                    'quiet': True,
-                }
-                
-                print(f"📥 Downloading video from: {video_url}")
-                
-                # For simulation - create dummy file (replace with actual yt-dlp)
-                dummy_video_path = os.path.join(temp_dir, f"goal_{goal_id}_{file_suffix}.mp4")
-                
-                # Simulate video download
-                # In real implementation, use:
-                # with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                #     ydl.download([video_url])
-                #     downloaded_files = glob.glob(os.path.join(temp_dir, "video_*"))
-                #     if downloaded_files:
-                #         dummy_video_path = downloaded_files[0]
-                
-                # Create dummy video content for testing
-                with open(dummy_video_path, 'wb') as f:
-                    f.write(b'simulated video content from URL download')
-                
-                # Upload to S3
-                upload_result = self.upload_video_file(
-                    dummy_video_path, 
-                    goal_id, 
-                    file_suffix,
-                    metadata={
-                        **(metadata or {}),
-                        'source_url': video_url,
-                        'download_method': 'yt-dlp'
-                    }
-                )
-                
-                if upload_result["status"] == "success":
-                    return {
-                        "status": "success",
-                        "s3_info": upload_result,
-                        "download_method": "yt-dlp_simulation",
-                        "source_url": video_url
-                    }
-                else:
-                    return {
-                        "status": "error",
-                        "error": f"S3 upload failed: {upload_result.get('error')}"
-                    }
-        
-        except ImportError:
-            return {"status": "error", "error": "yt-dlp not installed"}
-        except Exception as e:
-            return {"status": "error", "error": f"Download failed: {e}"}

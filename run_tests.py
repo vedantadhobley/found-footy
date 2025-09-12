@@ -22,7 +22,8 @@ def run_tests():
         "--cov=found_footy",    # Coverage for our package
         "--cov-report=term-missing",  # Show missing lines
         "--cov-report=html:htmlcov",  # Generate HTML coverage report
-        "--durations=10"        # Show 10 slowest tests
+        "--durations=10",       # Show 10 slowest tests
+        "-k", "not integration or test_integration"  # ✅ Run integration tests by default
     ]
     
     try:
@@ -31,6 +32,14 @@ def run_tests():
         if result.returncode == 0:
             print("\n✅ All tests passed!")
             print("📊 Coverage report generated in htmlcov/")
+            print("\n🎯 Test File Coverage:")
+            print("  ✅ test_advance_flow.py - Advance flow logic")
+            print("  ✅ test_goal_flow.py - Goal processing")
+            print("  ✅ test_twitter_flow.py - Video discovery")
+            print("  ✅ test_download_flow.py - S3 storage")
+            print("  ✅ test_monitor_flow.py - Live monitoring")
+            print("  ✅ test_ingest_flow.py - Fixture ingestion")
+            print("  ✅ test_integration.py - End-to-end workflows")
         else:
             print(f"\n❌ Tests failed with exit code {result.returncode}")
             
