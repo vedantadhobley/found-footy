@@ -17,3 +17,23 @@ dependencies = {file = ["requirements.txt"]}
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["found_footy*"]
+
+[tool.pytest.ini_options]
+# ✅ ADD: Pytest configuration to suppress warnings
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+filterwarnings = [
+    "ignore::UserWarning",
+    "ignore::DeprecationWarning",
+    "ignore:Your Prefect server is running an older version:UserWarning"
+]
+log_cli = false
+log_cli_level = "INFO"
+addopts = "--strict-markers --strict-config"
+markers = [
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "slow: marks tests as slow running"
+]

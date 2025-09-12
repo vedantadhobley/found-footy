@@ -10,7 +10,7 @@ from found_footy.flows.shared_tasks import (
     fixtures_categorize_task,
     fixtures_store_task
 )
-from found_footy.flows.flow_triggers import schedule_advance
+from found_footy.flows.flow_triggers import schedule_advance_flow  # ✅ UPDATE: Use renamed function
 from found_footy.flows.flow_naming import generate_ingest_flow_name
 
 @flow(
@@ -46,7 +46,8 @@ def ingest_flow(date_str: Optional[str] = None, team_ids: Optional[str] = None):
         kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
         advance_time = kickoff_time - timedelta(minutes=3)
         try:
-            result = schedule_advance("fixtures_staging", "fixtures_active", fixture["id"], advance_time)
+            # ✅ UPDATE: Use renamed function
+            result = schedule_advance_flow("fixtures_staging", "fixtures_active", fixture["id"], advance_time)
             if result["status"] in ["scheduled", "immediate"]:
                 scheduled_advances += 1
                 logger.info(f"✅ Scheduled advance for fixture {fixture['id']} at {advance_time}")

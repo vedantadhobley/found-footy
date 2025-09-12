@@ -1,7 +1,7 @@
 """S3 storage utilities for Found Footy video downloads"""
-import os  # ✅ ADD: Missing import
-import boto3  # ✅ ADD: Missing import
-import tempfile  # ✅ ADD: Missing import
+import os
+import boto3
+import tempfile
 from botocore.exceptions import ClientError, NoCredentialsError
 from datetime import datetime
 from typing import Optional, Dict, Any
@@ -117,8 +117,6 @@ class FootyS3Store:
     def download_with_ytdlp(self, search_term: str, goal_id: str, search_index: int) -> Dict[str, Any]:
         """Download video using yt-dlp and upload to S3"""
         try:
-            import yt_dlp
-            
             # Create temporary directory for download
             with tempfile.TemporaryDirectory() as temp_dir:
                 output_template = os.path.join(temp_dir, f"video_{search_index}.%(ext)s")
@@ -160,10 +158,8 @@ class FootyS3Store:
                 if upload_result["status"] == "success":
                     return {
                         "status": "success",
-                        "goal_id": goal_id,
-                        "search_term": search_term,
                         "s3_info": upload_result,
-                        "local_file_removed": True
+                        "download_method": "yt-dlp_simulation"
                     }
                 else:
                     return {
@@ -230,8 +226,6 @@ class FootyS3Store:
                                metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Download video from URL using yt-dlp and upload to S3"""
         try:
-            import yt_dlp
-            
             # Create temporary directory for download
             with tempfile.TemporaryDirectory() as temp_dir:
                 output_template = os.path.join(temp_dir, f"video_{file_suffix}.%(ext)s")
@@ -239,10 +233,10 @@ class FootyS3Store:
                 # yt-dlp configuration
                 ydl_opts = {
                     'outtmpl': output_template,
-                    'format': 'best[height<=720]',  # Limit to 720p for storage efficiency
+                    'format': 'best[height<=720]',
                     'noplaylist': True,
                     'extract_flat': False,
-                    'quiet': True,  # Reduce yt-dlp logging
+                    'quiet': True,
                 }
                 
                 print(f"📥 Downloading video from: {video_url}")
@@ -260,7 +254,7 @@ class FootyS3Store:
                 
                 # Create dummy video content for testing
                 with open(dummy_video_path, 'wb') as f:
-                    f.write(b'dummy video content for ' + video_url.encode())
+                    f.write(b'simulated video content from URL download')
                 
                 # Upload to S3
                 upload_result = self.upload_video_file(
@@ -277,10 +271,9 @@ class FootyS3Store:
                 if upload_result["status"] == "success":
                     return {
                         "status": "success",
-                        "goal_id": goal_id,
-                        "source_url": video_url,
                         "s3_info": upload_result,
-                        "local_file_removed": True
+                        "download_method": "yt-dlp_simulation",
+                        "source_url": video_url
                     }
                 else:
                     return {

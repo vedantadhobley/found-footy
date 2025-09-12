@@ -222,7 +222,7 @@ services:
     networks:
       - found-footy-network
 
-  # Twitter worker - updated for S3
+  # Twitter worker - simplified without browser dependencies
   twitter-worker:
     build: .
     command: prefect worker start --pool twitter-pool --type process --limit 2
@@ -273,6 +273,33 @@ services:
     restart: unless-stopped
     networks:
       - found-footy-network
+
+  # Test service with profile
+  test:
+    build: .
+    profiles: ["test"]  # Only runs when explicitly requested
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
+      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - PYTHONPATH=/app
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo '🧪 Running Found Footy Test Suite...' &&
+        echo '⏳ Waiting for services to be ready...' &&
+        sleep 5 &&
+        python -m pytest tests/ -v --tb=short --cov=found_footy --cov-report=term-missing &&
+        echo '✅ Tests completed!'
+      "
+    volumes:
+      - .:/app
+    networks:
+      - found-footy-network
+    restart: "no"
 
 volumes:
   prefect_postgres_data:

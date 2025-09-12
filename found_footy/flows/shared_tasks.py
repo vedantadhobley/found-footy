@@ -1,4 +1,4 @@
-# ✅ UPDATED: found_footy/flows/shared_tasks.py - Use team data from variables
+# ✅ FIXED: found_footy/flows/shared_tasks.py - Complete all methods
 from datetime import datetime, timedelta, timezone
 from prefect import task, get_run_logger
 from typing import Optional, List
@@ -12,7 +12,7 @@ from found_footy.api.mongo_api import (
     parse_team_ids_parameter
 )
 from found_footy.storage.mongo_store import FootyMongoStore
-from found_footy.utils.team_data import get_team_ids  # ✅ NEW IMPORT
+from found_footy.utils.team_data import get_team_ids
 
 # Create store instance
 store = FootyMongoStore()
@@ -37,7 +37,7 @@ def fixtures_process_parameters_task(team_ids=None, date_str=None):
             query_date = datetime.now(timezone.utc).date()
             logger.warning(f"⚠️ Invalid date format, using today: {query_date}")
     
-    # ✅ UPDATED: Get team IDs from Prefect Variables instead of MongoDB
+    # ✅ Get team IDs from Prefect Variables
     available_team_ids = get_team_ids()
     valid_team_ids = available_team_ids
     

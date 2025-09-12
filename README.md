@@ -219,22 +219,56 @@ Goal Detected → Goal Flow → Twitter Flow (Search) → Download Flow (S3) →
 
 ### **📱 Twitter Video Discovery**
 
-The Twitter flow searches for goal videos and collects URLs:
+The Twitter flow uses **web scraping** to search for goal videos:
 
-1. **Search Strategy**: Uses player name, team name, minute, and fixture context
-2. **URL Discovery**: Extracts video URLs from tweet media entities
-3. **Metadata Collection**: Gathers quality, duration, and source information
-4. **Database Update**: Stores discovered videos in `goals_pending`
+1. **Multi-Source Scraping**: Uses Nitter instances and direct Twitter scraping
+2. **Smart Search Terms**: Combines player name, team name, minute, and fixture context  
+3. **Video Metadata**: Extracts resolution, duration, thumbnail, and format information
+4. **URL Validation**: Tests video URLs for accessibility before download
+5. **Rate Limiting**: Respectful scraping with delays between requests
 
-**Example Search Terms:**
+**Scraping Strategy:**
 ```python
-search_terms = [
-    "Messi goal",
-    "Barcelona goal 67",
-    "Messi Barcelona", 
-    "goal 67'"
+# Primary: Nitter instances (privacy-focused Twitter frontends)
+nitter_instances = [
+    "nitter.net",
+    "nitter.it", 
+    "nitter.privacydev.net"
 ]
+
+# Secondary: Direct Twitter scraping with Playwright
+# Tertiary: Alternative Twitter archive sources
 ```
+
+**Video Metadata Extracted:**
+```python
+video_metadata = {
+    "resolution": "1280x720",
+    "duration": "45s",
+    "format": "mp4",
+    "thumbnail": "https://pbs.twimg.com/...",
+    "filesize": "2.1MB",
+    "quality": "720p"
+}
+```
+
+### **🌐 Web Scraping Architecture**
+
+| Component | Purpose | Technology |
+|-----------|---------|------------|
+| **Nitter Scraping** | Privacy-focused Twitter frontend | BeautifulSoup + requests |
+| **Direct Twitter** | Official Twitter site scraping | Playwright + Selenium |
+| **Video Metadata** | Resolution, duration, format | yt-dlp extraction |
+| **URL Validation** | Test video accessibility | HTTP HEAD requests |
+| **Rate Limiting** | Respectful scraping | Time delays + rotating UAs |
+
+**Benefits of Web Scraping Approach:**
+✅ **No API Limits** - Not constrained by Twitter API rate limits  
+✅ **No Authentication** - No need for Twitter developer accounts  
+✅ **Real-time Content** - Access to latest tweets as they're posted  
+✅ **Rich Metadata** - Extract video quality, duration, thumbnails  
+✅ **Multiple Sources** - Fallback to different scraping methods  
+✅ **Cost Effective** - No API usage fees
 
 ### **📥 Download & S3 Storage**
 

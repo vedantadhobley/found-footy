@@ -1,5 +1,6 @@
 # ✅ FIXED: found_footy/storage/mongo_store.py - Add missing os import and complete methods
-import os  # ✅ ADD: Missing import
+"""MongoDB storage for football application data - 5 collections architecture"""
+import os
 from pymongo import MongoClient, UpdateOne
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
@@ -14,7 +15,7 @@ class FootyMongoStore:
         self.client = MongoClient(connection_url)
         self.db = self.client.found_footy
         
-        # ✅ Keep goal collections as they are
+        # Keep goal collections as they are
         self.fixtures_staging = self.db.fixtures_staging
         self.fixtures_active = self.db.fixtures_active
         self.fixtures_completed = self.db.fixtures_completed
@@ -92,8 +93,7 @@ class FootyMongoStore:
             
             documents = []
             for fixture in fixtures_data:
-                document = {
-                    "_id": fixture["id"],
+                doc = {
                     "fixture_id": fixture["id"],
                     "home_team_id": fixture["home_id"],
                     "away_team_id": fixture["away_id"],
@@ -101,20 +101,15 @@ class FootyMongoStore:
                         "home": fixture["home"],
                         "away": fixture["away"]
                     },
-                    "teams": {
-                        "home": fixture["home_id"],
-                        "away": fixture["away_id"]
-                    },
-                    "league": fixture["league"],
+                    "league_name": fixture["league"],
                     "league_id": fixture["league_id"],
-                    "kickoff_time": datetime.fromisoformat(fixture["time"].replace('Z', '+00:00')),
-                    "raw_fixture_data": fixture,
+                    "kickoff_time": fixture["time"],
                     "status": fixture.get("status", "NS"),
                     "goals": fixture.get("current_goals", {"home": 0, "away": 0}),
-                    "last_checked": datetime.now(timezone.utc),
-                    "created_at": datetime.now(timezone.utc)
+                    "created_at": datetime.now(timezone.utc),
+                    "data_source": "api_football"
                 }
-                documents.append(document)
+                documents.append(doc)
     
             bulk_operations = [
                 UpdateOne(
@@ -152,7 +147,7 @@ class FootyMongoStore:
             
             # Enhanced validation
             if not player_name or not team_name or minute <= 0 or player_id <= 0:
-                print(f"⚠️ Skipping goal - incomplete data for fixture {fixture_id}")
+                print(f"⚠️ INCOMPLETE GOAL DATA: {player_name} {team_name} {minute}' - skipping")
                 return False
             
             goal_id = f"{fixture_id}_{minute}_{player_id}"
@@ -160,7 +155,7 @@ class FootyMongoStore:
             # Prevent duplicates
             if (self.goals_pending.find_one({"_id": goal_id}) or 
                 self.goals_processed.find_one({"_id": goal_id})):
-                print(f"⚠️ Goal {goal_id} already exists - skipping")
+                print(f"⚠️ DUPLICATE GOAL: {goal_id} already exists - skipping")
                 return False
             
             # Store goal with complete data
@@ -203,6 +198,7 @@ class FootyMongoStore:
             for collection_name in collection_names:
                 collection = getattr(self, collection_name)
                 if collection.count_documents({}) > 0:
+                    print(f"⚠️ Collection {collection_name} is not empty")
                     return False
         
             print(f"✅ All specified collections are empty: {collection_names}")
@@ -217,7 +213,7 @@ class FootyMongoStore:
         try:
             current_fixture = self.fixtures_active.find_one({"fixture_id": fixture_id})
             if not current_fixture:
-                print(f"⚠️ Fixture {fixture_id} not found in active collection")
+                print(f"⚠️ No current fixture found for ID {fixture_id}")
                 return {"status": "not_found", "goals_changed": False}
             
             # Extract current API state
@@ -239,8 +235,9 @@ class FootyMongoStore:
                 from found_footy.utils.fixture_status import is_fixture_completed
                 fixture_completed = is_fixture_completed(status)
             except Exception as e:
-                print(f"⚠️ Could not load status logic: {e}")
-                fixture_completed = status in {"FT", "AET", "PEN", "PST", "CANC", "ABD", "AWD", "WO"}
+                # Fallback status check
+                completed_statuses = {"FT", "AET", "PEN", "PST", "CANC", "ABD", "AWD", "WO"}
+                fixture_completed = status in completed_statuses
             
             return {
                 "status": "success",
@@ -261,6 +258,7 @@ class FootyMongoStore:
         """Update fixture with latest API data"""
         try:
             if delta_result["status"] != "success":
+                print(f"⚠️ Delta result failed for fixture {fixture_id}")
                 return False
             
             update_data = {

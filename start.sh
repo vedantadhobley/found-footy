@@ -6,7 +6,8 @@ echo "=================================="
 docker compose down
 
 # Build and start everything
-docker compose up --build -d
+# docker compose up --build -d
+docker compose --profile test up --build -d
 
 echo ""
 echo "✅ Found Footy started!"
