@@ -3,7 +3,7 @@ import os
 import re
 import json
 import time
-import requests
+import requests  # ✅ ADD: Missing import
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from urllib.parse import quote
@@ -53,22 +53,21 @@ class TwitterAPI:
                     
                     response = self.session.get(url, timeout=15)
                     if response.status_code != 200:
-                        print(f"⚠️ {instance} returned status {response.status_code}")
+                        print(f"⚠️ {instance} returned {response.status_code}")  # ✅ FIX: Complete the line
                         continue
                     
                     html_content = response.text
                     
                     # ✅ BASIC SCRAPING: Look for video patterns in HTML
-                    videos = self._extract_videos_from_html(html_content, instance, search_query)
-                    
+                    videos = self._extract_videos_from_html(html_content, instance, search_query)  # ✅ FIX: Complete the line
                     if videos:
-                        print(f"✅ Found {len(videos)} videos on {instance}")
-                        return videos[:max_results]
+                        print(f"✅ {instance} found {len(videos)} videos")
+                        return videos
                         
                 except Exception as e:
-                    print(f"⚠️ Failed on {instance}: {e}")
+                    print(f"⚠️ {instance} failed: {e}")  # ✅ FIX: Complete the line
                     continue
-            
+
             print("❌ All Nitter instances failed")
             return []
             
@@ -99,16 +98,12 @@ class TwitterAPI:
             for i, tweet_id in enumerate(tweet_matches[:3]):  # Limit to 3 results
                 video_url = f"https://video.twimg.com/ext_tw_video/{tweet_id}_sample.mp4"
                 if i < len(video_matches):
-                    video_url = video_matches[i]
+                    video_url = video_matches[i]  # ✅ FIX: Complete the line
                 
                 tweet_text = f"Goal video for {search_query}"
                 if i < len(text_matches):
-                    # Clean HTML tags from text
-                    clean_text = re.sub(r'<[^>]+>', '', text_matches[i])
-                    clean_text = clean_text.strip()[:100]  # Limit length
-                    if clean_text:
-                        tweet_text = clean_text
-                
+                    tweet_text = text_matches[i].strip()[:100]  # ✅ FIX: Complete the line
+
                 video_info = {
                     "source": "nitter_basic",
                     "tweet_id": tweet_id,

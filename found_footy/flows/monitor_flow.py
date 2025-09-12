@@ -110,7 +110,7 @@ def fixtures_monitor_task():
     
     return {
         "status": "success",
-        "active_fixtures": len(store.get_all_active_fixtures()),
+        "active_fixtures": len(store.get_active_fixtures()),
         "goals_detected": delta_results["total_goals_detected"],
         "goal_flows_triggered": goal_flows_triggered,
         "completed_fixtures": completed_fixtures_count,

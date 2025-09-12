@@ -1,4 +1,4 @@
-"""Professional test infrastructure for Found Footy"""
+"""Professional test infrastructure for Found Footy - Updated for new dependencies"""
 import pytest
 import sys
 import os
@@ -17,7 +17,7 @@ def configure_test_environment():
     
 @pytest.fixture(autouse=True) 
 def mock_all_external_dependencies():
-    """Mock ALL external dependencies globally"""
+    """Mock ALL external dependencies globally - Updated for snscrape and yt-dlp"""
     with patch('pymongo.MongoClient') as mock_mongo, \
          patch('boto3.client') as mock_boto3, \
          patch('prefect.deployments.run_deployment') as mock_run_deployment, \
@@ -27,7 +27,11 @@ def mock_all_external_dependencies():
          patch('found_footy.api.mongo_api.fixtures') as mock_fixtures_api, \
          patch('found_footy.api.mongo_api.fixtures_batch') as mock_fixtures_batch, \
          patch('found_footy.api.mongo_api.fixtures_events') as mock_fixtures_events, \
-         patch('found_footy.api.twitter_api.twitter_videos_search') as mock_twitter_search:
+         patch('found_footy.api.twitter_api.twitter_videos_search') as mock_twitter_search, \
+         patch('found_footy.flows.flow_triggers.schedule_advance_flow') as mock_schedule_advance, \
+         patch('found_footy.flows.flow_triggers.schedule_twitter_flow') as mock_schedule_twitter, \
+         patch('snscrape.modules.twitter.TwitterSearchScraper') as mock_snscrape, \
+         patch('yt_dlp.YoutubeDL') as mock_ytdlp:
         
         # ✅ Mock MongoDB
         mock_collection = MagicMock()
@@ -78,6 +82,36 @@ def mock_all_external_dependencies():
         mock_fixtures_events.return_value = []
         mock_twitter_search.return_value = []
         
+        # ✅ Mock Flow Triggers
+        mock_schedule_advance.return_value = {"status": "scheduled", "flow_run_id": "test-123"}
+        mock_schedule_twitter.return_value = {"status": "scheduled", "flow_run_id": "test-456", "delay_minutes": 2}
+        
+        # ✅ NEW: Mock snscrape
+        mock_tweet = Mock()
+        mock_tweet.url = "https://twitter.com/test/status/123"
+        mock_tweet.id = "123"
+        mock_tweet.rawContent = "Test tweet"
+        mock_tweet.user.username = "test_user"
+        mock_tweet.date = datetime.now(timezone.utc)
+        mock_tweet.media = [Mock(type="video")]
+        
+        mock_scraper_instance = Mock()
+        mock_scraper_instance.get_items.return_value = [mock_tweet]
+        mock_snscrape.return_value = mock_scraper_instance
+        
+        # ✅ NEW: Mock yt-dlp
+        mock_ytdlp_instance = Mock()
+        mock_ytdlp_instance.extract_info.return_value = {
+            "url": "https://video.twimg.com/test.mp4",
+            "width": 1280,
+            "height": 720,
+            "duration": 45,
+            "ext": "mp4"
+        }
+        mock_ytdlp_instance.download.return_value = None
+        mock_ytdlp.return_value.__enter__.return_value = mock_ytdlp_instance
+        mock_ytdlp.return_value.__exit__.return_value = None
+        
         yield {
             'mongo_client': mock_mongo_instance,
             'mongo_db': mock_db,
@@ -89,7 +123,11 @@ def mock_all_external_dependencies():
             'fixtures_api': mock_fixtures_api,
             'fixtures_batch': mock_fixtures_batch,
             'fixtures_events': mock_fixtures_events,
-            'twitter_search': mock_twitter_search
+            'twitter_search': mock_twitter_search,
+            'schedule_advance': mock_schedule_advance,
+            'schedule_twitter': mock_schedule_twitter,  # ✅ ADD
+            'snscrape': mock_snscrape,  # ✅ ADD
+            'ytdlp': mock_ytdlp  # ✅ ADD
         }
 
 @pytest.fixture
@@ -140,16 +178,20 @@ def sample_goal_data():
 
 @pytest.fixture
 def sample_twitter_videos():
-    """Sample Twitter video search results"""
+    """Sample Twitter video search results - Updated for snscrape format"""
     return [
         {
-            "source": "nitter",
+            "source": "snscrape_python",
             "tweet_id": "1234567890",
             "tweet_url": "https://twitter.com/user/status/1234567890",
             "video_url": "https://video.twimg.com/ext_tw_video/test1.mp4",
             "tweet_text": "🔥 Amazing goal by Benzema! What a strike! ⚽",
             "username": "football_highlights",
             "timestamp": "2025-01-15T20:07:00Z",
+            "discovered_at": "2025-01-15T20:07:00Z",
+            "search_index": 0,
+            "video_index": 0,
+            "requires_ytdlp": True,
             "video_metadata": {
                 "resolution": "1280x720",
                 "duration": 45,

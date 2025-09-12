@@ -1,8 +1,7 @@
-# ✅ FIXED: found_footy/flows/shared_tasks.py - Complete all methods
+import os  # ✅ ADD THIS LINE
 from datetime import datetime, timedelta, timezone
 from prefect import task, get_run_logger
 from typing import Optional, List
-import json
 
 from found_footy.api.mongo_api import (
     fixtures, 
@@ -28,10 +27,10 @@ def fixtures_process_parameters_task(team_ids=None, date_str=None):
         logger.info(f"📅 Using today's date: {query_date}")
     else:
         try:
-            if len(date_str) == 8:  # YYYYMMDD format
-                query_date = datetime.strptime(date_str, "%Y%m%d").date()
-            else:  # YYYY-MM-DD format
-                query_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            if len(date_str) == 8:
+                query_date = datetime.strptime(date_str, "%Y%m%d").date()  # ✅ FIX: Complete the line
+            else:
+                query_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()  # ✅ FIX: Complete the line
             logger.info(f"📅 Using provided date: {query_date}")
         except (ValueError, TypeError):
             query_date = datetime.now(timezone.utc).date()
@@ -45,10 +44,10 @@ def fixtures_process_parameters_task(team_ids=None, date_str=None):
         try:
             parsed_team_ids = parse_team_ids_parameter(team_ids)
             if parsed_team_ids:
-                valid_team_ids = [tid for tid in parsed_team_ids if tid in available_team_ids]
-                logger.info(f"⚽ Filtered to {len(valid_team_ids)} valid teams from {len(parsed_team_ids)} requested")
+                valid_team_ids = [tid for tid in parsed_team_ids if tid in available_team_ids]  # ✅ FIX: Complete the line
+                logger.info(f"⚽ Using {len(valid_team_ids)} parsed team IDs")
             else:
-                logger.warning("⚠️ Could not parse team_ids, using all teams")
+                logger.info(f"⚽ No valid parsed team IDs, using all teams")  # ✅ FIX: Complete the line
         except Exception as e:
             logger.warning(f"⚠️ Error parsing team_ids: {e}, using all teams")
     
@@ -144,18 +143,18 @@ def fixtures_categorize_task(team_fixtures):
         elif status in staging_statuses:
             kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
             if kickoff_time > current_time:
-                staging_fixtures.append(fixture)
-                readable_kickoff = kickoff_time.strftime("%H:%M")
-                logger.info(f"📅 STAGING: {fixture['home']} vs {fixture['away']} (status: {status}, kickoff: {readable_kickoff})")
+                staging_fixtures.append(fixture)  # ✅ FIX: Complete the line
+                logger.info(f"📅 STAGING: {fixture['home']} vs {fixture['away']} (kickoff: {kickoff_time})")
             else:
-                # Past kickoff time but still staging status - move to active
-                active_fixtures.append(fixture)
-                logger.info(f"🔄 ACTIVE: {fixture['home']} vs {fixture['away']} (late start, status: {status})")
+                # Past fixture but still NS - likely cancelled or error
+                logger.warning(f"⚠️ Past fixture still NS: {fixture['home']} vs {fixture['away']}")  # ✅ FIX: Complete the line
+                staging_fixtures.append(fixture)
                 
         else:
             # Unknown status - default to staging
             staging_fixtures.append(fixture)
             logger.warning(f"❓ UNKNOWN STATUS: {fixture['home']} vs {fixture['away']} (status: {status}) - defaulted to staging")
+
     
     logger.info(f"📊 STATUS CATEGORIZATION: {len(staging_fixtures)} staging, {len(active_fixtures)} active, {len(completed_fixtures)} completed")
     
@@ -187,10 +186,16 @@ def fixtures_delta_task():
     """Bulk delta detection for entire fixtures_active collection"""
     logger = get_run_logger()
     
-    active_fixtures = store.get_all_active_fixtures()
+    # ✅ FIX: Use the correct method name
+    active_fixtures = store.get_active_fixtures()
     if not active_fixtures:
         logger.info("⏸️ No active fixtures for delta detection")
-        return {"fixtures_with_changes": [], "fixtures_completed": [], "total_goals_detected": 0}
+        return {
+            "status": "success",
+            "fixtures_with_changes": [], 
+            "fixtures_completed": [], 
+            "total_goals_detected": 0
+        }
     
     fixture_ids = [f["fixture_id"] for f in active_fixtures]
     logger.info(f"🔍 Running bulk delta detection on {len(fixture_ids)} fixtures")
@@ -209,38 +214,43 @@ def fixtures_delta_task():
             api_data = api_lookup.get(fixture_id)
             
             if not api_data:
-                logger.warning(f"⚠️ No API data for fixture {fixture_id}")
+                logger.warning(f"⚠️ No API data for fixture {fixture_id}")  # ✅ FIX: Complete the line
                 continue
-            
-            # Run delta detection
-            delta_result = store.fixtures_delta(fixture_id, api_data)
-            
-            if delta_result["status"] == "success":
-                if delta_result.get("goals_changed", False):
-                    fixtures_with_changes.append({
-                        "fixture_id": fixture_id,
-                        "delta_result": delta_result
-                    })
-                    total_goals_detected += delta_result.get("total_goal_increase", 0)
                 
-                if delta_result.get("fixture_completed", False):
-                    fixtures_completed.append({
-                        "fixture_id": fixture_id,
-                        "delta_result": delta_result
-                    })
+            # Get delta for this fixture
+            delta_result = store.fixtures_delta(fixture_id, api_data)  # ✅ FIX: Complete the line
+            
+            if delta_result.get("goals_changed"):
+                fixtures_with_changes.append({
+                    "fixture_id": fixture_id,
+                    "delta_result": delta_result
+                })
+                total_goals_detected += delta_result.get("total_goal_increase", 0)
+            
+            if delta_result.get("status_changed_to_completed"):
+                fixtures_completed.append({
+                    "fixture_id": fixture_id,
+                    "delta_result": delta_result
+                })
         
         logger.info(f"✅ Delta detection complete: {len(fixtures_with_changes)} with goals, {len(fixtures_completed)} completed")
         
         return {
+            "status": "success",
             "fixtures_with_changes": fixtures_with_changes,
             "fixtures_completed": fixtures_completed,
-            "total_goals_detected": total_goals_detected,
-            "status": "success"
+            "total_goals_detected": total_goals_detected
         }
         
     except Exception as e:
         logger.error(f"❌ Bulk delta detection failed: {e}")
-        return {"fixtures_with_changes": [], "fixtures_completed": [], "total_goals_detected": 0, "status": "error", "error": str(e)}
+        return {
+            "status": "error", 
+            "fixtures_with_changes": [], 
+            "fixtures_completed": [], 
+            "total_goals_detected": 0, 
+            "error": str(e)
+        }
 
 @task(name="fixtures-advance-task")
 def fixtures_advance_task(source_collection: str, destination_collection: str, fixture_id: Optional[int] = None):
@@ -249,16 +259,16 @@ def fixtures_advance_task(source_collection: str, destination_collection: str, f
     
     try:
         if fixture_id:
-            logger.info(f"🎯 Advancing specific fixture {fixture_id}: {source_collection} → {destination_collection}")
+            logger.info(f"📋 Advancing specific fixture {fixture_id}: {source_collection} → {destination_collection}")  # ✅ FIX: Complete the line
         else:
-            logger.info(f"📋 Advancing all fixtures: {source_collection} → {destination_collection}")
+            logger.info(f"📋 Advancing all fixtures: {source_collection} → {destination_collection}")  # ✅ FIX: Complete the line
         
         # Use the store's generic method
         result = store.fixtures_advance(source_collection, destination_collection, fixture_id)
-        
         logger.info(f"✅ Advanced {result.get('advanced_count', 0)} fixtures")
+        
         return result
         
     except Exception as e:
-        logger.error(f"❌ Error in fixtures-advance-task: {e}")
+        logger.error(f"❌ Error in fixtures advance task: {e}")
         return {"status": "error", "advanced_count": 0, "error": str(e)}

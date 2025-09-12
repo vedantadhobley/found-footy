@@ -27,11 +27,12 @@ python_functions = ["test_*"]
 filterwarnings = [
     "ignore::UserWarning",
     "ignore::DeprecationWarning",
-    "ignore:Your Prefect server is running an older version:UserWarning"
+    "ignore:Your Prefect server is running an older version:UserWarning",
+    "ignore:.*Prefect server.*older version.*:UserWarning"
 ]
 log_cli = false
 log_cli_level = "INFO"
-addopts = "--strict-markers --strict-config"
+addopts = "--strict-markers --strict-config -v --tb=short"
 markers = [
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",

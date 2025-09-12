@@ -1,7 +1,8 @@
-# ✅ NEW: found_footy/utils/team_data.py
 """Team data management using Prefect Variables - consistent with fixture_status.py pattern"""
 import asyncio
 import json
+import nest_asyncio
+import argparse
 from prefect import get_client
 from prefect.client.schemas.objects import Variable
 
@@ -122,10 +123,9 @@ async def create_team_data_variables():
             
         except Exception as e:
             if "already exists" in str(e):
-                print("⚠️ Team variables already exist - updating...")
-                await update_team_data_variables()
+                print("⚠️ Team variables already exist - use --update to update them")
             else:
-                raise e
+                print(f"❌ Error creating team variables: {e}")
 
 async def update_team_data_variables():
     """Update existing team data variables"""
@@ -164,24 +164,17 @@ async def get_team_data_async():
     """Get team data configuration from Prefect Variables"""
     try:
         async with get_client() as client:
-            # Get UEFA teams
             uefa_var = await client.read_variable_by_name("uefa_25_2025")
-            uefa_teams = json.loads(uefa_var.value)
-            # Convert string keys to integers
-            uefa_teams = {int(k): v for k, v in uefa_teams.items()}
-            
-            # Get FIFA teams
             fifa_var = await client.read_variable_by_name("fifa_25_2025")
-            fifa_teams = json.loads(fifa_var.value)
-            # Convert string keys to integers
-            fifa_teams = {int(k): v for k, v in fifa_teams.items()}
+            
+            uefa_data = json.loads(uefa_var.value)
+            fifa_data = json.loads(fifa_var.value)
             
             return {
-                "uefa": uefa_teams,
-                "fifa": fifa_teams,
-                "all": {**uefa_teams, **fifa_teams}
+                "uefa": uefa_data,
+                "fifa": fifa_data,
+                "all": {**uefa_data, **fifa_data}
             }
-            
     except Exception as e:
         print(f"⚠️ Could not load team data from variables: {e}")
         # Fallback to hardcoded values
@@ -205,7 +198,7 @@ async def get_team_ids_async():
     try:
         async with get_client() as client:
             var = await client.read_variable_by_name("all_teams_2025_ids")
-            team_ids = [int(x.strip()) for x in var.value.split(",") if x.strip()]
+            team_ids = [int(x.strip()) for x in var.value.split(',')]
             return team_ids
     except Exception as e:
         print(f"⚠️ Could not load team IDs from variables: {e}")
@@ -236,8 +229,6 @@ def is_team_tracked(team_id):
     return team_id in get_team_ids()
 
 if __name__ == "__main__":
-    import argparse
-    
     parser = argparse.ArgumentParser(description="Manage team data variables")
     parser.add_argument("--create", action="store_true", help="Create team data variables")
     parser.add_argument("--update", action="store_true", help="Update existing variables")

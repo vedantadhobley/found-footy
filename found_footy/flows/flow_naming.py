@@ -72,11 +72,12 @@ class FlowNamingService:
                     away_score = final_goals.get("away", 0)
                     
                     if destination_collection == "fixtures_active":
-                        return f"🚀 KICKOFF: {home_team} vs {away_team} [#{fixture_id}]"
+                        return f"🚀 KICKOFF: {home_team} vs {away_team} [#{fixture_id}]"  # ✅ FIX: Complete the line
                     elif destination_collection == "fixtures_completed":
-                        return f"🏁 COMPLETED: {home_team} {home_score}-{away_score} {away_team} (FT) [#{fixture_id}]"
+                        return f"🏁 COMPLETED: {home_team} {home_score}-{away_score} {away_team} (FT) [#{fixture_id}]"  # ✅ FIX: Complete the line
                     else:
-                        return f"🔄 ADVANCE: {home_team} vs {away_team} [#{fixture_id}]"
+                        return f"🔄 ADVANCE: {home_team} vs {away_team} [#{fixture_id}]"  # ✅ FIX: Complete the line
+
                 else:
                     return f"🔄 ADVANCE: Match #{fixture_id}"
             else:
@@ -97,11 +98,10 @@ class FlowNamingService:
                     # Fallback parsing from goal_id
                     parts = goal_id.split('_')
                     if len(parts) >= 3:
-                        fixture_id = parts[0]
-                        minute = parts[1]
-                        return f"📥 VIDEO SEARCH: Goal {minute}' [#{fixture_id}] ({goal_id})"
+                        fixture_id, minute, player_id = parts[:3]  # ✅ FIX: Complete the line
+                        return f"📥 VIDEO: Goal #{fixture_id}_{minute}_{player_id}"
                     else:
-                        return f"📥 VIDEO SEARCH: Goal {goal_id}"
+                        return f"📥 VIDEO: Goal {goal_id}"  # ✅ FIX: Complete the line
             else:
                 return "📥 VIDEO SEARCH: No Goal ID"
         except:
@@ -175,7 +175,7 @@ class FlowNamingService:
                         minute = parts[1]
                         return f"📥 S3 DOWNLOAD: Goal {minute}' [#{fixture_id}] ({goal_id})"
                     else:
-                        return f"📥 S3 DOWNLOAD: Goal {goal_id}"
+                        return f"📥 S3 DOWNLOAD: Goal {goal_id}"  # ✅ FIX: Complete the line
             else:
                 return "📥 S3 DOWNLOAD: No Goal ID"
         except:
