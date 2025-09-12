@@ -10,3 +10,7 @@ typing-extensions==4.14.1
 urllib3==2.5.0
 pymongo==4.14.1
 nest-asyncio==1.6.0
+boto3==1.35.50
+botocore==1.35.50
+yt-dlp==2024.8.6
+mutagen==1.47.0

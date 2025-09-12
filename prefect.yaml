@@ -90,3 +90,16 @@ deployments:
       - twitter
       - social
     description: "Twitter goal processing with rich naming"
+
+  # 7. Download flow
+  - name: download-flow
+    entrypoint: found_footy.flows.download_flow:download_flow
+    work_pool:
+      name: download-pool
+    parameters:
+      goal_id: null
+    tags:
+      - download
+      - s3
+      - videos
+    description: "Video download and S3 storage flow"

@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
 class FootyMongoStore:
-    """MongoDB storage for football application data - 5 collections architecture (no teams)"""
+    """MongoDB storage for football application data - 5 collections architecture"""
     
     def __init__(self, connection_url=None):
         if connection_url is None:
@@ -14,7 +14,7 @@ class FootyMongoStore:
         self.client = MongoClient(connection_url)
         self.db = self.client.found_footy
         
-        # ✅ CLEANED: Only 5 collections - teams removed
+        # ✅ Keep goal collections as they are
         self.fixtures_staging = self.db.fixtures_staging
         self.fixtures_active = self.db.fixtures_active
         self.fixtures_completed = self.db.fixtures_completed

@@ -149,25 +149,6 @@ services:
     networks:
       - found-footy-network
 
-  # Twitter worker
-  twitter-worker:
-    build: .
-    command: prefect worker start --pool twitter-pool --type process --limit 2
-    environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
-      - PYTHONPATH=/app
-    depends_on:
-      prefect-server:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-      app:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    networks:
-      - found-footy-network
-
   # MongoDB only
   mongodb:
     image: mongo:7
@@ -219,6 +200,81 @@ services:
     networks:
       - found-footy-network
 
+  # MinIO S3-compatible storage
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # MinIO Console
+    environment:
+      MINIO_ROOT_USER: footy_admin
+      MINIO_ROOT_PASSWORD: footy_secure_pass
+      MINIO_DEFAULT_BUCKETS: footy-videos
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - found-footy-network
+
+  # Twitter worker - updated for S3
+  twitter-worker:
+    build: .
+    command: prefect worker start --pool twitter-pool --type process --limit 2
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
+      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - PYTHONPATH=/app
+      # S3 Configuration
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_ACCESS_KEY=footy_admin
+      - S3_SECRET_KEY=footy_secure_pass
+      - S3_BUCKET_NAME=footy-videos
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      app:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - found-footy-network
+
+  # Download worker - S3 video processing
+  download-worker:
+    build: .
+    command: prefect worker start --pool download-pool --type process --limit 2
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
+      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - PYTHONPATH=/app
+      # S3 Configuration
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_ACCESS_KEY=footy_admin
+      - S3_SECRET_KEY=footy_secure_pass
+      - S3_BUCKET_NAME=footy-videos
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      app:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - found-footy-network
+
 volumes:
   prefect_postgres_data:
   mongodb_data:
+  minio_data:  # ✅ Add MinIO volume

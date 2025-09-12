@@ -64,7 +64,7 @@ def fixtures_events(fixture_id):
     goal_events = []
     for event in events:
         if (event.get("type") == "Goal" and 
-            event.get("detail") not in ["Penalty Shootout"]):
+            event.get("detail") not in ["Missed Penalty"]):
             goal_events.append(event)
     
     print(f"✅ API returned {len(goal_events)} goal events for fixture {fixture_id}")

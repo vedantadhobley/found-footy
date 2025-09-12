@@ -86,26 +86,26 @@ class FlowNamingService:
     
     @staticmethod
     def get_twitter_flow_name(goal_id: Optional[str] = None) -> str:
-        """Generate contextual name for twitter flow"""
+        """Generate contextual name for twitter video scraping flow"""
         try:
             if goal_id:
                 # Try to get goal details from database
                 goal_doc = store.goals_pending.find_one({"_id": goal_id})
                 if goal_doc:
-                    return f"⚽ {goal_doc['team_name']}: {goal_doc['player_name']} ({goal_doc['minute']}') [#{goal_doc['fixture_id']}]"
+                    return f"📥 VIDEO: {goal_doc['team_name']} - {goal_doc['player_name']} ({goal_doc['minute']}') [#{goal_doc['fixture_id']}]"
                 else:
                     # Fallback parsing from goal_id
                     parts = goal_id.split('_')
                     if len(parts) >= 3:
                         fixture_id = parts[0]
                         minute = parts[1]
-                        return f"🔍 TWITTER: Goal {minute}' [#{fixture_id}] ({goal_id})"
+                        return f"📥 VIDEO SEARCH: Goal {minute}' [#{fixture_id}] ({goal_id})"
                     else:
-                        return f"🔍 TWITTER: Goal {goal_id}"
+                        return f"📥 VIDEO SEARCH: Goal {goal_id}"
             else:
-                return "🔍 TWITTER: No Goal ID"
+                return "📥 VIDEO SEARCH: No Goal ID"
         except:
-            return f"🔍 TWITTER: Goal {goal_id or 'Unknown'}"
+            return f"📥 VIDEO SEARCH: Goal {goal_id or 'Unknown'}"
 
     @staticmethod
     def get_goal_flow_name(fixture_id: int, goal_count: int = 0) -> str:
@@ -156,6 +156,34 @@ class FlowNamingService:
                 return f"❓ UNKNOWN: {flow_name}"
         except Exception as e:
             return f"❌ ERROR: {flow_name} ({str(e)[:50]})"
+
+    @staticmethod
+    def get_download_flow_name(goal_id: Optional[str] = None) -> str:
+        """Generate contextual name for download flow"""
+        try:
+            if goal_id:
+                # Try to get goal details from database
+                goal_doc = store.goals_pending.find_one({"_id": goal_id})
+                if goal_doc:
+                    video_count = len(goal_doc.get("discovered_videos", []))
+                    return f"📥 S3 DOWNLOAD: {goal_doc['team_name']} - {goal_doc['player_name']} ({goal_doc['minute']}') - {video_count} videos [#{goal_doc['fixture_id']}]"
+                else:
+                    # Fallback parsing from goal_id
+                    parts = goal_id.split('_')
+                    if len(parts) >= 3:
+                        fixture_id = parts[0]
+                        minute = parts[1]
+                        return f"📥 S3 DOWNLOAD: Goal {minute}' [#{fixture_id}] ({goal_id})"
+                    else:
+                        return f"📥 S3 DOWNLOAD: Goal {goal_id}"
+            else:
+                return "📥 S3 DOWNLOAD: No Goal ID"
+        except:
+            return f"📥 S3 DOWNLOAD: Goal {goal_id or 'Unknown'}"
+
+# Add convenience function
+def get_download_flow_name(goal_id=None):
+    return FlowNamingService.get_download_flow_name(goal_id)
 
 # ✅ RUNTIME NAMING: Functions that get called at runtime
 def runtime_advance_flow_name():

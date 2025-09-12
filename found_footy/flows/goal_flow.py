@@ -4,14 +4,14 @@ from prefect.deployments import run_deployment
 from typing import Optional, List
 
 from found_footy.flows.shared_tasks import store
-from found_footy.flows.flow_naming import get_twitter_flow_name  # ✅ UPDATED
+from found_footy.flows.flow_naming import get_twitter_flow_name, get_download_flow_name
 
 @flow(
     name="goal-flow"
     # ❌ NO flow_run_name here - will be set by triggering code
 )
 def goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
-    """Dedicated goal processing flow - triggers Twitter directly"""
+    """Dedicated goal processing flow - triggers Twitter → Download chain"""
     logger = get_run_logger()
     
     if not goal_events:
@@ -26,7 +26,7 @@ def goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
     for goal_event in goal_events:
         try:
             # Store the goal first
-            if store.store_goal_pending(fixture_id, goal_event):  # ✅ UPDATED METHOD
+            if store.store_goal_pending(fixture_id, goal_event):
                 minute = goal_event.get("time", {}).get("elapsed", 0)
                 player_id = goal_event.get("player", {}).get("id", 0)
                 goal_id = f"{fixture_id}_{minute}_{player_id}"
@@ -34,8 +34,8 @@ def goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
                 player_name = goal_event.get("player", {}).get("name", "Unknown")
                 team_name = goal_event.get("team", {}).get("name", "Unknown")
                 
-                # Trigger Twitter flow with rich naming using new method
-                twitter_flow_name = get_twitter_flow_name(goal_id)  # ✅ UPDATED
+                # Trigger Twitter search flow
+                twitter_flow_name = get_twitter_flow_name(goal_id)
                 
                 run_deployment(
                     name="twitter-flow/twitter-flow",
@@ -47,17 +47,19 @@ def goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
                 goals_processed.append(goal_id)
                 
                 logger.info(f"✅ Stored goal: {team_name} - {player_name} ({minute}')")
-                logger.info(f"🐦 Triggered Twitter: {twitter_flow_name}")
+                logger.info(f"🔍 Triggered Twitter search: {twitter_flow_name}")
                 
         except Exception as e:
             logger.error(f"❌ Failed to process goal: {e}")
     
-    logger.info(f"📡 Triggered {twitter_flows_triggered} Twitter flows directly")
+    logger.info(f"🔍 Triggered {twitter_flows_triggered} Twitter search flows")
+    logger.info("📥 Download flows will be triggered after video discovery")
     
     return {
         "status": "success",
         "fixture_id": fixture_id,
         "goals_processed": len(goals_processed),
         "twitter_flows_triggered": twitter_flows_triggered,
-        "valid_goals": goals_processed
+        "valid_goals": goals_processed,
+        "pipeline": "goal → twitter_search → download → s3"
     }
