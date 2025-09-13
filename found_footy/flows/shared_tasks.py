@@ -123,13 +123,20 @@ def fixtures_categorize_task(team_fixtures):
         current_home_goals = goals_data.get("home") or 0
         current_away_goals = goals_data.get("away") or 0
         
-        # Add API data to fixture
+        # ✅ FIX: Ensure team names are preserved in the correct format
         fixture["api_status"] = status
         fixture["status"] = status
         fixture["current_goals"] = {
             "home": current_home_goals,
             "away": current_away_goals
         }
+        fixture["goals"] = {
+            "home": current_home_goals,
+            "away": current_away_goals
+        }
+        # ✅ ENSURE: Team names are accessible as 'home' and 'away' fields
+        # These should already be set from the mongo_api.fixtures() call
+        # fixture["home"] and fixture["away"] should already exist
         
         # STATUS-BASED ROUTING using centralized logic
         if status in completed_statuses:
@@ -143,18 +150,17 @@ def fixtures_categorize_task(team_fixtures):
         elif status in staging_statuses:
             kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
             if kickoff_time > current_time:
-                staging_fixtures.append(fixture)  # ✅ FIX: Complete the line
+                staging_fixtures.append(fixture)
                 logger.info(f"📅 STAGING: {fixture['home']} vs {fixture['away']} (kickoff: {kickoff_time})")
             else:
                 # Past fixture but still NS - likely cancelled or error
-                logger.warning(f"⚠️ Past fixture still NS: {fixture['home']} vs {fixture['away']}")  # ✅ FIX: Complete the line
+                logger.warning(f"⚠️ Past fixture still NS: {fixture['home']} vs {fixture['away']}")
                 staging_fixtures.append(fixture)
                 
         else:
             # Unknown status - default to staging
             staging_fixtures.append(fixture)
             logger.warning(f"❓ UNKNOWN STATUS: {fixture['home']} vs {fixture['away']} (status: {status}) - defaulted to staging")
-
     
     logger.info(f"📊 STATUS CATEGORIZATION: {len(staging_fixtures)} staging, {len(active_fixtures)} active, {len(completed_fixtures)} completed")
     

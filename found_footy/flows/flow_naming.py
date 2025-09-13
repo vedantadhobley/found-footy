@@ -54,7 +54,7 @@ class FlowNamingService:
         destination_collection: str, 
         fixture_id: Optional[int] = None
     ) -> str:
-        """Generate contextual name for advance flow - RUNTIME EVALUATION"""
+        """Generate contextual name for advance flow - FIXED TEAM NAME EXTRACTION"""
         try:
             if fixture_id:
                 # Try to get fixture details for rich name AT RUNTIME
@@ -65,24 +65,30 @@ class FlowNamingService:
                     fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
                 
                 if fixture:
-                    home_team = fixture.get("team_names", {}).get("home", "Home")
-                    away_team = fixture.get("team_names", {}).get("away", "Away")
+                    # ✅ FIX: Use correct field names from fixture data structure
+                    # The fixture data has 'home' and 'away' fields directly, not 'team_names'
+                    home_team = fixture.get("home", "Home")
+                    away_team = fixture.get("away", "Away")
+                    
+                    # Get current scores if available
+                    current_goals = fixture.get("current_goals", {})
                     final_goals = fixture.get("goals", {})
-                    home_score = final_goals.get("home", 0)
-                    away_score = final_goals.get("away", 0)
+                    goals = current_goals or final_goals
+                    home_score = goals.get("home", 0)
+                    away_score = goals.get("away", 0)
                     
                     if destination_collection == "fixtures_active":
-                        return f"🚀 KICKOFF: {home_team} vs {away_team} [#{fixture_id}]"  # ✅ FIX: Complete the line
+                        return f"🚀 KICKOFF: {home_team} vs {away_team} [#{fixture_id}]"
                     elif destination_collection == "fixtures_completed":
-                        return f"🏁 COMPLETED: {home_team} {home_score}-{away_score} {away_team} (FT) [#{fixture_id}]"  # ✅ FIX: Complete the line
+                        return f"🏁 COMPLETED: {home_team} {home_score}-{away_score} {away_team} (FT) [#{fixture_id}]"
                     else:
-                        return f"🔄 ADVANCE: {home_team} vs {away_team} [#{fixture_id}]"  # ✅ FIX: Complete the line
-
+                        return f"🔄 ADVANCE: {home_team} vs {away_team} [#{fixture_id}]"
                 else:
                     return f"🔄 ADVANCE: Match #{fixture_id}"
             else:
                 return f"🔄 ADVANCE: {source_collection} → {destination_collection}"
-        except:
+        except Exception as e:
+            print(f"⚠️ Error in advance flow naming: {e}")
             return f"🔄 ADVANCE: {source_collection} → {destination_collection}"
     
     @staticmethod
@@ -98,10 +104,10 @@ class FlowNamingService:
                     # Fallback parsing from goal_id
                     parts = goal_id.split('_')
                     if len(parts) >= 3:
-                        fixture_id, minute, player_id = parts[:3]  # ✅ FIX: Complete the line
+                        fixture_id, minute, player_id = parts[:3]
                         return f"📥 VIDEO: Goal #{fixture_id}_{minute}_{player_id}"
                     else:
-                        return f"📥 VIDEO: Goal {goal_id}"  # ✅ FIX: Complete the line
+                        return f"📥 VIDEO: Goal {goal_id}"
             else:
                 return "📥 VIDEO SEARCH: No Goal ID"
         except:
@@ -114,8 +120,9 @@ class FlowNamingService:
             # Try to get fixture details for rich name
             fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
             if fixture:
-                home_team = fixture.get("team_names", {}).get("home", "Home")
-                away_team = fixture.get("team_names", {}).get("away", "Away")
+                # ✅ FIX: Use correct field names
+                home_team = fixture.get("home", "Home")
+                away_team = fixture.get("away", "Away")
                 goals = fixture.get("goals", {})
                 home_score = goals.get("home", 0)
                 away_score = goals.get("away", 0)
@@ -175,7 +182,7 @@ class FlowNamingService:
                         minute = parts[1]
                         return f"📥 S3 DOWNLOAD: Goal {minute}' [#{fixture_id}] ({goal_id})"
                     else:
-                        return f"📥 S3 DOWNLOAD: Goal {goal_id}"  # ✅ FIX: Complete the line
+                        return f"📥 S3 DOWNLOAD: Goal {goal_id}"
             else:
                 return "📥 S3 DOWNLOAD: No Goal ID"
         except:

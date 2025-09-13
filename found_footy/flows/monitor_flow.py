@@ -44,8 +44,9 @@ def fixtures_monitor_task():
                 # Get fixture context for rich naming
                 fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
                 if fixture:
-                    home_team = fixture.get("team_names", {}).get("home", "Home")
-                    away_team = fixture.get("team_names", {}).get("away", "Away")
+                    # ✅ FIX: Use correct field names - 'home' and 'away', not 'team_names'
+                    home_team = fixture.get("home", "Home")
+                    away_team = fixture.get("away", "Away")
                     flow_run_name = f"⚽ GOALS: {home_team} {home_score}-{away_score} {away_team} - {len(complete_goal_events)} events [#{fixture_id}]"
                 else:
                     flow_run_name = f"⚽ GOALS: Match #{fixture_id} - {home_score}-{away_score} - {len(complete_goal_events)} events"
@@ -82,8 +83,9 @@ def fixtures_monitor_task():
             # Get fixture context for completion flow naming
             fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
             if fixture:
-                home_team = fixture.get("team_names", {}).get("home", "Home")
-                away_team = fixture.get("team_names", {}).get("away", "Away")
+                # ✅ FIX: Use correct field names
+                home_team = fixture.get("home", "Home")
+                away_team = fixture.get("away", "Away")
                 final_goals = delta_result.get("current_goals", {})
                 home_score = final_goals.get("home", 0)
                 away_score = final_goals.get("away", 0)
