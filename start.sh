@@ -1,26 +1,42 @@
-#!/bin/bash
-# filepath: /home/vedanta/found-footy/start.sh
-echo "🚀 Starting Found Footy - Fully Automated"
-echo "=================================="
+#!/usr/bin/env bash
+set -euo pipefail
 
-docker compose down
+echo "🚀 Found Footy"
 
-# Build and start everything
-# docker compose up --build -d
-docker compose --profile test up --build -d
+cmd="${1:-redeploy}"
+svc="${2:-}"
 
-echo ""
-echo "✅ Found Footy started!"
-echo ""
-echo "📊 Services:"
-echo "  - Prefect UI: http://localhost:4200"
-echo "  - MongoDB Admin: http://localhost:8083 (admin/admin123)"
-echo ""
-echo "📋 Check deployment status:"
-echo "  docker-compose logs app"
-echo ""
-echo "🔍 Monitor workers:"
-echo "  docker-compose logs -f fixtures-worker-1"
-echo ""
-echo "🧪 Test events:"
-echo "  docker-compose exec fixtures-worker-1 python debug_events.py"
+redeploy() {
+  echo "🔄 Redeploying (local rebuild, no pulling)..."
+  export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1
+  docker compose down --remove-orphans || true
+  docker compose build              # rebuild images from local changes (cached)
+  docker compose up -d --force-recreate  # ensure fresh containers
+  echo "📦 Applying Prefect deployments..."
+  docker compose run --rm app python found_footy/flows/deployments.py --apply || true
+  echo "✅ Redeploy complete"
+  docker compose ps
+}
+
+case "$cmd" in
+  redeploy|"")
+    redeploy
+    ;;
+  logs)
+    if [ -n "${svc}" ]; then
+      docker compose logs -f "${svc}"
+    else
+      docker compose logs -f
+    fi
+    ;;
+  status|ps)
+    docker compose ps
+    ;;
+  down)
+    docker compose down --volumes
+    ;;
+  *)
+    echo "Usage: ./start.sh [redeploy|logs [service]|status|ps|down]"
+    exit 1
+    ;;
+esac

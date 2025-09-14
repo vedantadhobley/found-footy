@@ -1,103 +1,77 @@
 # ✅ FIXED: found_footy/api/mongo_api.py - Remove all team metadata functions
 import requests
-from datetime import date, datetime
+from datetime import date
 import json
 import os
 from prefect import task, get_run_logger
 
-# API configuration
 BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
 HEADERS = {
-    "x-rapidapi-key": "3815c39f56msh68991ec604f7be3p1cb7c4jsnf78a6cb47415",
-    "x-rapidapi-host": "api-football-v1.p.rapidapi.com"
+    "x-rapidapi-key": os.getenv("RAPIDAPI_KEY", "CHANGE_ME"),
+    "x-rapidapi-host": "api-football-v1.p.rapidapi.com",
 }
 
-def fixtures(date_param=None):
-    """Get fixtures - exact endpoint name from API"""
+def _coerce_date_param(date_param):
     if date_param is None:
-        date_param = date.today().strftime("%Y-%m-%d")
-    elif isinstance(date_param, date):
-        date_param = date_param.strftime("%Y-%m-%d")
-    elif len(date_param) == 8:  # YYYYMMDD format
-        date_param = f"{date_param[:4]}-{date_param[4:6]}-{date_param[6:8]}"
-    
+        return date.today().strftime("%Y-%m-%d")
+    if isinstance(date_param, date):
+        return date_param.strftime("%Y-%m-%d")
+    if isinstance(date_param, str) and len(date_param) == 8:
+        return f"{date_param[:4]}-{date_param[4:6]}-{date_param[6:8]}"
+    return str(date_param)
+
+def fixtures(date_param=None):
+    """
+    Return API-Football fixtures exactly as returned by the API.
+    Schema (per item): { fixture: {...}, league: {...}, teams: {...}, goals: {...}, score: {...} }
+    """
+    date_str = _coerce_date_param(date_param)
     url = f"{BASE_URL}/fixtures"
-    querystring = {"date": date_param}
-    
-    print(f"📡 API call: fixtures(date={date_param})")
-    
-    response = requests.get(url, headers=HEADERS, params=querystring)
-    response.raise_for_status()
-    
-    api_fixtures = response.json().get("response", [])
-    print(f"✅ API returned {len(api_fixtures)} fixtures")
-    
-    # Convert to simplified format
-    simplified_fixtures = []
-    for fixture in api_fixtures:
-        simplified_fixtures.append({
-            "id": fixture["fixture"]["id"],
-            "home": fixture["teams"]["home"]["name"],
-            "home_id": fixture["teams"]["home"]["id"],
-            "away": fixture["teams"]["away"]["name"],
-            "away_id": fixture["teams"]["away"]["id"],
-            "league": fixture["league"]["name"],
-            "league_id": fixture["league"]["id"],
-            "time": fixture["fixture"]["date"]
-        })
-    
-    return simplified_fixtures
+    resp = requests.get(url, headers=HEADERS, params={"date": date_str})
+    resp.raise_for_status()
+    items = resp.json().get("response", [])
+    return items  # raw items
 
 def fixtures_events(fixture_id):
-    """Get fixture events - exact endpoint name from API"""
+    """
+    Return API-Football events exactly as returned by the API for a fixture (no filtering).
+    Each item: { time: {...}, team: {...}, player: {...}, assist: {...}, type: "...", detail: "...", comments: ... }
+    """
     url = f"{BASE_URL}/fixtures/events"
-    querystring = {"fixture": str(fixture_id)}
-    
-    print(f"📡 API call: fixtures/events(fixture={fixture_id})")
-    
-    response = requests.get(url, headers=HEADERS, params=querystring)
-    response.raise_for_status()
-    
-    events = response.json().get("response", [])
-    
-    # Filter only goal events (non-penalty shootout)
-    goal_events = []
-    for event in events:
-        if (event.get("type") == "Goal" and 
-            event.get("detail") not in ["Missed Penalty"]):
-            goal_events.append(event)
-    
-    print(f"✅ API returned {len(goal_events)} goal events for fixture {fixture_id}")
-    return goal_events
+    resp = requests.get(url, headers=HEADERS, params={"fixture": str(fixture_id)})
+    resp.raise_for_status()
+    return resp.json().get("response", [])  # raw events
 
 def fixtures_batch(fixture_ids_list):
-    """Get multiple fixtures in batch - using ids parameter"""
+    """
+    Batch fixtures by ids (raw schema).
+    """
     if not fixture_ids_list:
         return []
-    
-    # Use hyphen-separated format for batch calls
-    fixture_ids_str = "-".join(map(str, fixture_ids_list))
-    
+    ids_str = "-".join(map(str, fixture_ids_list))
     url = f"{BASE_URL}/fixtures"
-    querystring = {"ids": fixture_ids_str}
-    
-    print(f"📡 API call: fixtures(ids={fixture_ids_str}) - batch of {len(fixture_ids_list)}")
-    
-    response = requests.get(url, headers=HEADERS, params=querystring)
-    response.raise_for_status()
-    
-    results = response.json().get("response", [])
-    print(f"✅ Batch API returned {len(results)} fixture details")
-    return results
+    resp = requests.get(url, headers=HEADERS, params={"ids": ids_str})
+    resp.raise_for_status()
+    return resp.json().get("response", [])  # raw items
 
 def filter_fixtures_by_teams(fixtures_list, team_ids):
-    """Filter fixtures to only include specified teams"""
+    """
+    Filter on raw schema: item['teams']['home']['id'], item['teams']['away']['id']
+    Accepts mixed inputs (raw or legacy flattened) without mutating items.
+    """
     filtered = []
-    for fixture in fixtures_list:
-        if fixture["home_id"] in team_ids or fixture["away_id"] in team_ids:
-            filtered.append(fixture)
-    
-    print(f"✅ Filtered to {len(filtered)} fixtures involving specified teams")
+    ts = set(map(int, team_ids or []))
+    for item in fixtures_list or []:
+        try:
+            # raw schema
+            hid = int(item["teams"]["home"]["id"])
+            aid = int(item["teams"]["away"]["id"])
+        except Exception:
+            # legacy flattened fallback
+            hid = int(item.get("home_id", -1))
+            aid = int(item.get("away_id", -1))
+        if hid in ts or aid in ts:
+            filtered.append(item)
     return filtered
 
 def parse_team_ids_parameter(team_ids_param):

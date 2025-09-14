@@ -180,27 +180,19 @@ services:
       ME_CONFIG_MONGODB_ADMINPASSWORD: footy_secure_pass
       ME_CONFIG_MONGODB_SERVER: mongodb
       ME_CONFIG_MONGODB_PORT: 27017
-      ME_CONFIG_MONGODB_URL: mongodb://footy_admin:footy_secure_pass@mongodb:27017/admin
+      ME_CONFIG_MONGODB_AUTH_DATABASE: admin
       ME_CONFIG_BASICAUTH_USERNAME: admin
       ME_CONFIG_BASICAUTH_PASSWORD: admin123
-      ME_CONFIG_OPTIONS_EDITORTHEME: default  # Add this
-      ME_CONFIG_REQUEST_SIZE: 100kb  # Add this
     ports:
       - "8083:8081"
     depends_on:
       mongodb:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8081"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    restart: on-failure
+    restart: unless-stopped
     networks:
       - found-footy-network
 
-  # MinIO S3-compatible storage with automatic bucket creation
+  # MinIO S3-compatible storage - CLEAN, NO SCRIPTS
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -210,17 +202,8 @@ services:
     environment:
       MINIO_ROOT_USER: footy_admin
       MINIO_ROOT_PASSWORD: footy_secure_pass
-      # ✅ FIX: Create bucket automatically
-      MINIO_DEFAULT_BUCKETS: footy-videos
     volumes:
       - minio_data:/data
-      # ✅ ADD: Bucket initialization script
-      - ./scripts/create-buckets.sh:/create-buckets.sh:ro
-    entrypoint: >
-      sh -c "
-        mkdir -p /data/footy-videos &&
-        minio server /data --console-address ':9001'
-      "
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
@@ -230,19 +213,29 @@ services:
     networks:
       - found-footy-network
 
-  # Twitter worker - simplified without browser dependencies
+  # Twitter worker - Enhanced with session management
   twitter-worker:
     build: .
-    command: prefect worker start --pool twitter-pool --type process --limit 2
+    command: >
+      sh -c "
+        python scripts/twitter_worker_startup.py &&
+        prefect worker start --pool twitter-pool --type process --limit 2
+      "
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
       - PYTHONPATH=/app
-      # S3 Configuration
       - S3_ENDPOINT_URL=http://minio:9000
       - S3_ACCESS_KEY=footy_admin
       - S3_SECRET_KEY=footy_secure_pass
       - S3_BUCKET_NAME=footy-videos
+      # Twitter credentials
+      - TWITTER_USERNAME=REDACTED_USERNAME
+      - TWITTER_PASSWORD=REDACTED_PASSWORD
+      - TWITTER_EMAIL=REDACTED_EMAIL
+      # SSL Configuration
+      - PYTHONHTTPSVERIFY=0
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     depends_on:
       prefect-server:
         condition: service_healthy
@@ -264,11 +257,13 @@ services:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
       - PYTHONPATH=/app
-      # S3 Configuration
       - S3_ENDPOINT_URL=http://minio:9000
       - S3_ACCESS_KEY=footy_admin
       - S3_SECRET_KEY=footy_secure_pass
       - S3_BUCKET_NAME=footy-videos
+      - PYTHONHTTPSVERIFY=0
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      - SSL_CERT_DIR=/etc/ssl/certs
     depends_on:
       prefect-server:
         condition: service_healthy
@@ -282,34 +277,35 @@ services:
     networks:
       - found-footy-network
 
-  # Test service with profile
+  # Test service - ✅ RESTORED: No profile, runs with normal startup
   test:
     build: .
-    profiles: ["test"]  # Only runs when explicitly requested
     environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
       - PYTHONPATH=/app
     depends_on:
       prefect-server:
         condition: service_healthy
       mongodb:
         condition: service_healthy
+      minio:
+        condition: service_healthy
+      app:
+        condition: service_completed_successfully
     command: >
       sh -c "
         echo '🧪 Running Found Footy Test Suite...' &&
-        echo '⏳ Waiting for services to be ready...' &&
-        sleep 5 &&
-        python -m pytest tests/ -v --tb=short --cov=found_footy --cov-report=term-missing &&
-        echo '✅ Tests completed!'
+        python run_tests.py
       "
     volumes:
       - .:/app
     networks:
       - found-footy-network
-    restart: "no"
+    restart: "no"  # ✅ KEEP: Still runs once and exits
 
 volumes:
   prefect_postgres_data:
+    driver: local
   mongodb_data:
-  minio_data:  # ✅ Add MinIO volume
+    driver: local
+  minio_data:
+    driver: local

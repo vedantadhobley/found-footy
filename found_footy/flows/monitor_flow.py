@@ -41,12 +41,10 @@ def fixtures_monitor_task():
             complete_goal_events = fixtures_events(fixture_id)
             
             if complete_goal_events:
-                # Get fixture context for rich naming
+                # Get fixture context for rich naming using raw schema
                 fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
                 if fixture:
-                    # ✅ FIX: Use correct field names - 'home' and 'away', not 'team_names'
-                    home_team = fixture.get("home", "Home")
-                    away_team = fixture.get("away", "Away")
+                    home_team, away_team = store._extract_team_names(fixture)
                     flow_run_name = f"⚽ GOALS: {home_team} {home_score}-{away_score} {away_team} - {len(complete_goal_events)} events [#{fixture_id}]"
                 else:
                     flow_run_name = f"⚽ GOALS: Match #{fixture_id} - {home_score}-{away_score} - {len(complete_goal_events)} events"
@@ -74,7 +72,7 @@ def fixtures_monitor_task():
             logger.error(f"❌ Error triggering goal flow for fixture {fixture_id}: {e}")
             continue
     
-    # Process completions
+    # Process completions using raw schema
     for completed_fixture in delta_results["fixtures_completed"]:
         fixture_id = completed_fixture["fixture_id"] 
         delta_result = completed_fixture["delta_result"]
@@ -83,9 +81,7 @@ def fixtures_monitor_task():
             # Get fixture context for completion flow naming
             fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
             if fixture:
-                # ✅ FIX: Use correct field names
-                home_team = fixture.get("home", "Home")
-                away_team = fixture.get("away", "Away")
+                home_team, away_team = store._extract_team_names(fixture)
                 final_goals = delta_result.get("current_goals", {})
                 home_score = final_goals.get("home", 0)
                 away_score = final_goals.get("away", 0)

@@ -9,29 +9,53 @@ RUN groupadd -g ${GROUP_ID} appuser && \
 
 WORKDIR /app
 
-# ✅ SIMPLIFIED: Only install basic system dependencies
+# ✅ Install Chrome for browser automation (multi-arch support)
 RUN apt-get update && apt-get install -y \
     wget \
     ca-certificates \
+    curl \
+    openssl \
+    git \
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    python3-dev \
+    # Chrome dependencies
+    chromium \
+    chromium-driver \
+    xvfb \
+    && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# ✅ Install uv for fast dependency management
-RUN pip install uv
+# ✅ Create Chrome wrapper script for headless operation
+RUN echo '#!/bin/bash\nexec chromium "$@" --no-sandbox --disable-dev-shm-usage --headless --disable-gpu' > /usr/local/bin/chrome \
+    && chmod +x /usr/local/bin/chrome
 
-# Copy requirements first for better caching
+# Install certificates and uv
+RUN update-ca-certificates --fresh && \
+    mkdir -p /etc/ssl/custom && \
+    cat /etc/ssl/certs/ca-certificates.crt > /etc/ssl/custom/bundle.crt && \
+    pip install uv
+
+# Copy requirements and install dependencies
 COPY requirements.txt .
+RUN PYTHONHTTPSVERIFY=0 uv pip install --system -r requirements.txt
 
-# ✅ Install dependencies using uv
-RUN uv pip install --system -r requirements.txt
-
-# ✅ COPY AND FIX PERMISSIONS: Copy application code as root first
+# Copy application code and set permissions
 COPY . .
+RUN chown -R appuser:appuser /app && \
+    mkdir -p /app/downloads && chown -R appuser:appuser /app/downloads
 
-# ✅ FIX: Ensure appuser owns all files in /app
-RUN chown -R appuser:appuser /app
-
-# Create downloads directory with proper permissions
-RUN mkdir -p /app/downloads && chown -R appuser:appuser /app/downloads
+# Environment variables
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_DIR=/etc/ssl/certs
+ENV PYTHONHTTPSVERIFY=0
+ENV PYTHONPATH=/app
+ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+# Chrome environment
+ENV CHROME_BIN=/usr/local/bin/chrome
+ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 
 # Switch to non-root user
 USER appuser

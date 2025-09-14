@@ -54,7 +54,7 @@ class FlowNamingService:
         destination_collection: str, 
         fixture_id: Optional[int] = None
     ) -> str:
-        """Generate contextual name for advance flow - FIXED TEAM NAME EXTRACTION"""
+        """Generate contextual name for advance flow using raw schema"""
         try:
             if fixture_id:
                 # Try to get fixture details for rich name AT RUNTIME
@@ -65,26 +65,20 @@ class FlowNamingService:
                     fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
                 
                 if fixture:
-                    # ✅ FIX: Use correct field names from fixture data structure
-                    # The fixture data has 'home' and 'away' fields directly, not 'team_names'
-                    home_team = fixture.get("home", "Home")
-                    away_team = fixture.get("away", "Away")
-                    
-                    # Get current scores if available
-                    current_goals = fixture.get("current_goals", {})
-                    final_goals = fixture.get("goals", {})
-                    goals = current_goals or final_goals
-                    home_score = goals.get("home", 0)
-                    away_score = goals.get("away", 0)
+                    # Use raw schema extraction
+                    home_team, away_team = store._extract_team_names(fixture)
+                    current_goals = store._extract_current_goals(fixture)
+                    home_score = current_goals.get("home", 0)
+                    away_score = current_goals.get("away", 0)
                     
                     if destination_collection == "fixtures_active":
                         return f"🚀 KICKOFF: {home_team} vs {away_team} [#{fixture_id}]"
                     elif destination_collection == "fixtures_completed":
-                        return f"🏁 COMPLETED: {home_team} {home_score}-{away_score} {away_team} (FT) [#{fixture_id}]"
+                        return f"🏁 FINAL: {home_team} {home_score}-{away_score} {away_team} [#{fixture_id}]"
                     else:
-                        return f"🔄 ADVANCE: {home_team} vs {away_team} [#{fixture_id}]"
+                        return f"🔄 ADVANCE: {home_team} vs {away_team} → {destination_collection} [#{fixture_id}]"
                 else:
-                    return f"🔄 ADVANCE: Match #{fixture_id}"
+                    return f"🔄 ADVANCE: Match #{fixture_id} → {destination_collection}"
             else:
                 return f"🔄 ADVANCE: {source_collection} → {destination_collection}"
         except Exception as e:
@@ -115,17 +109,15 @@ class FlowNamingService:
 
     @staticmethod
     def get_goal_flow_name(fixture_id: int, goal_count: int = 0) -> str:
-        """Generate contextual name for goal flow"""
+        """Generate contextual name for goal flow using raw schema"""
         try:
             # Try to get fixture details for rich name
             fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
             if fixture:
-                # ✅ FIX: Use correct field names
-                home_team = fixture.get("home", "Home")
-                away_team = fixture.get("away", "Away")
-                goals = fixture.get("goals", {})
-                home_score = goals.get("home", 0)
-                away_score = goals.get("away", 0)
+                home_team, away_team = store._extract_team_names(fixture)
+                current_goals = store._extract_current_goals(fixture)
+                home_score = current_goals.get("home", 0)
+                away_score = current_goals.get("away", 0)
                 
                 return f"⚽ GOALS: {home_team} {home_score}-{away_score} {away_team} - {goal_count} events [#{fixture_id}]"
             else:

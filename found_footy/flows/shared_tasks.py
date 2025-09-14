@@ -101,7 +101,7 @@ def fixtures_categorize_task(team_fixtures):
     current_time = datetime.now(timezone.utc)
     
     # Get full fixture data including current scores
-    fixture_ids = [fixture["id"] for fixture in team_fixtures]
+    fixture_ids = [fixture["fixture"]["id"] for fixture in team_fixtures]
     logger.info(f"🔍 Getting detailed data for {len(fixture_ids)} fixtures...")
     
     try:
@@ -112,55 +112,33 @@ def fixtures_categorize_task(team_fixtures):
         api_lookup = {}
     
     for fixture in team_fixtures:
-        fixture_id = fixture["id"]
+        fixture_id = fixture["fixture"]["id"]
         
         # Get detailed API data
-        api_data = api_lookup.get(fixture_id, {})
+        api_data = api_lookup.get(fixture_id, fixture)  # Use fixture as fallback
+        
+        # Extract using raw schema - don't flatten!
         status = api_data.get("fixture", {}).get("status", {}).get("short", "NS")
         
-        # Extract current scores from API
-        goals_data = api_data.get("goals", {"home": 0, "away": 0})
-        current_home_goals = goals_data.get("home") or 0
-        current_away_goals = goals_data.get("away") or 0
-        
-        # ✅ FIX: Ensure team names are preserved in the correct format
-        fixture["api_status"] = status
-        fixture["status"] = status
-        fixture["current_goals"] = {
-            "home": current_home_goals,
-            "away": current_away_goals
-        }
-        fixture["goals"] = {
-            "home": current_home_goals,
-            "away": current_away_goals
-        }
-        # ✅ ENSURE: Team names are accessible as 'home' and 'away' fields
-        # These should already be set from the mongo_api.fixtures() call
-        # fixture["home"] and fixture["away"] should already exist
+        # Use the raw fixture data as-is, don't modify schema
+        processed_fixture = api_data
         
         # STATUS-BASED ROUTING using centralized logic
         if status in completed_statuses:
-            completed_fixtures.append(fixture)
-            logger.info(f"🏁 COMPLETED: {fixture['home']} vs {fixture['away']} (status: {status})")
+            completed_fixtures.append(processed_fixture)
+            logger.info(f"📋 COMPLETED: Fixture {fixture_id} ({status})")
             
         elif status in active_statuses:
-            active_fixtures.append(fixture)
-            logger.info(f"🔄 ACTIVE: {fixture['home']} {current_home_goals}-{current_away_goals} {fixture['away']} (status: {status})")
+            active_fixtures.append(processed_fixture)
+            logger.info(f"🔴 ACTIVE: Fixture {fixture_id} ({status})")
             
         elif status in staging_statuses:
-            kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
-            if kickoff_time > current_time:
-                staging_fixtures.append(fixture)
-                logger.info(f"📅 STAGING: {fixture['home']} vs {fixture['away']} (kickoff: {kickoff_time})")
-            else:
-                # Past fixture but still NS - likely cancelled or error
-                logger.warning(f"⚠️ Past fixture still NS: {fixture['home']} vs {fixture['away']}")
-                staging_fixtures.append(fixture)
+            staging_fixtures.append(processed_fixture)
+            logger.info(f"📅 STAGING: Fixture {fixture_id} ({status})")
                 
         else:
-            # Unknown status - default to staging
-            staging_fixtures.append(fixture)
-            logger.warning(f"❓ UNKNOWN STATUS: {fixture['home']} vs {fixture['away']} (status: {status}) - defaulted to staging")
+            logger.warning(f"❓ UNKNOWN STATUS: Fixture {fixture_id} has status '{status}'")
+            staging_fixtures.append(processed_fixture)  # Default to staging
     
     logger.info(f"📊 STATUS CATEGORIZATION: {len(staging_fixtures)} staging, {len(active_fixtures)} active, {len(completed_fixtures)} completed")
     
@@ -192,7 +170,6 @@ def fixtures_delta_task():
     """Bulk delta detection for entire fixtures_active collection"""
     logger = get_run_logger()
     
-    # ✅ FIX: Use the correct method name
     active_fixtures = store.get_active_fixtures()
     if not active_fixtures:
         logger.info("⏸️ No active fixtures for delta detection")
@@ -203,7 +180,7 @@ def fixtures_delta_task():
             "total_goals_detected": 0
         }
     
-    fixture_ids = [f["fixture_id"] for f in active_fixtures]
+    fixture_ids = [store._extract_fixture_id(f) for f in active_fixtures]
     logger.info(f"🔍 Running bulk delta detection on {len(fixture_ids)} fixtures")
     
     try:
@@ -216,15 +193,13 @@ def fixtures_delta_task():
         total_goals_detected = 0
         
         for active_fixture in active_fixtures:
-            fixture_id = active_fixture["fixture_id"]
+            fixture_id = store._extract_fixture_id(active_fixture)
             api_data = api_lookup.get(fixture_id)
             
             if not api_data:
-                logger.warning(f"⚠️ No API data for fixture {fixture_id}")  # ✅ FIX: Complete the line
                 continue
                 
-            # Get delta for this fixture
-            delta_result = store.fixtures_delta(fixture_id, api_data)  # ✅ FIX: Complete the line
+            delta_result = store.fixtures_delta(fixture_id, api_data)
             
             if delta_result.get("goals_changed"):
                 fixtures_with_changes.append({
@@ -232,7 +207,7 @@ def fixtures_delta_task():
                     "delta_result": delta_result
                 })
                 total_goals_detected += delta_result.get("total_goal_increase", 0)
-            
+                
             if delta_result.get("status_changed_to_completed"):
                 fixtures_completed.append({
                     "fixture_id": fixture_id,
