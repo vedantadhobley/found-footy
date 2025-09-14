@@ -57,15 +57,6 @@ services:
         condition: service_healthy
     command: >
       sh -c "
-        echo '🚀 Found Footy Automated Setup Starting...' &&
-        echo '⏳ Waiting 10 seconds for services to stabilize...' &&
-        sleep 10 &&
-        echo '📋 Running centralized configuration sync...' &&
-        python -c 'from found_footy.config.startup_config import sync_startup; sync_startup()' &&
-        echo '🏗️ Creating deployments and automations...' &&
-        timeout 300 python -m found_footy.flows.deployments --apply &&
-        echo '✅ Setup completed successfully!' &&
-        echo '🌐 Access Prefect UI at http://localhost:4200' &&
         echo '📊 Check deployments and automations in the UI'
       "
     networks:
@@ -81,6 +72,10 @@ services:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
       - PYTHONPATH=/app
+      # ✅ FIX: Load from .env file
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+    env_file:
+      - .env
     depends_on:
       prefect-server:
         condition: service_healthy
@@ -100,6 +95,10 @@ services:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
       - PYTHONPATH=/app
+      # ✅ FIX: Load from .env file
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+    env_file:
+      - .env
     depends_on:
       prefect-server:
         condition: service_healthy
@@ -119,6 +118,10 @@ services:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
       - PYTHONPATH=/app
+      # ✅ FIX: Load from .env file
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+    env_file:
+      - .env
     depends_on:
       prefect-server:
         condition: service_healthy
@@ -138,6 +141,10 @@ services:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
       - PYTHONPATH=/app
+      # ✅ FIX: Load from .env file
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+    env_file:
+      - .env
     depends_on:
       prefect-server:
         condition: service_healthy
@@ -213,12 +220,15 @@ services:
     networks:
       - found-footy-network
 
-  # Twitter worker - Enhanced with session management
+  # Twitter worker - ✅ ENHANCED: Debug-friendly configuration
   twitter-worker:
     build: .
     command: >
       sh -c "
-        python scripts/twitter_worker_startup.py &&
+        echo '🤖 Twitter Worker starting on $(uname -m) architecture...' &&
+        echo '🔍 Environment check...' &&
+        python /app/scripts/debug_twitter_worker.py || echo '⚠️ Debug script failed' &&
+        echo '🚀 Starting worker...' &&
         prefect worker start --pool twitter-pool --type process --limit 2
       "
     environment:
@@ -229,13 +239,12 @@ services:
       - S3_ACCESS_KEY=footy_admin
       - S3_SECRET_KEY=footy_secure_pass
       - S3_BUCKET_NAME=footy-videos
-      # Twitter credentials
-      - TWITTER_USERNAME=REDACTED_USERNAME
-      - TWITTER_PASSWORD=REDACTED_PASSWORD
-      - TWITTER_EMAIL=REDACTED_EMAIL
-      # SSL Configuration
-      - PYTHONHTTPSVERIFY=0
-      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+      # ✅ ADD: Debug environment variables
+      - DEBUG_MODE=1
+      - PREFECT_LOGGING_LEVEL=DEBUG
+    env_file:
+      - .env
     depends_on:
       prefect-server:
         condition: service_healthy
@@ -248,6 +257,13 @@ services:
     restart: unless-stopped
     networks:
       - found-footy-network
+    # ✅ ADD: Health check for Twitter worker
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://prefect-server:4200/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   # Download worker - S3 video processing
   download-worker:
@@ -262,8 +278,10 @@ services:
       - S3_SECRET_KEY=footy_secure_pass
       - S3_BUCKET_NAME=footy-videos
       - SSL_CERT_DIR=/etc/ssl/certs
-      - PYTHONHTTPSVERIFY=0
-      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      # ✅ FIX: Load from .env file
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+    env_file:
+      - .env
     depends_on:
       prefect-server:
         condition: service_healthy
@@ -277,34 +295,30 @@ services:
     networks:
       - found-footy-network
 
-  # Test service - Complete configuration
+  # Test service - ✅ RESTORED: No profile, runs with normal startup
   test:
     build: .
     environment:
       - PYTHONPATH=/app
-      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
-      - S3_ENDPOINT_URL=http://minio:9000
-      - S3_ACCESS_KEY=footy_admin
-      - S3_SECRET_KEY=footy_secure_pass
-      - S3_BUCKET_NAME=footy-videos
+      # ✅ FIX: Load from .env file
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+    env_file:
+      - .env
     depends_on:
       prefect-server:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-      minio:
-        condition: service_healthy
-      app:
-        condition: service_completed_successfully
     command: >
       sh -c "
-        echo '🧪 Test service ready for manual runs'
+        echo '🧪 Test container ready' &&
+        sleep 30
       "
     volumes:
       - .:/app
     networks:
       - found-footy-network
-    restart: "no"
+    restart: "no"  # ✅ KEEP: Still runs once and exits
 
 volumes:
   prefect_postgres_data:

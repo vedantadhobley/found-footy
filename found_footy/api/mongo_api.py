@@ -1,4 +1,4 @@
-# ✅ FIXED: found_footy/api/mongo_api.py - Remove all team metadata functions
+# ✅ FIXED: found_footy/api/mongo_api.py - Secure credentials from environment
 import requests
 from datetime import date
 import json
@@ -6,10 +6,22 @@ import os
 from prefect import task, get_run_logger
 
 BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
-HEADERS = {
-    "x-rapidapi-key": os.getenv("RAPIDAPI_KEY", "CHANGE_ME"),
-    "x-rapidapi-host": "api-football-v1.p.rapidapi.com",
-}
+
+# ✅ FIX: Load from environment variable - no fallback that exposes credentials
+def get_api_headers():
+    """Get API headers with secure credential handling"""
+    rapidapi_key = os.getenv("RAPIDAPI_KEY")
+    
+    if not rapidapi_key:
+        raise ValueError(
+            "RAPIDAPI_KEY environment variable not set. "
+            "Please add your RapidAPI key to the .env file: RAPIDAPI_KEY=your_key_here"
+        )
+    
+    return {
+        "x-rapidapi-key": rapidapi_key,
+        "x-rapidapi-host": "api-football-v1.p.rapidapi.com",
+    }
 
 def _coerce_date_param(date_param):
     if date_param is None:
@@ -27,7 +39,8 @@ def fixtures(date_param=None):
     """
     date_str = _coerce_date_param(date_param)
     url = f"{BASE_URL}/fixtures"
-    resp = requests.get(url, headers=HEADERS, params={"date": date_str})
+    headers = get_api_headers()  # ✅ FIX: Use secure headers function
+    resp = requests.get(url, headers=headers, params={"date": date_str})
     resp.raise_for_status()
     items = resp.json().get("response", [])
     return items  # raw items
@@ -38,7 +51,8 @@ def fixtures_events(fixture_id):
     Each item: { time: {...}, team: {...}, player: {...}, assist: {...}, type: "...", detail: "...", comments: ... }
     """
     url = f"{BASE_URL}/fixtures/events"
-    resp = requests.get(url, headers=HEADERS, params={"fixture": str(fixture_id)})
+    headers = get_api_headers()  # ✅ FIX: Use secure headers function
+    resp = requests.get(url, headers=headers, params={"fixture": str(fixture_id)})
     resp.raise_for_status()
     return resp.json().get("response", [])  # raw events
 
@@ -50,7 +64,8 @@ def fixtures_batch(fixture_ids_list):
         return []
     ids_str = "-".join(map(str, fixture_ids_list))
     url = f"{BASE_URL}/fixtures"
-    resp = requests.get(url, headers=HEADERS, params={"ids": ids_str})
+    headers = get_api_headers()  # ✅ FIX: Use secure headers function
+    resp = requests.get(url, headers=headers, params={"ids": ids_str})
     resp.raise_for_status()
     return resp.json().get("response", [])  # raw items
 

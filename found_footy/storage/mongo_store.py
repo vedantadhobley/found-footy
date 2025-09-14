@@ -25,6 +25,7 @@ class FootyMongoStore:
     def _create_indexes(self):
         """Indexes on raw schema + convenience duplicate 'fixture_id' field"""
         try:
+            # ✅ FIX: Don't create _id indexes - MongoDB does this automatically
             # Unique by the nested fixture id (raw) and by duplicate field
             self.fixtures_staging.create_index([("fixture.id", ASCENDING)], unique=True)
             self.fixtures_active.create_index([("fixture.id", ASCENDING)], unique=True)
@@ -39,10 +40,12 @@ class FootyMongoStore:
             self.fixtures_active.create_index([("fixture_id", ASCENDING)])
             self.fixtures_completed.create_index([("fixture_id", ASCENDING)])
 
-            # Goals collections (pending/processed) keep their goal_id uniqueness
-            self.goals_pending.create_index([("_id", ASCENDING)], unique=True)
-            self.goals_processed.create_index([("_id", ASCENDING)], unique=True)
-
+            # ✅ FIX: Goals collections - only create field indexes, not _id
+            self.goals_pending.create_index([("fixture_id", ASCENDING)])
+            self.goals_processed.create_index([("fixture_id", ASCENDING)])
+            self.goals_pending.create_index([("player_id", ASCENDING)])
+            self.goals_processed.create_index([("player_id", ASCENDING)])
+            
             print("✅ MongoDB indexes created successfully")
         except Exception as e:
             print(f"⚠️ Error creating indexes: {e}")

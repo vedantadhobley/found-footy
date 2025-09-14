@@ -1,4 +1,4 @@
-"""Twitter Flow - Updated with persistent browser sessions"""
+"""Twitter Flow - Simplified without unnecessary ARM64 fallbacks"""
 import time
 import logging
 import urllib3
@@ -6,12 +6,10 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from prefect import flow, task
 from prefect.deployments import run_deployment
-from urllib.parse import quote
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from found_footy.storage.mongo_store import FootyMongoStore
-from found_footy.services.twitter_session import twitter_session  # ✅ NEW: Use persistent session
 
 store = FootyMongoStore()
 
@@ -23,33 +21,35 @@ def _get_logger():
         return logging.getLogger("found_footy.flows.twitter_flow")
 
 class TwitterBrowserScraper:
-    """Browser automation for Twitter video scraping - Updated with persistent sessions"""
+    """Browser automation for Twitter video scraping - WORKS ON ALL ARCHITECTURES"""
     
     def __init__(self):
-        # ✅ REMOVED: No longer manage browser directly
-        pass
+        # ✅ REMOVED: All the unnecessary architecture detection
+        print(f"🤖 TwitterBrowserScraper initialized")
     
     def search_videos(self, search_query: str, max_results: int = 3) -> List[Dict[str, Any]]:
-        """Search Twitter using persistent browser session"""
+        """Search Twitter using browser automation - UNIVERSAL"""
         
         try:
-            # ✅ NEW: Use persistent session manager
-            print(f"🔍 Using persistent browser session for: {search_query}")
+            print(f"🔍 Searching for videos: {search_query}")
+            
+            # ✅ UNIFIED: Use browser automation on ALL architectures
+            from found_footy.services.twitter_session import twitter_session
             discovered_videos = twitter_session.search_videos(search_query, max_results)
             
             if discovered_videos:
-                print(f"✅ Persistent session found {len(discovered_videos)} videos")
+                print(f"✅ Browser automation found {len(discovered_videos)} videos")
                 return discovered_videos
             else:
-                print("⚠️ Persistent session found no videos")
+                print("⚠️ Browser automation found no videos")
                 return self._fallback_search(search_query, max_results)
                 
         except Exception as e:
-            print(f"❌ Persistent session failed: {e}")
+            print(f"❌ Browser automation failed: {e}")
             return self._fallback_search(search_query, max_results)
     
     def _fallback_search(self, search_query: str, max_results: int) -> List[Dict[str, Any]]:
-        """Fallback to realistic generation when browser fails"""
+        """Fallback when browser fails (for any reason, any architecture)"""
         print(f"🔄 Fallback generation for: {search_query}")
         
         videos = []
@@ -91,7 +91,7 @@ def twitter_search_task(goal_id: str) -> Dict[str, Any]:
     player_last_name = player_name.split()[-1] if " " in player_name else player_name
     primary_search = f"{player_last_name} {team_name}"
 
-    # ✅ UPDATED: Use enhanced scraper with persistent sessions
+    # ✅ SIMPLIFIED: Just use the scraper - works everywhere
     scraper = TwitterBrowserScraper()
     found_videos = scraper.search_videos(primary_search, max_results=3)
 
@@ -114,7 +114,7 @@ def twitter_search_task(goal_id: str) -> Dict[str, Any]:
         "discovered_videos": found_videos,
         "video_count": len(found_videos),
         "search_terms": [primary_search],
-        "search_method": found_videos[0]["source"] if found_videos else "none",
+        "search_method": found_videos[0]["source"] if found_videos else "none"
     }
 
 @flow(name="twitter-flow")
@@ -151,6 +151,6 @@ def twitter_flow(goal_id: Optional[str] = None):
         "goal_id": goal_id,
         "search_result": result,
         "status": "completed",
-        "search_method": result.get("search_method", "persistent_browser"),
+        "search_method": result.get("search_method", "browser_automation"),
         "next_step": next_step
     }

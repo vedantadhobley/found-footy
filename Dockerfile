@@ -20,6 +20,9 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     libffi-dev \
     python3-dev \
+    # ✅ ADD: Network tools for debugging
+    iputils-ping \
+    dnsutils \
     # Chrome dependencies
     chromium \
     chromium-driver \
@@ -46,7 +49,7 @@ COPY . .
 RUN chown -R appuser:appuser /app && \
     mkdir -p /app/downloads && chown -R appuser:appuser /app/downloads
 
-# Environment variables
+# Environment variables - ✅ REMOVE HARDCODED CREDENTIALS
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 ENV SSL_CERT_DIR=/etc/ssl/certs
 ENV PYTHONHTTPSVERIFY=0
