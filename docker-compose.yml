@@ -223,47 +223,26 @@ services:
   # Twitter worker - ✅ ENHANCED: Debug-friendly configuration
   twitter-worker:
     build: .
-    command: >
-      sh -c "
-        echo '🤖 Twitter Worker starting on $(uname -m) architecture...' &&
-        echo '🔍 Environment check...' &&
-        python /app/scripts/debug_twitter_worker.py || echo '⚠️ Debug script failed' &&
-        echo '🚀 Starting worker...' &&
-        prefect worker start --pool twitter-pool --type process --limit 2
-      "
+    command: prefect worker start --pool twitter-pool --type process --limit 2
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
       - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
       - PYTHONPATH=/app
-      - S3_ENDPOINT_URL=http://minio:9000
-      - S3_ACCESS_KEY=footy_admin
-      - S3_SECRET_KEY=footy_secure_pass
-      - S3_BUCKET_NAME=footy-videos
-      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
-      # ✅ ADD: Debug environment variables
-      - DEBUG_MODE=1
-      - PREFECT_LOGGING_LEVEL=DEBUG
+      - TWITTER_SESSION_URL=http://twitter-session:8888
     env_file:
       - .env
     depends_on:
+      twitter-session:
+        condition: service_healthy  # ✅ Only wait for session service
       prefect-server:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-      minio:
-        condition: service_healthy
       app:
         condition: service_completed_successfully
-    restart: unless-stopped
     networks:
       - found-footy-network
-    # ✅ ADD: Health check for Twitter worker
-    healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://prefect-server:4200/api/health', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+    restart: unless-stopped
 
   # Download worker - S3 video processing
   download-worker:
@@ -320,10 +299,38 @@ services:
       - found-footy-network
     restart: "no"  # ✅ KEEP: Still runs once and exits
 
+  # ✅ FIXED: Twitter Session Service - Standalone
+  twitter-session:
+    build: .
+    command: python -m found_footy.services.twitter_session  # ✅ SIMPLIFY: Direct module run
+    environment:
+      - TWITTER_USERNAME=${TWITTER_USERNAME}
+      - TWITTER_PASSWORD=${TWITTER_PASSWORD}
+      - TWITTER_EMAIL=${TWITTER_EMAIL}
+      - SESSION_TIMEOUT=3600
+    env_file:
+      - .env
+    ports:
+      - "8888:8888"
+    networks:
+      - found-footy-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    tmpfs:
+      - /tmp/chrome_session:noexec,nosuid,size=100m
+    # ✅ KEEP: No dependencies - completely standalone
+
 volumes:
   prefect_postgres_data:
     driver: local
   mongodb_data:
     driver: local
   minio_data:
+    driver: local
+  twitter_session_data:  # ✅ NEW: Persist browser session
     driver: local

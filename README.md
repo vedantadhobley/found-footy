@@ -459,3 +459,365 @@ download-worker:
 ---
 
 The system is designed for **24/7 operation** with automatic error recovery and intelligent resource management across all domains. The two-stage video pipeline ensures clean separation of concerns while maintaining high performance and reliability.
+
+# Found Footy ⚽
+
+**AI-Powered Football Goal Discovery & Video Curation Platform**
+
+Found Footy automatically discovers, downloads, and curates football goal videos from social media platforms using AI-powered search strategies and modern cloud infrastructure.
+
+## 🏗️ **Architecture Overview**
+
+### **Core Philosophy**
+- **Domain-Driven Design**: Flows organized by business domain (ingest, monitor, goal, twitter, download)
+- **Event-Driven Architecture**: Goals trigger downstream video discovery and curation
+- **Cloud-Native Storage**: MinIO S3 for videos, MongoDB for metadata
+- **Test-Driven Development**: Business logic tested with `.fn()` approach
+
+### **System Components**
+
+```mermaid
+graph TB
+    subgraph "Data Sources"
+        API[Football API<br/>Live Fixtures & Events]
+        TWITTER[Twitter API<br/>Goal Video Discovery]
+    end
+    
+    subgraph "Prefect Flows"
+        INGEST[Ingest Flow<br/>Fetch Latest Fixtures]
+        MONITOR[Monitor Flow<br/>Track Active Games]
+        GOAL[Goal Flow<br/>Process Goal Events]
+        TWITTER_FLOW[Twitter Flow<br/>Discover Videos]
+        DOWNLOAD[Download Flow<br/>Fetch & Store Videos]
+        ADVANCE[Advance Flow<br/>Lifecycle Management]
+    end
+    
+    subgraph "Storage Layer"
+        MONGO[(MongoDB<br/>Fixtures & Goals)]
+        S3[(MinIO S3<br/>Video Files)]
+    end
+    
+    subgraph "AI Components"
+        SEARCH[Smart Search<br/>Multi-Strategy Discovery]
+        FILTER[Content Filter<br/>Quality & Relevance]
+    end
+    
+    API --> INGEST
+    INGEST --> MONGO
+    MONITOR --> MONGO
+    MONITOR --> GOAL
+    GOAL --> TWITTER_FLOW
+    TWITTER_FLOW --> TWITTER
+    TWITTER_FLOW --> SEARCH
+    TWITTER_FLOW --> DOWNLOAD
+    DOWNLOAD --> S3
+    ADVANCE --> MONGO
+    FILTER --> S3
+```
+
+### **Flow Architecture**
+
+```mermaid
+graph LR
+    subgraph "Flow Domains"
+        direction TB
+        
+        subgraph "Data Ingestion"
+            INGEST[🔄 Ingest Flow<br/>Fetch fixtures]
+            ADVANCE[📈 Advance Flow<br/>Lifecycle mgmt]
+        end
+        
+        subgraph "Real-Time Monitoring"
+            MONITOR[👁️ Monitor Flow<br/>Track changes]
+        end
+        
+        subgraph "Goal Processing"
+            GOAL[⚽ Goal Flow<br/>Process events]
+        end
+        
+        subgraph "Content Discovery"
+            TWITTER_FLOW[🐦 Twitter Flow<br/>Find videos]
+            DOWNLOAD[📥 Download Flow<br/>Store content]
+        end
+    end
+    
+    INGEST --> MONITOR
+    MONITOR --> GOAL
+    GOAL --> TWITTER_FLOW
+    TWITTER_FLOW --> DOWNLOAD
+    ADVANCE -.-> INGEST
+```
+
+## 🔄 **Data Flow Pipeline**
+
+### **1. Goal ID Format (NEW)**
+```
+Regular Time: "fixture_id_minute"     → "959546_44"
+Extra Time:   "fixture_id_minute+extra" → "959546_90+2"
+```
+
+### **2. Processing Lifecycle**
+
+```mermaid
+sequenceDiagram
+    participant API as Football API
+    participant Monitor as Monitor Flow
+    participant Goal as Goal Flow
+    participant Twitter as Twitter Flow
+    participant Download as Download Flow
+    participant S3 as MinIO S3
+    participant DB as MongoDB
+    
+    Note over API,DB: Real-time Goal Detection
+    API->>Monitor: Fixture updates
+    Monitor->>DB: Store fixtures_active
+    Monitor->>Goal: Goal detected!
+    
+    Note over Goal,DB: Goal Processing
+    Goal->>DB: Store goals_pending
+    Goal->>Twitter: Trigger video search
+    
+    Note over Twitter,Download: Video Discovery
+    Twitter->>Twitter: Multi-strategy search
+    Twitter->>DB: Update with discovered videos
+    Twitter->>Download: Trigger downloads
+    
+    Note over Download,S3: Content Storage
+    Download->>Download: yt-dlp processing
+    Download->>S3: Upload videos
+    Download->>DB: Move to goals_processed
+```
+
+### **3. Storage Schema**
+
+#### **MongoDB Collections**
+```javascript
+// fixtures_active - Live game tracking
+{
+  fixture_id: 959546,
+  teams: { home: "Argentina", away: "France" },
+  goals: { home: 3, away: 3 },
+  status: "FT"
+}
+
+// goals_pending - Processing queue
+{
+  _id: "959546_44",           // NEW: minute-based ID
+  fixture_id: 959546,
+  minute: 44,
+  extra_time: null,
+  player_name: "L. Messi",
+  discovered_videos: [...],   // Twitter search results
+  status: "processing"
+}
+
+// goals_processed - Completed goals
+{
+  _id: "959546_44",
+  storage_backend: "s3",
+  s3_bucket: "footy-videos",
+  successful_uploads: [...],
+  download_stats: {...}
+}
+```
+
+#### **S3 Storage Structure**
+```
+footy-videos/
+├── 959546/                    # fixture_id folder
+│   ├── 959546_44_0_0.mp4     # goal_id_search_video.ext
+│   ├── 959546_44_0_1.mp4
+│   └── 959546_90+2_1_0.mp4   # extra time goal
+└── 123456/
+    └── 123456_67_0_0.mp4
+```
+
+## 🧪 **Testing Strategy**
+
+### **Business Logic Testing with `.fn()`**
+```python
+# Test flows without Prefect server using .fn() method
+def test_twitter_flow():
+    from found_footy.flows.twitter_flow import twitter_flow
+    
+    # ✅ Test pure business logic
+    result = twitter_flow.fn(goal_id="959546_44")
+    assert result["status"] == "completed"
+```
+
+### **End-to-End Pipeline Testing**
+```bash
+# Complete pipeline test
+python scripts/test_real_goal.py
+
+# Test specific components
+python scripts/test_real_goal.py --insert-only
+python scripts/test_real_goal.py --check 959546_44
+python scripts/test_real_goal.py --minio-only
+```
+
+## 🚀 **Quick Start**
+
+### **1. Environment Setup**
+```bash
+# Clone and start infrastructure
+git clone <repo>
+cd found-footy
+docker-compose up -d
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### **2. Initialize System**
+```bash
+# Setup Prefect variables and deploy flows
+python scripts/setup_variables.py
+python scripts/deploy_flows.py
+
+# Test with real goal data
+python scripts/test_real_goal.py
+```
+
+### **3. Monitor Operations**
+- **Prefect UI**: http://localhost:4200 - Flow execution dashboard
+- **MinIO Console**: http://localhost:9001 - Video storage browser
+- **MongoDB Admin**: http://localhost:8083 - Database viewer
+
+## 🔧 **Configuration**
+
+### **Environment Variables**
+```bash
+# Database
+MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+
+# Storage
+S3_ENDPOINT_URL=http://minio:9000
+S3_ACCESS_KEY=footy_admin
+S3_SECRET_KEY=footy_secure_pass
+S3_BUCKET_NAME=footy-videos
+
+# APIs
+TWITTER_SESSION_URL=http://twitter-session:8888
+FOOTBALL_API_KEY=your_api_key_here
+```
+
+### **Prefect Deployment**
+```python
+# Domain-specific deployments
+deployments = [
+    "ingest-flow/prod",
+    "monitor-flow/prod", 
+    "goal-flow/prod",
+    "twitter-flow/prod",
+    "download-flow/prod",
+    "advance-flow/prod"
+]
+```
+
+## 📊 **Flow Details**
+
+### **Monitor Flow** - Real-time Goal Detection
+- Tracks active fixtures for goal changes
+- Uses delta detection to avoid unnecessary processing
+- Triggers goal processing only when new goals detected
+- Rich contextual naming: `⚽ GOALS: Argentina 3-3 France - 2 events [#959546]`
+
+### **Goal Flow** - Event Processing
+- Processes individual goal events
+- Stores with new minute-based ID format
+- Triggers downstream video discovery
+- Handles both regular and extra time goals
+
+### **Twitter Flow** - Video Discovery
+- Multi-strategy search approach
+- Player name + team combinations
+- Hashtag and trending topic searches
+- Quality filtering and relevance scoring
+
+### **Download Flow** - Content Curation
+- yt-dlp integration for video extraction
+- S3 upload with rich metadata
+- Progress tracking and error handling
+- Automated quality assessment
+
+## 🛠️ **Development**
+
+### **Adding New Flows**
+```python
+# 1. Create flow file
+# found_footy/flows/my_flow.py
+
+@flow(name="my-flow")
+def my_flow():
+    logger = get_run_logger()
+    # Implementation here
+
+# 2. Add to __init__.py
+# found_footy/flows/__init__.py
+from .my_flow import my_flow
+
+# 3. Create deployment
+# scripts/deploy_flows.py
+```
+
+### **Testing Best Practices**
+- Use `.fn()` for business logic testing
+- Mock external APIs in tests
+- Test error scenarios thoroughly
+- Use proper logging with `get_logger(__name__)`
+
+### **Error Handling**
+```python
+from found_footy.utils.logging import get_logger, log_error_with_trace
+
+logger = get_logger(__name__)
+
+try:
+    # Operations
+    pass
+except Exception as e:
+    log_error_with_trace(logger, "❌ Operation failed", e)
+    return {"status": "error", "error": str(e)}
+```
+
+## 📈 **Monitoring & Observability**
+
+### **Logging Strategy**
+- Emoji-enhanced log messages for easy scanning
+- Structured error traces with full context
+- Performance metrics and timing data
+- Business logic checkpoints
+
+### **Health Checks**
+```bash
+# System health verification
+python scripts/health_check.py
+
+# Storage verification
+python scripts/verify_storage.py
+```
+
+## 🎯 **Production Considerations**
+
+### **Scalability**
+- Horizontal scaling via Prefect work pools
+- S3-compatible storage for unlimited video capacity
+- MongoDB sharding for large datasets
+- Rate limiting for external APIs
+
+### **Reliability**
+- Comprehensive error handling and retries
+- Dead letter queues for failed processing
+- Health monitoring and alerting
+- Backup and disaster recovery procedures
+
+### **Security**
+- API key rotation and secure storage
+- S3 bucket policies and access controls
+- MongoDB authentication and authorization
+- Network isolation and VPC configuration
+
+---
+
+**Built with ❤️ for football fans worldwide** ⚽

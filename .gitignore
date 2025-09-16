@@ -69,3 +69,7 @@ htmlcov/
 # Temporary files
 tmp/
 temp/
+# Cleaned up obsolete scripts
+scripts/debug_twitter_worker.py
+scripts/test_twitter_content.py
+scripts/test_szoboszlai_real.py

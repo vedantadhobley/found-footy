@@ -1,17 +1,17 @@
-"""Test infrastructure for Found Footy"""
+"""Test configuration with centralized module clearing"""
 import os
 import sys
 import pytest
-from unittest.mock import patch, MagicMock, Mock
 from datetime import datetime, timezone
-import logging
+from typing import List
+from unittest.mock import patch, MagicMock, Mock
 
-# Run flows and tasks as plain functions to avoid Prefect engine (and server imports)
 @pytest.fixture(scope="session", autouse=True)
 def configure_test_environment():
+    """Configure test environment for .fn() testing"""
     os.environ.setdefault("TESTING", "true")
-    os.environ.setdefault("PREFECT_API_URL", "http://localhost:4200/api")
-    os.environ.setdefault("PYTHONHTTPSVERIFY", "0")
+    
+    # ✅ Enable .fn() testing - this makes flows testable without Prefect server
     try:
         from prefect.flows import Flow
         from prefect.tasks import Task
@@ -19,32 +19,63 @@ def configure_test_environment():
         Task.__call__ = lambda self, *a, **k: self.fn(*a, **k)
     except Exception:
         pass
-    yield
+
+@pytest.fixture
+def clear_flow_modules():
+    """✅ CONSOLIDATED: Shared module clearing for all flow tests"""
+    def _clear_modules(module_names: List[str]):
+        """Clear specified modules from sys.modules"""
+        cleared_count = 0
+        for module in module_names:
+            if module in sys.modules:
+                del sys.modules[module]
+                cleared_count += 1
+        return cleared_count
+    return _clear_modules
+
+@pytest.fixture
+def common_flow_modules():
+    """✅ CONSOLIDATED: Common modules that need clearing"""
+    return [
+        'found_footy.flows.twitter_flow',
+        'found_footy.flows.monitor_flow', 
+        'found_footy.flows.goal_flow',
+        'found_footy.flows.download_flow',
+        'found_footy.flows.advance_flow',
+        'found_footy.flows.ingest_flow',
+        'found_footy.storage.mongo_store',
+        'found_footy.storage.s3_store',
+        'found_footy.flows.shared_tasks'
+    ]
+
+@pytest.fixture(autouse=True)
+def clear_all_flow_modules(clear_flow_modules, common_flow_modules):
+    """✅ CONSOLIDATED: Auto-clear all flow modules before each test"""
+    cleared_count = clear_flow_modules(common_flow_modules)
+    print(f"🧹 Cleared {cleared_count} modules before test")
 
 @pytest.fixture(autouse=True)
 def mock_external_services():
-    """Mock external services - Fixed to patch the class correctly"""
+    """Mock external services for .fn() testing"""
     with (
         patch("pymongo.MongoClient") as mock_mongo,
         patch("boto3.client") as mock_boto3,
-        patch("prefect.deployments.run_deployment") as mock_run_deployment,
-        # ✅ FIX: Remove the incorrect TwitterBrowserScraper patch
-        patch("selenium.webdriver.Chrome") as mock_chrome,
+        patch("requests.post") as mock_requests,
         patch("yt_dlp.YoutubeDL") as mock_ytdlp,
         patch("found_footy.utils.team_data.get_team_ids", return_value=[541, 529, 157, 50]),
-        patch(
-            "found_footy.utils.fixture_status.get_fixture_statuses",
-            return_value={"completed": ["FT", "AET", "PEN"], "active": ["1H", "HT", "2H"], "staging": ["TBD", "NS"]},
-        ),
+        patch("found_footy.utils.fixture_status.get_fixture_statuses", return_value={
+            "completed": ["FT", "AET", "PEN"], 
+            "active": ["1H", "HT", "2H"], 
+            "staging": ["TBD", "NS"]
+        }),
     ):
-        # Mongo mock setup
+        # Setup MongoDB mock
         mock_collection = MagicMock()
         mock_collection.find.return_value = []
         mock_collection.find_one.return_value = None
         mock_collection.count_documents.return_value = 0
         mock_collection.bulk_write.return_value = MagicMock(upserted_count=0, modified_count=0)
         mock_collection.delete_one.return_value = MagicMock()
-        mock_collection.delete_many.return_value = MagicMock()
         mock_collection.replace_one.return_value = MagicMock()
         mock_collection.insert_one.return_value = MagicMock()
         mock_collection.create_index.return_value = None
@@ -60,16 +91,27 @@ def mock_external_services():
         mock_mongo_instance.found_footy = mock_db
         mock_mongo.return_value = mock_mongo_instance
 
-        # S3 mock setup
+        # Setup S3 mock
         mock_s3_client = MagicMock()
         mock_s3_client.head_bucket.return_value = True
         mock_s3_client.upload_file.return_value = None
         mock_s3_client.list_objects_v2.return_value = {"Contents": []}
         mock_boto3.return_value = mock_s3_client
 
-        # yt-dlp mock setup
+        # Setup requests mock (for Twitter session)
+        mock_requests.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"status": "success", "videos": []}
+        )
+
+        # Setup yt-dlp mock
         ytdlp_instance = Mock()
-        ytdlp_instance.extract_info.return_value = {"width": 1280, "height": 720, "duration": 45, "ext": "mp4"}
+        ytdlp_instance.extract_info.return_value = {
+            "width": 1280, 
+            "height": 720, 
+            "duration": 45, 
+            "ext": "mp4"
+        }
         ytdlp_instance.download.return_value = None
         mock_ytdlp.return_value.__enter__.return_value = ytdlp_instance
         mock_ytdlp.return_value.__exit__.return_value = None

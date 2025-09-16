@@ -1,8 +1,11 @@
 """Team data management using Prefect Variables - consistent with fixture_status.py pattern"""
-import asyncio
-import json
-import nest_asyncio
-import argparse
+
+# ❌ MISSING: These will cause immediate runtime failures
+import asyncio  # Missing for async functions
+import nest_asyncio  # Missing for sync wrappers  
+import json  # Missing for JSON operations
+import argparse  # Missing for CLI functionality
+
 from prefect import get_client
 from prefect.client.schemas.objects import Variable
 

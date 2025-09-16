@@ -1,44 +1,76 @@
-"""Tests for advance flow - Fixed mock expectations"""
+"""Tests for advance flow - Updated for .fn() approach"""
 import pytest
 from unittest.mock import patch, Mock
 
-class TestAdvanceFlow:
-    """Test advance flow business logic - NO Prefect execution"""
+class TestAdvanceFlowWithFn:
+    """Test advance flow using .fn() approach"""
     
-    def test_advance_flow_staging_to_active(self):
-        """Test advance logic with proper mock setup"""
+    def test_advance_flow_fn_staging_to_active(self):
+        """Test advance_flow.fn() staging to active advancement"""
         
-        # ✅ FIX: Create a local mock that returns what we expect
-        with patch('found_footy.storage.mongo_store.FootyMongoStore') as MockStore:
-            mock_store_instance = Mock()
-            mock_store_instance.fixtures_advance.return_value = {
+        with patch('found_footy.flows.advance_flow.fixtures_advance_task') as mock_advance:
+            mock_advance.return_value = {
                 "status": "success", 
-                "advanced_count": 3  # ✅ Return exactly what test expects
+                "advanced_count": 3
             }
-            MockStore.return_value = mock_store_instance
             
-            # Test the business logic
-            store = MockStore()
-            result = store.fixtures_advance("fixtures_staging", "fixtures_active", None)
+            # ✅ USE .fn() TO TEST ACTUAL BUSINESS LOGIC
+            from found_footy.flows.advance_flow import advance_flow
+            result = advance_flow.fn(
+                source_collection="fixtures_staging",
+                destination_collection="fixtures_active",
+                fixture_id=None
+            )
             
             assert result["status"] == "success"
             assert result["advanced_count"] == 3
+            assert result["source_collection"] == "fixtures_staging"
+            assert result["destination_collection"] == "fixtures_active"
             
-    def test_advance_flow_error_handling(self):
-        """Test error handling in business logic"""
+            # Verify task was called with correct parameters
+            mock_advance.assert_called_once_with("fixtures_staging", "fixtures_active", None)
+    
+    def test_advance_flow_fn_specific_fixture(self):
+        """Test advance_flow.fn() with specific fixture advancement"""
         
-        with patch('found_footy.storage.mongo_store.FootyMongoStore') as MockStore:
-            mock_store_instance = Mock()
-            mock_store_instance.fixtures_advance.side_effect = Exception("DB error")
-            MockStore.return_value = mock_store_instance
+        with patch('found_footy.flows.advance_flow.fixtures_advance_task') as mock_advance:
+            mock_advance.return_value = {
+                "status": "success", 
+                "advanced_count": 1
+            }
             
-            store = MockStore()
+            # ✅ USE .fn() TO TEST ACTUAL BUSINESS LOGIC
+            from found_footy.flows.advance_flow import advance_flow
+            result = advance_flow.fn(
+                source_collection="fixtures_active",
+                destination_collection="fixtures_completed",
+                fixture_id=12345
+            )
             
-            # Test that exceptions are handled gracefully
-            try:
-                result = store.fixtures_advance("fixtures_staging", "fixtures_active", None)
-                # Should return error status, not raise exception
-                assert result["status"] == "error"
-            except Exception:
-                # If it raises, that's also valid - just catch it
-                pass
+            assert result["status"] == "success"
+            assert result["advanced_count"] == 1
+            assert result["fixture_id"] == 12345
+            
+            # Verify task was called with specific fixture ID
+            mock_advance.assert_called_once_with("fixtures_active", "fixtures_completed", 12345)
+    
+    def test_fixtures_advance_task_fn_business_logic(self):
+        """Test fixtures_advance_task.fn() business logic"""
+        
+        with patch('found_footy.flows.shared_tasks.FootyMongoStore') as MockStore:
+            mock_store = Mock()
+            mock_store.fixtures_advance.return_value = {
+                "status": "success",
+                "advanced_count": 2
+            }
+            MockStore.return_value = mock_store
+            
+            # ✅ USE .fn() TO TEST ACTUAL TASK LOGIC
+            from found_footy.flows.shared_tasks import fixtures_advance_task
+            result = fixtures_advance_task.fn("fixtures_staging", "fixtures_active", None)
+            
+            assert result["status"] == "success"
+            assert result["advanced_count"] == 2
+            
+            # Verify store method was called
+            mock_store.fixtures_advance.assert_called_once_with("fixtures_staging", "fixtures_active", None)

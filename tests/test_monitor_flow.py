@@ -1,48 +1,72 @@
-"""Tests for monitor flow - FIXED MOCK RETURNS"""
+"""Tests for monitor flow - Updated for .fn() approach"""
 import pytest
 from unittest.mock import patch, Mock
 
-class TestMonitorFlow:
-    """Test monitor flow business logic"""
+class TestMonitorFlowWithFn:
+    """Test monitor flow using .fn() approach"""
     
-    def test_monitor_flow_no_active_fixtures(self):
-        """Test with no active fixtures"""
+    def test_monitor_flow_fn_no_active_fixtures(self):
+        """Test monitor_flow.fn() with no active fixtures"""
         
-        with patch('found_footy.storage.mongo_store.FootyMongoStore.check_collections_empty') as mock_check:
-            mock_check.return_value = True
+        with patch('found_footy.flows.monitor_flow.FootyMongoStore') as MockStore:
+            mock_store = Mock()
+            mock_store.check_collections_empty.return_value = True
+            MockStore.return_value = mock_store
             
-            from found_footy.storage.mongo_store import FootyMongoStore
-            store = FootyMongoStore()
-            is_empty = store.check_collections_empty(["fixtures_active"])
+            # ✅ USE .fn() TO TEST ACTUAL BUSINESS LOGIC
+            from found_footy.flows.monitor_flow import monitor_flow
+            result = monitor_flow.fn()
             
-            assert is_empty == True
-            
-    def test_fixtures_delta_detection(self):
-        """Test goal detection business logic"""
+            assert result["status"] == "no_work_skipped"
+            assert result["reason"] == "no_active_fixtures"
+    
+    def test_monitor_flow_fn_with_active_fixtures(self):
+        """Test monitor_flow.fn() with active fixtures"""
         
-        # ✅ FIX: Test the business logic directly, don't rely on global mocks
-        with patch('found_footy.storage.mongo_store.FootyMongoStore.__init__', return_value=None) as mock_init:
+        with patch('found_footy.flows.monitor_flow.FootyMongoStore') as MockStore, \
+             patch('found_footy.flows.monitor_flow.fixtures_monitor_task') as mock_monitor:
             
-            from found_footy.storage.mongo_store import FootyMongoStore
-            store = FootyMongoStore()
+            mock_store = Mock()
+            mock_store.check_collections_empty.return_value = False
+            MockStore.return_value = mock_store
             
-            # ✅ MANUALLY SET THE METHODS TO RETURN WHAT WE WANT
-            fixture_data = [
-                {"fixture_id": 12345, "team_names": {"home": "Real Madrid", "away": "Barcelona"}}
-            ]
+            mock_monitor.return_value = {
+                "status": "success",
+                "goals_detected": 2,
+                "goal_flows_triggered": 2
+            }
             
-            # Mock the methods directly on the instance
-            store.get_active_fixtures = Mock(return_value=fixture_data)
-            store.fixtures_delta = Mock(return_value={
-                "goals_changed": True,
-                "total_goal_increase": 1,
-                "current_goals": {"home": 1, "away": 0}
-            })
+            # ✅ USE .fn() TO TEST ACTUAL BUSINESS LOGIC
+            from found_footy.flows.monitor_flow import monitor_flow
+            result = monitor_flow.fn()
             
-            # Now test
-            fixtures = store.get_active_fixtures()
-            assert len(fixtures) == 1
-            assert fixtures[0]["fixture_id"] == 12345
+            assert result["status"] == "work_completed"
+            assert "monitor_result" in result
             
-            delta = store.fixtures_delta(12345, {"goals": {"home": 1, "away": 0}})
-            assert delta["goals_changed"] == True
+            # Verify monitor task was called
+            mock_monitor.assert_called_once()
+    
+    def test_fixtures_monitor_task_fn_business_logic(self):
+        """Test fixtures_monitor_task.fn() business logic"""
+        
+        with patch('found_footy.flows.monitor_flow.FootyMongoStore') as MockStore, \
+             patch('found_footy.flows.monitor_flow.fixtures_delta_task') as mock_delta, \
+             patch('found_footy.flows.monitor_flow.run_deployment') as mock_run:
+            
+            mock_store = Mock()
+            MockStore.return_value = mock_store
+            
+            mock_delta.return_value = {
+                "status": "success",
+                "fixtures_with_changes": [],
+                "fixtures_completed": [],
+                "total_goals_detected": 0
+            }
+            
+            # ✅ USE .fn() TO TEST ACTUAL TASK LOGIC
+            from found_footy.flows.monitor_flow import fixtures_monitor_task
+            result = fixtures_monitor_task.fn()
+            
+            assert result["status"] == "success"
+            assert result["goal_flows_triggered"] == 0
+            assert result["completed_fixtures_count"] == 0

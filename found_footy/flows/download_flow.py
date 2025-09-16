@@ -7,11 +7,10 @@ import logging
 import yt_dlp
 from prefect import flow, task, get_run_logger
 
+# ✅ CLEAN: Direct imports
 from found_footy.storage.mongo_store import FootyMongoStore
 from found_footy.storage.s3_store import FootyS3Store
-
-store = FootyMongoStore()
-s3_store = FootyS3Store()
+from found_footy.utils.logging import get_logger, log_error_with_trace  # ✅ ADD
 
 def _get_logger():
     try:
@@ -22,9 +21,13 @@ def _get_logger():
 
 @task(name="download-videos-task")
 def download_videos_task(goal_id: str) -> Dict[str, Any]:
-    logger = _get_logger()
+    logger = get_logger(__name__)  # ✅ CHANGE
     logger.info(f"📥 Starting yt-dlp download for goal: {goal_id}")
 
+    # ✅ CLEAN: Direct instantiation
+    store = FootyMongoStore()
+    s3_store = FootyS3Store()
+    
     goal_doc = store.goals_pending.find_one({"_id": goal_id})
     if not goal_doc:
         logger.warning(f"⚠️ Goal {goal_id} not found in goals_pending")
@@ -106,33 +109,24 @@ def download_videos_task(goal_id: str) -> Dict[str, Any]:
             logger.error(f"❌ Exception processing {tweet_url}: {e}")
 
     # Update and move goal
-    goal_doc["download_completed"] = True
     goal_doc["successful_uploads"] = successful_uploads
     goal_doc["failed_downloads"] = failed_downloads
-    goal_doc["download_stats"] = {
-        "total_discovered": len(discovered_videos),
-        "successful": len(successful_uploads),
-        "failed": len(failed_downloads),
-        "success_rate": (len(successful_uploads) / len(discovered_videos)) if discovered_videos else 0,
-    }
     goal_doc["downloaded_at"] = datetime.now(timezone.utc)
-    goal_doc["status"] = "download_completed"
-    goal_doc["storage_backend"] = "s3"
-    goal_doc["s3_bucket"] = s3_store.bucket_name
-    goal_doc["download_method"] = "yt-dlp_python"
-
+    
+    # Move to processed
     store.goals_processed.replace_one({"_id": goal_id}, goal_doc, upsert=True)
     store.goals_pending.delete_one({"_id": goal_id})
 
-    return {
-        "status": "success",
+    result = {
         "goal_id": goal_id,
-        "download_stats": goal_doc["download_stats"],
+        "download_stats": goal_doc.get("download_stats", {}),
         "successful_uploads": successful_uploads,
         "failed_downloads": failed_downloads,
         "storage_backend": "s3",
         "download_method": "yt-dlp_python",
     }
+
+    return {"status": "success", **result}
 
 @flow(name="download-flow")
 def download_flow(goal_id: Optional[str] = None) -> Dict[str, Any]:

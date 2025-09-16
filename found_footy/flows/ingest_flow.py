@@ -1,6 +1,6 @@
 # ✅ NEW: found_footy/flows/ingest_flow.py
 from datetime import datetime, timedelta, timezone
-from prefect import flow, get_run_logger
+from prefect import flow
 from prefect.deployments import run_deployment
 from typing import Optional
 
@@ -10,16 +10,18 @@ from found_footy.flows.shared_tasks import (
     fixtures_categorize_task,
     fixtures_store_task
 )
-from found_footy.flows.flow_triggers import schedule_advance_flow  # ✅ UPDATE: Use renamed function
+from found_footy.flows.flow_triggers import schedule_advance_flow
 from found_footy.flows.flow_naming import generate_ingest_flow_name
+from found_footy.utils.logging import get_logger, log_error_with_trace  # ✅ ADD
+
+logger = get_logger(__name__)  # ✅ CHANGE
 
 @flow(
     name="ingest-flow",
-    flow_run_name=generate_ingest_flow_name  # ✅ Safe - runs immediately
+    flow_run_name=generate_ingest_flow_name
 )
 def ingest_flow(date_str: Optional[str] = None, team_ids: Optional[str] = None):
     """Pure fixtures ingest flow with status-based routing"""
-    logger = get_run_logger()
     
     logger.info("📥 Starting Pure Fixtures Ingest Flow")
     
@@ -46,7 +48,6 @@ def ingest_flow(date_str: Optional[str] = None, team_ids: Optional[str] = None):
         kickoff_time = datetime.fromisoformat(fixture["time"].replace('Z', '+00:00'))
         advance_time = kickoff_time - timedelta(minutes=3)
         try:
-            # ✅ UPDATE: Use renamed function
             result = schedule_advance_flow("fixtures_staging", "fixtures_active", fixture["id"], advance_time)
             if result["status"] in ["scheduled", "immediate"]:
                 scheduled_advances += 1

@@ -3,14 +3,19 @@ from prefect import flow, task, get_run_logger
 from prefect.deployments import run_deployment
 from typing import List
 
-from found_footy.flows.shared_tasks import fixtures_delta_task, store
+from found_footy.flows.shared_tasks import fixtures_delta_task
 from found_footy.api.mongo_api import fixtures_events
 from found_footy.flows.flow_naming import generate_monitor_flow_name
+# ✅ CLEAN: Direct import
+from found_footy.storage.mongo_store import FootyMongoStore
 
 @task(name="fixtures-monitor-task")
 def fixtures_monitor_task():
     """Monitor active fixtures - trigger goal flows ONLY when goals actually changed"""
     logger = get_run_logger()
+    
+    # ✅ CLEAN: Direct instantiation
+    store = FootyMongoStore()
     
     delta_results = fixtures_delta_task()
     
@@ -117,11 +122,14 @@ def fixtures_monitor_task():
 
 @flow(
     name="monitor-flow",
-    flow_run_name=generate_monitor_flow_name  # ✅ Safe - runs immediately
+    flow_run_name=generate_monitor_flow_name
 )
 def monitor_flow():
     """Monitor flow - uses custom naming for all runs"""
     logger = get_run_logger()
+    
+    # ✅ CLEAN: Direct instantiation
+    store = FootyMongoStore()
     
     if store.check_collections_empty(["fixtures_active"]):
         logger.info("⏸️ No active fixtures - skipping API calls")

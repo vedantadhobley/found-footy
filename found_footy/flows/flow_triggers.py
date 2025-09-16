@@ -4,6 +4,9 @@ from datetime import datetime, timedelta
 from prefect import get_client
 from prefect.states import Scheduled
 from found_footy.flows.flow_naming import get_advance_flow_name, get_twitter_flow_name
+from found_footy.utils.logging import get_logger, log_error_with_trace  # ✅ ADD: Missing import
+
+logger = get_logger(__name__)  # ✅ ADD: Missing logger
 
 async def schedule_advance_flow_async(source_collection, destination_collection, fixture_id, scheduled_time=None):
     """NON-BLOCKING: Use async client with RICH team context naming"""
@@ -26,6 +29,7 @@ async def schedule_advance_flow_async(source_collection, destination_collection,
                     name=flow_name,  # ✅ Set rich name at scheduling time
                     state=Scheduled(scheduled_time=scheduled_time)
                 )
+                logger.info(f"✅ Scheduled advance flow: {flow_name}")  # ✅ ADD: Logging
                 return {"status": "scheduled", "flow_run_id": str(flow_run.id)}
             else:
                 flow_run = await client.create_flow_run_from_deployment(
@@ -37,9 +41,11 @@ async def schedule_advance_flow_async(source_collection, destination_collection,
                     },
                     name=flow_name  # ✅ Set rich name immediately
                 )
+                logger.info(f"✅ Triggered advance flow: {flow_name}")  # ✅ ADD: Logging
                 return {"status": "immediate", "flow_run_id": str(flow_run.id)}
                 
     except Exception as e:
+        log_error_with_trace(logger, "❌ Error scheduling advance flow", e)  # ✅ ADD: Error logging
         return {"status": "error", "error": str(e)}
 
 async def schedule_twitter_flow_async(goal_id, delay_minutes=0):
@@ -60,6 +66,7 @@ async def schedule_twitter_flow_async(goal_id, delay_minutes=0):
                     name=f"{flow_name} [⏰ +{delay_minutes}min]",  # ✅ Indicate delay in name
                     state=Scheduled(scheduled_time=scheduled_time)
                 )
+                logger.info(f"✅ Scheduled Twitter flow: {flow_name} (+{delay_minutes}min)")  # ✅ ADD: Logging
                 return {
                     "status": "scheduled", 
                     "flow_run_id": str(flow_run.id),
@@ -72,9 +79,11 @@ async def schedule_twitter_flow_async(goal_id, delay_minutes=0):
                     parameters={"goal_id": goal_id},
                     name=flow_name
                 )
+                logger.info(f"✅ Triggered Twitter flow: {flow_name}")  # ✅ ADD: Logging
                 return {"status": "immediate", "flow_run_id": str(flow_run.id)}
                 
     except Exception as e:
+        log_error_with_trace(logger, "❌ Error scheduling Twitter flow", e)  # ✅ ADD: Error logging
         return {"status": "error", "error": str(e)}
 
 def schedule_advance_flow(source, destination, fixture_id, scheduled_time=None):

@@ -54,6 +54,6 @@ class TestCompleteIntegration:
             # Now test - this will use the mocked boto3
             from found_footy.storage.s3_store import FootyS3Store
             s3_store = FootyS3Store()
-            upload_result = s3_store.upload_video_file("test.mp4", "12345_67_789", 0, 0)
+            upload_result = s3_store.upload_video_file("test.mp4", "12345_67", 0, 0)
             
             assert upload_result["status"] == "success"

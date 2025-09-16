@@ -9,10 +9,15 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from pathlib import Path
 
+# ✅ FIXED: Use proper logging
+from found_footy.utils.logging import get_logger, log_error_with_trace
+
 class FootyS3Store:
     """S3 storage manager for video files"""
     
     def __init__(self):
+        self.logger = get_logger(self.__class__.__name__)
+        
         self.endpoint_url = os.getenv('S3_ENDPOINT_URL', 'http://localhost:9000')
         self.access_key = os.getenv('S3_ACCESS_KEY', 'footy_admin')
         self.secret_key = os.getenv('S3_SECRET_KEY', 'footy_secure_pass')
@@ -33,31 +38,36 @@ class FootyS3Store:
         """Create bucket if it doesn't exist"""
         try:
             self.s3_client.head_bucket(Bucket=self.bucket_name)
-            print(f"✅ S3 bucket '{self.bucket_name}' exists")
+            self.logger.info(f"✅ S3 bucket '{self.bucket_name}' exists")
         except ClientError as e:
             error_code = int(e.response['Error']['Code'])
             if error_code == 404:
                 try:
                     self.s3_client.create_bucket(Bucket=self.bucket_name)
-                    print(f"✅ Created S3 bucket: {self.bucket_name}")
+                    self.logger.info(f"✅ Created S3 bucket: {self.bucket_name}")
                 except Exception as create_error:
-                    print(f"❌ Error creating bucket: {create_error}")
+                    log_error_with_trace(self.logger, "❌ Error creating bucket", create_error)
             else:
-                print(f"❌ Error checking bucket: {e}")
+                log_error_with_trace(self.logger, "❌ Error checking bucket", e)
         except Exception as e:
-            print(f"⚠️ Could not verify S3 bucket: {e}")
+            log_error_with_trace(self.logger, "⚠️ Could not verify S3 bucket", e)
     
     def generate_video_key(self, goal_id: str, search_index: int, video_index: int, file_extension: str = "mp4") -> str:
-        """Generate S3 key for video file"""
-        # Parse goal_id for better organization
-        parts = goal_id.split('_')
-        if len(parts) >= 3:
-            fixture_id, minute, player_id = parts[:3]
-            # Organize by fixture, then by goal
-            return f"fixtures/{fixture_id}/goals/{goal_id}_{search_index}_{video_index}.{file_extension}"
+        """Generate S3 key for video file - HANDLES NEW FORMAT"""
+        
+        # ✅ NEW: Parse goal_id correctly for new format
+        # Format: "fixture_id_minute" or "fixture_id_minute+extra"
+        if '+' in goal_id:
+            # Handle extra time: "959546_90+2"
+            main_part, extra_part = goal_id.split('+')
+            fixture_id = main_part.split('_')[0]
         else:
-            # Fallback structure
-            return f"goals/{goal_id}_{search_index}_{video_index}.{file_extension}"
+            # Handle regular time: "959546_44"
+            parts = goal_id.split('_')
+            fixture_id = parts[0] if len(parts) >= 2 else "unknown"
+        
+        # ✅ SIMPLIFIED: fixture_id/goal_id_search_video.extension  
+        return f"{fixture_id}/{goal_id}_{search_index}_{video_index}.{file_extension}"
     
     def upload_video_file(self, local_file_path: str, goal_id: str, search_index: int, video_index: int,
                          metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -97,7 +107,7 @@ class FootyS3Store:
             # Generate URL
             s3_url = f"{self.endpoint_url}/{self.bucket_name}/{s3_key}"
             
-            print(f"✅ Uploaded video to S3: {s3_key}")
+            self.logger.info(f"✅ Uploaded video to S3: {s3_key}")
             
             return {
                 "status": "success",
@@ -109,12 +119,18 @@ class FootyS3Store:
             }
             
         except FileNotFoundError:
-            return {"status": "error", "error": f"Local file not found: {local_file_path}"}
+            error_msg = f"Local file not found: {local_file_path}"
+            self.logger.error(f"❌ {error_msg}")
+            return {"status": "error", "error": error_msg}
         except NoCredentialsError:
-            return {"status": "error", "error": "S3 credentials not configured"}
+            error_msg = "S3 credentials not configured"
+            self.logger.error(f"❌ {error_msg}")
+            return {"status": "error", "error": error_msg}
         except ClientError as e:
+            log_error_with_trace(self.logger, "❌ S3 client error", e)
             return {"status": "error", "error": f"S3 client error: {e}"}
         except Exception as e:
+            log_error_with_trace(self.logger, "❌ Upload failed", e)
             return {"status": "error", "error": f"Upload failed: {e}"}
     
     def download_video_from_url(self, video_url: str, goal_id: str, file_suffix: str, 
@@ -128,7 +144,7 @@ class FootyS3Store:
             
             # Create temporary directory for download
             with tempfile.TemporaryDirectory() as temp_dir:
-                print(f"📥 Downloading video from: {video_url}")
+                self.logger.info(f"📥 Downloading video from: {video_url}")
                 
                 # For now, create a realistic dummy file until we integrate yt-dlp
                 dummy_video_path = os.path.join(temp_dir, f"goal_{goal_id}_{file_suffix}.mp4")
@@ -152,24 +168,26 @@ class FootyS3Store:
                 )
                 
                 if upload_result["status"] == "success":
-                    print(f"✅ Downloaded and uploaded: {upload_result['s3_key']}")
+                    self.logger.info(f"✅ Downloaded and uploaded: {upload_result['s3_key']}")
                     return upload_result
                 else:
                     return upload_result
         
         except Exception as e:
+            log_error_with_trace(self.logger, "❌ Download failed", e)
             return {"status": "error", "error": f"Download failed: {e}"}
     
     def list_goal_videos(self, goal_id: str) -> list:
-        """List all videos for a specific goal"""
+        """List all videos for a specific goal - SIMPLIFIED"""
         try:
-            # Parse goal_id for prefix
+            # Parse goal_id for fixture prefix
             parts = goal_id.split('_')
             if len(parts) >= 3:
                 fixture_id = parts[0]
-                prefix = f"fixtures/{fixture_id}/goals/{goal_id}"
+                # ✅ SIMPLIFIED: Look in fixture folder for goal files
+                prefix = f"{fixture_id}/{goal_id}_"
             else:
-                prefix = f"goals/{goal_id}"
+                prefix = f"unknown/{goal_id}_"
             
             response = self.s3_client.list_objects_v2(
                 Bucket=self.bucket_name,
@@ -178,17 +196,52 @@ class FootyS3Store:
             
             videos = []
             for obj in response.get('Contents', []):
-                videos.append({
-                    'key': obj['Key'],
-                    'size': obj['Size'],
-                    'last_modified': obj['LastModified'].isoformat(),
-                    'url': f"{self.endpoint_url}/{self.bucket_name}/{obj['Key']}"
-                })
+                video_info = {
+                    "s3_key": obj['Key'],
+                    "size": obj['Size'],
+                    "last_modified": obj['LastModified'],
+                    "s3_url": f"{self.endpoint_url}/{self.bucket_name}/{obj['Key']}"
+                }
+                videos.append(video_info)
             
             return videos
         
         except Exception as e:
-            print(f"❌ Error listing videos: {e}")
+            log_error_with_trace(self.logger, "❌ Error listing videos", e)
+            return []
+    
+    def get_fixture_videos(self, fixture_id: int) -> list:
+        """Get ALL videos for a fixture - NEW CONVENIENCE METHOD"""
+        try:
+            # ✅ SIMPLIFIED: All videos in fixture folder
+            prefix = f"{fixture_id}/"
+            
+            response = self.s3_client.list_objects_v2(
+                Bucket=self.bucket_name,
+                Prefix=prefix
+            )
+            
+            videos = []
+            for obj in response.get('Contents', []):
+                # Extract goal_id from filename
+                filename = obj['Key'].split('/')[-1]  # Get just the filename
+                goal_id = '_'.join(filename.split('_')[:3])  # fixture_minute_player
+                
+                video_info = {
+                    "s3_key": obj['Key'],
+                    "goal_id": goal_id,
+                    "fixture_id": fixture_id,
+                    "filename": filename,
+                    "size": obj['Size'],
+                    "last_modified": obj['LastModified'],
+                    "s3_url": f"{self.endpoint_url}/{self.bucket_name}/{obj['Key']}"
+                }
+                videos.append(video_info)
+            
+            return videos
+        
+        except Exception as e:
+            log_error_with_trace(self.logger, "❌ Error listing fixture videos", e)
             return []
     
     def get_bucket_stats(self) -> Dict[str, Any]:
@@ -208,4 +261,5 @@ class FootyS3Store:
             }
         
         except Exception as e:
+            log_error_with_trace(self.logger, "❌ Could not get stats", e)
             return {"error": f"Could not get stats: {e}"}

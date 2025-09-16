@@ -1,7 +1,10 @@
-from prefect import flow, get_run_logger
+from prefect import flow
 from typing import Optional
 from found_footy.flows.shared_tasks import fixtures_advance_task
 from found_footy.flows.flow_naming import runtime_advance_flow_name
+from found_footy.utils.logging import get_logger, log_error_with_trace  # ✅ ADD
+
+logger = get_logger(__name__)  # ✅ CHANGE
 
 @flow(
     name="advance-flow"
@@ -13,7 +16,6 @@ def advance_flow(
     fixture_id: Optional[int] = None
 ):
     """Pure fixture advancement - runtime naming from parameters"""
-    logger = get_run_logger()
     
     # ✅ Set name at runtime using current parameters
     logger.info(f"🏷️ Flow name: {runtime_advance_flow_name()}")

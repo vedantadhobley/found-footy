@@ -47,7 +47,8 @@ RUN PYTHONHTTPSVERIFY=0 uv pip install --system -r requirements.txt
 # Copy application code and set permissions
 COPY . .
 RUN chown -R appuser:appuser /app && \
-    mkdir -p /app/downloads && chown -R appuser:appuser /app/downloads
+    mkdir -p /app/downloads && chown -R appuser:appuser /app/downloads && \
+    mkdir -p /app/session && chown -R appuser:appuser /app/session  # ✅ ADD: Create session directory
 
 # Environment variables - ✅ REMOVE HARDCODED CREDENTIALS
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
