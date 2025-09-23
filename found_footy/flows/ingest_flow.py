@@ -44,10 +44,10 @@ def ingest_flow(date_str: Optional[str] = None, team_ids: Optional[str] = None):
     scheduled_advances = 0
     for fixture in categorized["staging_fixtures"]:
         try:
-            # ✅ FIX: Use correct API-Football field structure
+            # ✅ FIX: Use correct API-Football nested structure
             if "fixture" in fixture and "date" in fixture["fixture"]:
-                date_field = fixture["fixture"]["date"]  # "2025-09-23T09:00:00+00:00"
-                fixture_id = fixture["fixture"]["id"]
+                date_field = fixture["fixture"]["date"]  # "2025-09-23T19:00:00+00:00"
+                fixture_id = fixture["fixture"]["id"]    # 1457279
             else:
                 logger.warning(f"⚠️ No date field found in fixture")
                 logger.debug(f"Available fixture keys: {list(fixture.keys())}")
@@ -55,19 +55,11 @@ def ingest_flow(date_str: Optional[str] = None, team_ids: Optional[str] = None):
                     logger.debug(f"Nested fixture keys: {list(fixture['fixture'].keys())}")
                 continue
             
-            # ✅ Parse the kickoff time - handle timezone properly
-            if date_field.endswith('Z'):
-                kickoff_time = datetime.fromisoformat(date_field.replace('Z', '+00:00'))
-            elif '+' in date_field or date_field.endswith('Z'):
-                # Already has timezone info
-                kickoff_time = datetime.fromisoformat(date_field)
-            else:
-                # Assume UTC if no timezone
-                kickoff_time = datetime.fromisoformat(date_field + '+00:00')
-            
+            # ✅ Parse the kickoff time - your example has timezone already
+            kickoff_time = datetime.fromisoformat(date_field)  # No need to replace Z since it has +00:00
             advance_time = kickoff_time - timedelta(minutes=3)
             
-            # ✅ UPDATE: Use renamed function
+            # Schedule advance flow
             result = schedule_advance_flow("fixtures_staging", "fixtures_active", fixture_id, advance_time)
             if result["status"] in ["scheduled", "immediate"]:
                 scheduled_advances += 1
