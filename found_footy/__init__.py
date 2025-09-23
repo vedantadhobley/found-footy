@@ -7,11 +7,6 @@ from found_footy.api.mongo_api import (
     filter_fixtures_by_teams
 )
 
-from found_footy.api.twitter_api import (  # ✅ ADD: Twitter API
-    twitter_videos_search,
-    twitter_video_metadata
-)
-
 from found_footy.flows.ingest_flow import ingest_flow
 from found_footy.flows.monitor_flow import monitor_flow
 from found_footy.flows.advance_flow import advance_flow
@@ -41,8 +36,6 @@ __all__ = [
     "fixtures_events", 
     "fixtures_batch",
     "filter_fixtures_by_teams",
-    "twitter_videos_search",  # ✅ ADD
-    "twitter_video_metadata",  # ✅ ADD
     # Flow functions
     "ingest_flow",
     "monitor_flow",

@@ -4,6 +4,32 @@ networks:
     name: found-footy-network
 
 services:
+
+  twitter-session:
+    build: .
+    command: python /app/twitter_service_standalone.py  # ✅ CHANGE: Use completely standalone file
+    environment:
+      - TWITTER_USERNAME=${TWITTER_USERNAME}
+      - TWITTER_PASSWORD=${TWITTER_PASSWORD}
+      - TWITTER_EMAIL=${TWITTER_EMAIL}
+      - SESSION_TIMEOUT=3600
+    env_file:
+      - .env
+    ports:
+      - "8888:8888"
+    networks:
+      - found-footy-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    tmpfs:
+      - /tmp/chrome_session:noexec,nosuid,size=100m
+    # No dependencies - standalone
+
   # Core Prefect database only
   prefect-postgres:
     image: postgres:15
@@ -321,6 +347,8 @@ services:
     restart: "no"  # ✅ KEEP: Still runs once and exits
 
 volumes:
+  twitter_session_data:
+    driver: local
   prefect_postgres_data:
     driver: local
   mongodb_data:

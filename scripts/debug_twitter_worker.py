@@ -286,15 +286,26 @@ def test_worker_startup_simulation():
     try:
         print("  🚀 Simulating worker startup...")
         
-        # Check if we can import the flow
-        from found_footy.flows.twitter_flow import twitter_flow, TwitterBrowserScraper
+        # ✅ CHANGE: Import the new Twitter architecture
+        from found_footy.flows.twitter_flow import twitter_flow, TwitterAPIClient
         print("  ✅ Twitter flow import successful")
         
-        # Test scraper initialization
-        scraper = TwitterBrowserScraper()
-        print("  ✅ TwitterBrowserScraper initialization successful")
+        # Test new session service client
+        client = TwitterAPIClient()
+        print("  ✅ TwitterAPIClient initialization successful")
         
-        # Test basic flow structure (don't actually run it)
+        # Test session service connectivity
+        import requests
+        try:
+            response = requests.get("http://twitter-session:8888/health", timeout=5)
+            if response.status_code == 200:
+                print("  ✅ Twitter Session Service reachable")
+            else:
+                print(f"  ⚠️ Twitter Session Service returned {response.status_code}")
+        except Exception as e:
+            print(f"  ⚠️ Twitter Session Service unreachable: {e}")
+        
+        # Test basic flow structure
         import inspect
         sig = inspect.signature(twitter_flow.fn)
         print(f"  ✅ Twitter flow signature: {sig}")
