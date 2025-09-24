@@ -48,7 +48,7 @@ def fixtures_monitor_task():
                     flow_run_name = f"⚽ GOALS: {home_team} {home_score}-{away_score} {away_team} - {len(complete_goal_events)} events [#{fixture_id}]"
                 else:
                     flow_run_name = f"⚽ GOALS: Match #{fixture_id} - {home_score}-{away_score} - {len(complete_goal_events)} events"
-                
+
                 run_deployment(
                     name="goal-flow/goal-flow",
                     parameters={

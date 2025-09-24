@@ -230,30 +230,33 @@ class FootyMongoStore:
             return False
 
     def store_goal_pending(self, fixture_id: int, goal_data: dict) -> bool:
-        """Store goal in goals_pending collection"""
+        """Store goal in goals_pending collection - raw API data only"""
         try:
-            # Extract from raw goal event schema
-            minute = goal_data.get("time", {}).get("elapsed", 0)
-            player_id = goal_data.get("player", {}).get("id", 0)
-            player_name = goal_data.get("player", {}).get("name", "Unknown")
-            team_name = goal_data.get("team", {}).get("name", "Unknown")
-
-            goal_id = f"{fixture_id}_{minute}_{player_id}"
+            # ✅ Only process actual goals
+            if goal_data.get("type") != "Goal":
+                return False
             
-            goal_doc = {
-                "_id": goal_id,
-                "fixture_id": fixture_id,
-                "minute": minute,
-                "player_id": player_id,
-                "player_name": player_name,
-                "team_name": team_name,
-                "raw_event": goal_data,
-                "created_at": datetime.now(timezone.utc),
-                "status": "pending_twitter_search"
-            }
+            # ✅ Extract time data for correct _id format
+            time_data = goal_data.get("time", {})
+            elapsed = time_data.get("elapsed", 0)
+            extra = time_data.get("extra")
+            
+            # ✅ NEW: Use your specified _id format
+            if extra is not None:
+                goal_id = f"{fixture_id}_{elapsed}_{extra}"
+            else:
+                goal_id = f"{fixture_id}_{elapsed}"
+            
+            # ✅ Store exactly as from API, use custom _id
+            goal_doc = dict(goal_data)  # Raw API data only
+            goal_doc["_id"] = goal_id   # Set custom _id format
             
             self.goals_pending.replace_one({"_id": goal_id}, goal_doc, upsert=True)
-            print(f"✅ Stored goal: {team_name} - {player_name} ({minute}')")
+            
+            # Extract for logging
+            player_name = goal_data.get("player", {}).get("name", "Unknown")
+            team_name = goal_data.get("team", {}).get("name", "Unknown")
+            print(f"✅ Stored goal: {team_name} - {player_name} ({elapsed}')")
             return True
         
         except Exception as e:
@@ -271,3 +274,25 @@ class FootyMongoStore:
         except Exception as e:
             print(f"❌ Error getting active fixtures: {e}")
             return []
+
+    def get_existing_goal_ids(self, fixture_id: int) -> set:
+        """Get existing goal IDs for a fixture using your _id format"""
+        try:
+            # Since _id format is "{fixture_id}_{elapsed}[_{extra}]", we can use regex
+            import re
+            pattern = re.compile(f"^{fixture_id}_")
+            
+            # Check both pending and processed collections
+            pending_goals = list(self.goals_pending.find({"_id": pattern}, {"_id": 1}))
+            processed_goals = list(self.goals_processed.find({"_id": pattern}, {"_id": 1}))
+            
+            # Extract _id values
+            existing_ids = set()
+            for goal in pending_goals + processed_goals:
+                existing_ids.add(goal["_id"])
+            
+            return existing_ids
+            
+        except Exception as e:
+            print(f"❌ Error getting existing goal IDs for fixture {fixture_id}: {e}")
+            return set()

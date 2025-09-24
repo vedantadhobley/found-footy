@@ -47,43 +47,41 @@ class FootyS3Store:
         except Exception as e:
             print(f"⚠️ Could not verify S3 bucket: {e}")
     
-    def generate_video_key(self, goal_id: str, search_index: int, video_index: int, file_extension: str = "mp4") -> str:
-        """Generate S3 key for video file"""
-        # Parse goal_id for better organization
-        parts = goal_id.split('_')
-        if len(parts) >= 3:
-            fixture_id, minute, player_id = parts[:3]
-            # Organize by fixture, then by goal
-            return f"fixtures/{fixture_id}/goals/{goal_id}_{search_index}_{video_index}.{file_extension}"
-        else:
-            # Fallback structure
-            return f"goals/{goal_id}_{search_index}_{video_index}.{file_extension}"
+    def generate_video_key(self, goal_id: str, video_index: int, file_extension: str = "mp4") -> str:
+        """Generate simplified S3 key: fixture_id/goal_id/goal_id_index.ext"""
+        
+        # Extract fixture_id from goal_id (first part before first underscore)
+        fixture_id = goal_id.split('_')[0]
+        
+        # ✅ NEW: Simplified structure - fixture_id/goal_id/goal_id_index.ext
+        return f"{fixture_id}/{goal_id}/{goal_id}_{video_index}.{file_extension}"
     
-    def upload_video_file(self, local_file_path: str, goal_id: str, search_index: int, video_index: int,
+    def upload_video_file(self, local_file_path: str, goal_id: str, video_index: int,
                          metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Upload video file to S3 with metadata"""
+        """Upload video file to S3 with simplified structure"""
         try:
             # Get file extension
             file_extension = Path(local_file_path).suffix.lstrip('.')
             if not file_extension:
                 file_extension = "mp4"
             
-            # Generate S3 key
-            s3_key = self.generate_video_key(goal_id, search_index, video_index, file_extension)
+            # ✅ Generate simplified S3 key
+            s3_key = self.generate_video_key(goal_id, video_index, file_extension)
             
             # Prepare metadata
             s3_metadata = {
                 'goal_id': goal_id,
-                'search_index': str(search_index),
                 'video_index': str(video_index),
                 'uploaded_at': datetime.utcnow().isoformat(),
                 'content_type': f'video/{file_extension}'
             }
             
             if metadata:
-                s3_metadata.update({k: str(v) for k, v in metadata.items()})
+                # Add custom metadata (prefix with 'x-amz-meta-' for S3)
+                for key, value in metadata.items():
+                    s3_metadata[f'custom_{key}'] = str(value)
             
-            # Upload file
+            # Upload to S3
             self.s3_client.upload_file(
                 local_file_path,
                 self.bucket_name,
@@ -94,82 +92,69 @@ class FootyS3Store:
                 }
             )
             
-            # Generate URL
-            s3_url = f"{self.endpoint_url}/{self.bucket_name}/{s3_key}"
-            
-            print(f"✅ Uploaded video to S3: {s3_key}")
+            print(f"✅ Uploaded: {s3_key}")
             
             return {
                 "status": "success",
                 "s3_key": s3_key,
-                "s3_url": s3_url,
                 "bucket": self.bucket_name,
-                "file_size": os.path.getsize(local_file_path),
-                "metadata": s3_metadata
+                "file_size": Path(local_file_path).stat().st_size,
+                "metadata": s3_metadata,
+                "url": f"{self.endpoint_url}/{self.bucket_name}/{s3_key}"
             }
             
-        except FileNotFoundError:
-            return {"status": "error", "error": f"Local file not found: {local_file_path}"}
-        except NoCredentialsError:
-            return {"status": "error", "error": "S3 credentials not configured"}
-        except ClientError as e:
-            return {"status": "error", "error": f"S3 client error: {e}"}
         except Exception as e:
-            return {"status": "error", "error": f"Upload failed: {e}"}
+            print(f"❌ Upload failed: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "s3_key": None
+            }
     
-    def download_video_from_url(self, video_url: str, goal_id: str, file_suffix: str, 
+    def download_video_from_url(self, video_url: str, goal_id: str, video_index: int, 
                                metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Download video from URL and upload to S3"""
+        """Download video from URL and upload to S3 with simplified structure"""
         try:
-            # Parse file suffix to get search_index and video_index
-            parts = file_suffix.split('_')
-            search_index = int(parts[0]) if len(parts) > 0 else 0
-            video_index = int(parts[1]) if len(parts) > 1 else 0
-            
             # Create temporary directory for download
             with tempfile.TemporaryDirectory() as temp_dir:
                 print(f"📥 Downloading video from: {video_url}")
                 
                 # For now, create a realistic dummy file until we integrate yt-dlp
-                dummy_video_path = os.path.join(temp_dir, f"goal_{goal_id}_{file_suffix}.mp4")
+                dummy_video_path = os.path.join(temp_dir, f"{goal_id}_{video_index}.mp4")
                 
                 # Create a more realistic dummy file (1MB)
                 with open(dummy_video_path, 'wb') as f:
-                    # Write 1MB of data to simulate a video file
-                    f.write(b'\x00' * (1024 * 1024))
+                    f.write(b'\x00' * (1024 * 1024))  # 1MB dummy
                 
-                # Upload to S3
-                upload_result = self.upload_video_file(
-                    dummy_video_path, 
-                    goal_id, 
-                    search_index,
+                # ✅ Upload using simplified structure
+                result = self.upload_video_file(
+                    dummy_video_path,
+                    goal_id,
                     video_index,
-                    metadata={
-                        'source_url': video_url,
-                        'download_method': 'simulation',
-                        **(metadata or {})
-                    }
+                    metadata
                 )
                 
-                if upload_result["status"] == "success":
-                    print(f"✅ Downloaded and uploaded: {upload_result['s3_key']}")
-                    return upload_result
-                else:
-                    return upload_result
-        
+                if result["status"] == "success":
+                    print(f"✅ Successfully downloaded and uploaded: {result['s3_key']}")
+                
+                return result
+    
         except Exception as e:
-            return {"status": "error", "error": f"Download failed: {e}"}
+            print(f"❌ Download failed: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "s3_key": None
+            }
     
     def list_goal_videos(self, goal_id: str) -> list:
-        """List all videos for a specific goal"""
+        """List all videos for a specific goal using simplified structure"""
         try:
-            # Parse goal_id for prefix
-            parts = goal_id.split('_')
-            if len(parts) >= 3:
-                fixture_id = parts[0]
-                prefix = f"fixtures/{fixture_id}/goals/{goal_id}"
-            else:
-                prefix = f"goals/{goal_id}"
+            # Extract fixture_id from goal_id
+            fixture_id = goal_id.split('_')[0]
+            
+            # ✅ NEW: Use simplified prefix - fixture_id/goal_id/
+            prefix = f"{fixture_id}/{goal_id}/"
             
             response = self.s3_client.list_objects_v2(
                 Bucket=self.bucket_name,

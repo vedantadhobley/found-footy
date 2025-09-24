@@ -30,83 +30,98 @@ def download_videos_task(goal_id: str) -> Dict[str, Any]:
     successful_uploads: List[Dict[str, Any]] = []
     failed_downloads: List[Dict[str, Any]] = []
 
-    for video_info in discovered_videos:
-        tweet_url = video_info["tweet_url"]
-        search_index = int(video_info.get("search_index", 0))
-        video_index = int(video_info.get("video_index", 0))
-        logger.info(f"🔗 Processing: {tweet_url}")
-
+    for video_index, video_info in enumerate(discovered_videos):
         try:
+            tweet_url = video_info.get("tweet_url") or video_info.get("video_page_url")
+            if not tweet_url:
+                continue
+
+            # ✅ Use simplified video_index (no search_index needed)
             with tempfile.TemporaryDirectory() as temp_dir:
-                out_tmpl = os.path.join(temp_dir, f"{goal_id}_{search_index}_{video_index}.%(ext)s")
+                # Generate output template using simplified naming
+                out_tmpl = os.path.join(temp_dir, f"{goal_id}_{video_index}.%(ext)s")
 
-                # Extract info
-                with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl_info:
-                    info = ydl_info.extract_info(tweet_url, download=False) or {}
-                video_metadata = {
-                    "resolution": f"{info.get('width', 'unknown')}x{info.get('height', 'unknown')}",
-                    "duration": info.get("duration", "unknown"),
-                    "format": info.get("ext", "mp4"),
-                    "quality": info.get("format", "unknown"),
-                }
-
-                # Download
+                # Extract video info first
                 with yt_dlp.YoutubeDL(
                     {"format": "best[height<=720]", "outtmpl": out_tmpl, "quiet": True, "no_warnings": True}
                 ) as ydl:
-                    ydl.download([tweet_url])
+                    info = ydl.extract_info(tweet_url, download=True)
 
-                # Find file
+                video_metadata = {
+                    "goal_id": goal_id,
+                    "video_index": video_index,
+                    "source_tweet": tweet_url,
+                    "search_term": video_info.get("search_term", "unknown"),
+                    "tweet_text": video_info.get("tweet_text", "")[:100],
+                    "discovered_at": video_info.get("discovered_at"),
+                    "download_method": "yt-dlp",
+                    "quality": info.get("format", "unknown"),
+                }
+
+                # Find downloaded file
                 candidates = [
                     f for f in os.listdir(temp_dir)
-                    if f.startswith(f"{goal_id}_{search_index}_{video_index}") and not f.endswith(".info.json")
+                    if f.startswith(f"{goal_id}_{video_index}") and not f.endswith(".info.json")
                 ]
                 if not candidates:
-                    # Create a tiny dummy if extractor named oddly (still satisfies tests due to mocks)
-                    dummy = os.path.join(temp_dir, f"{goal_id}_{search_index}_{video_index}.mp4")
+                    # Create a tiny dummy if extractor named oddly
+                    dummy = os.path.join(temp_dir, f"{goal_id}_{video_index}.mp4")
                     with open(dummy, "wb") as fh:
                         fh.write(b"\x00" * 1024)
                     candidates = [os.path.basename(dummy)]
 
-                downloaded_file = os.path.join(temp_dir, candidates[0])
+                local_video_path = os.path.join(temp_dir, candidates[0])
 
+                # ✅ Upload with simplified structure
                 upload_result = s3_store.upload_video_file(
-                    downloaded_file,
+                    local_video_path,
                     goal_id,
-                    search_index,
-                    video_index,
-                    metadata={
-                        "search_term": video_info.get("search_term"),
-                        "source_tweet_id": video_info.get("tweet_id"),
-                        "source_tweet_url": video_info.get("tweet_url"),
-                        "video_resolution": video_metadata.get("resolution", "unknown"),
-                        "video_duration": video_metadata.get("duration", "unknown"),
-                        "video_format": video_metadata.get("format", "mp4"),
-                        "video_quality": video_metadata.get("quality", "unknown"),
-                        "extracted_by": "yt-dlp_python",
-                        "discovered_at": video_info.get("discovered_at"),
-                    },
+                    video_index,  # No search_index needed
+                    video_metadata
                 )
 
-                if upload_result.get("status") == "success":
-                    successful_uploads.append(upload_result)
+                if upload_result["status"] == "success":
+                    successful_uploads.append({
+                        "video_index": video_index,
+                        "s3_key": upload_result["s3_key"],
+                        "file_size": upload_result["file_size"],
+                        "source_url": tweet_url
+                    })
+                    logger.info(f"✅ Video {video_index}: {upload_result['s3_key']}")
                 else:
-                    failed_downloads.append({**video_info, "error": upload_result.get("error", "upload_failed")})
+                    failed_downloads.append({
+                        "video_index": video_index,
+                        "error": upload_result.get("error"),
+                        "source_url": tweet_url
+                    })
 
         except Exception as e:
-            failed_downloads.append({**video_info, "error": str(e)})
-            logger.error(f"❌ Exception processing {tweet_url}: {e}")
+            failed_downloads.append({
+                "video_index": video_index,
+                "error": str(e),
+                "source_url": tweet_url
+            })
+            logger.error(f"❌ Video {video_index} failed: {e}")
 
-    # Update and move goal
-    goal_doc["successful_uploads"] = successful_uploads
-    goal_doc["failed_downloads"] = failed_downloads
-    goal_doc["downloaded_at"] = datetime.now(timezone.utc)
-    
-    # Move to processed
-    store.goals_processed.replace_one({"_id": goal_id}, goal_doc, upsert=True)
-    store.goals_pending.delete_one({"_id": goal_id})
+    # Move goal to processed collection with upload results
+    if successful_uploads:
+        processed_goal_doc = dict(goal_doc)
+        processed_goal_doc["successful_uploads"] = successful_uploads
+        processed_goal_doc["failed_downloads"] = failed_downloads
+        processed_goal_doc["processing_completed_at"] = datetime.now(timezone.utc).isoformat()
 
-    return {"status": "success", "goal_id": goal_id, "successful_uploads": successful_uploads, "failed_downloads": failed_downloads}
+        store.goals_processed.replace_one({"_id": goal_id}, processed_goal_doc, upsert=True)
+        store.goals_pending.delete_one({"_id": goal_id})
+
+        logger.info(f"✅ Moved goal {goal_id} to goals_processed")
+
+    return {
+        "status": "success",
+        "goal_id": goal_id,
+        "successful_uploads": len(successful_uploads),
+        "failed_downloads": len(failed_downloads),
+        "upload_details": successful_uploads
+    }
 
 @flow(name="download-flow")
 def download_flow(goal_id: Optional[str] = None) -> Dict[str, Any]:
