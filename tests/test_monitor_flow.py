@@ -42,7 +42,7 @@ class TestMonitorFlow:
             # Now test
             fixtures = store.get_active_fixtures()
             assert len(fixtures) == 1
-            assert fixtures[0]["fixture_id"] == 12345
+            assert fixtures[0]["_id"] == 12345
             
             delta = store.fixtures_delta(12345, {"goals": {"home": 1, "away": 0}})
             assert delta["goals_changed"] == True

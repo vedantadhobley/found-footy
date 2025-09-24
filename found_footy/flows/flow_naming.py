@@ -60,7 +60,7 @@ class FlowNamingService:
                 # Try to get fixture details for rich name AT RUNTIME
                 fixture = None
                 if source_collection == "fixtures_staging":
-                    fixture = store.fixtures_staging.find_one({"fixture_id": fixture_id})
+                    fixture = store.fixtures_staging.find_one({"_id": fixture_id})
                 elif source_collection == "fixtures_active":
                     fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
                 

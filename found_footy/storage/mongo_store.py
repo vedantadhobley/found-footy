@@ -1,10 +1,10 @@
-import os  # ✅ ADD: Missing import at the top
+import os
 from pymongo import MongoClient, UpdateOne, ASCENDING
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
 class FootyMongoStore:
-    """MongoDB storage for football application data - 5 collections architecture"""
+    """MongoDB storage for football application data - Raw API schema only"""
     
     def __init__(self, connection_url=None):
         if connection_url is None:
@@ -23,24 +23,28 @@ class FootyMongoStore:
         self._create_indexes()
 
     def _create_indexes(self):
-        """Indexes on raw schema + convenience duplicate 'fixture_id' field"""
+        """Create indexes - _id will be fixture.id"""
         try:
-            # ✅ FIX: Don't create _id indexes - MongoDB does this automatically
-            # Unique by the nested fixture id (raw) and by duplicate field
-            self.fixtures_staging.create_index([("fixture.id", ASCENDING)], unique=True)
-            self.fixtures_active.create_index([("fixture.id", ASCENDING)], unique=True)
-            self.fixtures_completed.create_index([("fixture.id", ASCENDING)], unique=True)
-
+            # ✅ _id indexes are automatic, but we can create indexes on nested fields
+            # Status indexes for workflow routing
             self.fixtures_staging.create_index([("fixture.status.short", ASCENDING)])
             self.fixtures_active.create_index([("fixture.status.short", ASCENDING)])
             self.fixtures_completed.create_index([("fixture.status.short", ASCENDING)])
+            
+            # Date indexes for time-based queries
+            self.fixtures_staging.create_index([("fixture.date", ASCENDING)])
+            self.fixtures_active.create_index([("fixture.date", ASCENDING)])
+            self.fixtures_completed.create_index([("fixture.date", ASCENDING)])
 
-            # Duplicate flat key for easy lookups
-            self.fixtures_staging.create_index([("fixture_id", ASCENDING)])
-            self.fixtures_active.create_index([("fixture_id", ASCENDING)])
-            self.fixtures_completed.create_index([("fixture_id", ASCENDING)])
+            # Team indexes for filtering
+            self.fixtures_staging.create_index([("teams.home.id", ASCENDING)])
+            self.fixtures_staging.create_index([("teams.away.id", ASCENDING)])
+            self.fixtures_active.create_index([("teams.home.id", ASCENDING)])
+            self.fixtures_active.create_index([("teams.away.id", ASCENDING)])
+            self.fixtures_completed.create_index([("teams.home.id", ASCENDING)])
+            self.fixtures_completed.create_index([("teams.away.id", ASCENDING)])
 
-            # ✅ FIX: Goals collections - only create field indexes, not _id
+            # Goals collections
             self.goals_pending.create_index([("fixture_id", ASCENDING)])
             self.goals_processed.create_index([("fixture_id", ASCENDING)])
             self.goals_pending.create_index([("player_id", ASCENDING)])
@@ -52,11 +56,11 @@ class FootyMongoStore:
 
     @staticmethod
     def _extract_fixture_id(raw_item: dict) -> int:
-        """Safely extract fixture.id from raw API schema; fallback to legacy keys."""
+        """Extract fixture.id from raw API schema"""
         try:
             return int(raw_item["fixture"]["id"])
         except Exception:
-            return int(raw_item.get("fixture_id") or raw_item.get("id") or 0)
+            return 0
 
     @staticmethod
     def _extract_team_names(raw_item: dict) -> tuple:
@@ -66,8 +70,7 @@ class FootyMongoStore:
             away_name = raw_item["teams"]["away"]["name"]
             return home_name, away_name
         except Exception:
-            # Fallback to flat schema if raw doesn't work
-            return raw_item.get("home", "Home"), raw_item.get("away", "Away")
+            return "Unknown", "Unknown"
 
     @staticmethod
     def _extract_current_goals(raw_item: dict) -> dict:
@@ -78,7 +81,6 @@ class FootyMongoStore:
                 "away": raw_item["goals"]["away"] or 0
             }
         except Exception:
-            # Fallback
             return {"home": 0, "away": 0}
 
     @staticmethod
@@ -87,23 +89,24 @@ class FootyMongoStore:
         try:
             return raw_item["fixture"]["status"]["short"]
         except Exception:
-            return raw_item.get("status", "NS")
+            return "NS"
 
     def fixtures_advance(self, source_collection_name: str, destination_collection_name: str, fixture_id: int = None) -> dict:
-        """Move fixtures between collections with consistent error handling"""
+        """Move fixtures between collections"""
         try:
             source_collection = getattr(self, source_collection_name)
             destination_collection = getattr(self, destination_collection_name)
             
-            query = {"fixture_id": fixture_id} if fixture_id else {}
+            # ✅ Query by _id (which is fixture.id)
+            query = {"_id": fixture_id} if fixture_id else {}
             source_docs = list(source_collection.find(query))
             
             if not source_docs:
-                return {"status": "success", "advanced_count": 0}  # ✅ FIX: Complete the line
+                return {"status": "success", "advanced_count": 0}
             
-            # Move documents
+            # Move documents - _id will be preserved
             for doc in source_docs:
-                destination_collection.replace_one({"fixture_id": doc["fixture_id"]}, doc, upsert=True)  # ✅ FIX: Complete the line
+                destination_collection.replace_one({"_id": doc["_id"]}, doc, upsert=True)
         
             # Delete from source
             source_collection.delete_many(query)
@@ -116,10 +119,7 @@ class FootyMongoStore:
             return {"status": "error", "advanced_count": 0, "error": str(e)}
 
     def bulk_insert_fixtures(self, fixtures_data: list[dict], collection_name: str) -> int:
-        """
-        Upsert raw API-Football items into the chosen collection without reshaping.
-        Adds a duplicate 'fixture_id' = item.fixture.id for convenience.
-        """
+        """Store raw API-Football items exactly as they come from API."""
         if not fixtures_data:
             return 0
 
@@ -133,37 +133,37 @@ class FootyMongoStore:
             print(f"⚠️ Unknown collection: {collection_name}")
             return 0
 
-        ops = []
+        processed_count = 0
         for item in fixtures_data:
-            fid = self._extract_fixture_id(item)
-            if fid <= 0:
+            fixture_id = self._extract_fixture_id(item)
+            if fixture_id <= 0:
                 continue
-            # Store raw + convenience fields
-            doc = dict(item)
-            doc["fixture_id"] = fid
-            ops.append(
-                UpdateOne(
-                    {"fixture.id": fid},
-                    {"$set": doc},
-                    upsert=True,
+            
+            # ✅ Store exactly as from API, use fixture.id as _id
+            doc = dict(item)  # Raw API data only
+            doc["_id"] = fixture_id  # Set _id to fixture.id
+            
+            try:
+                # ✅ Complete replacement - removes all extra fields
+                result = target.replace_one(
+                    {"_id": fixture_id},
+                    doc,  # Complete document replacement
+                    upsert=True
                 )
-            )
+                if result.upserted_id or result.modified_count > 0:
+                    processed_count += 1
+                    
+            except Exception as e:
+                print(f"❌ Error storing fixture {fixture_id}: {e}")
+                continue
 
-        if not ops:
-            return 0
-
-        try:
-            result = target.bulk_write(ops, ordered=False)
-            return (result.upserted_count or 0) + (result.modified_count or 0)
-        except Exception as e:
-            print(f"❌ Error bulk inserting into {collection_name}: {e}")
-            return 0
+        return processed_count
 
     def check_collections_empty(self, collection_names: List[str]) -> bool:
         """Check if specified collections are empty"""
         try:
             for collection_name in collection_names:
-                collection = getattr(self, collection_name)  # ✅ FIX: Complete the line
+                collection = getattr(self, collection_name)
                 if collection.count_documents({}) > 0:
                     return False
             
@@ -175,10 +175,10 @@ class FootyMongoStore:
             return False
 
     def fixtures_delta(self, fixture_id: int, api_data: dict) -> dict:
-        """Pure comparison with centralized status logic using raw schema"""
+        """Compare current fixture with API data"""
         try:
-            # Get current fixture data
-            current_fixture = self.fixtures_active.find_one({"fixture_id": fixture_id})
+            # ✅ Query by _id (which is fixture.id)
+            current_fixture = self.fixtures_active.find_one({"_id": fixture_id})
             if not current_fixture:
                 return {"status": "not_found", "fixture_id": fixture_id}
             
@@ -210,29 +210,27 @@ class FootyMongoStore:
             print(f"❌ Error in fixtures delta: {e}")
             return {"status": "error", "error": str(e)}
 
-    def fixtures_update(self, fixture_id: int, delta_result: dict) -> bool:
-        """Update fixture with latest API data"""
+    def fixtures_update(self, fixture_id: int, api_data: dict) -> bool:
+        """Update fixture with latest API data - store raw API data only"""
         try:
-            # Store the complete raw API data, don't modify nested structure
-            update_data = {
-                "$set": {
-                    "last_updated": datetime.now(timezone.utc)
-                }
-            }
+            # ✅ Store raw API data exactly as it comes, _id = fixture.id
+            doc = dict(api_data)
+            doc["_id"] = fixture_id
             
-            result = self.fixtures_active.update_one(
-                {"fixture_id": fixture_id},
-                update_data
+            result = self.fixtures_active.replace_one(
+                {"_id": fixture_id},
+                doc,
+                upsert=True
             )
             
-            return result.modified_count > 0
+            return result.modified_count > 0 or result.upserted_id is not None
         
         except Exception as e:
             print(f"❌ Error updating fixture {fixture_id}: {e}")
             return False
 
     def store_goal_pending(self, fixture_id: int, goal_data: dict) -> bool:
-        """Store goal in goals_pending collection with enhanced validation"""
+        """Store goal in goals_pending collection"""
         try:
             # Extract from raw goal event schema
             minute = goal_data.get("time", {}).get("elapsed", 0)
@@ -249,7 +247,7 @@ class FootyMongoStore:
                 "player_id": player_id,
                 "player_name": player_name,
                 "team_name": team_name,
-                "raw_event": goal_data,  # Store complete raw event
+                "raw_event": goal_data,
                 "created_at": datetime.now(timezone.utc),
                 "status": "pending_twitter_search"
             }
@@ -262,7 +260,6 @@ class FootyMongoStore:
             print(f"❌ Error storing goal: {e}")
             return False
 
-    # ✅ LEGACY: Keep for backward compatibility
     def store_goal_active(self, fixture_id: int, goal_data: dict) -> bool:
         """Legacy method - calls store_goal_pending"""
         return self.store_goal_pending(fixture_id, goal_data)

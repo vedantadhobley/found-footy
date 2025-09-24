@@ -42,7 +42,7 @@ def fixtures_monitor_task():
             
             if complete_goal_events:
                 # Get fixture context for rich naming using raw schema
-                fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
+                fixture = store.fixtures_active.find_one({"_id": fixture_id})
                 if fixture:
                     home_team, away_team = store._extract_team_names(fixture)
                     flow_run_name = f"⚽ GOALS: {home_team} {home_score}-{away_score} {away_team} - {len(complete_goal_events)} events [#{fixture_id}]"
@@ -79,7 +79,7 @@ def fixtures_monitor_task():
         
         try:
             # Get fixture context for completion flow naming
-            fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
+            fixture = store.fixtures_active.find_one({"_id": fixture_id})
             if fixture:
                 home_team, away_team = store._extract_team_names(fixture)
                 final_goals = delta_result.get("current_goals", {})
