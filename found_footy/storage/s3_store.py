@@ -50,10 +50,12 @@ class FootyS3Store:
     def generate_video_key(self, goal_id: str, video_index: int, file_extension: str = "mp4") -> str:
         """Generate simplified S3 key: fixture_id/goal_id/goal_id_index.ext"""
         
-        # Extract fixture_id from goal_id (first part before first underscore)
+        # ✅ Extract fixture_id from goal_id (first part before first underscore)
+        # Handle both formats: "12345_45" and "12345_45+3"
         fixture_id = goal_id.split('_')[0]
         
         # ✅ NEW: Simplified structure - fixture_id/goal_id/goal_id_index.ext
+        # This will create paths like: 12345/12345_45+3/12345_45+3_0.mp4
         return f"{fixture_id}/{goal_id}/{goal_id}_{video_index}.{file_extension}"
     
     def upload_video_file(self, local_file_path: str, goal_id: str, video_index: int,

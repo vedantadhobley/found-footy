@@ -13,7 +13,7 @@ class TwitterAPIClient:
     def __init__(self):
         self.session_url = os.getenv('TWITTER_SESSION_URL', 'http://twitter-session:8888')
         
-    def search_videos(self, search_query: str, max_results: int = 3) -> List[Dict[str, Any]]:
+    def search_videos(self, search_query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         """Search videos via session service - fail if unavailable"""
         try:
             response = requests.post(
@@ -47,10 +47,20 @@ def twitter_search_task(goal_id: str) -> Dict[str, Any]:
         logger.warning(f"⚠️ Goal {goal_id} not found")
         return {"status": "goal_not_found", "goal_id": goal_id}
 
+    # ✅ FIX: Use the extracted convenience fields
     player_name = goal_doc.get("player_name", "")
     team_name = goal_doc.get("team_name", "")
+    
+    if not player_name or not team_name:
+        logger.warning(f"⚠️ Missing player/team data for goal {goal_id}")
+        logger.debug(f"Available fields: {list(goal_doc.keys())}")
+        return {"status": "missing_data", "goal_id": goal_id}
+    
+    # ✅ Create search query with proper data
     player_last_name = player_name.split()[-1] if " " in player_name else player_name
     search_query = f"{player_last_name} {team_name}"
+    
+    logger.info(f"🔍 Searching Twitter for: '{search_query}' (Player: {player_name}, Team: {team_name})")
 
     client = TwitterAPIClient()
     found_videos = client.search_videos(search_query, max_results=3)
@@ -59,12 +69,13 @@ def twitter_search_task(goal_id: str) -> Dict[str, Any]:
     goal_doc["discovered_videos"] = found_videos
     store.goals_pending.replace_one({"_id": goal_id}, goal_doc, upsert=True)
 
-    logger.info(f"✅ Twitter search complete: {len(found_videos)} videos for {search_query}")
+    logger.info(f"✅ Twitter search complete: {len(found_videos)} videos for '{search_query}'")
     return {
         "status": "success",
         "goal_id": goal_id,
         "discovered_videos": found_videos,
-        "video_count": len(found_videos)
+        "video_count": len(found_videos),
+        "search_query": search_query  # ✅ Include for debugging
     }
 
 @flow(name="twitter-flow")
@@ -82,10 +93,14 @@ def twitter_flow(goal_id: Optional[str] = None):
         logger.info(f"✅ Found {result['video_count']} videos - triggering download")
         
         try:
+            # ✅ FIX: Use proper naming function
+            from found_footy.flows.flow_naming import get_download_flow_name
+            download_flow_name = get_download_flow_name(goal_id)
+            
             run_deployment(
                 name="download-flow/download-flow",
                 parameters={"goal_id": goal_id},
-                flow_run_name=f"📥 DOWNLOAD: {goal_id} ({result['video_count']} videos)"
+                flow_run_name=download_flow_name  # ✅ Use rich name
             )
             next_step = "download_triggered"
         except Exception as e:

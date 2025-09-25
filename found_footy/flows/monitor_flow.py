@@ -37,9 +37,14 @@ def fixtures_monitor_task():
         
         logger.info(f"🚨 GOAL DELTA DETECTED: Fixture {fixture_id} - +{total_increase} goals (now {home_score}-{away_score})")
         
+        complete_goal_events = []
+        for event in delta_result.get("events", []):
+            if (event.get("type") == "Goal" and 
+                event.get("detail") != "Missed Penalty" and
+                event.get("player", {}).get("name")):
+                complete_goal_events.append(event)
+        
         try:
-            complete_goal_events = fixtures_events(fixture_id)
-            
             if complete_goal_events:
                 # Get fixture context for rich naming using raw schema
                 fixture = store.fixtures_active.find_one({"_id": fixture_id})

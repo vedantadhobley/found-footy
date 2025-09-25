@@ -27,6 +27,13 @@ def download_videos_task(goal_id: str) -> Dict[str, Any]:
         logger.warning(f"⚠️ No discovered tweet URLs for goal {goal_id}")
         return {"status": "no_videos", "goal_id": goal_id}
 
+    # ✅ Extract display info for logging
+    player_name = goal_doc.get("player_name", "Unknown")
+    team_name = goal_doc.get("team_name", "Unknown")
+    minute_display = goal_id.split('_', 1)[1] if '_' in goal_id else "unknown"
+    
+    logger.info(f"📥 Downloading {len(discovered_videos)} videos for {team_name} - {player_name} ({minute_display}')")
+
     successful_uploads: List[Dict[str, Any]] = []
     failed_downloads: List[Dict[str, Any]] = []
 
@@ -36,7 +43,9 @@ def download_videos_task(goal_id: str) -> Dict[str, Any]:
             if not tweet_url:
                 continue
 
-            # ✅ Use simplified video_index (no search_index needed)
+            # ✅ The video naming will automatically use the new + format
+            # S3 path will be: 12345/12345_45+3/12345_45+3_0.mp4
+            
             with tempfile.TemporaryDirectory() as temp_dir:
                 # Generate output template using simplified naming
                 out_tmpl = os.path.join(temp_dir, f"{goal_id}_{video_index}.%(ext)s")

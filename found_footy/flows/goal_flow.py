@@ -17,8 +17,11 @@ def goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
         logger.warning(f"⚠️ No goal events provided for fixture {fixture_id}")
         return {"status": "no_goals", "fixture_id": fixture_id}
     
-    # ✅ Filter only actual goals
-    actual_goals = [event for event in goal_events if event.get("type") == "Goal"]
+    # ✅ Filter only actual goals (exclude missed penalties)
+    actual_goals = [
+        event for event in goal_events 
+        if event.get("type") == "Goal" and event.get("detail") != "Missed Penalty"
+    ]
     
     if not actual_goals:
         logger.info(f"⚽ No actual goals found in {len(goal_events)} events for fixture {fixture_id}")
@@ -36,13 +39,13 @@ def goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
     
     for goal_event in actual_goals:
         try:
-            # ✅ Generate goal ID using your format
+            # ✅ Generate goal ID using your NEW + format
             time_data = goal_event.get("time", {})
             elapsed = time_data.get("elapsed", 0)
             extra = time_data.get("extra")
             
-            if extra is not None:
-                goal_id = f"{fixture_id}_{elapsed}_{extra}"
+            if extra is not None and extra > 0:
+                goal_id = f"{fixture_id}_{elapsed}+{extra}"
             else:
                 goal_id = f"{fixture_id}_{elapsed}"
             
@@ -54,9 +57,12 @@ def goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
                 player_name = goal_event.get("player", {}).get("name", "Unknown")
                 team_name = goal_event.get("team", {}).get("name", "Unknown")
                 
+                # ✅ Display format for logging
+                minute_display = f"{elapsed}+{extra}" if extra and extra > 0 else str(elapsed)
+                
                 if is_new_goal:
                     # ✅ NEW GOAL: Trigger Twitter flow
-                    logger.info(f"🆕 NEW GOAL: {team_name} - {player_name} ({elapsed}')")
+                    logger.info(f"🆕 NEW GOAL: {team_name} - {player_name} ({minute_display}')")
                     
                     schedule_result = schedule_twitter_flow(goal_id, delay_minutes=2)
                     
@@ -76,7 +82,7 @@ def goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
                 else:
                     # ✅ EXISTING GOAL: Update only, no Twitter flow
                     updated_goals.append(goal_id)
-                    logger.info(f"🔄 UPDATED: {team_name} - {player_name} ({elapsed}') - Data refreshed, no new Twitter flow")
+                    logger.info(f"🔄 UPDATED: {team_name} - {player_name} ({minute_display}') - Data refreshed, no new Twitter flow")
                 
         except Exception as e:
             logger.error(f"❌ Failed to process goal: {e}")

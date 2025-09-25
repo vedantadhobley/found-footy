@@ -230,10 +230,10 @@ class FootyMongoStore:
             return False
 
     def store_goal_pending(self, fixture_id: int, goal_data: dict) -> bool:
-        """Store goal in goals_pending collection - raw API data only"""
+        """Store goal in goals_pending collection - raw API data with extracted fields"""
         try:
             # ✅ Only process actual goals
-            if goal_data.get("type") != "Goal":
+            if goal_data.get("type") != "Goal" or goal_data.get("detail") == "Missed Penalty":
                 return False
             
             # ✅ Extract time data for correct _id format
@@ -241,22 +241,29 @@ class FootyMongoStore:
             elapsed = time_data.get("elapsed", 0)
             extra = time_data.get("extra")
             
-            # ✅ NEW: Use your specified _id format
-            if extra is not None:
-                goal_id = f"{fixture_id}_{elapsed}_{extra}"
+            # ✅ NEW: Use + format for extra time
+            if extra is not None and extra > 0:
+                goal_id = f"{fixture_id}_{elapsed}+{extra}"
             else:
                 goal_id = f"{fixture_id}_{elapsed}"
             
-            # ✅ Store exactly as from API, use custom _id
-            goal_doc = dict(goal_data)  # Raw API data only
+            # ✅ Store raw API data PLUS extracted fields for easy access
+            goal_doc = dict(goal_data)  # Raw API data
             goal_doc["_id"] = goal_id   # Set custom _id format
+            
+            # ✅ ADD: Extract commonly needed fields for easy access
+            goal_doc["fixture_id"] = fixture_id  # For convenience
+            goal_doc["minute"] = elapsed
+            goal_doc["player_name"] = goal_data.get("player", {}).get("name", "Unknown")
+            goal_doc["player_id"] = goal_data.get("player", {}).get("id", 0)
+            goal_doc["team_name"] = goal_data.get("team", {}).get("name", "Unknown")
+            goal_doc["team_id"] = goal_data.get("team", {}).get("id", 0)
             
             self.goals_pending.replace_one({"_id": goal_id}, goal_doc, upsert=True)
             
-            # Extract for logging
-            player_name = goal_data.get("player", {}).get("name", "Unknown")
-            team_name = goal_data.get("team", {}).get("name", "Unknown")
-            print(f"✅ Stored goal: {team_name} - {player_name} ({elapsed}')")
+            # ✅ Display format for logging
+            minute_display = f"{elapsed}+{extra}" if extra and extra > 0 else str(elapsed)
+            print(f"✅ Stored goal: {goal_doc['team_name']} - {goal_doc['player_name']} ({minute_display}')")
             return True
         
         except Exception as e:
@@ -276,11 +283,12 @@ class FootyMongoStore:
             return []
 
     def get_existing_goal_ids(self, fixture_id: int) -> set:
-        """Get existing goal IDs for a fixture using your _id format"""
+        """Get existing goal IDs for a fixture using your _id format with + for extra time"""
         try:
-            # Since _id format is "{fixture_id}_{elapsed}[_{extra}]", we can use regex
+            # Since _id format is "{fixture_id}_{elapsed}[+{extra}]", we can use regex
             import re
-            pattern = re.compile(f"^{fixture_id}_")
+            # Match fixture_id followed by underscore, then digits, optionally +digits
+            pattern = re.compile(f"^{fixture_id}_\\d+(?:\\+\\d+)?$")
             
             # Check both pending and processed collections
             pending_goals = list(self.goals_pending.find({"_id": pattern}, {"_id": 1}))

@@ -93,19 +93,43 @@ class FlowNamingService:
                 # Try to get goal details from database
                 goal_doc = store.goals_pending.find_one({"_id": goal_id})
                 if goal_doc:
-                    return f"📥 VIDEO: {goal_doc['team_name']} - {goal_doc['player_name']} ({goal_doc['minute']}') [#{goal_doc['fixture_id']}]"
+                    player_name = goal_doc.get("player_name", "Unknown")
+                    team_name = goal_doc.get("team_name", "Unknown") 
+                    minute = goal_doc.get("minute", 0)
+                    fixture_id = goal_doc.get("fixture_id", "unknown")
+                    
+                    # ✅ Extract extra time from goal_id for display
+                    minute_display = str(minute)
+                    if '+' in goal_id:
+                        # Extract the time part after underscore: "12345_45+3" -> "45+3"
+                        time_part = '_'.join(goal_id.split('_')[1:])  # Everything after first underscore
+                        minute_display = time_part
+                    
+                    # ✅ Get fixture details for team names and score
+                    fixture = store.fixtures_active.find_one({"_id": fixture_id})
+                    if fixture:
+                        home_team = fixture.get("teams", {}).get("home", {}).get("name", "Unknown")
+                        away_team = fixture.get("teams", {}).get("away", {}).get("name", "Unknown")
+                        home_goals = fixture.get("goals", {}).get("home", 0) or 0
+                        away_goals = fixture.get("goals", {}).get("away", 0) or 0
+                        
+                        return f"📥 VIDEO: {home_team} {home_goals}-{away_goals} {away_team} | {team_name} - {player_name} ({minute_display}') [#{fixture_id}]"
+                    else:
+                        return f"📥 VIDEO: {team_name} - {player_name} ({minute_display}') [#{fixture_id}]"
                 else:
-                    # Fallback parsing from goal_id
-                    parts = goal_id.split('_')
-                    if len(parts) >= 3:
-                        fixture_id, minute, player_id = parts[:3]
-                        return f"📥 VIDEO: Goal #{fixture_id}_{minute}_{player_id}"
+                    # Fallback parsing from goal_id with + format
+                    if '_' in goal_id:
+                        parts = goal_id.split('_', 1)  # Split only on first underscore
+                        fixture_id = parts[0]
+                        minute_display = parts[1] if len(parts) > 1 else "unknown"
+                        return f"📥 VIDEO: Goal {minute_display}' [#{fixture_id}]"
                     else:
                         return f"📥 VIDEO: Goal {goal_id}"
             else:
                 return "📥 VIDEO SEARCH: No Goal ID"
-        except:
-            return f"📥 VIDEO SEARCH: Goal {goal_id or 'Unknown'}"
+        except Exception as e:
+            print(f"❌ Error in get_twitter_flow_name: {e}")
+            return f"📥 VIDEO: Goal {goal_id or 'Unknown'}"
 
     @staticmethod
     def get_goal_flow_name(fixture_id: int, goal_count: int = 0) -> str:
@@ -162,22 +186,34 @@ class FlowNamingService:
         try:
             if goal_id:
                 # Try to get goal details from database
-                goal_doc = store.goals_pending.find_one({"_id": goal_id})
+                goal_doc = store.goals_pending.find_one({"_id": goal_id}) or store.goals_processed.find_one({"_id": goal_id})
                 if goal_doc:
+                    player_name = goal_doc.get("player_name", "Unknown")
+                    team_name = goal_doc.get("team_name", "Unknown")
+                    minute = goal_doc.get("minute", 0)
+                    fixture_id = goal_doc.get("fixture_id", "unknown")
                     video_count = len(goal_doc.get("discovered_videos", []))
-                    return f"📥 S3 DOWNLOAD: {goal_doc['team_name']} - {goal_doc['player_name']} ({goal_doc['minute']}') - {video_count} videos [#{goal_doc['fixture_id']}]"
+                    
+                    # ✅ Extract extra time from goal_id for display
+                    minute_display = str(minute)
+                    if '+' in goal_id:
+                        time_part = '_'.join(goal_id.split('_')[1:])  # Everything after first underscore
+                        minute_display = time_part
+                    
+                    return f"📥 S3 DOWNLOAD: {team_name} - {player_name} ({minute_display}') - {video_count} videos [#{fixture_id}]"
                 else:
-                    # Fallback parsing from goal_id
-                    parts = goal_id.split('_')
-                    if len(parts) >= 3:
+                    # Fallback parsing from goal_id with + format
+                    if '_' in goal_id:
+                        parts = goal_id.split('_', 1)  # Split only on first underscore
                         fixture_id = parts[0]
-                        minute = parts[1]
-                        return f"📥 S3 DOWNLOAD: Goal {minute}' [#{fixture_id}] ({goal_id})"
+                        minute_display = parts[1] if len(parts) > 1 else "unknown"
+                        return f"📥 S3 DOWNLOAD: Goal {minute_display}' [#{fixture_id}]"
                     else:
-                        return f"📥 S3 DOWNLOAD: Goal {goal_id}"
+                        return f"📥 S3 DOWNLOAD: {goal_id}"
             else:
                 return "📥 S3 DOWNLOAD: No Goal ID"
-        except:
+        except Exception as e:
+            print(f"❌ Error in get_download_flow_name: {e}")
             return f"📥 S3 DOWNLOAD: Goal {goal_id or 'Unknown'}"
 
 # Add convenience function
