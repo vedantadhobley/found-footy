@@ -30,9 +30,10 @@ class TestGoalFlow:
             for goal_event in goal_events:
                 # Test store_goal_pending call
                 if mock_store_method(fixture_id, goal_event):
-                    minute = goal_event.get("time", {}).get("elapsed", 0)
+                    elapsed = goal_event.get("time", {}).get("elapsed", 0)
                     player_id = goal_event.get("player", {}).get("id", 0)
-                    goal_id = f"{fixture_id}_{minute}_{player_id}"
+                    extra = 789  # Simulated extra data
+                    goal_id = f"{fixture_id}_{elapsed}+{extra}"  # ✅ NEW FORMAT
                     
                     # Test schedule_twitter_flow call
                     schedule_result = mock_schedule(goal_id, delay_minutes=2)
@@ -83,9 +84,10 @@ class TestGoalFlow:
                 # Test store_goal_pending call - returns False for duplicate
                 if mock_store_method(fixture_id, goal_event):
                     # This branch should NOT execute for duplicates
-                    minute = goal_event.get("time", {}).get("elapsed", 0)
+                    elapsed = goal_event.get("time", {}).get("elapsed", 0)
                     player_id = goal_event.get("player", {}).get("id", 0)
-                    goal_id = f"{fixture_id}_{minute}_{player_id}"
+                    extra = 789  # Simulated extra data
+                    goal_id = f"{fixture_id}_{elapsed}+{extra}"  # ✅ NEW FORMAT
                     
                     schedule_result = mock_schedule(goal_id, delay_minutes=2)
                     
@@ -129,9 +131,10 @@ class TestGoalFlow:
             
             for goal_event in goal_events:
                 if mock_store_method(fixture_id, goal_event):
-                    minute = goal_event.get("time", {}).get("elapsed", 0)
+                    elapsed = goal_event.get("time", {}).get("elapsed", 0)
                     player_id = goal_event.get("player", {}).get("id", 0)
-                    goal_id = f"{fixture_id}_{minute}_{player_id}"
+                    extra = 789  # Simulated extra data
+                    goal_id = f"{fixture_id}_{elapsed}+{extra}"  # ✅ NEW FORMAT
                     
                     schedule_result = mock_schedule(goal_id, delay_minutes=2)
                     

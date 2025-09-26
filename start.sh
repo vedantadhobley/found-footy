@@ -55,9 +55,57 @@ test_twitter() {
   docker compose exec twitter-worker python /app/scripts/test_twitter_content.py
 }
 
+test_integration() {
+  echo "🧪 Running Integration Test..."
+  
+  # Ensure test container is running
+  if ! docker-compose ps test | grep -q "Up"; then
+    echo "🔄 Starting test container..."
+    docker-compose up -d test
+    sleep 5
+  fi
+  
+  echo "🚀 Executing integration test..."
+  docker-compose exec test python /app/scripts/test_integration_real.py
+}
+
+test_twitter_debug() {
+  echo "🔍 Running Twitter Debug Test..."
+  
+  if ! docker-compose ps test | grep -q "Up"; then
+    echo "🔄 Starting test container..."
+    docker-compose up -d test
+    sleep 5
+  fi
+  
+  docker-compose exec test python /app/scripts/debug_twitter_worker.py
+}
+
+test_shell() {
+  echo "🐚 Opening test shell..."
+  
+  if ! docker-compose ps test | grep -q "Up"; then
+    echo "🔄 Starting test container..."
+    docker-compose up -d test
+    sleep 5
+  fi
+  
+  docker-compose exec test bash
+}
+
 case "$cmd" in
   redeploy|"")
     redeploy
+    ;;
+  # ... existing cases ...
+  test-integration)
+    test_integration
+    ;;
+  test-twitter-debug) 
+    test_twitter_debug
+    ;;
+  test-shell)
+    test_shell
     ;;
   logs)
     if [ -n "${svc}" ]; then
@@ -84,19 +132,17 @@ case "$cmd" in
   *)
     echo "Usage: ./start.sh [command] [service]"
     echo ""
+    # Update the help text at the end of start.sh:
     echo "Commands:"
-    echo "  redeploy       - Full rebuild and redeploy (default)"
-    echo "  logs [svc]     - Show logs for service"
-    echo "  debug-twitter  - Debug Twitter worker issues"
-    echo "  debug-logs     - Show debug logs for twitter-worker"
-    echo "  test-twitter   - Test Twitter functionality end-to-end"
-    echo "  status/ps      - Show container status"
-    echo "  down           - Stop all containers"
-    echo ""
-    echo "Examples:"
-    echo "  ./start.sh debug-twitter"
-    echo "  ./start.sh logs twitter-worker"
-    echo "  ./start.sh test-twitter"
+    echo "  redeploy         - Full rebuild and redeploy (default)"
+    echo "  logs [svc]       - Show logs for service"  
+    echo "  debug-twitter    - Debug Twitter worker issues"
+    echo "  debug-logs       - Show debug logs for twitter-worker"
+    echo "  test-twitter     - Test Twitter functionality end-to-end"
+    echo "  test-integration - Run complete pipeline integration test"  # ✅ NEW
+    echo "  test-shell       - Open interactive shell in test container"  # ✅ NEW
+    echo "  status/ps        - Show container status"
+    echo "  down             - Stop all containers"
     exit 1
     ;;
 esac

@@ -47,14 +47,18 @@ def fixtures(date_param=None):
 
 def fixtures_events(fixture_id):
     """
-    Return API-Football events exactly as returned by the API for a fixture (no filtering).
-    Each item: { time: {...}, team: {...}, player: {...}, assist: {...}, type: "...", detail: "...", comments: ... }
+    Return API-Football events for a single fixture.
+    Args: fixture_id - single fixture ID (int)
+    Returns: List of event objects
     """
     url = f"{BASE_URL}/fixtures/events"
-    headers = get_api_headers()  # ✅ FIX: Use secure headers function
+    headers = get_api_headers()
+    
     resp = requests.get(url, headers=headers, params={"fixture": str(fixture_id)})
     resp.raise_for_status()
-    return resp.json().get("response", [])  # raw events
+    events = resp.json().get("response", [])
+    
+    return events  # Return raw events array, not wrapped in fixture object
 
 def fixtures_batch(fixture_ids_list):
     """
@@ -124,3 +128,73 @@ def parse_team_ids_parameter(team_ids_param):
     else:
         print(f"⚠️ Unexpected team_ids type: {type(team_ids_param)}")
         return []
+
+def test_events_api_debug():
+    """Debug the events API call specifically"""
+    print("🔍 DEBUGGING EVENTS API")
+    print("=" * 40)
+    
+    import requests
+    
+    # 1. Test direct API call
+    headers = {
+        'X-RapidAPI-Key': os.getenv('RAPIDAPI_KEY', ''),
+        'X-RapidAPI-Host': 'api-football-v1.p.rapidapi.com'
+    }
+    
+    # Test events endpoint directly
+    fixture_id = 1378993
+    url = f"https://api-football-v1.p.rapidapi.com/v3/fixtures/events?fixture={fixture_id}"
+    
+    print(f"🌐 Direct API call: {url}")
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        print(f"   Status: {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            print(f"   Response keys: {list(data.keys())}")
+            
+            if 'response' in data:
+                events = data['response']
+                print(f"   Events array length: {len(events)}")
+                
+                for i, event in enumerate(events[:5]):  # Show first 5
+                    event_type = event.get('type', 'NO_TYPE')
+                    player_name = event.get('player', {}).get('name', 'NO_NAME')
+                    minute = event.get('time', {}).get('elapsed', 'NO_TIME')
+                    team_name = event.get('team', {}).get('name', 'NO_TEAM')
+                    
+                    print(f"      Event {i+1}: {event_type} - {player_name} ({team_name}) - {minute}'")
+            else:
+                print(f"   No 'response' key in data: {data}")
+        else:
+            print(f"   Error: {response.text}")
+            
+    except Exception as e:
+        print(f"   ❌ Direct API call failed: {e}")
+    
+    # 2. Test your fixtures_events function
+    print(f"\n🔧 Testing fixtures_events function...")
+    
+    try:
+        from found_footy.api.mongo_api import fixtures_events
+        
+        events_data = fixtures_events([fixture_id])
+        print(f"   Function returned: {len(events_data)} items")
+        
+        if events_data:
+            for item in events_data:
+                print(f"   Item keys: {list(item.keys())}")
+                if 'events' in item:
+                    print(f"   Events in item: {len(item['events'])}")
+                else:
+                    print(f"   No 'events' key in item")
+        else:
+            print("   Empty response from function")
+            
+    except Exception as e:
+        print(f"   ❌ Function call failed: {e}")
+        import traceback
+        traceback.print_exc()

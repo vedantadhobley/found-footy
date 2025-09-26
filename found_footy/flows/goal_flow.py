@@ -18,10 +18,7 @@ def goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
         return {"status": "no_goals", "fixture_id": fixture_id}
     
     # ✅ Filter only actual goals (exclude missed penalties)
-    actual_goals = [
-        event for event in goal_events 
-        if event.get("type") == "Goal" and event.get("detail") != "Missed Penalty"
-    ]
+    actual_goals = [event for event in goal_events if event.get("type") == "Goal"]
     
     if not actual_goals:
         logger.info(f"⚽ No actual goals found in {len(goal_events)} events for fixture {fixture_id}")

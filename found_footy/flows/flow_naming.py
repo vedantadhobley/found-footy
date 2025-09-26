@@ -135,8 +135,8 @@ class FlowNamingService:
     def get_goal_flow_name(fixture_id: int, goal_count: int = 0) -> str:
         """Generate contextual name for goal flow using raw schema"""
         try:
-            # Try to get fixture details for rich name
-            fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
+            # ✅ FIX: Use new schema with _id
+            fixture = store.fixtures_active.find_one({"_id": fixture_id})
             if fixture:
                 home_team, away_team = store._extract_team_names(fixture)
                 current_goals = store._extract_current_goals(fixture)
@@ -146,7 +146,8 @@ class FlowNamingService:
                 return f"⚽ GOALS: {home_team} {home_score}-{away_score} {away_team} - {goal_count} events [#{fixture_id}]"
             else:
                 return f"⚽ GOALS: Match #{fixture_id} - {goal_count} events"
-        except:
+        except Exception as e:
+            print(f"❌ Error in get_goal_flow_name: {e}")
             return f"⚽ GOALS: Match #{fixture_id} - {goal_count} events"
 
     @staticmethod

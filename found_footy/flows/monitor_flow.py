@@ -21,6 +21,9 @@ def fixtures_monitor_task():
     goal_flows_triggered = 0
     completed_fixtures_count = 0
     
+    # Track fixtures with incomplete goals
+    fixtures_with_incomplete_goals = set()
+    
     # Process fixtures with goal changes
     for fixture_change in delta_results["fixtures_with_changes"]:
         fixture_id = fixture_change["fixture_id"]
@@ -37,16 +40,19 @@ def fixtures_monitor_task():
         
         logger.info(f"🚨 GOAL DELTA DETECTED: Fixture {fixture_id} - +{total_increase} goals (now {home_score}-{away_score})")
         
-        complete_goal_events = []
-        for event in delta_result.get("events", []):
-            if (event.get("type") == "Goal" and 
-                event.get("detail") != "Missed Penalty" and
-                event.get("player", {}).get("name")):
-                complete_goal_events.append(event)
-        
+        # Fetch actual EVENTS data from API
         try:
+            events_list = fixtures_events(fixture_id)  # ✅ Returns raw events array
+            complete_goal_events = []
+            
+            # ✅ FIX: Process events directly - no need to check fixture.id
+            for event in events_list:
+                if (event.get("type") == "Goal" and 
+                    event.get("player", {}).get("name")):  # Only complete goals
+                    complete_goal_events.append(event)
+            
             if complete_goal_events:
-                # Get fixture context for rich naming using raw schema
+                # COMPLETE GOALS: Process them AND update fixture
                 fixture = store.fixtures_active.find_one({"_id": fixture_id})
                 if fixture:
                     home_team, away_team = store._extract_team_names(fixture)
@@ -66,22 +72,36 @@ def fixtures_monitor_task():
                 goal_flows_triggered += 1
                 logger.info(f"✅ Triggered goal flow: {flow_run_name}")
                 
-                # Update fixture with new scores
+                # UPDATE: Only update fixture when goals are complete
                 store.fixtures_update(fixture_id, delta_result)
                 logger.info(f"✅ Updated fixture {fixture_id} with new scores: {home_score}-{away_score}")
                 
             else:
-                logger.warning(f"⚠️ No complete goal events found for fixture {fixture_id}")
+                # ✅ INCOMPLETE GOALS: Skip fixture update AND mark as incomplete
+                logger.warning(f"⚠️ Goals detected but player names missing for fixture {fixture_id} - skipping fixture update")
+                logger.info(f"🔄 Fixture will be retried in next monitoring cycle")
+                
+                # ✅ CRITICAL: Track this fixture as having incomplete goals
+                fixtures_with_incomplete_goals.add(fixture_id)
+                # ❌ NO fixture update - fixture remains "stale" for next cycle
             
         except Exception as e:
-            logger.error(f"❌ Error triggering goal flow for fixture {fixture_id}: {e}")
+            logger.error(f"❌ Error fetching events for fixture {fixture_id}: {e}")
             continue
     
-    # Process completions using raw schema
+    # ✅ MODIFIED: Process completions - BUT SKIP if goals are incomplete
     for completed_fixture in delta_results["fixtures_completed"]:
         fixture_id = completed_fixture["fixture_id"] 
         delta_result = completed_fixture["delta_result"]
         
+        # ✅ CRITICAL CHECK: Don't complete if goals are incomplete
+        if fixture_id in fixtures_with_incomplete_goals:
+            logger.warning(f"⚠️ COMPLETION SKIPPED: Fixture {fixture_id} has incomplete goals")
+            logger.info(f"🔄 Match will remain in fixtures_active until goals are processed")
+            logger.info(f"📊 Current goals: {delta_result.get('current_goals', {})}")
+            continue
+        
+        # ✅ SAFE TO COMPLETE: No incomplete goals detected
         try:
             # Get fixture context for completion flow naming
             fixture = store.fixtures_active.find_one({"_id": fixture_id})
@@ -117,6 +137,7 @@ def fixtures_monitor_task():
         "goals_detected": delta_results["total_goals_detected"],
         "goal_flows_triggered": goal_flows_triggered,
         "completed_fixtures": completed_fixtures_count,
+        "incomplete_goals_detected": len(fixtures_with_incomplete_goals),  # ✅ NEW METRIC
         "delta_results": delta_results
     }
 
