@@ -48,6 +48,7 @@ def fixtures_monitor_task():
             # ✅ FIX: Process events directly - no need to check fixture.id
             for event in events_list:
                 if (event.get("type") == "Goal" and 
+                    event.get("detail") != "Missed Penalty" and
                     event.get("player", {}).get("name")):  # Only complete goals
                     complete_goal_events.append(event)
             
@@ -72,9 +73,23 @@ def fixtures_monitor_task():
                 goal_flows_triggered += 1
                 logger.info(f"✅ Triggered goal flow: {flow_run_name}")
                 
-                # UPDATE: Only update fixture when goals are complete
-                store.fixtures_update(fixture_id, delta_result)
-                logger.info(f"✅ Updated fixture {fixture_id} with new scores: {home_score}-{away_score}")
+                # UPDATE: Only update fixture when goals are complete - CLEAN UPDATE
+                # ❌ REMOVE: Don't store delta results in fixture
+                # store.fixtures_update(fixture_id, delta_result)  # This adds extra fields
+                
+                # ✅ FIX: Update only the core fixture data from API
+                current_fixture = store.fixtures_active.find_one({"_id": fixture_id})
+                if current_fixture:
+                    # Keep only core API fields + updated goals/score
+                    clean_update = {
+                        "goals": delta_result.get("current_goals", {}),
+                        "score": delta_result.get("current_score", {})
+                    }
+                    store.fixtures_active.update_one(
+                        {"_id": fixture_id}, 
+                        {"$set": clean_update}
+                    )
+                    logger.info(f"✅ Updated fixture {fixture_id} with new scores: {home_score}-{away_score}")
                 
             else:
                 # ✅ INCOMPLETE GOALS: Skip fixture update AND mark as incomplete

@@ -251,11 +251,9 @@ services:
     build: .
     command: >
       sh -c "
-        echo '🤖 Twitter Worker starting on $(uname -m) architecture...' &&
-        echo '🔍 Environment check...' &&
-        python /app/scripts/debug_twitter_worker.py || echo '⚠️ Debug script failed' &&
-        echo '🚀 Starting worker...' &&
-        prefect worker start --pool twitter-pool --type process --limit 2
+        echo '🤖 Twitter Worker starting...' &&
+        echo '🚀 Starting worker directly...' &&
+        PREFECT_LOGGING_LEVEL=INFO prefect worker start --pool twitter-pool --type process --limit 2
       "
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api

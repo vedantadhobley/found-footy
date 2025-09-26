@@ -58,9 +58,8 @@ class FootyS3Store:
         # This will create paths like: 12345/12345_45+3/12345_45+3_0.mp4
         return f"{fixture_id}/{goal_id}/{goal_id}_{video_index}.{file_extension}"
     
-    def upload_video_file(self, local_file_path: str, goal_id: str, video_index: int,
-                         metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Upload video file to S3 with simplified structure"""
+    def upload_video_file(self, local_file_path: str, goal_id: str, video_index: int, metadata: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Upload video file to S3 with clean metadata"""
         try:
             # Get file extension
             file_extension = Path(local_file_path).suffix.lstrip('.')
@@ -78,19 +77,30 @@ class FootyS3Store:
                 'content_type': f'video/{file_extension}'
             }
             
+            # ✅ FIX: Clean metadata for S3 headers
+            clean_metadata = {}
             if metadata:
-                # Add custom metadata (prefix with 'x-amz-meta-' for S3)
                 for key, value in metadata.items():
-                    s3_metadata[f'custom_{key}'] = str(value)
+                    if value is not None:
+                        # Clean string values to remove invalid header characters
+                        clean_value = str(value)
+                        # Remove newlines, tabs, and other problematic characters
+                        clean_value = clean_value.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+                        # Truncate long values that might break headers
+                        if len(clean_value) > 100:
+                            clean_value = clean_value[:97] + "..."
+                        # Remove any non-ASCII characters that might cause issues
+                        clean_value = ''.join(char if ord(char) < 128 else '?' for char in clean_value)
+                        clean_metadata[f"goal-{key}"] = clean_value
             
-            # Upload to S3
+            # Upload to S3 with clean metadata
             self.s3_client.upload_file(
                 local_file_path,
                 self.bucket_name,
                 s3_key,
                 ExtraArgs={
-                    'Metadata': s3_metadata,
-                    'ContentType': f'video/{file_extension}'
+                    'Metadata': clean_metadata,
+                    'ContentType': 'video/mp4'
                 }
             )
             

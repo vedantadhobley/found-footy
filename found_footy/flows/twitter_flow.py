@@ -47,15 +47,15 @@ def twitter_search_task(goal_id: str) -> Dict[str, Any]:
         logger.warning(f"⚠️ Goal {goal_id} not found")
         return {"status": "goal_not_found", "goal_id": goal_id}
 
-    # ✅ FIX: Use the extracted convenience fields
-    player_name = goal_doc.get("player_name", "")
-    team_name = goal_doc.get("team_name", "")
+    # ✅ FIX: Use raw API structure instead of extra fields
+    player_name = goal_doc.get("player", {}).get("name", "")
+    team_name = goal_doc.get("team", {}).get("name", "")
     
     if not player_name or not team_name:
         logger.warning(f"⚠️ Missing player/team data for goal {goal_id}")
-        logger.debug(f"Available fields: {list(goal_doc.keys())}")
+        logger.debug(f"Goal doc structure: {goal_doc}")
         return {"status": "missing_data", "goal_id": goal_id}
-    
+
     # ✅ Create search query with proper data
     player_last_name = player_name.split()[-1] if " " in player_name else player_name
     search_query = f"{player_last_name} {team_name}"
@@ -63,7 +63,8 @@ def twitter_search_task(goal_id: str) -> Dict[str, Any]:
     logger.info(f"🔍 Searching Twitter for: '{search_query}' (Player: {player_name}, Team: {team_name})")
 
     client = TwitterAPIClient()
-    found_videos = client.search_videos(search_query, max_results=3)
+    # ✅ FIX: Increase max_results to 5
+    found_videos = client.search_videos(search_query, max_results=5)
 
     # Update goal with discovered videos (empty list if none found)
     goal_doc["discovered_videos"] = found_videos
@@ -73,9 +74,11 @@ def twitter_search_task(goal_id: str) -> Dict[str, Any]:
     return {
         "status": "success",
         "goal_id": goal_id,
-        "discovered_videos": found_videos,
+        "search_query": search_query,
+        "player_name": player_name,
+        "team_name": team_name,
         "video_count": len(found_videos),
-        "search_query": search_query  # ✅ Include for debugging
+        "videos": found_videos
     }
 
 @flow(name="twitter-flow")

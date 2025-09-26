@@ -308,20 +308,12 @@ def test_real_szoboszlai_flow():
         goal_id = "1378993_83_1096"  # Szoboszlai goal
         goal_doc = {
             "_id": goal_id,
-            "fixture_id": 1378993,
-            "minute": 83,
-            "player_id": 1096,
-            "player_name": "D. Szoboszlai",
-            "team_name": "Liverpool",
-            "raw_event": {
-                "time": {"elapsed": 83, "extra": None},
-                "team": {"id": 40, "name": "Liverpool"},
-                "player": {"id": 1096, "name": "D. Szoboszlai"},
-                "type": "Goal",
-                "detail": "Normal Goal"
-            },
-            "created_at": "2025-09-14T10:00:00Z",
-            "status": "pending_twitter_search"
+            "time": {"elapsed": 83},
+            "team": {"id": 40, "name": "Liverpool"},
+            "player": {"id": 1096, "name": "D. Szoboszlai"},
+            "type": "Goal",
+            "detail": "Normal Goal"
+            # ❌ REMOVE: "created_at", "status", etc.
         }
         
         # Insert the goal into goals_pending

@@ -27,9 +27,10 @@ def download_videos_task(goal_id: str) -> Dict[str, Any]:
         logger.warning(f"⚠️ No discovered tweet URLs for goal {goal_id}")
         return {"status": "no_videos", "goal_id": goal_id}
 
-    # ✅ Extract display info for logging
-    player_name = goal_doc.get("player_name", "Unknown")
-    team_name = goal_doc.get("team_name", "Unknown")
+    # ✅ FIX: Use raw API structure instead of extra fields
+    player_name = goal_doc.get("player", {}).get("name", "Unknown")
+    team_name = goal_doc.get("team", {}).get("name", "Unknown")
+    
     minute_display = goal_id.split('_', 1)[1] if '_' in goal_id else "unknown"
     
     logger.info(f"📥 Downloading {len(discovered_videos)} videos for {team_name} - {player_name} ({minute_display}')")

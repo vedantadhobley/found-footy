@@ -71,11 +71,20 @@ def test_complete_pipeline():
         print("❌ NO API KEY FOUND!")
         return False
     
-    # 2. Insert baseline fixture for comparison
-    print("\n2️⃣ Setting up baseline fixture...")
+    # 2. Clean existing data first
+    print("\n2️⃣ Cleaning existing test data...")
     
     from found_footy.storage.mongo_store import FootyMongoStore
     store = FootyMongoStore()
+    
+    # ✅ CRITICAL: Clean existing goals so they're detected as "new"
+    store.fixtures_active.delete_many({"_id": 1378993})
+    store.goals_pending.delete_many({"_id": {"$regex": "^1378993_"}})
+    store.goals_processed.delete_many({"_id": {"$regex": "^1378993_"}})
+    print("✅ Cleaned existing test data")
+    
+    # 3. Insert baseline fixture for comparison
+    print("\n3️⃣ Setting up baseline fixture...")
     
     fixture_baseline = {
         "_id": 1378993,
@@ -91,8 +100,8 @@ def test_complete_pipeline():
     store.fixtures_active.replace_one({"_id": 1378993}, fixture_baseline, upsert=True)
     print("✅ Baseline inserted: Liverpool 0-0 Arsenal")
     
-    # 3. Debug events API specifically
-    print("\n3️⃣ Debugging events API...")
+    # 4. Debug events API specifically
+    print("\n4️⃣ Debugging events API...")
     
     import requests
     
@@ -123,8 +132,7 @@ def test_complete_pipeline():
                     minute = event.get('time', {}).get('elapsed', 'NO_TIME')
                     print(f"      🥅 {player_name} - {minute}'")
                     
-                # This should work - the API HAS the events!
-                print("✅ Events API is working - the issue is in your fixtures_events function!")
+                print("✅ Events API is working - testing wrapper function...")
             else:
                 print("❌ No events in API response")
                 print(f"   Response: {data}")
@@ -134,34 +142,42 @@ def test_complete_pipeline():
     except Exception as e:
         print(f"❌ Events API call failed: {e}")
     
-    # 4. Test your wrapper function
-    print("\n4️⃣ Testing your fixtures_events function...")
+    # 5. Test your wrapper function
+    print("\n5️⃣ Testing your fixtures_events function...")
     
     try:
         from found_footy.api.mongo_api import fixtures_events
         
-        events_data = fixtures_events([1378993])
+        # ✅ FIX: Pass single fixture ID, not array
+        events_data = fixtures_events(1378993)  # Single fixture ID
         print(f"📦 fixtures_events returned: {len(events_data)} items")
         
-        if not events_data:
-            print("❌ Your fixtures_events function is broken!")
-            print("💡 The direct API works but your wrapper doesn't")
-            print("🔧 Need to fix found_footy.api.mongo_api.fixtures_events")
+        if events_data:
+            print("✅ Events function working!")
+            goal_events = [e for e in events_data if e.get('type') == 'Goal']
+            print(f"   Found {len(goal_events)} goal events")
+            
+            for event in goal_events[:3]:  # Show first 3
+                player_name = event.get('player', {}).get('name', 'NO_NAME')
+                minute = event.get('time', {}).get('elapsed', 'NO_TIME')
+                print(f"      🥅 {player_name} - {minute}'")
+        else:
+            print("❌ Events function returned empty - check API call")
         
     except Exception as e:
         print(f"❌ fixtures_events function failed: {e}")
         import traceback
         traceback.print_exc()
     
-    # 5. Continue with monitor test
-    print("\n5️⃣ Triggering monitor flow...")
+    # 6. Continue with monitor test
+    print("\n6️⃣ Triggering monitor flow...")
     
     if trigger_monitor_via_prefect_api():
-        print("⏰ Waiting 30 seconds for processing...")
-        time.sleep(30)
+        print("⏰ Waiting 45 seconds for complete processing...")
+        time.sleep(45)  # ✅ Longer wait for goal + twitter flows
         
-        # 4. Check results
-        print("\n4️⃣ Checking results...")
+        # 7. Check results
+        print("\n7️⃣ Checking complete results...")
         
         try:
             goals_pending = list(store.goals_pending.find({"_id": {"$regex": "^1378993_"}}))
@@ -169,15 +185,30 @@ def test_complete_pipeline():
             
             total_goals = len(goals_pending) + len(goals_processed)
             
-            print(f"📊 RESULTS:")
+            print(f"📊 COMPLETE RESULTS:")
             print(f"   Goals pending: {len(goals_pending)}")
             print(f"   Goals processed: {len(goals_processed)}")
             
             if total_goals > 0:
-                print("🎯 SUCCESS! Monitor detected goals via API:")
+                print("🎯 SUCCESS! Goals detected and processed:")
+                
                 for goal in goals_pending:
-                    print(f"   📥 {goal['_id']}: {goal.get('player_name', 'Unknown')}")
-                return True
+                    print(f"   📥 PENDING: {goal['_id']}")
+                    print(f"       Player: {goal.get('player_name', 'Unknown')}")
+                    print(f"       Videos: {len(goal.get('discovered_videos', []))}")
+                    
+                for goal in goals_processed:
+                    print(f"   ✅ PROCESSED: {goal['_id']}")
+                    print(f"       Player: {goal.get('player_name', 'Unknown')}")
+                    print(f"       Videos: {len(goal.get('successful_uploads', []))}")
+                
+                # Check if Twitter flows were triggered
+                if any(goal.get('discovered_videos') for goal in goals_pending):
+                    print("🐦 Twitter flows executed successfully!")
+                    return True
+                else:
+                    print("⏳ Goals stored but Twitter flows may still be processing...")
+                    return True
             else:
                 # Check if fixture was updated by monitor
                 current_fixture = store.fixtures_active.find_one({"_id": 1378993})

@@ -230,7 +230,7 @@ class FootyMongoStore:
             return False
 
     def store_goal_pending(self, fixture_id: int, goal_data: dict) -> bool:
-        """Store goal in goals_pending collection - raw API data with extracted fields"""
+        """Store goal in goals_pending collection - RAW API DATA ONLY"""
         try:
             # ✅ Only process actual goals
             if goal_data.get("type") != "Goal" or goal_data.get("detail") == "Missed Penalty":
@@ -241,29 +241,25 @@ class FootyMongoStore:
             elapsed = time_data.get("elapsed", 0)
             extra = time_data.get("extra")
             
-            # ✅ NEW: Use + format for extra time
+            # ✅ Use + format for extra time
             if extra is not None and extra > 0:
                 goal_id = f"{fixture_id}_{elapsed}+{extra}"
             else:
                 goal_id = f"{fixture_id}_{elapsed}"
             
-            # ✅ Store raw API data PLUS extracted fields for easy access
-            goal_doc = dict(goal_data)  # Raw API data
+            # ✅ Store ONLY raw API data - NO extra fields
+            goal_doc = dict(goal_data)  # Raw API data ONLY
             goal_doc["_id"] = goal_id   # Set custom _id format
             
-            # ✅ ADD: Extract commonly needed fields for easy access
-            goal_doc["fixture_id"] = fixture_id  # For convenience
-            goal_doc["minute"] = elapsed
-            goal_doc["player_name"] = goal_data.get("player", {}).get("name", "Unknown")
-            goal_doc["player_id"] = goal_data.get("player", {}).get("id", 0)
-            goal_doc["team_name"] = goal_data.get("team", {}).get("name", "Unknown")
-            goal_doc["team_id"] = goal_data.get("team", {}).get("id", 0)
-            
+            # ❌ REMOVE ALL THESE EXTRA FIELDS - they're being added somewhere
+            # goal_doc["fixture_id"] = fixture_id  
+            # goal_doc["minute"] = elapsed
+            # goal_doc["player_name"] = goal_data.get("player", {}).get("name", "Unknown")
+            # goal_doc["player_id"] = goal_data.get("player", {}).get("id", 0)
+            # goal_doc["team_name"] = goal_data.get("team", {}).get("name", "Unknown")
+            # goal_doc["team_id"] = goal_data.get("team", {}).get("id", 0)
+        
             self.goals_pending.replace_one({"_id": goal_id}, goal_doc, upsert=True)
-            
-            # ✅ Display format for logging
-            minute_display = f"{elapsed}+{extra}" if extra and extra > 0 else str(elapsed)
-            print(f"✅ Stored goal: {goal_doc['team_name']} - {goal_doc['player_name']} ({minute_display}')")
             return True
         
         except Exception as e:

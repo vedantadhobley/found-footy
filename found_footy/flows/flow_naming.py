@@ -93,27 +93,30 @@ class FlowNamingService:
                 # Try to get goal details from database
                 goal_doc = store.goals_pending.find_one({"_id": goal_id})
                 if goal_doc:
-                    player_name = goal_doc.get("player_name", "Unknown")
-                    team_name = goal_doc.get("team_name", "Unknown") 
-                    minute = goal_doc.get("minute", 0)
-                    fixture_id = goal_doc.get("fixture_id", "unknown")
+                    # ✅ FIX: Use raw API structure instead of extra fields
+                    player_name = goal_doc.get("player", {}).get("name", "Unknown")
+                    team_name = goal_doc.get("team", {}).get("name", "Unknown")
+                    elapsed = goal_doc.get("time", {}).get("elapsed", 0)
+                    
+                    # Extract fixture_id from goal_id
+                    fixture_id = goal_id.split('_')[0] if '_' in goal_id else "unknown"
                     
                     # ✅ Extract extra time from goal_id for display
-                    minute_display = str(minute)
+                    minute_display = str(elapsed)
                     if '+' in goal_id:
                         # Extract the time part after underscore: "12345_45+3" -> "45+3"
                         time_part = '_'.join(goal_id.split('_')[1:])  # Everything after first underscore
                         minute_display = time_part
                     
                     # ✅ Get fixture details for team names and score
-                    fixture = store.fixtures_active.find_one({"_id": fixture_id})
+                    fixture = store.fixtures_active.find_one({"_id": int(fixture_id)})
                     if fixture:
                         home_team = fixture.get("teams", {}).get("home", {}).get("name", "Unknown")
                         away_team = fixture.get("teams", {}).get("away", {}).get("name", "Unknown")
-                        home_goals = fixture.get("goals", {}).get("home", 0) or 0
-                        away_goals = fixture.get("goals", {}).get("away", 0) or 0
+                        # home_goals = fixture.get("goals", {}).get("home", 0) or 0
+                        # away_goals = fixture.get("goals", {}).get("away", 0) or 0
                         
-                        return f"📥 VIDEO: {home_team} {home_goals}-{away_goals} {away_team} | {team_name} - {player_name} ({minute_display}') [#{fixture_id}]"
+                        return f"📥 VIDEO: {home_team} vs {away_team} | {team_name} - {player_name} ({minute_display}') [#{fixture_id}]"
                     else:
                         return f"📥 VIDEO: {team_name} - {player_name} ({minute_display}') [#{fixture_id}]"
                 else:
@@ -189,14 +192,17 @@ class FlowNamingService:
                 # Try to get goal details from database
                 goal_doc = store.goals_pending.find_one({"_id": goal_id}) or store.goals_processed.find_one({"_id": goal_id})
                 if goal_doc:
-                    player_name = goal_doc.get("player_name", "Unknown")
-                    team_name = goal_doc.get("team_name", "Unknown")
-                    minute = goal_doc.get("minute", 0)
-                    fixture_id = goal_doc.get("fixture_id", "unknown")
+                    # ✅ FIX: Use raw API structure instead of extra fields
+                    player_name = goal_doc.get("player", {}).get("name", "Unknown")
+                    team_name = goal_doc.get("team", {}).get("name", "Unknown")
+                    elapsed = goal_doc.get("time", {}).get("elapsed", 0)
+                    
+                    # Extract fixture_id from goal_id
+                    fixture_id = goal_id.split('_')[0] if '_' in goal_id else "unknown"
                     video_count = len(goal_doc.get("discovered_videos", []))
                     
                     # ✅ Extract extra time from goal_id for display
-                    minute_display = str(minute)
+                    minute_display = str(elapsed)
                     if '+' in goal_id:
                         time_part = '_'.join(goal_id.split('_')[1:])  # Everything after first underscore
                         minute_display = time_part
