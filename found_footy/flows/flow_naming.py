@@ -62,7 +62,7 @@ class FlowNamingService:
                 if source_collection == "fixtures_staging":
                     fixture = store.fixtures_staging.find_one({"_id": fixture_id})
                 elif source_collection == "fixtures_active":
-                    fixture = store.fixtures_active.find_one({"fixture_id": fixture_id})
+                    fixture = store.fixtures_active.find_one({"_id": fixture_id})
                 
                 if fixture:
                     # Use raw schema extraction
@@ -90,10 +90,10 @@ class FlowNamingService:
         """Generate contextual name for twitter video scraping flow"""
         try:
             if goal_id:
-                # Try to get goal details from database
-                goal_doc = store.goals_pending.find_one({"_id": goal_id})
+                # ✅ FIX: Use single goals collection
+                goal_doc = store.goals.find_one({"_id": goal_id})
                 if goal_doc:
-                    # ✅ FIX: Use raw API structure instead of extra fields
+                    # Use raw API structure
                     player_name = goal_doc.get("player", {}).get("name", "Unknown")
                     team_name = goal_doc.get("team", {}).get("name", "Unknown")
                     elapsed = goal_doc.get("time", {}).get("elapsed", 0)
@@ -101,20 +101,18 @@ class FlowNamingService:
                     # Extract fixture_id from goal_id
                     fixture_id = goal_id.split('_')[0] if '_' in goal_id else "unknown"
                     
-                    # ✅ Extract extra time from goal_id for display
+                    # Extract extra time from goal_id for display
                     minute_display = str(elapsed)
                     if '+' in goal_id:
                         # Extract the time part after underscore: "12345_45+3" -> "45+3"
                         time_part = '_'.join(goal_id.split('_')[1:])  # Everything after first underscore
                         minute_display = time_part
                     
-                    # ✅ Get fixture details for team names and score
+                    # Get fixture details for team names and score
                     fixture = store.fixtures_active.find_one({"_id": int(fixture_id)})
                     if fixture:
                         home_team = fixture.get("teams", {}).get("home", {}).get("name", "Unknown")
                         away_team = fixture.get("teams", {}).get("away", {}).get("name", "Unknown")
-                        # home_goals = fixture.get("goals", {}).get("home", 0) or 0
-                        # away_goals = fixture.get("goals", {}).get("away", 0) or 0
                         
                         return f"📥 VIDEO: {home_team} vs {away_team} | {team_name} - {player_name} ({minute_display}') [#{fixture_id}]"
                     else:
@@ -138,7 +136,6 @@ class FlowNamingService:
     def get_goal_flow_name(fixture_id: int, goal_count: int = 0) -> str:
         """Generate contextual name for goal flow using raw schema"""
         try:
-            # ✅ FIX: Use new schema with _id
             fixture = store.fixtures_active.find_one({"_id": fixture_id})
             if fixture:
                 home_team, away_team = store._extract_team_names(fixture)
@@ -189,10 +186,10 @@ class FlowNamingService:
         """Generate contextual name for download flow"""
         try:
             if goal_id:
-                # Try to get goal details from database
-                goal_doc = store.goals_pending.find_one({"_id": goal_id}) or store.goals_processed.find_one({"_id": goal_id})
+                # ✅ FIX: Use single goals collection only
+                goal_doc = store.goals.find_one({"_id": goal_id})
                 if goal_doc:
-                    # ✅ FIX: Use raw API structure instead of extra fields
+                    # Use raw API structure
                     player_name = goal_doc.get("player", {}).get("name", "Unknown")
                     team_name = goal_doc.get("team", {}).get("name", "Unknown")
                     elapsed = goal_doc.get("time", {}).get("elapsed", 0)
@@ -201,7 +198,7 @@ class FlowNamingService:
                     fixture_id = goal_id.split('_')[0] if '_' in goal_id else "unknown"
                     video_count = len(goal_doc.get("discovered_videos", []))
                     
-                    # ✅ Extract extra time from goal_id for display
+                    # Extract extra time from goal_id for display
                     minute_display = str(elapsed)
                     if '+' in goal_id:
                         time_part = '_'.join(goal_id.split('_')[1:])  # Everything after first underscore

@@ -17,15 +17,14 @@ class FootyMongoStore:
         self.fixtures_staging = self.db.fixtures_staging
         self.fixtures_active = self.db.fixtures_active
         self.fixtures_completed = self.db.fixtures_completed
-        self.goals_pending = self.db.goals_pending
-        self.goals_processed = self.db.goals_processed
+        # ✅ SINGLE goals collection
+        self.goals = self.db.goals
         
         self._create_indexes()
 
     def _create_indexes(self):
-        """Create indexes - _id will be fixture.id"""
+        """Create indexes"""
         try:
-            # ✅ _id indexes are automatic, but we can create indexes on nested fields
             # Status indexes for workflow routing
             self.fixtures_staging.create_index([("fixture.status.short", ASCENDING)])
             self.fixtures_active.create_index([("fixture.status.short", ASCENDING)])
@@ -44,11 +43,10 @@ class FootyMongoStore:
             self.fixtures_completed.create_index([("teams.home.id", ASCENDING)])
             self.fixtures_completed.create_index([("teams.away.id", ASCENDING)])
 
-            # Goals collections
-            self.goals_pending.create_index([("fixture_id", ASCENDING)])
-            self.goals_processed.create_index([("fixture_id", ASCENDING)])
-            self.goals_pending.create_index([("player_id", ASCENDING)])
-            self.goals_processed.create_index([("player_id", ASCENDING)])
+            # ✅ Single goals collection indexes
+            self.goals.create_index([("fixture_id", ASCENDING)])
+            self.goals.create_index([("player_id", ASCENDING)])
+            self.goals.create_index([("processing_status", ASCENDING)])
             
             print("✅ MongoDB indexes created successfully")
         except Exception as e:
@@ -97,7 +95,6 @@ class FootyMongoStore:
             source_collection = getattr(self, source_collection_name)
             destination_collection = getattr(self, destination_collection_name)
             
-            # ✅ Query by _id (which is fixture.id)
             query = {"_id": fixture_id} if fixture_id else {}
             source_docs = list(source_collection.find(query))
             
@@ -139,15 +136,13 @@ class FootyMongoStore:
             if fixture_id <= 0:
                 continue
             
-            # ✅ Store exactly as from API, use fixture.id as _id
-            doc = dict(item)  # Raw API data only
-            doc["_id"] = fixture_id  # Set _id to fixture.id
+            doc = dict(item)
+            doc["_id"] = fixture_id
             
             try:
-                # ✅ Complete replacement - removes all extra fields
                 result = target.replace_one(
                     {"_id": fixture_id},
-                    doc,  # Complete document replacement
+                    doc,
                     upsert=True
                 )
                 if result.upserted_id or result.modified_count > 0:
@@ -163,33 +158,36 @@ class FootyMongoStore:
         """Check if specified collections are empty"""
         try:
             for collection_name in collection_names:
-                collection = getattr(self, collection_name)
-                if collection.count_documents({}) > 0:
+                if collection_name == "fixtures_active":
+                    count = self.fixtures_active.count_documents({})
+                elif collection_name == "fixtures_staging":
+                    count = self.fixtures_staging.count_documents({})
+                elif collection_name == "fixtures_completed":
+                    count = self.fixtures_completed.count_documents({})
+                elif collection_name == "goals":
+                    count = self.goals.count_documents({})
+                else:
+                    continue
+                
+                if count > 0:
                     return False
-            
-            print(f"✅ All specified collections are empty: {collection_names}")
             return True
-            
+        
         except Exception as e:
             print(f"❌ Error checking collections: {e}")
-            return False
+            return True
 
     def fixtures_delta(self, fixture_id: int, api_data: dict) -> dict:
         """Compare current fixture with API data"""
         try:
-            # ✅ Query by _id (which is fixture.id)
             current_fixture = self.fixtures_active.find_one({"_id": fixture_id})
             if not current_fixture:
                 return {"status": "not_found", "fixture_id": fixture_id}
             
-            # Extract API data using raw schema
             api_status = self._extract_status(api_data)
             api_goals = self._extract_current_goals(api_data)
-            
-            # Current goals from stored data
             current_goals = self._extract_current_goals(current_fixture)
             
-            # Check for changes
             goals_changed = (api_goals.get("home", 0) != current_goals.get("home", 0) or 
                            api_goals.get("away", 0) != current_goals.get("away", 0))
             
@@ -211,9 +209,8 @@ class FootyMongoStore:
             return {"status": "error", "error": str(e)}
 
     def fixtures_update(self, fixture_id: int, api_data: dict) -> bool:
-        """Update fixture with latest API data - store raw API data only"""
+        """Update fixture with latest API data"""
         try:
-            # ✅ Store raw API data exactly as it comes, _id = fixture.id
             doc = dict(api_data)
             doc["_id"] = fixture_id
             
@@ -229,74 +226,133 @@ class FootyMongoStore:
             print(f"❌ Error updating fixture {fixture_id}: {e}")
             return False
 
-    def store_goal_pending(self, fixture_id: int, goal_data: dict) -> bool:
-        """Store goal in goals_pending collection - RAW API DATA ONLY"""
+    def store_goal(self, fixture_id: int, goal_data: dict, processing_status: str = "discovered") -> bool:
+        """Store goal in single goals collection with processing status"""
         try:
-            # ✅ Only process actual goals
+            # Only process actual goals
             if goal_data.get("type") != "Goal" or goal_data.get("detail") == "Missed Penalty":
                 return False
             
-            # ✅ Extract time data for correct _id format
+            # Extract time data for goal ID
             time_data = goal_data.get("time", {})
             elapsed = time_data.get("elapsed", 0)
             extra = time_data.get("extra")
             
-            # ✅ Use + format for extra time
+            # Generate goal ID with + format for extra time
             if extra is not None and extra > 0:
                 goal_id = f"{fixture_id}_{elapsed}+{extra}"
             else:
                 goal_id = f"{fixture_id}_{elapsed}"
             
-            # ✅ Store ONLY raw API data - NO extra fields
-            goal_doc = dict(goal_data)  # Raw API data ONLY
-            goal_doc["_id"] = goal_id   # Set custom _id format
+            # Check if goal already exists
+            existing_goal = self.goals.find_one({"_id": goal_id})
+            if existing_goal:
+                print(f"🔄 Goal {goal_id} already exists - updating data only")
+                # Update existing with latest API data but preserve processing fields
+                goal_doc = dict(goal_data)
+                goal_doc["_id"] = goal_id
+                goal_doc["fixture_id"] = fixture_id
+                
+                # Preserve processing fields
+                for field in ["processing_status", "discovered_videos", "successful_uploads", "processing_completed_at"]:
+                    if field in existing_goal:
+                        goal_doc[field] = existing_goal[field]
+                
+                self.goals.replace_one({"_id": goal_id}, goal_doc)
+                return False  # Not a new goal
             
-            # ❌ REMOVE ALL THESE EXTRA FIELDS - they're being added somewhere
-            # goal_doc["fixture_id"] = fixture_id  
-            # goal_doc["minute"] = elapsed
-            # goal_doc["player_name"] = goal_data.get("player", {}).get("name", "Unknown")
-            # goal_doc["player_id"] = goal_data.get("player", {}).get("id", 0)
-            # goal_doc["team_name"] = goal_data.get("team", {}).get("name", "Unknown")
-            # goal_doc["team_id"] = goal_data.get("team", {}).get("id", 0)
-        
-            self.goals_pending.replace_one({"_id": goal_id}, goal_doc, upsert=True)
+            # Store new goal
+            goal_doc = dict(goal_data)
+            goal_doc["_id"] = goal_id
+            goal_doc["fixture_id"] = fixture_id
+            goal_doc["processing_status"] = processing_status
+            goal_doc["created_at"] = datetime.now(timezone.utc).isoformat()
+            
+            self.goals.insert_one(goal_doc)
+            print(f"✅ New goal stored: {goal_id}")
             return True
-        
+            
         except Exception as e:
             print(f"❌ Error storing goal: {e}")
             return False
 
-    def store_goal_active(self, fixture_id: int, goal_data: dict) -> bool:
-        """Legacy method - calls store_goal_pending"""
-        return self.store_goal_pending(fixture_id, goal_data)
+    def get_existing_goal_ids(self, fixture_id: int) -> set:
+        """Get existing goal IDs for a fixture from goals collection"""
+        try:
+            import re
+            pattern = re.compile(f"^{fixture_id}_\\d+(?:\\+\\d+)?$")
+            
+            goals = list(self.goals.find({"_id": pattern}, {"_id": 1}))
+            return {goal["_id"] for goal in goals}
+            
+        except Exception as e:
+            print(f"❌ Error getting existing goal IDs for fixture {fixture_id}: {e}")
+            return set()
 
-    def get_active_fixtures(self) -> List[Dict]:
-        """Get all fixtures from fixtures_active collection"""
+    def validate_goal_count(self, fixture_id: int, expected_total_goals: int) -> dict:
+        """Validate stored goals match expected count from fixture data"""
+        try:
+            stored_goals_count = self.goals.count_documents({"fixture_id": fixture_id})
+            
+            is_valid = stored_goals_count == expected_total_goals
+            
+            return {
+                "is_valid": is_valid,
+                "stored_count": stored_goals_count,
+                "expected_count": expected_total_goals,
+                "difference": expected_total_goals - stored_goals_count
+            }
+            
+        except Exception as e:
+            print(f"❌ Error validating goal count for fixture {fixture_id}: {e}")
+            return {
+                "is_valid": False,
+                "stored_count": 0,
+                "expected_count": expected_total_goals,
+                "error": str(e)
+            }
+
+    def update_goal_processing_status(self, goal_id: str, status: str, **kwargs) -> bool:
+        """Update goal processing status and additional fields"""
+        try:
+            update_data = {"processing_status": status}
+            
+            for key, value in kwargs.items():
+                update_data[key] = value
+            
+            if status == "completed":
+                update_data["processing_completed_at"] = datetime.now(timezone.utc).isoformat()
+            
+            result = self.goals.update_one(
+                {"_id": goal_id},
+                {"$set": update_data}
+            )
+            
+            return result.modified_count > 0
+            
+        except Exception as e:
+            print(f"❌ Error updating goal status: {e}")
+            return False
+
+    def get_goals_by_status(self, fixture_id: int = None, status: str = None) -> List[dict]:
+        """Get goals filtered by fixture and/or processing status"""
+        try:
+            query = {}
+            if fixture_id:
+                query["fixture_id"] = fixture_id
+            if status:
+                query["processing_status"] = status
+                
+            return list(self.goals.find(query))
+            
+        except Exception as e:
+            print(f"❌ Error getting goals: {e}")
+            return []
+
+    def get_active_fixtures(self) -> List[dict]:
+        """Get all active fixtures for monitoring"""
         try:
             return list(self.fixtures_active.find({}))
         except Exception as e:
             print(f"❌ Error getting active fixtures: {e}")
             return []
-
-    def get_existing_goal_ids(self, fixture_id: int) -> set:
-        """Get existing goal IDs for a fixture using your _id format with + for extra time"""
-        try:
-            # Since _id format is "{fixture_id}_{elapsed}[+{extra}]", we can use regex
-            import re
-            # Match fixture_id followed by underscore, then digits, optionally +digits
-            pattern = re.compile(f"^{fixture_id}_\\d+(?:\\+\\d+)?$")
-            
-            # Check both pending and processed collections
-            pending_goals = list(self.goals_pending.find({"_id": pattern}, {"_id": 1}))
-            processed_goals = list(self.goals_processed.find({"_id": pattern}, {"_id": 1}))
-            
-            # Extract _id values
-            existing_ids = set()
-            for goal in pending_goals + processed_goals:
-                existing_ids.add(goal["_id"])
-            
-            return existing_ids
-            
-        except Exception as e:
-            print(f"❌ Error getting existing goal IDs for fixture {fixture_id}: {e}")
-            return set()

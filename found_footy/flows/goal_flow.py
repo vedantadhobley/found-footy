@@ -3,30 +3,26 @@ from prefect import flow, get_run_logger
 from typing import Optional, List
 
 from found_footy.flows.shared_tasks import store
-from found_footy.flows.flow_triggers import schedule_twitter_flow  # ✅ NEW IMPORT
+from found_footy.flows.flow_triggers import schedule_twitter_flow
 
-@flow(
-    name="goal-flow"
-    # ❌ NO flow_run_name here - will be set by triggering code
-)
+@flow(name="goal-flow")
 def goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
-    """Dedicated goal processing flow - triggers Twitter → Download chain with 5min delay"""
+    """Goal processing flow with single collection and new implementation"""
     logger = get_run_logger()
     
     if not goal_events:
         logger.warning(f"⚠️ No goal events provided for fixture {fixture_id}")
         return {"status": "no_goals", "fixture_id": fixture_id}
     
-    # ✅ Filter only actual goals (exclude missed penalties)
     actual_goals = [event for event in goal_events if event.get("type") == "Goal"]
     
     if not actual_goals:
         logger.info(f"⚽ No actual goals found in {len(goal_events)} events for fixture {fixture_id}")
         return {"status": "no_goals", "fixture_id": fixture_id}
     
-    logger.info(f"⚽ Processing {len(actual_goals)} goal events (filtered from {len(goal_events)} total events) for fixture {fixture_id}")
+    logger.info(f"⚽ Processing {len(actual_goals)} goal events for fixture {fixture_id}")
     
-    # ✅ NEW: Get existing goal IDs to detect new vs updated goals
+    # Get existing goal IDs from single collection
     existing_goal_ids = store.get_existing_goal_ids(fixture_id)
     logger.info(f"📋 Found {len(existing_goal_ids)} existing goals for fixture {fixture_id}")
     
@@ -36,7 +32,7 @@ def goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
     
     for goal_event in actual_goals:
         try:
-            # ✅ Generate goal ID using your NEW + format
+            # Generate goal ID
             time_data = goal_event.get("time", {})
             elapsed = time_data.get("elapsed", 0)
             extra = time_data.get("extra")
@@ -46,48 +42,46 @@ def goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
             else:
                 goal_id = f"{fixture_id}_{elapsed}"
             
-            # ✅ Check if this is a new goal or update to existing
             is_new_goal = goal_id not in existing_goal_ids
             
-            # ✅ Store/update the goal (always store latest API data)
-            if store.store_goal_pending(fixture_id, goal_event):
-                player_name = goal_event.get("player", {}).get("name", "Unknown")
-                team_name = goal_event.get("team", {}).get("name", "Unknown")
-                
-                # ✅ Display format for logging
-                minute_display = f"{elapsed}+{extra}" if extra and extra > 0 else str(elapsed)
-                
-                if is_new_goal:
-                    # ✅ NEW GOAL: Trigger Twitter flow
-                    logger.info(f"🆕 NEW GOAL: {team_name} - {player_name} ({minute_display}')")
+            # ✅ NEW IMPLEMENTATION: Use store_goal directly with processing_status
+            if is_new_goal:
+                # NEW goal - store and trigger Twitter flow
+                if store.store_goal(fixture_id, goal_event, processing_status="discovered"):
+                    player_name = goal_event.get("player", {}).get("name", "Unknown")
+                    team_name = goal_event.get("team", {}).get("name", "Unknown")
+                    display_minute = f"{elapsed}+{extra}" if extra else str(elapsed)
                     
-                    schedule_result = schedule_twitter_flow(goal_id, delay_minutes=2)
+                    logger.info(f"🆕 NEW GOAL: {team_name} - {player_name} ({display_minute}') [{goal_id}]")
                     
-                    if schedule_result["status"] == "scheduled":
-                        twitter_flows_scheduled += 1
+                    # Schedule Twitter flow with 2-minute delay
+                    try:
+                        schedule_result = schedule_twitter_flow(goal_id, delay_minutes=2)
+                        
+                        if schedule_result["status"] in ["scheduled", "immediate"]:
+                            twitter_flows_scheduled += 1
+                            new_goals.append(goal_id)
+                            logger.info(f"📅 Scheduled Twitter flow for {goal_id}")
+                        else:
+                            logger.error(f"❌ Failed to schedule Twitter flow: {schedule_result}")
+                            
+                    except Exception as e:
+                        logger.error(f"❌ Error scheduling Twitter flow for {goal_id}: {e}")
                         new_goals.append(goal_id)
-                        logger.info(f"⏰ Scheduled Twitter search in 2 minutes: {schedule_result['scheduled_time']}")
                         
-                    elif schedule_result["status"] == "immediate":
-                        twitter_flows_scheduled += 1
-                        new_goals.append(goal_id)
-                        logger.info(f"🔍 Triggered immediate Twitter search")
-                        
-                    else:
-                        logger.error(f"❌ Failed to schedule Twitter flow: {schedule_result.get('error')}")
-                        
-                else:
-                    # ✅ EXISTING GOAL: Update only, no Twitter flow
-                    updated_goals.append(goal_id)
-                    logger.info(f"🔄 UPDATED: {team_name} - {player_name} ({minute_display}') - Data refreshed, no new Twitter flow")
+            else:
+                # EXISTING goal - just update data
+                store.store_goal(fixture_id, goal_event, processing_status="discovered")
+                logger.info(f"🔄 UPDATED GOAL: {goal_id} (data refreshed)")
+                updated_goals.append(goal_id)
                 
         except Exception as e:
-            logger.error(f"❌ Failed to process goal: {e}")
+            logger.error(f"❌ Error processing goal event: {e}")
+            continue
     
-    logger.info(f"📊 GOAL PROCESSING SUMMARY:")
+    logger.info(f"✅ Goal processing complete for fixture {fixture_id}:")
     logger.info(f"   🆕 New goals: {len(new_goals)} (triggered {twitter_flows_scheduled} Twitter flows)")
-    logger.info(f"   🔄 Updated goals: {len(updated_goals)} (data refreshed only)")
-    logger.info("📥 Download flows will be triggered after video discovery")
+    logger.info(f"   🔄 Updated goals: {len(updated_goals)}")
     
     return {
         "status": "success",
@@ -97,6 +91,5 @@ def goal_flow(fixture_id: int, goal_events: Optional[List[dict]] = None):
         "twitter_flows_scheduled": twitter_flows_scheduled,
         "new_goal_ids": new_goals,
         "updated_goal_ids": updated_goals,
-        "delay_minutes": 2,
-        "pipeline": "new_goal → [2min delay] → twitter_search → download → s3"
+        "processing_method": "single_collection_unified"
     }

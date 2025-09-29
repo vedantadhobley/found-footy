@@ -77,10 +77,9 @@ def test_complete_pipeline():
     from found_footy.storage.mongo_store import FootyMongoStore
     store = FootyMongoStore()
     
-    # ✅ CRITICAL: Clean existing goals so they're detected as "new"
+    # ✅ FIX: Clean using single goals collection
     store.fixtures_active.delete_many({"_id": 1378993})
-    store.goals_pending.delete_many({"_id": {"$regex": "^1378993_"}})
-    store.goals_processed.delete_many({"_id": {"$regex": "^1378993_"}})
+    store.goals.delete_many({"_id": {"$regex": "^1378993_"}})  # Single collection
     print("✅ Cleaned existing test data")
     
     # 3. Insert baseline fixture for comparison
@@ -174,40 +173,62 @@ def test_complete_pipeline():
     
     if trigger_monitor_via_prefect_api():
         print("⏰ Waiting 45 seconds for complete processing...")
-        time.sleep(45)  # ✅ Longer wait for goal + twitter flows
+        time.sleep(45)
         
         # 7. Check results
         print("\n7️⃣ Checking complete results...")
         
         try:
-            goals_pending = list(store.goals_pending.find({"_id": {"$regex": "^1378993_"}}))
-            goals_processed = list(store.goals_processed.find({"_id": {"$regex": "^1378993_"}}))
+            # ✅ FIX: Check single goals collection with status filtering
+            goals_discovered = list(store.goals.find({
+                "_id": {"$regex": "^1378993_"},
+                "processing_status": "discovered"
+            }))
             
-            total_goals = len(goals_pending) + len(goals_processed)
+            goals_videos_found = list(store.goals.find({
+                "_id": {"$regex": "^1378993_"},
+                "processing_status": "videos_discovered"
+            }))
             
-            print(f"📊 COMPLETE RESULTS:")
-            print(f"   Goals pending: {len(goals_pending)}")
-            print(f"   Goals processed: {len(goals_processed)}")
+            goals_completed = list(store.goals.find({
+                "_id": {"$regex": "^1378993_"},
+                "processing_status": "completed"
+            }))
+            
+            total_goals = len(goals_discovered) + len(goals_videos_found) + len(goals_completed)
+            
+            print(f"📊 COMPLETE RESULTS (Single Collection):")
+            print(f"   Goals discovered: {len(goals_discovered)}")
+            print(f"   Goals with videos: {len(goals_videos_found)}")
+            print(f"   Goals completed: {len(goals_completed)}")
+            print(f"   Total goals: {total_goals}")
             
             if total_goals > 0:
                 print("🎯 SUCCESS! Goals detected and processed:")
                 
-                for goal in goals_pending:
-                    print(f"   📥 PENDING: {goal['_id']}")
-                    print(f"       Player: {goal.get('player_name', 'Unknown')}")
-                    print(f"       Videos: {len(goal.get('discovered_videos', []))}")
+                for goal in goals_discovered:
+                    player_name = goal.get('player', {}).get('name', 'Unknown')
+                    print(f"   🆕 DISCOVERED: {goal['_id']} - {player_name}")
                     
-                for goal in goals_processed:
-                    print(f"   ✅ PROCESSED: {goal['_id']}")
-                    print(f"       Player: {goal.get('player_name', 'Unknown')}")
-                    print(f"       Videos: {len(goal.get('successful_uploads', []))}")
+                for goal in goals_videos_found:
+                    player_name = goal.get('player', {}).get('name', 'Unknown')
+                    videos_count = len(goal.get('discovered_videos', []))
+                    print(f"   🐦 VIDEOS FOUND: {goal['_id']} - {player_name} ({videos_count} videos)")
+                    
+                for goal in goals_completed:
+                    player_name = goal.get('player', {}).get('name', 'Unknown')
+                    uploads_count = len(goal.get('successful_uploads', []))
+                    print(f"   ✅ COMPLETED: {goal['_id']} - {player_name} ({uploads_count} uploads)")
                 
                 # Check if Twitter flows were triggered
-                if any(goal.get('discovered_videos') for goal in goals_pending):
+                if goals_videos_found or goals_completed:
                     print("🐦 Twitter flows executed successfully!")
                     return True
+                elif goals_discovered:
+                    print("⏳ Goals stored, Twitter flows may still be processing...")
+                    return True
                 else:
-                    print("⏳ Goals stored but Twitter flows may still be processing...")
+                    print("📝 Goals detected but processing may be in progress...")
                     return True
             else:
                 # Check if fixture was updated by monitor
@@ -217,8 +238,8 @@ def test_complete_pipeline():
                     print(f"   Current fixture goals: {current_goals}")
                     
                     if current_goals.get("home", 0) > 0 or current_goals.get("away", 0) > 0:
-                        print("✅ Monitor updated fixture from API but no goals processed")
-                        print("💡 This means API returned goals but without complete player data")
+                        print("✅ Monitor updated fixture from API but no goals processed yet")
+                        print("💡 This means API returned goals but event validation may be pending")
                         return True
                     else:
                         print("⏳ No goal changes detected - API returned same 0-0 score")
@@ -230,6 +251,8 @@ def test_complete_pipeline():
                     
         except Exception as e:
             print(f"❌ Results check failed: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     else:
         print("❌ Monitor flow trigger failed")
@@ -243,9 +266,9 @@ def cleanup_test():
         from found_footy.storage.mongo_store import FootyMongoStore
         store = FootyMongoStore()
         
+        # ✅ FIX: Clean using single goals collection
         store.fixtures_active.delete_many({"_id": 1378993})
-        store.goals_pending.delete_many({"_id": {"$regex": "^1378993_"}})
-        store.goals_processed.delete_many({"_id": {"$regex": "^1378993_"}})
+        store.goals.delete_many({"_id": {"$regex": "^1378993_"}})  # Single collection
         print("✅ Test data cleaned up")
         
     except Exception as e:

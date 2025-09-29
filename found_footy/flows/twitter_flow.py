@@ -42,19 +42,24 @@ def twitter_search_task(goal_id: str) -> Dict[str, Any]:
 
     store = FootyMongoStore()
     
-    goal_doc = store.goals_pending.find_one({"_id": goal_id})
+    # ✅ Use single goals collection
+    goal_doc = store.goals.find_one({"_id": goal_id})
     if not goal_doc:
         logger.warning(f"⚠️ Goal {goal_id} not found")
         return {"status": "goal_not_found", "goal_id": goal_id}
 
-    # ✅ FIX: Use raw API structure instead of extra fields
+    # ✅ Use raw API structure instead of extra fields
     player_name = goal_doc.get("player", {}).get("name", "")
     team_name = goal_doc.get("team", {}).get("name", "")
     
     if not player_name or not team_name:
         logger.warning(f"⚠️ Missing player/team data for goal {goal_id}")
         logger.debug(f"Goal doc structure: {goal_doc}")
-        return {"status": "missing_data", "goal_id": goal_id}
+        # ✅ Still update with empty videos and continue
+        goal_doc["discovered_videos"] = []
+        # ✅ FIX LINE 72: Use single collection method
+        store.update_goal_processing_status(goal_id, "videos_discovered", discovered_videos=[])
+        return {"status": "missing_data", "goal_id": goal_id, "video_count": 0, "videos": []}
 
     # ✅ Create search query with proper data
     player_last_name = player_name.split()[-1] if " " in player_name else player_name
@@ -63,12 +68,16 @@ def twitter_search_task(goal_id: str) -> Dict[str, Any]:
     logger.info(f"🔍 Searching Twitter for: '{search_query}' (Player: {player_name}, Team: {team_name})")
 
     client = TwitterAPIClient()
-    # ✅ FIX: Increase max_results to 5
+    # Search for 5 videos (your current implementation)
     found_videos = client.search_videos(search_query, max_results=5)
 
-    # Update goal with discovered videos (empty list if none found)
-    goal_doc["discovered_videos"] = found_videos
-    store.goals_pending.replace_one({"_id": goal_id}, goal_doc, upsert=True)
+    # ✅ FIX: Use single collection status update method instead of replace_one
+    store.update_goal_processing_status(
+        goal_id, 
+        "videos_discovered",
+        discovered_videos=found_videos,
+        twitter_search_completed=True
+    )
 
     logger.info(f"✅ Twitter search complete: {len(found_videos)} videos for '{search_query}'")
     return {
