@@ -102,4 +102,17 @@ deployments:
       - download
       - s3
       - videos
-    description: "Video download and S3 storage flow"
+    description: "Video download and S3 storage flow with immediate filtering"
+
+  # 8. Filter flow  
+  - name: filter-flow
+    entrypoint: found_footy.flows.filter_flow:filter_flow
+    work_pool:
+      name: filter-pool
+    parameters:
+      goal_id: null
+    tags:
+      - filter
+      - deduplication
+      - video-processing
+    description: "Video deduplication and filtering (triggered by download flow)"

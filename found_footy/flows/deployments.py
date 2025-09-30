@@ -12,7 +12,8 @@ async def ensure_work_pools():
         "advance-pool", 
         "goal-pool", 
         "twitter-pool",
-        "download-pool"  # ✅ ADD: Missing download pool
+        "download-pool",
+        "filter-pool"  # ✅ ADD: Missing filter pool
     ]
     
     for pool_name in pools:

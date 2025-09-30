@@ -151,6 +151,48 @@ class FlowNamingService:
             return f"⚽ GOALS: Match #{fixture_id} - {goal_count} events"
 
     @staticmethod
+    def get_filter_flow_name(goal_id: Optional[str] = None) -> str:
+        """Generate contextual name for filter flow"""
+        try:
+            if goal_id:
+                # Get goal document for rich naming
+                goal_doc = store.goals.find_one({"_id": goal_id})
+                if goal_doc:
+                    # Use raw API structure
+                    player_name = goal_doc.get("player", {}).get("name", "Unknown")
+                    team_name = goal_doc.get("team", {}).get("name", "Unknown")
+                    
+                    # Extract fixture_id from goal_id
+                    fixture_id = goal_id.split('_')[0] if '_' in goal_id else "unknown"
+                    
+                    # Extract minute display from goal_id
+                    minute_display = str(goal_doc.get("time", {}).get("elapsed", 0))
+                    if '+' in goal_id:
+                        # Handle extra time: "12345_45+3" -> "45+3'"
+                        time_part = '_'.join(goal_id.split('_')[1:])  # Everything after first underscore
+                        minute_display = time_part
+                    
+                    # Get video count for context
+                    successful_uploads = goal_doc.get("successful_uploads", [])
+                    video_count = len(successful_uploads)
+                    
+                    return f"🎬 FILTER: {team_name} - {player_name} ({minute_display}') - {video_count} videos [#{fixture_id}]"
+                else:
+                    # Fallback parsing from goal_id
+                    if '_' in goal_id:
+                        parts = goal_id.split('_', 1)  # Split only on first underscore
+                        fixture_id = parts[0]
+                        minute_display = parts[1] if len(parts) > 1 else "unknown"
+                        return f"🎬 FILTER: Goal {minute_display}' [#{fixture_id}]"
+                    else:
+                        return f"🎬 FILTER: {goal_id}"
+            else:
+                return "🎬 FILTER: Video Deduplication"
+        except Exception as e:
+            print(f"❌ Error in get_filter_flow_name: {e}")
+            return f"🎬 FILTER: {goal_id or 'Unknown Goal'}"
+
+    @staticmethod
     def generate_flow_run_name(flow_name: str, parameters: Dict[str, Any]) -> str:
         """Universal flow name generator based on flow type and parameters"""
         try:
@@ -174,6 +216,14 @@ class FlowNamingService:
                 )
             elif flow_name == "twitter-flow":
                 return FlowNamingService.get_twitter_flow_name(
+                    parameters.get("goal_id")
+                )
+            elif flow_name == "download-flow":
+                return FlowNamingService.get_download_flow_name(
+                    parameters.get("goal_id")
+                )
+            elif flow_name == "filter-flow":  # ✅ ADD: Filter flow naming
+                return FlowNamingService.get_filter_flow_name(
                     parameters.get("goal_id")
                 )
             else:
@@ -254,6 +304,9 @@ def get_twitter_flow_name(goal_id=None):
 
 def get_goal_flow_name(fixture_id, goal_count=0):
     return FlowNamingService.get_goal_flow_name(fixture_id, goal_count)
+
+def get_filter_flow_name(goal_id=None):
+    return FlowNamingService.get_filter_flow_name(goal_id)
 
 def generate_flow_run_name(flow_name, parameters):
     return FlowNamingService.generate_flow_run_name(flow_name, parameters)

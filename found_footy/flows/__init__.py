@@ -7,6 +7,7 @@ from .monitor_flow import monitor_flow
 from .advance_flow import advance_flow
 from .goal_flow import goal_flow
 from .twitter_flow import twitter_flow
+from .filter_flow import filter_flow  # ✅ ADD
 
 # Shared utilities
 from .shared_tasks import (
@@ -26,6 +27,7 @@ __all__ = [
     "advance_flow", 
     "goal_flow",
     "twitter_flow",
+    "filter_flow",  # ✅ ADD
     # Tasks
     "fixtures_process_parameters_task",
     "fixtures_fetch_api_task",
