@@ -214,9 +214,10 @@ services:
       ME_CONFIG_BASICAUTH_USERNAME: founduser
       ME_CONFIG_BASICAUTH_PASSWORD: footypass
       ME_CONFIG_MONGODB_URL: mongodb://founduser:footypass@mongodb:27017/admin?authSource=admin
-      ME_CONFIG_SITE_BASEURL: /  # ✅ ADD: Fix base URL
+      ME_CONFIG_SITE_BASEURL: /  # ✅ Keep base URL fix
+      ME_CONFIG_SITE_SSL_ENABLED: "false"  # ✅ ADD: Disable SSL for Tailscale
     ports:
-      - "0.0.0.0:3000:8081"  # ✅ Already correct
+      - "0.0.0.0:3000:8081"  # ✅ Bind to all interfaces
     depends_on:
       mongodb:
         condition: service_healthy
@@ -227,15 +228,19 @@ services:
   # MinIO S3-compatible storage
   minio:
     image: minio/minio:latest
-    command: server /data --console-address ":9001" --address ":9000"
+    command: server /data --console-address ":9001" --address ":9000" --certs-dir ""  # ✅ ADD: Disable certs
     ports:
-      - "0.0.0.0:9000:9000"  # ✅ Bind to all interfaces
-      - "0.0.0.0:9001:9001"  # ✅ Bind to all interfaces
+      - "0.0.0.0:9000:9000"
+      - "0.0.0.0:9001:9001"
     environment:
       MINIO_ROOT_USER: founduser
       MINIO_ROOT_PASSWORD: footypass
-      MINIO_SERVER_URL: ${EXTERNAL_HOST:-http://localhost}:9000        # ✅ USE ENV VAR
-      MINIO_BROWSER_REDIRECT_URL: ${EXTERNAL_HOST:-http://localhost}:9001  # ✅ USE ENV VAR
+      MINIO_SERVER_URL: ${EXTERNAL_HOST:-http://localhost}:9000
+      MINIO_BROWSER_REDIRECT_URL: ${EXTERNAL_HOST:-http://localhost}:9001
+      MINIO_DOMAIN: ${EXTERNAL_HOST:-localhost}:9001
+      MINIO_SERVER_REGION: us-east-1
+      MINIO_BROWSER: "on"
+      MINIO_CI_CD: "true"                             # ✅ ADD: Disable SSL enforcement
     volumes:
       - minio_data:/data
     healthcheck:
