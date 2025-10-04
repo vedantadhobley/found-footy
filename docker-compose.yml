@@ -54,7 +54,7 @@ services:
     image: prefecthq/prefect:3-latest
     command: prefect server start --host 0.0.0.0 --port 4200
     ports:
-      - "5000:4200"
+      - "0.0.0.0:5000:4200"  # ✅ BIND to all interfaces for Tailscale
     environment:
       - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://prefect:prefect@prefect-postgres:5432/prefect
       - PREFECT_SERVER_API_HOST=0.0.0.0
@@ -207,16 +207,15 @@ services:
     environment:
       ME_CONFIG_MONGODB_ADMINUSERNAME: founduser
       ME_CONFIG_MONGODB_ADMINPASSWORD: footypass
-      ME_CONFIG_MONGODB_SERVER: mongodb  # ✅ CORRECT: This matches your service name
+      ME_CONFIG_MONGODB_SERVER: mongodb
       ME_CONFIG_MONGODB_PORT: 27017
       ME_CONFIG_MONGODB_AUTH_DATABASE: admin
       ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
       ME_CONFIG_BASICAUTH_USERNAME: founduser
       ME_CONFIG_BASICAUTH_PASSWORD: footypass
-      # ✅ ADD: Force authentication mechanism
       ME_CONFIG_MONGODB_URL: mongodb://founduser:footypass@mongodb:27017/admin?authSource=admin
     ports:
-      - "3000:8081"  # ✅ CLEAN: Standard admin UI port
+      - "0.0.0.0:3000:8081"  # ✅ BIND to all interfaces for Tailscale
     depends_on:
       mongodb:
         condition: service_healthy
@@ -227,10 +226,10 @@ services:
   # MinIO S3-compatible storage - CLEAN, NO SCRIPTS
   minio:
     image: minio/minio:latest
-    command: server /data --console-address ":9001"
+    command: server /data --console-address ":9001" --address ":9000"
     ports:
-      - "9000:9000"          # ✅ KEEP: MinIO S3 API standard
-      - "9001:9001"          # ✅ KEEP: MinIO Console standard
+      - "0.0.0.0:9000:9000"  # ✅ BIND to all interfaces for Tailscale
+      - "0.0.0.0:9001:9001"  # ✅ BIND to all interfaces for Tailscale
     environment:
       MINIO_ROOT_USER: founduser      # ✅ FIX: from found (3+ chars required)
       MINIO_ROOT_PASSWORD: footypass  # ✅ FIX: from footy (8+ chars required)
