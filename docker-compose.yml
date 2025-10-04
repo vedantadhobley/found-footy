@@ -2,10 +2,7 @@ networks:
   found-footy-network:
     driver: bridge
     name: found-footy-network
-    ipam:
-      config:
-        - subnet: 172.25.0.0/16  # ✅ Custom subnet for Tailscale routing
-          gateway: 172.25.0.1
+    # ✅ SIMPLE: No custom subnet needed
 
 services:
 
@@ -33,11 +30,11 @@ services:
     image: prefecthq/prefect:3-latest
     command: prefect server start --host 0.0.0.0 --port 4200
     ports:
-      - "0.0.0.0:5000:4200"  # ✅ CORRECT: Bind to all interfaces
+      - "0.0.0.0:5000:4200"
     environment:
       - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://prefect:prefect@prefect-postgres:5432/prefect
       - PREFECT_SERVER_API_HOST=0.0.0.0
-      - PREFECT_UI_API_URL=http://localhost:5000/api  # ✅ FIX: Change back to localhost
+      - PREFECT_UI_API_URL=${EXTERNAL_HOST:-http://localhost}:5000/api  # ✅ USE ENV VAR PROPERLY
     depends_on:
       prefect-postgres:
         condition: service_healthy
@@ -193,10 +190,8 @@ services:
       ME_CONFIG_BASICAUTH_USERNAME: founduser
       ME_CONFIG_BASICAUTH_PASSWORD: footypass
       ME_CONFIG_MONGODB_URL: mongodb://founduser:footypass@mongodb:27017/admin?authSource=admin
-      ME_CONFIG_SITE_BASEURL: /  # ✅ Keep base URL fix
-      ME_CONFIG_SITE_SSL_ENABLED: "false"  # ✅ ADD: Disable SSL for Tailscale
     ports:
-      - "0.0.0.0:3000:8081"  # ✅ Bind to all interfaces
+      - "0.0.0.0:3000:8081"
     depends_on:
       mongodb:
         condition: service_healthy
@@ -204,7 +199,7 @@ services:
     networks:
       - found-footy-network
 
-  # MinIO S3-compatible storage
+  # MinIO S3-compatible storage  
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001" --address ":9000"
@@ -214,7 +209,8 @@ services:
     environment:
       MINIO_ROOT_USER: founduser
       MINIO_ROOT_PASSWORD: footypass
-      # ✅ REMOVE: No more EXTERNAL_HOST environment variable bullshit
+      MINIO_SERVER_URL: ${EXTERNAL_HOST:-http://localhost}:9000        # ✅ ADD
+      MINIO_BROWSER_REDIRECT_URL: ${EXTERNAL_HOST:-http://localhost}:9001  # ✅ ADD
     volumes:
       - minio_data:/data
     healthcheck:
