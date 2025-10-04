@@ -20,14 +20,20 @@ do_redeploy() {
   
   echo "✅ .env file found"
   
-  # Clean any existing EXTERNAL_HOST entries
+  # Clean any existing environment entries
   sed -i '/^EXTERNAL_HOST=/d' .env
+  sed -i '/^MINIO_BROWSER_REDIRECT_URL=/d' .env
   
-  # ✅ FIX: Set EXTERNAL_HOST BEFORE starting containers
+  # ✅ FIX: Set environment variables BEFORE starting containers
   if [ "$mode" = "tailscale" ]; then
     TAILSCALE_IP=$(tailscale ip -4)
     echo "EXTERNAL_HOST=http://$TAILSCALE_IP" >> .env
+    echo "MINIO_BROWSER_REDIRECT_URL=http://$TAILSCALE_IP:9001" >> .env
     echo "📍 EXTERNAL_HOST set to: http://$TAILSCALE_IP"
+    echo "📍 MINIO_BROWSER_REDIRECT_URL set to: http://$TAILSCALE_IP:9001"
+  else
+    # Local mode - use localhost
+    echo "MINIO_BROWSER_REDIRECT_URL=http://localhost:9001" >> .env
   fi
   
   # Deploy services AFTER setting environment
@@ -52,6 +58,7 @@ do_redeploy() {
     echo "  📁 MinIO S3 API:     http://$TAILSCALE_IP:9000 (for file downloads)"
     echo ""
     echo "🔒 Only Nginx exposes ports - all services internal"
+    echo "🔧 MinIO browser URL configured for Tailscale access"
     echo "🔧 All requests routed through secure Nginx proxy"
     echo ""
   else

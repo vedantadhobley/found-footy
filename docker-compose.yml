@@ -188,7 +188,10 @@ services:
       ME_CONFIG_BASICAUTH_USERNAME: founduser
       ME_CONFIG_BASICAUTH_PASSWORD: footypass
       ME_CONFIG_MONGODB_URL: mongodb://founduser:footypass@mongodb:27017/admin?authSource=admin
+      # ✅ FIX: Force HTTP and proper base URL handling
       ME_CONFIG_MONGODB_SSL: "false"
+      ME_CONFIG_SITE_SSL_ENABLED: "false"
+      ME_CONFIG_SITE_BASEURL: "/"
       ME_CONFIG_OPTIONS_READONLY: "false"
     depends_on:
       mongodb:
@@ -205,6 +208,8 @@ services:
     environment:
       MINIO_ROOT_USER: founduser
       MINIO_ROOT_PASSWORD: footypass
+      # ✅ ADD: Dynamic browser redirect URL (set by start.sh)
+      MINIO_BROWSER_REDIRECT_URL: ${MINIO_BROWSER_REDIRECT_URL:-http://localhost:9001}
     volumes:
       - minio_data:/data
     healthcheck:
