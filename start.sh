@@ -23,7 +23,14 @@ do_redeploy() {
   # Clean any existing EXTERNAL_HOST entries
   sed -i '/^EXTERNAL_HOST=/d' .env
   
-  # Deploy services
+  # ✅ FIX: Set EXTERNAL_HOST BEFORE starting containers
+  if [ "$mode" = "tailscale" ]; then
+    TAILSCALE_IP=$(tailscale ip -4)
+    echo "EXTERNAL_HOST=http://$TAILSCALE_IP" >> .env
+    echo "📍 EXTERNAL_HOST set to: http://$TAILSCALE_IP"
+  fi
+  
+  # Deploy services AFTER setting environment
   export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1
   docker compose down --remove-orphans || true
   docker compose build
@@ -33,12 +40,6 @@ do_redeploy() {
   docker compose run --rm app python found_footy/flows/deployments.py --apply || true
   
   if [ "$mode" = "tailscale" ]; then
-    # Get Tailscale IP for configuration AND display
-    TAILSCALE_IP=$(tailscale ip -4)
-    
-    # ✅ ADD: Set EXTERNAL_HOST for Prefect API URL configuration
-    echo "EXTERNAL_HOST=http://$TAILSCALE_IP" >> .env
-    
     echo ""
     echo "🎯 ============================================"
     echo "🎯 TAILSCALE ACCESS VIA NGINX PROXY"
@@ -49,7 +50,6 @@ do_redeploy() {
     echo "  🗄️  MongoDB Express: http://$TAILSCALE_IP:3000 (founduser/footypass)"
     echo "  📦 MinIO Console:   http://$TAILSCALE_IP:9001 (founduser/footypass)"
     echo ""
-    echo "🔧 EXTERNAL_HOST set to: http://$TAILSCALE_IP"  # ✅ ADD: Show what was set
     echo "🔧 All requests routed through Nginx reverse proxy"
     echo ""
   else
