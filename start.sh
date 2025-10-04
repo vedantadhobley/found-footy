@@ -1,13 +1,3 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-echo "🚀 Found Footy"
-echo "🏗️ Architecture: $(uname -m)"
-echo "🐧 Platform: $(uname -s)"
-
-cmd="${1:-redeploy}"
-svc="${2:-}"
-
 do_redeploy() {
   local mode="$1"
   
@@ -20,30 +10,9 @@ do_redeploy() {
   
   echo "✅ .env file found"
   
-  # Handle Tailscale configuration
-  if [ "$mode" = "tailscale" ]; then
-    if ! command -v tailscale &> /dev/null; then
-      echo "❌ Tailscale not installed"
-      exit 1
-    fi
-    
-    TAILSCALE_IP=$(tailscale ip -4)
-    if [ -z "$TAILSCALE_IP" ]; then
-      echo "❌ Could not get Tailscale IP"
-      exit 1
-    fi
-    
-    echo "📍 Tailscale IP detected: $TAILSCALE_IP"
-    
-    # Set EXTERNAL_HOST in .env for service configuration
-    sed -i '/^EXTERNAL_HOST=/d' .env
-    echo "EXTERNAL_HOST=http://$TAILSCALE_IP" >> .env
-    echo "✅ EXTERNAL_HOST set to http://$TAILSCALE_IP"
-  else
-    # Local mode - remove EXTERNAL_HOST
-    sed -i '/^EXTERNAL_HOST=/d' .env
-    echo "✅ EXTERNAL_HOST removed (using localhost)"
-  fi
+  # ❌ REMOVE: No more EXTERNAL_HOST management - Nginx handles everything
+  # Clean any existing EXTERNAL_HOST entries
+  sed -i '/^EXTERNAL_HOST=/d' .env
   
   # Deploy services
   export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1
@@ -55,9 +24,12 @@ do_redeploy() {
   docker compose run --rm app python found_footy/flows/deployments.py --apply || true
   
   if [ "$mode" = "tailscale" ]; then
+    # Get Tailscale IP for user display only
+    TAILSCALE_IP=$(tailscale ip -4)
+    
     echo ""
     echo "🎯 ============================================"
-    echo "🎯 TAILSCALE ACCESS CONFIGURED"
+    echo "🎯 TAILSCALE ACCESS VIA NGINX PROXY"
     echo "🎯 ============================================"
     echo ""
     echo "✅ Access your services via Tailscale:"
@@ -65,12 +37,12 @@ do_redeploy() {
     echo "  🗄️  MongoDB Express: http://$TAILSCALE_IP:3000 (founduser/footypass)"
     echo "  📦 MinIO Console:   http://$TAILSCALE_IP:9001 (founduser/footypass)"
     echo ""
-    echo "🔧 Services configured with EXTERNAL_HOST=$TAILSCALE_IP"
+    echo "🔧 All requests routed through Nginx reverse proxy"
     echo ""
   else
     echo ""
     echo "🎯 ======================================"
-    echo "🎯 LOCAL DEVELOPMENT MODE"
+    echo "🎯 LOCAL DEVELOPMENT VIA NGINX PROXY"
     echo "🎯 ======================================"
     echo ""
     echo "✅ Access your services locally:"
@@ -84,60 +56,3 @@ do_redeploy() {
   echo "✅ Deploy complete"
   docker compose ps
 }
-
-test_integration() {
-  echo "🧪 Running Integration Test..."
-  
-  if ! docker compose ps | grep -q "Up"; then
-    echo "🔄 Starting services first..."
-    do_redeploy "local"
-    sleep 30
-  fi
-  
-  if ! docker compose ps test | grep -q "Up"; then
-    echo "🔄 Starting test container..."
-    docker compose up -d test
-    sleep 10
-  fi
-  
-  echo "🚀 Executing integration test..."
-  docker compose exec test python /app/scripts/test_integration_real.py
-}
-
-case "$cmd" in
-  redeploy|"")
-    do_redeploy "local"
-    ;;
-  tailscale)
-    do_redeploy "tailscale"
-    ;;
-  test-integration-real)
-    test_integration
-    ;;
-  logs)
-    if [ -n "${svc}" ]; then
-      docker compose logs -f "${svc}"
-    else
-      docker compose logs -f
-    fi
-    ;;
-  status|ps)
-    docker compose ps
-    ;;
-  down)
-    docker compose down --volumes
-    ;;
-  *)
-    echo "Usage: ./start.sh [command]"
-    echo ""
-    echo "Commands:"
-    echo "  redeploy              - Local development (default)"
-    echo "  tailscale             - Tailscale access with proper IP configuration"
-    echo "  test-integration-real - Run integration test"
-    echo "  logs [svc]            - Show logs"
-    echo "  status/ps             - Show status"
-    echo "  down                  - Stop everything"
-    echo ""
-    exit 1
-    ;;
-esac

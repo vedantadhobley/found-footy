@@ -29,12 +29,10 @@ services:
   prefect-server:
     image: prefecthq/prefect:3-latest
     command: prefect server start --host 0.0.0.0 --port 4200
-    ports:
-      - "0.0.0.0:5000:4200"
     environment:
       - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://prefect:prefect@prefect-postgres:5432/prefect
       - PREFECT_SERVER_API_HOST=0.0.0.0
-      - PREFECT_UI_API_URL=${EXTERNAL_HOST:-http://localhost}:5000/api  # ✅ USE ENV VAR PROPERLY
+      - PREFECT_UI_API_URL=http://localhost:5000/api  # ✅ FIX: Use localhost (Nginx handles external)
     depends_on:
       prefect-postgres:
         condition: service_healthy
@@ -46,6 +44,7 @@ services:
       start_period: 30s
     networks:
       - found-footy-network
+    # ❌ NO PORTS: Nginx handles external access
 
   # Init container - runs setup then exits
   app:
@@ -190,35 +189,34 @@ services:
       ME_CONFIG_BASICAUTH_USERNAME: founduser
       ME_CONFIG_BASICAUTH_PASSWORD: footypass
       ME_CONFIG_MONGODB_URL: mongodb://founduser:footypass@mongodb:27017/admin?authSource=admin
-      # ✅ ADD: These are needed for Tailscale access
-      ME_CONFIG_SITE_BASEURL: ${EXTERNAL_HOST:-http://localhost}:3000/
-      ME_CONFIG_SITE_COOKIESECRET: foundfooty
-      ME_CONFIG_SITE_SESSIONSECRET: foundfooty
-    ports:
-      - "0.0.0.0:3000:8081"
+      # ❌ REMOVE: All EXTERNAL_HOST references
+      # ME_CONFIG_SITE_BASEURL: ${EXTERNAL_HOST:-http://localhost}:3000/
+      # ME_CONFIG_SITE_COOKIESECRET: foundfooty
+      # ME_CONFIG_SITE_SESSIONSECRET: foundfooty
     depends_on:
       mongodb:
         condition: service_healthy
     restart: unless-stopped
     networks:
       - found-footy-network
+    # ❌ NO PORTS: Nginx handles external access
 
   # MinIO S3-compatible storage  
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001" --address ":9000"
     ports:
-      - "0.0.0.0:9000:9000"
-      - "0.0.0.0:9001:9001"
+      - "0.0.0.0:9000:9000"  # ✅ KEEP: S3 API port (not web UI)
+      # ❌ REMOVE: Web console port - Nginx handles this
     environment:
       MINIO_ROOT_USER: founduser
       MINIO_ROOT_PASSWORD: footypass
-      MINIO_SERVER_URL: ${EXTERNAL_HOST:-http://localhost}:9000
-      MINIO_BROWSER_REDIRECT_URL: ${EXTERNAL_HOST:-http://localhost}:9001
-      # ✅ ADD: Force MinIO to respect the URLs
-      MINIO_DOMAIN: ${EXTERNAL_HOST:-localhost}:9001
-      MINIO_SERVER_REGION: us-east-1
-      MINIO_CI_CD: "true"  # Disables some redirect logic
+      # ❌ REMOVE: All EXTERNAL_HOST references - Nginx handles URLs
+      # MINIO_SERVER_URL: ${EXTERNAL_HOST:-http://localhost}:9000
+      # MINIO_BROWSER_REDIRECT_URL: ${EXTERNAL_HOST:-http://localhost}:9001
+      # MINIO_DOMAIN: ${EXTERNAL_HOST:-localhost}:9001
+      # MINIO_SERVER_REGION: us-east-1
+      # MINIO_CI_CD: "true"
     volumes:
       - minio_data:/data
     healthcheck:
@@ -387,6 +385,23 @@ services:
     tmpfs:
       - /tmp/chrome_session:noexec,nosuid,size=100m
     # No dependencies - standalone
+
+  # Nginx reverse proxy for Tailscale access
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "0.0.0.0:5000:5000"  # ✅ FIX: Map actual ports
+      - "0.0.0.0:3000:3000"  # ✅ FIX: Map actual ports  
+      - "0.0.0.0:9001:9001"  # ✅ FIX: Map actual ports
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - prefect-server
+      - mongo-express  
+      - minio
+    networks:
+      - found-footy-network
+    restart: unless-stopped
 
 volumes:
   twitter_session_data:
