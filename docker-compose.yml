@@ -2,33 +2,12 @@ networks:
   found-footy-network:
     driver: bridge
     name: found-footy-network
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16  # ✅ Custom subnet for Tailscale routing
+          gateway: 172.25.0.1
 
 services:
-
-  twitter-session:
-    build: .
-    command: python /app/twitter_service_standalone.py  # ✅ CHANGE: Use completely standalone file
-    environment:
-      - TWITTER_USERNAME=${TWITTER_USERNAME}
-      - TWITTER_PASSWORD=${TWITTER_PASSWORD}
-      - TWITTER_EMAIL=${TWITTER_EMAIL}
-      - SESSION_TIMEOUT=3600
-    env_file:
-      - .env
-    ports:
-      - "8000:8888"          # 🔄 CHANGE: Clean external port
-    networks:
-      - found-footy-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    tmpfs:
-      - /tmp/chrome_session:noexec,nosuid,size=100m
-    # No dependencies - standalone
 
   # Core Prefect database only
   prefect-postgres:
@@ -54,11 +33,11 @@ services:
     image: prefecthq/prefect:3-latest
     command: prefect server start --host 0.0.0.0 --port 4200
     ports:
-      - "0.0.0.0:5000:4200"  # ✅ Bind to all interfaces
+      - "0.0.0.0:5000:4200"  # ✅ CORRECT: Bind to all interfaces
     environment:
       - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://prefect:prefect@prefect-postgres:5432/prefect
       - PREFECT_SERVER_API_HOST=0.0.0.0
-      - PREFECT_UI_API_URL=${EXTERNAL_HOST:-http://localhost}:5000/api  # ✅ USE ENV VAR
+      - PREFECT_UI_API_URL=http://localhost:5000/api  # ✅ FIX: Change back to localhost
     depends_on:
       prefect-postgres:
         condition: service_healthy
@@ -228,19 +207,14 @@ services:
   # MinIO S3-compatible storage
   minio:
     image: minio/minio:latest
-    command: server /data --console-address ":9001" --address ":9000" --certs-dir ""  # ✅ ADD: Disable certs
+    command: server /data --console-address ":9001" --address ":9000"
     ports:
       - "0.0.0.0:9000:9000"
       - "0.0.0.0:9001:9001"
     environment:
       MINIO_ROOT_USER: founduser
       MINIO_ROOT_PASSWORD: footypass
-      MINIO_SERVER_URL: ${EXTERNAL_HOST:-http://localhost}:9000
-      MINIO_BROWSER_REDIRECT_URL: ${EXTERNAL_HOST:-http://localhost}:9001
-      MINIO_DOMAIN: ${EXTERNAL_HOST:-localhost}:9001
-      MINIO_SERVER_REGION: us-east-1
-      MINIO_BROWSER: "on"
-      MINIO_CI_CD: "true"                             # ✅ ADD: Disable SSL enforcement
+      # ✅ REMOVE: No more EXTERNAL_HOST environment variable bullshit
     volumes:
       - minio_data:/data
     healthcheck:
@@ -383,6 +357,32 @@ services:
     networks:
       - found-footy-network
     restart: "no"  # ✅ KEEP: Still runs once and exits
+
+  # Twitter session - Fix port binding
+  twitter-session:
+    build: .
+    command: python /app/twitter_service_standalone.py
+    environment:
+      - TWITTER_USERNAME=${TWITTER_USERNAME}
+      - TWITTER_PASSWORD=${TWITTER_PASSWORD}
+      - TWITTER_EMAIL=${TWITTER_EMAIL}
+      - SESSION_TIMEOUT=3600
+    env_file:
+      - .env
+    ports:
+      - "0.0.0.0:8000:8888"  # ✅ FIX: Bind to all interfaces
+    networks:
+      - found-footy-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    tmpfs:
+      - /tmp/chrome_session:noexec,nosuid,size=100m
+    # No dependencies - standalone
 
 volumes:
   twitter_session_data:

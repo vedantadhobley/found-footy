@@ -25,43 +25,10 @@ do_redeploy() {
   
   echo "✅ .env file found"
   
-  # Handle Tailscale configuration if needed
-  if [ "$mode" = "tailscale" ]; then
-    # Get Tailscale IP automatically
-    if ! command -v tailscale &> /dev/null; then
-      echo "❌ Tailscale not installed or not in PATH"
-      exit 1
-    fi
-    
-    TAILSCALE_IP=$(tailscale ip -4)
-    if [ -z "$TAILSCALE_IP" ]; then
-      echo "❌ Could not get Tailscale IP. Is Tailscale running?"
-      exit 1
-    fi
-    
-    echo "📍 Tailscale IP detected: $TAILSCALE_IP"
-    
-    # Update .env with Tailscale IP
-    echo "🔧 Configuring for Tailscale access..."
-    sed -i '/^EXTERNAL_HOST=/d' .env
-    echo "EXTERNAL_HOST=http://$TAILSCALE_IP" >> .env
-    
-    # Ensure ports bind to all interfaces (one-time fix)
-    if ! grep -q "0.0.0.0:5000:4200" docker-compose.yml; then
-      echo "🔧 Updating port bindings for external access..."
-      sed -i 's|"5000:4200"|"0.0.0.0:5000:4200"|g' docker-compose.yml
-      sed -i 's|"3000:8081"|"0.0.0.0:3000:8081"|g' docker-compose.yml
-      sed -i 's|"9000:9000"|"0.0.0.0:9000:9000"|g' docker-compose.yml
-      sed -i 's|"9001:9001"|"0.0.0.0:9001:9001"|g' docker-compose.yml
-      sed -i 's|"8000:8888"|"0.0.0.0:8000:8888"|g' docker-compose.yml
-    fi
-  else
-    # Local mode - remove EXTERNAL_HOST to use localhost fallback
-    echo "🏠 Configuring for local development..."
-    sed -i '/^EXTERNAL_HOST=/d' .env
-  fi
+  # Clean any previous EXTERNAL_HOST entries (not needed for network routing)
+  sed -i '/^EXTERNAL_HOST=/d' .env
   
-  # Deploy
+  # Deploy services
   export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1
   docker compose down --remove-orphans || true
   docker compose build
@@ -71,16 +38,68 @@ do_redeploy() {
   docker compose run --rm app python found_footy/flows/deployments.py --apply || true
   
   if [ "$mode" = "tailscale" ]; then
+    # Set up Tailscale network routing after containers are up
+    echo "🔧 Setting up Tailscale network routing..."
+    
+    if ! command -v tailscale &> /dev/null; then
+      echo "❌ Tailscale not installed or not in PATH"
+      exit 1
+    fi
+    
+    # Wait for network to be fully ready
+    sleep 10
+    
+    # Get Docker network subnet
+    DOCKER_SUBNET=$(docker network inspect found-footy-network --format='{{range .IPAM.Config}}{{.Subnet}}{{end}}')
+    if [ -z "$DOCKER_SUBNET" ]; then
+      echo "❌ Could not get Docker network subnet"
+      exit 1
+    fi
+    
+    echo "📍 Docker subnet detected: $DOCKER_SUBNET"
+    
+    # Enable subnet routing in Tailscale
+    echo "🚀 Advertising Docker subnet to Tailscale..."
+    sudo tailscale up --advertise-routes=$DOCKER_SUBNET --accept-routes
+    
+    # Verify Tailscale routing is working
+    TAILSCALE_IP=$(tailscale ip -4)
+    if [ -z "$TAILSCALE_IP" ]; then
+      echo "❌ Could not get Tailscale IP"
+      exit 1
+    fi
+    
+    # Get container IPs for user info
+    echo "🔍 Getting container IP addresses..."
+    sleep 5  # Let containers fully start
+    
+    PREFECT_IP=$(docker inspect prefect-server --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || echo "pending")
+    MONGO_EXPRESS_IP=$(docker inspect mongo-express --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || echo "pending")
+    MINIO_IP=$(docker inspect minio --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || echo "pending")
+    TWITTER_IP=$(docker inspect twitter-session --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || echo "pending")
+    
     echo ""
     echo "🎯 ============================================"
-    echo "🎯 TAILSCALE ACCESS CONFIGURED SUCCESSFULLY"
+    echo "🎯 TAILSCALE NETWORK ROUTING CONFIGURED"
     echo "🎯 ============================================"
     echo ""
-    echo "✅ Access your services via Tailscale:"
+    echo "✅ Docker network exposed to Tailscale:"
+    echo "  🌐 Network: $DOCKER_SUBNET"
+    echo "  📍 Tailscale IP: $TAILSCALE_IP"
+    echo ""
+    echo "✅ Access services via Tailscale (host ports):"
     echo "  📊 Prefect UI:      http://$TAILSCALE_IP:5000"
     echo "  🗄️  MongoDB Express: http://$TAILSCALE_IP:3000 (founduser/footypass)"
     echo "  📦 MinIO Console:   http://$TAILSCALE_IP:9001 (founduser/footypass)"
     echo "  🐦 Twitter Service: http://$TAILSCALE_IP:8000/health"
+    echo ""
+    echo "✅ Direct container access (if needed):"
+    echo "  📊 Prefect UI:      http://$PREFECT_IP:4200 (internal)"
+    echo "  🗄️  MongoDB Express: http://$MONGO_EXPRESS_IP:8081 (internal)"
+    echo "  📦 MinIO Console:   http://$MINIO_IP:9001 (internal)"
+    echo "  🐦 Twitter Service: http://$TWITTER_IP:8888 (internal)"
+    echo ""
+    echo "🎯 Network routing allows full Docker network access!"
     echo ""
   else
     echo ""
@@ -149,7 +168,7 @@ case "$cmd" in
     echo ""
     echo "Commands:"
     echo "  redeploy              - Full rebuild for LOCAL development (default)"
-    echo "  tailscale             - Full rebuild with TAILSCALE configuration"
+    echo "  tailscale             - Full rebuild with TAILSCALE network routing"
     echo "  test-integration-real - Run integration test"
     echo "  logs [svc]            - Show logs for service"  
     echo "  status/ps             - Show container status"
@@ -157,7 +176,7 @@ case "$cmd" in
     echo ""
     echo "Examples:"
     echo "  ./start.sh                        # Local development"
-    echo "  ./start.sh tailscale              # Remote access via Tailscale"
+    echo "  ./start.sh tailscale              # Network routing via Tailscale"
     echo "  ./start.sh test-integration-real  # Run integration test"
     exit 1
     ;;
