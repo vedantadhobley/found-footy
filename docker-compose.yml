@@ -190,6 +190,10 @@ services:
       ME_CONFIG_BASICAUTH_USERNAME: founduser
       ME_CONFIG_BASICAUTH_PASSWORD: footypass
       ME_CONFIG_MONGODB_URL: mongodb://founduser:footypass@mongodb:27017/admin?authSource=admin
+      # ✅ ADD: These are needed for Tailscale access
+      ME_CONFIG_SITE_BASEURL: ${EXTERNAL_HOST:-http://localhost}:3000/
+      ME_CONFIG_SITE_COOKIESECRET: foundfooty
+      ME_CONFIG_SITE_SESSIONSECRET: foundfooty
     ports:
       - "0.0.0.0:3000:8081"
     depends_on:
@@ -209,8 +213,12 @@ services:
     environment:
       MINIO_ROOT_USER: founduser
       MINIO_ROOT_PASSWORD: footypass
-      MINIO_SERVER_URL: ${EXTERNAL_HOST:-http://localhost}:9000        # ✅ ADD
-      MINIO_BROWSER_REDIRECT_URL: ${EXTERNAL_HOST:-http://localhost}:9001  # ✅ ADD
+      MINIO_SERVER_URL: ${EXTERNAL_HOST:-http://localhost}:9000
+      MINIO_BROWSER_REDIRECT_URL: ${EXTERNAL_HOST:-http://localhost}:9001
+      # ✅ ADD: Force MinIO to respect the URLs
+      MINIO_DOMAIN: ${EXTERNAL_HOST:-localhost}:9001
+      MINIO_SERVER_REGION: us-east-1
+      MINIO_CI_CD: "true"  # Disables some redirect logic
     volumes:
       - minio_data:/data
     healthcheck:
