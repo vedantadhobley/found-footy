@@ -54,11 +54,11 @@ services:
     image: prefecthq/prefect:3-latest
     command: prefect server start --host 0.0.0.0 --port 4200
     ports:
-      - "0.0.0.0:5000:4200"  # ✅ BIND to all interfaces for Tailscale
+      - "0.0.0.0:5000:4200"  # ✅ Bind to all interfaces
     environment:
       - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://prefect:prefect@prefect-postgres:5432/prefect
       - PREFECT_SERVER_API_HOST=0.0.0.0
-      - PREFECT_UI_API_URL=http://localhost:5000/api  # ✅ Tell UI where API is
+      - PREFECT_UI_API_URL=${EXTERNAL_HOST:-http://localhost}:5000/api  # ✅ USE ENV VAR
     depends_on:
       prefect-postgres:
         condition: service_healthy
@@ -214,8 +214,9 @@ services:
       ME_CONFIG_BASICAUTH_USERNAME: founduser
       ME_CONFIG_BASICAUTH_PASSWORD: footypass
       ME_CONFIG_MONGODB_URL: mongodb://founduser:footypass@mongodb:27017/admin?authSource=admin
+      ME_CONFIG_SITE_BASEURL: /  # ✅ ADD: Fix base URL
     ports:
-      - "0.0.0.0:3000:8081"  # ✅ BIND to all interfaces for Tailscale
+      - "0.0.0.0:3000:8081"  # ✅ Already correct
     depends_on:
       mongodb:
         condition: service_healthy
@@ -223,16 +224,18 @@ services:
     networks:
       - found-footy-network
 
-  # MinIO S3-compatible storage - CLEAN, NO SCRIPTS
+  # MinIO S3-compatible storage
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001" --address ":9000"
     ports:
-      - "0.0.0.0:9000:9000"  # ✅ BIND to all interfaces for Tailscale
-      - "0.0.0.0:9001:9001"  # ✅ BIND to all interfaces for Tailscale
+      - "0.0.0.0:9000:9000"  # ✅ Bind to all interfaces
+      - "0.0.0.0:9001:9001"  # ✅ Bind to all interfaces
     environment:
-      MINIO_ROOT_USER: founduser      # ✅ FIX: from found (3+ chars required)
-      MINIO_ROOT_PASSWORD: footypass  # ✅ FIX: from footy (8+ chars required)
+      MINIO_ROOT_USER: founduser
+      MINIO_ROOT_PASSWORD: footypass
+      MINIO_SERVER_URL: ${EXTERNAL_HOST:-http://localhost}:9000        # ✅ USE ENV VAR
+      MINIO_BROWSER_REDIRECT_URL: ${EXTERNAL_HOST:-http://localhost}:9001  # ✅ USE ENV VAR
     volumes:
       - minio_data:/data
     healthcheck:
