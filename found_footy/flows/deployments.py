@@ -94,6 +94,7 @@ def deploy_from_yaml():
     if result.returncode == 0:
         print("✅ All deployments created from prefect.yaml!")
         print("✅ Using direct flow triggering - no automation needed")
+        print("🌐 Access Prefect UI at http://localhost:5000")  # ✅ FIX: from 4200
         return True
     else:
         print(f"❌ Failed to deploy from prefect.yaml:")
@@ -117,7 +118,7 @@ if __name__ == "__main__":
         
         if success:
             print("✅ Setup complete!")
-            print("🌐 Access Prefect UI at http://localhost:4200")
+            print("🌐 Access Prefect UI at http://localhost:5000")
         else:
             print("❌ Deployment failed")
     else:

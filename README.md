@@ -272,10 +272,11 @@ footy-videos/
 
 | Service | Purpose | URL | Credentials |
 |---------|---------|-----|-------------|
-| **Prefect UI** | Flow Management & Monitoring | http://localhost:4200 | No auth |
-| **MinIO Console** | S3 Management UI | http://localhost:9001 | footy_admin / footy_secure_pass |
-| **MinIO S3 API** | Programmatic Video Access | http://localhost:9000 | footy_admin / footy_secure_pass |
-| **MongoDB Admin** | Database Management | http://localhost:8083 | admin / admin123 |
+| **Prefect UI** | Flow Management & Monitoring | http://localhost:5000 | No auth |
+| **MinIO Console** | S3 Management UI | http://localhost:9001 | founduser / footypass |
+| **MinIO S3 API** | Programmatic Video Access | http://localhost:9000 | founduser / footypass |
+| **MongoDB Admin** | Database Management | http://localhost:3000 | founduser / footypass |
+| **Twitter Service** | Session Management | http://localhost:8000/health | No auth |
 
 ## 📊 **Data Collections**
 
@@ -383,7 +384,7 @@ print(f'Goals with videos: {len(processed)}')
 ```bash
 # Access MinIO Console
 open http://localhost:9001
-# Login: footy_admin / footy_secure_pass
+# Login: founduser / footypass
 
 # List videos via CLI
 docker-compose exec download-worker python -c "

@@ -10,7 +10,7 @@ import logging
 @pytest.fixture(scope="session", autouse=True)
 def configure_test_environment():
     os.environ.setdefault("TESTING", "true")
-    os.environ.setdefault("PREFECT_API_URL", "http://localhost:4200/api")
+    os.environ.setdefault("PREFECT_API_URL", "http://localhost:5000/api")  # ✅ FIX: from 4200
     os.environ.setdefault("PYTHONHTTPSVERIFY", "0")
     try:
         from prefect.flows import Flow

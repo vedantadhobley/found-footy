@@ -6,7 +6,8 @@ import time
 import requests
 sys.path.insert(0, '/app')
 
-os.environ['MONGODB_URL'] = 'mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin'
+# ✅ FIX: Use new credentials
+os.environ['MONGODB_URL'] = 'mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin'
 
 def trigger_monitor_via_prefect_api():
     """Use correct Prefect API endpoints"""
@@ -105,12 +106,12 @@ def test_complete_pipeline():
     import requests
     
     headers = {
-        'X-RapidAPI-Key': api_key,
+        'X-RapidAPI-Key': api_key,  # ✅ REVERT: Back to RapidAPI headers
         'X-RapidAPI-Host': 'api-football-v1.p.rapidapi.com'
     }
     
-    # Direct events API call
-    url = f"https://api-football-v1.p.rapidapi.com/v3/fixtures/events?fixture=1378993"
+    # RapidAPI events API call
+    url = f"https://api-football-v1.p.rapidapi.com/v3/fixtures/events?fixture=1378993"  # ✅ REVERT: Back to RapidAPI URL
     
     try:
         response = requests.get(url, headers=headers, timeout=10)

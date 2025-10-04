@@ -16,7 +16,7 @@ services:
     env_file:
       - .env
     ports:
-      - "8888:8888"
+      - "8000:8888"          # 🔄 CHANGE: Clean external port
     networks:
       - found-footy-network
     restart: unless-stopped
@@ -40,7 +40,7 @@ services:
     volumes:
       - prefect_postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "5432:5432"          # ✅ KEEP: Standard PostgreSQL
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U prefect -d prefect"]
       interval: 10s
@@ -52,11 +52,13 @@ services:
   # Prefect orchestration server
   prefect-server:
     image: prefecthq/prefect:3-latest
-    command: prefect server start --host 0.0.0.0
+    command: prefect server start --host 0.0.0.0 --port 4200
     ports:
-      - "4200:4200"
+      - "5000:4200"
     environment:
       - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://prefect:prefect@prefect-postgres:5432/prefect
+      - PREFECT_SERVER_API_HOST=0.0.0.0
+      - PREFECT_UI_API_URL=http://localhost:5000/api  # ✅ Tell UI where API is
     depends_on:
       prefect-postgres:
         condition: service_healthy
@@ -74,7 +76,7 @@ services:
     build: .
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ FIX
       - PYTHONPATH=/app
     depends_on:
       prefect-server:
@@ -96,10 +98,9 @@ services:
     command: prefect worker start --pool ingest-pool --type process --limit 2
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ CHANGE
       - PYTHONPATH=/app
-      # ✅ FIX: Load from .env file
-      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY}  # ✅ REVERT: Back to RapidAPI
     env_file:
       - .env
     depends_on:
@@ -119,10 +120,9 @@ services:
     command: prefect worker start --pool monitor-pool --type process --limit 1
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ CHANGE
       - PYTHONPATH=/app
-      # ✅ FIX: Load from .env file
-      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY}  # ✅ REVERT: Back to RapidAPI
     env_file:
       - .env
     depends_on:
@@ -142,10 +142,8 @@ services:
     command: prefect worker start --pool advance-pool --type process --limit 2
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ CHANGE
       - PYTHONPATH=/app
-      # ✅ FIX: Load from .env file
-      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
     env_file:
       - .env
     depends_on:
@@ -165,10 +163,8 @@ services:
     command: prefect worker start --pool goal-pool --type process --limit 3
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ CHANGE
       - PYTHONPATH=/app
-      # ✅ FIX: Load from .env file
-      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
     env_file:
       - .env
     depends_on:
@@ -186,14 +182,14 @@ services:
   mongodb:
     image: mongo:7
     environment:
-      MONGO_INITDB_ROOT_USERNAME: footy_admin
-      MONGO_INITDB_ROOT_PASSWORD: footy_secure_pass
+      MONGO_INITDB_ROOT_USERNAME: founduser    # ✅ CHANGE: from found (meets 3+ char requirement)
+      MONGO_INITDB_ROOT_PASSWORD: footypass    # ✅ CHANGE: from footy (meets 8+ char requirement)
       MONGO_INITDB_DATABASE: found_footy
     command: >
       mongod
       --setParameter logComponentVerbosity={network:{verbosity:0},storage:{verbosity:0}}
     ports:
-      - "27017:27017"
+      - "27017:27017"        # ✅ KEEP: Standard MongoDB
     volumes:
       - mongodb_data:/data/db
     healthcheck:
@@ -209,15 +205,18 @@ services:
   mongo-express:
     image: mongo-express:latest
     environment:
-      ME_CONFIG_MONGODB_ADMINUSERNAME: footy_admin
-      ME_CONFIG_MONGODB_ADMINPASSWORD: footy_secure_pass
-      ME_CONFIG_MONGODB_SERVER: mongodb
+      ME_CONFIG_MONGODB_ADMINUSERNAME: founduser
+      ME_CONFIG_MONGODB_ADMINPASSWORD: footypass
+      ME_CONFIG_MONGODB_SERVER: mongodb  # ✅ CORRECT: This matches your service name
       ME_CONFIG_MONGODB_PORT: 27017
       ME_CONFIG_MONGODB_AUTH_DATABASE: admin
-      ME_CONFIG_BASICAUTH_USERNAME: admin
-      ME_CONFIG_BASICAUTH_PASSWORD: admin123
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
+      ME_CONFIG_BASICAUTH_USERNAME: founduser
+      ME_CONFIG_BASICAUTH_PASSWORD: footypass
+      # ✅ ADD: Force authentication mechanism
+      ME_CONFIG_MONGODB_URL: mongodb://founduser:footypass@mongodb:27017/admin?authSource=admin
     ports:
-      - "8083:8081"
+      - "3000:8081"  # ✅ CLEAN: Standard admin UI port
     depends_on:
       mongodb:
         condition: service_healthy
@@ -230,11 +229,11 @@ services:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # MinIO Console
+      - "9000:9000"          # ✅ KEEP: MinIO S3 API standard
+      - "9001:9001"          # ✅ KEEP: MinIO Console standard
     environment:
-      MINIO_ROOT_USER: footy_admin
-      MINIO_ROOT_PASSWORD: footy_secure_pass
+      MINIO_ROOT_USER: founduser      # ✅ FIX: from found (3+ chars required)
+      MINIO_ROOT_PASSWORD: footypass  # ✅ FIX: from footy (8+ chars required)
     volumes:
       - minio_data:/data
     healthcheck:
@@ -257,13 +256,13 @@ services:
       "
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ CHANGE
       - PYTHONPATH=/app
       - S3_ENDPOINT_URL=http://minio:9000
-      - S3_ACCESS_KEY=footy_admin
-      - S3_SECRET_KEY=footy_secure_pass
+      - S3_ACCESS_KEY=founduser   # ✅ CHANGE: from found
+      - S3_SECRET_KEY=footypass   # ✅ CHANGE: from footy
       - S3_BUCKET_NAME=footy-videos
-      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+      # ❌ REMOVE: - API_FOOTBALL_KEY=${API_FOOTBALL_KEY}
       # ✅ ADD: Debug environment variables
       - DEBUG_MODE=1
       - PREFECT_LOGGING_LEVEL=DEBUG
@@ -295,15 +294,14 @@ services:
     command: prefect worker start --pool download-pool --type process --limit 2
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ CHANGE
       - PYTHONPATH=/app
       - S3_ENDPOINT_URL=http://minio:9000
-      - S3_ACCESS_KEY=footy_admin
-      - S3_SECRET_KEY=footy_secure_pass
+      - S3_ACCESS_KEY=founduser   # ✅ CHANGE
+      - S3_SECRET_KEY=footypass   # ✅ CHANGE
       - S3_BUCKET_NAME=footy-videos
       - SSL_CERT_DIR=/etc/ssl/certs
-      # ✅ FIX: Load from .env file
-      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+      # ❌ REMOVE: - API_FOOTBALL_KEY=${API_FOOTBALL_KEY}
     env_file:
       - .env
     depends_on:
@@ -325,15 +323,14 @@ services:
     command: prefect worker start --pool filter-pool --type process --limit 2
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://footy_admin:footy_secure_pass@mongodb:27017/found_footy?authSource=admin
+      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ CHANGE
       - PYTHONPATH=/app
       - S3_ENDPOINT_URL=http://minio:9000
-      - S3_ACCESS_KEY=footy_admin
-      - S3_SECRET_KEY=footy_secure_pass
+      - S3_ACCESS_KEY=founduser   # ✅ CHANGE
+      - S3_SECRET_KEY=footypass   # ✅ CHANGE
       - S3_BUCKET_NAME=footy-videos
       - SSL_CERT_DIR=/etc/ssl/certs
-      # ✅ FIX: Load from .env file
-      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+      # ❌ REMOVE: - API_FOOTBALL_KEY=${API_FOOTBALL_KEY}
     env_file:
       - .env
     depends_on:
@@ -361,8 +358,7 @@ services:
     build: .
     environment:
       - PYTHONPATH=/app
-      # ✅ FIX: Load from .env file
-      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY}  # ✅ REVERT: Back to RapidAPI for testing
     env_file:
       - .env
     depends_on:

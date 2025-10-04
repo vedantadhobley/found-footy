@@ -2,6 +2,7 @@
 from prefect import flow, task, get_run_logger
 from prefect.deployments import run_deployment
 from typing import List
+from datetime import datetime, timezone  # ✅ ADD: Missing imports
 
 from found_footy.flows.shared_tasks import fixtures_delta_task, store
 from found_footy.api.mongo_api import fixtures_events
@@ -133,57 +134,80 @@ def fixtures_monitor_task():
             logger.error(f"❌ Error fetching events for fixture {fixture_id}: {e}")
             continue
     
-    # Process completions - enhanced validation
+    # Process completions - ✅ FIXED validation using fresh API data
     for completed_fixture in delta_results["fixtures_completed"]:
         fixture_id = completed_fixture["fixture_id"] 
         delta_result = completed_fixture["delta_result"]
         
-        # ✅ CRITICAL CHECK: Don't complete if goals are incomplete
-        if fixture_id in fixtures_with_incomplete_goals:
-            incomplete_info = fixtures_with_incomplete_goals[fixture_id]
-            logger.warning(f"⚠️ COMPLETION SKIPPED: Fixture {fixture_id} has incomplete goals")
-            logger.info(f"📊 Incomplete details: {incomplete_info}")
-            continue
-        
-        # ✅ FIX: Updated validation for single collection
         current_goals = delta_result.get("current_goals", {})
         expected_total = current_goals.get("home", 0) + current_goals.get("away", 0)
         
         if expected_total > 0:
-            # ✅ Use single collection validation method
-            validation = store.validate_goal_count(fixture_id, expected_total)
-            if not validation["is_valid"]:
-                logger.warning(f"⚠️ COMPLETION SKIPPED: Fixture {fixture_id} has {validation['stored_count']} completed goals but fixture shows {validation['expected_count']}")
+            try:
+                # ✅ FIX: Get FRESH API events for validation
+                logger.info(f"🔍 Validating completion for fixture {fixture_id}: expected {expected_total} goals")
+                
+                # ENHANCEMENT: Add error handling for API failures
+                try:
+                    fresh_events = fixtures_events(fixture_id)  # Fresh API call
+                except Exception as api_error:
+                    logger.error(f"❌ API call failed for fixture {fixture_id}: {api_error}")
+                    logger.info(f"🔄 Will retry in next monitoring cycle")
+                    continue  # Skip this fixture, don't fail entire monitor task
+                
+                fresh_goal_events = [e for e in fresh_events if e.get("type") == "Goal" and e.get("detail") != "Missed Penalty"]
+                fresh_api_count = len(fresh_goal_events)
+                
+                logger.info(f"📊 VALIDATION DATA:")
+                logger.info(f"   Fixture shows: {expected_total} goals")
+                logger.info(f"   Fresh API events: {fresh_api_count} goal events")
+                
+                # ✅ CORRECT: Compare fixture goals vs fresh API events (not stored goals)
+                if fresh_api_count != expected_total:
+                    logger.warning(f"⚠️ COMPLETION SKIPPED: Fixture {fixture_id} shows {expected_total} goals but API events show {fresh_api_count}")
+                    logger.info(f"💡 This suggests API data inconsistency - will retry in next cycle")
+                    continue
+                
+                # ✅ ADDITIONAL: Check if events have complete data
+                complete_events = [e for e in fresh_goal_events if e.get("player", {}).get("name")]
+                incomplete_events = len(fresh_goal_events) - len(complete_events)
+                
+                if incomplete_events > 0:
+                    logger.warning(f"⚠️ COMPLETION SKIPPED: {incomplete_events}/{fresh_api_count} events missing player data")
+                    continue
+                
+                logger.info(f"✅ VALIDATION PASSED: {fresh_api_count} goals match {expected_total} expected, all have complete data")
+                
+            except Exception as api_error:
+                logger.error(f"❌ API validation failed for fixture {fixture_id}: {api_error}")
+                logger.info(f"🔄 Will retry completion in next cycle")
                 continue
         
-        # ✅ SAFE TO COMPLETE: All goals are validated and complete
+        # ✅ PROCEED: Complete the fixture
         try:
-            # Get fixture context for completion flow naming
-            fixture = store.fixtures_active.find_one({"_id": fixture_id})
-            if fixture:
-                home_team, away_team = store._extract_team_names(fixture)
-                final_goals = delta_result.get("current_goals", {})
-                home_score = final_goals.get("home", 0)
-                away_score = final_goals.get("away", 0)
-                completion_flow_name = f"🏁 COMPLETED: {home_team} {home_score}-{away_score} {away_team} (FT) [#{fixture_id}]"
+            logger.info(f"🏁 COMPLETING FIXTURE: {fixture_id}")
+            
+            # Move from active to completed
+            fixture_doc = store.fixtures_active.find_one({"_id": fixture_id})
+            if fixture_doc:
+                # Update with final API data
+                fixture_doc.update(delta_result.get("api_data", {}))
+                fixture_doc["completed_at"] = datetime.now(timezone.utc)
+                
+                # Store in completed collection
+                store.fixtures_completed.insert_one(fixture_doc)
+                
+                # Remove from active collection
+                store.fixtures_active.delete_one({"_id": fixture_id})
+                
+                completed_fixtures_count += 1
+                logger.info(f"✅ Fixture {fixture_id} moved to completed collection")
             else:
-                completion_flow_name = f"🏁 COMPLETED: Match #{fixture_id} (FT)"
-            
-            run_deployment(
-                name="advance-flow/advance-flow",
-                parameters={
-                    "source_collection": "fixtures_active",
-                    "destination_collection": "fixtures_completed",
-                    "fixture_id": fixture_id
-                },
-                flow_run_name=completion_flow_name
-            )
-            
-            completed_fixtures_count += 1
-            logger.info(f"✅ Triggered completion flow: {completion_flow_name}")
-            
+                logger.error(f"❌ Fixture {fixture_id} not found in active collection")
+                
         except Exception as e:
             logger.error(f"❌ Error completing fixture {fixture_id}: {e}")
+            continue
     
     return {
         "status": "success",

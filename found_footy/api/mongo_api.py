@@ -1,26 +1,27 @@
-# ✅ FIXED: found_footy/api/mongo_api.py - Secure credentials from environment
+# ✅ REVERT: Back to RapidAPI for batch support
 import requests
 from datetime import date
 import json
 import os
 from prefect import task, get_run_logger
 
+# ✅ REVERT: Back to RapidAPI endpoint
 BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
 
-# ✅ FIX: Load from environment variable - no fallback that exposes credentials
+# ✅ REVERT: Back to RapidAPI headers
 def get_api_headers():
-    """Get API headers with secure credential handling"""
-    rapidapi_key = os.getenv("RAPIDAPI_KEY")
+    """Get API headers for RapidAPI access"""
+    api_key = os.getenv("RAPIDAPI_KEY")
     
-    if not rapidapi_key:
+    if not api_key:
         raise ValueError(
             "RAPIDAPI_KEY environment variable not set. "
             "Please add your RapidAPI key to the .env file: RAPIDAPI_KEY=your_key_here"
         )
     
     return {
-        "x-rapidapi-key": rapidapi_key,
-        "x-rapidapi-host": "api-football-v1.p.rapidapi.com",
+        "X-RapidAPI-Key": api_key,
+        "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
     }
 
 def _coerce_date_param(date_param):
@@ -39,7 +40,7 @@ def fixtures(date_param=None):
     """
     date_str = _coerce_date_param(date_param)
     url = f"{BASE_URL}/fixtures"
-    headers = get_api_headers()  # ✅ FIX: Use secure headers function
+    headers = get_api_headers()
     resp = requests.get(url, headers=headers, params={"date": date_str})
     resp.raise_for_status()
     items = resp.json().get("response", [])
@@ -68,66 +69,46 @@ def fixtures_batch(fixture_ids_list):
         return []
     ids_str = "-".join(map(str, fixture_ids_list))
     url = f"{BASE_URL}/fixtures"
-    headers = get_api_headers()  # ✅ FIX: Use secure headers function
+    headers = get_api_headers()
     resp = requests.get(url, headers=headers, params={"ids": ids_str})
     resp.raise_for_status()
     return resp.json().get("response", [])  # raw items
 
 def filter_fixtures_by_teams(fixtures_list, team_ids):
-    """
-    Filter on raw schema: item['teams']['home']['id'], item['teams']['away']['id']
-    Accepts mixed inputs (raw or legacy flattened) without mutating items.
-    """
+    """Filter fixtures that include any of the specified team IDs"""
+    if not fixtures_list or not team_ids:
+        return []
+    
+    team_ids_set = set(map(int, team_ids))
     filtered = []
-    ts = set(map(int, team_ids or []))
-    for item in fixtures_list or []:
-        try:
-            # raw schema
-            hid = int(item["teams"]["home"]["id"])
-            aid = int(item["teams"]["away"]["id"])
-        except Exception:
-            # legacy flattened fallback
-            hid = int(item.get("home_id", -1))
-            aid = int(item.get("away_id", -1))
-        if hid in ts or aid in ts:
-            filtered.append(item)
+    for fixture in fixtures_list:
+        home_id = fixture.get("teams", {}).get("home", {}).get("id")
+        away_id = fixture.get("teams", {}).get("away", {}).get("id")
+        if home_id in team_ids_set or away_id in team_ids_set:
+            filtered.append(fixture)
     return filtered
 
 def parse_team_ids_parameter(team_ids_param):
     """Parse team IDs from parameter - ensure it always returns a list"""
-    if team_ids_param is None or team_ids_param == "":
+    if team_ids_param is None:
         return []
     
     if isinstance(team_ids_param, str):
         if team_ids_param.strip() == "":
             return []
         try:
-            # Try JSON parsing first
-            team_ids = json.loads(team_ids_param)
-            if isinstance(team_ids, int):
-                return [team_ids]  # Single integer in JSON
-            elif isinstance(team_ids, list):
-                return [int(x) for x in team_ids]  # List in JSON
-            else:
-                return []
-        except json.JSONDecodeError:
-            # Fall back to comma-separated parsing
-            try:
-                team_ids = [int(x.strip()) for x in team_ids_param.split(",") if x.strip()]
-                return team_ids
-            except ValueError:
-                print(f"⚠️ Could not parse team_ids: {team_ids_param}")
-                return []
+            # Try to parse as comma-separated values
+            return [int(x.strip()) for x in team_ids_param.split(',') if x.strip()]
+        except ValueError:
+            return []
     
-    elif isinstance(team_ids_param, (list, tuple)):
-        return [int(x) for x in team_ids_param]
+    if isinstance(team_ids_param, (list, tuple)):
+        return [int(x) for x in team_ids_param if str(x).strip()]
     
-    elif isinstance(team_ids_param, int):
+    if isinstance(team_ids_param, int):
         return [team_ids_param]
     
-    else:
-        print(f"⚠️ Unexpected team_ids type: {type(team_ids_param)}")
-        return []
+    return []
 
 def test_events_api_debug():
     """Debug the events API call specifically"""
@@ -136,17 +117,15 @@ def test_events_api_debug():
     
     import requests
     
-    # 1. Test direct API call
-    headers = {
-        'X-RapidAPI-Key': os.getenv('RAPIDAPI_KEY', ''),
-        'X-RapidAPI-Host': 'api-football-v1.p.rapidapi.com'
-    }
+    # ✅ FIX: Use RapidAPI headers consistently
+    headers = get_api_headers()
     
     # Test events endpoint directly
     fixture_id = 1378993
-    url = f"https://api-football-v1.p.rapidapi.com/v3/fixtures/events?fixture={fixture_id}"
+    url = f"{BASE_URL}/fixtures/events?fixture={fixture_id}"
     
-    print(f"🌐 Direct API call: {url}")
+    print(f"🌐 RapidAPI call: {url}")
+    print(f"🔑 Headers: X-RapidAPI-Key: {headers['X-RapidAPI-Key'][:10]}...{headers['X-RapidAPI-Key'][-4:]}")  # ✅ FIX: Correct header key
     
     try:
         response = requests.get(url, headers=headers, timeout=10)
@@ -158,39 +137,33 @@ def test_events_api_debug():
             
             if 'response' in data:
                 events = data['response']
-                print(f"   Events array length: {len(events)}")
+                print(f"   Events found: {len(events)}")
                 
-                for i, event in enumerate(events[:5]):  # Show first 5
-                    event_type = event.get('type', 'NO_TYPE')
-                    player_name = event.get('player', {}).get('name', 'NO_NAME')
-                    minute = event.get('time', {}).get('elapsed', 'NO_TIME')
-                    team_name = event.get('team', {}).get('name', 'NO_TEAM')
-                    
-                    print(f"      Event {i+1}: {event_type} - {player_name} ({team_name}) - {minute}'")
+                goal_events = [e for e in events if e.get('type') == 'Goal']
+                print(f"   Goal events: {len(goal_events)}")
+                
+                for event in goal_events:
+                    player = event.get('player', {}).get('name', 'Unknown')
+                    team = event.get('team', {}).get('name', 'Unknown')
+                    minute = event.get('time', {}).get('elapsed', '?')
+                    print(f"     🥅 {player} ({team}) - {minute}'")
             else:
-                print(f"   No 'response' key in data: {data}")
+                print("   No 'response' key in data")
         else:
-            print(f"   Error: {response.text}")
+            print(f"   ❌ API Error: {response.status_code}")
+            print(f"   Response: {response.text[:200]}")
             
     except Exception as e:
-        print(f"   ❌ Direct API call failed: {e}")
+        print(f"   ❌ RapidAPI call failed: {e}")
     
-    # 2. Test your fixtures_events function
-    print(f"\n🔧 Testing fixtures_events function...")
-    
+    print("\n2️⃣ Testing fixtures_events function...")
     try:
-        from found_footy.api.mongo_api import fixtures_events
-        
-        events_data = fixtures_events([fixture_id])
+        events_data = fixtures_events(fixture_id)
         print(f"   Function returned: {len(events_data)} items")
         
         if events_data:
-            for item in events_data:
-                print(f"   Item keys: {list(item.keys())}")
-                if 'events' in item:
-                    print(f"   Events in item: {len(item['events'])}")
-                else:
-                    print(f"   No 'events' key in item")
+            goal_events = [e for e in events_data if e.get('type') == 'Goal']
+            print(f"   Goal events from function: {len(goal_events)}")
         else:
             print("   Empty response from function")
             

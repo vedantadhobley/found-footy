@@ -14,8 +14,8 @@ class FootyS3Store:
     
     def __init__(self):
         self.endpoint_url = os.getenv('S3_ENDPOINT_URL', 'http://localhost:9000')
-        self.access_key = os.getenv('S3_ACCESS_KEY', 'footy_admin')
-        self.secret_key = os.getenv('S3_SECRET_KEY', 'footy_secure_pass')
+        self.access_key = os.getenv('S3_ACCESS_KEY', 'founduser')      # ✅ FIX
+        self.secret_key = os.getenv('S3_SECRET_KEY', 'footypass')      # ✅ FIX
         self.bucket_name = os.getenv('S3_BUCKET_NAME', 'footy-videos')
         
         # Initialize S3 client
