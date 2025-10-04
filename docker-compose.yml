@@ -189,9 +189,12 @@ services:
       ME_CONFIG_BASICAUTH_USERNAME: founduser
       ME_CONFIG_BASICAUTH_PASSWORD: footypass
       ME_CONFIG_MONGODB_URL: mongodb://founduser:footypass@mongodb:27017/admin?authSource=admin
-      # ✅ SIMPLE: Just disable SSL completely
+      # ✅ NUCLEAR: Disable ALL SSL/HTTPS functionality
       ME_CONFIG_MONGODB_SSL: "false"
       ME_CONFIG_SITE_SSL_ENABLED: "false"
+      ME_CONFIG_SITE_SSL_CRT_PATH: ""
+      ME_CONFIG_SITE_SSL_KEY_PATH: ""
+      ME_CONFIG_OPTIONS_READONLY: "false"
     depends_on:
       mongodb:
         condition: service_healthy
@@ -208,8 +211,12 @@ services:
     environment:
       MINIO_ROOT_USER: founduser
       MINIO_ROOT_PASSWORD: footypass
-      # ✅ SIMPLE: Just the basics
+      # ✅ NUCLEAR: Disable ALL redirect and SSL functionality  
       MINIO_CI_CD: "true"
+      MINIO_BROWSER_REDIRECT: "off"
+      MINIO_DOMAIN: ""
+      MINIO_SERVER_URL: ""
+      MINIO_BROWSER_REDIRECT_URL: ""
     volumes:
       - minio_data:/data
     healthcheck:
