@@ -32,7 +32,7 @@ services:
     environment:
       - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://prefect:prefect@prefect-postgres:5432/prefect
       - PREFECT_SERVER_API_HOST=0.0.0.0
-      - PREFECT_UI_API_URL=http://localhost:5000/api  # ✅ FIX: Use localhost (Nginx handles external)
+      - PREFECT_UI_API_URL=${EXTERNAL_HOST:-http://localhost}:5000/api  # ✅ FIX: Use port 5000
     depends_on:
       prefect-postgres:
         condition: service_healthy
@@ -390,9 +390,9 @@ services:
   nginx:
     image: nginx:alpine
     ports:
-      - "0.0.0.0:5000:5000"  # ✅ FIX: Map actual ports
-      - "0.0.0.0:3000:3000"  # ✅ FIX: Map actual ports  
-      - "0.0.0.0:9001:9001"  # ✅ FIX: Map actual ports
+      - "0.0.0.0:5000:5000" # ✅ FIX: Use port 5000 (not 80)
+      - "0.0.0.0:3000:3000" # ✅ MongoDB Express
+      - "0.0.0.0:9001:9001" # ✅ MinIO Console
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:

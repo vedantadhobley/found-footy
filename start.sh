@@ -33,8 +33,11 @@ do_redeploy() {
   docker compose run --rm app python found_footy/flows/deployments.py --apply || true
   
   if [ "$mode" = "tailscale" ]; then
-    # Get Tailscale IP for user display only
+    # Get Tailscale IP for configuration AND display
     TAILSCALE_IP=$(tailscale ip -4)
+    
+    # ✅ ADD: Set EXTERNAL_HOST for Prefect API URL configuration
+    echo "EXTERNAL_HOST=http://$TAILSCALE_IP" >> .env
     
     echo ""
     echo "🎯 ============================================"
@@ -46,6 +49,7 @@ do_redeploy() {
     echo "  🗄️  MongoDB Express: http://$TAILSCALE_IP:3000 (founduser/footypass)"
     echo "  📦 MinIO Console:   http://$TAILSCALE_IP:9001 (founduser/footypass)"
     echo ""
+    echo "🔧 EXTERNAL_HOST set to: http://$TAILSCALE_IP"  # ✅ ADD: Show what was set
     echo "🔧 All requests routed through Nginx reverse proxy"
     echo ""
   else
