@@ -10,7 +10,8 @@ services:
   prefect-server:
     image: prefecthq/prefect:3-latest
     command: prefect server start --host 0.0.0.0 --port 4200
-    # ❌ REMOVE: Direct port exposure - Nginx handles this
+    ports:
+      - "0.0.0.0:5000:4200"  # ✅ KEEP: Direct access
     environment:
       - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://prefect:prefect@prefect-postgres:5432/prefect
       - PREFECT_SERVER_API_HOST=0.0.0.0
@@ -174,10 +175,11 @@ services:
     networks:
       - found-footy-network
 
-  # MongoDB admin interface only - internal access only
+  # MongoDB admin interface
   mongo-express:
     image: mongo-express:latest
-    # ❌ REMOVE: Direct port exposure - Nginx handles this
+    ports:
+      - "0.0.0.0:3000:8081"  # ✅ KEEP: Direct access
     environment:
       ME_CONFIG_MONGODB_ADMINUSERNAME: founduser
       ME_CONFIG_MONGODB_ADMINPASSWORD: footypass
@@ -188,11 +190,7 @@ services:
       ME_CONFIG_BASICAUTH_USERNAME: founduser
       ME_CONFIG_BASICAUTH_PASSWORD: footypass
       ME_CONFIG_MONGODB_URL: mongodb://founduser:footypass@mongodb:27017/admin?authSource=admin
-      # ✅ FIX: Force HTTP and proper base URL handling
       ME_CONFIG_MONGODB_SSL: "false"
-      ME_CONFIG_SITE_SSL_ENABLED: "false"
-      ME_CONFIG_SITE_BASEURL: "/"
-      ME_CONFIG_OPTIONS_READONLY: "false"
     depends_on:
       mongodb:
         condition: service_healthy
@@ -200,16 +198,17 @@ services:
     networks:
       - found-footy-network
 
-  # MinIO S3-compatible storage - internal access only
+  # MinIO S3-compatible storage
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001" --address ":9000"
-    # ❌ REMOVE: All direct port exposures - Nginx handles both API and Console
+    ports:
+      - "0.0.0.0:9000:9000"  # ✅ KEEP: S3 API
+      - "0.0.0.0:9001:9001"  # ✅ KEEP: Console
     environment:
       MINIO_ROOT_USER: founduser
       MINIO_ROOT_PASSWORD: footypass
-      # ✅ ADD: Dynamic browser redirect URL (set by start.sh)
-      MINIO_BROWSER_REDIRECT_URL: ${MINIO_BROWSER_REDIRECT_URL:-http://localhost:9001}
+      # ✅ CLEAN: No redirect URLs - use defaults
     volumes:
       - minio_data:/data
     healthcheck:
@@ -353,10 +352,12 @@ services:
       - found-footy-network
     restart: "no"  # ✅ KEEP: Still runs once and exits
 
-  # Twitter session - Fix port binding
+  # Twitter session
   twitter-session:
     build: .
     command: python /app/twitter_service_standalone.py
+    ports:
+      - "0.0.0.0:8000:8888"  # ✅ KEEP: Direct access
     environment:
       - TWITTER_USERNAME=${TWITTER_USERNAME}
       - TWITTER_PASSWORD=${TWITTER_PASSWORD}
@@ -364,8 +365,6 @@ services:
       - SESSION_TIMEOUT=3600
     env_file:
       - .env
-    ports:
-      - "0.0.0.0:8000:8888"  # ✅ FIX: Bind to all interfaces
     networks:
       - found-footy-network
     restart: unless-stopped
@@ -377,25 +376,6 @@ services:
       start_period: 40s
     tmpfs:
       - /tmp/chrome_session:noexec,nosuid,size=100m
-    # No dependencies - standalone
-
-  # Nginx reverse proxy - ONLY service with exposed ports
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "0.0.0.0:5000:5000"  # Prefect UI
-      - "0.0.0.0:3000:3000"  # MongoDB Express
-      - "0.0.0.0:9001:9001"  # MinIO Console
-      - "0.0.0.0:9000:9000"  # ✅ ADD: MinIO S3 API for file downloads
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - prefect-server
-      - mongo-express  
-      - minio
-    networks:
-      - found-footy-network
-    restart: unless-stopped
 
 volumes:
   twitter_session_data:

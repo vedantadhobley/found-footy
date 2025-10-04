@@ -9,9 +9,7 @@ cmd="${1:-redeploy}"
 svc="${2:-}"
 
 do_redeploy() {
-  local mode="$1"
-  
-  echo "🔄 Redeploying ($mode mode)..."
+  echo "🔄 Redeploying..."
   
   if [ ! -f .env ]; then
     echo "⚠️ .env file not found!"
@@ -20,23 +18,16 @@ do_redeploy() {
   
   echo "✅ .env file found"
   
-  # Clean any existing environment entries
+  # ✅ SIMPLE: Always use localhost
   sed -i '/^EXTERNAL_HOST=/d' .env
   sed -i '/^MINIO_BROWSER_REDIRECT_URL=/d' .env
+  sed -i '/^MINIO_SERVER_URL=/d' .env
+  sed -i '/^ME_CONFIG_SITE_BASEURL=/d' .env
   
-  # ✅ FIX: Set environment variables BEFORE starting containers
-  if [ "$mode" = "tailscale" ]; then
-    TAILSCALE_IP=$(tailscale ip -4)
-    echo "EXTERNAL_HOST=http://$TAILSCALE_IP" >> .env
-    echo "MINIO_BROWSER_REDIRECT_URL=http://$TAILSCALE_IP:9001" >> .env
-    echo "📍 EXTERNAL_HOST set to: http://$TAILSCALE_IP"
-    echo "📍 MINIO_BROWSER_REDIRECT_URL set to: http://$TAILSCALE_IP:9001"
-  else
-    # Local mode - use localhost
-    echo "MINIO_BROWSER_REDIRECT_URL=http://localhost:9001" >> .env
-  fi
+  echo "EXTERNAL_HOST=http://localhost" >> .env
+  echo "📍 EXTERNAL_HOST set to: http://localhost"
   
-  # Deploy services AFTER setting environment
+  # ✅ SIMPLE: Deploy without complexity
   export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1
   docker compose down --remove-orphans || true
   docker compose build
@@ -45,32 +36,23 @@ do_redeploy() {
   echo "📦 Applying Prefect deployments..."
   docker compose run --rm app python found_footy/flows/deployments.py --apply || true
   
-  if [ "$mode" = "tailscale" ]; then
-    echo ""
-    echo "🎯 ============================================"
-    echo "🎯 TAILSCALE ACCESS VIA NGINX PROXY ONLY"
-    echo "🎯 ============================================"
-    echo ""
-    echo "✅ Access your services via Tailscale:"
-    echo "  📊 Prefect UI:       http://$TAILSCALE_IP:5000"
-    echo "  🗄️  MongoDB Express:  http://$TAILSCALE_IP:3000 (founduser/footypass)"
-    echo "  📦 MinIO Console:    http://$TAILSCALE_IP:9001 (founduser/footypass)"
-    echo "  📁 MinIO S3 API:     http://$TAILSCALE_IP:9000 (for file downloads)"
-    echo ""
-    echo "🔒 Only Nginx exposes ports - all services internal"
-    echo "🔧 MinIO browser URL configured for Tailscale access"
-    echo "🔧 All requests routed through secure Nginx proxy"
-    echo ""
-  else
-    echo "✅ Access your services locally:"
-    echo "  📊 Prefect UI:       http://localhost:5000"
-    echo "  🗄️  MongoDB Express:  http://localhost:3000 (founduser/footypass)"
-    echo "  📦 MinIO Console:    http://localhost:9001 (founduser/footypass)"
-    echo "  📁 MinIO S3 API:     http://localhost:9000 (for file downloads)"
-    echo "  🐦 Twitter Service:  http://localhost:8000/health"
-    echo ""
-    echo "🔒 Only Nginx exposes ports - all services internal"
-  fi
+  echo ""
+  echo "🎯 ============================================"
+  echo "🎯 LOCAL ACCESS - ALL SERVICES"
+  echo "🎯 ============================================"
+  echo ""
+  echo "✅ Access your services locally:"
+  echo "  📊 Prefect UI:       http://localhost:5000"
+  echo "  🗄️  MongoDB Express:  http://localhost:3000 (founduser/footypass)"
+  echo "  📦 MinIO Console:    http://localhost:9001 (founduser/footypass)"
+  echo "  📁 MinIO S3 API:     http://localhost:9000"
+  echo "  🐦 Twitter Service:  http://localhost:8000/health"
+  echo ""
+  echo "📱 For remote access, consider:"
+  echo "  • SSH port forwarding"
+  echo "  • VPN setup"
+  echo "  • Cloud deployment"
+  echo ""
   
   echo "✅ Deploy complete"
   docker compose ps
@@ -81,7 +63,7 @@ test_integration() {
   
   if ! docker compose ps | grep -q "Up"; then
     echo "🔄 Starting services first..."
-    do_redeploy "local"
+    do_redeploy
     sleep 30
   fi
   
@@ -95,14 +77,11 @@ test_integration() {
   docker compose exec test python /app/scripts/test_integration_real.py
 }
 
-# ✅ ADD: Missing main execution logic
 case "$cmd" in
   redeploy|"")
-    do_redeploy "local"
+    do_redeploy
     ;;
-  tailscale)
-    do_redeploy "tailscale"
-    ;;
+  # ❌ REMOVE: tailscale option completely
   test-integration-real)
     test_integration
     ;;
@@ -124,7 +103,6 @@ case "$cmd" in
     echo ""
     echo "Commands:"
     echo "  redeploy              - Local development (default)"
-    echo "  tailscale             - Tailscale access via Nginx proxy"
     echo "  test-integration-real - Run integration test"
     echo "  logs [svc]            - Show logs"
     echo "  status/ps             - Show status"
