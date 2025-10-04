@@ -189,10 +189,9 @@ services:
       ME_CONFIG_BASICAUTH_USERNAME: founduser
       ME_CONFIG_BASICAUTH_PASSWORD: footypass
       ME_CONFIG_MONGODB_URL: mongodb://founduser:footypass@mongodb:27017/admin?authSource=admin
-      # ❌ REMOVE: All EXTERNAL_HOST references
-      # ME_CONFIG_SITE_BASEURL: ${EXTERNAL_HOST:-http://localhost}:3000/
-      # ME_CONFIG_SITE_COOKIESECRET: foundfooty
-      # ME_CONFIG_SITE_SESSIONSECRET: foundfooty
+      # ✅ ADD: Disable SSL for MongoDB Express
+      ME_CONFIG_OPTIONS_EDITORTHEME: ambiance
+      ME_CONFIG_MONGODB_SSL: "false"
     depends_on:
       mongodb:
         condition: service_healthy
@@ -206,17 +205,13 @@ services:
     image: minio/minio:latest
     command: server /data --console-address ":9001" --address ":9000"
     ports:
-      - "0.0.0.0:9000:9000"  # ✅ KEEP: S3 API port (not web UI)
-      # ❌ REMOVE: Web console port - Nginx handles this
+      - "0.0.0.0:9000:9000"  # ✅ KEEP: S3 API port
     environment:
       MINIO_ROOT_USER: founduser
       MINIO_ROOT_PASSWORD: footypass
-      # ❌ REMOVE: All EXTERNAL_HOST references - Nginx handles URLs
-      # MINIO_SERVER_URL: ${EXTERNAL_HOST:-http://localhost}:9000
-      # MINIO_BROWSER_REDIRECT_URL: ${EXTERNAL_HOST:-http://localhost}:9001
-      # MINIO_DOMAIN: ${EXTERNAL_HOST:-localhost}:9001
-      # MINIO_SERVER_REGION: us-east-1
-      # MINIO_CI_CD: "true"
+      # ✅ ADD: Disable SSL/TLS for MinIO console
+      MINIO_BROWSER_REDIRECT_URL: http://localhost:9001
+      MINIO_SERVER_URL: http://localhost:9000
     volumes:
       - minio_data:/data
     healthcheck:
