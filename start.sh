@@ -1,3 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "🚀 Found Footy"
+echo "🏗️ Architecture: $(uname -m)"
+echo "🐧 Platform: $(uname -s)"
+
+cmd="${1:-redeploy}"
+svc="${2:-}"
+
 do_redeploy() {
   local mode="$1"
   
@@ -10,7 +20,6 @@ do_redeploy() {
   
   echo "✅ .env file found"
   
-  # ❌ REMOVE: No more EXTERNAL_HOST management - Nginx handles everything
   # Clean any existing EXTERNAL_HOST entries
   sed -i '/^EXTERNAL_HOST=/d' .env
   
@@ -56,3 +65,61 @@ do_redeploy() {
   echo "✅ Deploy complete"
   docker compose ps
 }
+
+test_integration() {
+  echo "🧪 Running Integration Test..."
+  
+  if ! docker compose ps | grep -q "Up"; then
+    echo "🔄 Starting services first..."
+    do_redeploy "local"
+    sleep 30
+  fi
+  
+  if ! docker compose ps test | grep -q "Up"; then
+    echo "🔄 Starting test container..."
+    docker compose up -d test
+    sleep 10
+  fi
+  
+  echo "🚀 Executing integration test..."
+  docker compose exec test python /app/scripts/test_integration_real.py
+}
+
+# ✅ ADD: Missing main execution logic
+case "$cmd" in
+  redeploy|"")
+    do_redeploy "local"
+    ;;
+  tailscale)
+    do_redeploy "tailscale"
+    ;;
+  test-integration-real)
+    test_integration
+    ;;
+  logs)
+    if [ -n "${svc}" ]; then
+      docker compose logs -f "${svc}"
+    else
+      docker compose logs -f
+    fi
+    ;;
+  status|ps)
+    docker compose ps
+    ;;
+  down)
+    docker compose down --volumes
+    ;;
+  *)
+    echo "Usage: ./start.sh [command]"
+    echo ""
+    echo "Commands:"
+    echo "  redeploy              - Local development (default)"
+    echo "  tailscale             - Tailscale access via Nginx proxy"
+    echo "  test-integration-real - Run integration test"
+    echo "  logs [svc]            - Show logs"
+    echo "  status/ps             - Show status"
+    echo "  down                  - Stop everything"
+    echo ""
+    exit 1
+    ;;
+esac
