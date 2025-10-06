@@ -11,11 +11,12 @@ services:
     image: prefecthq/prefect:3-latest
     command: prefect server start --host 0.0.0.0 --port 4200
     ports:
-      - "0.0.0.0:5000:4200"  # ✅ KEEP: Direct access
+      - "0.0.0.0:5000:4200"
     environment:
       - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://prefect:prefect@prefect-postgres:5432/prefect
       - PREFECT_SERVER_API_HOST=0.0.0.0
-      - PREFECT_UI_API_URL=${EXTERNAL_HOST:-http://localhost}:5000/api
+      # ✅ SIMPLE: Remove variable substitution - just use localhost
+      - PREFECT_UI_API_URL=http://localhost:5000/api
     depends_on:
       prefect-postgres:
         condition: service_healthy
@@ -51,7 +52,7 @@ services:
     build: .
     environment:
       - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ FIX
+      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin
       - PYTHONPATH=/app
     depends_on:
       prefect-server:
@@ -60,7 +61,9 @@ services:
         condition: service_healthy
     command: >
       sh -c "
-        echo '📊 Check deployments and automations in the UI'
+        echo '🚀 Creating Prefect Variables...' &&
+        python -c 'import asyncio; from found_footy.config.startup_config import full_startup_sync; asyncio.run(full_startup_sync())' &&
+        echo '📊 Variables created successfully - check Prefect UI'
       "
     networks:
       - found-footy-network
@@ -203,12 +206,11 @@ services:
     image: minio/minio:latest
     command: server /data --console-address ":9001" --address ":9000"
     ports:
-      - "0.0.0.0:9000:9000"  # ✅ KEEP: S3 API
-      - "0.0.0.0:9001:9001"  # ✅ KEEP: Console
+      - "0.0.0.0:9000:9000"
+      - "0.0.0.0:9001:9001"
     environment:
       MINIO_ROOT_USER: founduser
       MINIO_ROOT_PASSWORD: footypass
-      # ✅ CLEAN: No redirect URLs - use defaults
     volumes:
       - minio_data:/data
     healthcheck:
