@@ -1,44 +1,51 @@
-"""Goal processing asset - handles discovered goals"""
+"""Process goals job - validates and stores goal events
+
+Migrated from found_footy/flows/goal_flow.py
+"""
 
 import logging
-from typing import List
+from typing import List, Dict, Any
 
-from dagster import asset, AssetExecutionContext, Output
+from dagster import job, op, OpExecutionContext, Config, Out
 from src.data.mongo_store import FootyMongoStore
 
 logger = logging.getLogger(__name__)
 
 
-@asset(
-    name="process_goals",
-    description="Process goal events and schedule Twitter scraping",
-    group_name="goals",
-    compute_kind="processing"
+class ProcessGoalsConfig(Config):
+    """Configuration for processing goals"""
+    fixture_id: int
+    goal_events: List[Dict[str, Any]]
+
+
+@op(
+    name="validate_and_store_goals",
+    description="Validate goal events and store to MongoDB",
+    out=Out(List[str], description="List of new goal IDs that need Twitter scraping")
 )
-def process_goals_asset(
-    context: AssetExecutionContext,
-    fixture_id: int,
-    goal_events: List[dict] | None = None
-) -> Output:
+def validate_and_store_goals_op(
+    context: OpExecutionContext,
+    config: ProcessGoalsConfig
+) -> List[str]:
     """
-    Process goal events - migrated from goal_flow.py
+    Process goal events:
+    1. Filter for actual goals (not assists/penalties)
+    2. Store new goals to MongoDB
+    3. Return list of goal IDs that need Twitter scraping
+    """
+    fixture_id = config.fixture_id
+    goal_events = config.goal_events
     
-    Steps:
-    1. Get discovered goals from MongoDB
-    2. Validate goal data
-    3. Update processing status
-    4. Schedule downstream Twitter scraping
-    """
     if not goal_events:
         context.log.warning(f"No goal events for fixture {fixture_id}")
-        return Output(value={"status": "no_goals", "fixture_id": fixture_id})
+        return []
     
-    # Filter for actual goals (not assists, penalties, etc.)
+    # Filter for actual goals
     actual_goals = [event for event in goal_events if event.get("type") == "Goal"]
     
     if not actual_goals:
         context.log.info(f"⚽ No actual goals in {len(goal_events)} events")
-        return Output(value={"status": "no_goals", "fixture_id": fixture_id})
+        return []
     
     context.log.info(f"⚽ Processing {len(actual_goals)} goal events for fixture {fixture_id}")
     
@@ -73,17 +80,15 @@ def process_goals_asset(
         except Exception as e:
             context.log.error(f"Error processing goal event: {e}")
     
-    result = {
-        "status": "success",
-        "fixture_id": fixture_id,
-        "new_goals": len(new_goals),
-        "updated_goals": len(updated_goals)
-    }
+    context.log.info(f"✅ Processed: {len(new_goals)} new, {len(updated_goals)} updated")
     
-    return Output(
-        value=result,
-        metadata={
-            "new_goals": len(new_goals),
-            "updated_goals": len(updated_goals)
-        }
-    )
+    return new_goals
+
+
+@job(
+    name="process_goals",
+    description="Process goal events and prepare for Twitter scraping"
+)
+def process_goals_job():
+    """Goal processing workflow"""
+    validate_and_store_goals_op()

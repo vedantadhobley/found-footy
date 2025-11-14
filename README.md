@@ -272,11 +272,12 @@ footy-videos/
 
 | Service | Purpose | URL | Credentials |
 |---------|---------|-----|-------------|
-| **Prefect UI** | Flow Management & Monitoring | http://localhost:5000 | No auth |
-| **MinIO Console** | S3 Management UI | http://localhost:9001 | founduser / footypass |
-| **MinIO S3 API** | Programmatic Video Access | http://localhost:9000 | founduser / footypass |
-| **MongoDB Admin** | Database Management | http://localhost:3000 | founduser / footypass |
-| **Twitter Service** | Session Management | http://localhost:8000/health | No auth |
+| **Dagster UI** | Pipeline Management & Monitoring | http://localhost:3000 | No auth |
+| **Mongo Express** | Database Management UI | http://localhost:8081 | ffuser / ffpass |
+| **MongoDB Direct** | Direct Database Access | mongodb://localhost:27017 | ffuser / ffpass |
+| **MinIO Console** | S3 Management UI | http://localhost:9001 | ffuser / ffpass |
+| **MinIO S3 API** | Programmatic Video Access | http://localhost:9000 | ffuser / ffpass |
+| **Twitter Service** | Session Management | http://localhost:8888/health | No auth |
 
 ## 📊 **Data Collections**
 
@@ -345,13 +346,13 @@ docker-compose logs -f twitter-worker download-worker
 
 ### **3. Manual Operations**
 
-#### **Via Prefect UI (Recommended)**
-1. Navigate to: http://localhost:4200
-2. Go to **Deployments** tab
-3. Run deployments:
-   - `ingest-manual` - Manual fixture ingestion
-   - `monitor-flow` - Manual goal detection
-   - `advance-flow` - Manual collection advancement
+#### **Via Dagster UI (Recommended)**
+1. Navigate to: http://localhost:3000
+2. Go to **Assets** tab
+3. Materialize assets:
+   - `ingest_fixtures` - Manual fixture ingestion
+   - `monitor_fixtures` - Manual goal detection
+   - `advance_fixtures` - Manual collection advancement
 
 #### **Via CLI in Container**
 ```bash
@@ -384,32 +385,30 @@ print(f'Goals with videos: {len(processed)}')
 ```bash
 # Access MinIO Console
 open http://localhost:9001
-# Login: founduser / footypass
+# Login: ffuser / ffpass
 
 # List videos via CLI
-docker-compose exec download-worker python -c "
-from found_footy.storage.s3_store import FootyS3Store
+docker-compose exec dagster-webserver python -c "
+from src.data.s3_store import FootyS3Store
 s3 = FootyS3Store()
-stats = s3.get_bucket_stats()
-print(f'Total videos: {stats[\"total_videos\"]}')
-print(f'Total size: {stats[\"total_size_mb\"]} MB')
+# Check bucket and video storage
 "
 ```
 
 #### **MongoDB Data**
 ```bash
-# Access MongoDB Admin
-open http://localhost:8083
-# Login: admin / admin123
+# Access Mongo Express UI
+open http://localhost:8081
+# Login: ffuser / ffpass
 
 # Check collections via CLI
-docker-compose exec monitor-worker python -c "
-from found_footy.storage.mongo_store import FootyMongoStore
+docker-compose exec dagster-webserver python -c "
+from src.data.mongo_store import FootyMongoStore
 store = FootyMongoStore()
 active = store.fixtures_active.count_documents({})
-goals = store.goals_pending.count_documents({})
+goals_count = store.goals.count_documents({})
 print(f'Active fixtures: {active}')
-print(f'Pending goals: {goals}')
+print(f'Total goals: {goals_count}')
 "
 ```
 
@@ -418,14 +417,17 @@ print(f'Pending goals: {goals}')
 ### **Environment Variables**
 ```bash
 # Required for production
-MONGODB_URL=mongodb://user:pass@mongodb-cluster:27017/found_footy
+MONGODB_URL=mongodb://ffuser:ffpass@mongodb-cluster:27017/found_footy?authSource=admin
 S3_ENDPOINT_URL=https://s3.amazonaws.com  # Or your S3-compatible storage
-S3_ACCESS_KEY=your_access_key
-S3_SECRET_KEY=your_secret_key
+S3_ACCESS_KEY=ffuser
+S3_SECRET_KEY=ffpass
 S3_BUCKET_NAME=production-footy-videos
 
-# Optional performance tuning
-PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://user:pass@postgres:5432/prefect
+# Dagster Postgres
+DAGSTER_PG_HOST=dagster-postgres
+DAGSTER_PG_USERNAME=ffuser
+DAGSTER_PG_PASSWORD=ffpass
+DAGSTER_PG_DB=dagster
 ```
 
 ### **Scaling Considerations**

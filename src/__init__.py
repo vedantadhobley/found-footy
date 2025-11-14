@@ -1,61 +1,51 @@
 """
 Found Footy - Football highlights automation with Dagster
 
-Main Dagster Definitions object combining all assets, jobs, schedules, and resources.
+Main Dagster Definitions object combining assets, jobs, schedules, and resources.
+
+Architecture:
+- All workflows use Jobs (event-driven or scheduled with runtime parameters)
+- Jobs allow runtime configuration via Config classes
+- Schedules trigger jobs at specified intervals
 """
 from dagster import Definitions
 
-# Import all assets
-from src.assets.fixtures.ingest import ingest_fixtures_asset
-from src.assets.fixtures.monitor import monitor_fixtures_asset
-from src.assets.fixtures.advance import advance_fixtures_asset
-from src.assets.goals.process_goals import process_goals_asset
-from src.assets.twitter.scrape import scrape_twitter_videos_asset
-from src.assets.videos.download import download_videos_asset
-from src.assets.videos.filter import filter_videos_asset
-
-# Import jobs
+# Import all jobs (all workflows are jobs now since they need runtime params)
 from src.jobs import (
-    fixtures_pipeline_job,
-    goal_processing_job,
-    twitter_scraping_job,
-    video_pipeline_job
+    ingest_fixtures_job,
+    advance_fixtures_job,
+    monitor_fixtures_job,
+    process_goals_job,
+    scrape_twitter_job,
+    download_videos_job,
+    filter_videos_job,
 )
 
 # Import schedules
-from src.schedules import (
-    daily_ingest_schedule,
-    monitor_schedule
-)
+from src.schedules import daily_ingest_schedule, monitor_schedule
 
 # Import resources
 from src.resources import (
     mongo_resource,
     s3_resource,
-    twitter_session_resource
+    twitter_session_resource,
 )
 
 
 # Combine everything into Dagster Definitions
 defs = Definitions(
     assets=[
-        # Fixtures
-        ingest_fixtures_asset,
-        monitor_fixtures_asset,
-        advance_fixtures_asset,
-        # Goals
-        process_goals_asset,
-        # Twitter
-        scrape_twitter_videos_asset,
-        # Videos
-        download_videos_asset,
-        filter_videos_asset,
+        # No assets - all workflows are jobs with runtime parameters
     ],
     jobs=[
-        fixtures_pipeline_job,
-        goal_processing_job,
-        twitter_scraping_job,
-        video_pipeline_job,
+        # All workflows use jobs for runtime configuration flexibility
+        ingest_fixtures_job,
+        advance_fixtures_job,
+        monitor_fixtures_job,
+        process_goals_job,
+        scrape_twitter_job,
+        download_videos_job,
+        filter_videos_job,
     ],
     schedules=[
         daily_ingest_schedule,

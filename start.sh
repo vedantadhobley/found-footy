@@ -1,15 +1,30 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
 
-echo "🚀 Found Footy"
-echo "🏗️ Architecture: $(uname -m)"
-echo "🐧 Platform: $(uname -s)"
+# Found Footy - Docker Compose Startup Script
+# Usage:
+#   ./start.sh           - Start services
+#   ./start.sh -v        - Start with fresh volumes (wipe data)
+#   ./start.sh logs      - Show logs
+#   ./start.sh down      - Stop everything
 
-cmd="${1:-redeploy}"
-svc="${2:-}"
+# Parse arguments
+WIPE_VOLUMES=false
+
+for arg in "$@"; do
+  case $arg in
+    -v|--volumes)
+      WIPE_VOLUMES=true
+      shift
+      ;;
+    *)
+      ;;
+  esac
+done
 
 do_redeploy() {
-  echo "🔄 Redeploying..."
+  echo "🚀 Found Footy"
+  echo "🏗️ Architecture: $(uname -m)"
+  echo "🐧 Platform: $(uname -s)"
   
   if [ ! -f .env ]; then
     echo "⚠️ .env file not found!"
@@ -27,65 +42,54 @@ do_redeploy() {
   echo "EXTERNAL_HOST=http://localhost" >> .env
   echo "📍 EXTERNAL_HOST set to: http://localhost"
   
-  # ✅ SIMPLE: Deploy without complexity
+  # Shutdown existing containers
+  if [[ "$WIPE_VOLUMES" == true ]]; then
+    echo "🗑️  Stopping containers and wiping volumes..."
+    docker compose down -v
+  else
+    echo "🛑 Stopping containers..."
+    docker compose down --remove-orphans
+  fi
+  
+  # Remove old image to avoid conflicts
+  docker rmi -f found-footy:latest || true
+  
+  # Build and start services
   export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1
-  docker compose down --remove-orphans || true
-  docker compose build
-  docker compose up -d --force-recreate
   
-  echo "📦 Applying Prefect deployments..."
-  docker compose run --rm app python found_footy/flows/deployments.py --apply || true
+  echo "🔨 Building base image..."
+  docker compose build app-base
+  
+  echo "🚀 Starting services..."
+  docker compose up -d
   
   echo ""
-  echo "🎯 ============================================"
-  echo "🎯 LOCAL ACCESS - ALL SERVICES"
-  echo "🎯 ============================================"
-  echo ""
-  echo "✅ Access your services locally:"
-  echo "  📊 Prefect UI:       http://localhost:5000"
-  echo "  🗄️  MongoDB Express:  http://localhost:3000 (founduser/footypass)"
-  echo "  📦 MinIO Console:    http://localhost:9001 (founduser/footypass)"
-  echo "  📁 MinIO S3 API:     http://localhost:9000"
-  echo "  🐦 Twitter Service:  http://localhost:8000/health"
-  echo ""
-  echo "📱 For remote access, consider:"
-  echo "  • SSH port forwarding"
-  echo "  • VPN setup"
-  echo "  • Cloud deployment"
+  echo "✅ Services started!"
+  echo "   Dagster UI:      http://localhost:3000"
+  echo "   MongoDB Express: http://localhost:8081 (ffuser/ffpass)"
+  echo "   MongoDB Direct:  mongodb://localhost:27017 (ffuser/ffpass)"
+  echo "   MinIO Console:   http://localhost:9001 (ffuser/ffpass)"
+  echo "   MinIO S3 API:    http://localhost:9000"
+  echo "   Twitter Service: http://localhost:8888/health"
+  if [[ "$WIPE_VOLUMES" == true ]]; then
+    echo "   Mode: FRESH START (volumes wiped)"
+  else
+    echo "   Mode: NORMAL (data preserved)"
+  fi
   echo ""
   
-  echo "✅ Deploy complete"
   docker compose ps
 }
 
-test_integration() {
-  echo "🧪 Running Integration Test..."
-  
-  if ! docker compose ps | grep -q "Up"; then
-    echo "🔄 Starting services first..."
-    do_redeploy
-    sleep 30
-  fi
-  
-  if ! docker compose ps test | grep -q "Up"; then
-    echo "🔄 Starting test container..."
-    docker compose up -d test
-    sleep 10
-  fi
-  
-  echo "🚀 Executing integration test..."
-  docker compose exec test python /app/scripts/test_integration_real.py
-}
+# Handle commands
+cmd="${1:-start}"
 
 case "$cmd" in
-  redeploy|"")
+  start|"")
     do_redeploy
     ;;
-  # ❌ REMOVE: tailscale option completely
-  test-integration-real)
-    test_integration
-    ;;
   logs)
+    svc="${2:-}"
     if [ -n "${svc}" ]; then
       docker compose logs -f "${svc}"
     else
@@ -96,17 +100,25 @@ case "$cmd" in
     docker compose ps
     ;;
   down)
-    docker compose down --volumes
+    echo "🛑 Stopping all services..."
+    docker compose down
+    ;;
+  -v|--volumes)
+    WIPE_VOLUMES=true
+    do_redeploy
     ;;
   *)
-    echo "Usage: ./start.sh [command]"
+    echo "Usage: ./start.sh [command] [options]"
     echo ""
     echo "Commands:"
-    echo "  redeploy              - Local development (default)"
-    echo "  test-integration-real - Run integration test"
-    echo "  logs [svc]            - Show logs"
-    echo "  status/ps             - Show status"
-    echo "  down                  - Stop everything"
+    echo "  start          - Start services (default)"
+    echo "  start -v       - Start with fresh volumes (wipe data)"
+    echo "  logs [service] - Show logs"
+    echo "  status/ps      - Show status"
+    echo "  down           - Stop everything"
+    echo ""
+    echo "Options:"
+    echo "  -v, --volumes  - Wipe volumes on start"
     echo ""
     exit 1
     ;;

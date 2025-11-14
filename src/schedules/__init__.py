@@ -1,12 +1,13 @@
-"""Dagster schedules - automated asset materialization"""
-from dagster import ScheduleDefinition, AssetSelection
+"""Dagster schedules - automated job execution"""
+from dagster import ScheduleDefinition
+from src.jobs import ingest_fixtures_job, monitor_fixtures_job
 
 
 # Daily fixture ingestion at midnight UTC
 daily_ingest_schedule = ScheduleDefinition(
     name="daily_ingest_schedule",
     description="Ingest fixtures daily at midnight UTC",
-    target=AssetSelection.assets("ingest_fixtures"),
+    job=ingest_fixtures_job,
     cron_schedule="0 0 * * *",  # Midnight UTC
 )
 
@@ -14,6 +15,6 @@ daily_ingest_schedule = ScheduleDefinition(
 monitor_schedule = ScheduleDefinition(
     name="monitor_schedule",
     description="Monitor active fixtures for goal changes every 3 minutes",
-    target=AssetSelection.assets("monitor_fixtures"),
+    job=monitor_fixtures_job,
     cron_schedule="*/3 * * * *",  # Every 3 minutes
 )

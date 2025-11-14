@@ -1,34 +1,40 @@
-"""Twitter scraping asset - finds goal videos on Twitter"""
+"""Twitter scraping job - finds goal videos on Twitter
+
+Migrated from found_footy/flows/twitter_flow.py
+"""
 
 import os
 import logging
 import requests
+from typing import Dict, Any
 
-from dagster import asset, AssetExecutionContext, Output
+from dagster import job, op, OpExecutionContext, Config
 from src.data.mongo_store import FootyMongoStore
 
 logger = logging.getLogger(__name__)
 
 
-@asset(
-    name="scrape_twitter_videos",
-    description="Scrape Twitter for goal videos using session service",
-    group_name="twitter",
-    compute_kind="scraping"
-)
-def scrape_twitter_videos_asset(
-    context: AssetExecutionContext,
+class ScrapeTwitterConfig(Config):
+    """Configuration for Twitter scraping"""
     goal_id: str
-) -> Output:
+
+
+@op(
+    name="search_twitter_videos",
+    description="Search Twitter for goal videos and store URLs"
+)
+def search_twitter_videos_op(
+    context: OpExecutionContext,
+    config: ScrapeTwitterConfig
+) -> Dict[str, Any]:
     """
-    Scrape Twitter for goal videos - migrated from twitter_flow.py
-    
-    Steps:
+    Search Twitter for videos:
     1. Get goal details from MongoDB
-    2. Build search query from player/team names
-    3. Call Twitter session service to scrape videos
+    2. Build search query
+    3. Call Twitter session service
     4. Store discovered video URLs
     """
+    goal_id = config.goal_id
     context.log.info(f"🔍 Twitter search for goal: {goal_id}")
     
     store = FootyMongoStore()
@@ -36,7 +42,7 @@ def scrape_twitter_videos_asset(
     
     if not goal_doc:
         context.log.warning(f"Goal {goal_id} not found")
-        return Output(value={"status": "goal_not_found", "goal_id": goal_id})
+        return {"status": "goal_not_found", "goal_id": goal_id}
     
     # Extract player and team info
     player_name = goal_doc.get("player", {}).get("name", "")
@@ -45,11 +51,11 @@ def scrape_twitter_videos_asset(
     if not player_name or not team_name:
         context.log.warning("Missing player/team data")
         store.update_goal_processing_status(goal_id, "videos_discovered", discovered_videos=[])
-        return Output(value={"status": "missing_data", "goal_id": goal_id, "video_count": 0})
+        return {"status": "missing_data", "goal_id": goal_id, "video_count": 0}
     
     # Build search query
     player_last_name = player_name.split()[-1] if " " in player_name else player_name
-    search_query = f"{player_last_name} {team_name} goal"
+    search_query = f"{player_last_name} {team_name}"
     
     context.log.info(f"🔍 Searching: '{search_query}'")
     
@@ -82,19 +88,19 @@ def scrape_twitter_videos_asset(
     
     context.log.info(f"✅ Found {len(found_videos)} videos for '{search_query}'")
     
-    result = {
+    return {
         "status": "success",
         "goal_id": goal_id,
         "search_query": search_query,
         "video_count": len(found_videos),
         "videos": found_videos
     }
-    
-    return Output(
-        value=result,
-        metadata={
-            "goal_id": goal_id,
-            "video_count": len(found_videos),
-            "search_query": search_query
-        }
-    )
+
+
+@job(
+    name="scrape_twitter",
+    description="Search Twitter for goal videos"
+)
+def scrape_twitter_job():
+    """Twitter scraping workflow"""
+    search_twitter_videos_op()

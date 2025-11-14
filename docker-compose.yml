@@ -7,13 +7,13 @@ services:
     image: postgres:15-alpine
     container_name: found-footy-dagster-postgres
     environment:
-      POSTGRES_USER: founduser
-      POSTGRES_PASSWORD: footypass
+      POSTGRES_USER: ffuser
+      POSTGRES_PASSWORD: ffpass
       POSTGRES_DB: dagster
     volumes:
       - dagster_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U founduser -d dagster"]
+      test: ["CMD-SHELL", "pg_isready -U ffuser -d dagster"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -25,9 +25,11 @@ services:
   mongo:
     image: mongo:7-jammy
     container_name: found-footy-mongo
+    ports:
+      - "27017:27017"
     environment:
-      MONGO_INITDB_ROOT_USERNAME: founduser
-      MONGO_INITDB_ROOT_PASSWORD: footypass
+      MONGO_INITDB_ROOT_USERNAME: ffuser
+      MONGO_INITDB_ROOT_PASSWORD: ffpass
       MONGO_INITDB_DATABASE: found_footy
     command: >
       mongod
@@ -49,15 +51,15 @@ services:
     container_name: found-footy-mongo-express
     restart: unless-stopped
     ports:
-      - "3000:8081"  # Changed to match old setup (was on 3000 before)
+      - "8081:8081"
     environment:
       ME_CONFIG_MONGODB_SERVER: mongo
       ME_CONFIG_MONGODB_PORT: 27017
-      ME_CONFIG_MONGODB_ADMINUSERNAME: founduser
-      ME_CONFIG_MONGODB_ADMINPASSWORD: footypass
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ffuser
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ffpass
       ME_CONFIG_MONGODB_AUTH_DATABASE: admin
-      ME_CONFIG_BASICAUTH_USERNAME: founduser
-      ME_CONFIG_BASICAUTH_PASSWORD: footypass
+      ME_CONFIG_BASICAUTH_USERNAME: ffuser
+      ME_CONFIG_BASICAUTH_PASSWORD: ffpass
     depends_on:
       mongo:
         condition: service_healthy
@@ -79,8 +81,8 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
-      MINIO_ROOT_USER: founduser
-      MINIO_ROOT_PASSWORD: footypass
+      MINIO_ROOT_USER: ffuser
+      MINIO_ROOT_PASSWORD: ffpass
     volumes:
       - minio_data:/data
     healthcheck:
@@ -92,30 +94,37 @@ services:
     networks:
       - footy-network
 
-  # Dagster webserver (UI)
-  dagster-webserver:
+  # Base image builder (builds once, used by all services)
+  app-base:
     build:
       context: .
       dockerfile: Dockerfile
     image: found-footy:latest
+    command: "true"  # Just build, don't run
+    profiles:
+      - build-only
+
+  # Dagster webserver (UI)
+  dagster-webserver:
+    image: found-footy:latest
     container_name: found-footy-dagster-webserver
     command: dagster-webserver -h 0.0.0.0 -p 3000 -w /app/workspace.yaml
     ports:
-      - "5000:3000"  # Changed from 3000:3000 to avoid conflict with mongo-express
+      - "3000:3000"
     env_file:
       - .env
     environment:
       DAGSTER_HOME: /app
-      DAGSTER_PG_USERNAME: founduser
-      DAGSTER_PG_PASSWORD: footypass
+      DAGSTER_PG_USERNAME: ffuser
+      DAGSTER_PG_PASSWORD: ffpass
       DAGSTER_PG_HOST: dagster-postgres
       DAGSTER_PG_DB: dagster
       DAGSTER_PG_PORT: 5432
-      MONGODB_URI: mongodb://founduser:footypass@mongo:27017/found_footy?authSource=admin
-      MONGODB_URL: mongodb://founduser:footypass@mongo:27017/found_footy?authSource=admin
+      MONGODB_URI: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
+      MONGODB_URL: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
       S3_ENDPOINT_URL: http://minio:9000
-      S3_ACCESS_KEY: founduser
-      S3_SECRET_KEY: footypass
+      S3_ACCESS_KEY: ffuser
+      S3_SECRET_KEY: ffpass
       S3_BUCKET_NAME: footy-videos
       TWITTER_SESSION_URL: http://twitter-session:8888
       PYTHONPATH: /app
@@ -149,16 +158,16 @@ services:
       - .env
     environment:
       DAGSTER_HOME: /app
-      DAGSTER_PG_USERNAME: founduser
-      DAGSTER_PG_PASSWORD: footypass
+      DAGSTER_PG_USERNAME: ffuser
+      DAGSTER_PG_PASSWORD: ffpass
       DAGSTER_PG_HOST: dagster-postgres
       DAGSTER_PG_DB: dagster
       DAGSTER_PG_PORT: 5432
-      MONGODB_URI: mongodb://founduser:footypass@mongo:27017/found_footy?authSource=admin
-      MONGODB_URL: mongodb://founduser:footypass@mongo:27017/found_footy?authSource=admin
+      MONGODB_URI: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
+      MONGODB_URL: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
       S3_ENDPOINT_URL: http://minio:9000
-      S3_ACCESS_KEY: founduser
-      S3_SECRET_KEY: footypass
+      S3_ACCESS_KEY: ffuser
+      S3_SECRET_KEY: ffpass
       S3_BUCKET_NAME: footy-videos
       TWITTER_SESSION_URL: http://twitter-session:8888
       PYTHONPATH: /app
@@ -179,9 +188,6 @@ services:
 
   # Twitter session service
   twitter-session:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: found-footy:latest
     container_name: found-footy-twitter-session
     command: python twitter_service_standalone.py
@@ -204,10 +210,10 @@ services:
     container_name: found-footy-test
     environment:
       PYTHONPATH: /app
-      MONGODB_URL: mongodb://founduser:footypass@mongo:27017/found_footy?authSource=admin
+      MONGODB_URL: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
       S3_ENDPOINT_URL: http://minio:9000
-      S3_ACCESS_KEY: founduser
-      S3_SECRET_KEY: footypass
+      S3_ACCESS_KEY: ffuser
+      S3_SECRET_KEY: ffpass
       S3_BUCKET_NAME: footy-videos
     env_file:
       - .env
