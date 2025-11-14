@@ -1,25 +1,25 @@
 """
 Found Footy - Football highlights automation with Dagster
 
-Main Dagster Definitions object combining assets, jobs, schedules, and resources.
+Main Dagster Definitions object combining jobs, schedules, and resources.
 
 Architecture:
-- All workflows use Jobs (event-driven or scheduled with runtime parameters)
-- Jobs allow runtime configuration via Config classes
-- Schedules trigger jobs at specified intervals
+- 3 jobs: ingest_fixtures, monitor_fixtures, goal_pipeline
+- goal_pipeline has 6 ops: process → scrape → download → upload → filter → complete
+- monitor_fixtures runs on schedule, triggers goal_pipeline with fixture data
+- This matches your Prefect structure: goal_flow → twitter_flow → download_flow → filter_flow
 """
 from dagster import Definitions
 
-# Import all jobs (all workflows are jobs now since they need runtime params)
+# Import jobs
 from src.jobs import (
     ingest_fixtures_job,
-    advance_fixtures_job,
     monitor_fixtures_job,
-    process_goals_job,
-    scrape_twitter_job,
-    download_videos_job,
-    filter_videos_job,
+    goal_pipeline_job,  # Main pipeline with 6 ops
 )
+
+# Import sensor
+from src.sensors import goal_pipeline_trigger_sensor
 
 # Import schedules
 from src.schedules import daily_ingest_schedule, monitor_schedule
@@ -34,22 +34,17 @@ from src.resources import (
 
 # Combine everything into Dagster Definitions
 defs = Definitions(
-    assets=[
-        # No assets - all workflows are jobs with runtime parameters
-    ],
     jobs=[
-        # All workflows use jobs for runtime configuration flexibility
-        ingest_fixtures_job,
-        advance_fixtures_job,
-        monitor_fixtures_job,
-        process_goals_job,
-        scrape_twitter_job,
-        download_videos_job,
-        filter_videos_job,
+        ingest_fixtures_job,    # Fetch fixtures from API-Football (scheduled daily)
+        monitor_fixtures_job,   # Monitor for changes (scheduled every 3 min)
+        goal_pipeline_job,      # 6 ops: process → scrape → download → upload → filter → complete
+    ],
+    sensors=[
+        goal_pipeline_trigger_sensor,  # Watches for pending goals, triggers goal_pipeline
     ],
     schedules=[
-        daily_ingest_schedule,
-        monitor_schedule,
+        daily_ingest_schedule,  # Ingest fixtures at midnight
+        monitor_schedule,       # Monitor every 3 minutes
     ],
     resources={
         "mongo": mongo_resource,

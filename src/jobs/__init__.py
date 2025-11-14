@@ -14,19 +14,11 @@ The complete workflow:
 """
 
 from .ingest_fixtures import ingest_fixtures_job
-from .advance_fixtures import advance_fixtures_job
 from .monitor import monitor_fixtures_job
-from .process_goals import process_goals_job
-from .scrape_twitter import scrape_twitter_job
-from .download_videos import download_videos_job
-from .filter_videos import filter_videos_job
+from .goal_pipeline import goal_pipeline_job
 
 __all__ = [
     "ingest_fixtures_job",
-    "advance_fixtures_job",
     "monitor_fixtures_job",
-    "process_goals_job",
-    "scrape_twitter_job",
-    "download_videos_job",
-    "filter_videos_job",
+    "goal_pipeline_job",  # Main pipeline with 6 ops
 ]
