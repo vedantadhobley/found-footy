@@ -1,94 +1,128 @@
-"""Process goals job - validates and stores goal events
+"""Process goal op - validates and stores a single goal
 
-Migrated from found_footy/flows/goal_flow.py
+Clean approach: Only pass goal_id via config, read full data from MongoDB.
+This matches Prefect pattern where MongoDB is the source of truth.
 """
 
-import logging
-from typing import List, Dict, Any
-
-from dagster import job, op, OpExecutionContext, Config, Out
-from src.data.mongo_store import FootyMongoStore
-
-logger = logging.getLogger(__name__)
+from dagster import op, Config
+from typing import Dict, Any
+from pymongo import MongoClient
+from bson import ObjectId
+from datetime import datetime
 
 
-class ProcessGoalsConfig(Config):
-    """Configuration for processing goals"""
-    fixture_id: int
-    goal_events: List[Dict[str, Any]]
+class GoalProcessingConfig(Config):
+    """Minimal config - just identifiers, MongoDB has the data."""
+    fixture_id: str = "000000000000000000000000"  # MongoDB ObjectId as string (default for testing)
+    goal_minute: int = 45  # Minute when goal was scored
+    player_name: str = "Test Player"  # Player who scored (for unique identification)
+    mongo_uri: str = "mongodb://localhost:27017"
+    db_name: str = "found_footy"
 
 
 @op(
-    name="validate_and_store_goals",
-    description="Validate goal events and store to MongoDB",
-    out=Out(List[str], description="List of new goal IDs that need Twitter scraping")
+    name="process_goal",
+    description="Store a single goal in MongoDB (reads goal data from fixtures collection)"
 )
-def validate_and_store_goals_op(
-    context: OpExecutionContext,
-    config: ProcessGoalsConfig
-) -> List[str]:
+def process_goal_op(context, config: GoalProcessingConfig) -> Dict[str, Any]:
     """
-    Process goal events:
-    1. Filter for actual goals (not assists/penalties)
-    2. Store new goals to MongoDB
-    3. Return list of goal IDs that need Twitter scraping
+    Process a single goal event - matches goal_flow.py from Prefect.
+    
+    Clean approach:
+    1. Receive minimal identifiers via config (fixture_id, minute, player)
+    2. Read full goal event data from fixtures collection in MongoDB
+    3. Store in goals collection if new
+    4. Return goal_id for downstream processing
+    
+    This op processes ONE goal per pipeline run (enables parallel processing).
     """
-    fixture_id = config.fixture_id
-    goal_events = config.goal_events
+    client = MongoClient(config.mongo_uri)
+    db = client[config.db_name]
     
-    if not goal_events:
-        context.log.warning(f"No goal events for fixture {fixture_id}")
-        return []
+    context.log.info(f"Processing goal: {config.player_name} ({config.goal_minute}') from fixture {config.fixture_id}")
     
-    # Filter for actual goals
-    actual_goals = [event for event in goal_events if event.get("type") == "Goal"]
+    # Check if goal already exists in goals collection
+    existing = db.goals.find_one({
+        "fixture_id": ObjectId(config.fixture_id),
+        "time.elapsed": config.goal_minute,
+        "player.name": config.player_name
+    })
     
-    if not actual_goals:
-        context.log.info(f"⚽ No actual goals in {len(goal_events)} events")
-        return []
+    if existing:
+        goal_id = str(existing["_id"])
+        context.log.info(f"✅ Goal already exists: {goal_id}")
+        client.close()
+        return {
+            "goal_id": goal_id,
+            "is_new": False,
+            "player": config.player_name,
+            "minute": config.goal_minute,
+            "fixture_id": config.fixture_id
+        }
     
-    context.log.info(f"⚽ Processing {len(actual_goals)} goal events for fixture {fixture_id}")
+    # Read full goal event from fixtures collection
+    fixture = db.fixtures.find_one({"_id": ObjectId(config.fixture_id)})
+    if not fixture:
+        context.log.error(f"❌ Fixture {config.fixture_id} not found in MongoDB")
+        client.close()
+        raise ValueError(f"Fixture {config.fixture_id} not found")
     
-    store = FootyMongoStore()
-    existing_goal_ids = store.get_existing_goal_ids(fixture_id)
+    # Find the specific goal event in the goals array
+    goals_array = fixture.get("goals", [])
+    goal_event = None
     
-    new_goals = []
-    updated_goals = []
+    for event in goals_array:
+        if (event.get("time", {}).get("elapsed") == config.goal_minute and 
+            event.get("player", {}).get("name") == config.player_name):
+            goal_event = event
+            break
     
-    for goal_event in actual_goals:
-        try:
-            time_data = goal_event.get("time", {})
-            elapsed = time_data.get("elapsed", 0)
-            extra = time_data.get("extra")
-            
-            goal_id = f"{fixture_id}_{elapsed}+{extra}" if extra else f"{fixture_id}_{elapsed}"
-            is_new_goal = goal_id not in existing_goal_ids
-            
-            if is_new_goal:
-                if store.store_goal(fixture_id, goal_event, processing_status="discovered"):
-                    player_name = goal_event.get("player", {}).get("name", "Unknown")
-                    team_name = goal_event.get("team", {}).get("name", "Unknown")
-                    display_minute = f"{elapsed}+{extra}" if extra else str(elapsed)
-                    
-                    context.log.info(f"🆕 NEW GOAL: {team_name} - {player_name} ({display_minute}') [{goal_id}]")
-                    new_goals.append(goal_id)
-            else:
-                store.store_goal(fixture_id, goal_event, processing_status="discovered")
-                context.log.info(f"🔄 UPDATED GOAL: {goal_id}")
-                updated_goals.append(goal_id)
-                
-        except Exception as e:
-            context.log.error(f"Error processing goal event: {e}")
+    if not goal_event:
+        context.log.error(f"❌ Goal event not found for {config.player_name} at {config.goal_minute}'")
+        client.close()
+        raise ValueError(f"Goal event not found for {config.player_name} at {config.goal_minute}'")
     
-    context.log.info(f"✅ Processed: {len(new_goals)} new, {len(updated_goals)} updated")
+    # Extract team info from fixture
+    home_team = fixture.get("teams", {}).get("home", {}).get("name", "Unknown")
+    away_team = fixture.get("teams", {}).get("away", {}).get("name", "Unknown")
     
-    return new_goals
-
-
-@job(
-    name="process_goals",
-    description="Process goal events and prepare for Twitter scraping"
-)
-def process_goals_job():
-    """Goal processing workflow"""
-    validate_and_store_goals_op()
+    context.log.info(f"📖 Read goal data from fixtures: {config.player_name} in {home_team} vs {away_team}")
+    
+    # Create new goal document
+    goal_doc = {
+        "fixture_id": ObjectId(config.fixture_id),
+        "time": goal_event["time"],
+        "team": goal_event["team"],
+        "player": goal_event["player"],
+        "assist": goal_event.get("assist"),
+        "type": goal_event["type"],
+        "detail": goal_event["detail"],
+        "comments": goal_event.get("comments"),
+        "processing_status": {
+            "twitter_scraped": False,
+            "videos_downloaded": False,
+            "videos_uploaded": False,
+            "videos_filtered": False,
+            "completed": False
+        },
+        "created_at": datetime.utcnow(),
+        "home_team": home_team,  # Store for easy access
+        "away_team": away_team
+    }
+    
+    result = db.goals.insert_one(goal_doc)
+    goal_id = str(result.inserted_id)
+    
+    context.log.info(f"🆕 NEW GOAL STORED: {config.player_name} ({config.goal_minute}') [{goal_id}]")
+    
+    client.close()
+    
+    return {
+        "goal_id": goal_id,
+        "is_new": True,
+        "player": config.player_name,
+        "minute": config.goal_minute,
+        "fixture_id": config.fixture_id,
+        "home_team": home_team,
+        "away_team": away_team
+    }

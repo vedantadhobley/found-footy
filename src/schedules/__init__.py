@@ -11,10 +11,10 @@ daily_ingest_schedule = ScheduleDefinition(
     cron_schedule="0 0 * * *",  # Midnight UTC
 )
 
-# Monitor active fixtures every 3 minutes
+# Monitor active fixtures every 5 minutes (reduced API costs)
 monitor_schedule = ScheduleDefinition(
     name="monitor_schedule",
-    description="Monitor active fixtures for goal changes every 3 minutes",
+    description="Monitor active fixtures for goal changes every 5 minutes",
     job=monitor_fixtures_job,
-    cron_schedule="*/3 * * * *",  # Every 3 minutes
+    cron_schedule="*/5 * * * *",  # Every 5 minutes
 )

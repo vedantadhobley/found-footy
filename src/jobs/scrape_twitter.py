@@ -1,106 +1,102 @@
-"""Twitter scraping job - finds goal videos on Twitter
+"""Twitter scraping op - searches Twitter for a single goal's videos"""
 
-Migrated from found_footy/flows/twitter_flow.py
-"""
-
-import os
-import logging
-import requests
+from dagster import op, Config, Backoff, Jitter, RetryPolicy
 from typing import Dict, Any
-
-from dagster import job, op, OpExecutionContext, Config
-from src.data.mongo_store import FootyMongoStore
-
-logger = logging.getLogger(__name__)
+from pymongo import MongoClient
+from bson import ObjectId
+from datetime import datetime
 
 
-class ScrapeTwitterConfig(Config):
-    """Configuration for Twitter scraping"""
-    goal_id: str
+class MongoConfig(Config):
+    """MongoDB connection configuration."""
+    mongo_uri: str = "mongodb://localhost:27017"
+    db_name: str = "found_footy"
 
 
 @op(
-    name="search_twitter_videos",
-    description="Search Twitter for goal videos and store URLs"
+    name="scrape_twitter",
+    description="Search Twitter for videos of a single goal",
+    retry_policy=RetryPolicy(
+        max_retries=3,
+        delay=10,  # 10 seconds between retries
+        backoff=Backoff.EXPONENTIAL,
+        jitter=Jitter.PLUS_MINUS
+    )
 )
-def search_twitter_videos_op(
-    context: OpExecutionContext,
-    config: ScrapeTwitterConfig
-) -> Dict[str, Any]:
+def scrape_twitter_op(context, config: MongoConfig, process_result: Dict) -> Dict[str, Any]:
     """
-    Search Twitter for videos:
-    1. Get goal details from MongoDB
-    2. Build search query
-    3. Call Twitter session service
-    4. Store discovered video URLs
+    Search Twitter for videos of ONE goal - matches twitter_flow.py.
+    
+    Retries up to 3 times on failure (Twitter API can be flaky).
+    Uses exponential backoff: 10s, 20s, 40s.
     """
-    goal_id = config.goal_id
-    context.log.info(f"🔍 Twitter search for goal: {goal_id}")
+    from found_footy.services.twitter_session_isolated import TwitterSessionManager
     
-    store = FootyMongoStore()
-    goal_doc = store.goals.find_one({"_id": goal_id})
+    goal_id = process_result["goal_id"]
+    player = process_result["player"]
+    minute = process_result["minute"]
+    home_team = process_result["home_team"]
+    away_team = process_result["away_team"]
     
-    if not goal_doc:
-        context.log.warning(f"Goal {goal_id} not found")
-        return {"status": "goal_not_found", "goal_id": goal_id}
+    client = MongoClient(config.mongo_uri)
+    db = client[config.db_name]
     
-    # Extract player and team info
-    player_name = goal_doc.get("player", {}).get("name", "")
-    team_name = goal_doc.get("team", {}).get("name", "")
+    # Build search query (player last name + teams)
+    player_last_name = player.split()[-1] if " " in player else player
+    query = f"{player_last_name} {home_team} {away_team}"
     
-    if not player_name or not team_name:
-        context.log.warning("Missing player/team data")
-        store.update_goal_processing_status(goal_id, "videos_discovered", discovered_videos=[])
-        return {"status": "missing_data", "goal_id": goal_id, "video_count": 0}
+    context.log.info(f"🔍 Searching Twitter for: {query}")
     
-    # Build search query
-    player_last_name = player_name.split()[-1] if " " in player_name else player_name
-    search_query = f"{player_last_name} {team_name}"
-    
-    context.log.info(f"🔍 Searching: '{search_query}'")
-    
-    # Call Twitter session service
-    session_url = os.getenv('TWITTER_SESSION_URL', 'http://twitter-session:8888')
     try:
-        response = requests.post(
-            f"{session_url}/search",
-            json={"search_query": search_query, "max_results": 5},
-            timeout=60
+        twitter = TwitterSessionManager()
+        videos = twitter.search_videos(query, max_results=10)
+        
+        context.log.info(f"Found {len(videos)} videos")
+        
+        # Store video metadata in MongoDB
+        video_ids = []
+        for video in videos:
+            video_doc = {
+                "goal_id": ObjectId(goal_id),
+                "tweet_url": video["tweet_url"],
+                "video_url": video["video_url"],
+                "author": video["author"],
+                "text": video["text"],
+                "created_at": video["created_at"],
+                "download_status": "pending",
+                "upload_status": "pending",
+                "discovered_at": datetime.utcnow()
+            }
+            
+            # Upsert to avoid duplicates
+            result = db.videos.update_one(
+                {"goal_id": ObjectId(goal_id), "tweet_url": video["tweet_url"]},
+                {"$set": video_doc},
+                upsert=True
+            )
+            
+            if result.upserted_id:
+                video_ids.append(str(result.upserted_id))
+        
+        # Update goal status
+        db.goals.update_one(
+            {"_id": ObjectId(goal_id)},
+            {"$set": {"processing_status.twitter_scraped": True}}
         )
         
-        if response.status_code == 200:
-            data = response.json()
-            found_videos = data.get("videos", [])
-        else:
-            context.log.warning(f"Twitter API returned status {response.status_code}")
-            found_videos = []
+        client.close()
+        
+        context.log.info(f"✅ Scraped {len(videos)} videos for goal {goal_id}")
+        
+        return {
+            "goal_id": goal_id,
+            "player": player,
+            "minute": minute,
+            "videos_found": len(videos),
+            "video_ids": video_ids
+        }
+    
     except Exception as e:
-        context.log.error(f"Twitter API error: {e}")
-        found_videos = []
-    
-    # Update goal processing status
-    store.update_goal_processing_status(
-        goal_id,
-        "videos_discovered",
-        discovered_videos=found_videos,
-        twitter_search_completed=True
-    )
-    
-    context.log.info(f"✅ Found {len(found_videos)} videos for '{search_query}'")
-    
-    return {
-        "status": "success",
-        "goal_id": goal_id,
-        "search_query": search_query,
-        "video_count": len(found_videos),
-        "videos": found_videos
-    }
-
-
-@job(
-    name="scrape_twitter",
-    description="Search Twitter for goal videos"
-)
-def scrape_twitter_job():
-    """Twitter scraping workflow"""
-    search_twitter_videos_op()
+        client.close()
+        context.log.error(f"❌ Twitter search failed: {e}")
+        raise  # Re-raise to trigger retry policy

@@ -1,223 +1,250 @@
-"""Download videos job - downloads videos from Twitter and uploads to S3
+"""Download and upload video ops - separate Twitter download from S3 upload"""
 
-Migrated from found_footy/flows/download_flow.py
-"""
-
-import os
-import tempfile
-import logging
+from dagster import op, Config, Backoff, Jitter, RetryPolicy
 from typing import Dict, Any, List
-
-import yt_dlp
-from dagster import job, op, OpExecutionContext, Config, DynamicOut, DynamicOutput
-
-from src.data.mongo_store import FootyMongoStore
-from src.data.s3_store import FootyS3Store
-
-logger = logging.getLogger(__name__)
+from pymongo import MongoClient
+from bson import ObjectId
+from datetime import datetime
+import subprocess
+import tempfile
+from pathlib import Path
 
 
-class DownloadVideosConfig(Config):
-    """Configuration for downloading videos"""
-    goal_id: str
-
-
-@op(
-    name="get_videos_to_download",
-    description="Get list of videos to download from MongoDB",
-    out=DynamicOut(Dict[str, Any])
-)
-def get_videos_to_download_op(
-    context: OpExecutionContext,
-    config: DownloadVideosConfig
-):
-    """Get discovered videos that need to be downloaded - yields each video as DynamicOutput"""
-    goal_id = config.goal_id
-    context.log.info(f"📥 Getting videos to download for goal: {goal_id}")
-    
-    store = FootyMongoStore()
-    goal_doc = store.goals.find_one({"_id": goal_id})
-    
-    if not goal_doc:
-        context.log.warning(f"Goal {goal_id} not found")
-        return
-    
-    discovered_videos = goal_doc.get("discovered_videos", [])
-    
-    if not discovered_videos:
-        context.log.warning(f"No videos to download for {goal_id}")
-        store.update_goal_processing_status(goal_id, "completed", successful_uploads=[], failed_downloads=[])
-        return
-    
-    context.log.info(f"Found {len(discovered_videos)} videos to download")
-    
-    for idx, video in enumerate(discovered_videos):
-        yield DynamicOutput(
-            value={
-                "goal_id": goal_id,
-                "video_index": idx,
-                "video_info": video
-            },
-            mapping_key=f"video_{idx}"
-        )
+class MongoConfig(Config):
+    """MongoDB connection configuration."""
+    mongo_uri: str = "mongodb://localhost:27017"
+    db_name: str = "found_footy"
 
 
 @op(
-    name="download_and_upload_video",
-    description="Download a single video from Twitter and upload to S3"
-)
-def download_and_upload_video_op(
-    context: OpExecutionContext,
-    video_data: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Download video with yt-dlp and upload to S3"""
-    goal_id = video_data["goal_id"]
-    video_index = video_data["video_index"]
-    video_info = video_data["video_info"]
-    
-    tweet_url = video_info.get("tweet_url") or video_info.get("video_page_url")
-    
-    if not tweet_url:
-        context.log.warning(f"Video {video_index}: No URL found")
-        return {
-            "status": "failed",
-            "goal_id": goal_id,
-            "video_index": video_index,
-            "error": "No URL"
-        }
-    
-    context.log.info(f"📥 Downloading video {video_index}: {tweet_url}")
-    
-    # Download with yt-dlp
-    try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            out_tmpl = os.path.join(temp_dir, f"{goal_id}_{video_index}.%(ext)s")
-            
-            ydl_opts = {
-                "format": "best[height<=720]",
-                "outtmpl": out_tmpl,
-                "quiet": True,
-                "no_warnings": True,
-                "writeinfojson": True,
-                "socket_timeout": 30,
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(tweet_url, download=True)
-            
-            # Find downloaded file
-            candidates = [
-                f for f in os.listdir(temp_dir)
-                if f.startswith(f"{goal_id}_{video_index}") and not f.endswith(".info.json")
-            ]
-            
-            if not candidates:
-                context.log.error(f"No file downloaded for video {video_index}")
-                return {
-                    "status": "failed",
-                    "goal_id": goal_id,
-                    "video_index": video_index,
-                    "error": "Download produced no file"
-                }
-            
-            downloaded_file = os.path.join(temp_dir, candidates[0])
-            
-            # Upload to S3
-            context.log.info(f"☁️ Uploading video {video_index} to S3...")
-            s3_store = FootyS3Store()
-            
-            video_metadata = {
-                "goal_id": goal_id,
-                "video_index": video_index,
-                "source_tweet": tweet_url,
-                "search_term": video_info.get("search_term", "unknown"),
-                "download_method": "yt-dlp",
-                "quality": info.get("format", "unknown"),
-            }
-            
-            upload_result = s3_store.upload_video_file(
-                downloaded_file,
-                goal_id,
-                video_index,
-                video_metadata
-            )
-            
-            if upload_result["status"] == "success":
-                context.log.info(f"✅ Video {video_index} uploaded successfully")
-                return {
-                    "status": "success",
-                    "goal_id": goal_id,
-                    "video_index": video_index,
-                    "s3_key": upload_result["s3_key"],
-                    "file_size": upload_result["file_size"]
-                }
-            else:
-                context.log.error(f"❌ S3 upload failed for video {video_index}")
-                return {
-                    "status": "failed",
-                    "goal_id": goal_id,
-                    "video_index": video_index,
-                    "error": "S3 upload failed"
-                }
-                
-    except Exception as e:
-        context.log.error(f"❌ Error processing video {video_index}: {e}")
-        return {
-            "status": "failed",
-            "goal_id": goal_id,
-            "video_index": video_index,
-            "error": str(e)
-        }
-
-
-@op(
-    name="update_goal_completion",
-    description="Update goal with download results"
-)
-def update_goal_completion_op(
-    context: OpExecutionContext,
-    results: List[Dict[str, Any]]
-):
-    """Update goal processing status with download results"""
-    # Extract goal_id from first result (all results should have same goal_id)
-    if not results:
-        context.log.warning("No results to process")
-        return
-    
-    goal_id = results[0].get("goal_id")
-    if not goal_id:
-        # Try to get from video_index in results
-        for r in results:
-            if "goal_id" in r:
-                goal_id = r["goal_id"]
-                break
-        
-        if not goal_id:
-            context.log.error("Could not determine goal_id from results")
-            return
-    
-    successful = [r for r in results if r["status"] == "success"]
-    failed = [r for r in results if r["status"] == "failed"]
-    
-    context.log.info(f"📊 Download complete for {goal_id}: {len(successful)} successful, {len(failed)} failed")
-    
-    store = FootyMongoStore()
-    store.update_goal_processing_status(
-        goal_id,
-        "completed",
-        successful_uploads=[r["s3_key"] for r in successful],
-        failed_downloads=[r.get("error", "unknown") for r in failed]
-    )
-    
-    context.log.info(f"✅ Goal {goal_id} processing completed")
-
-
-@job(
     name="download_videos",
-    description="Download goal videos from Twitter and upload to S3"
+    description="Download videos from Twitter for a single goal",
+    retry_policy=RetryPolicy(
+        max_retries=3,
+        delay=15,  # 15 seconds between retries
+        backoff=Backoff.EXPONENTIAL,
+        jitter=Jitter.PLUS_MINUS
+    )
 )
-def download_videos_job():
-    """Video download workflow"""
-    videos = get_videos_to_download_op()
-    results = videos.map(download_and_upload_video_op).collect()
-    update_goal_completion_op(results)
+def download_videos_op(context, config: MongoConfig, scrape_result: Dict) -> Dict[str, Any]:
+    """
+    Download videos from Twitter for ONE goal using yt-dlp.
+    
+    Retries up to 3 times on failure (network/Twitter issues).
+    Downloads are stored temporarily and paths returned for upload op.
+    """
+    goal_id = scrape_result["goal_id"]
+    player = scrape_result["player"]
+    minute = scrape_result["minute"]
+    
+    client = MongoClient(config.mongo_uri)
+    db = client[config.db_name]
+    
+    # Get videos for THIS goal that need downloading
+    videos = list(db.videos.find({
+        "goal_id": ObjectId(goal_id),
+        "download_status": "pending"
+    }))
+    
+    if not videos:
+        context.log.info("No videos to download")
+        client.close()
+        return {
+            "goal_id": goal_id,
+            "player": player,
+            "minute": minute,
+            "downloaded_count": 0,
+            "failed_count": 0,
+            "video_paths": []
+        }
+    
+    context.log.info(f"📥 Downloading {len(videos)} videos for {player} ({minute}')")
+    
+    downloaded_videos = []
+    failed_count = 0
+    
+    # Create temp directory for this goal's videos
+    tmpdir = tempfile.mkdtemp(prefix=f"goal_{goal_id}_")
+    
+    try:
+        for video in videos:
+            video_url = video["video_url"]
+            video_id = str(video["_id"])
+            
+            try:
+                output_path = Path(tmpdir) / f"{video_id}.mp4"
+                
+                # Download with yt-dlp
+                cmd = [
+                    "yt-dlp",
+                    "-f", "best",
+                    "-o", str(output_path),
+                    video_url
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                
+                if result.returncode == 0 and output_path.exists():
+                    # Mark as downloaded in DB
+                    db.videos.update_one(
+                        {"_id": video["_id"]},
+                        {"$set": {
+                            "download_status": "completed",
+                            "downloaded_at": datetime.utcnow()
+                        }}
+                    )
+                    
+                    downloaded_videos.append({
+                        "video_id": video_id,
+                        "local_path": str(output_path),
+                        "video_url": video_url
+                    })
+                    
+                    context.log.info(f"✅ Downloaded video {video_id}")
+                else:
+                    db.videos.update_one(
+                        {"_id": video["_id"]},
+                        {"$set": {"download_status": "failed"}}
+                    )
+                    failed_count += 1
+                    context.log.error(f"❌ yt-dlp failed for {video_url}")
+            
+            except Exception as e:
+                context.log.error(f"Failed to download {video_id}: {e}")
+                db.videos.update_one(
+                    {"_id": video["_id"]},
+                    {"$set": {"download_status": "failed"}}
+                )
+                failed_count += 1
+        
+        # Update goal processing status
+        if downloaded_videos:
+            db.goals.update_one(
+                {"_id": ObjectId(goal_id)},
+                {"$set": {"processing_status.videos_downloaded": True}}
+            )
+        
+        client.close()
+        
+        context.log.info(f"✅ Downloaded {len(downloaded_videos)}/{len(videos)} videos")
+        
+        return {
+            "goal_id": goal_id,
+            "player": player,
+            "minute": minute,
+            "downloaded_count": len(downloaded_videos),
+            "failed_count": failed_count,
+            "video_paths": downloaded_videos,
+            "temp_dir": tmpdir  # Pass to upload op for cleanup
+        }
+    
+    except Exception as e:
+        client.close()
+        context.log.error(f"❌ Download failed: {e}")
+        raise  # Re-raise to trigger retry
+
+
+@op(
+    name="upload_videos",
+    description="Upload downloaded videos to S3/MinIO",
+    retry_policy=RetryPolicy(
+        max_retries=3,
+        delay=10,
+        backoff=Backoff.EXPONENTIAL,
+        jitter=Jitter.PLUS_MINUS
+    )
+)
+def upload_videos_op(context, config: MongoConfig, download_result: Dict) -> Dict[str, Any]:
+    """
+    Upload downloaded videos to S3/MinIO storage.
+    
+    Retries up to 3 times on failure (network/S3 issues).
+    Separate from download so failures can be retried independently.
+    """
+    from found_footy.storage.s3_store import S3Store
+    import shutil
+    
+    goal_id = download_result["goal_id"]
+    player = download_result["player"]
+    minute = download_result["minute"]
+    video_paths = download_result["video_paths"]
+    temp_dir = download_result.get("temp_dir")
+    
+    if not video_paths:
+        context.log.info("No videos to upload")
+        return {
+            "goal_id": goal_id,
+            "player": player,
+            "minute": minute,
+            "uploaded_count": 0,
+            "failed_count": 0
+        }
+    
+    context.log.info(f"☁️ Uploading {len(video_paths)} videos to S3")
+    
+    client = MongoClient(config.mongo_uri)
+    db = client[config.db_name]
+    s3 = S3Store()
+    
+    uploaded_count = 0
+    failed_count = 0
+    
+    try:
+        for video_data in video_paths:
+            video_id = video_data["video_id"]
+            local_path = video_data["local_path"]
+            
+            try:
+                # Upload to S3
+                s3_key = f"goals/{goal_id}/{video_id}.mp4"
+                s3.upload_file(local_path, s3_key)
+                
+                # Update video record with S3 location
+                db.videos.update_one(
+                    {"_id": ObjectId(video_id)},
+                    {"$set": {
+                        "upload_status": "completed",
+                        "s3_key": s3_key,
+                        "uploaded_at": datetime.utcnow()
+                    }}
+                )
+                
+                uploaded_count += 1
+                context.log.info(f"✅ Uploaded {video_id} to {s3_key}")
+            
+            except Exception as e:
+                context.log.error(f"Failed to upload {video_id}: {e}")
+                db.videos.update_one(
+                    {"_id": ObjectId(video_id)},
+                    {"$set": {"upload_status": "failed"}}
+                )
+                failed_count += 1
+        
+        # Update goal processing status
+        if uploaded_count > 0:
+            db.goals.update_one(
+                {"_id": ObjectId(goal_id)},
+                {"$set": {"processing_status.videos_uploaded": True}}
+            )
+        
+        client.close()
+        
+        # Cleanup temp directory
+        if temp_dir and Path(temp_dir).exists():
+            shutil.rmtree(temp_dir)
+            context.log.info(f"🗑️ Cleaned up temp dir: {temp_dir}")
+        
+        context.log.info(f"✅ Uploaded {uploaded_count}/{len(video_paths)} videos")
+        
+        return {
+            "goal_id": goal_id,
+            "player": player,
+            "minute": minute,
+            "uploaded_count": uploaded_count,
+            "failed_count": failed_count
+        }
+    
+    except Exception as e:
+        client.close()
+        context.log.error(f"❌ Upload failed: {e}")
+        raise  # Re-raise to trigger retry

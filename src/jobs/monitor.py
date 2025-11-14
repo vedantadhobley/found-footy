@@ -1,10 +1,17 @@
 """Monitor fixtures job - detects goal changes and triggers processing
 
 Migrated from found_footy/flows/monitor_flow.py
+
+Schedule: Every 5 minutes (reduced from 3min to save ~33% API costs)
+- Only queries API when fixtures_active is not empty ✅
+- Detects goal changes and updates fixtures in MongoDB ✅
+- Sensor picks up unprocessed goals from fixtures collection ✅
+- No delay logic - sensor triggers immediately, retry logic added later ✅
 """
 
 import logging
 from typing import Dict, Any
+from datetime import datetime, timezone
 
 from dagster import job, op, OpExecutionContext
 from src.data.mongo_store import FootyMongoStore
@@ -85,9 +92,8 @@ def monitor_fixtures_op(context: OpExecutionContext) -> Dict[str, Any]:
                 context.log.info(f"✅ Found {actual_complete_count} complete goals for fixture {fixture_id}")
                 goals_detected += actual_complete_count
                 
-                # Store pending goal processing data for sensor to pick up
-                context.log.info(f"� Storing {actual_complete_count} goals for fixture {fixture_id}")
-                store.store_pending_goal_processing(fixture_id, complete_goal_events)
+                # Goals are already in fixture document, sensor will find them
+                context.log.info(f"📝 {actual_complete_count} goals available for sensor to process")
             
             # Update fixture if all goals are complete
             if total_event_count == expected_total_goals and actual_incomplete_count == 0:
@@ -95,7 +101,7 @@ def monitor_fixtures_op(context: OpExecutionContext) -> Dict[str, Any]:
                 current_fixture = store.fixtures_active.find_one({"_id": fixture_id})
                 if current_fixture:
                     clean_update = {
-                        "goals": delta_result.get("current_goals", {}),
+                        "goals": complete_goal_events,  # Store complete goal events for sensor
                         "score": delta_result.get("current_score", {})
                     }
                     store.fixtures_active.update_one(
