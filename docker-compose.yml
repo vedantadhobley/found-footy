@@ -1,164 +1,30 @@
-networks:
-  found-footy-network:
-    driver: bridge
-    name: found-footy-network
-    # ✅ SIMPLE: No custom subnet needed
+# Dagster-based deployment for Found Footy
+# Migrated from Prefect to Dagster orchestration
 
 services:
-
-  # Prefect orchestration server
-  prefect-server:
-    image: prefecthq/prefect:3-latest
-    command: prefect server start --host 0.0.0.0 --port 4200
-    ports:
-      - "0.0.0.0:5000:4200"
+  # PostgreSQL database for Dagster metadata storage
+  dagster-postgres:
+    image: postgres:15-alpine
+    container_name: found-footy-dagster-postgres
     environment:
-      - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://prefect:prefect@prefect-postgres:5432/prefect
-      - PREFECT_SERVER_API_HOST=0.0.0.0
-      # ✅ SIMPLE: Remove variable substitution - just use localhost
-      - PREFECT_UI_API_URL=http://localhost:5000/api
-    depends_on:
-      prefect-postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 15
-      start_period: 30s
-    networks:
-      - found-footy-network
-
-  # Core Prefect database only
-  prefect-postgres:
-    image: postgres:15
-    environment:
-      POSTGRES_USER: prefect
-      POSTGRES_PASSWORD: prefect
-      POSTGRES_DB: prefect
+      POSTGRES_USER: founduser
+      POSTGRES_PASSWORD: footypass
+      POSTGRES_DB: dagster
     volumes:
-      - prefect_postgres_data:/var/lib/postgresql/data
-    # ❌ REMOVE: Direct port exposure - only internal access needed
+      - dagster_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U prefect -d prefect"]
+      test: ["CMD-SHELL", "pg_isready -U founduser -d dagster"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
     networks:
-      - found-footy-network
+      - footy-network
 
-  # Init container - runs setup then exits
-  app:
-    build: .
-    environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin
-      - PYTHONPATH=/app
-    depends_on:
-      prefect-server:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-    command: >
-      sh -c "
-        echo '🚀 Creating Prefect Variables...' &&
-        python -c 'import asyncio; from found_footy.config.startup_config import full_startup_sync; asyncio.run(full_startup_sync())' &&
-        echo '📊 Variables created successfully - check Prefect UI'
-      "
-    networks:
-      - found-footy-network
-    restart: "no"
-
-  # CLEAN: Domain-separated workers only
-  # Ingest worker
-  ingest-worker:
-    build: .
-    command: prefect worker start --pool ingest-pool --type process --limit 2
-    environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ CHANGE
-      - PYTHONPATH=/app
-      - RAPIDAPI_KEY=${RAPIDAPI_KEY}  # ✅ REVERT: Back to RapidAPI
-    env_file:
-      - .env
-    depends_on:
-      prefect-server:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-      app:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    networks:
-      - found-footy-network
-
-  # Monitor worker (dedicated)
-  monitor-worker:
-    build: .
-    command: prefect worker start --pool monitor-pool --type process --limit 1
-    environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ CHANGE
-      - PYTHONPATH=/app
-      - RAPIDAPI_KEY=${RAPIDAPI_KEY}  # ✅ REVERT: Back to RapidAPI
-    env_file:
-      - .env
-    depends_on:
-      prefect-server:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-      app:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    networks:
-      - found-footy-network
-
-  # Advance worker
-  advance-worker:
-    build: .
-    command: prefect worker start --pool advance-pool --type process --limit 2
-    environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ CHANGE
-      - PYTHONPATH=/app
-    env_file:
-      - .env
-    depends_on:
-      prefect-server:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-      app:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    networks:
-      - found-footy-network
-
-  # Goal worker
-  goal-worker:
-    build: .
-    command: prefect worker start --pool goal-pool --type process --limit 3
-    environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ CHANGE
-      - PYTHONPATH=/app
-    env_file:
-      - .env
-    depends_on:
-      prefect-server:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-      app:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    networks:
-      - found-footy-network
-
-  # MongoDB only - internal access only
-  mongodb:
-    image: mongo:7
+  # MongoDB for application data (fixtures, goals, videos)
+  mongo:
+    image: mongo:7-jammy
+    container_name: found-footy-mongo
     environment:
       MONGO_INITDB_ROOT_USERNAME: founduser
       MONGO_INITDB_ROOT_PASSWORD: footypass
@@ -166,9 +32,8 @@ services:
     command: >
       mongod
       --setParameter logComponentVerbosity={network:{verbosity:0},storage:{verbosity:0}}
-    # ❌ REMOVE: Direct port exposure - only Mongo Express needs access
     volumes:
-      - mongodb_data:/data/db
+      - mongo_data:/data/db
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
       interval: 10s
@@ -176,215 +41,204 @@ services:
       retries: 5
       start_period: 10s
     networks:
-      - found-footy-network
+      - footy-network
 
-  # MongoDB admin interface
+  # Mongo Express (database UI)
   mongo-express:
-    image: mongo-express:latest
+    image: mongo-express:1.0.2-20-alpine3.19
+    container_name: found-footy-mongo-express
+    restart: unless-stopped
     ports:
-      - "0.0.0.0:3000:8081"  # ✅ KEEP: Direct access
+      - "3000:8081"  # Changed to match old setup (was on 3000 before)
     environment:
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_PORT: 27017
       ME_CONFIG_MONGODB_ADMINUSERNAME: founduser
       ME_CONFIG_MONGODB_ADMINPASSWORD: footypass
-      ME_CONFIG_MONGODB_SERVER: mongodb
-      ME_CONFIG_MONGODB_PORT: 27017
       ME_CONFIG_MONGODB_AUTH_DATABASE: admin
-      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
       ME_CONFIG_BASICAUTH_USERNAME: founduser
       ME_CONFIG_BASICAUTH_PASSWORD: footypass
-      ME_CONFIG_MONGODB_URL: mongodb://founduser:footypass@mongodb:27017/admin?authSource=admin
-      ME_CONFIG_MONGODB_SSL: "false"
     depends_on:
-      mongodb:
+      mongo:
         condition: service_healthy
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8081"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks:
-      - found-footy-network
+      - footy-network
 
-  # MinIO S3-compatible storage
+  # MinIO (S3-compatible storage for videos)
   minio:
     image: minio/minio:latest
-    command: server /data --console-address ":9001" --address ":9000"
+    container_name: found-footy-minio
+    command: server /data --console-address ":9001"
     ports:
-      - "0.0.0.0:9000:9000"
-      - "0.0.0.0:9001:9001"
+      - "9000:9000"
+      - "9001:9001"
     environment:
       MINIO_ROOT_USER: founduser
       MINIO_ROOT_PASSWORD: footypass
     volumes:
       - minio_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
     networks:
-      - found-footy-network
+      - footy-network
 
-  # Twitter worker - ✅ ENHANCED: Debug-friendly configuration
-  twitter-worker:
-    build: .
-    command: >
-      sh -c "
-        echo '🤖 Twitter Worker starting...' &&
-        echo '🚀 Starting worker directly...' &&
-        PREFECT_LOGGING_LEVEL=INFO prefect worker start --pool twitter-pool --type process --limit 2
-      "
-    environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ CHANGE
-      - PYTHONPATH=/app
-      - S3_ENDPOINT_URL=http://minio:9000
-      - S3_ACCESS_KEY=founduser   # ✅ CHANGE: from found
-      - S3_SECRET_KEY=footypass   # ✅ CHANGE: from footy
-      - S3_BUCKET_NAME=footy-videos
-      # ❌ REMOVE: - API_FOOTBALL_KEY=${API_FOOTBALL_KEY}
-      # ✅ ADD: Debug environment variables
-      - DEBUG_MODE=1
-      - PREFECT_LOGGING_LEVEL=DEBUG
+  # Dagster webserver (UI)
+  dagster-webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: found-footy:latest
+    container_name: found-footy-dagster-webserver
+    command: dagster-webserver -h 0.0.0.0 -p 3000 -w /app/workspace.yaml
+    ports:
+      - "5000:3000"  # Changed from 3000:3000 to avoid conflict with mongo-express
     env_file:
       - .env
+    environment:
+      DAGSTER_HOME: /app
+      DAGSTER_PG_USERNAME: founduser
+      DAGSTER_PG_PASSWORD: footypass
+      DAGSTER_PG_HOST: dagster-postgres
+      DAGSTER_PG_DB: dagster
+      DAGSTER_PG_PORT: 5432
+      MONGODB_URI: mongodb://founduser:footypass@mongo:27017/found_footy?authSource=admin
+      MONGODB_URL: mongodb://founduser:footypass@mongo:27017/found_footy?authSource=admin
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: founduser
+      S3_SECRET_KEY: footypass
+      S3_BUCKET_NAME: footy-videos
+      TWITTER_SESSION_URL: http://twitter-session:8888
+      PYTHONPATH: /app
+    volumes:
+      - ./src:/app/src
+      - ./workspace.yaml:/app/workspace.yaml
+      - ./dagster.yaml:/app/dagster.yaml
+      - dagster_logs:/app/dagster_logs
+      - dagster_storage:/app/dagster_storage
     depends_on:
-      prefect-server:
+      dagster-postgres:
         condition: service_healthy
-      mongodb:
+      mongo:
         condition: service_healthy
-      minio:
-        condition: service_healthy
-      app:
-        condition: service_completed_successfully
     restart: unless-stopped
-    networks:
-      - found-footy-network
-    # ✅ ADD: Health check for Twitter worker
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://prefect-server:4200/api/health', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
       start_period: 60s
+    networks:
+      - footy-network
 
-  # Download worker - S3 video processing
-  download-worker:
-    build: .
-    command: prefect worker start --pool download-pool --type process --limit 2
-    environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ CHANGE
-      - PYTHONPATH=/app
-      - S3_ENDPOINT_URL=http://minio:9000
-      - S3_ACCESS_KEY=founduser   # ✅ CHANGE
-      - S3_SECRET_KEY=footypass   # ✅ CHANGE
-      - S3_BUCKET_NAME=footy-videos
-      - SSL_CERT_DIR=/etc/ssl/certs
-      # ❌ REMOVE: - API_FOOTBALL_KEY=${API_FOOTBALL_KEY}
+  # Dagster daemon (for schedules and sensors)
+  dagster-daemon:
+    image: found-footy:latest
+    container_name: found-footy-dagster-daemon
+    command: dagster-daemon run
     env_file:
       - .env
+    environment:
+      DAGSTER_HOME: /app
+      DAGSTER_PG_USERNAME: founduser
+      DAGSTER_PG_PASSWORD: footypass
+      DAGSTER_PG_HOST: dagster-postgres
+      DAGSTER_PG_DB: dagster
+      DAGSTER_PG_PORT: 5432
+      MONGODB_URI: mongodb://founduser:footypass@mongo:27017/found_footy?authSource=admin
+      MONGODB_URL: mongodb://founduser:footypass@mongo:27017/found_footy?authSource=admin
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: founduser
+      S3_SECRET_KEY: footypass
+      S3_BUCKET_NAME: footy-videos
+      TWITTER_SESSION_URL: http://twitter-session:8888
+      PYTHONPATH: /app
+    volumes:
+      - ./src:/app/src
+      - ./workspace.yaml:/app/workspace.yaml
+      - ./dagster.yaml:/app/dagster.yaml
+      - dagster_logs:/app/dagster_logs
+      - dagster_storage:/app/dagster_storage
     depends_on:
-      prefect-server:
+      dagster-postgres:
         condition: service_healthy
-      mongodb:
+      dagster-webserver:
         condition: service_healthy
-      minio:
-        condition: service_healthy
-      app:
-        condition: service_completed_successfully
     restart: unless-stopped
     networks:
-      - found-footy-network
+      - footy-network
 
-  # Filter worker - Video deduplication processing  
-  filter-worker:
-    build: .
-    command: prefect worker start --pool filter-pool --type process --limit 2
-    environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-      - MONGODB_URL=mongodb://founduser:footypass@mongodb:27017/found_footy?authSource=admin  # ✅ CHANGE
-      - PYTHONPATH=/app
-      - S3_ENDPOINT_URL=http://minio:9000
-      - S3_ACCESS_KEY=founduser   # ✅ CHANGE
-      - S3_SECRET_KEY=footypass   # ✅ CHANGE
-      - S3_BUCKET_NAME=footy-videos
-      - SSL_CERT_DIR=/etc/ssl/certs
-      # ❌ REMOVE: - API_FOOTBALL_KEY=${API_FOOTBALL_KEY}
+  # Twitter session service
+  twitter-session:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: found-footy:latest
+    container_name: found-footy-twitter-session
+    command: python twitter_service_standalone.py
+    ports:
+      - "8888:8888"
     env_file:
       - .env
-    depends_on:
-      prefect-server:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-      app:
-        condition: service_completed_successfully
+    environment:
+      PYTHONPATH: /app
+    volumes:
+      - ./twitter_service_standalone.py:/app/twitter_service_standalone.py
+      - ./found_footy/services:/app/found_footy/services
     restart: unless-stopped
     networks:
-      - found-footy-network
-    # Health check for filter worker
-    healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://prefect-server:4200/api/health', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+      - footy-network
 
-  # Test service - ✅ RESTORED: No profile, runs with normal startup
+  # Test service for debugging
   test:
-    build: .
+    image: found-footy:latest
+    container_name: found-footy-test
     environment:
-      - PYTHONPATH=/app
-      - RAPIDAPI_KEY=${RAPIDAPI_KEY}  # ✅ REVERT: Back to RapidAPI for testing
+      PYTHONPATH: /app
+      MONGODB_URL: mongodb://founduser:footypass@mongo:27017/found_footy?authSource=admin
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: founduser
+      S3_SECRET_KEY: footypass
+      S3_BUCKET_NAME: footy-videos
     env_file:
       - .env
     depends_on:
-      prefect-server:
+      dagster-webserver:
         condition: service_healthy
-      mongodb:
+      mongo:
         condition: service_healthy
     command: >
       sh -c "
         echo '🧪 Test container ready' &&
-        sleep 30
+        tail -f /dev/null
       "
     volumes:
       - .:/app
     networks:
-      - found-footy-network
-    restart: "no"  # ✅ KEEP: Still runs once and exits
-
-  # Twitter session
-  twitter-session:
-    build: .
-    command: python /app/twitter_service_standalone.py
-    ports:
-      - "0.0.0.0:8000:8888"  # ✅ KEEP: Direct access
-    environment:
-      - TWITTER_USERNAME=${TWITTER_USERNAME}
-      - TWITTER_PASSWORD=${TWITTER_PASSWORD}
-      - TWITTER_EMAIL=${TWITTER_EMAIL}
-      - SESSION_TIMEOUT=3600
-    env_file:
-      - .env
-    networks:
-      - found-footy-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    tmpfs:
-      - /tmp/chrome_session:noexec,nosuid,size=100m
+      - footy-network
+    restart: "no"
 
 volumes:
-  twitter_session_data:
+  dagster_postgres_data:
     driver: local
-  prefect_postgres_data:
-    driver: local
-  mongodb_data:
+  mongo_data:
     driver: local
   minio_data:
     driver: local
+  dagster_logs:
+    driver: local
+  dagster_storage:
+    driver: local
+
+networks:
+  footy-network:
+    driver: bridge
