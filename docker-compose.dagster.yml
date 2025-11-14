@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  # MongoDB - Same as before
+  mongo:
+    image: mongo:7.0
+    container_name: found-footy-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: found_footy
+
+  # Dagster Daemon - Handles schedules and sensors
+  dagster-daemon:
+    build: .
+    container_name: found-footy-dagster-daemon
+    restart: unless-stopped
+    command: dagster-daemon run
+    volumes:
+      - ./:/app
+      - /tmp/.X11-unix:/tmp/.X11-unix  # For GUI support (manual Twitter login)
+      - twitter_cookies:/root/.twitter  # Persistent Twitter cookies
+    environment:
+      - DAGSTER_HOME=/app/.dagster
+      - MONGODB_URI=mongodb://mongo:27017/found_footy
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET}
+      - API_FOOTBALL_KEY=${API_FOOTBALL_KEY}
+      - DISPLAY=${DISPLAY:-:0}  # For non-headless Chrome
+      - TWITTER_MANUAL_LOGIN=true  # Flag to enable manual login mode
+    depends_on:
+      - mongo
+    networks:
+      - found-footy-network
+
+  # Dagster Webserver - UI for monitoring and triggering
+  dagster-webserver:
+    build: .
+    container_name: found-footy-dagster-webserver
+    restart: unless-stopped
+    command: dagster-webserver -h 0.0.0.0 -p 3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./:/app
+      - twitter_cookies:/root/.twitter
+    environment:
+      - DAGSTER_HOME=/app/.dagster
+      - MONGODB_URI=mongodb://mongo:27017/found_footy
+    depends_on:
+      - mongo
+    networks:
+      - found-footy-network
+
+  # Twitter Session Service - Separate service for manual login support
+  twitter-session:
+    build: .
+    container_name: found-footy-twitter-session
+    restart: unless-stopped
+    command: python -m found_footy.services.twitter_session_manual
+    ports:
+      - "8888:8888"  # API for session status
+      - "5900:5900"  # VNC for remote browser access (optional)
+    volumes:
+      - ./:/app
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - twitter_cookies:/root/.twitter
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - TWITTER_MANUAL_LOGIN=true
+      - VNC_PASSWORD=${VNC_PASSWORD:-foundfootyvnc}  # For remote access
+    networks:
+      - found-footy-network
+    devices:
+      - /dev/dri:/dev/dri  # GPU acceleration for Raspberry Pi
+
+volumes:
+  mongo_data:
+  twitter_cookies:  # Persistent cookies across restarts
+
+networks:
+  found-footy-network:
+    driver: bridge
