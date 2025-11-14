@@ -1,0 +1,105 @@
+"""Twitter scraping asset - finds goal videos on Twitter"""
+
+import os
+import logging
+import requests
+
+from dagster import asset, AssetExecutionContext, Output, Config
+from src.data.mongo_store import FootyMongoStore
+
+logger = logging.getLogger(__name__)
+
+
+class TwitterScrapeConfig(Config):
+    goal_id: str
+
+
+@asset(
+    name="scrape_twitter_videos",
+    description="Scrape Twitter for goal videos using session service",
+    group_name="twitter",
+    compute_kind="scraping"
+)
+def scrape_twitter_videos_asset(
+    context: AssetExecutionContext,
+    config: TwitterScrapeConfig
+) -> Output:
+    """
+    Scrape Twitter for goal videos - migrated from twitter_flow.py
+    
+    Steps:
+    1. Get goal details from MongoDB
+    2. Build search query from player/team names
+    3. Call Twitter session service to scrape videos
+    4. Store discovered video URLs
+    """
+    goal_id = config.goal_id
+    context.log.info(f"🔍 Twitter search for goal: {goal_id}")
+    
+    store = FootyMongoStore()
+    goal_doc = store.goals.find_one({"_id": goal_id})
+    
+    if not goal_doc:
+        context.log.warning(f"Goal {goal_id} not found")
+        return Output(value={"status": "goal_not_found", "goal_id": goal_id})
+    
+    # Extract player and team info
+    player_name = goal_doc.get("player", {}).get("name", "")
+    team_name = goal_doc.get("team", {}).get("name", "")
+    
+    if not player_name or not team_name:
+        context.log.warning("Missing player/team data")
+        store.update_goal_processing_status(goal_id, "videos_discovered", discovered_videos=[])
+        return Output(value={"status": "missing_data", "goal_id": goal_id, "video_count": 0})
+    
+    # Build search query
+    player_last_name = player_name.split()[-1] if " " in player_name else player_name
+    search_query = f"{player_last_name} {team_name} goal"
+    
+    context.log.info(f"🔍 Searching: '{search_query}'")
+    
+    # Call Twitter session service
+    session_url = os.getenv('TWITTER_SESSION_URL', 'http://twitter-session:8888')
+    try:
+        response = requests.post(
+            f"{session_url}/search",
+            json={"search_query": search_query, "max_results": 5},
+            timeout=60
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            found_videos = data.get("videos", [])
+        else:
+            context.log.warning(f"Twitter API returned status {response.status_code}")
+            found_videos = []
+    except Exception as e:
+        context.log.error(f"Twitter API error: {e}")
+        found_videos = []
+    
+    # Update goal processing status
+    store.update_goal_processing_status(
+        goal_id,
+        "videos_discovered",
+        discovered_videos=found_videos,
+        twitter_search_completed=True
+    )
+    
+    context.log.info(f"✅ Found {len(found_videos)} videos for '{search_query}'")
+    
+    result = {
+        "status": "success",
+        "goal_id": goal_id,
+        "search_query": search_query,
+        "video_count": len(found_videos),
+        "videos": found_videos
+    }
+    
+    return Output(
+        value=result,
+        metadata={
+            "goal_id": goal_id,
+            "video_count": len(found_videos),
+            "search_query": search_query
+        }
+    )
