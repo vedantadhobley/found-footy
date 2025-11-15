@@ -141,7 +141,7 @@ class FootyS3Store:
                     dummy_video_path,
                     goal_id,
                     video_index,
-                    metadata
+                    metadata or {}
                 )
                 
                 if result["status"] == "success":

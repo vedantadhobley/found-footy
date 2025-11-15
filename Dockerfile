@@ -27,6 +27,8 @@ RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
     xvfb \
+    # ✅ ADD: gosu for switching users in entrypoint
+    gosu \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -47,7 +49,12 @@ RUN PYTHONHTTPSVERIFY=0 uv pip install --system -r requirements.txt
 # Copy application code and set permissions
 COPY . .
 RUN chown -R appuser:appuser /app && \
-    mkdir -p /app/downloads && chown -R appuser:appuser /app/downloads
+    mkdir -p /app/downloads && chown -R appuser:appuser /app/downloads && \
+    mkdir -p /app/dagster_logs /app/dagster_storage && \
+    chown -R appuser:appuser /app/dagster_logs /app/dagster_storage
+
+# Switch to non-root user
+USER appuser
 
 # Environment variables - ✅ REMOVE HARDCODED CREDENTIALS
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
@@ -59,9 +66,6 @@ ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 # Chrome environment
 ENV CHROME_BIN=/usr/local/bin/chrome
 ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
-
-# Switch to non-root user
-USER appuser
 
 # ✅ DEFAULT: Start worker (init container overrides this)
 CMD ["prefect", "worker", "start", "--pool", "default-pool", "--type", "process"]

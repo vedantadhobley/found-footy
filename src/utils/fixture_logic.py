@@ -185,9 +185,15 @@ def detect_fixture_deltas(store: FootyMongoStore) -> Dict[str, Any]:
             api_data = api_lookup.get(fixture_id)
             
             if not api_data:
+                logger.warning(f"⚠️ No API data returned for fixture {fixture_id} - skipping")
                 continue
                 
             delta_result = store.fixtures_delta(fixture_id, api_data)
+            
+            # Skip fixtures with errors
+            if delta_result.get("status") == "error":
+                logger.error(f"❌ Error processing fixture {fixture_id}: {delta_result.get('error')}")
+                continue
             
             if delta_result.get("goals_changed"):
                 fixtures_with_changes.append({

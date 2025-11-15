@@ -30,7 +30,7 @@ def filter_videos_op(context, config: MongoConfig, upload_result: Dict) -> Dict[
     1. Hash-based: Remove exact file duplicates
     2. OpenCV-based: Remove visually similar videos (95%+ similarity)
     """
-    from found_footy.storage.s3_store import S3Store
+    from src.data.s3_store import FootyS3Store
     
     goal_id = upload_result["goal_id"]
     player = upload_result["player"]
@@ -38,7 +38,7 @@ def filter_videos_op(context, config: MongoConfig, upload_result: Dict) -> Dict[
     
     client = MongoClient(config.mongo_uri)
     db = client[config.db_name]
-    s3 = S3Store()
+    s3 = FootyS3Store()
     
     # Get all uploaded videos for THIS goal
     videos = list(db.videos.find({
@@ -78,7 +78,12 @@ def filter_videos_op(context, config: MongoConfig, upload_result: Dict) -> Dict[
             local_path = Path(tmpdir) / f"{video['_id']}.mp4"
             
             try:
-                s3.download_file(video["s3_key"], str(local_path))
+                # Download using boto3 client (same as Prefect)
+                s3.s3_client.download_file(
+                    s3.bucket_name,
+                    video["s3_key"],
+                    str(local_path)
+                )
                 
                 # Compute hash
                 with open(local_path, 'rb') as f:

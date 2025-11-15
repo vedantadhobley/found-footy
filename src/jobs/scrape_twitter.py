@@ -27,10 +27,10 @@ def scrape_twitter_op(context, config: MongoConfig, process_result: Dict) -> Dic
     """
     Search Twitter for videos of ONE goal - matches twitter_flow.py.
     
+    Uses cookie-based authentication (more reliable after Twitter login changes).
     Retries up to 3 times on failure (Twitter API can be flaky).
     Uses exponential backoff: 10s, 20s, 40s.
     """
-    from found_footy.services.twitter_session_isolated import TwitterSessionManager
     
     goal_id = process_result["goal_id"]
     player = process_result["player"]
@@ -48,8 +48,25 @@ def scrape_twitter_op(context, config: MongoConfig, process_result: Dict) -> Dic
     context.log.info(f"🔍 Searching Twitter for: {query}")
     
     try:
-        twitter = TwitterSessionManager()
-        videos = twitter.search_videos(query, max_results=10)
+        # Use Twitter session service (cookie-based auth)
+        import requests
+        import os
+        
+        session_url = os.getenv('TWITTER_SESSION_URL', 'http://twitter-session:8888')
+        
+        response = requests.post(
+            f"{session_url}/search",
+            json={"search_query": query, "max_results": 10},
+            timeout=60
+        )
+        
+        if response.status_code != 200:
+            context.log.error(f"❌ Twitter service returned {response.status_code}")
+            context.log.error("   Make sure twitter-session container is running with valid cookies")
+            raise Exception("Twitter service unavailable or not authenticated")
+        
+        data = response.json()
+        videos = data.get("videos", [])
         
         context.log.info(f"Found {len(videos)} videos")
         

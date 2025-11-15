@@ -129,11 +129,7 @@ services:
       TWITTER_SESSION_URL: http://twitter-session:8888
       PYTHONPATH: /app
     volumes:
-      - ./src:/app/src
-      - ./workspace.yaml:/app/workspace.yaml
-      - ./dagster.yaml:/app/dagster.yaml
-      - dagster_logs:/app/dagster_logs
-      - dagster_storage:/app/dagster_storage
+      - ./downloads:/app/downloads  # Mount downloads directory for video temp storage
     depends_on:
       dagster-postgres:
         condition: service_healthy
@@ -172,11 +168,7 @@ services:
       TWITTER_SESSION_URL: http://twitter-session:8888
       PYTHONPATH: /app
     volumes:
-      - ./src:/app/src
-      - ./workspace.yaml:/app/workspace.yaml
-      - ./dagster.yaml:/app/dagster.yaml
-      - dagster_logs:/app/dagster_logs
-      - dagster_storage:/app/dagster_storage
+      - ./downloads:/app/downloads  # Mount downloads directory for video temp storage
     depends_on:
       dagster-postgres:
         condition: service_healthy
@@ -186,52 +178,33 @@ services:
     networks:
       - footy-network
 
-  # Twitter session service
+  # Twitter session service (cookie-based auth, isolated microservice)
   twitter-session:
     image: found-footy:latest
     container_name: found-footy-twitter-session
-    command: python twitter_service_standalone.py
+    user: appuser
+    command: >
+      bash -c "
+      mkdir -p /data &&
+      chmod 777 /data &&
+      Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
+      sleep 2 &&
+      python -u twitter_service_standalone.py
+      "
     ports:
       - "8888:8888"
     env_file:
       - .env
     environment:
       PYTHONPATH: /app
+      TWITTER_COOKIES_FILE: /data/twitter_cookies.pkl
+      DISPLAY: "${DISPLAY:-:99}"
     volumes:
-      - ./twitter_service_standalone.py:/app/twitter_service_standalone.py
-      - ./found_footy/services:/app/found_footy/services
+      - twitter_cookies:/data  # Persistent cookies volume
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw  # X11 socket for GUI
     restart: unless-stopped
     networks:
       - footy-network
-
-  # Test service for debugging
-  test:
-    image: found-footy:latest
-    container_name: found-footy-test
-    environment:
-      PYTHONPATH: /app
-      MONGODB_URL: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
-      S3_ENDPOINT_URL: http://minio:9000
-      S3_ACCESS_KEY: ffuser
-      S3_SECRET_KEY: ffpass
-      S3_BUCKET_NAME: footy-videos
-    env_file:
-      - .env
-    depends_on:
-      dagster-webserver:
-        condition: service_healthy
-      mongo:
-        condition: service_healthy
-    command: >
-      sh -c "
-        echo '🧪 Test container ready' &&
-        tail -f /dev/null
-      "
-    volumes:
-      - .:/app
-    networks:
-      - footy-network
-    restart: "no"
 
 volumes:
   dagster_postgres_data:
@@ -240,10 +213,8 @@ volumes:
     driver: local
   minio_data:
     driver: local
-  dagster_logs:
-    driver: local
-  dagster_storage:
-    driver: local
+  twitter_cookies:
+    driver: local  # Persistent Twitter auth cookies
 
 networks:
   footy-network:

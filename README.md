@@ -91,19 +91,26 @@ found-footy/
 
 ## 🚀 Quick Start
 
-### 1. Start Services
+### 1. Setup Twitter (One-Time)
 
 ```bash
-docker-compose -f docker-compose.dagster.yml up -d
+# Run setup script to login and save cookies
+./scripts/setup_twitter_docker.sh
 ```
 
-### 2. Access Dagster UI
+### 2. Start All Services
+
+```bash
+docker compose up -d
+```
+
+### 3. Access Dagster UI
 
 ```bash
 open http://localhost:3000
 ```
 
-### 3. Enable Automation
+### 4. Enable Automation
 
 Go to **Automation** in Dagster UI:
 
@@ -186,55 +193,43 @@ Cycle 3 (10:00): Sensor picks up confirmed goal
 
 ---
 
-### 🔧 PRIORITY 2: Fix Twitter Scraping
+### 🔧 PRIORITY 2: Fix Twitter Scraping ✅ SOLUTION READY
 
-**Current Issue**: Twitter scraping broken (project was paused)
+**Current Issue**: Twitter scraping broken (Selenium login automation fails)
 
-**Context**: Will host on Raspberry Pi, manual login OK
-
-**Solution Options:**
-
-**Option A: Cookie-Based (RECOMMENDED)**
-- Export cookies from browser after manual login
-- Use in requests/snscrape
-- Pros: Simple, lightweight
-- Cons: Cookies expire periodically
-
-**Option B: Playwright with Manual Login**
-- Start Playwright in headed mode
-- User logs in once manually
-- Save session to disk
-- Pros: Robust, handles JS
-- Cons: Heavier resources
-
-**Option C: Self-Hosted Nitter**
-- Run local Nitter instance
-- Scrape Nitter instead of Twitter
-- Pros: No auth needed
-- Cons: Maintenance overhead
-
-**Option D: Twitter API v2 Academic**
-- Apply for academic research access
-- Use official API
-- Pros: Official, stable
-- Cons: Application process, rate limits
-
-**Option E: Hybrid Approach (BEST)**
-- Try multiple methods in order
-- Cookie-based → Playwright → Nitter
-- Mark as failed for manual review
+**✅ SOLUTION IMPLEMENTED: Cookie-Based Auth in Docker**
+- One-time manual login via `./scripts/setup_twitter_docker.sh`
+- Cookies saved to Docker volume (persistent)
+- Service reuses cookies automatically (~30 day lifespan)
+- Chrome already installed in Docker image
+- Works identically on WSL, Mini PC, any Docker host
 
 ---
 
 ### 🎯 PRIORITY 3: Testing & Polish
 
+**Twitter Scraping Test (After Mini PC Setup)**:
+```bash
+# One-time setup on Mini PC (manual login, saves cookies)
+./scripts/setup_twitter_docker.sh
+
+# Then start everything
+docker compose up -d
+
+# Test Twitter service
+curl -X POST http://localhost:8888/search \
+  -H "Content-Type: application/json" \
+  -d '{"search_query":"Ronaldo goal","max_results":3}'
+```
+
+**Full Pipeline Test (After Mini PC)**:
 - Test full pipeline with live data
 - Validate goal confirmation works
-- Test Twitter scraping on Pi
+- Test Twitter scraping on Mini PC
 - Verify S3 storage
 - Test OpenCV deduplication
 - Add monitoring alerts
-- Document Pi deployment
+- Document Mini PC deployment
 
 ---
 
@@ -340,15 +335,17 @@ docker exec found-footy-mongo mongosh -u founduser -p footypass --eval "db.admin
 - 40% cost reduction (5min monitoring)
 - Retry policies on external services
 - Pipeline loads successfully
+- Cookie-based Twitter auth (Docker-ready)
+- All services containerized
 
 ---
 
 ## 🚧 What Needs Work
 
 - Goal confirmation strategy (2-cycle validation)
-- Twitter scraping (authentication broken)
+- Twitter setup on Mini PC (run setup script once)
 - End-to-end testing (not tested live)
-- Raspberry Pi deployment docs
+- Mini PC deployment (use same Docker setup)
 
 ---
 

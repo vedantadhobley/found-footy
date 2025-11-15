@@ -2,10 +2,8 @@
 
 # Found Footy - Docker Compose Startup Script
 # Usage:
-#   ./start.sh           - Start services
-#   ./start.sh -v        - Start with fresh volumes (wipe data)
-#   ./start.sh logs      - Show logs
-#   ./start.sh down      - Stop everything
+#   ./start.sh           - Start in production mode
+#   ./start.sh -v        - Start in production mode (wipe volumes)
 
 # Parse arguments
 WIPE_VOLUMES=false
@@ -21,105 +19,49 @@ for arg in "$@"; do
   esac
 done
 
-do_redeploy() {
-  echo "🚀 Found Footy"
-  echo "🏗️ Architecture: $(uname -m)"
-  echo "🐧 Platform: $(uname -s)"
-  
-  if [ ! -f .env ]; then
-    echo "⚠️ .env file not found!"
-    exit 1
+# Shutdown existing containers
+if [[ "$WIPE_VOLUMES" == true ]]; then
+  echo "🗑️  Stopping containers and wiping DATA volumes (keeping Twitter auth)..."
+  # Backup Twitter cookies before wiping
+  if docker volume inspect found-footy_twitter_cookies > /dev/null 2>&1; then
+    echo "📦 Backing up Twitter cookies..."
+    docker run --rm \
+      -v found-footy_twitter_cookies:/source:ro \
+      -v "$(pwd)/.twitter_backup:/backup" \
+      alpine sh -c "mkdir -p /backup && cp -a /source/. /backup/ 2>/dev/null || true"
   fi
   
-  echo "✅ .env file found"
+  docker compose down -v
   
-  # ✅ SIMPLE: Always use localhost
-  sed -i '/^EXTERNAL_HOST=/d' .env
-  sed -i '/^MINIO_BROWSER_REDIRECT_URL=/d' .env
-  sed -i '/^MINIO_SERVER_URL=/d' .env
-  sed -i '/^ME_CONFIG_SITE_BASEURL=/d' .env
-  
-  echo "EXTERNAL_HOST=http://localhost" >> .env
-  echo "📍 EXTERNAL_HOST set to: http://localhost"
-  
-  # Shutdown existing containers
-  if [[ "$WIPE_VOLUMES" == true ]]; then
-    echo "🗑️  Stopping containers and wiping volumes..."
-    docker compose down -v
-  else
-    echo "🛑 Stopping containers..."
-    docker compose down --remove-orphans
+  # Restore Twitter cookies after volume wipe
+  if [ -d "$(pwd)/.twitter_backup" ] && [ "$(ls -A $(pwd)/.twitter_backup)" ]; then
+    echo "📦 Restoring Twitter cookies..."
+    docker volume create found-footy_twitter_cookies
+    docker run --rm \
+      -v found-footy_twitter_cookies:/dest \
+      -v "$(pwd)/.twitter_backup:/backup:ro" \
+      alpine sh -c "cp -a /backup/. /dest/ 2>/dev/null || true"
+    rm -rf "$(pwd)/.twitter_backup"
+    echo "✅ Twitter cookies restored - no need to re-login!"
   fi
-  
-  # Remove old image to avoid conflicts
-  docker rmi -f found-footy:latest || true
-  
-  # Build and start services
-  export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1
-  
-  echo "🔨 Building base image..."
-  docker compose build app-base
-  
-  echo "🚀 Starting services..."
-  docker compose up -d
-  
-  echo ""
-  echo "✅ Services started!"
-  echo "   Dagster UI:      http://localhost:3000"
-  echo "   MongoDB Express: http://localhost:8081 (ffuser/ffpass)"
-  echo "   MongoDB Direct:  mongodb://localhost:27017 (ffuser/ffpass)"
-  echo "   MinIO Console:   http://localhost:9001 (ffuser/ffpass)"
-  echo "   MinIO S3 API:    http://localhost:9000"
-  echo "   Twitter Service: http://localhost:8888/health"
-  if [[ "$WIPE_VOLUMES" == true ]]; then
-    echo "   Mode: FRESH START (volumes wiped)"
-  else
-    echo "   Mode: NORMAL (data preserved)"
-  fi
-  echo ""
-  
-  docker compose ps
-}
+else
+  echo "🛑 Stopping containers..."
+  docker compose down
+fi
 
-# Handle commands
-cmd="${1:-start}"
+# Build and start services
+echo "� Starting Found Footy..."
+docker compose --profile build-only build
+docker compose up -d
 
-case "$cmd" in
-  start|"")
-    do_redeploy
-    ;;
-  logs)
-    svc="${2:-}"
-    if [ -n "${svc}" ]; then
-      docker compose logs -f "${svc}"
-    else
-      docker compose logs -f
-    fi
-    ;;
-  status|ps)
-    docker compose ps
-    ;;
-  down)
-    echo "🛑 Stopping all services..."
-    docker compose down
-    ;;
-  -v|--volumes)
-    WIPE_VOLUMES=true
-    do_redeploy
-    ;;
-  *)
-    echo "Usage: ./start.sh [command] [options]"
-    echo ""
-    echo "Commands:"
-    echo "  start          - Start services (default)"
-    echo "  start -v       - Start with fresh volumes (wipe data)"
-    echo "  logs [service] - Show logs"
-    echo "  status/ps      - Show status"
-    echo "  down           - Stop everything"
-    echo ""
-    echo "Options:"
-    echo "  -v, --volumes  - Wipe volumes on start"
-    echo ""
-    exit 1
-    ;;
-esac
+echo ""
+echo "✅ Services started!"
+echo "   Dagster UI:      http://localhost:3000"
+echo "   MongoDB Express: http://localhost:8081 (ffuser/ffpass)"
+echo "   MinIO Console:   http://localhost:9001 (ffuser/ffpass)"
+echo "   Twitter Service: http://localhost:8888/health"
+if [[ "$WIPE_VOLUMES" == true ]]; then
+  echo "   Mode: FRESH START (volumes wiped)"
+else
+  echo "   Mode: PRODUCTION (rebuild required for changes)"
+fi

@@ -1,63 +1,191 @@
-"""Goal Pipeline - Process ONE goal from detection to filtered videos
+"""Goal Pipeline - Process goal events and store in MongoDB
 
-Architecture: ONE pipeline run per goal (enables parallel processing)
+Migrated from found_footy/flows/goal_flow.py
 
-This matches your Prefect flow structure:
-- goal_flow → stores goal
-- twitter_flow → searches Twitter for videos
-- download_flow → downloads videos from Twitter
-- upload_flow → uploads videos to S3  
-- filter_flow → deduplicates videos
+This job:
+1. Receives goal_events from monitor_fixtures
+2. Generates goal_ids
+3. Stores goals in MongoDB
+4. Triggers Twitter search for new goals
 
-Each op processes ONE goal per run. When 3 goals occur, sensor triggers
-3 separate pipeline runs (parallel processing, better isolation).
-
-Logic is split across separate files for maintainability:
-- process_goals.py - Store single goal in MongoDB
-- scrape_twitter.py - Search Twitter for goal's videos (with retry)
-- download_videos.py - Download videos from Twitter (with retry)
-  + upload_videos_op - Upload videos to S3 (with retry)  
-- filter_videos.py - Deduplicate goal's videos
-
-Parameter Passing:
-- Sensor passes goal data via run_config
-- process_goal_op reads from run_config and forwards to downstream ops
+Each monitor run can trigger this job with multiple goals.
+Goals are stored in a single "goals" collection with processing_status field.
 """
 
-from dagster import job, op, Config, In, Out, DynamicOut
-from typing import Dict, Any
-from .process_goals import process_goal_op
-from .scrape_twitter import scrape_twitter_op
-from .download_videos import download_videos_op, upload_videos_op
-from .filter_videos import filter_videos_op
+from dagster import job, op, OpExecutionContext, Config
+from typing import List, Dict, Any
+from datetime import datetime, timezone
+
+from src.data.mongo_store import FootyMongoStore
+
+
+class GoalPipelineConfig(Config):
+    """Configuration for goal pipeline"""
+    fixture_id: int
+    goal_events: List[Dict[str, Any]]
+
+
+@op(
+    name="process_goal_events_op",
+    description="Process goal events from monitor and store in MongoDB"
+)
+def process_goal_events_op(context: OpExecutionContext, config: GoalPipelineConfig) -> Dict[str, Any]:
+    """
+    Process goal events from monitor_fixtures.
+    
+    For each goal:
+    1. Generate goal_id (fixture_id_minute or fixture_id_minute+extra)
+    2. Check if goal already exists
+    3. Store new goals or update existing ones
+    4. (TODO) Schedule Twitter flow with delay for new goals
+    
+    Based on Prefect's goal_flow.py
+    """
+    fixture_id = config.fixture_id
+    goal_events = config.goal_events
+    
+    if not goal_events:
+        context.log.warning(f"⚠️ No goal events for fixture {fixture_id}")
+        return {"status": "no_goals", "fixture_id": fixture_id}
+    
+    # Filter actual goals
+    actual_goals = [e for e in goal_events if e.get("type") == "Goal"]
+    
+    if not actual_goals:
+        context.log.info(f"⚽ No actual goals in {len(goal_events)} events")
+        return {"status": "no_goals", "fixture_id": fixture_id}
+    
+    context.log.info(f"⚽ Processing {len(actual_goals)} goal events for fixture {fixture_id}")
+    
+    store = FootyMongoStore()
+    
+    # Get existing goal IDs
+    existing_goal_ids = set()
+    for goal_doc in store.goals.find({"fixture_id": fixture_id}):
+        existing_goal_ids.add(goal_doc["_id"])
+    
+    context.log.info(f"📋 Found {len(existing_goal_ids)} existing goals for fixture {fixture_id}")
+    
+    new_goals = []
+    updated_goals = []
+    twitter_flows_scheduled = 0
+    
+    for goal_event in actual_goals:
+        try:
+            # Generate goal_id
+            time_data = goal_event.get("time", {})
+            elapsed = time_data.get("elapsed", 0)
+            extra = time_data.get("extra")
+            
+            if extra is not None and extra > 0:
+                goal_id = f"{fixture_id}_{elapsed}+{extra}"
+            else:
+                goal_id = f"{fixture_id}_{elapsed}"
+            
+            is_new_goal = goal_id not in existing_goal_ids
+            
+            # Prepare goal document
+            player_data = goal_event.get("player", {})
+            team_data = goal_event.get("team", {})
+            
+            goal_doc = {
+                "_id": goal_id,
+                "fixture_id": fixture_id,
+                "player_name": player_data.get("name", "Unknown"),
+                "player_id": player_data.get("id"),
+                "team_name": team_data.get("name", "Unknown"),
+                "team_id": team_data.get("id"),
+                "minute": elapsed,
+                "extra_time": extra,
+                "goal_type": goal_event.get("detail", "Normal Goal"),
+                "assist": goal_event.get("assist", {}).get("name"),
+                "processing_status": "discovered",
+                "discovered_at": datetime.now(timezone.utc),
+                "raw_event": goal_event
+            }
+            
+            if is_new_goal:
+                # NEW goal - insert and schedule Twitter
+                store.goals.insert_one(goal_doc)
+                
+                display_minute = f"{elapsed}+{extra}" if extra else str(elapsed)
+                context.log.info(f"🆕 NEW GOAL: {team_data.get('name')} - {player_data.get('name')} ({display_minute}') [{goal_id}]")
+                
+                new_goals.append(goal_id)
+                
+                # Trigger Twitter search job for new goal
+                from src.jobs.twitter_search import twitter_search_job
+                
+                try:
+                    context.log.info(f"🐦 Triggering Twitter search for {goal_id}")
+                    result = twitter_search_job.execute_in_process(
+                        run_config={
+                            "ops": {
+                                "search_twitter_for_goal": {
+                                    "config": {"goal_id": goal_id}
+                                }
+                            }
+                        },
+                        instance=context.instance,
+                        tags={
+                            "goal_id": goal_id,
+                            "fixture_id": str(fixture_id),
+                            "triggered_by": "goal_pipeline"
+                        }
+                    )
+                    
+                    if result.success:
+                        twitter_flows_scheduled += 1
+                        context.log.info(f"✅ Twitter search completed for {goal_id}")
+                    else:
+                        context.log.warning(f"⚠️ Twitter search failed for {goal_id}")
+                        
+                except Exception as e:
+                    context.log.error(f"❌ Failed to trigger Twitter search for {goal_id}: {e}")
+                
+            else:
+                # EXISTING goal - update
+                store.goals.replace_one(
+                    {"_id": goal_id},
+                    goal_doc,
+                    upsert=True
+                )
+                context.log.info(f"🔄 UPDATED GOAL: {goal_id}")
+                updated_goals.append(goal_id)
+        
+        except Exception as e:
+            context.log.error(f"❌ Error processing goal event: {e}")
+            continue
+    
+    context.log.info(f"✅ Goal processing complete for fixture {fixture_id}:")
+    context.log.info(f"   🆕 New goals: {len(new_goals)}")
+    context.log.info(f"   🔄 Updated goals: {len(updated_goals)}")
+    context.log.info(f"   🐦 Twitter searches triggered: {twitter_flows_scheduled}")
+    
+    return {
+        "status": "success",
+        "fixture_id": fixture_id,
+        "new_goals": len(new_goals),
+        "updated_goals": len(updated_goals),
+        "new_goal_ids": new_goals,
+        "updated_goal_ids": updated_goals
+    }
 
 
 @job(
     name="goal_pipeline",
-    description="Complete goal pipeline: process → scrape → download → upload → filter (ONE goal per run)"
+    description="Process goal events and store in MongoDB"
 )
 def goal_pipeline_job():
     """
-    Main pipeline with 5 ops for processing ONE goal:
+    Goal pipeline workflow.
     
-    1. process_goal - Store goal in MongoDB (reads full data from fixtures collection)
-    2. scrape_twitter - Search Twitter for goal's videos (retry: 3x)
-    3. download_videos - Download videos from Twitter (retry: 3x)
-    4. upload_videos - Upload videos to S3 (retry: 3x)
-    5. filter_videos - Deduplicate goal's videos
+    Receives goal events from monitor_fixtures and:
+    1. Stores them in MongoDB
+    2. Triggers Twitter search for new goals
+    3. Twitter search triggers download job
+    4. Download job triggers deduplication
     
-    When monitor detects 3 goals, sensor triggers 3 pipeline runs in parallel.
-    Each run is isolated - failures don't affect other goals.
-    Retry policies on external ops (Twitter, S3) for resilience.
-    
-    Clean parameter flow:
-    - Sensor passes minimal config: fixture_id, goal_minute, player_name
-    - process_goal reads full data from MongoDB fixtures collection
-    - goal_id + metadata flows through pipeline via op returns
-    - MongoDB is the source of truth ✅
+    Based on Prefect's goal_flow.
     """
-    process_result = process_goal_op()
-    scrape_result = scrape_twitter_op(process_result)
-    download_result = download_videos_op(scrape_result)
-    upload_result = upload_videos_op(download_result)
-    filter_videos_op(upload_result)
+    process_goal_events_op()

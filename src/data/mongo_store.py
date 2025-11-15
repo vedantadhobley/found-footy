@@ -72,13 +72,21 @@ class FootyMongoStore:
 
     @staticmethod
     def _extract_current_goals(raw_item: dict) -> dict:
-        """Extract goals from raw API schema"""
+        """Extract goals from raw API schema with robust null handling"""
         try:
+            goals = raw_item.get("goals")
+            if goals is None:
+                return {"home": 0, "away": 0}
+            
+            home = goals.get("home")
+            away = goals.get("away")
+            
             return {
-                "home": raw_item["goals"]["home"] or 0,
-                "away": raw_item["goals"]["away"] or 0
+                "home": home if home is not None else 0,
+                "away": away if away is not None else 0
             }
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Error extracting goals from {raw_item.get('fixture', {}).get('id', 'unknown')}: {e}")
             return {"home": 0, "away": 0}
 
     @staticmethod
@@ -182,7 +190,17 @@ class FootyMongoStore:
         try:
             current_fixture = self.fixtures_active.find_one({"_id": fixture_id})
             if not current_fixture:
+                print(f"⚠️ Fixture {fixture_id} not found in fixtures_active")
                 return {"status": "not_found", "fixture_id": fixture_id}
+            
+            # Validate api_data has required structure
+            if not api_data or not isinstance(api_data, dict):
+                print(f"❌ Invalid API data for fixture {fixture_id}: data is None or not a dict")
+                return {"status": "error", "error": "Invalid API data structure", "fixture_id": fixture_id}
+            
+            if "fixture" not in api_data:
+                print(f"❌ Invalid API data for fixture {fixture_id}: missing 'fixture' key")
+                return {"status": "error", "error": "Missing fixture key in API data", "fixture_id": fixture_id}
             
             api_status = self._extract_status(api_data)
             api_goals = self._extract_current_goals(api_data)
@@ -201,12 +219,15 @@ class FootyMongoStore:
                 "previous_goals": current_goals,
                 "total_goal_increase": (api_goals.get("home", 0) + api_goals.get("away", 0)) - 
                                      (current_goals.get("home", 0) + current_goals.get("away", 0)),
-                "new_status": api_status
+                "new_status": api_status,
+                "api_data": api_data  # Include full API data for updates
             }
             
         except Exception as e:
-            print(f"❌ Error in fixtures delta: {e}")
-            return {"status": "error", "error": str(e)}
+            print(f"❌ Error processing fixture {fixture_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "error": str(e), "fixture_id": fixture_id}
 
     def fixtures_update(self, fixture_id: int, api_data: dict) -> bool:
         """Update fixture with latest API data"""
