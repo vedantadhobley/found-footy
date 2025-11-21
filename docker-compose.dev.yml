@@ -1,15 +1,17 @@
-# Development Docker Compose - CORRECT multi-container pattern
-# This implements the professional pattern where:
-#   - 'dev' container = VS Code attaches here (Python tooling only, no services)
-#   - Other services run independently with ports exposed to host
-#   - All containers communicate via internal network using STANDARD ports
+# Development Docker Compose - Multi-project setup
+#
+# Port allocation: found-footy uses 3100-3109
+#   3100: Dagster UI
+#   3101: MongoDB Express
+#   3102: MinIO Console
+#   3103: Twitter API
+#   3104: noVNC Browser
 #
 # Internal communication (standard ports):
-#   - postgres:5432, mongo:27017, minio:9000, dagster-webserver:3000
-#
-# Host access (found-footy range 3100-3199):
-#   - Only USER-FACING dashboards are exposed to host
-#   - Backend services (postgres, mongo, minio API) stay internal
+#   - found-footy-postgres:5432
+#   - found-footy-mongo:27017
+#   - found-footy-minio:9000
+#   - found-footy-dagster-webserver:3000
 
 services:
   # DEDICATED DEV CONTAINER - VS Code attaches HERE
@@ -33,10 +35,10 @@ services:
       # Connection strings for services
       DAGSTER_PG_USERNAME: ffuser
       DAGSTER_PG_PASSWORD: ffpass
-      DAGSTER_PG_HOST: postgres
+      DAGSTER_PG_HOST: found-footy-postgres
       DAGSTER_PG_DB: dagster
-      MONGODB_URI: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
-      S3_ENDPOINT_URL: http://minio:9000
+      MONGODB_URI: mongodb://ffuser:ffpass@found-footy-mongo:27017/found_footy?authSource=admin
+      S3_ENDPOINT_URL: http://found-footy-minio:9000
       S3_ACCESS_KEY: ffuser
       S3_SECRET_KEY: ffpass--
     command: sleep infinity
@@ -49,23 +51,23 @@ services:
       dockerfile: Dockerfile.dev
     container_name: found-footy-dagster-webserver
     ports:
-      - "3000:3000"   # Dagster UI
+      - "3100:3000"   # Dagster UI
     env_file:
       - .env
     environment:
       DAGSTER_HOME: /workspace
       DAGSTER_PG_USERNAME: ffuser
       DAGSTER_PG_PASSWORD: ffpass
-      DAGSTER_PG_HOST: postgres
+      DAGSTER_PG_HOST: found-footy-postgres
       DAGSTER_PG_DB: dagster
       DAGSTER_PG_PORT: 5432
-      MONGODB_URI: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
-      MONGODB_URL: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
-      S3_ENDPOINT_URL: http://minio:9000
+      MONGODB_URI: mongodb://ffuser:ffpass@found-footy-mongo:27017/found_footy?authSource=admin
+      MONGODB_URL: mongodb://ffuser:ffpass@found-footy-mongo:27017/found_footy?authSource=admin
+      S3_ENDPOINT_URL: http://found-footy-minio:9000
       S3_ACCESS_KEY: ffuser
       S3_SECRET_KEY: ffpass--
       S3_BUCKET_NAME: footy-videos
-      TWITTER_SESSION_URL: http://twitter:8888
+      TWITTER_SESSION_URL: http://found-footy-twitter:8888
       TWITTER_COOKIES_FILE: /data/twitter_cookies.pkl
       PYTHONPATH: /workspace
       PYTHONHTTPSVERIFY: 0
@@ -102,12 +104,12 @@ services:
       DAGSTER_HOME: /workspace
       DAGSTER_PG_USERNAME: ffuser
       DAGSTER_PG_PASSWORD: ffpass
-      DAGSTER_PG_HOST: postgres
+      DAGSTER_PG_HOST: found-footy-postgres
       DAGSTER_PG_DB: dagster
       DAGSTER_PG_PORT: 5432
-      MONGODB_URI: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
-      MONGODB_URL: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
-      S3_ENDPOINT_URL: http://minio:9000
+      MONGODB_URI: mongodb://ffuser:ffpass@found-footy-mongo:27017/found_footy?authSource=admin
+      MONGODB_URL: mongodb://ffuser:ffpass@found-footy-mongo:27017/found_footy?authSource=admin
+      S3_ENDPOINT_URL: http://found-footy-minio:9000
       S3_ACCESS_KEY: ffuser
       S3_SECRET_KEY: ffpass--
       S3_BUCKET_NAME: footy-videos
@@ -136,8 +138,8 @@ services:
       dockerfile: Dockerfile.dev
     container_name: found-footy-twitter
     ports:
-      - "8888:8888"  # Twitter API service
-      - "6080:6080"  # noVNC web interface
+      - "3103:8888"  # Twitter API
+      - "3104:6080"  # noVNC Browser
     env_file:
       - .env
     environment:
@@ -177,6 +179,7 @@ services:
     restart: unless-stopped
     networks:
       - found-footy-dev
+      - luv-dev
 
   # MONGODB - application data storage
   mongo:
@@ -201,15 +204,16 @@ services:
     restart: unless-stopped
     networks:
       - found-footy-dev
+      - luv-dev
 
   # MONGODB EXPRESS - MongoDB web UI
   mongo-express:
     image: mongo-express:1.0.2-20-alpine3.19
     container_name: found-footy-mongo-express
     ports:
-      - "8081:8081"  # MongoDB Express
+      - "3101:8081"  # MongoDB Express
     environment:
-      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_SERVER: found-footy-mongo
       ME_CONFIG_MONGODB_PORT: 27017
       ME_CONFIG_MONGODB_ADMINUSERNAME: ffuser
       ME_CONFIG_MONGODB_ADMINPASSWORD: ffpass
@@ -220,7 +224,7 @@ services:
       mongo:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8081"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://ffuser:ffpass@127.0.0.1:8081"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -235,7 +239,7 @@ services:
     container_name: found-footy-minio
     command: server /data --console-address ":9001"
     ports:
-      - "9001:9001"  # MinIO Console
+      - "3102:9001"  # MinIO Console
     environment:
       MINIO_ROOT_USER: ffuser
       MINIO_ROOT_PASSWORD: ffpass--
@@ -250,6 +254,7 @@ services:
     restart: unless-stopped
     networks:
       - found-footy-dev
+      - luv-dev
 
 volumes:
   postgres_data_dev:
@@ -262,12 +267,11 @@ volumes:
     driver: local
 
 networks:
-  # Internal network - auto-created, auto-destroyed
-  # All found-footy DEV services communicate here
+  # Internal network for this project
   found-footy-dev:
+    name: found-footy-dev  # Explicit name to avoid Docker Compose prefix
     driver: bridge
   
-  # Shared network - persistent, cross-project communication
-  # Only join this if you need to talk to OTHER projects
+  # Shared network - frontend and other projects join this to communicate
   luv-dev:
     external: true
