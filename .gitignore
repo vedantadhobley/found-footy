@@ -33,11 +33,13 @@ env.bak/
 venv.bak/
 
 # IDEs
-.vscode/
 .idea/
 *.swp
 *.swo
 *~
+# Keep .devcontainer but ignore local settings
+.devcontainer/.env
+.devcontainer/settings.json
 
 # OS
 .DS_Store
@@ -69,3 +71,12 @@ htmlcov/
 # Temporary files
 tmp/
 temp/
+
+# Development artifacts
+.twitter_backup/
+dumps/
+dagster_storage/
+dagster_logs/
+
+# Docker development volumes
+.bash_history_dir/

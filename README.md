@@ -13,6 +13,25 @@ Automated football highlights pipeline - Migrated from Prefect to Dagster for be
 
 ---
 
+## 🔌 Port Configuration
+
+**Port Range:** 3100-3199 (Found-footy allocation)
+
+**Development Access (via SSH forwarding):**
+- **Dagster UI:** http://localhost:3100
+- **MongoDB Express:** http://localhost:3101
+- **MinIO Console:** http://localhost:3102
+- **Twitter Login:** http://localhost:3103
+
+**Internal Services (no external access):**
+- PostgreSQL: `postgres:5432`
+- MongoDB: `mongo:27017`
+- MinIO API: `minio:9000`
+
+> See [Multi-Project Setup Guide](../MULTI_PROJECT_SETUP.md) for full port allocation details.
+
+---
+
 ## 📊 System Architecture
 
 ```
@@ -69,7 +88,7 @@ ONE PIPELINE PER GOAL (Parallel)
 
 ```
 found-footy/
-├── src/                          # Dagster codebase
+├── src/                          # Dagster codebase (main orchestration)
 │   ├── jobs/                     # 3 main jobs
 │   │   ├── ingest_fixtures.py    # Daily fixture ingestion
 │   │   ├── monitor.py            # Goal detection (5min)
@@ -81,10 +100,19 @@ found-footy/
 │   ├── api/                      # External APIs
 │   ├── data/                     # Storage (MongoDB, S3)
 │   └── utils/                    # Business logic
-├── found_footy/                  # Original Prefect code
-├── docker-compose.dagster.yml    # Dagster stack
+├── twitter/                      # 🐦 Independent Twitter scraper service
+│   ├── app.py                    # FastAPI REST API
+│   ├── session.py                # Browser session manager
+│   ├── auth.py                   # Authentication logic
+│   ├── config.py                 # Configuration
+│   ├── Dockerfile                # Container image
+│   ├── requirements.txt          # Dependencies
+│   └── README.md                 # Full documentation
+├── found_footy/                  # Original Prefect code (legacy)
+├── docker-compose.yml            # Production stack
+├── docker-compose.dev.yml        # Development stack
 ├── workspace.yaml                # Dagster config
-└── README_PREFECT.md             # Prefect docs
+└── README_PREFECT.md             # Prefect docs (historical)
 ```
 
 ---
@@ -93,10 +121,21 @@ found-footy/
 
 ### 1. Setup Twitter (One-Time)
 
+The Twitter service will try to authenticate automatically using credentials from `.env`.
+
+If that fails (2FA/CAPTCHA), use the manual login UI:
+
 ```bash
-# Run setup script to login and save cookies
-./scripts/setup_twitter_docker.sh
+# Start services
+docker compose up -d
+
+# Open login UI in browser
+open http://localhost:3103/login
+
+# Follow instructions to copy 3 cookies from DevTools
 ```
+
+See detailed guide: [`twitter/QUICKSTART.md`](twitter/QUICKSTART.md)
 
 ### 2. Start All Services
 

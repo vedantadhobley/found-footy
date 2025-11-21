@@ -56,7 +56,7 @@ docker compose up -d
 
 echo ""
 echo "✅ Services started!"
-echo "   Dagster UI:      http://localhost:3000"
+echo "   Dagster UI:      http://localhost:3002"
 echo "   MongoDB Express: http://localhost:8081 (ffuser/ffpass)"
 echo "   MinIO Console:   http://localhost:9001 (ffuser/ffpass)"
 echo "   Twitter Service: http://localhost:8888/health"

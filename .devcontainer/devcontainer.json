@@ -1,0 +1,75 @@
+{
+  "name": "Found Footy Dev",
+  "dockerComposeFile": "../docker-compose.dev.yml",
+  "service": "dev",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "none",
+  
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.black-formatter",
+        "charliermarsh.ruff",
+        "ms-azuretools.vscode-docker",
+        "mongodb.mongodb-vscode",
+        "github.copilot",
+        "github.copilot-chat",
+        "redhat.vscode-yaml",
+        "tamasfe.even-better-toml"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.linting.enabled": true,
+        "python.linting.pylintEnabled": false,
+        "python.linting.ruffEnabled": true,
+        "python.formatting.provider": "black",
+        "python.analysis.typeCheckingMode": "basic",
+        "python.analysis.autoImportCompletions": true,
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.organizeImports": "explicit"
+        },
+        "files.exclude": {
+          "**/__pycache__": true,
+          "**/*.pyc": true,
+          "**/.pytest_cache": true,
+          "**/.ruff_cache": true
+        },
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "terminal.integrated.profiles.linux": {
+          "bash": {
+            "path": "/bin/bash"
+          }
+        }
+      }
+    }
+  },
+  
+  // Docker CLI already installed in Dockerfile.dev, no DinD feature needed
+  
+  // CRITICAL: Explicit port forwarding to prevent VS Code from guessing wrong
+  // Only forward USER-FACING dashboards (not backend services)
+  "forwardPorts": [3100, 3101, 3102, 3103],
+  "portsAttributes": {
+    "3100": {
+      "label": "Dagster UI",
+      "onAutoForward": "notify"
+    },
+    "3101": {
+      "label": "MongoDB Express",
+      "onAutoForward": "notify"
+    },
+    "3102": {
+      "label": "MinIO Console",
+      "onAutoForward": "notify"
+    },
+    "3103": {
+      "label": "Twitter Login UI",
+      "onAutoForward": "notify"
+    }
+  },
+  
+  "postCreateCommand": "echo '✅ Dev container ready! Dagster UI: http://localhost:3100'"
+}

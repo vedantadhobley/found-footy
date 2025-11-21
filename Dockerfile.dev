@@ -1,0 +1,48 @@
+# Development Dockerfile for Dev Containers
+FROM python:3.10-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    build-essential \
+    # Chrome for browser automation
+    chromium \
+    chromium-driver \
+    xvfb \
+    # VNC server and noVNC for web-based GUI access
+    x11vnc \
+    fluxbox \
+    novnc \
+    websockify \
+    # Docker CLI
+    docker.io \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create Chrome wrapper
+RUN echo '#!/bin/bash\nexec chromium "$@" --no-sandbox --disable-dev-shm-usage --headless --disable-gpu' > /usr/local/bin/chrome \
+    && chmod +x /usr/local/bin/chrome
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install dev tools
+RUN pip install --no-cache-dir ipython ipdb pytest black ruff mypy
+
+# Environment variables
+ENV PYTHONPATH=/workspace \ 
+    CHROME_BIN=/usr/local/bin/chrome \
+    CHROMEDRIVER_PATH=/usr/bin/chromedriver \
+    DISPLAY=:99 \
+    VNC_PORT=5900 \
+    NOVNC_PORT=6080
+
+# No EXPOSE needed - this is a dev tooling image
+# Services will expose their own ports in docker-compose.dev.yml
+
+# Default command: sleep infinity (dev container stays alive for VS Code)
+CMD ["sleep", "infinity"]
