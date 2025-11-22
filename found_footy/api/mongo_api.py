@@ -1,27 +1,27 @@
 # ✅ REVERT: Back to RapidAPI for batch support
-import requests
-from datetime import date
 import json
 import os
-from prefect import task, get_run_logger
+from datetime import date
 
-# ✅ REVERT: Back to RapidAPI endpoint
-BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
+import requests
+from prefect import get_run_logger, task
 
-# ✅ REVERT: Back to RapidAPI headers
+# api-football.com direct endpoint
+BASE_URL = "https://v3.football.api-sports.io"
+
+# api-football.com authentication
 def get_api_headers():
-    """Get API headers for RapidAPI access"""
-    api_key = os.getenv("RAPIDAPI_KEY")
+    """Get API headers for api-football.com access"""
+    api_key = os.getenv("API_FOOTBALL_KEY")
     
     if not api_key:
         raise ValueError(
-            "RAPIDAPI_KEY environment variable not set. "
-            "Please add your RapidAPI key to the .env file: RAPIDAPI_KEY=your_key_here"
+            "API_FOOTBALL_KEY environment variable not set. "
+            "Please add your api-football.com key to the .env file: API_FOOTBALL_KEY=your_key_here"
         )
     
     return {
-        "X-RapidAPI-Key": api_key,
-        "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
+        "x-apisports-key": api_key
     }
 
 def _coerce_date_param(date_param):

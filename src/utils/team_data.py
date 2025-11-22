@@ -31,7 +31,30 @@ UEFA_25_2025 = {
 
 FIFA_25_2025 = {
     26: {"name": "Argentina", "country": "Argentina", "rank": 1},
-    9: {"name": "Spain", "country": "Spain", "rank": 2}
+    9: {"name": "Spain", "country": "Spain", "rank": 2},
+    2: {"name": "France", "country": "France", "rank": 3},
+    10: {"name": "England", "country": "England", "rank": 4},
+    6: {"name": "Brazil", "country": "Brazil", "rank": 5},
+    27: {"name": "Portugal", "country": "Portugal", "rank": 6},
+    1118: {"name": "Netherlands", "country": "Netherlands", "rank": 7},
+    1: {"name": "Belgium", "country": "Belgium", "rank": 8},
+    25: {"name": "Germany", "country": "Germany", "rank": 9},
+    3: {"name": "Croatia", "country": "Croatia", "rank": 10},
+    768: {"name": "Italy", "country": "Italy", "rank": 11},
+    31: {"name": "Morocco", "country": "Morocco", "rank": 12},
+    16: {"name": "Mexico", "country": "Mexico", "rank": 13},
+    8: {"name": "Colombia", "country": "Colombia", "rank": 14},
+    2384: {"name": "USA", "country": "USA", "rank": 15},
+    7: {"name": "Uruguay", "country": "Uruguay", "rank": 16},
+    12: {"name": "Japan", "country": "Japan", "rank": 17},
+    13: {"name": "Senegal", "country": "Senegal", "rank": 18},
+    15: {"name": "Switzerland", "country": "Switzerland", "rank": 19},
+    22: {"name": "Iran", "country": "Iran", "rank": 20},
+    21: {"name": "Denmark", "country": "Denmark", "rank": 21},
+    775: {"name": "Austria", "country": "Austria", "rank": 22},
+    17: {"name": "South Korea", "country": "South Korea", "rank": 23},
+    20: {"name": "Australia", "country": "Australia", "rank": 24},
+    2382: {"name": "Ecuador", "country": "Ecuador", "rank": 25}
 }
 
 def get_team_data():

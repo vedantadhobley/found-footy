@@ -3,62 +3,79 @@ Found Footy - Football highlights automation with Dagster
 
 Main Dagster Definitions object combining jobs, schedules, and resources.
 
-Architecture:
-- Core jobs: ingest_fixtures, advance_fixtures, monitor_fixtures
-- Pipeline jobs: goal_pipeline → twitter_search → download_and_upload_videos → deduplicate_videos
-- monitor_fixtures runs every 5 min, triggers goal_pipeline with fixture data
-- Complete pipeline: goal → Twitter → download → S3 upload → deduplication
+New Clean Architecture:
+1. ingestion_job (daily 00:05 UTC)
+   → Fetch fixtures → Categorize by status → Store in staging/active/completed
+
+2. monitor_job (every minute)
+   → Activate fixtures → Batch fetch → Detect goal deltas → Spawn goal jobs → Complete fixtures
+
+3. goal_job (per fixture with new goals)
+   → Fetch events → Check status → Add to pending → Validate → Update fixture → Spawn twitter jobs
+
+4. twitter_job (per validated goal)
+   → Search Twitter → Extract videos → Save discovered_videos
+
+5. download_job (per goal with videos)
+   → Validate → Download → Deduplicate (OpenCV) → Upload to S3 → Mark completed
 """
 from dagster import Definitions
 
 # Import jobs
 from src.jobs import (
-    ingest_fixtures_job,
-    advance_fixtures_job,
-    monitor_fixtures_job,
-    goal_pipeline_job,
-    twitter_search_job,
-    download_and_upload_videos_job,
-    deduplicate_videos_job,
-    test_pipeline_job,
+    goal_job,
+    ingestion_job,
+    ingestion_schedule,
+    monitor_job,
+    monitor_schedule,
+    twitter_job,
 )
 
-# Import schedules
-from src.schedules import daily_ingest_schedule, advance_schedule, monitor_schedule
+# Import download job
+from src.jobs.download import download_job
 
-# Import resources
-from src.resources import (
-    mongo_resource,
-    s3_resource,
-    twitter_session_resource,
-)
+# Import resources (if they exist)
+try:
+    from src.resources import (
+        mongo_resource,
+        s3_resource,
+    )
+    has_resources = True
+except ImportError:
+    has_resources = False
 
 
 # Combine everything into Dagster Definitions
-defs = Definitions(
-    jobs=[
-        # Core jobs
-        ingest_fixtures_job,    # Fetch fixtures from API-Football (scheduled daily)
-        advance_fixtures_job,   # Move fixtures staging → active after ingest
-        monitor_fixtures_job,   # Monitor for changes (scheduled every 5 min)
-        
-        # Pipeline jobs
-        goal_pipeline_job,      # Process goals → trigger Twitter search
-        twitter_search_job,     # Search Twitter → trigger download
-        download_and_upload_videos_job,  # Download + upload → trigger deduplication
-        deduplicate_videos_job, # Deduplicate videos using OpenCV
-        
-        # Test job
-        test_pipeline_job,      # Test job: Insert fixture → Trigger monitor
-    ],
-    schedules=[
-        daily_ingest_schedule,  # Ingest fixtures at midnight UTC
-        advance_schedule,       # Advance fixtures at kickoff (every minute check)
-        monitor_schedule,       # Monitor every 5 minutes
-    ],
-    resources={
-        "mongo": mongo_resource,
-        "s3": s3_resource,
-        "twitter_session": twitter_session_resource,
-    },
-)
+if has_resources:
+    defs = Definitions(
+        jobs=[
+            ingestion_job,   # Daily fixture ingestion with status-based routing
+            monitor_job,     # Per-minute monitoring for goal deltas
+            goal_job,        # Per-fixture goal validation
+            twitter_job,     # Per-goal video discovery
+            download_job,    # Per-goal video download/dedup/upload
+        ],
+        schedules=[
+            ingestion_schedule,  # Daily at 00:05 UTC
+            monitor_schedule,    # Every minute
+        ],
+        resources={
+            "mongo": mongo_resource,
+            "s3": s3_resource,
+        },
+    )
+else:
+    # No resources defined yet
+    defs = Definitions(
+        jobs=[
+            ingestion_job,   # Daily fixture ingestion with status-based routing
+            monitor_job,     # Per-minute monitoring for goal deltas
+            goal_job,        # Per-fixture goal validation
+            twitter_job,     # Per-goal video discovery
+            download_job,    # Per-goal video download/dedup/upload
+        ],
+        schedules=[
+            ingestion_schedule,  # Daily at 00:05 UTC
+            monitor_schedule,    # Every minute
+        ],
+    )

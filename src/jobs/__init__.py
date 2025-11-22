@@ -1,34 +1,46 @@
-"""Dagster jobs - event-driven workflows for Found Footy
+"""Dagster jobs - Clean modular pipeline architecture for Found Footy
 
-Jobs are used for workflows that are programmatically triggered with runtime parameters,
-as opposed to assets which define data dependencies.
+Complete workflow with proper validation and separation of concerns:
 
-The complete workflow:
-- ingest_fixtures_job (scheduled daily) → stores fixtures by status
-- advance_fixtures_job (triggered) → moves fixtures between collections
-- monitor_fixtures_job (scheduled every 5min) → detects goal changes → triggers goal_pipeline_job
-- goal_pipeline_job → stores goals → triggers twitter_search_job for new goals
-- twitter_search_job → searches Twitter → triggers download_and_upload_videos_job
-- download_and_upload_videos_job → downloads videos with yt-dlp → uploads to S3 → triggers deduplicate_videos_job
-- deduplicate_videos_job → deduplicates using OpenCV → deletes duplicates from S3
+1. ingestion_job (daily 00:05 UTC)
+   → Fetch day's fixtures from api-football.com
+   → Store in fixtures_staging
+
+2. monitor_job (every minute)
+   → Activate fixtures (staging → active when start time reached)
+   → Batch fetch current data for all active fixtures
+   → Detect goal deltas (compare stored vs fetched counts)
+   → Spawn goal_job for each fixture with new goals
+   → Complete fixtures (active → completed, only if no pending goals)
+
+3. goal_job (spawned per fixture with new goals)
+   → Fetch goal events from API
+   → Check status (confirmed/pending/new)
+   → Add new goals to goals_pending
+   → Validate pending goals → move to goals_confirmed
+   → Clean up invalidated goals (disappeared from API)
+   → Update fixture (only after validation)
+   → Spawn twitter_job for each validated goal
+
+4. twitter_job (spawned per validated goal)
+   → Search Twitter for goal videos
+   → Extract video URLs
+   → Download videos
+   → Upload to S3
 """
 
-from .ingest_fixtures import ingest_fixtures_job
-from .advance import advance_fixtures_job
-from .monitor import monitor_fixtures_job
-from .goal_pipeline import goal_pipeline_job
-from .twitter_search import twitter_search_job
-from .download_videos import download_and_upload_videos_job
-from .deduplicate_videos import deduplicate_videos_job
-from .test_pipeline import test_pipeline_job
+from .goal import GoalJobConfig, goal_job
+from .ingest import ingestion_job, ingestion_schedule
+from .monitor import monitor_job, monitor_schedule
+from .twitter import TwitterJobConfig, twitter_job
 
 __all__ = [
-    "ingest_fixtures_job",
-    "advance_fixtures_job",
-    "monitor_fixtures_job",
-    "goal_pipeline_job",
-    "twitter_search_job",
-    "download_and_upload_videos_job",
-    "deduplicate_videos_job",
-    "test_pipeline_job",
+    "ingestion_job",
+    "ingestion_schedule",
+    "monitor_job",
+    "monitor_schedule",
+    "goal_job",
+    "GoalJobConfig",
+    "twitter_job",
+    "TwitterJobConfig",
 ]

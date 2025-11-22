@@ -1,28 +1,28 @@
 # API-Football client - no orchestration dependencies
-import requests
-from datetime import date
-import os
 import logging
+import os
+from datetime import date
+
+import requests
 
 logger = logging.getLogger(__name__)
 
-# RapidAPI endpoint
-BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
+# api-football.com direct endpoint
+BASE_URL = "https://v3.football.api-sports.io"
 
-# ✅ REVERT: Back to RapidAPI headers
+# api-football.com authentication
 def get_api_headers():
-    """Get API headers for RapidAPI access"""
-    api_key = os.getenv("RAPIDAPI_KEY")
+    """Get API headers for api-football.com access"""
+    api_key = os.getenv("API_FOOTBALL_KEY")
     
     if not api_key:
         raise ValueError(
-            "RAPIDAPI_KEY environment variable not set. "
-            "Please add your RapidAPI key to the .env file: RAPIDAPI_KEY=your_key_here"
+            "API_FOOTBALL_KEY environment variable not set. "
+            "Please add your api-football.com key to the .env file: API_FOOTBALL_KEY=your_key_here"
         )
     
     return {
-        "X-RapidAPI-Key": api_key,
-        "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
+        "x-apisports-key": api_key
     }
 
 def _coerce_date_param(date_param):
@@ -118,15 +118,15 @@ def test_events_api_debug():
     
     import requests
     
-    # ✅ FIX: Use RapidAPI headers consistently
+    # Use api-football.com headers
     headers = get_api_headers()
     
     # Test events endpoint directly
     fixture_id = 1378993
     url = f"{BASE_URL}/fixtures/events?fixture={fixture_id}"
     
-    print(f"🌐 RapidAPI call: {url}")
-    print(f"🔑 Headers: X-RapidAPI-Key: {headers['X-RapidAPI-Key'][:10]}...{headers['X-RapidAPI-Key'][-4:]}")  # ✅ FIX: Correct header key
+    print(f"🌐 api-football.com call: {url}")
+    print(f"🔑 Headers: x-apisports-key: {headers['x-apisports-key'][:10]}...{headers['x-apisports-key'][-4:]}")
     
     try:
         response = requests.get(url, headers=headers, timeout=10)
@@ -155,7 +155,7 @@ def test_events_api_debug():
             print(f"   Response: {response.text[:200]}")
             
     except Exception as e:
-        print(f"   ❌ RapidAPI call failed: {e}")
+        print(f"   ❌ api-football.com call failed: {e}")
     
     print("\n2️⃣ Testing fixtures_events function...")
     try:

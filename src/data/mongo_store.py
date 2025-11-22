@@ -1,7 +1,9 @@
 import os
-from pymongo import MongoClient, ASCENDING
 from datetime import datetime, timezone
 from typing import List
+
+from pymongo import ASCENDING, MongoClient
+
 
 class FootyMongoStore:
     """MongoDB storage for football application data - Raw API schema only"""
@@ -17,8 +19,9 @@ class FootyMongoStore:
         self.fixtures_staging = self.db.fixtures_staging
         self.fixtures_active = self.db.fixtures_active
         self.fixtures_completed = self.db.fixtures_completed
-        # ✅ SINGLE goals collection
-        self.goals = self.db.goals
+        # Goals collections - pending and confirmed
+        self.goals_pending = self.db.goals_pending
+        self.goals_confirmed = self.db.goals_confirmed
         
         self._create_indexes()
 
@@ -43,10 +46,15 @@ class FootyMongoStore:
             self.fixtures_completed.create_index([("teams.home.id", ASCENDING)])
             self.fixtures_completed.create_index([("teams.away.id", ASCENDING)])
 
-            # ✅ Single goals collection indexes
-            self.goals.create_index([("fixture_id", ASCENDING)])
-            self.goals.create_index([("player_id", ASCENDING)])
-            self.goals.create_index([("processing_status", ASCENDING)])
+            # Goals collections indexes
+            # goals_pending: Basic goal data only (no video processing)
+            self.goals_pending.create_index([("fixture_id", ASCENDING)])
+            self.goals_pending.create_index([("created_at", ASCENDING)])
+            
+            # goals_confirmed: Extended with video processing fields
+            self.goals_confirmed.create_index([("fixture_id", ASCENDING)])
+            self.goals_confirmed.create_index([("confirmed_at", ASCENDING)])
+            self.goals_confirmed.create_index([("processing_status", ASCENDING)])  # discovered|downloading|completed
             
             print("✅ MongoDB indexes created successfully")
         except Exception as e:
