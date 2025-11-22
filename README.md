@@ -40,47 +40,47 @@ Fully automated pipeline that detects football goals in real-time, discovers vid
 graph TB
     subgraph "🔄 Every 1 Minute - Monitoring"
         A[monitor_job<br/>Schedule: Every 1min]
-        A --> B[Activate Fixtures<br/>TBD/NS → Active]
-        B --> C[Batch Fetch Active Fixtures<br/>API Call for Active Only]
-        C --> D[Detect Goal Delta<br/>Compare DB vs API]
+        A --> B[Activate Fixtures<br/>staging → active]
+        B --> C[Batch Fetch Active<br/>API Call]
+        C --> D[Detect Goal Delta<br/>Compare stored vs fetched]
         D --> E{New Goals?}
-        E -->|Yes| F[Write to<br/>pending_goal_jobs]
-        E -->|No| G[Complete Fixtures<br/>FT/AET/PEN → Completed]
+        E -->|Yes| F[Direct Execution<br/>goal_job per fixture]
+        E -->|No| G[End]
     end
     
-    subgraph "⚡ Sensor-Triggered - Goal Processing"
-        H[Goal Sensor<br/>Polls pending_goal_jobs]
-        F --> H
-        H --> I[goal_job<br/>Per Fixture]
-        I --> J[Validate Goals<br/>Pending → Confirmed]
-        J --> K{Valid Goals?}
-        K -->|Yes| L[Write to<br/>pending_twitter_jobs]
-        K -->|No| M[Clean Up Invalidated]
+    subgraph "⚡ Direct Execution - Goal Processing"
+        F --> H[goal_job<br/>Per Fixture ID]
+        H --> H1[Fetch Goals from API]
+        H1 --> H2[Filter Confirmed Goals]
+        H2 --> H3[Compare with Pending]
+        H3 --> H4[Process Changes<br/>add/confirm/drop]
+        H4 --> H5[Update Fixture<br/>& Complete if FT]
+        H5 --> I{Goals Confirmed?}
+        I -->|Yes| J[Direct Execution<br/>twitter_job per goal]
+        I -->|No| K[End]
     end
     
-    subgraph "🐦 Sensor-Triggered - Twitter Discovery"
-        N[Twitter Sensor<br/>Polls pending_twitter_jobs]
-        L --> N
-        N --> O[twitter_job<br/>Per Goal]
-        O --> O1[Wait 2min<br/>Initial delay]
-        O1 --> P[Search Twitter<br/>Last name + team]
-        P --> Q[Extract Videos<br/>Parse tweet URLs]
-        Q --> R[Save discovered_videos<br/>Status: discovered]
+    subgraph "🐦 Direct Execution - Twitter Discovery"
+        J --> L[twitter_job<br/>Per Goal ID]
+        L --> L1[Wait 2min<br/>Initial delay]
+        L1 --> L2[Search Twitter<br/>Last name + team]
+        L2 --> L3[Extract Videos<br/>Parse URLs]
+        L3 --> L4[Save to goals_confirmed<br/>discovered_videos field]
     end
     
     subgraph "📥 Manual/Scheduled - Video Processing"
-        S[download_job<br/>Per Goal]
-        R -.Manual Trigger.-> S
-        S --> T[Download with yt-dlp<br/>120s timeout]
-        T --> U[Deduplicate<br/>3-Level OpenCV]
-        U --> V[Upload to S3<br/>videos/goal_id/]
-        V --> W[Mark Complete<br/>Status: completed]
+        M[download_job<br/>Per Goal]
+        L4 -.Manual Trigger.-> M
+        M --> M1[Download with yt-dlp<br/>120s timeout]
+        M1 --> M2[Deduplicate<br/>3-Level OpenCV]
+        M2 --> M3[Upload to S3<br/>videos/goal_id/]
+        M3 --> M4[Mark Complete]
     end
     
     style A fill:#e1f5ff
-    style I fill:#fff4e1
-    style O fill:#e1ffe7
-    style S fill:#ffe1f5
+    style H fill:#fff4e1
+    style L fill:#e1ffe7
+    style M fill:#ffe1f5
 ```
 
 ---
@@ -96,10 +96,10 @@ found-footy/
 │   │   │   └── ops/                   # Fetch → Categorize → Store
 │   │   ├── monitor/                   # Real-time monitoring (1min)
 │   │   │   ├── monitor_job.py         # Main job definition
-│   │   │   └── ops/                   # Activate → Fetch → Detect → Spawn
+│   │   │   └── ops/                   # Activate → Fetch → Detect → Trigger
 │   │   ├── goal/                      # Goal validation
 │   │   │   ├── goal_job.py            # Main job definition
-│   │   │   └── ops/                   # Fetch → Check → Validate → Spawn
+│   │   │   └── ops/                   # Fetch → Filter → Compare → Process → Update → Trigger
 │   │   ├── twitter/                   # Twitter video discovery
 │   │   │   ├── twitter_job.py         # Main job definition
 │   │   │   └── ops/                   # Search → Extract → Save
@@ -182,9 +182,10 @@ In Dagster UI, go to **Automation** tab:
 - ✅ Enable `daily_ingestion_schedule` - Midnight UTC
 - ✅ Enable `monitor_schedule` - Every 1 minute
 
-**Sensors:**
-- ✅ Enable `goal_sensor` - Polls `pending_goal_jobs` every 30s
-- ✅ Enable `twitter_sensor` - Polls `pending_twitter_jobs` every 30s
+**Job Execution:**
+- ✅ Direct execution from monitor → goal → twitter (no sensors or queues)
+- ✅ Per-fixture goal processing with granular ops
+- ✅ Per-goal twitter searches with retry logic
 
 ## 🔄 Pipeline Flows (Detailed)
 
@@ -223,82 +224,78 @@ graph TB
     C --> D[batch_fetch_active_op<br/>API: Get fresh data]
     D --> E[detect_goal_delta_op<br/>Compare DB vs API goals]
     E --> F{Goal changes?}
-    F -->|New Goals| G[spawn_goal_jobs_op<br/>Write to pending_goal_jobs]
-    F -->|No Changes| H[complete_fixtures_op<br/>Move FT → Completed]
+    F -->|New Goals| G[trigger_goal_jobs_op<br/>Direct execute per fixture]
+    F -->|No Changes| H[End]
     
     style A fill:#e1f5ff
     style G fill:#fff4e1
-    style H fill:#ffe1f5
 ```
 
 **Key Features:**
 - Only fetches from API if there are active fixtures (cost optimization)
 - Activates fixtures when they start (TBD/NS → 1H)
 - Detects new goals by comparing goals arrays
-- Writes fixture_id to `pending_goal_jobs` for sensor pickup
-- Completes fixtures only after all goals are processed
-- **Smart Race Condition Prevention**: Complete op checks for newly detected goals
+- **Directly executes goal_job** via `execute_in_process()` with fixture_id config
+- No queue collections or sensors needed
+- Clean and immediate execution flow
 
 ---
 
-### 3️⃣ Goal Validation Flow (Sensor-Triggered)
+### 3️⃣ Goal Validation Flow (Per Fixture)
 
 ```mermaid
 graph TB
-    A[Sensor Polls<br/>pending_goal_jobs] --> B[goal_job<br/>Per Fixture]
-    B --> C[fetch_goal_events_op<br/>API: Get goal events]
-    C --> D[check_goal_status_op<br/>Generate goal_id]
-    D --> E{Goal Status?}
-    E -->|New| F[add_to_pending_op<br/>goals_pending]
-    E -->|Exists| G[Skip]
-    F --> H[validate_pending_goals_op<br/>Still in API?]
-    H --> I{Valid?}
-    I -->|Yes| J[Move to<br/>goals_confirmed]
-    I -->|No| K[cleanup_invalidated_goals_op<br/>Delete from pending]
-    J --> L[update_fixture_goals_op<br/>Fetch fresh fixture data]
-    L --> M[spawn_twitter_jobs_op<br/>Write to pending_twitter_jobs]
+    A[goal_job<br/>Per Fixture] --> B[fetch_fixture_goals_op<br/>API: Get goal events]
+    B --> C[filter_confirmed_goals_op<br/>Generate goal_ids<br/>Check goals_confirmed]
+    C --> D[compare_with_pending_op<br/>Compare with goals_pending<br/>for this fixture]
+    D --> E{Changes?}
+    E -->|Add| F[process_goal_changes_op<br/>Add to goals_pending]
+    E -->|Confirm| G[process_goal_changes_op<br/>Confirm goal]
+    E -->|Drop| H[process_goal_changes_op<br/>Drop invalidated]
+    F --> I[update_fixture_op<br/>Update fixture data<br/>Complete if FT + no pending]
+    G --> I
+    H --> I
+    I --> J{Goals confirmed?}
+    J -->|Yes| K[trigger_twitter_jobs_op<br/>Direct execute per goal]
+    J -->|No| L[End]
     
-    style A fill:#e1f5ff
-    style B fill:#fff4e1
-    style J fill:#e1ffe7
-    style M fill:#ffe1f5
+    style A fill:#fff4e1
+    style F fill:#e1ffe7
+    style G fill:#e1ffe7
+    style K fill:#ffe1f5
 ```
 
 **Goal ID Format:** `{fixture_id}_{player_id}_{elapsed}[+{extra}]`  
 Example: `1234567_12345_67` or `1234567_12345_67+1`
 
 **Key Features:**
-- Generates unique goal IDs with player_id for fast lookups
-- 2-stage validation: pending → confirmed
-- Cleans up goals that disappear from API (VAR, corrections)
-- Fetches fresh fixture data before updating
-- Writes goal_id to `pending_twitter_jobs` for sensor pickup
+- **6 granular ops** for detailed Dagster UI visualization
+- Generates unique goal IDs with player_id for fast _id lookups
+- 2-stage validation: goals_pending → goals_confirmed (one cycle wait)
+- Per-fixture scoped comparisons (only checks goals_pending for this fixture)
+- Handles fixture updates AND completion (when status=FT/AET/PEN + no pending goals)
+- **Directly executes twitter_job** via `execute_in_process()` with goal_id config
+- No queue collections needed
 
 ---
 
-### 4️⃣ Twitter Discovery Flow (Sensor-Triggered)
+### 4️⃣ Twitter Discovery Flow (Per Goal)
 
 ```mermaid
 graph TB
-    A[Sensor Polls<br/>pending_twitter_jobs] --> B[twitter_job<br/>Per Goal]
-    B --> B1[Initial Wait<br/>2 minutes for uploads]
-    B1 --> C[search_twitter_op<br/>Firefox + Selenium]
-    C --> D{Query: last_name + team<br/>filter:videos}
-    D --> E{Found < 5?}
-    E -->|Yes| F[Wait 3 minutes<br/>Retry search]
-    F --> G{Still < 5?}
-    G -->|Yes| H[Wait 4 minutes<br/>Final retry]
-    G -->|No| I[extract_videos_op]
-    E -->|No| I
-    H --> I
-    I --> J{Filter by Time<br/>After goal timestamp}
-    J --> K[update_goal_discovered_videos_op<br/>Save to goals_confirmed]
-    K --> L[Status: discovered<br/>Ready for download]
+    A[twitter_job<br/>Per Goal] --> B[search_twitter_op<br/>Firefox + Selenium<br/>2+3+4 min retry logic]
+    B --> C{Query: last_name + team<br/>filter:videos}
+    C --> D{Found >= 5?}
+    D -->|Yes| E[extract_videos_op<br/>Parse video URLs]
+    D -->|No| F[Wait & Retry<br/>2min → 3min → 4min]
+    F --> E
+    E --> G{Filter by Time<br/>After goal timestamp}
+    G --> H[update_goal_discovered_videos_op<br/>Save to goals_confirmed]
+    H --> I[Status: discovered<br/>Ready for download]
     
-    style A fill:#e1f5ff
-    style B fill:#e1ffe7
-    style C fill:#fff4e1
-    style L fill:#ffe1f5
+    style A fill:#e1ffe7
+    style B fill:#fff4e1
+    style I fill:#ffe1f5
 ```
 
 **Search Query:** `"{player_last_name} {team_name} filter:videos"`  
@@ -397,27 +394,16 @@ erDiagram
         array discovered_videos
         string processing_status
     }
-    
-    pending_goal_jobs {
-        int fixture_id
-        int goal_delta
-        datetime created_at
-    }
-    
-    pending_twitter_jobs {
-        string goal_id
-        datetime created_at
-    }
 ```
 
 **Collection Lifecycle:**
 1. **fixtures_staging** - Fixtures not yet started (TBD, NS)
 2. **fixtures_active** - Live matches (1H, HT, 2H, ET)
 3. **fixtures_completed** - Finished matches (FT, AET, PEN)
-4. **goals_pending** - Newly detected goals awaiting validation
+4. **goals_pending** - Newly detected goals awaiting validation (one cycle wait)
 5. **goals_confirmed** - Validated goals ready for video discovery
-6. **pending_goal_jobs** - Queue for goal_job sensor
-7. **pending_twitter_jobs** - Queue for twitter_job sensor
+
+**Note:** No queue collections (pending_goal_jobs, pending_twitter_jobs) - jobs execute directly
 
 ---
 
@@ -432,13 +418,14 @@ Fixtures are automatically routed to appropriate collections based on their stat
 
 This enables efficient monitoring - only active fixtures are fetched from the API.
 
-### ✅ Sensor-Based Job Triggering
+### ✅ Direct Job Execution (No Sensors)
 
-Instead of RunRequest yields, jobs write to MongoDB collections:
-- `monitor_job` → `pending_goal_jobs` collection
-- `goal_job` → `pending_twitter_jobs` collection
-- Sensors poll these collections every 30 seconds
-- Provides better observability and manual intervention capability
+Jobs execute other jobs directly using `execute_in_process()`:
+- `monitor_job` → directly executes `goal_job` per fixture_id
+- `goal_job` → directly executes `twitter_job` per goal_id
+- Config passed at runtime: `run_config={"ops": {"op_name": {"config": {"fixture_id": 123}}}}`
+- No intermediate queue collections needed
+- Clean, immediate execution with full Dagster observability
 
 ### ✅ Goal ID with Player ID
 
@@ -474,14 +461,16 @@ Videos are deduplicated BEFORE S3 upload:
 - Uses OpenCV perceptual hashing
 - Auto-cleanup via tempfile.TemporaryDirectory()
 
-### ✅ Race Condition Prevention
+### ✅ Fixture Lifecycle Management
 
-`complete_fixtures_op` has 3 safety checks:
-1. Status must be in completed_statuses (FT, AET, PEN)
-2. Fixture NOT in fixtures_with_new_goal_ids (just detected goals)
-3. NO pending goals remaining in goals_pending
+`goal_job` handles fixture updates and completion:
+1. **Updates fixture data** in fixtures_active when goals are confirmed
+2. **Completes fixtures** when:
+   - Status is FT/AET/PEN (match finished)
+   - AND no goals remain in goals_pending for this fixture
+3. Moved from fixtures_active → fixtures_completed
 
-This prevents completing fixtures while goals are still being processed.
+This ensures fixtures are only completed after all goals are validated.
 
 ---
 
@@ -497,13 +486,13 @@ dagster job execute -m src.jobs.ingest.ingestion_job
 # Test monitor (requires active fixtures)
 dagster job execute -m src.jobs.monitor.monitor_job
 
-# Test goal job (requires fixture_id)
+# Test goal job (requires fixture_id in config)
 dagster job execute -m src.jobs.goal.goal_job \
-  --config '{"ops": {"fetch_goal_events": {"inputs": {"fixture_id": 1234567}}}}'
+  --config '{"ops": {"fetch_fixture_goals": {"config": {"fixture_id": 1234567}}}}'
 
-# Test twitter job (requires goal_id)
+# Test twitter job (requires goal_id in config)
 dagster job execute -m src.jobs.twitter.twitter_job \
-  --config '{"ops": {"search_twitter": {"inputs": {"goal_id": "1234567_12345_67"}}}}'
+  --config '{"ops": {"search_twitter": {"config": {"goal_id": "1234567_12345_67"}}}}'
 ```
 
 **Twitter Service Test:**
@@ -564,21 +553,20 @@ docker logs -f found-footy-dagster-daemon
 
 **Monitor Job Runs:**
 - Go to Dagster UI → Runs
-- Filter by job name
-- Check op-level logs for errors
-
-**Sensor Status:**
-- Dagster UI → Automation → Sensors
-- Check last tick time and status
-- View evaluation logs
+- Filter by job name (monitor_job, goal_job, twitter_job)
+- Check op-level logs for detailed execution flow
+- View run timeline to see direct execution chain
 
 **MongoDB Queries:**
 ```bash
-# Check pending jobs
+# Check active fixtures
 docker exec found-footy-mongo mongosh -u founduser -p footypass found_footy \
-  --eval "db.pending_goal_jobs.find().pretty()"
+  --eval "db.fixtures_active.find().limit(5).pretty()"
 
-# Check goals
+# Check goals (pending and confirmed)
+docker exec found-footy-mongo mongosh -u founduser -p footypass found_footy \
+  --eval "db.goals_pending.find().pretty()"
+
 docker exec found-footy-mongo mongosh -u founduser -p footypass found_footy \
   --eval "db.goals_confirmed.find().limit(5).pretty()"
 ```
@@ -606,17 +594,17 @@ docker compose exec twitter python -m twitter.firefox_manual_setup
 3. Check monitor_job logs for errors
 4. Verify API-Football.com key is valid
 
-### Issue: Sensor Not Triggering Jobs
+### Issue: Jobs Not Executing
 
 **Checks:**
-1. Is sensor enabled in Dagster UI → Automation?
-2. Check sensor evaluation logs (shows ticks)
-3. Verify MongoDB collections have pending jobs:
+1. Is monitor_schedule enabled in Dagster UI → Automation?
+2. Check monitor_job logs to see if goal deltas are being detected
+3. Verify fixtures_active has fixtures:
    ```bash
-   db.pending_goal_jobs.find()
-   db.pending_twitter_jobs.find()
+   db.fixtures_active.find()
    ```
-4. Check dagster-daemon logs: `docker logs found-footy-dagster-daemon`
+4. Check for errors in goal_job and twitter_job runs (Dagster UI → Runs)
+5. Review dagster-daemon logs: `docker logs found-footy-dagster-daemon`
 
 ### Issue: Videos Not Downloading
 

@@ -1,35 +1,35 @@
-"""Dagster jobs - Clean modular pipeline architecture for Found Footy
+"""Dagster jobs - Direct execution pipeline architecture for Found Footy
 
-Complete workflow with proper validation and separation of concerns:
+Complete workflow with direct job execution (no sensors or queues):
 
 1. ingestion_job (daily 00:05 UTC)
    → Fetch day's fixtures from api-football.com
-   → Store in fixtures_staging
+   → Route to fixtures_staging/active/completed based on status
 
 2. monitor_job (every minute)
    → Activate fixtures (staging → active when start time reached)
    → Batch fetch current data for all active fixtures
    → Detect goal deltas (compare stored vs fetched counts)
-   → Spawn goal_job for each fixture with new goals
-   → Complete fixtures (active → completed, only if no pending goals)
+   → DIRECTLY EXECUTE goal_job per fixture (via execute_in_process)
 
-3. goal_job (spawned per fixture with new goals)
-   → Fetch goal events from API
-   → Check status (confirmed/pending/new)
-   → Add new goals to goals_pending
-   → Validate pending goals → move to goals_confirmed
-   → Clean up invalidated goals (disappeared from API)
-   → Update fixture (only after validation)
-   → Spawn twitter_job for each validated goal
+3. goal_job (per fixture_id)
+   → Fetch goals from API
+   → Filter out already-confirmed goals
+   → Compare with goals_pending for this fixture
+   → Process changes (add/confirm/drop)
+   → Update fixture & complete if FT/AET/PEN + no pending goals
+   → DIRECTLY EXECUTE twitter_job per confirmed goal (via execute_in_process)
 
-4. twitter_job (spawned per validated goal)
-   → Search Twitter for goal videos
+4. twitter_job (per goal_id)
+   → Search Twitter with 2+3+4 min retry logic
    → Extract video URLs
-   → Download videos
-   → Upload to S3
+   → Save discovered_videos to goals_confirmed
+
+Collections: fixtures_staging, fixtures_active, fixtures_completed, goals_pending, goals_confirmed
+No queue collections - direct execution throughout
 """
 
-from .goal import GoalJobConfig, goal_job
+from .goal import goal_job
 from .ingest import ingestion_job, ingestion_schedule
 from .monitor import monitor_job, monitor_schedule
 from .twitter import TwitterJobConfig, twitter_job
@@ -40,7 +40,6 @@ __all__ = [
     "monitor_job",
     "monitor_schedule",
     "goal_job",
-    "GoalJobConfig",
     "twitter_job",
     "TwitterJobConfig",
 ]

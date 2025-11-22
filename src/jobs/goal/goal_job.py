@@ -1,63 +1,50 @@
 """Goal Job - Process and validate goal events for a fixture"""
-from dagster import Config, job
+from dagster import job
 
 from .ops import (
-    add_to_pending_op,
-    check_goal_status_op,
-    cleanup_invalidated_goals_op,
-    fetch_goal_events_op,
-    spawn_twitter_jobs_op,
-    update_fixture_goals_op,
-    validate_pending_goals_op,
+    compare_with_pending_op,
+    fetch_fixture_goals_op,
+    filter_confirmed_goals_op,
+    process_goal_changes_op,
+    trigger_twitter_jobs_op,
+    update_fixture_op,
 )
-
-
-class GoalJobConfig(Config):
-    """Configuration for goal job"""
-    fixture_id: int
 
 
 @job(
     name="goal_job",
-    description="Process goal events for a fixture - validate and trigger twitter jobs",
-    tags={"pipeline": "goal", "trigger": "on_demand"}
+    description="Process goal events for a fixture - validate, update, and trigger twitter jobs",
+    tags={"pipeline": "goal", "trigger": "monitor"}
 )
 def goal_job():
     """
     Pipeline to process goal events for a single fixture.
     
     Flow:
-    1. Fetch all goal events for the fixture
-    2. Check status of each goal (confirmed/pending/new)
-    3. Add new goals to goals_pending
-    4. Validate pending goals (still in API?) → move to goals_confirmed
-    5. Clean up invalidated goals (disappeared from API)
-    6. Update fixture goal count (after validation)
-    7. Spawn twitter_job for each validated goal
+    1. Fetch goals from API
+    2. Filter out already-confirmed goals
+    3. Compare remaining with goals_pending
+    4. Process changes (add/confirm/drop)
+    5. Update fixture & complete if ready
+    6. Trigger twitter jobs for confirmed goals
     
-    This job is spawned by monitor_job when a goal delta is detected.
-    Config will be provided at runtime via RunConfig.
+    This job is triggered by monitor_job when goal delta detected.
+    Config (fixture_id) will be provided at runtime.
     """
-    # Note: fixture_id from config will be passed to fetch_goal_events_op at runtime
-    # Ops will receive it through their config/context
+    # Step 1: Fetch goals from API
+    fetch_result = fetch_fixture_goals_op()
     
-    # Fetch all goal events for this fixture
-    goal_events = fetch_goal_events_op()
+    # Step 2: Filter out already-confirmed goals
+    filter_result = filter_confirmed_goals_op(fetch_result)
     
-    # Check status of each goal
-    goal_status = check_goal_status_op(goal_events)
+    # Step 3: Compare with goals_pending for this fixture
+    compare_result = compare_with_pending_op(filter_result)
     
-    # Add new goals to pending
-    add_to_pending_op(goal_status)
+    # Step 4: Process changes (add/confirm/drop)
+    process_result = process_goal_changes_op(compare_result)
     
-    # Validate pending goals → move to confirmed
-    validation_result = validate_pending_goals_op(goal_status)
+    # Step 5: Update fixture & complete if ready
+    update_result = update_fixture_op(process_result)
     
-    # Clean up invalidated goals
-    cleanup_invalidated_goals_op(goal_status)
-    
-    # Update fixture with validated goals
-    update_fixture_goals_op(validation_result)
-    
-    # Spawn twitter jobs for validated goals
-    spawn_twitter_jobs_op(validation_result)
+    # Step 6: Trigger twitter jobs for confirmed goals
+    trigger_twitter_jobs_op(update_result)

@@ -1,18 +1,16 @@
 """Goal ops module exports"""
-from .add_to_pending_op import add_to_pending_op
-from .check_goal_status_op import check_goal_status_op
-from .cleanup_invalidated_goals_op import cleanup_invalidated_goals_op
-from .fetch_goal_events_op import fetch_goal_events_op
-from .spawn_twitter_jobs_op import spawn_twitter_jobs_op
-from .update_fixture_goals_op import update_fixture_goals_op
-from .validate_pending_goals_op import validate_pending_goals_op
+from .compare_with_pending_op import compare_with_pending_op
+from .fetch_fixture_goals_op import fetch_fixture_goals_op
+from .filter_confirmed_goals_op import filter_confirmed_goals_op
+from .process_goal_changes_op import process_goal_changes_op
+from .trigger_twitter_jobs_op import trigger_twitter_jobs_op
+from .update_fixture_op import update_fixture_op
 
 __all__ = [
-    "fetch_goal_events_op",
-    "check_goal_status_op",
-    "add_to_pending_op",
-    "validate_pending_goals_op",
-    "cleanup_invalidated_goals_op",
-    "update_fixture_goals_op",
-    "spawn_twitter_jobs_op",
+    "fetch_fixture_goals_op",
+    "filter_confirmed_goals_op",
+    "compare_with_pending_op",
+    "process_goal_changes_op",
+    "update_fixture_op",
+    "trigger_twitter_jobs_op",
 ]

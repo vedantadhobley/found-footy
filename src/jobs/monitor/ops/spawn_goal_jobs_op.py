@@ -1,67 +1,77 @@
-"""Spawn goal jobs for fixtures with new goals"""
-from datetime import datetime
+"""Trigger goal jobs for fixtures with new goals"""
 from typing import Any, Dict, List
 
 from dagster import OpExecutionContext, op
 
-# Note: We'll import the goal_job when we create it
-# For now, this is a placeholder that will trigger goal jobs
+from src.jobs.goal.goal_job import goal_job
 
 
 @op(
-    name="spawn_goal_jobs",
-    description="Trigger goal_job for each fixture with new goals",
-    tags={"kind": "orchestration", "spawns": "goal_job"}
+    name="trigger_goal_jobs",
+    description="Directly execute goal_job for each fixture with goal delta",
 )
-def spawn_goal_jobs_op(
+def trigger_goal_jobs_op(
     context: OpExecutionContext,
     fixtures_with_new_goals: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
     """
-    For each fixture with new goals, spawn a goal_job to process them.
+    Directly execute goal_job for each fixture with goal delta.
     
     Args:
         fixtures_with_new_goals: List of fixtures with goal deltas
-        
+    
     Returns:
-        Dict with spawn statistics
+        Dict with execution statistics
+    
+    Each goal_job will:
+    - Validate ALL goals for that fixture
+    - Update fixture data in fixtures_active
+    - Move fixture to fixtures_completed if ready
     """
     if not fixtures_with_new_goals:
-        context.log.info("✅ No goal jobs to spawn")
-        return {"status": "success", "spawned_count": 0}
+        context.log.info("✅ No goal jobs to trigger")
+        return {"status": "success", "triggered_count": 0}
     
-    context.log.info(f"🚀 Spawning goal jobs for {len(fixtures_with_new_goals)} fixtures")
-    
-    spawned_count = 0
+    triggered_count = 0
+    failed_count = 0
     
     for fixture_data in fixtures_with_new_goals:
         try:
             fixture_id = fixture_data["fixture_id"]
             goal_delta = fixture_data["goal_delta"]
             
-            context.log.info(f"🚀 Marking fixture {fixture_id} for goal_job ({goal_delta} new goals)")
+            context.log.info(f"🚀 Executing goal_job for fixture {fixture_id} (+{goal_delta} goals)")
             
-            # Store fixture_id in a collection for sensor to pick up
-            from src.data.mongo_store import FootyMongoStore
-            store = FootyMongoStore()
+            # Execute goal_job directly with fixture_id config
+            result = goal_job.execute_in_process(
+                run_config={
+                    "ops": {
+                        "process_fixture_goals": {
+                            "config": {
+                                "fixture_id": fixture_id
+                            }
+                        }
+                    }
+                }
+            )
             
-            # Store in pending_goal_jobs collection
-            store.db["pending_goal_jobs"].insert_one({
-                "fixture_id": fixture_id,
-                "goal_delta": goal_delta,
-                "created_at": datetime.utcnow().isoformat()
-            })
-            
-            spawned_count += 1
+            if result.success:
+                context.log.info(f"✅ goal_job succeeded for fixture {fixture_id}")
+                triggered_count += 1
+            else:
+                context.log.error(f"❌ goal_job failed for fixture {fixture_id}")
+                failed_count += 1
             
         except Exception as e:
-            context.log.error(f"❌ Failed to spawn goal job for fixture {fixture_data.get('fixture_id')}: {e}")
+            context.log.error(f"❌ Exception executing goal_job for fixture {fixture_data.get('fixture_id')}: {e}")
+            failed_count += 1
             continue
     
-    context.log.info(f"✅ Spawned {spawned_count} goal jobs")
+    context.log.info(f"✅ Executed {triggered_count} goal jobs ({failed_count} failed)")
     
     return {
         "status": "success",
-        "spawned_count": spawned_count,
+        "triggered_count": triggered_count,
+        "failed_count": failed_count,
         "total_fixtures": len(fixtures_with_new_goals)
     }

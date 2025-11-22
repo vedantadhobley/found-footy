@@ -16,7 +16,7 @@ class TwitterJobConfig(Config):
 @job(
     name="twitter_job",
     description="Search Twitter and discover video URLs for a goal",
-    tags={"pipeline": "twitter", "trigger": "on_demand", "phase": "discovery"}
+    tags={"pipeline": "twitter", "trigger": "sensor", "phase": "discovery"}
 )
 def twitter_job():
     """
@@ -32,7 +32,7 @@ def twitter_job():
     Smart Features:
     - Initial Delay: 2 minutes for videos to be uploaded after goal
     - Search Query: Uses player last name + team (e.g., "Messi Barcelona")
-    - Time Filtering: Only tweets posted AFTER goal's created_at timestamp
+    - Time Filtering: Only tweets posted AFTER goal's first_seen timestamp
     - Retry Logic: If < 5 videos, waits 3min then 4min (total ~10 min window)
     - Saves whatever found: Even if < 5 videos, saves them for download_job
     
@@ -52,9 +52,6 @@ def twitter_job():
     NOTE: Includes internal retry mechanisms for Twitter API rate limits.
     Config (goal_id) will be provided at runtime via RunConfig.
     """
-    # Note: goal_id from config will be passed to search_twitter_op at runtime
-    # The op passes goal_id through the pipeline via return values
-    
     # Search Twitter for the goal (returns {goal_id, tweets})
     search_result = search_twitter_op()
     
