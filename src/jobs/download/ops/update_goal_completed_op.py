@@ -42,19 +42,9 @@ def update_goal_completed_op(
     )
     
     try:
-        result = store.goals_confirmed.update_one(
-            {"_id": goal_id},
-            {
-                "$set": {
-                    "processing_status": "completed",
-                    "successful_uploads": successful_uploads,
-                    "failed_downloads": failed_downloads,
-                    "download_completed_at": datetime.now(timezone.utc).isoformat()
-                }
-            }
-        )
+        success = store.mark_goal_processing_completed(goal_id, successful_uploads)
         
-        if result.modified_count > 0:
+        if success:
             context.log.info(f"✅ Goal {goal_id} marked as completed")
             return {
                 "status": "success",

@@ -39,7 +39,7 @@ def search_twitter_op(context: OpExecutionContext, goal_id: str) -> Dict[str, An
     
     # Get goal doc to get created_at timestamp
     store = FootyMongoStore()
-    goal_doc = store.goals_confirmed.find_one({"_id": goal_id})
+    goal_doc = store.get_goal_from_confirmed(goal_id)
     
     if not goal_doc:
         context.log.error(f"❌ Goal {goal_id} not found in goals_confirmed")

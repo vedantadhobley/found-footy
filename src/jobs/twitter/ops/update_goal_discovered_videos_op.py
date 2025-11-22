@@ -37,16 +37,7 @@ def update_goal_discovered_videos_op(
         context.log.warning(f"⚠️  No videos discovered for goal {goal_id}")
         
         # Update goal with empty discovered_videos
-        store.goals_confirmed.update_one(
-            {"_id": goal_id},
-            {
-                "$set": {
-                    "discovered_videos": [],
-                    "processing_status": "discovered",
-                    "video_discovery_completed_at": context.run.tags.get("dagster/run_start_time")
-                }
-            }
-        )
+        store.update_goal_discovered_videos(goal_id, [])
         
         return {
             "status": "no_videos",
@@ -57,19 +48,10 @@ def update_goal_discovered_videos_op(
     context.log.info(f"💾 Updating goal {goal_id} with {len(video_metadata)} discovered videos")
     
     try:
-        result = store.goals_confirmed.update_one(
-            {"_id": goal_id},
-            {
-                "$set": {
-                    "discovered_videos": video_metadata,
-                    "processing_status": "discovered",
-                    "video_discovery_completed_at": context.run.tags.get("dagster/run_start_time")
-                }
-            }
-        )
+        success = store.update_goal_discovered_videos(goal_id, video_metadata)
         
-        if result.modified_count > 0:
-            context.log.info(f"✅ Updated goal {goal_id} with {len(video_metadata)} video URLs")
+        if success:
+            context.log.info(f"✅ Updated goal {goal_id} with {len(video_metadata)} videos")
             return {
                 "status": "success",
                 "goal_id": goal_id,

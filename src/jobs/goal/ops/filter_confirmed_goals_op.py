@@ -9,7 +9,7 @@ from src.data.mongo_store import FootyMongoStore
 @op(
     name="filter_confirmed_goals",
     description="Remove goals that are already in goals_confirmed",
-    required_resource_keys={"mongo_store"},
+    required_resource_keys={"mongo"},
 )
 def filter_confirmed_goals_op(
     context: OpExecutionContext,
@@ -25,7 +25,7 @@ def filter_confirmed_goals_op(
             "new_goals": List[Dict] - goals not yet confirmed
         }
     """
-    store: FootyMongoStore = context.resources.mongo_store
+    store: FootyMongoStore = context.resources.mongo
     
     fixture_id = fetch_result["fixture_id"]
     goal_events = fetch_result["goal_events"]
@@ -50,7 +50,7 @@ def filter_confirmed_goals_op(
             goal_id += f"+{extra_time}"
         
         # Check if already confirmed (by _id)
-        if store.db["goals_confirmed"].find_one({"_id": goal_id}):
+        if store.is_goal_confirmed(goal_id):
             context.log.debug(f"Goal {goal_id} already confirmed, filtering out")
             filtered_count += 1
             continue

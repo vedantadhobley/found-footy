@@ -30,13 +30,11 @@ def batch_fetch_active_op(
     store = FootyMongoStore()
     
     # Get all active fixture IDs
-    active_fixtures = list(store.fixtures_active.find({}, {"_id": 1}))
+    fixture_ids = store.get_active_fixture_ids()
     
-    if not active_fixtures:
+    if not fixture_ids:
         context.log.info("📋 No active fixtures to fetch")
         return []
-    
-    fixture_ids = [f["_id"] for f in active_fixtures]
     context.log.info(f"🌐 Batch fetching data for {len(fixture_ids)} active fixtures")
     
     try:

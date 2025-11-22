@@ -9,7 +9,7 @@ from src.data.mongo_store import FootyMongoStore
 @op(
     name="compare_with_pending",
     description="Compare new goals with goals_pending for this fixture",
-    required_resource_keys={"mongo_store"},
+    required_resource_keys={"mongo"},
 )
 def compare_with_pending_op(
     context: OpExecutionContext,
@@ -27,7 +27,7 @@ def compare_with_pending_op(
             "goal_data": Dict[str, Dict] - goal metadata by goal_id
         }
     """
-    store: FootyMongoStore = context.resources.mongo_store
+    store: FootyMongoStore = context.resources.mongo
     
     fixture_id = filter_result["fixture_id"]
     new_goals = filter_result["new_goals"]
@@ -35,7 +35,7 @@ def compare_with_pending_op(
     context.log.info(f"Comparing {len(new_goals)} goals with pending for fixture {fixture_id}")
     
     # Get all goals_pending for THIS fixture
-    pending_goals = list(store.db["goals_pending"].find({"fixture_id": fixture_id}))
+    pending_goals = store.get_pending_goals_for_fixture(fixture_id)
     pending_goal_ids = {g["_id"] for g in pending_goals}
     
     context.log.info(f"Found {len(pending_goals)} goals in pending for fixture {fixture_id}")

@@ -41,7 +41,7 @@ def detect_goal_delta_op(
             fixture_id = fresh_fixture["fixture"]["id"]
             
             # Get stored fixture
-            stored_fixture = store.fixtures_active.find_one({"_id": fixture_id})
+            stored_fixture = store.get_fixture_from_active(fixture_id)
             
             if not stored_fixture:
                 context.log.warning(f"⚠️  Fixture {fixture_id} not found in active collection")

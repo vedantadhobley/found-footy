@@ -25,7 +25,7 @@ def validate_goal_op(context: OpExecutionContext, goal_id: str) -> Dict[str, Any
     
     context.log.info(f"🔍 Validating goal {goal_id}")
     
-    goal_doc = store.goals_confirmed.find_one({"_id": goal_id})
+    goal_doc = store.get_goal_from_confirmed(goal_id)
     
     if not goal_doc:
         context.log.warning(f"⚠️  Goal {goal_id} not found in goals_confirmed")
@@ -43,16 +43,7 @@ def validate_goal_op(context: OpExecutionContext, goal_id: str) -> Dict[str, Any
         context.log.warning(f"⚠️  No discovered videos for goal {goal_id}")
         
         # Mark as completed with no videos
-        store.goals_confirmed.update_one(
-            {"_id": goal_id},
-            {
-                "$set": {
-                    "processing_status": "completed",
-                    "successful_uploads": [],
-                    "failed_downloads": []
-                }
-            }
-        )
+        store.mark_goal_processing_completed(goal_id, [])
         
         return {"status": "no_videos", "goal_id": goal_id, "goal_doc": goal_doc}
     

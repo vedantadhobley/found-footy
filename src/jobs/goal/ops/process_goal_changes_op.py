@@ -1,5 +1,4 @@
 """Execute goal changes: add, confirm, drop"""
-from datetime import datetime
 from typing import Any, Dict
 
 from dagster import OpExecutionContext, op
@@ -10,7 +9,7 @@ from src.data.mongo_store import FootyMongoStore
 @op(
     name="process_goal_changes",
     description="Execute goal changes: add to pending, confirm, or drop",
-    required_resource_keys={"mongo_store"},
+    required_resource_keys={"mongo"},
 )
 def process_goal_changes_op(
     context: OpExecutionContext,
@@ -28,7 +27,7 @@ def process_goal_changes_op(
             "goals_dropped": int
         }
     """
-    store: FootyMongoStore = context.resources.mongo_store
+    store: FootyMongoStore = context.resources.mongo
     
     fixture_id = compare_result["fixture_id"]
     to_add = compare_result["to_add"]
@@ -41,18 +40,7 @@ def process_goal_changes_op(
     # Add new goals to pending
     for goal_id in to_add:
         goal = goal_data[goal_id]
-        goal_doc = {
-            "_id": goal_id,
-            "fixture_id": fixture_id,
-            "player": goal["player"],
-            "team": goal["team"],
-            "time": goal["time"],
-            "detail": goal["detail"],
-            "first_seen": datetime.utcnow(),
-            "status": "pending"
-        }
-        
-        store.db["goals_pending"].insert_one(goal_doc)
+        store.add_goal_to_pending(goal_id, fixture_id, goal)
         context.log.info(
             f"➕ ADDED to pending: {goal_id} - "
             f"{goal['player'].get('name')} @ {goal['time'].get('elapsed')}'"
@@ -61,16 +49,7 @@ def process_goal_changes_op(
     # Confirm goals (move from pending to confirmed)
     confirmed_goal_ids = []
     for goal_id in to_confirm:
-        goal_doc = store.db["goals_pending"].find_one({"_id": goal_id})
-        if goal_doc:
-            # Update with validation timestamp
-            goal_doc["validated_at"] = datetime.utcnow()
-            goal_doc["status"] = "confirmed"
-            
-            # Move to confirmed
-            store.db["goals_confirmed"].insert_one(goal_doc)
-            store.db["goals_pending"].delete_one({"_id": goal_id})
-            
+        if store.confirm_goal(goal_id):
             goal = goal_data.get(goal_id, {})
             context.log.info(
                 f"✅ CONFIRMED: {goal_id} - "
@@ -81,8 +60,8 @@ def process_goal_changes_op(
     
     # Drop invalidated goals
     for goal_id in to_drop:
-        store.db["goals_pending"].delete_one({"_id": goal_id})
-        context.log.warning(f"❌ DROPPED from pending: {goal_id} (no longer in API)")
+        if store.drop_goal_from_pending(goal_id):
+            context.log.warning(f"❌ DROPPED from pending: {goal_id} (no longer in API)")
     
     context.log.info(
         f"Completed: +{len(to_add)} added, ✅{len(confirmed_goal_ids)} confirmed, "

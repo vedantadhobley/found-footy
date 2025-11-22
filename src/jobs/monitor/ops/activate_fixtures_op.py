@@ -26,7 +26,7 @@ def activate_fixtures_op(context: OpExecutionContext) -> Dict[str, Any]:
     context.log.info(f"🕐 Checking for fixtures to activate (current time: {now.isoformat()})")
     
     # Get all fixtures from staging
-    staging_fixtures = list(store.fixtures_staging.find({}))
+    staging_fixtures = store.get_staging_fixtures()
     
     if not staging_fixtures:
         context.log.info("📋 No fixtures in staging")
@@ -50,20 +50,12 @@ def activate_fixtures_op(context: OpExecutionContext) -> Dict[str, Any]:
             # Check if fixture should be active (start time reached)
             if fixture_date <= now:
                 # Move to active
-                store.fixtures_active.replace_one(
-                    {"_id": fixture_id},
-                    fixture,
-                    upsert=True
-                )
-                
-                # Remove from staging
-                store.fixtures_staging.delete_one({"_id": fixture_id})
-                
-                home_team = fixture.get("teams", {}).get("home", {}).get("name", "Unknown")
-                away_team = fixture.get("teams", {}).get("away", {}).get("name", "Unknown")
-                
-                context.log.info(f"✅ Activated fixture {fixture_id}: {home_team} vs {away_team}")
-                activated_count += 1
+                if store.activate_fixture(fixture_id, fixture):
+                    home_team = fixture.get("teams", {}).get("home", {}).get("name", "Unknown")
+                    away_team = fixture.get("teams", {}).get("away", {}).get("name", "Unknown")
+                    
+                    context.log.info(f"✅ Activated fixture {fixture_id}: {home_team} vs {away_team}")
+                    activated_count += 1
         
         except Exception as e:
             context.log.error(f"❌ Error activating fixture {fixture.get('_id')}: {e}")

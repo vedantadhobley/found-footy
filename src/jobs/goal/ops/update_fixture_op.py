@@ -1,5 +1,4 @@
 """Update fixture data and complete if ready"""
-from datetime import datetime
 from typing import Any, Dict
 
 from dagster import OpExecutionContext, op
@@ -10,7 +9,7 @@ from src.data.mongo_store import FootyMongoStore
 @op(
     name="update_fixture",
     description="Update fixture data in fixtures_active and complete if ready",
-    required_resource_keys={"mongo_store"},
+    required_resource_keys={"mongo"},
 )
 def update_fixture_op(
     context: OpExecutionContext,
@@ -27,7 +26,7 @@ def update_fixture_op(
             "fixture_completed": bool
         }
     """
-    store: FootyMongoStore = context.resources.mongo_store
+    store: FootyMongoStore = context.resources.mongo
     
     fixture_id = process_result["fixture_id"]
     fixture_status = process_result["fixture_status"]
@@ -36,21 +35,15 @@ def update_fixture_op(
     context.log.info(f"Updating fixture {fixture_id}")
     
     # Count goals for this fixture
-    confirmed_count = store.db["goals_confirmed"].count_documents({"fixture_id": fixture_id})
-    pending_count = store.db["goals_pending"].count_documents({"fixture_id": fixture_id})
+    confirmed_count = store.count_confirmed_goals_for_fixture(fixture_id)
+    pending_count = store.count_pending_goals_for_fixture(fixture_id)
     
     # Only update fixture if goals were confirmed (not if just added to pending)
     fixture_updated = False
     if goals_confirmed > 0:
-        store.db["fixtures_active"].update_one(
-            {"_id": fixture_id},
-            {"$set": {
-                "goals.stored": confirmed_count,
-                "last_goal_update": datetime.utcnow()
-            }}
-        )
-        context.log.info(f"📊 Updated fixture {fixture_id} stored goal count to {confirmed_count}")
-        fixture_updated = True
+        fixture_updated = store.update_fixture_goal_counts(fixture_id)
+        if fixture_updated:
+            context.log.info(f"📊 Updated fixture {fixture_id} stored goal count to {confirmed_count}")
     
     # Check if fixture should be completed
     completed_statuses = ["FT", "AET", "PEN", "ABD", "AWD", "WO", "CANC", "PST"]
@@ -58,17 +51,9 @@ def update_fixture_op(
     
     if fixture_status in completed_statuses and pending_count == 0:
         # Move to completed
-        fixture_doc = store.db["fixtures_active"].find_one({"_id": fixture_id})
-        if fixture_doc:
-            # Update with final data
-            fixture_doc["status"] = fixture_status
-            fixture_doc["completed_at"] = datetime.utcnow()
-            
-            store.db["fixtures_completed"].insert_one(fixture_doc)
-            store.db["fixtures_active"].delete_one({"_id": fixture_id})
-            
+        fixture_completed = store.complete_fixture(fixture_id, fixture_status)
+        if fixture_completed:
             context.log.info(f"🏁 COMPLETED: Moved fixture {fixture_id} to completed ({fixture_status})")
-            fixture_completed = True
     else:
         if fixture_status in completed_statuses:
             context.log.info(

@@ -180,8 +180,10 @@ class FootyMongoStore:
                     count = self.fixtures_staging.count_documents({})
                 elif collection_name == "fixtures_completed":
                     count = self.fixtures_completed.count_documents({})
-                elif collection_name == "goals":
-                    count = self.goals.count_documents({})
+                elif collection_name == "goals_pending":
+                    count = self.goals_pending.count_documents({})
+                elif collection_name == "goals_confirmed":
+                    count = self.goals_confirmed.count_documents({})
                 else:
                     continue
                 
@@ -274,7 +276,7 @@ class FootyMongoStore:
                 goal_id = f"{fixture_id}_{elapsed}"
             
             # Check if goal already exists
-            existing_goal = self.goals.find_one({"_id": goal_id})
+            existing_goal = self.goals_confirmed.find_one({"_id": goal_id})
             if existing_goal:
                 print(f"🔄 Goal {goal_id} already exists - updating data only")
                 # Update existing with latest API data but preserve processing fields
@@ -287,7 +289,7 @@ class FootyMongoStore:
                     if field in existing_goal:
                         goal_doc[field] = existing_goal[field]
                 
-                self.goals.replace_one({"_id": goal_id}, goal_doc)
+                self.goals_confirmed.replace_one({"_id": goal_id}, goal_doc)
                 return False  # Not a new goal
             
             # Store new goal
@@ -297,7 +299,7 @@ class FootyMongoStore:
             goal_doc["processing_status"] = processing_status
             goal_doc["created_at"] = datetime.now(timezone.utc).isoformat()
             
-            self.goals.insert_one(goal_doc)
+            self.goals_confirmed.insert_one(goal_doc)
             print(f"✅ New goal stored: {goal_id}")
             return True
             
@@ -311,7 +313,7 @@ class FootyMongoStore:
             import re
             pattern = re.compile(f"^{fixture_id}_\\d+(?:\\+\\d+)?$")
             
-            goals = list(self.goals.find({"_id": pattern}, {"_id": 1}))
+            goals = list(self.goals_confirmed.find({"_id": pattern}, {"_id": 1}))
             return {goal["_id"] for goal in goals}
             
         except Exception as e:
@@ -321,7 +323,7 @@ class FootyMongoStore:
     def validate_goal_count(self, fixture_id: int, expected_total_goals: int) -> dict:
         """Validate stored goals match expected count from fixture data"""
         try:
-            stored_goals_count = self.goals.count_documents({"fixture_id": fixture_id})
+            stored_goals_count = self.goals_confirmed.count_documents({"fixture_id": fixture_id})
             
             is_valid = stored_goals_count == expected_total_goals
             
@@ -352,7 +354,7 @@ class FootyMongoStore:
             if status == "completed":
                 update_data["processing_completed_at"] = datetime.now(timezone.utc).isoformat()
             
-            result = self.goals.update_one(
+            result = self.goals_confirmed.update_one(
                 {"_id": goal_id},
                 {"$set": update_data}
             )
@@ -372,11 +374,138 @@ class FootyMongoStore:
             if status:
                 query["processing_status"] = status
                 
-            return list(self.goals.find(query))
+            return list(self.goals_confirmed.find(query))
             
         except Exception as e:
             print(f"❌ Error getting goals: {e}")
             return []
+    
+    # === New Architecture Helper Methods ===
+    
+    def add_goal_to_pending(self, goal_id: str, fixture_id: int, goal_data: dict) -> bool:
+        """Add a goal to goals_pending collection"""
+        try:
+            goal_doc = {
+                "_id": goal_id,
+                "fixture_id": fixture_id,
+                "player": goal_data.get("player", {}),
+                "team": goal_data.get("team", {}),
+                "time": goal_data.get("time", {}),
+                "detail": goal_data.get("detail", "Normal Goal"),
+                "first_seen": datetime.now(timezone.utc),
+                "status": "pending"
+            }
+            self.goals_pending.insert_one(goal_doc)
+            return True
+        except Exception as e:
+            print(f"❌ Error adding goal to pending: {e}")
+            return False
+    
+    def confirm_goal(self, goal_id: str) -> bool:
+        """Move goal from pending to confirmed"""
+        try:
+            goal_doc = self.goals_pending.find_one({"_id": goal_id})
+            if not goal_doc:
+                print(f"⚠️ Goal {goal_id} not found in pending")
+                return False
+            
+            # Update with validation timestamp
+            goal_doc["validated_at"] = datetime.now(timezone.utc)
+            goal_doc["status"] = "confirmed"
+            goal_doc["processing_status"] = "discovered"  # Ready for twitter search
+            
+            # Move to confirmed
+            self.goals_confirmed.insert_one(goal_doc)
+            self.goals_pending.delete_one({"_id": goal_id})
+            return True
+        except Exception as e:
+            print(f"❌ Error confirming goal: {e}")
+            return False
+    
+    def drop_goal_from_pending(self, goal_id: str) -> bool:
+        """Remove goal from pending (invalidated by API)"""
+        try:
+            result = self.goals_pending.delete_one({"_id": goal_id})
+            return result.deleted_count > 0
+        except Exception as e:
+            print(f"❌ Error dropping goal from pending: {e}")
+            return False
+    
+    def get_pending_goals_for_fixture(self, fixture_id: int) -> List[dict]:
+        """Get all pending goals for a fixture"""
+        try:
+            return list(self.goals_pending.find({"fixture_id": fixture_id}))
+        except Exception as e:
+            print(f"❌ Error getting pending goals: {e}")
+            return []
+    
+    def get_confirmed_goals_for_fixture(self, fixture_id: int) -> List[dict]:
+        """Get all confirmed goals for a fixture"""
+        try:
+            return list(self.goals_confirmed.find({"fixture_id": fixture_id}))
+        except Exception as e:
+            print(f"❌ Error getting confirmed goals: {e}")
+            return []
+    
+    def is_goal_confirmed(self, goal_id: str) -> bool:
+        """Check if goal exists in goals_confirmed"""
+        try:
+            return self.goals_confirmed.find_one({"_id": goal_id}) is not None
+        except Exception as e:
+            print(f"❌ Error checking if goal confirmed: {e}")
+            return False
+    
+    def count_pending_goals_for_fixture(self, fixture_id: int) -> int:
+        """Count pending goals for a fixture"""
+        try:
+            return self.goals_pending.count_documents({"fixture_id": fixture_id})
+        except Exception as e:
+            print(f"❌ Error counting pending goals: {e}")
+            return 0
+    
+    def count_confirmed_goals_for_fixture(self, fixture_id: int) -> int:
+        """Count confirmed goals for a fixture"""
+        try:
+            return self.goals_confirmed.count_documents({"fixture_id": fixture_id})
+        except Exception as e:
+            print(f"❌ Error counting confirmed goals: {e}")
+            return 0
+    
+    def update_fixture_goal_counts(self, fixture_id: int) -> bool:
+        """Update fixture with current goal counts"""
+        try:
+            confirmed_count = self.count_confirmed_goals_for_fixture(fixture_id)
+            
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id},
+                {"$set": {
+                    "goals.stored": confirmed_count,
+                    "last_goal_update": datetime.now(timezone.utc)
+                }}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error updating fixture goal counts: {e}")
+            return False
+    
+    def complete_fixture(self, fixture_id: int, final_status: str) -> bool:
+        """Move fixture from active to completed"""
+        try:
+            fixture_doc = self.fixtures_active.find_one({"_id": fixture_id})
+            if not fixture_doc:
+                print(f"⚠️ Fixture {fixture_id} not found in active")
+                return False
+            
+            # Update with final data
+            fixture_doc["status"] = final_status
+            fixture_doc["completed_at"] = datetime.now(timezone.utc)
+            
+            self.fixtures_completed.insert_one(fixture_doc)
+            self.fixtures_active.delete_one({"_id": fixture_id})
+            return True
+        except Exception as e:
+            print(f"❌ Error completing fixture: {e}")
+            return False
 
     def get_active_fixtures(self) -> List[dict]:
         """Get all active fixtures for monitoring"""
@@ -385,3 +514,97 @@ class FootyMongoStore:
         except Exception as e:
             print(f"❌ Error getting active fixtures: {e}")
             return []
+    
+    def get_active_fixture_ids(self) -> List[int]:
+        """Get all active fixture IDs"""
+        try:
+            fixtures = list(self.fixtures_active.find({}, {"_id": 1}))
+            return [f["_id"] for f in fixtures]
+        except Exception as e:
+            print(f"❌ Error getting active fixture IDs: {e}")
+            return []
+    
+    def get_staging_fixtures(self) -> List[dict]:
+        """Get all fixtures in staging"""
+        try:
+            return list(self.fixtures_staging.find({}))
+        except Exception as e:
+            print(f"❌ Error getting staging fixtures: {e}")
+            return []
+    
+    def activate_fixture(self, fixture_id: int, fixture_doc: dict) -> bool:
+        """Move fixture from staging to active"""
+        try:
+            self.fixtures_active.replace_one(
+                {"_id": fixture_id},
+                fixture_doc,
+                upsert=True
+            )
+            self.fixtures_staging.delete_one({"_id": fixture_id})
+            return True
+        except Exception as e:
+            print(f"❌ Error activating fixture {fixture_id}: {e}")
+            return False
+    
+    def get_fixture_from_active(self, fixture_id: int) -> dict | None:
+        """Get fixture document from fixtures_active"""
+        try:
+            return self.fixtures_active.find_one({"_id": fixture_id})
+        except Exception as e:
+            print(f"❌ Error getting fixture {fixture_id} from active: {e}")
+            return None
+    
+    def get_goal_from_confirmed(self, goal_id: str) -> dict | None:
+        """Get goal document from goals_confirmed"""
+        try:
+            return self.goals_confirmed.find_one({"_id": goal_id})
+        except Exception as e:
+            print(f"❌ Error getting goal {goal_id} from confirmed: {e}")
+            return None
+    
+    def update_goal_discovered_videos(self, goal_id: str, videos: List[dict]) -> bool:
+        """Update discovered_videos field for a goal"""
+        try:
+            result = self.goals_confirmed.update_one(
+                {"_id": goal_id},
+                {"$set": {
+                    "discovered_videos": videos,
+                    "processing_status": "discovered",
+                    "discovery_completed_at": datetime.now(timezone.utc)
+                }}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error updating discovered videos for goal {goal_id}: {e}")
+            return False
+    
+    def mark_goal_processing_started(self, goal_id: str) -> bool:
+        """Mark goal as processing started"""
+        try:
+            result = self.goals_confirmed.update_one(
+                {"_id": goal_id},
+                {"$set": {
+                    "processing_status": "downloading",
+                    "processing_started_at": datetime.now(timezone.utc)
+                }}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error marking goal {goal_id} as processing: {e}")
+            return False
+    
+    def mark_goal_processing_completed(self, goal_id: str, successful_uploads: List[dict]) -> bool:
+        """Mark goal processing as completed"""
+        try:
+            result = self.goals_confirmed.update_one(
+                {"_id": goal_id},
+                {"$set": {
+                    "processing_status": "completed",
+                    "successful_uploads": successful_uploads,
+                    "processing_completed_at": datetime.now(timezone.utc)
+                }}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error marking goal {goal_id} as completed: {e}")
+            return False

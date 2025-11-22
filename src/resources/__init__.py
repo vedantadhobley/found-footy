@@ -1,22 +1,10 @@
 """Dagster resources - MongoDB, S3, and external services"""
-from dagster import ConfigurableResource
-from pymongo import MongoClient
-import boto3
 import os
 
+import boto3
+from dagster import ConfigurableResource
 
-class MongoDBResource(ConfigurableResource):
-    """MongoDB resource for application data"""
-    uri: str
-    database_name: str = "found_footy"
-    
-    def get_client(self) -> MongoClient:
-        """Get MongoDB client"""
-        return MongoClient(self.uri)
-    
-    def get_database(self):
-        """Get database instance"""
-        return self.get_client()[self.database_name]
+from src.data.mongo_store import FootyMongoStore
 
 
 class S3Resource(ConfigurableResource):
@@ -46,9 +34,8 @@ class TwitterSessionResource(ConfigurableResource):
 
 
 # Resource instances configured from environment variables
-mongo_resource = MongoDBResource(
-    uri=os.getenv("MONGODB_URI", "mongodb://founduser:footypass@mongo:27017/found_footy?authSource=admin"),
-    database_name="found_footy"
+mongo_resource = FootyMongoStore(
+    connection_url=os.getenv("MONGODB_URI", "mongodb://founduser:footypass@mongo:27017/found_footy?authSource=admin")
 )
 
 s3_resource = S3Resource(
