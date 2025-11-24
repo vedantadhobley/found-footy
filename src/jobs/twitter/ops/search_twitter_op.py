@@ -4,9 +4,14 @@ from datetime import datetime
 from typing import Any, Dict, List
 from urllib.parse import quote
 
-from dagster import OpExecutionContext, op
+from dagster import Config, OpExecutionContext, op
 
 from src.data.mongo_store import FootyMongoStore
+
+
+class SearchTwitterConfig(Config):
+    """Configuration for search_twitter_op"""
+    goal_id: str
 
 
 @op(
@@ -14,7 +19,7 @@ from src.data.mongo_store import FootyMongoStore
     description="Search Twitter for videos of a specific goal with retry logic",
     tags={"kind": "external", "service": "twitter"}
 )
-def search_twitter_op(context: OpExecutionContext, goal_id: str) -> Dict[str, Any]:
+def search_twitter_op(context: OpExecutionContext, config: SearchTwitterConfig) -> Dict[str, Any]:
     """
     Search Twitter for tweets containing videos of the goal.
     
@@ -35,6 +40,7 @@ def search_twitter_op(context: OpExecutionContext, goal_id: str) -> Dict[str, An
     Returns:
         Dict with goal_id and tweets list: {"goal_id": str, "tweets": List[Dict]}
     """
+    goal_id = config.goal_id
     context.log.info(f"🐦 Searching Twitter for goal {goal_id}")
     
     # Get goal doc to get created_at timestamp

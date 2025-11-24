@@ -46,7 +46,7 @@ def trigger_goal_jobs_op(
             result = goal_job.execute_in_process(
                 run_config={
                     "ops": {
-                        "process_fixture_goals": {
+                        "fetch_fixture_goals": {
                             "config": {
                                 "fixture_id": fixture_id
                             }
