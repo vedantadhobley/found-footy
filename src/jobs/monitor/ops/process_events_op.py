@@ -37,7 +37,7 @@ def process_and_debounce_events_op(context: OpExecutionContext, fresh_fixtures: 
     """
     store = FootyMongoStore()
     
-    from src.jobs.debounce.debounce_job import debounce_fixture_events_op
+    from src.jobs.debounce.debounce_job import debounce_fixture_events_logic
     
     debounced_count = 0
     completed_count = 0
@@ -64,16 +64,54 @@ def process_and_debounce_events_op(context: OpExecutionContext, fresh_fixtures: 
                     f"REMOVED={comparison['removed_events']}"
                 )
                 
-                # Directly invoke debounce job
+                # Trigger debounce job as actual job run (shows in UI)
                 try:
-                    result = debounce_fixture_events_op(context, fixture_id)
-                    if result.get("status") == "success":
+                    from src.jobs.debounce.debounce_job import debounce_job
+                    from dagster import RunRequest, run_status_sensor
+                    
+                    # Execute debounce job in process (shows in UI)
+                    debounce_run_config = {"ops": {"debounce_fixture_events": {"config": {"fixture_id": fixture_id}}}}
+                    result = debounce_job.execute_in_process(
+                        run_config=debounce_run_config,
+                        instance=context.instance
+                    )
+                    
+                    if result.success:
                         debounced_count += 1
-                        context.log.info(f"✅ Debounced fixture {fixture_id}")
+                        context.log.info(f"✅ Debounce job completed for fixture {fixture_id}")
+                        
+                        # Check output for Twitter-ready events
+                        output = result.output_for_node("debounce_fixture_events")
+                        twitter_ready = output.get("twitter_triggered", [])
+                        
+                        if twitter_ready:
+                            context.log.info(f"🐦 {len(twitter_ready)} events ready for Twitter")
+                            
+                            # Trigger Twitter job for each event
+                            from src.jobs.twitter.twitter_job import twitter_job
+                            for event_id in twitter_ready:
+                                try:
+                                    twitter_run_config = {
+                                        "ops": {
+                                            "search_and_save_twitter_videos": {
+                                                "config": {"fixture_id": fixture_id, "event_id": event_id}
+                                            }
+                                        }
+                                    }
+                                    twitter_result = twitter_job.execute_in_process(
+                                        run_config=twitter_run_config,
+                                        instance=context.instance
+                                    )
+                                    if twitter_result.success:
+                                        context.log.info(f"  ✅ Twitter job completed for {event_id}")
+                                except Exception as twitter_err:
+                                    context.log.error(f"  ❌ Twitter job failed for {event_id}: {twitter_err}")
                     else:
-                        context.log.warning(f"⚠️ Debounce returned non-success for {fixture_id}")
+                        context.log.warning(f"⚠️ Debounce job failed for {fixture_id}")
                 except Exception as e:
-                    context.log.error(f"❌ Error invoking debounce for {fixture_id}: {e}")
+                    context.log.error(f"❌ Error executing debounce job for {fixture_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
             
             # AFTER debounce, check if fixture is finished
             status = fresh_fixture.get("fixture", {}).get("status", {}).get("short")

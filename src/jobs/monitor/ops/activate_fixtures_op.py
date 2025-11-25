@@ -50,7 +50,7 @@ def activate_fixtures_op(context: OpExecutionContext) -> Dict[str, Any]:
             # Check if fixture should be active (start time reached)
             if fixture_date <= now:
                 # Move to active
-                if store.activate_fixture(fixture_id, fixture):
+                if store.activate_fixture(fixture_id):
                     home_team = fixture.get("teams", {}).get("home", {}).get("name", "Unknown")
                     away_team = fixture.get("teams", {}).get("away", {}).get("name", "Unknown")
                     context.log.info(f"✅ Activated fixture {fixture_id}: {home_team} vs {away_team}")

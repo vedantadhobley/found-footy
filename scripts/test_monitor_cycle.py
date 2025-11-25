@@ -79,7 +79,10 @@ def test_monitor_cycle():
     print("=" * 60)
     print()
     
-    store = FootyMongoStore()
+    # Use environment variable for container compatibility
+    import os
+    mongo_uri = os.getenv('MONGODB_URI') or os.getenv('MONGODB_URL', 'mongodb://localhost:27017/')
+    store = FootyMongoStore(connection_url=mongo_uri)
     fixture_id = TEST_FIXTURE_DATA["_id"]
     
     # Clean up existing data

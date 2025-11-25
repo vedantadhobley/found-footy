@@ -1,11 +1,16 @@
 """Debounce job - Validate event stability per fixture using clean iteration pattern"""
-from dagster import job, op, OpExecutionContext
+from dagster import job, op, OpExecutionContext, Config
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from src.data.mongo_store import FootyMongoStore
+
+
+class DebounceJobConfig(Config):
+    """Configuration for debounce job"""
+    fixture_id: int
 
 
 def generate_event_hash(event: dict) -> str:
@@ -100,12 +105,7 @@ def calculate_score_context(fixture: dict, event: dict) -> Dict[str, Any]:
     }
 
 
-@op(
-    name="debounce_fixture_events",
-    description="Debounce events for a single fixture using clean iteration pattern",
-    tags={"kind": "debounce", "stage": "validation"}
-)
-def debounce_fixture_events_op(context: OpExecutionContext, fixture_id: int) -> Dict[str, Any]:
+def debounce_fixture_events_logic(fixture_id: int, context: Optional[OpExecutionContext] = None) -> Dict[str, Any]:
     """
     Debounce events for a single fixture using clean iteration pattern.
     
@@ -131,12 +131,19 @@ def debounce_fixture_events_op(context: OpExecutionContext, fixture_id: int) -> 
     live_fixture = store.get_live_fixture(fixture_id)
     active_fixture = store.get_fixture_from_active(fixture_id)
     
+    def log(msg: str, level: str = "info"):
+        """Helper to log with optional context"""
+        if context:
+            getattr(context.log, level)(msg)
+        else:
+            print(f"[{level.upper()}] {msg}")
+    
     if not live_fixture:
-        context.log.warning(f"Fixture {fixture_id} not found in live")
+        log(f"Fixture {fixture_id} not found in live", "warning")
         return {"status": "not_found_live"}
     
     if not active_fixture:
-        context.log.warning(f"Fixture {fixture_id} not found in active")
+        log(f"Fixture {fixture_id} not found in active", "warning")
         return {"status": "not_found_active"}
     
     live_events = live_fixture.get("events", [])
@@ -183,42 +190,29 @@ def debounce_fixture_events_op(context: OpExecutionContext, fixture_id: int) -> 
                 # Check if complete (3 consecutive stable polls)
                 if new_stable_count >= 3:
                     store.mark_event_debounce_complete(fixture_id, event_id)
-                    context.log.info(f"✅ COMPLETE: {event_id} (stable_count={new_stable_count})")
+                    log(f"✅ DEBOUNCE COMPLETE: {event_id} (stable_count={new_stable_count}) - ready for Twitter")
                     completed_count += 1
                     twitter_triggered.append(event_id)
-                    
-                    # Trigger twitter job for this event
-                    from src.jobs.twitter.twitter_job import search_and_save_twitter_videos_op, TwitterJobConfig
-                    try:
-                        twitter_config = TwitterJobConfig(fixture_id=fixture_id, event_id=event_id)
-                        twitter_result = search_and_save_twitter_videos_op(context, twitter_config)
-                        if twitter_result.get("status") == "success":
-                            video_count = twitter_result.get("video_count", 0)
-                            context.log.info(f"🐦 Twitter search complete: {video_count} videos found for {event_id}")
-                        else:
-                            context.log.warning(f"⚠️ Twitter search returned non-success for {event_id}")
-                    except Exception as e:
-                        context.log.error(f"❌ Error invoking twitter for {event_id}: {e}")
                 else:
-                    context.log.info(f"📊 STABLE: {event_id} (count={new_stable_count}/3)")
+                    log(f"📊 STABLE: {event_id} (count={new_stable_count}/3)")
                 
                 updated_count += 1
             else:
                 # CASE 2: Hash changed - reset to 1
-                context.log.warning(f"⚠️ HASH CHANGED: {event_id}, resetting to 1")
+                log(f"⚠️ HASH CHANGED: {event_id}, resetting to 1", "warning")
                 snapshot = {"timestamp": now, "hash": live_hash}
                 store.update_event_stable_count(fixture_id, event_id, 1, snapshot)
                 updated_count += 1
         else:
             # CASE 4: Event in active but NOT in live - removed from API (VAR)
             if not active_event.get("_removed", False):
-                context.log.warning(f"🚫 REMOVED: {event_id} (VAR or API removed)")
+                log(f"🚫 REMOVED: {event_id} (VAR or API removed)", "warning")
                 store.mark_event_removed(fixture_id, event_id)
                 removed_count += 1
     
     # CASE 1: Whatever's left in live_events_dict are NEW events
     for event_id, live_event in live_events_dict.items():
-        context.log.info(f"✨ NEW EVENT: {event_id}")
+        log(f"✨ NEW EVENT: {event_id}")
         
         # Generate hash
         event_hash = generate_event_hash(live_event)
@@ -242,13 +236,13 @@ def debounce_fixture_events_op(context: OpExecutionContext, fixture_id: int) -> 
         
         # Add to active
         store.add_event_to_active(fixture_id, enhanced_event)
-        context.log.info(
+        log(
             f"  → {twitter_search} "
             f"({score_context['_score_before']} → {score_context['_score_after']})"
         )
         new_count += 1
     
-    context.log.info(
+    log(
         f"🎯 Fixture {fixture_id} debounce: "
         f"{new_count} new, {updated_count} updated, {completed_count} completed, {removed_count} removed"
     )
@@ -262,6 +256,16 @@ def debounce_fixture_events_op(context: OpExecutionContext, fixture_id: int) -> 
         "removed_events": removed_count,
         "twitter_triggered": twitter_triggered
     }
+
+
+@op(
+    name="debounce_fixture_events",
+    description="Debounce events for a single fixture using clean iteration pattern",
+    tags={"kind": "debounce", "stage": "validation"}
+)
+def debounce_fixture_events_op(context: OpExecutionContext, config: DebounceJobConfig) -> Dict[str, Any]:
+    """Op wrapper that calls the logic function with context"""
+    return debounce_fixture_events_logic(config.fixture_id, context)
 
 
 @job(

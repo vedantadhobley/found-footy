@@ -16,7 +16,7 @@ class FootyMongoStore:
     
     def __init__(self, connection_url=None):
         if connection_url is None:
-            connection_url = os.getenv('MONGODB_URL', 'mongodb://localhost:27017/')
+            connection_url = os.getenv('MONGODB_URI') or os.getenv('MONGODB_URL', 'mongodb://localhost:27017/')
         
         self.client = MongoClient(connection_url)
         self.db = self.client.found_footy
@@ -34,16 +34,18 @@ class FootyMongoStore:
         try:
             # Status indexes
             self.fixtures_staging.create_index([("fixture.status.short", ASCENDING)])
+            self.fixtures_live.create_index([("fixture.status.short", ASCENDING)])
             self.fixtures_active.create_index([("fixture.status.short", ASCENDING)])
             self.fixtures_completed.create_index([("fixture.status.short", ASCENDING)])
             
             # Date indexes
             self.fixtures_staging.create_index([("fixture.date", ASCENDING)])
+            self.fixtures_live.create_index([("fixture.date", ASCENDING)])
             self.fixtures_active.create_index([("fixture.date", ASCENDING)])
             self.fixtures_completed.create_index([("fixture.date", ASCENDING)])
 
             # Team indexes
-            for collection in [self.fixtures_staging, self.fixtures_active, self.fixtures_completed]:
+            for collection in [self.fixtures_staging, self.fixtures_live, self.fixtures_active, self.fixtures_completed]:
                 collection.create_index([("teams.home.id", ASCENDING)])
                 collection.create_index([("teams.away.id", ASCENDING)])
             
@@ -469,8 +471,12 @@ class FootyMongoStore:
     
     def complete_fixture(self, fixture_id: int) -> bool:
         """
-        Move fixture from active to completed (when status is FT/AET/PEN).
+        Move fixture from active to completed (when status is FT/AET/PEN AND all events processed).
         Also removes from fixtures_live.
+        
+        CRITICAL: Only completes if ALL enhanced events have:
+        - _debounce_complete: true
+        - _twitter_complete: true
         """
         try:
             fixture_doc = self.fixtures_active.find_one({"_id": fixture_id})
@@ -478,6 +484,27 @@ class FootyMongoStore:
                 print(f"⚠️ Fixture {fixture_id} not found in active")
                 return False
             
+            # Check if fixture has enhanced events
+            events = fixture_doc.get("events", [])
+            enhanced_events = [e for e in events if e.get("_event_id")]
+            
+            if enhanced_events:
+                # Has events - must check if all processing is complete
+                all_debounced = all(e.get("_debounce_complete", False) for e in enhanced_events)
+                all_twitter_done = all(e.get("_twitter_complete", False) for e in enhanced_events)
+                
+                if not (all_debounced and all_twitter_done):
+                    # Events still being processed - cannot complete yet
+                    debounced = sum(1 for e in enhanced_events if e.get("_debounce_complete"))
+                    twitter_done = sum(1 for e in enhanced_events if e.get("_twitter_complete"))
+                    print(
+                        f"⏳ Fixture {fixture_id} waiting for event processing: "
+                        f"debounced={debounced}/{len(enhanced_events)}, "
+                        f"twitter={twitter_done}/{len(enhanced_events)}"
+                    )
+                    return False
+            
+            # Either no events OR all events fully processed - can complete
             # Add completion timestamp
             fixture_doc["completed_at"] = datetime.now(timezone.utc)
             
