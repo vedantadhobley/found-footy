@@ -91,17 +91,7 @@ class FootyMongoStore:
         except Exception:
             return {"home": 0, "away": 0}
     
-    @staticmethod
-    def _generate_event_id(fixture_id: int, event: dict) -> str:
-        """
-        Generate unique event ID from event data.
-        Format: {fixture_id}_{player_id}_{elapsed}_{type}_{detail}
-        """
-        player_id = event.get("player", {}).get("id", "")
-        elapsed = event.get("time", {}).get("elapsed", "")
-        event_type = event.get("type", "")
-        detail = event.get("detail", "")
-        return f"{fixture_id}_{player_id}_{elapsed}_{event_type}_{detail}"
+
 
     # === Staging Operations ===
     
@@ -169,6 +159,8 @@ class FootyMongoStore:
         Store raw API data in fixtures_live for comparison (gets overwritten each poll).
         Filters events to only include trackable ones (Goals only, per event_config).
         Generates _event_id for each event to enable easy comparison in debounce.
+        
+        Event IDs are sequential per team+event_type: {fixture_id}_{team_id}_{event_type}_{#}
         """
         try:
             from src.utils.event_config import should_track_event
@@ -177,15 +169,22 @@ class FootyMongoStore:
             doc["_id"] = fixture_id
             doc["stored_at"] = datetime.now(timezone.utc)
             
-            # Filter events - only store ones we care about
+            # Filter events and generate IDs in single pass
             raw_events = doc.get("events", [])
             filtered_events = []
+            team_event_counters = {}  # Track sequence per team+event_type: "team_id_event_type" -> count
             
             for event in raw_events:
                 if should_track_event(event):
-                    # Generate event_id for this event
-                    event_id = self._generate_event_id(fixture_id, event)
-                    event["_event_id"] = event_id
+                    # Increment counter for this team+event_type combo
+                    team_id = event.get("team", {}).get("id", 0)
+                    event_type = event.get("type", "Unknown")
+                    counter_key = f"{team_id}_{event_type}"
+                    team_event_counters[counter_key] = team_event_counters.get(counter_key, 0) + 1
+                    sequence = team_event_counters[counter_key]
+                    
+                    # Generate and attach event ID: {fixture_id}_{team_id}_{event_type}_{#}
+                    event["_event_id"] = f"{fixture_id}_{team_id}_{event_type}_{sequence}"
                     filtered_events.append(event)
             
             doc["events"] = filtered_events
@@ -379,19 +378,91 @@ class FootyMongoStore:
             print(f"❌ Error marking event {event_id} as removed: {e}")
             return False
     
-    def mark_event_twitter_complete(self, fixture_id: int, event_id: str) -> bool:
+    def mark_event_twitter_started(self, fixture_id: int, event_id: str) -> bool:
         """
-        Mark event as twitter complete (videos downloaded).
-        Called by twitter job.
+        Mark event as twitter search started.
+        Called by twitter job when search begins.
         """
         try:
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id, "events._event_id": event_id},
-                {"$set": {"events.$._twitter_complete": True}}
+                {
+                    "$set": {
+                        "events.$._twitter_started": True,
+                        "events.$._twitter_started_at": datetime.now(timezone.utc)
+                    }
+                }
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error marking event {event_id} twitter started: {e}")
+            return False
+    
+    def mark_event_twitter_complete(
+        self, 
+        fixture_id: int, 
+        event_id: str, 
+        discovered_videos: List[Dict[str, Any]] | None = None
+    ) -> bool:
+        """
+        Mark event as twitter complete and save discovered video URLs.
+        Called by twitter job when search completes.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            discovered_videos: List of video dicts with metadata (tweet_url, tweet_text, etc.)
+        """
+        try:
+            update_doc = {
+                "events.$._twitter_complete": True,
+                "events.$._twitter_completed_at": datetime.now(timezone.utc)
+            }
+            
+            # Add discovered videos if provided
+            if discovered_videos is not None:
+                update_doc["events.$._discovered_videos"] = discovered_videos
+                update_doc["events.$._video_count"] = len(discovered_videos)
+            
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, "events._event_id": event_id},
+                {"$set": update_doc}
             )
             return result.modified_count > 0
         except Exception as e:
             print(f"❌ Error marking event {event_id} twitter complete: {e}")
+            return False
+    
+    def mark_event_download_complete(
+        self,
+        fixture_id: int,
+        event_id: str,
+        s3_urls: List[str]
+    ) -> bool:
+        """
+        Mark event as download complete and save S3 URLs.
+        Called by download job when videos uploaded.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            s3_urls: List of S3 URLs for uploaded videos
+        """
+        try:
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, "events._event_id": event_id},
+                {
+                    "$set": {
+                        "events.$._download_complete": True,
+                        "events.$._s3_urls": s3_urls,
+                        "events.$._s3_count": len(s3_urls),
+                        "events.$._download_completed_at": datetime.now(timezone.utc)
+                    }
+                }
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error marking event {event_id} download complete: {e}")
             return False
 
     # === Completion Operations ===

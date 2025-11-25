@@ -56,6 +56,44 @@ class FootyS3Store:
         # This will create paths like: 12345/12345_234_Goal_1/12345_234_Goal_1_0.mp4
         return f"{fixture_id}/{event_id}/{event_id}_{video_index}.{file_extension}"
     
+    def upload_video(self, local_file_path: str, s3_key: str, metadata: Dict[str, Any] | None = None) -> str | None:
+        """
+        Simple upload method - takes full S3 key and uploads with metadata.
+        Returns S3 URL on success, None on failure.
+        """
+        try:
+            # Clean metadata for S3 headers
+            clean_metadata = {}
+            if metadata:
+                for key, value in metadata.items():
+                    if value is not None:
+                        clean_value = str(value)
+                        # Remove invalid header characters
+                        clean_value = clean_value.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+                        # Truncate long values
+                        if len(clean_value) > 100:
+                            clean_value = clean_value[:97] + "..."
+                        # ASCII only
+                        clean_value = ''.join(char if ord(char) < 128 else '?' for char in clean_value)
+                        clean_metadata[key] = clean_value
+            
+            # Upload to S3
+            self.s3_client.upload_file(
+                local_file_path,
+                self.bucket_name,
+                s3_key,
+                ExtraArgs={
+                    'Metadata': clean_metadata,
+                    'ContentType': 'video/mp4'
+                }
+            )
+            
+            return f"{self.endpoint_url}/{self.bucket_name}/{s3_key}"
+        
+        except Exception as e:
+            print(f"❌ Upload failed: {e}")
+            return None
+    
     def upload_video_file(self, local_file_path: str, event_id: str, video_index: int, metadata: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """Upload video file to S3 with clean metadata"""
         try:

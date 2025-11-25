@@ -10,7 +10,7 @@ fixtures_active is NEVER overwritten - only updated by debounce_job!
 """
 
 from dagster import op, OpExecutionContext
-from typing import List, Dict
+from typing import List, Dict, Any
 from src.data.mongo_store import FootyMongoStore
 
 
@@ -19,7 +19,7 @@ from src.data.mongo_store import FootyMongoStore
     description="Store live data, compare, and invoke debounce per fixture",
     tags={"kind": "mongodb", "stage": "process"}
 )
-def process_and_debounce_events_op(context: OpExecutionContext, fresh_fixtures: List[Dict]) -> Dict[str, any]:
+def process_and_debounce_events_op(context: OpExecutionContext, fresh_fixtures: List[Dict]) -> Dict[str, Any]:
     """
     Store live data and invoke debounce for fixtures that need it.
     

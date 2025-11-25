@@ -25,41 +25,46 @@ def filter_trackable_events(raw_events: List[dict]) -> List[dict]:
     return [event for event in raw_events if should_track_event(event)]
 
 
-def assign_event_ids(events: List[dict], fixture_id: int) -> List[dict]:
-    """
-    Assign unique event IDs to events based on team and type.
-    
-    Event ID format: {fixture_id}_{team_id}_{event_type}_{#}
-    Example: 1378993_40_Goal_1
-    
-    Args:
-        events: List of events (must be sorted chronologically)
-        fixture_id: Fixture ID
-        
-    Returns:
-        Events with _event_id field added
-    """
-    # Count events by (team_id, type) to assign sequential numbers
-    counters = {}
-    
-    enhanced_events = []
-    for event in events:
-        team_id = event.get("team", {}).get("id")
-        event_type = get_event_type_for_id(event)
-        
-        # Track counter for this team+type
-        key = (team_id, event_type)
-        counters[key] = counters.get(key, 0) + 1
-        
-        # Generate event ID
-        event_id = f"{fixture_id}_{team_id}_{event_type}_{counters[key]}"
-        
-        # Add to event
-        event_copy = event.copy()
-        event_copy["_event_id"] = event_id
-        enhanced_events.append(event_copy)
-    
-    return enhanced_events
+# DEPRECATED: Use mongo_store._generate_event_id() instead
+# This function uses a different ID format and is not used in the current architecture
+# def assign_event_ids(events: List[dict], fixture_id: int) -> List[dict]:
+#     """
+#     Assign unique event IDs to events based on team and type.
+#     
+#     Event ID format: {fixture_id}_{team_id}_{event_type}_{#}
+#     Example: 1378993_40_Goal_1
+#     
+#     DEPRECATED: Current architecture uses mongo_store._generate_event_id()
+#     Format: {fixture_id}_{player_id}_{elapsed}_{type}_{detail}
+#     
+#     Args:
+#         events: List of events (must be sorted chronologically)
+#         fixture_id: Fixture ID
+#         
+#     Returns:
+#         Events with _event_id field added
+#     """
+#     # Count events by (team_id, type) to assign sequential numbers
+#     counters = {}
+#     
+#     enhanced_events = []
+#     for event in events:
+#         team_id = event.get("team", {}).get("id")
+#         event_type = get_event_type_for_id(event)
+#         
+#         # Track counter for this team+type
+#         key = (team_id, event_type)
+#         counters[key] = counters.get(key, 0) + 1
+#         
+#         # Generate event ID
+#         event_id = f"{fixture_id}_{team_id}_{event_type}_{counters[key]}"
+#         
+#         # Add to event
+#         event_copy = event.copy()
+#         event_copy["_event_id"] = event_id
+#         enhanced_events.append(event_copy)
+#     
+#     return enhanced_events
 
 
 def calculate_score_context(

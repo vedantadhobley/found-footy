@@ -27,11 +27,12 @@ from src.jobs import (
     ingestion_schedule,
     monitor_job,
     monitor_schedule,
+    debounce_job,
     twitter_job,
 )
 
 # Import download job
-from src.jobs.download import download_job
+from src.jobs.download.download_job import download_job
 
 # Import resources (if they exist)
 try:
@@ -50,8 +51,9 @@ if has_resources:
         jobs=[
             ingestion_job,   # Daily fixture ingestion with status-based routing
             monitor_job,     # Per-minute monitoring with in-place event enhancement
+            debounce_job,    # Per-fixture event stability validation
             twitter_job,     # Per-event video discovery
-            download_job,    # Per-event video download/dedup/upload
+            download_job,    # Per-event video download/dedup/upload to S3
         ],
         schedules=[
             ingestion_schedule,  # Daily at 00:05 UTC
@@ -68,8 +70,9 @@ else:
         jobs=[
             ingestion_job,   # Daily fixture ingestion with status-based routing
             monitor_job,     # Per-minute monitoring with in-place event enhancement
+            debounce_job,    # Per-fixture event stability validation
             twitter_job,     # Per-event video discovery
-            download_job,    # Per-event video download/dedup/upload
+            download_job,    # Per-event video download/dedup/upload to S3
         ],
         schedules=[
             ingestion_schedule,  # Daily at 00:05 UTC

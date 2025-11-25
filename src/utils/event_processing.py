@@ -1,42 +1,50 @@
-"""Event processing utilities - ID generation, hashing, and sequential assignment"""
+"""Event processing utilities - ID generation, hashing, and sequential assignment
+
+DEPRECATED FILE - NOT USED IN CURRENT ARCHITECTURE
+===================================================
+
+This entire file is deprecated. Current architecture uses:
+- mongo_store._generate_event_id() for event ID generation
+  Format: {fixture_id}_{player_id}_{elapsed}_{type}_{detail}
+- debounce_job.generate_event_hash() for hash generation
+- Event filtering happens in store_live_fixture() with should_track_event()
+
+This file is kept for reference only. None of these functions are imported or used.
+If you need event processing utilities, look in:
+- src/data/mongo_store.py (_generate_event_id)
+- src/jobs/debounce/debounce_job.py (generate_event_hash, build_twitter_search)
+- src/utils/event_config.py (should_track_event)
+
+==================================================
+"""
 import hashlib
 import json
 from typing import Dict, List
 
 
+# DEPRECATED: Use mongo_store._generate_event_id() instead
+# Current architecture uses format: {fixture_id}_{player_id}_{elapsed}_{type}_{detail}
+# This function uses old format: {fixture_id}_{player_id}_{event_type}_{sequence}
 def generate_event_id(fixture_id: int, player_id: int, event_type: str, sequence: int) -> str:
     """
-    Generate sequential event ID.
+    DEPRECATED: Generate sequential event ID (old format).
     
-    Format: {fixture_id}_{player_id}_{event_type}_{sequence}
+    Current architecture uses mongo_store._generate_event_id()
+    Format: {fixture_id}_{player_id}_{elapsed}_{type}_{detail}
     
-    Examples:
-        5000_234_Goal_1  (Messi's 1st goal in fixture 5000)
-        5000_234_Goal_2  (Messi's 2nd goal in fixture 5000)
-        5000_234_Card_1  (Messi's 1st card in fixture 5000)
-        5000_789_Goal_1  (Ronaldo's 1st goal in fixture 5000)
-    
-    Args:
-        fixture_id: Fixture ID
-        player_id: Player ID from event.player.id
-        event_type: Event type (Goal, Card, etc)
-        sequence: Sequential number for this player+type combination
-        
-    Returns:
-        Event ID string
+    This function kept only because it's used by assign_sequential_ids()
+    in this deprecated file.
     """
     return f"{fixture_id}_{player_id}_{event_type}_{sequence}"
 
 
+# DEPRECATED: Use with generate_event_id above
 def parse_event_id(event_id: str) -> dict:
     """
-    Parse event ID back into components.
+    DEPRECATED: Parse event ID back into components (old format).
     
-    Args:
-        event_id: Event ID string like "5000_234_Goal_2"
-        
-    Returns:
-        Dict with fixture_id, player_id, event_type, sequence
+    This function kept only because it's used by assign_sequential_ids()
+    in this deprecated file.
     """
     parts = event_id.split('_')
     if len(parts) != 4:

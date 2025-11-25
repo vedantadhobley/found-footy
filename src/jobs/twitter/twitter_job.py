@@ -1,8 +1,37 @@
 """Twitter Job - Discover event videos on Twitter"""
 from dagster import Config, job, op, OpExecutionContext
-import time
+import os
+import requests
 from typing import Dict, Any, List
 from src.data.mongo_store import FootyMongoStore
+
+
+class TwitterAPIClient:
+    """Simple Twitter session client"""
+    
+    def __init__(self):
+        self.session_url = os.getenv('TWITTER_SESSION_URL', 'http://twitter-session:8888')
+        
+    def search_videos(self, search_query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+        """Search videos via session service - fail if unavailable"""
+        try:
+            response = requests.post(
+                f"{self.session_url}/search",
+                json={"search_query": search_query, "max_results": max_results},
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                videos = data.get("videos", [])
+                return videos
+            else:
+                return []
+                
+        except requests.exceptions.ConnectionError:
+            return []
+        except Exception:
+            return []
 
 
 class TwitterJobConfig(Config):
@@ -62,22 +91,47 @@ def search_and_save_twitter_videos_op(
     # Mark twitter started
     store.mark_event_twitter_started(fixture_id, event_id)
     
-    # TODO: Integrate actual Twitter search when ready
-    # For now, return empty list (placeholder)
-    context.log.info("⏳ Twitter search not yet implemented - marking as complete with no videos")
-    
-    discovered_videos = []
-    
-    # Mark twitter complete
-    store.mark_event_twitter_complete(fixture_id, event_id, discovered_videos)
+    # Search Twitter via session service
+    client = TwitterAPIClient()
+    discovered_videos = client.search_videos(twitter_search, max_results=5)
     
     context.log.info(f"✅ Twitter search complete: {len(discovered_videos)} videos found")
+    
+    # Mark twitter complete with discovered videos
+    store.mark_event_twitter_complete(fixture_id, event_id, discovered_videos)
+    
+    # Trigger download job if videos found
+    if discovered_videos:
+        context.log.info(f"📥 Found {len(discovered_videos)} videos - triggering download job")
+        
+        from src.jobs.download.download_job import (
+            fetch_event_videos_op,
+            download_and_deduplicate_op,
+            upload_to_s3_with_tags_op,
+            mark_download_complete_op,
+            DownloadJobConfig
+        )
+        try:
+            download_config = DownloadJobConfig(fixture_id=fixture_id, event_id=event_id)
+            
+            # Execute download pipeline
+            fetch_result = fetch_event_videos_op(context, download_config)
+            if fetch_result.get("status") == "success":
+                download_result = download_and_deduplicate_op(context, fetch_result)
+                if download_result.get("status") == "success":
+                    upload_result = upload_to_s3_with_tags_op(context, download_result)
+                    if upload_result.get("status") == "success":
+                        mark_download_complete_op(context, upload_result)
+                        context.log.info(f"✅ Download pipeline completed for {event_id}")
+        except Exception as e:
+            context.log.error(f"❌ Error executing download pipeline: {e}")
     
     return {
         "status": "success",
         "event_id": event_id,
         "fixture_id": fixture_id,
-        "video_count": len(discovered_videos)
+        "video_count": len(discovered_videos),
+        "discovered_videos": discovered_videos
     }
 
 

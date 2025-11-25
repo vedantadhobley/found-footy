@@ -186,7 +186,19 @@ def debounce_fixture_events_op(context: OpExecutionContext, fixture_id: int) -> 
                     context.log.info(f"✅ COMPLETE: {event_id} (stable_count={new_stable_count})")
                     completed_count += 1
                     twitter_triggered.append(event_id)
-                    # TODO: Trigger twitter job here
+                    
+                    # Trigger twitter job for this event
+                    from src.jobs.twitter.twitter_job import search_and_save_twitter_videos_op, TwitterJobConfig
+                    try:
+                        twitter_config = TwitterJobConfig(fixture_id=fixture_id, event_id=event_id)
+                        twitter_result = search_and_save_twitter_videos_op(context, twitter_config)
+                        if twitter_result.get("status") == "success":
+                            video_count = twitter_result.get("video_count", 0)
+                            context.log.info(f"🐦 Twitter search complete: {video_count} videos found for {event_id}")
+                        else:
+                            context.log.warning(f"⚠️ Twitter search returned non-success for {event_id}")
+                    except Exception as e:
+                        context.log.error(f"❌ Error invoking twitter for {event_id}: {e}")
                 else:
                     context.log.info(f"📊 STABLE: {event_id} (count={new_stable_count}/3)")
                 

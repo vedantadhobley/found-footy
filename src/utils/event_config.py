@@ -155,3 +155,20 @@ def is_goal_scrapeable(detail: str) -> bool:
 def is_card_scrapeable(detail: str) -> bool:
     """Check if card detail is scrapeable"""
     return detail in EVENT_TYPES.get("Card", {}).get("scrapeable_details", [])
+
+
+def get_event_type_for_id(event: dict) -> str:
+    """
+    Extract event type string for ID generation.
+    
+    Args:
+        event: Event dict from API
+        
+    Returns:
+        Event type string (e.g., "Goal", "Card")
+    """
+    return event.get("type", "Unknown")
+
+
+# Constant for debounce stable count (default across all event types)
+DEBOUNCE_STABLE_COUNT = 3

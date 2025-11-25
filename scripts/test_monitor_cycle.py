@@ -2,15 +2,20 @@
 """
 Test monitor cycle with fixture 1378993 (Liverpool vs Arsenal, 1-0)
 
-Inserts fixture directly into fixtures_active with basic data (no events).
-Monitor will fetch full data, enhance events, and start debounce cycle.
+Inserts fixture into fixtures_staging with NS (Not Started) status.
+Monitor will:
+1. Activate fixture (staging → active)
+2. Fetch full data from API
+3. Filter events and generate _event_id
+4. Trigger debounce cycle
 """
 import sys
 from datetime import datetime, timezone
 
-from src.data.mongo_store import MongoStore
+from src.data.mongo_store import FootyMongoStore
 
 # Test fixture data - Liverpool vs Arsenal, 1-0
+# Using NS status so monitor will activate it
 TEST_FIXTURE_DATA = {
     "_id": 1378993,
     "fixture": {
@@ -20,9 +25,9 @@ TEST_FIXTURE_DATA = {
         "date": "2024-02-04T16:30:00+00:00",
         "timestamp": 1707062400,
         "status": {
-            "long": "Match Finished",
-            "short": "FT",
-            "elapsed": 90
+            "long": "Not Started",
+            "short": "NS",
+            "elapsed": 0
         },
         "venue": {
             "id": 494,
@@ -74,57 +79,62 @@ def test_monitor_cycle():
     print("=" * 60)
     print()
     
-    store = MongoStore()
+    store = FootyMongoStore()
     fixture_id = TEST_FIXTURE_DATA["_id"]
     
     # Clean up existing data
     print("🧹 Cleaning up existing data...")
     
-    for collection_name in ["fixtures_active", "fixtures_completed"]:
+    for collection_name in ["fixtures_staging", "fixtures_live", "fixtures_active", "fixtures_completed"]:
         result = store.db[collection_name].delete_one({"fixture.id": fixture_id})
         if result.deleted_count > 0:
             print(f"   ✓ Removed from {collection_name}")
     
-    # Insert fixture with empty events
+    # Insert fixture into staging with NS status
     print()
-    print("💾 Inserting test fixture into fixtures_active...")
+    print("💾 Inserting test fixture into fixtures_staging...")
     print(f"   Fixture: {fixture_id}")
     print(f"   Teams: {TEST_FIXTURE_DATA['teams']['home']['name']} vs {TEST_FIXTURE_DATA['teams']['away']['name']}")
     print(f"   Score: {TEST_FIXTURE_DATA['goals']['home']}-{TEST_FIXTURE_DATA['goals']['away']}")
-    print(f"   Status: {TEST_FIXTURE_DATA['fixture']['status']['short']}")
+    print(f"   Status: {TEST_FIXTURE_DATA['fixture']['status']['short']} (Not Started)")
     print(f"   Events: {len(TEST_FIXTURE_DATA['events'])} (empty - will be fetched)")
     
-    store.fixtures_active.insert_one(TEST_FIXTURE_DATA)
+    store.fixtures_staging.insert_one(TEST_FIXTURE_DATA)
     
     print()
     print("=" * 60)
     print("✅ TEST FIXTURE READY")
     print("=" * 60)
     print()
-    print("Next: Run monitor_job to test the cycle")
+    print("Next: Run monitor_job to test the complete cycle")
     print()
     print("Expected behavior:")
-    print("1. ✅ Monitor fetches fixture from API (with events)")
-    print("2. ✅ Filters to trackable events (1 Goal)")
-    print("3. ✅ Enhances event with metadata:")
+    print("1. ✅ Monitor activates fixture (staging → active with empty events)")
+    print("2. ✅ Monitor fetches full fixture data from API (with events)")
+    print("3. ✅ Stores in fixtures_live, filters to trackable events (Goals only)")
+    print("4. ✅ Generates _event_id: {fixture_id}_{team_id}_{event_type}_{#}")
+    print("      Example: 1378993_40_Goal_1 (first goal by team 40)")
+    print("5. ✅ Compares live vs active → detects NEW events")
+    print("6. ✅ Triggers debounce job which enhances event with:")
     print("      - _event_id: 1378993_40_Goal_1")
-    print("      - _search_hash: szoboszlai_liverpool")
-    print("      - _debounce_count: 0 (first cycle)")
+    print("      - _twitter_search: Szoboszlai Liverpool")
+    print("      - _stable_count: 1 (first poll)")
     print("      - _debounce_complete: false")
     print("      - _twitter_complete: false")
-    print("      - _score: {home: 1, away: 0}")
-    print("4. ✅ Updates fixture in fixtures_active")
-    print("5. ❌ Does NOT move to completed (needs debounce + Twitter)")
+    print("      - _score_before: {home: 0, away: 0}")
+    print("      - _score_after: {home: 1, away: 0}")
+    print("7. ✅ Updates fixture in fixtures_active")
+    print("8. ❌ Does NOT move to completed (status is NS, not FT)")
     print()
-    print("After 3 more monitor cycles (with stable hash):")
-    print("   - _debounce_count: 3")
+    print("After 2 more monitor cycles (with stable hash):")
+    print("   - _stable_count: 3")
     print("   - _debounce_complete: true")
-    print("   - Event ready for Twitter job")
+    print("   - Triggers Twitter job automatically")
     print()
     print("After Twitter job completes:")
     print("   - _twitter_complete: true")
     print("   - _discovered_videos: [...]")
-    print("   - Fixture moves to fixtures_completed")
+    print("   - If status is FT, fixture moves to fixtures_completed")
     print()
     print("To run monitor_job:")
     print("   dagster job execute -m src -j monitor_job")
