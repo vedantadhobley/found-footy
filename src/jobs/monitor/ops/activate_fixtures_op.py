@@ -53,7 +53,6 @@ def activate_fixtures_op(context: OpExecutionContext) -> Dict[str, Any]:
                 if store.activate_fixture(fixture_id, fixture):
                     home_team = fixture.get("teams", {}).get("home", {}).get("name", "Unknown")
                     away_team = fixture.get("teams", {}).get("away", {}).get("name", "Unknown")
-                    
                     context.log.info(f"✅ Activated fixture {fixture_id}: {home_team} vs {away_team}")
                     activated_count += 1
         

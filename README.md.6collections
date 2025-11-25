@@ -1,0 +1,635 @@
+# ⚽ Found Footy - Automated Football Goal Highlights Pipeline
+
+**Event-level debounce architecture** that detects football goals in real-time, validates stability, discovers videos on Twitter, and stores them in S3. Built with Dagster orchestration and MongoDB storage.
+
+---
+
+## 🎯 Current Status
+
+- ✅ **Event-Level Architecture** - Granular tracking with debounce validation per goal
+- ✅ **Pro API Batch Endpoint** - Single call gets fixtures + events + lineups (99% API reduction)
+- ✅ **fixtures_tracked UI Layer** - Complete data for frontend in one query with pizza tracker
+- ✅ **Smart Debounce Triggering** - Only processes NEW/INCOMPLETE events
+- ✅ **Twitter Integration** - Firefox session with saved profile
+- 🚀 **Ready for Testing** - All jobs, ops, and flows implemented
+
+---
+
+## 🔌 Port Configuration
+
+**Development Access (via SSH forwarding):**
+- **Dagster UI:** http://localhost:3100
+- **MongoDB Express:** http://localhost:3101  
+- **MinIO Console:** http://localhost:3102
+- **Twitter VNC:** http://localhost:6080/vnc.html
+
+**Internal Services:**
+- PostgreSQL: `postgres:5432`
+- MongoDB: `mongo:27017`
+- MinIO API: `minio:9000`
+
+---
+
+## 📊 System Architecture
+
+### The Big Picture
+
+```mermaid
+graph TB
+    subgraph "🔄 Daily Ingestion"
+        A[ingest_job<br/>00:05 UTC Daily]
+        A --> A1[Fetch Today's Fixtures]
+        A1 --> A2{Route by Status}
+        A2 -->|TBD/NS/LIVE| A3[fixtures_staging]
+        A2 -->|FT/AET/PEN| A4[fixtures_completed]
+    end
+    
+    subgraph "👁️ Every Minute Monitor"
+        B[monitor_job<br/>:00 Every Minute]
+        B --> B1[Activate Fixtures<br/>staging → active + tracked]
+        B1 --> B2[Batch API Call<br/>Fixtures + Events + Lineups]
+        B2 --> B3[Update fixtures_active<br/>ALWAYS]
+        B3 --> B4{Compare<br/>active vs tracked}
+        B4 -->|NEW/INCOMPLETE| B5[Trigger debounce_job]
+        B4 -->|All Complete| B6[Skip]
+        B3 --> B7{Status FT/AET/PEN?}
+        B7 -->|Yes| B8[tracked → completed]
+    end
+    
+    subgraph "⚡ Debounce Validation"
+        C[debounce_job<br/>Per Fixture]
+        B5 --> C
+        C --> C1[Process Events<br/>Poll 1: stable_count=1]
+        C1 --> C2[fixtures_tracked<br/>debounce_complete=false]
+        C1 --> C3[Check Stability<br/>Poll 2: count=2<br/>Poll 3: count=3]
+        C3 --> C4{Stable?}
+        C4 -->|Yes| C5[Confirm Event<br/>events_confirmed]
+        C5 --> C6[fixtures_tracked<br/>debounce_complete=true]
+        C6 --> C7[Trigger twitter_job]
+    end
+    
+    subgraph "🐦 Twitter Discovery"
+        D[twitter_job<br/>Per Event]
+        C7 --> D
+        D --> D1[Search Twitter<br/>Use prebuilt search string]
+        D1 --> D2[Extract Videos]
+        D2 --> D3[fixtures_tracked<br/>twitter_complete=true]
+    end
+    
+    style A fill:#e1f5ff
+    style B fill:#fff4e1
+    style C fill:#e1ffe7
+    style D fill:#ffe1f5
+```
+
+---
+
+## 🗄️ MongoDB Collections
+
+### Data Architecture
+
+```
+fixtures_staging          → Fixtures waiting to start (TBD, NS)
+     ↓ (activation)
+fixtures_active           → RAW API data (for processing only)
+     + (copy on activation)
+fixtures_tracked          → UI DATA with pizza tracker 🍕
+     ↓ (status FT/AET/PEN)
+fixtures_completed        → Archive (copy of fixtures_tracked)
+
+events_pending            → Debouncing (internal, stable_count tracking)
+     ↓ (stable_count >= 3)
+events_confirmed          → Validated events (internal, ready for Twitter)
+```
+
+### fixtures_tracked Schema (Pizza Tracker 🍕)
+
+This is the **single source of truth for the UI** - one query gets everything!
+
+```json
+{
+  "_id": 5000,
+  "fixture_id": 5000,
+  
+  // Complete fixture data (no joins needed!)
+  "home_team": {"id": 40, "name": "Liverpool", "logo": "https://..."},
+  "away_team": {"id": 50, "name": "Man City", "logo": "https://..."},
+  "league": {"id": 39, "name": "Premier League", "logo": "https://..."},
+  "fixture_date": "2025-11-24T15:00:00Z",
+  "venue": "Anfield",
+  "status": "2H",
+  "score": {"home": 2, "away": 1},
+  
+  // Tracked events with pizza tracker status 🍕
+  "tracked_events": {
+    "5000_234_Goal_1": {
+      "player": {"id": 234, "name": "D. Szoboszlai", "last_name": "Szoboszlai"},
+      "team": {"id": 40, "name": "Liverpool"},
+      "assist": {"id": 456, "name": "M. Salah"},
+      "type": "Goal",
+      "detail": "Normal Goal",
+      "time": {"elapsed": 23, "extra": null},
+      
+      // Score context (prevents confusion with multiple goals)
+      "score_before": {"home": 0, "away": 0},
+      "score_after": {"home": 1, "away": 0},
+      "scoring_team": "home",
+      
+      // Twitter search (prebuilt for UI display)
+      "twitter_search": "Szoboszlai Liverpool",
+      
+      // 🍕 Pizza Tracker Status
+      "first_seen": "2025-11-24T15:23:45Z",
+      "debounce_complete": true,           // ✅ Stage 1: Verified
+      "debounce_completed_at": "2025-11-24T15:25:45Z",
+      "twitter_complete": true,            // ✅ Stage 2: Videos Ready
+      "twitter_completed_at": "2025-11-24T15:35:00Z",
+      
+      "minio_path": "5000/5000_234_Goal_1"
+    }
+  }
+}
+```
+
+### UI Query Pattern
+
+```javascript
+// Frontend: Single query gets EVERYTHING
+const response = await fetch(`/api/fixtures/${fixtureId}/tracked`);
+const tracked = await response.json();
+
+// Display fixture info
+console.log(`${tracked.home_team.name} ${tracked.score.home} - ${tracked.score.away} ${tracked.away_team.name}`);
+
+// Show all events with live status
+Object.values(tracked.tracked_events).forEach(event => {
+  if (!event.debounce_complete) {
+    show(`⏳ Validating potential Goal "${event.twitter_search}"`);
+  } else if (!event.twitter_complete) {
+    show(`🔍 Fetching goal "${event.twitter_search}"`);
+  } else {
+    show(`✅ ${event.team.name} (${event.score_after[event.scoring_team]}) - ${event.score_after.away}: ${event.player.last_name}`);
+    show(`<a href="/videos/${event.minio_path}">Watch Videos</a>`);
+  }
+});
+```
+
+---
+
+## 🔄 Pipeline Flows
+
+### 1️⃣ Ingestion Job (Daily at 00:05 UTC)
+
+**Purpose:** Fetch and stage the day's fixtures
+
+```
+1. Fetch fixtures from API-Football
+2. Filter to 50 tracked teams
+3. Route by status:
+   - TBD/NS/LIVE → fixtures_staging
+   - FT/AET/PEN → fixtures_completed
+```
+
+### 2️⃣ Monitor Job (Every Minute)
+
+**Purpose:** Detect changes by comparing current vs tracked state
+
+```
+1. ACTIVATE: Move fixtures from staging → active when start time reached
+   → Create fixtures_tracked with complete fixture data
+   → Initialize empty tracked_events dict
+
+2. BATCH FETCH: Single API call gets ALL data
+   → Fixtures + Events + Lineups + Statistics
+   
+3. UPDATE ACTIVE: ALWAYS update fixtures_active with fresh batch data
+   
+4. COMPARE & DETECT:
+   → Build event IDs from current API events
+   → Get fixtures_tracked.tracked_events dict
+   → Find NEW events (not in tracked_events at all)
+   → Find INCOMPLETE events (debounce_complete=false)
+   → If ANY differences: Trigger debounce_job
+   → If NO differences: Skip (nothing to process)
+   
+5. COMPLETE: When status=FT/AET/PEN
+   → Copy fixtures_tracked → fixtures_completed
+   → Delete from fixtures_active and fixtures_tracked
+```
+
+**Key Insight:** Monitor compares `fixtures_active` (raw API) vs `fixtures_tracked` (our UI state). Only triggers debounce when there's work to do!
+
+### 3️⃣ Debounce Job (Per Fixture, Triggered)
+
+**Purpose:** Event-level debounce tracking and confirmation
+
+```
+Poll 1 (NEW EVENT):
+→ Add to events_pending (stable_count=1, snapshot 1)
+→ Add to fixtures_tracked with:
+  - debounce_complete=false
+  - score_before/score_after (captured on first_seen)
+  - twitter_search string
+  - player last_name
+
+Poll 2 (SAME HASH):
+→ Increment stable_count to 2
+→ Update fixtures_tracked
+
+Poll 3 (SAME HASH):
+→ stable_count=3 → CONFIRM!
+→ Move to events_confirmed
+→ Update fixtures_tracked:
+  - debounce_complete=true
+  - debounce_completed_at timestamp
+→ Trigger twitter_job
+```
+
+**Debounce Hash:** Only `player.name` + `team.name` (Twitter-relevant fields)  
+**Why?** Minute changes (67' → 68') don't affect video discovery
+
+### 4️⃣ Twitter Job (Per Event, Triggered)
+
+**Purpose:** Discover video URLs on Twitter
+
+```
+1. Get event from events_confirmed
+2. Get twitter_search from fixtures_tracked
+3. Update fixtures_tracked: twitter_started_at
+4. Wait 2 minutes (videos need time to upload)
+5. Search Twitter: "{player_last_name} {team_name}"
+6. Retry logic if < 5 videos (3min, 4min waits)
+7. Extract video URLs from tweets
+8. Save to events_confirmed.discovered_videos
+9. Update fixtures_tracked:
+   - twitter_complete=true
+   - twitter_completed_at timestamp
+```
+
+**Total Wait Time:** ~10 minutes (1min monitor + 2+3+4min searches)
+
+---
+
+## 🏗️ Project Structure
+
+```
+found-footy/
+├── src/                               # Dagster orchestration
+│   ├── jobs/
+│   │   ├── ingest/                    # Daily fixture ingestion
+│   │   │   ├── ingestion_job.py
+│   │   │   └── ops/
+│   │   ├── monitor/                   # Real-time monitoring
+│   │   │   ├── monitor_job.py
+│   │   │   └── ops/
+│   │   │       ├── activate_fixtures_op.py
+│   │   │       ├── batch_fetch_active_op.py
+│   │   │       └── process_and_debounce_events_op.py
+│   │   ├── debounce/                  # Event-level debounce
+│   │   │   ├── debounce_job.py
+│   │   │   └── ops/
+│   │   │       ├── process_events_op.py
+│   │   │       ├── check_stability_op.py
+│   │   │       └── confirm_events_op.py
+│   │   ├── twitter/                   # Twitter discovery
+│   │   │   ├── twitter_job.py
+│   │   │   └── ops/
+│   │   │       ├── search_twitter_op.py
+│   │   │       ├── extract_videos_op.py
+│   │   │       └── update_event_discovered_videos_op.py
+│   │   └── download/                  # Video processing (future)
+│   ├── resources/                     # Dagster resources
+│   ├── api/                           # API-Football client
+│   │   └── mongo_api.py
+│   ├── data/                          # Storage clients
+│   │   ├── mongo_store.py             # MongoDB with fixtures_tracked
+│   │   └── s3_store.py
+│   └── utils/                         # Business logic
+│       ├── event_config.py            # Trackable events config
+│       ├── event_processing.py        # Event ID generation
+│       ├── fixture_status.py
+│       └── team_data.py
+├── twitter/                           # Twitter scraper
+│   ├── session.py
+│   ├── auth.py
+│   └── firefox_manual_setup.py
+├── ARCHITECTURE.md                    # Detailed architecture docs
+├── docker-compose.yml                 # Production stack
+└── workspace.yaml                     # Dagster config
+```
+
+---
+
+## 🚀 Quick Start
+
+### 1. Prerequisites
+
+```bash
+docker --version  # 20.10+
+docker-compose --version  # 1.29+
+```
+
+### 2. Setup Environment
+
+```bash
+# Copy example env
+cp .env.example .env
+
+# Edit .env with your API key
+nano .env
+# Set: API_FOOTBALL_KEY=your_key_here
+```
+
+### 3. Setup Twitter Session (One-Time)
+
+```bash
+# Start Twitter container
+docker compose up -d twitter
+
+# Run manual Firefox setup
+docker compose exec twitter python -m twitter.firefox_manual_setup
+
+# Follow VNC GUI at http://localhost:6080/vnc.html
+# Log into Twitter, profile saved automatically
+```
+
+### 4. Start All Services
+
+```bash
+docker compose up -d
+```
+
+### 5. Access Dagster UI
+
+```bash
+open http://localhost:3100
+```
+
+### 6. Enable Automation
+
+In Dagster UI → Automation:
+- ✅ Enable `daily_ingestion_schedule`
+- ✅ Enable `per_minute_monitor_schedule`
+
+---
+
+## 💡 Key Design Decisions
+
+### ✅ Pro API Batch Endpoint
+
+**Before (Two-Tier Polling):**
+```
+Per minute:
+1. Batch fixtures call (N fixtures) - 1 request
+2. For each fixture: fixtures/events call - N requests
+Total: 1 + N requests per minute
+```
+
+**After (Pro API Batch):**
+```
+Per minute:
+1. Batch call includes fixtures + events + lineups - 1 request
+Total: 1 request per minute (N-1 reduction!)
+```
+
+**Savings:** 7500 requests/day limit goes much further!
+
+### ✅ Event-Level Granularity
+
+**Before:** Track goals at fixture level  
+**After:** Track individual events (goals, cards, VAR)
+
+**Benefits:**
+- Player attribution tracked (handles own goals correctly)
+- Debounce per event, not per fixture
+- Stable event IDs across polls
+- Only track relevant events (Goals: Normal/Penalty/Own)
+
+### ✅ fixtures_tracked UI Layer
+
+**Separation of Concerns:**
+- `fixtures_active` = Raw API data (processing only)
+- `fixtures_tracked` = Complete UI data (fixture + events + pizza tracker)
+- `fixtures_completed` = Archive copy
+
+**Benefits:**
+- **Single query** for UI (no joins!)
+- **Pizza tracker** status with simple booleans
+- **Score context** per goal (prevents confusion)
+- **Prebuilt search strings** for UI display
+
+### ✅ Smart Debounce Triggering
+
+**Compare Before Processing:**
+```python
+# Monitor compares current API events vs tracked_events
+current_event_ids = set(["5000_234_Goal_1", "5000_234_Goal_2"])
+tracked_events = fixture["tracked_events"]  # {"5000_234_Goal_1": {...}}
+
+new_events = current_event_ids - tracked_events.keys()
+incomplete = [id for id in current_event_ids 
+              if not tracked_events[id]["debounce_complete"]]
+
+if new_events or incomplete:
+    trigger_debounce_job()  # Work to do!
+else:
+    skip()  # All events complete, save processing
+```
+
+**Result:** Only debounce when needed → Efficient resource usage
+
+### ✅ Score Context per Goal
+
+**Problem:** Multiple simultaneous goals cause confusion  
+**Solution:** Capture score on `first_seen`
+
+```json
+{
+  "5000_234_Goal_1": {
+    "score_before": {"home": 0, "away": 0},
+    "score_after": {"home": 1, "away": 0},
+    "scoring_team": "home"
+  },
+  "5000_789_Goal_1": {
+    "score_before": {"home": 1, "away": 0},  // After first goal
+    "score_after": {"home": 1, "away": 1},
+    "scoring_team": "away"
+  }
+}
+```
+
+**UI Display:**
+- "Liverpool (1) - 0: Szoboszlai" (1-0 after this goal)
+- "Man City (1) - 1: Haaland" (1-1 after this goal)
+
+### ✅ Event ID Format
+
+**Format:** `{fixture_id}_{player_id}_{event_type}_{sequence}`
+
+**Examples:**
+```
+5000_234_Goal_1    # Messi's 1st goal
+5000_234_Goal_2    # Messi's 2nd goal
+5000_789_Goal_1    # Ronaldo's 1st goal
+```
+
+**Benefits:**
+- Sequential per player+type
+- Stable across polls (same event keeps same ID)
+- Easy to iterate and check existence
+
+---
+
+## 📊 API Usage Optimization
+
+**Old Architecture:**
+- Per fixture: 1 + 1 API calls (batch + events)
+- 10 active fixtures: 11 calls/minute = 15,840 calls/day
+
+**New Architecture:**
+- All fixtures: 1 API call (batch with events)
+- 10 active fixtures: 1 call/minute = 1,440 calls/day
+
+**Result:** 90% API call reduction!
+
+---
+
+## 🎯 Event Types
+
+**Currently Tracked:**
+```python
+EVENT_TYPES = {
+    "Goal": {
+        "enabled": True,
+        "scrapeable_details": ["Normal Goal", "Penalty", "Own Goal"],
+        "debounce_fields": ["player.name", "team.name"],
+        "debounce_stable_count": 3
+    }
+}
+```
+
+**Future Phases:**
+- Phase 2: Red Cards
+- Phase 3: VAR Events  
+- Phase 4: Download & Deduplication
+
+---
+
+## 📋 Testing Checklist
+
+### Manual Testing
+
+```bash
+# 1. Test ingestion
+dagster job execute -m src.jobs.ingest.ingestion_job
+
+# 2. Check staging collection
+docker exec found-footy-mongo mongosh -u founduser -p footypass found_footy \
+  --eval "db.fixtures_staging.find().limit(3).pretty()"
+
+# 3. Manually activate a fixture (for testing)
+docker exec found-footy-mongo mongosh -u founduser -p footypass found_footy \
+  --eval "fixture = db.fixtures_staging.findOne(); db.fixtures_active.insertOne(fixture); print('Activated: ' + fixture._id)"
+
+# 4. Test monitor job
+dagster job execute -m src.jobs.monitor.monitor_job
+
+# 5. Check fixtures_tracked
+docker exec found-footy-mongo mongosh -u founduser -p footypass found_footy \
+  --eval "db.fixtures_tracked.find().pretty()"
+
+# 6. Test debounce (requires fixture_id)
+dagster job execute -m src.jobs.debounce.debounce_job \
+  --config '{"ops": {"process_events": {"config": {"fixture_id": 12345}}}}'
+
+# 7. Check events
+docker exec found-footy-mongo mongosh -u founduser -p footypass found_footy \
+  --eval "db.events_pending.find().pretty()"
+```
+
+### Verify Twitter
+
+```bash
+# Test Twitter session
+docker compose exec twitter python -c "
+from twitter.session import TwitterSessionManager
+from twitter.config import TwitterConfig
+mgr = TwitterSessionManager(TwitterConfig())
+print('✅ Session OK' if mgr.authenticate() else '❌ Auth Failed')
+"
+```
+
+---
+
+## 🐛 Troubleshooting
+
+### Monitor not triggering debounce
+
+**Check:**
+1. Are there active fixtures? `db.fixtures_active.find()`
+2. Do fixtures have events? Check `events` array in fixtures_active
+3. Is fixtures_tracked created? `db.fixtures_tracked.find()`
+4. Check monitor logs in Dagster UI → Runs
+
+### Events not being added to fixtures_tracked
+
+**Check:**
+1. Is debounce_job running? Check Dagster UI → Runs
+2. Are events trackable? Only Goals with Normal/Penalty/Own are tracked
+3. Check process_events_op logs for score context calculation
+
+### Twitter job not updating fixtures_tracked
+
+**Check:**
+1. Is twitter_complete being set? Check logs
+2. Is search_twitter_op finding videos?
+3. Verify fixtures_tracked document has event_id
+
+---
+
+## 📚 Documentation
+
+- **[README.md](README.md)** - This file (system overview)
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Detailed architecture documentation
+- **[twitter/README.md](twitter/README.md)** - Twitter service docs
+- **[SETUP.md](SETUP.md)** - Setup and deployment guide
+
+---
+
+## ✅ Implementation Status
+
+### Complete ✅
+
+- ✅ Event-level architecture with debounce validation
+- ✅ Pro API batch endpoint integration
+- ✅ fixtures_tracked UI data layer with pizza tracker
+- ✅ Smart debounce triggering (NEW/INCOMPLETE detection)
+- ✅ Score context per goal
+- ✅ Monitor job with comparison logic
+- ✅ Debounce job with 3-op structure
+- ✅ Twitter job with event_id support
+- ✅ Completion flow (tracked → completed)
+
+### Testing Required 🧪
+
+- 🧪 End-to-end flow with real fixtures
+- 🧪 Multiple simultaneous goals (score context)
+- 🧪 Debounce stability tracking (3 polls)
+- 🧪 Twitter search with prebuilt strings
+- 🧪 UI query pattern (single fixtures_tracked call)
+
+### Future Enhancements 🚀
+
+- 🚀 Download job (download videos from discovered URLs)
+- 🚀 Deduplication (OpenCV perceptual hashing)
+- 🚀 Red card tracking
+- 🚀 VAR event tracking
+- 🚀 Web dashboard for highlights gallery
+
+---
+
+**Last Updated:** November 24, 2025  
+**Status:** ✅ Implementation Complete - Ready for Testing  
+**Architecture:** Event-level debounce with fixtures_tracked UI layer
+
+Built with ❤️ and ⚽

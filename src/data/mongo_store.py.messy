@@ -1,0 +1,319 @@
+import os
+from datetime import datetime, timezone
+from typing import List, Dict, Any
+
+from pymongo import ASCENDING, MongoClient
+
+
+class FootyMongoStore:
+    """
+    MongoDB storage with 4 collections - fixtures_live for comparison!
+    
+    Collections:
+    - fixtures_staging: Waiting to start (TBD, NS)
+    - fixtures_live: Raw API data from batch fetch (for comparison)
+    - fixtures_active: Enhanced with debounce data IN events array
+    - fixtures_completed: Archive
+    
+    Flow:
+    1. Monitor stores fresh API → fixtures_live
+    2. Monitor compares live vs active → identifies fixtures needing debounce
+    3. Debounce reads live (raw) + active (enhanced) → updates active
+    4. fixtures_active NEVER gets overwritten, only updated with new enhancements
+    """
+    
+    def __init__(self, connection_url=None):
+        if connection_url is None:
+            connection_url = os.getenv('MONGODB_URL', 'mongodb://localhost:27017/')
+        
+        self.client = MongoClient(connection_url)
+        self.db = self.client.found_footy
+        
+        # 4 Collections
+        self.fixtures_staging = self.db.fixtures_staging
+        self.fixtures_live = self.db.fixtures_live  # Raw API data
+        self.fixtures_active = self.db.fixtures_active  # Enhanced
+        self.fixtures_completed = self.db.fixtures_completed
+        
+        self._create_indexes()
+
+    def _create_indexes(self):
+        """Create indexes"""
+        try:
+            # Status indexes
+            self.fixtures_staging.create_index([("fixture.status.short", ASCENDING)])
+            self.fixtures_live.create_index([("fixture.status.short", ASCENDING)])
+            self.fixtures_active.create_index([("fixture.status.short", ASCENDING)])
+            self.fixtures_completed.create_index([("fixture.status.short", ASCENDING)])
+            
+            # Date indexes
+            self.fixtures_staging.create_index([("fixture.date", ASCENDING)])
+            self.fixtures_live.create_index([("fixture.date", ASCENDING)])
+            self.fixtures_active.create_index([("fixture.date", ASCENDING)])
+            self.fixtures_completed.create_index([("fixture.date", ASCENDING)])
+
+            # Team indexes
+            self.fixtures_staging.create_index([("teams.home.id", ASCENDING)])
+            self.fixtures_staging.create_index([("teams.away.id", ASCENDING)])
+            self.fixtures_live.create_index([("teams.home.id", ASCENDING)])
+            self.fixtures_live.create_index([("teams.away.id", ASCENDING)])
+            self.fixtures_active.create_index([("teams.home.id", ASCENDING)])
+            self.fixtures_active.create_index([("teams.away.id", ASCENDING)])
+            
+            # Enhanced event fields (in fixtures_active events array)
+            self.fixtures_active.create_index([("events._event_id", ASCENDING)])
+            self.fixtures_active.create_index([("events._debounce_complete", ASCENDING)])
+            
+            print("✅ MongoDB indexes created successfully")
+        except Exception as e:
+            print(f"⚠️ Error creating indexes: {e}")
+
+    # ===== STAGING METHODS =====
+    
+    def save_fixtures_to_staging(self, fixtures: List[dict]) -> int:
+        """Bulk insert fixtures to staging"""
+        try:
+            if not fixtures:
+                return 0
+            result = self.fixtures_staging.insert_many(fixtures, ordered=False)
+            return len(result.inserted_ids)
+        except Exception as e:
+            print(f"⚠️ Error saving to staging: {e}")
+            return 0
+
+    def get_staging_fixtures(self) -> List[dict]:
+        """Get all fixtures from staging"""
+        try:
+            return list(self.fixtures_staging.find({}))
+        except Exception as e:
+            print(f"❌ Error getting staging fixtures: {e}")
+            return []
+
+    # ===== ACTIVE METHODS =====
+    
+    def activate_fixture(self, fixture_id: int, fixture_doc: dict) -> bool:
+        """Move fixture from staging to active"""
+        try:
+            doc = dict(fixture_doc)
+            doc["_id"] = fixture_id
+            self.fixtures_active.insert_one(doc)
+            self.fixtures_staging.delete_one({"_id": fixture_id})
+            return True
+        except Exception as e:
+            print(f"❌ Error activating fixture {fixture_id}: {e}")
+            return False
+
+    def get_active_fixture_ids(self) -> List[int]:
+        """Get list of active fixture IDs"""
+        try:
+            return [doc["_id"] for doc in self.fixtures_active.find({}, {"_id": 1})]
+        except Exception as e:
+            print(f"❌ Error getting active fixture IDs: {e}")
+            return []
+
+    def get_fixture_from_active(self, fixture_id: int) -> dict | None:
+        """Get fixture from active collection"""
+        try:
+            return self.fixtures_active.find_one({"_id": fixture_id})
+        except Exception as e:
+            print(f"❌ Error getting fixture {fixture_id}: {e}")
+            return None
+
+    # ===== LIVE METHODS (for comparison) =====
+    
+    def store_live_fixture(self, fixture_id: int, api_data: dict) -> bool:
+        """Store raw API data in fixtures_live for comparison"""
+        try:
+            doc = dict(api_data)
+            doc["_id"] = fixture_id
+            result = self.fixtures_live.replace_one({"_id": fixture_id}, doc, upsert=True)
+            return result.modified_count > 0 or result.upserted_id is not None
+        except Exception as e:
+            print(f"❌ Error storing live fixture {fixture_id}: {e}")
+            return False
+    
+    def get_live_fixture(self, fixture_id: int) -> dict | None:
+        """Get raw API data from fixtures_live"""
+        try:
+            return self.fixtures_live.find_one({"_id": fixture_id})
+        except Exception as e:
+            print(f"❌ Error getting live fixture {fixture_id}: {e}")
+            return None
+    
+    def compare_live_vs_active(self, fixture_id: int) -> Dict[str, Any]:
+        """
+        Compare fixtures_live (raw API) vs fixtures_active (enhanced).
+        
+        Returns which events need debounce:
+        - NEW: Event in live but not in active
+        - INCOMPLETE: Event in both but _debounce_complete=false in active
+        """
+        try:
+            live = self.get_live_fixture(fixture_id)
+            active = self.get_fixture_from_active(fixture_id)
+            
+            if not live or "events" not in live:
+                return {"needs_debounce": False, "reason": "no_live_events"}
+            
+            live_events = live.get("events", [])
+            active_events = active.get("events", []) if active else []
+            
+            # Build map of active events
+            active_map = {}
+            for event in active_events:
+                # Key: player_id + time + type
+                key = f"{event.get('player', {}).get('id')}_{event.get('time', {}).get('elapsed')}_{event.get('type')}"
+                active_map[key] = event
+            
+            new_count = 0
+            incomplete_count = 0
+            
+            for live_event in live_events:
+                key = f"{live_event.get('player', {}).get('id')}_{live_event.get('time', {}).get('elapsed')}_{live_event.get('type')}"
+                
+                if key not in active_map:
+                    new_count += 1
+                else:
+                    active_event = active_map[key]
+                    if not active_event.get("_debounce_complete", False):
+                        incomplete_count += 1
+            
+            needs_debounce = new_count > 0 or incomplete_count > 0
+            
+            return {
+                "needs_debounce": needs_debounce,
+                "new_events": new_count,
+                "incomplete_events": incomplete_count,
+                "total_live_events": len(live_events)
+            }
+        except Exception as e:
+            print(f"❌ Error comparing live vs active: {e}")
+            return {"needs_debounce": False, "reason": "error"}
+
+    # ===== EVENT ENHANCEMENT METHODS (Update fixtures_active) =====
+    
+    def add_event_to_active(self, fixture_id: int, event_with_enhancements: Dict[str, Any]) -> bool:
+        """
+        Add a NEW enhanced event to fixtures_active.events array.
+        This is for events that exist in live but not in active yet.
+        """
+        try:
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id},
+                {"$push": {"events": event_with_enhancements}}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error adding event to active: {e}")
+            return False
+
+    def update_event_stable_count(self, fixture_id: int, event_id: str, stable_count: int, snapshot: Dict[str, Any]) -> bool:
+        """
+        Update stable_count and add snapshot for an EXISTING event in fixtures_active.
+        """
+        try:
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, "events._event_id": event_id},
+                {
+                    "$set": {"events.$._stable_count": stable_count},
+                    "$push": {"events.$._snapshots": snapshot}
+                }
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error updating stable count: {e}")
+            return False
+
+    def mark_event_debounce_complete(self, fixture_id: int, event_id: str) -> bool:
+        """Mark event as debounce complete (stable_count >= 3)"""
+        try:
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, "events._event_id": event_id},
+                {
+                    "$set": {
+                        "events.$._debounce_complete": True,
+                        "events.$._debounce_completed_at": datetime.now(timezone.utc)
+                    }
+                }
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error marking debounce complete: {e}")
+            return False
+
+    def mark_event_twitter_started(self, fixture_id: int, event_id: str) -> bool:
+        """Mark that Twitter search has started"""
+        try:
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, "events._event_id": event_id},
+                {"$set": {"events.$._twitter_started_at": datetime.now(timezone.utc)}}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error marking twitter started: {e}")
+            return False
+
+    def mark_event_twitter_complete(self, fixture_id: int, event_id: str, video_urls: List[str]) -> bool:
+        """Mark event as twitter complete with discovered videos"""
+        try:
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, "events._event_id": event_id},
+                {
+                    "$set": {
+                        "events.$._twitter_complete": True,
+                        "events.$._twitter_completed_at": datetime.now(timezone.utc),
+                        "events.$._discovered_videos": video_urls
+                    }
+                }
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error marking twitter complete: {e}")
+            return False
+
+    def get_events_ready_for_twitter(self, fixture_id: int) -> List[Dict[str, Any]]:
+        """Get events where debounce_complete=true but twitter_complete=false"""
+        try:
+            fixture = self.fixtures_active.find_one({"_id": fixture_id})
+            if not fixture or "events" not in fixture:
+                return []
+            
+            ready = []
+            for event in fixture["events"]:
+                if (event.get("_debounce_complete", False) and 
+                    not event.get("_twitter_complete", False)):
+                    ready.append(event)
+            
+            return ready
+        except Exception as e:
+            print(f"❌ Error getting events ready for twitter: {e}")
+            return []
+
+    # ===== COMPLETION METHODS =====
+    
+    def move_fixture_to_completed(self, fixture_id: int) -> bool:
+        """Move fixture from active to completed"""
+        try:
+            fixture = self.fixtures_active.find_one({"_id": fixture_id})
+            if not fixture:
+                return False
+            
+            fixture["completed_at"] = datetime.now(timezone.utc)
+            self.fixtures_completed.insert_one(fixture)
+            self.fixtures_active.delete_one({"_id": fixture_id})
+            self.fixtures_live.delete_one({"_id": fixture_id})  # Clean up live too
+            return True
+        except Exception as e:
+            print(f"❌ Error moving fixture to completed: {e}")
+            return False
+
+    # ===== UTILITY METHODS =====
+    
+    def count_fixtures(self, collection_name: str) -> int:
+        """Count fixtures in a collection"""
+        try:
+            collection = getattr(self, collection_name)
+            return collection.count_documents({})
+        except Exception as e:
+            print(f"❌ Error counting {collection_name}: {e}")
+            return 0

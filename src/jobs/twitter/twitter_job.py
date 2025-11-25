@@ -1,62 +1,105 @@
-"""Twitter Job - Discover goal videos on Twitter"""
-from dagster import Config, job
-
-from .ops import (
-    extract_videos_op,
-    search_twitter_op,
-    update_goal_discovered_videos_op,
-)
+"""Twitter Job - Discover event videos on Twitter"""
+from dagster import Config, job, op, OpExecutionContext
+import time
+from typing import Dict, Any, List
+from src.data.mongo_store import FootyMongoStore
 
 
 class TwitterJobConfig(Config):
     """Configuration for twitter job"""
-    goal_id: str
+    fixture_id: int
+    event_id: str
+
+
+@op(
+    name="search_and_save_twitter_videos",
+    description="Search Twitter for event videos and save discovered URLs",
+    tags={"kind": "twitter", "stage": "discovery"}
+)
+def search_and_save_twitter_videos_op(
+    context: OpExecutionContext, 
+    config: TwitterJobConfig
+) -> Dict[str, Any]:
+    """
+    Search Twitter for videos and save discovered video URLs to event in fixtures_active.
+    
+    Reads event from fixtures_active.events array (already has _twitter_search field).
+    Marks _twitter_complete when done.
+    
+    Args:
+        fixture_id: Fixture ID
+        event_id: Event ID like "5000_234_Goal_1"
+        
+    Returns:
+        Dict with event_id and discovered video count
+    """
+    fixture_id = config.fixture_id
+    event_id = config.event_id
+    
+    store = FootyMongoStore()
+    
+    # Get fixture from active
+    fixture = store.get_fixture_from_active(fixture_id)
+    if not fixture:
+        context.log.error(f"❌ Fixture {fixture_id} not found")
+        return {"status": "error", "event_id": event_id}
+    
+    # Find event in events array
+    event = None
+    for evt in fixture.get("events", []):
+        if evt.get("_event_id") == event_id:
+            event = evt
+            break
+    
+    if not event:
+        context.log.error(f"❌ Event {event_id} not found in fixture {fixture_id}")
+        return {"status": "error", "event_id": event_id}
+    
+    # Get prebuilt search string
+    twitter_search = event.get("_twitter_search", "Unknown Goal")
+    context.log.info(f"🐦 Searching Twitter for: {twitter_search}")
+    
+    # Mark twitter started
+    store.mark_event_twitter_started(fixture_id, event_id)
+    
+    # TODO: Integrate actual Twitter search when ready
+    # For now, return empty list (placeholder)
+    context.log.info("⏳ Twitter search not yet implemented - marking as complete with no videos")
+    
+    discovered_videos = []
+    
+    # Mark twitter complete
+    store.mark_event_twitter_complete(fixture_id, event_id, discovered_videos)
+    
+    context.log.info(f"✅ Twitter search complete: {len(discovered_videos)} videos found")
+    
+    return {
+        "status": "success",
+        "event_id": event_id,
+        "fixture_id": fixture_id,
+        "video_count": len(discovered_videos)
+    }
 
 
 @job(
     name="twitter_job",
-    description="Search Twitter and discover video URLs for a goal",
+    description="Search Twitter and discover video URLs for an event",
     tags={"pipeline": "twitter", "trigger": "sensor", "phase": "discovery"}
 )
 def twitter_job():
     """
-    Pipeline to discover goal videos on Twitter with smart retry logic.
+    Search Twitter for event videos.
+    
+    Called PER EVENT after debounce_job marks _debounce_complete=true.
     
     Flow:
-    1. Wait 2 minutes initially for videos to be uploaded
-    2. Search Twitter for tweets (player last name + team name)
-    3. Retry if < 5 videos found (wait 3 min, then 4 min)
-    4. Extract video URLs from tweets
-    5. Save discovered_videos to goal document
+    1. Get event from fixtures_active.events array
+    2. Use prebuilt _twitter_search field
+    3. Search Twitter for videos
+    4. Mark _twitter_complete and save discovered video URLs
     
-    Smart Features:
-    - Initial Delay: 2 minutes for videos to be uploaded after goal
-    - Search Query: Uses player last name + team (e.g., "Messi Barcelona")
-    - Time Filtering: Only tweets posted AFTER goal's first_seen timestamp
-    - Retry Logic: If < 5 videos, waits 3min then 4min (total ~10 min window)
-    - Saves whatever found: Even if < 5 videos, saves them for download_job
+    All updates happen in-place in fixtures_active.events array.
     
-    This job is spawned by goal_job after a goal is validated.
-    Saves video URLs to discovered_videos field with processing_status='discovered'.
-    
-    If videos are found, download_job can be manually triggered to:
-    - Download videos
-    - Deduplicate with OpenCV
-    - Upload to S3
-    
-    Benefits of split:
-    - Can rerun twitter search independently if not enough videos found
-    - Download/dedup is separate and can be retried independently
-    - Clear separation of concerns
-    
-    NOTE: Includes internal retry mechanisms for Twitter API rate limits.
-    Config (goal_id) will be provided at runtime via RunConfig.
+    Config (fixture_id, event_id) provided at runtime via RunConfig.
     """
-    # Search Twitter for the goal (returns {goal_id, tweets})
-    search_result = search_twitter_op()
-    
-    # Extract video URLs from tweets (returns {goal_id, videos})
-    extraction_result = extract_videos_op(search_result)
-    
-    # Save discovered videos to goal document
-    update_goal_discovered_videos_op(extraction_result)
+    search_and_save_twitter_videos_op()

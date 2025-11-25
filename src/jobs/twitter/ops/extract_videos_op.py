@@ -14,22 +14,23 @@ def extract_videos_op(
     search_result: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    Extract video URLs from tweet objects.
+    Extract video URLs from tweets.
     
     Args:
-        search_result: Dict with goal_id and tweets from search_twitter_op
+        search_result: Dict with event_id and tweets from search_twitter_op
         
     Returns:
-        Dict with goal_id and video metadata list
+        Dict with event_id and video metadata list
     """
-    goal_id = search_result.get("goal_id", "unknown")
+    event_id = search_result.get("event_id", "unknown")
+    fixture_id = search_result.get("fixture_id")
     tweets = search_result.get("tweets", [])
     
     if not tweets:
-        context.log.warning(f"⚠️  No tweets to extract videos from for goal {goal_id}")
-        return {"goal_id": goal_id, "videos": []}
+        context.log.warning(f"⚠️  No tweets to extract videos from for event {event_id}")
+        return {"event_id": event_id, "fixture_id": fixture_id, "videos": []}
     
-    context.log.info(f"📹 Extracting videos from {len(tweets)} tweets for goal {goal_id}")
+    context.log.info(f"📹 Extracting videos from {len(tweets)} tweets for event {event_id}")
     
     videos = []
     
@@ -44,7 +45,7 @@ def extract_videos_op(
             
             # Extract video metadata
             video_metadata = {
-                "goal_id": goal_id,  # Pass through goal_id from tweet metadata
+                "event_id": event_id,  # Pass through event_id from tweet metadata
                 "tweet_id": tweet_id,
                 "tweet_url": tweet_url,
                 "video_url": video_page_url,  # yt-dlp will handle the tweet URL
@@ -62,6 +63,6 @@ def extract_videos_op(
             context.log.error(f"❌ Error extracting video from tweet: {e}")
             continue
     
-    context.log.info(f"✅ Extracted {len(videos)} video URLs for goal {goal_id}")
+    context.log.info(f"✅ Extracted {len(videos)} video URLs for event {event_id}")
     
-    return {"goal_id": goal_id, "videos": videos}
+    return {"event_id": event_id, "fixture_id": fixture_id, "videos": videos}

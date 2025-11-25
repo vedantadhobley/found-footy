@@ -3,27 +3,26 @@ Found Footy - Football highlights automation with Dagster
 
 Main Dagster Definitions object combining jobs, schedules, and resources.
 
-New Clean Architecture:
+Event-Level Debounce Architecture:
 1. ingestion_job (daily 00:05 UTC)
    → Fetch fixtures → Categorize by status → Store in staging/active/completed
 
 2. monitor_job (every minute)
-   → Activate fixtures → Batch fetch → Detect goal deltas → Spawn goal jobs → Complete fixtures
+   → Activate fixtures → Batch fetch → Update fixtures → Trigger debounce jobs → Complete fixtures
 
-3. goal_job (per fixture with new goals)
-   → Fetch events → Check status → Add to pending → Validate → Update fixture → Spawn twitter jobs
+3. debounce_job (per fixture with events)
+   → Extract events → Process snapshots → Validate stability → Confirm events → Trigger twitter jobs
 
-4. twitter_job (per validated goal)
+4. twitter_job (per confirmed event)
    → Search Twitter → Extract videos → Save discovered_videos
 
-5. download_job (per goal with videos)
+5. download_job (per event with videos)
    → Validate → Download → Deduplicate (OpenCV) → Upload to S3 → Mark completed
 """
 from dagster import Definitions
 
 # Import jobs
 from src.jobs import (
-    goal_job,
     ingestion_job,
     ingestion_schedule,
     monitor_job,
@@ -50,10 +49,9 @@ if has_resources:
     defs = Definitions(
         jobs=[
             ingestion_job,   # Daily fixture ingestion with status-based routing
-            monitor_job,     # Per-minute monitoring for goal deltas
-            goal_job,        # Per-fixture goal validation
-            twitter_job,     # Per-goal video discovery
-            download_job,    # Per-goal video download/dedup/upload
+            monitor_job,     # Per-minute monitoring with in-place event enhancement
+            twitter_job,     # Per-event video discovery
+            download_job,    # Per-event video download/dedup/upload
         ],
         schedules=[
             ingestion_schedule,  # Daily at 00:05 UTC
@@ -69,10 +67,9 @@ else:
     defs = Definitions(
         jobs=[
             ingestion_job,   # Daily fixture ingestion with status-based routing
-            monitor_job,     # Per-minute monitoring for goal deltas
-            goal_job,        # Per-fixture goal validation
-            twitter_job,     # Per-goal video discovery
-            download_job,    # Per-goal video download/dedup/upload
+            monitor_job,     # Per-minute monitoring with in-place event enhancement
+            twitter_job,     # Per-event video discovery
+            download_job,    # Per-event video download/dedup/upload
         ],
         schedules=[
             ingestion_schedule,  # Daily at 00:05 UTC

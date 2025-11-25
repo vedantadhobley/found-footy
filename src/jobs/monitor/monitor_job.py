@@ -4,43 +4,41 @@ from dagster import ScheduleDefinition, job
 from .ops import (
     activate_fixtures_op,
     batch_fetch_active_op,
-    detect_goal_delta_op,
-    trigger_goal_jobs_op,
+    process_and_debounce_events_op,
 )
 
 
 @job(
     name="monitor_job",
-    description="Monitor active fixtures for goal events and completion",
+    description="Monitor active fixtures for events and completion",
     tags={"pipeline": "monitor", "frequency": "per_minute"}
 )
 def monitor_job():
     """
-    Pipeline to monitor fixtures and detect goal events.
+    Pipeline to monitor fixtures and process events.
     
     Flow:
     1. Activate fixtures (staging → active if start time reached)
-    2. Batch fetch current data for all active fixtures
-    3. Detect goal deltas (compare stored vs fetched goal counts)
-    4. Trigger goal_job for fixtures with new goals
+    2. Batch fetch current data for all active fixtures (includes events array)
+    3. Update fixtures and trigger debounce_job for fixtures with trackable events
     
-    CRITICAL RULES:
-    - Monitor does NOT update fixture data or move to completed
-    - goal_job handles all fixture updates and completion
-    - This ensures atomic operations per fixture
+    Event Processing:
+    - Batch API returns full fixture data including events array
+    - Only trackable events (Goals with specific details) are processed
+    - debounce_job handles event-level debounce tracking
+    - Stable events are confirmed and trigger twitter_job
+    
+    Fixture Completion:
+    - Fixtures with status FT/AET/PEN are moved to fixtures_completed
     """
     # Step 1: Activate fixtures (staging → active if start time reached)
     activate_result = activate_fixtures_op()
     
-    # Step 2: Fetch fresh data for all active fixtures
+    # Step 2: Fetch fresh data for all active fixtures (includes events)
     fresh_fixtures = batch_fetch_active_op(activate_result)
     
-    # Step 3: Detect goal deltas (compare stored vs fetched)
-    fixtures_with_new_goals = detect_goal_delta_op(fresh_fixtures)
-    
-    # Step 4: Trigger goal_job for fixtures with new goals
-    # goal_job will handle validation, fixture updates, and completion
-    trigger_goal_jobs_op(fixtures_with_new_goals)
+    # Step 3: Update fixtures, trigger debounce for events, move completed
+    process_and_debounce_events_op(fresh_fixtures)
 
 
 # Schedule to run every minute at :00 seconds

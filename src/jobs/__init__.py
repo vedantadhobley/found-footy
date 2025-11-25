@@ -1,6 +1,6 @@
-"""Dagster jobs - Direct execution pipeline architecture for Found Footy
+"""Dagster jobs - Event-level debounce architecture for Found Footy
 
-Complete workflow with direct job execution (no sensors or queues):
+Complete workflow with Pro API batch endpoint and event debouncing:
 
 1. ingestion_job (daily 00:05 UTC)
    → Fetch day's fixtures from api-football.com
@@ -8,28 +8,28 @@ Complete workflow with direct job execution (no sensors or queues):
 
 2. monitor_job (every minute)
    → Activate fixtures (staging → active when start time reached)
-   → Batch fetch current data for all active fixtures
-   → Detect goal deltas (compare stored vs fetched counts)
-   → DIRECTLY EXECUTE goal_job per fixture (via execute_in_process)
+   → Batch fetch ALL data for active fixtures (fixtures + events + lineups in one call)
+   → Update fixtures_active with fresh data
+   → Trigger debounce_job for fixtures with trackable events
+   → Move completed fixtures (FT/AET/PEN) to fixtures_completed
 
-3. goal_job (per fixture_id)
-   → Fetch goals from API
-   → Filter out already-confirmed goals
-   → Compare with goals_pending for this fixture
-   → Process changes (add/confirm/drop)
-   → Update fixture & complete if FT/AET/PEN + no pending goals
-   → DIRECTLY EXECUTE twitter_job per confirmed goal (via execute_in_process)
+3. debounce_job (per fixture_id)
+   → Extract events from fixture data
+   → Process events: add new, update existing snapshots
+   → Track stability: 3 consecutive identical hashes = stable
+   → Confirm stable events (events_pending → events_confirmed)
+   → DIRECTLY EXECUTE twitter_job per confirmed event
 
-4. twitter_job (per goal_id)
+4. twitter_job (per event_id)
    → Search Twitter with 2+3+4 min retry logic
    → Extract video URLs
-   → Save discovered_videos to goals_confirmed
+   → Save discovered_videos to events_confirmed
 
-Collections: fixtures_staging, fixtures_active, fixtures_completed, goals_pending, goals_confirmed
-No queue collections - direct execution throughout
+Collections: fixtures_staging, fixtures_active, fixtures_completed, events_pending, events_confirmed
+Event-level granularity with debounce tracking
 """
 
-from .goal import goal_job
+from .debounce import debounce_job
 from .ingest import ingestion_job, ingestion_schedule
 from .monitor import monitor_job, monitor_schedule
 from .twitter import TwitterJobConfig, twitter_job
@@ -39,7 +39,7 @@ __all__ = [
     "ingestion_schedule",
     "monitor_job",
     "monitor_schedule",
-    "goal_job",
+    "debounce_job",
     "twitter_job",
     "TwitterJobConfig",
 ]

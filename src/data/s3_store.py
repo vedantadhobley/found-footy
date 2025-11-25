@@ -45,18 +45,18 @@ class FootyS3Store:
         except Exception as e:
             print(f"⚠️ Could not verify S3 bucket: {e}")
     
-    def generate_video_key(self, goal_id: str, video_index: int, file_extension: str = "mp4") -> str:
-        """Generate simplified S3 key: fixture_id/goal_id/goal_id_index.ext"""
+    def generate_video_key(self, event_id: str, video_index: int, file_extension: str = "mp4") -> str:
+        """Generate simplified S3 key: fixture_id/event_id/event_id_index.ext"""
         
-        # ✅ Extract fixture_id from goal_id (first part before first underscore)
-        # Handle both formats: "12345_45" and "12345_45+3"
-        fixture_id = goal_id.split('_')[0]
+        # Extract fixture_id from event_id (first part before first underscore)
+        # Event ID format: {fixture}_{player}_{type}_{seq}
+        fixture_id = event_id.split('_')[0]
         
-        # ✅ NEW: Simplified structure - fixture_id/goal_id/goal_id_index.ext
-        # This will create paths like: 12345/12345_45+3/12345_45+3_0.mp4
-        return f"{fixture_id}/{goal_id}/{goal_id}_{video_index}.{file_extension}"
+        # Simplified structure - fixture_id/event_id/event_id_index.ext
+        # This will create paths like: 12345/12345_234_Goal_1/12345_234_Goal_1_0.mp4
+        return f"{fixture_id}/{event_id}/{event_id}_{video_index}.{file_extension}"
     
-    def upload_video_file(self, local_file_path: str, goal_id: str, video_index: int, metadata: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    def upload_video_file(self, local_file_path: str, event_id: str, video_index: int, metadata: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """Upload video file to S3 with clean metadata"""
         try:
             # Get file extension
@@ -64,12 +64,12 @@ class FootyS3Store:
             if not file_extension:
                 file_extension = "mp4"
             
-            # ✅ Generate simplified S3 key
-            s3_key = self.generate_video_key(goal_id, video_index, file_extension)
+            # Generate S3 key
+            s3_key = self.generate_video_key(event_id, video_index, file_extension)
             
             # Prepare metadata
             s3_metadata = {
-                'goal_id': goal_id,
+                'event_id': event_id,
                 'video_index': str(video_index),
                 'uploaded_at': datetime.utcnow().isoformat(),
                 'content_type': f'video/{file_extension}'
@@ -89,7 +89,7 @@ class FootyS3Store:
                             clean_value = clean_value[:97] + "..."
                         # Remove any non-ASCII characters that might cause issues
                         clean_value = ''.join(char if ord(char) < 128 else '?' for char in clean_value)
-                        clean_metadata[f"goal-{key}"] = clean_value
+                        clean_metadata[f"event-{key}"] = clean_value
             
             # Upload to S3 with clean metadata
             self.s3_client.upload_file(
@@ -121,25 +121,25 @@ class FootyS3Store:
                 "s3_key": None
             }
     
-    def download_video_from_url(self, video_url: str, goal_id: str, video_index: int, 
+    def download_video_from_url(self, video_url: str, event_id: str, video_index: int, 
                                metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Download video from URL and upload to S3 with simplified structure"""
+        """Download video from URL and upload to S3"""
         try:
             # Create temporary directory for download
             with tempfile.TemporaryDirectory() as temp_dir:
                 print(f"📥 Downloading video from: {video_url}")
                 
                 # For now, create a realistic dummy file until we integrate yt-dlp
-                dummy_video_path = os.path.join(temp_dir, f"{goal_id}_{video_index}.mp4")
+                dummy_video_path = os.path.join(temp_dir, f"{event_id}_{video_index}.mp4")
                 
                 # Create a more realistic dummy file (1MB)
                 with open(dummy_video_path, 'wb') as f:
                     f.write(b'\x00' * (1024 * 1024))  # 1MB dummy
                 
-                # ✅ Upload using simplified structure
+                # Upload
                 result = self.upload_video_file(
                     dummy_video_path,
-                    goal_id,
+                    event_id,
                     video_index,
                     metadata or {}
                 )
@@ -157,14 +157,14 @@ class FootyS3Store:
                 "s3_key": None
             }
     
-    def list_goal_videos(self, goal_id: str) -> list:
-        """List all videos for a specific goal using simplified structure"""
+    def list_event_videos(self, event_id: str) -> list:
+        """List all videos for a specific event"""
         try:
-            # Extract fixture_id from goal_id
-            fixture_id = goal_id.split('_')[0]
+            # Extract fixture_id from event_id
+            fixture_id = event_id.split('_')[0]
             
-            # ✅ NEW: Use simplified prefix - fixture_id/goal_id/
-            prefix = f"{fixture_id}/{goal_id}/"
+            # Use prefix - fixture_id/event_id/
+            prefix = f"{fixture_id}/{event_id}/"
             
             response = self.s3_client.list_objects_v2(
                 Bucket=self.bucket_name,

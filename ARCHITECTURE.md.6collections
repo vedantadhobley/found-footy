@@ -1,0 +1,640 @@
+# Found Footy - Event-Level Debounce Architecture
+
+## 🎯 Overview
+
+**Pro API Discovery**: The batch fixtures endpoint returns complete data (fixtures + events + lineups + statistics) in a single call, eliminating the need for separate event polling.
+
+**Event-Level Granularity**: Track individual events (goals, cards, VAR) with debounce logic to ensure stability before triggering downstream processing.
+
+---
+
+## 📊 Complete Workflow
+
+### 1️⃣ **Ingestion Job** (Daily at 00:05 UTC)
+
+**Purpose**: Fetch and stage the day's fixtures
+
+**Flow**:
+```
+1. Fetch day's fixtures from API-Football
+2. Route fixtures by status:
+   - "TBD", "NS", "LIVE", "1H", "HT", "2H", "ET", "P" → fixtures_staging
+   - "FT", "AET", "PEN" → fixtures_completed
+   - Others → Skip
+```
+
+**Collections Updated**:
+- `fixtures_staging` - Fixtures waiting to start
+- `fixtures_completed` - Already finished fixtures
+
+---
+
+### 2️⃣ **Monitor Job** (Every Minute)
+
+**Purpose**: Detect changes by comparing current vs tracked state
+
+**Flow**:
+```
+1. ACTIVATE: Move fixtures from staging → active when start time reached
+   - Copy full fixture data to fixtures_tracked (all teams, league, venue info)
+   - Initialize tracked_events as empty dict
+   
+2. BATCH FETCH: Single API call gets ALL data for active fixtures
+   - Fixtures data (scores, status, time)
+   - Events array (goals, cards, VAR, substitutions)
+   - Lineups array
+   - Statistics
+   
+3. UPDATE ACTIVE: Always update fixtures_active with fresh batch data (raw API)
+   
+4. COMPARE & DETECT:
+   For each active fixture:
+   → Build event IDs from current API events (trackable only)
+   → Get fixtures_tracked.tracked_events dict
+   → Compare to find:
+      - NEW events: not in tracked_events at all
+      - INCOMPLETE events: in tracked_events with completed=false
+   → If ANY differences exist: Trigger debounce_job
+   → If NO differences: Skip (nothing to debounce, saves processing)
+   
+5. COMPLETE: Move fixtures with status FT/AET/PEN → fixtures_completed
+```
+
+**Collections Updated**:
+- `fixtures_active` - **ALWAYS updated** with fresh batch data
+- `fixtures_tracked` - **Updated by debounce_job** (not by monitor)
+- `fixtures_completed` - Receives finished fixtures
+
+**Key Insight**: 
+- Monitor compares current (from API) vs tracked (our state)
+- Only triggers debounce when there's work to do (new or incomplete events)
+- Makes it visible in UI: "debounce_job triggered" = something is happening!
+
+---
+
+### 3️⃣ **Debounce Job** (Per Fixture) - **TRIGGERED WHEN COMPARISON FINDS DIFFERENCES**
+
+**Purpose**: Event-level debounce tracking and confirmation
+
+**Flow**:
+```
+1. GET CURRENT EVENTS:
+   - Extract events from fixtures_active
+   - Filter to trackable events (Goals: Normal/Penalty/Own Goal)
+   - Build event IDs for all current events
+   
+2. GET TRACKED STATE:
+   - Get fixtures_tracked document for this fixture
+   - Load tracked_events dict
+   
+3. PROCESS EACH CURRENT EVENT:
+   
+   If event_id NOT IN tracked_events:
+     → NEW EVENT DETECTED
+     → Add to events_pending (stable_count=1, snapshot 1)
+     → Add to fixtures_tracked with completed=false
+   
+   Else if event_id IN tracked_events AND completed=false:
+     → STILL DEBOUNCING
+     → Get existing event from events_pending
+     → Generate new hash from current data
+     → Compare with previous hash:
+        - Same hash: Increment stable_count (1→2→3)
+        - Different hash: Reset stable_count to 1
+     → Update snapshot in events_pending
+     → Check if stable_count >= 3:
+        - Yes: Mark is_stable=true
+   
+   Else if event_id IN tracked_events AND completed=true:
+     → SKIP (already confirmed and processed)
+
+4. CHECK STABILITY:
+   - Query events_pending for is_stable=True (stable_count >= 3)
+   
+5. CONFIRM STABLE EVENTS:
+   - Move from events_pending → events_confirmed
+   - Set processing_status = "pending_twitter"
+   - Update fixtures_tracked:
+     → debounce_completed = true
+     → confirmed_at = timestamp
+     → stable_count = 3
+   - Trigger twitter_job for each confirmed event
+```
+
+**Debounce Counts**:
+- **1st poll**: Add to pending (stable_count=1), add to tracked (debounce_completed=false)
+- **2nd poll**: Same hash → stable_count=2 in tracked
+- **3rd poll**: Same hash → stable_count=3, debounce_completed=true in tracked → CONFIRM!
+
+**UI Visibility**: Users can see `stable_count: 2/3` showing progress!
+
+**fixtures_tracked Document** (Pizza Tracker for Goals! 🍕):
+```json
+{
+  "_id": 5000,
+  "fixture_id": 5000,
+  
+  // Complete fixture data for UI (no need to query fixtures_active)
+  "home_team": {
+    "id": 40,
+    "name": "Liverpool",
+    "logo": "https://..."
+  },
+  "away_team": {
+    "id": 50,
+    "name": "Manchester City", 
+    "logo": "https://..."
+  },
+  "league": {
+    "id": 39,
+    "name": "Premier League",
+    "logo": "https://..."
+  },
+  "fixture_date": "2025-11-24T15:00:00Z",
+  "venue": "Anfield",
+  "status": "2H",
+  "score": {"home": 2, "away": 1},
+  
+  // Tracked events with Pizza Tracker status
+  "tracked_events": {
+    "5000_234_Goal_1": {
+      // Event details (for display)
+      "player": {
+        "id": 234,
+        "name": "D. Szoboszlai",
+        "last_name": "Szoboszlai"  // For Twitter search
+      },
+      "team": {
+        "id": 40,
+        "name": "Liverpool"
+      },
+      "assist": {
+        "id": 456,
+        "name": "M. Salah"
+      },
+      "type": "Goal",
+      "detail": "Normal Goal",
+      "time": {
+        "elapsed": 23,
+        "extra": null
+      },
+      
+      // Score context (captured when event first seen)
+      "score_before": {"home": 0, "away": 0},  // Score BEFORE this goal
+      "score_after": {"home": 1, "away": 0},   // Score AFTER this goal
+      "scoring_team": "home",  // Which team scored
+      
+      // Twitter search query (for UI display)
+      "twitter_search": "Szoboszlai Liverpool",
+      
+      // 🍕 Pizza Tracker Status
+      "first_seen": "2025-11-24T15:23:45Z",
+      "debounce_complete": true,      // ✅ Stage 1: Verified
+      "debounce_completed_at": "2025-11-24T15:25:45Z",
+      "twitter_complete": true,       // ✅ Stage 2: Videos Ready
+      "twitter_completed_at": "2025-11-24T15:35:00Z",
+      
+      // MinIO path: /footy-videos/5000/5000_234_Goal_1/
+      "minio_path": "5000/5000_234_Goal_1"
+    },
+    
+    "5000_234_Goal_2": {
+      "player": {"id": 234, "name": "D. Szoboszlai", "last_name": "Szoboszlai"},
+      "team": {"id": 40, "name": "Liverpool"},
+      "assist": null,
+      "type": "Goal",
+      "detail": "Normal Goal",
+      "time": {"elapsed": 67, "extra": null},
+      
+      // Score context (this was the 2-1 goal)
+      "score_before": {"home": 1, "away": 1},
+      "score_after": {"home": 2, "away": 1},
+      "scoring_team": "home",
+      "twitter_search": "Szoboszlai Liverpool",
+      
+      // 🍕 Still in oven (debouncing)
+      "first_seen": "2025-11-24T15:67:12Z",
+      "debounce_complete": false,     // ⏳ Stage 1: Verifying (2/3)
+      "twitter_complete": false       // ⏸️ Stage 2: Waiting
+    },
+    
+    "5000_789_Goal_1": {
+      "player": {"id": 789, "name": "E. Haaland", "last_name": "Haaland"},
+      "team": {"id": 50, "name": "Manchester City"},
+      "type": "Goal",
+      "detail": "Penalty",
+      "time": {"elapsed": 45, "extra": 2},
+      
+      // Score context (this was the equalizer)
+      "score_before": {"home": 1, "away": 0},
+      "score_after": {"home": 1, "away": 1},
+      "scoring_team": "away",
+      "twitter_search": "Haaland Manchester City",
+      
+      // 🍕 Stage 1 done, Stage 2 in progress
+      "first_seen": "2025-11-24T15:45:30Z",
+      "debounce_complete": true,      // ✅ Stage 1: Verified
+      "debounce_completed_at": "2025-11-24T15:47:30Z",
+      "twitter_complete": false,      // ⏳ Stage 2: Processing
+      "twitter_started_at": "2025-11-24T15:47:31Z"
+    }
+  },
+  
+  "last_updated": "2025-11-24T15:70:00Z"
+}
+```
+
+**🍕 Pizza Tracker UI**:
+```javascript
+// Timeline display with live processing updates
+event = tracked_events["5000_234_Goal_2"]
+
+// Build score context
+const scoreDisplay = `${home_team.name} (${event.score_before.home}) - ${event.score_before.away} ${away_team.name} → ${event.score_after.home} - ${event.score_after.away}`
+// "Liverpool (1) - 1 Man City → 2 - 1"
+
+// Build event title
+const title = `${event.team.name} (${event.score_after[event.scoring_team]}) - ${event.score_after[other]}: ${event.player.last_name}`
+// "Liverpool (2) - 1: Szoboszlai"
+
+// Status message
+if (!event.debounce_complete) {
+  message = `⏳ Validating potential Goal "${event.player.last_name} ${event.team.name}"`
+} else if (!event.twitter_complete) {
+  message = `🔍 Fetching goal "${event.player.last_name} ${event.team.name}"`
+  subtext = `Searching Twitter: "${event.twitter_search}"`
+} else {
+  message = `✅ ${title}`
+  action = `<a href="/videos/${event.minio_path}">Watch Videos</a>`
+}
+
+// Timeline shows all events in chronological order
+GET /api/fixtures/5000/tracked
+→ Returns EVERYTHING needed
+→ Frontend sorts tracked_events by time.elapsed
+→ Frontend generates status from booleans
+```
+
+**Update Points**:
+- **Monitor job** (activation): Copies full fixture data to fixtures_tracked
+- **Debounce job**: Updates debounce_complete, adds event to tracked_events
+- **Twitter/Download job**: Updates twitter_complete
+- **On completion**: Entire fixtures_tracked document moves to fixtures_completed
+
+**Event Document Structure** (events_pending):
+```json
+{
+  "_id": "5000_234_Goal_1",
+  "fixture_id": 5000,
+  "event_type": "Goal",
+  "event_detail": "Normal Goal",
+  "event_data": { ... },  // Full event from API
+  "search_hash": "a1b2c3d4e5f6g7h8",  // Hash of player_name + team_name
+  "first_seen": "2025-11-24T15:30:00Z",
+  "snapshots": [
+    {"timestamp": "2025-11-24T15:30:00Z", "hash": "a1b2c3d4e5f6g7h8"},
+    {"timestamp": "2025-11-24T15:31:00Z", "hash": "a1b2c3d4e5f6g7h8"},
+    {"timestamp": "2025-11-24T15:32:00Z", "hash": "a1b2c3d4e5f6g7h8"}
+  ],
+  "stable_count": 3,
+  "is_stable": true,
+  "twitter_search": {
+    "player_name": "D. Szoboszlai",
+    "team_name": "Liverpool"
+  }
+}
+```
+
+**Event Document Structure** (events_confirmed):
+```json
+{
+  "_id": "5000_234_Goal_1",
+  "fixture_id": 5000,
+  "event_type": "Goal",
+  "event_detail": "Normal Goal",
+  "event_data": { ... },
+  "twitter_search": {
+    "player_name": "D. Szoboszlai",
+    "team_name": "Liverpool"
+  },
+  "confirmed_at": "2025-11-24T15:32:00Z",
+  "processing_status": "pending_twitter",  // → discovered → downloading → completed
+  "debounce_history": {
+    "first_seen": "2025-11-24T15:30:00Z",
+    "snapshots": [...],
+    "stable_count": 3
+  }
+}
+```
+
+**Collections Updated**:
+- `events_pending` - Events being debounced
+- `events_confirmed` - Stable events ready for Twitter
+
+**Why Hash Only player_name + team_name?**
+- Twitter search query: "Szoboszlai Liverpool"
+- Minute changes (67' → 68') don't affect video discovery
+- Assist changes don't affect search results
+- Prevents unnecessary debounce resets from irrelevant metadata updates
+
+---
+
+### 4️⃣ **Twitter Job** (Per Event)
+
+**Purpose**: Discover video URLs on Twitter
+
+**Flow**:
+```
+1. Wait 2 minutes (videos need time to upload)
+2. Search Twitter: "{player_lastname} {team_name}"
+   Example: "Szoboszlai Liverpool"
+3. Retry logic if < 5 videos found:
+   - Wait 3 minutes, search again
+   - Wait 4 minutes, search again
+4. Extract video URLs from tweets
+5. Save to events_confirmed.discovered_videos
+6. Update processing_status = "discovered"
+```
+
+**Collections Updated**:
+- `events_confirmed.discovered_videos` - Video URLs found
+- `events_confirmed.processing_status` - Updated to "discovered"
+
+---
+
+## 🗄️ MongoDB Collections
+
+### Fixture Collections
+- **`fixtures_staging`** - Fixtures waiting to start (status: TBD, NS)
+- **`fixtures_active`** - **RAW API DATA** - For processing only (always fresh)
+- **`fixtures_tracked`** - **UI DATA** - Complete fixture + events + pizza tracker status
+- **`fixtures_completed`** - **ARCHIVE** - Copy of fixtures_tracked when fixture ends
+
+### Event Collections (Internal Processing)
+- **`events_pending`** - Events being debounced (internal tracking)
+- **`events_confirmed`** - Stable events confirmed (internal tracking)
+
+### Data Flow
+```
+fixtures_active → debounce job reads → updates fixtures_tracked
+                                           ↓ (UI reads this!)
+                                    fixtures_completed (when FT)
+```
+
+**Key Separation**: 
+- `fixtures_active` = Raw API data only (for processing)
+- `fixtures_tracked` = **Complete UI data** (fixture info + events + pizza tracker status)
+- `fixtures_completed` = Copy of fixtures_tracked when done
+- **UI only queries fixtures_tracked/completed** - never touches fixtures_active!
+
+---
+
+## 🔄 Fixture Lifecycle
+
+```
+fixtures_staging (basic fixture info)
+    ↓ (start time reached - monitor_job)
+    
+fixtures_active (raw API - processing only)
+    + (copy full data on activation)
+fixtures_tracked (UI data - pizza tracker)
+    
+    ↓ (every minute)
+fixtures_active updated with batch API
+    ↓ (compare)
+fixtures_tracked updated by debounce/twitter jobs
+    
+    ↓ (status FT/AET/PEN - monitor_job)
+fixtures_completed (copy of fixtures_tracked)
+```
+
+**Key Points**:
+- **Activation**: When current time >= fixture.date
+  - Copies COMPLETE fixture data to fixtures_tracked (teams, league, venue, etc.)
+  - Initializes empty tracked_events dict
+- **Updates**: Every minute
+  - fixtures_active: **ALWAYS** updated (raw API data for processing)
+  - fixtures_tracked: **ONLY** updated by jobs (UI data with pizza tracker)
+- **Completion**: When status FT/AET/PEN
+  - fixtures_tracked → fixtures_completed (exact copy)
+  - fixtures_active deleted (no longer needed)
+
+---
+
+## 🎯 Event Lifecycle
+
+```
+fixtures_active (always has latest events from API)
+    ↓ (monitor compares to fixtures_tracked)
+NEW/INCOMPLETE EVENTS DETECTED
+    ↓ (trigger debounce_job)
+
+--- POLL 1 (NEW EVENT) ---
+events_pending (snapshot 1, stable_count=1)
+    + fixtures_tracked: {"event_id": {"completed": false, "first_seen": "..."}}
+    ↓ (next poll - monitor detects completed=false)
+
+--- POLL 2 (SAME HASH) ---
+events_pending (snapshot 2, stable_count=2)
+    + fixtures_tracked: still completed=false
+    ↓ (next poll - monitor detects completed=false)
+
+--- POLL 3 (SAME HASH) ---
+events_pending (snapshot 3, stable_count=3, is_stable=true)
+    ↓ (confirm!)
+events_confirmed (trigger twitter_job)
+    + fixtures_tracked: {"event_id": {"completed": true, "confirmed_at": "..."}}
+    ↓ (next poll - monitor sees completed=true, SKIPS)
+
+--- POLL 4+ (COMPLETED) ---
+Monitor: Event in tracked with completed=true → NO DEBOUNCE TRIGGER
+    ↓ (twitter scraping happens separately)
+events_confirmed (discovered_videos populated)
+```
+
+**Debounce Rules**:
+- **Not in tracked**: NEW → Add to events_pending (count=1), add to tracked (completed=false)
+- **In tracked, completed=false**: DEBOUNCING → Update pending, increment/reset count
+- **In tracked, completed=true**: DONE → Skip entirely (no debounce needed)
+- **Hash Unchanged**: stable_count++ (1→2→3)
+- **Hash Changed**: stable_count = 1 (reset)
+- **Stable (count=3)**: Confirm → tracked.completed=true
+
+---
+
+## 🆔 Event ID Format
+
+**Format**: `{fixture_id}_{player_id}_{event_type}_{sequence}`
+
+**Examples**:
+```
+5000_234_Goal_1    # Messi's 1st goal in fixture 5000
+5000_234_Goal_2    # Messi's 2nd goal in fixture 5000
+5000_789_Goal_1    # Ronaldo's 1st goal in fixture 5000
+5000_234_Card_1    # Messi's 1st card in fixture 5000
+```
+
+**Benefits**:
+- Sequential per player+type
+- Easy to iterate: "Goal_1", "Goal_2", "Goal_3"
+- Easy to check existence: Query for "{fixture}_{player}_Goal_*"
+- Stable across polls: Same event keeps same ID
+
+---
+
+## 🔍 Event Tracking Configuration
+
+**File**: `src/utils/event_config.py`
+
+```python
+EVENT_TYPES = {
+    "Goal": {
+        "enabled": True,
+        "scrapeable_details": ["Normal Goal", "Penalty", "Own Goal"],
+        "debounce_fields": ["player.name", "team.name"],
+        "debounce_stable_count": 3
+    },
+    "Card": {
+        "enabled": False,  # Future phase
+        "scrapeable_details": ["Yellow Card", "Red Card"],
+        "debounce_fields": ["player.name", "team.name"],
+        "debounce_stable_count": 3
+    },
+    # ... more event types
+}
+```
+
+**Currently Tracking**:
+- ✅ Goals: Normal Goal, Penalty, Own Goal
+- ❌ Cards: Disabled (future phase)
+- ❌ VAR: Disabled (future phase)
+- ❌ Substitutions: Never tracked (not interesting)
+
+**Clean Database**: Only trackable events are stored. Substitutions, yellow cards, etc. are ignored completely.
+
+---
+
+## 🚀 API Usage Optimization
+
+### Old Architecture (Two-Tier Polling)
+```
+Per minute:
+1. Batch fixtures call (active fixtures) - 1 request
+2. For each fixture: fixtures/events call - N requests
+Total: 1 + N requests per minute
+```
+
+### New Architecture (Pro API Batch)
+```
+Per minute:
+1. Batch fixtures call with events included - 1 request
+Total: 1 request per minute
+```
+
+**Savings**: N-1 requests per minute eliminated!
+
+**Pro API Benefits**:
+- 7500 requests/day limit
+- Batch endpoint includes: fixtures + events + lineups + statistics
+- Single call gets everything
+
+---
+
+## 📁 File Structure
+
+### New Files Created
+```
+src/utils/
+├── event_config.py          # EVENT_TYPES configuration
+└── event_processing.py      # ID generation, hashing, sequential assignment
+
+src/jobs/debounce/
+├── __init__.py
+├── debounce_job.py          # Main job
+└── ops/
+    ├── __init__.py
+    ├── process_events_op.py      # Extract and process events
+    ├── check_stability_op.py     # Find stable events
+    └── confirm_events_op.py      # Move to confirmed
+
+src/jobs/monitor/ops/
+└── process_and_debounce_events_op.py  # New monitor op
+```
+
+### Updated Files
+```
+src/data/
+├── mongo_store.py           # New event methods, removed goal methods
+└── s3_store.py              # event_id instead of goal_id
+
+src/jobs/monitor/
+├── monitor_job.py           # Simplified to 3 ops
+└── ops/__init__.py          # Removed goal delta ops
+
+src/jobs/twitter/
+└── twitter_job.py           # event_id config instead of goal_id
+
+src/jobs/__init__.py         # Updated workflow docs
+```
+
+### Removed Files
+```
+src/jobs/goal/               # Entire directory ❌
+src/jobs/monitor/ops/
+├── detect_goal_delta_op.py  # ❌
+└── trigger_goal_jobs_op.py  # ❌
+```
+
+---
+
+## 🎉 Key Improvements
+
+1. **Simpler**: Single batch API call replaces complex two-tier polling
+2. **Granular**: Event-level tracking vs coarse goal-level
+3. **Accurate**: Player attribution tracked (handles own goals correctly)
+4. **Clean**: Only tracks relevant events, ignores substitutions/yellow cards
+5. **Smart**: Hashes only Twitter-relevant fields to avoid false resets
+6. **Stable**: Sequential IDs easy to iterate and check
+7. **Efficient**: N-1 fewer API requests per minute
+
+---
+
+## 🔮 Future Phases
+
+**Phase 2: Red Cards**
+- Enable Card tracking in event_config.py
+- Twitter search: "Fernandes Manchester United red card"
+
+**Phase 3: VAR Events**
+- Enable Var tracking
+- Track goal cancellations, penalty confirmations
+
+**Phase 4: Download & Dedup**
+- download_job: Download videos from discovered URLs
+- Use OpenCV for deduplication
+- Upload unique videos to S3
+
+---
+
+## 📝 Summary
+
+**The Complete Flow**:
+```
+1. Ingestion (daily) → Stage fixtures
+2. Monitor (per minute) → Activate, batch fetch, update, trigger debounce, complete
+3. Debounce (per fixture) → Process events, check stability, confirm stable
+4. Twitter (per event) → Search, extract videos, save URLs
+5. Download (future) → Download, deduplicate, upload to S3
+```
+
+**Collections**:
+- 3 Fixture: staging, active, completed
+- 2 Event: pending, confirmed
+
+**Jobs**:
+- ingestion_job (scheduled daily)
+- monitor_job (scheduled per minute)
+- debounce_job (triggered by monitor)
+- twitter_job (triggered by debounce)
+
+The architecture is now event-centric, debounce-based, and optimized for the Pro API batch endpoint! 🚀

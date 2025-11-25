@@ -1,0 +1,843 @@
+import os
+from datetime import datetime, timezone
+from typing import List
+
+from pymongo import ASCENDING, MongoClient
+
+
+class FootyMongoStore:
+    """MongoDB storage for football application data - Raw API schema only"""
+    
+    def __init__(self, connection_url=None):
+        if connection_url is None:
+            connection_url = os.getenv('MONGODB_URL', 'mongodb://localhost:27017/')
+        
+        self.client = MongoClient(connection_url)
+        self.db = self.client.found_footy
+        
+        # Collections (simplified - 3 collections only)
+        self.fixtures_staging = self.db.fixtures_staging
+        self.fixtures_active = self.db.fixtures_active
+        self.fixtures_completed = self.db.fixtures_completed
+        
+        self._create_indexes()
+
+    def _create_indexes(self):
+        """Create indexes for 3-collection architecture"""
+        try:
+            # Status indexes for workflow routing
+            self.fixtures_staging.create_index([("fixture.status.short", ASCENDING)])
+            self.fixtures_active.create_index([("fixture.status.short", ASCENDING)])
+            self.fixtures_completed.create_index([("fixture.status.short", ASCENDING)])
+            
+            # Date indexes for time-based queries
+            self.fixtures_staging.create_index([("fixture.date", ASCENDING)])
+            self.fixtures_active.create_index([("fixture.date", ASCENDING)])
+            self.fixtures_completed.create_index([("fixture.date", ASCENDING)])
+
+            # Team indexes for filtering
+            self.fixtures_staging.create_index([("teams.home.id", ASCENDING)])
+            self.fixtures_staging.create_index([("teams.away.id", ASCENDING)])
+            self.fixtures_active.create_index([("teams.home.id", ASCENDING)])
+            self.fixtures_active.create_index([("teams.away.id", ASCENDING)])
+            self.fixtures_completed.create_index([("teams.home.id", ASCENDING)])
+            self.fixtures_completed.create_index([("teams.away.id", ASCENDING)])
+
+            # Event indexes within fixtures_active (for querying event metadata)
+            self.fixtures_active.create_index([("events._event_id", ASCENDING)])
+            self.fixtures_active.create_index([("events._debounce_complete", ASCENDING)])
+            self.fixtures_active.create_index([("events._twitter_complete", ASCENDING)])
+            
+            print("✅ MongoDB indexes created successfully")
+        except Exception as e:
+            print(f"⚠️ Error creating indexes: {e}")
+
+    @staticmethod
+    def _extract_fixture_id(raw_item: dict) -> int:
+        """Extract fixture.id from raw API schema"""
+        try:
+            return int(raw_item["fixture"]["id"])
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _extract_team_names(raw_item: dict) -> tuple:
+        """Extract team names from raw API schema"""
+        try:
+            home_name = raw_item["teams"]["home"]["name"]
+            away_name = raw_item["teams"]["away"]["name"]
+            return home_name, away_name
+        except Exception:
+            return "Unknown", "Unknown"
+
+    @staticmethod
+    def _extract_current_goals(raw_item: dict) -> dict:
+        """Extract goals from raw API schema with robust null handling"""
+        try:
+            goals = raw_item.get("goals")
+            if goals is None:
+                return {"home": 0, "away": 0}
+            
+            home = goals.get("home")
+            away = goals.get("away")
+            
+            return {
+                "home": home if home is not None else 0,
+                "away": away if away is not None else 0
+            }
+        except Exception as e:
+            print(f"⚠️ Error extracting goals from {raw_item.get('fixture', {}).get('id', 'unknown')}: {e}")
+            return {"home": 0, "away": 0}
+
+    @staticmethod
+    def _extract_status(raw_item: dict) -> str:
+        """Extract status from raw API schema"""
+        try:
+            return raw_item["fixture"]["status"]["short"]
+        except Exception:
+            return "NS"
+
+    def fixtures_advance(self, source_collection_name: str, destination_collection_name: str, fixture_id: int | None = None) -> dict:
+        """Move fixtures between collections"""
+        try:
+            source_collection = getattr(self, source_collection_name)
+            destination_collection = getattr(self, destination_collection_name)
+            
+            query = {"_id": fixture_id} if fixture_id else {}
+            source_docs = list(source_collection.find(query))
+            
+            if not source_docs:
+                return {"status": "success", "advanced_count": 0}
+            
+            # Move documents - _id will be preserved
+            for doc in source_docs:
+                destination_collection.replace_one({"_id": doc["_id"]}, doc, upsert=True)
+        
+            # Delete from source
+            source_collection.delete_many(query)
+            
+            print(f"📋 Advanced {len(source_docs)} fixtures: {source_collection_name} → {destination_collection_name}")
+            return {"status": "success", "advanced_count": len(source_docs)}
+        
+        except Exception as e:
+            print(f"❌ Error advancing fixtures: {e}")
+            return {"status": "error", "advanced_count": 0, "error": str(e)}
+
+    def bulk_insert_fixtures(self, fixtures_data: list[dict], collection_name: str) -> int:
+        """Store raw API-Football items exactly as they come from API."""
+        if not fixtures_data:
+            return 0
+
+        collection_map = {
+            "fixtures_staging": self.fixtures_staging,
+            "fixtures_active": self.fixtures_active,
+            "fixtures_completed": self.fixtures_completed,
+        }
+        target = collection_map.get(collection_name)
+        if target is None:
+            print(f"⚠️ Unknown collection: {collection_name}")
+            return 0
+
+        processed_count = 0
+        for item in fixtures_data:
+            fixture_id = self._extract_fixture_id(item)
+            if fixture_id <= 0:
+                continue
+            
+            doc = dict(item)
+            doc["_id"] = fixture_id
+            
+            try:
+                result = target.replace_one(
+                    {"_id": fixture_id},
+                    doc,
+                    upsert=True
+                )
+                if result.upserted_id or result.modified_count > 0:
+                    processed_count += 1
+                    
+            except Exception as e:
+                print(f"❌ Error storing fixture {fixture_id}: {e}")
+                continue
+
+        return processed_count
+
+    def check_collections_empty(self, collection_names: List[str]) -> bool:
+        """Check if specified collections are empty"""
+        try:
+            for collection_name in collection_names:
+                if collection_name == "fixtures_active":
+                    count = self.fixtures_active.count_documents({})
+                elif collection_name == "fixtures_staging":
+                    count = self.fixtures_staging.count_documents({})
+                elif collection_name == "fixtures_completed":
+                    count = self.fixtures_completed.count_documents({})
+                else:
+                    continue
+                
+                if count > 0:
+                    return False
+            return True
+        
+        except Exception as e:
+            print(f"❌ Error checking collections: {e}")
+            return True
+
+    def fixtures_delta(self, fixture_id: int, api_data: dict) -> dict:
+        """Compare current fixture with API data"""
+        try:
+            current_fixture = self.fixtures_active.find_one({"_id": fixture_id})
+            if not current_fixture:
+                print(f"⚠️ Fixture {fixture_id} not found in fixtures_active")
+                return {"status": "not_found", "fixture_id": fixture_id}
+            
+            # Validate api_data has required structure
+            if not api_data or not isinstance(api_data, dict):
+                print(f"❌ Invalid API data for fixture {fixture_id}: data is None or not a dict")
+                return {"status": "error", "error": "Invalid API data structure", "fixture_id": fixture_id}
+            
+            if "fixture" not in api_data:
+                print(f"❌ Invalid API data for fixture {fixture_id}: missing 'fixture' key")
+                return {"status": "error", "error": "Missing fixture key in API data", "fixture_id": fixture_id}
+            
+            api_status = self._extract_status(api_data)
+            api_goals = self._extract_current_goals(api_data)
+            current_goals = self._extract_current_goals(current_fixture)
+            
+            goals_changed = (api_goals.get("home", 0) != current_goals.get("home", 0) or 
+                           api_goals.get("away", 0) != current_goals.get("away", 0))
+            
+            status_changed_to_completed = (api_status in ["FT", "AET", "PEN"] and 
+                                         self._extract_status(current_fixture) not in ["FT", "AET", "PEN"])
+            
+            return {
+                "goals_changed": goals_changed,
+                "status_changed_to_completed": status_changed_to_completed,
+                "current_goals": api_goals,
+                "previous_goals": current_goals,
+                "total_goal_increase": (api_goals.get("home", 0) + api_goals.get("away", 0)) - 
+                                     (current_goals.get("home", 0) + current_goals.get("away", 0)),
+                "new_status": api_status,
+                "api_data": api_data  # Include full API data for updates
+            }
+            
+        except Exception as e:
+            print(f"❌ Error processing fixture {fixture_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "error": str(e), "fixture_id": fixture_id}
+
+    def fixtures_update(self, fixture_id: int, api_data: dict) -> bool:
+        """Update fixture with latest API data"""
+        try:
+            doc = dict(api_data)
+            doc["_id"] = fixture_id
+            
+            result = self.fixtures_active.replace_one(
+                {"_id": fixture_id},
+                doc,
+                upsert=True
+            )
+            
+            return result.modified_count > 0 or result.upserted_id is not None
+        
+        except Exception as e:
+            print(f"❌ Error updating fixture {fixture_id}: {e}")
+            return False
+    
+    def update_fixture_goal_counts(self, fixture_id: int) -> bool:
+        """Update fixture with current goal counts"""
+        try:
+            confirmed_count = self.count_confirmed_goals_for_fixture(fixture_id)
+            
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id},
+                {"$set": {
+                    "goals.stored": confirmed_count,
+                    "last_goal_update": datetime.now(timezone.utc)
+                }}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error updating fixture goal counts: {e}")
+            return False
+    
+    def complete_fixture(self, fixture_id: int, final_status: str) -> bool:
+        """Move fixture from active to completed"""
+        try:
+            fixture_doc = self.fixtures_active.find_one({"_id": fixture_id})
+            if not fixture_doc:
+                print(f"⚠️ Fixture {fixture_id} not found in active")
+                return False
+            
+            # Update with final data
+            fixture_doc["status"] = final_status
+            fixture_doc["completed_at"] = datetime.now(timezone.utc)
+            
+            self.fixtures_completed.insert_one(fixture_doc)
+            self.fixtures_active.delete_one({"_id": fixture_id})
+            return True
+        except Exception as e:
+            print(f"❌ Error completing fixture: {e}")
+            return False
+
+    def get_active_fixtures(self) -> List[dict]:
+        """Get all active fixtures for monitoring"""
+        try:
+            return list(self.fixtures_active.find({}))
+        except Exception as e:
+            print(f"❌ Error getting active fixtures: {e}")
+            return []
+    
+    def get_active_fixture_ids(self) -> List[int]:
+        """Get all active fixture IDs"""
+        try:
+            fixtures = list(self.fixtures_active.find({}, {"_id": 1}))
+            return [f["_id"] for f in fixtures]
+        except Exception as e:
+            print(f"❌ Error getting active fixture IDs: {e}")
+            return []
+    
+    def get_staging_fixtures(self) -> List[dict]:
+        """Get all fixtures in staging"""
+        try:
+            return list(self.fixtures_staging.find({}))
+        except Exception as e:
+            print(f"❌ Error getting staging fixtures: {e}")
+            return []
+    
+    def activate_fixture(self, fixture_id: int, fixture_doc: dict) -> bool:
+        """Move fixture from staging to active"""
+        try:
+            self.fixtures_active.replace_one(
+                {"_id": fixture_id},
+                fixture_doc,
+                upsert=True
+            )
+            self.fixtures_staging.delete_one({"_id": fixture_id})
+            return True
+        except Exception as e:
+            print(f"❌ Error activating fixture {fixture_id}: {e}")
+            return False
+    
+    def get_fixture_from_active(self, fixture_id: int) -> dict | None:
+        """Get fixture document from fixtures_active"""
+        try:
+            return self.fixtures_active.find_one({"_id": fixture_id})
+        except Exception as e:
+            print(f"❌ Error getting fixture {fixture_id} from active: {e}")
+            return None
+    
+
+
+    # === Event Management (New Debounce Architecture) ===
+
+    def add_event_to_pending(self, event_id: str, fixture_id: int, event_data: dict, search_hash: str) -> bool:
+        """
+        Add new event to pending collection for debounce tracking.
+        
+        Args:
+            event_id: Sequential event ID (fixture_player_type_seq)
+            fixture_id: Fixture ID
+            event_data: Full event data from API
+            search_hash: Hash of Twitter search parameters
+            
+        Returns:
+            True if added successfully
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            
+            doc = {
+                "_id": event_id,
+                "fixture_id": fixture_id,
+                "event_type": event_data.get("type"),
+                "event_detail": event_data.get("detail"),
+                "event_data": event_data,
+                "search_hash": search_hash,
+                "first_seen": now,
+                "snapshots": [{
+                    "timestamp": now,
+                    "hash": search_hash
+                }],
+                "stable_count": 1,
+                "is_stable": False,
+                "twitter_search": {
+                    "player_name": event_data.get("player", {}).get("name", ""),
+                    "team_name": event_data.get("team", {}).get("name", "")
+                }
+            }
+            
+            self.events_pending.insert_one(doc)
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error adding event {event_id} to pending: {e}")
+            return False
+
+    def update_event_snapshot(self, event_id: str, search_hash: str, event_data: dict, is_changed: bool) -> bool:
+        """
+        Update event with new snapshot.
+        
+        Args:
+            event_id: Event ID
+            search_hash: Current hash
+            event_data: Latest event data
+            is_changed: True if hash changed (resets stability)
+            
+        Returns:
+            True if updated successfully
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            
+            pending_event = self.events_pending.find_one({"_id": event_id})
+            if not pending_event:
+                return False
+            
+            if is_changed:
+                # Hash changed - reset stability
+                self.events_pending.update_one(
+                    {"_id": event_id},
+                    {
+                        "$set": {
+                            "event_data": event_data,
+                            "search_hash": search_hash,
+                            "stable_count": 1,
+                            "is_stable": False,
+                            "twitter_search": {
+                                "player_name": event_data.get("player", {}).get("name", ""),
+                                "team_name": event_data.get("team", {}).get("name", "")
+                            }
+                        },
+                        "$push": {
+                            "snapshots": {
+                                "timestamp": now,
+                                "hash": search_hash
+                            }
+                        }
+                    }
+                )
+            else:
+                # Hash unchanged - increment stability
+                new_stable_count = pending_event["stable_count"] + 1
+                from ..utils.event_config import get_debounce_stable_count
+                required_count = get_debounce_stable_count(event_data.get("type", ""))
+                is_now_stable = new_stable_count >= required_count
+                
+                self.events_pending.update_one(
+                    {"_id": event_id},
+                    {
+                        "$set": {
+                            "event_data": event_data,  # Update with latest metadata
+                            "stable_count": new_stable_count,
+                            "is_stable": is_now_stable
+                        },
+                        "$push": {
+                            "snapshots": {
+                                "timestamp": now,
+                                "hash": search_hash
+                            }
+                        }
+                    }
+                )
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error updating event {event_id} snapshot: {e}")
+            return False
+
+    def confirm_event(self, event_id: str) -> bool:
+        """
+        Move event from pending to confirmed.
+        
+        Args:
+            event_id: Event ID
+            
+        Returns:
+            True if confirmed successfully
+        """
+        try:
+            # Get pending event
+            pending_event = self.events_pending.find_one({"_id": event_id})
+            if not pending_event:
+                return False
+            
+            now = datetime.now(timezone.utc)
+            
+            # Create confirmed document
+            confirmed_doc = {
+                "_id": event_id,
+                "fixture_id": pending_event["fixture_id"],
+                "event_type": pending_event["event_type"],
+                "event_detail": pending_event["event_detail"],
+                "event_data": pending_event["event_data"],
+                "twitter_search": pending_event["twitter_search"],
+                "confirmed_at": now,
+                "processing_status": "pending_twitter",  # Start with pending Twitter scrape
+                "debounce_history": {
+                    "first_seen": pending_event["first_seen"],
+                    "snapshots": pending_event["snapshots"],
+                    "stable_count": pending_event["stable_count"]
+                }
+            }
+            
+            # Insert to confirmed
+            self.events_confirmed.insert_one(confirmed_doc)
+            
+            # Remove from pending
+            self.events_pending.delete_one({"_id": event_id})
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error confirming event {event_id}: {e}")
+            return False
+
+    def get_pending_events_for_fixture(self, fixture_id: int) -> List[dict]:
+        """Get all pending events for a fixture"""
+        try:
+            return list(self.events_pending.find({"fixture_id": fixture_id}))
+        except Exception as e:
+            print(f"❌ Error getting pending events for fixture {fixture_id}: {e}")
+            return []
+
+    def get_stable_pending_events(self, fixture_id: int | None = None) -> List[dict]:
+        """Get events that are stable and ready for confirmation"""
+        try:
+            query = {"is_stable": True}
+            if fixture_id is not None:
+                query["fixture_id"] = fixture_id
+            return list(self.events_pending.find(query))
+        except Exception as e:
+            print(f"❌ Error getting stable pending events: {e}")
+            return []
+
+    def get_confirmed_event(self, event_id: str) -> dict | None:
+        """Get confirmed event by ID"""
+        try:
+            return self.events_confirmed.find_one({"_id": event_id})
+        except Exception as e:
+            print(f"❌ Error getting confirmed event {event_id}: {e}")
+            return None
+
+    def update_event_processing_status(self, event_id: str, status: str, **kwargs) -> bool:
+        """Update processing status for confirmed event"""
+        try:
+            update_doc = {"$set": {"processing_status": status}}
+            if kwargs:
+                update_doc["$set"].update(kwargs)
+            
+            result = self.events_confirmed.update_one(
+                {"_id": event_id},
+                update_doc
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error updating event {event_id} status: {e}")
+            return False
+
+    def get_events_by_status(self, status: str, fixture_id: int | None = None) -> List[dict]:
+        """Get confirmed events by processing status"""
+        try:
+            query = {"processing_status": status}
+            if fixture_id is not None:
+                query["fixture_id"] = fixture_id
+            return list(self.events_confirmed.find(query))
+        except Exception as e:
+            print(f"❌ Error getting events by status {status}: {e}")
+            return []
+
+    # === Fixture Update Methods (for monitor job) ===
+
+    def update_fixture_data(self, fixture_id: int, api_data: dict) -> bool:
+        """Update fixture in active collection with fresh API data"""
+        try:
+            doc = dict(api_data)
+            doc["_id"] = fixture_id
+            
+            result = self.fixtures_active.replace_one(
+                {"_id": fixture_id},
+                doc,
+                upsert=False
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error updating fixture {fixture_id}: {e}")
+            return False
+
+    def move_fixture_to_completed(self, fixture_id: int) -> bool:
+        """Move fixture from active to completed"""
+        try:
+            fixture = self.fixtures_active.find_one({"_id": fixture_id})
+            if not fixture:
+                return False
+            
+            # Insert to completed
+            self.fixtures_completed.insert_one(fixture)
+            
+            # Remove from active
+            self.fixtures_active.delete_one({"_id": fixture_id})
+            
+            return True
+        except Exception as e:
+            print(f"❌ Error moving fixture {fixture_id} to completed: {e}")
+            return False
+
+    # === fixtures_tracked Methods (UI Data Layer) ===
+
+    def create_tracked_fixture(self, fixture_id: int, fixture_data: dict) -> bool:
+        """
+        Create fixtures_tracked document with complete fixture info + empty tracked_events.
+        Called when activating a fixture from staging.
+        
+        Args:
+            fixture_id: Fixture ID
+            fixture_data: Raw API fixture data from fixtures_active
+            
+        Returns:
+            True if created successfully
+        """
+        try:
+            # Extract complete fixture data for UI
+            doc = {
+                "_id": fixture_id,
+                "fixture_id": fixture_id,
+                "home_team": {
+                    "id": fixture_data.get("teams", {}).get("home", {}).get("id"),
+                    "name": fixture_data.get("teams", {}).get("home", {}).get("name"),
+                    "logo": fixture_data.get("teams", {}).get("home", {}).get("logo")
+                },
+                "away_team": {
+                    "id": fixture_data.get("teams", {}).get("away", {}).get("id"),
+                    "name": fixture_data.get("teams", {}).get("away", {}).get("name"),
+                    "logo": fixture_data.get("teams", {}).get("away", {}).get("logo")
+                },
+                "league": {
+                    "id": fixture_data.get("league", {}).get("id"),
+                    "name": fixture_data.get("league", {}).get("name"),
+                    "logo": fixture_data.get("league", {}).get("logo"),
+                    "country": fixture_data.get("league", {}).get("country")
+                },
+                "fixture_date": fixture_data.get("fixture", {}).get("date"),
+                "venue": fixture_data.get("fixture", {}).get("venue", {}).get("name"),
+                "status": fixture_data.get("fixture", {}).get("status", {}).get("short"),
+                "score": self._extract_current_goals(fixture_data),
+                "tracked_events": {},  # Empty dict, events added by debounce job
+                "created_at": datetime.now(timezone.utc),
+                "last_updated": datetime.now(timezone.utc)
+            }
+            
+            result = self.fixtures_tracked.insert_one(doc)
+            return result.inserted_id is not None
+            
+        except Exception as e:
+            print(f"❌ Error creating tracked fixture {fixture_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def add_tracked_event(self, fixture_id: int, event_id: str, event_data: dict, 
+                          score_before: dict, score_after: dict, scoring_team: str) -> bool:
+        """
+        Add NEW event to fixtures_tracked.tracked_events with debounce_complete=false.
+        Called by debounce job when detecting a new event.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID (e.g., "5000_234_Goal_1")
+            event_data: Event data from API
+            score_before: Score before this goal {"home": 0, "away": 0}
+            score_after: Score after this goal {"home": 1, "away": 0}
+            scoring_team: "home" or "away"
+            
+        Returns:
+            True if added successfully
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            
+            # Build Twitter search string (player last name + team name)
+            player_name = event_data.get("player", {}).get("name", "")
+            player_last_name = player_name.split()[-1] if player_name else ""
+            team_name = event_data.get("team", {}).get("name", "")
+            twitter_search = f"{player_last_name} {team_name}".strip()
+            
+            # Build tracked event document
+            tracked_event = {
+                "player": {
+                    "id": event_data.get("player", {}).get("id"),
+                    "name": player_name,
+                    "last_name": player_last_name
+                },
+                "team": {
+                    "id": event_data.get("team", {}).get("id"),
+                    "name": team_name
+                },
+                "assist": {
+                    "id": event_data.get("assist", {}).get("id"),
+                    "name": event_data.get("assist", {}).get("name")
+                } if event_data.get("assist") else None,
+                "type": event_data.get("type"),
+                "detail": event_data.get("detail"),
+                "time": event_data.get("time"),
+                "score_before": score_before,
+                "score_after": score_after,
+                "scoring_team": scoring_team,
+                "twitter_search": twitter_search,
+                "first_seen": now,
+                "debounce_complete": False,
+                "twitter_complete": False,
+                "minio_path": f"{fixture_id}/{event_id}"
+            }
+            
+            # Add to tracked_events dict and update score
+            result = self.fixtures_tracked.update_one(
+                {"_id": fixture_id},
+                {
+                    "$set": {
+                        f"tracked_events.{event_id}": tracked_event,
+                        "score": score_after,  # Update current score
+                        "last_updated": now
+                    }
+                }
+            )
+            
+            return result.modified_count > 0
+            
+        except Exception as e:
+            print(f"❌ Error adding tracked event {event_id} to fixture {fixture_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def update_tracked_event_debounce(self, fixture_id: int, event_id: str) -> bool:
+        """
+        Mark event debounce as complete in fixtures_tracked.
+        Called by debounce job when confirming stable event.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            
+        Returns:
+            True if updated successfully
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            
+            result = self.fixtures_tracked.update_one(
+                {"_id": fixture_id},
+                {
+                    "$set": {
+                        f"tracked_events.{event_id}.debounce_complete": True,
+                        f"tracked_events.{event_id}.debounce_completed_at": now,
+                        "last_updated": now
+                    }
+                }
+            )
+            
+            return result.modified_count > 0
+            
+        except Exception as e:
+            print(f"❌ Error updating debounce status for {event_id}: {e}")
+            return False
+
+    def update_tracked_event_twitter(self, fixture_id: int, event_id: str, 
+                                      twitter_started: bool = False) -> bool:
+        """
+        Mark event twitter as complete in fixtures_tracked.
+        Called by twitter job when videos are ready.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            twitter_started: If True, sets twitter_started_at; if False, sets twitter_complete
+            
+        Returns:
+            True if updated successfully
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            
+            if twitter_started:
+                update_fields = {
+                    f"tracked_events.{event_id}.twitter_started_at": now,
+                    "last_updated": now
+                }
+            else:
+                update_fields = {
+                    f"tracked_events.{event_id}.twitter_complete": True,
+                    f"tracked_events.{event_id}.twitter_completed_at": now,
+                    "last_updated": now
+                }
+            
+            result = self.fixtures_tracked.update_one(
+                {"_id": fixture_id},
+                {"$set": update_fields}
+            )
+            
+            return result.modified_count > 0
+            
+        except Exception as e:
+            print(f"❌ Error updating twitter status for {event_id}: {e}")
+            return False
+
+    def get_tracked_fixture(self, fixture_id: int) -> dict | None:
+        """
+        Get fixtures_tracked document for UI.
+        Single query returns everything: fixture info + events + pizza tracker status.
+        
+        Args:
+            fixture_id: Fixture ID
+            
+        Returns:
+            Complete tracked fixture document or None
+        """
+        try:
+            return self.fixtures_tracked.find_one({"_id": fixture_id})
+        except Exception as e:
+            print(f"❌ Error getting tracked fixture {fixture_id}: {e}")
+            return None
+
+    def get_all_tracked_fixtures(self) -> List[dict]:
+        """Get all fixtures_tracked for UI display"""
+        try:
+            return list(self.fixtures_tracked.find({}))
+        except Exception as e:
+            print(f"❌ Error getting all tracked fixtures: {e}")
+            return []
+
+    def move_tracked_to_completed(self, fixture_id: int) -> bool:
+        """
+        Copy fixtures_tracked to fixtures_completed and remove from tracked/active.
+        Called when fixture status is FT/AET/PEN.
+        
+        Args:
+            fixture_id: Fixture ID
+            
+        Returns:
+            True if moved successfully
+        """
+        try:
+            tracked = self.fixtures_tracked.find_one({"_id": fixture_id})
+            if not tracked:
+                print(f"⚠️ Tracked fixture {fixture_id} not found")
+                return False
+            
+            # Add completion timestamp
+            tracked["completed_at"] = datetime.now(timezone.utc)
+            
+            # Copy to completed
+            self.fixtures_completed.insert_one(tracked)
+            
+            # Remove from tracked and active
+            self.fixtures_tracked.delete_one({"_id": fixture_id})
+            self.fixtures_active.delete_one({"_id": fixture_id})
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error moving tracked fixture {fixture_id} to completed: {e}")
+            return False

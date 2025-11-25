@@ -1,0 +1,229 @@
+"""Debounce job - Validate event stability per fixture"""
+from dagster import job, op, OpExecutionContext
+import hashlib
+import json
+from datetime import datetime, timezone
+from typing import Dict, Any, List
+
+from src.data.mongo_store import FootyMongoStore
+
+
+def generate_event_hash(event: dict) -> str:
+    """Generate hash from event data for comparison"""
+    # Use critical fields that shouldn't change if event is stable
+    key_fields = {
+        "player_id": event.get("player", {}).get("id"),
+        "team_id": event.get("team", {}).get("id"),
+        "type": event.get("type"),
+        "detail": event.get("detail"),
+        "time_elapsed": event.get("time", {}).get("elapsed"),
+        "assist_id": event.get("assist", {}).get("id"),
+    }
+    return hashlib.md5(json.dumps(key_fields, sort_keys=True).encode()).hexdigest()
+
+
+def generate_event_id(fixture_id: int, event: dict, sequence: int) -> str:
+    """Generate unique event ID: {fixture}_{player}_{type}_{sequence}"""
+    player_id = event.get("player", {}).get("id", "unknown")
+    event_type = event.get("type", "Event")
+    return f"{fixture_id}_{player_id}_{event_type}_{sequence}"
+
+
+def calculate_score_context(events: List[dict], current_event_index: int, home_team_id: int, away_team_id: int) -> Dict[str, Any]:
+    """Calculate score before and after this event"""
+    score_home = 0
+    score_away = 0
+    
+    # Count goals up to this event
+    for idx, evt in enumerate(events):
+        if idx >= current_event_index:
+            break
+        if evt.get("type") == "Goal" and evt.get("detail") == "Normal Goal":
+            team_id = evt.get("team", {}).get("id")
+            if team_id == home_team_id:
+                score_home += 1
+            elif team_id == away_team_id:
+                score_away += 1
+    
+    score_before = {"home": score_home, "away": score_away}
+    
+    # Add this goal
+    current_team_id = events[current_event_index].get("team", {}).get("id")
+    if current_team_id == home_team_id:
+        score_home += 1
+        scoring_team = "home"
+    elif current_team_id == away_team_id:
+        score_away += 1
+        scoring_team = "away"
+    else:
+        scoring_team = "unknown"
+    
+    score_after = {"home": score_home, "away": score_away}
+    
+    return {
+        "_score_before": score_before,
+        "_score_after": score_after,
+        "_scoring_team": scoring_team
+    }
+
+
+@op(
+    name="debounce_fixture_events",
+    description="Debounce events for a single fixture - validates event stability",
+    tags={"kind": "debounce", "stage": "validation"}
+)
+def debounce_fixture_events_op(context: OpExecutionContext, fixture_id: int) -> Dict[str, Any]:
+    """
+    Debounce events for a single fixture.
+    
+    Process:
+    1. Get events needing debounce (NEW or INCOMPLETE) from fixtures_active
+    2. For NEW events: Add enhancement fields (_event_id, _stable_count=1, etc.)
+    3. For INCOMPLETE events: Check hash, increment stable_count if unchanged
+    4. Mark as _debounce_complete when stable_count >= 3
+    
+    All updates happen IN-PLACE in fixtures_active.events array.
+    
+    Args:
+        fixture_id: Fixture ID to process
+        
+    Returns:
+        Dict with processing stats
+    """
+    store = FootyMongoStore()
+    
+    # Get fixture with fresh API data
+    fixture = store.get_fixture_from_active(fixture_id)
+    if not fixture:
+        context.log.warning(f"Fixture {fixture_id} not found in active")
+        return {"status": "not_found"}
+    
+    # Get team IDs for score context
+    home_team_id = fixture.get("teams", {}).get("home", {}).get("id")
+    away_team_id = fixture.get("teams", {}).get("away", {}).get("id")
+    home_team_name = fixture.get("teams", {}).get("home", {}).get("name")
+    away_team_name = fixture.get("teams", {}).get("away", {}).get("name")
+    
+    # Get events needing debounce
+    events_needing = store.get_events_needing_debounce(fixture_id)
+    
+    if not events_needing:
+        context.log.info(f"No events need debounce for fixture {fixture_id}")
+        return {"status": "no_events"}
+    
+    new_count = 0
+    updated_count = 0
+    completed_count = 0
+    
+    # Get all events for goal sequence counting
+    all_events = fixture.get("events", [])
+    goal_sequence = {}  # Track goal sequence per player
+    
+    for event_info in events_needing:
+        event = event_info["event"]
+        event_index = event_info["index"]
+        status = event_info["status"]
+        now = datetime.now(timezone.utc)
+        
+        # Generate hash for this event
+        current_hash = generate_event_hash(event)
+        
+        if status == "new":
+            # NEW EVENT - Add initial enhancement
+            player_id = event.get("player", {}).get("id")
+            player_name = event.get("player", {}).get("name", "Unknown")
+            
+            # Track sequence for this player
+            if player_id not in goal_sequence:
+                goal_sequence[player_id] = 1
+            else:
+                goal_sequence[player_id] += 1
+            
+            event_id = generate_event_id(fixture_id, event, goal_sequence[player_id])
+            
+            # Calculate score context
+            score_context = calculate_score_context(all_events, event_index, home_team_id, away_team_id)
+            
+            # Build twitter search string
+            player_last_name = player_name.split()[-1] if player_name else "Unknown"
+            team_name = home_team_name if event.get("team", {}).get("id") == home_team_id else away_team_name
+            twitter_search = f"{player_last_name} {team_name}"
+            
+            enhancement = {
+                "_event_id": event_id,
+                "_stable_count": 1,
+                "_debounce_complete": False,
+                "_twitter_complete": False,
+                "_first_seen": now,
+                "_snapshots": [{"timestamp": now, "hash": current_hash}],
+                "_twitter_search": twitter_search,
+                **score_context
+            }
+            
+            store.add_event_enhancement(fixture_id, event_index, enhancement)
+            context.log.info(f"✨ NEW event {event_id}: {twitter_search} ({score_context['_score_after']})")
+            new_count += 1
+        
+        elif status == "incomplete":
+            # INCOMPLETE EVENT - Check stability
+            event_id = event.get("_event_id")
+            stable_count = event.get("_stable_count", 0)
+            snapshots = event.get("_snapshots", [])
+            
+            # Check if hash changed
+            last_hash = snapshots[-1]["hash"] if snapshots else None
+            
+            if current_hash == last_hash:
+                # STABLE - Increment count
+                new_stable_count = stable_count + 1
+                snapshot = {"timestamp": now, "hash": current_hash}
+                
+                store.update_event_stable_count(fixture_id, event_id, new_stable_count, snapshot)
+                
+                # Check if complete
+                if new_stable_count >= 3:
+                    store.mark_event_debounce_complete(fixture_id, event_id)
+                    context.log.info(f"✅ DEBOUNCE COMPLETE: {event_id} (stable_count={new_stable_count})")
+                    completed_count += 1
+                else:
+                    context.log.info(f"📊 STABLE: {event_id} (count={new_stable_count}/3)")
+                
+                updated_count += 1
+            else:
+                # UNSTABLE - Reset to 1
+                context.log.warning(f"⚠️ UNSTABLE: {event_id} changed, resetting count to 1")
+                snapshot = {"timestamp": now, "hash": current_hash}
+                store.update_event_stable_count(fixture_id, event_id, 1, snapshot)
+                updated_count += 1
+    
+    context.log.info(
+        f"🎯 Fixture {fixture_id} debounce: "
+        f"{new_count} new, {updated_count} updated, {completed_count} completed"
+    )
+    
+    return {
+        "status": "success",
+        "fixture_id": fixture_id,
+        "new_events": new_count,
+        "updated_events": updated_count,
+        "completed_events": completed_count
+    }
+
+
+@job(
+    name="debounce_job",
+    description="Validate event stability per fixture",
+    tags={"pipeline": "debounce"}
+)
+def debounce_job():
+    """
+    Debounce job validates event stability for a single fixture.
+    Called by monitor_job for each fixture that has events needing debounce.
+    
+    Process:
+    1. Get events needing debounce (NEW or INCOMPLETE)
+    2. For NEW: Add enhancement fields with stable_count=1
+    3. For INCOMPLETE: Check hash, increment if stable, mark complete at 3
+    4. All updates happen in-place in fixtures_active.events array
+    """
+    debounce_fixture_events_op()
