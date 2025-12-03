@@ -4,6 +4,7 @@ Monitor Workflow - Every Minute
 Tracks active fixtures, fetches fresh data, and triggers EventWorkflow for fixtures with changes.
 """
 from temporalio import workflow
+from temporalio.common import RetryPolicy
 from datetime import timedelta
 from typing import List
 
@@ -35,12 +36,14 @@ class MonitorWorkflow:
         await workflow.execute_activity(
             monitor_activities.activate_fixtures,
             start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(maximum_attempts=2),
         )
         
         # Fetch all active fixtures from API
         fixtures = await workflow.execute_activity(
             monitor_activities.fetch_active_fixtures,
             start_to_close_timeout=timedelta(seconds=60),
+            retry_policy=RetryPolicy(maximum_attempts=3),
         )
         
         # Process each fixture

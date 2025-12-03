@@ -4,6 +4,7 @@ Event Workflow - Per Fixture with Changes
 Debounces all events for a single fixture, then triggers TwitterWorkflow for stable events.
 """
 from temporalio import workflow
+from temporalio.common import RetryPolicy
 from datetime import timedelta
 
 with workflow.unsafe.imports_passed_through():
@@ -34,11 +35,12 @@ class EventWorkflow:
             event_activities.debounce_fixture_events,
             fixture_id,
             start_to_close_timeout=timedelta(seconds=60),
+            retry_policy=RetryPolicy(maximum_attempts=2),
         )
         
         # For each event that completed debounce, trigger Twitter workflow
-        twitter_ready = result.get("twitter_ready", [])
-        for event_id in twitter_ready:
+        twitter_triggered = result.get("twitter_triggered", [])
+        for event_id in twitter_triggered:
             workflow_id = f"twitter-{fixture_id}-{event_id}"
             
             # Start TwitterWorkflow as child workflow
@@ -50,7 +52,8 @@ class EventWorkflow:
         
         return {
             "fixture_id": fixture_id,
-            "new_events": result.get("new_count", 0),
-            "updated_events": result.get("updated_count", 0),
-            "twitter_triggered": len(twitter_ready),
+            "new_events": result.get("new_events", 0),
+            "updated_events": result.get("updated_events", 0),
+            "completed_events": result.get("completed_events", 0),
+            "twitter_triggered": len(twitter_triggered),
         }
