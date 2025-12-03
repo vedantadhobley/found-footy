@@ -97,26 +97,12 @@ class FootyMongoStore:
 
     # === Staging Operations ===
     
-    def bulk_insert_fixtures(self, raw_fixtures: List[dict], collection_name: str) -> int:
-        """
-        Insert fixtures into specified collection (staging, active, or completed).
-        Convenience method for ingestion workflow.
-        """
-        if not raw_fixtures:
-            return 0
-        
-        # Map collection names to actual collections
-        collection_map = {
-            "fixtures_staging": self.fixtures_staging,
-            "fixtures_active": self.fixtures_active,
-            "fixtures_completed": self.fixtures_completed,
-        }
-        
-        collection = collection_map.get(collection_name)
-        if collection is None:
-            raise ValueError(f"Unknown collection: {collection_name}")
-        
+    def fixtures_insert_staging(self, raw_fixtures: List[dict]) -> int:
+        """Insert fixtures into staging collection"""
         try:
+            if not raw_fixtures:
+                return 0
+            
             docs = []
             for fixture in raw_fixtures:
                 fixture_id = self._extract_fixture_id(fixture)
@@ -128,16 +114,12 @@ class FootyMongoStore:
                 docs.append(doc)
             
             if docs:
-                result = collection.insert_many(docs, ordered=False)
+                result = self.fixtures_staging.insert_many(docs, ordered=False)
                 return len(result.inserted_ids)
             return 0
         except Exception as e:
-            print(f"❌ Error inserting to {collection_name}: {e}")
+            print(f"❌ Error inserting to staging: {e}")
             return 0
-    
-    def fixtures_insert_staging(self, raw_fixtures: List[dict]) -> int:
-        """Insert fixtures into staging collection"""
-        return self.bulk_insert_fixtures(raw_fixtures, "fixtures_staging")
 
     def get_staging_fixtures(self) -> List[dict]:
         """Get all fixtures in staging"""

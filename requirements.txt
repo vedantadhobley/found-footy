@@ -1,3 +1,4 @@
+# Core dependencies
 pymongo
 requests
 python-dotenv
@@ -11,14 +12,23 @@ selenium
 opencv-python
 numpy
 pillow
+
+# Testing
 pytest
 pytest-cov
 pytest-mock
 pytest-asyncio
+
+# API
 fastapi
 uvicorn[standard]
-dagster
-dagster-webserver
-dagster-postgres
-dagster-docker
+
+# Workflow engine - Temporal
+temporalio
 psutil
+
+# Deprecated (Dagster) - keeping for reference during migration
+# dagster
+# dagster-webserver
+# dagster-postgres
+# dagster-docker

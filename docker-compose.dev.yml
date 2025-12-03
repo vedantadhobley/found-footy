@@ -1,136 +1,19 @@
-# Development Docker Compose - Multi-project setup
+# Development Docker Compose - Temporal orchestration
 #
-# Port allocation: found-footy uses 3100-3109
-#   3100: Dagster UI
-#   3101: MongoDB Express
-#   3102: MinIO Console
-#   3103: Twitter API
-#   3104: noVNC Browser
+# Port allocation: found-footy uses 4100-4109 (dev)
+#   4100: Temporal UI
+#   4101: MongoDB Express
+#   4102: MinIO Console
+#   4103: Twitter API
+#   4104: noVNC Browser
+#   7233: Temporal gRPC
 #
-# Internal communication (standard ports):
-#   - found-footy-postgres:5432
-#   - found-footy-mongo:27017
-#   - found-footy-minio:9000
-#   - found-footy-dagster-webserver:3000
+# Internal ports:
+#   - found-footy-postgres:5432 (Temporal metadata)
+#   - found-footy-mongo:27017 (Application data)
+#   - found-footy-minio:9000 (S3 storage)
 
 services:
-  # DEDICATED DEV CONTAINER - VS Code attaches HERE
-  # This container ONLY provides Python + tooling for development
-  # It does NOT run your application
-  dev:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    container_name: found-footy-dev
-    volumes:
-      - .:/workspace
-      - /home/vedanta/.ssh:/root/.ssh:ro
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - found-footy-dev
-      - luv-dev
-    environment:
-      PYTHONPATH: /workspace
-      DOCKER_HOST: unix:///var/run/docker.sock
-      # Connection strings for services
-      DAGSTER_PG_USERNAME: ffuser
-      DAGSTER_PG_PASSWORD: ffpass
-      DAGSTER_PG_HOST: found-footy-postgres
-      DAGSTER_PG_DB: dagster
-      MONGODB_URI: mongodb://ffuser:ffpass@found-footy-mongo:27017/found_footy?authSource=admin
-      S3_ENDPOINT_URL: http://found-footy-minio:9000
-      S3_ACCESS_KEY: ffuser
-      S3_SECRET_KEY: ffpass--
-    command: sleep infinity
-    restart: unless-stopped
-
-  # DAGSTER WEBSERVER - your application UI
-  dagster-webserver:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    container_name: found-footy-dagster-webserver
-    ports:
-      - "3100:3000"   # Dagster UI
-    env_file:
-      - .env
-    environment:
-      DAGSTER_HOME: /workspace
-      DAGSTER_PG_USERNAME: ffuser
-      DAGSTER_PG_PASSWORD: ffpass
-      DAGSTER_PG_HOST: found-footy-postgres
-      DAGSTER_PG_DB: dagster
-      DAGSTER_PG_PORT: 5432
-      MONGODB_URI: mongodb://ffuser:ffpass@found-footy-mongo:27017/found_footy?authSource=admin
-      MONGODB_URL: mongodb://ffuser:ffpass@found-footy-mongo:27017/found_footy?authSource=admin
-      S3_ENDPOINT_URL: http://found-footy-minio:9000
-      S3_ACCESS_KEY: ffuser
-      S3_SECRET_KEY: ffpass--
-      S3_BUCKET_NAME: footy-videos
-      TWITTER_SESSION_URL: http://found-footy-twitter:8888
-      TWITTER_COOKIES_FILE: /data/twitter_cookies.pkl
-      PYTHONPATH: /workspace
-      PYTHONHTTPSVERIFY: 0
-      DISPLAY: ":99"
-    volumes:
-      - .:/workspace
-      - /workspace/dagster_storage
-      - /workspace/dagster_logs
-      - twitter_cookies_dev:/data
-    networks:
-      - found-footy-dev
-      - luv-dev
-    depends_on:
-      postgres:
-        condition: service_healthy
-      mongo:
-        condition: service_healthy
-    restart: unless-stopped
-    command: >
-      bash -c "
-        mkdir -p /workspace/dagster_storage /workspace/dagster_logs /workspace/downloads /data &&
-        dagster-webserver -h 0.0.0.0 -p 3000 -w /workspace/workspace.yaml
-      "
-
-  # DAGSTER DAEMON - background job processor
-  dagster-daemon:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    container_name: found-footy-dagster-daemon
-    env_file:
-      - .env
-    environment:
-      DAGSTER_HOME: /workspace
-      DAGSTER_PG_USERNAME: ffuser
-      DAGSTER_PG_PASSWORD: ffpass
-      DAGSTER_PG_HOST: found-footy-postgres
-      DAGSTER_PG_DB: dagster
-      DAGSTER_PG_PORT: 5432
-      MONGODB_URI: mongodb://ffuser:ffpass@found-footy-mongo:27017/found_footy?authSource=admin
-      MONGODB_URL: mongodb://ffuser:ffpass@found-footy-mongo:27017/found_footy?authSource=admin
-      S3_ENDPOINT_URL: http://found-footy-minio:9000
-      S3_ACCESS_KEY: ffuser
-      S3_SECRET_KEY: ffpass--
-      S3_BUCKET_NAME: footy-videos
-      PYTHONPATH: /workspace
-      PYTHONHTTPSVERIFY: 0
-    volumes:
-      - .:/workspace
-      - /workspace/dagster_storage
-      - /workspace/dagster_logs
-      - twitter_cookies_dev:/data
-    networks:
-      - found-footy-dev
-    depends_on:
-      - dagster-webserver
-    restart: unless-stopped
-    command: >
-      bash -c "
-        mkdir -p /workspace/dagster_storage /workspace/dagster_logs &&
-        dagster-daemon run
-      "
-
   # TWITTER SERVICE - handles Twitter scraping with GUI access
   twitter:
     build:
@@ -138,8 +21,8 @@ services:
       dockerfile: Dockerfile.dev
     container_name: found-footy-twitter
     ports:
-      - "3103:8888"  # Twitter API
-      - "3104:6080"  # noVNC Browser
+      - "4103:8888"  # Twitter API
+      - "4104:6080"  # noVNC Browser
     env_file:
       - .env
     environment:
@@ -159,19 +42,18 @@ services:
     restart: unless-stopped
     command: bash /workspace/twitter/start_with_vnc.sh
 
-  # POSTGRESQL - Dagster metadata storage
+  # POSTGRESQL - Temporal metadata storage
   postgres:
     image: postgres:15-alpine
     container_name: found-footy-postgres
-    # No port mapping - accessed via Dagster UI only
     environment:
       POSTGRES_USER: ffuser
       POSTGRES_PASSWORD: ffpass
-      POSTGRES_DB: dagster
+      POSTGRES_DB: temporal
     volumes:
       - postgres_data_dev:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ffuser -d dagster"]
+      test: ["CMD-SHELL", "pg_isready -U ffuser -d temporal"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -211,7 +93,7 @@ services:
     image: mongo-express:1.0.2-20-alpine3.19
     container_name: found-footy-mongo-express
     ports:
-      - "3101:8081"  # MongoDB Express
+      - "4101:8081"  # MongoDB Express
     environment:
       ME_CONFIG_MONGODB_SERVER: found-footy-mongo
       ME_CONFIG_MONGODB_PORT: 27017
@@ -239,7 +121,7 @@ services:
     container_name: found-footy-minio
     command: server /data --console-address ":9001"
     ports:
-      - "3102:9001"  # MinIO Console
+      - "4102:9001"  # MinIO Console
     environment:
       MINIO_ROOT_USER: ffuser
       MINIO_ROOT_PASSWORD: ffpass--
@@ -255,6 +137,68 @@ services:
     networks:
       - found-footy-dev
       - luv-dev
+
+  # TEMPORAL SERVER - Workflow orchestration
+  temporal:
+    image: temporalio/auto-setup:latest
+    container_name: found-footy-temporal
+    ports:
+      - "7233:7233"  # Temporal server
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=ffuser
+      - POSTGRES_PWD=ffpass
+      - POSTGRES_SEEDS=found-footy-postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - found-footy-dev
+      - luv-dev
+    restart: unless-stopped
+
+  # TEMPORAL UI - Web interface
+  temporal-ui:
+    image: temporalio/ui:latest
+    container_name: found-footy-temporal-ui
+    ports:
+      - "4100:8080"  # Temporal UI
+    environment:
+      - TEMPORAL_ADDRESS=found-footy-temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:4100
+    depends_on:
+      - temporal
+    networks:
+      - found-footy-dev
+    restart: unless-stopped
+
+  # TEMPORAL WORKER - Executes workflows
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: found-footy-worker
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /workspace
+      TEMPORAL_HOST: found-footy-temporal:7233
+      MONGODB_URI: mongodb://ffuser:ffpass@found-footy-mongo:27017/found_footy?authSource=admin
+      S3_ENDPOINT_URL: http://found-footy-minio:9000
+      S3_ACCESS_KEY: ffuser
+      S3_SECRET_KEY: ffpass--
+      S3_BUCKET_NAME: footy-videos
+      TWITTER_SESSION_URL: http://found-footy-twitter:8888
+    volumes:
+      - .:/workspace
+    networks:
+      - found-footy-dev
+    depends_on:
+      - temporal
+      - mongo
+    restart: unless-stopped
+    command: python /workspace/src/worker.py
 
 volumes:
   postgres_data_dev:
