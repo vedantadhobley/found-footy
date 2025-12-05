@@ -297,8 +297,8 @@ class TwitterAuthenticator:
         # All authentication methods failed
         print("❌ All authentication methods failed")
         print()
-        print("📋 Manual setup required:")
-        print("   1. Access the login UI: http://localhost:3103/login")
-        print("   2. Follow instructions to export cookies from your browser")
+        print("📋 Manual login required:")
+        print("   1. Open VNC: http://localhost:4103")
+        print("   2. Login to Twitter in the Firefox browser")
         print("   3. Restart the service")
         return False

@@ -22,13 +22,16 @@ sleep 1
 x11vnc -display :99 -forever -shared -rfbport 5900 -nopw -bg -quiet
 sleep 1
 
-# Start noVNC (web interface to VNC)
+# Start noVNC (web interface to VNC) with auto-redirect to vnc.html
 websockify --web=/usr/share/novnc 6080 localhost:5900 &
 sleep 1
 
+# Create index redirect to vnc.html
+mkdir -p /usr/share/novnc
+echo '<html><head><meta http-equiv="refresh" content="0;url=/vnc.html"></head></html>' > /usr/share/novnc/index.html
+
 echo "✅ VNC server running!"
-echo "   📺 Access browser GUI at: http://localhost:6080/vnc.html"
-echo "   (Chrome will launch when you run manual_login or make API requests)"
+echo "   📺 Firefox GUI: http://localhost:4103"
 echo ""
 
 # Start Twitter service

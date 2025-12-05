@@ -4,8 +4,7 @@
 #   4100: Temporal UI
 #   4101: MongoDB Express
 #   4102: MinIO Console
-#   4103: Twitter API
-#   4104: noVNC Browser
+#   4103: Twitter Firefox VNC (browser GUI)
 #   7233: Temporal gRPC
 #
 # Internal ports:
@@ -21,8 +20,7 @@ services:
       dockerfile: Dockerfile.dev
     container_name: found-footy-twitter
     ports:
-      - "4103:8888"  # Twitter API
-      - "4104:6080"  # noVNC Browser
+      - "4103:6080"  # noVNC Browser - view Firefox at http://localhost:4103
     env_file:
       - .env
     environment:
@@ -150,12 +148,12 @@ services:
       - POSTGRES_USER=ffuser
       - POSTGRES_PWD=ffpass
       - POSTGRES_SEEDS=found-footy-postgres
+      - BIND_ON_IP=0.0.0.0  # Bind to all interfaces
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - found-footy-dev
-      - luv-dev
     restart: unless-stopped
 
   # TEMPORAL UI - Web interface

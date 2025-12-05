@@ -4,59 +4,66 @@
 
 ```
 src/
-├── workflows/          # Temporal workflows (orchestration)
+├── workflows/              # Temporal workflows (orchestration)
 │   ├── ingest_workflow.py      # Daily at 00:05 UTC - fetch and categorize fixtures
-│   ├── monitor_workflow.py     # Every minute - track active fixtures
-│   ├── event_workflow.py       # Per fixture - debounce events
-│   ├── twitter_workflow.py     # Per event - search videos
-│   └── download_workflow.py    # Per event - download & upload
-├── activities/         # Temporal activities (actual work)
-│   ├── ingest.py      # Fetch and categorize fixtures
-│   ├── monitor.py     # Activate, fetch, compare
-│   ├── event.py       # Debounce logic
-│   ├── twitter.py     # Twitter search
-│   └── download.py    # Download, dedupe, S3 upload
-├── data/              # Data layer
-│   └── mongo_store.py # MongoDB operations (4-collection architecture)
-└── worker.py          # Temporal worker (runs workflows & activities)
+│   ├── monitor_workflow.py     # Every minute - track fixtures, debounce events inline
+│   ├── twitter_workflow.py     # Per event - search videos via browser automation
+│   └── download_workflow.py    # Per event - download & upload with per-video retry
+├── activities/             # Temporal activities (actual work)
+│   ├── ingest.py          # Fetch and categorize fixtures
+│   ├── monitor.py         # Activate, fetch, compare, process_fixture_events
+│   ├── twitter.py         # 3 activities: get_data, search, save
+│   └── download.py        # 5 activities for download/upload
+├── data/                  # Data layer
+│   ├── mongo_store.py     # MongoDB operations (4-collection architecture)
+│   └── s3_store.py        # MinIO S3 operations
+├── utils/                 # Utilities
+│   ├── event_config.py    # Event filtering (Goals only)
+│   └── team_data.py       # 50 tracked teams
+└── worker.py              # Temporal worker (runs workflows & activities)
 ```
 
 ## Workflow Chain
 
 ```
-IngestWorkflow (daily)
+IngestWorkflow (daily 00:05 UTC)
   ↓
 MonitorWorkflow (every minute)
-  ↓ triggers per fixture with changes
-EventWorkflow
-  ↓ triggers per stable event
-TwitterWorkflow
-  ↓ triggers if videos found
-DownloadWorkflow
+  ├─> process_fixture_events (inline debounce)
+  └─> TwitterWorkflow (per stable event)
+        ↓ triggers if videos found
+      DownloadWorkflow (per event)
 ```
 
-## Key Differences from Dagster
+## Key Features
 
-- **Event-driven**: Workflows trigger child workflows immediately (no polling/sensors)
-- **Durable**: Temporal automatically persists state, handles retries
-- **UI visibility**: Each workflow execution shows as separate run in Temporal UI
-- **Clean code**: No op decorators, context passing, or instance management
+- **Set-based debounce**: Event ID includes player_id, no hash comparison needed
+- **Inline processing**: MonitorWorkflow processes events directly (no separate EventWorkflow)
+- **Per-video retry**: DownloadWorkflow has 5 granular activities with individual retries
+- **Firefox automation**: Twitter search via browser with saved profile
 
-## Next Steps
+## Quick Start
 
-1. Install dependencies: `pip install -r requirements.txt`
-2. Start services: `docker compose -f docker-compose.dev.yml up -d`
-3. Temporal UI: `localhost:4105`
-4. Migrate activity logic from `src-dagster/` (TODOs marked in activity files)
-5. Test with manual workflow trigger
+```bash
+# Start services
+docker compose -f docker-compose.dev.yml up -d
 
-## Migration Status
+# View worker logs
+docker compose -f docker-compose.dev.yml logs -f worker
 
-- ✅ Structure created
-- ✅ Workflow orchestration defined
-- ✅ Activity stubs created
-- ⏳ Activity implementations (copy from src-dagster)
-- ⏳ API client (api-football.com)
-- ⏳ Twitter integration (use existing twitter/ directory)
-- ⏳ S3/MinIO client
-- ⏳ Testing scripts
+# Temporal UI
+open http://localhost:4100
+
+# MongoDB Express
+open http://localhost:4101
+```
+
+## Implementation Status
+
+- ✅ IngestWorkflow - Fetches and categorizes fixtures
+- ✅ MonitorWorkflow - Polls fixtures, debounces events inline
+- ✅ TwitterWorkflow - Searches Twitter via browser automation
+- ✅ DownloadWorkflow - Downloads, deduplicates, uploads to S3
+- ✅ MongoDB 4-collection architecture
+- ✅ Set-based debounce (no hash comparison)
+- ✅ Per-video retry policies

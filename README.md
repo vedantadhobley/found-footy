@@ -1,15 +1,15 @@
 # ⚽ Found Footy - Automated Football Goal Highlights Pipeline
 
-**End-to-end automation** - detects football goals in real-time, validates stability with hash-based debounce, discovers videos on Twitter, downloads and deduplicates, then stores in S3 with metadata tags. Built with Dagster orchestration and MongoDB storage.
+**End-to-end automation** - detects football goals in real-time, validates stability with set-based debounce, discovers videos on Twitter via browser automation, downloads and deduplicates, then stores in S3 with metadata tags. Built with **Temporal.io** orchestration and MongoDB storage.
 
 ---
 
-## 🎯 Complete Pipeline Flow
+## 🎯 Architecture Overview
 
 ```mermaid
 graph TB
     subgraph "🗓️ Daily Ingestion (00:05 UTC)"
-        A1[Ingestion Job]
+        A1[IngestWorkflow]
         A2[Fetch Today's Fixtures<br/>from API-Football]
         A3{Categorize<br/>by Status}
         A4[fixtures_staging<br/>TBD, NS]
@@ -22,73 +22,38 @@ graph TB
         A3 -->|Finished| A6
     end
     
-    subgraph "⏱️ Monitor Job (Every Minute)"
-        B1[Monitor Job]
-        B2[Activate Ready Fixtures<br/>staging → active<br/>with empty events]
-        B3[Batch Fetch Active Fixtures<br/>from API-Football]
-        B4[Filter Events<br/>Goals only]
-        B5[Generate Event IDs<br/>fixture_team_Goal_#]
-        B6[Store in fixtures_live<br/>overwrite each poll]
-        B7{Compare<br/>live vs active}
-        B8[Complete Finished Fixtures<br/>active → completed]
+    subgraph "⏱️ MonitorWorkflow (Every Minute)"
+        B1[Activate Ready Fixtures<br/>staging → active]
+        B2[Fetch Active Fixtures<br/>from API-Football]
+        B3[Filter Events<br/>Goals only, with player_id]
+        B4[Store in fixtures_live]
+        B5[Process Events Inline<br/>Pure set operations]
+        B6{Stable Event?<br/>count >= 3}
+        B7[→ TwitterWorkflow]
         
-        B1 --> B2 --> B3 --> B4 --> B5 --> B6 --> B7
-        B7 --> B8
+        B1 --> B2 --> B3 --> B4 --> B5 --> B6
+        B6 -->|Yes| B7
     end
     
-    subgraph "🎯 Debounce Job (Per Fixture)"
-        C1{Trigger<br/>Condition?}
-        C2[Build Event Dict<br/>by _event_id]
-        C3[Iterate Active Events<br/>pop from dict]
-        C4{Event in<br/>live dict?}
-        C5[Calculate Hash<br/>of event data]
-        C6{Hash<br/>changed?}
-        C7[Increment stable_count<br/>Add snapshot]
-        C8[Reset stable_count=1<br/>Add snapshot]
-        C9{stable_count<br/>>= 3?}
-        C10[Mark debounce_complete<br/>Trigger Twitter Job]
-        C11[Add NEW Event<br/>to active<br/>stable_count=1]
-        C12[Mark REMOVED<br/>_removed=true<br/>VAR disallowed]
+    subgraph "🐦 TwitterWorkflow (Per Stable Event)"
+        C1[Build Search Query<br/>player + team]
+        C2[POST to twitter:8888<br/>Firefox automation]
+        C3[Save discovered_videos]
+        C4{Videos Found?}
+        C5[→ DownloadWorkflow]
         
-        B7 -->|NEW event<br/>OR incomplete<br/>OR removed| C1
-        C1 -->|Yes| C2 --> C3 --> C4
-        C4 -->|Yes| C5 --> C6
-        C6 -->|No| C7 --> C9
-        C6 -->|Yes| C8
-        C9 -->|Yes| C10
-        C9 -->|No| C3
-        C4 -->|No, leftover| C11
-        C3 -->|In active<br/>not in live| C12
+        C1 --> C2 --> C3 --> C4
+        C4 -->|Yes| C5
     end
     
-    subgraph "🐦 Twitter Job (Per Stable Event)"
-        D1[Twitter Job]
-        D2[Build Search Query<br/>team + player + minute]
-        D3[POST to twitter-session<br/>:8888/search]
-        D4[Parse Response<br/>Extract video URLs]
-        D5[Save discovered_videos<br/>in active event]
-        D6[Mark twitter_complete<br/>Store video_count]
-        D7[Trigger Download Job]
+    subgraph "⬇️ DownloadWorkflow (Per Event)"
+        D1[fetch_event_data]
+        D2[download_single_video ×N<br/>3 retries each]
+        D3[deduplicate_videos<br/>MD5 hash, keep largest]
+        D4[upload_single_video ×N<br/>3 retries each]
+        D5[mark_download_complete]
         
-        C10 --> D1 --> D2 --> D3 --> D4 --> D5 --> D6 --> D7
-    end
-    
-    subgraph "⬇️ Download Job (Per Event with Videos)"
-        E1[Download Job]
-        E2[Fetch Event Data<br/>from fixtures_active]
-        E3[Download Videos<br/>to /tmp with yt-dlp]
-        E4[Calculate File Hashes<br/>MD5 per video]
-        E5{Duplicate<br/>hash?}
-        E6[Keep Largest File<br/>best quality]
-        E7[Upload to S3<br/>fixture_id/event_id/]
-        E8[Add Metadata Tags<br/>player, team, event_id]
-        E9[Mark download_complete<br/>Store s3_urls + count]
-        E10[Cleanup /tmp]
-        
-        D7 --> E1 --> E2 --> E3 --> E4 --> E5
-        E5 -->|Yes| E6 --> E7
-        E5 -->|No| E7
-        E7 --> E8 --> E9 --> E10
+        D1 --> D2 --> D3 --> D4 --> D5
     end
     
     subgraph "💾 Storage"
@@ -97,384 +62,172 @@ graph TB
         F3[(fixtures_active)]
         F4[(fixtures_completed)]
         F5[☁️ MinIO S3<br/>fixture_id/event_id/<br/>videos with tags]
-        
-        A4 -.-> F1
-        B6 -.-> F2
-        C7 -.-> F3
-        C8 -.-> F3
-        C11 -.-> F3
-        D6 -.-> F3
-        E9 -.-> F3
-        B8 -.-> F4
-        E7 -.-> F5
     end
     
     style A1 fill:#e1f5ff
-    style B1 fill:#fff3e0
-    style C1 fill:#f3e5f5
-    style D1 fill:#e8f5e9
-    style E1 fill:#fce4ec
+    style B7 fill:#e8f5e9
+    style C5 fill:#fce4ec
+    style D3 fill:#fff3e0
 ```
 
 ---
 
-## 📋 Job Breakdown
+## 🔄 Key Features
 
-### 1️⃣ Ingestion Job (Daily, 00:05 UTC)
-**Purpose:** Fetch today's fixtures and categorize by status
+### Set-Based Debounce (No Hash Comparison)
 
-**Operations:**
-- Fetch fixtures from API-Football for current date
-- Route to correct collection based on status:
-  - `TBD`, `NS` → `fixtures_staging` (not started)
-  - `LIVE`, `1H`, `HT`, `2H`, `ET`, `P`, `BT` → `fixtures_active` (in progress)
-  - `FT`, `AET`, `PEN` → `fixtures_completed` (finished)
+Events are identified by `{fixture_id}_{team_id}_{player_id}_{event_type}_{sequence}`. This means:
 
----
+- **Player changes (VAR)** → Different event_id → Automatically detected by set operations
+- **No MD5 hashing** → Pure set operations (O(n) to build, O(1) lookups)
+- **Simpler code** → All debounce logic inline in MonitorWorkflow
 
-### 2️⃣ Monitor Job (Every Minute)
-**Purpose:** Track active fixtures and detect event changes
+```python
+# Algorithm in process_fixture_events activity
+live_ids = {e["_event_id"] for e in live_events}
+active_ids = {e["_event_id"] for e in active_events}
 
-**Operations:**
-1. **Activate:** Move ready fixtures from `staging` → `active` (empty events)
-2. **Fetch:** Batch fetch active fixtures from API-Football
-3. **Filter:** Keep only trackable events (Goals only)
-4. **Generate IDs:** Create sequential event IDs per team+event_type
-   - Format: `{fixture_id}_{team_id}_{event_type}_{#}`
-   - Example: `1378993_40_Goal_1`, `1378993_40_Goal_2`
-5. **Store:** Save in `fixtures_live` (overwrites each poll)
-6. **Compare:** Check for 3 trigger conditions:
-   - **NEW:** Event in live but NOT in active
-   - **INCOMPLETE:** Event in both but `_debounce_complete=false`
-   - **REMOVED:** Event in active but NOT in live (VAR)
-7. **Trigger Debounce:** Invoke debounce job per fixture with changes
-8. **Complete:** Move finished fixtures to `completed`
+new_ids = live_ids - active_ids       # NEW events
+removed_ids = active_ids - live_ids   # REMOVED (VAR)
+matching_ids = live_ids & active_ids  # Increment stable_count
+```
 
----
+### Per-Video Retry (Granular Activities)
 
-### 3️⃣ Debounce Job (Per Fixture)
-**Purpose:** Validate event stability with hash-based tracking
+DownloadWorkflow uses 5 separate activities:
+1. `fetch_event_data` - Get event from MongoDB
+2. `download_single_video` - Download ONE video (3 retry attempts)
+3. `deduplicate_videos` - MD5 hash, keep largest per hash
+4. `upload_single_video` - Upload ONE video to S3 (3 retry attempts)
+5. `mark_download_complete` - Update MongoDB, cleanup
 
-**Operations:**
-1. **Build Dict:** Create `{_event_id: event}` from `fixtures_live`
-2. **Iterate Active:** Process each event in `fixtures_active`
-3. **Calculate Hash:** MD5 hash of event data (player, team, time, detail)
-4. **Compare Hash:**
-   - **Unchanged:** Increment `stable_count`, add snapshot
-   - **Changed:** Reset `stable_count=1`, add snapshot
-5. **Check Stability:** If `stable_count >= 3`:
-   - Mark `_debounce_complete=true`
-   - Trigger Twitter job
-6. **Process NEW:** Leftover events in dict = new, add to active
-7. **Mark REMOVED:** Active events not in live = VAR disallowed
+**Benefits**: If 3/5 videos succeed, those are preserved. Failures don't lose progress.
 
-**Enhancement Fields Added:**
-- `_event_id`, `_stable_count`, `_debounce_complete`
-- `_first_seen`, `_snapshots[]`, `_score_before`, `_score_after`
-- `_twitter_search`, `_twitter_complete`
+### Firefox Browser Automation for Twitter
+
+Twitter service uses Firefox with a saved profile at `/data/firefox_profile`:
+- No API keys needed
+- Handles login state persistently
+- Manual login once, then automated searches
 
 ---
 
-### 4️⃣ Twitter Job (Per Stable Event)
-**Purpose:** Discover goal videos on Twitter
+## 📋 Workflow Breakdown
 
-**Operations:**
-1. **Build Query:** Format search string
-   - Pattern: `"{team_name}" "{player_name}" {minute}'`
-   - Example: `"Liverpool" "D. Szoboszlai" 13'`
-2. **Search:** POST to `twitter-session:8888/search`
-3. **Parse Results:** Extract video URLs from tweets
-4. **Save:** Store `_discovered_videos[]` in active event
-5. **Mark Complete:** Set `_twitter_complete=true`, `_video_count`
-6. **Trigger Download:** Invoke download job if videos found
+### 1️⃣ IngestWorkflow (Daily, 00:05 UTC)
 
-**Saved Video Metadata:**
-- `tweet_url`, `tweet_text`, `video_url`, `author_username`
+**Purpose**: Fetch today's fixtures and route by status
+
+| Status | Collection |
+|--------|------------|
+| TBD, NS | fixtures_staging |
+| LIVE, 1H, HT, 2H, ET, P, BT | fixtures_active |
+| FT, AET, PEN | fixtures_completed |
 
 ---
 
-### 5️⃣ Download Job (Per Event with Videos)
-**Purpose:** Download, deduplicate, and upload videos to S3
+### 2️⃣ MonitorWorkflow (Every Minute)
 
-**Operations:**
-1. **Fetch Event:** Get event data from `fixtures_active`
-   - Extract: `event_id`, `fixture_id`, `player_name`, `team_name`
-2. **Download:** Use `yt-dlp` to download videos to `/tmp`
-   - Format: Best quality, MP4
-3. **Calculate Hashes:** MD5 hash per downloaded file
-4. **Deduplicate:** If hash matches:
-   - Keep largest file (best quality)
-   - Delete duplicates
-5. **Upload to S3:**
-   - Key: `{fixture_id}/{event_id}/{filename}`
-   - Example: `1378993/1378993_40_Goal_1/video_001.mp4`
-6. **Add Metadata Tags:**
-   - `player_name`, `team_name`, `event_id`, `fixture_id`
-7. **Mark Complete:** Update event with:
-   - `_download_complete=true`
-   - `_s3_urls[]`, `_s3_count`
-8. **Cleanup:** Remove `/tmp` directory
+**Purpose**: Poll active fixtures, process events inline, trigger Twitter for stable events
+
+**Activities**:
+1. `activate_fixtures` - Move staging → active when start time reached
+2. `fetch_active_fixtures` - Batch fetch from API-Football
+3. `store_and_compare` - Filter to Goals, generate event_id, store in live
+4. `process_fixture_events` - Pure set operations, increment stable_count
+5. `sync_fixture_metadata` - Keep fixture score/status fresh
+6. `complete_fixture_if_ready` - Move to completed when done
+
+**Debounce Logic**:
+- NEW event → Add to active with `_stable_count=1`
+- MATCHING event → Increment `_stable_count`
+- REMOVED event → Mark `_removed=true` (VAR disallowed)
+- `_stable_count >= 3` → Trigger TwitterWorkflow
+
+---
+
+### 3️⃣ TwitterWorkflow (Per Stable Event)
+
+**Purpose**: Search Twitter for event videos
+
+**3 Granular Activities**:
+1. `get_twitter_search_data` - Get search query from MongoDB (10s, 2 retries)
+2. `execute_twitter_search` - POST to Firefox automation (150s, 3 retries)
+3. `save_twitter_results` - Save videos to MongoDB (10s, 2 retries)
+
+**Why 3 activities?**
+- If search fails → only retry search (not MongoDB reads)
+- If save fails → videos preserved in workflow state
+
+**If videos found** → Triggers DownloadWorkflow as child
+
+---
+
+### 4️⃣ DownloadWorkflow (Per Event with Videos)
+
+**Purpose**: Download, deduplicate, upload videos
+
+**Activities**:
+1. `fetch_event_data` - Get event from fixtures_active
+2. `download_single_video` (loop) - Download each video individually
+3. `deduplicate_videos` - Keep largest file per MD5 hash
+4. `upload_single_video` (loop) - Upload each unique video to S3
+5. `mark_download_complete` - Update MongoDB, cleanup temp dir
+
+**S3 Structure**: `{fixture_id}/{event_id}/{md5_hash}.mp4`
 
 ---
 
 ## 🗄️ 4-Collection Architecture
 
-### Event Enhancement Pattern
+| Collection | Purpose | Update Pattern |
+|------------|---------|----------------|
+| fixtures_staging | Pre-match fixtures | Insert/Delete |
+| fixtures_live | Comparison buffer | Overwrite each poll |
+| fixtures_active | Enhanced events | Incremental updates only |
+| fixtures_completed | Archive | Insert only |
 
-**fixtures_live:** Raw API data with `_event_id` generated (filtered to Goals only):
+### Event Enhancement Fields
+
 ```javascript
 {
-  "player": {"id": 234, "name": "D. Szoboszlai"},
+  // Original API fields
+  "player": {"id": 306, "name": "Mohamed Salah"},
   "team": {"id": 40, "name": "Liverpool"},
   "type": "Goal",
-  "detail": "Normal Goal",
-  "time": {"elapsed": 23},
-  "_event_id": "5000_234_23_Goal_Normal Goal"  // Generated by monitor
-}
-```
-
-**fixtures_active:** Enhanced events with debounce tracking (added in-place):
-```javascript
-{
-  // Raw API fields (from live)
-  "player": {"id": 234, "name": "D. Szoboszlai"},
-  "team": {"id": 40, "name": "Liverpool"},
-  "type": "Goal",
-  "detail": "Normal Goal",
-  "time": {"elapsed": 23},
   
-  // Enhanced fields (added by debounce_job)
-  "_event_id": "5000_234_23_Goal_Normal Goal",
+  // Enhancement fields (added by debounce)
+  "_event_id": "123456_40_306_Goal_1",
   "_stable_count": 3,
   "_debounce_complete": true,
-  "_twitter_complete": false,
-  "_first_seen": "2025-11-24T15:23:45Z",
-  "_snapshots": [
-    {"timestamp": "2025-11-24T15:23:45Z", "hash": "abc123"},
-    {"timestamp": "2025-11-24T15:24:45Z", "hash": "abc123"},
-    {"timestamp": "2025-11-24T15:25:45Z", "hash": "abc123"}
-  ],
+  "_twitter_complete": true,
+  "_twitter_search": "Salah Liverpool",
   "_score_before": {"home": 0, "away": 0},
   "_score_after": {"home": 1, "away": 0},
-  "_scoring_team": "home",
-  "_twitter_search": "Szoboszlai Liverpool"
+  
+  // Added by Twitter
+  "discovered_videos": [...],
+  
+  // Added by Download
+  "s3_urls": [...]
 }
 ```
-
----
-
-## 🔄 Pipeline Flow
-
-```mermaid
-sequenceDiagram
-    participant Monitor
-    participant Live as fixtures_live
-    participant Active as fixtures_active
-    participant Debounce
-    participant Twitter
-    
-    Monitor->>Live: Store filtered API data<br/>with _event_id
-    Monitor->>Monitor: Compare live vs active
-    
-    alt Case 1: NEW events
-        Monitor->>Debounce: Trigger debounce
-        Debounce->>Active: Add new event<br/>stable_count=1
-    end
-    
-    alt Case 2: INCOMPLETE events
-        Monitor->>Debounce: Trigger debounce
-        Debounce->>Debounce: Compare hash
-        alt Hash same
-            Debounce->>Active: Increment stable_count
-            alt stable_count >= 3
-                Debounce->>Active: Mark debounce_complete
-                Debounce->>Twitter: Trigger twitter job
-            end
-        else Hash changed
-            Debounce->>Active: Reset stable_count=1
-        end
-    end
-    
-    alt Case 3: REMOVED events
-        Monitor->>Debounce: Trigger debounce
-        Debounce->>Active: Mark event removed
-    end
-```
-
-### 1. Ingest Job (Daily 00:05 UTC)
-
-Fetches today's fixtures and routes to appropriate collections:
-
-```
-1. Fetch fixtures from API-Football
-2. Filter to 50 tracked teams
-3. Route by status:
-   - TBD/NS → fixtures_staging
-   - LIVE → fixtures_active (with empty events array)
-   - FT/AET/PEN → fixtures_completed
-```
-
-### 2. Monitor Job (Every Minute)
-
-Activates fixtures and triggers debounce when needed:
-
-```
-1. Activate fixtures (staging → active with EMPTY events array)
-2. Batch fetch fresh API data for ALL active fixtures
-3. Filter events (Goals only) and store in fixtures_live WITH _event_id
-4. Compare fixtures_live vs fixtures_active (3 trigger cases)
-5. If needs_debounce: directly invoke debounce_job(fixture_id)
-6. After debounce: Move FT/AET/PEN fixtures to completed
-```
-
-**3 Cases That Trigger Debounce:**
-- **NEW:** Event in live but NOT in active
-- **INCOMPLETE:** Event in both but `_debounce_complete=false`
-- **REMOVED:** Event in active but NOT in live (VAR disallowed)
-
-### 3. Debounce Job (Per Fixture)
-
-Processes events using clean iteration pattern:
-
-```
-1. Get live events (with _event_id) and active events
-2. Build dict of live events by _event_id
-3. Iterate active events:
-   
-   IF event_id in live_events_dict:
-     Pop event from dict
-     
-     IF hash unchanged:
-       → Increment stable_count
-       → Add snapshot
-       → If stable_count >= 3: mark debounce_complete, trigger twitter
-     ELSE:
-       → Reset stable_count = 1 (hash changed)
-   
-   ELSE (not in live):
-     → Mark event as removed (VAR case)
-
-4. Whatever's left in live_events_dict = NEW events
-   → Add to active with stable_count=1
-```
-
-**Hash Fields:** `player_id`, `team_id`, `type`, `detail`, `time_elapsed`, `assist_id`
-
-### 4. Twitter Job (Per Event)
-
-Called when `_debounce_complete=true`:
-
-```
-1. Get event from fixtures_active.events array
-2. Use prebuilt _twitter_search field
-3. Search Twitter for videos
-4. Download videos to MinIO
-5. Mark _twitter_complete=true
-```
-
----
-
-## 📊 MongoDB Collections (4 Total)
-
-### fixtures_staging
-
-Fixtures waiting to start (status TBD, NS).
-
-```json
-{
-  "_id": 5000,
-  "fixture": {
-    "id": 5000,
-    "date": "2025-11-24T15:00:00Z",
-    "status": {"short": "TBD"}
-  },
-  "teams": {
-    "home": {"id": 40, "name": "Liverpool"},
-    "away": {"id": 50, "name": "Man City"}
-  }
-}
-```
-
-### fixtures_live
-
-**Temporary storage** for raw API data with filtered events (Goals only). Gets **overwritten** each poll.
-
-```json
-{
-  "_id": 5000,
-  "stored_at": "2025-11-24T15:25:00Z",
-  "fixture": {...},
-  "teams": {...},
-  "events": [
-    {
-      "player": {"id": 234, "name": "D. Szoboszlai"},
-      "team": {"id": 40, "name": "Liverpool"},
-      "type": "Goal",
-      "detail": "Normal Goal",
-      "time": {"elapsed": 23},
-      "_event_id": "5000_234_23_Goal_Normal Goal"  // Generated by monitor
-    }
-  ]
-}
-```
-
-### fixtures_active
-
-Enhanced fixtures with debounce tracking. Events array **grows incrementally**, **never replaced**.
-
-```json
-{
-  "_id": 5000,
-  "activated_at": "2025-11-24T15:00:00Z",
-  "fixture": {...},
-  "teams": {...},
-  "events": [
-    {
-      // Raw API fields
-      "player": {"id": 234, "name": "D. Szoboszlai"},
-      "team": {"id": 40, "name": "Liverpool"},
-      "type": "Goal",
-      "detail": "Normal Goal",
-      "time": {"elapsed": 23},
-      
-      // Enhanced fields (added by debounce_job, never overwritten)
-      "_event_id": "5000_234_23_Goal_Normal Goal",
-      "_stable_count": 3,
-      "_debounce_complete": true,
-      "_twitter_complete": false,
-      "_first_seen": "2025-11-24T15:23:45Z",
-      "_snapshots": [
-        {"timestamp": "2025-11-24T15:23:45Z", "hash": "abc123"},
-        {"timestamp": "2025-11-24T15:24:45Z", "hash": "abc123"},
-        {"timestamp": "2025-11-24T15:25:45Z", "hash": "abc123"}
-      ],
-      "_score_before": {"home": 0, "away": 0},
-      "_score_after": {"home": 1, "away": 0},
-      "_scoring_team": "home",
-      "_twitter_search": "Szoboszlai Liverpool"
-    }
-  ]
-}
-```
-
-### fixtures_completed
-
-Archive of finished fixtures with all enhancements intact. fixtures_live entry is deleted when moved here.
 
 ---
 
 ## 🔌 Port Configuration
 
 **Development Access (via SSH forwarding):**
-- **Dagster UI:** http://localhost:3100
-- **MongoDB Express:** http://localhost:3101  
-- **MinIO Console:** http://localhost:3102
+- **Temporal UI:** http://localhost:4100
+- **MongoDB Express:** http://localhost:4101
+- **MinIO Console:** http://localhost:9001
 - **Twitter VNC:** http://localhost:6080/vnc.html
 
 **Internal Services:**
-- PostgreSQL: `postgres:5432`
+- Temporal Server: `temporal:7233`
 - MongoDB: `mongo:27017`
 - MinIO API: `minio:9000`
+- Twitter Service: `twitter:8888`
 
 ---
 
@@ -498,13 +251,16 @@ cp .env.example .env
 # Edit .env with your API-Football key
 
 # 3. Start services
-docker-compose up -d
+docker compose -f docker-compose.dev.yml up -d
 
-# 4. SSH port forwarding (from local machine)
-ssh -L 3100:localhost:3100 -L 3101:localhost:3101 -L 3102:localhost:3102 user@server
+# 4. One-time Twitter setup (interactive)
+docker compose -f docker-compose.dev.yml exec twitter python -m twitter.firefox_manual_setup
 
-# 5. Access Dagster UI
-# Open http://localhost:3100 in your browser
+# 5. SSH port forwarding (from local machine)
+ssh -L 4100:localhost:4100 -L 4101:localhost:4101 -L 9001:localhost:9001 user@server
+
+# 6. Access Temporal UI
+# Open http://localhost:4100 in your browser
 ```
 
 ---
@@ -514,77 +270,60 @@ ssh -L 3100:localhost:3100 -L 3101:localhost:3101 -L 3102:localhost:3102 user@se
 ```
 found-footy/
 ├── src/
+│   ├── workflows/           # Temporal workflows
+│   │   ├── ingest_workflow.py
+│   │   ├── monitor_workflow.py
+│   │   ├── twitter_workflow.py
+│   │   └── download_workflow.py
+│   ├── activities/          # Temporal activities
+│   │   ├── ingest.py
+│   │   ├── monitor.py       # Includes process_fixture_events
+│   │   ├── twitter.py
+│   │   └── download.py      # 5 granular activities
 │   ├── data/
-│   │   ├── mongo_store.py       # 4 collections (staging/live/active/completed)
-│   │   └── s3_store.py          # MinIO video storage
-│   ├── jobs/
-│   │   ├── ingest/              # Daily fixture ingestion
-│   │   ├── monitor/             # Per-minute monitoring + comparison
-│   │   ├── debounce/            # Per-fixture event validation (clean iteration)
-│   │   ├── twitter/             # Per-event video discovery
-│   │   └── download/            # Video download & dedup
+│   │   ├── mongo_store.py   # 4-collection architecture
+│   │   └── s3_store.py      # MinIO video storage
 │   ├── utils/
-│   │   └── event_config.py      # Event filtering config (Goals only)
-│   └── api/
-│       └── mongo_api.py         # API-Football wrapper
-├── docker-compose.yml
-├── Dockerfile
+│   │   ├── event_config.py  # Event filtering (Goals only)
+│   │   └── team_data.py     # 50 tracked teams
+│   └── worker.py            # Temporal worker
+├── twitter/                 # Firefox browser automation
+│   ├── service.py           # HTTP server (:8888)
+│   └── firefox_manual_setup.py
+├── docker-compose.dev.yml
 └── README.md
 ```
 
 ---
 
-## 🎯 Key Features
+## 🎯 Workflow Naming Convention
 
-- **4-Collection Architecture** - Staging → Live (temp) → Active (enhanced) → Completed
-- **In-Place Enhancement** - Events enhanced incrementally, never overwritten
-- **Clean Iteration Pattern** - Build dict, pop as processed, leftovers are NEW
-- **Event Filtering** - Only Goals stored (Normal Goal, Penalty, Own Goal)
-- **Hash-Based Stability** - MD5 of critical fields, 3 consecutive stable polls
-- **3 Debounce Trigger Cases** - NEW, INCOMPLETE, REMOVED (VAR)
-- **Pre-Generated Event IDs** - Set in monitor for clean comparison
-- **Smart Twitter Search** - Player last name + team name
-- **MinIO Storage** - S3-compatible local video storage
-- **Dagster Orchestration** - Visual pipeline monitoring
+| Workflow | ID Format | Example |
+|----------|-----------|---------|
+| IngestWorkflow | `ingest-{DD_MM_YYYY}` | `ingest-05_12_2024` |
+| MonitorWorkflow | `monitor-{DD_MM_YYYY}-{HH:MM}` | `monitor-05_12_2024-15:23` |
+| TwitterWorkflow | `twitter-{Team}-{LastName}-{min}-{event_id}` | `twitter-Liverpool-Salah-45+3min-123_40_306_Goal_1` |
+| DownloadWorkflow | `download-{Team}-{LastName}-{count}vids-{event_id}` | `download-Liverpool-Salah-3vids-123_40_306_Goal_1` |
 
 ---
 
 ## 🐛 Debugging
 
 ### Check Active Fixtures
-
 ```bash
-# MongoDB Express
-http://localhost:3101
-
-# Click: found_footy → fixtures_active
-# Look at events array for enhanced fields
+# MongoDB Express at http://localhost:4101
+# Click: found_footy → fixtures_active → Look at events array
 ```
 
-### Check Dagster Logs
-
+### Check Temporal UI
 ```bash
-# Dagster UI
-http://localhost:3100
-
-# Click: Runs → Select job → View logs
+# http://localhost:4100
+# View workflow hierarchy, inputs/outputs, retry status
 ```
 
-### Manual Job Triggers
-
-```python
-# In Dagster UI, go to Jobs and click "Launch Run"
-# Provide config for twitter_job:
-{
-  "ops": {
-    "search_and_save_twitter_videos": {
-      "config": {
-        "fixture_id": 5000,
-        "event_id": "5000_234_Goal_1"
-      }
-    }
-  }
-}
+### View Worker Logs
+```bash
+docker compose -f docker-compose.dev.yml logs -f worker
 ```
 
 ---
@@ -592,20 +331,10 @@ http://localhost:3100
 ## 📝 Notes
 
 - **API Limit:** 7500 requests/day (Pro plan)
-- **Batch Endpoint:** Gets fixtures + events + lineups in one call
-- **Debounce Window:** 3 polls at 1-minute intervals
-- **Twitter Retry:** 2min initial + 3min + 4min (total ~10min)
-- **Storage:** MinIO (S3-compatible) at `minio:9000`
-
----
-
-## 🔮 Future Enhancements
-
-- [ ] Actual Twitter integration (currently placeholder)
-- [ ] Video download & deduplication with OpenCV
-- [ ] Frontend UI to query fixtures_active
-- [ ] Webhook notifications for completed events
-- [ ] Multi-league support beyond 50 teams
+- **Debounce Window:** 3 polls at 1-minute intervals (~3 minutes)
+- **Twitter Timeout:** 120s for browser automation
+- **Download Retry:** 3 attempts per video with 5s initial interval
+- **50 Tracked Teams:** Top European clubs (see `team_data.py`)
 
 ---
 

@@ -15,11 +15,10 @@ from temporalio.worker import Worker
 from src.workflows import (
     IngestWorkflow,
     MonitorWorkflow,
-    EventWorkflow,
     TwitterWorkflow,
     DownloadWorkflow,
 )
-from src.activities import ingest, monitor, event, twitter, download
+from src.activities import ingest, monitor, twitter, download
 
 
 async def setup_schedules(client: Client):
@@ -36,7 +35,6 @@ async def setup_schedules(client: Client):
     print("📅 Setting up workflow schedules...", flush=True)
     
     # Schedule 1: IngestWorkflow - Daily at 00:05 UTC (PAUSED by default)
-    # Workflow ID format: ingest-{DD_MM_YYYY}-{fixture_count}fix
     ingest_schedule_id = "ingest-daily"
     try:
         ingest_handle = client.get_schedule_handle(ingest_schedule_id)
@@ -48,7 +46,7 @@ async def setup_schedules(client: Client):
             Schedule(
                 action=ScheduleActionStartWorkflow(
                     IngestWorkflow.run,
-                    id="ingest-{{ (now.Format \"02_01_2006\") }}",  # Dynamic ID with date
+                    id="ingest-scheduled",  # Simple ID - Temporal adds timestamp suffix
                     task_queue="found-footy",
                 ),
                 spec=ScheduleSpec(cron_expressions=["5 0 * * *"]),  # 00:05 UTC daily
@@ -61,7 +59,6 @@ async def setup_schedules(client: Client):
         print(f"   ✓ Created '{ingest_schedule_id}' (PAUSED, enable in UI when ready)", flush=True)
     
     # Schedule 2: MonitorWorkflow - Every minute (ENABLED by default)
-    # Workflow ID format: monitor-{DD_MM_YYYY}-{HH:MM}-{active_count}fix
     monitor_schedule_id = "monitor-every-minute"
     try:
         monitor_handle = client.get_schedule_handle(monitor_schedule_id)
@@ -73,7 +70,7 @@ async def setup_schedules(client: Client):
             Schedule(
                 action=ScheduleActionStartWorkflow(
                     MonitorWorkflow.run,
-                    id="monitor-{{ (now.Format \"02_01_2006-15:04\") }}",  # Dynamic ID with date-time
+                    id="monitor-scheduled",  # Simple ID - Temporal adds timestamp suffix
                     task_queue="found-footy",
                 ),
                 spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=timedelta(minutes=1))]),
@@ -105,7 +102,6 @@ async def main():
             workflows=[
                 IngestWorkflow,
                 MonitorWorkflow,
-                EventWorkflow,
                 TwitterWorkflow,
                 DownloadWorkflow,
             ],
@@ -113,23 +109,29 @@ async def main():
                 # Ingest activities
                 ingest.fetch_todays_fixtures,
                 ingest.categorize_and_store_fixtures,
-                # Monitor activities
+                # Monitor activities (includes inline debounce)
                 monitor.activate_fixtures,
                 monitor.fetch_active_fixtures,
                 monitor.store_and_compare,
+                monitor.process_fixture_events,
                 monitor.sync_fixture_metadata,
                 monitor.complete_fixture_if_ready,
-                # Event (debounce) activities
-                event.debounce_fixture_events,
-                # Twitter activities
-                twitter.search_event_videos,
-                # Download activities
-                download.download_and_upload_videos,
+                # Twitter activities (3 granular for retry control)
+                twitter.get_twitter_search_data,
+                twitter.execute_twitter_search,
+                twitter.save_twitter_results,
+                # Download activities (5 granular for per-video retry)
+                download.fetch_event_data,
+                download.download_single_video,
+                download.deduplicate_videos,
+                download.upload_single_video,
+                download.mark_download_complete,
             ],
         )
         
-        print("🚀 Worker started - listening for workflows on 'found-footy' task queue...", flush=True)
-        print("📋 Registered workflows: Ingest, Monitor, Event, Twitter, Download", flush=True)
+        print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
+        print("📋 Workflows: Ingest, Monitor, Twitter, Download", flush=True)
+        print("🔧 Activities: 14 total (2 ingest, 6 monitor, 3 twitter, 5 download)", flush=True)
         print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every minute)", flush=True)
         await worker.run()
     except Exception as e:

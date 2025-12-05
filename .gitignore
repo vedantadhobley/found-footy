@@ -80,3 +80,10 @@ dagster_logs/
 
 # Docker development volumes
 .bash_history_dir/
+
+# Twitter cookies (SENSITIVE - never commit)
+twitter_cookies_backup.json
+twitter_cookies*.json
+twitter_cookies*.pkl
+*.pkl
+.open_vnc_signal

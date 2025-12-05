@@ -184,7 +184,7 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
     6. Sync fixture metadata
     """
     from src.data.mongo_store import FootyMongoStore
-    from src.activities.event import build_twitter_search, calculate_score_context
+    from src.utils.event_enhancement import build_twitter_search, calculate_score_context
     
     store = FootyMongoStore()
     
@@ -246,9 +246,23 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
     matching_ids = live_ids & active_ids
     updated_count = 0
     twitter_triggered = []
+    twitter_retry_needed = []
     
     for event_id in matching_ids:
         active_event = active_map[event_id]
+        
+        # Check if this event needs a Twitter retry (<5 videos found last cycle)
+        if active_event.get("_twitter_needs_retry") and not active_event.get("_twitter_complete"):
+            live_event = next(e for e in live_events if e.get("_event_id") == event_id)
+            twitter_retry_needed.append({
+                "event_id": event_id,
+                "player_name": live_event.get("player", {}).get("name", "Unknown"),
+                "team_name": live_event.get("team", {}).get("name", "Unknown"),
+                "minute": live_event.get("time", {}).get("elapsed"),
+                "extra": live_event.get("time", {}).get("extra"),
+            })
+            activity.logger.info(f"🔄 TWITTER RETRY: {event_id} (found <5 videos last time)")
+            continue  # Don't process stable count for events waiting on retry
         
         # Skip if already complete
         if active_event.get("_debounce_complete"):
@@ -286,6 +300,7 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
         "removed_events": removed_count,
         "updated_events": updated_count,
         "twitter_triggered": twitter_triggered,
+        "twitter_retry_needed": twitter_retry_needed,
     }
 
 

@@ -7,7 +7,8 @@ RUN apt-get update && apt-get install -y \
     curl \
     wget \
     build-essential \
-    # Firefox for browser automation (better bot detection avoidance)
+    gnupg \
+    # Firefox for browser automation (fallback)
     firefox-esr \
     xvfb \
     # VNC server and noVNC for web-based GUI access
@@ -19,16 +20,19 @@ RUN apt-get update && apt-get install -y \
     docker.io \
     && rm -rf /var/lib/apt/lists/*
 
-# Install geckodriver for Firefox automation
+# Install Google Chrome (for undetected-chromedriver)
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install geckodriver for Firefox automation (fallback)
 RUN wget -q https://github.com/mozilla/geckodriver/releases/download/v0.35.0/geckodriver-v0.35.0-linux64.tar.gz \
     && tar -xzf geckodriver-v0.35.0-linux64.tar.gz \
     && mv geckodriver /usr/local/bin/ \
     && chmod +x /usr/local/bin/geckodriver \
     && rm geckodriver-v0.35.0-linux64.tar.gz
-
-# Create Chrome wrapper
-RUN echo '#!/bin/bash\nexec chromium "$@" --no-sandbox --disable-dev-shm-usage --headless --disable-gpu' > /usr/local/bin/chrome \
-    && chmod +x /usr/local/bin/chrome
 
 # Set working directory
 WORKDIR /workspace
@@ -42,8 +46,7 @@ RUN pip install --no-cache-dir ipython ipdb pytest black ruff mypy
 
 # Environment variables
 ENV PYTHONPATH=/workspace \ 
-    CHROME_BIN=/usr/local/bin/chrome \
-    CHROMEDRIVER_PATH=/usr/bin/chromedriver \
+    CHROME_BIN=/usr/bin/google-chrome \
     DISPLAY=:99 \
     VNC_PORT=5900 \
     NOVNC_PORT=6080

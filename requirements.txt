@@ -32,3 +32,4 @@ psutil
 # dagster-webserver
 # dagster-postgres
 # dagster-docker
+undetected-chromedriver>=3.5.0

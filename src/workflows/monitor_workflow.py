@@ -30,6 +30,7 @@ class MonitorWorkflow:
            - Store in fixtures_live
            - Process events inline (pure set comparison - no hash!)
            - Trigger TwitterWorkflow directly for stable events
+           - Trigger retry TwitterWorkflow for events needing more videos
         4. Complete finished fixtures (FT/AET/PEN → completed)
         
         Note: With player_id in event_id, VAR scenarios handled automatically:
@@ -53,9 +54,12 @@ class MonitorWorkflow:
         
         # Process each fixture
         twitter_workflows_triggered = []
+        twitter_retries_triggered = []
         
         for fixture_data in fixtures:
             fixture_id = fixture_data.get("fixture", {}).get("id")
+            status = fixture_data.get("fixture", {}).get("status", {}).get("short")
+            fixture_finished = status in ["FT", "AET", "PEN"]
             
             # Store in live
             await workflow.execute_activity(
@@ -88,16 +92,38 @@ class MonitorWorkflow:
                 
                 twitter_workflows_triggered.append(twitter_id)
                 
-                # Start TwitterWorkflow as child
+                # Start TwitterWorkflow as child (first attempt)
                 await workflow.execute_child_workflow(
                     TwitterWorkflow.run,
-                    args=[fixture_id, event_id, player_name, team_name],
+                    args=[fixture_id, event_id, player_name, team_name, False, fixture_finished],
+                    id=twitter_id,
+                )
+            
+            # Trigger RETRY TwitterWorkflow for events that need another search
+            for event_info in result.get("twitter_retry_needed", []):
+                event_id = event_info["event_id"]
+                player_name = event_info["player_name"]
+                team_name = event_info["team_name"]
+                minute = event_info["minute"]
+                extra = event_info.get("extra")
+                
+                # Build human-readable workflow ID with -retry suffix
+                player_last = player_name.split()[-1] if player_name else "Unknown"
+                team_clean = team_name.replace(" ", "_").replace(".", "_")
+                minute_str = f"{minute}+{extra}min" if extra else f"{minute}min"
+                twitter_id = f"twitter-{team_clean}-{player_last}-{minute_str}-retry-{event_id}"
+                
+                twitter_retries_triggered.append(twitter_id)
+                
+                # Start TwitterWorkflow as retry (is_retry=True)
+                await workflow.execute_child_workflow(
+                    TwitterWorkflow.run,
+                    args=[fixture_id, event_id, player_name, team_name, True, fixture_finished],
                     id=twitter_id,
                 )
             
             # Check if fixture is finished and should be completed
-            status = fixture_data.get("fixture", {}).get("status", {}).get("short")
-            if status in ["FT", "AET", "PEN"]:
+            if fixture_finished:
                 await workflow.execute_activity(
                     monitor_activities.complete_fixture_if_ready,
                     fixture_id,
@@ -107,5 +133,6 @@ class MonitorWorkflow:
         return {
             "fixtures_processed": len(fixtures),
             "twitter_workflows_triggered": len(twitter_workflows_triggered),
+            "twitter_retries_triggered": len(twitter_retries_triggered),
             "active_fixture_count": len(fixtures),
         }

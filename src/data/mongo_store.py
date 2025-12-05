@@ -465,6 +465,43 @@ class FootyMongoStore:
             print(f"❌ Error marking event {event_id} twitter complete: {e}")
             return False
     
+    def mark_event_twitter_needs_retry(
+        self, 
+        fixture_id: int, 
+        event_id: str, 
+        discovered_videos: List[Dict[str, Any]] | None = None
+    ) -> bool:
+        """
+        Mark event as needing Twitter retry (<5 videos found, fixture still in progress).
+        
+        Saves videos found so far but sets _twitter_needs_retry=True instead of complete.
+        On next poll cycle, MonitorWorkflow will trigger another TwitterWorkflow.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            discovered_videos: List of video dicts found so far
+        """
+        try:
+            update_doc = {
+                "events.$._twitter_needs_retry": True,
+                "events.$._twitter_retry_at": datetime.now(timezone.utc),
+            }
+            
+            # Save videos found so far (will be overwritten on retry)
+            if discovered_videos is not None:
+                update_doc["events.$._discovered_videos"] = discovered_videos
+                update_doc["events.$._video_count"] = len(discovered_videos)
+            
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, "events._event_id": event_id},
+                {"$set": update_doc}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error marking event {event_id} for Twitter retry: {e}")
+            return False
+    
     def sync_fixture_data(self, fixture_id: int) -> bool:
         """
         Sync fixture top-level data from fixtures_live to fixtures_active.
