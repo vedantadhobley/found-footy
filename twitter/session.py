@@ -57,8 +57,15 @@ class TwitterSessionManager:
         # Profile directory shared between manual Firefox and Selenium
         self.profile_dir = "/data/firefox_profile"
         
-        # Backup cookie file (mounted from host, survives volume deletes)
-        self.cookie_backup_file = "/workspace/twitter_cookies_backup.json"
+        # Backup cookie file - configurable via env var, defaults to ~/.config/found-footy/
+        # This should be OUTSIDE the repo to avoid accidental commits
+        default_backup_path = os.path.expanduser("~/.config/found-footy/twitter_cookies.json")
+        self.cookie_backup_file = os.environ.get('TWITTER_COOKIE_BACKUP_PATH', default_backup_path)
+        
+        # Ensure backup directory exists
+        backup_dir = os.path.dirname(self.cookie_backup_file)
+        if backup_dir:
+            os.makedirs(backup_dir, exist_ok=True)
         
         # Notification state - only notify once per "login required" session
         self._login_notification_sent = False
@@ -68,7 +75,8 @@ class TwitterSessionManager:
         if os.path.exists(self._login_notification_file):
             self._login_notification_sent = True
         
-        print("🔧 TwitterSessionManager initialized")
+        print(f"🔧 TwitterSessionManager initialized")
+        print(f"   📁 Cookie backup: {self.cookie_backup_file}")
     
     def _setup_browser(self, headless: bool = None) -> bool:
         """Setup Firefox browser with Selenium (for scraping, not login)

@@ -26,6 +26,7 @@ services:
     environment:
       PYTHONPATH: /workspace
       TWITTER_COOKIES_FILE: /data/twitter_cookies.pkl
+      TWITTER_COOKIE_BACKUP_PATH: /config/twitter_cookies.json
       TWITTER_SERVICE_HOST: "0.0.0.0"
       TWITTER_SERVICE_PORT: "8888"
       TWITTER_HEADLESS: "false"  # GUI mode - full browser visible via noVNC!
@@ -35,6 +36,7 @@ services:
     volumes:
       - .:/workspace  # Mount entire project for development
       - twitter_cookies_dev:/data
+      - ~/.config/found-footy:/config  # Cookie backup (outside repo)
     networks:
       - found-footy-dev
     restart: unless-stopped
