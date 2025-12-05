@@ -101,17 +101,26 @@ def calculate_score_context(fixture: dict, event: dict) -> Dict[str, Any]:
 @activity.defn
 async def debounce_fixture_events(fixture_id: int) -> Dict[str, Any]:
     """
-    Debounce events for a single fixture using clean iteration pattern.
+    Debounce events for a single fixture using iterate-and-drop pattern.
     
-    Process:
-    1. Get live events (with _event_id) and active events
-    2. Build dict of live events by _event_id
-    3. Iterate active events:
-       - If in live dict: pop from dict, compare hash
-         - Hash same: increment stable_count, complete at 3
-         - Hash different: reset to stable_count=1
-       - If NOT in live dict: mark as removed (Case 4: VAR)
-    4. Whatever's left in live dict are NEW events (Case 1)
+    Algorithm:
+    1. Get live events (with _event_id generated in store_live_fixture)
+    2. Get active events (with enhancement fields)
+    3. Build dict of live events by _event_id for O(1) lookup
+    4. Iterate through active events (what we're already tracking):
+       - If event_id found in live dict:
+         * Pop event from dict (mark as "processed")
+         * Compare hash with last snapshot
+         * If hash unchanged: increment stable_count (trigger Twitter at 3)
+         * If hash changed: reset to stable_count=1 (restart debounce)
+       - If event_id NOT in live dict:
+         * Event removed from API (VAR disallowed goal)
+         * Mark as _removed=True
+    5. Whatever's left in live_events_dict = NEW events
+       - Add to active with _stable_count=1
+    
+    This pattern eliminates set comparison overhead and makes "new events"
+    detection trivial (leftover dict items).
     
     Returns:
         Dict with processing stats and list of event_ids ready for Twitter
@@ -233,6 +242,29 @@ async def debounce_fixture_events(fixture_id: int) -> Dict[str, Any]:
         f"{new_count} new, {updated_count} updated, {completed_count} completed, {removed_count} removed"
     )
     
+    # Build event details map for workflow naming
+    event_details = {}
+    for event_id in twitter_triggered:
+        # Get event from active to extract player name, team, minute, and extra time
+        fixture = store.get_fixture_from_active(fixture_id)
+        if fixture:
+            for event in fixture.get("events", []):
+                if event.get("_event_id") == event_id:
+                    time_data = event.get("time", {})
+                    event_details[event_id] = {
+                        "player": event.get("player", {}).get("name", "Unknown"),
+                        "team": event.get("team", {}).get("name", "Unknown"),
+                        "minute": time_data.get("elapsed", "?"),
+                        "extra": time_data.get("extra")  # None if not present
+                    }
+                    break
+    
+    # Sync fixture data from live to active (preserve enhanced events)
+    # This ensures fixture metadata (score, status, etc.) stays fresh
+    if new_count > 0 or updated_count > 0 or completed_count > 0:
+        activity.logger.info(f"🔄 Syncing fixture {fixture_id} data from live to active")
+        store.sync_fixture_data(fixture_id)
+    
     return {
         "status": "success",
         "fixture_id": fixture_id,
@@ -240,5 +272,6 @@ async def debounce_fixture_events(fixture_id: int) -> Dict[str, Any]:
         "updated_events": updated_count,
         "completed_events": completed_count,
         "removed_events": removed_count,
-        "twitter_triggered": twitter_triggered
+        "twitter_triggered": twitter_triggered,
+        "event_details": event_details
     }

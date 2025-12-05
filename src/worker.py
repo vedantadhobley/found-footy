@@ -36,6 +36,7 @@ async def setup_schedules(client: Client):
     print("📅 Setting up workflow schedules...", flush=True)
     
     # Schedule 1: IngestWorkflow - Daily at 00:05 UTC (PAUSED by default)
+    # Workflow ID format: ingest-{DD_MM_YYYY}-{fixture_count}fix
     ingest_schedule_id = "ingest-daily"
     try:
         ingest_handle = client.get_schedule_handle(ingest_schedule_id)
@@ -47,7 +48,7 @@ async def setup_schedules(client: Client):
             Schedule(
                 action=ScheduleActionStartWorkflow(
                     IngestWorkflow.run,
-                    id=f"ingest-{ingest_schedule_id}",  # Simple static ID - only runs once per day
+                    id="ingest-{{ (now.Format \"02_01_2006\") }}",  # Dynamic ID with date
                     task_queue="found-footy",
                 ),
                 spec=ScheduleSpec(cron_expressions=["5 0 * * *"]),  # 00:05 UTC daily
@@ -60,6 +61,7 @@ async def setup_schedules(client: Client):
         print(f"   ✓ Created '{ingest_schedule_id}' (PAUSED, enable in UI when ready)", flush=True)
     
     # Schedule 2: MonitorWorkflow - Every minute (ENABLED by default)
+    # Workflow ID format: monitor-{DD_MM_YYYY}-{HH:MM}-{active_count}fix
     monitor_schedule_id = "monitor-every-minute"
     try:
         monitor_handle = client.get_schedule_handle(monitor_schedule_id)
@@ -71,7 +73,7 @@ async def setup_schedules(client: Client):
             Schedule(
                 action=ScheduleActionStartWorkflow(
                     MonitorWorkflow.run,
-                    id=f"monitor-{monitor_schedule_id}",  # Simple static ID - each run completes quickly
+                    id="monitor-{{ (now.Format \"02_01_2006-15:04\") }}",  # Dynamic ID with date-time
                     task_queue="found-footy",
                 ),
                 spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=timedelta(minutes=1))]),
@@ -115,6 +117,7 @@ async def main():
                 monitor.activate_fixtures,
                 monitor.fetch_active_fixtures,
                 monitor.store_and_compare,
+                monitor.sync_fixture_metadata,
                 monitor.complete_fixture_if_ready,
                 # Event (debounce) activities
                 event.debounce_fixture_events,

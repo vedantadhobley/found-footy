@@ -4,7 +4,7 @@ from typing import Dict, List, Any
 
 
 @activity.defn
-async def search_event_videos(fixture_id: int, event_id: str) -> Dict[str, Any]:
+async def search_event_videos(fixture_id: int, event_id: str, player_name: str = "") -> Dict[str, Any]:
     """
     Search Twitter for event videos.
     
@@ -20,4 +20,5 @@ async def search_event_videos(fixture_id: int, event_id: str) -> Dict[str, Any]:
     return {
         "video_count": 0,
         "videos": [],
+        "player_name": player_name,  # Pass through for DownloadWorkflow naming
     }

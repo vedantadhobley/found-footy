@@ -196,15 +196,19 @@ class FootyMongoStore:
             
             for event in raw_events:
                 if should_track_event(event):
-                    # Increment counter for this team+event_type combo
+                    # Get player, team, type for unique event ID
+                    player_id = event.get("player", {}).get("id", 0)
                     team_id = event.get("team", {}).get("id", 0)
                     event_type = event.get("type", "Unknown")
-                    counter_key = f"{team_id}_{event_type}"
+                    
+                    # Increment counter per player+event_type (handles multiple goals by same player)
+                    counter_key = f"{player_id}_{event_type}"
                     team_event_counters[counter_key] = team_event_counters.get(counter_key, 0) + 1
                     sequence = team_event_counters[counter_key]
                     
-                    # Generate and attach event ID: {fixture_id}_{team_id}_{event_type}_{#}
-                    event["_event_id"] = f"{fixture_id}_{team_id}_{event_type}_{sequence}"
+                    # Generate event ID: {fixture_id}_{team_id}_{player_id}_{event_type}_{#}
+                    # Player ID makes it unique - no hash needed for VAR scenarios!
+                    event["_event_id"] = f"{fixture_id}_{team_id}_{player_id}_{event_type}_{sequence}"
                     filtered_events.append(event)
             
             doc["events"] = filtered_events
@@ -258,15 +262,24 @@ class FootyMongoStore:
     
     def compare_live_vs_active(self, fixture_id: int) -> Dict[str, Any]:
         """
-        Compare fixtures_live (raw API) vs fixtures_active (enhanced).
-        Uses pre-generated _event_id fields for clean comparison.
+        Quick check to determine if EventWorkflow needs to run for this fixture.
+        Uses set operations on pre-generated _event_id fields (cheap comparison).
         
-        Returns which events need debounce based on 3 cases:
-        1. NEW: Event exists in live but NOT in active
-        2. INCOMPLETE: Event exists in BOTH but _debounce_complete=false in active
-        3. REMOVED: Event exists in active but NOT in live (VAR disallowed goal, API removed it)
+        Algorithm:
+        1. Build set of event_ids from fixtures_live (single iteration)
+        2. Build set of event_ids from fixtures_active (single iteration)
+        3. Check for differences using Python set operations:
+           - NEW: live_ids - active_ids (in live, not in active)
+           - REMOVED: active_ids - live_ids (in active, not in live)
+           - INCOMPLETE: iterate live_ids, check if _debounce_complete=False
         
-        Any of these 3 cases triggers immediate debounce for this fixture.
+        Triggers EventWorkflow if ANY of these cases has events:
+        - NEW events appeared
+        - INCOMPLETE events exist (still debouncing)
+        - REMOVED events (VAR disallowed)
+        
+        This is a cheap pre-check. The actual hash comparison happens
+        inside the debounce_fixture_events activity (EventWorkflow).
         """
         try:
             live = self.get_live_fixture(fixture_id)
@@ -345,18 +358,17 @@ class FootyMongoStore:
             return False
     
     def update_event_stable_count(self, fixture_id: int, event_id: str, 
-                                   stable_count: int, snapshot: dict) -> bool:
+                                   stable_count: int, snapshot: dict | None = None) -> bool:
         """
-        Update existing event's stable_count and add snapshot.
-        Called by debounce job for CASE 2 (incomplete events).
+        Update existing event's stable_count.
+        
+        Note: snapshot parameter kept for backwards compatibility but ignored.
+        With player_id in event_id, we don't need hash/snapshot tracking!
         """
         try:
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id, "events._event_id": event_id},
-                {
-                    "$set": {"events.$._stable_count": stable_count},
-                    "$push": {"events.$._snapshots": snapshot}
-                }
+                {"$set": {"events.$._stable_count": stable_count}}
             )
             return result.modified_count > 0
         except Exception as e:
@@ -451,6 +463,41 @@ class FootyMongoStore:
             return result.modified_count > 0
         except Exception as e:
             print(f"❌ Error marking event {event_id} twitter complete: {e}")
+            return False
+    
+    def sync_fixture_data(self, fixture_id: int) -> bool:
+        """
+        Sync fixture top-level data from fixtures_live to fixtures_active.
+        Preserves enhanced events array - only updates fixture metadata.
+        Called after successful debounce to keep fixture data fresh.
+        
+        Updates: fixture, teams, league, goals, score, status, etc.
+        Preserves: events array (with all enhancement fields)
+        """
+        try:
+            live_fixture = self.get_live_fixture(fixture_id)
+            if not live_fixture:
+                return False
+            
+            # Get current events from active (preserve enhancements)
+            active_fixture = self.get_fixture_from_active(fixture_id)
+            if not active_fixture:
+                return False
+            
+            # Build update document with all top-level fields from live
+            update_doc = dict(live_fixture)
+            update_doc["_id"] = fixture_id
+            # Preserve enhanced events from active
+            update_doc["events"] = active_fixture.get("events", [])
+            
+            # Replace entire document (preserving events)
+            result = self.fixtures_active.replace_one(
+                {"_id": fixture_id},
+                update_doc
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error syncing fixture data for {fixture_id}: {e}")
             return False
     
     def mark_event_download_complete(

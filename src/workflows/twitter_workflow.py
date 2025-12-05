@@ -16,7 +16,7 @@ class TwitterWorkflow:
     """Search Twitter for event videos"""
     
     @workflow.run
-    async def run(self, fixture_id: int, event_id: str) -> dict:
+    async def run(self, fixture_id: int, event_id: str, player_name: str = "", team_name: str = "") -> dict:
         """
         Workflow:
         1. Get event from fixtures_active
@@ -31,19 +31,23 @@ class TwitterWorkflow:
         # Search Twitter for videos
         result = await workflow.execute_activity(
             twitter_activities.search_event_videos,
-            args=[fixture_id, event_id],
+            args=[fixture_id, event_id, player_name],
             start_to_close_timeout=timedelta(seconds=120),
         )
         
         # If videos found, trigger download workflow
         video_count = result.get("video_count", 0)
         if video_count > 0:
-            workflow_id = f"download-{fixture_id}-{event_id}"
+            # Build workflow ID with full team name and player last name
+            player_last = player_name.split()[-1] if player_name else "Unknown"
+            # Clean team name: replace spaces and dots with underscores, remove other special chars
+            team_clean = team_name.replace(" ", "_").replace(".", "_").replace("-", "_")
+            workflow_id = f"download-{team_clean}-{player_last}-{video_count}vids-{event_id}"
             
             # Start DownloadWorkflow as child workflow
             await workflow.execute_child_workflow(
                 DownloadWorkflow.run,
-                args=[fixture_id, event_id],
+                args=[fixture_id, event_id, player_name, team_name],
                 id=workflow_id,
             )
         

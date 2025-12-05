@@ -13,7 +13,7 @@ UEFA_25_2025 = {
     529: {"name": "Barcelona", "country": "Spain", "rank": 9},
     211: {"name": "Benfica", "country": "Portugal", "rank": 10},
     530: {"name": "Atletico Madrid", "country": "Spain", "rank": 11},
-    910: {"name": "Roma", "country": "Italy", "rank": 12},
+    497: {"name": "Roma", "country": "Italy", "rank": 12},
     49: {"name": "Chelsea", "country": "England", "rank": 13},
     42: {"name": "Arsenal", "country": "England", "rank": 14},
     169: {"name": "Eintracht Frankfurt", "country": "Germany", "rank": 15},

@@ -40,13 +40,31 @@ class EventWorkflow:
         
         # For each event that completed debounce, trigger Twitter workflow
         twitter_triggered = result.get("twitter_triggered", [])
+        event_details = result.get("event_details", {})  # Map of event_id -> {player, team, minute}
+        
         for event_id in twitter_triggered:
-            workflow_id = f"twitter-{fixture_id}-{event_id}"
+            # Build human-readable workflow ID with team, player last name, minute+extra
+            details = event_details.get(event_id, {})
+            player_name = details.get("player", "Unknown")
+            player_last = player_name.split()[-1] if player_name else "Unknown"
+            team_name = details.get("team", "Unknown")
+            # Clean team name: replace spaces and dots with underscores, remove other special chars
+            team_clean = team_name.replace(" ", "_").replace(".", "_").replace("-", "_")
+            minute = details.get("minute", "?")
+            extra = details.get("extra")
             
-            # Start TwitterWorkflow as child workflow
+            # Format minute with extra time if present
+            if extra and extra > 0:
+                time_str = f"{minute}+{extra}"
+            else:
+                time_str = str(minute)
+            
+            workflow_id = f"twitter-{team_clean}-{player_last}-{time_str}min-{event_id}"
+            
+            # Start TwitterWorkflow as child workflow, passing player_name and team_name
             await workflow.execute_child_workflow(
                 TwitterWorkflow.run,
-                args=[fixture_id, event_id],
+                args=[fixture_id, event_id, player_name, team_name],
                 id=workflow_id,
             )
         

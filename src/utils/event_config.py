@@ -76,11 +76,16 @@ def should_track_event(event: dict) -> bool:
     """
     event_type = event.get("type")
     event_detail = event.get("detail")
+    comments = event.get("comments", "")
     
     config = EVENT_TYPES.get(event_type, {})
     
     # Check if type is enabled
     if not config.get("enabled", False):
+        return False
+    
+    # Filter out penalty shootout goals (not regular match goals)
+    if event_type == "Goal" and comments and "Penalty Shootout" in comments:
         return False
     
     # Check if detail is in scrapeable list (if list exists)

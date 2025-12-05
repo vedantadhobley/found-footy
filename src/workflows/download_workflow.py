@@ -16,7 +16,7 @@ class DownloadWorkflow:
     """Download, deduplicate, and upload videos to S3"""
     
     @workflow.run
-    async def run(self, fixture_id: int, event_id: str) -> dict:
+    async def run(self, fixture_id: int, event_id: str, player_name: str = "", team_name: str = "") -> dict:
         """
         Workflow:
         1. Fetch event data from fixtures_active

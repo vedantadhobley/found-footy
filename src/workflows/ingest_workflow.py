@@ -49,4 +49,6 @@ class IngestWorkflow:
             ),
         )
         
+        # Add total fixture count for logging
+        result["total_fixtures"] = len(fixtures)
         return result

@@ -164,3 +164,149 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
     except Exception as e:
         activity.logger.error(f"❌ Error completing fixture {fixture_id}: {e}")
         return False
+
+
+@activity.defn
+async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
+    """
+    Process fixture events using pure set comparison - NO HASH NEEDED!
+    
+    With player_id in event_id, VAR scenarios are handled automatically:
+    - Player changes → different event_id → old marked removed, new added
+    - Goal cancelled → event_id disappears → marked removed
+    
+    Algorithm:
+    1. Get event_ids from live and active (sets)
+    2. NEW = live_ids - active_ids → add with stable_count=1
+    3. REMOVED = active_ids - live_ids → mark as removed
+    4. MATCHING = live_ids & active_ids → increment stable_count
+    5. For stable_count >= 3 → mark debounce_complete, trigger Twitter
+    6. Sync fixture metadata
+    """
+    from src.data.mongo_store import FootyMongoStore
+    from src.activities.event import build_twitter_search, calculate_score_context
+    
+    store = FootyMongoStore()
+    
+    live_fixture = store.get_live_fixture(fixture_id)
+    active_fixture = store.get_fixture_from_active(fixture_id)
+    
+    if not live_fixture:
+        activity.logger.warning(f"Fixture {fixture_id} not in live")
+        return {"status": "not_found_live"}
+    
+    if not active_fixture:
+        activity.logger.warning(f"Fixture {fixture_id} not in active")
+        return {"status": "not_found_active"}
+    
+    live_events = live_fixture.get("events", [])
+    active_events = active_fixture.get("events", [])
+    
+    # Build sets
+    live_ids = {e["_event_id"] for e in live_events if e.get("_event_id")}
+    active_map = {e["_event_id"]: e for e in active_events if e.get("_event_id")}
+    active_ids = set(active_map.keys())
+    
+    # NEW events
+    new_ids = live_ids - active_ids
+    new_count = 0
+    for event_id in new_ids:
+        live_event = next(e for e in live_events if e.get("_event_id") == event_id)
+        
+        # Build enhancement fields
+        twitter_search = build_twitter_search(live_event, live_fixture)
+        score_context = calculate_score_context(live_fixture, live_event)
+        
+        enhanced = {
+            **live_event,
+            "_stable_count": 1,
+            "_debounce_complete": False,
+            "_twitter_complete": False,
+            "_twitter_search": twitter_search,
+            **score_context,
+            "_removed": False,
+            "_first_seen": datetime.now(timezone.utc),
+        }
+        
+        if store.add_event_to_active(fixture_id, enhanced):
+            activity.logger.info(f"✨ NEW EVENT: {event_id}")
+            new_count += 1
+    
+    # REMOVED events (VAR cancelled)
+    removed_ids = active_ids - live_ids
+    removed_count = 0
+    for event_id in removed_ids:
+        active_event = active_map[event_id]
+        if not active_event.get("_removed"):
+            if store.mark_event_removed(fixture_id, event_id):
+                activity.logger.warning(f"🚫 REMOVED: {event_id} (VAR)")
+                removed_count += 1
+    
+    # MATCHING events - increment stable_count
+    matching_ids = live_ids & active_ids
+    updated_count = 0
+    twitter_triggered = []
+    
+    for event_id in matching_ids:
+        active_event = active_map[event_id]
+        
+        # Skip if already complete
+        if active_event.get("_debounce_complete"):
+            continue
+        
+        # Increment stable count
+        new_count_val = active_event.get("_stable_count", 0) + 1
+        
+        # Note: No hash/snapshot needed with player_id approach!
+        if store.update_event_stable_count(fixture_id, event_id, new_count_val, None):
+            updated_count += 1
+            
+            if new_count_val >= 3:
+                # Mark complete and prepare for Twitter
+                store.mark_event_debounce_complete(fixture_id, event_id)
+                
+                live_event = next(e for e in live_events if e.get("_event_id") == event_id)
+                twitter_triggered.append({
+                    "event_id": event_id,
+                    "player_name": live_event.get("player", {}).get("name", "Unknown"),
+                    "team_name": live_event.get("team", {}).get("name", "Unknown"),
+                    "minute": live_event.get("time", {}).get("elapsed"),
+                    "extra": live_event.get("time", {}).get("extra"),
+                })
+                activity.logger.info(f"✅ DEBOUNCE COMPLETE: {event_id} (stable_count=3)")
+            else:
+                activity.logger.info(f"📊 STABLE: {event_id} (count={new_count_val}/3)")
+    
+    # Sync fixture metadata
+    store.sync_fixture_data(fixture_id)
+    
+    return {
+        "status": "success",
+        "new_events": new_count,
+        "removed_events": removed_count,
+        "updated_events": updated_count,
+        "twitter_triggered": twitter_triggered,
+    }
+
+
+@activity.defn
+async def sync_fixture_metadata(fixture_id: int) -> bool:
+    """
+    Sync fixture top-level data from fixtures_live to fixtures_active.
+    Called when no debounce is needed but we want to keep fixture metadata fresh.
+    
+    Updates: score, status, time, teams data, etc.
+    Preserves: Enhanced events array
+    """
+    from src.data.mongo_store import FootyMongoStore
+    
+    store = FootyMongoStore()
+    
+    try:
+        if store.sync_fixture_data(fixture_id):
+            activity.logger.debug(f"🔄 Synced fixture {fixture_id} metadata")
+            return True
+        return False
+    except Exception as e:
+        activity.logger.error(f"❌ Error syncing fixture {fixture_id}: {e}")
+        return False
