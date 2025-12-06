@@ -78,10 +78,8 @@ class DownloadWorkflow:
         
         workflow.logger.info(f"📋 Found {len(discovered_videos)} videos to download")
         
-        # Create temp directory for this event
+        # Temp directory path (created by first download activity)
         temp_dir = f"/tmp/footy_{event_id}"
-        import os
-        os.makedirs(temp_dir, exist_ok=True)
         
         # =========================================================================
         # Step 2: Download each video individually (with per-video retry)

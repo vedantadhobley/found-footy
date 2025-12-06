@@ -74,6 +74,9 @@ async def download_single_video(video_url: str, video_index: int, event_id: str,
         Dict with file_path, file_hash, file_size, video_index
     """
     try:
+        # Ensure temp directory exists (activity can do I/O)
+        os.makedirs(temp_dir, exist_ok=True)
+        
         output_path = os.path.join(temp_dir, f"{event_id}_{video_index}.mp4")
         
         activity.logger.info(f"📥 Downloading video {video_index}: {video_url[:50]}...")
