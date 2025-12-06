@@ -1,104 +1,207 @@
 # Twitter Authentication
 
-The Twitter service uses persistent cookie-based authentication.
-
-## How It Works
-
-1. **On Startup**: Service tries to load cookies from `/data/twitter_cookies.pkl`
-2. **If cookies exist and are valid**: ✅ Service starts authenticated
-3. **If no cookies or invalid**: ⚠️ Service starts but shows `authenticated: false`
-
-## First-Time Setup
-
-When you first run the service (or after clearing volumes), you need to login once:
-
-```bash
-./scripts/login_twitter.sh
-```
-
-This will:
-- Check if you're already authenticated
-- Guide you through the login process
-- Save cookies to a persistent Docker volume
-- Cookies persist across restarts
-
-## Check Authentication Status
-
-```bash
-curl http://localhost:8888/health
-```
-
-Should return:
-```json
-{
-  "status": "healthy",
-  "authenticated": true
-}
-```
-
-## When to Re-authenticate
-
-You only need to login again if:
-- First time running the service
-- After running `./start.sh -v` (wipes volumes)
-- Twitter logged you out (cookies expired)
-- Health check shows `authenticated: false`
+The Twitter service uses **browser automation with VNC access** for authentication and video searching.
 
 ## Architecture
 
-### Cookie Storage
-- Location: `/data/twitter_cookies.pkl` inside container
-- Volume: `twitter_cookies` (Docker volume, persists)
-- Format: Python pickle file with Selenium cookies
-
-### Interactive Login
-The service can open a browser for manual login, but this requires:
-- X11 forwarding configured
-- Setting `TWITTER_INTERACTIVE_LOGIN=true` in environment
-
-For simplicity, use `./scripts/login_twitter.sh` instead, which handles the Docker setup.
-
-## Troubleshooting
-
-### "authenticated: false" on startup
-
-Run the login script:
-```bash
-./scripts/login_twitter.sh
+```
+┌─────────────────────────────────────────────────────┐
+│ found-footy-twitter container                       │
+│                                                     │
+│  ┌─────────────────┐   ┌──────────────────────────┐ │
+│  │ FastAPI :8888   │   │ Firefox Browser          │ │
+│  │  /search        │──▶│ (Selenium + Profile)     │ │
+│  │  /health        │   └──────────────────────────┘ │
+│  └─────────────────┘              │                 │
+│                                   │                 │
+│  ┌─────────────────┐   ┌──────────┴───────────────┐ │
+│  │ noVNC :6080     │──▶│ Xvfb Virtual Display :99 │ │
+│  │  (Web access)   │   └──────────────────────────┘ │
+│  └─────────────────┘                                │
+└─────────────────────────────────────────────────────┘
+        │
+        │ Port 4103
+        ▼
+    http://localhost:4103 → VNC browser GUI
 ```
 
-### Cookies keep expiring
+## How It Works
 
-Twitter may have logged you out. Re-run login script to get fresh cookies.
+### Automatic Authentication Flow
 
-### Can't login interactively
+On startup and before each search, the service:
 
-The Docker container runs headless by default. Use the provided scripts which handle the browser setup:
-- `./scripts/login_twitter.sh` - Quick helper (recommended)
-- `./scripts/setup_twitter_docker.sh` - Full setup (advanced)
+1. **Check existing session** - Is browser alive and logged in?
+2. **Try cookie restore** - Load from `~/.config/found-footy/twitter_cookies.json`
+3. **Verify login** - Navigate to twitter.com/home and check for redirect
+4. **If all fail** → Launch Firefox for manual login, send email notification
 
-## Environment Variables
+### Cookie Backup
 
-- `TWITTER_COOKIES_FILE`: Path to cookies file (default: `/data/twitter_cookies.pkl`)
-- `TWITTER_INTERACTIVE_LOGIN`: Enable auto-login on startup (default: `false`)
-- `DISPLAY`: X11 display for browser (default: `:99` for Xvfb)
+Cookies are automatically:
+- **Exported** after successful login to `~/.config/found-footy/twitter_cookies.json`
+- **Restored** on container restart before authentication check
+- **Refreshed** after each successful search
+
+## Quick Start
+
+### 1. Start Services
+```bash
+docker compose -f docker-compose.dev.yml up -d
+```
+
+### 2. Check Status
+```bash
+# Health check
+curl http://localhost:8888/health
+
+# Should return:
+# {"status": "ready", "authenticated": true}
+```
+
+### 3. First-Time Login (if needed)
+
+If `authenticated: false`, open VNC:
+
+```
+http://localhost:4103
+```
+
+This opens a browser showing Firefox. Log into Twitter:
+1. Navigate to twitter.com
+2. Enter credentials
+3. Complete any 2FA
+4. Service auto-detects login success
+5. Cookies backed up automatically
 
 ## API Endpoints
 
 ### GET /health
-Check authentication status
-
-### POST /search
-Search for videos (requires authentication)
-
-### POST /authenticate
-Force re-authentication:
 ```bash
-curl -X POST http://localhost:8888/authenticate \
-  -H "Content-Type: application/json" \
-  -d '{"force_reauth": true, "interactive": false}'
+curl http://localhost:8888/health
 ```
 
-Parameters:
-- `force_reauth`: Force new authentication even if authenticated (default: `true`)
-- `interactive`: Open browser for manual login (default: `false`, requires X11)
+Returns:
+```json
+{"status": "ready", "authenticated": true}
+```
+
+Or if login needed:
+```json
+{"status": "login_required", "authenticated": false, "vnc_url": "http://localhost:4103"}
+```
+
+### POST /search
+```bash
+curl -X POST http://localhost:8888/search \
+  -H "Content-Type: application/json" \
+  -d '{"search_query": "Salah Liverpool goal", "max_results": 5}'
+```
+
+Returns:
+```json
+{
+  "videos": [
+    {
+      "tweet_url": "https://twitter.com/user/status/123",
+      "tweet_text": "What a goal by Salah!",
+      "video_page_url": "https://x.com/i/status/123"
+    }
+  ],
+  "count": 1
+}
+```
+
+**Error (503)**: Authentication required - open VNC to login
+
+### POST /verify-and-switch
+Force re-verify authentication after manual login:
+```bash
+curl -X POST http://localhost:8888/verify-and-switch
+```
+
+## Cookie Backup Location
+
+```
+~/.config/found-footy/twitter_cookies.json
+```
+
+This file is:
+- **Host-mounted** - Survives container rebuilds
+- **Auto-created** - After first successful login
+- **JSON format** - Human-readable for debugging
+
+## Troubleshooting
+
+### "authenticated: false" or 503 errors
+
+1. Open VNC: http://localhost:4103
+2. Log into Twitter manually
+3. Wait for auto-detection (service logs show success)
+
+### VNC Not Accessible
+
+```bash
+# Check container is running
+docker ps | grep twitter
+
+# Check logs
+docker logs found-footy-twitter
+
+# Restart if needed
+docker compose -f docker-compose.dev.yml restart twitter
+```
+
+### Cookies Not Restoring
+
+Check the backup file exists:
+```bash
+ls -la ~/.config/found-footy/twitter_cookies.json
+```
+
+If missing, login via VNC - it will be created automatically.
+
+### Twitter Login Loop
+
+Twitter may require additional verification. Use VNC to:
+1. Complete any CAPTCHA
+2. Verify phone/email
+3. Accept new terms
+
+## Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TWITTER_SERVICE_PORT` | 8888 | API port |
+| `TWITTER_COOKIE_BACKUP_PATH` | `/config/twitter_cookies.json` | Cookie backup location |
+| `TWITTER_HEADLESS` | false | Run browser headless (no GUI) |
+| `VNC_PUBLIC_URL` | http://localhost:4103 | VNC URL in notifications |
+
+## Session Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Startup
+    Startup --> CheckSession: Service starts
+    CheckSession --> Authenticated: Session valid
+    CheckSession --> TryCookies: Session invalid
+    TryCookies --> Authenticated: Cookies restored
+    TryCookies --> NeedLogin: Cookies failed/missing
+    NeedLogin --> WaitingForLogin: Launch Firefox, send notification
+    WaitingForLogin --> Authenticated: Manual login detected
+    Authenticated --> Search: /search called
+    Search --> Authenticated: Success (backup cookies)
+    Search --> NeedLogin: Session expired
+```
+
+## Email Notifications (Production)
+
+When login is needed, the service can send email notifications. Configure:
+
+```bash
+TWITTER_NOTIFY_EMAIL=you@example.com
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=app-password
+```

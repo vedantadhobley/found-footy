@@ -1,4 +1,0 @@
-load_from:
-  - python_file:
-      relative_path: src/__init__.py
-      location_name: found_footy

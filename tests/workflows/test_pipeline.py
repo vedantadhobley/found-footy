@@ -114,7 +114,7 @@ def insert_fixture_to_staging(fixture_id: int):
     print()
     print("Watch progress:")
     print(f"  📊 Temporal UI:     http://localhost:4100")
-    print(f"  🖥️  Twitter Firefox: http://localhost:4104")
+    print(f"  🖥️  Twitter Firefox: http://localhost:4103")
     print(f"  🗄️  MongoDB Express: http://localhost:4101")
     print(f"  📝 Worker logs:     docker logs -f found-footy-worker")
     print()

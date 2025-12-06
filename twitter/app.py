@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from .config import TwitterConfig
-from .session import TwitterSessionManager
+from .session import TwitterSessionManager, TwitterAuthError
 
 # Force unbuffered output so logs show immediately
 sys.stdout.reconfigure(line_buffering=True)
@@ -115,6 +115,10 @@ async def search_videos(request: VideoSearchRequest):
         
     Returns:
         JSON with discovered videos
+        
+    Raises:
+        503 Service Unavailable if not authenticated (manual login required)
+        500 Internal Server Error for other failures
     """
     try:
         videos = twitter_session.search_videos(
@@ -126,6 +130,18 @@ async def search_videos(request: VideoSearchRequest):
             "videos": videos,
             "count": len(videos)
         }
+    except TwitterAuthError as e:
+        # Authentication failed - this is a service unavailable situation
+        # The caller should retry later after manual login
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "authentication_required",
+                "message": str(e),
+                "vnc_url": "http://localhost:4103",
+                "action": "Manual login required via VNC"
+            }
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

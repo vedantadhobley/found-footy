@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "found-footy"
-version = "0.1.0"
-description = "Football fixtures and goal automation using Prefect"
+version = "0.2.0"
+description = "Football goal video pipeline with Temporal orchestration"
 authors = [{name = "Vedanta Dhobley", email = "vedanta.dhobley@gmail.com"}]
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,19 +16,17 @@ dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["found_footy*"]
+include = ["src*", "twitter*"]
 
 [tool.pytest.ini_options]
-# ✅ ADD: Pytest configuration to suppress warnings
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+asyncio_mode = "auto"
 filterwarnings = [
     "ignore::UserWarning",
     "ignore::DeprecationWarning",
-    "ignore:Your Prefect server is running an older version:UserWarning",
-    "ignore:.*Prefect server.*older version.*:UserWarning"
 ]
 log_cli = false
 log_cli_level = "INFO"

@@ -395,12 +395,13 @@ Events in `fixtures_active` have these enhancement fields:
 | `_event_id` | Unique identifier | store_and_compare |
 | `_stable_count` | Debounce counter (0-3) | process_fixture_events |
 | `_debounce_complete` | true when count >= 3 | process_fixture_events |
-| `_twitter_complete` | true when searched | search_event_videos |
+| `_twitter_started` | true when search begun | get_twitter_search_data |
+| `_twitter_complete` | true when searched | save_twitter_results |
 | `_twitter_search` | Search query | process_fixture_events |
 | `_score_before` | Score before goal | process_fixture_events |
 | `_score_after` | Score after goal | process_fixture_events |
 | `_removed` | VAR disallowed | process_fixture_events |
-| `discovered_videos` | Video URLs from Twitter | search_event_videos |
+| `discovered_videos` | Video URLs from Twitter | save_twitter_results |
 | `s3_urls` | Uploaded video URLs | mark_download_complete |
 
 ---
@@ -419,8 +420,8 @@ Events in `fixtures_active` have these enhancement fields:
 | fetch_todays_fixtures | 30s | 3 | 1s |
 | activate_fixtures | 30s | 2 | 1s |
 | store_and_compare | 10s | 2 | 1s |
-| process_fixture_events | 60s | 2 | 1s |
-| search_event_videos | 120s | 3 | 10s |
+| process_fixture_events | 60s | 3 | 1s |
+| execute_twitter_search | 150s | 3 | 10s |
 | download_single_video | 2min | 3 | 5s |
 | upload_single_video | 2min | 3 | 5s |
 
@@ -464,9 +465,10 @@ Check that all events have:
 - `_download_complete: true` (if videos found)
 
 ### Twitter Search Failing
-1. Check Twitter service is running: `docker logs twitter`
-2. Verify Firefox profile exists: `/data/firefox_profile`
-3. May need to re-login: `docker exec -it twitter python -m twitter.firefox_manual_setup`
+1. Check Twitter service is running: `docker logs found-footy-twitter`
+2. Check VNC browser: http://localhost:4103
+3. Verify Firefox profile exists: `/data/firefox_profile`
+4. May need to re-login via VNC GUI
 
 ### Downloads Failing
 1. Check yt-dlp is installed in worker container
@@ -484,7 +486,7 @@ Check that all events have:
 | TwitterWorkflow | Per stable event | Find videos | 3 |
 | DownloadWorkflow | Per event with videos | Download & upload | 5 |
 
-**Total**: 4 workflows, 16 activities
+**Total**: 4 workflows, 14 activities (2 ingest, 6 monitor, 3 twitter, 3 download)
 
 Key architecture decisions:
 - ✅ **Set-based debounce** - No hash comparison, player_id in event_id

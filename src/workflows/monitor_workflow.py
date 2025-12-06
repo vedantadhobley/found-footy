@@ -38,6 +38,8 @@ class MonitorWorkflow:
         - Goal cancelled → event_id disappears → marked removed
         """
         
+        workflow.logger.info("👁️ Starting monitor cycle")
+        
         # Activate fixtures whose start time has been reached
         await workflow.execute_activity(
             monitor_activities.activate_fixtures,
@@ -129,6 +131,12 @@ class MonitorWorkflow:
                     fixture_id,
                     start_to_close_timeout=timedelta(seconds=10),
                 )
+        
+        workflow.logger.info(
+            f"✅ Monitor complete: {len(fixtures)} fixtures, "
+            f"{len(twitter_workflows_triggered)} Twitter searches, "
+            f"{len(twitter_retries_triggered)} retries"
+        )
         
         return {
             "fixtures_processed": len(fixtures),

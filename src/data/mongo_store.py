@@ -14,6 +14,9 @@ class FootyMongoStore:
     - fixtures_completed: Archive (FT, AET, PEN)
     """
     
+    # Class variable to track if indexes have been created this session
+    _indexes_created = False
+    
     def __init__(self, connection_url=None):
         if connection_url is None:
             connection_url = os.getenv('MONGODB_URI') or os.getenv('MONGODB_URL', 'mongodb://localhost:27017/')
@@ -30,7 +33,11 @@ class FootyMongoStore:
         self._create_indexes()
 
     def _create_indexes(self):
-        """Create indexes for all collections"""
+        """Create indexes for all collections (only runs once per session)"""
+        # Skip if already created this session
+        if getattr(FootyMongoStore, '_indexes_created', False):
+            return
+        
         try:
             # Status indexes
             self.fixtures_staging.create_index([("fixture.status.short", ASCENDING)])
@@ -53,9 +60,9 @@ class FootyMongoStore:
             self.fixtures_active.create_index([("events._event_id", ASCENDING)])
             self.fixtures_active.create_index([("events._debounce_complete", ASCENDING)])
             
-            print("✅ MongoDB indexes created successfully")
+            FootyMongoStore._indexes_created = True
         except Exception as e:
-            print(f"⚠️ Error creating indexes: {e}")
+            print(f"⚠️ MongoDB index error: {e}")
 
     # === Helper Methods ===
     

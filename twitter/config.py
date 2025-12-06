@@ -7,10 +7,10 @@ from dataclasses import dataclass
 class TwitterConfig:
     """Twitter service configuration loaded from environment variables"""
     
-    # Authentication
-    username: str = os.getenv('TWITTER_USERNAME', 'REDACTED_USERNAME')
-    password: str = os.getenv('TWITTER_PASSWORD', 'REDACTED_PASSWORD')
-    email: str = os.getenv('TWITTER_EMAIL', 'REDACTED_EMAIL')
+    # Authentication - NO DEFAULTS, must be set via environment variables
+    username: str = os.getenv('TWITTER_USERNAME', '')
+    password: str = os.getenv('TWITTER_PASSWORD', '')
+    email: str = os.getenv('TWITTER_EMAIL', '')
     
     # Session management
     cookies_file: str = os.getenv('TWITTER_COOKIES_FILE', '/data/twitter_cookies.pkl')

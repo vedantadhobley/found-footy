@@ -2,12 +2,57 @@
 Temporal Worker - Executes workflows and activities
 """
 import asyncio
+import logging
 import os
+import re
 import sys
 
 # Force unbuffered output
 sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
 sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
+
+
+class CleanTemporalFormatter(logging.Formatter):
+    """
+    Custom formatter that strips Temporal's context dict from activity/workflow logs.
+    
+    Temporal SDK appends context dicts to logs like:
+    - Activities: {'activity_id': ..., 'workflow_id': ...}
+    - Workflows: {'attempt': ..., 'namespace': ..., 'workflow_id': ...}
+    
+    This is verbose for development - we strip it and show just the message.
+    """
+    
+    # Regex to match trailing context dicts (both activity and workflow patterns)
+    CONTEXT_PATTERN = re.compile(r"\s*\(\{'.+\}\)\s*$")
+    
+    def format(self, record):
+        msg = record.getMessage()
+        # Strip the Temporal context dict from the end of the message
+        cleaned = self.CONTEXT_PATTERN.sub("", msg)
+        return cleaned
+
+
+# Configure logging BEFORE importing temporalio
+# This ensures activity.logger.info() and workflow.logger.info() show up
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(CleanTemporalFormatter())
+
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[handler],
+    force=True,  # Override any existing config
+)
+
+# Set the specific temporalio loggers to INFO
+logging.getLogger("temporalio.activity").setLevel(logging.INFO)
+logging.getLogger("temporalio.workflow").setLevel(logging.INFO)
+
+# Reduce noise from other loggers
+logging.getLogger("temporalio.worker").setLevel(logging.WARNING)
+logging.getLogger("temporalio.client").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("pymongo").setLevel(logging.WARNING)
 
 from temporalio.client import Client
 from temporalio.worker import Worker

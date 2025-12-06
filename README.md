@@ -217,11 +217,17 @@ Twitter service uses Firefox with a saved profile at `/data/firefox_profile`:
 
 ## 🔌 Port Configuration
 
-**Development Access (via SSH forwarding):**
+**Development (4100-4109):**
 - **Temporal UI:** http://localhost:4100
 - **MongoDB Express:** http://localhost:4101
-- **MinIO Console:** http://localhost:9001
-- **Twitter VNC:** http://localhost:6080/vnc.html
+- **MinIO Console:** http://localhost:4102
+- **Twitter VNC:** http://localhost:4103
+
+**Production (3100-3109):**
+- **Temporal UI:** http://localhost:3100
+- **MongoDB Express:** http://localhost:3101
+- **MinIO Console:** http://localhost:3102
+- **Twitter VNC:** http://localhost:3103
 
 **Internal Services:**
 - Temporal Server: `temporal:7233`
@@ -253,11 +259,11 @@ cp .env.example .env
 # 3. Start services
 docker compose -f docker-compose.dev.yml up -d
 
-# 4. One-time Twitter setup (interactive)
-docker compose -f docker-compose.dev.yml exec twitter python -m twitter.firefox_manual_setup
+# 4. First-time Twitter login (via VNC)
+# Open http://localhost:4103 and login to Twitter in Firefox
 
 # 5. SSH port forwarding (from local machine)
-ssh -L 4100:localhost:4100 -L 4101:localhost:4101 -L 9001:localhost:9001 user@server
+ssh -L 4100:localhost:4100 -L 4101:localhost:4101 -L 4102:localhost:4102 -L 4103:localhost:4103 user@server
 
 # 6. Access Temporal UI
 # Open http://localhost:4100 in your browser
@@ -277,9 +283,9 @@ found-footy/
 │   │   └── download_workflow.py
 │   ├── activities/          # Temporal activities
 │   │   ├── ingest.py
-│   │   ├── monitor.py       # Includes process_fixture_events
+│   │   ├── monitor.py
 │   │   ├── twitter.py
-│   │   └── download.py      # 5 granular activities
+│   │   └── download.py
 │   ├── data/
 │   │   ├── mongo_store.py   # 4-collection architecture
 │   │   └── s3_store.py      # MinIO video storage
@@ -288,9 +294,12 @@ found-footy/
 │   │   └── team_data.py     # 50 tracked teams
 │   └── worker.py            # Temporal worker
 ├── twitter/                 # Firefox browser automation
-│   ├── service.py           # HTTP server (:8888)
-│   └── firefox_manual_setup.py
-├── docker-compose.dev.yml
+│   ├── app.py               # FastAPI server (:8888)
+│   ├── session.py           # Browser session manager
+│   └── start_with_vnc.sh    # VNC startup script
+├── tests/                   # Integration tests
+├── docker-compose.dev.yml   # Development (ports 4100-4109)
+├── docker-compose.yml       # Production (ports 3100-3109)
 └── README.md
 ```
 

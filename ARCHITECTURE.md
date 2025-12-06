@@ -1,4 +1,6 @@
-# Found Footy - 4-Collection In-Place Debounce Architecture
+# Found Footy - Architecture Guide
+
+**Temporal.io orchestration with 4-collection MongoDB architecture**
 
 ## 🎯 Core Concept
 
@@ -178,9 +180,13 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 
 ## 🔄 Job Details
 
-### 1. Ingest Job (Daily 00:05 UTC)
+### 1. IngestWorkflow (Daily 00:05 UTC)
 
 **Purpose**: Fetch today's fixtures and route by status
+
+**Activities**:
+- `fetch_todays_fixtures` - Call API-Football
+- `categorize_and_store_fixtures` - Route by status
 
 **Process**:
 ```python
@@ -192,13 +198,21 @@ Archive with all enhancements intact. fixtures_live entry deleted.
    - FT/AET/PEN → fixtures_completed
 ```
 
-**Why empty events?** Monitor will populate events from fixtures_live comparison.
+**Why empty events?** MonitorWorkflow will populate events from fixtures_live comparison.
 
 ---
 
-### 2. Monitor Job (Every Minute)
+### 2. MonitorWorkflow (Every Minute)
 
-**Purpose**: Activate fixtures, compare live vs active, trigger debounce
+**Purpose**: Activate fixtures, detect events, trigger TwitterWorkflow
+
+**Activities** (6 total):
+- `activate_fixtures` - Move staging → active when start time reached
+- `fetch_active_fixtures` - Batch fetch from API-Football
+- `store_and_compare` - Filter events, store in live
+- `process_fixture_events` - Pure set operations, increment stable_count
+- `sync_fixture_metadata` - Keep score/status fresh
+- `complete_fixture_if_ready` - Move to completed when FT/AET/PEN
 
 **Process**:
 ```python
@@ -211,121 +225,91 @@ Archive with all enhancements intact. fixtures_live entry deleted.
    b. Generate _event_id for each filtered event
    c. Store in fixtures_live (overwrite previous)
 
-4. For each fixture:
-   a. Compare fixtures_live vs fixtures_active
-   b. Detect 3 trigger cases:
-      - NEW: Event in live, not in active
-      - INCOMPLETE: Event in both, _debounce_complete=false
-      - REMOVED: Event in active, not in live (VAR)
-   c. If needs_debounce: directly invoke debounce_job(fixture_id)
+4. Process events inline (pure set operations):
+   a. NEW events (live - active): Add to active with stable_count=1
+   b. MATCHING events (live & active): Increment stable_count
+   c. REMOVED events (active - live): Mark _removed=true (VAR)
+   d. stable_count >= 3: Trigger TwitterWorkflow as child
 
-5. After debounce:
+5. After processing:
    a. Check if status is FT/AET/PEN
-   b. Move to fixtures_completed (also deletes fixtures_live)
+   b. Move to fixtures_completed
 ```
-
-**Key Methods:**
-- `store_live_fixture()`: Filters events, generates _event_id
-- `compare_live_vs_active()`: Returns needs_debounce + counts
-- `debounce_fixture_events_op()`: Directly invoked per fixture
 
 **Event ID Format:**
 ```python
-f"{fixture_id}_{player_id}_{elapsed}_{type}_{detail}"
-# Example: "5000_234_23_Goal_Normal Goal"
+f"{fixture_id}_{team_id}_{player_id}_{type}_{sequence}"
+# Example: "5000_40_234_Goal_1"
 ```
 
 ---
 
-### 3. Debounce Job (Per Fixture)
+### 3. TwitterWorkflow (Per Stable Event)
 
-**Purpose**: Process events using clean iteration pattern
+**Purpose**: Search Twitter for event videos, trigger download
 
-**Process (Clean Iteration Pattern)**:
-```python
-1. Get live_events and active_events
-
-2. Build dict of live events by _event_id:
-   live_events_dict = {e["_event_id"]: e for e in live_events}
-
-3. Iterate active_events:
-   FOR each active_event:
-     IF active_event["_event_id"] in live_events_dict:
-       # CASE 2 or 3: Event exists in both
-       live_event = live_events_dict.pop(event_id)
-       
-       IF hash(live_event) == last_snapshot_hash:
-         # CASE 3: Hash unchanged - increment stable_count
-         stable_count += 1
-         Add snapshot
-         IF stable_count >= 3:
-           Mark _debounce_complete
-           Trigger twitter job
-       ELSE:
-         # CASE 2: Hash changed - reset
-         stable_count = 1
-         Add snapshot with new hash
-     
-     ELSE:
-       # CASE 4: Event in active but NOT in live (VAR removed)
-       Mark event as _removed
-
-4. Whatever's left in live_events_dict are NEW events:
-   FOR each event_id, live_event in live_events_dict.items():
-     # CASE 1: NEW event
-     Build enhancement fields:
-       - _event_id (already set)
-       - _stable_count = 1
-       - _debounce_complete = false
-       - _first_seen = now
-       - _snapshots = [{"timestamp": now, "hash": hash(live_event)}]
-       - _score_before, _score_after, _scoring_team
-       - _twitter_search = "{player_last_name} {team_name}"
-     
-     Add enhanced event to fixtures_active
-```
-
-**Hash Function:**
-```python
-def generate_event_hash(event: dict) -> str:
-    key_fields = {
-        "player_id": event.get("player", {}).get("id"),
-        "team_id": event.get("team", {}).get("id"),
-        "type": event.get("type"),
-        "detail": event.get("detail"),
-        "time_elapsed": event.get("time", {}).get("elapsed"),
-        "assist_id": event.get("assist", {}).get("id"),
-    }
-    return hashlib.md5(json.dumps(key_fields, sort_keys=True).encode()).hexdigest()
-```
-
-**Why This Pattern?**
-- No double iteration needed
-- Clear handling of all 4 cases
-- Whatever's left = NEW events (elegant!)
-
----
-
-### 4. Twitter Job (Per Event)
-
-**Purpose**: Search Twitter for video clips
+**Activities** (3 granular for retry control):
+- `get_twitter_search_data` - Get search query from MongoDB
+- `execute_twitter_search` - POST to Firefox automation service
+- `save_twitter_results` - Save videos to MongoDB
 
 **Process**:
 ```python
 1. Get event from fixtures_active where:
    - _debounce_complete = true
-   - _twitter_complete = false
+   - _twitter_started = true (marked by workflow)
 
-2. Use prebuilt _twitter_search field
+2. Use prebuilt _twitter_search field (e.g., "Salah Liverpool")
 
-3. Search Twitter API for videos
+3. POST to twitter:8888/search (Firefox browser automation)
 
-4. Download videos to MinIO S3
+4. Save discovered videos to fixtures_active
+
+5. If videos found AND fixture finished:
+   - Trigger DownloadWorkflow as child
+```
+
+**Why 3 activities?**
+- If search fails → only retry search (not MongoDB reads)
+- If save fails → videos preserved in workflow state
+
+---
+
+### 4. DownloadWorkflow (Per Event with Videos)
+
+**Purpose**: Download, deduplicate, upload videos to S3
+
+**Activities** (5 granular for per-video retry):
+- `fetch_event_data` - Get event from fixtures_active
+- `download_single_video` - Download ONE video (3 retries)
+- `deduplicate_videos` - MD5 hash, keep largest per hash
+- `upload_single_video` - Upload ONE video to S3 (3 retries)
+- `mark_download_complete` - Update MongoDB, cleanup
+
+**Process**:
+```python
+1. Get event from fixtures_active with discovered_videos
+
+2. For each video URL:
+   - Download to temp directory
+   - Track success/failure per video
+
+3. Deduplicate by MD5 hash (keep largest file per hash)
+
+4. For each unique video:
+   - Upload to S3: {fixture_id}/{event_id}/{md5_hash}.mp4
+   - Tag with metadata (player, team, minute)
 
 5. Update fixtures_active:
-   - Mark _twitter_complete = true
-   - Store video URLs in _discovered_videos
+   - Mark _download_complete = true
+   - Store s3_urls array
+   - Cleanup temp directory
 ```
+
+**Why 5 activities?**
+- If 3/5 videos succeed, those are preserved
+- Failures don't lose progress
+- Clear retry visibility in Temporal UI
 
 ---
 
@@ -397,35 +381,34 @@ def generate_event_hash(event: dict) -> str:
 
 ```mermaid
 sequenceDiagram
-    participant M as Monitor
+    participant MW as MonitorWorkflow
     participant L as fixtures_live
     participant A as fixtures_active
-    participant D as Debounce
-    participant T as Twitter
+    participant TW as TwitterWorkflow
+    participant DW as DownloadWorkflow
     
-    Note over M: Poll 1 - 15:23:00
-    M->>L: Store event (filtered, with _event_id)
-    M->>M: Compare: NEW event detected
-    M->>D: Invoke debounce(5000)
-    D->>A: Add event (stable_count=1)
+    Note over MW: Poll 1 - 15:23:00
+    MW->>L: Store event (filtered, with _event_id)
+    MW->>MW: process_fixture_events: NEW event
+    MW->>A: Add event (stable_count=1)
     
-    Note over M: Poll 2 - 15:24:00
-    M->>L: Store event (overwrite)
-    M->>M: Compare: INCOMPLETE event
-    M->>D: Invoke debounce(5000)
-    D->>D: Hash same? Yes
-    D->>A: Update (stable_count=2)
+    Note over MW: Poll 2 - 15:24:00
+    MW->>L: Store event (overwrite)
+    MW->>MW: process_fixture_events: MATCHING
+    MW->>A: Update (stable_count=2)
     
-    Note over M: Poll 3 - 15:25:00
-    M->>L: Store event (overwrite)
-    M->>M: Compare: INCOMPLETE event
-    M->>D: Invoke debounce(5000)
-    D->>D: Hash same? Yes
-    D->>A: Update (stable_count=3, debounce_complete=true)
-    D->>T: Trigger twitter job
+    Note over MW: Poll 3 - 15:25:00
+    MW->>L: Store event (overwrite)
+    MW->>MW: process_fixture_events: stable_count=3!
+    MW->>A: Mark debounce_complete=true
+    MW->>TW: Start TwitterWorkflow (child)
     
-    T->>T: Search Twitter
-    T->>A: Mark twitter_complete=true
+    TW->>TW: POST to twitter:8888/search
+    TW->>A: Save discovered_videos
+    TW->>DW: Start DownloadWorkflow (child)
+    
+    DW->>DW: Download + dedupe + upload to S3
+    DW->>A: Mark download_complete=true
 ```
 
 ---
@@ -455,9 +438,10 @@ db.fixtures_active.find({"events._event_id": {$exists: true}})
 ```
 
 ### Check comparison logic
-```python
-# In Dagster UI logs
-"🎯 Fixture 5000 needs debounce: NEW=1, INCOMPLETE=0, REMOVED=0"
+```bash
+# In worker logs
+docker logs -f found-footy-worker
+# Or in Temporal UI: http://localhost:4100
 ```
 
 ---

@@ -25,6 +25,7 @@ class IngestWorkflow:
            - LIVE/1H/HT/2H/ET/P/BT → fixtures_active  
            - FT/AET/PEN → fixtures_completed
         """
+        workflow.logger.info("📥 Starting daily fixture ingest")
         
         # Fetch today's fixtures
         fixtures = await workflow.execute_activity(
@@ -51,4 +52,9 @@ class IngestWorkflow:
         
         # Add total fixture count for logging
         result["total_fixtures"] = len(fixtures)
+        
+        workflow.logger.info(
+            f"✅ Ingest complete: {result.get('staging_count', 0)} staging, "
+            f"{result.get('active_count', 0)} active, {result.get('completed_count', 0)} completed"
+        )
         return result

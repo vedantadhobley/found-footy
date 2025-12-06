@@ -1,35 +1,37 @@
-# Core dependencies
+# Found Footy - Temporal Pipeline Dependencies
+
+# Core
 pymongo
 requests
 python-dotenv
 boto3
+
+# Video Processing
 yt-dlp
 mutagen
-anyio
-pyOpenSSL
-cryptography
-selenium
 opencv-python
 numpy
 pillow
+
+# Browser Automation (Twitter service)
+selenium
+undetected-chromedriver>=3.5.0
+
+# API
+fastapi
+uvicorn[standard]
+
+# Workflow Orchestration
+temporalio
+psutil
+
+# Async
+anyio
+pyOpenSSL
+cryptography
 
 # Testing
 pytest
 pytest-cov
 pytest-mock
 pytest-asyncio
-
-# API
-fastapi
-uvicorn[standard]
-
-# Workflow engine - Temporal
-temporalio
-psutil
-
-# Deprecated (Dagster) - keeping for reference during migration
-# dagster
-# dagster-webserver
-# dagster-postgres
-# dagster-docker
-undetected-chromedriver>=3.5.0

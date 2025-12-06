@@ -1,27 +1,67 @@
-# Dagster-based deployment for Found Footy
-# Migrated from Prefect to Dagster orchestration
+# Production Docker Compose - Temporal orchestration
+#
+# Port allocation: found-footy uses 3100-3109 (production)
+#   3100: Temporal UI
+#   3101: MongoDB Express
+#   3102: MinIO Console
+#   3103: Twitter Firefox VNC (browser GUI)
+#
+# Internal ports (not exposed):
+#   - postgres:5432 (Temporal metadata)
+#   - mongo:27017 (Application data)
+#   - minio:9000 (S3 storage)
+#   - temporal:7233 (gRPC)
+#   - twitter:8888 (API)
 
 services:
-  # PostgreSQL database for Dagster metadata storage
-  dagster-postgres:
+  # TWITTER SERVICE - handles Twitter scraping with GUI access
+  twitter:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: found-footy-twitter
+    ports:
+      - "3103:6080"  # noVNC Browser - view Firefox at http://localhost:3103
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /workspace
+      TWITTER_COOKIES_FILE: /data/twitter_cookies.pkl
+      TWITTER_COOKIE_BACKUP_PATH: /config/twitter_cookies.json
+      TWITTER_SERVICE_HOST: "0.0.0.0"
+      TWITTER_SERVICE_PORT: "8888"
+      TWITTER_HEADLESS: "false"
+      DISPLAY: ":99"
+    volumes:
+      - .:/workspace
+      - twitter_cookies:/data
+      - ~/.config/found-footy:/config
+    networks:
+      - found-footy-prod
+    restart: unless-stopped
+    command: bash /workspace/twitter/start_with_vnc.sh
+
+  # POSTGRESQL - Temporal metadata storage
+  postgres:
     image: postgres:15-alpine
-    container_name: found-footy-dagster-postgres
+    container_name: found-footy-postgres
     environment:
       POSTGRES_USER: ffuser
       POSTGRES_PASSWORD: ffpass
-      POSTGRES_DB: dagster
+      POSTGRES_DB: temporal
     volumes:
-      - dagster_postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ffuser -d dagster"]
+      test: ["CMD-SHELL", "pg_isready -U ffuser -d temporal"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
+    restart: unless-stopped
     networks:
       - found-footy-prod
 
-  # MongoDB for application data (fixtures, goals, videos)
+  # MONGODB - application data storage
   mongo:
     image: mongo:7-jammy
     container_name: found-footy-mongo
@@ -40,18 +80,18 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    restart: unless-stopped
     networks:
       - found-footy-prod
 
-  # Mongo Express (database UI)
+  # MONGODB EXPRESS - MongoDB web UI
   mongo-express:
     image: mongo-express:1.0.2-20-alpine3.19
     container_name: found-footy-mongo-express
-    restart: unless-stopped
     ports:
-      - "3101:8081"   # Found-footy production MongoDB Express
+      - "3101:8081"
     environment:
-      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_SERVER: found-footy-mongo
       ME_CONFIG_MONGODB_PORT: 27017
       ME_CONFIG_MONGODB_ADMINUSERNAME: ffuser
       ME_CONFIG_MONGODB_ADMINPASSWORD: ffpass
@@ -62,24 +102,25 @@ services:
       mongo:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8081"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://ffuser:ffpass@127.0.0.1:8081"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
+    restart: unless-stopped
     networks:
       - found-footy-prod
 
-  # MinIO (S3-compatible storage for videos)
+  # MINIO - S3-compatible object storage
   minio:
     image: minio/minio:latest
     container_name: found-footy-minio
     command: server /data --console-address ":9001"
     ports:
-      - "3102:9001"   # Found-footy production MinIO Console (web UI only, API is internal)
+      - "3102:9001"
     environment:
       MINIO_ROOT_USER: ffuser
-      MINIO_ROOT_PASSWORD: ffpass
+      MINIO_ROOT_PASSWORD: ffpass--
     volumes:
       - minio_data:/data
     healthcheck:
@@ -88,142 +129,81 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    restart: unless-stopped
     networks:
       - found-footy-prod
 
-  # Base image builder (builds once, used by all services)
-  app-base:
+  # TEMPORAL SERVER - Workflow orchestration
+  temporal:
+    image: temporalio/auto-setup:latest
+    container_name: found-footy-temporal
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=ffuser
+      - POSTGRES_PWD=ffpass
+      - POSTGRES_SEEDS=found-footy-postgres
+      - BIND_ON_IP=0.0.0.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - found-footy-prod
+    restart: unless-stopped
+
+  # TEMPORAL UI - Web interface
+  temporal-ui:
+    image: temporalio/ui:latest
+    container_name: found-footy-temporal-ui
+    ports:
+      - "3100:8080"
+    environment:
+      - TEMPORAL_ADDRESS=found-footy-temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3100
+    depends_on:
+      - temporal
+    networks:
+      - found-footy-prod
+    restart: unless-stopped
+
+  # TEMPORAL WORKER - Executes workflows
+  worker:
     build:
       context: .
-      dockerfile: Dockerfile
-    image: found-footy:latest
-    command: "true"  # Just build, don't run
-    profiles:
-      - build-only
-
-  # Dagster webserver (UI)
-  dagster-webserver:
-    image: found-footy:latest
-    container_name: found-footy-dagster-webserver
-    command: dagster-webserver -h 0.0.0.0 -p 3000 -w /app/workspace.yaml
-    ports:
-      - "3100:3000"   # Found-footy production Dagster UI (range: 3100-3199)
+      dockerfile: Dockerfile.dev
+    container_name: found-footy-worker
     env_file:
       - .env
     environment:
-      DAGSTER_HOME: /app
-      DAGSTER_PG_USERNAME: ffuser
-      DAGSTER_PG_PASSWORD: ffpass
-      DAGSTER_PG_HOST: dagster-postgres
-      DAGSTER_PG_DB: dagster
-      DAGSTER_PG_PORT: 5432
-      MONGODB_URI: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
-      MONGODB_URL: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
-      S3_ENDPOINT_URL: http://minio:9000
+      PYTHONPATH: /workspace
+      TEMPORAL_HOST: found-footy-temporal:7233
+      MONGODB_URI: mongodb://ffuser:ffpass@found-footy-mongo:27017/found_footy?authSource=admin
+      S3_ENDPOINT_URL: http://found-footy-minio:9000
       S3_ACCESS_KEY: ffuser
-      S3_SECRET_KEY: ffpass
+      S3_SECRET_KEY: ffpass--
       S3_BUCKET_NAME: footy-videos
-      TWITTER_SESSION_URL: http://twitter-session:8888
-      PYTHONPATH: /app
+      TWITTER_SESSION_URL: http://found-footy-twitter:8888
     volumes:
-      - ./downloads:/app/downloads  # Mount downloads directory for video temp storage
+      - .:/workspace
+    networks:
+      - found-footy-prod
     depends_on:
-      dagster-postgres:
-        condition: service_healthy
-      mongo:
-        condition: service_healthy
+      - temporal
+      - mongo
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
-      interval: 10s
-      timeout: 5s
-      retries: 15
-      start_period: 60s
-    networks:
-      - found-footy-prod
-
-  # Dagster daemon (for schedules and sensors)
-  dagster-daemon:
-    image: found-footy:latest
-    container_name: found-footy-dagster-daemon
-    command: dagster-daemon run
-    env_file:
-      - .env
-    environment:
-      DAGSTER_HOME: /app
-      DAGSTER_PG_USERNAME: ffuser
-      DAGSTER_PG_PASSWORD: ffpass
-      DAGSTER_PG_HOST: dagster-postgres
-      DAGSTER_PG_DB: dagster
-      DAGSTER_PG_PORT: 5432
-      MONGODB_URI: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
-      MONGODB_URL: mongodb://ffuser:ffpass@mongo:27017/found_footy?authSource=admin
-      S3_ENDPOINT_URL: http://minio:9000
-      S3_ACCESS_KEY: ffuser
-      S3_SECRET_KEY: ffpass
-      S3_BUCKET_NAME: footy-videos
-      TWITTER_SESSION_URL: http://twitter-session:8888
-      PYTHONPATH: /app
-    volumes:
-      - ./downloads:/app/downloads  # Mount downloads directory for video temp storage
-    depends_on:
-      dagster-postgres:
-        condition: service_healthy
-      dagster-webserver:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - found-footy-prod
-
-  # Twitter session service (cookie-based auth, isolated microservice)
-  twitter-session:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: found-footy:latest
-    container_name: found-footy-twitter-session
-    command: >
-      bash -c "
-      mkdir -p /data &&
-      chmod 777 /data &&
-      Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
-      sleep 2 &&
-      python -m twitter.app
-      "
-    ports:
-      - "3103:8888"   # Found-footy production Twitter Login UI
-    env_file:
-      - .env
-    environment:
-      PYTHONPATH: /app
-      TWITTER_COOKIES_FILE: /data/twitter_cookies.pkl
-      TWITTER_SERVICE_HOST: "0.0.0.0"
-      TWITTER_SERVICE_PORT: "8888"
-      DISPLAY: "${DISPLAY:-:99}"
-    volumes:
-      - twitter_cookies:/data  # Persistent cookies volume
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw  # X11 socket for GUI
-    restart: unless-stopped
-    networks:
-      - found-footy-prod
+    command: python /workspace/src/worker.py
 
 volumes:
-  dagster_postgres_data:
+  postgres_data:
     driver: local
   mongo_data:
     driver: local
   minio_data:
     driver: local
   twitter_cookies:
-    driver: local  # Persistent Twitter auth cookies
+    driver: local
 
 networks:
-  # Internal network - auto-created for prod environment
-  # All found-footy PROD services communicate here
   found-footy-prod:
+    name: found-footy-prod
     driver: bridge
-  
-  # Shared network - persistent, cross-project communication
-  # Only join this if you need to talk to OTHER projects in prod
-  luv-prod:
-    external: true

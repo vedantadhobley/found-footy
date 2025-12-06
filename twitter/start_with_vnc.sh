@@ -9,21 +9,22 @@ echo "🖥️  Starting VNC server for browser GUI access..."
 rm -f /tmp/.X99-lock
 rm -f /tmp/.X11-unix/X99
 
-# Start Xvfb (virtual display)
-Xvfb :99 -screen 0 1920x1080x24 &
+# Start Xvfb (virtual display) - suppress output
+Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
 export DISPLAY=:99
 sleep 2
 
-# Start lightweight window manager
-fluxbox &
+# Start lightweight window manager - suppress output
+fluxbox > /dev/null 2>&1 &
 sleep 1
 
-# Start VNC server (allows remote control of the display)
-x11vnc -display :99 -forever -shared -rfbport 5900 -nopw -bg -quiet
+# Start VNC server - use -q for quiet mode
+x11vnc -display :99 -forever -shared -rfbport 5900 -nopw -bg -q
 sleep 1
 
 # Start noVNC (web interface to VNC) with auto-redirect to vnc.html
-websockify --web=/usr/share/novnc 6080 localhost:5900 &
+# Redirect websockify logs to /dev/null to suppress 404 spam
+websockify --web=/usr/share/novnc 6080 localhost:5900 > /dev/null 2>&1 &
 sleep 1
 
 # Create index redirect to vnc.html
