@@ -58,7 +58,7 @@ class FootyMongoStore:
             
             # Enhanced event field indexes (fixtures_active only)
             self.fixtures_active.create_index([("events._event_id", ASCENDING)])
-            self.fixtures_active.create_index([("events._debounce_complete", ASCENDING)])
+            self.fixtures_active.create_index([("events._monitor_complete", ASCENDING)])
             
             FootyMongoStore._indexes_created = True
         except Exception as e:
@@ -278,7 +278,7 @@ class FootyMongoStore:
         3. Check for differences using Python set operations:
            - NEW: live_ids - active_ids (in live, not in active)
            - REMOVED: active_ids - live_ids (in active, not in live)
-           - INCOMPLETE: iterate live_ids, check if _debounce_complete=False
+           - INCOMPLETE: iterate live_ids, check if _monitor_complete=False
         
         Triggers EventWorkflow if ANY of these cases has events:
         - NEW events appeared
@@ -305,11 +305,11 @@ class FootyMongoStore:
             # CASE 1: NEW - Events in live but not in active
             new_event_ids = live_event_ids - active_event_ids
             
-            # CASE 2: INCOMPLETE - Events in both but not debounce complete
+            # CASE 2: INCOMPLETE - Events in both but not monitor complete
             active_map = {e.get("_event_id"): e for e in active_events if e.get("_event_id")}
             incomplete_count = 0
             for event_id in live_event_ids:
-                if event_id in active_map and not active_map[event_id].get("_debounce_complete", False):
+                if event_id in active_map and not active_map[event_id].get("_monitor_complete", False):
                     incomplete_count += 1
             
             # CASE 3: REMOVED - Events in active but not in live anymore
@@ -345,19 +345,25 @@ class FootyMongoStore:
         
         Enhancement fields in event:
         - _event_id: Unique event identifier
-        - _stable_count: Number of consecutive unchanged polls
-        - _debounce_complete: True when stable_count reaches threshold
+        - _monitor_count: Number of consecutive unchanged polls
+        - _monitor_complete: True when monitor_count reaches threshold
         - _twitter_complete: True when videos downloaded
         - _first_seen: Timestamp when first detected
         - _snapshots: List of hash snapshots over time
         - _score_before: Score before this event
         - _score_after: Score after this event
         - _twitter_search: Search string for Twitter
+        
+        Also updates fixture-level _last_event timestamp for UI sorting.
         """
         try:
+            now = datetime.now(timezone.utc)
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id},
-                {"$push": {"events": event_with_enhancements}}
+                {
+                    "$push": {"events": event_with_enhancements},
+                    "$set": {"_last_event": now}
+                }
             )
             return result.modified_count > 0
         except Exception as e:
@@ -367,34 +373,70 @@ class FootyMongoStore:
     def update_event_stable_count(self, fixture_id: int, event_id: str, 
                                    stable_count: int, snapshot: dict | None = None) -> bool:
         """
-        Update existing event's stable_count.
+        Update existing event's monitor_count.
         
         Note: snapshot parameter kept for backwards compatibility but ignored.
         With player_id in event_id, we don't need hash/snapshot tracking!
+        
+        Also updates fixture-level _last_event timestamp for UI sorting.
         """
         try:
+            now = datetime.now(timezone.utc)
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id, "events._event_id": event_id},
-                {"$set": {"events.$._stable_count": stable_count}}
+                {
+                    "$set": {
+                        "events.$._monitor_count": stable_count,
+                        "_last_event": now
+                    }
+                }
             )
             return result.modified_count > 0
         except Exception as e:
-            print(f"❌ Error updating stable count for event {event_id}: {e}")
+            print(f"❌ Error updating monitor count for event {event_id}: {e}")
             return False
     
-    def mark_event_debounce_complete(self, fixture_id: int, event_id: str) -> bool:
+    def mark_event_monitor_complete(self, fixture_id: int, event_id: str) -> bool:
         """
-        Mark event as debounce complete (stable_count reached threshold).
-        Called by debounce job when event is stable.
+        Mark event as monitor complete (monitor_count reached threshold).
+        Called by monitor activity when event is stable.
+        Sets _twitter_count to 1 to begin Twitter attempts.
         """
         try:
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id, "events._event_id": event_id},
-                {"$set": {"events.$._debounce_complete": True}}
+                {"$set": {
+                    "events.$._monitor_complete": True,
+                    "events.$._twitter_count": 1
+                }}
             )
             return result.modified_count > 0
         except Exception as e:
-            print(f"❌ Error marking event {event_id} debounce complete: {e}")
+            print(f"❌ Error marking event {event_id} monitor complete: {e}")
+            return False
+    
+    def update_event_twitter_count(self, fixture_id: int, event_id: str, new_count: int, is_complete: bool) -> bool:
+        """
+        Update Twitter attempt counter and completion flag.
+        Called by monitor before triggering additional Twitter searches.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID  
+            new_count: New twitter_count value (1, 2, or 3)
+            is_complete: True if new_count >= 3 (final attempt)
+        """
+        try:
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, "events._event_id": event_id},
+                {"$set": {
+                    "events.$._twitter_count": new_count,
+                    "events.$._twitter_complete": is_complete
+                }}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error updating twitter count for {event_id}: {e}")
             return False
     
     def mark_event_removed(self, fixture_id: int, event_id: str) -> bool:
@@ -447,6 +489,9 @@ class FootyMongoStore:
         Mark event as twitter complete and save discovered video URLs.
         Called by twitter job when search completes.
         
+        IMPORTANT: Merges new videos with existing ones (dedup by URL).
+        This handles retry scenarios where we've already discovered some videos.
+        
         Args:
             fixture_id: Fixture ID
             event_id: Event ID
@@ -458,56 +503,98 @@ class FootyMongoStore:
                 "events.$._twitter_completed_at": datetime.now(timezone.utc)
             }
             
-            # Add discovered videos if provided
+            # Merge new videos with existing (dedup by URL) - same logic as retry
             if discovered_videos is not None:
-                update_doc["events.$._discovered_videos"] = discovered_videos
-                update_doc["events.$._video_count"] = len(discovered_videos)
+                # Fetch existing videos to merge
+                existing_videos = []
+                fixture = self.fixtures_active.find_one({"_id": fixture_id})
+                if fixture:
+                    for evt in fixture.get("events", []):
+                        if evt.get("_event_id") == event_id:
+                            existing_videos = evt.get("_discovered_videos", [])
+                            break
+                
+                # Create URL set from existing videos (Twitter uses video_page_url)
+                existing_urls = {v.get("video_page_url") or v.get("url") for v in existing_videos if v.get("video_page_url") or v.get("url")}
+                
+                # Add new videos that aren't already in the list
+                merged_videos = existing_videos.copy()
+                for video in discovered_videos:
+                    video_url = video.get("video_page_url") or video.get("url")
+                    if video_url not in existing_urls:
+                        merged_videos.append(video)
+                
+                update_doc["events.$._discovered_videos"] = merged_videos
+                update_doc["events.$._video_count"] = len(merged_videos)
             
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id, "events._event_id": event_id},
                 {"$set": update_doc}
             )
-            return result.modified_count > 0
+            if result.modified_count == 0:
+                msg = f"❌ FATAL: Failed to mark event {event_id} twitter complete (0 documents modified)"
+                print(msg)
+                raise RuntimeError(msg)
+            return True
         except Exception as e:
-            print(f"❌ Error marking event {event_id} twitter complete: {e}")
-            return False
+            print(f"❌ FATAL: Error marking event {event_id} twitter complete: {e}")
+            raise  # Re-raise - this is critical for pipeline integrity
     
-    def mark_event_twitter_needs_retry(
-        self, 
-        fixture_id: int, 
-        event_id: str, 
-        discovered_videos: List[Dict[str, Any]] | None = None
-    ) -> bool:
+
+    def _generate_event_display_titles(self, fixture: Dict[str, Any], event: Dict[str, Any]) -> tuple:
         """
-        Mark event as needing Twitter retry (<5 videos found, fixture still in progress).
+        Generate display titles for frontend.
         
-        Saves videos found so far but sets _twitter_needs_retry=True instead of complete.
-        On next poll cycle, MonitorWorkflow will trigger another TwitterWorkflow.
+        Title: "Manchester City 0 - (3) Liverpool" (home team first, scoring team score in parens)
+        Subtitle: "90+2 - Florian Wirtz (Dominik Szoboszlai)" (minute - scorer (assister))
         
         Args:
-            fixture_id: Fixture ID
-            event_id: Event ID
-            discovered_videos: List of video dicts found so far
+            fixture: Fixture data with teams, score
+            event: Event data with time, player, assist
+        
+        Returns:
+            tuple: (title, subtitle)
         """
-        try:
-            update_doc = {
-                "events.$._twitter_needs_retry": True,
-                "events.$._twitter_retry_at": datetime.now(timezone.utc),
-            }
-            
-            # Save videos found so far (will be overwritten on retry)
-            if discovered_videos is not None:
-                update_doc["events.$._discovered_videos"] = discovered_videos
-                update_doc["events.$._video_count"] = len(discovered_videos)
-            
-            result = self.fixtures_active.update_one(
-                {"_id": fixture_id, "events._event_id": event_id},
-                {"$set": update_doc}
-            )
-            return result.modified_count > 0
-        except Exception as e:
-            print(f"❌ Error marking event {event_id} for Twitter retry: {e}")
-            return False
+        # Extract teams and scores
+        home_team = fixture.get("teams", {}).get("home", {}).get("name", "Unknown")
+        away_team = fixture.get("teams", {}).get("away", {}).get("name", "Unknown")
+        home_score = fixture.get("goals", {}).get("home", 0)
+        away_score = fixture.get("goals", {}).get("away", 0)
+        
+        # Determine which team scored (for highlighting)
+        scoring_team = event.get("team", {}).get("name", "")
+        
+        # Build title with scoring team's score in parentheses
+        # Format: "Home 0 - (3) Away" or "Away 2 - (1) Home" (home team first if exists)
+        if home_team and home_team != "Unknown":
+            # Home team exists - show home first
+            if scoring_team == home_team:
+                title = f"{home_team} ({home_score}) - {away_score} {away_team}"
+            else:
+                title = f"{home_team} {home_score} - ({away_score}) {away_team}"
+        else:
+            # No home team (neutral venue) - show scoring team first
+            if scoring_team == away_team:
+                title = f"{away_team} ({away_score}) - {home_score} {home_team}"
+            else:
+                title = f"{home_team} ({home_score}) - {away_score} {away_team}"
+        
+        # Build subtitle with time and players
+        minute = event.get("time", {}).get("elapsed", 0)
+        extra = event.get("time", {}).get("extra")
+        scorer = event.get("player", {}).get("name", "Unknown")
+        assister = event.get("assist", {}).get("player", {}).get("name", "")
+        
+        # Format time: "90+2" or just "45"
+        time_str = f"{minute}+{extra}" if extra else str(minute)
+        
+        # Format subtitle: "90+2 - Florian Wirtz (Dominik Szoboszlai)"
+        if assister:
+            subtitle = f"{time_str}' - {scorer} ({assister})"
+        else:
+            subtitle = f"{time_str}' - {scorer}"
+        
+        return title, subtitle
     
     def sync_fixture_data(self, fixture_id: int) -> bool:
         """
@@ -517,6 +604,8 @@ class FootyMongoStore:
         
         Updates: fixture, teams, league, goals, score, status, etc.
         Preserves: events array (with all enhancement fields)
+        
+        Also regenerates display titles for all events (low-cost operation).
         """
         try:
             live_fixture = self.get_live_fixture(fixture_id)
@@ -531,8 +620,16 @@ class FootyMongoStore:
             # Build update document with all top-level fields from live
             update_doc = dict(live_fixture)
             update_doc["_id"] = fixture_id
-            # Preserve enhanced events from active
-            update_doc["events"] = active_fixture.get("events", [])
+            
+            # Preserve enhanced events from active and regenerate display titles
+            enhanced_events = active_fixture.get("events", [])
+            for event in enhanced_events:
+                # Regenerate display titles based on current fixture state
+                title, subtitle = self._generate_event_display_titles(update_doc, event)
+                event["_display_title"] = title
+                event["_display_subtitle"] = subtitle
+            
+            update_doc["events"] = enhanced_events
             
             # Replace entire document (preserving events)
             result = self.fixtures_active.replace_one(
@@ -548,33 +645,55 @@ class FootyMongoStore:
         self,
         fixture_id: int,
         event_id: str,
-        s3_urls: List[str]
+        s3_urls: List[str],
+        perceptual_hashes: List[str]
     ) -> bool:
         """
-        Mark event as download complete and save S3 URLs.
-        Called by download job when videos uploaded.
+        Save S3 URLs and perceptual hashes after download completes.
+        Called by download workflow after videos uploaded.
+        
+        Note: Monitor workflow controls _twitter_count and _twitter_complete.
+        This just appends new results to existing arrays.
         
         Args:
             fixture_id: Fixture ID
             event_id: Event ID
-            s3_urls: List of S3 URLs for uploaded videos
+            s3_urls: List of S3 URLs for uploaded videos (this attempt only)
+            perceptual_hashes: List of perceptual hashes for cross-resolution dedup
         """
         try:
+            # If no new videos (all were duplicates), just verify event exists
+            if not s3_urls and not perceptual_hashes:
+                # Verify event exists in active collection
+                fixture = self.fixtures_active.find_one(
+                    {"_id": fixture_id, "events._event_id": event_id}
+                )
+                if not fixture:
+                    msg = f"❌ FATAL: Event {event_id} not found in fixtures_active"
+                    print(msg)
+                    raise RuntimeError(msg)
+                print(f"✅ Download complete for {event_id} (0 new videos - all were duplicates)")
+                return True
+            
+            # Append new S3 URLs and hashes to existing arrays
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id, "events._event_id": event_id},
                 {
-                    "$set": {
-                        "events.$._download_complete": True,
-                        "events.$._s3_urls": s3_urls,
-                        "events.$._s3_count": len(s3_urls),
-                        "events.$._download_completed_at": datetime.now(timezone.utc)
+                    "$push": {
+                        "events.$._s3_urls": {"$each": s3_urls},
+                        "events.$._perceptual_hashes": {"$each": perceptual_hashes}
                     }
                 }
             )
-            return result.modified_count > 0
+            
+            if result.modified_count == 0:
+                msg = f"❌ FATAL: Failed to mark event {event_id} download complete (0 documents modified)"
+                print(msg)
+                raise RuntimeError(msg)
+            return True
         except Exception as e:
-            print(f"❌ Error marking event {event_id} download complete: {e}")
-            return False
+            print(f"❌ FATAL: Error marking event {event_id} download complete: {e}")
+            raise  # Re-raise - this is critical for pipeline integrity
 
     # === Completion Operations ===
     
@@ -583,9 +702,13 @@ class FootyMongoStore:
         Move fixture from active to completed (when status is FT/AET/PEN AND all events processed).
         Also removes from fixtures_live.
         
-        CRITICAL: Only completes if ALL enhanced events have:
-        - _debounce_complete: true
-        - _twitter_complete: true
+        CRITICAL: Only completes if ALL valid enhanced events have:
+        - _monitor_complete: true
+        - _twitter_complete: true (stays false until 5 videos OR 3 attempts reached)
+        
+        Ignores:
+        - Removed events (_removed: true)
+        - Events without player ID (player_id=None, can't generate stable event_id)
         """
         try:
             fixture_doc = self.fixtures_active.find_one({"_id": fixture_id})
@@ -598,20 +721,36 @@ class FootyMongoStore:
             enhanced_events = [e for e in events if e.get("_event_id")]
             
             if enhanced_events:
-                # Has events - must check if all processing is complete
-                all_debounced = all(e.get("_debounce_complete", False) for e in enhanced_events)
-                all_twitter_done = all(e.get("_twitter_complete", False) for e in enhanced_events)
+                # Filter out events that should be ignored for completion
+                # 1. Removed events (VAR disallowed, etc.)
+                # 2. Events with player_id=None (can't generate stable event_id)
+                valid_events = [
+                    e for e in enhanced_events 
+                    if not e.get("_removed", False) 
+                    and "None" not in e.get("_event_id", "")
+                ]
                 
-                if not (all_debounced and all_twitter_done):
-                    # Events still being processed - cannot complete yet
-                    debounced = sum(1 for e in enhanced_events if e.get("_debounce_complete"))
-                    twitter_done = sum(1 for e in enhanced_events if e.get("_twitter_complete"))
-                    print(
-                        f"⏳ Fixture {fixture_id} waiting for event processing: "
-                        f"debounced={debounced}/{len(enhanced_events)}, "
-                        f"twitter={twitter_done}/{len(enhanced_events)}"
-                    )
-                    return False
+                if not valid_events:
+                    # All events removed or invalid - can complete
+                    pass
+                else:
+                    # Has valid events - must check if all processing is complete
+                    all_monitored = all(e.get("_monitor_complete", False) for e in valid_events)
+                    
+                    # For Twitter: MUST have reached 3 attempts (_twitter_count >= 3)
+                    # Derive completion from attempt counter instead of boolean flag
+                    all_twitter_done = all(e.get("_twitter_count", 0) >= 3 for e in valid_events)
+                    
+                    if not (all_monitored and all_twitter_done):
+                        # Events still being processed - cannot complete yet
+                        monitored = sum(1 for e in valid_events if e.get("_monitor_complete"))
+                        twitter_done = sum(1 for e in valid_events if e.get("_twitter_count", 0) >= 3)
+                        print(
+                            f"⏳ Fixture {fixture_id} waiting for event processing: "
+                            f"monitored={monitored}/{len(valid_events)}, "
+                            f"twitter={twitter_done}/{len(valid_events)}"
+                        )
+                        return False
             
             # Either no events OR all events fully processed - can complete
             # Add completion timestamp

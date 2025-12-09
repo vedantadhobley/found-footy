@@ -55,8 +55,8 @@ class MonitorWorkflow:
         )
         
         # Process each fixture
-        twitter_workflows_triggered = []
-        twitter_retries_triggered = []
+        twitter_first_searches = []
+        twitter_additional_searches = []
         
         for fixture_data in fixtures:
             fixture_id = fixture_data.get("fixture", {}).get("id")
@@ -90,38 +90,41 @@ class MonitorWorkflow:
                 player_last = player_name.split()[-1] if player_name else "Unknown"
                 team_clean = team_name.replace(" ", "_").replace(".", "_")
                 minute_str = f"{minute}+{extra}min" if extra else f"{minute}min"
-                twitter_id = f"twitter-{team_clean}-{player_last}-{minute_str}-{event_id}"
+                twitter_id = f"twitter1-{team_clean}-{player_last}-{minute_str}-{event_id}"
                 
-                twitter_workflows_triggered.append(twitter_id)
+                twitter_first_searches.append(twitter_id)
                 
-                # Start TwitterWorkflow as child (first attempt)
+                # Start TwitterWorkflow (first attempt, attempt_number=1)
                 await workflow.execute_child_workflow(
                     TwitterWorkflow.run,
-                    args=[fixture_id, event_id, player_name, team_name, False, fixture_finished],
+                    args=[fixture_id, event_id, player_name, team_name, 1, fixture_finished],
                     id=twitter_id,
+                    execution_timeout=timedelta(minutes=10),
                 )
             
-            # Trigger RETRY TwitterWorkflow for events that need another search
+            # Trigger additional TwitterWorkflow for events that need more searches
             for event_info in result.get("twitter_retry_needed", []):
                 event_id = event_info["event_id"]
                 player_name = event_info["player_name"]
                 team_name = event_info["team_name"]
                 minute = event_info["minute"]
                 extra = event_info.get("extra")
+                attempt_number = event_info.get("attempt_number", 1)
                 
-                # Build human-readable workflow ID with -retry suffix
+                # Build human-readable workflow ID with attempt number
                 player_last = player_name.split()[-1] if player_name else "Unknown"
                 team_clean = team_name.replace(" ", "_").replace(".", "_")
                 minute_str = f"{minute}+{extra}min" if extra else f"{minute}min"
-                twitter_id = f"twitter-{team_clean}-{player_last}-{minute_str}-retry-{event_id}"
+                twitter_id = f"twitter{attempt_number}-{team_clean}-{player_last}-{minute_str}-{event_id}"
                 
-                twitter_retries_triggered.append(twitter_id)
+                twitter_additional_searches.append(twitter_id)
                 
-                # Start TwitterWorkflow as retry (is_retry=True)
+                # Start TwitterWorkflow (additional attempt)
                 await workflow.execute_child_workflow(
                     TwitterWorkflow.run,
-                    args=[fixture_id, event_id, player_name, team_name, True, fixture_finished],
+                    args=[fixture_id, event_id, player_name, team_name, attempt_number, fixture_finished],
                     id=twitter_id,
+                    execution_timeout=timedelta(minutes=10),
                 )
             
             # Check if fixture is finished and should be completed
@@ -134,13 +137,13 @@ class MonitorWorkflow:
         
         workflow.logger.info(
             f"✅ Monitor complete: {len(fixtures)} fixtures, "
-            f"{len(twitter_workflows_triggered)} Twitter searches, "
-            f"{len(twitter_retries_triggered)} retries"
+            f"{len(twitter_first_searches)} new searches, "
+            f"{len(twitter_additional_searches)} additional searches"
         )
         
         return {
             "fixtures_processed": len(fixtures),
-            "twitter_workflows_triggered": len(twitter_workflows_triggered),
-            "twitter_retries_triggered": len(twitter_retries_triggered),
+            "twitter_first_searches": len(twitter_first_searches),
+            "twitter_additional_searches": len(twitter_additional_searches),
             "active_fixture_count": len(fixtures),
         }

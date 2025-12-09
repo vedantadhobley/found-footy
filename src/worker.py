@@ -164,7 +164,7 @@ async def main():
                 # Twitter activities (3 granular for retry control)
                 twitter.get_twitter_search_data,
                 twitter.execute_twitter_search,
-                twitter.save_twitter_results,
+                twitter.save_discovered_videos,
                 # Download activities (5 granular for per-video retry)
                 download.fetch_event_data,
                 download.download_single_video,

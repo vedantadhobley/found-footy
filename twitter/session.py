@@ -493,6 +493,16 @@ Steps:
             
             for i, tweet_element in enumerate(tweet_elements[:20]):
                 try:
+                    # Skip promoted/ad tweets
+                    try:
+                        # Check for "Promoted" label or ad indicators
+                        promoted_indicators = tweet_element.find_elements(By.XPATH, ".//*[contains(text(), 'Promoted') or contains(text(), 'Ad')]")
+                        if promoted_indicators:
+                            print(f"   ⏭️  Skipping promoted tweet", flush=True)
+                            continue
+                    except:
+                        pass
+                    
                     # Extract tweet text
                     tweet_text = "Text not found"
                     try:
@@ -514,12 +524,55 @@ Steps:
                     except:
                         pass
                     
-                    # Check for video
+                    # Check for video and extract duration
                     has_video = False
+                    video_duration_seconds = None
+                    
                     for selector in ["video", "[data-testid='videoPlayer']", "[data-testid='videoComponent']"]:
                         try:
-                            if tweet_element.find_elements(By.CSS_SELECTOR, selector):
+                            video_elements = tweet_element.find_elements(By.CSS_SELECTOR, selector)
+                            if video_elements:
                                 has_video = True
+                                
+                                # Try to extract duration from video element's duration attribute
+                                try:
+                                    video_elem = video_elements[0]
+                                    duration = video_elem.get_attribute("duration")
+                                    if duration:
+                                        video_duration_seconds = float(duration)
+                                except:
+                                    pass
+                                
+                                # Try to find duration text in player overlay (e.g., "0:15")
+                                if not video_duration_seconds:
+                                    try:
+                                        # Common selectors for video duration display
+                                        duration_selectors = [
+                                            "[aria-label*='Duration']",
+                                            "[data-testid='videoPlayerDuration']",
+                                            ".r-1e081e0",  # Twitter's duration class
+                                            "div[dir='ltr'][style*='color']",  # Styled duration text
+                                        ]
+                                        for dur_selector in duration_selectors:
+                                            duration_elements = tweet_element.find_elements(By.CSS_SELECTOR, dur_selector)
+                                            for dur_elem in duration_elements:
+                                                dur_text = dur_elem.text.strip()
+                                                # Parse formats like "0:15" or "1:23"
+                                                if ":" in dur_text and len(dur_text) <= 6:
+                                                    parts = dur_text.split(":")
+                                                    if len(parts) == 2:
+                                                        try:
+                                                            minutes = int(parts[0])
+                                                            seconds = int(parts[1])
+                                                            video_duration_seconds = minutes * 60 + seconds
+                                                            break
+                                                        except:
+                                                            pass
+                                            if video_duration_seconds:
+                                                break
+                                    except:
+                                        pass
+                                
                                 break
                         except:
                             continue
@@ -539,7 +592,8 @@ Steps:
                             "video_index": len(discovered_videos),
                             "source": "browser_automation",
                             "requires_ytdlp": True,
-                            "video_page_url": f"https://x.com/i/status/{tweet_id}"
+                            "video_page_url": f"https://x.com/i/status/{tweet_id}",
+                            "duration_seconds": video_duration_seconds  # May be None if not found
                         }
                         
                         discovered_videos.append(video_entry)

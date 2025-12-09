@@ -12,7 +12,7 @@ This separation ensures:
 - Clear visibility in Temporal UI of which step failed
 """
 from temporalio import activity
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import os
 import requests
 
@@ -69,15 +69,24 @@ async def get_twitter_search_data(fixture_id: int, event_id: str) -> Dict[str, A
         activity.logger.error(f"❌ {msg}")
         raise ValueError(msg)
     
+    # Get existing discovered videos (for retry deduplication)
+    existing_videos = event.get("_discovered_videos", [])
+    # Twitter service uses video_page_url field
+    existing_urls = [v.get("video_page_url") or v.get("url") for v in existing_videos if v.get("video_page_url") or v.get("url")]
+    
     # Mark search as started (for debugging/monitoring)
     store.mark_event_twitter_started(fixture_id, event_id)
     
-    activity.logger.info(f"🔍 Got search query: '{twitter_search}' for {event_id}")
+    if existing_urls:
+        activity.logger.info(f"🔍 Got search query: '{twitter_search}' for {event_id} (will skip {len(existing_urls)} existing videos)")
+    else:
+        activity.logger.info(f"🔍 Got search query: '{twitter_search}' for {event_id}")
     
     return {
         "twitter_search": twitter_search,
         "fixture_id": fixture_id,
         "event_id": event_id,
+        "existing_video_urls": existing_urls,
     }
 
 
@@ -86,19 +95,27 @@ async def get_twitter_search_data(fixture_id: int, event_id: str) -> Dict[str, A
 # =============================================================================
 
 @activity.defn
-async def execute_twitter_search(twitter_search: str, max_results: int = 5) -> Dict[str, Any]:
+async def execute_twitter_search(
+    twitter_search: str, 
+    max_results: int = 3,
+    existing_video_urls: Optional[List[str]] = None
+) -> Dict[str, Any]:
     """
     POST to Twitter browser automation service.
     
     This is the risky external call that needs proper retry policy.
     If this fails, Temporal will retry the activity (not swallow the error).
     
+    On retry attempts, filters out videos we've already discovered to avoid
+    re-downloading duplicates.
+    
     Args:
         twitter_search: Search query (e.g., "Salah Liverpool")
-        max_results: Max videos to return (default 5)
+        max_results: Max videos to return (default 3)
+        existing_video_urls: List of video URLs already discovered (for retry deduplication)
     
     Returns:
-        Dict with videos array
+        Dict with videos array (filtered to exclude existing URLs)
     
     Raises:
         ConnectionError: Twitter service unavailable
@@ -145,39 +162,40 @@ async def execute_twitter_search(twitter_search: str, max_results: int = 5) -> D
     data = response.json()
     videos = data.get("videos", [])
     
-    activity.logger.info(f"✅ Found {len(videos)} videos")
+    # Filter out videos we've already discovered (on retry)
+    # Twitter service uses video_page_url field
+    if existing_video_urls:
+        original_count = len(videos)
+        videos = [v for v in videos if (v.get("video_page_url") or v.get("url")) not in existing_video_urls]
+        filtered_count = original_count - len(videos)
+        if filtered_count > 0:
+            activity.logger.info(f"🔄 Filtered out {filtered_count} already-discovered videos")
+    
+    activity.logger.info(f"✅ Found {len(videos)} new videos")
     
     return {"videos": videos}
 
 
 # =============================================================================
-# Activity 3: Save Twitter Results
+# Activity 3: Save Discovered Videos (No Completion Logic)
 # =============================================================================
 
 @activity.defn
-async def save_twitter_results(
+async def save_discovered_videos(
     fixture_id: int,
     event_id: str,
     videos: List[Dict[str, Any]],
-    needs_retry: bool = False,
 ) -> Dict[str, Any]:
     """
-    Save discovered videos to MongoDB and optionally mark for retry.
+    Append newly discovered videos to _discovered_videos array.
     
-    If needs_retry=True (got <5 videos, fixture still in progress):
-    - Save videos found so far
-    - Mark _twitter_needs_retry=True (will be picked up next cycle)
-    - Do NOT mark _twitter_complete
-    
-    If needs_retry=False:
-    - Save videos
-    - Mark _twitter_complete=True
+    Does NOT set _twitter_complete - that's handled by Download workflow
+    after it knows final S3 count.
     
     Args:
         fixture_id: The fixture ID
         event_id: The event ID
-        videos: List of video dicts from Twitter
-        needs_retry: If True, mark for retry instead of complete
+        videos: List of new video dicts from Twitter (already filtered for dupes)
     
     Returns:
         Dict with save status
@@ -189,31 +207,32 @@ async def save_twitter_results(
     
     store = FootyMongoStore()
     
-    if needs_retry:
-        # Mark for retry - save videos but don't complete
-        success = store.mark_event_twitter_needs_retry(fixture_id, event_id, videos)
-        if not success:
-            msg = f"Failed to mark Twitter retry for {event_id}"
+    if not videos:
+        activity.logger.info(f"No new videos to save for {event_id}")
+        return {"saved": True, "video_count": 0}
+    
+    # Just append videos to _discovered_videos, don't touch _twitter_complete
+    try:
+        result = store.fixtures_active.update_one(
+            {"_id": fixture_id, "events._event_id": event_id},
+            {
+                "$push": {
+                    "events.$._discovered_videos": {"$each": videos}
+                }
+            }
+        )
+        
+        if result.modified_count == 0:
+            msg = f"Failed to save discovered videos for {event_id}"
             activity.logger.error(f"❌ {msg}")
             raise RuntimeError(msg)
         
-        activity.logger.info(f"⏳ Saved {len(videos)} videos, marked for retry: {event_id}")
-        return {
-            "saved": True,
-            "video_count": len(videos),
-            "needs_retry": True,
-        }
-    else:
-        # Final save - mark complete
-        success = store.mark_event_twitter_complete(fixture_id, event_id, videos)
-        if not success:
-            msg = f"Failed to save Twitter results for {event_id}"
-            activity.logger.error(f"❌ {msg}")
-            raise RuntimeError(msg)
+        activity.logger.info(f"💾 Saved {len(videos)} new discovered videos for {event_id}")
+        return {"saved": True, "video_count": len(videos)}
         
-        activity.logger.info(f"💾 Saved {len(videos)} videos for {event_id}")
-        return {
-            "saved": True,
-            "video_count": len(videos),
-            "needs_retry": False,
-        }
+    except Exception as e:
+        activity.logger.error(f"❌ Error saving videos: {e}")
+        raise
+
+
+

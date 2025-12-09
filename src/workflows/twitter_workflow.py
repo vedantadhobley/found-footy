@@ -41,24 +41,28 @@ class TwitterWorkflow:
         event_id: str,
         player_name: str = "",
         team_name: str = "",
-        is_retry: bool = False,
+        is_retry: int = 0,
         fixture_finished: bool = False,
     ) -> dict:
         """
-        Execute the Twitter video discovery pipeline.
+        Execute the Twitter video discovery pipeline (single attempt per invocation).
+        
+        Monitor workflow triggers this multiple times (up to 3 attempts with time gaps).
+        Each attempt deduplicates URLs and hashes against previous attempts.
         
         Args:
             fixture_id: The fixture ID
             event_id: The event ID (format: {fixture}_{team}_{player}_{type}_{#})
             player_name: Player name for workflow ID naming
             team_name: Team name for workflow ID naming
-            is_retry: True if this is a retry after getting <5 videos
-            fixture_finished: True if fixture has ended (FT/AET/PEN) - no more retries
+            is_retry: Attempt number (1, 2, 3) - kept as is_retry for backwards compatibility
+            fixture_finished: Whether fixture is finished (FT/AET/PEN)
         
         Returns:
-            Dict with fixture_id, event_id, videos_found count, needs_retry flag
+            Dict with videos_discovered, videos_uploaded for this attempt
         """
-        workflow.logger.info(f"🐦 Starting Twitter search for {event_id}")
+        attempt_number = is_retry if is_retry > 0 else 1
+        workflow.logger.info(f"🐦 Starting Twitter search for {event_id} (attempt {attempt_number}/3)")
         
         # =========================================================================
         # Step 1: Get search query from MongoDB
@@ -71,19 +75,20 @@ class TwitterWorkflow:
         )
         
         twitter_search = search_data["twitter_search"]
-        workflow.logger.info(f"🔍 Search query: '{twitter_search}'")
+        existing_video_urls = search_data.get("existing_video_urls", [])
+        workflow.logger.info(f"🔍 Search query: '{twitter_search}' ({len(existing_video_urls)} existing URLs)")
         
         # =========================================================================
         # Step 2: Execute Twitter search (the risky external call)
         # =========================================================================
         search_result = await workflow.execute_activity(
             twitter_activities.execute_twitter_search,
-            args=[twitter_search, 5],  # max 5 videos
-            start_to_close_timeout=timedelta(seconds=150),  # 2.5 min (120s search + buffer)
+            args=[twitter_search, 3, existing_video_urls],
+            start_to_close_timeout=timedelta(seconds=150),
             retry_policy=RetryPolicy(
                 maximum_attempts=3,
                 initial_interval=timedelta(seconds=10),
-                backoff_coefficient=1.5,  # 10s → 15s → 22.5s
+                backoff_coefficient=1.5,
             ),
         )
         
@@ -92,61 +97,53 @@ class TwitterWorkflow:
         workflow.logger.info(f"📹 Found {video_count} videos")
         
         # =========================================================================
-        # Step 3: Decide if we need to retry (wait 1 more cycle)
+        # Step 3: Save discovered videos (append to _discovered_videos array)
         # =========================================================================
-        # Retry logic: If <5 videos AND fixture not finished AND not already a retry
-        needs_retry = video_count < 5 and not fixture_finished and not is_retry
-        
-        if needs_retry:
-            workflow.logger.info(
-                f"⏳ Only {video_count} videos found - will retry next cycle "
-                f"(fixture still in progress)"
-            )
-        
-        # =========================================================================
-        # Step 4: Save results to MongoDB
-        # =========================================================================
-        # Pass needs_retry so mongo knows whether to mark complete or pending
         await workflow.execute_activity(
-            twitter_activities.save_twitter_results,
-            args=[fixture_id, event_id, videos, needs_retry],
+            twitter_activities.save_discovered_videos,
+            args=[fixture_id, event_id, videos],
             start_to_close_timeout=timedelta(seconds=10),
             retry_policy=RetryPolicy(maximum_attempts=2),
         )
         
-        workflow.logger.info(f"💾 Saved results for {event_id}")
+        workflow.logger.info(f"💾 Saved {video_count} discovered videos for {event_id}")
         
         # =========================================================================
-        # Step 5: Trigger DownloadWorkflow if videos found (and not deferring to retry)
+        # Step 4: Always trigger DownloadWorkflow (even if 0 new videos)
         # =========================================================================
-        # Only download if we have videos AND (not retrying OR this is the retry OR fixture finished)
-        should_download = video_count > 0 and (not needs_retry or is_retry or fixture_finished)
+        player_last = player_name.split()[-1] if player_name else "Unknown"
+        team_clean = team_name.replace(" ", "_").replace(".", "_").replace("-", "_")
         
-        if should_download:
-            # Build human-readable workflow ID
-            player_last = player_name.split()[-1] if player_name else "Unknown"
-            team_clean = team_name.replace(" ", "_").replace(".", "_").replace("-", "_")
-            retry_suffix = "-retry" if is_retry else ""
-            download_workflow_id = f"download-{team_clean}-{player_last}-{video_count}vids{retry_suffix}-{event_id}"
-            
-            workflow.logger.info(f"⬇️ Starting download: {download_workflow_id}")
-            
-            await workflow.execute_child_workflow(
+        # Use attempt number in workflow ID (default to 1 for backwards compatibility)
+        attempt_number = is_retry if is_retry > 0 else 1
+        download_workflow_id = f"download{attempt_number}-{team_clean}-{player_last}-{video_count}vids-{event_id}"
+        
+        workflow.logger.info(f"⬇️ Starting download: {download_workflow_id}")
+        
+        s3_count = 0
+        try:
+            download_result = await workflow.execute_child_workflow(
                 DownloadWorkflow.run,
                 args=[fixture_id, event_id, player_name, team_name],
                 id=download_workflow_id,
+                execution_timeout=timedelta(minutes=15),
             )
             
-            workflow.logger.info(f"✅ Download complete for {event_id}")
-        elif needs_retry:
-            workflow.logger.info(f"⏸️ Deferring download - waiting for retry with more videos")
-        else:
-            workflow.logger.info(f"⚠️ No videos found, skipping download")
+            s3_count = download_result.get("videos_uploaded", 0)
+            workflow.logger.info(f"✅ Download complete: {s3_count} videos in S3 for {event_id}")
+        except Exception as e:
+            workflow.logger.error(f"❌ Download workflow failed: {e}")
+            workflow.logger.info(f"⚠️ Continuing despite download failure - videos remain in MongoDB")
+        
+        # =========================================================================
+        # Step 5: Return results
+        # =========================================================================
+        workflow.logger.info(f"✅ Twitter search complete: {video_count} videos found, {s3_count} in S3")
         
         return {
             "fixture_id": fixture_id,
             "event_id": event_id,
-            "videos_found": video_count,
-            "needs_retry": needs_retry,
-            "is_retry": is_retry,
+            "videos_discovered": video_count,
+            "videos_uploaded": s3_count,
+            "attempt_number": attempt_number,
         }

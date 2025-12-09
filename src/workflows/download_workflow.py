@@ -75,8 +75,12 @@ class DownloadWorkflow:
         discovered_videos = event_data["discovered_videos"]
         player_name = event_data["player_name"]
         team_name = event_data["team_name"]
+        event = event_data.get("event", {})
+        existing_s3_hashes = event_data.get("existing_s3_hashes", [])
         
         workflow.logger.info(f"📋 Found {len(discovered_videos)} videos to download")
+        if existing_s3_hashes:
+            workflow.logger.info(f"📦 Will check against {len(existing_s3_hashes)} existing S3 video hashes")
         
         # Temp directory path (created by first download activity)
         temp_dir = f"/tmp/footy_{event_id}"
@@ -95,7 +99,7 @@ class DownloadWorkflow:
             
             result = await workflow.execute_activity(
                 download_activities.download_single_video,
-                args=[video_url, idx, event_id, temp_dir],
+                args=[video_url, idx, event_id, temp_dir, video_url],  # Pass video_url as source_tweet_url
                 start_to_close_timeout=timedelta(minutes=2),
                 retry_policy=RetryPolicy(
                     maximum_attempts=3,
@@ -113,17 +117,17 @@ class DownloadWorkflow:
         # =========================================================================
         unique_videos = await workflow.execute_activity(
             download_activities.deduplicate_videos,
-            args=[download_results],
+            args=[download_results, existing_s3_hashes],
             start_to_close_timeout=timedelta(seconds=30),
             retry_policy=RetryPolicy(maximum_attempts=2),
         )
         
         if not unique_videos:
             workflow.logger.warning(f"⚠️ No videos to upload (all downloads failed)")
-            # Cleanup and mark complete with empty list
+            # Just save empty results - monitor controls retry logic
             await workflow.execute_activity(
                 download_activities.mark_download_complete,
-                args=[fixture_id, event_id, [], temp_dir],
+                args=[fixture_id, event_id, [], [], temp_dir],
                 start_to_close_timeout=timedelta(seconds=10),
             )
             return {
@@ -141,7 +145,12 @@ class DownloadWorkflow:
         workflow.logger.info(f"☁️ Uploading {len(unique_videos)} videos to S3...")
         
         s3_urls = []
+        perceptual_hashes = []
         for idx, video_info in enumerate(unique_videos):
+            # Collect perceptual hash
+            if "perceptual_hash" in video_info:
+                perceptual_hashes.append(video_info["perceptual_hash"])
+            
             result = await workflow.execute_activity(
                 download_activities.upload_single_video,
                 args=[
@@ -151,6 +160,13 @@ class DownloadWorkflow:
                     player_name,
                     team_name,
                     idx,
+                    video_info.get("file_hash", ""),
+                    video_info.get("perceptual_hash", ""),
+                    video_info.get("duration", 0.0),
+                    video_info.get("duplicate_count", 1),
+                    "",  # assister_name
+                    "",  # opponent_team  
+                    video_info.get("source_url", ""),
                 ],
                 start_to_close_timeout=timedelta(minutes=2),
                 retry_policy=RetryPolicy(
@@ -166,11 +182,13 @@ class DownloadWorkflow:
         workflow.logger.info(f"☁️ Uploaded {len(s3_urls)}/{len(unique_videos)} videos to S3")
         
         # =========================================================================
-        # Step 5: Mark complete and cleanup temp directory
+        # Step 5: Save results and cleanup temp directory
         # =========================================================================
+        # Note: Monitor workflow controls counters and completion flags
+        # Download workflow just saves the results (S3 URLs and perceptual hashes)
         await workflow.execute_activity(
             download_activities.mark_download_complete,
-            args=[fixture_id, event_id, s3_urls, temp_dir],
+            args=[fixture_id, event_id, s3_urls, perceptual_hashes, temp_dir],
             start_to_close_timeout=timedelta(seconds=10),
             retry_policy=RetryPolicy(maximum_attempts=2),
         )

@@ -130,7 +130,7 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
     """
     Check if fixture is ready to complete:
     - Status must be FT/AET/PEN
-    - All events must have _debounce_complete=True
+    - All events must have _monitor_complete=True
     - All events must have _twitter_complete=True
     
     If ready, moves fixture to fixtures_completed.
@@ -152,7 +152,7 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
                 enhanced_events = [e for e in events if e.get("_event_id")]
                 
                 if enhanced_events:
-                    debounced = sum(1 for e in enhanced_events if e.get("_debounce_complete"))
+                    debounced = sum(1 for e in enhanced_events if e.get("_monitor_complete"))
                     twitter_done = sum(1 for e in enhanced_events if e.get("_twitter_complete"))
                     activity.logger.debug(
                         f"Fixture {fixture_id} waiting: "
@@ -217,12 +217,26 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
         twitter_search = build_twitter_search(live_event, live_fixture)
         score_context = calculate_score_context(live_fixture, live_event)
         
+        # Generate display titles for frontend
+        title, subtitle = store._generate_event_display_titles(live_fixture, live_event)
+        
         enhanced = {
             **live_event,
-            "_stable_count": 1,
-            "_debounce_complete": False,
-            "_twitter_complete": False,
+            # Monitor tracking (counter-based)
+            "_monitor_count": 1,
+            "_monitor_complete": False,  # Set to True when _monitor_count >= 3
+            # Twitter/Download tracking (counter-based)
+            "_twitter_count": 0,  # Starts at 0, set to 1 when monitor completes
+            "_twitter_complete": False,  # Set to True when _twitter_count >= 3
             "_twitter_search": twitter_search,
+            # Video storage (accumulated across all attempts)
+            "_discovered_videos": [],
+            "_s3_urls": [],
+            "_perceptual_hashes": [],
+            # Display fields (for frontend)
+            "_display_title": title,
+            "_display_subtitle": subtitle,
+            # Metadata
             **score_context,
             "_removed": False,
             "_first_seen": datetime.now(timezone.utc),
@@ -251,8 +265,23 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
     for event_id in matching_ids:
         active_event = active_map[event_id]
         
-        # Check if this event needs a Twitter retry (<5 videos found last cycle)
-        if active_event.get("_twitter_needs_retry") and not active_event.get("_twitter_complete"):
+        # Check if this event needs another Twitter+Download attempt
+        twitter_count = active_event.get("_twitter_count", 0)
+        has_s3_videos = len(active_event.get("_s3_urls", [])) > 0
+        
+        # Trigger additional search if: have videos AND counter < 3
+        # Counter: 1 (after first), 2 (after second), 3 (after third - done)
+        should_trigger_more = has_s3_videos and twitter_count < 3
+        
+        if should_trigger_more:
+            # Increment counter for this attempt
+            new_twitter_count = twitter_count + 1
+            is_final = new_twitter_count >= 3
+            
+            # Update counter and completion flag
+            store.update_event_twitter_count(fixture_id, event_id, new_twitter_count, is_final)
+            
+        if should_trigger_more:
             live_event = next(e for e in live_events if e.get("_event_id") == event_id)
             twitter_retry_needed.append({
                 "event_id": event_id,
@@ -260,16 +289,19 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
                 "team_name": live_event.get("team", {}).get("name", "Unknown"),
                 "minute": live_event.get("time", {}).get("elapsed"),
                 "extra": live_event.get("time", {}).get("extra"),
+                "attempt_number": new_twitter_count,
             })
-            activity.logger.info(f"🔄 TWITTER RETRY: {event_id} (found <5 videos last time)")
-            continue  # Don't process stable count for events waiting on retry
+            activity.logger.info(
+                f"🔄 TWITTER ATTEMPT: {event_id} (#{twitter_count + 1}/3)"
+            )
+            continue  # Don't process stable count for events waiting on next attempt
         
         # Skip if already complete
-        if active_event.get("_debounce_complete"):
+        if active_event.get("_monitor_complete"):
             continue
         
-        # Increment stable count
-        new_count_val = active_event.get("_stable_count", 0) + 1
+        # Increment monitor count
+        new_count_val = active_event.get("_monitor_count", 0) + 1
         
         # Note: No hash/snapshot needed with player_id approach!
         if store.update_event_stable_count(fixture_id, event_id, new_count_val, None):
@@ -277,7 +309,7 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
             
             if new_count_val >= 3:
                 # Mark complete and prepare for Twitter
-                store.mark_event_debounce_complete(fixture_id, event_id)
+                store.mark_event_monitor_complete(fixture_id, event_id)
                 
                 live_event = next(e for e in live_events if e.get("_event_id") == event_id)
                 twitter_triggered.append({
@@ -287,9 +319,9 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
                     "minute": live_event.get("time", {}).get("elapsed"),
                     "extra": live_event.get("time", {}).get("extra"),
                 })
-                activity.logger.info(f"✅ DEBOUNCE COMPLETE: {event_id} (stable_count=3)")
+                activity.logger.info(f"✅ MONITOR COMPLETE: {event_id} (monitor_count=3)")
             else:
-                activity.logger.info(f"📊 STABLE: {event_id} (count={new_count_val}/3)")
+                activity.logger.info(f"📊 MONITORING: {event_id} (count={new_count_val}/3)")
     
     # Sync fixture metadata
     store.sync_fixture_data(fixture_id)

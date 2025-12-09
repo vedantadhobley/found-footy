@@ -18,6 +18,8 @@ RUN apt-get update && apt-get install -y \
     websockify \
     # Docker CLI
     docker.io \
+    # ffmpeg for video processing (duration, frame extraction, perceptual hashing)
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Google Chrome (for undetected-chromedriver)
