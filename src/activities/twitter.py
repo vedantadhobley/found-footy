@@ -74,9 +74,6 @@ async def get_twitter_search_data(fixture_id: int, event_id: str) -> Dict[str, A
     # Twitter service uses video_page_url field
     existing_urls = [v.get("video_page_url") or v.get("url") for v in existing_videos if v.get("video_page_url") or v.get("url")]
     
-    # Mark search as started (for debugging/monitoring)
-    store.mark_event_twitter_started(fixture_id, event_id)
-    
     if existing_urls:
         activity.logger.info(f"🔍 Got search query: '{twitter_search}' for {event_id} (will skip {len(existing_urls)} existing videos)")
     else:
@@ -97,7 +94,7 @@ async def get_twitter_search_data(fixture_id: int, event_id: str) -> Dict[str, A
 @activity.defn
 async def execute_twitter_search(
     twitter_search: str, 
-    max_results: int = 3,
+    max_results: int = 5,
     existing_video_urls: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """
@@ -106,16 +103,16 @@ async def execute_twitter_search(
     This is the risky external call that needs proper retry policy.
     If this fails, Temporal will retry the activity (not swallow the error).
     
-    On retry attempts, filters out videos we've already discovered to avoid
-    re-downloading duplicates.
+    Passes exclude_urls to Twitter service so it can skip already-discovered
+    videos during scraping, allowing us to find more NEW videos.
     
     Args:
         twitter_search: Search query (e.g., "Salah Liverpool")
-        max_results: Max videos to return (default 3)
-        existing_video_urls: List of video URLs already discovered (for retry deduplication)
+        max_results: Max videos to return (default 5)
+        existing_video_urls: List of video URLs already discovered (passed as exclude_urls)
     
     Returns:
-        Dict with videos array (filtered to exclude existing URLs)
+        Dict with videos array (all NEW videos not in exclude_urls)
     
     Raises:
         ConnectionError: Twitter service unavailable
@@ -124,13 +121,22 @@ async def execute_twitter_search(
     """
     session_url = os.getenv("TWITTER_SESSION_URL", "http://twitter:8888")
     
-    activity.logger.info(f"🐦 Searching Twitter: '{twitter_search}'")
+    exclude_urls = existing_video_urls or []
+    
+    if exclude_urls:
+        activity.logger.info(f"🐦 Searching Twitter: '{twitter_search}' (excluding {len(exclude_urls)} already-discovered URLs)")
+    else:
+        activity.logger.info(f"🐦 Searching Twitter: '{twitter_search}'")
     activity.logger.info(f"📡 POST {session_url}/search")
     
     try:
         response = requests.post(
             f"{session_url}/search",
-            json={"search_query": twitter_search, "max_results": max_results},
+            json={
+                "search_query": twitter_search, 
+                "max_results": max_results,
+                "exclude_urls": exclude_urls
+            },
             timeout=120,  # 2 min for browser automation
         )
     except requests.exceptions.ConnectionError as e:
@@ -159,17 +165,9 @@ async def execute_twitter_search(
         raise RuntimeError(f"Twitter service error {response.status_code}: {response.text}")
     
     # Parse videos from response
+    # Note: exclude_urls filtering already happened server-side in the Twitter service
     data = response.json()
     videos = data.get("videos", [])
-    
-    # Filter out videos we've already discovered (on retry)
-    # Twitter service uses video_page_url field
-    if existing_video_urls:
-        original_count = len(videos)
-        videos = [v for v in videos if (v.get("video_page_url") or v.get("url")) not in existing_video_urls]
-        filtered_count = original_count - len(videos)
-        if filtered_count > 0:
-            activity.logger.info(f"🔄 Filtered out {filtered_count} already-discovered videos")
     
     activity.logger.info(f"✅ Found {len(videos)} new videos")
     
@@ -233,6 +231,38 @@ async def save_discovered_videos(
     except Exception as e:
         activity.logger.error(f"❌ Error saving videos: {e}")
         raise
+
+
+# =============================================================================
+# Activity 4: Mark Twitter Complete (called in finally block)
+# =============================================================================
+
+@activity.defn
+async def mark_event_twitter_complete(fixture_id: int, event_id: str) -> bool:
+    """
+    Mark event as twitter_complete=true.
+    
+    Called by Twitter workflow in finally block after downloads finish.
+    This is the signal that all processing for this event attempt is done.
+    
+    Args:
+        fixture_id: The fixture ID
+        event_id: The event ID
+    
+    Returns:
+        True if successful
+    """
+    from src.data.mongo_store import FootyMongoStore
+    
+    store = FootyMongoStore()
+    
+    success = store.mark_event_twitter_complete(fixture_id, event_id)
+    if success:
+        activity.logger.info(f"✅ Marked {event_id} twitter_complete=true")
+    else:
+        activity.logger.warning(f"⚠️ Failed to mark {event_id} twitter_complete (fixture may have moved)")
+    
+    return success
 
 
 

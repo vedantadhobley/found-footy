@@ -222,12 +222,12 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
         
         enhanced = {
             **live_event,
-            # Monitor tracking (counter-based)
+            # Monitor tracking (counter-based) - Monitor is the orchestrator
             "_monitor_count": 1,
             "_monitor_complete": False,  # Set to True when _monitor_count >= 3
-            # Twitter/Download tracking (counter-based)
-            "_twitter_count": 0,  # Starts at 0, set to 1 when monitor completes
-            "_twitter_complete": False,  # Set to True when _twitter_count >= 3
+            # Twitter tracking - Monitor increments count, Twitter workflow sets complete
+            "_twitter_count": 0,  # Monitor increments when triggering Twitter
+            "_twitter_complete": False,  # Twitter workflow sets True when done (incl downloads)
             "_twitter_search": twitter_search,
             # Video storage (accumulated across all attempts)
             "_discovered_videos": [],
@@ -242,7 +242,8 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
             "_first_seen": datetime.now(timezone.utc),
         }
         
-        if store.add_event_to_active(fixture_id, enhanced):
+        first_seen = enhanced["_first_seen"]
+        if store.add_event_to_active(fixture_id, enhanced, first_seen):
             activity.logger.info(f"✨ NEW EVENT: {event_id}")
             new_count += 1
     
@@ -265,41 +266,38 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
     for event_id in matching_ids:
         active_event = active_map[event_id]
         
-        # Check if this event needs another Twitter+Download attempt
-        twitter_count = active_event.get("_twitter_count", 0)
-        has_s3_videos = len(active_event.get("_s3_urls", [])) > 0
-        
-        # Trigger additional search if: have videos AND counter < 3
-        # Counter: 1 (after first), 2 (after second), 3 (after third - done)
-        should_trigger_more = has_s3_videos and twitter_count < 3
-        
-        if should_trigger_more:
-            # Increment counter for this attempt
-            new_twitter_count = twitter_count + 1
-            is_final = new_twitter_count >= 3
-            
-            # Update counter and completion flag
-            store.update_event_twitter_count(fixture_id, event_id, new_twitter_count, is_final)
-            
-        if should_trigger_more:
-            live_event = next(e for e in live_events if e.get("_event_id") == event_id)
-            twitter_retry_needed.append({
-                "event_id": event_id,
-                "player_name": live_event.get("player", {}).get("name", "Unknown"),
-                "team_name": live_event.get("team", {}).get("name", "Unknown"),
-                "minute": live_event.get("time", {}).get("elapsed"),
-                "extra": live_event.get("time", {}).get("extra"),
-                "attempt_number": new_twitter_count,
-            })
-            activity.logger.info(
-                f"🔄 TWITTER ATTEMPT: {event_id} (#{twitter_count + 1}/3)"
-            )
-            continue  # Don't process stable count for events waiting on next attempt
-        
-        # Skip if already complete
+        # =====================================================================
+        # CASE 1: _monitor_complete = TRUE -> Check Twitter status
+        # =====================================================================
         if active_event.get("_monitor_complete"):
-            continue
+            # Already through debounce - check if we need more Twitter attempts
+            if not active_event.get("_twitter_complete"):
+                twitter_count = active_event.get("_twitter_count", 0)
+                
+                # Check if we need more Twitter attempts (max 3)
+                if twitter_count < 3:
+                    # Increment counter for this attempt (Monitor tracks count)
+                    new_twitter_count = twitter_count + 1
+                    store.update_event_twitter_count(fixture_id, event_id, new_twitter_count)
+                    
+                    live_event = next(e for e in live_events if e.get("_event_id") == event_id)
+                    twitter_retry_needed.append({
+                        "event_id": event_id,
+                        "player_name": live_event.get("player", {}).get("name", "Unknown"),
+                        "team_name": live_event.get("team", {}).get("name", "Unknown"),
+                        "minute": live_event.get("time", {}).get("elapsed"),
+                        "extra": live_event.get("time", {}).get("extra"),
+                        "attempt_number": new_twitter_count,
+                    })
+                    activity.logger.info(
+                        f"🔄 TWITTER ATTEMPT: {event_id} (#{new_twitter_count}/3)"
+                    )
+                # Note: _twitter_complete is set by Twitter workflow when it finishes
+            continue  # Already debounced, skip monitor count processing
         
+        # =====================================================================
+        # CASE 2: _monitor_complete = FALSE -> Check/increment monitor count
+        # =====================================================================
         # Increment monitor count
         new_count_val = active_event.get("_monitor_count", 0) + 1
         
@@ -309,7 +307,9 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
             
             if new_count_val >= 3:
                 # Mark complete and prepare for Twitter
-                store.mark_event_monitor_complete(fixture_id, event_id)
+                # Get _first_seen from active event for _last_activity update
+                first_seen = active_event.get("_first_seen")
+                store.mark_event_monitor_complete(fixture_id, event_id, first_seen)
                 
                 live_event = next(e for e in live_events if e.get("_event_id") == event_id)
                 twitter_triggered.append({

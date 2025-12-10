@@ -164,9 +164,9 @@ class FootyMongoStore:
             if not staging_doc:
                 return False
             
-            # Initialize with empty events array
+            # Initialize with empty events array and activity timestamp
             staging_doc["events"] = []
-            staging_doc["activated_at"] = datetime.now(timezone.utc)
+            staging_doc["_last_activity"] = datetime.now(timezone.utc)
             
             self.fixtures_active.replace_one(
                 {"_id": fixture_id},
@@ -194,7 +194,6 @@ class FootyMongoStore:
             
             doc = dict(api_data)
             doc["_id"] = fixture_id
-            doc["stored_at"] = datetime.now(timezone.utc)
             
             # Filter events and generate IDs in single pass
             raw_events = doc.get("events", [])
@@ -338,7 +337,7 @@ class FootyMongoStore:
 
     # === Event Enhancement Operations (In-Place Updates to fixtures_active) ===
     
-    def add_event_to_active(self, fixture_id: int, event_with_enhancements: dict) -> bool:
+    def add_event_to_active(self, fixture_id: int, event_with_enhancements: dict, event_first_seen: datetime) -> bool:
         """
         Add NEW event to fixtures_active events array with enhancement fields.
         Called by debounce job when detecting a new event (CASE 1).
@@ -354,15 +353,14 @@ class FootyMongoStore:
         - _score_after: Score after this event
         - _twitter_search: Search string for Twitter
         
-        Also updates fixture-level _last_event timestamp for UI sorting.
         """
         try:
-            now = datetime.now(timezone.utc)
+            # Use $max to ensure _last_activity only moves forward
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id},
                 {
                     "$push": {"events": event_with_enhancements},
-                    "$set": {"_last_event": now}
+                    "$max": {"_last_activity": event_first_seen}
                 }
             )
             return result.modified_count > 0
@@ -377,61 +375,63 @@ class FootyMongoStore:
         
         Note: snapshot parameter kept for backwards compatibility but ignored.
         With player_id in event_id, we don't need hash/snapshot tracking!
-        
-        Also updates fixture-level _last_event timestamp for UI sorting.
         """
         try:
-            now = datetime.now(timezone.utc)
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id, "events._event_id": event_id},
-                {
-                    "$set": {
-                        "events.$._monitor_count": stable_count,
-                        "_last_event": now
-                    }
-                }
+                {"$set": {"events.$._monitor_count": stable_count}}
             )
             return result.modified_count > 0
         except Exception as e:
             print(f"❌ Error updating monitor count for event {event_id}: {e}")
             return False
     
-    def mark_event_monitor_complete(self, fixture_id: int, event_id: str) -> bool:
+    def mark_event_monitor_complete(self, fixture_id: int, event_id: str, event_first_seen: datetime = None) -> bool:
         """
         Mark event as monitor complete (monitor_count reached threshold).
         Called by monitor activity when event is stable.
         Sets _twitter_count to 1 to begin Twitter attempts.
+        Updates _last_activity to event's _first_seen (only moves forward).
         """
         try:
-            result = self.fixtures_active.update_one(
-                {"_id": fixture_id, "events._event_id": event_id},
-                {"$set": {
+            update_ops = {
+                "$set": {
                     "events.$._monitor_complete": True,
                     "events.$._twitter_count": 1
-                }}
+                }
+            }
+            
+            # Update _last_activity using $max to only move forward
+            if event_first_seen:
+                update_ops["$max"] = {"_last_activity": event_first_seen}
+            
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, "events._event_id": event_id},
+                update_ops
             )
             return result.modified_count > 0
         except Exception as e:
             print(f"❌ Error marking event {event_id} monitor complete: {e}")
             return False
     
-    def update_event_twitter_count(self, fixture_id: int, event_id: str, new_count: int, is_complete: bool) -> bool:
+    def update_event_twitter_count(self, fixture_id: int, event_id: str, new_count: int) -> bool:
         """
-        Update Twitter attempt counter and completion flag.
-        Called by monitor before triggering additional Twitter searches.
+        Update Twitter attempt counter.
+        Called by monitor BEFORE triggering Twitter workflow.
+        
+        NOTE: Does NOT set _twitter_complete - that's set by Twitter workflow when it finishes.
+        This ensures we track "attempts started" vs "attempts completed" separately.
         
         Args:
             fixture_id: Fixture ID
             event_id: Event ID  
             new_count: New twitter_count value (1, 2, or 3)
-            is_complete: True if new_count >= 3 (final attempt)
         """
         try:
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id, "events._event_id": event_id},
                 {"$set": {
-                    "events.$._twitter_count": new_count,
-                    "events.$._twitter_complete": is_complete
+                    "events.$._twitter_count": new_count
                 }}
             )
             return result.modified_count > 0
@@ -457,26 +457,6 @@ class FootyMongoStore:
             return result.modified_count > 0
         except Exception as e:
             print(f"❌ Error marking event {event_id} as removed: {e}")
-            return False
-    
-    def mark_event_twitter_started(self, fixture_id: int, event_id: str) -> bool:
-        """
-        Mark event as twitter search started.
-        Called by twitter job when search begins.
-        """
-        try:
-            result = self.fixtures_active.update_one(
-                {"_id": fixture_id, "events._event_id": event_id},
-                {
-                    "$set": {
-                        "events.$._twitter_started": True,
-                        "events.$._twitter_started_at": datetime.now(timezone.utc)
-                    }
-                }
-            )
-            return result.modified_count > 0
-        except Exception as e:
-            print(f"❌ Error marking event {event_id} twitter started: {e}")
             return False
     
     def mark_event_twitter_complete(
@@ -621,6 +601,10 @@ class FootyMongoStore:
             update_doc = dict(live_fixture)
             update_doc["_id"] = fixture_id
             
+            # Preserve _last_activity from active (would be lost in replace)
+            if "_last_activity" in active_fixture:
+                update_doc["_last_activity"] = active_fixture["_last_activity"]
+            
             # Preserve enhanced events from active and regenerate display titles
             enhanced_events = active_fixture.get("events", [])
             for event in enhanced_events:
@@ -703,8 +687,8 @@ class FootyMongoStore:
         Also removes from fixtures_live.
         
         CRITICAL: Only completes if ALL valid enhanced events have:
-        - _monitor_complete: true
-        - _twitter_complete: true (stays false until 5 videos OR 3 attempts reached)
+        - _monitor_complete: true (debounce finished)
+        - _twitter_complete: true (set by Twitter workflow when done)
         
         Ignores:
         - Removed events (_removed: true)
@@ -737,18 +721,17 @@ class FootyMongoStore:
                     # Has valid events - must check if all processing is complete
                     all_monitored = all(e.get("_monitor_complete", False) for e in valid_events)
                     
-                    # For Twitter: MUST have reached 3 attempts (_twitter_count >= 3)
-                    # Derive completion from attempt counter instead of boolean flag
-                    all_twitter_done = all(e.get("_twitter_count", 0) >= 3 for e in valid_events)
+                    # Twitter complete is set by Twitter workflow when it finishes (after downloads)
+                    all_twitter_done = all(e.get("_twitter_complete", False) for e in valid_events)
                     
                     if not (all_monitored and all_twitter_done):
                         # Events still being processed - cannot complete yet
                         monitored = sum(1 for e in valid_events if e.get("_monitor_complete"))
-                        twitter_done = sum(1 for e in valid_events if e.get("_twitter_count", 0) >= 3)
+                        twitter_done = sum(1 for e in valid_events if e.get("_twitter_complete"))
                         print(
                             f"⏳ Fixture {fixture_id} waiting for event processing: "
                             f"monitored={monitored}/{len(valid_events)}, "
-                            f"twitter={twitter_done}/{len(valid_events)}"
+                            f"twitter_complete={twitter_done}/{len(valid_events)}"
                         )
                         return False
             

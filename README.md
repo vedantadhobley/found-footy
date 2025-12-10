@@ -1,6 +1,6 @@
 # ⚽ Found Footy - Automated Football Goal Highlights Pipeline
 
-**End-to-end automation** - detects football goals in real-time, validates stability with set-based debounce, discovers videos on Twitter via browser automation, downloads and deduplicates, then stores in S3 with metadata tags. Built with **Temporal.io** orchestration and MongoDB storage.
+**End-to-end automation** - detects football goals in real-time, validates stability with set-based debounce, discovers videos on Twitter via browser automation, downloads and deduplicates using perceptual hashing, then stores in S3 with metadata tags. Built with **Temporal.io** orchestration and MongoDB storage.
 
 ---
 
@@ -35,10 +35,10 @@ graph TB
         B6 -->|Yes| B7
     end
     
-    subgraph "🐦 TwitterWorkflow (Per Stable Event)"
+    subgraph "🐦 TwitterWorkflow (3x Per Stable Event)"
         C1[Build Search Query<br/>player + team]
         C2[POST to twitter:8888<br/>Firefox automation]
-        C3[Save discovered_videos]
+        C3[Pass exclude_urls<br/>Skip already found]
         C4{Videos Found?}
         C5[→ DownloadWorkflow]
         
@@ -48,10 +48,10 @@ graph TB
     
     subgraph "⬇️ DownloadWorkflow (Per Event)"
         D1[fetch_event_data]
-        D2[download_single_video ×N<br/>3 retries each]
-        D3[deduplicate_videos<br/>MD5 hash, keep largest]
-        D4[upload_single_video ×N<br/>3 retries each]
-        D5[mark_download_complete]
+        D2[download_single_video ×N<br/>Duration filter: 5-60s]
+        D3[deduplicate_videos<br/>Perceptual hash + quality]
+        D4[upload_single_video ×N<br/>Replace if better quality]
+        D5[save_processed_urls]
         
         D1 --> D2 --> D3 --> D4 --> D5
     end
@@ -61,7 +61,7 @@ graph TB
         F2[(fixtures_live)]
         F3[(fixtures_active)]
         F4[(fixtures_completed)]
-        F5[☁️ MinIO S3<br/>fixture_id/event_id/<br/>videos with tags]
+        F5[☁️ MinIO S3<br/>fixture_id/event_id/<br/>videos with metadata]
     end
     
     style A1 fill:#e1f5ff
@@ -92,23 +92,60 @@ removed_ids = active_ids - live_ids   # REMOVED (VAR)
 matching_ids = live_ids & active_ids  # Increment stable_count
 ```
 
+### 3 Twitter Attempts with URL Exclusion
+
+Each stable event gets **3 Twitter searches** to find the best quality videos:
+
+- **Attempt 1**: Immediately when stable - find early uploads
+- **Attempt 2**: ~5 minutes later - find more/better uploads
+- **Attempt 3**: ~5 minutes later - final search, mark complete
+
+**Key improvement**: Each search passes `exclude_urls` to skip already-discovered videos:
+```python
+# Twitter service skips URLs during scraping
+if tweet_url in exclude_set:
+    print(f"⏭️ Skipping already-discovered URL: {tweet_url}")
+    continue
+```
+
+This means **5 NEW videos per search** (not the same 5 repeatedly).
+
+### Perceptual Hashing for Deduplication
+
+Same video at different resolutions = same perceptual hash:
+
+```python
+# Duration (0.5s tolerance) + 3 frame hashes
+perceptual_hash = f"{duration:.1f}_{hash1}_{hash2}_{hash3}"
+# Example: "15.2_4c33b33b_f8d2d234_48b2a460"
+```
+
+**Quality comparison** (when hashes match):
+1. Resolution score (width × height) - Higher wins
+2. Bitrate - Higher wins
+3. File size - Higher wins
+
+### Duration Filtering
+
+Videos are filtered before download:
+- **Too short**: < 5 seconds (usually just celebrations)
+- **Too long**: > 60 seconds (usually full match compilations)
+- **Just right**: 5-60 seconds (goal clips)
+
+Filtered URLs are still tracked in `_discovered_videos` to prevent re-discovery.
+
 ### Per-Video Retry (Granular Activities)
 
-DownloadWorkflow uses 5 separate activities:
-1. `fetch_event_data` - Get event from MongoDB
+DownloadWorkflow uses 7 separate activities:
+1. `fetch_event_data` - Get event + existing S3 metadata
 2. `download_single_video` - Download ONE video (3 retry attempts)
-3. `deduplicate_videos` - MD5 hash, keep largest per hash
-4. `upload_single_video` - Upload ONE video to S3 (3 retry attempts)
-5. `mark_download_complete` - Update MongoDB, cleanup
+3. `deduplicate_videos` - Perceptual hash, quality compare
+4. `replace_s3_video` - Delete old video if better found
+5. `upload_single_video` - Upload ONE video to S3 (3 retry attempts)
+6. `save_processed_urls` - Track all URLs for dedup
+7. `mark_download_complete` - Update MongoDB, cleanup
 
 **Benefits**: If 3/5 videos succeed, those are preserved. Failures don't lose progress.
-
-### Firefox Browser Automation for Twitter
-
-Twitter service uses Firefox with a saved profile at `/data/firefox_profile`:
-- No API keys needed
-- Handles login state persistently
-- Manual login once, then automated searches
 
 ---
 
@@ -146,18 +183,22 @@ Twitter service uses Firefox with a saved profile at `/data/firefox_profile`:
 
 ---
 
-### 3️⃣ TwitterWorkflow (Per Stable Event)
+### 3️⃣ TwitterWorkflow (3x Per Stable Event)
 
 **Purpose**: Search Twitter for event videos
 
 **3 Granular Activities**:
-1. `get_twitter_search_data` - Get search query from MongoDB (10s, 2 retries)
-2. `execute_twitter_search` - POST to Firefox automation (150s, 3 retries)
-3. `save_twitter_results` - Save videos to MongoDB (10s, 2 retries)
+1. `get_twitter_search_data` - Get search query + existing URLs from MongoDB
+2. `execute_twitter_search` - POST to Firefox automation with `exclude_urls`
+3. `save_discovered_videos` - Save NEW videos to MongoDB
 
 **Why 3 activities?**
 - If search fails → only retry search (not MongoDB reads)
 - If save fails → videos preserved in workflow state
+
+**Search parameters**:
+- `max_results: 5` - Find up to 5 videos per search
+- `exclude_urls: [...]` - Skip already-discovered URLs during scraping
 
 **If videos found** → Triggers DownloadWorkflow as child
 
@@ -165,16 +206,20 @@ Twitter service uses Firefox with a saved profile at `/data/firefox_profile`:
 
 ### 4️⃣ DownloadWorkflow (Per Event with Videos)
 
-**Purpose**: Download, deduplicate, upload videos
+**Purpose**: Download, deduplicate, upload videos with quality comparison
 
-**Activities**:
-1. `fetch_event_data` - Get event from fixtures_active
-2. `download_single_video` (loop) - Download each video individually
-3. `deduplicate_videos` - Keep largest file per MD5 hash
-4. `upload_single_video` (loop) - Upload each unique video to S3
-5. `mark_download_complete` - Update MongoDB, cleanup temp dir
+**Pipeline**:
+```
+Download → Duration Filter → Perceptual Hash → Quality Compare → Upload/Replace
+```
 
-**S3 Structure**: `{fixture_id}/{event_id}/{md5_hash}.mp4`
+**S3 Structure**: `{fixture_id}/{event_id}/{short_hash}.mp4`
+
+**Metadata stored on each S3 object**:
+- `x-amz-meta-width`, `x-amz-meta-height`
+- `x-amz-meta-bitrate`, `x-amz-meta-file-size`
+- `x-amz-meta-perceptual-hash`
+- `x-amz-meta-source-url`
 
 ---
 
@@ -199,17 +244,23 @@ Twitter service uses Firefox with a saved profile at `/data/firefox_profile`:
   // Enhancement fields (added by debounce)
   "_event_id": "123456_40_306_Goal_1",
   "_stable_count": 3,
-  "_debounce_complete": true,
+  "_monitor_complete": true,
+  "_twitter_count": 3,
   "_twitter_complete": true,
   "_twitter_search": "Salah Liverpool",
-  "_score_before": {"home": 0, "away": 0},
-  "_score_after": {"home": 1, "away": 0},
   
-  // Added by Twitter
-  "discovered_videos": [...],
-  
-  // Added by Download
-  "s3_urls": [...]
+  // Video tracking
+  "_discovered_videos": [
+    {"video_page_url": "https://x.com/i/status/123", "tweet_text": "..."}
+  ],
+  "_s3_videos": [
+    {
+      "s3_key": "123456/123456_40_306_Goal_1/abc123.mp4",
+      "perceptual_hash": "15.2_abc_def_ghi",
+      "width": 1920, "height": 1080,
+      "bitrate": 5000000
+    }
+  ]
 }
 ```
 
@@ -269,6 +320,16 @@ ssh -L 4100:localhost:4100 -L 4101:localhost:4101 -L 4102:localhost:4102 -L 4103
 # Open http://localhost:4100 in your browser
 ```
 
+### Test the Pipeline
+
+```bash
+# Insert a test fixture
+docker exec found-footy-worker python /workspace/tests/workflows/test_pipeline.py --fixture-id 1469132
+
+# Watch logs
+docker compose -f docker-compose.dev.yml logs -f worker
+```
+
 ---
 
 ## 📂 Project Structure
@@ -300,6 +361,9 @@ found-footy/
 ├── tests/                   # Integration tests
 ├── docker-compose.dev.yml   # Development (ports 4100-4109)
 ├── docker-compose.yml       # Production (ports 3100-3109)
+├── ARCHITECTURE.md          # Detailed architecture docs
+├── TEMPORAL_WORKFLOWS.md    # Workflow documentation
+├── TWITTER_AUTH.md          # Twitter auth guide
 └── README.md
 ```
 
@@ -311,8 +375,24 @@ found-footy/
 |----------|-----------|---------|
 | IngestWorkflow | `ingest-{DD_MM_YYYY}` | `ingest-05_12_2024` |
 | MonitorWorkflow | `monitor-{DD_MM_YYYY}-{HH:MM}` | `monitor-05_12_2024-15:23` |
-| TwitterWorkflow | `twitter-{Team}-{LastName}-{min}-{event_id}` | `twitter-Liverpool-Salah-45+3min-123_40_306_Goal_1` |
-| DownloadWorkflow | `download-{Team}-{LastName}-{count}vids-{event_id}` | `download-Liverpool-Salah-3vids-123_40_306_Goal_1` |
+| TwitterWorkflow | `twitter{N}-{Team}-{LastName}-{min}-{event_id}` | `twitter1-Liverpool-Salah-45+3min-123_40_306_Goal_1` |
+| DownloadWorkflow | `download{N}-{Team}-{LastName}-{count}vids-{event_id}` | `download1-Liverpool-Salah-3vids-123_40_306_Goal_1` |
+
+---
+
+## 🔁 Retry Strategy
+
+All activities have exponential backoff for transient failures:
+
+| Activity Type | Max Attempts | Initial Interval | Backoff |
+|--------------|--------------|------------------|---------|
+| MongoDB reads | 2-3 | 1s | 2.0x |
+| MongoDB writes | 3 | 1s | 2.0x |
+| API-Football | 3 | 1s | 2.0x |
+| Twitter search | 3 | 10s | 1.5x |
+| Video download | 3 | 2s | 2.0x |
+| S3 upload | 3 | 2s | 1.5x |
+| S3 delete | 3 | 2s | 2.0x |
 
 ---
 
@@ -335,15 +415,35 @@ found-footy/
 docker compose -f docker-compose.dev.yml logs -f worker
 ```
 
+### Check S3 Videos
+```bash
+docker exec found-footy-worker python -c "
+from src.data.s3_store import FootyS3Store
+s3 = FootyS3Store()
+objs = s3.s3_client.list_objects_v2(Bucket='footy-videos', Prefix='')
+for obj in objs.get('Contents', []):
+    print(obj['Key'])
+"
+```
+
 ---
 
 ## 📝 Notes
 
 - **API Limit:** 7500 requests/day (Pro plan)
 - **Debounce Window:** 3 polls at 1-minute intervals (~3 minutes)
-- **Twitter Timeout:** 120s for browser automation
-- **Download Retry:** 3 attempts per video with 5s initial interval
+- **Twitter Search:** 5 videos per search, 3 searches per event
+- **Duration Filter:** 5-60 seconds (skip too short/long)
+- **Video Download Timeout:** 60s per video
 - **50 Tracked Teams:** Top European clubs (see `team_data.py`)
+
+---
+
+## 🚀 Future Improvements
+
+- [ ] **Twitter scroll pagination** - Currently only scans ~4-10 tweets from initial page load. Adding scroll functionality would load more tweets and significantly increase the video pool (see `twitter/session.py` search_videos method)
+- [ ] **Corporate media handling** - Some accounts (SonySportsNetwk, etc.) have DRM that blocks yt-dlp. Could skip these accounts or use alternative download methods
+- [ ] **Parallel downloads** - Currently downloads videos sequentially. Could parallelize for faster processing
 
 ---
 

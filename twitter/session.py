@@ -441,12 +441,13 @@ Steps:
         print("❌ All authentication methods failed - manual login required", flush=True)
         return False
     
-    def search_videos(self, search_query: str, max_results: int = None) -> List[Dict[str, Any]]:
+    def search_videos(self, search_query: str, max_results: int = None, exclude_urls: List[str] = None) -> List[Dict[str, Any]]:
         """Search Twitter for videos matching query
         
         Args:
             search_query: Search terms (e.g., "Messi goal Barcelona")
             max_results: Maximum videos to return
+            exclude_urls: List of URLs to skip (already processed videos)
             
         Returns:
             List of video dictionaries
@@ -456,6 +457,12 @@ Steps:
         """
         if max_results is None:
             max_results = self.config.default_max_results
+        
+        if exclude_urls is None:
+            exclude_urls = []
+        
+        # Normalize exclude_urls for comparison
+        exclude_set = set(exclude_urls)
         
         # CRITICAL: Ensure we're authenticated before searching
         if not self.ensure_authenticated():
@@ -468,14 +475,37 @@ Steps:
             print(f"❌ {error_msg}", flush=True)
             raise TwitterAuthError(error_msg)
         
+        if exclude_urls:
+            print(f"🔍 Searching: {search_query} (excluding {len(exclude_urls)} already-discovered URLs)", flush=True)
+        else:
+            print(f"🔍 Searching: {search_query}", flush=True)
+        
         try:
             # Build search URL with video filter
             video_search_query = f"{search_query} filter:videos"
             search_url = f"https://twitter.com/search?q={quote(video_search_query)}&src=typed_query&f=live"
             
-            print(f"🔍 Searching: {search_query}", flush=True)
             print(f"   URL: {search_url}", flush=True)
-            self.driver.get(search_url)
+            
+            # Set a reasonable timeout - if page takes >30s, something is WRONG
+            self.driver.set_page_load_timeout(30)
+            
+            try:
+                self.driver.get(search_url)
+            except Exception as e:
+                # Page load timeout or other error
+                print(f"❌ Page load failed after 30s: {e}", flush=True)
+                print(f"   Current URL: {self.driver.current_url}", flush=True)
+                
+                # Try to get page source to see if we got blocked/challenged
+                try:
+                    page_source = self.driver.page_source[:500]
+                    print(f"   Page preview: {page_source}", flush=True)
+                except:
+                    pass
+                
+                raise RuntimeError(f"Twitter search page failed to load within 30s: {e}")
+            
             time.sleep(self.config.search_timeout)
             self.last_activity = time.time()
             
@@ -485,13 +515,13 @@ Steps:
                 self.authenticated = False
                 raise TwitterAuthError(f"Got logged out during search! Redirected to: {current_url}")
             
-            # Extract tweets
+            # Extract tweets - scan up to 50 tweets to find videos
             tweet_elements = self.driver.find_elements(By.CSS_SELECTOR, "article[data-testid='tweet']")
             print(f"   📄 Found {len(tweet_elements)} tweets", flush=True)
             
             discovered_videos = []
             
-            for i, tweet_element in enumerate(tweet_elements[:20]):
+            for i, tweet_element in enumerate(tweet_elements[:50]):
                 try:
                     # Skip promoted/ad tweets
                     try:
@@ -578,6 +608,11 @@ Steps:
                             continue
                     
                     if has_video and tweet_url:
+                        # Skip URLs that were already discovered/processed
+                        if tweet_url in exclude_set:
+                            print(f"   ⏭️ Skipping already-discovered URL: {tweet_url[:60]}...", flush=True)
+                            continue
+                        
                         tweet_id = tweet_url.split("/status/")[-1] if "/status/" in tweet_url else f"unknown_{i}"
                         
                         video_entry = {

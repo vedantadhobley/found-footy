@@ -3,9 +3,16 @@ Monitor Workflow - Every Minute
 
 Tracks active fixtures, fetches fresh data, and processes events inline.
 No EventWorkflow needed with player_id in event_id!
+
+ORCHESTRATION MODEL:
+- Monitor is the single orchestrator for all event processing
+- Monitor tracks: _monitor_count, _monitor_complete, _twitter_count
+- Twitter workflow sets: _twitter_complete (when done)
+- Fixture completes when ALL events have _monitor_complete=true AND _twitter_complete=true
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.workflow import ParentClosePolicy
 from datetime import timedelta
 from typing import List
 
@@ -68,6 +75,11 @@ class MonitorWorkflow:
                 monitor_activities.store_and_compare,
                 args=[fixture_id, fixture_data],
                 start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=3,
+                    initial_interval=timedelta(seconds=1),
+                    backoff_coefficient=2.0,
+                ),
             )
             
             # Process events inline (no EventWorkflow needed!)
@@ -94,12 +106,14 @@ class MonitorWorkflow:
                 
                 twitter_first_searches.append(twitter_id)
                 
-                # Start TwitterWorkflow (first attempt, attempt_number=1)
-                await workflow.execute_child_workflow(
+                # Start TwitterWorkflow (first attempt, attempt_number=1) - non-blocking
+                # Twitter workflow sets _twitter_complete=true when done (including downloads)
+                await workflow.start_child_workflow(
                     TwitterWorkflow.run,
                     args=[fixture_id, event_id, player_name, team_name, 1, fixture_finished],
                     id=twitter_id,
                     execution_timeout=timedelta(minutes=10),
+                    parent_close_policy=ParentClosePolicy.ABANDON,
                 )
             
             # Trigger additional TwitterWorkflow for events that need more searches
@@ -119,12 +133,14 @@ class MonitorWorkflow:
                 
                 twitter_additional_searches.append(twitter_id)
                 
-                # Start TwitterWorkflow (additional attempt)
-                await workflow.execute_child_workflow(
+                # Start TwitterWorkflow (additional attempt) - non-blocking
+                # Twitter workflow sets _twitter_complete=true when done (including downloads)
+                await workflow.start_child_workflow(
                     TwitterWorkflow.run,
                     args=[fixture_id, event_id, player_name, team_name, attempt_number, fixture_finished],
                     id=twitter_id,
                     execution_timeout=timedelta(minutes=10),
+                    parent_close_policy=ParentClosePolicy.ABANDON,
                 )
             
             # Check if fixture is finished and should be completed
@@ -133,6 +149,11 @@ class MonitorWorkflow:
                     monitor_activities.complete_fixture_if_ready,
                     fixture_id,
                     start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=RetryPolicy(
+                        maximum_attempts=3,
+                        initial_interval=timedelta(seconds=1),
+                        backoff_coefficient=2.0,
+                    ),
                 )
         
         workflow.logger.info(

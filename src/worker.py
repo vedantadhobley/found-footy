@@ -161,22 +161,25 @@ async def main():
                 monitor.process_fixture_events,
                 monitor.sync_fixture_metadata,
                 monitor.complete_fixture_if_ready,
-                # Twitter activities (3 granular for retry control)
+                # Twitter activities (4 granular for retry control)
                 twitter.get_twitter_search_data,
                 twitter.execute_twitter_search,
                 twitter.save_discovered_videos,
-                # Download activities (5 granular for per-video retry)
+                twitter.mark_event_twitter_complete,
+                # Download activities (7 granular for per-video retry + quality replacement)
                 download.fetch_event_data,
                 download.download_single_video,
                 download.deduplicate_videos,
                 download.upload_single_video,
                 download.mark_download_complete,
+                download.replace_s3_video,
+                download.save_processed_urls,
             ],
         )
         
         print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
         print("📋 Workflows: Ingest, Monitor, Twitter, Download", flush=True)
-        print("🔧 Activities: 14 total (2 ingest, 6 monitor, 3 twitter, 5 download)", flush=True)
+        print("🔧 Activities: 17 total (2 ingest, 6 monitor, 4 twitter, 7 download)", flush=True)
         print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every minute)", flush=True)
         await worker.run()
     except Exception as e:

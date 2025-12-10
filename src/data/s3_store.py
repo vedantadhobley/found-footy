@@ -58,15 +58,13 @@ class FootyS3Store:
             print(f"❌ FATAL: Unexpected S3 error: {e}")
             raise
     
-    def upload_video(self, local_file_path: str, s3_key: str, metadata: Dict[str, Any] = None, 
-                    tags: Dict[str, str] = None) -> Optional[str]:
-        """Upload video file to S3 with metadata and tags
+    def upload_video(self, local_file_path: str, s3_key: str, metadata: Dict[str, Any] = None) -> Optional[str]:
+        """Upload video file to S3 with metadata
         
         Args:
             local_file_path: Path to local video file
             s3_key: S3 key (path) for the file
             metadata: Optional metadata to attach to object headers
-            tags: Optional tags for S3 object tagging (better for filtering/search)
             
         Returns:
             S3 URL if successful, None otherwise
@@ -96,12 +94,6 @@ class FootyS3Store:
                 'Metadata': clean_metadata,
                 'ContentType': content_type
             }
-            
-            # Add tags if provided (separate from metadata, better for filtering)
-            if tags:
-                # Build tag string: "key1=value1&key2=value2"
-                tag_string = '&'.join([f"{k}={v}" for k, v in tags.items()])
-                extra_args['Tagging'] = tag_string
             
             # Upload with auto-retry on NoSuchBucket
             try:

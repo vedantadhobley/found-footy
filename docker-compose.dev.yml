@@ -2,7 +2,7 @@
 #
 # Port allocation: found-footy uses 4100-4109 (dev)
 #   4100: Temporal UI
-#   4101: MongoDB Express
+#   4101: MongoDB Compass (web GUI)
 #   4102: MinIO Console
 #   4103: Twitter Firefox VNC (browser GUI)
 #   7233: Temporal gRPC
@@ -67,7 +67,7 @@ services:
   mongo:
     image: mongo:7-jammy
     container_name: found-footy-mongo
-    # No port mapping - accessed via MongoDB Express dashboard
+    # No port mapping - accessed via MongoDB Compass dashboard
     environment:
       MONGO_INITDB_ROOT_USERNAME: ffuser
       MONGO_INITDB_ROOT_PASSWORD: ffpass
@@ -88,29 +88,17 @@ services:
       - found-footy-dev
       - luv-dev
 
-  # MONGODB EXPRESS - MongoDB web UI
-  mongo-express:
-    image: mongo-express:1.0.2-20-alpine3.19
-    container_name: found-footy-mongo-express
+  # MONGOKU - MongoDB web GUI (supports integer IDs)
+  mongoku:
+    image: huggingface/mongoku:latest
+    container_name: found-footy-mongoku
     ports:
-      - "4101:8081"  # MongoDB Express
+      - "4101:3100"  # Mongoku Web UI
     environment:
-      ME_CONFIG_MONGODB_SERVER: found-footy-mongo
-      ME_CONFIG_MONGODB_PORT: 27017
-      ME_CONFIG_MONGODB_ADMINUSERNAME: ffuser
-      ME_CONFIG_MONGODB_ADMINPASSWORD: ffpass
-      ME_CONFIG_MONGODB_AUTH_DATABASE: admin
-      ME_CONFIG_BASICAUTH_USERNAME: ffuser
-      ME_CONFIG_BASICAUTH_PASSWORD: ffpass
+      MONGOKU_DEFAULT_HOST: mongodb://ffuser:ffpass@found-footy-mongo:27017
     depends_on:
       mongo:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://ffuser:ffpass@127.0.0.1:8081"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     restart: unless-stopped
     networks:
       - found-footy-dev
