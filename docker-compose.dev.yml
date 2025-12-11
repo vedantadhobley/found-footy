@@ -18,7 +18,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-    container_name: found-footy-twitter
+    container_name: found-footy-dev-twitter
     ports:
       - "4103:6080"  # noVNC Browser - view Firefox at http://localhost:4103
     env_file:
@@ -35,7 +35,7 @@ services:
       NOVNC_PORT: "6080"
     volumes:
       - .:/workspace  # Mount entire project for development
-      - twitter_cookies_dev:/data
+      - found-footy-dev-twitter-cookies:/data
       - ~/.config/found-footy:/config  # Cookie backup (outside repo)
     networks:
       - found-footy-dev
@@ -45,13 +45,13 @@ services:
   # POSTGRESQL - Temporal metadata storage
   postgres:
     image: postgres:15-alpine
-    container_name: found-footy-postgres
+    container_name: found-footy-dev-postgres
     environment:
       POSTGRES_USER: ffuser
       POSTGRES_PASSWORD: ffpass
       POSTGRES_DB: temporal
     volumes:
-      - postgres_data_dev:/var/lib/postgresql/data
+      - found-footy-dev-postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ffuser -d temporal"]
       interval: 10s
@@ -66,17 +66,19 @@ services:
   # MONGODB - application data storage
   mongo:
     image: mongo:7-jammy
-    container_name: found-footy-mongo
+    container_name: found-footy-dev-mongo
     # No port mapping - accessed via MongoDB Compass dashboard
     environment:
       MONGO_INITDB_ROOT_USERNAME: ffuser
       MONGO_INITDB_ROOT_PASSWORD: ffpass
       MONGO_INITDB_DATABASE: found_footy
-    command: >
-      mongod
-      --setParameter logComponentVerbosity={network:{verbosity:0},storage:{verbosity:0}}
+      MONGO_REPLICA_HOST: found-footy-dev-mongo
+    entrypoint: ["/mongo-init-keyfile.sh"]
+    command: ["mongod", "--replSet", "rs0", "--keyFile", "/data/keyfile/mongodb-keyfile", "--bind_ip_all", "--setParameter", "logComponentVerbosity={network:{verbosity:0},storage:{verbosity:0}}"]
     volumes:
-      - mongo_data_dev:/data/db
+      - found-footy-dev-mongo-data:/data/db
+      - found-footy-dev-mongo-keyfile:/data/keyfile
+      - ./mongo-init-keyfile.sh:/mongo-init-keyfile.sh:ro
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
       interval: 10s
@@ -87,15 +89,16 @@ services:
     networks:
       - found-footy-dev
       - luv-dev
-
+  
   # MONGOKU - MongoDB web GUI (supports integer IDs)
   mongoku:
     image: huggingface/mongoku:latest
-    container_name: found-footy-mongoku
+    container_name: found-footy-dev-mongoku
     ports:
       - "4101:3100"  # Mongoku Web UI
     environment:
-      MONGOKU_DEFAULT_HOST: mongodb://ffuser:ffpass@found-footy-mongo:27017
+      MONGOKU_DEFAULT_HOST: mongodb://ffuser:ffpass@found-footy-dev-mongo:27017
+      MONGOKU_SERVER_ORIGIN: http://localhost:4101
     depends_on:
       mongo:
         condition: service_healthy
@@ -106,7 +109,7 @@ services:
   # MINIO - S3-compatible object storage
   minio:
     image: minio/minio:latest
-    container_name: found-footy-minio
+    container_name: found-footy-dev-minio
     command: server /data --console-address ":9001"
     ports:
       - "4102:9001"  # MinIO Console
@@ -114,7 +117,7 @@ services:
       MINIO_ROOT_USER: ffuser
       MINIO_ROOT_PASSWORD: ffpass--
     volumes:
-      - minio_data_dev:/data
+      - found-footy-dev-minio-data:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 10s
@@ -129,7 +132,7 @@ services:
   # TEMPORAL SERVER - Workflow orchestration
   temporal:
     image: temporalio/auto-setup:latest
-    container_name: found-footy-temporal
+    container_name: found-footy-dev-temporal
     ports:
       - "7233:7233"  # Temporal server
     environment:
@@ -137,7 +140,7 @@ services:
       - DB_PORT=5432
       - POSTGRES_USER=ffuser
       - POSTGRES_PWD=ffpass
-      - POSTGRES_SEEDS=found-footy-postgres
+      - POSTGRES_SEEDS=found-footy-dev-postgres
       - BIND_ON_IP=0.0.0.0  # Bind to all interfaces
     depends_on:
       postgres:
@@ -149,11 +152,11 @@ services:
   # TEMPORAL UI - Web interface
   temporal-ui:
     image: temporalio/ui:latest
-    container_name: found-footy-temporal-ui
+    container_name: found-footy-dev-temporal-ui
     ports:
       - "4100:8080"  # Temporal UI
     environment:
-      - TEMPORAL_ADDRESS=found-footy-temporal:7233
+      - TEMPORAL_ADDRESS=found-footy-dev-temporal:7233
       - TEMPORAL_CORS_ORIGINS=http://localhost:4100
     depends_on:
       - temporal
@@ -166,18 +169,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-    container_name: found-footy-worker
+    container_name: found-footy-dev-worker
     env_file:
       - .env
     environment:
       PYTHONPATH: /workspace
-      TEMPORAL_HOST: found-footy-temporal:7233
-      MONGODB_URI: mongodb://ffuser:ffpass@found-footy-mongo:27017/found_footy?authSource=admin
-      S3_ENDPOINT_URL: http://found-footy-minio:9000
+      TEMPORAL_HOST: found-footy-dev-temporal:7233
+      MONGODB_URI: mongodb://ffuser:ffpass@found-footy-dev-mongo:27017/found_footy?authSource=admin
+      S3_ENDPOINT_URL: http://found-footy-dev-minio:9000
       S3_ACCESS_KEY: ffuser
       S3_SECRET_KEY: ffpass--
       S3_BUCKET_NAME: footy-videos
-      TWITTER_SESSION_URL: http://found-footy-twitter:8888
+      TWITTER_SESSION_URL: http://found-footy-dev-twitter:8888
     volumes:
       - .:/workspace
       - ~/.config/found-footy:/config  # Cookie backup (shared with twitter service)
@@ -190,13 +193,20 @@ services:
     command: python /workspace/src/worker.py
 
 volumes:
-  postgres_data_dev:
+  found-footy-dev-postgres-data:
+    name: found-footy-dev-postgres-data
     driver: local
-  mongo_data_dev:
+  found-footy-dev-mongo-data:
+    name: found-footy-dev-mongo-data
     driver: local
-  minio_data_dev:
+  found-footy-dev-mongo-keyfile:
+    name: found-footy-dev-mongo-keyfile
     driver: local
-  twitter_cookies_dev:
+  found-footy-dev-minio-data:
+    name: found-footy-dev-minio-data
+    driver: local
+  found-footy-dev-twitter-cookies:
+    name: found-footy-dev-twitter-cookies
     driver: local
 
 networks:

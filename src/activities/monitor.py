@@ -202,7 +202,8 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
     live_events = live_fixture.get("events", [])
     active_events = active_fixture.get("events", [])
     
-    # Build sets
+    # Build sets for comparison
+    # Note: VAR'd events are DELETED (not marked _removed), so no special handling needed
     live_ids = {e["_event_id"] for e in live_events if e.get("_event_id")}
     active_map = {e["_event_id"]: e for e in active_events if e.get("_event_id")}
     active_ids = set(active_map.keys())
@@ -247,15 +248,13 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
             activity.logger.info(f"✨ NEW EVENT: {event_id}")
             new_count += 1
     
-    # REMOVED events (VAR cancelled)
+    # REMOVED events (VAR cancelled) - DELETE from MongoDB and S3
     removed_ids = active_ids - live_ids
     removed_count = 0
     for event_id in removed_ids:
-        active_event = active_map[event_id]
-        if not active_event.get("_removed"):
-            if store.mark_event_removed(fixture_id, event_id):
-                activity.logger.warning(f"🚫 REMOVED: {event_id} (VAR)")
-                removed_count += 1
+        if store.mark_event_removed(fixture_id, event_id):
+            activity.logger.warning(f"🗑️ VAR REMOVED: {event_id} (deleted from DB + S3)")
+            removed_count += 1
     
     # MATCHING events - increment stable_count
     matching_ids = live_ids & active_ids

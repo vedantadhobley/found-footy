@@ -87,3 +87,4 @@ twitter_cookies*.json
 twitter_cookies*.pkl
 *.pkl
 .open_vnc_signal
+mongodb-keyfile

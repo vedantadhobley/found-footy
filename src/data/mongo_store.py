@@ -187,7 +187,9 @@ class FootyMongoStore:
         Filters events to only include trackable ones (Goals only, per event_config).
         Generates _event_id for each event to enable easy comparison in debounce.
         
-        Event IDs are sequential per team+event_type: {fixture_id}_{team_id}_{event_type}_{#}
+        Event IDs use sequence per player+type: {fixture_id}_{team_id}_{player_id}_{event_type}_{sequence}
+        Sequence-based IDs handle minute drift during debounce (44'→45' doesn't change ID).
+        VAR'd events are deleted entirely, freeing the sequence slot for new goals.
         """
         try:
             from src.utils.event_config import should_track_event
@@ -198,7 +200,7 @@ class FootyMongoStore:
             # Filter events and generate IDs in single pass
             raw_events = doc.get("events", [])
             filtered_events = []
-            team_event_counters = {}  # Track sequence per team+event_type: "team_id_event_type" -> count
+            player_event_counters = {}  # Track sequence per player+event_type
             
             for event in raw_events:
                 if should_track_event(event):
@@ -209,11 +211,11 @@ class FootyMongoStore:
                     
                     # Increment counter per player+event_type (handles multiple goals by same player)
                     counter_key = f"{player_id}_{event_type}"
-                    team_event_counters[counter_key] = team_event_counters.get(counter_key, 0) + 1
-                    sequence = team_event_counters[counter_key]
+                    player_event_counters[counter_key] = player_event_counters.get(counter_key, 0) + 1
+                    sequence = player_event_counters[counter_key]
                     
-                    # Generate event ID: {fixture_id}_{team_id}_{player_id}_{event_type}_{#}
-                    # Player ID makes it unique - no hash needed for VAR scenarios!
+                    # Generate event ID: {fixture_id}_{team_id}_{player_id}_{event_type}_{sequence}
+                    # Sequence-based to handle minute drift; removed events handled separately in debounce
                     event["_event_id"] = f"{fixture_id}_{team_id}_{player_id}_{event_type}_{sequence}"
                     filtered_events.append(event)
             
@@ -441,22 +443,55 @@ class FootyMongoStore:
     
     def mark_event_removed(self, fixture_id: int, event_id: str) -> bool:
         """
-        Mark event as removed (no longer in API data).
-        Called by debounce job for CASE 3 (removed events).
+        Remove event completely when VAR disallows it.
+        
+        This DELETES the event from MongoDB and S3 (not just marks it removed).
+        Why: Sequence-based event IDs (e.g., ..._Goal_1) would collide if the
+        same player scores again after VAR. Deleting frees the ID slot.
+        
+        Steps:
+        1. Get event's S3 URLs from MongoDB
+        2. Delete videos from S3
+        3. Remove event from MongoDB events array
         """
+        from src.data.s3_store import FootyS3Store
+        
         try:
-            result = self.fixtures_active.update_one(
+            # Step 1: Get event data to find S3 URLs
+            fixture = self.fixtures_active.find_one(
                 {"_id": fixture_id, "events._event_id": event_id},
-                {
-                    "$set": {
-                        "events.$._removed": True,
-                        "events.$._removed_at": datetime.now(timezone.utc)
-                    }
-                }
+                {"events.$": 1}
             )
-            return result.modified_count > 0
+            
+            if fixture and fixture.get("events"):
+                event = fixture["events"][0]
+                s3_urls = event.get("_s3_urls", [])
+                
+                # Step 2: Delete videos from S3
+                if s3_urls:
+                    s3_store = FootyS3Store()
+                    for s3_url in s3_urls:
+                        # Extract key from URL: http://minio:9000/bucket/key -> key
+                        try:
+                            key = s3_url.split("/footy-videos/", 1)[1]
+                            s3_store.delete_video(key)
+                            print(f"🗑️ Deleted S3 video for VAR'd goal: {key}")
+                        except Exception as e:
+                            print(f"⚠️ Failed to delete S3 video {s3_url}: {e}")
+            
+            # Step 3: Remove event from MongoDB array entirely
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id},
+                {"$pull": {"events": {"_event_id": event_id}}}
+            )
+            
+            if result.modified_count > 0:
+                print(f"🗑️ Removed VAR'd event from MongoDB: {event_id}")
+                return True
+            return False
+            
         except Exception as e:
-            print(f"❌ Error marking event {event_id} as removed: {e}")
+            print(f"❌ Error removing event {event_id}: {e}")
             return False
     
     def mark_event_twitter_complete(

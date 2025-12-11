@@ -33,16 +33,16 @@ class MonitorWorkflow:
         2. Batch fetch all active fixtures from API
         3. For each fixture:
            - Filter to trackable events (Goals only)
-           - Generate event IDs with player_id: {fixture}_{team}_{player}_{type}_{#}
+           - Generate event IDs: {fixture}_{team}_{player}_{type}_{sequence}
            - Store in fixtures_live
-           - Process events inline (pure set comparison - no hash!)
-           - Trigger TwitterWorkflow directly for stable events
+           - Process events (pure set comparison)
+           - Trigger TwitterWorkflow for stable events
            - Trigger retry TwitterWorkflow for events needing more videos
         4. Complete finished fixtures (FT/AET/PEN → completed)
         
-        Note: With player_id in event_id, VAR scenarios handled automatically:
-        - Player changes → different event_id → old removed, new added
-        - Goal cancelled → event_id disappears → marked removed
+        VAR handling: Events removed from API are DELETED from MongoDB + S3.
+        This frees the sequence ID slot so if the same player scores again,
+        the new goal gets the same sequence number without collision.
         """
         
         workflow.logger.info("👁️ Starting monitor cycle")
