@@ -567,56 +567,69 @@ class FootyMongoStore:
 
     def _generate_event_display_titles(self, fixture: Dict[str, Any], event: Dict[str, Any]) -> tuple:
         """
-        Generate display titles for frontend.
+        Generate display titles for frontend with highlight markers.
         
-        Title: "Manchester City 0 - (3) Liverpool" (home team first, scoring team score in parens)
-        Subtitle: "90+2 - Florian Wirtz (Dominik Szoboszlai)" (minute - scorer (assister))
+        Title: "<<Liverpool (3)>> - 0 Arsenal" (scoring team highlighted with <<>>)
+        Subtitle: "88' Goal - <<A. Grimaldo>> (Assister)" (scorer highlighted with <<>>)
+        
+        Frontend should parse <<text>> markers and render them as highlighted text.
         
         Args:
-            fixture: Fixture data with teams, score
-            event: Event data with time, player, assist
+            fixture: Fixture data with teams
+            event: Event data with time, player, assist, _score_after
         
         Returns:
             tuple: (title, subtitle)
         """
-        # Extract teams and scores
+        # Extract teams
         home_team = fixture.get("teams", {}).get("home", {}).get("name", "Unknown")
         away_team = fixture.get("teams", {}).get("away", {}).get("name", "Unknown")
-        home_score = fixture.get("goals", {}).get("home", 0)
-        away_score = fixture.get("goals", {}).get("away", 0)
+        
+        # Use _score_after (score after this goal) instead of fixture.goals (final score)
+        score_after = event.get("_score_after", {})
+        home_score = score_after.get("home", 0)
+        away_score = score_after.get("away", 0)
+        
+        # Fallback to fixture goals if _score_after not set (shouldn't happen)
+        if not score_after:
+            home_score = fixture.get("goals", {}).get("home", 0)
+            away_score = fixture.get("goals", {}).get("away", 0)
         
         # Determine which team scored (for highlighting)
-        scoring_team = event.get("team", {}).get("name", "")
+        scoring_team = event.get("_scoring_team", "")
         
-        # Build title with scoring team's score in parentheses
-        # Format: "Home 0 - (3) Away" or "Away 2 - (1) Home" (home team first if exists)
-        if home_team and home_team != "Unknown":
-            # Home team exists - show home first
-            if scoring_team == home_team:
-                title = f"{home_team} ({home_score}) - {away_score} {away_team}"
-            else:
-                title = f"{home_team} {home_score} - ({away_score}) {away_team}"
+        # Build title with scoring team highlighted using <<>> markers
+        # Format: "<<Home (1)>> - 0 Away" or "Home 0 - <<(1) Away>>"
+        if scoring_team == "home":
+            title = f"<<{home_team} ({home_score})>> - {away_score} {away_team}"
         else:
-            # No home team (neutral venue) - show scoring team first
-            if scoring_team == away_team:
-                title = f"{away_team} ({away_score}) - {home_score} {home_team}"
-            else:
-                title = f"{home_team} ({home_score}) - {away_score} {away_team}"
+            title = f"{home_team} {home_score} - <<({away_score}) {away_team}>>"
         
         # Build subtitle with time and players
         minute = event.get("time", {}).get("elapsed", 0)
         extra = event.get("time", {}).get("extra")
         scorer = event.get("player", {}).get("name", "Unknown")
-        assister = event.get("assist", {}).get("player", {}).get("name", "")
+        detail = event.get("detail", "")
+        assister = event.get("assist", {}).get("name", "")
         
         # Format time: "90+2" or just "45"
         time_str = f"{minute}+{extra}" if extra else str(minute)
         
-        # Format subtitle: "90+2 - Florian Wirtz (Dominik Szoboszlai)"
-        if assister:
-            subtitle = f"{time_str}' - {scorer} ({assister})"
+        # Format: "88' Goal - <<Scorer>> (Assister)" with scorer highlighted
+        # Possible detail values: "Normal Goal", "Own Goal", "Penalty", "Missed Penalty"
+        if detail == "Own Goal":
+            goal_type = "Own Goal"
+        elif detail == "Penalty":
+            goal_type = "Penalty Goal"
+        elif detail == "Missed Penalty":
+            goal_type = "Missed Penalty"
         else:
-            subtitle = f"{time_str}' - {scorer}"
+            goal_type = "Goal"
+        
+        if assister:
+            subtitle = f"{time_str}' {goal_type} - <<{scorer}>> ({assister})"
+        else:
+            subtitle = f"{time_str}' {goal_type} - <<{scorer}>>"
         
         return title, subtitle
     
