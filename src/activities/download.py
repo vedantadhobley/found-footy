@@ -59,50 +59,64 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
     team_name = event.get("team", {}).get("name", "Unknown")
     assister_name = event.get("assist", {}).get("player", {}).get("name", "")
     
-    # Get S3 URLs from MongoDB
-    existing_s3_urls = event.get("_s3_urls", [])
+    # Get existing videos from MongoDB (new _s3_videos schema)
+    existing_s3_videos_mongo = event.get("_s3_videos", [])
     
     # Build full metadata for existing S3 videos (for quality comparison)
-    # This includes perceptual_hash, resolution, bitrate, file_size, source_url
-    existing_s3_videos = []  # List of {s3_url, s3_key, perceptual_hash, width, height, bitrate, file_size, source_url}
+    # Enrich MongoDB data with S3 metadata for quality comparison
+    existing_s3_videos = []  # List of {s3_url, s3_key, perceptual_hash, width, height, bitrate, file_size, source_url, popularity}
     already_downloaded_urls = set()
     
-    if existing_s3_urls:
+    if existing_s3_videos_mongo:
         s3_store = FootyS3Store()
         
-        for s3_url in existing_s3_urls:
+        for video_obj in existing_s3_videos_mongo:
+            s3_url = video_obj.get("url", "")
+            if not s3_url:
+                continue
+                
             try:
-                # Extract bucket and key from S3 URL
-                # Format: http://found-footy-minio:9000/footy-videos/1378993/event_id/file.mp4
-                parts = s3_url.split("/footy-videos/", 1)
-                if len(parts) == 2:
-                    s3_key = parts[1]
-                    # Use boto3's head_object to get metadata
-                    response = s3_store.s3_client.head_object(Bucket="footy-videos", Key=s3_key)
-                    metadata = response.get("Metadata", {})
-                    
-                    source_url = metadata.get("source_url", "")
-                    if source_url:
-                        already_downloaded_urls.add(source_url)
-                    
-                    # Build full video info for quality comparison
-                    video_info = {
-                        "s3_url": s3_url,
-                        "s3_key": s3_key,
-                        "perceptual_hash": metadata.get("perceptual_hash", ""),
-                        "width": int(metadata.get("width", 0)),
-                        "height": int(metadata.get("height", 0)),
-                        "bitrate": float(metadata.get("bitrate", 0)),
-                        "file_size": int(metadata.get("file_size", 0)),
-                        "source_url": source_url,
-                        "duration": float(metadata.get("duration", 0)),
-                        "resolution_score": int(metadata.get("resolution_score", 0)),
-                    }
-                    existing_s3_videos.append(video_info)
-                    activity.logger.debug(f"✓ Existing S3 video: {s3_key} ({video_info['width']}x{video_info['height']})")
+                # Extract S3 key from relative path
+                # Format: /video/footy-videos/{fixture}/{event_id}/file.mp4
+                if not s3_url.startswith("/video/footy-videos/"):
+                    activity.logger.warning(f"⚠️ Unexpected S3 URL format: {s3_url}")
+                    continue
+                
+                s3_key = s3_url.replace("/video/footy-videos/", "")
+                
+                # Use boto3's head_object to get full metadata from S3
+                response = s3_store.s3_client.head_object(Bucket="footy-videos", Key=s3_key)
+                metadata = response.get("Metadata", {})
+                
+                source_url = metadata.get("source_url", "")
+                if source_url:
+                    already_downloaded_urls.add(source_url)
+                
+                # Build full video info for quality comparison (S3 metadata + MongoDB data)
+                video_info = {
+                    "s3_url": s3_url,
+                    "s3_key": s3_key,
+                    "perceptual_hash": video_obj.get("perceptual_hash", "") or metadata.get("perceptual_hash", ""),
+                    "width": int(metadata.get("width", 0)),
+                    "height": int(metadata.get("height", 0)),
+                    "bitrate": float(metadata.get("bitrate", 0)),
+                    "file_size": int(metadata.get("file_size", 0)),
+                    "source_url": source_url,
+                    "duration": float(metadata.get("duration", 0)),
+                    "resolution_score": video_obj.get("resolution_score", 0) or int(metadata.get("resolution_score", 0)),
+                    "popularity": video_obj.get("popularity", 1),  # From MongoDB
+                }
+                existing_s3_videos.append(video_info)
+                activity.logger.debug(f"✓ Existing S3 video: {s3_key} ({video_info['width']}x{video_info['height']}, pop={video_info['popularity']})")
             except Exception as e:
-                # If we can't get metadata, still track the URL but with no quality info
+                # If we can't get metadata, still track the URL but with limited info
                 activity.logger.warning(f"⚠️ Failed to get S3 metadata for {s3_url}: {e}")
+                existing_s3_videos.append({
+                    "s3_url": s3_url,
+                    "perceptual_hash": video_obj.get("perceptual_hash", ""),
+                    "resolution_score": video_obj.get("resolution_score", 0),
+                    "popularity": video_obj.get("popularity", 1),
+                })
     
     # Filter discovered_videos to only NEW ones (URLs not already downloaded)
     videos_to_download = []
@@ -263,6 +277,21 @@ async def download_single_video(
         )
         os.remove(output_path)
         return {"status": "filtered", "reason": "too_long", "duration": duration, "source_url": source_tweet_url}
+    
+    # Aspect ratio filter: reject non-landscape videos
+    # Goal clips should be landscape format (at least 4:3 aspect ratio = 1.33)
+    # This filters out:
+    #   - Vertical videos (9:16 phone recordings, TikTok reposts)
+    #   - Square videos (1:1 club promo clips, social media posts)
+    MIN_ASPECT_RATIO = 1.33  # 4:3
+    if width and height:
+        aspect_ratio = width / height
+        if aspect_ratio < MIN_ASPECT_RATIO:
+            activity.logger.warning(
+                f"📐 Video {video_index} aspect ratio too narrow ({width}x{height} = {aspect_ratio:.2f} < {MIN_ASPECT_RATIO}), skipping"
+            )
+            os.remove(output_path)
+            return {"status": "filtered", "reason": "aspect_ratio", "width": width, "height": height, "aspect_ratio": aspect_ratio, "source_url": source_tweet_url}
     
     # Calculate MD5 hash and size first
     file_hash = _calculate_md5(output_path)
@@ -548,7 +577,7 @@ async def upload_single_video(
     file_hash: str = "",
     perceptual_hash: str = "",
     duration: float = 0.0,
-    quality_score: int = 1,
+    popularity: int = 1,
     assister_name: str = "",
     opponent_team: str = "",
     source_url: str = "",
@@ -570,7 +599,7 @@ async def upload_single_video(
         file_hash: MD5 hash for S3 key (enables dedup checking)
         perceptual_hash: Perceptual hash for cross-resolution dedup
         duration: Video duration in seconds
-        quality_score: Duplicate count (higher = better/more popular video)
+        popularity: Duplicate count (higher = more sources found this video = more trustworthy)
     
     Returns:
         Dict with s3_url, perceptual_hash, and status
@@ -611,7 +640,7 @@ async def upload_single_video(
         "team_name": team_name,
         "event_id": event_id,
         "fixture_id": str(fixture_id),
-        "quality_score": str(quality_score),
+        "popularity": str(popularity),  # How many times this video was seen (dedup count)
         "source_url": source_url,  # Original tweet URL for dedup tracking
         "display_title": display_title,
         "display_subtitle": display_subtitle,
@@ -635,7 +664,7 @@ async def upload_single_video(
         quality_info += f"@{int(bitrate)}kbps"
     activity.logger.info(
         f"☁️ Uploading video {video_index} to S3: {s3_key} "
-        f"({quality_info}, quality_score={quality_score})"
+        f"({quality_info}, popularity={popularity})"
     )
     
     s3_store = FootyS3Store()
@@ -647,11 +676,23 @@ async def upload_single_video(
         raise RuntimeError(msg)
     
     activity.logger.info(f"✅ Uploaded video {video_index}: {s3_url}")
+    
+    # Return video object for MongoDB storage
+    resolution_score = width * height if width and height else 0
     return {
         "status": "success",
         "s3_url": s3_url,
         "perceptual_hash": perceptual_hash,
-        "quality_score": quality_score
+        "resolution_score": resolution_score,
+        "popularity": popularity,
+        # Full video object for MongoDB _s3_videos array
+        "video_object": {
+            "url": s3_url,
+            "perceptual_hash": perceptual_hash,
+            "resolution_score": resolution_score,
+            "popularity": popularity,
+            "rank": 0,  # Will be recalculated
+        }
     }
 
 
@@ -659,27 +700,17 @@ async def upload_single_video(
 async def mark_download_complete(
     fixture_id: int,
     event_id: str,
-    s3_urls: List[str],
-    perceptual_hashes: List[str],
-    successful_video_urls: List[Dict[str, Any]],
+    video_objects: List[Dict[str, Any]],
     temp_dir: str,
 ) -> bool:
     """
-    Save download results (S3 URLs and hashes) and cleanup temp directory.
-    
-    Note: URL tracking for dedup is now handled by save_processed_urls activity,
-    which is called separately before this function. Pass empty list for
-    successful_video_urls unless you need legacy behavior.
-    
-    Note: Monitor workflow controls _twitter_count and _twitter_complete flags.
-    This function just saves the S3 results of the download attempt.
+    Save download results (video objects) and cleanup temp directory.
+    Then recalculate ranks for all videos in this event.
     
     Args:
         fixture_id: Fixture ID
         event_id: Event ID
-        s3_urls: List of S3 URLs that were uploaded
-        perceptual_hashes: List of perceptual hashes for cross-resolution dedup
-        successful_video_urls: DEPRECATED - pass empty list. URLs saved via save_processed_urls.
+        video_objects: List of video objects {url, perceptual_hash, resolution_score, popularity, rank}
         temp_dir: Temporary directory to cleanup
     
     Returns:
@@ -690,31 +721,16 @@ async def mark_download_complete(
     
     store = FootyMongoStore()
     
-    # Save S3 URLs and perceptual hashes
-    activity.logger.info(f"💾 Saving {len(s3_urls)} videos for {event_id}")
-    success = store.mark_event_download_complete(
-        fixture_id, event_id, s3_urls, perceptual_hashes
-    )
-    
-    # Save successful video URLs to _discovered_videos for dedup
-    if successful_video_urls:
-        activity.logger.info(f"💾 Saving {len(successful_video_urls)} successful URLs to discovered_videos")
-        try:
-            result = store.fixtures_active.update_one(
-                {"_id": fixture_id, "events._event_id": event_id},
-                {
-                    "$push": {
-                        "events.$._discovered_videos": {"$each": successful_video_urls}
-                    }
-                }
-            )
-            if result.modified_count == 0:
-                activity.logger.warning(f"⚠️ Failed to save discovered videos for {event_id}")
-        except Exception as e:
-            activity.logger.error(f"❌ Error saving discovered videos: {e}")
+    # Save video objects to _s3_videos array
+    activity.logger.info(f"💾 Saving {len(video_objects)} videos for {event_id}")
+    success = store.add_videos_to_event(fixture_id, event_id, video_objects)
     
     if not success:
         activity.logger.warning(f"⚠️ Failed to update event {event_id}")
+    else:
+        # Recalculate ranks after adding new videos
+        activity.logger.info(f"📊 Recalculating video ranks for {event_id}")
+        store.recalculate_video_ranks(fixture_id, event_id)
     
     # Cleanup temp directory
     if temp_dir and os.path.exists(temp_dir):
@@ -730,10 +746,9 @@ async def replace_s3_video(
     event_id: str,
     old_s3_url: str,
     old_s3_key: str,
-    old_perceptual_hash: str,
 ) -> bool:
     """
-    Delete an old S3 video and update MongoDB to remove it from _s3_urls.
+    Delete an old S3 video and update MongoDB to remove it from _s3_videos.
     Called when a higher quality version is being uploaded to replace it.
     
     Args:
@@ -741,7 +756,6 @@ async def replace_s3_video(
         event_id: Event ID
         old_s3_url: Full S3 URL to remove from MongoDB
         old_s3_key: S3 key for deletion
-        old_perceptual_hash: Perceptual hash to remove from MongoDB
     
     Returns:
         True if successful
@@ -758,15 +772,14 @@ async def replace_s3_video(
         activity.logger.error(f"❌ Failed to delete old S3 video {old_s3_key}: {e}")
         # Continue - we still want to update MongoDB
     
-    # Remove from MongoDB _s3_urls and _perceptual_hashes arrays
+    # Remove from MongoDB _s3_videos array (by URL)
     store = FootyMongoStore()
     try:
         result = store.fixtures_active.update_one(
             {"_id": fixture_id, "events._event_id": event_id},
             {
                 "$pull": {
-                    "events.$._s3_urls": old_s3_url,
-                    "events.$._perceptual_hashes": old_perceptual_hash
+                    "events.$._s3_videos": {"url": old_s3_url}
                 }
             }
         )
@@ -1007,18 +1020,52 @@ def _generate_perceptual_hash(file_path: str, duration: float) -> str:
     return composite
 
 
-def _perceptual_hashes_match(hash_a: str, hash_b: str, duration_tolerance: float = 0.5) -> bool:
+def _hamming_distance(hex_a: str, hex_b: str) -> int:
+    """
+    Calculate hamming distance (bit difference) between two hex hashes.
+    
+    Args:
+        hex_a: First hex hash (e.g., "1fcee5dad69a67cc")
+        hex_b: Second hex hash
+        
+    Returns:
+        Number of differing bits (0-64 for 64-bit hashes)
+    """
+    try:
+        int_a = int(hex_a, 16)
+        int_b = int(hex_b, 16)
+        return bin(int_a ^ int_b).count('1')
+    except (ValueError, TypeError):
+        return 64  # Max distance on error
+
+
+def _perceptual_hashes_match(
+    hash_a: str, 
+    hash_b: str, 
+    duration_tolerance: float = 0.5,
+    max_hamming_per_frame: int = 8,
+    max_total_hamming: int = 12
+) -> bool:
     """
     Check if two perceptual hashes represent the same video.
     
     Match criteria:
     - Duration within ±0.5 seconds (same video, different encodings)
-    - All 3 frame hashes must match exactly (3/3)
+    - Frame hashes must be similar (using hamming distance)
+      - Each frame hash can differ by at most 8 bits (out of 64)
+      - Total difference across all 3 frames can be at most 12 bits (out of 192)
+    
+    The hamming distance tolerance accounts for:
+    - Different video encodings (h264 vs h265, different bitrates)
+    - Slight pixel differences from compression
+    - Minor timestamp drift in frame extraction
     
     Args:
         hash_a: First hash (format: "duration:hash1:hash2:hash3")
         hash_b: Second hash (format: "duration:hash1:hash2:hash3")
         duration_tolerance: Max duration difference in seconds (default 0.5s)
+        max_hamming_per_frame: Max bit difference per frame hash (default 8/64 = 12.5%)
+        max_total_hamming: Max total bit difference across all frames (default 12/192 = 6.25%)
         
     Returns:
         True if videos match
@@ -1038,12 +1085,17 @@ def _perceptual_hashes_match(hash_a: str, hash_b: str, duration_tolerance: float
         if duration_diff > duration_tolerance:
             return False
         
-        # All 3 frame hashes must match (strict)
-        return (
-            parts_a[1] == parts_b[1] and
-            parts_a[2] == parts_b[2] and
-            parts_a[3] == parts_b[3]
-        )
+        # Check hamming distance for each frame hash
+        total_hamming = 0
+        for i in range(1, 4):
+            frame_hamming = _hamming_distance(parts_a[i], parts_b[i])
+            if frame_hamming > max_hamming_per_frame:
+                return False
+            total_hamming += frame_hamming
+        
+        # Check total hamming distance across all frames
+        return total_hamming <= max_total_hamming
+        
     except Exception:
         return False
 
@@ -1128,5 +1180,3 @@ def _try_direct_download(video_url: str, output_path: str, cookies_json: str, ac
     except Exception as e:
         activity.logger.warning(f"⚠️ Browser download failed: {str(e)[:200]}")
         return False
-
-

@@ -118,7 +118,9 @@ class FootyS3Store:
                 else:
                     raise  # Re-raise other errors
             
-            s3_url = f"{self.endpoint_url}/{self.bucket_name}/{s3_key}"
+            # Return relative path for frontend video proxy (not internal MinIO URL)
+            # Frontend API will serve videos via /video/{bucket}/{path}
+            s3_url = f"/video/{self.bucket_name}/{s3_key}"
             print(f"✅ Uploaded: {s3_key}")
             return s3_url
             

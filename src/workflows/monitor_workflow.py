@@ -156,6 +156,13 @@ class MonitorWorkflow:
                     ),
                 )
         
+        # Notify frontend to refresh (SSE broadcast to connected clients)
+        await workflow.execute_activity(
+            monitor_activities.notify_frontend_refresh,
+            start_to_close_timeout=timedelta(seconds=10),
+            retry_policy=RetryPolicy(maximum_attempts=1),  # Don't retry - frontend may not be running
+        )
+        
         workflow.logger.info(
             f"✅ Monitor complete: {len(fixtures)} fixtures, "
             f"{len(twitter_first_searches)} new searches, "

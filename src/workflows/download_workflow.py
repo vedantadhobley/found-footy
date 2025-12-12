@@ -3,17 +3,23 @@ Download Workflow - Video Download/Upload Pipeline
 
 Orchestrates granular download/upload with per-video retry:
 1. fetch_event_data - Get discovered_videos and existing S3 video metadata
-2. download_single_video x N - Download each video individually
+2. download_single_video x N - Download each video individually (3 retries per video)
 3. deduplicate_videos - Hash dedup with quality comparison against existing S3
 4. replace_s3_video x N - Delete old S3 videos being replaced by higher quality
 5. upload_single_video x N - Upload new/replacement videos to S3
-6. save_processed_urls - Track all processed URLs for future dedup
+6. save_processed_urls - Track ALL processed URLs for future dedup
 7. mark_download_complete - Update MongoDB, cleanup temp dir
 
-Per-video retry ensures:
-- Failed download on video 3/5 doesn't lose progress on 1-2
-- Failed upload on video 4/5 doesn't re-download everything
-- Partial success is preserved (3/5 videos uploaded = 3 videos in S3)
+Per-video retry (3 attempts):
+- Each video gets 3 download attempts with exponential backoff (2s, 4s, 8s)
+- Videos that fail all 3 attempts are marked as "failed" and skipped
+- Failed URLs are tracked in _discovered_videos so they won't be retried
+
+URL Tracking (prevents re-discovery):
+- Successful uploads: added to _discovered_videos
+- Filtered videos (too short/long/vertical): added to _discovered_videos
+- Skipped videos (S3 already has better quality): added to _discovered_videos  
+- Failed videos (couldn't download after 3 retries): added to _discovered_videos
 
 Cross-retry quality comparison:
 - New videos that match existing S3 by perceptual hash are compared by quality
@@ -26,7 +32,7 @@ from datetime import timedelta
 
 with workflow.unsafe.imports_passed_through():
     from src.activities import download as download_activities
-
+    from src.activities import monitor as monitor_activities
 
 @workflow.defn
 class DownloadWorkflow:
@@ -99,7 +105,8 @@ class DownloadWorkflow:
         workflow.logger.info(f"📥 Downloading {len(discovered_videos)} videos...")
         
         download_results = []
-        filtered_urls = []  # Track URLs we filtered out (too short/long)
+        filtered_urls = []  # Track URLs filtered out (too short/long/vertical)
+        failed_urls = []    # Track URLs that failed after 3 retries (don't retry again)
         
         for idx, video in enumerate(discovered_videos):
             video_url = video.get("tweet_url") or video.get("video_page_url")
@@ -121,7 +128,7 @@ class DownloadWorkflow:
                 )
                 download_results.append(result)
                 
-                # Track filtered videos (too short/long) for dedup
+                # Track filtered videos (too short/long/vertical) for dedup
                 if result.get("status") == "filtered":
                     source_url = result.get("source_url")
                     if source_url:
@@ -130,12 +137,14 @@ class DownloadWorkflow:
                         
             except Exception as e:
                 workflow.logger.warning(f"⚠️ Video {idx} failed after 3 retries: {str(e)[:100]}")
-                download_results.append({"status": "failed", "error": str(e)[:200]})
+                download_results.append({"status": "failed", "error": str(e)[:200], "source_url": video_url})
+                # Track failed URL so we don't retry it in future Twitter searches
+                failed_urls.append(video_url)
         
         successful_downloads = sum(1 for r in download_results if r.get("status") == "success")
         filtered_count = len(filtered_urls)
-        workflow.logger.info(f"📥 Downloaded {successful_downloads}/{len(discovered_videos)} videos ({filtered_count} filtered)")
-
+        failed_count = len(failed_urls)
+        workflow.logger.info(f"📥 Downloaded {successful_downloads}/{len(discovered_videos)} videos ({filtered_count} filtered, {failed_count} failed)")
         
         # =========================================================================
         # Step 3: Deduplicate with quality comparison
@@ -154,30 +163,13 @@ class DownloadWorkflow:
         
         total_to_process = len(videos_to_upload) + len(videos_to_replace)
         
-        if total_to_process == 0 and not skipped_urls and not filtered_urls:
-            workflow.logger.warning(f"⚠️ No videos to upload (all downloads failed)")
-            await workflow.execute_activity(
-                download_activities.mark_download_complete,
-                args=[fixture_id, event_id, [], [], [], temp_dir],
-                start_to_close_timeout=timedelta(seconds=10),
-                retry_policy=RetryPolicy(
-                    maximum_attempts=3,
-                    initial_interval=timedelta(seconds=1),
-                    backoff_coefficient=2.0,
-                ),
-            )
-            return {
-                "fixture_id": fixture_id,
-                "event_id": event_id,
-                "videos_uploaded": 0,
-                "s3_urls": [],
-            }
+        # URLs to track for dedup (even if we don't upload anything)
+        all_processed_urls = skipped_urls + filtered_urls + failed_urls
         
-        # Even if no videos to upload, save filtered URLs for dedup
         if total_to_process == 0:
-            workflow.logger.info(f"📝 No videos to upload, but saving {len(skipped_urls) + len(filtered_urls)} URLs for dedup")
-            all_processed_urls = skipped_urls + filtered_urls
+            # No videos to upload - but save processed URLs for future dedup
             if all_processed_urls:
+                workflow.logger.info(f"📝 No videos to upload, saving {len(all_processed_urls)} URLs for dedup")
                 await workflow.execute_activity(
                     download_activities.save_processed_urls,
                     args=[fixture_id, event_id, all_processed_urls],
@@ -188,9 +180,12 @@ class DownloadWorkflow:
                         backoff_coefficient=2.0,
                     ),
                 )
+            else:
+                workflow.logger.warning(f"⚠️ No videos to upload (all downloads failed)")
+            
             await workflow.execute_activity(
                 download_activities.mark_download_complete,
-                args=[fixture_id, event_id, [], [], [], temp_dir],
+                args=[fixture_id, event_id, [], temp_dir],
                 start_to_close_timeout=timedelta(seconds=10),
                 retry_policy=RetryPolicy(
                     maximum_attempts=3,
@@ -225,7 +220,6 @@ class DownloadWorkflow:
                         event_id,
                         old_video.get("s3_url", ""),
                         old_video.get("s3_key", ""),
-                        old_video.get("perceptual_hash", ""),
                     ],
                     start_to_close_timeout=timedelta(seconds=15),
                     retry_policy=RetryPolicy(
@@ -246,14 +240,10 @@ class DownloadWorkflow:
         
         workflow.logger.info(f"☁️ Uploading {len(all_uploads)} videos to S3...")
         
-        s3_urls = []
-        perceptual_hashes = []
+        video_objects = []  # New schema: list of video objects for MongoDB
         successful_video_urls = []
         
         for idx, video_info in enumerate(all_uploads):
-            if "perceptual_hash" in video_info:
-                perceptual_hashes.append(video_info["perceptual_hash"])
-            
             try:
                 result = await workflow.execute_activity(
                     download_activities.upload_single_video,
@@ -267,7 +257,7 @@ class DownloadWorkflow:
                         video_info.get("file_hash", ""),
                         video_info.get("perceptual_hash", ""),
                         video_info.get("duration", 0.0),
-                        video_info.get("duplicate_count", 1),
+                        video_info.get("duplicate_count", 1),  # This becomes popularity
                         "",  # assister_name
                         "",  # opponent_team
                         video_info.get("source_url", ""),
@@ -285,7 +275,14 @@ class DownloadWorkflow:
                 )
                 
                 if result.get("status") == "success":
-                    s3_urls.append(result["s3_url"])
+                    # Collect video object for MongoDB
+                    video_objects.append(result.get("video_object", {
+                        "url": result["s3_url"],
+                        "perceptual_hash": result.get("perceptual_hash", ""),
+                        "resolution_score": result.get("resolution_score", 0),
+                        "popularity": result.get("popularity", 1),
+                        "rank": 0,
+                    }))
                     source_url = video_info.get("source_url")
                     if source_url:
                         successful_video_urls.append({
@@ -295,25 +292,17 @@ class DownloadWorkflow:
             except Exception as e:
                 workflow.logger.warning(f"⚠️ Upload {idx} failed: {str(e)[:100]}")
         
-        workflow.logger.info(f"☁️ Uploaded {len(s3_urls)}/{len(all_uploads)} videos to S3")
+        workflow.logger.info(f"☁️ Uploaded {len(video_objects)}/{len(all_uploads)} videos to S3")
         
         # =========================================================================
         # Step 6: Save ALL processed URLs for dedup tracking
-        # Combine: skipped (existing S3 better) + filtered (too short/long) + successful uploads
+        # Combine: skipped + filtered + failed + successful uploads
         # This ensures future Twitter searches don't re-discover these URLs
         # =========================================================================
-        all_processed_urls = []
-        
-        # Add skipped URLs (we downloaded but existing S3 was better quality)
-        all_processed_urls.extend(skipped_urls)
-        
-        # Add filtered URLs (too short/long - collected during download loop)
-        all_processed_urls.extend(filtered_urls)
-        
-        # Add successful upload URLs
+        # Add successful upload URLs to the list we built earlier
         for video_info in all_uploads:
             source_url = video_info.get("source_url")
-            if source_url:
+            if source_url and source_url not in all_processed_urls:
                 all_processed_urls.append(source_url)
         
         if all_processed_urls:
@@ -330,12 +319,12 @@ class DownloadWorkflow:
             )
         
         # =========================================================================
-        # Step 7: Save S3 results and cleanup temp directory
-        # Note: URLs are saved separately above, this just saves s3_urls and hashes
+        # Step 7: Save video objects and cleanup temp directory
+        # This saves to _s3_videos array and recalculates ranks
         # =========================================================================
         await workflow.execute_activity(
             download_activities.mark_download_complete,
-            args=[fixture_id, event_id, s3_urls, perceptual_hashes, [], temp_dir],  # Empty list for URLs - saved above
+            args=[fixture_id, event_id, video_objects, temp_dir],
             start_to_close_timeout=timedelta(seconds=10),
             retry_policy=RetryPolicy(
                 maximum_attempts=3,
@@ -344,11 +333,23 @@ class DownloadWorkflow:
             ),
         )
         
-        workflow.logger.info(f"✅ Download complete: {len(s3_urls)} videos in S3")
+        # =========================================================================
+        # Step 8: Notify frontend to refresh (SSE broadcast)
+        # Only notify if we actually uploaded new videos
+        # =========================================================================
+        if video_objects:
+            await workflow.execute_activity(
+                monitor_activities.notify_frontend_refresh,
+                start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=RetryPolicy(maximum_attempts=1),  # Don't retry - frontend may not be running
+            )
+        
+        s3_urls = [v["url"] for v in video_objects]
+        workflow.logger.info(f"✅ Download complete: {len(video_objects)} videos in S3")
         
         return {
             "fixture_id": fixture_id,
             "event_id": event_id,
-            "videos_uploaded": len(s3_urls),
+            "videos_uploaded": len(video_objects),
             "s3_urls": s3_urls,
         }

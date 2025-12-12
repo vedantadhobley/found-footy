@@ -450,14 +450,14 @@ class FootyMongoStore:
         same player scores again after VAR. Deleting frees the ID slot.
         
         Steps:
-        1. Get event's S3 URLs from MongoDB
+        1. Get event's S3 videos from MongoDB
         2. Delete videos from S3
         3. Remove event from MongoDB events array
         """
         from src.data.s3_store import FootyS3Store
         
         try:
-            # Step 1: Get event data to find S3 URLs
+            # Step 1: Get event data to find S3 videos
             fixture = self.fixtures_active.find_one(
                 {"_id": fixture_id, "events._event_id": event_id},
                 {"events.$": 1}
@@ -465,15 +465,24 @@ class FootyMongoStore:
             
             if fixture and fixture.get("events"):
                 event = fixture["events"][0]
-                s3_urls = event.get("_s3_urls", [])
+                # Support both old (_s3_urls) and new (_s3_videos) schema
+                s3_videos = event.get("_s3_videos", [])
+                s3_urls = [v.get("url") for v in s3_videos if v.get("url")]
+                # Fallback to old schema
+                if not s3_urls:
+                    s3_urls = event.get("_s3_urls", [])
                 
                 # Step 2: Delete videos from S3
                 if s3_urls:
                     s3_store = FootyS3Store()
                     for s3_url in s3_urls:
-                        # Extract key from URL: http://minio:9000/bucket/key -> key
+                        # Extract S3 key from relative path
+                        # Format: /video/footy-videos/{key}
                         try:
-                            key = s3_url.split("/footy-videos/", 1)[1]
+                            if not s3_url.startswith("/video/footy-videos/"):
+                                print(f"⚠️ Unexpected S3 URL format: {s3_url}")
+                                continue
+                            key = s3_url.replace("/video/footy-videos/", "")
                             s3_store.delete_video(key)
                             print(f"🗑️ Deleted S3 video for VAR'd goal: {key}")
                         except Exception as e:
@@ -660,6 +669,175 @@ class FootyMongoStore:
             print(f"❌ Error syncing fixture data for {fixture_id}: {e}")
             return False
     
+    def add_videos_to_event(
+        self,
+        fixture_id: int,
+        event_id: str,
+        video_objects: List[Dict[str, Any]]
+    ) -> bool:
+        """
+        Add video objects to _s3_videos array.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            video_objects: List of {url, perceptual_hash, resolution_score, popularity, rank}
+        
+        Returns:
+            True if successful
+        """
+        try:
+            if not video_objects:
+                # Verify event exists
+                fixture = self.fixtures_active.find_one(
+                    {"_id": fixture_id, "events._event_id": event_id}
+                )
+                if not fixture:
+                    msg = f"❌ FATAL: Event {event_id} not found in fixtures_active"
+                    print(msg)
+                    raise RuntimeError(msg)
+                print(f"✅ No new videos to add for {event_id}")
+                return True
+            
+            # Append new video objects
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, "events._event_id": event_id},
+                {
+                    "$push": {
+                        "events.$._s3_videos": {"$each": video_objects}
+                    }
+                }
+            )
+            
+            if result.modified_count == 0:
+                msg = f"❌ FATAL: Failed to add videos to event {event_id} (0 documents modified)"
+                print(msg)
+                raise RuntimeError(msg)
+            
+            print(f"✅ Added {len(video_objects)} videos to {event_id}")
+            return True
+        except Exception as e:
+            print(f"❌ FATAL: Error adding videos to event {event_id}: {e}")
+            raise
+    
+    def recalculate_video_ranks(self, fixture_id: int, event_id: str) -> bool:
+        """
+        Recalculate ranks for all videos in an event.
+        Sorts by popularity (desc) then resolution_score (desc).
+        Rank 1 = best video.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            
+        Returns:
+            True if successful
+        """
+        try:
+            # Get current fixture
+            fixture = self.fixtures_active.find_one({"_id": fixture_id})
+            if not fixture:
+                print(f"⚠️ Fixture {fixture_id} not found")
+                return False
+            
+            # Find the event
+            event = None
+            event_idx = None
+            for idx, evt in enumerate(fixture.get("events", [])):
+                if evt.get("_event_id") == event_id:
+                    event = evt
+                    event_idx = idx
+                    break
+            
+            if event is None:
+                print(f"⚠️ Event {event_id} not found")
+                return False
+            
+            # Get videos and sort them
+            videos = event.get("_s3_videos", [])
+            if not videos:
+                return True
+            
+            # Sort by popularity (desc) then resolution_score (desc)
+            videos_sorted = sorted(
+                videos, 
+                key=lambda v: (v.get("popularity", 1), v.get("resolution_score", 0)),
+                reverse=True
+            )
+            
+            # Assign ranks (1 = best)
+            for rank, video in enumerate(videos_sorted, start=1):
+                video["rank"] = rank
+            
+            # Update in MongoDB
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, "events._event_id": event_id},
+                {"$set": {f"events.$.s3_videos": videos_sorted}}
+            )
+            
+            # Also try the underscore version
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, "events._event_id": event_id},
+                {"$set": {"events.$._s3_videos": videos_sorted}}
+            )
+            
+            print(f"📊 Recalculated ranks for {len(videos)} videos in {event_id}")
+            return True
+        except Exception as e:
+            print(f"❌ Error recalculating video ranks: {e}")
+            return False
+    
+    def update_video_popularity(
+        self,
+        fixture_id: int,
+        event_id: str,
+        s3_url: str,
+        new_popularity: int
+    ) -> bool:
+        """
+        Update popularity for a specific video and recalculate ranks.
+        Called when we find a duplicate of an existing video.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            s3_url: URL of video to update
+            new_popularity: New popularity value
+            
+        Returns:
+            True if successful
+        """
+        try:
+            # Update the specific video's popularity
+            result = self.fixtures_active.update_one(
+                {
+                    "_id": fixture_id,
+                    "events._event_id": event_id,
+                    "events._s3_videos.url": s3_url
+                },
+                {
+                    "$set": {"events.$[evt]._s3_videos.$[vid].popularity": new_popularity}
+                },
+                array_filters=[
+                    {"evt._event_id": event_id},
+                    {"vid.url": s3_url}
+                ]
+            )
+            
+            if result.modified_count > 0:
+                print(f"📈 Updated popularity to {new_popularity} for {s3_url}")
+                # Recalculate ranks
+                self.recalculate_video_ranks(fixture_id, event_id)
+                return True
+            else:
+                print(f"⚠️ Video not found for popularity update: {s3_url}")
+                return False
+        except Exception as e:
+            print(f"❌ Error updating video popularity: {e}")
+            return False
+
+    # === Legacy function (deprecated) ===
+    
     def mark_event_download_complete(
         self,
         fixture_id: int,
@@ -668,51 +846,20 @@ class FootyMongoStore:
         perceptual_hashes: List[str]
     ) -> bool:
         """
-        Save S3 URLs and perceptual hashes after download completes.
-        Called by download workflow after videos uploaded.
-        
-        Note: Monitor workflow controls _twitter_count and _twitter_complete.
-        This just appends new results to existing arrays.
-        
-        Args:
-            fixture_id: Fixture ID
-            event_id: Event ID
-            s3_urls: List of S3 URLs for uploaded videos (this attempt only)
-            perceptual_hashes: List of perceptual hashes for cross-resolution dedup
+        DEPRECATED: Use add_videos_to_event instead.
+        Kept for backwards compatibility during migration.
         """
-        try:
-            # If no new videos (all were duplicates), just verify event exists
-            if not s3_urls and not perceptual_hashes:
-                # Verify event exists in active collection
-                fixture = self.fixtures_active.find_one(
-                    {"_id": fixture_id, "events._event_id": event_id}
-                )
-                if not fixture:
-                    msg = f"❌ FATAL: Event {event_id} not found in fixtures_active"
-                    print(msg)
-                    raise RuntimeError(msg)
-                print(f"✅ Download complete for {event_id} (0 new videos - all were duplicates)")
-                return True
-            
-            # Append new S3 URLs and hashes to existing arrays
-            result = self.fixtures_active.update_one(
-                {"_id": fixture_id, "events._event_id": event_id},
-                {
-                    "$push": {
-                        "events.$._s3_urls": {"$each": s3_urls},
-                        "events.$._perceptual_hashes": {"$each": perceptual_hashes}
-                    }
-                }
-            )
-            
-            if result.modified_count == 0:
-                msg = f"❌ FATAL: Failed to mark event {event_id} download complete (0 documents modified)"
-                print(msg)
-                raise RuntimeError(msg)
-            return True
-        except Exception as e:
-            print(f"❌ FATAL: Error marking event {event_id} download complete: {e}")
-            raise  # Re-raise - this is critical for pipeline integrity
+        # Convert old format to new format
+        video_objects = []
+        for i, url in enumerate(s3_urls):
+            video_objects.append({
+                "url": url,
+                "perceptual_hash": perceptual_hashes[i] if i < len(perceptual_hashes) else "",
+                "resolution_score": 0,  # Unknown
+                "popularity": 1,
+                "rank": i + 1
+            })
+        return self.add_videos_to_event(fixture_id, event_id, video_objects)
 
     # === Completion Operations ===
     

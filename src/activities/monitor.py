@@ -232,8 +232,8 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
             "_twitter_search": twitter_search,
             # Video storage (accumulated across all attempts)
             "_discovered_videos": [],
-            "_s3_urls": [],
-            "_perceptual_hashes": [],
+            # _s3_videos: List of {url, perceptual_hash, resolution_score, popularity, rank}
+            "_s3_videos": [],
             # Display fields (for frontend)
             "_display_title": title,
             "_display_subtitle": subtitle,
@@ -355,4 +355,33 @@ async def sync_fixture_metadata(fixture_id: int) -> bool:
         return False
     except Exception as e:
         activity.logger.error(f"❌ Error syncing fixture {fixture_id}: {e}")
+        return False
+
+
+@activity.defn
+async def notify_frontend_refresh() -> bool:
+    """
+    Notify the frontend API to broadcast a refresh to all connected SSE clients.
+    Called at the end of monitor cycles and after download completions.
+    """
+    import os
+    import requests
+    
+    api_url = os.getenv("FRONTEND_API_URL", "http://vedanta-systems-dev-found-footy-api:3001")
+    
+    try:
+        response = requests.post(f"{api_url}/refresh", timeout=5)
+        if response.ok:
+            result = response.json()
+            activity.logger.info(f"📡 Frontend notified ({result.get('clientsNotified', 0)} clients)")
+            return True
+        else:
+            activity.logger.warning(f"⚠️ Frontend notify failed: {response.status_code}")
+            return False
+    except requests.exceptions.ConnectionError:
+        # Frontend not running is not a fatal error
+        activity.logger.debug("📡 Frontend API not available (connection refused)")
+        return False
+    except Exception as e:
+        activity.logger.warning(f"⚠️ Frontend notify error: {e}")
         return False

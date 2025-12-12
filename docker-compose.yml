@@ -62,7 +62,7 @@ services:
       - found-footy-prod
       - luv-prod
 
-  # MONGODB - application data storage
+  # MONGODB - application data storage (standalone, no replica set needed)
   mongo:
     image: mongo:7-jammy
     container_name: found-footy-prod-mongo
@@ -70,13 +70,8 @@ services:
       MONGO_INITDB_ROOT_USERNAME: ffuser
       MONGO_INITDB_ROOT_PASSWORD: ffpass
       MONGO_INITDB_DATABASE: found_footy
-      MONGO_REPLICA_HOST: found-footy-prod-mongo
-    entrypoint: ["/mongo-init-keyfile.sh"]
-    command: ["mongod", "--replSet", "rs0", "--keyFile", "/data/keyfile/mongodb-keyfile", "--bind_ip_all", "--setParameter", "logComponentVerbosity={network:{verbosity:0},storage:{verbosity:0}}"]
     volumes:
       - found-footy-prod-mongo-data:/data/db
-      - found-footy-prod-mongo-keyfile:/data/keyfile
-      - ./mongo-init-keyfile.sh:/mongo-init-keyfile.sh:ro
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
       interval: 10s
@@ -177,10 +172,12 @@ services:
       S3_SECRET_KEY: ffpass--
       S3_BUCKET_NAME: footy-videos
       TWITTER_SESSION_URL: http://found-footy-prod-twitter:8888
+      FRONTEND_API_URL: http://vedanta-systems-prod-found-footy-api:3001
     volumes:
       - .:/workspace
     networks:
       - found-footy-prod
+      - luv-prod  # Need luv-prod network to reach frontend API
     depends_on:
       - temporal
       - mongo
@@ -193,9 +190,6 @@ volumes:
     driver: local
   found-footy-prod-mongo-data:
     name: found-footy-prod-mongo-data
-    driver: local
-  found-footy-prod-mongo-keyfile:
-    name: found-footy-prod-mongo-keyfile
     driver: local
   found-footy-prod-minio-data:
     name: found-footy-prod-minio-data
