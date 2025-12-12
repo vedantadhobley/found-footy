@@ -1,290 +1,353 @@
-# ⚽ Found Footy - Automated Football Goal Highlights Pipeline
+# ⚽ Found Footy
 
-**End-to-end automation** - detects football goals in real-time, validates stability with set-based debounce, discovers videos on Twitter via browser automation, downloads and deduplicates using perceptual hashing, then stores in S3 with metadata tags. Built with **Temporal.io** orchestration and MongoDB storage.
+**Automated football goal video pipeline** — Detects goals in real-time, discovers videos on Twitter, downloads and deduplicates with perceptual hashing, and stores the best quality videos in S3.
+
+Built with **Temporal.io** for orchestration, **MongoDB** for state management, and **Firefox browser automation** for Twitter scraping.
 
 ---
 
-## 🎯 Architecture Overview
+## 🎯 What It Does
 
 ```mermaid
-graph TB
-    subgraph "🗓️ Daily Ingestion (00:05 UTC)"
-        A1[IngestWorkflow]
-        A2[Fetch Today's Fixtures<br/>from API-Football]
-        A3{Categorize<br/>by Status}
-        A4[fixtures_staging<br/>TBD, NS]
-        A5[fixtures_active<br/>LIVE, 1H, HT, etc]
-        A6[fixtures_completed<br/>FT, AET, PEN]
+flowchart TB
+    subgraph INPUT["📡 Input"]
+        API[API-Football<br/>Live match data]
+    end
+    
+    subgraph DETECT["🔍 Detection"]
+        GOAL[Goal Detected!<br/>Player scores]
+        STABLE[Stable after 3 polls<br/>~3 minutes]
+    end
+    
+    subgraph DISCOVER["🐦 Discovery"]
+        TWITTER[Twitter Search<br/>3 attempts × 5 videos]
+    end
+    
+    subgraph PROCESS["⚙️ Processing"]
+        DOWNLOAD[Download via yt-dlp]
+        FILTER[Filter 5-60s duration]
+        HASH[Perceptual Hash<br/>Deduplicate]
+        QUALITY[Quality Compare<br/>Keep best resolution]
+    end
+    
+    subgraph OUTPUT["💾 Output"]
+        S3[MinIO S3<br/>Ranked videos]
+        META[MongoDB<br/>Event metadata]
+    end
+    
+    API --> GOAL --> STABLE
+    STABLE --> TWITTER
+    TWITTER --> DOWNLOAD --> FILTER --> HASH --> QUALITY
+    QUALITY --> S3
+    QUALITY --> META
+```
+
+**The pipeline handles:**
+- 🎯 **50 top European clubs** — Premier League, La Liga, Bundesliga, Serie A, Ligue 1, Champions League
+- ⏱️ **Real-time detection** — Goals detected within minutes of scoring
+- 🔄 **VAR handling** — Disallowed goals automatically detected and marked
+- 📊 **Quality ranking** — Videos ranked by resolution, with duplicates removed
+- 🏷️ **Rich metadata** — Score at time of goal, scorer, assister, display titles with highlights
+
+---
+
+## 🏗️ Architecture Overview
+
+```mermaid
+flowchart TB
+    subgraph TEMPORAL["⏰ Temporal.io Orchestration"]
+        direction TB
+        INGEST[IngestWorkflow<br/>Daily 00:05 UTC]
+        MONITOR[MonitorWorkflow<br/>Every minute]
+        TWITTERWF[TwitterWorkflow<br/>3× per event]
+        DOWNLOADWF[DownloadWorkflow<br/>Per video batch]
         
-        A1 --> A2 --> A3
-        A3 -->|Not Started| A4
-        A3 -->|In Progress| A5
-        A3 -->|Finished| A6
+        INGEST -.->|Populates| MONITOR
+        MONITOR -->|Triggers| TWITTERWF
+        TWITTERWF -->|Triggers| DOWNLOADWF
     end
     
-    subgraph "⏱️ MonitorWorkflow (Every Minute)"
-        B1[Activate Ready Fixtures<br/>staging → active]
-        B2[Fetch Active Fixtures<br/>from API-Football]
-        B3[Filter Events<br/>Goals only, with player_id]
-        B4[Store in fixtures_live]
-        B5[Process Events Inline<br/>Pure set operations]
-        B6{Stable Event?<br/>count >= 3}
-        B7[→ TwitterWorkflow]
-        
-        B1 --> B2 --> B3 --> B4 --> B5 --> B6
-        B6 -->|Yes| B7
+    subgraph STORAGE["💾 Storage Layer"]
+        direction TB
+        MONGO[(MongoDB<br/>4 Collections)]
+        MINIO[(MinIO S3<br/>Video files)]
     end
     
-    subgraph "🐦 TwitterWorkflow (3x Per Stable Event)"
-        C1[Build Search Query<br/>player + team]
-        C2[POST to twitter:8888<br/>Firefox automation]
-        C3[Pass exclude_urls<br/>Skip already found]
-        C4{Videos Found?}
-        C5[→ DownloadWorkflow]
-        
-        C1 --> C2 --> C3 --> C4
-        C4 -->|Yes| C5
+    subgraph EXTERNAL["🌐 External Services"]
+        direction TB
+        APIFB[API-Football<br/>Match data]
+        TWITTER[Twitter/X<br/>Video discovery]
     end
     
-    subgraph "⬇️ DownloadWorkflow (Per Event)"
-        D1[fetch_event_data]
-        D2[download_single_video ×N<br/>Duration filter: 5-60s]
-        D3[deduplicate_videos<br/>Perceptual hash + quality]
-        D4[upload_single_video ×N<br/>Replace if better quality]
-        D5[save_processed_urls]
-        
-        D1 --> D2 --> D3 --> D4 --> D5
-    end
-    
-    subgraph "💾 Storage"
-        F1[(fixtures_staging)]
-        F2[(fixtures_live)]
-        F3[(fixtures_active)]
-        F4[(fixtures_completed)]
-        F5[☁️ MinIO S3<br/>fixture_id/event_id/<br/>videos with metadata]
-    end
-    
-    style A1 fill:#e1f5ff
-    style B7 fill:#e8f5e9
-    style C5 fill:#fce4ec
-    style D3 fill:#fff3e0
+    INGEST --> APIFB
+    MONITOR --> APIFB
+    MONITOR --> MONGO
+    TWITTERWF --> TWITTER
+    DOWNLOADWF --> MINIO
+    DOWNLOADWF --> MONGO
 ```
 
 ---
 
-## 🔄 Key Features
+## 📊 Data Flow
 
-### Set-Based Debounce (No Hash Comparison)
+### MongoDB 4-Collection Architecture
 
-Events are identified by `{fixture_id}_{team_id}_{player_id}_{event_type}_{sequence}`. This means:
+```mermaid
+flowchart TB
+    subgraph COLLECTIONS["MongoDB Collections"]
+        direction LR
+        STAGING[(fixtures_staging<br/>Upcoming matches)]
+        LIVE[(fixtures_live<br/>Temp comparison)]
+        ACTIVE[(fixtures_active<br/>In-progress)]
+        COMPLETED[(fixtures_completed<br/>Archive)]
+    end
+    
+    API[API-Football] -->|Daily ingest| STAGING
+    STAGING -->|Start time reached| ACTIVE
+    API -->|Every minute| LIVE
+    LIVE <-->|Compare events| ACTIVE
+    ACTIVE -->|Match finished| COMPLETED
+    LIVE -.->|Deleted after| COMPLETED
+    
+    style STAGING fill:#e1f5ff,color:#000
+    style LIVE fill:#fff4e1,color:#000
+    style ACTIVE fill:#e1ffe1,color:#000
+    style COMPLETED fill:#f0f0f0,color:#000
+```
 
-- **Player changes (VAR)** → Different event_id → Automatically detected by set operations
-- **No MD5 hashing** → Pure set operations (O(n) to build, O(1) lookups)
-- **Simpler code** → All debounce logic inline in MonitorWorkflow
+| Collection | Purpose | Lifecycle |
+|------------|---------|-----------|
+| **fixtures_staging** | Matches waiting to start (TBD, NS) | Hours to days |
+| **fixtures_live** | Raw API data for comparison | ~1 minute (overwritten) |
+| **fixtures_active** | Enhanced events with video tracking | ~90 minutes |
+| **fixtures_completed** | Permanent archive | Forever |
+
+### Event Lifecycle
+
+```mermaid
+flowchart TB
+    NEW[🆕 New Event<br/>Goal detected in API]
+    COUNT1[stable_count = 1]
+    COUNT2[stable_count = 2]
+    COUNT3[stable_count = 3<br/>✅ STABLE]
+    
+    TWITTER1[🐦 Twitter Search #1<br/>Find early uploads]
+    TWITTER2[🐦 Twitter Search #2<br/>+5 min, find more]
+    TWITTER3[🐦 Twitter Search #3<br/>+5 min, final search]
+    
+    DOWNLOAD[⬇️ Download Videos<br/>Filter & dedupe]
+    COMPLETE[✅ Event Complete<br/>_twitter_complete = true]
+    
+    NEW --> COUNT1
+    COUNT1 -->|+1 min poll| COUNT2
+    COUNT2 -->|+1 min poll| COUNT3
+    COUNT3 --> TWITTER1
+    TWITTER1 --> DOWNLOAD
+    TWITTER1 -.->|+5 min| TWITTER2
+    TWITTER2 --> DOWNLOAD
+    TWITTER2 -.->|+5 min| TWITTER3
+    TWITTER3 --> DOWNLOAD
+    TWITTER3 --> COMPLETE
+    
+    VAR[❌ VAR Disallowed<br/>Event disappears from API]
+    COUNT1 & COUNT2 -.->|Event removed| VAR
+    
+    style COUNT3 fill:#e8f5e9,color:#000
+    style COMPLETE fill:#e8f5e9,color:#000
+    style VAR fill:#ffebee,color:#000
+```
+
+---
+
+## 🔧 Core Features
+
+### Set-Based Event Debounce
+
+Events are identified by a unique ID: `{fixture_id}_{team_id}_{player_id}_{event_type}_{sequence}`
 
 ```python
-# Algorithm in process_fixture_events activity
+# Pure set operations - O(1) lookups, no hash comparison needed
 live_ids = {e["_event_id"] for e in live_events}
 active_ids = {e["_event_id"] for e in active_events}
 
-new_ids = live_ids - active_ids       # NEW events
-removed_ids = active_ids - live_ids   # REMOVED (VAR)
-matching_ids = live_ids & active_ids  # Increment stable_count
+new_ids = live_ids - active_ids       # NEW → add with count=1
+removed_ids = active_ids - live_ids   # VAR → mark _removed=true
+matching_ids = live_ids & active_ids  # EXISTS → increment count
 ```
 
-### 3 Twitter Attempts with URL Exclusion
+**Why this works:**
+- If VAR changes the scorer → Different player_id → Different event_id → Detected automatically
+- No MD5 hashing or deep comparison needed
+- Simple, fast, reliable
 
-Each stable event gets **3 Twitter searches** to find the best quality videos:
+### Twitter Video Discovery
 
-- **Attempt 1**: Immediately when stable - find early uploads
-- **Attempt 2**: ~5 minutes later - find more/better uploads
-- **Attempt 3**: ~5 minutes later - final search, mark complete
-
-**Key improvement**: Each search passes `exclude_urls` to skip already-discovered videos:
-```python
-# Twitter service skips URLs during scraping
-if tweet_url in exclude_set:
-    print(f"⏭️ Skipping already-discovered URL: {tweet_url}")
-    continue
+```mermaid
+flowchart TB
+    subgraph ATTEMPT["Each Twitter Attempt"]
+        SEARCH[Search query:<br/>Salah Liverpool]
+        EXCLUDE[Pass exclude_urls<br/>Skip already found]
+        RESULTS[Get up to 5 NEW videos]
+    end
+    
+    subgraph STRATEGY["3-Attempt Strategy"]
+        A1[Attempt 1: Immediately<br/>Early uploads, often SD]
+        A2[Attempt 2: +5 minutes<br/>More uploads available]
+        A3[Attempt 3: +5 minutes<br/>Best quality uploads]
+    end
+    
+    A1 --> SEARCH
+    A2 --> SEARCH
+    A3 --> SEARCH
+    SEARCH --> EXCLUDE --> RESULTS
+    
+    RESULTS -->|Up to 15 unique videos| TOTAL[Total: 5 x 3 = 15 videos]
 ```
 
-This means **5 NEW videos per search** (not the same 5 repeatedly).
+**Key feature: URL Exclusion**
+- Each search passes `exclude_urls` containing previously discovered videos
+- Twitter service skips these during scraping
+- Result: 15 unique videos instead of the same 5 repeated
 
-### Perceptual Hashing for Deduplication
+### Perceptual Hash Deduplication
 
-Same video at different resolutions = same perceptual hash:
+**Problem:** Same video at different resolutions = different file hashes
 
-```python
-# Duration (0.5s tolerance) + 3 frame hashes
-perceptual_hash = f"{duration:.1f}_{hash1}_{hash2}_{hash3}"
-# Example: "15.2_4c33b33b_f8d2d234_48b2a460"
+**Solution:** Duration-based perceptual hash
+
+```mermaid
+flowchart LR
+    subgraph COMPUTE["Compute Hash"]
+        direction TB
+        DUR[Extract duration<br/>e.g., 15.2s]
+        F1[Frame @ 1s]
+        F2[Frame @ 2s]
+        F3[Frame @ 3s]
+        H1[dHash 64-bit]
+        H2[dHash 64-bit]
+        H3[dHash 64-bit]
+        
+        DUR --> F1 & F2 & F3
+        F1 --> H1
+        F2 --> H2
+        F3 --> H3
+    end
+    
+    RESULT["15.2:4c33b33b:f8d2d234:48b2a460"]
+    
+    H1 & H2 & H3 --> RESULT
 ```
 
-**Quality comparison** (when hashes match):
-1. Resolution score (width × height) - Higher wins
-2. Bitrate - Higher wins
-3. File size - Higher wins
+**Hash format:** `{duration}:{frame1_hash}:{frame2_hash}:{frame3_hash}`
 
-### Duration Filtering
+**Matching tolerance:**
+- Duration: ±0.5 seconds
+- Frame hashes: Hamming distance ≤8 bits per frame, ≤12 total
 
-Videos are filtered before download:
-- **Too short**: < 5 seconds (usually just celebrations)
-- **Too long**: > 60 seconds (usually full match compilations)
-- **Just right**: 5-60 seconds (goal clips)
+### Quality Ranking
 
-Filtered URLs are still tracked in `_discovered_videos` to prevent re-discovery.
+Videos are ranked by:
+1. **Popularity** — How many sources uploaded the same content (same perceptual hash)
+2. **Resolution** — Width × Height (1080p > 720p > 480p)
 
-### Per-Video Retry (Granular Activities)
-
-DownloadWorkflow uses 7 separate activities:
-1. `fetch_event_data` - Get event + existing S3 metadata
-2. `download_single_video` - Download ONE video (3 retry attempts)
-3. `deduplicate_videos` - Perceptual hash, quality compare
-4. `replace_s3_video` - Delete old video if better found
-5. `upload_single_video` - Upload ONE video to S3 (3 retry attempts)
-6. `save_processed_urls` - Track all URLs for dedup
-7. `mark_download_complete` - Update MongoDB, cleanup
-
-**Benefits**: If 3/5 videos succeed, those are preserved. Failures don't lose progress.
-
----
-
-## 📋 Workflow Breakdown
-
-### 1️⃣ IngestWorkflow (Daily, 00:05 UTC)
-
-**Purpose**: Fetch today's fixtures and route by status
-
-| Status | Collection |
-|--------|------------|
-| TBD, NS | fixtures_staging |
-| LIVE, 1H, HT, 2H, ET, P, BT | fixtures_active |
-| FT, AET, PEN | fixtures_completed |
-
----
-
-### 2️⃣ MonitorWorkflow (Every Minute)
-
-**Purpose**: Poll active fixtures, process events inline, trigger Twitter for stable events
-
-**Activities**:
-1. `activate_fixtures` - Move staging → active when start time reached
-2. `fetch_active_fixtures` - Batch fetch from API-Football
-3. `store_and_compare` - Filter to Goals, generate event_id, store in live
-4. `process_fixture_events` - Pure set operations, increment stable_count
-5. `sync_fixture_metadata` - Keep fixture score/status fresh
-6. `complete_fixture_if_ready` - Move to completed when done
-
-**Debounce Logic**:
-- NEW event → Add to active with `_stable_count=1`
-- MATCHING event → Increment `_stable_count`
-- REMOVED event → Mark `_removed=true` (VAR disallowed)
-- `_stable_count >= 3` → Trigger TwitterWorkflow
-
----
-
-### 3️⃣ TwitterWorkflow (3x Per Stable Event)
-
-**Purpose**: Search Twitter for event videos
-
-**3 Granular Activities**:
-1. `get_twitter_search_data` - Get search query + existing URLs from MongoDB
-2. `execute_twitter_search` - POST to Firefox automation with `exclude_urls`
-3. `save_discovered_videos` - Save NEW videos to MongoDB
-
-**Why 3 activities?**
-- If search fails → only retry search (not MongoDB reads)
-- If save fails → videos preserved in workflow state
-
-**Search parameters**:
-- `max_results: 5` - Find up to 5 videos per search
-- `exclude_urls: [...]` - Skip already-discovered URLs during scraping
-
-**If videos found** → Triggers DownloadWorkflow as child
-
----
-
-### 4️⃣ DownloadWorkflow (Per Event with Videos)
-
-**Purpose**: Download, deduplicate, upload videos with quality comparison
-
-**Pipeline**:
-```
-Download → Duration Filter → Perceptual Hash → Quality Compare → Upload/Replace
+```mermaid
+flowchart TB
+    subgraph VIDEOS["Downloaded Videos"]
+        V1[Video A<br/>720p, hash: abc123]
+        V2[Video B<br/>1080p, hash: abc123]
+        V3[Video C<br/>720p, hash: abc123]
+        V4[Video D<br/>1080p, hash: xyz789]
+    end
+    
+    subgraph RANKED["Ranked Result"]
+        R1[Rank 1: Video B<br/>1080p, popularity=3]
+        R2[Rank 2: Video D<br/>1080p, popularity=1]
+    end
+    
+    V1 & V2 & V3 -->|Same hash, keep best| R1
+    V4 --> R2
 ```
 
-**S3 Structure**: `{fixture_id}/{event_id}/{short_hash}.mp4`
+### Display Titles with Highlights
 
-**Metadata stored on each S3 object**:
-- `x-amz-meta-width`, `x-amz-meta-height`
-- `x-amz-meta-bitrate`, `x-amz-meta-file-size`
-- `x-amz-meta-perceptual-hash`
-- `x-amz-meta-source-url`
-
----
-
-## 🗄️ 4-Collection Architecture
-
-| Collection | Purpose | Update Pattern |
-|------------|---------|----------------|
-| fixtures_staging | Pre-match fixtures | Insert/Delete |
-| fixtures_live | Comparison buffer | Overwrite each poll |
-| fixtures_active | Enhanced events | Incremental updates only |
-| fixtures_completed | Archive | Insert only |
-
-### Event Enhancement Fields
+Events include display-ready titles with `<<>>` markers for frontend highlighting:
 
 ```javascript
-{
-  // Original API fields
-  "player": {"id": 306, "name": "Mohamed Salah"},
-  "team": {"id": 40, "name": "Liverpool"},
-  "type": "Goal",
-  
-  // Enhancement fields (added by debounce)
-  "_event_id": "123456_40_306_Goal_1",
-  "_stable_count": 3,
-  "_monitor_complete": true,
-  "_twitter_count": 3,
-  "_twitter_complete": true,
-  "_twitter_search": "Salah Liverpool",
-  
-  // Video tracking
-  "_discovered_videos": [
-    {"video_page_url": "https://x.com/i/status/123", "tweet_text": "..."}
-  ],
-  "_s3_videos": [
-    {
-      "s3_key": "123456/123456_40_306_Goal_1/abc123.mp4",
-      "perceptual_hash": "15.2_abc_def_ghi",
-      "width": 1920, "height": 1080,
-      "bitrate": 5000000
-    }
-  ]
-}
+// Title: Scoring team highlighted
+"<<Liverpool (3)>> - 0 Arsenal"
+"Manchester City 1 - <<(2) Real Madrid>>"
+
+// Subtitle: Scorer highlighted
+"88' Goal - <<A. Grimaldo>> (Florian Wirtz)"
+"13' Own Goal - <<Bruno Guimaraes>> (R. Andrich)"
+"51' Penalty Goal - <<A. Gordon>>"
 ```
+
+**Score context:** Title shows score *at time of goal*, not final score.
 
 ---
 
-## 🔌 Port Configuration
+## 🐳 Infrastructure
 
-**Development (4100-4109):**
-- **Temporal UI:** http://localhost:4100
-- **MongoDB Express:** http://localhost:4101
-- **MinIO Console:** http://localhost:4102
-- **Twitter VNC:** http://localhost:4103
+### Services
 
-**Production (3100-3109):**
-- **Temporal UI:** http://localhost:3100
-- **MongoDB Express:** http://localhost:3101
-- **MinIO Console:** http://localhost:3102
-- **Twitter VNC:** http://localhost:3103
+```mermaid
+flowchart TB
+    subgraph DOCKER["Docker Compose Stack"]
+        direction TB
+        
+        subgraph CORE["Core Services"]
+            WORKER[Worker<br/>Temporal activities]
+            TEMPORAL[Temporal Server<br/>Workflow orchestration]
+            POSTGRES[(PostgreSQL<br/>Temporal metadata)]
+        end
+        
+        subgraph DATA["Data Layer"]
+            MONGO[(MongoDB<br/>Application data)]
+            MINIO[(MinIO<br/>S3-compatible storage)]
+        end
+        
+        subgraph TWITTER["Twitter Automation"]
+            TWITTERSVC[Twitter Service<br/>FastAPI :8888]
+            FIREFOX[Firefox + Selenium]
+            VNC[noVNC :6080<br/>Browser GUI access]
+        end
+        
+        subgraph UI["Management UIs"]
+            TEMPUI[Temporal UI :8080]
+            MONGOKU[Mongoku :3100]
+            MINIOUI[MinIO Console :9001]
+        end
+    end
+    
+    WORKER --> TEMPORAL
+    TEMPORAL --> POSTGRES
+    WORKER --> MONGO
+    WORKER --> MINIO
+    WORKER --> TWITTERSVC
+    TWITTERSVC --> FIREFOX
+    FIREFOX --> VNC
+```
 
-**Internal Services:**
-- Temporal Server: `temporal:7233`
-- MongoDB: `mongo:27017`
-- MinIO API: `minio:9000`
-- Twitter Service: `twitter:8888`
+### Port Allocation
+
+| Service | Dev Port | Prod Port | Purpose |
+|---------|----------|-----------|---------|
+| Temporal UI | 4100 | 3100 | Workflow monitoring |
+| Mongoku | 4101 | 3101 | MongoDB GUI |
+| MinIO Console | 4102 | 3102 | S3 management |
+| Twitter VNC | 4103 | 3103 | Browser access |
+| Temporal gRPC | 7233 | 7233 | Workflow API |
+
+### Internal Services (Docker network only)
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| MongoDB | 27017 | Application data |
+| PostgreSQL | 5432 | Temporal metadata |
+| MinIO API | 9000 | S3 storage |
+| Twitter API | 8888 | Search endpoint |
 
 ---
 
@@ -293,40 +356,47 @@ Download → Duration Filter → Perceptual Hash → Quality Compare → Upload/
 ### Prerequisites
 
 - Docker & Docker Compose
-- Python 3.11+
-- SSH access to server (for port forwarding)
+- API-Football API key ([api-football.com](https://api-football.com))
+- Twitter/X account for video discovery
 
 ### Quick Start
 
 ```bash
-# 1. Clone repo
+# 1. Clone and configure
 git clone <repo-url>
 cd found-footy
-
-# 2. Set up environment
 cp .env.example .env
 # Edit .env with your API-Football key
 
-# 3. Start services
+# 2. Start services
 docker compose -f docker-compose.dev.yml up -d
 
-# 4. First-time Twitter login (via VNC)
-# Open http://localhost:4103 and login to Twitter in Firefox
+# 3. First-time Twitter login
+# Open http://localhost:4103 (VNC browser)
+# Log into Twitter in the Firefox window
+# Cookies are saved automatically
 
-# 5. SSH port forwarding (from local machine)
-ssh -L 4100:localhost:4100 -L 4101:localhost:4101 -L 4102:localhost:4102 -L 4103:localhost:4103 user@server
+# 4. Verify health
+curl http://localhost:8888/health
+# Should return: {"status": "healthy", "authenticated": true}
 
-# 6. Access Temporal UI
-# Open http://localhost:4100 in your browser
+# 5. Access UIs (via SSH tunnel if remote)
+ssh -L 4100:localhost:4100 -L 4101:localhost:4101 \
+    -L 4102:localhost:4102 -L 4103:localhost:4103 user@server
+
+# Temporal UI: http://localhost:4100
+# MongoDB:     http://localhost:4101
+# MinIO:       http://localhost:4102
 ```
 
 ### Test the Pipeline
 
 ```bash
 # Insert a test fixture
-docker exec found-footy-worker python /workspace/tests/workflows/test_pipeline.py --fixture-id 1469132
+docker exec found-footy-dev-worker python \
+    /workspace/tests/workflows/test_pipeline.py --fixture-id 1469132
 
-# Watch logs
+# Watch the pipeline
 docker compose -f docker-compose.dev.yml logs -f worker
 ```
 
@@ -337,113 +407,306 @@ docker compose -f docker-compose.dev.yml logs -f worker
 ```
 found-footy/
 ├── src/
-│   ├── workflows/           # Temporal workflows
-│   │   ├── ingest_workflow.py
-│   │   ├── monitor_workflow.py
-│   │   ├── twitter_workflow.py
-│   │   └── download_workflow.py
-│   ├── activities/          # Temporal activities
-│   │   ├── ingest.py
-│   │   ├── monitor.py
-│   │   ├── twitter.py
-│   │   └── download.py
+│   ├── workflows/              # Temporal workflow definitions
+│   │   ├── ingest_workflow.py  # Daily fixture ingestion
+│   │   ├── monitor_workflow.py # Event detection & debounce
+│   │   ├── twitter_workflow.py # Video discovery
+│   │   └── download_workflow.py # Download & upload pipeline
+│   │
+│   ├── activities/             # Temporal activity implementations
+│   │   ├── ingest.py           # API-Football fetching
+│   │   ├── monitor.py          # Event processing
+│   │   ├── twitter.py          # Twitter search
+│   │   └── download.py         # Video download/upload
+│   │
 │   ├── data/
-│   │   ├── mongo_store.py   # 4-collection architecture
-│   │   └── s3_store.py      # MinIO video storage
+│   │   ├── mongo_store.py      # 4-collection MongoDB
+│   │   └── s3_store.py         # MinIO video storage
+│   │
 │   ├── utils/
-│   │   ├── event_config.py  # Event filtering (Goals only)
-│   │   └── team_data.py     # 50 tracked teams
-│   └── worker.py            # Temporal worker
-├── twitter/                 # Firefox browser automation
-│   ├── app.py               # FastAPI server (:8888)
-│   ├── session.py           # Browser session manager
-│   └── start_with_vnc.sh    # VNC startup script
-├── tests/                   # Integration tests
-├── docker-compose.dev.yml   # Development (ports 4100-4109)
-├── docker-compose.yml       # Production (ports 3100-3109)
-├── ARCHITECTURE.md          # Detailed architecture docs
-├── TEMPORAL_WORKFLOWS.md    # Workflow documentation
-├── TWITTER_AUTH.md          # Twitter auth guide
-└── README.md
+│   │   ├── event_config.py     # Event filtering rules
+│   │   ├── event_enhancement.py # Score context calculation
+│   │   └── team_data.py        # 50 tracked teams
+│   │
+│   └── worker.py               # Temporal worker entry point
+│
+├── twitter/                    # Browser automation service
+│   ├── app.py                  # FastAPI server
+│   ├── session.py              # Selenium browser session
+│   ├── auth.py                 # Cookie management
+│   └── start_with_vnc.sh       # VNC startup script
+│
+├── tests/
+│   └── workflows/
+│       ├── test_pipeline.py    # End-to-end test
+│       └── test_ingest.py      # Ingest workflow test
+│
+├── docker-compose.dev.yml      # Development stack
+├── docker-compose.yml          # Production stack
+├── Dockerfile                  # Worker image
+└── Dockerfile.dev              # Twitter service image
 ```
 
 ---
 
-## 🎯 Workflow Naming Convention
+## ⏰ Workflow Details
 
-| Workflow | ID Format | Example |
-|----------|-----------|---------|
-| IngestWorkflow | `ingest-{DD_MM_YYYY}` | `ingest-05_12_2024` |
-| MonitorWorkflow | `monitor-{DD_MM_YYYY}-{HH:MM}` | `monitor-05_12_2024-15:23` |
-| TwitterWorkflow | `twitter{N}-{Team}-{LastName}-{min}-{event_id}` | `twitter1-Liverpool-Salah-45+3min-123_40_306_Goal_1` |
-| DownloadWorkflow | `download{N}-{Team}-{LastName}-{count}vids-{event_id}` | `download1-Liverpool-Salah-3vids-123_40_306_Goal_1` |
+### 1. IngestWorkflow
+
+**Schedule:** Daily at 00:05 UTC  
+**Purpose:** Fetch today's fixtures and route by status
+
+```mermaid
+flowchart TB
+    TRIGGER[⏰ Daily 00:05 UTC]
+    FETCH[Fetch fixtures<br/>GET /fixtures?date=today]
+    
+    subgraph ROUTE["Route by Status"]
+        TBD[TBD, NS → fixtures_staging]
+        LIVE[1H, HT, 2H → fixtures_active]
+        DONE[FT, AET, PEN → fixtures_completed]
+    end
+    
+    TRIGGER --> FETCH --> TBD & LIVE & DONE
+```
+
+### 2. MonitorWorkflow
+
+**Schedule:** Every minute  
+**Purpose:** Activate fixtures, detect events, trigger Twitter
+
+```mermaid
+flowchart TB
+    TRIGGER[⏰ Every minute]
+    
+    ACTIVATE[Activate ready fixtures<br/>staging → active]
+    FETCH[Fetch active fixtures<br/>from API-Football]
+    STORE[Store in fixtures_live<br/>with _event_id]
+    PROCESS[Process events<br/>Set operations]
+    
+    subgraph EVENTS["Event Handling"]
+        NEW[NEW: Add with count=1]
+        MATCH[MATCH: Increment count]
+        REMOVE[REMOVED: Mark _removed]
+    end
+    
+    TWITTER[🐦 Trigger TwitterWorkflow<br/>Non-blocking]
+    SYNC[Sync fixture metadata<br/>Update API fields]
+    COMPLETE[Complete if finished<br/>active → completed]
+    
+    TRIGGER --> ACTIVATE --> FETCH --> STORE --> PROCESS
+    PROCESS --> NEW & MATCH & REMOVE
+    MATCH -->|count=3| TWITTER
+    PROCESS --> SYNC --> COMPLETE
+```
+
+### 3. TwitterWorkflow
+
+**Trigger:** Per stable event (runs 3 times)  
+**Purpose:** Search Twitter, trigger download
+
+```mermaid
+flowchart TB
+    TRIGGER[Triggered by Monitor<br/>Non-blocking child]
+    
+    GET[Get search data<br/>Query + exclude_urls]
+    SEARCH[POST to twitter:8888<br/>Firefox automation]
+    SAVE[Save discovered videos<br/>to MongoDB]
+    
+    FOUND{Videos found?}
+    DOWNLOAD[Trigger DownloadWorkflow<br/>Blocking child]
+    DONE[Done]
+    
+    TRIGGER --> GET --> SEARCH --> FOUND
+    FOUND -->|Yes| SAVE --> DOWNLOAD --> DONE
+    FOUND -->|No| DONE
+```
+
+### 4. DownloadWorkflow
+
+**Trigger:** Per Twitter search with videos  
+**Purpose:** Download, deduplicate, upload
+
+```mermaid
+flowchart TB
+    TRIGGER[Triggered by Twitter<br/>With video URLs]
+    
+    FETCH[Fetch event data<br/>Existing S3 videos]
+    
+    subgraph EACH["For Each Video"]
+        DL[Download via yt-dlp]
+        FILTER{Duration<br/>5-60s?}
+        META[Extract metadata<br/>Resolution, bitrate]
+        HASH[Compute perceptual hash]
+        FILTERED[Track as filtered]
+    end
+    
+    DEDUP[Deduplicate<br/>Compare hashes]
+    
+    subgraph UPLOAD["Upload Phase"]
+        REPLACE[Replace if better quality]
+        NEW[Upload new videos]
+    end
+    
+    SAVE[Save to MongoDB<br/>_s3_videos array]
+    
+    TRIGGER --> FETCH --> DL
+    DL --> FILTER
+    FILTER -->|Yes| META --> HASH
+    FILTER -->|No| FILTERED
+    HASH --> DEDUP
+    DEDUP --> REPLACE & NEW
+    REPLACE & NEW --> SAVE
+```
 
 ---
 
 ## 🔁 Retry Strategy
 
-All activities have exponential backoff for transient failures:
+All activities have exponential backoff:
 
-| Activity Type | Max Attempts | Initial Interval | Backoff |
-|--------------|--------------|------------------|---------|
-| MongoDB reads | 2-3 | 1s | 2.0x |
-| MongoDB writes | 3 | 1s | 2.0x |
-| API-Football | 3 | 1s | 2.0x |
-| Twitter search | 3 | 10s | 1.5x |
-| Video download | 3 | 2s | 2.0x |
-| S3 upload | 3 | 2s | 1.5x |
-| S3 delete | 3 | 2s | 2.0x |
+| Activity Type | Max Retries | Initial Wait | Backoff |
+|--------------|-------------|--------------|---------|
+| MongoDB reads | 2-3 | 1s | 2.0× |
+| MongoDB writes | 3 | 1s | 2.0× |
+| API-Football | 3 | 1s | 2.0× |
+| Twitter search | 3 | 10s | 1.5× |
+| Video download | 3 | 2s | 2.0× |
+| S3 upload | 3 | 2s | 1.5× |
+
+---
+
+## 📊 Event Schema
+
+Events are stored with both raw API fields and enhancement fields:
+
+```javascript
+{
+  // ═══════════ RAW API FIELDS ═══════════
+  "player": {"id": 306, "name": "Mohamed Salah"},
+  "team": {"id": 40, "name": "Liverpool"},
+  "assist": {"id": 123, "name": "Trent Alexander-Arnold"},
+  "type": "Goal",
+  "detail": "Normal Goal",  // or "Own Goal", "Penalty"
+  "time": {"elapsed": 45, "extra": 3},
+  
+  // ═══════════ ENHANCEMENT FIELDS ═══════════
+  "_event_id": "123456_40_306_Goal_1",
+  "_stable_count": 3,
+  "_monitor_complete": true,
+  "_twitter_count": 3,
+  "_twitter_complete": true,
+  "_twitter_search": "Salah Liverpool",
+  "_first_seen": "2025-01-01T15:45:00Z",
+  "_removed": false,
+  
+  // ═══════════ SCORE CONTEXT ═══════════
+  "_score_before": {"home": 2, "away": 0},
+  "_score_after": {"home": 3, "away": 0},
+  "_scoring_team": "home",
+  
+  // ═══════════ DISPLAY FIELDS ═══════════
+  "_display_title": "<<Liverpool (3)>> - 0 Arsenal",
+  "_display_subtitle": "45+3' Goal - <<Mohamed Salah>> (T. Alexander-Arnold)",
+  
+  // ═══════════ VIDEO TRACKING ═══════════
+  "_discovered_videos": [
+    {"video_page_url": "https://x.com/...", "tweet_url": "..."}
+  ],
+  "_s3_videos": [
+    {
+      "url": "/video/footy-videos/123456/.../abc123.mp4",
+      "perceptual_hash": "15.2:4c33b33b:f8d2d234:48b2a460",
+      "resolution_score": 2073600,  // 1920×1080
+      "popularity": 3,
+      "rank": 1
+    }
+  ]
+}
+```
 
 ---
 
 ## 🐛 Debugging
 
-### Check Active Fixtures
+### Check Workflow Status
 ```bash
-# MongoDB Express at http://localhost:4101
-# Click: found_footy → fixtures_active → Look at events array
+# Temporal UI
+open http://localhost:4100
 ```
 
-### Check Temporal UI
+### Check Event Data
 ```bash
-# http://localhost:4100
-# View workflow hierarchy, inputs/outputs, retry status
-```
-
-### View Worker Logs
-```bash
-docker compose -f docker-compose.dev.yml logs -f worker
+# MongoDB (via Mongoku)
+open http://localhost:4101
+# Navigate: found_footy → fixtures_active → events array
 ```
 
 ### Check S3 Videos
 ```bash
-docker exec found-footy-worker python -c "
+docker exec found-footy-dev-worker python -c "
 from src.data.s3_store import FootyS3Store
 s3 = FootyS3Store()
-objs = s3.s3_client.list_objects_v2(Bucket='footy-videos', Prefix='')
-for obj in objs.get('Contents', []):
-    print(obj['Key'])
+for obj in s3.s3_client.list_objects_v2(Bucket='footy-videos').get('Contents', []):
+    print(f\"{obj['Key']} ({obj['Size']/1024/1024:.1f} MB)\")
 "
 ```
 
----
+### Common Issues
 
-## 📝 Notes
-
-- **API Limit:** 7500 requests/day (Pro plan)
-- **Debounce Window:** 3 polls at 1-minute intervals (~3 minutes)
-- **Twitter Search:** 5 videos per search, 3 searches per event
-- **Duration Filter:** 5-60 seconds (skip too short/long)
-- **Video Download Timeout:** 60s per video
-- **50 Tracked Teams:** Top European clubs (see `team_data.py`)
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Fixture stuck in active | Events missing `_twitter_complete` | Check worker logs for Twitter errors |
+| Twitter search empty | Session expired | Re-login via VNC (port 4103) |
+| Videos not uploading | S3 connection failed | Check MinIO is running |
+| Same videos repeatedly | `exclude_urls` not passed | Check TwitterWorkflow activities |
 
 ---
 
-## 🚀 Future Improvements
+## 📝 Configuration
 
-- [ ] **Twitter scroll pagination** - Currently only scans ~4-10 tweets from initial page load. Adding scroll functionality would load more tweets and significantly increase the video pool (see `twitter/session.py` search_videos method)
-- [ ] **Corporate media handling** - Some accounts (SonySportsNetwk, etc.) have DRM that blocks yt-dlp. Could skip these accounts or use alternative download methods
-- [ ] **Parallel downloads** - Currently downloads videos sequentially. Could parallelize for faster processing
+### Environment Variables
+
+```bash
+# API-Football
+API_FOOTBALL_KEY=your_api_key
+
+# MongoDB
+MONGODB_URI=mongodb://user:pass@mongo:27017/found_footy
+
+# MinIO S3
+S3_ENDPOINT=http://minio:9000
+S3_ACCESS_KEY=minioadmin
+S3_SECRET_KEY=minioadmin
+S3_BUCKET=footy-videos
+
+# Temporal
+TEMPORAL_ADDRESS=temporal:7233
+
+# Twitter Service
+TWITTER_SERVICE_URL=http://twitter:8888
+```
+
+### Limits & Thresholds
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| API daily limit | 7,500 requests | Pro plan |
+| Debounce polls | 3 | ~3 minutes |
+| Twitter searches | 3 per event | ~15 min window |
+| Videos per search | 5 max | |
+| Duration filter | 5-60 seconds | |
+| Download timeout | 60s per video | |
+| Tracked teams | 50 | Top European clubs |
+| Aspect ratio min | 1.33 (4:3) | Rejects vertical |
+
+---
+
+## 📚 Additional Documentation
+
+- **[ARCHITECTURE.md](./ARCHITECTURE.md)** — Detailed collection schemas, workflow internals
+- **[TEMPORAL_WORKFLOWS.md](./TEMPORAL_WORKFLOWS.md)** — Activity specifications, retry policies
+- **[TWITTER_AUTH.md](./TWITTER_AUTH.md)** — Browser automation, cookie management
 
 ---
 

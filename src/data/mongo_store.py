@@ -636,13 +636,14 @@ class FootyMongoStore:
     def sync_fixture_data(self, fixture_id: int) -> bool:
         """
         Sync fixture top-level data from fixtures_live to fixtures_active.
-        Preserves enhanced events array - only updates fixture metadata.
+        Also updates raw event fields from API while preserving our enhanced fields.
         Called after successful debounce to keep fixture data fresh.
         
         Updates: fixture, teams, league, goals, score, status, etc.
-        Preserves: events array (with all enhancement fields)
+        Updates in events: assist, detail, comments, time (raw API fields)
+        Preserves in events: all _ prefixed fields (our enhancements)
         
-        Also regenerates display titles for all events (low-cost operation).
+        Also regenerates display titles for all events.
         """
         try:
             live_fixture = self.get_live_fixture(fixture_id)
@@ -662,10 +663,26 @@ class FootyMongoStore:
             if "_last_activity" in active_fixture:
                 update_doc["_last_activity"] = active_fixture["_last_activity"]
             
-            # Preserve enhanced events from active and regenerate display titles
+            # Build lookup of live events by event_id for merging
+            live_events = live_fixture.get("events", [])
+            live_events_by_id = {}
+            for live_event in live_events:
+                # Generate event_id for live event to match against active
+                event_id = self._generate_event_id(fixture_id, live_event)
+                live_events_by_id[event_id] = live_event
+            
+            # Merge API updates into enhanced events while preserving our fields
             enhanced_events = active_fixture.get("events", [])
             for event in enhanced_events:
-                # Regenerate display titles based on current fixture state
+                event_id = event.get("_event_id")
+                if event_id and event_id in live_events_by_id:
+                    live_event = live_events_by_id[event_id]
+                    # Update raw API fields (non _ prefixed) from live
+                    for key, value in live_event.items():
+                        if not key.startswith("_"):
+                            event[key] = value
+                
+                # Regenerate display titles based on updated data
                 title, subtitle = self._generate_event_display_titles(update_doc, event)
                 event["_display_title"] = title
                 event["_display_subtitle"] = subtitle
