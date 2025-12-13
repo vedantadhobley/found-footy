@@ -370,7 +370,7 @@ async def notify_frontend_refresh() -> bool:
     api_url = os.getenv("FRONTEND_API_URL", "http://vedanta-systems-dev-found-footy-api:3001")
     
     try:
-        response = requests.post(f"{api_url}/refresh", timeout=5)
+        response = requests.post(f"{api_url}/api/found-footy/refresh", timeout=5)
         if response.ok:
             result = response.json()
             activity.logger.info(f"📡 Frontend notified ({result.get('clientsNotified', 0)} clients)")
