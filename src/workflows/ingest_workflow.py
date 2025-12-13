@@ -9,6 +9,7 @@ from datetime import timedelta
 
 with workflow.unsafe.imports_passed_through():
     from src.activities import ingest as ingest_activities
+    from src.activities import monitor as monitor_activities
 
 
 @workflow.defn
@@ -24,6 +25,7 @@ class IngestWorkflow:
            - TBD/NS → fixtures_staging
            - LIVE/1H/HT/2H/ET/P/BT → fixtures_active  
            - FT/AET/PEN → fixtures_completed
+        3. Notify frontend to refresh (for upcoming fixtures display)
         """
         workflow.logger.info("📥 Starting daily fixture ingest")
         
@@ -48,6 +50,13 @@ class IngestWorkflow:
                 initial_interval=timedelta(seconds=1),
                 maximum_interval=timedelta(seconds=10),
             ),
+        )
+        
+        # Notify frontend to refresh (shows upcoming fixtures)
+        await workflow.execute_activity(
+            monitor_activities.notify_frontend_refresh,
+            start_to_close_timeout=timedelta(seconds=10),
+            retry_policy=RetryPolicy(maximum_attempts=1),  # Don't retry - frontend may not be running
         )
         
         # Add total fixture count for logging
