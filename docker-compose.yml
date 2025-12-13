@@ -30,8 +30,10 @@ services:
       TWITTER_COOKIE_BACKUP_PATH: /config/twitter_cookies.json
       TWITTER_SERVICE_HOST: "0.0.0.0"
       TWITTER_SERVICE_PORT: "8888"
-      TWITTER_HEADLESS: "false"
+      TWITTER_HEADLESS: "false"  # GUI mode - full browser visible via noVNC
       DISPLAY: ":99"
+      VNC_PORT: "5900"
+      NOVNC_PORT: "6080"
     volumes:
       - .:/workspace
       - found-footy-prod-twitter-cookies:/data
@@ -172,9 +174,10 @@ services:
       S3_SECRET_KEY: ffpass--
       S3_BUCKET_NAME: footy-videos
       TWITTER_SESSION_URL: http://found-footy-prod-twitter:8888
-      FRONTEND_API_URL: http://vedanta-systems-prod-found-footy-api:3001
+      FRONTEND_API_URL: http://vedanta-systems-prod-api:3001
     volumes:
       - .:/workspace
+      - ~/.config/found-footy:/config  # Cookie backup (shared with twitter service)
     networks:
       - found-footy-prod
       - luv-prod  # Need luv-prod network to reach frontend API

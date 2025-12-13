@@ -363,7 +363,7 @@ async def deduplicate_videos(
     
     if not successful:
         activity.logger.warning("⚠️ No successful downloads to deduplicate")
-        return {"videos_to_upload": [], "videos_to_replace": [], "skipped_urls": []}
+        return {"videos_to_upload": [], "videos_to_replace": [], "videos_to_bump_popularity": [], "skipped_urls": []}
     
     # Build lookup for existing S3 videos by perceptual hash
     existing_videos_list = existing_s3_videos or []
@@ -373,6 +373,7 @@ async def deduplicate_videos(
     # Track results
     videos_to_upload = []  # New videos (no match in S3)
     videos_to_replace = []  # Higher quality than existing S3 video
+    videos_to_bump_popularity = []  # Existing is better but still track the duplicate
     skipped_urls = []  # URLs of videos we're not uploading (existing is better)
     
     seen_hashes = {}  # perceptual_hash -> {file_info, duplicate_count}
@@ -422,19 +423,28 @@ async def deduplicate_videos(
             
             if keep_new:
                 # New video is better - mark for replacement
+                # IMPORTANT: Inherit popularity from the video we're replacing + 1
+                # This preserves the dedup history (e.g., if old had popularity=3, new gets 4)
+                existing_popularity = matched_existing.get("popularity", 1)
                 activity.logger.info(
-                    f"🔄 REPLACE: New video is {reason} ({duration:.1f}s)"
+                    f"🔄 REPLACE: New video is {reason} ({duration:.1f}s) - inheriting popularity {existing_popularity} + 1"
                 )
-                file_info["duplicate_count"] = 1
+                file_info["duplicate_count"] = existing_popularity + 1
                 videos_to_replace.append({
                     "new_video": file_info,
                     "old_s3_video": matched_existing
                 })
             else:
                 # Existing is better - skip but track URL
+                # Still increment popularity since this is another "vote" for this content
+                existing_popularity = matched_existing.get("popularity", 1)
                 activity.logger.info(
-                    f"⏭️ SKIP: Existing S3 video is {reason} ({duration:.1f}s)"
+                    f"⏭️ SKIP: Existing S3 video is {reason} ({duration:.1f}s), bumping popularity {existing_popularity} → {existing_popularity + 1}"
                 )
+                videos_to_bump_popularity.append({
+                    "s3_video": matched_existing,
+                    "new_popularity": existing_popularity + 1
+                })
                 os.remove(file_path)
                 if source_url:
                     skipped_urls.append(source_url)
@@ -503,12 +513,14 @@ async def deduplicate_videos(
         f"{len(videos_to_upload)} new, "
         f"{len(videos_to_replace)} replacements, "
         f"{len(skipped_urls)} skipped (existing better), "
+        f"{len(videos_to_bump_popularity)} popularity bumps, "
         f"{duplicates_removed} batch dups"
     )
     
     return {
         "videos_to_upload": videos_to_upload,
         "videos_to_replace": videos_to_replace,
+        "videos_to_bump_popularity": videos_to_bump_popularity,
         "skipped_urls": skipped_urls
     }
 
@@ -791,6 +803,39 @@ async def replace_s3_video(
     except Exception as e:
         activity.logger.error(f"❌ Failed to update MongoDB after S3 delete: {e}")
         raise
+
+
+@activity.defn
+async def bump_video_popularity(
+    fixture_id: int,
+    event_id: str,
+    s3_url: str,
+    new_popularity: int,
+) -> bool:
+    """
+    Bump the popularity count for an existing video.
+    Called when we find a duplicate but the existing video is higher quality.
+    
+    Args:
+        fixture_id: Fixture ID
+        event_id: Event ID
+        s3_url: S3 URL of the existing video
+        new_popularity: New popularity value
+    
+    Returns:
+        True if successful
+    """
+    from src.data.mongo_store import FootyMongoStore
+    
+    store = FootyMongoStore()
+    success = store.update_video_popularity(fixture_id, event_id, s3_url, new_popularity)
+    
+    if success:
+        activity.logger.info(f"📈 Bumped popularity to {new_popularity} for existing video")
+    else:
+        activity.logger.warning(f"⚠️ Failed to bump popularity for {s3_url}")
+    
+    return success
 
 
 @activity.defn

@@ -174,13 +174,14 @@ async def main():
                 download.upload_single_video,
                 download.mark_download_complete,
                 download.replace_s3_video,
+                download.bump_video_popularity,
                 download.save_processed_urls,
             ],
         )
         
         print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
         print("📋 Workflows: Ingest, Monitor, Twitter, Download", flush=True)
-        print("🔧 Activities: 18 total (2 ingest, 7 monitor, 4 twitter, 7 download)", flush=True)
+        print("🔧 Activities: 19 total (2 ingest, 7 monitor, 4 twitter, 8 download)", flush=True)
         print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every minute)", flush=True)
         await worker.run()
     except Exception as e:

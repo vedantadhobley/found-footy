@@ -664,12 +664,13 @@ class FootyMongoStore:
                 update_doc["_last_activity"] = active_fixture["_last_activity"]
             
             # Build lookup of live events by event_id for merging
+            # Live events already have _event_id from store_live_fixture()
             live_events = live_fixture.get("events", [])
             live_events_by_id = {}
             for live_event in live_events:
-                # Generate event_id for live event to match against active
-                event_id = self._generate_event_id(fixture_id, live_event)
-                live_events_by_id[event_id] = live_event
+                event_id = live_event.get("_event_id")
+                if event_id:
+                    live_events_by_id[event_id] = live_event
             
             # Merge API updates into enhanced events while preserving our fields
             enhanced_events = active_fixture.get("events", [])
@@ -694,6 +695,9 @@ class FootyMongoStore:
                 {"_id": fixture_id},
                 update_doc
             )
+            if result.modified_count > 0:
+                live_status = live_fixture.get("fixture", {}).get("status", {}).get("short")
+                print(f"🔄 Synced fixture {fixture_id}: status={live_status}")
             return result.modified_count > 0
         except Exception as e:
             print(f"❌ Error syncing fixture data for {fixture_id}: {e}")

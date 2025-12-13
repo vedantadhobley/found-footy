@@ -159,12 +159,40 @@ class DownloadWorkflow:
         
         videos_to_upload = dedup_result.get("videos_to_upload", [])
         videos_to_replace = dedup_result.get("videos_to_replace", [])
+        videos_to_bump_popularity = dedup_result.get("videos_to_bump_popularity", [])
         skipped_urls = dedup_result.get("skipped_urls", [])
         
         total_to_process = len(videos_to_upload) + len(videos_to_replace)
         
         # URLs to track for dedup (even if we don't upload anything)
         all_processed_urls = skipped_urls + filtered_urls + failed_urls
+        
+        # =========================================================================
+        # Step 3b: Bump popularity for existing videos that had duplicates
+        # (when we skipped uploading because existing was higher quality)
+        # =========================================================================
+        if videos_to_bump_popularity:
+            workflow.logger.info(f"📈 Bumping popularity for {len(videos_to_bump_popularity)} existing videos")
+            for bump_info in videos_to_bump_popularity:
+                s3_video = bump_info["s3_video"]
+                new_popularity = bump_info["new_popularity"]
+                try:
+                    await workflow.execute_activity(
+                        download_activities.bump_video_popularity,
+                        args=[
+                            fixture_id,
+                            event_id,
+                            s3_video.get("url", ""),
+                            new_popularity,
+                        ],
+                        start_to_close_timeout=timedelta(seconds=10),
+                        retry_policy=RetryPolicy(
+                            maximum_attempts=2,
+                            initial_interval=timedelta(seconds=1),
+                        ),
+                    )
+                except Exception as e:
+                    workflow.logger.warning(f"⚠️ Failed to bump popularity: {e}")
         
         if total_to_process == 0:
             # No videos to upload - but save processed URLs for future dedup
