@@ -13,6 +13,8 @@
 #   - temporal:7233 (gRPC)
 #   - twitter:8888 (API)
 
+name: found-footy-prod
+
 services:
   # TWITTER SERVICE - handles Twitter scraping with GUI access
   twitter:

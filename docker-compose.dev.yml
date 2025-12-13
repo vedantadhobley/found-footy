@@ -12,6 +12,8 @@
 #   - found-footy-mongo:27017 (Application data)
 #   - found-footy-minio:9000 (S3 storage)
 
+name: found-footy-dev
+
 services:
   # TWITTER SERVICE - handles Twitter scraping with GUI access
   twitter:
