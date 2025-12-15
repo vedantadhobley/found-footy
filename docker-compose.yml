@@ -20,14 +20,14 @@ services:
   twitter:
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     container_name: found-footy-prod-twitter
     ports:
       - "3103:6080"  # noVNC Browser - view Firefox at http://localhost:3103
     env_file:
       - .env
     environment:
-      PYTHONPATH: /workspace
+      PYTHONPATH: /app
       TWITTER_COOKIES_FILE: /data/twitter_cookies.pkl
       TWITTER_COOKIE_BACKUP_PATH: /config/twitter_cookies.json
       TWITTER_SERVICE_HOST: "0.0.0.0"
@@ -37,13 +37,12 @@ services:
       VNC_PORT: "5900"
       NOVNC_PORT: "6080"
     volumes:
-      - .:/workspace
       - found-footy-prod-twitter-cookies:/data
       - ~/.config/found-footy:/config
     networks:
       - found-footy-prod
     restart: unless-stopped
-    command: bash /workspace/twitter/start_with_vnc.sh
+    command: bash /app/twitter/start_with_vnc.sh
 
   # POSTGRESQL - Temporal metadata storage
   postgres:
@@ -163,12 +162,12 @@ services:
   worker:
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     container_name: found-footy-prod-worker
     env_file:
       - .env
     environment:
-      PYTHONPATH: /workspace
+      PYTHONPATH: /app
       TEMPORAL_HOST: found-footy-prod-temporal:7233
       MONGODB_URI: mongodb://ffuser:ffpass@found-footy-prod-mongo:27017/found_footy?authSource=admin
       S3_ENDPOINT_URL: http://found-footy-prod-minio:9000
@@ -178,7 +177,6 @@ services:
       TWITTER_SESSION_URL: http://found-footy-prod-twitter:8888
       FRONTEND_API_URL: http://vedanta-systems-prod-api:3001
     volumes:
-      - .:/workspace
       - ~/.config/found-footy:/config  # Cookie backup (shared with twitter service)
     networks:
       - found-footy-prod
@@ -187,7 +185,7 @@ services:
       - temporal
       - mongo
     restart: unless-stopped
-    command: python /workspace/src/worker.py
+    command: python /app/src/worker.py
 
 volumes:
   found-footy-prod-postgres-data:

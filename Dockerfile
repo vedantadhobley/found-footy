@@ -1,71 +1,56 @@
-# Use Prefect 3 as base image
-FROM prefecthq/prefect:3-python3.10
+# Production Dockerfile - code is baked into image
+FROM python:3.10-slim
 
-# Create app user
-ARG USER_ID=1000
-ARG GROUP_ID=1000
-RUN groupadd -g ${GROUP_ID} appuser && \
-    useradd -m -u ${USER_ID} -g ${GROUP_ID} appuser
-
-WORKDIR /app
-
-# ✅ Install Chrome for browser automation (multi-arch support)
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    wget \
-    ca-certificates \
-    curl \
-    openssl \
     git \
+    curl \
+    wget \
     build-essential \
-    libssl-dev \
-    libffi-dev \
-    python3-dev \
-    # ✅ ADD: Network tools for debugging
-    iputils-ping \
-    dnsutils \
-    # Chrome dependencies
-    chromium \
-    chromium-driver \
+    gnupg \
+    # Firefox for browser automation
+    firefox-esr \
     xvfb \
-    # ✅ ADD: gosu for switching users in entrypoint
-    gosu \
-    && update-ca-certificates \
+    # VNC server and noVNC for web-based GUI access
+    x11vnc \
+    fluxbox \
+    novnc \
+    websockify \
+    # ffmpeg for video processing
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# ✅ Create Chrome wrapper script for headless operation
-RUN echo '#!/bin/bash\nexec chromium "$@" --no-sandbox --disable-dev-shm-usage --headless --disable-gpu' > /usr/local/bin/chrome \
-    && chmod +x /usr/local/bin/chrome
+# Install Google Chrome (for undetected-chromedriver)
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install certificates and uv
-RUN update-ca-certificates --fresh && \
-    mkdir -p /etc/ssl/custom && \
-    cat /etc/ssl/certs/ca-certificates.crt > /etc/ssl/custom/bundle.crt && \
-    pip install uv
+# Install geckodriver for Firefox automation
+RUN wget -q https://github.com/mozilla/geckodriver/releases/download/v0.35.0/geckodriver-v0.35.0-linux64.tar.gz \
+    && tar -xzf geckodriver-v0.35.0-linux64.tar.gz \
+    && mv geckodriver /usr/local/bin/ \
+    && chmod +x /usr/local/bin/geckodriver \
+    && rm geckodriver-v0.35.0-linux64.tar.gz
 
-# Copy requirements and install dependencies
+# Set working directory
+WORKDIR /app
+
+# Copy requirements and install dependencies first (better layer caching)
 COPY requirements.txt .
-RUN PYTHONHTTPSVERIFY=0 uv pip install --system -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code and set permissions
-COPY . .
-RUN chown -R appuser:appuser /app && \
-    mkdir -p /app/downloads && chown -R appuser:appuser /app/downloads && \
-    mkdir -p /app/dagster_logs /app/dagster_storage && \
-    chown -R appuser:appuser /app/dagster_logs /app/dagster_storage
+# Copy application code into image
+COPY src/ ./src/
+COPY twitter/ ./twitter/
 
-# Switch to non-root user
-USER appuser
+# Environment variables
+ENV PYTHONPATH=/app \
+    CHROME_BIN=/usr/bin/google-chrome \
+    DISPLAY=:99 \
+    VNC_PORT=5900 \
+    NOVNC_PORT=6080
 
-# Environment variables - ✅ REMOVE HARDCODED CREDENTIALS
-ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-ENV SSL_CERT_DIR=/etc/ssl/certs
-ENV PYTHONHTTPSVERIFY=0
-ENV PYTHONPATH=/app
-ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
-ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
-# Chrome environment
-ENV CHROME_BIN=/usr/local/bin/chrome
-ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
-
-# ✅ DEFAULT: Start worker (init container overrides this)
-CMD ["prefect", "worker", "start", "--pool", "default-pool", "--type", "process"]
+# Default command (overridden in docker-compose)
+CMD ["python", "/app/src/worker.py"]
