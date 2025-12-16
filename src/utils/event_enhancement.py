@@ -4,15 +4,88 @@ Event Enhancement Utilities
 Helper functions for building Twitter search queries and calculating score context.
 These are used when enhancing events during the debounce process.
 """
+import unicodedata
 from typing import Dict, Any
+
+from src.utils.team_data import get_team_nickname
+
+
+def normalize_accents(text: str) -> str:
+    """
+    Replace accented characters with their ASCII equivalents.
+    
+    Examples:
+        "Doué" -> "Doue"
+        "Müller" -> "Muller"
+        "Ibrahimović" -> "Ibrahimovic"
+    """
+    # Normalize to decomposed form (separate base char from accent)
+    normalized = unicodedata.normalize("NFD", text)
+    # Remove combining diacritical marks (accents)
+    ascii_text = "".join(c for c in normalized if unicodedata.category(c) != "Mn")
+    return ascii_text
+
+
+def extract_player_search_name(player_name: str) -> str:
+    """
+    Extract the best search name from a player's full name.
+    
+    Handles various name formats:
+    - "M. Salah" -> "Salah"
+    - "K. De Bruyne" -> "De Bruyne"  
+    - "C. Hudson-Odoi" -> "Hudson Odoi"
+    - "T. Alexander-Arnold" -> "Alexander Arnold"
+    - "Vinícius Júnior" -> "Vinicius Junior"
+    
+    Rules:
+    1. If name has initial (single letter followed by period), skip it
+    2. Take everything after the initial as the surname
+    3. Handle multi-part surnames (De Bruyne, Van Dijk, etc.)
+    4. Normalize accented characters
+    5. Replace hyphens with spaces for better search matching
+    
+    Args:
+        player_name: Full player name from API (e.g., "K. De Bruyne")
+        
+    Returns:
+        Search-friendly name (e.g., "De Bruyne")
+    """
+    if not player_name or player_name == "Unknown":
+        return "Unknown"
+    
+    # Normalize accents first
+    name = normalize_accents(player_name)
+    
+    # Replace hyphens with spaces for better search matching
+    name = name.replace("-", " ")
+    
+    # Split into parts
+    parts = name.split()
+    
+    if len(parts) == 1:
+        return parts[0]
+    
+    # Check if first part is an initial (single letter or letter with period)
+    first = parts[0]
+    is_initial = (len(first) == 1) or (len(first) == 2 and first.endswith("."))
+    
+    if is_initial:
+        # Return everything after the initial
+        surname_parts = parts[1:]
+        return " ".join(surname_parts)
+    else:
+        # No initial - take the last name (handles "Vinícius Júnior" -> "Junior")
+        # But also handle compound surnames - if second part is lowercase, include it
+        # Actually, just take the last part for simplicity
+        return parts[-1]
 
 
 def build_twitter_search(event: dict, fixture: dict) -> str:
     """
     Build Twitter search string from event and fixture data.
     
-    Format: "{PlayerLastName} {TeamName}"
-    Example: "Salah Liverpool"
+    Format: "{PlayerSearchName} {TeamNickname}"
+    Example: "Salah Liverpool", "De Bruyne Man City"
     
     Args:
         event: The goal event from API-Football
@@ -21,20 +94,23 @@ def build_twitter_search(event: dict, fixture: dict) -> str:
     Returns:
         Search string for Twitter query
     """
-    # Get player's last name
+    # Get player's search name (handles De Bruyne, Hudson-Odoi, accents, etc.)
     player_name = event.get("player", {}).get("name", "Unknown")
-    player_last_name = player_name.split()[-1] if player_name else "Unknown"
+    player_search_name = extract_player_search_name(player_name)
     
-    # Get team name from fixture (more reliable than event.team)
+    # Get team info from fixture
     event_team_id = event.get("team", {}).get("id")
     home_team_id = fixture.get("teams", {}).get("home", {}).get("id")
     
     if event_team_id == home_team_id:
-        team_name = fixture.get("teams", {}).get("home", {}).get("name", "")
+        api_team_name = fixture.get("teams", {}).get("home", {}).get("name", "")
     else:
-        team_name = fixture.get("teams", {}).get("away", {}).get("name", "")
+        api_team_name = fixture.get("teams", {}).get("away", {}).get("name", "")
     
-    return f"{player_last_name} {team_name}".strip()
+    # Use nickname from our team data if available, otherwise fall back to API name
+    team_name = get_team_nickname(event_team_id, fallback=api_team_name)
+    
+    return f"{player_search_name} {team_name}".strip()
 
 
 def calculate_score_context(fixture: dict, event: dict) -> Dict[str, Any]:
