@@ -711,11 +711,12 @@ class FootyMongoStore:
     ) -> bool:
         """
         Add video objects to _s3_videos array.
+        Deduplicates by URL to prevent duplicate entries.
         
         Args:
             fixture_id: Fixture ID
             event_id: Event ID
-            video_objects: List of {url, perceptual_hash, resolution_score, popularity, rank}
+            video_objects: List of {url, perceptual_hash, resolution_score, file_size, popularity, rank}
         
         Returns:
             True if successful
@@ -733,12 +734,39 @@ class FootyMongoStore:
                 print(f"✅ No new videos to add for {event_id}")
                 return True
             
+            # Get existing video URLs to avoid duplicates
+            fixture = self.fixtures_active.find_one(
+                {"_id": fixture_id, "events._event_id": event_id}
+            )
+            if not fixture:
+                msg = f"❌ FATAL: Event {event_id} not found in fixtures_active"
+                print(msg)
+                raise RuntimeError(msg)
+            
+            # Find the event and get existing URLs
+            existing_urls = set()
+            for evt in fixture.get("events", []):
+                if evt.get("_event_id") == event_id:
+                    for video in evt.get("_s3_videos", []):
+                        existing_urls.add(video.get("url", ""))
+                    break
+            
+            # Filter out videos that already exist
+            new_videos = [v for v in video_objects if v.get("url", "") not in existing_urls]
+            
+            if not new_videos:
+                print(f"✅ All {len(video_objects)} videos already exist for {event_id}, skipping duplicates")
+                return True
+            
+            if len(new_videos) < len(video_objects):
+                print(f"⚠️ Filtered out {len(video_objects) - len(new_videos)} duplicate videos for {event_id}")
+            
             # Append new video objects
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id, "events._event_id": event_id},
                 {
                     "$push": {
-                        "events.$._s3_videos": {"$each": video_objects}
+                        "events.$._s3_videos": {"$each": new_videos}
                     }
                 }
             )
@@ -757,7 +785,7 @@ class FootyMongoStore:
     def recalculate_video_ranks(self, fixture_id: int, event_id: str) -> bool:
         """
         Recalculate ranks for all videos in an event.
-        Sorts by popularity (desc) then resolution_score (desc).
+        Sorts by popularity (desc) then file_size (desc) - larger files = better quality.
         Rank 1 = best video.
         
         Args:
@@ -792,10 +820,10 @@ class FootyMongoStore:
             if not videos:
                 return True
             
-            # Sort by popularity (desc) then resolution_score (desc)
+            # Sort by popularity (desc) then file_size (desc) - bigger file = better quality
             videos_sorted = sorted(
                 videos, 
-                key=lambda v: (v.get("popularity", 1), v.get("resolution_score", 0)),
+                key=lambda v: (v.get("popularity", 1), v.get("file_size", 0)),
                 reverse=True
             )
             

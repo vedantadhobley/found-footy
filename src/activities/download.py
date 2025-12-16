@@ -395,31 +395,19 @@ async def deduplicate_videos(
                 break
         
         if matched_existing:
-            # Found match in S3 - compare quality
-            new_resolution = file_info.get("resolution_score", 0) or (file_info.get("width", 0) * file_info.get("height", 0))
-            existing_resolution = matched_existing.get("resolution_score", 0) or (matched_existing.get("width", 0) * matched_existing.get("height", 0))
-            
-            new_bitrate = file_info.get("bitrate", 0)
-            existing_bitrate = matched_existing.get("bitrate", 0)
-            
+            # Found match in S3 - compare quality by file size (larger = better quality/bitrate)
             new_file_size = file_size
             existing_file_size = matched_existing.get("file_size", 0)
             
-            # Quality comparison: resolution > bitrate > file_size
+            # Quality comparison: file_size only - larger files have better quality/bitrate
             keep_new = False
             reason = ""
             
-            if new_resolution > existing_resolution:
+            if new_file_size > existing_file_size:
                 keep_new = True
-                reason = f"higher resolution ({file_info.get('width', '?')}x{file_info.get('height', '?')} > {matched_existing.get('width', '?')}x{matched_existing.get('height', '?')})"
-            elif new_resolution == existing_resolution and new_bitrate > existing_bitrate:
-                keep_new = True
-                reason = f"higher bitrate ({new_bitrate:.0f}kbps > {existing_bitrate:.0f}kbps)"
-            elif new_resolution == existing_resolution and new_bitrate == existing_bitrate and new_file_size > existing_file_size:
-                keep_new = True
-                reason = f"larger file ({new_file_size} > {existing_file_size})"
+                reason = f"larger file ({new_file_size:,} > {existing_file_size:,} bytes)"
             else:
-                reason = f"existing is same or higher quality ({matched_existing.get('width', '?')}x{matched_existing.get('height', '?')})"
+                reason = f"existing is same or larger ({existing_file_size:,} bytes)"
             
             if keep_new:
                 # New video is better - mark for replacement
@@ -457,27 +445,18 @@ async def deduplicate_videos(
                 found_batch_dup = True
                 existing["duplicate_count"] += 1
                 
-                # Quality comparison
-                new_resolution = file_info.get("resolution_score", 0) or (file_info.get("width", 0) * file_info.get("height", 0))
-                existing_resolution = existing.get("resolution_score", 0) or (existing.get("width", 0) * existing.get("height", 0))
-                
-                new_bitrate = file_info.get("bitrate", 0)
-                existing_bitrate = existing.get("bitrate", 0)
+                # Compare by file_size only - larger file = better quality
+                new_file_size = file_size
+                existing_file_size = existing.get("file_size", 0)
                 
                 keep_new = False
                 reason = ""
                 
-                if new_resolution > existing_resolution:
+                if new_file_size > existing_file_size:
                     keep_new = True
-                    reason = f"higher resolution ({file_info.get('width')}x{file_info.get('height')} > {existing.get('width')}x{existing.get('height')})"
-                elif new_resolution == existing_resolution and new_bitrate > existing_bitrate:
-                    keep_new = True
-                    reason = f"higher bitrate ({new_bitrate:.0f}kbps > {existing_bitrate:.0f}kbps)"
-                elif new_resolution == existing_resolution and new_bitrate == existing_bitrate and file_size > existing["file_size"]:
-                    keep_new = True
-                    reason = f"larger file ({file_size} > {existing['file_size']})"
+                    reason = f"larger file ({new_file_size} > {existing_file_size})"
                 else:
-                    reason = "existing is higher quality"
+                    reason = f"existing is same or larger file ({existing_file_size} >= {new_file_size})"
                 
                 if keep_new:
                     activity.logger.info(
