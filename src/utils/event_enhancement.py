@@ -30,25 +30,29 @@ def extract_player_search_name(player_name: str) -> str:
     """
     Extract the best search name from a player's full name.
     
-    Handles various name formats:
-    - "M. Salah" -> "Salah"
-    - "K. De Bruyne" -> "De Bruyne"  
-    - "C. Hudson-Odoi" -> "Hudson Odoi"
-    - "T. Alexander-Arnold" -> "Alexander Arnold"
-    - "Vinícius Júnior" -> "Vinicius Junior"
+    Uses the longest word from the surname, which is typically the most
+    distinctive and searchable part of the name.
+    
+    Examples:
+        "M. Salah" -> "Salah"
+        "K. De Bruyne" -> "Bruyne"  
+        "C. Hudson-Odoi" -> "Hudson"  (both 6 chars, prefer last)
+        "T. Alexander-Arnold" -> "Alexander"  (longer than Arnold)
+        "R. Diaz Belloli" -> "Belloli"  (longer than Diaz)
+        "Vinícius Júnior" -> "Vinicius"  (longer than Junior)
     
     Rules:
-    1. If name has initial (single letter followed by period), skip it
-    2. Take everything after the initial as the surname
-    3. Handle multi-part surnames (De Bruyne, Van Dijk, etc.)
-    4. Normalize accented characters
-    5. Replace hyphens with spaces for better search matching
+    1. Normalize accented characters
+    2. Replace hyphens with spaces
+    3. Skip initial if present (single letter or letter+period)
+    4. Use the longest word from remaining parts
+    5. On ties, prefer the LAST word (typically the family name)
     
     Args:
         player_name: Full player name from API (e.g., "K. De Bruyne")
         
     Returns:
-        Search-friendly name (e.g., "De Bruyne")
+        Search-friendly name (e.g., "Bruyne")
     """
     if not player_name or player_name == "Unknown":
         return "Unknown"
@@ -70,14 +74,98 @@ def extract_player_search_name(player_name: str) -> str:
     is_initial = (len(first) == 1) or (len(first) == 2 and first.endswith("."))
     
     if is_initial:
-        # Return everything after the initial
+        # Skip the initial, work with surname parts
         surname_parts = parts[1:]
-        return " ".join(surname_parts)
     else:
-        # No initial - take the last name (handles "Vinícius Júnior" -> "Junior")
-        # But also handle compound surnames - if second part is lowercase, include it
-        # Actually, just take the last part for simplicity
-        return parts[-1]
+        # No initial - use all parts
+        surname_parts = parts
+    
+    if len(surname_parts) == 1:
+        return surname_parts[0]
+    
+    # Find the longest word
+    # On ties, prefer the LAST word (typically the actual family name)
+    # We reverse the list so that when max() finds equal lengths, it gets the last one
+    longest = max(reversed(surname_parts), key=len)
+    
+    return longest
+
+
+def extract_team_search_name(team_name: str) -> str:
+    """
+    Extract the best search term from a team's full name.
+    
+    For untracked teams, we need to find the most distinctive/searchable word.
+    Strategy: Use the longest word (usually the most specific/unique identifier).
+    
+    Examples:
+        "Borussia Mönchengladbach" -> "Monchengladbach"
+        "Brighton & Hove Albion" -> "Brighton"
+        "Wolverhampton Wanderers" -> "Wolverhampton"
+        "RB Leipzig" -> "Leipzig"
+        "West Ham United" -> "West Ham"  (special case: keep "West Ham" together)
+        "Crystal Palace" -> "Crystal Palace" (both words similar length, keep both)
+        "Nottingham Forest" -> "Nottingham"
+        "Newcastle United" -> "Newcastle"
+        
+    Rules:
+    1. Normalize accents
+    2. Remove special characters (& etc.)
+    3. Replace hyphens with spaces
+    4. Filter out common suffixes (FC, United, City, Wanderers, Rovers, etc.)
+    5. Use the longest remaining word
+    6. If multiple words of similar length, prefer keeping them together
+    
+    Args:
+        team_name: Full team name from API
+        
+    Returns:
+        Search-friendly team identifier
+    """
+    if not team_name:
+        return ""
+    
+    # Normalize accents
+    name = normalize_accents(team_name)
+    
+    # Remove special characters but keep spaces
+    name = name.replace("&", " ").replace("-", " ")
+    
+    # Split into words
+    words = name.split()
+    
+    # Common suffixes/prefixes to filter out (not distinctive)
+    common_words = {
+        "fc", "cf", "sc", "ac", "as", "ss", "rb", "vfb", "fsv", "sv", "bv",
+        "united", "city", "town", "wanderers", "rovers", "athletic", "albion",
+        "hotspur", "villa", "county", "olympic", "olympique", "sporting",
+        "real", "atletico", "deportivo", "racing", "dynamo", "lokomotiv",
+        "borussia",  # Generic prefix for German clubs
+    }
+    
+    # Filter out common words
+    distinctive_words = [w for w in words if w.lower() not in common_words]
+    
+    # If all words were filtered, use original words
+    if not distinctive_words:
+        distinctive_words = words
+    
+    # If only one distinctive word, use it
+    if len(distinctive_words) == 1:
+        return distinctive_words[0]
+    
+    # Find the longest word
+    longest = max(distinctive_words, key=len)
+    
+    # If longest is significantly longer (3+ chars), use just that
+    second_longest = sorted(distinctive_words, key=len, reverse=True)[1] if len(distinctive_words) > 1 else ""
+    
+    if len(longest) >= len(second_longest) + 3:
+        return longest
+    
+    # Otherwise, words are similar length - keep them together
+    # But limit to first 2 distinctive words to avoid overly long queries
+    return " ".join(distinctive_words[:2])
 
 
 def build_twitter_search(event: dict, fixture: dict) -> str:
@@ -86,6 +174,9 @@ def build_twitter_search(event: dict, fixture: dict) -> str:
     
     Format: "{PlayerSearchName} {TeamNickname}"
     Example: "Salah Liverpool", "De Bruyne Man City"
+    
+    For tracked teams, uses our curated nickname.
+    For untracked teams, extracts the most distinctive word from the API name.
     
     Args:
         event: The goal event from API-Football
@@ -107,8 +198,11 @@ def build_twitter_search(event: dict, fixture: dict) -> str:
     else:
         api_team_name = fixture.get("teams", {}).get("away", {}).get("name", "")
     
-    # Use nickname from our team data if available, otherwise fall back to API name
-    team_name = get_team_nickname(event_team_id, fallback=api_team_name)
+    # Use nickname from our team data if available
+    # Otherwise, extract the best search term from the API name
+    team_name = get_team_nickname(event_team_id, fallback=None)
+    if team_name is None:
+        team_name = extract_team_search_name(api_team_name)
     
     return f"{player_search_name} {team_name}".strip()
 
