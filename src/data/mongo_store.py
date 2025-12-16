@@ -918,6 +918,7 @@ class FootyMongoStore:
                 "url": url,
                 "perceptual_hash": perceptual_hashes[i] if i < len(perceptual_hashes) else "",
                 "resolution_score": 0,  # Unknown
+                "file_size": 0,  # Unknown (legacy format didn't have this)
                 "popularity": 1,
                 "rank": i + 1
             })

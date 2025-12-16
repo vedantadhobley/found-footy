@@ -681,6 +681,7 @@ async def upload_single_video(
             "url": s3_url,
             "perceptual_hash": perceptual_hash,
             "resolution_score": resolution_score,
+            "file_size": file_size,  # For ranking tiebreaker (larger = better quality)
             "popularity": popularity,
             "rank": 0,  # Will be recalculated
         }

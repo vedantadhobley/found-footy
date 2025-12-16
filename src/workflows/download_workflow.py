@@ -308,6 +308,7 @@ class DownloadWorkflow:
                         "url": result["s3_url"],
                         "perceptual_hash": result.get("perceptual_hash", ""),
                         "resolution_score": result.get("resolution_score", 0),
+                        "file_size": 0,  # Fallback - activity should provide this
                         "popularity": result.get("popularity", 1),
                         "rank": 0,
                     }))
