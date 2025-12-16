@@ -47,6 +47,7 @@ TOP_FIFA = {
     8: {"name": "Colombia", "country": "Colombia", "rank": 13},
     2384: {"name": "USA", "country": "USA", "rank": 14},
     16: {"name": "Mexico", "country": "Mexico", "rank": 15}
+    
     # 7: {"name": "Uruguay", "country": "Uruguay", "rank": 16},
     # 12: {"name": "Japan", "country": "Japan", "rank": 17},
     # 13: {"name": "Senegal", "country": "Senegal", "rank": 18},
