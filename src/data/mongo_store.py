@@ -898,32 +898,6 @@ class FootyMongoStore:
             print(f"❌ Error updating video popularity: {e}")
             return False
 
-    # === Legacy function (deprecated) ===
-    
-    def mark_event_download_complete(
-        self,
-        fixture_id: int,
-        event_id: str,
-        s3_urls: List[str],
-        perceptual_hashes: List[str]
-    ) -> bool:
-        """
-        DEPRECATED: Use add_videos_to_event instead.
-        Kept for backwards compatibility during migration.
-        """
-        # Convert old format to new format
-        video_objects = []
-        for i, url in enumerate(s3_urls):
-            video_objects.append({
-                "url": url,
-                "perceptual_hash": perceptual_hashes[i] if i < len(perceptual_hashes) else "",
-                "resolution_score": 0,  # Unknown
-                "file_size": 0,  # Unknown (legacy format didn't have this)
-                "popularity": 1,
-                "rank": i + 1
-            })
-        return self.add_videos_to_event(fixture_id, event_id, video_objects)
-
     # === Completion Operations ===
     
     def complete_fixture(self, fixture_id: int) -> bool:
