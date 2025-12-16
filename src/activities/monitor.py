@@ -306,7 +306,7 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
             
             if new_count_val >= 3:
                 # Mark complete and prepare for Twitter
-                # Get _first_seen from active event for _last_activity update
+                # Pass _first_seen to update _last_activity (when goal was first detected)
                 first_seen = active_event.get("_first_seen")
                 store.mark_event_monitor_complete(fixture_id, event_id, first_seen)
                 
