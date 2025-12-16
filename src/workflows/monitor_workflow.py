@@ -90,6 +90,15 @@ class MonitorWorkflow:
                 retry_policy=RetryPolicy(maximum_attempts=3),
             )
             
+            # Notify frontend immediately when events transition to _monitor_complete=true
+            # This lets frontend show "extracting" state BEFORE Twitter/Download starts
+            if result.get("twitter_triggered") or result.get("twitter_retry_needed"):
+                await workflow.execute_activity(
+                    monitor_activities.notify_frontend_refresh,
+                    start_to_close_timeout=timedelta(seconds=5),
+                    retry_policy=RetryPolicy(maximum_attempts=1),
+                )
+            
             # Trigger TwitterWorkflow for each newly stable event
             for event_info in result.get("twitter_triggered", []):
                 event_id = event_info["event_id"]
