@@ -103,18 +103,26 @@ def extract_team_search_name(team_name: str) -> str:
         "Brighton & Hove Albion" -> "Brighton"
         "Wolverhampton Wanderers" -> "Wolverhampton"
         "RB Leipzig" -> "Leipzig"
-        "West Ham United" -> "West Ham"  (special case: keep "West Ham" together)
-        "Crystal Palace" -> "Crystal Palace" (both words similar length, keep both)
-        "Nottingham Forest" -> "Nottingham"
+        "Sporting CP" -> "Sporting"
+        "Atletico Madrid" -> "Atletico"
+        "Aston Villa" -> "Villa" (tie, prefer last - the identifier)
+        "Borussia Dortmund" -> "Dortmund" (tie, prefer last - the city)
+        "Real Madrid" -> "Madrid"
+        "Manchester City" -> "Manchester"
         "Newcastle United" -> "Newcastle"
+        "West Ham United" -> "Ham" (after filtering United)
+        "Crystal Palace" -> "Palace" (tie, prefer last)
         
     Rules:
     1. Normalize accents
     2. Remove special characters (& etc.)
     3. Replace hyphens with spaces
-    4. Filter out common suffixes (FC, United, City, Wanderers, Rovers, etc.)
-    5. Use the longest remaining word
-    6. If multiple words of similar length, prefer keeping them together
+    4. Filter out very short words (1-2 chars like FC, RB, CP, AC, etc.)
+    5. Filter out truly generic suffixes (United, City, Town, Wanderers, Rovers, Albion)
+       - These appear in MANY team names and aren't distinctive
+       - But keep Sporting, Atletico, Real, Villa, etc. - these ARE the team identity
+    6. Use the longest remaining word
+    7. On ties, prefer the LAST word (usually city name, more distinctive)
     
     Args:
         team_name: Full team name from API
@@ -134,38 +142,48 @@ def extract_team_search_name(team_name: str) -> str:
     # Split into words
     words = name.split()
     
-    # Common suffixes/prefixes to filter out (not distinctive)
-    common_words = {
-        "fc", "cf", "sc", "ac", "as", "ss", "rb", "vfb", "fsv", "sv", "bv",
-        "united", "city", "town", "wanderers", "rovers", "athletic", "albion",
-        "hotspur", "villa", "county", "olympic", "olympique", "sporting",
-        "real", "atletico", "deportivo", "racing", "dynamo", "lokomotiv",
-        "borussia",  # Generic prefix for German clubs
-    }
+    # Filter out very short words (abbreviations like FC, RB, CP, AC, SC, 04, 05, etc.)
+    # AND truly generic suffixes that appear in many team names
+    # Note: We keep Sporting, Atletico, Real, Villa, etc. - these ARE the team identity!
+    generic_suffixes = {"united", "city", "town", "wanderers", "rovers", "albion", "county", "athletic"}
     
-    # Filter out common words
-    distinctive_words = [w for w in words if w.lower() not in common_words]
+    meaningful_words = [
+        w for w in words 
+        if len(w) > 2 and w.lower() not in generic_suffixes
+    ]
     
-    # If all words were filtered, use original words
-    if not distinctive_words:
-        distinctive_words = words
+    # If all words were filtered, fall back to original (filtering short words only)
+    if not meaningful_words:
+        meaningful_words = [w for w in words if len(w) > 2]
     
-    # If only one distinctive word, use it
-    if len(distinctive_words) == 1:
-        return distinctive_words[0]
+    # If still empty, use original words
+    if not meaningful_words:
+        meaningful_words = words
     
-    # Find the longest word
-    longest = max(distinctive_words, key=len)
+    # If only one meaningful word, use it
+    if len(meaningful_words) == 1:
+        return meaningful_words[0]
     
-    # If longest is significantly longer (3+ chars), use just that
-    second_longest = sorted(distinctive_words, key=len, reverse=True)[1] if len(distinctive_words) > 1 else ""
+    # Sort by length descending
+    sorted_by_len = sorted(meaningful_words, key=len, reverse=True)
+    longest = sorted_by_len[0]
+    second = sorted_by_len[1] if len(sorted_by_len) > 1 else ""
     
-    if len(longest) >= len(second_longest) + 3:
+    # If words are very similar length (diff <= 1), keep both together
+    # This handles "West Ham" (4,3), "Crystal Palace" (7,6)
+    # But NOT "Atletico Madrid" (8,6) or "Borussia Dortmund" (8,8)
+    length_diff = len(longest) - len(second)
+    
+    if length_diff <= 1 and len(longest) <= 7:
+        # Short words that are similar - keep together
+        # e.g., West Ham (4,3), Crystal Palace (7,6)
+        return " ".join(meaningful_words[:2])
+    elif length_diff == 0:
+        # Exact tie - prefer LAST word (Borussia Dortmund -> Dortmund, Eintracht Frankfurt -> Frankfurt)
+        return meaningful_words[-1]
+    else:
+        # Clear winner - use just the longest
         return longest
-    
-    # Otherwise, words are similar length - keep them together
-    # But limit to first 2 distinctive words to avoid overly long queries
-    return " ".join(distinctive_words[:2])
 
 
 def build_twitter_search(event: dict, fixture: dict) -> str:
