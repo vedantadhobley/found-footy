@@ -159,12 +159,12 @@ class FootyMongoStore:
         Move fixture from staging to active with EMPTY events array.
         This preserves all fixture metadata but starts with no events.
         
-        Does NOT set _last_activity here - that happens when:
-        1. Match actually starts (NS → active status in sync_fixture_data)
-        2. A goal is confirmed (in mark_event_monitor_complete)
+        Does NOT set _last_activity here - that only happens when:
+        - A goal is confirmed (in mark_event_monitor_complete)
         
-        This ensures fixtures are sorted by actual activity, not by when
-        they happened to be activated or their scheduled kickoff time.
+        This ensures fixtures are sorted by actual events, not by when
+        they happened to be activated or when the match started.
+        A 0-0 match will never have _last_activity set.
         """
         try:
             staging_doc = self.fixtures_staging.find_one({"_id": fixture_id})
@@ -662,8 +662,8 @@ class FootyMongoStore:
         
         Also regenerates display titles for all events.
         
-        IMPORTANT: Detects when match actually starts (NS/TBD → active status)
-        and sets _last_activity = datetime.now() at that moment.
+        Note: _last_activity is only set when an event (goal) is confirmed,
+        not when the match starts. This is handled by mark_event_monitor_complete.
         """
         from src.utils.fixture_status import get_staging_statuses, get_active_statuses
         
@@ -689,11 +689,12 @@ class FootyMongoStore:
             active_statuses = get_active_statuses()    # ["1H", "HT", "2H", etc.]
             
             if old_status in staging_statuses and new_status in active_statuses:
-                # Match just started! Set _last_activity to NOW
-                update_doc["_last_activity"] = datetime.now(timezone.utc)
+                # Match just started - but don't set _last_activity yet
+                # It will only be set when an actual event (goal) happens
                 print(f"⚽ Match {fixture_id} started! ({old_status} → {new_status})")
-            elif "_last_activity" in active_fixture:
-                # Preserve existing _last_activity
+            
+            # Preserve existing _last_activity (only set by mark_event_monitor_complete)
+            if "_last_activity" in active_fixture:
                 update_doc["_last_activity"] = active_fixture["_last_activity"]
             
             # Build lookup of live events by event_id for merging
