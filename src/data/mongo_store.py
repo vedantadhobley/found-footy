@@ -177,8 +177,8 @@ class FootyMongoStore:
             # Don't set _last_activity here - will be set when match actually starts
             # or when first goal is confirmed. This prevents a delayed 0-0 match
             # from jumping above a match with actual goals.
-            # Use epoch time as placeholder for sorting (will be at bottom)
-            staging_doc["_last_activity"] = datetime(1970, 1, 1, tzinfo=timezone.utc)
+            # Use null - frontend sorts fixtures with null _last_activity by kickoff time
+            staging_doc["_last_activity"] = None
             
             self.fixtures_active.replace_one(
                 {"_id": fixture_id},

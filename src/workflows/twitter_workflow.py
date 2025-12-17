@@ -103,7 +103,25 @@ class TwitterWorkflow:
             workflow.logger.info(f"📹 Found {video_count} videos")
             
             # =========================================================================
-            # Step 3: Trigger DownloadWorkflow (will save URLs only for successful downloads)
+            # Step 3: Save discovered videos to MongoDB IMMEDIATELY
+            # This prevents re-discovery if DownloadWorkflow crashes or fails.
+            # URLs are saved BEFORE download, so failed downloads won't be retried.
+            # =========================================================================
+            if videos:
+                await workflow.execute_activity(
+                    twitter_activities.save_discovered_videos,
+                    args=[fixture_id, event_id, videos],
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=RetryPolicy(
+                        maximum_attempts=3,
+                        initial_interval=timedelta(seconds=1),
+                        backoff_coefficient=2.0,
+                    ),
+                )
+                workflow.logger.info(f"💾 Saved {video_count} URLs to _discovered_videos")
+            
+            # =========================================================================
+            # Step 4: Trigger DownloadWorkflow (URLs already saved above)
             # =========================================================================
             player_last = player_name.split()[-1] if player_name else "Unknown"
             team_clean = team_name.replace(" ", "_").replace(".", "_").replace("-", "_")

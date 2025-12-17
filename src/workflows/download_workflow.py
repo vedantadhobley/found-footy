@@ -2,29 +2,27 @@
 Download Workflow - Video Download/Upload Pipeline
 
 Orchestrates granular download/upload with per-video retry:
-1. fetch_event_data - Get discovered_videos and existing S3 video metadata
+1. fetch_event_data - Get existing S3 video metadata for quality comparison
 2. download_single_video x N - Download each video individually (3 retries per video)
 3. deduplicate_videos - Hash dedup with quality comparison against existing S3
 4. replace_s3_video x N - Delete old S3 videos being replaced by higher quality
 5. upload_single_video x N - Upload new/replacement videos to S3
-6. save_processed_urls - Track ALL processed URLs for future dedup
-7. mark_download_complete - Update MongoDB, cleanup temp dir
+6. mark_download_complete - Update MongoDB, cleanup temp dir
 
 Per-video retry (3 attempts):
 - Each video gets 3 download attempts with exponential backoff (2s, 4s, 8s)
 - Videos that fail all 3 attempts are marked as "failed" and skipped
-- Failed URLs are tracked in _discovered_videos so they won't be retried
+- URLs are already saved to _discovered_videos by TwitterWorkflow BEFORE download starts
 
-URL Tracking (prevents re-discovery):
-- Successful uploads: added to _discovered_videos
-- Filtered videos (too short/long/vertical): added to _discovered_videos
-- Skipped videos (S3 already has better quality): added to _discovered_videos  
-- Failed videos (couldn't download after 3 retries): added to _discovered_videos
+URL Tracking (handled by TwitterWorkflow):
+- TwitterWorkflow saves ALL discovered URLs IMMEDIATELY after Twitter search
+- This prevents re-discovery even if DownloadWorkflow crashes or fails
+- Failed downloads won't be retried in future Twitter searches
 
 Cross-retry quality comparison:
 - New videos that match existing S3 by perceptual hash are compared by quality
 - Higher quality new videos REPLACE existing S3 videos (resolution > bitrate > file_size)
-- Lower quality matches are SKIPPED but tracked for dedup
+- Lower quality matches are SKIPPED (URL already tracked)
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -195,21 +193,8 @@ class DownloadWorkflow:
                     workflow.logger.warning(f"⚠️ Failed to bump popularity: {e}")
         
         if total_to_process == 0:
-            # No videos to upload - but save processed URLs for future dedup
-            if all_processed_urls:
-                workflow.logger.info(f"📝 No videos to upload, saving {len(all_processed_urls)} URLs for dedup")
-                await workflow.execute_activity(
-                    download_activities.save_processed_urls,
-                    args=[fixture_id, event_id, all_processed_urls],
-                    start_to_close_timeout=timedelta(seconds=10),
-                    retry_policy=RetryPolicy(
-                        maximum_attempts=3,
-                        initial_interval=timedelta(seconds=1),
-                        backoff_coefficient=2.0,
-                    ),
-                )
-            else:
-                workflow.logger.warning(f"⚠️ No videos to upload (all downloads failed)")
+            # No videos to upload - URLs already saved by TwitterWorkflow
+            workflow.logger.info(f"⚠️ No videos to upload ({len(all_processed_urls)} processed)")
             
             await workflow.execute_activity(
                 download_activities.mark_download_complete,
@@ -323,32 +308,10 @@ class DownloadWorkflow:
         
         workflow.logger.info(f"☁️ Uploaded {len(video_objects)}/{len(all_uploads)} videos to S3")
         
-        # =========================================================================
-        # Step 6: Save ALL processed URLs for dedup tracking
-        # Combine: skipped + filtered + failed + successful uploads
-        # This ensures future Twitter searches don't re-discover these URLs
-        # =========================================================================
-        # Add successful upload URLs to the list we built earlier
-        for video_info in all_uploads:
-            source_url = video_info.get("source_url")
-            if source_url and source_url not in all_processed_urls:
-                all_processed_urls.append(source_url)
-        
-        if all_processed_urls:
-            workflow.logger.info(f"📝 Saving {len(all_processed_urls)} processed URLs for dedup")
-            await workflow.execute_activity(
-                download_activities.save_processed_urls,
-                args=[fixture_id, event_id, all_processed_urls],
-                start_to_close_timeout=timedelta(seconds=10),
-                retry_policy=RetryPolicy(
-                    maximum_attempts=3,
-                    initial_interval=timedelta(seconds=1),
-                    backoff_coefficient=2.0,
-                ),
-            )
+        # URLs already saved by TwitterWorkflow - no need to save again
         
         # =========================================================================
-        # Step 7: Save video objects and cleanup temp directory
+        # Step 6: Save video objects and cleanup temp directory
         # This saves to _s3_videos array and recalculates ranks
         # =========================================================================
         await workflow.execute_activity(

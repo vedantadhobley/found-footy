@@ -818,54 +818,6 @@ async def bump_video_popularity(
     return success
 
 
-@activity.defn
-async def save_processed_urls(
-    fixture_id: int,
-    event_id: str,
-    processed_urls: List[str],
-) -> bool:
-    """
-    Save processed video URLs to MongoDB for deduplication tracking.
-    These are URLs that we downloaded but didn't upload because:
-    - We already have a higher quality version
-    - The video matched an existing S3 video
-    
-    This ensures future Twitter searches don't re-discover these URLs.
-    
-    Args:
-        fixture_id: Fixture ID
-        event_id: Event ID
-        processed_urls: List of tweet URLs that were processed
-    
-    Returns:
-        True if successful
-    """
-    from src.data.mongo_store import FootyMongoStore
-    
-    if not processed_urls:
-        return True
-    
-    store = FootyMongoStore()
-    try:
-        # Add URLs to _discovered_videos so they're skipped in future searches
-        video_url_dicts = [{"video_page_url": url, "tweet_url": url} for url in processed_urls]
-        
-        result = store.fixtures_active.update_one(
-            {"_id": fixture_id, "events._event_id": event_id},
-            {
-                "$push": {
-                    "events.$._discovered_videos": {"$each": video_url_dicts}
-                }
-            }
-        )
-        if result.modified_count > 0:
-            activity.logger.info(f"✅ Saved {len(processed_urls)} processed URLs for dedup tracking")
-        return True
-    except Exception as e:
-        activity.logger.error(f"❌ Failed to save processed URLs: {e}")
-        return False
-
-
 def _calculate_md5(file_path: str) -> str:
     """Calculate MD5 hash of file for deduplication"""
     hash_md5 = hashlib.md5()
