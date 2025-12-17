@@ -600,14 +600,9 @@ Events are stored with both raw API fields and enhancement fields:
   "_first_seen": "2025-01-01T15:45:00Z",
   "_removed": false,
   
-  // ═══════════ SCORE CONTEXT ═══════════
-  "_score_before": {"home": 2, "away": 0},
+  // ═══════════ SCORE CONTEXT (for frontend title generation) ═══════════
   "_score_after": {"home": 3, "away": 0},
   "_scoring_team": "home",
-  
-  // ═══════════ DISPLAY FIELDS ═══════════
-  "_display_title": "<<Liverpool (3)>> - 0 Arsenal",
-  "_display_subtitle": "45+3' Goal - <<Mohamed Salah>> (T. Alexander-Arnold)",
   
   // ═══════════ VIDEO TRACKING ═══════════
   "_discovered_videos": [

@@ -611,20 +611,6 @@ async def upload_single_video(
     # S3 key: {fixture_id}/{event_id}/{filename}
     s3_key = f"{fixture_id}/{event_id}/{filename}"
     
-    # Get display titles from MongoDB event
-    from src.data.mongo_store import FootyMongoStore
-    store = FootyMongoStore()
-    
-    display_title = ""
-    display_subtitle = ""
-    fixture_data = store.get_fixture_from_active(fixture_id)
-    if fixture_data:
-        for evt in fixture_data.get("events", []):
-            if evt.get("_event_id") == event_id:
-                display_title = evt.get("_display_title", "")
-                display_subtitle = evt.get("_display_subtitle", "")
-                break
-    
     # Metadata (stored in object headers) - includes quality info for cross-retry dedup
     metadata = {
         "player_name": player_name,
@@ -633,8 +619,6 @@ async def upload_single_video(
         "fixture_id": str(fixture_id),
         "popularity": str(popularity),  # How many times this video was seen (dedup count)
         "source_url": source_url,  # Original tweet URL for dedup tracking
-        "display_title": display_title,
-        "display_subtitle": display_subtitle,
         "perceptual_hash": perceptual_hash,  # For cross-resolution dedup
         "duration": str(duration),
         # Quality metrics for cross-retry quality comparison

@@ -237,7 +237,7 @@ def calculate_score_context(fixture: dict, event: dict) -> Dict[str, Any]:
         event: The specific goal event to calculate context for
     
     Returns:
-        Dict with _score_before, _score_after, _scoring_team
+        Dict with _score_after, _scoring_team
     """
     # Get all goal events sorted by time
     all_events = fixture.get("events", [])
@@ -286,7 +286,6 @@ def calculate_score_context(fixture: dict, event: dict) -> Dict[str, Any]:
     score_after = {"home": score_home, "away": score_away}
     
     return {
-        "_score_before": score_before,
         "_score_after": score_after,
         "_scoring_team": scoring_team,
     }

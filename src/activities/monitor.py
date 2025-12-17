@@ -218,9 +218,6 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
         twitter_search = build_twitter_search(live_event, live_fixture)
         score_context = calculate_score_context(live_fixture, live_event)
         
-        # Generate display titles for frontend
-        title, subtitle = store._generate_event_display_titles(live_fixture, live_event)
-        
         enhanced = {
             **live_event,
             # Monitor tracking (counter-based) - Monitor is the orchestrator
@@ -234,10 +231,7 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
             "_discovered_videos": [],
             # _s3_videos: List of {url, perceptual_hash, resolution_score, popularity, rank}
             "_s3_videos": [],
-            # Display fields (for frontend)
-            "_display_title": title,
-            "_display_subtitle": subtitle,
-            # Metadata
+            # Score context (for frontend display title generation)
             **score_context,
             "_removed": False,
             "_first_seen": datetime.now(timezone.utc),

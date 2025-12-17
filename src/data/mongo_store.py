@@ -362,9 +362,8 @@ class FootyMongoStore:
         - _monitor_complete: True when monitor_count reaches threshold
         - _twitter_complete: True when videos downloaded
         - _first_seen: Timestamp when first detected
-        - _snapshots: List of hash snapshots over time
-        - _score_before: Score before this event
         - _score_after: Score after this event
+        - _scoring_team: Which team scored ("home" or "away")
         - _twitter_search: Search string for Twitter
         
         """
@@ -582,74 +581,6 @@ class FootyMongoStore:
             raise  # Re-raise - this is critical for pipeline integrity
     
 
-    def _generate_event_display_titles(self, fixture: Dict[str, Any], event: Dict[str, Any]) -> tuple:
-        """
-        Generate display titles for frontend with highlight markers.
-        
-        Title: "<<Liverpool (3)>> - 0 Arsenal" (scoring team highlighted with <<>>)
-        Subtitle: "88' Goal - <<A. Grimaldo>> (Assister)" (scorer highlighted with <<>>)
-        
-        Frontend should parse <<text>> markers and render them as highlighted text.
-        
-        Args:
-            fixture: Fixture data with teams
-            event: Event data with time, player, assist, _score_after
-        
-        Returns:
-            tuple: (title, subtitle)
-        """
-        # Extract teams
-        home_team = fixture.get("teams", {}).get("home", {}).get("name", "Unknown")
-        away_team = fixture.get("teams", {}).get("away", {}).get("name", "Unknown")
-        
-        # Use _score_after (score after this goal) instead of fixture.goals (final score)
-        score_after = event.get("_score_after", {})
-        home_score = score_after.get("home", 0)
-        away_score = score_after.get("away", 0)
-        
-        # Fallback to fixture goals if _score_after not set (shouldn't happen)
-        if not score_after:
-            home_score = fixture.get("goals", {}).get("home", 0)
-            away_score = fixture.get("goals", {}).get("away", 0)
-        
-        # Determine which team scored (for highlighting)
-        scoring_team = event.get("_scoring_team", "")
-        
-        # Build title with scoring team highlighted using <<>> markers
-        # Format: "<<Home (1)>> - 0 Away" or "Home 0 - <<(1) Away>>"
-        if scoring_team == "home":
-            title = f"<<{home_team} ({home_score})>> - {away_score} {away_team}"
-        else:
-            title = f"{home_team} {home_score} - <<({away_score}) {away_team}>>"
-        
-        # Build subtitle with time and players
-        minute = event.get("time", {}).get("elapsed", 0)
-        extra = event.get("time", {}).get("extra")
-        scorer = event.get("player", {}).get("name", "Unknown")
-        detail = event.get("detail", "")
-        assister = event.get("assist", {}).get("name", "")
-        
-        # Format time: "90+2" or just "45"
-        time_str = f"{minute}+{extra}" if extra else str(minute)
-        
-        # Format: "88' Goal - <<Scorer>> (Assister)" with scorer highlighted
-        # Possible detail values: "Normal Goal", "Own Goal", "Penalty", "Missed Penalty"
-        if detail == "Own Goal":
-            goal_type = "Own Goal"
-        elif detail == "Penalty":
-            goal_type = "Penalty Goal"
-        elif detail == "Missed Penalty":
-            goal_type = "Missed Penalty"
-        else:
-            goal_type = "Goal"
-        
-        if assister:
-            subtitle = f"{time_str}' {goal_type} - <<{scorer}>> ({assister})"
-        else:
-            subtitle = f"{time_str}' {goal_type} - <<{scorer}>>"
-        
-        return title, subtitle
-    
     def sync_fixture_data(self, fixture_id: int) -> bool:
         """
         Sync fixture top-level data from fixtures_live to fixtures_active.
@@ -716,11 +647,6 @@ class FootyMongoStore:
                     for key, value in live_event.items():
                         if not key.startswith("_"):
                             event[key] = value
-                
-                # Regenerate display titles based on updated data
-                title, subtitle = self._generate_event_display_titles(update_doc, event)
-                event["_display_title"] = title
-                event["_display_subtitle"] = subtitle
             
             update_doc["events"] = enhanced_events
             
