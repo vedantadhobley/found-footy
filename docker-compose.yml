@@ -75,6 +75,7 @@ services:
       MONGO_INITDB_DATABASE: found_footy
     volumes:
       - found-footy-prod-mongo-data:/data/db
+      - found-footy-prod-mongo-config:/data/configdb
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
       interval: 10s
@@ -193,6 +194,9 @@ volumes:
     driver: local
   found-footy-prod-mongo-data:
     name: found-footy-prod-mongo-data
+    driver: local
+  found-footy-prod-mongo-config:
+    name: found-footy-prod-mongo-config
     driver: local
   found-footy-prod-minio-data:
     name: found-footy-prod-minio-data
