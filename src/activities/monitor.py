@@ -1,7 +1,23 @@
-"""Monitor activities"""
+"""
+Monitor Activities
+==================
+
+Temporal activities for the MonitorWorkflow.
+
+This module handles:
+- Fixture activation (staging → active)
+- Polling active fixtures from API
+- Event debouncing (3-poll confirmation)
+- Twitter workflow triggering
+- Fixture completion
+
+See src/data/models.py for data model documentation.
+"""
 from temporalio import activity
 from typing import Dict, List, Any
 from datetime import datetime, timezone
+
+from src.data.models import EventFields, create_new_enhanced_event
 
 
 @activity.defn
@@ -53,6 +69,160 @@ async def activate_fixtures() -> Dict[str, int]:
             continue
     
     activity.logger.info(f"🎯 Activated {activated_count} fixtures")
+    
+    return {"activated_count": activated_count}
+
+
+@activity.defn
+async def fetch_staging_fixtures() -> List[Dict[str, Any]]:
+    """
+    Batch fetch all staging fixtures from API-Football.
+    Returns raw API data for fixtures still in staging.
+    
+    This allows us to update staging fixtures with real-time data
+    (status changes, time updates, cancellations, etc.)
+    """
+    from src.api.api_client import fixtures_batch
+    from src.data.mongo_store import FootyMongoStore
+    
+    store = FootyMongoStore()
+    
+    # Get all staging fixture IDs
+    fixture_ids = store.get_staging_fixture_ids()
+    
+    if not fixture_ids:
+        activity.logger.info("📋 No staging fixtures to fetch")
+        return []
+    
+    activity.logger.info(f"🌐 Batch fetching data for {len(fixture_ids)} staging fixtures")
+    
+    try:
+        fresh_data = fixtures_batch(fixture_ids)
+        activity.logger.info(f"✅ Retrieved fresh data for {len(fresh_data)} staging fixtures")
+        return fresh_data
+    
+    except Exception as e:
+        activity.logger.error(f"❌ Failed to batch fetch staging fixtures: {e}")
+        raise
+
+
+@activity.defn
+async def process_staging_fixtures(staging_fixtures: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Process staging fixtures:
+    1. Update fixture data in staging (times, status, metadata)
+    2. Detect status changes from NS/TBD → any other status
+    3. Return list of fixtures ready to activate (don't move yet!)
+    
+    Activation happens at the END of the monitor cycle to avoid double-fetching.
+    
+    Returns:
+        - updated_count: Number of fixtures updated in staging
+        - fixtures_to_activate: List of {fixture_id, fixture_data} to activate later
+    """
+    from src.data.mongo_store import FootyMongoStore
+    from src.utils.fixture_status import get_staging_statuses
+    
+    store = FootyMongoStore()
+    staging_statuses = get_staging_statuses()  # ["NS", "TBD"]
+    
+    updated_count = 0
+    fixtures_to_activate = []
+    
+    for fixture_data in staging_fixtures:
+        fixture_id = fixture_data.get("fixture", {}).get("id")
+        new_status = fixture_data.get("fixture", {}).get("status", {}).get("short", "")
+        
+        if not fixture_id:
+            continue
+        
+        # Get current status from staging
+        current_fixture = store.fixtures_staging.find_one({"_id": fixture_id})
+        if not current_fixture:
+            # Fixture might have been activated by another process
+            continue
+            
+        current_status = current_fixture.get("fixture", {}).get("status", {}).get("short", "")
+        home_team = fixture_data.get("teams", {}).get("home", {}).get("name", "Unknown")
+        away_team = fixture_data.get("teams", {}).get("away", {}).get("name", "Unknown")
+        
+        # Always update the staging fixture with fresh data first
+        store.update_staging_fixture(fixture_id, fixture_data)
+        updated_count += 1
+        
+        # Check if fixture status changed OUT of staging (match started, cancelled, etc.)
+        if current_status in staging_statuses and new_status not in staging_statuses:
+            # Status changed! Queue for activation at end of cycle
+            fixtures_to_activate.append({
+                "fixture_id": fixture_id,
+                "home_team": home_team,
+                "away_team": away_team,
+                "old_status": current_status,
+                "new_status": new_status,
+            })
+            activity.logger.info(
+                f"📌 QUEUED FOR ACTIVATION: {fixture_id} {home_team} vs {away_team} "
+                f"({current_status} → {new_status})"
+            )
+        elif current_status != new_status:
+            # Status changed but still in staging (e.g., TBD → NS)
+            activity.logger.info(
+                f"📝 STAGING UPDATE: {fixture_id} {home_team} vs {away_team} "
+                f"({current_status} → {new_status})"
+            )
+    
+    activity.logger.info(
+        f"📊 Staging processed: {updated_count} updated, {len(fixtures_to_activate)} queued for activation"
+    )
+    
+    return {
+        "updated_count": updated_count,
+        "fixtures_to_activate": fixtures_to_activate,
+    }
+
+
+@activity.defn
+async def activate_pending_fixtures(fixtures_to_activate: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Activate fixtures that were detected as started/changed during staging processing.
+    Called at the END of the monitor cycle after all other processing is done.
+    
+    This avoids double-fetching fixtures that just activated.
+    
+    Args:
+        fixtures_to_activate: List of {fixture_id, home_team, away_team, old_status, new_status}
+    
+    Returns:
+        - activated_count: Number of fixtures activated
+    """
+    from src.data.mongo_store import FootyMongoStore
+    
+    store = FootyMongoStore()
+    activated_count = 0
+    
+    for fixture_info in fixtures_to_activate:
+        fixture_id = fixture_info["fixture_id"]
+        home_team = fixture_info["home_team"]
+        away_team = fixture_info["away_team"]
+        old_status = fixture_info["old_status"]
+        new_status = fixture_info["new_status"]
+        
+        # Get the updated staging document (already has fresh API data)
+        staging_doc = store.fixtures_staging.find_one({"_id": fixture_id})
+        if not staging_doc:
+            activity.logger.warning(f"⚠️ Fixture {fixture_id} not found in staging for activation")
+            continue
+        
+        # Move to active with _last_activity set
+        if store.activate_fixture_with_data(fixture_id, staging_doc):
+            activity.logger.info(
+                f"⚽ ACTIVATED: {fixture_id} {home_team} vs {away_team} "
+                f"({old_status} → {new_status})"
+            )
+            activated_count += 1
+    
+    if activated_count > 0:
+        activity.logger.info(f"🎯 Activated {activated_count} fixtures")
     
     return {"activated_count": activated_count}
 
@@ -128,38 +298,76 @@ async def store_and_compare(fixture_id: int, fixture_data: Dict) -> Dict[str, An
 @activity.defn
 async def complete_fixture_if_ready(fixture_id: int) -> bool:
     """
-    Check if fixture is ready to complete:
-    - Status must be FT/AET/PEN
-    - All events must have _monitor_complete=True
-    - All events must have _twitter_complete=True
+    Check if fixture is ready to complete and move it if so.
     
-    If ready, moves fixture to fixtures_completed.
+    Completion requires:
+    1. _completion_complete = True (counter >= 3 OR winner data exists)
+    2. All events have _monitor_complete = True
+    3. All events have _twitter_complete = True
+    
+    First call for a completed fixture starts the counter.
+    Subsequent calls increment until ready.
     """
     from src.data.mongo_store import FootyMongoStore
     
     store = FootyMongoStore()
     
     try:
-        # Check if all events are complete and move if ready
+        # First, increment/initialize the completion counter
+        completion_status = store.increment_completion_count(fixture_id)
+        count = completion_status["completion_count"]
+        winner_exists = completion_status["winner_exists"]
+        completion_complete = completion_status["completion_complete"]
+        
+        # Log progress
+        if count == 1:
+            activity.logger.info(
+                f"📊 COMPLETION STARTED: fixture {fixture_id} "
+                f"(winner={'yes' if winner_exists else 'pending'})"
+            )
+        else:
+            activity.logger.info(
+                f"📊 COMPLETION CHECK: fixture {fixture_id} "
+                f"(count={count}/3, winner={'yes' if winner_exists else 'pending'})"
+            )
+        
+        # Check if all criteria met
+        if not completion_complete:
+            activity.logger.debug(
+                f"Fixture {fixture_id} waiting for completion counter "
+                f"(count={count}/3, winner={winner_exists})"
+            )
+            return False
+        
+        # Check events status
+        fixture = store.get_fixture_from_active(fixture_id)
+        if fixture:
+            events = fixture.get("events", [])
+            enhanced_events = [e for e in events if e.get(EventFields.EVENT_ID)]
+            valid_events = [
+                e for e in enhanced_events 
+                if not e.get(EventFields.REMOVED, False) 
+                and "None" not in e.get(EventFields.EVENT_ID, "")
+            ]
+            
+            if valid_events:
+                monitored = sum(1 for e in valid_events if e.get(EventFields.MONITOR_COMPLETE))
+                twitter_done = sum(1 for e in valid_events if e.get(EventFields.TWITTER_COMPLETE))
+                
+                if monitored < len(valid_events) or twitter_done < len(valid_events):
+                    activity.logger.info(
+                        f"⏳ Fixture {fixture_id} waiting for events: "
+                        f"monitored={monitored}/{len(valid_events)}, "
+                        f"twitter_complete={twitter_done}/{len(valid_events)}"
+                    )
+                    return False
+        
+        # All ready - complete the fixture
         if store.complete_fixture(fixture_id):
             activity.logger.info(f"🏁 Moved fixture {fixture_id} to completed")
             return True
-        else:
-            # Log why it's not ready (for debugging)
-            fixture = store.get_fixture_from_active(fixture_id)
-            if fixture:
-                events = fixture.get("events", [])
-                enhanced_events = [e for e in events if e.get("_event_id")]
-                
-                if enhanced_events:
-                    debounced = sum(1 for e in enhanced_events if e.get("_monitor_complete"))
-                    twitter_done = sum(1 for e in enhanced_events if e.get("_twitter_complete"))
-                    activity.logger.debug(
-                        f"Fixture {fixture_id} waiting: "
-                        f"{debounced}/{len(enhanced_events)} debounced, "
-                        f"{twitter_done}/{len(enhanced_events)} Twitter complete"
-                    )
-            return False
+        
+        return False
     
     except Exception as e:
         activity.logger.error(f"❌ Error completing fixture {fixture_id}: {e}")
@@ -169,19 +377,16 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
 @activity.defn
 async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
     """
-    Process fixture events using pure set comparison - NO HASH NEEDED!
-    
-    With player_id in event_id, VAR scenarios are handled automatically:
-    - Player changes → different event_id → old marked removed, new added
-    - Goal cancelled → event_id disappears → marked removed
+    Process fixture events using pure set comparison.
     
     Algorithm:
     1. Get event_ids from live and active (sets)
-    2. NEW = live_ids - active_ids → add with stable_count=1
-    3. REMOVED = active_ids - live_ids → mark as removed
-    4. MATCHING = live_ids & active_ids → increment stable_count
-    5. For stable_count >= 3 → mark debounce_complete, trigger Twitter
-    6. Sync fixture metadata
+    2. NEW = live_ids - active_ids → add with monitor_count=1
+    3. REMOVED = active_ids - live_ids → delete entirely (VAR)
+    4. MATCHING = live_ids & active_ids → increment monitor_count
+    5. At monitor_count >= 3 → mark complete, trigger Twitter
+    
+    See src/data/models.py for event field documentation.
     """
     from src.data.mongo_store import FootyMongoStore
     from src.utils.event_enhancement import build_twitter_search, calculate_score_context
@@ -203,41 +408,30 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
     active_events = active_fixture.get("events", [])
     
     # Build sets for comparison
-    # Note: VAR'd events are DELETED (not marked _removed), so no special handling needed
-    live_ids = {e["_event_id"] for e in live_events if e.get("_event_id")}
-    active_map = {e["_event_id"]: e for e in active_events if e.get("_event_id")}
+    live_ids = {e[EventFields.EVENT_ID] for e in live_events if e.get(EventFields.EVENT_ID)}
+    active_map = {e[EventFields.EVENT_ID]: e for e in active_events if e.get(EventFields.EVENT_ID)}
     active_ids = set(active_map.keys())
     
     # NEW events
     new_ids = live_ids - active_ids
     new_count = 0
     for event_id in new_ids:
-        live_event = next(e for e in live_events if e.get("_event_id") == event_id)
+        live_event = next(e for e in live_events if e.get(EventFields.EVENT_ID) == event_id)
         
         # Build enhancement fields
         twitter_search = build_twitter_search(live_event, live_fixture)
         score_context = calculate_score_context(live_fixture, live_event)
         
-        enhanced = {
-            **live_event,
-            # Monitor tracking (counter-based) - Monitor is the orchestrator
-            "_monitor_count": 1,
-            "_monitor_complete": False,  # Set to True when _monitor_count >= 3
-            # Twitter tracking - Monitor increments count, Twitter workflow sets complete
-            "_twitter_count": 0,  # Monitor increments when triggering Twitter
-            "_twitter_complete": False,  # Twitter workflow sets True when done (incl downloads)
-            "_twitter_search": twitter_search,
-            # Video storage (accumulated across all attempts)
-            "_discovered_videos": [],
-            # _s3_videos: List of {url, perceptual_hash, resolution_score, popularity, rank}
-            "_s3_videos": [],
-            # Score context (for frontend display title generation)
-            **score_context,
-            "_removed": False,
-            "_first_seen": datetime.now(timezone.utc),
-        }
+        # Create enhanced event using models helper
+        enhanced = create_new_enhanced_event(
+            live_event=live_event,
+            event_id=event_id,
+            twitter_search=twitter_search,
+            score_after=score_context.get(EventFields.SCORE_AFTER, ""),
+            scoring_team=score_context.get(EventFields.SCORING_TEAM, ""),
+        )
         
-        first_seen = enhanced["_first_seen"]
+        first_seen = enhanced[EventFields.FIRST_SEEN]
         if store.add_event_to_active(fixture_id, enhanced, first_seen):
             activity.logger.info(f"✨ NEW EVENT: {event_id}")
             new_count += 1
@@ -250,7 +444,7 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
             activity.logger.warning(f"🗑️ VAR REMOVED: {event_id} (deleted from DB + S3)")
             removed_count += 1
     
-    # MATCHING events - increment stable_count
+    # MATCHING events - increment monitor_count
     matching_ids = live_ids & active_ids
     updated_count = 0
     twitter_triggered = []
@@ -262,10 +456,10 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
         # =====================================================================
         # CASE 1: _monitor_complete = TRUE -> Check Twitter status
         # =====================================================================
-        if active_event.get("_monitor_complete"):
+        if active_event.get(EventFields.MONITOR_COMPLETE):
             # Already through debounce - check if we need more Twitter attempts
-            if not active_event.get("_twitter_complete"):
-                twitter_count = active_event.get("_twitter_count", 0)
+            if not active_event.get(EventFields.TWITTER_COMPLETE):
+                twitter_count = active_event.get(EventFields.TWITTER_COUNT, 0)
                 
                 # Check if we need more Twitter attempts (max 3)
                 if twitter_count < 3:
@@ -273,7 +467,7 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
                     new_twitter_count = twitter_count + 1
                     store.update_event_twitter_count(fixture_id, event_id, new_twitter_count)
                     
-                    live_event = next(e for e in live_events if e.get("_event_id") == event_id)
+                    live_event = next(e for e in live_events if e.get(EventFields.EVENT_ID) == event_id)
                     twitter_retry_needed.append({
                         "event_id": event_id,
                         "player_name": live_event.get("player", {}).get("name", "Unknown"),
@@ -292,7 +486,7 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
         # CASE 2: _monitor_complete = FALSE -> Check/increment monitor count
         # =====================================================================
         # Increment monitor count
-        new_count_val = active_event.get("_monitor_count", 0) + 1
+        new_count_val = active_event.get(EventFields.MONITOR_COUNT, 0) + 1
         
         # Note: No hash/snapshot needed with player_id approach!
         if store.update_event_stable_count(fixture_id, event_id, new_count_val, None):
@@ -301,10 +495,10 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
             if new_count_val >= 3:
                 # Mark complete and prepare for Twitter
                 # Pass _first_seen to update _last_activity (when goal was first detected)
-                first_seen = active_event.get("_first_seen")
+                first_seen = active_event.get(EventFields.FIRST_SEEN)
                 store.mark_event_monitor_complete(fixture_id, event_id, first_seen)
                 
-                live_event = next(e for e in live_events if e.get("_event_id") == event_id)
+                live_event = next(e for e in live_events if e.get(EventFields.EVENT_ID) == event_id)
                 twitter_triggered.append({
                     "event_id": event_id,
                     "player_name": live_event.get("player", {}).get("name", "Unknown"),

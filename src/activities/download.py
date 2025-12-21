@@ -9,6 +9,8 @@ import asyncio
 import random
 import time
 
+from src.data.models import EventFields
+
 # Global lock and timestamp to rate-limit downloads across all workers
 _download_lock = asyncio.Lock()
 _last_download_time = 0
@@ -42,7 +44,7 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
     # Find event
     event = None
     for evt in fixture.get("events", []):
-        if evt.get("_event_id") == event_id:
+        if evt.get(EventFields.EVENT_ID) == event_id:
             event = evt
             break
     
@@ -50,7 +52,7 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
         activity.logger.error(f"❌ Event {event_id} not found")
         return {"status": "error", "error": "event_not_found"}
     
-    discovered_videos = event.get("_discovered_videos", [])
+    discovered_videos = event.get(EventFields.DISCOVERED_VIDEOS, [])
     if not discovered_videos:
         activity.logger.warning(f"⚠️ No videos to download for {event_id}")
         return {"status": "no_videos", "discovered_videos": []}
@@ -60,7 +62,7 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
     assister_name = event.get("assist", {}).get("player", {}).get("name", "")
     
     # Get existing videos from MongoDB (new _s3_videos schema)
-    existing_s3_videos_mongo = event.get("_s3_videos", [])
+    existing_s3_videos_mongo = event.get(EventFields.S3_VIDEOS, [])
     
     # Build full metadata for existing S3 videos (for quality comparison)
     # Enrich MongoDB data with S3 metadata for quality comparison

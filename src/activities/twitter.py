@@ -16,6 +16,8 @@ from typing import Dict, List, Any, Optional
 import os
 import requests
 
+from src.data.models import EventFields
+
 
 # =============================================================================
 # Activity 1: Get Twitter Search Data
@@ -53,7 +55,7 @@ async def get_twitter_search_data(fixture_id: int, event_id: str) -> Dict[str, A
     # Find the specific event
     event = None
     for evt in fixture.get("events", []):
-        if evt.get("_event_id") == event_id:
+        if evt.get(EventFields.EVENT_ID) == event_id:
             event = evt
             break
     
@@ -63,14 +65,14 @@ async def get_twitter_search_data(fixture_id: int, event_id: str) -> Dict[str, A
         raise ValueError(msg)
     
     # Get prebuilt search string (set by process_fixture_events)
-    twitter_search = event.get("_twitter_search", "")
+    twitter_search = event.get(EventFields.TWITTER_SEARCH, "")
     if not twitter_search:
         msg = f"No _twitter_search field on event {event_id}"
         activity.logger.error(f"❌ {msg}")
         raise ValueError(msg)
     
     # Get existing discovered videos (for retry deduplication)
-    existing_videos = event.get("_discovered_videos", [])
+    existing_videos = event.get(EventFields.DISCOVERED_VIDEOS, [])
     # Twitter service uses video_page_url field
     existing_urls = [v.get("video_page_url") or v.get("url") for v in existing_videos if v.get("video_page_url") or v.get("url")]
     

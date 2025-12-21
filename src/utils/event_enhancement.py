@@ -8,6 +8,7 @@ import unicodedata
 from typing import Dict, Any
 
 from src.utils.team_data import get_team_nickname
+from src.data.models import EventFields
 
 
 def normalize_accents(text: str) -> str:
@@ -286,6 +287,6 @@ def calculate_score_context(fixture: dict, event: dict) -> Dict[str, Any]:
     score_after = {"home": score_home, "away": score_away}
     
     return {
-        "_score_after": score_after,
-        "_scoring_team": scoring_team,
+        EventFields.SCORE_AFTER: score_after,
+        EventFields.SCORING_TEAM: scoring_team,
     }

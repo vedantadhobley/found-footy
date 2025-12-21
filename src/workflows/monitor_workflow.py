@@ -9,6 +9,13 @@ ORCHESTRATION MODEL:
 - Monitor tracks: _monitor_count, _monitor_complete, _twitter_count
 - Twitter workflow sets: _twitter_complete (when done)
 - Fixture completes when ALL events have _monitor_complete=true AND _twitter_complete=true
+
+FIXTURE LIFECYCLE:
+- Staging fixtures: Polled for updates (times, status, metadata)
+  - When status changes NS/TBD → anything else: Queued for activation
+- Active fixtures: Full event monitoring, debouncing, Twitter workflows
+  - When status is completed and all events complete: Moved to completed
+- End of cycle: Complete ready fixtures, then activate queued fixtures
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -19,6 +26,7 @@ from typing import List
 with workflow.unsafe.imports_passed_through():
     from src.activities import monitor as monitor_activities
     from src.workflows.twitter_workflow import TwitterWorkflow
+    from src.utils.fixture_status import get_completed_statuses
 
 
 @workflow.defn
@@ -29,16 +37,18 @@ class MonitorWorkflow:
     async def run(self) -> dict:
         """
         Workflow:
-        1. Activate ready fixtures (staging → active with empty events)
+        1. Fetch and process staging fixtures (update data, detect status changes)
         2. Batch fetch all active fixtures from API
-        3. For each fixture:
+        3. For each active fixture:
            - Filter to trackable events (Goals only)
            - Generate event IDs: {fixture}_{team}_{player}_{type}_{sequence}
            - Store in fixtures_live
            - Process events (pure set comparison)
            - Trigger TwitterWorkflow for stable events
            - Trigger retry TwitterWorkflow for events needing more videos
-        4. Complete finished fixtures (FT/AET/PEN → completed)
+        4. Complete finished fixtures (active → completed)
+        5. Activate queued fixtures (staging → active)
+        6. Notify frontend
         
         VAR handling: Events removed from API are DELETED from MongoDB + S3.
         This frees the sequence ID slot so if the same player scores again,
@@ -47,12 +57,32 @@ class MonitorWorkflow:
         
         workflow.logger.info("👁️ Starting monitor cycle")
         
-        # Activate fixtures whose start time has been reached
-        await workflow.execute_activity(
-            monitor_activities.activate_fixtures,
-            start_to_close_timeout=timedelta(seconds=30),
-            retry_policy=RetryPolicy(maximum_attempts=2),
+        # Get completed statuses for checking if fixtures are finished
+        completed_statuses = get_completed_statuses()
+        
+        # =================================================================
+        # STAGING: Fetch and process staging fixtures (updates only, no activation yet)
+        # =================================================================
+        staging_fixtures = await workflow.execute_activity(
+            monitor_activities.fetch_staging_fixtures,
+            start_to_close_timeout=timedelta(seconds=60),
+            retry_policy=RetryPolicy(maximum_attempts=3),
         )
+        
+        staging_result = {"updated_count": 0, "fixtures_to_activate": []}
+        if staging_fixtures:
+            staging_result = await workflow.execute_activity(
+                monitor_activities.process_staging_fixtures,
+                staging_fixtures,
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+        
+        fixtures_to_activate = staging_result.get("fixtures_to_activate", [])
+        
+        # =================================================================
+        # ACTIVE: Fetch and process active fixtures (event monitoring)
+        # =================================================================
         
         # Fetch all active fixtures from API
         fixtures = await workflow.execute_activity(
@@ -64,11 +94,12 @@ class MonitorWorkflow:
         # Process each fixture
         twitter_first_searches = []
         twitter_additional_searches = []
+        completed_count = 0
         
         for fixture_data in fixtures:
             fixture_id = fixture_data.get("fixture", {}).get("id")
             status = fixture_data.get("fixture", {}).get("status", {}).get("short")
-            fixture_finished = status in ["FT", "AET", "PEN"]
+            fixture_finished = status in completed_statuses
             
             # Store in live
             await workflow.execute_activity(
@@ -154,7 +185,7 @@ class MonitorWorkflow:
             
             # Check if fixture is finished and should be completed
             if fixture_finished:
-                await workflow.execute_activity(
+                was_completed = await workflow.execute_activity(
                     monitor_activities.complete_fixture_if_ready,
                     fixture_id,
                     start_to_close_timeout=timedelta(seconds=10),
@@ -164,6 +195,21 @@ class MonitorWorkflow:
                         backoff_coefficient=2.0,
                     ),
                 )
+                if was_completed:
+                    completed_count += 1
+        
+        # =================================================================
+        # END OF CYCLE: Activate queued fixtures (staging → active)
+        # =================================================================
+        activated_count = 0
+        if fixtures_to_activate:
+            activation_result = await workflow.execute_activity(
+                monitor_activities.activate_pending_fixtures,
+                fixtures_to_activate,
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+            activated_count = activation_result.get("activated_count", 0)
         
         # Notify frontend to refresh (SSE broadcast to connected clients)
         await workflow.execute_activity(
@@ -173,14 +219,18 @@ class MonitorWorkflow:
         )
         
         workflow.logger.info(
-            f"✅ Monitor complete: {len(fixtures)} fixtures, "
+            f"✅ Monitor complete: "
+            f"staging={staging_result.get('updated_count', 0)} updated/{activated_count} activated, "
+            f"active={len(fixtures)} processed/{completed_count} completed, "
             f"{len(twitter_first_searches)} new searches, "
             f"{len(twitter_additional_searches)} additional searches"
         )
         
         return {
-            "fixtures_processed": len(fixtures),
+            "staging_updated": staging_result.get("updated_count", 0),
+            "staging_activated": activated_count,
+            "active_fixtures_processed": len(fixtures),
+            "active_fixtures_completed": completed_count,
             "twitter_first_searches": len(twitter_first_searches),
             "twitter_additional_searches": len(twitter_additional_searches),
-            "active_fixture_count": len(fixtures),
         }

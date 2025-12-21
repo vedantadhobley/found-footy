@@ -1,8 +1,25 @@
+"""
+MongoDB Storage Layer
+=====================
+
+This module provides the data access layer for Found Footy's 4-collection architecture.
+All MongoDB operations are centralized here for consistency and maintainability.
+
+See src/data/models.py for complete data model documentation.
+"""
+
 import os
 from datetime import datetime, timezone
 from typing import Dict, List, Any
 
 from pymongo import ASCENDING, MongoClient
+
+from src.data.models import (
+    FixtureFields,
+    EventFields,
+    FixtureStatus,
+    create_activation_fields,
+)
 
 
 class FootyMongoStore:
@@ -154,17 +171,74 @@ class FootyMongoStore:
             print(f"❌ Error getting staging fixtures: {e}")
             return []
 
+    def get_staging_fixture_ids(self) -> List[int]:
+        """Get all staging fixture IDs"""
+        try:
+            fixtures = list(self.fixtures_staging.find({}, {"_id": 1}))
+            return [f["_id"] for f in fixtures]
+        except Exception as e:
+            print(f"❌ Error getting staging fixture IDs: {e}")
+            return []
+
+    def update_staging_fixture(self, fixture_id: int, api_data: dict) -> bool:
+        """
+        Update fixture in staging with fresh API data.
+        Preserves _id, updates everything else (status, times, teams, etc.)
+        """
+        try:
+            doc = dict(api_data)
+            doc["_id"] = fixture_id
+            
+            result = self.fixtures_staging.replace_one(
+                {"_id": fixture_id},
+                doc,
+                upsert=False  # Don't create if doesn't exist
+            )
+            return result.modified_count > 0 or result.matched_count > 0
+        except Exception as e:
+            print(f"❌ Error updating staging fixture {fixture_id}: {e}")
+            return False
+
+    def activate_fixture_with_data(self, fixture_id: int, api_data: dict) -> bool:
+        """
+        Move fixture from staging to active using fresh API data.
+        
+        Called when we detect a status change from NS/TBD to any other status.
+        Uses create_activation_fields() from models.py to set tracking fields.
+        
+        See src/data/models.py for complete field documentation.
+        """
+        try:
+            # Remove from staging first
+            staging_result = self.fixtures_staging.delete_one({"_id": fixture_id})
+            if staging_result.deleted_count == 0:
+                print(f"⚠️ Fixture {fixture_id} not found in staging")
+                # Continue anyway - might be a race condition
+            
+            # Build active document from fresh API data
+            doc = dict(api_data)
+            doc["_id"] = fixture_id
+            doc["events"] = []  # Start with empty events array
+            
+            # Add fixture-level tracking fields from models.py
+            doc.update(create_activation_fields())
+            
+            self.fixtures_active.replace_one(
+                {"_id": fixture_id},
+                doc,
+                upsert=True
+            )
+            return True
+        except Exception as e:
+            print(f"❌ Error activating fixture with data {fixture_id}: {e}")
+            return False
+
     def activate_fixture(self, fixture_id: int) -> bool:
         """
+        DEPRECATED: Use activate_fixture_with_data() instead.
+        
         Move fixture from staging to active with EMPTY events array.
-        This preserves all fixture metadata but starts with no events.
-        
-        Does NOT set _last_activity here - that only happens when:
-        - A goal is confirmed (in mark_event_monitor_complete)
-        
-        This ensures fixtures are sorted by actual events, not by when
-        they happened to be activated or when the match started.
-        A 0-0 match will never have _last_activity set.
+        This is the old time-based activation method, kept for backwards compatibility.
         """
         try:
             staging_doc = self.fixtures_staging.find_one({"_id": fixture_id})
@@ -174,11 +248,8 @@ class FootyMongoStore:
             # Initialize with empty events array
             staging_doc["events"] = []
             
-            # Don't set _last_activity here - will be set when match actually starts
-            # or when first goal is confirmed. This prevents a delayed 0-0 match
-            # from jumping above a match with actual goals.
-            # Use null - frontend sorts fixtures with null _last_activity by kickoff time
-            staging_doc["_last_activity"] = None
+            # Add fixture-level tracking fields from models.py
+            staging_doc.update(create_activation_fields())
             
             self.fixtures_active.replace_one(
                 {"_id": fixture_id},
@@ -228,7 +299,7 @@ class FootyMongoStore:
                     
                     # Generate event ID: {fixture_id}_{team_id}_{player_id}_{event_type}_{sequence}
                     # Sequence-based to handle minute drift; removed events handled separately in debounce
-                    event["_event_id"] = f"{fixture_id}_{team_id}_{player_id}_{event_type}_{sequence}"
+                    event[EventFields.EVENT_ID] = f"{fixture_id}_{team_id}_{player_id}_{event_type}_{sequence}"
                     filtered_events.append(event)
             
             doc["events"] = filtered_events
@@ -312,17 +383,17 @@ class FootyMongoStore:
             active_events = active.get("events", []) if active else []
             
             # Build sets of event IDs (already generated in store_live_fixture)
-            live_event_ids = {e.get("_event_id") for e in live_events if e.get("_event_id")}
-            active_event_ids = {e.get("_event_id") for e in active_events if e.get("_event_id")}
+            live_event_ids = {e.get(EventFields.EVENT_ID) for e in live_events if e.get(EventFields.EVENT_ID)}
+            active_event_ids = {e.get(EventFields.EVENT_ID) for e in active_events if e.get(EventFields.EVENT_ID)}
             
             # CASE 1: NEW - Events in live but not in active
             new_event_ids = live_event_ids - active_event_ids
             
             # CASE 2: INCOMPLETE - Events in both but not monitor complete
-            active_map = {e.get("_event_id"): e for e in active_events if e.get("_event_id")}
+            active_map = {e.get(EventFields.EVENT_ID): e for e in active_events if e.get(EventFields.EVENT_ID)}
             incomplete_count = 0
             for event_id in live_event_ids:
-                if event_id in active_map and not active_map[event_id].get("_monitor_complete", False):
+                if event_id in active_map and not active_map[event_id].get(EventFields.MONITOR_COMPLETE, False):
                     incomplete_count += 1
             
             # CASE 3: REMOVED - Events in active but not in live anymore
@@ -373,7 +444,7 @@ class FootyMongoStore:
                 {"_id": fixture_id},
                 {
                     "$push": {"events": event_with_enhancements},
-                    "$max": {"_last_activity": event_first_seen}
+                    "$max": {FixtureFields.LAST_ACTIVITY: event_first_seen}
                 }
             )
             return result.modified_count > 0
@@ -391,8 +462,8 @@ class FootyMongoStore:
         """
         try:
             result = self.fixtures_active.update_one(
-                {"_id": fixture_id, "events._event_id": event_id},
-                {"$set": {"events.$._monitor_count": stable_count}}
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {"$set": {f"events.$.{EventFields.MONITOR_COUNT}": stable_count}}
             )
             return result.modified_count > 0
         except Exception as e:
@@ -414,17 +485,17 @@ class FootyMongoStore:
         try:
             update_ops = {
                 "$set": {
-                    "events.$._monitor_complete": True,
-                    "events.$._twitter_count": 1
+                    f"events.$.{EventFields.MONITOR_COMPLETE}": True,
+                    f"events.$.{EventFields.TWITTER_COUNT}": 1
                 }
             }
             
             # Update _last_activity to when the goal was first detected
             if event_first_seen:
-                update_ops["$max"] = {"_last_activity": event_first_seen}
+                update_ops["$max"] = {FixtureFields.LAST_ACTIVITY: event_first_seen}
             
             result = self.fixtures_active.update_one(
-                {"_id": fixture_id, "events._event_id": event_id},
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
                 update_ops
             )
             return result.modified_count > 0
@@ -447,9 +518,9 @@ class FootyMongoStore:
         """
         try:
             result = self.fixtures_active.update_one(
-                {"_id": fixture_id, "events._event_id": event_id},
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
                 {"$set": {
-                    "events.$._twitter_count": new_count
+                    f"events.$.{EventFields.TWITTER_COUNT}": new_count
                 }}
             )
             return result.modified_count > 0
@@ -482,7 +553,7 @@ class FootyMongoStore:
             if fixture and fixture.get("events"):
                 event = fixture["events"][0]
                 # Support both old (_s3_urls) and new (_s3_videos) schema
-                s3_videos = event.get("_s3_videos", [])
+                s3_videos = event.get(EventFields.S3_VIDEOS, [])
                 s3_urls = [v.get("url") for v in s3_videos if v.get("url")]
                 # Fallback to old schema
                 if not s3_urls:
@@ -507,7 +578,7 @@ class FootyMongoStore:
             # Step 3: Remove event from MongoDB array entirely
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id},
-                {"$pull": {"events": {"_event_id": event_id}}}
+                {"$pull": {"events": {EventFields.EVENT_ID: event_id}}}
             )
             
             if result.modified_count > 0:
@@ -539,8 +610,8 @@ class FootyMongoStore:
         """
         try:
             update_doc = {
-                "events.$._twitter_complete": True,
-                "events.$._twitter_completed_at": datetime.now(timezone.utc)
+                f"events.$.{EventFields.TWITTER_COMPLETE}": True,
+                f"events.$.{EventFields.TWITTER_COMPLETED_AT}": datetime.now(timezone.utc)
             }
             
             # Merge new videos with existing (dedup by URL) - same logic as retry
@@ -550,8 +621,8 @@ class FootyMongoStore:
                 fixture = self.fixtures_active.find_one({"_id": fixture_id})
                 if fixture:
                     for evt in fixture.get("events", []):
-                        if evt.get("_event_id") == event_id:
-                            existing_videos = evt.get("_discovered_videos", [])
+                        if evt.get(EventFields.EVENT_ID) == event_id:
+                            existing_videos = evt.get(EventFields.DISCOVERED_VIDEOS, [])
                             break
                 
                 # Create URL set from existing videos (Twitter uses video_page_url)
@@ -564,11 +635,11 @@ class FootyMongoStore:
                     if video_url not in existing_urls:
                         merged_videos.append(video)
                 
-                update_doc["events.$._discovered_videos"] = merged_videos
-                update_doc["events.$._video_count"] = len(merged_videos)
+                update_doc[f"events.$.{EventFields.DISCOVERED_VIDEOS}"] = merged_videos
+                update_doc[f"events.$.{EventFields.VIDEO_COUNT}"] = len(merged_videos)
             
             result = self.fixtures_active.update_one(
-                {"_id": fixture_id, "events._event_id": event_id},
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
                 {"$set": update_doc}
             )
             if result.modified_count == 0:
@@ -624,23 +695,24 @@ class FootyMongoStore:
                 # It will only be set when an actual event (goal) happens
                 print(f"⚽ Match {fixture_id} started! ({old_status} → {new_status})")
             
-            # Preserve existing _last_activity (only set by mark_event_monitor_complete)
-            if "_last_activity" in active_fixture:
-                update_doc["_last_activity"] = active_fixture["_last_activity"]
+            # Preserve all our enhanced fixture-level fields (underscore prefixed)
+            for key in active_fixture:
+                if key.startswith("_") and key != "_id":
+                    update_doc[key] = active_fixture[key]
             
             # Build lookup of live events by event_id for merging
             # Live events already have _event_id from store_live_fixture()
             live_events = live_fixture.get("events", [])
             live_events_by_id = {}
             for live_event in live_events:
-                event_id = live_event.get("_event_id")
+                event_id = live_event.get(EventFields.EVENT_ID)
                 if event_id:
                     live_events_by_id[event_id] = live_event
             
             # Merge API updates into enhanced events while preserving our fields
             enhanced_events = active_fixture.get("events", [])
             for event in enhanced_events:
-                event_id = event.get("_event_id")
+                event_id = event.get(EventFields.EVENT_ID)
                 if event_id and event_id in live_events_by_id:
                     live_event = live_events_by_id[event_id]
                     # Update raw API fields (non _ prefixed) from live
@@ -685,7 +757,7 @@ class FootyMongoStore:
             if not video_objects:
                 # Verify event exists
                 fixture = self.fixtures_active.find_one(
-                    {"_id": fixture_id, "events._event_id": event_id}
+                    {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id}
                 )
                 if not fixture:
                     msg = f"❌ FATAL: Event {event_id} not found in fixtures_active"
@@ -696,7 +768,7 @@ class FootyMongoStore:
             
             # Get existing video URLs to avoid duplicates
             fixture = self.fixtures_active.find_one(
-                {"_id": fixture_id, "events._event_id": event_id}
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id}
             )
             if not fixture:
                 msg = f"❌ FATAL: Event {event_id} not found in fixtures_active"
@@ -706,8 +778,8 @@ class FootyMongoStore:
             # Find the event and get existing URLs
             existing_urls = set()
             for evt in fixture.get("events", []):
-                if evt.get("_event_id") == event_id:
-                    for video in evt.get("_s3_videos", []):
+                if evt.get(EventFields.EVENT_ID) == event_id:
+                    for video in evt.get(EventFields.S3_VIDEOS, []):
                         existing_urls.add(video.get("url", ""))
                     break
             
@@ -723,10 +795,10 @@ class FootyMongoStore:
             
             # Append new video objects
             result = self.fixtures_active.update_one(
-                {"_id": fixture_id, "events._event_id": event_id},
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
                 {
                     "$push": {
-                        "events.$._s3_videos": {"$each": new_videos}
+                        f"events.$.{EventFields.S3_VIDEOS}": {"$each": new_videos}
                     }
                 }
             )
@@ -766,7 +838,7 @@ class FootyMongoStore:
             event = None
             event_idx = None
             for idx, evt in enumerate(fixture.get("events", [])):
-                if evt.get("_event_id") == event_id:
+                if evt.get(EventFields.EVENT_ID) == event_id:
                     event = evt
                     event_idx = idx
                     break
@@ -776,7 +848,7 @@ class FootyMongoStore:
                 return False
             
             # Get videos and sort them
-            videos = event.get("_s3_videos", [])
+            videos = event.get(EventFields.S3_VIDEOS, [])
             if not videos:
                 return True
             
@@ -791,16 +863,10 @@ class FootyMongoStore:
             for rank, video in enumerate(videos_sorted, start=1):
                 video["rank"] = rank
             
-            # Update in MongoDB
+            # Update in MongoDB (use the underscore-prefixed field)
             result = self.fixtures_active.update_one(
-                {"_id": fixture_id, "events._event_id": event_id},
-                {"$set": {f"events.$.s3_videos": videos_sorted}}
-            )
-            
-            # Also try the underscore version
-            result = self.fixtures_active.update_one(
-                {"_id": fixture_id, "events._event_id": event_id},
-                {"$set": {"events.$._s3_videos": videos_sorted}}
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {"$set": {f"events.$.{EventFields.S3_VIDEOS}": videos_sorted}}
             )
             
             print(f"📊 Recalculated ranks for {len(videos)} videos in {event_id}")
@@ -860,18 +926,142 @@ class FootyMongoStore:
 
     # === Completion Operations ===
     
+    def has_winner_data(self, fixture_doc: dict) -> bool:
+        """
+        Check if fixture has winner data populated.
+        
+        Winner data is in teams.home.winner / teams.away.winner:
+        - True = this team won
+        - False = this team lost
+        - None = draw OR not yet determined
+        
+        For knockout matches (penalty shootouts), winner will eventually be True/False.
+        For league matches, can be a draw (both None) which is still valid.
+        """
+        teams = fixture_doc.get("teams", {})
+        home_winner = teams.get("home", {}).get("winner")
+        away_winner = teams.get("away", {}).get("winner")
+        
+        # Winner data exists if either team has a non-None winner value
+        # This handles both wins (True/False) AND draws (None/None after match)
+        # The key insight: API returns winner=None during match, then sets it after
+        
+        # For draws, we rely on the completion counter
+        # For wins, at least one will be True
+        return home_winner is True or away_winner is True
+    
+    def increment_completion_count(self, fixture_id: int) -> dict:
+        """
+        Increment the completion counter for a fixture.
+        
+        Similar to event debouncing:
+        - _completion_count: Number of times we've seen completed status
+        - _completion_complete: True when ready to move to fixtures_completed
+        - _completion_first_seen: When we first saw the completed status
+        
+        Returns dict with:
+        - completion_count: Current count after increment
+        - completion_complete: Whether fixture is ready for completion
+        - winner_exists: Whether winner data is populated
+        """
+        try:
+            fixture_doc = self.fixtures_active.find_one({"_id": fixture_id})
+            if not fixture_doc:
+                return {"completion_count": 0, "completion_complete": False, "winner_exists": False}
+            
+            current_count = fixture_doc.get(FixtureFields.COMPLETION_COUNT, 0)
+            winner_exists = self.has_winner_data(fixture_doc)
+            
+            if current_count == 0:
+                # First time seeing completed status
+                self.fixtures_active.update_one(
+                    {"_id": fixture_id},
+                    {
+                        "$set": {
+                            FixtureFields.COMPLETION_COUNT: 1,
+                            FixtureFields.COMPLETION_COMPLETE: False,
+                            FixtureFields.COMPLETION_FIRST_SEEN: datetime.now(timezone.utc),
+                        }
+                    }
+                )
+                new_count = 1
+            else:
+                # Increment counter
+                new_count = current_count + 1
+                self.fixtures_active.update_one(
+                    {"_id": fixture_id},
+                    {"$set": {FixtureFields.COMPLETION_COUNT: new_count}}
+                )
+            
+            # Completion ready when count >= 3 OR winner data exists
+            completion_complete = new_count >= 3 or winner_exists
+            
+            if completion_complete and not fixture_doc.get(FixtureFields.COMPLETION_COMPLETE):
+                self.fixtures_active.update_one(
+                    {"_id": fixture_id},
+                    {"$set": {FixtureFields.COMPLETION_COMPLETE: True}}
+                )
+            
+            return {
+                "completion_count": new_count,
+                "completion_complete": completion_complete,
+                "winner_exists": winner_exists,
+            }
+        except Exception as e:
+            print(f"❌ Error incrementing completion count for {fixture_id}: {e}")
+            return {"completion_count": 0, "completion_complete": False, "winner_exists": False}
+    
+    def is_completion_ready(self, fixture_id: int) -> bool:
+        """
+        Check if fixture is ready for completion (all criteria met).
+        
+        Criteria:
+        1. _completion_complete = True (counter >= 3 OR winner exists)
+        2. All events have _monitor_complete = True
+        3. All events have _twitter_complete = True
+        """
+        try:
+            fixture_doc = self.fixtures_active.find_one({"_id": fixture_id})
+            if not fixture_doc:
+                return False
+            
+            # Check completion counter
+            if not fixture_doc.get(FixtureFields.COMPLETION_COMPLETE, False):
+                return False
+            
+            # Check events
+            events = fixture_doc.get("events", [])
+            enhanced_events = [e for e in events if e.get(EventFields.EVENT_ID)]
+            
+            if enhanced_events:
+                valid_events = [
+                    e for e in enhanced_events 
+                    if not e.get(EventFields.REMOVED, False) 
+                    and "None" not in e.get(EventFields.EVENT_ID, "")
+                ]
+                
+                if valid_events:
+                    all_monitored = all(e.get(EventFields.MONITOR_COMPLETE, False) for e in valid_events)
+                    all_twitter_done = all(e.get(EventFields.TWITTER_COMPLETE, False) for e in valid_events)
+                    
+                    if not (all_monitored and all_twitter_done):
+                        return False
+            
+            return True
+        except Exception as e:
+            print(f"❌ Error checking completion ready for {fixture_id}: {e}")
+            return False
+
     def complete_fixture(self, fixture_id: int) -> bool:
         """
-        Move fixture from active to completed (when status is FT/AET/PEN AND all events processed).
-        Also removes from fixtures_live.
+        Move fixture from active to completed.
         
-        CRITICAL: Only completes if ALL valid enhanced events have:
-        - _monitor_complete: true (debounce finished)
-        - _twitter_complete: true (set by Twitter workflow when done)
+        Prerequisites (checked by is_completion_ready):
+        - _completion_complete: true (counter >= 3 OR winner data exists)
+        - All valid events have _monitor_complete: true
+        - All valid events have _twitter_complete: true
         
-        Ignores:
-        - Removed events (_removed: true)
-        - Events without player ID (player_id=None, can't generate stable event_id)
+        This method just does the move - use is_completion_ready to check first.
         """
         try:
             fixture_doc = self.fixtures_active.find_one({"_id": fixture_id})
@@ -879,44 +1069,8 @@ class FootyMongoStore:
                 print(f"⚠️ Fixture {fixture_id} not found in active")
                 return False
             
-            # Check if fixture has enhanced events
-            events = fixture_doc.get("events", [])
-            enhanced_events = [e for e in events if e.get("_event_id")]
-            
-            if enhanced_events:
-                # Filter out events that should be ignored for completion
-                # 1. Removed events (VAR disallowed, etc.)
-                # 2. Events with player_id=None (can't generate stable event_id)
-                valid_events = [
-                    e for e in enhanced_events 
-                    if not e.get("_removed", False) 
-                    and "None" not in e.get("_event_id", "")
-                ]
-                
-                if not valid_events:
-                    # All events removed or invalid - can complete
-                    pass
-                else:
-                    # Has valid events - must check if all processing is complete
-                    all_monitored = all(e.get("_monitor_complete", False) for e in valid_events)
-                    
-                    # Twitter complete is set by Twitter workflow when it finishes (after downloads)
-                    all_twitter_done = all(e.get("_twitter_complete", False) for e in valid_events)
-                    
-                    if not (all_monitored and all_twitter_done):
-                        # Events still being processed - cannot complete yet
-                        monitored = sum(1 for e in valid_events if e.get("_monitor_complete"))
-                        twitter_done = sum(1 for e in valid_events if e.get("_twitter_complete"))
-                        print(
-                            f"⏳ Fixture {fixture_id} waiting for event processing: "
-                            f"monitored={monitored}/{len(valid_events)}, "
-                            f"twitter_complete={twitter_done}/{len(valid_events)}"
-                        )
-                        return False
-            
-            # Either no events OR all events fully processed - can complete
             # Add completion timestamp
-            fixture_doc["completed_at"] = datetime.now(timezone.utc)
+            fixture_doc[FixtureFields.COMPLETED_AT] = datetime.now(timezone.utc)
             
             # Insert to completed
             self.fixtures_completed.insert_one(fixture_doc)
