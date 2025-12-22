@@ -23,7 +23,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 from datetime import timedelta
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 with workflow.unsafe.imports_passed_through():
     from src.activities import twitter as twitter_activities
@@ -35,7 +35,7 @@ class TwitterWorkflowInput:
     """Input for TwitterWorkflow"""
     fixture_id: int
     event_id: str
-    player_name: str
+    player_name: Optional[str]  # Can be None for events without player info
     team_aliases: List[str]  # ["Liverpool", "LFC", "Reds"] or just ["Liverpool"]
 
 

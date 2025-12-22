@@ -15,7 +15,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 from datetime import timedelta
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 with workflow.unsafe.imports_passed_through():
     from src.activities import rag as rag_activities
@@ -27,10 +27,10 @@ class RAGWorkflowInput:
     """Input for RAGWorkflow"""
     fixture_id: int
     event_id: str
-    team_name: str      # "Liverpool"
-    player_name: str    # "Mohamed Salah"
-    minute: int         # For workflow ID naming
-    extra: int | None   # Extra time minutes
+    team_name: str                  # "Liverpool"
+    player_name: Optional[str]      # "Mohamed Salah" or None if unknown
+    minute: int                     # For workflow ID naming
+    extra: Optional[int] = None    # Extra time minutes
 
 
 @workflow.defn

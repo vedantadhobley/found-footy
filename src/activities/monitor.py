@@ -477,14 +477,24 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
                 store.mark_event_monitor_complete(fixture_id, event_id, first_seen)
                 
                 live_event = next(e for e in live_events if e.get(EventFields.EVENT_ID) == event_id)
-                twitter_triggered.append({
-                    "event_id": event_id,
-                    "player_name": live_event.get("player", {}).get("name", "Unknown"),
-                    "team_name": live_event.get("team", {}).get("name", "Unknown"),
-                    "minute": live_event.get("time", {}).get("elapsed"),
-                    "extra": live_event.get("time", {}).get("extra"),
-                })
-                activity.logger.info(f"✅ MONITOR COMPLETE: {event_id} (monitor_count=3)")
+                player_name = live_event.get("player", {}).get("name")
+                team_name = live_event.get("team", {}).get("name", "Unknown")
+                
+                # Only trigger Twitter search if we have a player name
+                # Without a player name, Twitter search would be too broad/noisy
+                if player_name:
+                    twitter_triggered.append({
+                        "event_id": event_id,
+                        "player_name": player_name,
+                        "team_name": team_name,
+                        "minute": live_event.get("time", {}).get("elapsed"),
+                        "extra": live_event.get("time", {}).get("extra"),
+                    })
+                    activity.logger.info(f"✅ MONITOR COMPLETE: {event_id} (monitor_count=3) → Twitter triggered")
+                else:
+                    activity.logger.warning(
+                        f"⚠️ MONITOR COMPLETE: {event_id} (monitor_count=3) → No player name, skipping Twitter"
+                    )
             else:
                 activity.logger.info(f"📊 MONITORING: {event_id} (count={new_count_val}/3)")
     
