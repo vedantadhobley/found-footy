@@ -336,25 +336,33 @@ async def deduplicate_videos(
     existing_s3_videos: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
-    Deduplicate videos by perceptual hash WITHIN batch and AGAINST existing S3 videos.
+    Deduplicate videos by perceptual hash WITHIN batch FIRST, then AGAINST existing S3 videos.
     
-    Three outcomes for each downloaded video:
-    1. NEW: No match in S3 or batch -> upload it
-    2. REPLACE: Matches S3 video but new is higher quality -> upload and delete old
-    3. SKIP: Matches S3 video but existing is higher quality -> skip (track URL for dedup)
-    4. BATCH_DUP: Matches another video in this batch -> keep higher quality
+    Order matters for efficiency:
+    1. BATCH DEDUP FIRST: Reduce N downloaded videos to unique best-quality videos
+    2. S3 DEDUP SECOND: Compare batch winners against existing S3 videos
     
-    Quality comparison: resolution > bitrate > file_size
+    This minimizes S3 operations - if we have 3 copies of the same video from different
+    alias searches, we pick the best one BEFORE checking S3, so we only do 1 S3 operation
+    instead of 3.
+    
+    Outcomes for each batch winner:
+    - NEW: No match in S3 -> upload it
+    - REPLACE: Matches S3 video but new is higher quality -> upload and delete old
+    - SKIP: Matches S3 video but existing is higher quality -> skip (bump popularity)
+    
+    Quality comparison: file_size (larger = better quality/bitrate)
     
     Args:
-        downloaded_files: List of download results with file_path, file_hash, file_size, quality metadata
+        downloaded_files: List of download results with file_path, perceptual_hash, file_size, etc.
         existing_s3_videos: List of existing S3 video metadata from fetch_event_data
     
     Returns:
         Dict with:
-        - videos_to_upload: List of unique videos to upload
+        - videos_to_upload: List of unique videos to upload (no S3 match)
         - videos_to_replace: List of {new_video, old_s3_video} for replacement
-        - skipped_urls: List of source URLs that matched lower-quality existing videos
+        - videos_to_bump_popularity: List of {s3_video, new_popularity} for existing better videos
+        - skipped_urls: List of source URLs that we're not uploading
     """
     # Filter out failed and filtered downloads
     successful = [f for f in downloaded_files if f.get("status") == "success"]
@@ -367,28 +375,79 @@ async def deduplicate_videos(
         activity.logger.warning("⚠️ No successful downloads to deduplicate")
         return {"videos_to_upload": [], "videos_to_replace": [], "videos_to_bump_popularity": [], "skipped_urls": []}
     
-    # Build lookup for existing S3 videos by perceptual hash
-    existing_videos_list = existing_s3_videos or []
-    if existing_videos_list:
-        activity.logger.info(f"📦 Checking against {len(existing_videos_list)} existing S3 videos...")
+    activity.logger.info(f"📥 Deduplicating {len(successful)} successful downloads...")
     
-    # Track results
-    videos_to_upload = []  # New videos (no match in S3)
-    videos_to_replace = []  # Higher quality than existing S3 video
-    videos_to_bump_popularity = []  # Existing is better but still track the duplicate
-    skipped_urls = []  # URLs of videos we're not uploading (existing is better)
-    
-    seen_hashes = {}  # perceptual_hash -> {file_info, duplicate_count}
-    duplicates_removed = 0
+    # =========================================================================
+    # PHASE 1: BATCH DEDUP - Reduce to unique best-quality videos
+    # =========================================================================
+    seen_hashes = {}  # perceptual_hash -> file_info (best quality for this hash)
+    batch_duplicates_removed = 0
     
     for file_info in successful:
         perceptual_hash = file_info["perceptual_hash"]
         file_path = file_info["file_path"]
         file_size = file_info["file_size"]
-        duration = file_info["duration"]
-        source_url = file_info.get("source_url", "")
+        duration = file_info.get("duration", 0)
         
-        # === CROSS-RETRY DEDUP: Check against existing S3 videos ===
+        # Check against other videos already seen in this batch
+        found_batch_dup = False
+        for seen_hash, existing in list(seen_hashes.items()):
+            if _perceptual_hashes_match(perceptual_hash, seen_hash):
+                found_batch_dup = True
+                existing["duplicate_count"] = existing.get("duplicate_count", 1) + 1
+                
+                # Compare by file_size - larger = better quality
+                new_file_size = file_size
+                existing_file_size = existing.get("file_size", 0)
+                
+                if new_file_size > existing_file_size:
+                    # New is better - replace in seen_hashes
+                    activity.logger.info(
+                        f"🔄 Batch dup: keeping new ({new_file_size:,} > {existing_file_size:,} bytes, {duration:.1f}s)"
+                    )
+                    os.remove(existing["file_path"])
+                    file_info["duplicate_count"] = existing["duplicate_count"]
+                    del seen_hashes[seen_hash]
+                    seen_hashes[perceptual_hash] = file_info
+                else:
+                    # Existing is better - discard new
+                    activity.logger.info(
+                        f"🔄 Batch dup: keeping existing ({existing_file_size:,} >= {new_file_size:,} bytes)"
+                    )
+                    os.remove(file_path)
+                
+                batch_duplicates_removed += 1
+                break
+        
+        if not found_batch_dup:
+            # New unique video in batch
+            file_info["duplicate_count"] = 1
+            seen_hashes[perceptual_hash] = file_info
+    
+    batch_winners = list(seen_hashes.values())
+    activity.logger.info(f"📊 Batch dedup: {len(successful)} → {len(batch_winners)} unique ({batch_duplicates_removed} dups removed)")
+    
+    # =========================================================================
+    # PHASE 2: S3 DEDUP - Compare batch winners against existing S3 videos
+    # =========================================================================
+    existing_videos_list = existing_s3_videos or []
+    if existing_videos_list:
+        activity.logger.info(f"📦 Comparing {len(batch_winners)} batch winners against {len(existing_videos_list)} S3 videos...")
+    
+    videos_to_upload = []  # New videos (no S3 match)
+    videos_to_replace = []  # Higher quality than existing S3 video
+    videos_to_bump_popularity = []  # Existing S3 is better
+    skipped_urls = []  # URLs we're not uploading
+    
+    for file_info in batch_winners:
+        perceptual_hash = file_info["perceptual_hash"]
+        file_path = file_info["file_path"]
+        file_size = file_info["file_size"]
+        duration = file_info.get("duration", 0)
+        source_url = file_info.get("source_url", "")
+        duplicate_count = file_info.get("duplicate_count", 1)
+        
+        # Check against existing S3 videos
         matched_existing = None
         for existing in existing_videos_list:
             existing_hash = existing.get("perceptual_hash", "")
@@ -397,105 +456,50 @@ async def deduplicate_videos(
                 break
         
         if matched_existing:
-            # Found match in S3 - compare quality by file size (larger = better quality/bitrate)
+            # Found match in S3 - compare quality
             new_file_size = file_size
             existing_file_size = matched_existing.get("file_size", 0)
-            
-            # Quality comparison: file_size only - larger files have better quality/bitrate
-            keep_new = False
-            reason = ""
+            existing_popularity = matched_existing.get("popularity", 1)
             
             if new_file_size > existing_file_size:
-                keep_new = True
-                reason = f"larger file ({new_file_size:,} > {existing_file_size:,} bytes)"
-            else:
-                reason = f"existing is same or larger ({existing_file_size:,} bytes)"
-            
-            if keep_new:
-                # New video is better - mark for replacement
-                # IMPORTANT: Inherit popularity from the video we're replacing + 1
-                # This preserves the dedup history (e.g., if old had popularity=3, new gets 4)
-                existing_popularity = matched_existing.get("popularity", 1)
+                # New is better - mark for replacement
+                # Inherit popularity from old + add batch duplicate count
+                new_popularity = existing_popularity + duplicate_count
                 activity.logger.info(
-                    f"🔄 REPLACE: New video is {reason} ({duration:.1f}s) - inheriting popularity {existing_popularity} + 1"
+                    f"🔄 S3 REPLACE: New is larger ({new_file_size:,} > {existing_file_size:,} bytes, {duration:.1f}s) "
+                    f"- popularity {existing_popularity} + {duplicate_count} = {new_popularity}"
                 )
-                file_info["duplicate_count"] = existing_popularity + 1
+                file_info["duplicate_count"] = new_popularity
                 videos_to_replace.append({
                     "new_video": file_info,
                     "old_s3_video": matched_existing
                 })
             else:
-                # Existing is better - skip but track URL
-                # Still increment popularity since this is another "vote" for this content
-                existing_popularity = matched_existing.get("popularity", 1)
+                # Existing S3 is better - skip but bump popularity
+                new_popularity = existing_popularity + duplicate_count
                 activity.logger.info(
-                    f"⏭️ SKIP: Existing S3 video is {reason} ({duration:.1f}s), bumping popularity {existing_popularity} → {existing_popularity + 1}"
+                    f"⏭️ S3 SKIP: Existing is larger ({existing_file_size:,} >= {new_file_size:,} bytes) "
+                    f"- bumping popularity {existing_popularity} → {new_popularity}"
                 )
                 videos_to_bump_popularity.append({
                     "s3_video": matched_existing,
-                    "new_popularity": existing_popularity + 1
+                    "new_popularity": new_popularity
                 })
                 os.remove(file_path)
                 if source_url:
                     skipped_urls.append(source_url)
-            continue
-        
-        # === WITHIN-BATCH DEDUP: Check against other downloads in this batch ===
-        found_batch_dup = False
-        for seen_hash, existing in list(seen_hashes.items()):
-            if _perceptual_hashes_match(perceptual_hash, seen_hash):
-                found_batch_dup = True
-                existing["duplicate_count"] += 1
-                
-                # Compare by file_size only - larger file = better quality
-                new_file_size = file_size
-                existing_file_size = existing.get("file_size", 0)
-                
-                keep_new = False
-                reason = ""
-                
-                if new_file_size > existing_file_size:
-                    keep_new = True
-                    reason = f"larger file ({new_file_size} > {existing_file_size})"
-                else:
-                    reason = f"existing is same or larger file ({existing_file_size} >= {new_file_size})"
-                
-                if keep_new:
-                    activity.logger.info(
-                        f"🔄 Batch dup #{existing['duplicate_count']}: keeping new ({reason})"
-                    )
-                    os.remove(existing["file_path"])
-                    file_info["duplicate_count"] = existing["duplicate_count"]
-                    del seen_hashes[seen_hash]
-                    seen_hashes[perceptual_hash] = file_info
-                else:
-                    activity.logger.info(
-                        f"🔄 Batch dup #{existing['duplicate_count']}: keeping existing ({reason})"
-                    )
-                    os.remove(file_path)
-                
-                duplicates_removed += 1
-                break
-        
-        if not found_batch_dup:
-            # New unique video
-            file_info["duplicate_count"] = 1
-            seen_hashes[perceptual_hash] = file_info
-    
-    # Collect videos to upload (from batch dedup)
-    videos_to_upload = list(seen_hashes.values())
-    
-    # Sort by quality score
-    videos_to_upload.sort(key=lambda v: v.get("duplicate_count", 1), reverse=True)
+        else:
+            # No S3 match - this is a new video
+            activity.logger.info(f"✨ NEW: No S3 match ({file_size:,} bytes, {duration:.1f}s)")
+            videos_to_upload.append(file_info)
     
     # Log summary
     activity.logger.info(
-        f"✅ Deduplication complete: "
-        f"{len(videos_to_upload)} new, "
-        f"{len(videos_to_replace)} replacements, "
-        f"{len(skipped_urls)} skipped (existing better), "
+        f"✅ Dedup complete: "
+        f"{len(videos_to_upload)} new uploads, "
+        f"{len(videos_to_replace)} S3 replacements, "
         f"{len(videos_to_bump_popularity)} popularity bumps, "
-        f"{duplicates_removed} batch dups"
+        f"{len(skipped_urls)} skipped"
     )
     
     return {

@@ -19,6 +19,9 @@ Usage:
     # Insert specific fixture
     docker exec found-footy-worker python /workspace/tests/workflows/test_pipeline.py --fixture-id 1234567
     
+    # Skip cleanup (don't delete existing S3/MongoDB data)
+    docker exec found-footy-worker python /workspace/tests/workflows/test_pipeline.py --no-clean
+    
 Then watch:
     - Temporal UI: http://localhost:4100
     - Twitter Firefox: http://localhost:4104
@@ -28,14 +31,53 @@ import argparse
 import requests
 
 from src.data.mongo_store import FootyMongoStore
+from src.data.s3_store import FootyS3Store
 from src.api.api_client import get_api_headers, BASE_URL
 
 # Default fixture for testing
 DEFAULT_FIXTURE_ID = 1378993  # Liverpool vs Arsenal, 1-0
 
 
-def insert_fixture_to_staging(fixture_id: int):
+def clean_fixture_data(fixture_id: int):
+    """Delete all existing data for a fixture from MongoDB and S3"""
+    print(f"🧹 Cleaning existing data for fixture {fixture_id}...")
+    
+    # Clean MongoDB
+    store = FootyMongoStore()
+    mongo_deleted = 0
+    for coll_name in ["fixtures_staging", "fixtures_live", "fixtures_active", "fixtures_completed"]:
+        result = store.db[coll_name].delete_one({"_id": fixture_id})
+        if result.deleted_count > 0:
+            print(f"   ✓ Removed from {coll_name}")
+            mongo_deleted += 1
+    
+    if mongo_deleted == 0:
+        print(f"   ℹ️  No MongoDB documents found")
+    
+    # Clean S3
+    s3_store = FootyS3Store()
+    videos = s3_store.list_videos_by_fixture(fixture_id)
+    
+    if videos:
+        print(f"   🗑️  Deleting {len(videos)} videos from S3...")
+        for video in videos:
+            s3_key = video['key']
+            s3_store.delete_video(s3_key)
+        print(f"   ✓ Deleted {len(videos)} S3 videos")
+    else:
+        print(f"   ℹ️  No S3 videos found")
+    
+    print(f"✅ Cleanup complete")
+    print()
+
+
+def insert_fixture_to_staging(fixture_id: int, clean_first: bool = True):
     """Fetch fixture from API and insert into staging with reset state"""
+    
+    # Clean existing data first (S3 + MongoDB)
+    if clean_first:
+        clean_fixture_data(fixture_id)
+    
     store = FootyMongoStore()
     
     print(f"📡 Fetching fixture {fixture_id} from API...")
@@ -89,13 +131,6 @@ def insert_fixture_to_staging(fixture_id: int):
     
     print(f"   Reset to: NS, null scores, 0 events")
     
-    # Clean existing data from ALL collections
-    print(f"🧹 Cleaning existing data...")
-    for coll_name in ["fixtures_staging", "fixtures_live", "fixtures_active", "fixtures_completed"]:
-        result = store.db[coll_name].delete_one({"_id": fixture_id})
-        if result.deleted_count > 0:
-            print(f"   ✓ Removed from {coll_name}")
-    
     # Insert into staging
     store.fixtures_staging.insert_one(fixture_data)
     print(f"💾 Inserted into fixtures_staging")
@@ -136,9 +171,15 @@ def main():
         help=f"Fixture ID to test (default: {DEFAULT_FIXTURE_ID})"
     )
     
+    parser.add_argument(
+        "--no-clean",
+        action="store_true",
+        help="Skip cleanup (don't delete existing S3/MongoDB data)"
+    )
+    
     args = parser.parse_args()
     
-    success = insert_fixture_to_staging(args.fixture_id)
+    success = insert_fixture_to_staging(args.fixture_id, clean_first=not args.no_clean)
     exit(0 if success else 1)
 
 

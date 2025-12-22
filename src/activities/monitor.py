@@ -448,39 +448,17 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
     matching_ids = live_ids & active_ids
     updated_count = 0
     twitter_triggered = []
-    twitter_retry_needed = []
     
     for event_id in matching_ids:
         active_event = active_map[event_id]
         
         # =====================================================================
-        # CASE 1: _monitor_complete = TRUE -> Check Twitter status
+        # CASE 1: _monitor_complete = TRUE -> Already processed, skip
         # =====================================================================
+        # TwitterWorkflow now manages its own retry attempts with durable timers.
+        # Monitor's job is done once _monitor_complete=true.
         if active_event.get(EventFields.MONITOR_COMPLETE):
-            # Already through debounce - check if we need more Twitter attempts
-            if not active_event.get(EventFields.TWITTER_COMPLETE):
-                twitter_count = active_event.get(EventFields.TWITTER_COUNT, 0)
-                
-                # Check if we need more Twitter attempts (max 3)
-                if twitter_count < 3:
-                    # Increment counter for this attempt (Monitor tracks count)
-                    new_twitter_count = twitter_count + 1
-                    store.update_event_twitter_count(fixture_id, event_id, new_twitter_count)
-                    
-                    live_event = next(e for e in live_events if e.get(EventFields.EVENT_ID) == event_id)
-                    twitter_retry_needed.append({
-                        "event_id": event_id,
-                        "player_name": live_event.get("player", {}).get("name", "Unknown"),
-                        "team_name": live_event.get("team", {}).get("name", "Unknown"),
-                        "minute": live_event.get("time", {}).get("elapsed"),
-                        "extra": live_event.get("time", {}).get("extra"),
-                        "attempt_number": new_twitter_count,
-                    })
-                    activity.logger.info(
-                        f"🔄 TWITTER ATTEMPT: {event_id} (#{new_twitter_count}/3)"
-                    )
-                # Note: _twitter_complete is set by Twitter workflow when it finishes
-            continue  # Already debounced, skip monitor count processing
+            continue  # Already debounced, TwitterWorkflow handles the rest
         
         # =====================================================================
         # CASE 2: _monitor_complete = FALSE -> Check/increment monitor count
@@ -519,7 +497,6 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
         "removed_events": removed_count,
         "updated_events": updated_count,
         "twitter_triggered": twitter_triggered,
-        "twitter_retry_needed": twitter_retry_needed,
     }
 
 

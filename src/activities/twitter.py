@@ -267,4 +267,35 @@ async def mark_event_twitter_complete(fixture_id: int, event_id: str) -> bool:
     return success
 
 
+# =============================================================================
+# Activity 5: Update Twitter Attempt Counter
+# =============================================================================
+
+@activity.defn
+async def update_twitter_attempt(fixture_id: int, event_id: str, attempt: int) -> bool:
+    """
+    Update the _twitter_count field to track current attempt number.
+    
+    Called by TwitterWorkflow at the start of each attempt (1, 2, 3).
+    
+    Args:
+        fixture_id: The fixture ID
+        event_id: The event ID
+        attempt: Current attempt number (1, 2, or 3)
+    
+    Returns:
+        True if successful
+    """
+    from src.data.mongo_store import FootyMongoStore
+    
+    store = FootyMongoStore()
+    
+    success = store.update_event_twitter_count(fixture_id, event_id, attempt)
+    if success:
+        activity.logger.info(f"📊 Updated twitter_count={attempt} for {event_id}")
+    else:
+        activity.logger.warning(f"⚠️ Failed to update twitter_count for {event_id}")
+    
+    return success
+
 

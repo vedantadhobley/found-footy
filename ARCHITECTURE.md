@@ -20,46 +20,98 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 
 ## 📊 Data Flow
 
-```mermaid
-graph TD
-    A[Ingest Job<br/>Daily 00:05 UTC] -->|TBD/NS fixtures| B[fixtures_staging]
-    
-    B -->|Start time reached| C[Monitor: Activate<br/>Empty events array]
-    C --> D[fixtures_active]
-    
-    E[Monitor: API Poll<br/>Every minute] -->|Filtered events<br/>with _event_id| F[fixtures_live]
-    
-    F -->|Compare| G{3 Trigger Cases?}
-    
-    G -->|Case 1: NEW| H[Inline Processing]
-    G -->|Case 2: INCOMPLETE| H
-    G -->|Case 3: REMOVED| H
-    
-    H -->|stable_count >= 3| I[Twitter Workflow<br/>3x per event]
-    
-    I -->|Videos found| J[Download Workflow]
-    J -->|Upload| K[MinIO S3]
-    
-    D -->|Status FT/AET/PEN<br/>All events complete| L[fixtures_completed]
-    F -.->|Deleted| L
-    
-    style F fill:#ffe6e6
-    style D fill:#e6ffe6
-    style L fill:#e6f3ff
+```
+                              API-Football
+                                   │
+                    ┌──────────────┴──────────────┐
+                    ▼                              ▼
+            IngestWorkflow                  MonitorWorkflow
+           (Daily 00:05 UTC)               (Every 1 minute)
+                    │                              │
+                    ▼                              ▼
+           fixtures_staging ──────────────► fixtures_active
+           (TBD, NS fixtures)    activate    (live matches)
+                                                   │
+                                                   ▼
+                                            fixtures_live
+                                          (temp API buffer)
+                                                   │
+                                          ┌────────┴────────┐
+                                          ▼                 ▼
+                                    Compare IDs      On _monitor_complete
+                                    (set ops)              │
+                                          │                ▼
+                                    Increment       RAGWorkflow
+                                    counters        (fire-and-forget)
+                                                          │
+                                                          ▼
+                                                   TwitterWorkflow
+                                                   (3 attempts, 3-min spacing)
+                                                          │
+                                                          ▼
+                                                   DownloadWorkflow
+                                                   (per attempt)
+                                                          │
+                                                          ▼
+                                                      MinIO S3
+                                                          │
+                                                          ▼
+                                            When fixture FT + all complete
+                                                          │
+                                                          ▼
+                                              fixtures_completed
 ```
 
-### Comparison Logic (3 Trigger Cases)
+---
 
-```mermaid
-flowchart LR
-    Live[fixtures_live<br/>Raw API events<br/>with _event_id] --> Compare{Compare<br/>Event IDs}
-    Active[fixtures_active<br/>Enhanced events<br/>with _event_id] --> Compare
-    
-    Compare -->|Event in live<br/>NOT in active| Case1[Case 1: NEW<br/>Add with count=1]
-    Compare -->|Event in both<br/>count < 3| Case2[Case 2: INCOMPLETE<br/>Increment count]
-    Compare -->|Event in active<br/>NOT in live| Case3[Case 3: REMOVED<br/>Mark _removed=true<br/>VAR disallowed]
-    
-    Case2 -->|count = 3| Twitter[Twitter Workflow]
+## 🔄 Workflow Hierarchy
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        SCHEDULED WORKFLOWS                           │
+├─────────────────────────────────────────────────────────────────────┤
+│  IngestWorkflow (00:05 UTC)     MonitorWorkflow (Every 1 min)       │
+│         │                                │                           │
+│    Fetch fixtures                   Poll API                         │
+│    Route by status                  Debounce events                  │
+│                                     Trigger RAG on stable            │
+└──────────────────────────────────────┬──────────────────────────────┘
+                                       │
+                                       ▼ (fire-and-forget)
+┌─────────────────────────────────────────────────────────────────────┐
+│                        RAGWorkflow                                   │
+├─────────────────────────────────────────────────────────────────────┤
+│  1. get_team_aliases(team_name) → ["Liverpool", "LFC", "Reds"]      │
+│  2. save_team_aliases to MongoDB                                     │
+│  3. Start TwitterWorkflow (child, waits)                             │
+└──────────────────────────────────────┬──────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    TwitterWorkflow (Self-Managing)                   │
+├─────────────────────────────────────────────────────────────────────┤
+│  FOR attempt IN [1, 2, 3]:                                          │
+│    → update_twitter_attempt(attempt)                                 │
+│    → Search each alias: "Salah Liverpool", "Salah LFC", ...         │
+│    → Dedupe videos                                                   │
+│    → Start DownloadWorkflow (child, waits)                          │
+│    → IF attempt < 3: workflow.sleep(3 minutes) ← DURABLE TIMER      │
+│  AFTER attempt 3:                                                    │
+│    → mark_event_twitter_complete                                     │
+└──────────────────────────────────────┬──────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        DownloadWorkflow                              │
+├─────────────────────────────────────────────────────────────────────┤
+│  FOR each video URL:                                                 │
+│    → Download via yt-dlp                                             │
+│    → Filter by duration (5-60s)                                      │
+│    → Compute perceptual hash                                         │
+│    → Compare quality with existing S3                                │
+│    → Upload if new or better quality                                 │
+│    → Replace worse quality versions                                  │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -68,37 +120,30 @@ flowchart LR
 
 ### Twitter → Download → S3 Flow
 
-```mermaid
-flowchart TD
-    subgraph "Twitter Workflow (3x per event)"
-        T1[Attempt 1<br/>~3min after stable]
-        T2[Attempt 2<br/>~5min gap]
-        T3[Attempt 3<br/>~5min gap<br/>Final - sets _twitter_complete]
-    end
-    
-    subgraph "Each Twitter Attempt"
-        TS[Twitter Search<br/>max_results=5]
-        TV[Pass exclude_urls<br/>Skip already discovered]
-        TD[Trigger Download<br/>If new videos]
-    end
-    
-    subgraph "Download Workflow"
-        D1[Download Videos<br/>3 retries each]
-        D2[Duration Filter<br/>5-60 seconds]
-        D3[Perceptual Hash<br/>Duration + 3 frames]
-        D4[Quality Compare<br/>vs existing S3]
-        D5[Replace if better<br/>Skip if worse]
-        D6[Upload to S3<br/>3 retries each]
-    end
-    
-    T1 --> TS
-    T2 --> TS
-    T3 --> TS
-    TS --> TV --> TD
-    TD --> D1 --> D2 --> D3 --> D4
-    D4 -->|New video| D6
-    D4 -->|Better quality| D5 --> D6
-    D4 -->|Worse quality| Skip[Skip - track URL]
+```
+TwitterWorkflow (per event, self-managing)
+    │
+    ├── Attempt 1 (immediate):
+    │   ├── Search "Salah Liverpool" → 3 videos
+    │   ├── Search "Salah LFC" → 2 videos
+    │   ├── Search "Salah Reds" → 1 video  
+    │   ├── Dedupe (by URL) → 4 unique
+    │   ├── Save to _discovered_videos
+    │   └── DownloadWorkflow → 3 uploaded to S3
+    │
+    ├── sleep(3 min) ← Durable timer
+    │
+    ├── Attempt 2:
+    │   ├── Same 3 searches (exclude already-found URLs)
+    │   ├── 1 new video found
+    │   └── DownloadWorkflow → 1 uploaded
+    │
+    ├── sleep(3 min)
+    │
+    └── Attempt 3:
+        ├── Same searches
+        ├── 0 new videos
+        └── mark_event_twitter_complete
 ```
 
 ### Perceptual Hash Deduplication
@@ -111,33 +156,38 @@ flowchart TD
 - Compute dHash (64-bit difference hash) for each frame
 - Combine: `{duration:.1f}_{hash1}_{hash2}_{hash3}`
 
-```python
-def compute_perceptual_hash(file_path):
-    # Get duration
-    duration = get_duration_ffprobe(file_path)
-    
-    # Extract frames at fixed positions
-    frames = extract_frames_ffmpeg(file_path, [1.0, 2.0, 3.0])
-    
-    # Compute dHash for each frame
-    hashes = []
-    for frame in frames:
-        img = Image.open(frame).convert('L').resize((9, 8))
-        diff = np.array(img)[:, 1:] > np.array(img)[:, :-1]
-        hash_val = ''.join(str(int(b)) for b in diff.flatten())
-        hashes.append(format(int(hash_val, 2), '016x'))
-    
-    return f"{duration:.1f}_{'_'.join(hashes)}"
-```
-
 **Quality Comparison** (when hashes match):
 ```python
-def quality_score(video):
-    return (video["width"] * video["height"], video["bitrate"], video["file_size"])
+# Larger file = better quality (higher bitrate/resolution)
+if new_file_size > existing_file_size:
+    replace_video()  # Delete old, upload new with combined popularity
+```
 
-# Higher tuple = better quality (lexicographic comparison)
-if quality_score(new) > quality_score(existing):
-    replace_video()  # Delete old, upload new
+### Popularity Scoring
+
+**Purpose**: Track how many times the same video content appears across sources. Higher popularity = more trusted/validated content.
+
+**Rules**:
+1. Every video starts with `popularity = 1` when first seen
+2. When duplicates found in same batch, popularities are **summed** (keeps highest quality)
+3. When comparing batch winner vs S3, popularities are **combined**:
+   - **Batch > S3 quality**: Upload batch video with `batch_popularity + s3_popularity`, delete S3 video
+   - **S3 > Batch quality**: Keep S3 video, bump popularity to `s3_popularity + batch_popularity`
+
+**Example Flow**:
+```
+Batch: Video A (720p, pop=1), Video B (1080p, pop=1), Video C (480p, pop=1) - all same content
+S3: Video D (360p, pop=2) - same content
+
+Phase 1 (Batch Dedup):
+├── A arrives: pop=1
+├── B arrives: matches A, B is larger → keep B, pop=1+1=2, delete A
+└── C arrives: matches B, B is larger → keep B, pop=2+1=3, delete C
+
+Phase 2 (S3 Dedup):
+└── B (10MB, pop=3) vs D (1MB, pop=2)
+    → B is larger → REPLACE
+    → Upload B with pop=3+2=5, delete D
 ```
 
 ### Duration Filtering
@@ -146,53 +196,7 @@ Videos outside the 5-60 second range are filtered:
 - **< 5s**: Usually just celebrations, not full goal replays
 - **> 60s**: Usually compilations or full match highlights
 
-Filtered videos still have their URLs tracked in `_discovered_videos` to prevent re-download attempts.
-
-### Cross-Retry Quality Tracking
-
-```mermaid
-sequenceDiagram
-    participant T1 as Twitter Attempt 1
-    participant S3 as MinIO S3
-    participant T2 as Twitter Attempt 2
-    
-    T1->>S3: Upload video1 (720p)
-    Note over S3: Stores metadata:<br/>width=1280, height=720<br/>bitrate=2.5Mbps
-    
-    T2->>T2: Download video2 (same content)
-    T2->>T2: Compute perceptual hash
-    T2->>S3: Fetch existing video metadata
-    T2->>T2: Compare: video2 (1080p) > video1 (720p)
-    T2->>S3: DELETE video1
-    T2->>S3: Upload video2 (1080p)
-    Note over S3: Replaced with higher quality
-```
-
-### URL Exclusion (New in v2)
-
-Each Twitter search receives `exclude_urls` containing all previously discovered URLs:
-
-```python
-# In execute_twitter_search activity
-response = requests.post(
-    f"{session_url}/search",
-    json={
-        "search_query": "Salah Liverpool",
-        "max_results": 5,
-        "exclude_urls": existing_video_urls  # Skip these during scraping
-    }
-)
-```
-
-The Twitter service skips these URLs during scraping:
-```python
-# In session.py search_videos()
-if tweet_url in exclude_set:
-    print(f"⏭️ Skipping already-discovered URL: {tweet_url}")
-    continue
-```
-
-This means 3 attempts × 5 videos = up to **15 unique videos per event**.
+Filtered videos still have their URLs tracked to prevent re-download attempts.
 
 ---
 
@@ -262,9 +266,9 @@ Enhanced fixtures with video tracking. Events array **grows incrementally**, **n
       
       // ========== ENHANCED FIELDS ==========
       "_event_id": "5000_40_234_Goal_1",
-      "_stable_count": 3,
       "_monitor_count": 5,
       "_monitor_complete": true,
+      "_twitter_aliases": ["Liverpool", "LFC", "Reds"],
       "_twitter_count": 3,
       "_twitter_complete": true,
       "_first_seen": "2025-11-24T15:23:45Z",
@@ -325,95 +329,76 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 
 ### 2. MonitorWorkflow (Every Minute)
 
-**Purpose**: Activate fixtures, detect events, trigger Twitter workflows
+**Purpose**: Activate fixtures, detect events, trigger RAG for stable events
 
 | Activity | Purpose | Retries |
 |----------|---------|---------|
-| `activate_fixtures` | Move staging → active | 2x |
+| `fetch_staging_fixtures` | Get staging fixture data | 3x |
+| `process_staging_fixtures` | Update staging from API | 3x |
+| `activate_pending_fixtures` | Move staging → active | 2x |
 | `fetch_active_fixtures` | Batch fetch from API | 3x |
 | `store_and_compare` | Filter events, store in live | 3x, 2.0x backoff |
-| `process_fixture_events` | Set ops, increment counts | 3x |
-| `sync_fixture_metadata` | Keep score/status fresh | - |
+| `process_fixture_events` | Increment counts, detect stable | 3x |
 | `complete_fixture_if_ready` | Move to completed | 3x, 2.0x backoff |
+| `notify_frontend_refresh` | SSE broadcast | 1x |
 
-**Key Behavior**:
-- Twitter workflows are **non-blocking** (`parent_close_policy=ABANDON`)
-- Monitor completes quickly, doesn't wait for downloads
-- Each Twitter search is a separate child workflow
+**Key Change**: Monitor now triggers **RAGWorkflow** (not TwitterWorkflow) when events reach `_monitor_complete=true`.
 
-### 3. TwitterWorkflow (3x Per Event)
+### 3. RAGWorkflow (Per Stable Event)
 
-**Purpose**: Search Twitter for event videos, trigger download
+**Purpose**: Resolve team aliases, trigger Twitter workflow
 
 | Activity | Purpose | Retries |
 |----------|---------|---------|
-| `get_twitter_search_data` | Get search query + existing URLs | 2x |
-| `execute_twitter_search` | POST to Firefox with exclude_urls | 3x, 1.5x backoff from 10s |
-| `save_discovered_videos` | Persist videos to MongoDB | 3x, 2.0x backoff |
+| `get_team_aliases` | Query for aliases (stub/LLM) | 2x |
+| `save_team_aliases` | Store to MongoDB | 2x |
 
-**Search Parameters**:
-- `max_results: 5` - Up to 5 videos per search
-- `exclude_urls: [...]` - Skip already-discovered videos
+Then triggers **TwitterWorkflow** as child workflow.
 
-**3 Attempts Per Event**:
-- Attempt 1: Immediately when stable (count=3)
-- Attempt 2: ~5 minutes later (via `twitter_retry_needed`)
-- Attempt 3: ~5 minutes later (sets `_twitter_complete=true`)
+### 4. TwitterWorkflow (Self-Managing, 3 Attempts)
 
-### 4. DownloadWorkflow (Per Twitter Search)
+**Purpose**: Search Twitter for event videos, manage retries internally
 
-**Purpose**: Download, filter, deduplicate, upload videos with quality comparison
+| Activity | Purpose | Retries |
+|----------|---------|---------|
+| `update_twitter_attempt` | Set `_twitter_count` | 2x |
+| `get_twitter_search_data` | Get existing URLs | 2x |
+| `execute_twitter_search` | POST to Firefox | 3x, 1.5x from 10s |
+| `save_discovered_videos` | Persist to MongoDB | 3x, 2.0x |
+| `mark_event_twitter_complete` | Set completion flag | 3x |
+
+**Key Feature**: Uses `workflow.sleep(3 minutes)` between attempts - durable timer survives restarts.
+
+### 5. DownloadWorkflow (Per Twitter Attempt)
+
+**Purpose**: Download, filter, deduplicate, upload videos
 
 | Activity | Purpose | Retries |
 |----------|---------|---------|
 | `fetch_event_data` | Get existing S3 metadata | 2x |
-| `download_single_video` | Download ONE video | 3x, 2.0x backoff from 2s |
+| `download_single_video` | Download ONE video | 3x, 2.0x from 2s |
 | `deduplicate_videos` | Perceptual hash comparison | 2x |
-| `replace_s3_video` | Delete old video when replacing | 3x, 2.0x backoff from 2s |
-| `upload_single_video` | Upload ONE video to S3 | 3x, 1.5x backoff from 2s |
-| `save_processed_urls` | Track URLs for dedup | 3x, 2.0x backoff |
-| `mark_download_complete` | Update MongoDB, cleanup | 3x, 2.0x backoff |
-
-**Duration Filtering**: Videos < 5s or > 60s are skipped but tracked.
-
----
-
-## 🔁 Retry Strategy Summary
-
-All activities have exponential backoff for transient failures:
-
-| Activity Type | Max Attempts | Initial Interval | Backoff Coefficient |
-|--------------|--------------|------------------|---------------------|
-| MongoDB reads | 2-3 | 1s | 2.0x |
-| MongoDB writes | 3 | 1s | 2.0x |
-| API-Football | 3 | 1s | 2.0x |
-| Twitter search | 3 | 10s | 1.5x |
-| Video download | 3 | 2s | 2.0x |
-| S3 upload | 3 | 2s | 1.5x |
-| S3 delete | 3 | 2s | 2.0x |
-
-**Retry intervals example** (2s initial, 2.0x backoff):
-- Attempt 1: immediate
-- Attempt 2: wait 2s
-- Attempt 3: wait 4s
+| `replace_s3_video` | Delete old video when replacing | 3x, 2.0x |
+| `upload_single_video` | Upload ONE video to S3 | 3x, 1.5x from 2s |
+| `mark_download_complete` | Update MongoDB, cleanup | 3x, 2.0x |
 
 ---
 
 ## 📝 Event Enhancement Fields
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| `_event_id` | string | Unique: `{fixture}_{team}_{player}_{type}_{seq}` |
-| `_stable_count` | int | Consecutive unchanged polls (0-3) |
-| `_monitor_count` | int | Total times seen by monitor |
-| `_monitor_complete` | bool | true when stable_count >= 3 |
-| `_twitter_count` | int | Number of Twitter searches run (1-3) |
-| `_twitter_complete` | bool | true after 3rd Twitter attempt |
-| `_first_seen` | datetime | When event first appeared |
-| `_twitter_search` | string | "{player_last_name} {team_name}" |
-| `_removed` | bool | true if VAR disallowed |
-| `_discovered_videos` | array | Video URLs from Twitter |
-| `_s3_videos` | array | Uploaded videos with quality metadata |
+| Field | Type | Set By | Purpose |
+|-------|------|--------|---------|
+| `_event_id` | string | Monitor | Unique: `{fixture}_{team}_{player}_{type}_{seq}` |
+| `_monitor_count` | int | Monitor | Times seen by monitor (1, 2, 3+) |
+| `_monitor_complete` | bool | Monitor | true when `_monitor_count >= 3` |
+| `_twitter_aliases` | array | RAGWorkflow | Team search variations |
+| `_twitter_count` | int | TwitterWorkflow | Current attempt (1, 2, 3) |
+| `_twitter_complete` | bool | TwitterWorkflow | true after attempt 3 |
+| `_first_seen` | datetime | Monitor | When event first appeared |
+| `_twitter_search` | string | Monitor | `{player_last} {team_name}` |
+| `_removed` | bool | Monitor | true if VAR disallowed |
+| `_discovered_videos` | array | Twitter | Video URLs from searches |
+| `_s3_videos` | array | Download | Uploaded videos with metadata |
 
 ---
 
@@ -422,11 +407,14 @@ All activities have exponential backoff for transient failures:
 ### Why fixtures_live?
 Store raw API data temporarily for comparison without destroying enhancements.
 
-### Why 3 Twitter attempts?
-Early uploads often have lower quality. Later uploads may have 1080p versions.
+### Why RAGWorkflow as intermediary?
+Clean separation - alias lookup can be swapped from stub to LLM without touching Twitter logic.
 
-### Why exclude_urls?
-Without it, each search returns the same videos. With it, we find NEW videos each attempt.
+### Why self-managing TwitterWorkflow?
+Durable timers allow 3-minute spacing between attempts, decoupled from Monitor's 1-minute poll.
+
+### Why 3 Twitter attempts with 3-min spacing?
+Goal videos appear over 5-15 minutes. Early uploads often SD, later often HD.
 
 ### Why perceptual hashing?
 Same video at different bitrates = different file hashes. Perceptual hash catches duplicates.
@@ -434,17 +422,11 @@ Same video at different bitrates = different file hashes. Perceptual hash catche
 ### Why quality comparison on S3?
 Replace 720p with 1080p if same content found later.
 
-### Why duration filtering?
-< 5s = celebrations only. > 60s = compilations. 5-60s = goal clips.
-
 ### Why `$max` for `_last_activity`?
-Ensures timestamp only moves forward, never backwards (handles out-of-order event processing).
-
-### Why non-blocking child workflows?
-Monitor must complete quickly to start next poll. Downloads can take 2+ minutes.
+Ensures timestamp only moves forward (handles out-of-order processing).
 
 ### Why per-video retry?
-If 3/5 videos succeed, those are preserved. Partial success is better than total failure.
+If 3/5 videos succeed, those are preserved. Partial success beats total failure.
 
 ---
 
@@ -457,7 +439,7 @@ docker exec found-footy-worker python /workspace/tests/workflows/test_pipeline.p
 
 ### Check Video Pipeline
 ```bash
-docker compose -f docker-compose.dev.yml logs -f worker | grep -E "(Download|Upload|S3|quality|phash|filter)"
+docker compose -f docker-compose.dev.yml logs -f worker | grep -E "(Download|Upload|S3|quality|phash)"
 ```
 
 ### Verify S3 Videos
@@ -500,8 +482,8 @@ MongoDB Express: http://localhost:4101
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Fixture stuck in active | Events missing `_twitter_complete` | Check worker logs for Twitter errors |
+| Fixture stuck in active | Events missing `_twitter_complete` | Check TwitterWorkflow in Temporal UI |
 | Videos not uploading | S3 connection failed | Check MinIO is running |
 | Duplicate videos | Perceptual hash mismatch | Check ffprobe is installed |
 | Twitter search empty | Browser session expired | Re-login via VNC (port 4103) |
-| Same videos found repeatedly | `exclude_urls` not being passed | Check TwitterWorkflow activity calls |
+| RAGWorkflow not starting | Monitor not triggering | Check `_monitor_complete` in MongoDB |

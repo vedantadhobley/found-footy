@@ -1,320 +1,46 @@
-# RAG Implementation for Team Alias Lookup
+# RAG Implementation - Future LLM Integration
 
 ## Overview
 
-This document outlines the architectural changes to decouple Twitter search from the Monitor workflow and implement a RAG (Retrieval-Augmented Generation) system for generating team name aliases used in Twitter video searches.
+This document describes **how to implement the actual LLM-based team alias lookup** in the RAGWorkflow. The workflow infrastructure is already in place with a stub implementation.
 
-## Current Architecture
-
-```
-MonitorWorkflow (scheduled every 1 min)
-    │
-    ├── Debounce events (3 polls = 3 min to confirm goal)
-    │
-    └── On monitor_complete=true:
-        ├── Check _twitter_count, trigger TwitterWorkflow
-        ├── Next poll: if !twitter_complete && count < 3, trigger again
-        └── Repeat until 3 attempts made
-```
-
-**Problems:**
-1. Twitter retries are coupled to 1-minute monitor interval
-2. We want 3-minute spacing between Twitter attempts
-3. No intelligent team name aliasing (e.g., "Atletico de Madrid" should search as "Atletico", "Atleti", "ATM")
-
-## Proposed Architecture
-
-```
-MonitorWorkflow (scheduled every 1 min)
-    │
-    ├── Debounce events (3 polls = 3 min)
-    │
-    └── On monitor_complete=true → trigger RAGWorkflow (ONCE, fire-and-forget)
-                                        │
-                                        ├── get_team_aliases activity
-                                        │   └── Query local LLM for aliases
-                                        │
-                                        └── Start TwitterWorkflow (child)
-                                                │
-                                                ├── ATTEMPT 1:
-                                                │   ├── Search "Salah Liverpool"
-                                                │   ├── Search "Salah LFC"  
-                                                │   ├── Search "Salah Reds"
-                                                │   └── Download → S3
-                                                │
-                                                ├── 3-min durable timer
-                                                │
-                                                ├── ATTEMPT 2: Same 3 queries
-                                                │
-                                                ├── 3-min durable timer
-                                                │
-                                                ├── ATTEMPT 3: Same 3 queries
-                                                │
-                                                └── Mark _twitter_complete=true
-```
-
-## File Structure
-
-```
-src/
-├── workflows/
-│   ├── rag_workflow.py          # NEW: RAGWorkflow
-│   ├── twitter_workflow.py      # MODIFIED: Self-managing retries
-│   ├── download_workflow.py     # UNCHANGED
-│   └── monitor_workflow.py      # SIMPLIFIED: Remove retry logic
-│
-├── activities/
-│   ├── rag.py                   # NEW: get_team_aliases, save_team_aliases
-│   ├── twitter.py               # MODIFIED: Accept aliases, run 3 searches
-│   └── download.py              # UNCHANGED
-│
-└── data/
-    └── models.py                # Add TWITTER_ALIASES field
-```
-
-## Implementation Details
-
-### 1. RAGWorkflow (`src/workflows/rag_workflow.py`)
-
-```python
-from dataclasses import dataclass
-from datetime import timedelta
-from temporalio import workflow
-from temporalio.common import RetryPolicy
-
-with workflow.unsafe.imports_passed_through():
-    from src.activities import rag as rag_activities
-
-@dataclass
-class RAGWorkflowInput:
-    fixture_id: int
-    event_id: str
-    team_name: str      # "Liverpool"
-    player_name: str    # "Mohamed Salah"
-
-@workflow.defn
-class RAGWorkflow:
-    """
-    Resolve team aliases via RAG, then trigger Twitter search workflow.
-    
-    This workflow:
-    1. Queries local LLM for team name variations
-    2. Stores aliases in MongoDB for debugging
-    3. Triggers TwitterWorkflow with resolved aliases
-    """
-    
-    @workflow.run
-    async def run(self, input: RAGWorkflowInput) -> dict:
-        # Step 1: Get team aliases from RAG
-        aliases = await workflow.execute_activity(
-            rag_activities.get_team_aliases,
-            input.team_name,
-            start_to_close_timeout=timedelta(seconds=60),
-            retry_policy=RetryPolicy(maximum_attempts=3),
-        )
-        
-        # Step 2: Store aliases in MongoDB
-        await workflow.execute_activity(
-            rag_activities.save_team_aliases,
-            args=[input.fixture_id, input.event_id, aliases],
-            start_to_close_timeout=timedelta(seconds=10),
-        )
-        
-        # Step 3: Trigger Twitter workflow with aliases
-        from src.workflows.twitter_workflow import TwitterWorkflow, TwitterWorkflowInput
-        
-        await workflow.execute_child_workflow(
-            TwitterWorkflow.run,
-            TwitterWorkflowInput(
-                fixture_id=input.fixture_id,
-                event_id=input.event_id,
-                player_name=input.player_name,
-                team_aliases=aliases,
-            ),
-            id=f"twitter-{input.event_id}",
-            task_queue="found-footy",
-        )
-        
-        return {"status": "completed", "aliases": aliases}
-```
-
-### 2. RAG Activities (`src/activities/rag.py`)
-
-```python
-from temporalio import activity
-from typing import List
-import httpx
-
-@activity.defn
-async def get_team_aliases(team_name: str) -> List[str]:
-    """
-    Get team name aliases for Twitter search via local LLM.
-    
-    Examples:
-        "Atletico de Madrid" → ["Atletico", "Atleti", "ATM"]
-        "Manchester United"  → ["Man United", "Man Utd", "MUFC"]
-        "Liverpool"          → ["Liverpool", "LFC", "Reds"]
-        "Real Madrid"        → ["Real Madrid", "Real", "Madrid"]
-    
-    Args:
-        team_name: Full team name from API
-    
-    Returns:
-        List of 3 aliases for Twitter search
-    """
-    activity.logger.info(f"🔍 Getting aliases for team: {team_name}")
-    
-    # TODO: Replace stub with actual LLM call
-    # See "Local LLM Integration" section below
-    
-    # STUB: Return team name 3x to test the flow
-    aliases = [team_name, team_name, team_name]
-    
-    activity.logger.info(f"📋 Resolved aliases: {aliases}")
-    return aliases
-
-
-@activity.defn
-async def save_team_aliases(fixture_id: int, event_id: str, aliases: List[str]) -> bool:
-    """Save resolved aliases to event for debugging/visibility."""
-    from src.data.mongo_store import FootyMongoStore
-    from src.data.models import EventFields
-    
-    store = FootyMongoStore()
-    
-    result = store.fixtures_active.update_one(
-        {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
-        {"$set": {f"events.$.{EventFields.TWITTER_ALIASES}": aliases}}
-    )
-    
-    return result.modified_count > 0
-```
-
-### 3. TwitterWorkflow Changes
-
-The TwitterWorkflow will be restructured to:
-- Accept `team_aliases: List[str]` in input
-- Build 3 search queries per attempt (one per alias)
-- Manage all 3 attempts internally with durable timers
-- Mark `_twitter_complete` only after all attempts
-
-```python
-@dataclass
-class TwitterWorkflowInput:
-    fixture_id: int
-    event_id: str
-    player_name: str
-    team_aliases: List[str]  # ["Liverpool", "LFC", "Reds"]
-
-@workflow.defn
-class TwitterWorkflow:
-    @workflow.run
-    async def run(self, input: TwitterWorkflowInput) -> dict:
-        for attempt in range(1, 4):
-            # Run 3 searches (one per alias)
-            all_videos = []
-            for alias in input.team_aliases:
-                query = f"{input.player_name.split()[-1]} {alias}"
-                result = await workflow.execute_activity(
-                    execute_twitter_search,
-                    args=[input.fixture_id, input.event_id, query],
-                    ...
-                )
-                all_videos.extend(result.get("videos", []))
-            
-            # Dedupe and save
-            unique = dedupe_by_url(all_videos)
-            await save_twitter_results(...)
-            
-            # Download
-            await workflow.execute_child_workflow(DownloadWorkflow.run, ...)
-            
-            # Wait 3 minutes (except after last attempt)
-            if attempt < 3:
-                wait = self._calculate_wait_to_next_3min_boundary()
-                await workflow.sleep(timedelta(seconds=wait))
-        
-        # Mark complete after all attempts
-        await mark_twitter_complete(...)
-        return {"status": "completed", "attempts": 3}
-```
-
-### 4. Monitor Simplification
-
-Remove from monitor:
-- `_twitter_count` tracking
-- Twitter retry logic
-- `update_event_twitter_count` calls
-- "additional searches" category
-
-Monitor now just:
-1. Debounces events (3 polls)
-2. Triggers RAGWorkflow once when `_monitor_complete=true`
-3. Checks `_twitter_complete` for fixture completion
-
-### 5. New Event Fields
-
-```python
-class EventFields:
-    # ... existing ...
-    TWITTER_ALIASES = "_twitter_aliases"  # ["Liverpool", "LFC", "Reds"]
-```
-
-## Execution Timeline
-
-```
-T+0:00  Goal detected, _monitor_count=1
-T+1:00  _monitor_count=2
-T+2:00  _monitor_count=3, _monitor_complete=true
-        → RAGWorkflow started
-        → get_team_aliases("Liverpool") → ["Liverpool", "LFC", "Reds"]
-        → TwitterWorkflow started
-
-T+2:10  Twitter Attempt 1:
-        → Search "Salah Liverpool" → 3 videos
-        → Search "Salah LFC" → 2 videos (1 dup)
-        → Search "Salah Reds" → 1 video (all dups)
-        → Dedupe → 4 unique videos
-        → Download → 3 uploaded to S3
-        → Sleep until T+5:00
-
-T+5:00  Twitter Attempt 2:
-        → Same searches, 1 new video found
-        → Download → 1 uploaded
-        → Sleep until T+8:00
-
-T+8:00  Twitter Attempt 3:
-        → Same searches, 0 new videos
-        → _twitter_complete=true
-
-T+9:00  Monitor sees _twitter_complete=true
-        → Fixture eligible for completion
-```
+**Current State**: `get_team_aliases(team_name)` returns `[team_name]` (stub)  
+**Future State**: Query local LLM (Ollama) for intelligent aliases
 
 ---
 
-# Local LLM Deployment on Strix Halo
+## What's Already Implemented
 
-## Hardware Specifications
+The workflow infrastructure is complete:
+
+| Component | Status | Location |
+|-----------|--------|----------|
+| `RAGWorkflow` | ✅ Done | `src/workflows/rag_workflow.py` |
+| `RAGWorkflowInput` dataclass | ✅ Done | `src/workflows/rag_workflow.py` |
+| `get_team_aliases` activity | ✅ Stub | `src/activities/rag.py` |
+| `save_team_aliases` activity | ✅ Done | `src/activities/rag.py` |
+| `_twitter_aliases` field | ✅ Done | `src/data/models.py` |
+| Worker registration | ✅ Done | `src/worker.py` |
+
+**All that remains is replacing the stub in `get_team_aliases` with an actual LLM call.**
+
+---
+
+## Target Hardware: Strix Halo
 
 | Component | Specification |
 |-----------|---------------|
-| **CPU** | AMD Ryzen AI Max+ 395 |
-| | 16-core / 32-thread |
-| | 3.0 GHz base, 5.1 GHz boost |
-| | 64 MB L3 Cache |
-| | 120W sustained, 140W boost |
-| **GPU** | AMD Radeon 8060S (integrated) |
-| | 40 Compute Units |
-| | Up to 2.9 GHz |
-| | 32 MB MALL Cache |
-| **Unified Memory** | Shared CPU/GPU memory pool |
+| **CPU** | AMD Ryzen AI Max+ 395 (16-core/32-thread) |
+| **GPU** | AMD Radeon 8060S (integrated, 40 CUs) |
+| **Memory** | Unified CPU/GPU memory pool |
 
-## ROCm + Ollama Stack
+The integrated GPU shares system RAM, making it ideal for running quantized LLMs.
 
-The recommended approach for running local LLMs on AMD hardware is **Ollama with ROCm**.
+---
 
-### Docker Compose Configuration
+## Recommended Stack: Ollama + ROCm
+
+### Docker Compose Addition
 
 Add to `docker-compose.yml`:
 
@@ -348,7 +74,7 @@ volumes:
     name: found-footy-ollama-models
 ```
 
-### Host Setup (Ubuntu/Debian)
+### Host Setup (Ubuntu)
 
 ```bash
 # 1. Install ROCm 6.x
@@ -361,39 +87,41 @@ sudo usermod -aG video,render $USER
 
 # 3. Verify GPU detection
 rocminfo | grep "Name:"
-# Should show: gfx1150 or similar for RDNA 3.5
 
-# 4. Set environment (add to ~/.bashrc)
+# 4. Set environment
 export HSA_OVERRIDE_GFX_VERSION=11.0.0
 ```
 
 ### Model Selection
 
-For the team alias task, a small efficient model is sufficient:
+For team alias lookup, a small model is sufficient:
 
-| Model | Size | Speed | Recommendation |
-|-------|------|-------|----------------|
-| **Phi-3 Mini** | 3.8B | Fast | ✅ Best for this task |
-| **Mistral 7B** | 7B | Medium | Good quality |
-| **Llama 3.1 8B** | 8B | Medium | Highest quality |
-| **Qwen2 7B** | 7B | Medium | Good multilingual |
+| Model | Size | Speed | Notes |
+|-------|------|-------|-------|
+| **Phi-3 Mini** | 3.8B | ~50 t/s | ✅ Recommended - fast, good quality |
+| Mistral 7B Q4 | 7B | ~30 t/s | Higher quality, slower |
+| Qwen2 7B | 7B | ~30 t/s | Good multilingual support |
 
 ```bash
-# Pull model (inside container or host)
+# Pull model
 docker exec found-footy-ollama ollama pull phi3:mini
-
-# Or for better quality
-docker exec found-footy-ollama ollama pull mistral:7b-instruct-q4_K_M
 ```
 
-### Integration with RAG Activity
+---
+
+## Implementation: Replace the Stub
+
+Update `src/activities/rag.py`:
 
 ```python
-# src/activities/rag.py
+"""
+RAG Activities - Team Alias Lookup
 
-import httpx
+Activities for the RAGWorkflow.
+"""
 from temporalio import activity
 from typing import List
+import httpx
 import json
 
 OLLAMA_URL = "http://found-footy-ollama:11434"
@@ -412,15 +140,23 @@ Examples:
 - "Manchester United" → ["Man United", "Man Utd", "MUFC"]
 - "Borussia Dortmund" → ["Dortmund", "BVB", "Borussia"]
 - "Paris Saint-Germain" → ["PSG", "Paris", "Paris SG"]
+- "Liverpool" → ["Liverpool", "LFC", "Reds"]
 """
+
 
 @activity.defn
 async def get_team_aliases(team_name: str) -> List[str]:
     """
     Get team name aliases via local Ollama LLM.
     
-    Uses Phi-3 Mini or similar small model for fast inference.
-    Falls back to [team_name] * 3 if LLM unavailable.
+    Uses Phi-3 Mini for fast inference (~1-2 seconds).
+    Falls back to [team_name] if LLM unavailable.
+    
+    Args:
+        team_name: Full team name from API (e.g., "Liverpool")
+    
+    Returns:
+        List of 3 aliases for Twitter search
     """
     activity.logger.info(f"🔍 Getting aliases for team: {team_name}")
     
@@ -445,12 +181,17 @@ async def get_team_aliases(team_name: str) -> List[str]:
             text = result.get("response", "").strip()
             
             # Parse JSON array from response
-            # Handle cases like: ["Atletico", "Atleti", "ATM"]
-            # or wrapped in markdown: ```json\n[...]\n```
+            # Handle markdown wrapping: ```json\n[...]\n```
             if "```" in text:
                 text = text.split("```")[1]
                 if text.startswith("json"):
                     text = text[4:]
+            
+            # Find the JSON array in the response
+            start = text.find("[")
+            end = text.rfind("]") + 1
+            if start >= 0 and end > start:
+                text = text[start:end]
             
             aliases = json.loads(text.strip())
             
@@ -459,15 +200,44 @@ async def get_team_aliases(team_name: str) -> List[str]:
                 activity.logger.info(f"✅ LLM aliases: {aliases}")
                 return aliases
             
+            activity.logger.warning(f"⚠️ LLM returned invalid format: {text}")
+            
+    except httpx.ConnectError:
+        activity.logger.warning("⚠️ Ollama not available, using fallback")
+    except json.JSONDecodeError as e:
+        activity.logger.warning(f"⚠️ Failed to parse LLM response: {e}")
     except Exception as e:
-        activity.logger.warning(f"⚠️ LLM failed, using fallback: {e}")
+        activity.logger.warning(f"⚠️ LLM error: {e}")
     
     # Fallback: just use team name
-    activity.logger.info(f"📋 Fallback aliases: [{team_name}] * 3")
-    return [team_name, team_name, team_name]
+    activity.logger.info(f"📋 Fallback aliases: [{team_name}]")
+    return [team_name]
+
+
+@activity.defn
+async def save_team_aliases(fixture_id: int, event_id: str, aliases: List[str]) -> bool:
+    """Save resolved aliases to event for debugging/visibility."""
+    from src.data.mongo_store import FootyMongoStore
+    from src.data.models import EventFields
+    
+    activity.logger.info(f"💾 Saving aliases for {event_id}: {aliases}")
+    
+    store = FootyMongoStore()
+    
+    try:
+        result = store.fixtures_active.update_one(
+            {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+            {"$set": {f"events.$.{EventFields.TWITTER_ALIASES}": aliases}}
+        )
+        return result.modified_count > 0
+    except Exception as e:
+        activity.logger.error(f"❌ Failed to save aliases: {e}")
+        return False
 ```
 
-### Performance Expectations
+---
+
+## Performance Expectations
 
 On Strix Halo with integrated Radeon 8060S:
 
@@ -477,45 +247,52 @@ On Strix Halo with integrated Radeon 8060S:
 | Mistral 7B Q4 | ~25-35 t/s | 2-4 seconds |
 | Llama 3.1 8B Q4 | ~20-30 t/s | 3-5 seconds |
 
-The unified memory architecture means models up to ~24GB can run without issue, but smaller quantized models (Q4_K_M) are recommended for speed.
+The unified memory architecture allows models up to ~24GB without issue.
 
-### Memory Allocation
+---
 
-The integrated GPU shares system RAM. Recommended allocation:
+## Testing
 
-```yaml
-# docker-compose.yml
-environment:
-  - OLLAMA_NUM_PARALLEL=2      # Max concurrent requests
-  - OLLAMA_MAX_LOADED_MODELS=1 # Keep 1 model in memory
-```
-
-For a 32GB system:
-- OS + Apps: ~8GB
-- Docker containers: ~4GB
-- Ollama model: ~8GB (7B Q4)
-- Headroom: ~12GB
-
-### Testing the Integration
+### 1. Start Ollama
 
 ```bash
-# 1. Start Ollama container
 docker compose up -d ollama
-
-# 2. Pull model
 docker exec found-footy-ollama ollama pull phi3:mini
+```
 
-# 3. Test directly
+### 2. Test Directly
+
+```bash
 curl http://localhost:11434/api/generate -d '{
   "model": "phi3:mini",
   "prompt": "Team: Liverpool FC\n\nReturn JSON array of 3 aliases:",
+  "system": "Return ONLY a JSON array of 3 team aliases.",
   "stream": false
 }'
-
-# Expected: {"response": "[\"Liverpool\", \"LFC\", \"Reds\"]", ...}
 ```
 
-### Alternative: vLLM with ROCm
+Expected:
+```json
+{"response": "[\"Liverpool\", \"LFC\", \"Reds\"]", ...}
+```
+
+### 3. Test via Activity
+
+```python
+# In Python REPL inside worker container
+import asyncio
+from src.activities.rag import get_team_aliases
+
+async def test():
+    aliases = await get_team_aliases("Atletico de Madrid")
+    print(aliases)  # ["Atletico", "Atleti", "ATM"]
+
+asyncio.run(test())
+```
+
+---
+
+## Alternative: vLLM
 
 For higher throughput (multiple concurrent requests), consider vLLM:
 
@@ -538,10 +315,9 @@ services:
       --gpu-memory-utilization 0.8
 ```
 
-vLLM provides an OpenAI-compatible API, making integration easier:
+vLLM provides an OpenAI-compatible API:
 
 ```python
-# Using OpenAI client with vLLM
 from openai import AsyncOpenAI
 
 client = AsyncOpenAI(
@@ -562,24 +338,33 @@ response = await client.chat.completions.create(
 
 ---
 
-## Migration Checklist
-
-- [ ] Create `src/workflows/rag_workflow.py`
-- [ ] Create `src/activities/rag.py` with stub implementation
-- [ ] Add `TWITTER_ALIASES` to `EventFields` in models.py
-- [ ] Add `update_event_aliases` method to `FootyMongoStore`
-- [ ] Restructure `TwitterWorkflow` for self-managed retries
-- [ ] Simplify `MonitorWorkflow` to remove twitter retry logic
-- [ ] Update `debounce_events` activity to trigger RAGWorkflow
-- [ ] Register new workflow and activities in worker.py
-- [ ] Test with stub (returns team name 3x)
-- [ ] Add Ollama service to docker-compose
-- [ ] Implement actual LLM call in `get_team_aliases`
-- [ ] Test end-to-end with real fixtures
-
 ## Open Questions
 
-1. **Caching**: Should we cache team aliases? (Same team appears in multiple fixtures)
-2. **Fallback strategy**: If LLM gives bad output, what's the fallback?
-3. **Multilingual**: Some team names are in Spanish/Italian - should LLM handle translation?
-4. **Rate limiting**: Max concurrent Ollama requests?
+1. **Caching**: Should we cache aliases? Same team appears in multiple fixtures.
+   - Option: Store in MongoDB `team_aliases` collection
+   - Option: In-memory LRU cache in activity
+
+2. **Multilingual**: Some team names are Spanish/Italian/German.
+   - Phi-3 handles this well
+   - Consider explicit language detection
+
+3. **Fallback Priority**: When LLM returns bad output:
+   - Currently: `[team_name]` (single alias)
+   - Option: Parse partial results
+   - Option: Secondary model
+
+4. **Rate Limiting**: Max concurrent Ollama requests:
+   - `OLLAMA_NUM_PARALLEL=2` limits concurrent inference
+   - Activity timeout (30s) handles slow responses
+
+---
+
+## Migration Checklist
+
+- [ ] Add `ollama` service to `docker-compose.yml`
+- [ ] Set up ROCm on host (if not already)
+- [ ] Pull model: `ollama pull phi3:mini`
+- [ ] Replace stub in `src/activities/rag.py`
+- [ ] Add `httpx` to `requirements.txt`
+- [ ] Test with real fixture
+- [ ] Consider caching strategy

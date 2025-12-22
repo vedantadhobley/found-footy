@@ -5,15 +5,16 @@ Tracks active fixtures, fetches fresh data, and processes events inline.
 No EventWorkflow needed with player_id in event_id!
 
 ORCHESTRATION MODEL:
-- Monitor is the single orchestrator for all event processing
-- Monitor tracks: _monitor_count, _monitor_complete, _twitter_count
-- Twitter workflow sets: _twitter_complete (when done)
+- Monitor is the single orchestrator for event monitoring and debouncing
+- Monitor triggers RAGWorkflow ONCE when _monitor_complete=true
+- RAGWorkflow → TwitterWorkflow (manages its own 3 attempts with 3-min timers)
+- Twitter workflow sets: _twitter_complete (when all 3 attempts done)
 - Fixture completes when ALL events have _monitor_complete=true AND _twitter_complete=true
 
 FIXTURE LIFECYCLE:
 - Staging fixtures: Polled for updates (times, status, metadata)
   - When status changes NS/TBD → anything else: Queued for activation
-- Active fixtures: Full event monitoring, debouncing, Twitter workflows
+- Active fixtures: Full event monitoring, debouncing, RAG→Twitter workflows
   - When status is completed and all events complete: Moved to completed
 - End of cycle: Complete ready fixtures, then activate queued fixtures
 """
@@ -25,7 +26,7 @@ from typing import List
 
 with workflow.unsafe.imports_passed_through():
     from src.activities import monitor as monitor_activities
-    from src.workflows.twitter_workflow import TwitterWorkflow
+    from src.workflows.rag_workflow import RAGWorkflow, RAGWorkflowInput
     from src.utils.fixture_status import get_completed_statuses
 
 
@@ -92,8 +93,7 @@ class MonitorWorkflow:
         )
         
         # Process each fixture
-        twitter_first_searches = []
-        twitter_additional_searches = []
+        rag_workflows_started = []
         completed_count = 0
         
         for fixture_data in fixtures:
@@ -123,14 +123,15 @@ class MonitorWorkflow:
             
             # Notify frontend immediately when events transition to _monitor_complete=true
             # This lets frontend show "extracting" state BEFORE Twitter/Download starts
-            if result.get("twitter_triggered") or result.get("twitter_retry_needed"):
+            if result.get("twitter_triggered"):
                 await workflow.execute_activity(
                     monitor_activities.notify_frontend_refresh,
                     start_to_close_timeout=timedelta(seconds=5),
                     retry_policy=RetryPolicy(maximum_attempts=1),
                 )
             
-            # Trigger TwitterWorkflow for each newly stable event
+            # Trigger RAGWorkflow for each newly stable event (ONCE per event)
+            # RAGWorkflow → TwitterWorkflow handles all 3 attempts internally
             for event_info in result.get("twitter_triggered", []):
                 event_id = event_info["event_id"]
                 player_name = event_info["player_name"]
@@ -142,46 +143,28 @@ class MonitorWorkflow:
                 player_last = player_name.split()[-1] if player_name else "Unknown"
                 team_clean = team_name.replace(" ", "_").replace(".", "_")
                 minute_str = f"{minute}+{extra}min" if extra else f"{minute}min"
-                twitter_id = f"twitter1-{team_clean}-{player_last}-{minute_str}-{event_id}"
+                rag_workflow_id = f"rag-{team_clean}-{player_last}-{minute_str}-{event_id}"
                 
-                twitter_first_searches.append(twitter_id)
+                rag_workflows_started.append(rag_workflow_id)
                 
-                # Start TwitterWorkflow (first attempt, attempt_number=1) - non-blocking
-                # Twitter workflow sets _twitter_complete=true when done (including downloads)
+                # Start RAGWorkflow (fire-and-forget)
+                # RAGWorkflow triggers TwitterWorkflow which manages all 3 attempts
                 await workflow.start_child_workflow(
-                    TwitterWorkflow.run,
-                    args=[fixture_id, event_id, player_name, team_name, 1, fixture_finished],
-                    id=twitter_id,
-                    execution_timeout=timedelta(minutes=10),
+                    RAGWorkflow.run,
+                    RAGWorkflowInput(
+                        fixture_id=fixture_id,
+                        event_id=event_id,
+                        team_name=team_name,
+                        player_name=player_name,
+                        minute=minute,
+                        extra=extra,
+                    ),
+                    id=rag_workflow_id,
+                    execution_timeout=timedelta(minutes=25),  # 3 attempts @ ~5min + 2x 3-min timers
                     parent_close_policy=ParentClosePolicy.ABANDON,
                 )
-            
-            # Trigger additional TwitterWorkflow for events that need more searches
-            for event_info in result.get("twitter_retry_needed", []):
-                event_id = event_info["event_id"]
-                player_name = event_info["player_name"]
-                team_name = event_info["team_name"]
-                minute = event_info["minute"]
-                extra = event_info.get("extra")
-                attempt_number = event_info.get("attempt_number", 1)
                 
-                # Build human-readable workflow ID with attempt number
-                player_last = player_name.split()[-1] if player_name else "Unknown"
-                team_clean = team_name.replace(" ", "_").replace(".", "_")
-                minute_str = f"{minute}+{extra}min" if extra else f"{minute}min"
-                twitter_id = f"twitter{attempt_number}-{team_clean}-{player_last}-{minute_str}-{event_id}"
-                
-                twitter_additional_searches.append(twitter_id)
-                
-                # Start TwitterWorkflow (additional attempt) - non-blocking
-                # Twitter workflow sets _twitter_complete=true when done (including downloads)
-                await workflow.start_child_workflow(
-                    TwitterWorkflow.run,
-                    args=[fixture_id, event_id, player_name, team_name, attempt_number, fixture_finished],
-                    id=twitter_id,
-                    execution_timeout=timedelta(minutes=10),
-                    parent_close_policy=ParentClosePolicy.ABANDON,
-                )
+                workflow.logger.info(f"🔍 Started RAGWorkflow: {rag_workflow_id}")
             
             # Check if fixture is finished and should be completed
             if fixture_finished:
@@ -222,8 +205,7 @@ class MonitorWorkflow:
             f"✅ Monitor complete: "
             f"staging={staging_result.get('updated_count', 0)} updated/{activated_count} activated, "
             f"active={len(fixtures)} processed/{completed_count} completed, "
-            f"{len(twitter_first_searches)} new searches, "
-            f"{len(twitter_additional_searches)} additional searches"
+            f"{len(rag_workflows_started)} RAG workflows started"
         )
         
         return {
@@ -231,6 +213,5 @@ class MonitorWorkflow:
             "staging_activated": activated_count,
             "active_fixtures_processed": len(fixtures),
             "active_fixtures_completed": completed_count,
-            "twitter_first_searches": len(twitter_first_searches),
-            "twitter_additional_searches": len(twitter_additional_searches),
+            "rag_workflows_started": len(rag_workflows_started),
         }

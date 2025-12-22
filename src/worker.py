@@ -60,10 +60,11 @@ from temporalio.worker import Worker
 from src.workflows import (
     IngestWorkflow,
     MonitorWorkflow,
+    RAGWorkflow,
     TwitterWorkflow,
     DownloadWorkflow,
 )
-from src.activities import ingest, monitor, twitter, download
+from src.activities import ingest, monitor, rag, twitter, download
 
 
 async def setup_schedules(client: Client):
@@ -147,6 +148,7 @@ async def main():
             workflows=[
                 IngestWorkflow,
                 MonitorWorkflow,
+                RAGWorkflow,
                 TwitterWorkflow,
                 DownloadWorkflow,
             ],
@@ -164,11 +166,15 @@ async def main():
                 monitor.sync_fixture_metadata,
                 monitor.complete_fixture_if_ready,
                 monitor.notify_frontend_refresh,
+                # RAG activities (team alias lookup - stub for now)
+                rag.get_team_aliases,
+                rag.save_team_aliases,
                 # Twitter activities (4 granular for retry control)
                 twitter.get_twitter_search_data,
                 twitter.execute_twitter_search,
                 twitter.save_discovered_videos,
                 twitter.mark_event_twitter_complete,
+                twitter.update_twitter_attempt,
                 # Download activities (6 granular for per-video retry + quality replacement)
                 download.fetch_event_data,
                 download.download_single_video,
@@ -181,8 +187,8 @@ async def main():
         )
         
         print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
-        print("📋 Workflows: Ingest, Monitor, Twitter, Download", flush=True)
-        print("🔧 Activities: 20 total (2 ingest, 9 monitor, 4 twitter, 6 download)", flush=True)
+        print("📋 Workflows: Ingest, Monitor, RAG, Twitter, Download", flush=True)
+        print("🔧 Activities: 23 total (2 ingest, 9 monitor, 2 rag, 5 twitter, 6 download)", flush=True)
         print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every minute)", flush=True)
         await worker.run()
     except Exception as e:

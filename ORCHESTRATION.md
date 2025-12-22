@@ -1,46 +1,55 @@
 # Found Footy - Orchestration Model
 
-## 🎯 Core Principle: Monitor is the Single Orchestrator
+## 🎯 Core Principle: Decoupled Workflow Architecture
 
-The **MonitorWorkflow** is the central orchestrator for all event processing. It runs every minute and manages the entire lifecycle of each event through counter-based tracking.
+The system uses a **decoupled architecture** where:
+- **MonitorWorkflow** handles debouncing and triggers RAGWorkflow **ONCE** per event
+- **RAGWorkflow** resolves team aliases (stub now, LLM later) and triggers TwitterWorkflow
+- **TwitterWorkflow** manages all 3 search attempts **internally** with 3-minute durable timers
+
+This decoupling allows Twitter searches to run at 3-minute intervals instead of being tied to Monitor's 1-minute poll cycle.
 
 ---
 
 ## 📊 Event State Machine
 
-Each event goes through a simple state machine controlled by the Monitor:
-
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         MONITOR ORCHESTRATION                                │
+│                         EVENT LIFECYCLE                                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                    PHASE 1: DEBOUNCE (Monitor Count)                  │   │
+│  │                    PHASE 1: DEBOUNCE (Monitor)                        │   │
 │  │                                                                        │   │
 │  │   _monitor_complete = FALSE                                            │   │
 │  │                                                                        │   │
-│  │   Each minute:                                                         │   │
-│  │     IF _monitor_count < 3:  increment count                            │   │
-│  │     IF _monitor_count >= 3: set _monitor_complete = TRUE               │   │
-│  │                              set _twitter_count = 1                     │   │
-│  │                              trigger TwitterWorkflow                    │   │
+│  │   Each minute (Monitor poll):                                          │   │
+│  │     IF event seen: increment _monitor_count                            │   │
+│  │     IF _monitor_count >= 3:                                            │   │
+│  │       → set _monitor_complete = TRUE                                   │   │
+│  │       → set _twitter_count = 1 (initial)                               │   │
+│  │       → trigger RAGWorkflow (ONCE, fire-and-forget)                    │   │
 │  │                                                                        │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                              │                                               │
-│                              ▼ (_monitor_complete = TRUE)                    │
+│                              ▼ (RAGWorkflow started)                         │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                    PHASE 2: TWITTER (Twitter Count)                   │   │
+│  │                    PHASE 2: TWITTER (Self-Managed)                    │   │
 │  │                                                                        │   │
-│  │   _twitter_complete = FALSE                                            │   │
+│  │   RAGWorkflow:                                                         │   │
+│  │     1. get_team_aliases(team_name) → ["Liverpool", "LFC", "Reds"]      │   │
+│  │     2. save_team_aliases to MongoDB                                    │   │
+│  │     3. Start TwitterWorkflow (child, waits for completion)             │   │
 │  │                                                                        │   │
-│  │   Each minute:                                                         │   │
-│  │     IF NOT _twitter_complete:                                          │   │
-│  │       IF _twitter_count < 3:  increment count                          │   │
-│  │                                trigger TwitterWorkflow                  │   │
-│  │                                                                        │   │
-│  │   TwitterWorkflow (when done):                                         │   │
-│  │     sets _twitter_complete = TRUE                                      │   │
+│  │   TwitterWorkflow (manages all 3 attempts internally):                 │   │
+│  │     FOR attempt IN [1, 2, 3]:                                          │   │
+│  │       → update_twitter_attempt(attempt)                                │   │
+│  │       → Search all aliases: "Salah Liverpool", "Salah LFC", ...        │   │
+│  │       → Dedupe videos, save to _discovered_videos                      │   │
+│  │       → Trigger DownloadWorkflow                                       │   │
+│  │       → IF attempt < 3: sleep(3 minutes) ← DURABLE TIMER               │   │
+│  │     AFTER attempt 3:                                                   │   │
+│  │       → set _twitter_complete = TRUE                                   │   │
 │  │                                                                        │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                              │                                               │
@@ -48,9 +57,9 @@ Each event goes through a simple state machine controlled by the Monitor:
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │                         PHASE 3: COMPLETE                             │   │
 │  │                                                                        │   │
-│  │   When ALL events have:                                                │   │
-│  │     _monitor_complete = TRUE  AND                                      │   │
-│  │     _twitter_complete = TRUE                                           │   │
+│  │   When fixture status = FT/AET/PEN AND:                                │   │
+│  │     ALL events have _monitor_complete = TRUE                           │   │
+│  │     ALL events have _twitter_complete = TRUE                           │   │
 │  │                                                                        │   │
 │  │   → Fixture moves to fixtures_completed                                │   │
 │  │                                                                        │   │
@@ -63,79 +72,143 @@ Each event goes through a simple state machine controlled by the Monitor:
 
 ## 🔢 Event Tracking Fields
 
-| Field | Set By | Meaning |
-|-------|--------|---------|
-| `_monitor_count` | Monitor | Number of consecutive debounce cycles (1, 2, 3) |
-| `_monitor_complete` | Monitor | TRUE when debounce finished (count reached 3) |
-| `_twitter_count` | Monitor | Number of Twitter attempts started (1, 2, 3) |
-| `_twitter_complete` | Twitter Workflow | TRUE when Twitter workflow finishes (including downloads) |
+| Field | Set By | When | Purpose |
+|-------|--------|------|---------|
+| `_monitor_count` | Monitor | Each poll when event seen | Debounce counter (1, 2, 3) |
+| `_monitor_complete` | Monitor | When `_monitor_count >= 3` | Debounce finished |
+| `_twitter_aliases` | RAGWorkflow | After alias lookup | Team search variations |
+| `_twitter_count` | TwitterWorkflow | Start of each attempt | Tracks current attempt (1, 2, 3) |
+| `_twitter_complete` | TwitterWorkflow | After attempt 3 | All searches finished |
 
 ---
 
-## 🔄 Monitor Decision Tree
+## 🔄 Workflow Responsibilities
 
-```python
-for each event in fixture:
-    
-    if NOT event._monitor_complete:
-        # PHASE 1: Still debouncing
-        if event._monitor_count < 3:
-            event._monitor_count += 1
-            # Event still stabilizing...
+### MonitorWorkflow (Scheduled Every Minute)
+- Polls active fixtures from API
+- Increments `_monitor_count` for seen events
+- Sets `_monitor_complete = TRUE` when count reaches 3
+- **Triggers RAGWorkflow ONCE** (fire-and-forget)
+- Checks fixture completion eligibility
+- **Does NOT manage Twitter retries** (that's TwitterWorkflow's job now)
+
+### RAGWorkflow (Triggered by Monitor)
+- Resolves team name aliases (stub: returns `[team_name]`)
+- Saves aliases to `_twitter_aliases` in MongoDB
+- Triggers TwitterWorkflow as child (waits for completion)
+- Future: Will query local LLM for intelligent aliases
+
+### TwitterWorkflow (Triggered by RAGWorkflow)
+- **Self-manages all 3 attempts** with durable timers
+- Builds search queries: `{player_last} {alias}` for each alias
+- Deduplicates videos across aliases and previous attempts
+- Triggers DownloadWorkflow after each attempt
+- Updates `_twitter_count` at start of each attempt
+- Sets `_twitter_complete = TRUE` after attempt 3
+
+### DownloadWorkflow (Triggered by TwitterWorkflow)
+- Downloads videos from Twitter URLs
+- Applies duration filter (5-60 seconds)
+- Computes perceptual hash for deduplication
+- Compares quality with existing S3 videos
+- Uploads new/better videos to S3
+
+---
+
+## ⏱️ Timeline Example
+
+```
+T+0:00  Goal scored! Event appears in API
+T+1:00  Monitor poll #1 → _monitor_count = 1
+T+2:00  Monitor poll #2 → _monitor_count = 2
+T+3:00  Monitor poll #3 → _monitor_count = 3
+        → _monitor_complete = TRUE
+        → RAGWorkflow triggered (fire-and-forget)
         
-        if event._monitor_count >= 3:
-            event._monitor_complete = True
-            event._twitter_count = 1
-            trigger TwitterWorkflow(attempt=1)
-    
-    else:  # _monitor_complete = True
-        # PHASE 2: Check Twitter status
-        if NOT event._twitter_complete:
-            if event._twitter_count < 3:
-                event._twitter_count += 1
-                trigger TwitterWorkflow(attempt=twitter_count)
-            # else: waiting for last Twitter workflow to finish
+T+3:05  RAGWorkflow:
+        → get_team_aliases("Liverpool") → ["Liverpool", "LFC", "Reds"]
+        → save to _twitter_aliases
+        → Start TwitterWorkflow
+        
+T+3:10  TwitterWorkflow Attempt 1:
+        → _twitter_count = 1
+        → Search "Salah Liverpool" → 3 videos
+        → Search "Salah LFC" → 2 videos (1 dup)
+        → Search "Salah Reds" → 1 video (all dups)
+        → Dedupe → 4 unique videos
+        → DownloadWorkflow → 3 uploaded to S3
+        → Sleep until next 3-min boundary (~T+6:00)
+        
+T+6:00  TwitterWorkflow Attempt 2:
+        → _twitter_count = 2
+        → Same 3 searches (new videos may exist)
+        → 1 new video found
+        → DownloadWorkflow → 1 uploaded
+        → Sleep until ~T+9:00
+        
+T+9:00  TwitterWorkflow Attempt 3:
+        → _twitter_count = 3
+        → Same 3 searches
+        → 0 new videos
+        → _twitter_complete = TRUE
+        
+T+10:00 Monitor sees:
+        → Fixture status = FT
+        → All events: _monitor_complete = TRUE
+        → All events: _twitter_complete = TRUE
+        → Move fixture to fixtures_completed
 ```
 
 ---
 
-## 📋 Workflow Responsibilities
+## 🎯 Key Design Decisions
 
-### MonitorWorkflow (Orchestrator)
-- Runs every minute
-- Tracks `_monitor_count` and `_monitor_complete`
-- Tracks `_twitter_count` (increments BEFORE triggering Twitter)
-- Triggers TwitterWorkflow when appropriate
-- Checks if fixture can be completed
+### Why decouple Twitter from Monitor?
 
-### TwitterWorkflow (Worker)
-- Does the actual Twitter search
-- Triggers DownloadWorkflow as child
-- Sets `_twitter_complete = TRUE` when done (in finally block)
-- This is the signal that all work for this attempt is finished
+**Before**: Monitor triggered TwitterWorkflow on each 1-minute poll
+- 3 attempts at ~1-minute intervals (tied to poll cycle)
+- Monitor logic was complex (tracking `twitter_retry_needed`)
 
-### DownloadWorkflow (Worker)
-- Downloads videos from Twitter URLs
-- Uploads to S3
-- Saves results to MongoDB
-- Called by TwitterWorkflow, not directly by Monitor
+**After**: Monitor triggers RAGWorkflow ONCE, TwitterWorkflow self-manages
+- 3 attempts at 3-minute intervals (better for video discovery)
+- Monitor logic is simple (just trigger once)
+- Durable timers survive worker restarts
+
+### Why 3-minute spacing?
+
+Goal videos appear on Twitter over 5-15 minutes:
+- Attempt 1 (immediately): Catch early uploads
+- Attempt 2 (+3 min): New uploads appearing
+- Attempt 3 (+6 min): Final sweep for late/HD uploads
+
+### Why RAGWorkflow as intermediary?
+
+1. **Clean separation**: Alias lookup is separate from Twitter search
+2. **Future extensibility**: Swap stub for LLM without touching TwitterWorkflow
+3. **Visibility**: Aliases saved to MongoDB for debugging
+
+### Why durable timers?
+
+Temporal's `workflow.sleep()` survives:
+- Worker restarts
+- Container crashes
+- Network issues
+
+The 3-minute wait is guaranteed even if the worker dies mid-wait.
 
 ---
 
 ## 🏁 Fixture Completion Logic
 
-A fixture can only be completed when:
+A fixture moves to `fixtures_completed` when:
 
-1. **ALL valid events** have `_monitor_complete = TRUE`
-2. **ALL valid events** have `_twitter_complete = TRUE`
-
-This ensures:
-- All debouncing is finished
-- All Twitter searches have completed
-- All downloads have finished
+1. **Fixture status** is `FT`, `AET`, or `PEN`
+2. **ALL valid events** have `_monitor_complete = TRUE`
+3. **ALL valid events** have `_twitter_complete = TRUE`
 
 ```python
-def complete_fixture(fixture_id):
+def complete_fixture_if_ready(fixture_id):
+    fixture = get_fixture(fixture_id)
     valid_events = [e for e in events if not e._removed and e._event_id]
     
     all_monitored = all(e._monitor_complete for e in valid_events)
@@ -147,67 +220,18 @@ def complete_fixture(fixture_id):
 
 ---
 
-## ⏱️ Timeline Example
-
-```
-Minute 0:  Goal scored! Event appears in API
-Minute 1:  Monitor sees new event → _monitor_count = 1
-Minute 2:  Monitor sees event again → _monitor_count = 2
-Minute 3:  Monitor sees event again → _monitor_count = 3 → _monitor_complete = TRUE
-           → Triggers TwitterWorkflow(attempt=1) → _twitter_count = 1
-           
-           TwitterWorkflow runs (60-150 seconds)
-           → Downloads videos
-           → Sets _twitter_complete = TRUE (when done)
-           
-Minute 4:  Monitor checks: _twitter_complete = TRUE for all events?
-           If yes AND fixture FT → complete_fixture()
-           If no → keep waiting
-           
-           OR if _twitter_complete = FALSE and _twitter_count < 3:
-           → Triggers TwitterWorkflow(attempt=2) → _twitter_count = 2
-           
-...repeat until _twitter_count = 3 and all workflows finish...
-```
-
----
-
-## 🎯 Key Design Decisions
-
-### Why Monitor tracks count, Twitter sets complete?
-
-1. **Clear separation of concerns**
-   - Monitor knows "how many attempts have I started"
-   - Twitter knows "have I finished my work"
-
-2. **Race condition prevention**
-   - If Monitor set `_twitter_complete`, it would happen BEFORE Twitter finishes
-   - By having Twitter set it, we know downloads are actually done
-
-3. **Simple state management**
-   - Monitor only increments counters
-   - Twitter only sets completion flag
-   - No complex coordination needed
-
-### Why non-blocking child workflows?
-
-TwitterWorkflow uses `ParentClosePolicy.ABANDON` so:
-- Monitor doesn't block waiting for searches
-- Multiple Twitter searches can run in parallel
-- Monitor can continue processing other fixtures
-
-The `_twitter_complete` flag ensures we still track when work is done.
-
----
-
 ## 🚨 Error Handling
 
-### Twitter workflow fails
-- `_twitter_complete` is set in `finally` block
-- Even if search/download fails, completion flag is set
-- Fixture can still complete (with partial or no videos)
+### TwitterWorkflow fails mid-execution
+- Temporal retries the workflow
+- `_twitter_count` shows how many attempts started
+- Partial videos already downloaded are preserved
 
 ### Event removed (VAR disallowed)
-- Event marked `_removed = TRUE`
+- Event marked `_removed = TRUE` by Monitor
 - Ignored in completion checks
-- Fixture can complete without waiting for removed events
+- Any running TwitterWorkflow continues but results are orphaned
+
+### LLM unavailable (future)
+- RAGWorkflow activity falls back to `[team_name]`
+- Search still works, just with single alias

@@ -299,6 +299,7 @@ class EventFields:
     TWITTER_COMPLETE = "_twitter_complete"
     TWITTER_COMPLETED_AT = "_twitter_completed_at"
     TWITTER_SEARCH = "_twitter_search"
+    TWITTER_ALIASES = "_twitter_aliases"  # Team name aliases from RAG
     
     # Video storage
     DISCOVERED_VIDEOS = "_discovered_videos"
@@ -324,6 +325,7 @@ class EventFields:
             cls.TWITTER_COMPLETE,
             cls.TWITTER_COMPLETED_AT,
             cls.TWITTER_SEARCH,
+            cls.TWITTER_ALIASES,
             cls.DISCOVERED_VIDEOS,
             cls.S3_VIDEOS,
             cls.VIDEO_COUNT,
