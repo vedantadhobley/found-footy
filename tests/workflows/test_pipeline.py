@@ -167,8 +167,9 @@ def main():
     parser.add_argument(
         "--fixture-id", "-f",
         type=int,
-        default=DEFAULT_FIXTURE_ID,
-        help=f"Fixture ID to test (default: {DEFAULT_FIXTURE_ID})"
+        nargs="+",
+        default=[DEFAULT_FIXTURE_ID],
+        help=f"Fixture ID(s) to test (default: {DEFAULT_FIXTURE_ID}). Can specify multiple."
     )
     
     parser.add_argument(
@@ -179,8 +180,26 @@ def main():
     
     args = parser.parse_args()
     
-    success = insert_fixture_to_staging(args.fixture_id, clean_first=not args.no_clean)
-    exit(0 if success else 1)
+    # Handle multiple fixtures
+    fixture_ids = args.fixture_id if isinstance(args.fixture_id, list) else [args.fixture_id]
+    
+    print(f"🚀 Processing {len(fixture_ids)} fixture(s)...")
+    print()
+    
+    success_count = 0
+    for fixture_id in fixture_ids:
+        print(f"{'='*60}")
+        print(f"📋 Fixture {fixture_id}")
+        print(f"{'='*60}")
+        if insert_fixture_to_staging(fixture_id, clean_first=not args.no_clean):
+            success_count += 1
+        print()
+    
+    print(f"{'='*60}")
+    print(f"✅ Complete: {success_count}/{len(fixture_ids)} fixtures added to staging")
+    print(f"{'='*60}")
+    
+    exit(0 if success_count == len(fixture_ids) else 1)
 
 
 if __name__ == "__main__":
