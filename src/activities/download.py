@@ -299,7 +299,7 @@ async def download_single_video(
     file_hash = _calculate_md5(output_path)
     file_size = os.path.getsize(output_path)
     
-    # Generate perceptual hash (duration + frames at 1s, 2s, 3s)
+    # Generate perceptual hash (duration + frames at 25%, 50%, 75%)
     # Duration is content-invariant - same video from different sources has same duration
     perceptual_hash = _generate_perceptual_hash(output_path, duration)
     
@@ -906,13 +906,18 @@ def _get_video_metadata(file_path: str) -> dict:
 
 def _generate_perceptual_hash(file_path: str, duration: float) -> str:
     """
-    Generate perceptual hash from video duration and 3 video frames at 1s, 2s, and 3s.
+    Generate perceptual hash from video duration and 3 video frames at 25%, 50%, 75%.
     
     Uses difference hash (dHash) algorithm for each frame:
     1. Extract frame at timestamp
     2. Resize to 9x8 (for 8x8 hash)
     3. Convert to grayscale
     4. Compare adjacent pixels to create 64-bit hash
+    
+    Percentage-based sampling is better than fixed timestamps because:
+    - Scales with duration (6s video → 1.5s, 3s, 4.5s; 30s video → 7.5s, 15s, 22.5s)
+    - Samples actual content throughout the video, not just the intro
+    - Better discrimination for clips of varying lengths
     
     Duration is a better identifier than file size because:
     - Same video from different sources has same duration
@@ -924,7 +929,7 @@ def _generate_perceptual_hash(file_path: str, duration: float) -> str:
         duration: Video duration in seconds
         
     Returns:
-        Composite hash string: "duration:hash1s:hash2s:hash3s"
+        Composite hash string: "duration:hash25:hash50:hash75"
         Example: "12.5:a3f8b2e1c9d4:f5a21e3b8c7d:9f2a4b1c3e5d"
     """
     import subprocess
@@ -977,13 +982,18 @@ def _generate_perceptual_hash(file_path: str, duration: float) -> str:
             activity.logger.warning(f"⚠️ Failed to extract frame at {timestamp}s: {e}")
             return "0" * 16
     
-    # Extract hashes at 1s, 2s, 3s
-    hash_1s = extract_frame_hash(1.0)
-    hash_2s = extract_frame_hash(2.0)
-    hash_3s = extract_frame_hash(3.0)
+    # Extract hashes at 25%, 50%, 75% through the video
+    # Percentage-based scales with duration and samples actual content throughout
+    t_25 = duration * 0.25
+    t_50 = duration * 0.50
+    t_75 = duration * 0.75
+    
+    hash_25 = extract_frame_hash(t_25)
+    hash_50 = extract_frame_hash(t_50)
+    hash_75 = extract_frame_hash(t_75)
     
     # Combine into single string (duration is content-invariant, better for dedup)
-    composite = f"{duration:.2f}:{hash_1s}:{hash_2s}:{hash_3s}"
+    composite = f"{duration:.2f}:{hash_25}:{hash_50}:{hash_75}"
     return composite
 
 
