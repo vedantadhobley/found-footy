@@ -479,6 +479,7 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
                 live_event = next(e for e in live_events if e.get(EventFields.EVENT_ID) == event_id)
                 player_name = live_event.get("player", {}).get("name")
                 team_name = live_event.get("team", {}).get("name", "Unknown")
+                team_id = live_event.get("team", {}).get("id")
                 
                 # Only trigger Twitter search if we have a player name
                 # Without a player name, Twitter search would be too broad/noisy
@@ -486,6 +487,7 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
                     twitter_triggered.append({
                         "event_id": event_id,
                         "player_name": player_name,
+                        "team_id": team_id,
                         "team_name": team_name,
                         "minute": live_event.get("time", {}).get("elapsed"),
                         "extra": live_event.get("time", {}).get("extra"),

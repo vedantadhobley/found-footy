@@ -1,10 +1,14 @@
 """
-RAG Workflow - Team Alias Lookup (Stub)
+RAG Workflow - Team Alias Lookup via Ollama LLM
 
-This workflow will eventually use RAG to get team name aliases for Twitter search.
-Currently a stub that passes the team name through as-is.
+Uses local Ollama LLM (GPU-accelerated) to generate team aliases for Twitter search.
 
-FUTURE: Query local LLM for variations like:
+Flow:
+1. Query get_team_aliases activity (checks cache, calls Ollama if miss)
+2. Save aliases to event for debugging
+3. Trigger TwitterWorkflow with resolved aliases
+
+Examples:
 - "Atletico de Madrid" → ["Atletico", "Atleti", "ATM"]
 - "Manchester United"  → ["Man United", "Man Utd", "MUFC"]
 
@@ -27,6 +31,7 @@ class RAGWorkflowInput:
     """Input for RAGWorkflow"""
     fixture_id: int
     event_id: str
+    team_id: int                    # API-Football team ID (for caching)
     team_name: str                  # "Liverpool"
     player_name: Optional[str]      # "Mohamed Salah" or None if unknown
     minute: int                     # For workflow ID naming
@@ -36,33 +41,25 @@ class RAGWorkflowInput:
 @workflow.defn
 class RAGWorkflow:
     """
-    Resolve team aliases via RAG, then trigger Twitter search workflow.
+    Resolve team aliases via Ollama LLM, then trigger Twitter search workflow.
     
-    This workflow exists to:
-    1. Encapsulate the RAG lookup (stub now, AI later)
-    2. Decouple monitor from Twitter retry logic
-    3. Provide clean handoff point for future RAG implementation
-    
-    Current stub behavior:
-    - Returns [team_name] as single-element list
-    - TwitterWorkflow handles the single alias
-    
-    Future RAG behavior:
-    - Query local LLM for 3 variations
-    - Return ["Liverpool", "LFC", "Reds"]
+    This workflow:
+    1. Queries Ollama for 3 team aliases (cached by team_id)
+    2. Normalizes aliases (removes diacritics)
+    3. Passes aliases to TwitterWorkflow for search
     """
     
     @workflow.run
     async def run(self, input: RAGWorkflowInput) -> dict:
-        workflow.logger.info(f"🔍 RAG lookup for team: {input.team_name}")
+        workflow.logger.info(f"🔍 RAG lookup for team {input.team_id}: {input.team_name}")
         
         # =========================================================================
-        # Step 1: Get team aliases (stub - just returns team name)
+        # Step 1: Get team aliases (checks cache, calls Ollama if miss)
         # =========================================================================
         aliases = await workflow.execute_activity(
             rag_activities.get_team_aliases,
-            input.team_name,
-            start_to_close_timeout=timedelta(seconds=30),
+            args=[input.team_id, input.team_name],
+            start_to_close_timeout=timedelta(seconds=60),  # LLM can take a few seconds
             retry_policy=RetryPolicy(maximum_attempts=2),
         )
         

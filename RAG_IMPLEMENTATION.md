@@ -1,130 +1,279 @@
-# RAG Implementation - Future LLM Integration
+# Team Alias Generation with RAG (Wikidata + LLM)
 
 ## Overview
 
-This document describes **how to implement the actual LLM-based team alias lookup** in the RAGWorkflow. The workflow infrastructure is already in place with a stub implementation.
+This document describes the RAG-based team alias generation system for improving Twitter search coverage.
 
-**Current State**: `get_team_aliases(team_name)` returns `[team_name]` (stub)  
-**Future State**: Query local LLM (Ollama) for intelligent aliases
+**Current State**: ✅ **FULLY IMPLEMENTED** - `get_team_aliases(team_id, team_name)` performs true RAG
+
+### What is RAG?
+
+**R**etrieval-**A**ugmented **G**eneration - the only approach we use:
+
+1. **Retrieve**: Fetch all known aliases from Wikidata API (search for QID, then fetch entity data)
+2. **Augment**: Include those aliases as context in the LLM prompt
+3. **Generate**: LLM selects/derives the BEST 3 aliases optimized for Twitter search
+
+We don't trust the model's training data alone. RAG ensures we have authoritative, curated alias data from Wikidata, with the LLM acting as an intelligent filter/deriver.
+
+### Why RAG?
+
+Wikidata for Atlético Madrid (Q8701) returns 46+ aliases:
+```
+"Club Atlético de Madrid, SAD", "Atletico Madrid", "Club Atlético de Madrid", 
+"Atletico", "El Atleti", "ATM Football Club", "Atletico of Madrid", 
+"Atleti de Madrid", "ATM", "Atl. de Madrid", "The Atletico", "Atlético", 
+"AtléticoDeMadrid", "Atlético Madrid"...
+```
+
+**Problem**: Many are bad for Twitter search (too long, formal names, articles like "El")
+
+**Solution**: LLM processes these WITH the context that it's for Twitter search:
+```
+Input: 46 Wikidata aliases + "optimize for Twitter search"
+Output: ["ATM", "Atletico", "El Atleti"]  ← Short, from Wikidata list only
+```
+
+**Key constraint**: The LLM can ONLY select from the provided Wikidata list. It cannot hallucinate aliases like "Colchoneros" (which is NOT in Wikidata). The code validates LLM output against the Wikidata list.
+
+Special characters (é, ü, ñ) are handled by **post-processing normalization**, not the LLM.
+
+### Endpoints
+
+| Port | Environment | Internal URL |
+|------|-------------|--------------|
+| `4104` | Dev | `http://found-footy-dev-ollama:11434` |
+| `3104` | Prod | `http://found-footy-prod-ollama:11434` |
+
+Test from host: `curl http://localhost:4104/api/generate -d '{"model":"phi3:mini","prompt":"test"}'`
 
 ---
 
-## What's Already Implemented
-
-The workflow infrastructure is complete:
+## Implementation Status
 
 | Component | Status | Location |
 |-----------|--------|----------|
 | `RAGWorkflow` | ✅ Done | `src/workflows/rag_workflow.py` |
 | `RAGWorkflowInput` dataclass | ✅ Done | `src/workflows/rag_workflow.py` |
-| `get_team_aliases` activity | ✅ Stub | `src/activities/rag.py` |
+| `get_team_aliases` activity | ✅ **IMPLEMENTED** | `src/activities/rag.py` |
 | `save_team_aliases` activity | ✅ Done | `src/activities/rag.py` |
-| `_twitter_aliases` field | ✅ Done | `src/data/models.py` |
+| Wikidata QID search | ✅ Done | `_search_wikidata_qid()` |
+| Wikidata alias fetch | ✅ Done | `_fetch_wikidata_aliases()` |
+| LLM validation | ✅ Done | Validates LLM output against Wikidata |
+| Heuristic fallback | ✅ Done | `_select_best_wikidata_aliases()` |
+| MongoDB caching | ✅ Done | By `team_id` as `_id` |
+| Diacritics normalization | ✅ Done | `_normalize_alias()` |
 | Worker registration | ✅ Done | `src/worker.py` |
+| Ollama service | ✅ Running | GPU-accelerated (Vulkan) |
 
-**All that remains is replacing the stub in `get_team_aliases` with an actual LLM call.**
+**Optional enhancements**:
+- Static team_id → QID mapping table (avoid Wikidata search latency)
+- Remove hardcoded nicknames from `team_data.py` (now redundant)
 
 ---
 
-## Target Hardware: Strix Halo
+## Target Hardware: Framework Desktop (Strix Halo)
 
 | Component | Specification |
 |-----------|---------------|
-| **CPU** | AMD Ryzen AI Max+ 395 (16-core/32-thread) |
-| **GPU** | AMD Radeon 8060S (integrated, 40 CUs) |
-| **Memory** | Unified CPU/GPU memory pool |
-
-The integrated GPU shares system RAM, making it ideal for running quantized LLMs.
+| **APU** | AMD Ryzen AI Max+ 395 (16-core/32-thread, gfx1151 GPU) |
+| **GPU** | AMD Radeon 8060S (integrated, 40 CUs RDNA 3.5) |
+| **Memory** | 128GB LPDDR5x-8000 unified memory (~215 GB/s bandwidth) |
 
 ---
 
-## Recommended Stack: Ollama + ROCm
+## Docker Compose Setup
 
-### Docker Compose Addition
+The Ollama service runs with Vulkan GPU acceleration:
 
-Add to `docker-compose.yml`:
+### Production (`docker-compose.yml`)
 
 ```yaml
-services:
-  ollama:
-    image: ollama/ollama:rocm
-    container_name: found-footy-ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama-models:/root/.ollama
-    devices:
-      - /dev/kfd
-      - /dev/dri
-    group_add:
-      - video
-      - render
-    environment:
-      - HSA_OVERRIDE_GFX_VERSION=11.0.0  # For RDNA 3.5
-      - OLLAMA_NUM_PARALLEL=2
-      - OLLAMA_MAX_LOADED_MODELS=1
-    deploy:
-      resources:
-        limits:
-          memory: 32G
-    restart: unless-stopped
-
-volumes:
-  ollama-models:
-    name: found-footy-ollama-models
+ollama:
+  image: ollama/ollama:latest
+  container_name: found-footy-prod-ollama
+  ports:
+    - "3104:11434"  # Exposed for testing
+  volumes:
+    - ~/.ollama:/root/.ollama  # Shared model store (host bind mount)
+  devices:
+    - /dev/dri:/dev/dri  # GPU access (Vulkan)
+  deploy:
+    resources:
+      limits:
+        memory: 8G
+  networks:
+    - found-footy-prod
 ```
 
-### Host Setup (Ubuntu)
+### Development (`docker-compose.dev.yml`)
 
-```bash
-# 1. Install ROCm 6.x
-wget https://repo.radeon.com/amdgpu-install/6.0/ubuntu/jammy/amdgpu-install_6.0.60000-1_all.deb
-sudo dpkg -i amdgpu-install_6.0.60000-1_all.deb
-sudo amdgpu-install --usecase=rocm,graphics --no-dkms
-
-# 2. Add user to required groups
-sudo usermod -aG video,render $USER
-
-# 3. Verify GPU detection
-rocminfo | grep "Name:"
-
-# 4. Set environment
-export HSA_OVERRIDE_GFX_VERSION=11.0.0
+```yaml
+ollama:
+  image: ollama/ollama:latest
+  container_name: found-footy-dev-ollama
+  ports:
+    - "4104:11434"  # Exposed for testing
+  volumes:
+    - ~/.ollama:/root/.ollama  # Shared model store (host bind mount)
+  devices:
+    - /dev/dri:/dev/dri  # GPU access (Vulkan)
+  deploy:
+    resources:
+      limits:
+        memory: 8G
+  networks:
+    - found-footy-dev
 ```
 
-### Model Selection
+### Key Design Decisions
 
-For team alias lookup, a small model is sufficient:
+| Decision | Rationale |
+|----------|-----------|
+| **Ollama** (not llama.cpp) | Built-in model management (`ollama pull/list/rm`), dynamic model switching |
+| **Vulkan** (not ROCm) | Works out of the box with mesa, no driver setup |
+| **8GB memory limit** | Plenty for Phi-3 Mini (2.3GB) with headroom, leaves 120GB for other services |
+| **Port exposed** | For testing via curl; internal access uses docker network |
+| **Shared host volume** | `~/.ollama` shared across dev/prod/host - download models once |
 
-| Model | Size | Speed | Notes |
-|-------|------|-------|-------|
-| **Phi-3 Mini** | 3.8B | ~50 t/s | ✅ Recommended - fast, good quality |
-| Mistral 7B Q4 | 7B | ~30 t/s | Higher quality, slower |
-| Qwen2 7B | 7B | ~30 t/s | Good multilingual support |
+---
+
+## Model Setup
+
+The **phi3:mini** model is automatically pulled on first container start. The entrypoint script handles this:
+
+```yaml
+entrypoint: |
+  sh -c '
+    /bin/ollama serve &
+    sleep 5
+    ollama pull $OLLAMA_MODEL  # phi3:mini by default
+    wait
+  '
+```
+
+Models are stored in `~/.ollama` on your host. This means:
+- **Shared across dev/prod** - Download once, use everywhere
+- **Shared with host Ollama** - If you install Ollama locally, same models
+- **Survives `docker volume prune`** - It's on your filesystem, not a Docker volume
+
+### Verify Model is Ready
 
 ```bash
-# Pull model
-docker exec found-footy-ollama ollama pull phi3:mini
+# Check Ollama healthcheck (waits for model)
+docker inspect found-footy-dev-ollama --format='{{.State.Health.Status}}'
+# Should show: healthy
+
+# Or list models directly
+docker exec found-footy-dev-ollama ollama list
+```
+
+### Recommended Models
+
+| Model | Size | Speed | Use Case |
+|-------|------|-------|----------|
+| **phi3:mini** | 2.3GB | ~40-50 t/s | ✅ Recommended - fast, good quality |
+| qwen2.5:3b | 2GB | ~50-60 t/s | Better multilingual |
+| mistral:7b | 4GB | ~25-30 t/s | Higher quality, slower |
+
+### Managing Models
+
+```bash
+# List models
+docker exec found-footy-dev-ollama ollama list
+
+# Pull different model
+docker exec found-footy-dev-ollama ollama pull qwen2.5:3b
+
+# Remove model
+docker exec found-footy-dev-ollama ollama rm phi3:mini
+
+# Model info
+docker exec found-footy-dev-ollama ollama show phi3:mini
+```
+
+---
+
+## MongoDB Schema: `team_aliases` Collection
+
+Team aliases are cached using **team_id as `_id`** for O(1) lookups.
+
+### Document Schema
+
+```javascript
+{
+  _id: 541,                          // API-Football team_id (fast lookup)
+  team_name: "Atletico Madrid",      // Original name from API (for display)
+  wikidata_qid: "Q8701",             // Wikidata entity ID
+  raw_aliases: [                     // All aliases from Wikidata (preserved)
+    "Club Atlético de Madrid, SAD",
+    "El Atleti",
+    "Atlético Madrid",
+    // ...
+  ],
+  twitter_aliases: [                 // LLM-derived, normalized (for search)
+    "Atletico",
+    "Atleti", 
+    "ATM"
+  ],
+  model: "phi3:mini",                // Model used (for debugging/retraining)
+  created_at: ISODate("..."),
+  updated_at: ISODate("...")
+}
+```
+
+### Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| `_id` = team_id | Fastest possible lookup, no secondary index needed |
+| `team_name` preserved | Frontend displays original name from API |
+| `raw_aliases` preserved | Audit trail, can re-derive if LLM improves |
+| `twitter_aliases` normalized | Special chars removed (é→e), ready for Twitter search |
+| `wikidata_qid` stored | Can refresh from Wikidata if aliases update |
+
+### Index (Auto-created)
+
+MongoDB automatically indexes `_id`, so no additional index is needed for lookups.
+
+```javascript
+// No index needed - _id is already indexed
+// Lookup: db.team_aliases.findOne({_id: 541})  // O(1)
 ```
 
 ---
 
 ## Implementation: Replace the Stub
 
-Update `src/activities/rag.py`:
+Replace `src/activities/rag.py` with:
 
 ```python
 """
-RAG Activities - Team Alias Lookup
+RAG Activities - Team Alias Lookup with Wikidata + LLM
 
-Activities for the RAGWorkflow.
+Flow:
+1. Check MongoDB cache (team_aliases collection by team_id)
+2. If miss:
+   a. Fetch aliases from Wikidata
+   b. LLM derives best 3 for Twitter
+   c. Normalize (remove diacritics: é→e, ü→u, ñ→n)
+   d. Cache result
+3. Return normalized aliases for Twitter search
+
+The original team name from API is preserved for frontend display.
 """
 from temporalio import activity
-from typing import List
+from typing import List, Optional
 import httpx
 import json
+import os
+import unicodedata
+from datetime import datetime, timezone
 
-OLLAMA_URL = "http://found-footy-ollama:11434"
+
+# Environment-aware URL (set in docker-compose)
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://found-footy-dev-ollama:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi3:mini")
 
 SYSTEM_PROMPT = """You are a football/soccer team name expert. Given a team's full name, 
 return exactly 3 short aliases commonly used on Twitter/X to refer to this team.
@@ -141,37 +290,179 @@ Examples:
 - "Borussia Dortmund" → ["Dortmund", "BVB", "Borussia"]
 - "Paris Saint-Germain" → ["PSG", "Paris", "Paris SG"]
 - "Liverpool" → ["Liverpool", "LFC", "Reds"]
+- "Real Madrid" → ["Real Madrid", "Madrid", "Real"]
+- "Bayern Munich" → ["Bayern", "Bayern Munich", "FCB"]
 """
 
 
-@activity.defn
-async def get_team_aliases(team_name: str) -> List[str]:
+def _get_cached_aliases(store, team_id: int) -> Optional[dict]:
+    """Check MongoDB cache for existing aliases by team_id."""
+    return store.db.team_aliases.find_one({"_id": team_id})
+
+
+def _cache_aliases(
+    store, 
+    team_id: int, 
+    team_name: str,
+    raw_aliases: List[str],
+    twitter_aliases: List[str], 
+    model: str,
+    wikidata_qid: Optional[str] = None
+) -> None:
+    """Store aliases in MongoDB cache using team_id as _id."""
+    store.db.team_aliases.update_one(
+        {"_id": team_id},
+        {
+            "$set": {
+                "team_name": team_name,
+                "wikidata_qid": wikidata_qid,
+                "raw_aliases": raw_aliases,
+                "twitter_aliases": twitter_aliases,
+                "model": model,
+                "updated_at": datetime.now(timezone.utc)
+            },
+            "$setOnInsert": {
+                "created_at": datetime.now(timezone.utc)
+            }
+        },
+        upsert=True
+    )
+
+
+def _normalize_alias(alias: str) -> str:
     """
-    Get team name aliases via local Ollama LLM.
+    Normalize alias for Twitter search by removing diacritics.
     
-    Uses Phi-3 Mini for fast inference (~1-2 seconds).
-    Falls back to [team_name] if LLM unavailable.
-    
-    Args:
-        team_name: Full team name from API (e.g., "Liverpool")
-    
-    Returns:
-        List of 3 aliases for Twitter search
+    Examples:
+        "Atlético" → "Atletico"
+        "München" → "Munchen"
+        "Señor" → "Senor"
     """
-    activity.logger.info(f"🔍 Getting aliases for team: {team_name}")
+    # NFD decomposes characters (é → e + combining accent)
+    # Then we strip the combining characters (category 'Mn')
+    normalized = unicodedata.normalize('NFD', alias)
+    return ''.join(c for c in normalized if unicodedata.category(c) != 'Mn')
+
+
+def _parse_llm_response(text: str) -> Optional[List[str]]:
+    """Parse JSON array from LLM response, handling markdown wrapping."""
+    # Handle markdown wrapping: ```json\n[...]\n```
+    if "```" in text:
+        parts = text.split("```")
+        for part in parts:
+            part = part.strip()
+            if part.startswith("json"):
+                text = part[4:].strip()
+                break
+            elif part.startswith("["):
+                text = part
+                break
+    
+    # Find the JSON array
+    start = text.find("[")
+    end = text.rfind("]") + 1
+    if start >= 0 and end > start:
+        text = text[start:end]
     
     try:
+        aliases = json.loads(text.strip())
+        if isinstance(aliases, list) and len(aliases) >= 3:
+            return [str(a).strip() for a in aliases[:3]]
+    except json.JSONDecodeError:
+        pass
+    
+    return None
+
+
+def _derive_fallback_aliases(team_name: str) -> List[str]:
+    """
+    Deterministic fallback when LLM unavailable.
+    
+    Derives aliases from team name:
+    - Full name
+    - First word (if multi-word)
+    - Initials (if 2+ words)
+    """
+    words = team_name.split()
+    aliases = [team_name]
+    
+    if len(words) > 1:
+        aliases.append(words[0])
+        initials = "".join(w[0].upper() for w in words if w[0].isalpha())
+        if len(initials) >= 2:
+            aliases.append(initials)
+    
+    while len(aliases) < 3:
+        aliases.append(team_name)
+    
+    return aliases[:3]
+
+
+@activity.defn
+async def get_team_aliases(team_id: int, team_name: str) -> List[str]:
+    """
+    Get team name aliases via RAG (Wikidata + LLM) with MongoDB caching.
+    
+    Flow:
+    1. Check cache by team_id (O(1) lookup)
+    2. If miss:
+       a. Fetch aliases from Wikidata
+       b. LLM derives best 3 for Twitter
+       c. Normalize (remove diacritics)
+       d. Cache result
+    3. Return normalized aliases for Twitter search
+    
+    Args:
+        team_id: API-Football team ID (used as cache key)
+        team_name: Full team name from API (for display/fallback)
+    
+    Returns:
+        List of 3 normalized aliases for Twitter search
+    """
+    from src.data.mongo_store import FootyMongoStore
+    
+    activity.logger.info(f"🔍 Getting aliases for team {team_id}: {team_name}")
+    
+    store = FootyMongoStore()
+    
+    # 1. Check cache by team_id
+    cached = _get_cached_aliases(store, team_id)
+    if cached:
+        aliases = cached.get("twitter_aliases", [])
+        activity.logger.info(f"📦 Cache hit: {aliases}")
+        return aliases
+    
+    activity.logger.info(f"🔄 Cache miss, fetching from Wikidata + LLM...")
+    
+    # 2a. Fetch from Wikidata (TODO: implement wikidata lookup by team_id mapping)
+    wikidata_qid = None  # Will be looked up from team_id → QID mapping
+    raw_aliases = []     # Will be fetched from Wikidata
+    
+    # 2b. Query LLM with Wikidata context
+    try:
         async with httpx.AsyncClient(timeout=30.0) as client:
+            # Build RAG prompt with Wikidata aliases as context
+            if raw_aliases:
+                prompt = f"""Team: {team_name}
+
+Known aliases from Wikidata:
+{chr(10).join(f'- {alias}' for alias in raw_aliases)}
+
+Derive or select the 3 best aliases for Twitter search. Return JSON array only."""
+            else:
+                # Fallback if no Wikidata data yet
+                prompt = f"Team: {team_name}\n\nReturn JSON array of 3 aliases:"
+            
             response = await client.post(
                 f"{OLLAMA_URL}/api/generate",
                 json={
-                    "model": "phi3:mini",
-                    "prompt": f"Team: {team_name}\n\nReturn JSON array of 3 aliases:",
+                    "model": OLLAMA_MODEL,
+                    "prompt": prompt,
                     "system": SYSTEM_PROMPT,
                     "stream": False,
                     "options": {
-                        "temperature": 0.3,  # Low temp for consistency
-                        "num_predict": 50,   # Short response
+                        "temperature": 0.3,
+                        "num_predict": 50,
                     }
                 }
             )
@@ -180,43 +471,47 @@ async def get_team_aliases(team_name: str) -> List[str]:
             result = response.json()
             text = result.get("response", "").strip()
             
-            # Parse JSON array from response
-            # Handle markdown wrapping: ```json\n[...]\n```
-            if "```" in text:
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
+            llm_aliases = _parse_llm_response(text)
             
-            # Find the JSON array in the response
-            start = text.find("[")
-            end = text.rfind("]") + 1
-            if start >= 0 and end > start:
-                text = text[start:end]
-            
-            aliases = json.loads(text.strip())
-            
-            if isinstance(aliases, list) and len(aliases) >= 3:
-                aliases = [str(a).strip() for a in aliases[:3]]
-                activity.logger.info(f"✅ LLM aliases: {aliases}")
-                return aliases
+            if llm_aliases:
+                # 2c. Normalize aliases (remove diacritics)
+                twitter_aliases = [_normalize_alias(a) for a in llm_aliases]
+                
+                activity.logger.info(f"✅ LLM: {llm_aliases} → Normalized: {twitter_aliases}")
+                
+                # 2d. Cache for future use
+                _cache_aliases(
+                    store, 
+                    team_id=team_id,
+                    team_name=team_name,
+                    raw_aliases=raw_aliases,
+                    twitter_aliases=twitter_aliases,
+                    model=OLLAMA_MODEL,
+                    wikidata_qid=wikidata_qid
+                )
+                return twitter_aliases
             
             activity.logger.warning(f"⚠️ LLM returned invalid format: {text}")
             
     except httpx.ConnectError:
         activity.logger.warning("⚠️ Ollama not available, using fallback")
-    except json.JSONDecodeError as e:
-        activity.logger.warning(f"⚠️ Failed to parse LLM response: {e}")
     except Exception as e:
         activity.logger.warning(f"⚠️ LLM error: {e}")
     
-    # Fallback: just use team name
-    activity.logger.info(f"📋 Fallback aliases: [{team_name}]")
-    return [team_name]
+    # 3. Fallback (normalize but don't cache - let RAG try again later)
+    fallback = _derive_fallback_aliases(team_name)
+    fallback = [_normalize_alias(a) for a in fallback]
+    activity.logger.info(f"📋 Fallback aliases: {fallback}")
+    return fallback
 
 
 @activity.defn
 async def save_team_aliases(fixture_id: int, event_id: str, aliases: List[str]) -> bool:
-    """Save resolved aliases to event for debugging/visibility."""
+    """
+    Save resolved aliases to event in MongoDB.
+    
+    Stores in _twitter_aliases field for debugging/visibility.
+    """
     from src.data.mongo_store import FootyMongoStore
     from src.data.models import EventFields
     
@@ -229,7 +524,13 @@ async def save_team_aliases(fixture_id: int, event_id: str, aliases: List[str]) 
             {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
             {"$set": {f"events.$.{EventFields.TWITTER_ALIASES}": aliases}}
         )
-        return result.modified_count > 0
+        
+        if result.modified_count > 0:
+            activity.logger.info(f"✅ Saved aliases for {event_id}")
+            return True
+        else:
+            activity.logger.warning(f"⚠️ No document modified for {event_id}")
+            return False
     except Exception as e:
         activity.logger.error(f"❌ Failed to save aliases: {e}")
         return False
@@ -237,43 +538,60 @@ async def save_team_aliases(fixture_id: int, event_id: str, aliases: List[str]) 
 
 ---
 
-## Performance Expectations
+## Replacing Hardcoded Nicknames
 
-On Strix Halo with integrated Radeon 8060S:
+### Current State (`team_data.py`)
 
-| Model | Tokens/sec | Latency (3 aliases) |
-|-------|------------|---------------------|
-| Phi-3 Mini (3.8B) | ~40-60 t/s | 1-2 seconds |
-| Mistral 7B Q4 | ~25-35 t/s | 2-4 seconds |
-| Llama 3.1 8B Q4 | ~20-30 t/s | 3-5 seconds |
+```python
+TOP_UEFA = {
+    541: {"name": "Real Madrid", "nickname": "Madrid"},  # ← hardcoded
+    40: {"name": "Liverpool", "nickname": "Liverpool"},  # ← hardcoded
+    # ...
+}
+```
 
-The unified memory architecture allows models up to ~24GB without issue.
+Used by `get_team_nickname()` → `build_twitter_search()` → returns ONE nickname.
+
+### New State
+
+1. **Remove `nickname` field** from `team_data.py` (or keep for reference only)
+2. **Always use `get_team_aliases()`** which returns 3 aliases via LLM + cache
+3. **TwitterWorkflow already handles multiple aliases** - it loops through the list
+
+### Migration Path
+
+1. Deploy with LLM + cache implementation
+2. Let cache populate naturally (first goal for each team triggers LLM)
+3. Once stable, remove `get_team_nickname()` usage from `build_twitter_search()`
+4. Eventually simplify `team_data.py` to just team IDs (for tracking purposes)
 
 ---
 
 ## Testing
 
-### 1. Start Ollama
+### 1. Verify Ollama is Running
 
 ```bash
-docker compose up -d ollama
-docker exec found-footy-ollama ollama pull phi3:mini
+# Dev
+curl http://localhost:4104/api/tags
+
+# Prod
+curl http://localhost:3104/api/tags
 ```
 
-### 2. Test Directly
+### 2. Test Model Directly
 
 ```bash
-curl http://localhost:11434/api/generate -d '{
+curl http://localhost:4104/api/generate -d '{
   "model": "phi3:mini",
-  "prompt": "Team: Liverpool FC\n\nReturn JSON array of 3 aliases:",
-  "system": "Return ONLY a JSON array of 3 team aliases.",
+  "prompt": "Team: Atletico de Madrid\n\nReturn JSON array of 3 aliases:",
   "stream": false
 }'
 ```
 
-Expected:
+Expected response contains:
 ```json
-{"response": "[\"Liverpool\", \"LFC\", \"Reds\"]", ...}
+{"response": "[\"Atletico\", \"Atleti\", \"ATM\"]", ...}
 ```
 
 ### 3. Test via Activity
@@ -284,87 +602,407 @@ import asyncio
 from src.activities.rag import get_team_aliases
 
 async def test():
+    # First call - cache miss, hits LLM (~1-2s)
     aliases = await get_team_aliases("Atletico de Madrid")
-    print(aliases)  # ["Atletico", "Atleti", "ATM"]
+    print(f"First call: {aliases}")
+    
+    # Second call - cache hit (instant)
+    aliases = await get_team_aliases("Atletico de Madrid")
+    print(f"Second call: {aliases}")
 
 asyncio.run(test())
 ```
 
----
+### 4. Verify Cache
 
-## Alternative: vLLM
-
-For higher throughput (multiple concurrent requests), consider vLLM:
-
-```yaml
-services:
-  vllm:
-    image: rocm/vllm:latest
-    container_name: found-footy-vllm
-    ports:
-      - "8000:8000"
-    devices:
-      - /dev/kfd
-      - /dev/dri
-    environment:
-      - HSA_OVERRIDE_GFX_VERSION=11.0.0
-    command: >
-      --model microsoft/Phi-3-mini-4k-instruct
-      --dtype float16
-      --max-model-len 4096
-      --gpu-memory-utilization 0.8
+```bash
+# Connect to Mongoku at localhost:4101 (dev) or 3101 (prod)
+# Or via mongosh:
+docker exec found-footy-dev-mongo mongosh found_footy -u ffuser -p ffpass --authenticationDatabase admin --eval "db.llm_team_aliases.find().pretty()"
 ```
 
-vLLM provides an OpenAI-compatible API:
+---
+
+## Phase 2: True RAG (Wikidata + LLM)
+
+Phase 2 implements actual RAG - retrieving Wikidata aliases and using the LLM to intelligently filter them for Twitter search.
+
+### Wikidata Sources
+
+- https://www.wikidata.org/wiki/Q8701 (Atlético Madrid)
+- https://www.wikidata.org/wiki/Q15789 (Bayern Munich)
+
+Each team has a unique QID, and the Wikidata API returns structured alias data in JSON.
+
+### Wikidata API
+
+Fetch any team's aliases with:
+
+```bash
+# Get Atlético Madrid (Q8701) - aliases in English
+curl "https://www.wikidata.org/wiki/Special:EntityData/Q8701.json" | jq '.entities.Q8701.aliases.en[].value'
+```
+
+Response contains `aliases.en` array:
+```json
+{
+  "entities": {
+    "Q8701": {
+      "aliases": {
+        "en": [
+          {"value": "Club Atlético de Madrid, SAD"},
+          {"value": "Atletico Madrid"},
+          {"value": "Club Atlético de Madrid"},
+          {"value": "Atletico"},
+          {"value": "El Atleti"},
+          {"value": "ATM Football Club"},
+          {"value": "Atletico of Madrid"},
+          {"value": "Atleti de Madrid"},
+          {"value": "ATM"},
+          {"value": "Atl. de Madrid"},
+          {"value": "The Atletico"},
+          {"value": "Atlético"},
+          {"value": "AtléticoDeMadrid"},
+          {"value": "Atlético Madrid"}
+        ]
+      }
+    }
+  }
+}
+```
+
+### RAG Architecture (Phase 2)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        get_team_aliases()                        │
+└───────────────────────────────┬─────────────────────────────────┘
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │   Check MongoDB Cache  │
+                    │  (llm_team_aliases)    │
+                    └───────────┬───────────┘
+                                │ miss
+                                ▼
+                    ┌───────────────────────┐
+                    │  Lookup QID for team  │  ← Map API team_id → Wikidata QID
+                    │  (team_wikidata_map)  │
+                    └───────────┬───────────┘
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │   RETRIEVE: Fetch     │  ← Wikidata REST API
+                    │   aliases from Wiki   │     returns 10-20 aliases
+                    └───────────┬───────────┘
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │  AUGMENT: Build prompt│  ← Include all Wikidata aliases
+                    │  with retrieved data  │     as context for LLM
+                    └───────────┬───────────┘
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │  GENERATE: LLM picks  │  ← Ollama selects best 3
+                    │  best 3 for Twitter   │     for Twitter search
+                    └───────────┬───────────┘
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │    Cache in MongoDB   │
+                    └───────────────────────┘
+```
+
+### New Collection: `team_wikidata_map`
+
+Maps API-Football team IDs to Wikidata QIDs:
+
+```json
+{
+  "_id": ObjectId("..."),
+  "team_id": 530,
+  "team_name": "Atlético de Madrid",
+  "qid": "Q8701",
+  "verified": true,
+  "created_at": ISODate("2025-12-23T10:00:00Z")
+}
+```
+
+This mapping can be:
+1. Manually curated for top teams
+2. Auto-discovered via Wikidata SPARQL (search by team name + instance_of:football_club)
+
+### RAG Implementation (Phase 2)
 
 ```python
-from openai import AsyncOpenAI
+async def fetch_wikidata_aliases(qid: str) -> List[str]:
+    """
+    RETRIEVE: Fetch all aliases from Wikidata API.
+    
+    Args:
+        qid: Wikidata entity ID (e.g., "Q8701" for Atlético Madrid)
+    
+    Returns:
+        List of ALL aliases from Wikidata (unfiltered)
+    """
+    url = f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json"
+    
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        data = response.json()
+    
+    entity = data.get("entities", {}).get(qid, {})
+    aliases_data = entity.get("aliases", {}).get("en", [])
+    
+    # Return ALL aliases - let LLM filter
+    return [a["value"] for a in aliases_data]
 
-client = AsyncOpenAI(
-    base_url="http://found-footy-vllm:8000/v1",
-    api_key="not-needed"
-)
 
-response = await client.chat.completions.create(
-    model="microsoft/Phi-3-mini-4k-instruct",
-    messages=[
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Team: {team_name}"}
-    ],
-    temperature=0.3,
-    max_tokens=50
-)
+# RAG System Prompt - tells LLM what we need
+RAG_SYSTEM_PROMPT = """You are a Twitter search optimization expert for football/soccer.
+
+Given a list of known aliases for a team (from Wikidata), derive or select the 3 BEST aliases for Twitter search.
+
+You can DERIVE aliases by simplifying existing ones:
+- Drop articles: "El Atleti" → "Atleti", "The Reds" → "Reds"
+- Drop prefixes: "FC Bayern" → "Bayern", "Real Madrid CF" → "Real Madrid"
+- Use common shortenings fans actually type
+
+Selection criteria:
+1. SHORT: Prefer 1-2 words (Twitter users don't type long names)
+2. COMMON: Prefer what fans actually tweet (not official legal names)
+3. UNIQUE: Each alias should catch different tweets
+
+Special characters (é, ü, ñ) are fine - they will be normalized later.
+
+Return ONLY a JSON array of exactly 3 strings. No explanation."""
+
+
+async def get_team_aliases_rag(team_name: str, wikidata_aliases: List[str]) -> List[str]:
+    """
+    AUGMENT + GENERATE: Use LLM to pick best aliases from Wikidata data.
+    
+    Args:
+        team_name: Team name from API
+        wikidata_aliases: All aliases retrieved from Wikidata
+    
+    Returns:
+        List of 3 best aliases for Twitter search
+    """
+    # AUGMENT: Build prompt with retrieved Wikidata data
+    prompt = f"""Team: {team_name}
+
+Known aliases from Wikidata:
+{chr(10).join(f'- {alias}' for alias in wikidata_aliases)}
+
+Derive or select the 3 best aliases for Twitter search. You may simplify these (drop articles, prefixes). Return JSON array only."""
+
+    # GENERATE: LLM selects best 3
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "system": RAG_SYSTEM_PROMPT,
+                "stream": False,
+                "options": {"temperature": 0.2, "num_predict": 50}
+            }
+        )
+        response.raise_for_status()
+        result = response.json()
+        
+    # Parse LLM response
+    aliases = _parse_llm_response(result.get("response", ""))
+    return aliases if aliases else wikidata_aliases[:3]
+```
+
+### Example RAG Flow
+
+**Input**: Team "Atlético de Madrid", QID "Q8701"
+
+**Step 1 - RETRIEVE** (Wikidata):
+```
+["Club Atlético de Madrid, SAD", "Atletico Madrid", "Club Atlético de Madrid",
+ "Atletico", "El Atleti", "ATM Football Club", "Atletico of Madrid", 
+ "Atleti de Madrid", "ATM", "Atl. de Madrid", "The Atletico", "Atlético",
+ "AtléticoDeMadrid", "Atlético Madrid"]
+```
+
+**Step 2 - AUGMENT** (Prompt):
+```
+Team: Atlético de Madrid
+
+Known aliases from Wikidata:
+- Club Atlético de Madrid, SAD
+- Atletico Madrid
+- Club Atlético de Madrid
+- Atletico
+- El Atleti
+- ATM Football Club
+- Atletico of Madrid
+- Atleti de Madrid
+- ATM
+- Atl. de Madrid
+- The Atletico
+- Atlético
+- AtléticoDeMadrid
+- Atlético Madrid
+
+Select the 3 best aliases for Twitter search. Return JSON array only.
+```
+
+**Step 3 - GENERATE** (LLM output):
+```json
+["Atletico", "Atleti", "ATM"]
+```
+
+### Why RAG > Either Alone
+
+| Approach | Problem |
+|----------|---------|
+| **Wikidata only** | Returns 14 aliases including "Club Atlético de Madrid, SAD" - too many, many bad for Twitter |
+| **LLM only** | May hallucinate aliases, miss lesser-known teams, training data cutoff |
+| **RAG (both)** | Wikidata provides accurate data, LLM intelligently filters for use case |
+
+---
+
+## Host Setup: Vulkan for AMD GPU (Ubuntu 24.04 LTS)
+
+Ollama uses **Vulkan** (not ROCm) for GPU access. This guide is for **Ubuntu 24.04 LTS** (Noble Numbat).
+
+### Strix Halo Support: Already Covered ✅
+
+**Good news**: Ubuntu 24.04 already has Mesa 25.0.7 via updates. Strix Halo (gfx1151) support was added in Mesa 24.2, so you're well covered.
+
+```bash
+# Check your Mesa version
+apt-cache policy mesa-vulkan-drivers
+# Should show: 25.0.7-0ubuntu0.24.04.2 or similar
+```
+
+**No PPA needed** - the stock Ubuntu 24.04 packages support Strix Halo out of the box.
+
+### Step 1: Install Vulkan Drivers
+
+```bash
+# Mesa Vulkan driver for AMD (RADV) - already in Ubuntu 24.04
+sudo apt update
+sudo apt install -y mesa-vulkan-drivers vulkan-tools
+```
+
+### Step 2: Add User to Video/Render Groups
+
+```bash
+# Required for /dev/dri access
+sudo usermod -aG video $USER
+sudo usermod -aG render $USER
+
+# Log out and back in (or reboot)
+```
+
+### Step 3: Verify GPU Access
+
+```bash
+# Check Vulkan is working
+vulkaninfo | head -30
+
+# Should show something like:
+# GPU0:
+#   apiVersion     = 1.3.xxx
+#   driverVersion  = xx.x.x
+#   vendorID       = 0x1002 (AMD)
+#   deviceName     = AMD Radeon...
+
+# Check /dev/dri exists
+ls -la /dev/dri/
+# Should show: card0, renderD128
+```
+
+### Step 4: Verify Docker GPU Access
+
+```bash
+# Test that docker can see the GPU (need --entrypoint to override ollama entrypoint)
+docker run --rm --device /dev/dri:/dev/dri --entrypoint /bin/sh ollama/ollama:latest -c "ls -la /dev/dri"
+```
+
+### Step 5: Test Ollama GPU Detection
+
+```bash
+# Start the stack
+docker compose -f docker-compose.dev.yml up -d ollama
+
+# Check logs for Vulkan detection
+docker logs found-footy-dev-ollama 2>&1 | grep -i "vulkan\|gpu"
+
+# Pull a model and run
+docker exec found-footy-dev-ollama ollama pull phi3:mini
+docker exec found-footy-dev-ollama ollama run phi3:mini "Hello"
+```
+
+### Troubleshooting
+
+**"GPU not detected" in Ollama logs:**
+```bash
+# Verify /dev/dri is mounted
+docker exec found-footy-dev-ollama ls -la /dev/dri/
+
+# Check if it's a permissions issue
+# Your user must be in video/render groups
+groups $USER
+```
+
+**"vulkaninfo: command not found":**
+```bash
+sudo apt install vulkan-tools
+```
+
+**"No Vulkan devices found":**
+```bash
+# Check if kernel supports your GPU
+dmesg | grep -i amdgpu
+
+# May need newer kernel for Strix Halo
+uname -r  # Should be 6.8+ for Strix Halo
+```
+
+### Strix Halo Specific Notes
+
+The Framework Desktop with Strix Halo (gfx1151) requires:
+- Linux kernel **6.12+** for full support (6.8+ minimum)
+- Mesa **24.3+** for RADV Vulkan
+
+If on Ubuntu LTS, add the kisak mesa PPA:
+```bash
+sudo add-apt-repository ppa:kisak/kisak-mesa
+sudo apt update && sudo apt upgrade
 ```
 
 ---
 
-## Open Questions
+## Setup Checklist
 
-1. **Caching**: Should we cache aliases? Same team appears in multiple fixtures.
-   - Option: Store in MongoDB `team_aliases` collection
-   - Option: In-memory LRU cache in activity
+### Per Environment (Dev/Prod)
 
-2. **Multilingual**: Some team names are Spanish/Italian/German.
-   - Phi-3 handles this well
-   - Consider explicit language detection
+- [ ] `docker compose up -d` (creates volumes automatically)
+- [ ] Pull model: `docker exec found-footy-{env}-ollama ollama pull phi3:mini`
+- [ ] Create index: `db.llm_team_aliases.createIndex({ "team_name": 1 }, { unique: true })`
+- [ ] Replace stub in `src/activities/rag.py`
+- [ ] Test with curl
+- [ ] Test with real fixture
 
-3. **Fallback Priority**: When LLM returns bad output:
-   - Currently: `[team_name]` (single alias)
-   - Option: Parse partial results
-   - Option: Secondary model
+### Code Changes
 
-4. **Rate Limiting**: Max concurrent Ollama requests:
-   - `OLLAMA_NUM_PARALLEL=2` limits concurrent inference
-   - Activity timeout (30s) handles slow responses
+- [ ] Add `httpx` to `requirements.txt` (if not present)
+- [ ] Update `src/activities/rag.py` with implementation above
+- [ ] (Optional) Remove hardcoded nicknames from `team_data.py`
 
 ---
 
-## Migration Checklist
+## Resources
 
-- [ ] Add `ollama` service to `docker-compose.yml`
-- [ ] Set up ROCm on host (if not already)
-- [ ] Pull model: `ollama pull phi3:mini`
-- [ ] Replace stub in `src/activities/rag.py`
-- [ ] Add `httpx` to `requirements.txt`
-- [ ] Test with real fixture
-- [ ] Consider caching strategy
+- **Ollama API Docs**: https://github.com/ollama/ollama/blob/main/docs/api.md
+- **Strix Halo Testing**: https://github.com/lhl/strix-halo-testing (benchmark data)
+- **Framework Desktop Wiki**: https://strixhalo-homelab.d7.wtf/AI/AI-Capabilities-Overview

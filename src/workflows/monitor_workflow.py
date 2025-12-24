@@ -135,6 +135,7 @@ class MonitorWorkflow:
             for event_info in result.get("twitter_triggered", []):
                 event_id = event_info["event_id"]
                 player_name = event_info["player_name"]
+                team_id = event_info["team_id"]
                 team_name = event_info["team_name"]
                 minute = event_info["minute"]
                 extra = event_info.get("extra")
@@ -154,6 +155,7 @@ class MonitorWorkflow:
                     RAGWorkflowInput(
                         fixture_id=fixture_id,
                         event_id=event_id,
+                        team_id=team_id,
                         team_name=team_name,
                         player_name=player_name,
                         minute=minute,

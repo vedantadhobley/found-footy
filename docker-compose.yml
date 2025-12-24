@@ -5,6 +5,7 @@
 #   3101: MongoDB Compass (web GUI)
 #   3102: MinIO Console
 #   3103: Twitter Firefox VNC (browser GUI)
+#   3104: Open WebUI (chat interface for Ollama)
 #
 # Internal ports (not exposed):
 #   - postgres:5432 (Temporal metadata)
@@ -12,6 +13,7 @@
 #   - minio:9000 (S3 storage)
 #   - temporal:7233 (gRPC)
 #   - twitter:8888 (API)
+#   - ollama:11434 (LLM API)
 
 name: found-footy-prod
 
@@ -159,6 +161,49 @@ services:
       - found-footy-prod
     restart: unless-stopped
 
+  # OLLAMA - Local LLM for team alias generation
+  ollama:
+    image: ollama/ollama:latest
+    container_name: found-footy-prod-ollama
+    # No exposed port - access via Open WebUI on 3104
+    volumes:
+      - ~/.ollama:/root/.ollama  # Shared model store (host bind mount)
+    devices:
+      - /dev/dri:/dev/dri  # GPU access (Vulkan)
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+    environment:
+      - OLLAMA_VULKAN=1  # Enable Vulkan GPU acceleration
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - found-footy-prod
+
+  # OPEN WEBUI - Chat interface for Ollama
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: found-footy-prod-webui
+    ports:
+      - "3104:8080"  # Chat UI at http://localhost:3104
+    environment:
+      - OLLAMA_BASE_URL=http://found-footy-prod-ollama:11434
+      - WEBUI_AUTH=false  # No login required
+    volumes:
+      - found-footy-prod-webui-data:/app/backend/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - found-footy-prod
+
   # TEMPORAL WORKER - Executes workflows
   worker:
     build:
@@ -177,6 +222,7 @@ services:
       S3_BUCKET_NAME: footy-videos
       TWITTER_SESSION_URL: http://found-footy-prod-twitter:8888
       FRONTEND_API_URL: http://vedanta-systems-prod-api:3001
+      OLLAMA_URL: http://found-footy-prod-ollama:11434
     volumes:
       - ~/.config/found-footy:/config  # Cookie backup (shared with twitter service)
     networks:
@@ -185,6 +231,7 @@ services:
     depends_on:
       - temporal
       - mongo
+      - ollama
     restart: unless-stopped
     command: python /app/src/worker.py
 
@@ -203,6 +250,9 @@ volumes:
     driver: local
   found-footy-prod-twitter-cookies:
     name: found-footy-prod-twitter-cookies
+    driver: local
+  found-footy-prod-webui-data:
+    name: found-footy-prod-webui-data
     driver: local
 
 networks:

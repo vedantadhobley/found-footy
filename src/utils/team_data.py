@@ -1,12 +1,12 @@
 """Team data management - pure Python, no orchestration dependencies"""
 
-# Static team data
+# Static team data - names match API-Football exactly
 # nickname: Short name used for Twitter search (more likely to match tweets)
 TOP_UEFA = {
     541: {"name": "Real Madrid", "country": "Spain", "rank": 1, "nickname": "Madrid"},
-    157: {"name": "Bayern Munich", "country": "Germany", "rank": 2, "nickname": "Bayern"},
+    157: {"name": "Bayern München", "country": "Germany", "rank": 2, "nickname": "Bayern"},
     50: {"name": "Manchester City", "country": "England", "rank": 3, "nickname": "City"},
-    85: {"name": "Paris Saint-Germain", "country": "France", "rank": 4, "nickname": "PSG"},
+    85: {"name": "Paris Saint Germain", "country": "France", "rank": 4, "nickname": "PSG"},
     529: {"name": "Barcelona", "country": "Spain", "rank": 5, "nickname": "Barcelona"},
     40: {"name": "Liverpool", "country": "England", "rank": 6, "nickname": "Liverpool"},
     530: {"name": "Atletico Madrid", "country": "Spain", "rank": 7, "nickname": "Atletico"},
@@ -15,9 +15,9 @@ TOP_UEFA = {
     165: {"name": "Borussia Dortmund", "country": "Germany", "rank": 10, "nickname": "Dortmund"},
     49: {"name": "Chelsea", "country": "England", "rank": 11, "nickname": "Chelsea"},
     496: {"name": "Juventus", "country": "Italy", "rank": 12, "nickname": "Juventus"},
-    497: {"name": "Roma", "country": "Italy", "rank": 13, "nickname": "Roma"},
-    505: {"name": "Inter Milan", "country": "Italy", "rank": 14, "nickname": "Inter"},
-    47: {"name": "Tottenham Hotspur", "country": "England", "rank": 15, "nickname": "Tottenham"},
+    497: {"name": "AS Roma", "country": "Italy", "rank": 13, "nickname": "Roma"},
+    505: {"name": "Inter", "country": "Italy", "rank": 14, "nickname": "Inter"},
+    47: {"name": "Tottenham", "country": "England", "rank": 15, "nickname": "Tottenham"},
     # 168: {"name": "Bayer Leverkusen", "country": "Germany", "rank": 8},
     # 211: {"name": "Benfica", "country": "Portugal", "rank": 10},
     # 169: {"name": "Eintracht Frankfurt", "country": "Germany", "rank": 15},
