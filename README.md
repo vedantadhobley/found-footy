@@ -59,29 +59,36 @@ flowchart TB
         direction TB
         INGEST[IngestWorkflow<br/>Daily 00:05 UTC]
         MONITOR[MonitorWorkflow<br/>Every minute]
+        RAGWF[RAGWorkflow<br/>Team alias lookup]
         TWITTERWF[TwitterWorkflow<br/>3× per event]
         DOWNLOADWF[DownloadWorkflow<br/>Per video batch]
         
+        INGEST -.->|Pre-caches aliases| RAGWF
         INGEST -.->|Populates| MONITOR
-        MONITOR -->|Triggers| TWITTERWF
+        MONITOR -->|Triggers| RAGWF
+        RAGWF -->|Triggers| TWITTERWF
         TWITTERWF -->|Triggers| DOWNLOADWF
     end
     
     subgraph STORAGE["💾 Storage Layer"]
         direction TB
-        MONGO[(MongoDB<br/>4 Collections)]
+        MONGO[(MongoDB<br/>5 Collections)]
         MINIO[(MinIO S3<br/>Video files)]
     end
     
     subgraph EXTERNAL["🌐 External Services"]
         direction TB
         APIFB[API-Football<br/>Match data]
+        WIKIDATA[Wikidata<br/>Team aliases]
+        OLLAMA[Ollama LLM<br/>Alias selection]
         TWITTER[Twitter/X<br/>Video discovery]
     end
     
     INGEST --> APIFB
     MONITOR --> APIFB
     MONITOR --> MONGO
+    RAGWF --> WIKIDATA
+    RAGWF --> OLLAMA
     TWITTERWF --> TWITTER
     DOWNLOADWF --> MINIO
     DOWNLOADWF --> MONGO
@@ -456,12 +463,13 @@ found-footy/
 ### 1. IngestWorkflow
 
 **Schedule:** Daily at 00:05 UTC  
-**Purpose:** Fetch today's fixtures and route by status
+**Purpose:** Fetch today's fixtures, pre-cache team aliases, route by status
 
 ```mermaid
 flowchart TB
     TRIGGER[⏰ Daily 00:05 UTC]
     FETCH[Fetch fixtures<br/>GET /fixtures?date=today]
+    RAG[Pre-cache RAG aliases<br/>Both teams per fixture]
     
     subgraph ROUTE["Route by Status"]
         TBD[TBD, NS → fixtures_staging]
@@ -469,13 +477,15 @@ flowchart TB
         DONE[FT, AET, PEN → fixtures_completed]
     end
     
-    TRIGGER --> FETCH --> TBD & LIVE & DONE
+    TRIGGER --> FETCH --> RAG --> TBD & LIVE & DONE
 ```
+
+**Pre-caching:** Calls `get_team_aliases` for both home and away teams. This ensures aliases are ready before any goals are scored, including for opponent teams (non-tracked teams).
 
 ### 2. MonitorWorkflow
 
 **Schedule:** Every minute  
-**Purpose:** Activate fixtures, detect events, trigger Twitter
+**Purpose:** Activate fixtures, detect events, trigger RAG → Twitter pipeline
 
 ```mermaid
 flowchart TB
@@ -492,24 +502,57 @@ flowchart TB
         REMOVE[REMOVED: Mark _removed]
     end
     
-    TWITTER[🐦 Trigger TwitterWorkflow<br/>Non-blocking]
+    RAG[🤖 Trigger RAGWorkflow<br/>Fire-and-forget]
     SYNC[Sync fixture metadata<br/>Update API fields]
     COMPLETE[Complete if finished<br/>active → completed]
     
     TRIGGER --> ACTIVATE --> FETCH --> STORE --> PROCESS
     PROCESS --> NEW & MATCH & REMOVE
-    MATCH -->|count=3| TWITTER
+    MATCH -->|count=3| RAG
     PROCESS --> SYNC --> COMPLETE
 ```
 
-### 3. TwitterWorkflow
+### 3. RAGWorkflow
 
-**Trigger:** Per stable event (runs 3 times)  
-**Purpose:** Search Twitter, trigger download
+**Trigger:** Per stable event (fired by Monitor)  
+**Purpose:** Resolve team aliases via Wikidata + Ollama LLM, trigger Twitter
 
 ```mermaid
 flowchart TB
-    TRIGGER[Triggered by Monitor<br/>Non-blocking child]
+    TRIGGER[Triggered by Monitor<br/>Fire-and-forget]
+    
+    CACHE{Cache hit?}
+    CACHED[Return cached aliases<br/>team_aliases collection]
+    
+    subgraph RAG["Full RAG Pipeline"]
+        WIKI[Query Wikidata<br/>Search for team QID]
+        FETCH[Fetch aliases<br/>English only]
+        PREPROCESS[Preprocess to words<br/>Filter junk]
+        LLM[Ollama LLM selects<br/>Best search terms]
+    end
+    
+    SAVE[Save to event<br/>_twitter_aliases]
+    TWITTER[🐦 Trigger TwitterWorkflow<br/>Child workflow]
+    
+    TRIGGER --> CACHE
+    CACHE -->|Yes| CACHED --> SAVE
+    CACHE -->|No| WIKI --> FETCH --> PREPROCESS --> LLM --> SAVE
+    SAVE --> TWITTER
+```
+
+**Alias Examples:**
+- `"Liverpool"` → `["Liverpool", "LFC", "Reds", "Anfield"]`
+- `"Atletico Madrid"` → `["Atletico", "Madrid", "ATM", "Atleti"]`
+- `"Belgium"` (national) → `["Belgium", "Belgian", "Belgique"]`
+
+### 4. TwitterWorkflow
+
+**Trigger:** Per stable event (runs 3 times)  
+**Purpose:** Search Twitter with aliases, trigger download
+
+```mermaid
+flowchart TB
+    TRIGGER[Triggered by RAGWorkflow<br/>Child workflow]
     
     GET[Get search data<br/>Query + exclude_urls]
     SEARCH[POST to twitter:8888<br/>Firefox automation]
@@ -524,7 +567,7 @@ flowchart TB
     FOUND -->|No| DONE
 ```
 
-### 4. DownloadWorkflow
+### 5. DownloadWorkflow
 
 **Trigger:** Per Twitter search with videos  
 **Purpose:** Download, deduplicate, upload

@@ -325,9 +325,13 @@ def _preprocess_aliases_to_words(raw_aliases: List[str], team_name: str, team_ty
 
 
 def _add_team_name_words(aliases: List[str], team_name: str) -> List[str]:
-    """Add words from team name to the alias list."""
+    """Add words from team name to the BEGINNING of the alias list.
+    
+    Team name words are added first because they're the most reliable search terms.
+    E.g., "Liverpool" for Liverpool FC, "Madrid" for Real Madrid.
+    """
     aliases_lower = {a.lower() for a in aliases}
-    result = list(aliases)
+    team_words = []  # Collect team name words to prepend
     
     name_normalized = team_name.replace('-', ' ')
     words = name_normalized.split()
@@ -346,10 +350,11 @@ def _add_team_name_words(aliases: List[str], team_name: str) -> List[str]:
         if word_lower in aliases_lower:
             continue
         
-        result.append(word_clean)
+        team_words.append(word_clean)
         aliases_lower.add(word_lower)
     
-    return result
+    # Prepend team name words at the beginning
+    return team_words + list(aliases)
 
 
 def _parse_llm_response(text: str) -> Optional[List[str]]:
