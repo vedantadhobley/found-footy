@@ -188,17 +188,24 @@ for event_id in matching_ids:
 ## 3. RAGWorkflow
 
 **Trigger**: Fire-and-forget from MonitorWorkflow when `_monitor_complete=true`  
-**Purpose**: Resolve team aliases, then trigger TwitterWorkflow
+**Purpose**: Resolve team aliases via Wikidata RAG + Ollama LLM, then trigger TwitterWorkflow
 
 ```
 RAGWorkflow
     │
-    ├── get_team_aliases(team_name)
-    │   └── Currently: Stub returns [team_name]
-    │   └── Future: Query Ollama LLM for variations
+    ├── get_cached_team_aliases(team_id)
+    │   └── Fast O(1) lookup in team_aliases collection
+    │   └── Pre-cached during ingestion for both teams
+    │
+    ├── IF cache miss: get_team_aliases(team_id, team_name)
+    │   ├── Call API-Football /teams?id={id} → get team.national boolean
+    │   ├── Query Wikidata for team QID and aliases
+    │   ├── Preprocess to single words (filter junk)
+    │   ├── Ollama LLM selects best words for Twitter
+    │   └── Cache with national boolean and timestamps
     │
     ├── save_team_aliases
-    │   └── Store to _twitter_aliases in MongoDB
+    │   └── Store to _twitter_aliases in event
     │
     └── execute_child_workflow(TwitterWorkflow)
         └── Waits for completion (3 attempts)
@@ -208,17 +215,26 @@ RAGWorkflow
 
 | Activity | Timeout | Retries | Purpose |
 |----------|---------|---------|---------|
-| `get_team_aliases` | 30s | 2 | Get team name variations |
-| `save_team_aliases` | 10s | 2 | Store to MongoDB |
+| `get_cached_team_aliases` | 10s | 2 | Fast MongoDB cache lookup |
+| `get_team_aliases` | 60s | 2 | Full RAG pipeline (Wikidata + Ollama) |
+| `save_team_aliases` | 10s | 2 | Store to event in MongoDB |
 
-### Alias Examples (Future)
+### Alias Examples (Real Output)
 
 ```
-"Atletico de Madrid" → ["Atletico", "Atleti", "ATM"]
-"Manchester United"  → ["Man United", "Man Utd", "MUFC"]
-"Liverpool"          → ["Liverpool", "LFC", "Reds"]
-"Paris Saint-Germain" → ["PSG", "Paris", "Paris SG"]
+"Atletico de Madrid" → ["ATM", "Atletico", "Atleti", "Madrid"]
+"Manchester United"  → ["MUFC", "Utd", "Devils", "Manchester", "United"]
+"Liverpool"          → ["LFC", "Reds", "Anfield", "Liverpool"]
+"Belgium"            → ["Belgian", "Belgique", "Belgium"]  # National team
+"Mali"               → ["Malian", "Mali"]  # National team (ID 1500)
 ```
+
+### Team Type Detection
+
+Team type (club vs national) is determined by API-Football, NOT by team ID:
+- API returns `team.national: true` for national teams
+- Stored in `team_aliases` collection as `national` boolean
+- National teams get nationality adjectives added ("Belgian", "French")
 
 ---
 

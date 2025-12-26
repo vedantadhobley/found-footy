@@ -660,3 +660,141 @@ def create_activation_fields() -> FixtureEnhancement:
         FixtureFields.COMPLETION_COUNT: 0,
         FixtureFields.COMPLETION_COMPLETE: False,
     }
+
+
+# =============================================================================
+# TEAM ALIAS TYPES (for RAG/Twitter search)
+# =============================================================================
+
+class TeamType(str, Enum):
+    """
+    Type of team for RAG processing.
+    
+    National teams get nationality adjectives added (e.g., "Brazilian", "French").
+    Clubs get standard alias processing.
+    """
+    CLUB = "club"
+    NATIONAL = "national"
+
+
+class TeamAliasFields:
+    """
+    Constants for team_aliases collection fields.
+    
+    Use these instead of string literals to avoid typos.
+    
+    Example:
+        doc[TeamAliasFields.TWITTER_ALIASES]
+    """
+    # _id is team_id (API-Football team ID)
+    TEAM_NAME = "team_name"
+    TEAM_TYPE = "team_type"       # "club" or "national" (string, legacy)
+    NATIONAL = "national"          # True if national team, False if club (boolean, canonical)
+    TWITTER_ALIASES = "twitter_aliases"
+    MODEL = "model"
+    WIKIDATA_QID = "wikidata_qid"
+    WIKIDATA_ALIASES = "wikidata_aliases"
+    CREATED_AT = "created_at"
+    UPDATED_AT = "updated_at"
+    
+    @classmethod
+    def all_fields(cls) -> List[str]:
+        """All team alias document fields."""
+        return [
+            cls.TEAM_NAME,
+            cls.TEAM_TYPE,
+            cls.NATIONAL,
+            cls.TWITTER_ALIASES,
+            cls.MODEL,
+            cls.WIKIDATA_QID,
+            cls.WIKIDATA_ALIASES,
+            cls.CREATED_AT,
+            cls.UPDATED_AT,
+        ]
+
+
+class TeamAlias(TypedDict, total=False):
+    """
+    Team alias document in team_aliases collection.
+    
+    Stores Twitter-friendly aliases for teams, generated via RAG pipeline:
+    1. Fetch aliases from Wikidata
+    2. Preprocess to single words
+    3. LLM selects best words for Twitter search
+    4. Add team name words and nationality adjectives
+    
+    The _id is the API-Football team_id for O(1) cache lookups.
+    The 'national' boolean is the canonical source of truth for team type.
+    
+    Example document:
+    {
+        "_id": 40,  # Liverpool's team_id
+        "team_name": "Liverpool",
+        "team_type": "club",
+        "national": false,
+        "twitter_aliases": ["LFC", "Reds", "Anfield", "Liverpool"],
+        "model": "qwen3-vl:8b-instruct",
+        "wikidata_qid": "Q1130849",
+        "wikidata_aliases": ["Liverpool F.C.", "Liverpool Football Club", "LFC", ...],
+        "created_at": "2025-12-26T10:30:00Z",
+        "updated_at": "2025-12-26T10:30:00Z"
+    }
+    """
+    _id: int                      # API-Football team_id (cache key)
+    team_name: str                # Full team name from API
+    team_type: str                # "club" or "national" (legacy, derived from national)
+    national: bool                # True if national team, False if club (canonical)
+    twitter_aliases: List[str]   # Final aliases for Twitter search
+    model: str                    # LLM model used (or "fallback")
+    wikidata_qid: Optional[str]  # Wikidata QID (e.g., "Q1130849")
+    wikidata_aliases: Optional[List[str]]  # Raw aliases from Wikidata
+    created_at: datetime
+    updated_at: datetime
+
+
+def create_team_alias(
+    team_id: int,
+    team_name: str,
+    national: bool,
+    twitter_aliases: List[str],
+    model: str,
+    wikidata_qid: Optional[str] = None,
+    wikidata_aliases: Optional[List[str]] = None,
+) -> TeamAlias:
+    """
+    Create a team alias document for insertion into team_aliases collection.
+    
+    Args:
+        team_id: API-Football team ID (used as _id)
+        team_name: Full team name
+        national: True if national team, False if club (from API)
+        twitter_aliases: Final aliases for Twitter search
+        model: LLM model used (or "fallback", "heuristic")
+        wikidata_qid: Wikidata QID if found
+        wikidata_aliases: Raw aliases from Wikidata
+    
+    Returns:
+        TeamAlias dict ready for MongoDB upsert
+    """
+    from datetime import datetime, timezone
+    
+    now = datetime.now(timezone.utc)
+    team_type = "national" if national else "club"  # Legacy field derived from national
+    
+    doc: TeamAlias = {
+        "_id": team_id,
+        TeamAliasFields.TEAM_NAME: team_name,
+        TeamAliasFields.TEAM_TYPE: team_type,
+        TeamAliasFields.NATIONAL: national,
+        TeamAliasFields.TWITTER_ALIASES: twitter_aliases,
+        TeamAliasFields.MODEL: model,
+        TeamAliasFields.CREATED_AT: now,
+        TeamAliasFields.UPDATED_AT: now,
+    }
+    
+    if wikidata_qid:
+        doc[TeamAliasFields.WIKIDATA_QID] = wikidata_qid
+    if wikidata_aliases:
+        doc[TeamAliasFields.WIKIDATA_ALIASES] = wikidata_aliases
+    
+    return doc

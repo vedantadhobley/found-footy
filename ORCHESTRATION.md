@@ -93,10 +93,11 @@ This decoupling allows Twitter searches to run at 3-minute intervals instead of 
 - **Does NOT manage Twitter retries** (that's TwitterWorkflow's job now)
 
 ### RAGWorkflow (Triggered by Monitor)
-- Resolves team name aliases (stub: returns `[team_name]`)
+- **Checks cache first** - aliases pre-cached during ingestion
+- If cache miss: runs full Wikidata + Ollama RAG pipeline
+- Determines team type via API-Football (`team.national` boolean)
 - Saves aliases to `_twitter_aliases` in MongoDB
 - Triggers TwitterWorkflow as child (waits for completion)
-- Future: Will query local LLM for intelligent aliases
 
 ### TwitterWorkflow (Triggered by RAGWorkflow)
 - **Self-manages all 3 attempts** with durable timers
@@ -126,29 +127,30 @@ T+3:00  Monitor poll #3 → _monitor_count = 3
         → RAGWorkflow triggered (fire-and-forget)
         
 T+3:05  RAGWorkflow:
-        → get_team_aliases("Liverpool") → ["Liverpool", "LFC", "Reds"]
-        → save to _twitter_aliases
+        → get_cached_team_aliases(40) → ["LFC", "Reds", "Anfield", "Liverpool"]
+        → save to _twitter_aliases in event
         → Start TwitterWorkflow
         
 T+3:10  TwitterWorkflow Attempt 1:
         → _twitter_count = 1
-        → Search "Salah Liverpool" → 3 videos
-        → Search "Salah LFC" → 2 videos (1 dup)
-        → Search "Salah Reds" → 1 video (all dups)
-        → Dedupe → 4 unique videos
-        → DownloadWorkflow → 3 uploaded to S3
+        → Search "Salah LFC" → 3 videos
+        → Search "Salah Reds" → 2 videos (1 dup)
+        → Search "Salah Anfield" → 1 video (all dups)
+        → Search "Salah Liverpool" → 1 video
+        → Dedupe → 5 unique videos
+        → DownloadWorkflow → 4 uploaded to S3
         → Sleep until next 3-min boundary (~T+6:00)
         
 T+6:00  TwitterWorkflow Attempt 2:
         → _twitter_count = 2
-        → Same 3 searches (new videos may exist)
+        → Same 4 searches (new videos may exist)
         → 1 new video found
         → DownloadWorkflow → 1 uploaded
         → Sleep until ~T+9:00
         
 T+9:00  TwitterWorkflow Attempt 3:
         → _twitter_count = 3
-        → Same 3 searches
+        → Same 4 searches
         → 0 new videos
         → _twitter_complete = TRUE
         
@@ -184,8 +186,28 @@ Goal videos appear on Twitter over 5-15 minutes:
 ### Why RAGWorkflow as intermediary?
 
 1. **Clean separation**: Alias lookup is separate from Twitter search
-2. **Future extensibility**: Swap stub for LLM without touching TwitterWorkflow
+2. **Future extensibility**: Wikidata + Ollama implementation is isolated
 3. **Visibility**: Aliases saved to MongoDB for debugging
+4. **Pre-caching**: Aliases cached during ingestion, fast lookup at runtime
+
+### Why pre-cache aliases during ingestion?
+
+During daily ingest (00:05 UTC), we pre-cache RAG aliases for BOTH teams in every fixture:
+- Ensures aliases are ready before any goals are scored
+- Covers opponent teams (non-tracked teams that play against our tracked teams)
+- Cache lookup is O(1) by team_id at runtime
+- Full RAG pipeline (Wikidata + Ollama) only runs once per team
+
+### Why use API-Football for team type?
+
+Team type (club vs national) determines alias generation:
+- National teams get nationality adjectives ("Belgian", "French", "Brazilian")
+- Clubs get standard nickname processing
+
+We use API-Football's `team.national` boolean because:
+- **Authoritative**: API knows definitively if a team is national
+- **No heuristics**: Don't guess based on team_id ranges
+- **Works for all teams**: Mali (ID 1500) is correctly identified as national
 
 ### Why durable timers?
 

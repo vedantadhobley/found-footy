@@ -3,11 +3,14 @@ Event Enhancement Utilities
 
 Helper functions for building Twitter search queries and calculating score context.
 These are used when enhancing events during the debounce process.
+
+NOTE: The Twitter search string built here is just a fallback/display string.
+The actual Twitter search uses RAG-generated aliases from team_aliases collection,
+which provides multiple aliases per team for better coverage.
 """
 import unicodedata
 from typing import Dict, Any
 
-from src.utils.team_data import get_team_nickname
 from src.data.models import EventFields
 
 
@@ -219,9 +222,8 @@ def build_twitter_search(event: dict, fixture: dict) -> str:
     
     # Use nickname from our team data if available
     # Otherwise, extract the best search term from the API name
-    team_name = get_team_nickname(event_team_id, fallback=None)
-    if team_name is None:
-        team_name = extract_team_search_name(api_team_name)
+    # NOTE: This is just for display/debugging. Actual Twitter search uses RAG aliases.
+    team_name = extract_team_search_name(api_team_name)
     
     return f"{player_search_name} {team_name}".strip()
 

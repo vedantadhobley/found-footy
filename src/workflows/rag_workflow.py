@@ -4,16 +4,20 @@ RAG Workflow - Team Alias Lookup via Ollama LLM
 Uses local Ollama LLM (GPU-accelerated) to generate team aliases for Twitter search.
 
 Flow:
-1. Query get_team_aliases activity (checks cache, calls Ollama if miss)
-2. Save aliases to event for debugging
-3. Trigger TwitterWorkflow with resolved aliases
+1. Check cache for pre-computed aliases (from Ingest)
+2. If miss: Query get_team_aliases activity (calls Wikidata + Ollama)
+3. Save aliases to event for debugging
+4. Trigger TwitterWorkflow with resolved aliases
 
 Examples:
 - "Atletico de Madrid" → ["Atletico", "Atleti", "ATM"]
-- "Manchester United"  → ["Man United", "Man Utd", "MUFC"]
+- "Manchester United"  → ["MUFC", "Devils", "Utd", "Manchester", "United"]
 
 Triggered by Monitor when event reaches _monitor_complete=true.
 Triggers TwitterWorkflow with resolved aliases.
+
+Note: Aliases are pre-cached at ingestion time for BOTH teams in each fixture.
+This ensures opponent teams (non-tracked) have aliases ready when they score.
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -41,12 +45,13 @@ class RAGWorkflowInput:
 @workflow.defn
 class RAGWorkflow:
     """
-    Resolve team aliases via Ollama LLM, then trigger Twitter search workflow.
+    Resolve team aliases via cache or Ollama LLM, then trigger Twitter search workflow.
     
     This workflow:
-    1. Queries Ollama for 3 team aliases (cached by team_id)
-    2. Normalizes aliases (removes diacritics)
-    3. Passes aliases to TwitterWorkflow for search
+    1. Checks cache for pre-computed aliases (from Ingest)
+    2. Falls back to full RAG lookup if cache miss
+    3. Normalizes aliases (removes diacritics)
+    4. Passes aliases to TwitterWorkflow for search
     """
     
     @workflow.run
@@ -54,16 +59,27 @@ class RAGWorkflow:
         workflow.logger.info(f"🔍 RAG lookup for team {input.team_id}: {input.team_name}")
         
         # =========================================================================
-        # Step 1: Get team aliases (checks cache, calls Ollama if miss)
+        # Step 1: Try fast cache lookup first (pre-cached during ingestion)
         # =========================================================================
         aliases = await workflow.execute_activity(
-            rag_activities.get_team_aliases,
-            args=[input.team_id, input.team_name],
-            start_to_close_timeout=timedelta(seconds=60),  # LLM can take a few seconds
+            rag_activities.get_cached_team_aliases,
+            input.team_id,
+            start_to_close_timeout=timedelta(seconds=10),
             retry_policy=RetryPolicy(maximum_attempts=2),
         )
         
-        workflow.logger.info(f"📋 Resolved aliases: {aliases}")
+        if aliases:
+            workflow.logger.info(f"📦 Cache hit: {aliases}")
+        else:
+            # Cache miss - do full RAG lookup (Wikidata + Ollama)
+            workflow.logger.info(f"🔄 Cache miss, running full RAG pipeline...")
+            aliases = await workflow.execute_activity(
+                rag_activities.get_team_aliases,
+                args=[input.team_id, input.team_name],
+                start_to_close_timeout=timedelta(seconds=60),  # LLM can take a few seconds
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+            workflow.logger.info(f"📋 RAG resolved aliases: {aliases}")
         
         # =========================================================================
         # Step 2: Save aliases to MongoDB for debugging/visibility

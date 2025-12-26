@@ -166,9 +166,10 @@ async def main():
                 monitor.sync_fixture_metadata,
                 monitor.complete_fixture_if_ready,
                 monitor.notify_frontend_refresh,
-                # RAG activities (team alias lookup - stub for now)
+                # RAG activities (team alias lookup)
                 rag.get_team_aliases,
                 rag.save_team_aliases,
+                rag.get_cached_team_aliases,
                 # Twitter activities (4 granular for retry control)
                 twitter.get_twitter_search_data,
                 twitter.execute_twitter_search,
@@ -188,7 +189,7 @@ async def main():
         
         print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
         print("📋 Workflows: Ingest, Monitor, RAG, Twitter, Download", flush=True)
-        print("🔧 Activities: 23 total (2 ingest, 9 monitor, 2 rag, 5 twitter, 6 download)", flush=True)
+        print("🔧 Activities: 25 total (2 ingest, 9 monitor, 4 rag, 5 twitter, 6 download)", flush=True)
         print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every minute)", flush=True)
         await worker.run()
     except Exception as e:

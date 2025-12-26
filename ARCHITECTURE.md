@@ -73,16 +73,17 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 │  IngestWorkflow (00:05 UTC)     MonitorWorkflow (Every 1 min)       │
 │         │                                │                           │
 │    Fetch fixtures                   Poll API                         │
-│    Route by status                  Debounce events                  │
-│                                     Trigger RAG on stable            │
+│    Pre-cache RAG aliases            Debounce events                  │
+│    Route by status                  Trigger RAG on stable            │
 └──────────────────────────────────────┬──────────────────────────────┘
                                        │
                                        ▼ (fire-and-forget)
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        RAGWorkflow                                   │
 ├─────────────────────────────────────────────────────────────────────┤
-│  1. get_team_aliases(team_name) → ["Liverpool", "LFC", "Reds"]      │
-│  2. save_team_aliases to MongoDB                                     │
+│  1. get_cached_team_aliases(team_id) → cache hit (pre-cached)       │
+│     OR get_team_aliases(team_id, team_name) → Wikidata + Ollama     │
+│  2. save_team_aliases to event in MongoDB                            │
 │  3. Start TwitterWorkflow (child, waits)                             │
 └──────────────────────────────────────┬──────────────────────────────┘
                                        │
@@ -346,12 +347,22 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 
 ### 3. RAGWorkflow (Per Stable Event)
 
-**Purpose**: Resolve team aliases, trigger Twitter workflow
+**Purpose**: Resolve team aliases via Wikidata RAG + Ollama LLM, trigger Twitter workflow
 
 | Activity | Purpose | Retries |
-|----------|---------|---------|
-| `get_team_aliases` | Query for aliases (stub/LLM) | 2x |
-| `save_team_aliases` | Store to MongoDB | 2x |
+|----------|---------|---------||
+| `get_cached_team_aliases` | Fast MongoDB cache lookup | 2x |
+| `get_team_aliases` | Full RAG pipeline (Wikidata + Ollama) | 2x |
+| `save_team_aliases` | Store to event in MongoDB | 2x |
+
+**RAG Pipeline Flow:**
+1. Check `team_aliases` MongoDB cache by team_id
+2. If miss: Call API-Football `/teams?id={id}` to get `team.national` boolean
+3. Query Wikidata for team QID and aliases
+4. Preprocess aliases to single words (filter junk, split phrases)
+5. Ollama LLM selects best words for Twitter search
+6. Add nationality adjectives for national teams ("Belgian", "French")
+7. Cache result with `national` boolean and `created_at` timestamp
 
 Then triggers **TwitterWorkflow** as child workflow.
 

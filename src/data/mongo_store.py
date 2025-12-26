@@ -18,17 +18,19 @@ from src.data.models import (
     FixtureFields,
     EventFields,
     FixtureStatus,
+    TeamAliasFields,
     create_activation_fields,
 )
 
 
 class FootyMongoStore:
     """
-    MongoDB storage for 4-collection architecture:
+    MongoDB storage for 5-collection architecture:
     - fixtures_staging: Waiting to activate (TBD, NS)
     - fixtures_live: Raw API data (temporary, for comparison)
     - fixtures_active: Enhanced with debounce data (never overwritten)
     - fixtures_completed: Archive (FT, AET, PEN)
+    - team_aliases: Cached team name aliases for Twitter search (RAG pipeline)
     """
     
     # Class variable to track if indexes have been created this session
@@ -41,11 +43,12 @@ class FootyMongoStore:
         self.client = MongoClient(connection_url)
         self.db = self.client.found_footy
         
-        # 4 Collections
+        # 5 Collections
         self.fixtures_staging = self.db.fixtures_staging
         self.fixtures_live = self.db.fixtures_live
         self.fixtures_active = self.db.fixtures_active
         self.fixtures_completed = self.db.fixtures_completed
+        self.team_aliases = self.db.team_aliases
         
         self._create_indexes()
 
@@ -76,6 +79,9 @@ class FootyMongoStore:
             # Enhanced event field indexes (fixtures_active only)
             self.fixtures_active.create_index([("events._event_id", ASCENDING)])
             self.fixtures_active.create_index([("events._monitor_complete", ASCENDING)])
+            
+            # Team aliases indexes (for lookup by team name)
+            self.team_aliases.create_index([(TeamAliasFields.TEAM_NAME, ASCENDING)])
             
             FootyMongoStore._indexes_created = True
         except Exception as e:
@@ -1091,3 +1097,102 @@ class FootyMongoStore:
         except Exception as e:
             print(f"❌ Error getting completed fixtures: {e}")
             return []
+
+    # === Team Aliases Methods ===
+    
+    def get_team_alias(self, team_id: int) -> dict | None:
+        """
+        Get cached team alias by team_id.
+        
+        Args:
+            team_id: API-Football team ID
+            
+        Returns:
+            TeamAlias document or None if not cached
+        """
+        try:
+            return self.team_aliases.find_one({"_id": team_id})
+        except Exception as e:
+            print(f"❌ Error getting team alias for {team_id}: {e}")
+            return None
+    
+    def upsert_team_alias(
+        self,
+        team_id: int,
+        team_name: str,
+        national: bool,
+        twitter_aliases: List[str],
+        model: str,
+        wikidata_qid: str | None = None,
+        wikidata_aliases: List[str] | None = None,
+    ) -> bool:
+        """
+        Create or update team alias in cache.
+        
+        Args:
+            team_id: API-Football team ID (used as _id)
+            team_name: Full team name
+            national: True if national team, False if club
+            twitter_aliases: Final aliases for Twitter search
+            model: LLM model used (or "fallback")
+            wikidata_qid: Wikidata QID if found
+            wikidata_aliases: Raw aliases from Wikidata
+            
+        Returns:
+            True if successful
+        """
+        try:
+            team_type = "national" if national else "club"  # Derive team_type from national
+            
+            update_data = {
+                TeamAliasFields.TEAM_NAME: team_name,
+                TeamAliasFields.TEAM_TYPE: team_type,
+                TeamAliasFields.NATIONAL: national,
+                TeamAliasFields.TWITTER_ALIASES: twitter_aliases,
+                TeamAliasFields.MODEL: model,
+                TeamAliasFields.UPDATED_AT: datetime.now(timezone.utc),
+            }
+            
+            if wikidata_qid:
+                update_data[TeamAliasFields.WIKIDATA_QID] = wikidata_qid
+            if wikidata_aliases:
+                update_data[TeamAliasFields.WIKIDATA_ALIASES] = wikidata_aliases
+            
+            self.team_aliases.update_one(
+                {"_id": team_id},
+                {
+                    "$set": update_data,
+                    "$setOnInsert": {TeamAliasFields.CREATED_AT: datetime.now(timezone.utc)},
+                },
+                upsert=True,
+            )
+            return True
+        except Exception as e:
+            print(f"❌ Error upserting team alias for {team_id}: {e}")
+            return False
+    
+    def get_all_team_aliases(self) -> List[dict]:
+        """Get all cached team aliases."""
+        try:
+            return list(self.team_aliases.find({}))
+        except Exception as e:
+            print(f"❌ Error getting all team aliases: {e}")
+            return []
+    
+    def delete_team_alias(self, team_id: int) -> bool:
+        """Delete a team alias from cache (for testing/refresh)."""
+        try:
+            result = self.team_aliases.delete_one({"_id": team_id})
+            return result.deleted_count > 0
+        except Exception as e:
+            print(f"❌ Error deleting team alias for {team_id}: {e}")
+            return False
+    
+    def clear_team_aliases(self) -> int:
+        """Clear all team aliases (for testing/refresh). Returns count deleted."""
+        try:
+            result = self.team_aliases.delete_many({})
+            return result.deleted_count
+        except Exception as e:
+            print(f"❌ Error clearing team aliases: {e}")
+            return 0

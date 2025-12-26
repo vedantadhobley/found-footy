@@ -119,6 +119,55 @@ def parse_team_ids_parameter(team_ids_param):
     
     return []
 
+
+def get_team_info(team_id: int) -> dict | None:
+    """
+    Fetch team info from API-Football to determine team type.
+    
+    Response includes:
+    - team.national: bool (True for national teams, False for clubs)
+    - team.name: str
+    - team.country: str
+    
+    Args:
+        team_id: API-Football team ID
+        
+    Returns:
+        Team info dict or None if not found
+    """
+    url = f"{BASE_URL}/teams"
+    headers = get_api_headers()
+    
+    try:
+        resp = requests.get(url, headers=headers, params={"id": team_id})
+        resp.raise_for_status()
+        data = resp.json()
+        
+        response = data.get("response", [])
+        if response and len(response) > 0:
+            return response[0].get("team")
+        
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to fetch team info for {team_id}: {e}")
+        return None
+
+
+def is_national_team(team_id: int) -> bool | None:
+    """
+    Check if a team is a national team via API lookup.
+    
+    Args:
+        team_id: API-Football team ID
+        
+    Returns:
+        True if national team, False if club, None if lookup failed
+    """
+    team_info = get_team_info(team_id)
+    if team_info:
+        return team_info.get("national", False)
+    return None
+
 def test_events_api_debug():
     """Debug the events API call specifically"""
     print("🔍 DEBUGGING EVENTS API")

@@ -7,19 +7,21 @@ src/
 ├── workflows/              # Temporal workflows (orchestration)
 │   ├── ingest_workflow.py      # Daily at 00:05 UTC - fetch and categorize fixtures
 │   ├── monitor_workflow.py     # Every minute - track fixtures, debounce events inline
+│   ├── rag_workflow.py         # Per event - resolve team aliases via Wikidata + Ollama
 │   ├── twitter_workflow.py     # Per event - search videos via browser automation
 │   └── download_workflow.py    # Per event - download & upload with per-video retry
 ├── activities/             # Temporal activities (actual work)
 │   ├── ingest.py          # Fetch and categorize fixtures
 │   ├── monitor.py         # Activate, fetch, compare, process_fixture_events
+│   ├── rag.py             # Team alias RAG (Wikidata + Ollama LLM)
 │   ├── twitter.py         # 3 activities: get_data, search, save
 │   └── download.py        # 5 activities for download/upload
 ├── data/                  # Data layer
-│   ├── mongo_store.py     # MongoDB operations (4-collection architecture)
+│   ├── mongo_store.py     # MongoDB operations (5-collection architecture)
 │   └── s3_store.py        # MinIO S3 operations
 ├── utils/                 # Utilities
 │   ├── event_config.py    # Event filtering (Goals only)
-│   └── team_data.py       # 50 tracked teams
+│   └── team_data.py       # 50 tracked teams (IDs only)
 └── worker.py              # Temporal worker (runs workflows & activities)
 ```
 
@@ -27,10 +29,12 @@ src/
 
 ```
 IngestWorkflow (daily 00:05 UTC)
+  ├─> Pre-cache team aliases via RAGWorkflow (both teams)
   ↓
 MonitorWorkflow (every minute)
   ├─> process_fixture_events (inline debounce)
   └─> TwitterWorkflow (per stable event)
+        ├─> Uses cached aliases (instant) or RAGWorkflow (60s timeout)
         ↓ triggers if videos found
       DownloadWorkflow (per event)
 ```
@@ -60,10 +64,11 @@ open http://localhost:4101
 
 ## Implementation Status
 
-- ✅ IngestWorkflow - Fetches and categorizes fixtures
+- ✅ IngestWorkflow - Fetches and categorizes fixtures, pre-caches team aliases
 - ✅ MonitorWorkflow - Polls fixtures, debounces events inline
+- ✅ RAGWorkflow - Wikidata RAG + Ollama LLM for team aliases
 - ✅ TwitterWorkflow - Searches Twitter via browser automation
 - ✅ DownloadWorkflow - Downloads, deduplicates, uploads to S3
-- ✅ MongoDB 4-collection architecture
+- ✅ MongoDB 5-collection architecture
 - ✅ Set-based debounce (no hash comparison)
 - ✅ Per-video retry policies

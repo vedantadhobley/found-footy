@@ -6,6 +6,13 @@ This document describes the RAG-based team alias generation system for improving
 
 **Current State**: ✅ **FULLY IMPLEMENTED** - `get_team_aliases(team_id, team_name)` performs true RAG
 
+> **Note**: This document was written during design/development. The actual implementation in `src/activities/rag.py` uses:
+> - Model: `qwen3-vl:8b-instruct` (configurable via `OLLAMA_MODEL` env var)
+> - Team type detection: API-Football `/teams?id={id}` returns `team.national` boolean
+> - Pre-caching: IngestWorkflow pre-caches aliases for both teams during fixture ingestion
+> 
+> See the implementation for authoritative details.
+
 ### What is RAG?
 
 **R**etrieval-**A**ugmented **G**eneration - the only approach we use:

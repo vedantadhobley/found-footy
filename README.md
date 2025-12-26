@@ -91,7 +91,7 @@ flowchart TB
 
 ## 📊 Data Flow
 
-### MongoDB 4-Collection Architecture
+### MongoDB 5-Collection Architecture
 
 ```mermaid
 flowchart TB
@@ -122,6 +122,7 @@ flowchart TB
 | **fixtures_live** | Raw API data for comparison | ~1 minute (overwritten) |
 | **fixtures_active** | Enhanced events with video tracking | ~90 minutes |
 | **fixtures_completed** | Permanent archive | Forever |
+| **team_aliases** | Cached team aliases from RAG pipeline | Persistent |
 
 ### Event Lifecycle
 
@@ -417,10 +418,11 @@ found-footy/
 │   │   ├── ingest.py           # API-Football fetching
 │   │   ├── monitor.py          # Event processing
 │   │   ├── twitter.py          # Twitter search
-│   │   └── download.py         # Video download/upload
+│   │   ├── download.py         # Video download/upload
+│   │   └── rag.py              # Team alias RAG (Wikidata + Ollama)
 │   │
 │   ├── data/
-│   │   ├── mongo_store.py      # 4-collection MongoDB
+│   │   ├── mongo_store.py      # 5-collection MongoDB
 │   │   └── s3_store.py         # MinIO video storage
 │   │
 │   ├── utils/
