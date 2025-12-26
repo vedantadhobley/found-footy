@@ -63,22 +63,35 @@ def build_tracked_teams():
 # Load teams from the actual source of truth (team_data.py)
 TRACKED_TEAMS = build_tracked_teams()
 
-SYSTEM_PROMPT = """You are a football alias selector. Given a list of official aliases from Wikidata, derive the 3 best for Twitter search.
+SYSTEM_PROMPT = """Select the best words for Twitter search from the provided list.
 
-Rules:
-- Return ONLY a JSON array of exactly 3 strings
-- Choose short names (1-2 words) that fans use on Twitter
-- Prefer: abbreviations (ATM, LFC), short names (Atleti, Barca), common nicknames
-- You MAY simplify aliases: "El Atleti" → "Atleti", "FC Barcelona" → "Barcelona"
-- All output must be DERIVED from the Wikidata list (substrings/simplifications OK)
-- DO NOT invent aliases that aren't grounded in the Wikidata data
-- No explanations, just the JSON array"""
+PRIORITY:
+1. Acronyms (MUFC, BVB, PSG, ATM, LFC) - most valuable
+2. Short nicknames (Spurs, Juve, Barca, Atleti, Bayern)
+3. Distinctive words (Devils, Blues, Gunners, Reds)
+
+RULES:
+- ONLY select from the provided list
+- Return ALL good options (no limit)
+- Skip generic words
+
+Output: JSON array ["MUFC", "Utd", "Devils"]"""
 
 
 def normalize_alias(alias: str) -> str:
-    """Remove diacritics: Atlético → Atletico"""
+    """Remove diacritics and strip article prefixes: Atlético → Atletico, The Bees → Bees"""
+    # Remove diacritics
     normalized = unicodedata.normalize('NFD', alias)
-    return ''.join(c for c in normalized if unicodedata.category(c) != 'Mn')
+    result = ''.join(c for c in normalized if unicodedata.category(c) != 'Mn')
+    
+    # Strip article prefixes (The, La, El, Los, Las, Le, Les, Gli, Die, Der, Das)
+    # Case-insensitive but preserve original case of the rest
+    for prefix in ('The ', 'La ', 'El ', 'Los ', 'Las ', 'Le ', 'Les ', 'Gli ', 'Die ', 'Der ', 'Das '):
+        if result.lower().startswith(prefix.lower()):
+            result = result[len(prefix):]
+            break
+    
+    return result.strip()
 
 
 async def search_wikidata_qid(team_name: str, team_type: str, country: str = None) -> Optional[str]:
@@ -179,8 +192,256 @@ async def search_wikidata_qid(team_name: str, team_type: str, country: str = Non
     return None
 
 
+def normalize_wikidata_alias(alias: str) -> Optional[str]:
+    """
+    Normalize a single alias for LLM consumption.
+    Returns None if the alias should be filtered out entirely.
+    """
+    import unicodedata
+    
+    # Normalize unicode (ç -> c, ü -> u, etc.)
+    normalized = unicodedata.normalize('NFKD', alias)
+    normalized = ''.join(c for c in normalized if not unicodedata.combining(c))
+    
+    # Skip non-Latin
+    if not all(c.isascii() or c.isspace() for c in normalized):
+        return None
+    
+    # Skip concatenated words like "FCBarcelona", "ASRoma", "FCInter"
+    if len(normalized) > 4 and ' ' not in normalized and not normalized.isupper():
+        for i in range(1, len(normalized)):
+            # lowercase followed by uppercase: "ASRoma"
+            if normalized[i-1].islower() and normalized[i].isupper():
+                return None
+        # Also catch FC/AS prefix patterns: "FCBarcelona" (FC + Capital + lowercase)
+        if len(normalized) > 3 and normalized[:2].isupper() and normalized[2].isupper() and normalized[3:4].islower():
+            return None
+    
+    # Skip "City SG" style aliases (word + 2-letter code) - these are useless
+    parts = normalized.split()
+    if len(parts) == 2 and len(parts[1]) <= 2:
+        return None
+    
+    # Skip long descriptive phrases
+    lower = normalized.lower()
+    bad_phrases = ['national football team', 'national soccer team', 'football club', 
+                   'soccer club', 'soccer team', 'football team', "men's national"]
+    for phrase in bad_phrases:
+        if phrase in lower:
+            return None
+    
+    # Skip endings with FC, NT, Club
+    if lower.endswith(' fc') or lower.endswith(' nt') or lower.endswith(' club'):
+        return None
+    
+    # Skip redundant acronym suffixes like "PSGFC" (5+ chars ending in FC)
+    # But keep legitimate 4-letter acronyms like NFFC, AVFC, MUFC
+    if normalized.isupper() and len(normalized) >= 5:
+        if normalized.endswith('FC') or normalized.endswith('NT'):
+            return None
+    
+    # Remove periods from acronyms: "F.C.B." -> "FCB", but skip "A.S.Roma" style
+    if '.' in normalized:
+        no_periods = normalized.replace('.', '')
+        if len(no_periods) <= 5 and no_periods.isupper():
+            normalized = no_periods
+        elif '.' in normalized:  # Still has periods, not a clean acronym
+            return None
+    
+    # Skip very short or very long
+    if len(normalized) < 3 or len(normalized) > 25:
+        return None
+    
+    # Skip partial/truncated words (like "Ars", "Checkered")
+    useless_fragments = {'ars', 'checkered', 'royal', 'spanish', 'belgian', 'italian'}
+    if normalized.lower() in useless_fragments:
+        return None
+    
+    # Remove periods from acronyms: "F.C.B." -> "FCB"
+    if '.' in normalized and len(normalized.replace('.', '')) <= 5:
+        normalized = normalized.replace('.', '')
+    
+    return normalized.strip()
+
+
+# Country -> nationality adjective(s) AND alternate names for national teams
+NATIONALITY_MAP = {
+    'argentina': ['Argentinian', 'Argentine'],
+    'brazil': ['Brazilian', 'Brasil'],
+    'france': ['French'],
+    'england': ['English'],
+    'germany': ['German', 'Deutschland'],
+    'spain': ['Spanish', 'Espana'],
+    'italy': ['Italian', 'Italia'],
+    'portugal': ['Portuguese'],
+    'netherlands': ['Dutch', 'Holland'],
+    'belgium': ['Belgian'],
+    'croatia': ['Croatian', 'Hrvatska'],
+    'morocco': ['Moroccan'],
+    'colombia': ['Colombian'],
+    'usa': ['American', 'America', 'USA', 'United', 'States'],
+    'mexico': ['Mexican'],
+    'japan': ['Japanese'],
+    'south korea': ['Korean'],
+    'australia': ['Australian'],
+    'poland': ['Polish'],
+    'switzerland': ['Swiss'],
+    'denmark': ['Danish'],
+    'sweden': ['Swedish'],
+    'norway': ['Norwegian'],
+    'wales': ['Welsh'],
+    'scotland': ['Scottish'],
+    'ireland': ['Irish'],
+    'turkey': ['Turkish'],
+    'greece': ['Greek'],
+    'serbia': ['Serbian'],
+    'ukraine': ['Ukrainian'],
+    'czech republic': ['Czech'],
+    'austria': ['Austrian'],
+    'hungary': ['Hungarian'],
+    'romania': ['Romanian'],
+    'senegal': ['Senegalese'],
+    'ghana': ['Ghanaian'],
+    'nigeria': ['Nigerian'],
+    'cameroon': ['Cameroonian'],
+    'egypt': ['Egyptian'],
+    'algeria': ['Algerian'],
+    'tunisia': ['Tunisian'],
+    'uruguay': ['Uruguayan'],
+    'chile': ['Chilean'],
+    'peru': ['Peruvian'],
+    'ecuador': ['Ecuadorian'],
+    'canada': ['Canadian'],
+}
+
+
+def preprocess_aliases_to_words(raw_aliases: List[str], team_name: str, team_type: str = "club") -> List[str]:
+    """
+    Heavy preprocessing to convert raw Wikidata aliases to clean single words.
+    
+    Steps:
+    1. Filter out concatenated junk (FCBarcelona, ASRoma)
+    2. Handle acronyms with periods (F.C.B. -> FCB, dedupe if FCB exists)
+    3. Split multi-word aliases into individual words
+    4. Remove skip words (FC, Club, The, La, de, of, etc.)
+    5. Remove words that are part of the team name
+    6. Dedupe everything
+    """
+    import unicodedata
+    
+    # Words to skip
+    skip_words = {
+        'fc', 'club', 'the', 'la', 'el', 'los', 'las', 'le', 'les', 'de', 'of', 
+        'and', 'del', 'der', 'die', 'das', 'ac', 'as', 'sc', 'cf', 'cd', 'ss',
+        'futbol', 'football', 'soccer', 'calcio', 'association', 'sporting',
+        'national', 'team', "men's", 'mens', 'royal', 'real', 'nt', 'united',
+        'one', 'red', 'west', 'sport', '1927', 'three'  # Generic/useless words
+    }
+    
+    # Team name words to skip (lowercase)
+    team_words = {w.lower() for w in team_name.split()}
+    
+    words = set()
+    acronyms = set()  # Track acronyms separately for period-stripping dedupe
+    
+    for alias in raw_aliases:
+        # Normalize unicode
+        normalized = unicodedata.normalize('NFKD', alias)
+        normalized = ''.join(c for c in normalized if not unicodedata.combining(c))
+        
+        # Skip non-ASCII
+        if not all(c.isascii() or c.isspace() for c in normalized):
+            continue
+        
+        # Skip concatenated junk like "FCBarcelona", "ASRoma"
+        if len(normalized) > 4 and ' ' not in normalized and not normalized.isupper():
+            is_concat = False
+            for i in range(1, len(normalized)):
+                if normalized[i-1].islower() and normalized[i].isupper():
+                    is_concat = True
+                    break
+            if is_concat:
+                continue
+            # Also catch FC/AS prefix patterns
+            if len(normalized) > 3 and normalized[:2].isupper() and normalized[2].isupper() and normalized[3:4].islower():
+                continue
+        
+        # Handle acronyms with periods: "F.C.B." -> "FCB", "I. M." -> "IM"
+        if '.' in normalized:
+            no_periods = normalized.replace('.', '').replace(' ', '').strip()
+            if 2 <= len(no_periods) <= 6 and no_periods.isupper():
+                # Only add if not already seen
+                if no_periods.lower() not in acronyms:
+                    acronyms.add(no_periods.lower())
+                    words.add(no_periods)
+            continue  # Don't process further either way
+        
+        # Check if it's a clean acronym (all caps, 2-6 chars, NO SPACES)
+        no_space = normalized.replace(' ', '')
+        if no_space.isupper() and 2 <= len(no_space) <= 6 and ' ' not in normalized:
+            # Skip corporate junk like SAD
+            if no_space in {'SAD', 'PLC', 'LTD', 'INC', 'IM'}:
+                continue
+            if no_space.lower() not in acronyms:
+                acronyms.add(no_space.lower())
+                words.add(no_space)
+            continue
+        
+        # Skip weird spaced "acronyms" like "I M"
+        if len(normalized) <= 4 and ' ' in normalized:
+            continue
+        
+        # Split multi-word aliases into individual words
+        for word in normalized.split():
+            # Strip punctuation from word
+            word_clean = ''.join(c for c in word if c.isalnum())
+            word_lower = word_clean.lower()
+            
+            # Skip if too short
+            if len(word_clean) < 2:
+                continue
+            
+            # Skip stop words
+            if word_lower in skip_words:
+                continue
+            
+            # Skip if it's just a team name word
+            if word_lower in team_words:
+                continue
+            
+            # Skip corporate/legal junk only
+            if word_lower in {'sad', 'plc', 'ltd', 'inc', 'ev'}:
+                continue
+            
+            # Add the word (preserve original case for proper nouns)
+            words.add(word_clean)
+    
+    # For national teams, auto-generate nationality adjectives if not already present
+    if team_type == "national":
+        team_lower = team_name.lower()
+        if team_lower in NATIONALITY_MAP:
+            for adj in NATIONALITY_MAP[team_lower]:
+                if adj.lower() not in {w.lower() for w in words}:
+                    words.add(adj)
+    
+    # Filter out any 1-char words
+    words = {w for w in words if len(w) > 1}
+    
+    # If we have non-acronym words, drop generic all-caps words (keep only meaningful acronyms)
+    # But if acronyms are ALL we have, keep them
+    non_caps = [w for w in words if not w.isupper()]
+    if non_caps:
+        # We have real words - only keep acronyms that look like team acronyms (3-5 chars)
+        words = {w for w in words if not w.isupper() or (w.isupper() and 3 <= len(w) <= 5)}
+    
+    # Sort: acronyms first, then by length (shorter = better)
+    result = sorted(words, key=lambda w: (not w.isupper(), len(w), w.lower()))
+    
+    return result
+
+
 async def fetch_wikidata_aliases(qid: str) -> List[str]:
-    """Fetch ENGLISH aliases only from Wikidata entity."""
+    """Fetch ENGLISH aliases only from Wikidata entity, pre-cleaned for LLM."""
     aliases = []
     try:
         response = requests.get(f"{WIKIDATA_ENTITY_URL}/{qid}.json", headers=HEADERS, timeout=10)
@@ -200,15 +461,7 @@ async def fetch_wikidata_aliases(qid: str) -> List[str]:
             if alias_entry.get("value"):
                 aliases.append(alias_entry["value"])
         
-        # Deduplicate
-        seen = set()
-        unique = []
-        for alias in aliases:
-            if alias.lower() not in seen:
-                seen.add(alias.lower())
-                unique.append(alias)
-        
-        return unique
+        return aliases  # Return raw - preprocessing happens in test_team
             
     except Exception as e:
         print(f"  ⚠️ Wikidata fetch error: {e}")
@@ -247,22 +500,21 @@ async def call_ollama(prompt: str) -> Optional[str]:
 async def call_ollama_api(wikidata_aliases: List[str], team_name: str) -> Optional[List[str]]:
     """Call Ollama API via internal Docker network."""
     
-    # Build the prompt
-    prompt = f"""Team: {team_name}
-Wikidata aliases: {json.dumps(wikidata_aliases[:20])}
+    # Build the prompt - input is already single words, just rank them
+    prompt = f"""Words: {json.dumps(wikidata_aliases)}
 
-Select the 3 best aliases for Twitter search. You can simplify (drop El/The/FC). Return ONLY a JSON array of 3 strings."""
+Select the best words for Twitter search. Return a JSON array."""
 
     payload = {
-        "model": "phi3:mini",
+        "model": "qwen3-vl:32b-instruct-q8_0",
         "prompt": prompt,
         "system": SYSTEM_PROMPT,
         "stream": False,
-        "options": {"temperature": 0.2, "num_predict": 50}
+        "options": {"temperature": 0.1, "num_predict": 100}
     }
     
-    # Use internal Docker network URL
-    ollama_url = "http://found-footy-dev-ollama:11434"
+    # Use external ollama-server via luv-dev network
+    ollama_url = "http://ollama-server:11434"
     
     try:
         response = requests.post(
@@ -279,7 +531,7 @@ Select the 3 best aliases for Twitter search. You can simplify (drop El/The/FC).
         end = text.rfind("]") + 1
         if start >= 0 and end > start:
             aliases = json.loads(text[start:end])
-            if isinstance(aliases, list) and len(aliases) >= 3:
+            if isinstance(aliases, list) and len(aliases) >= 1:
                 return [str(a).strip() for a in aliases[:3]]
     except Exception as e:
         print(f"  ⚠️ Ollama API error: {e}")
@@ -331,90 +583,70 @@ def is_likely_english(text: str, team_name: str = "") -> bool:
 
 def select_best_heuristic(aliases: List[str], team_name: str = "") -> List[str]:
     """
-    Heuristic selection when LLM fails.
+    Simple heuristic fallback when LLM fails.
     
-    Rules:
-    - Prefer English/Latin script aliases
-    - Maximum 1 acronym (no periods like J.F.C.)
-    - Prefer short nicknames and common names
-    - Good variety (not all acronym variations)
+    Prioritizes:
+    1. Clean acronyms (3-5 uppercase letters, no periods)
+    2. Single short words (nicknames like Spurs, Bayern, Atleti)
+    3. Team name itself
+    
+    Avoids: "The X", "La X", "El X", long phrases, concatenated words
     """
-    # Filter to Latin script only, prefer English
-    latin_aliases = [a for a in aliases if is_latin_script(a) and is_likely_english(a, team_name)]
-    
-    # Fallback if too aggressive filtering
-    if len(latin_aliases) < 3:
-        latin_aliases = [a for a in aliases if is_latin_script(a)]
-    
-    if not latin_aliases:
-        return aliases[:3] if aliases else [team_name]
-    
-    # Categorize aliases
-    clean_acronyms = []  # Like "LFC", "PSG", "ATM"
-    short_names = []     # Like "Barca", "Bayern", "Spurs"  
-    medium_names = []    # Like "Liverpool", "Real Madrid"
-    other = []
-    
-    for alias in latin_aliases:
-        # Skip aliases with periods (like "J.F.C.", "A.S.R")
-        if '.' in alias:
-            continue
-        
-        # Skip hashtags
-        if alias.startswith('#'):
-            continue
-            
-        words = alias.split()
-        
-        if is_clean_acronym(alias):
-            clean_acronyms.append(alias)
-        elif len(words) == 1 and len(alias) <= 10:
-            # Single short word - likely a nickname
-            short_names.append(alias)
-        elif len(words) <= 2 and len(alias) <= 20:
-            medium_names.append(alias)
-        elif len(alias) <= 30:
-            other.append(alias)
-    
-    # Build result: max 1 acronym, prefer variety
     result = []
+    seen = set()
     
-    # Add best acronym (if any) - prefer shorter ones
-    if clean_acronyms:
-        # Sort by length (shorter first), then alphabetically
-        clean_acronyms.sort(key=lambda x: (len(x), x))
-        result.append(clean_acronyms[0])
+    # Helper to check if alias is usable
+    def is_good(alias):
+        if not alias or not is_latin_script(alias):
+            return False
+        if '.' in alias:  # No periods
+            return False
+        lower = alias.lower()
+        # Skip "The/La/El/Die" prefixes
+        if lower.startswith(('the ', 'la ', 'el ', 'los ', 'die ', 'les ')):
+            return False
+        # Skip long phrases
+        if 'football' in lower or 'national' in lower or 'club' in lower or 'team' in lower:
+            return False
+        # Skip concatenated words like "ArsenalFC"
+        if len(alias) > 4 and ' ' not in alias:
+            for i in range(1, len(alias) - 1):
+                if alias[i-1].islower() and alias[i].isupper():
+                    return False
+        return True
     
-    # Add short nicknames (most valuable for Twitter)
-    seen_lower = {a.lower() for a in result}
-    for name in short_names:
-        if name.lower() not in seen_lower:
-            result.append(name)
-            seen_lower.add(name.lower())
-            if len(result) >= 3:
+    # 1. Find best acronym (3-5 uppercase letters)
+    for alias in aliases:
+        if alias.isupper() and 3 <= len(alias) <= 5 and is_good(alias):
+            if alias.lower() not in seen:
+                result.append(alias)
+                seen.add(alias.lower())
                 break
     
-    # Fill with medium names if needed
-    for name in medium_names:
+    # 2. Find short single-word names (nicknames)
+    for alias in aliases:
         if len(result) >= 3:
             break
-        if name.lower() not in seen_lower:
-            result.append(name)
-            seen_lower.add(name.lower())
+        words = alias.split()
+        if len(words) == 1 and 3 <= len(alias) <= 12 and is_good(alias):
+            if alias.lower() not in seen:
+                result.append(alias)
+                seen.add(alias.lower())
     
-    # Fill with other if still needed
-    for name in other:
-        if len(result) >= 3:
-            break
-        if name.lower() not in seen_lower:
-            result.append(name)
-            seen_lower.add(name.lower())
-    
-    # If we still don't have 3, add team name
-    if len(result) < 3 and team_name and team_name.lower() not in seen_lower:
+    # 3. Add team name if we don't have enough
+    if len(result) < 3 and team_name and team_name.lower() not in seen:
         result.append(team_name)
+        seen.add(team_name.lower())
     
-    return result[:3]
+    # 4. Fill with any remaining good short aliases
+    for alias in aliases:
+        if len(result) >= 3:
+            break
+        if len(alias) <= 15 and is_good(alias) and alias.lower() not in seen:
+            result.append(alias)
+            seen.add(alias.lower())
+    
+    return result[:3] if result else [team_name]
 
 
 async def test_team(team_id: int, team_name: str, team_type: str, country: str = None) -> Tuple[str, List[str], List[str]]:
@@ -423,44 +655,122 @@ async def test_team(team_id: int, team_name: str, team_type: str, country: str =
     print(f"Team: {team_name} (ID: {team_id}, Type: {team_type}, Country: {country})")
     print(f"{'='*60}")
     
-    # Search for Wikidata QID using SPARQL
+    # 1. Search for Wikidata QID
     qid = await search_wikidata_qid(team_name, team_type, country)
     
     if not qid:
         print(f"  ❌ No Wikidata QID found")
-        return team_name, [], [team_name]
+        return team_name, [], []
     
     print(f"  📚 Wikidata QID: {qid}")
     
-    # 2. Fetch aliases
-    wikidata_aliases = await fetch_wikidata_aliases(qid)
-    print(f"  📚 Wikidata aliases ({len(wikidata_aliases)}): {wikidata_aliases[:8]}...")
+    # 2. Fetch raw aliases
+    raw_aliases = await fetch_wikidata_aliases(qid)
+    print(f"  📚 Raw Wikidata aliases ({len(raw_aliases)}): {raw_aliases[:5]}...")
     
-    if not wikidata_aliases:
+    if not raw_aliases:
         print(f"  ❌ No aliases found")
-        return team_name, [], [team_name]
+        return team_name, [], []
     
-    # 3. Call LLM
-    llm_result = await call_ollama_api(wikidata_aliases, team_name)
+    # 3. Preprocess to single words (pass team_type for nationality generation)
+    single_words = preprocess_aliases_to_words(raw_aliases, team_name, team_type)
+    print(f"  🔧 Preprocessed to single words: {single_words}")
     
-    if llm_result:
-        # Validate against Wikidata
-        wikidata_text = " ".join(wikidata_aliases).lower()
-        valid = [a for a in llm_result if a.lower() in wikidata_text]
+    if not single_words:
+        print(f"  ❌ No usable words after preprocessing")
+        return team_name, raw_aliases[:10], []
+    
+    # 4. Call LLM to rank/select the best ones
+    llm_result = await call_ollama_api(single_words, team_name)
+    
+    if llm_result and len(llm_result) >= 1:
+        # Grounding check - must be in our preprocessed list
+        valid = []
+        seen = set()
+        words_lower = {w.lower() for w in single_words}
         
-        if len(valid) >= 3:
-            final = [normalize_alias(a) for a in valid[:3]]
-            print(f"  ✅ LLM result: {llm_result}")
-            print(f"  ✅ Normalized: {final}")
-            return team_name, wikidata_aliases[:10], final
+        for word in llm_result:
+            word_clean = word.strip()
+            word_lower = word_clean.lower()
+            
+            # Must be in our list and not a duplicate
+            if word_lower in words_lower and word_lower not in seen:
+                # Find original casing from our list
+                original = next((w for w in single_words if w.lower() == word_lower), word_clean)
+                valid.append(normalize_alias(original))
+                seen.add(word_lower)
+        
+        if valid:
+            print(f"  ✅ LLM selected: {llm_result}")
+            # Ensure nationality adjectives are always included for national teams
+            if team_type == "national":
+                team_lower = team_name.lower()
+                if team_lower in NATIONALITY_MAP:
+                    valid_lower = {v.lower() for v in valid}
+                    for adj in NATIONALITY_MAP[team_lower]:
+                        if adj.lower() not in valid_lower:
+                            valid.append(adj)
+            # Add distinctive team name words
+            valid = add_team_name_words(valid, team_name)
+            print(f"  ✅ Final aliases: {valid}")
+            return team_name, raw_aliases[:10], valid
         else:
-            print(f"  ⚠️ LLM returned ungrounded: {llm_result}")
+            print(f"  ⚠️ LLM grounding failed: {llm_result}")
     
-    # 4. Fallback to heuristic
-    selected = select_best_heuristic(wikidata_aliases, team_name)
-    final = [normalize_alias(a) for a in selected]
-    print(f"  📋 Heuristic fallback: {final}")
-    return team_name, wikidata_aliases[:10], final
+    # 5. Fallback - just use the preprocessed list as-is (already sorted by quality)
+    fallback = [normalize_alias(w) for w in single_words[:5]]
+    # Ensure nationality adjectives are always included for national teams
+    if team_type == "national":
+        team_lower = team_name.lower()
+        if team_lower in NATIONALITY_MAP:
+            fallback_lower = {f.lower() for f in fallback}
+            for adj in NATIONALITY_MAP[team_lower]:
+                if adj.lower() not in fallback_lower:
+                    fallback.append(adj)
+    # Add distinctive team name words
+    fallback = add_team_name_words(fallback, team_name)
+    print(f"  📋 Fallback (preprocessed): {fallback}")
+    return team_name, raw_aliases[:10], fallback
+
+
+def add_team_name_words(aliases: List[str], team_name: str) -> List[str]:
+    """
+    Add words from team name to the alias list.
+    
+    - Replace hyphens with spaces (Saint-Germain -> Saint Germain)
+    - Skip short all-caps abbreviations (FC, AC, SC) UNLESS it's the only word
+    - Keep everything else
+    """
+    aliases_lower = {a.lower() for a in aliases}
+    result = list(aliases)
+    
+    # Replace hyphens with spaces, then split
+    name_normalized = team_name.replace('-', ' ')
+    words = name_normalized.split()
+    
+    for word in words:
+        # Normalize the word (strip diacritics)
+        word_clean = normalize_alias(word)
+        word_lower = word_clean.lower()
+        
+        # Skip if too short
+        if len(word_clean) < 2:
+            continue
+        
+        # Skip short all-caps abbreviations (FC, AC, SC, etc.)
+        # BUT keep if it's the only word in the team name (like "USA")
+        if word_clean.isupper() and len(word_clean) <= 3 and len(words) > 1:
+            continue
+        
+        # Skip if already in aliases
+        if word_lower in aliases_lower:
+            continue
+        
+        # Add the word
+        result.append(word_clean)
+        aliases_lower.add(word_lower)
+    
+    return result
 
 
 async def main():
@@ -473,8 +783,8 @@ async def main():
     print("RAG PIPELINE TEST - Wikidata + Ollama Alias Generation")
     print("=" * 70)
     
-    # Check Ollama is reachable
-    ollama_url = "http://found-footy-dev-ollama:11434"
+    # Check Ollama is reachable (external service via luv-dev network)
+    ollama_url = "http://ollama-server:11434"
     try:
         response = requests.get(f"{ollama_url}/api/tags", timeout=5)
         models = response.json().get("models", [])

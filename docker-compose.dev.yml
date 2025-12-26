@@ -5,14 +5,16 @@
 #   4101: MongoDB Compass (web GUI)
 #   4102: MinIO Console
 #   4103: Twitter Firefox VNC (browser GUI)
-#   4104: Open WebUI (chat interface for Ollama)
 #   7233: Temporal gRPC
+#
+# External services (from ~/workspace/ollama):
+#   - ollama-server:11434 (LLM API) - http://localhost:11434
+#   - ollama-webui:8080 (Chat UI) - http://localhost:8080
 #
 # Internal ports:
 #   - found-footy-postgres:5432 (Temporal metadata)
 #   - found-footy-mongo:27017 (Application data)
 #   - found-footy-minio:9000 (S3 storage)
-#   - found-footy-ollama:11434 (LLM API)
 
 name: found-footy-dev
 
@@ -164,48 +166,9 @@ services:
       - found-footy-dev
     restart: unless-stopped
 
-  # OLLAMA - Local LLM for team alias generation
-  ollama:
-    image: ollama/ollama:latest
-    container_name: found-footy-dev-ollama
-    # No exposed port - access via Open WebUI on 4104
-    volumes:
-      - ~/.ollama:/root/.ollama  # Shared model store (host bind mount)
-    devices:
-      - /dev/dri:/dev/dri  # GPU access (Vulkan)
-    deploy:
-      resources:
-        limits:
-          memory: 8G
-    environment:
-      - OLLAMA_VULKAN=1  # Enable Vulkan GPU acceleration
-    healthcheck:
-      test: ["CMD-SHELL", "ollama list || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    restart: unless-stopped
-    networks:
-      - found-footy-dev
-
-  # OPEN WEBUI - Chat interface for Ollama
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: found-footy-dev-webui
-    ports:
-      - "4104:8080"  # Chat UI at http://localhost:4104
-    environment:
-      - OLLAMA_BASE_URL=http://found-footy-dev-ollama:11434
-      - WEBUI_AUTH=false  # No login required for dev
-    volumes:
-      - found-footy-dev-webui-data:/app/backend/data
-    depends_on:
-      ollama:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - found-footy-dev
+  # OLLAMA - External service from ~/workspace/ollama
+  # Accessed via luv-dev network as ollama-server:11434
+  # Web UI at http://localhost:8080
 
   # TEMPORAL WORKER - Executes workflows
   worker:
@@ -225,17 +188,16 @@ services:
       S3_BUCKET_NAME: footy-videos
       TWITTER_SESSION_URL: http://found-footy-dev-twitter:8888
       FRONTEND_API_URL: http://vedanta-systems-dev-api:3001
-      OLLAMA_URL: http://found-footy-dev-ollama:11434
+      OLLAMA_URL: http://ollama-server:11434  # External ollama via luv-dev network
     volumes:
       - .:/workspace
       - ~/.config/found-footy:/config  # Cookie backup (shared with twitter service)
     networks:
       - found-footy-dev
-      - luv-dev  # Need luv-dev network to reach frontend API
+      - luv-dev  # Shared network for frontend API and ollama-server
     depends_on:
       - temporal
       - mongo
-      - ollama
     restart: unless-stopped
     command: python /workspace/src/worker.py
 
@@ -254,9 +216,6 @@ volumes:
     driver: local
   found-footy-dev-twitter-cookies:
     name: found-footy-dev-twitter-cookies
-    driver: local
-  found-footy-dev-webui-data:
-    name: found-footy-dev-webui-data
     driver: local
 
 networks:
