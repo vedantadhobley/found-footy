@@ -28,6 +28,7 @@ from typing import List, Optional
 with workflow.unsafe.imports_passed_through():
     from src.activities import twitter as twitter_activities
     from src.workflows.download_workflow import DownloadWorkflow
+    from src.utils.event_enhancement import extract_player_search_name
 
 
 @dataclass
@@ -69,12 +70,13 @@ class TwitterWorkflow:
         total_videos_found = 0
         total_videos_uploaded = 0
         
-        # Get player last name for search queries
-        player_last = input.player_name.split()[-1] if input.player_name else "Unknown"
+        # Get player search name (handles accents, hyphens, "Jr" suffixes, etc.)
+        # "Vinícius Júnior" → "Vinicius", "T. Alexander-Arnold" → "Alexander"
+        player_search = extract_player_search_name(input.player_name) if input.player_name else "Unknown"
         
         workflow.logger.info(
             f"🐦 TwitterWorkflow starting for {input.event_id} "
-            f"(player: {player_last}, aliases: {input.team_aliases})"
+            f"(player: {player_search}, aliases: {input.team_aliases})"
         )
         
         for attempt in range(1, 4):  # Attempts 1, 2, 3
@@ -108,7 +110,7 @@ class TwitterWorkflow:
             seen_urls_this_batch = set()
             
             for alias in input.team_aliases:
-                search_query = f"{player_last} {alias}"
+                search_query = f"{player_search} {alias}"
                 workflow.logger.info(f"🔍 Searching: '{search_query}'")
                 
                 try:
@@ -162,7 +164,7 @@ class TwitterWorkflow:
             # =================================================================
             if all_videos:
                 team_clean = input.team_aliases[0].replace(" ", "_").replace(".", "_").replace("-", "_") if input.team_aliases else "Unknown"
-                download_workflow_id = f"download{attempt}-{team_clean}-{player_last}-{video_count}vids-{input.event_id}"
+                download_workflow_id = f"download{attempt}-{team_clean}-{player_search}-{video_count}vids-{input.event_id}"
                 
                 workflow.logger.info(f"⬇️ Starting download: {download_workflow_id}")
                 
