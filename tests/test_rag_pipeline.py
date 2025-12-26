@@ -506,7 +506,7 @@ async def call_ollama_api(wikidata_aliases: List[str], team_name: str) -> Option
 Select the best words for Twitter search. Return a JSON array."""
 
     payload = {
-        "model": "qwen3-vl:32b-instruct-q8_0",
+        "model": "qwen3-vl:8b-instruct",
         "prompt": prompt,
         "system": SYSTEM_PROMPT,
         "stream": False,
