@@ -545,7 +545,8 @@ async def get_team_aliases(team_id: int, team_name: str, team_type: Optional[str
     # 5. AUGMENT + GENERATE: LLM selects from preprocessed words
     if preprocessed:
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            # Short timeout - fail fast to fallback if Ollama is frozen
+            async with httpx.AsyncClient(timeout=10.0) as client:
                 prompt = f"""Words: {json.dumps(preprocessed)}
 
 Select the best words for Twitter search. Return a JSON array."""
