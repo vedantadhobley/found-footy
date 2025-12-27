@@ -300,20 +300,51 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
     """
     Check if fixture is ready to complete and move it if so.
     
-    Completion requires:
-    1. _completion_complete = True (counter >= 3 OR winner data exists)
-    2. All events have _monitor_complete = True
-    3. All events have _twitter_complete = True
+    Completion flow (in order):
+    1. Check all events have _monitor_complete = True
+    2. Check all events have _twitter_complete = True  
+    3. ONLY THEN start/increment the completion counter
+    4. When counter >= 3 (or winner data exists), move to completed
     
-    First call for a completed fixture starts the counter.
-    Subsequent calls increment until ready.
+    This ensures the completion counter doesn't start ticking until
+    all event processing (debounce + Twitter) is actually done.
     """
     from src.data.mongo_store import FootyMongoStore
     
     store = FootyMongoStore()
     
     try:
-        # First, increment/initialize the completion counter
+        # =====================================================================
+        # STEP 1: Check if ALL events are fully processed
+        # =====================================================================
+        fixture = store.get_fixture_from_active(fixture_id)
+        if not fixture:
+            activity.logger.warning(f"Fixture {fixture_id} not found in active")
+            return False
+        
+        events = fixture.get("events", [])
+        enhanced_events = [e for e in events if e.get(EventFields.EVENT_ID)]
+        valid_events = [
+            e for e in enhanced_events 
+            if not e.get(EventFields.REMOVED, False) 
+            and "None" not in e.get(EventFields.EVENT_ID, "")
+        ]
+        
+        if valid_events:
+            monitored = sum(1 for e in valid_events if e.get(EventFields.MONITOR_COMPLETE))
+            twitter_done = sum(1 for e in valid_events if e.get(EventFields.TWITTER_COMPLETE))
+            
+            if monitored < len(valid_events) or twitter_done < len(valid_events):
+                activity.logger.info(
+                    f"⏳ Fixture {fixture_id} events not ready: "
+                    f"monitored={monitored}/{len(valid_events)}, "
+                    f"twitter_complete={twitter_done}/{len(valid_events)}"
+                )
+                return False  # Don't start completion counter yet!
+        
+        # =====================================================================
+        # STEP 2: All events ready - NOW we can increment completion counter
+        # =====================================================================
         completion_status = store.increment_completion_count(fixture_id)
         count = completion_status["completion_count"]
         winner_exists = completion_status["winner_exists"]
@@ -323,7 +354,7 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
         if count == 1:
             activity.logger.info(
                 f"📊 COMPLETION STARTED: fixture {fixture_id} "
-                f"(winner={'yes' if winner_exists else 'pending'})"
+                f"(all events done, winner={'yes' if winner_exists else 'pending'})"
             )
         else:
             activity.logger.info(
@@ -331,7 +362,9 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
                 f"(count={count}/3, winner={'yes' if winner_exists else 'pending'})"
             )
         
-        # Check if all criteria met
+        # =====================================================================
+        # STEP 3: Check if completion counter is satisfied
+        # =====================================================================
         if not completion_complete:
             activity.logger.debug(
                 f"Fixture {fixture_id} waiting for completion counter "
@@ -339,30 +372,9 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
             )
             return False
         
-        # Check events status
-        fixture = store.get_fixture_from_active(fixture_id)
-        if fixture:
-            events = fixture.get("events", [])
-            enhanced_events = [e for e in events if e.get(EventFields.EVENT_ID)]
-            valid_events = [
-                e for e in enhanced_events 
-                if not e.get(EventFields.REMOVED, False) 
-                and "None" not in e.get(EventFields.EVENT_ID, "")
-            ]
-            
-            if valid_events:
-                monitored = sum(1 for e in valid_events if e.get(EventFields.MONITOR_COMPLETE))
-                twitter_done = sum(1 for e in valid_events if e.get(EventFields.TWITTER_COMPLETE))
-                
-                if monitored < len(valid_events) or twitter_done < len(valid_events):
-                    activity.logger.info(
-                        f"⏳ Fixture {fixture_id} waiting for events: "
-                        f"monitored={monitored}/{len(valid_events)}, "
-                        f"twitter_complete={twitter_done}/{len(valid_events)}"
-                    )
-                    return False
-        
-        # All ready - complete the fixture
+        # =====================================================================
+        # STEP 4: All ready - complete the fixture
+        # =====================================================================
         if store.complete_fixture(fixture_id):
             activity.logger.info(f"🏁 Moved fixture {fixture_id} to completed")
             return True

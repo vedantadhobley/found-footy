@@ -451,12 +451,42 @@ T+9:00  TwitterWorkflow Attempt 3
         → Search → 0 new videos
         → _twitter_complete = TRUE
 
-T+10:00 Monitor poll
+T+10:00 Monitor poll #1 after Twitter complete
         → Fixture status = FT
-        → All events: _monitor_complete = TRUE
-        → All events: _twitter_complete = TRUE
-        → complete_fixture_if_ready → fixtures_completed
+        → All events: _monitor_complete = TRUE, _twitter_complete = TRUE
+        → complete_fixture_if_ready: _completion_count = 1
+
+T+11:00 Monitor poll #2
+        → complete_fixture_if_ready: _completion_count = 2
+
+T+12:00 Monitor poll #3
+        → complete_fixture_if_ready: _completion_count = 3
+        → Fixture moved to fixtures_completed
 ```
+
+### Completion Counter Logic
+
+The completion counter **only starts** after ALL events are fully processed:
+
+```
+complete_fixture_if_ready flow:
+    │
+    ├── 1. Check ALL events have _monitor_complete = TRUE
+    │   └── If not: return False (don't increment counter)
+    │
+    ├── 2. Check ALL events have _twitter_complete = TRUE
+    │   └── If not: return False (don't increment counter)
+    │
+    ├── 3. ONLY NOW: increment _completion_count (1 → 2 → 3)
+    │   └── Logs "COMPLETION STARTED" on first increment
+    │
+    └── 4. When count >= 3 (or winner data exists):
+        └── Move fixture to fixtures_completed
+```
+
+This ensures the 3-minute completion debounce doesn't start ticking while
+Twitter workflows are still running. The counter only measures "stability
+after all processing is done".
 
 ---
 
