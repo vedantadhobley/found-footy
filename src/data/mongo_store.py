@@ -529,7 +529,8 @@ class FootyMongoStore:
                     f"events.$.{EventFields.TWITTER_COUNT}": new_count
                 }}
             )
-            return result.modified_count > 0
+            # Use matched_count to check if document was found (modified_count can be 0 if value unchanged)
+            return result.matched_count > 0
         except Exception as e:
             print(f"❌ Error updating twitter count for {event_id}: {e}")
             return False
@@ -978,6 +979,15 @@ class FootyMongoStore:
             current_count = fixture_doc.get(FixtureFields.COMPLETION_COUNT, 0)
             winner_exists = self.has_winner_data(fixture_doc)
             
+            # If already at 3 or more, don't increment further
+            if current_count >= 3:
+                completion_complete = True
+                return {
+                    "completion_count": current_count,
+                    "completion_complete": completion_complete,
+                    "winner_exists": winner_exists,
+                }
+            
             if current_count == 0:
                 # First time seeing completed status
                 self.fixtures_active.update_one(
@@ -1123,6 +1133,8 @@ class FootyMongoStore:
         national: bool,
         twitter_aliases: List[str],
         model: str,
+        country: str | None = None,
+        city: str | None = None,
         wikidata_qid: str | None = None,
         wikidata_aliases: List[str] | None = None,
     ) -> bool:
@@ -1135,6 +1147,8 @@ class FootyMongoStore:
             national: True if national team, False if club
             twitter_aliases: Final aliases for Twitter search
             model: LLM model used (or "fallback")
+            country: Country from API-Football (e.g., "England")
+            city: City from venue data (e.g., "Newcastle upon Tyne")
             wikidata_qid: Wikidata QID if found
             wikidata_aliases: Raw aliases from Wikidata
             
@@ -1153,6 +1167,11 @@ class FootyMongoStore:
                 TeamAliasFields.UPDATED_AT: datetime.now(timezone.utc),
             }
             
+            # Add optional fields from API
+            if country:
+                update_data[TeamAliasFields.COUNTRY] = country
+            if city:
+                update_data[TeamAliasFields.CITY] = city
             if wikidata_qid:
                 update_data[TeamAliasFields.WIKIDATA_QID] = wikidata_qid
             if wikidata_aliases:

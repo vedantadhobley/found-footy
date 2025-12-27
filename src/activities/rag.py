@@ -119,22 +119,39 @@ def _normalize_alias(alias: str) -> str:
     return result.strip()
 
 
-async def _search_wikidata_qid(team_name: str, team_type: str = "club", country: str = None) -> Optional[str]:
+async def _search_wikidata_qid(team_name: str, team_type: str = "club", country: str = None, city: str = None) -> Optional[str]:
     """
     Search Wikidata for team QID using multiple search strategies.
+    
+    Strategy: Try most specific searches first, then broaden.
+    For clubs, prefer results with detailed descriptions (mentioning city/country).
+    
+    Args:
+        team_name: Team name from API (e.g., "Newcastle")
+        team_type: "club" or "national"
+        country: Country name (e.g., "England")
+        city: City name from venue (e.g., "Newcastle upon Tyne")
     """
     # Normalize for search
     normalized = _normalize_alias(team_name)
     
-    # Build search terms
+    # Build search terms - MOST SPECIFIC FIRST
     search_terms = []
     
     if team_type == "club":
-        search_terms.append(f"{normalized} football club")
-        search_terms.append(f"FC {normalized}")
-        search_terms.append(f"{normalized} FC")
+        # 1. Try with city first (most specific - "Newcastle upon Tyne" is unambiguous)
+        if city:
+            search_terms.append(f"{normalized} {city}")
+        # 2. Try with country
         if country:
-            search_terms.append(f"{normalized} {country} football")
+            search_terms.append(f"{normalized} {country}")
+            search_terms.append(f"{normalized} FC {country}")
+        # 3. Standard variations (many teams have suffixes dropped in API)
+        search_terms.append(f"{normalized} United")
+        search_terms.append(f"{normalized} City")
+        search_terms.append(f"{normalized} FC")
+        search_terms.append(f"FC {normalized}")
+        search_terms.append(f"{normalized} football club")
         search_terms.append(normalized)
     else:
         # National teams
@@ -145,6 +162,10 @@ async def _search_wikidata_qid(team_name: str, team_type: str = "club", country:
     
     skip_keywords = ["women", "femen", "reserve", "youth", "junior", " b ", " c ", 
                      "under-", "u-19", "u-21", "academy", "futsal", "beach", "basketball"]
+    
+    # Track candidates - prefer those with detailed descriptions
+    best_candidate = None
+    best_desc_length = 0
     
     async with httpx.AsyncClient(timeout=10.0, headers=HEADERS) as client:
         for search_term in search_terms:
@@ -186,17 +207,47 @@ async def _search_wikidata_qid(team_name: str, team_type: str = "club", country:
                         is_multisport = "multisport" in desc or "sports club" in desc
                         if not (is_football or is_multisport):
                             continue
+                        
+                        # Score the result quality
+                        desc_quality = len(desc)
+                        
+                        # Big boost for city match in description
+                        if city and city.lower() in desc:
+                            desc_quality += 200
+                            activity.logger.info(f"✅ City match: {qid} ({label}) - {desc}")
+                            return qid  # Perfect match - return immediately
+                        
+                        # Boost for country match
+                        if country and country.lower() in desc:
+                            desc_quality += 100
+                        
+                        # Boost for location mention
+                        if " in " in desc:
+                            desc_quality += 50
+                        
+                        if desc_quality > best_desc_length:
+                            best_candidate = qid
+                            best_desc_length = desc_quality
+                            activity.logger.debug(f"📊 Better candidate: {qid} ({label}) - desc_quality={desc_quality}")
+                        
+                        # If we have a country match, that's good enough
+                        if country and country.lower() in desc:
+                            activity.logger.info(f"✅ Country match: {qid} ({label}) - {desc}")
+                            return qid
                     else:
                         if "national" not in desc or ("football" not in desc and "soccer" not in desc):
                             continue
-                    
-                    return qid
+                        # For national teams, first valid match is usually correct
+                        return qid
                     
             except Exception as e:
                 activity.logger.warning(f"⚠️ Search error for '{search_term}': {e}")
                 continue
     
-    return None
+    # Return best candidate found (even if not perfect)
+    if best_candidate:
+        activity.logger.info(f"📋 Best candidate: {best_candidate} (desc_quality={best_desc_length})")
+    return best_candidate
 
 
 async def _fetch_wikidata_aliases(qid: str) -> List[str]:
@@ -398,6 +449,8 @@ def _cache_aliases(
     national: bool,
     twitter_aliases: List[str], 
     model: str,
+    country: Optional[str] = None,
+    city: Optional[str] = None,
     wikidata_qid: Optional[str] = None,
     wikidata_aliases: Optional[List[str]] = None
 ) -> None:
@@ -408,6 +461,8 @@ def _cache_aliases(
         national=national,
         twitter_aliases=twitter_aliases,
         model=model,
+        country=country,
+        city=city,
         wikidata_qid=wikidata_qid,
         wikidata_aliases=wikidata_aliases,
     )
@@ -422,13 +477,13 @@ async def get_team_aliases(team_id: int, team_name: str, team_type: Optional[str
         team_id: API-Football team ID (cache key)
         team_name: Full team name
         team_type: "club", "national", or None (auto-detect via API) - DEPRECATED, kept for backward compat
-        country: Country name (for better search)
+        country: Country name (for better search) - can be overridden by API data
     
     Returns:
         List of normalized aliases for Twitter search
     """
     from src.data.mongo_store import FootyMongoStore
-    from src.api.api_client import is_national_team as api_is_national_team
+    from src.api.api_client import get_team_info
     from src.data.models import TeamAliasFields
     
     store = FootyMongoStore()
@@ -440,23 +495,42 @@ async def get_team_aliases(team_id: int, team_name: str, team_type: Optional[str
         activity.logger.info(f"📦 Cache hit: {aliases}")
         return aliases
     
-    # 2. Determine team type from API (canonical source of truth)
-    national = api_is_national_team(team_id)
-    if national is None:
-        # API failed, try to use the passed team_type hint
-        national = team_type == "national" if team_type else False
-        activity.logger.warning(f"⚠️ API lookup failed for team {team_id}, using hint: national={national}")
+    # 2. Get FULL team info from API (do this ONCE, use all the data)
+    team_info = get_team_info(team_id)
+    
+    # Extract all useful data from API response
+    api_country = None
+    api_city = None
+    national = False
+    
+    if team_info:
+        team_data = team_info.get("team", {})
+        venue_data = team_info.get("venue", {})
+        
+        national = team_data.get("national", False)
+        api_country = team_data.get("country")  # e.g., "England"
+        api_city = venue_data.get("city")       # e.g., "Newcastle upon Tyne"
+        
+        activity.logger.info(
+            f"🔍 API team info: {team_name} | national={national} | "
+            f"country={api_country} | city={api_city}"
+        )
     else:
-        activity.logger.info(f"🔍 API lookup: team {team_id} is {'national' if national else 'club'}")
+        # API failed, try to use the passed hints
+        national = team_type == "national" if team_type else False
+        activity.logger.warning(f"⚠️ API lookup failed for team {team_id}, using hints")
+    
+    # Use API country if available, otherwise use passed country
+    effective_country = api_country or country
     
     team_type_str = "national" if national else "club"
     
     activity.logger.info(f"🔍 Getting aliases for team {team_id}: {team_name} ({team_type_str})")
     activity.logger.info(f"🔄 Cache miss, starting RAG pipeline...")
     
-    # 3. RETRIEVE: Get aliases from Wikidata
+    # 3. RETRIEVE: Get aliases from Wikidata (pass country AND city for better search)
     wikidata_aliases = []
-    qid = await _search_wikidata_qid(team_name, team_type_str, country)
+    qid = await _search_wikidata_qid(team_name, team_type_str, effective_country, api_city)
     if qid:
         activity.logger.info(f"📚 Found Wikidata QID: {qid}")
         wikidata_aliases = await _fetch_wikidata_aliases(qid)
@@ -518,10 +592,10 @@ Select the best words for Twitter search. Return a JSON array."""
                         
                         activity.logger.info(f"✅ Final aliases: {twitter_aliases}")
                         
-                        # Cache with national boolean
+                        # Cache with all API data
                         _cache_aliases(
                             store, team_id, team_name, national, twitter_aliases,
-                            OLLAMA_MODEL, qid, wikidata_aliases
+                            OLLAMA_MODEL, api_country, api_city, qid, wikidata_aliases
                         )
                         return twitter_aliases
                 
@@ -552,7 +626,7 @@ Select the best words for Twitter search. Return a JSON array."""
     if qid:
         _cache_aliases(
             store, team_id, team_name, national, twitter_aliases,
-            "fallback", qid, wikidata_aliases
+            "fallback", api_country, api_city, qid, wikidata_aliases
         )
     
     return twitter_aliases

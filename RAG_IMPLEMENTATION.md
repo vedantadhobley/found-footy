@@ -74,7 +74,6 @@ Test from host: `curl http://localhost:4104/api/generate -d '{"model":"phi3:mini
 | Ollama service | ✅ Running | GPU-accelerated (Vulkan) |
 
 **Optional enhancements**:
-- Static team_id → QID mapping table (avoid Wikidata search latency)
 - Remove hardcoded nicknames from `team_data.py` (now redundant)
 
 ---
@@ -142,6 +141,7 @@ ollama:
 | **8GB memory limit** | Plenty for Phi-3 Mini (2.3GB) with headroom, leaves 120GB for other services |
 | **Port exposed** | For testing via curl; internal access uses docker network |
 | **Shared host volume** | `~/.ollama` shared across dev/prod/host - download models once |
+| **KEEP_ALIVE=-1** | Model stays loaded in GPU memory forever, eliminating cold-start latency (2+ min reload time) |
 
 ---
 
@@ -211,8 +211,11 @@ Team aliases are cached using **team_id as `_id`** for O(1) lookups.
 {
   _id: 541,                          // API-Football team_id (fast lookup)
   team_name: "Atletico Madrid",      // Original name from API (for display)
+  national: false,                   // True if national team, False if club
+  country: "Spain",                  // Country from API-Football teams endpoint
+  city: "Madrid",                    // City from venue data (for Wikidata search)
   wikidata_qid: "Q8701",             // Wikidata entity ID
-  raw_aliases: [                     // All aliases from Wikidata (preserved)
+  wikidata_aliases: [                // All aliases from Wikidata (preserved)
     "Club Atlético de Madrid, SAD",
     "El Atleti",
     "Atlético Madrid",
@@ -223,7 +226,7 @@ Team aliases are cached using **team_id as `_id`** for O(1) lookups.
     "Atleti", 
     "ATM"
   ],
-  model: "phi3:mini",                // Model used (for debugging/retraining)
+  model: "qwen3-vl:8b-instruct",     // Model used (for debugging/retraining)
   created_at: ISODate("..."),
   updated_at: ISODate("...")
 }
@@ -235,7 +238,8 @@ Team aliases are cached using **team_id as `_id`** for O(1) lookups.
 |----------|-----------|
 | `_id` = team_id | Fastest possible lookup, no secondary index needed |
 | `team_name` preserved | Frontend displays original name from API |
-| `raw_aliases` preserved | Audit trail, can re-derive if LLM improves |
+| `country`/`city` stored | Used for Wikidata disambiguation (e.g., "Newcastle" → "Newcastle upon Tyne, England" → Q18716 Newcastle United, not Q18485 Newcastle Town) |
+| `wikidata_aliases` preserved | Audit trail, can re-derive if LLM improves |
 | `twitter_aliases` normalized | Special chars removed (é→e), ready for Twitter search |
 | `wikidata_qid` stored | Can refresh from Wikidata if aliases update |
 

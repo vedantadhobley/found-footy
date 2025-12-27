@@ -7,6 +7,8 @@ Pre-caches RAG aliases for both teams in each fixture (per-team for modularity).
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from datetime import timedelta
+from dataclasses import dataclass
+from typing import Optional
 
 with workflow.unsafe.imports_passed_through():
     from src.activities import ingest as ingest_activities
@@ -14,12 +16,18 @@ with workflow.unsafe.imports_passed_through():
     from src.activities import rag as rag_activities
 
 
+@dataclass
+class IngestWorkflowInput:
+    """Optional input for IngestWorkflow - allows specifying target date for testing"""
+    target_date: Optional[str] = None  # ISO format: "2025-12-26" (None = today)
+
+
 @workflow.defn
 class IngestWorkflow:
     """Fetch today's fixtures, pre-cache RAG aliases, and categorize by status"""
     
     @workflow.run
-    async def run(self) -> dict:
+    async def run(self, input: Optional[IngestWorkflowInput] = None) -> dict:
         """
         Workflow:
         1. Fetch fixtures for today from API-Football
@@ -30,11 +38,19 @@ class IngestWorkflow:
            - FT/AET/PEN → fixtures_completed
         4. Notify frontend to refresh (for upcoming fixtures display)
         """
-        workflow.logger.info("📥 Starting daily fixture ingest")
+        # Parse target date if provided (for testing historical dates)
+        # Pass as ISO string to activity (date objects aren't JSON serializable)
+        target_date_str = None
+        if input and input.target_date:
+            target_date_str = input.target_date  # Already ISO format
+            workflow.logger.info(f"📥 Starting fixture ingest for {input.target_date}")
+        else:
+            workflow.logger.info("📥 Starting daily fixture ingest (today)")
         
-        # Fetch today's fixtures
+        # Fetch fixtures for target date (or today if not specified)
         fixtures = await workflow.execute_activity(
             ingest_activities.fetch_todays_fixtures,
+            target_date_str,  # Pass date string to activity (None = today)
             start_to_close_timeout=timedelta(seconds=30),
             retry_policy=RetryPolicy(
                 maximum_attempts=3,
@@ -51,6 +67,8 @@ class IngestWorkflow:
         
         for fixture in fixtures:
             teams = fixture.get("teams", {})
+            league = fixture.get("league", {})
+            country = league.get("country")  # e.g., "England", "Spain", "World" (for int'l)
             
             for side in ["home", "away"]:
                 team = teams.get(side, {})
@@ -64,11 +82,11 @@ class IngestWorkflow:
                 teams_processed.add(team_id)
                 
                 # Team type will be determined by the activity via API lookup
-                # Pass None to let get_team_aliases auto-detect
+                # Pass country for better Wikidata search
                 try:
                     await workflow.execute_activity(
                         rag_activities.get_team_aliases,
-                        args=[team_id, team_name, None],  # None = auto-detect team type
+                        args=[team_id, team_name, None, country],  # None = auto-detect team type
                         start_to_close_timeout=timedelta(seconds=90),  # Single team RAG
                         retry_policy=RetryPolicy(
                             maximum_attempts=2,

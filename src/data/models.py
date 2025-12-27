@@ -690,6 +690,8 @@ class TeamAliasFields:
     TEAM_NAME = "team_name"
     TEAM_TYPE = "team_type"       # "club" or "national" (string, legacy)
     NATIONAL = "national"          # True if national team, False if club (boolean, canonical)
+    COUNTRY = "country"            # Country from API-Football (e.g., "England")
+    CITY = "city"                  # City from venue data (e.g., "Newcastle upon Tyne")
     TWITTER_ALIASES = "twitter_aliases"
     MODEL = "model"
     WIKIDATA_QID = "wikidata_qid"
@@ -704,6 +706,8 @@ class TeamAliasFields:
             cls.TEAM_NAME,
             cls.TEAM_TYPE,
             cls.NATIONAL,
+            cls.COUNTRY,
+            cls.CITY,
             cls.TWITTER_ALIASES,
             cls.MODEL,
             cls.WIKIDATA_QID,

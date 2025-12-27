@@ -122,18 +122,24 @@ def parse_team_ids_parameter(team_ids_param):
 
 def get_team_info(team_id: int) -> dict | None:
     """
-    Fetch team info from API-Football to determine team type.
+    Fetch full team info from API-Football.
     
     Response includes:
+    - team.id: int
+    - team.name: str (e.g., "Newcastle")
+    - team.code: str (e.g., "NEW")
+    - team.country: str (e.g., "England")
     - team.national: bool (True for national teams, False for clubs)
-    - team.name: str
-    - team.country: str
+    - team.founded: int
+    - team.logo: str (URL)
+    - venue.name: str (e.g., "St. James' Park")
+    - venue.city: str (e.g., "Newcastle upon Tyne")
     
     Args:
         team_id: API-Football team ID
         
     Returns:
-        Team info dict or None if not found
+        Full response dict with 'team' and 'venue' keys, or None if not found
     """
     url = f"{BASE_URL}/teams"
     headers = get_api_headers()
@@ -145,7 +151,8 @@ def get_team_info(team_id: int) -> dict | None:
         
         response = data.get("response", [])
         if response and len(response) > 0:
-            return response[0].get("team")
+            # Return the full response (team + venue), not just team
+            return response[0]
         
         return None
     except Exception as e:
@@ -163,9 +170,10 @@ def is_national_team(team_id: int) -> bool | None:
     Returns:
         True if national team, False if club, None if lookup failed
     """
-    team_info = get_team_info(team_id)
-    if team_info:
-        return team_info.get("national", False)
+    full_info = get_team_info(team_id)
+    if full_info:
+        team = full_info.get("team", {})
+        return team.get("national", False)
     return None
 
 def test_events_api_debug():

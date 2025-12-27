@@ -5,12 +5,17 @@ from datetime import date
 
 
 @activity.defn
-async def fetch_todays_fixtures(target_date: date | None = None) -> List[Dict[str, Any]]:
+async def fetch_todays_fixtures(target_date_str: str | None = None) -> List[Dict[str, Any]]:
     """
     Fetch fixtures for the given date (defaults to today).
     Filters to only tracked teams (50 teams: 25 UEFA + 25 FIFA).
+    
+    Args:
+        target_date_str: ISO format date string (e.g., "2025-12-26") or None for today
     """
-    if target_date is None:
+    if target_date_str:
+        target_date = date.fromisoformat(target_date_str)
+    else:
         target_date = date.today()
     
     activity.logger.info(f"🌐 Fetching fixtures for {target_date}")

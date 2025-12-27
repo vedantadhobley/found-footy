@@ -80,6 +80,8 @@ class TwitterWorkflow:
         )
         
         for attempt in range(1, 4):  # Attempts 1, 2, 3
+            # Record attempt start time for "START to START" 3-minute spacing
+            attempt_start = workflow.now()
             workflow.logger.info(f"🐦 Twitter attempt {attempt}/3 for {input.event_id}")
             
             # =================================================================
@@ -187,11 +189,15 @@ class TwitterWorkflow:
                 workflow.logger.info(f"📭 No new videos to download for attempt {attempt}")
             
             # =================================================================
-            # Wait for next attempt (except after last)
+            # Wait for next attempt (3 minutes from START of this attempt)
             # =================================================================
             if attempt < 3:
-                wait_seconds = self._calculate_wait_to_next_boundary()
-                workflow.logger.info(f"⏳ Waiting {wait_seconds}s until next 3-min boundary")
+                elapsed = (workflow.now() - attempt_start).total_seconds()
+                wait_seconds = max(180 - elapsed, 30)  # 3 min minus elapsed, min 30s
+                workflow.logger.info(
+                    f"⏳ Attempt {attempt} took {elapsed:.0f}s, waiting {wait_seconds:.0f}s "
+                    f"(3 min START-to-START spacing)"
+                )
                 await workflow.sleep(timedelta(seconds=wait_seconds))
         
         # =================================================================
@@ -218,22 +224,4 @@ class TwitterWorkflow:
             "total_videos_uploaded": total_videos_uploaded,
             "attempts_completed": 3,
         }
-    
-    def _calculate_wait_to_next_boundary(self) -> int:
-        """
-        Calculate seconds to wait until next 3-minute boundary.
-        
-        Aligns attempts to clean time boundaries (like monitor's 1-min schedule).
-        Example: If current time is 12:01:30, wait until 12:03:00 (90 seconds).
-        
-        Returns:
-            Seconds to wait (minimum 30s to avoid edge cases)
-        """
-        now = workflow.now()
-        seconds_since_hour = now.minute * 60 + now.second
-        seconds_into_period = seconds_since_hour % 180  # 180 = 3 minutes
-        wait_seconds = 180 - seconds_into_period
-        
-        # Minimum 30 second wait to avoid edge cases
-        return max(wait_seconds, 30)
 

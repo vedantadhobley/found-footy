@@ -198,11 +198,13 @@ RAGWorkflow
     │   └── Pre-cached during ingestion for both teams
     │
     ├── IF cache miss: get_team_aliases(team_id, team_name)
-    │   ├── Call API-Football /teams?id={id} → get team.national boolean
-    │   ├── Query Wikidata for team QID and aliases
+    │   ├── Call API-Football /teams?id={id} → get team data + venue
+    │   │   └── team.national, team.country, venue.city
+    │   ├── Query Wikidata for team QID (uses country + city for disambiguation)
+    │   ├── Fetch Wikidata aliases
     │   ├── Preprocess to single words (filter junk)
     │   ├── Ollama LLM selects best words for Twitter
-    │   └── Cache with national boolean and timestamps
+    │   └── Cache with national, country, city, and timestamps
     │
     ├── save_team_aliases
     │   └── Store to _twitter_aliases in event
@@ -282,20 +284,23 @@ TwitterWorkflow (self-managing)
 | `save_discovered_videos` | 10s | 3 | 2.0x from 1s |
 | `mark_event_twitter_complete` | 10s | 3 | - |
 
-### 3-Minute Timer Logic
+### 3-Minute Timer Logic (START-to-START)
 
 ```python
-def _calculate_wait_to_next_boundary(self) -> int:
-    """
-    Calculate seconds to wait until next 3-minute boundary.
-    Aligns attempts to clean time boundaries.
-    """
-    now = workflow.now()
-    seconds_since_hour = now.minute * 60 + now.second
-    seconds_into_period = seconds_since_hour % 180  # 180 = 3 minutes
-    wait_seconds = 180 - seconds_into_period
-    return max(wait_seconds, 30)  # Minimum 30s wait
+# Record attempt start time
+attempt_start = workflow.now()
+
+# ... execute search, download, etc. ...
+
+# Wait remainder of 3 minutes from START of this attempt
+if attempt < 3:
+    elapsed = (workflow.now() - attempt_start).total_seconds()
+    wait_seconds = max(180 - elapsed, 30)  # 3 min minus elapsed, min 30s
+    await workflow.sleep(timedelta(seconds=wait_seconds))
 ```
+
+This ensures exactly 3 minutes from the START of one attempt to the START of the next,
+regardless of how long the search/download takes.
 
 ---
 
