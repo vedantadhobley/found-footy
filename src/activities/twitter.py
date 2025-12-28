@@ -76,6 +76,9 @@ async def get_twitter_search_data(fixture_id: int, event_id: str) -> Dict[str, A
     # Twitter service uses video_page_url field
     existing_urls = [v.get("video_page_url") or v.get("url") for v in existing_videos if v.get("video_page_url") or v.get("url")]
     
+    # Get match date for filtering (only search tweets from around match time)
+    match_date = fixture.get("fixture", {}).get("date", "")
+    
     if existing_urls:
         activity.logger.info(f"🔍 Got search query: '{twitter_search}' for {event_id} (will skip {len(existing_urls)} existing videos)")
     else:
@@ -86,6 +89,7 @@ async def get_twitter_search_data(fixture_id: int, event_id: str) -> Dict[str, A
         "fixture_id": fixture_id,
         "event_id": event_id,
         "existing_video_urls": existing_urls,
+        "match_date": match_date,  # ISO format: 2025-12-27T15:00:00+00:00
     }
 
 
@@ -97,7 +101,8 @@ async def get_twitter_search_data(fixture_id: int, event_id: str) -> Dict[str, A
 async def execute_twitter_search(
     twitter_search: str, 
     max_results: int = 5,
-    existing_video_urls: Optional[List[str]] = None
+    existing_video_urls: Optional[List[str]] = None,
+    match_date: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     POST to Twitter browser automation service.
@@ -112,6 +117,7 @@ async def execute_twitter_search(
         twitter_search: Search query (e.g., "Salah Liverpool")
         max_results: Max videos to return (default 5)
         existing_video_urls: List of video URLs already discovered (passed as exclude_urls)
+        match_date: ISO format match date for filtering (e.g., "2025-12-27T15:00:00+00:00")
     
     Returns:
         Dict with videos array (all NEW videos not in exclude_urls)
@@ -129,6 +135,8 @@ async def execute_twitter_search(
         activity.logger.info(f"🐦 Searching Twitter: '{twitter_search}' (excluding {len(exclude_urls)} already-discovered URLs)")
     else:
         activity.logger.info(f"🐦 Searching Twitter: '{twitter_search}'")
+    if match_date:
+        activity.logger.info(f"📅 Date filter: around {match_date[:10]}")
     activity.logger.info(f"📡 POST {session_url}/search")
     
     try:
@@ -137,7 +145,8 @@ async def execute_twitter_search(
             json={
                 "search_query": twitter_search, 
                 "max_results": max_results,
-                "exclude_urls": exclude_urls
+                "exclude_urls": exclude_urls,
+                "match_date": match_date,  # Pass to service for date filtering
             },
             timeout=120,  # 2 min for browser automation
         )

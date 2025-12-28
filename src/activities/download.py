@@ -165,17 +165,20 @@ async def download_single_video(
     source_tweet_url: str = ""
 ) -> Dict[str, Any]:
     """
-    Download a single video with yt-dlp, extract metadata, and calculate hash.
+    Download video(s) from a tweet with yt-dlp, extract metadata, and calculate hash.
+    
+    Handles multi-video tweets by downloading ALL videos and returning results for each.
+    Returns a list of results in the "videos" field when multiple videos are found.
     
     Args:
         video_url: URL to download (video page URL from Twitter)
-        video_index: Index of this video in the list
+        video_index: Index of this video in the list (used for filename prefix)
         event_id: Event ID for filename
         temp_dir: Temporary directory to download to
         source_tweet_url: Original tweet URL (for dedup checking)
     
     Returns:
-        Dict with file_path, file_hash, file_size, video_index, metadata (resolution, bitrate)
+        Dict with status and either single video info or "videos" list for multi-video tweets
     
     Raises:
         Exception: If download fails (for Temporal retry)
@@ -183,11 +186,15 @@ async def download_single_video(
     import subprocess
     import time
     import json
+    import glob
     
     # Ensure temp directory exists (activity can do I/O)
     os.makedirs(temp_dir, exist_ok=True)
     
-    output_path = os.path.join(temp_dir, f"{event_id}_{video_index}.mp4")
+    # Output template handles multi-video tweets with playlist_index
+    # For single video: event_id_0_01.mp4
+    # For multi-video: event_id_0_01.mp4, event_id_0_02.mp4, etc.
+    output_template = os.path.join(temp_dir, f"{event_id}_{video_index}_%(playlist_index)02d.mp4")
     
     activity.logger.info(f"📥 Downloading video {video_index}: {video_url[:50]}...")
     
@@ -220,18 +227,18 @@ async def download_single_video(
                 value = cookie.get('value', '')
                 f.write(f"{domain}\t{flag}\t{path}\t{secure}\t{expiration}\t{name}\t{value}\n")
         
-        # Run yt-dlp directly in worker with shared cookies - fast timeout
+        # Run yt-dlp - downloads ALL videos from multi-video tweets
         result = subprocess.run([
             'yt-dlp',
             '--cookies', temp_cookie_netscape,
             '--format', 'best[ext=mp4]/best',
-            '--output', output_path,
+            '--output', output_template,
             '--no-warnings',
             '--quiet',
             '--socket-timeout', '15',
             '--retries', '1',
             video_url
-        ], capture_output=True, text=True, timeout=30)
+        ], capture_output=True, text=True, timeout=60)  # Increased timeout for multi-video
         
         # Cleanup temp cookie file
         try:
@@ -251,12 +258,67 @@ async def download_single_video(
         activity.logger.warning(f"⚠️ Download failed: {str(e)[:100]}")
         raise
     
-    video_info = None  # No metadata from yt-dlp in quiet mode
+    # Find all downloaded files (handles multi-video tweets)
+    pattern = os.path.join(temp_dir, f"{event_id}_{video_index}_*.mp4")
+    downloaded_files = sorted(glob.glob(pattern))
     
-    if not os.path.exists(output_path):
-        msg = f"❌ Download failed for video {video_index}: file does not exist after yt-dlp"
+    if not downloaded_files:
+        msg = f"❌ Download failed for video {video_index}: no files found after yt-dlp"
         activity.logger.error(msg)
         raise RuntimeError(msg)
+    
+    if len(downloaded_files) > 1:
+        activity.logger.info(f"📹 Multi-video tweet: found {len(downloaded_files)} videos")
+    
+    # Process each downloaded file
+    results = []
+    for sub_idx, output_path in enumerate(downloaded_files):
+        sub_result = _process_downloaded_video(
+            output_path, 
+            video_index, 
+            sub_idx, 
+            source_tweet_url,
+            len(downloaded_files) > 1  # is_multi_video
+        )
+        if sub_result:
+            results.append(sub_result)
+    
+    # Return based on number of results
+    if len(results) == 0:
+        # All videos were filtered
+        return {"status": "filtered", "reason": "all_filtered", "source_url": source_tweet_url}
+    elif len(results) == 1:
+        # Single video (most common case)
+        return results[0]
+    else:
+        # Multi-video tweet - return list
+        activity.logger.info(f"✅ Multi-video tweet: {len(results)} videos passed filters")
+        return {"status": "multi_video", "videos": results, "source_url": source_tweet_url}
+
+
+def _process_downloaded_video(
+    output_path: str,
+    video_index: int,
+    sub_index: int,
+    source_tweet_url: str,
+    is_multi_video: bool = False
+) -> Optional[Dict[str, Any]]:
+    """
+    Process a single downloaded video file - get metadata, apply filters, generate hash.
+    
+    Args:
+        output_path: Path to the downloaded video file
+        video_index: Main video index
+        sub_index: Sub-index within multi-video tweet (0 for single video)
+        source_tweet_url: Original tweet URL
+        is_multi_video: Whether this is from a multi-video tweet
+        
+    Returns:
+        Dict with video info or None if filtered out
+    """
+    from temporalio import activity
+    
+    display_idx = f"{video_index}.{sub_index}" if is_multi_video else str(video_index)
     
     # Get video metadata (duration, resolution, bitrate)
     video_meta = _get_video_metadata(output_path)
@@ -265,42 +327,37 @@ async def download_single_video(
     height = video_meta["height"]
     bitrate = video_meta["bitrate"]
     
-    # Duration filter: 5-60 seconds (typical goal clips)
-    if duration < 5.0:
+    # Duration filter: 3-60 seconds (typical goal clips)
+    if duration < 3.0:
         activity.logger.warning(
-            f"⏱️ Video {video_index} too short ({duration:.1f}s < 5s), skipping"
+            f"⏱️ Video {display_idx} too short ({duration:.1f}s < 3s), skipping"
         )
         os.remove(output_path)
-        return {"status": "filtered", "reason": "too_short", "duration": duration, "source_url": source_tweet_url}
+        return None
     
     if duration > 60.0:
         activity.logger.warning(
-            f"⏱️ Video {video_index} too long ({duration:.1f}s > 60s), skipping"
+            f"⏱️ Video {display_idx} too long ({duration:.1f}s > 60s), skipping"
         )
         os.remove(output_path)
-        return {"status": "filtered", "reason": "too_long", "duration": duration, "source_url": source_tweet_url}
+        return None
     
     # Aspect ratio filter: reject non-landscape videos
-    # Goal clips should be landscape format (at least 4:3 aspect ratio = 1.33)
-    # This filters out:
-    #   - Vertical videos (9:16 phone recordings, TikTok reposts)
-    #   - Square videos (1:1 club promo clips, social media posts)
     MIN_ASPECT_RATIO = 1.33  # 4:3
     if width and height:
         aspect_ratio = width / height
         if aspect_ratio < MIN_ASPECT_RATIO:
             activity.logger.warning(
-                f"📐 Video {video_index} aspect ratio too narrow ({width}x{height} = {aspect_ratio:.2f} < {MIN_ASPECT_RATIO}), skipping"
+                f"📐 Video {display_idx} aspect ratio too narrow ({width}x{height} = {aspect_ratio:.2f} < {MIN_ASPECT_RATIO}), skipping"
             )
             os.remove(output_path)
-            return {"status": "filtered", "reason": "aspect_ratio", "width": width, "height": height, "aspect_ratio": aspect_ratio, "source_url": source_tweet_url}
+            return None
     
-    # Calculate MD5 hash and size first
+    # Calculate MD5 hash and size
     file_hash = _calculate_md5(output_path)
     file_size = os.path.getsize(output_path)
     
     # Generate perceptual hash (duration + frames at 25%, 50%, 75%)
-    # Duration is content-invariant - same video from different sources has same duration
     perceptual_hash = _generate_perceptual_hash(output_path, duration)
     
     quality_info = f"{width}x{height}" if width and height else "unknown res"
@@ -308,7 +365,7 @@ async def download_single_video(
         quality_info += f"@{bitrate:.0f}kbps"
     
     activity.logger.info(
-        f"✅ Downloaded video {video_index}: "
+        f"✅ Downloaded video {display_idx}: "
         f"{os.path.basename(output_path)} ({file_size / 1024 / 1024:.2f} MB, "
         f"{duration:.1f}s, {quality_info}, phash: {perceptual_hash.split(':')[1][:8]}...)"
     )
@@ -321,12 +378,12 @@ async def download_single_video(
         "duration": duration,
         "file_size": file_size,
         "video_index": video_index,
+        "sub_index": sub_index,
         "source_url": source_tweet_url,
-        # Quality metadata for cross-retry deduplication
         "width": width,
         "height": height,
         "bitrate": bitrate,
-        "resolution_score": width * height,  # Higher = better quality
+        "resolution_score": width * height if width and height else 0,
     }
 
 
@@ -510,20 +567,107 @@ async def deduplicate_videos(
     }
 
 
+def _extract_frame_for_vision(file_path: str, timestamp: float) -> Optional[str]:
+    """
+    Extract a single frame from video and return as base64.
+    
+    Args:
+        file_path: Path to video file
+        timestamp: Timestamp in seconds to extract frame
+        
+    Returns:
+        Base64-encoded PNG image or None if extraction fails
+    """
+    import subprocess
+    import base64
+    
+    try:
+        cmd = [
+            "ffmpeg",
+            "-ss", str(timestamp),
+            "-i", file_path,
+            "-vframes", "1",
+            "-f", "image2pipe",
+            "-vcodec", "png",
+            "-"
+        ]
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10
+        )
+        
+        if result.returncode != 0 or not result.stdout:
+            return None
+        
+        return base64.b64encode(result.stdout).decode('utf-8')
+    except Exception:
+        return None
+
+
+async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[str, Any]]:
+    """
+    Call Ollama vision model with an image.
+    
+    Args:
+        image_base64: Base64-encoded image
+        prompt: Question to ask about the image
+        
+    Returns:
+        Dict with response content or None if failed
+    """
+    import httpx
+    
+    ollama_url = os.getenv("OLLAMA_URL", "http://ollama-server:11434")
+    # Use qwen3-vl vision model for image analysis
+    vision_model = os.getenv("OLLAMA_VISION_MODEL", "qwen3-vl:8b-instruct")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{ollama_url}/api/generate",
+                json={
+                    "model": vision_model,
+                    "prompt": prompt,
+                    "images": [image_base64],
+                    "stream": False,
+                    "options": {
+                        "num_predict": 100,  # Short response needed
+                        "temperature": 0.1,   # Deterministic output
+                    }
+                }
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return None
+    except Exception:
+        return None
+
+
 @activity.defn
 async def validate_video_is_soccer(file_path: str, event_id: str) -> Dict[str, Any]:
     """
     AI validation to check if video is actually a soccer/football video.
     
-    This prevents uploading non-soccer content (ads, interviews, random videos, etc.)
-    to S3. Uses computer vision to detect soccer-specific features.
+    Uses Ollama qwen3-vl vision model to analyze frames and determine if
+    the video shows soccer gameplay. Extracts 3 frames (25%, 50%, 75%) and
+    checks each for soccer content.
     
-    TODO: Implement AI model inference:
-    - Check for soccer field (green pitch, white lines)
-    - Check for players in soccer uniforms
-    - Check for ball movement
-    - Check for goal posts/nets
-    - Reject if: ads, still images, interviews, non-sports content
+    Detection criteria:
+    - Soccer/football field (green pitch, white lines)
+    - Players in match uniforms
+    - Goal posts/nets
+    - Match action/gameplay
+    
+    Rejects:
+    - Ads/commercials
+    - Interviews/press conferences  
+    - Non-sports content
+    - Still images
+    - Different sports
     
     Args:
         file_path: Local path to video file
@@ -541,25 +685,150 @@ async def validate_video_is_soccer(file_path: str, event_id: str) -> Dict[str, A
         activity.logger.error(msg)
         raise FileNotFoundError(msg)
     
-    # STUB: For now, assume all videos are valid
-    # Future: Load AI model and run inference on video frames
+    # Get video duration for frame extraction
+    duration = 0.0
+    try:
+        import subprocess
+        probe_cmd = [
+            "ffprobe", "-v", "error", "-show_entries",
+            "format=duration", "-of", "csv=p=0", file_path
+        ]
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode == 0 and result.stdout.strip():
+            duration = float(result.stdout.strip())
+    except Exception as e:
+        activity.logger.warning(f"⚠️ Failed to get duration: {e}")
+        duration = 10.0  # Assume 10s if can't read
     
-    activity.logger.info(f"🤖 AI validation: {event_id} at {file_path} (STUB - assuming valid)")
+    if duration < 1.0:
+        # Too short to analyze
+        return {
+            "is_valid": True,
+            "confidence": 0.5,
+            "reason": "Video too short to analyze",
+            "detected_features": [],
+            "checks_performed": 0,
+        }
     
-    # TODO: Implement actual AI validation
-    # import cv2
-    # import torch
-    # model = load_soccer_detection_model()
-    # frames = extract_frames(file_path, num_frames=10)
-    # predictions = model.predict(frames)
-    # is_soccer = predictions['is_soccer'] > 0.8
-    # confidence = predictions['confidence']
+    # Vision prompt for soccer detection
+    prompt = """/no_think
+Look at this image and answer: Is this showing a soccer/football match being played?
+
+Answer ONLY with one word: YES or NO
+
+If you see ANY of these, answer YES:
+- Soccer/football field with green grass and white lines
+- Players playing soccer/football
+- Soccer goal posts or nets
+- Soccer/football match action
+
+If you see ANY of these, answer NO:
+- Advertisements or commercials
+- Interviews or press conferences
+- Still graphics or logos only
+- Different sport (basketball, tennis, etc.)
+- Empty screens or test patterns"""
+
+    activity.logger.info(f"🔍 Validating video with AI vision: {event_id}")
+    
+    # =========================================================================
+    # Smart 2-3 check strategy:
+    # 1. Check 25% and 75% first
+    # 2. If both agree → use that result (2 checks)
+    # 3. If they disagree → check 50% as tiebreaker (3 checks)
+    # =========================================================================
+    
+    def parse_response(resp) -> bool:
+        """Parse vision model response, returns True if soccer detected"""
+        if not resp:
+            return False
+        text = resp.get("response", "").strip().upper()
+        return "YES" in text
+    
+    # Extract frames at 25% and 75%
+    t_25 = duration * 0.25
+    t_75 = duration * 0.75
+    
+    frame_25 = _extract_frame_for_vision(file_path, t_25)
+    frame_75 = _extract_frame_for_vision(file_path, t_75)
+    
+    if not frame_25 and not frame_75:
+        activity.logger.warning(f"⚠️ Failed to extract frames from {file_path}")
+        return {
+            "is_valid": True,
+            "confidence": 0.3,
+            "reason": "Failed to extract frames for validation",
+            "detected_features": [],
+            "checks_performed": 0,
+        }
+    
+    # Check 25% first
+    checks_performed = 0
+    vote_25 = None
+    vote_75 = None
+    
+    if frame_25:
+        response_25 = await _call_vision_model(frame_25, prompt)
+        checks_performed += 1
+        vote_25 = parse_response(response_25)
+        activity.logger.info(f"   📸 25% check: {'YES' if vote_25 else 'NO'}")
+    
+    # Check 75%
+    if frame_75:
+        response_75 = await _call_vision_model(frame_75, prompt)
+        checks_performed += 1
+        vote_75 = parse_response(response_75)
+        activity.logger.info(f"   📸 75% check: {'YES' if vote_75 else 'NO'}")
+    
+    # Handle edge cases where one frame failed
+    if vote_25 is None and vote_75 is not None:
+        is_soccer = vote_75
+        confidence = 0.7
+        reason = "Single frame check (25% failed)"
+    elif vote_75 is None and vote_25 is not None:
+        is_soccer = vote_25
+        confidence = 0.7
+        reason = "Single frame check (75% failed)"
+    elif vote_25 == vote_75:
+        # Both agree - no tiebreaker needed
+        is_soccer = vote_25
+        confidence = 0.95 if is_soccer else 0.90
+        reason = f"Both checks agree: {'soccer' if is_soccer else 'not soccer'}"
+        activity.logger.info(f"   ✓ Both frames agree: {'YES' if is_soccer else 'NO'}")
+    else:
+        # Disagreement - need tiebreaker at 50%
+        activity.logger.info(f"   ⚖️ Disagreement, checking 50% as tiebreaker...")
+        t_50 = duration * 0.50
+        frame_50 = _extract_frame_for_vision(file_path, t_50)
+        
+        if frame_50:
+            response_50 = await _call_vision_model(frame_50, prompt)
+            checks_performed += 1
+            vote_50 = parse_response(response_50)
+            activity.logger.info(f"   📸 50% tiebreaker: {'YES' if vote_50 else 'NO'}")
+            
+            # Count votes (2/3 majority)
+            yes_votes = sum([vote_25 or False, vote_50, vote_75 or False])
+            is_soccer = yes_votes >= 2
+            confidence = 0.85
+            reason = f"Tiebreaker decided: {yes_votes}/3 votes for soccer"
+        else:
+            # Can't extract tiebreaker frame - use 25% result (earlier in video)
+            is_soccer = vote_25 if vote_25 is not None else False
+            confidence = 0.6
+            reason = "Tiebreaker failed, using first check"
+    
+    if is_soccer:
+        activity.logger.info(f"✅ Video validated as soccer ({checks_performed} checks): {event_id}")
+    else:
+        activity.logger.warning(f"❌ Video NOT soccer ({checks_performed} checks): {event_id}")
     
     return {
-        "is_valid": True,  # Stub: assume valid
-        "confidence": 1.0,
-        "reason": "AI validation not yet implemented (stub)",
-        "detected_features": [],  # Future: ["soccer_field", "players", "ball", "goal"]
+        "is_valid": is_soccer,
+        "confidence": confidence,
+        "reason": reason,
+        "detected_features": ["soccer_field"] if is_soccer else [],
+        "checks_performed": checks_performed,
     }
 
 

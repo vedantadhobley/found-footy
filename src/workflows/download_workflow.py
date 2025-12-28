@@ -99,6 +99,7 @@ class DownloadWorkflow:
         # Step 2: Download each video individually (with per-video retry)
         # 403 errors are common (rate limits, expired links) - retry 3x with backoff
         # Also track filtered URLs (too short/long) for dedup
+        # Multi-video tweets: each tweet may return multiple videos
         # =========================================================================
         workflow.logger.info(f"📥 Downloading {len(discovered_videos)} videos...")
         
@@ -116,7 +117,7 @@ class DownloadWorkflow:
                 result = await workflow.execute_activity(
                     download_activities.download_single_video,
                     args=[video_url, idx, event_id, temp_dir, video_url],
-                    start_to_close_timeout=timedelta(seconds=60),
+                    start_to_close_timeout=timedelta(seconds=90),  # Increased for multi-video
                     retry_policy=RetryPolicy(
                         maximum_attempts=3,
                         initial_interval=timedelta(seconds=2),
@@ -124,7 +125,14 @@ class DownloadWorkflow:
                         maximum_interval=timedelta(seconds=10),
                     ),
                 )
-                download_results.append(result)
+                
+                # Handle multi-video tweets - flatten the results
+                if result.get("status") == "multi_video":
+                    videos = result.get("videos", [])
+                    workflow.logger.info(f"📹 Multi-video tweet {idx}: {len(videos)} videos")
+                    download_results.extend(videos)
+                else:
+                    download_results.append(result)
                 
                 # Track filtered videos (too short/long/vertical) for dedup
                 if result.get("status") == "filtered":
@@ -246,17 +254,51 @@ class DownloadWorkflow:
                 # Continue anyway - we'll still upload the new one
         
         # =========================================================================
-        # Step 5: Upload new videos and replacements
+        # Step 5: Validate videos are soccer content before upload
+        # Uses AI vision to check if video actually shows soccer gameplay
         # =========================================================================
-        # Combine new uploads and replacement uploads
         all_uploads = videos_to_upload + [r["new_video"] for r in videos_to_replace]
+        validated_uploads = []
+        rejected_count = 0
         
-        workflow.logger.info(f"☁️ Uploading {len(all_uploads)} videos to S3...")
+        workflow.logger.info(f"🔍 Validating {len(all_uploads)} videos with AI vision...")
+        
+        for video_info in all_uploads:
+            try:
+                validation = await workflow.execute_activity(
+                    download_activities.validate_video_is_soccer,
+                    args=[video_info["file_path"], event_id],
+                    start_to_close_timeout=timedelta(seconds=45),  # Vision model can be slow
+                    retry_policy=RetryPolicy(
+                        maximum_attempts=2,
+                        initial_interval=timedelta(seconds=2),
+                    ),
+                )
+                
+                if validation.get("is_valid", True):
+                    validated_uploads.append(video_info)
+                else:
+                    rejected_count += 1
+                    workflow.logger.warning(
+                        f"🚫 Video rejected (not soccer): {validation.get('reason', 'unknown')}"
+                    )
+            except Exception as e:
+                # If validation fails, include the video (fail open)
+                workflow.logger.warning(f"⚠️ Validation failed, including video: {e}")
+                validated_uploads.append(video_info)
+        
+        if rejected_count > 0:
+            workflow.logger.info(f"🔍 Validation: {len(validated_uploads)} passed, {rejected_count} rejected")
+        
+        # =========================================================================
+        # Step 6: Upload validated videos to S3
+        # =========================================================================
+        workflow.logger.info(f"☁️ Uploading {len(validated_uploads)} videos to S3...")
         
         video_objects = []  # New schema: list of video objects for MongoDB
         successful_video_urls = []
         
-        for idx, video_info in enumerate(all_uploads):
+        for idx, video_info in enumerate(validated_uploads):
             try:
                 result = await workflow.execute_activity(
                     download_activities.upload_single_video,

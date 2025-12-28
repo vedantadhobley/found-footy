@@ -58,6 +58,7 @@ class VideoSearchRequest(BaseModel):
     search_query: str
     max_results: int = 5
     exclude_urls: List[str] = []
+    match_date: str = ""  # ISO format match date for filtering (e.g., "2025-12-27T15:00:00+00:00")
 
 
 class AuthRequest(BaseModel):
@@ -115,6 +116,7 @@ async def search_videos(request: VideoSearchRequest):
         search_query: Search terms (e.g., "Messi Barcelona goal")
         max_results: Maximum number of videos to return (default: 5)
         exclude_urls: List of URLs to skip (already processed)
+        match_date: ISO format match date for filtering (only search tweets around this date)
         
     Returns:
         JSON with discovered videos
@@ -127,7 +129,8 @@ async def search_videos(request: VideoSearchRequest):
         videos = twitter_session.search_videos(
             request.search_query,
             request.max_results,
-            request.exclude_urls
+            request.exclude_urls,
+            request.match_date
         )
         return {
             "status": "success",

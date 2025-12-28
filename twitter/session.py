@@ -441,13 +441,15 @@ Steps:
         print("❌ All authentication methods failed - manual login required", flush=True)
         return False
     
-    def search_videos(self, search_query: str, max_results: int = None, exclude_urls: List[str] = None) -> List[Dict[str, Any]]:
+    def search_videos(self, search_query: str, max_results: int = None, exclude_urls: List[str] = None, match_date: str = None) -> List[Dict[str, Any]]:
         """Search Twitter for videos matching query
         
         Args:
             search_query: Search terms (e.g., "Messi goal Barcelona")
             max_results: Maximum videos to return
             exclude_urls: List of URLs to skip (already processed videos)
+            match_date: ISO format match date for filtering (e.g., "2025-12-27T15:00:00+00:00")
+                       Will search tweets from 1 day before to 2 days after the match
             
         Returns:
             List of video dictionaries
@@ -483,6 +485,22 @@ Steps:
         try:
             # Build search URL with video filter
             video_search_query = f"{search_query} filter:videos"
+            
+            # Add date filtering if match_date is provided
+            # Twitter search supports since:YYYY-MM-DD and until:YYYY-MM-DD
+            # We search from 1 day before (pre-match hype) to 2 days after (highlights posted later)
+            if match_date:
+                try:
+                    from datetime import datetime, timedelta as td
+                    # Parse ISO date (e.g., "2025-12-27T15:00:00+00:00")
+                    match_dt = datetime.fromisoformat(match_date.replace('Z', '+00:00'))
+                    since_date = (match_dt - td(days=1)).strftime('%Y-%m-%d')
+                    until_date = (match_dt + td(days=2)).strftime('%Y-%m-%d')
+                    video_search_query = f"{video_search_query} since:{since_date} until:{until_date}"
+                    print(f"   📅 Date filter: {since_date} to {until_date}", flush=True)
+                except Exception as e:
+                    print(f"   ⚠️ Failed to parse match_date '{match_date}': {e}", flush=True)
+            
             search_url = f"https://twitter.com/search?q={quote(video_search_query)}&src=typed_query&f=live"
             
             print(f"   URL: {search_url}", flush=True)

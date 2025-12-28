@@ -104,6 +104,7 @@ class TwitterWorkflow:
                 retry_policy=RetryPolicy(maximum_attempts=2),
             )
             existing_urls = search_data.get("existing_video_urls", [])
+            match_date = search_data.get("match_date", "")  # For date filtering
             
             # =================================================================
             # Run searches for each alias, collect all videos
@@ -118,7 +119,7 @@ class TwitterWorkflow:
                 try:
                     search_result = await workflow.execute_activity(
                         twitter_activities.execute_twitter_search,
-                        args=[search_query, 5, list(existing_urls) + list(seen_urls_this_batch)],
+                        args=[search_query, 5, list(existing_urls) + list(seen_urls_this_batch), match_date],
                         start_to_close_timeout=timedelta(seconds=150),
                         retry_policy=RetryPolicy(
                             maximum_attempts=3,
