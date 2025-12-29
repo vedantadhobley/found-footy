@@ -107,7 +107,7 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 ├─────────────────────────────────────────────────────────────────────┤
 │  FOR each video URL:                                                 │
 │    → Download via yt-dlp                                             │
-│    → Filter by duration (5-60s)                                      │
+│    → Filter by duration (>3s to 60s)                                 │
 │    → Compute perceptual hash                                         │
 │    → Compare quality with existing S3                                │
 │    → Upload if new or better quality                                 │
@@ -157,6 +157,8 @@ TwitterWorkflow (per event, self-managing)
 - Compute **dHash** (64-bit difference hash) for each frame
 - Store all hashes: `dense:0.25:<ts>=<hash>,<ts>=<hash>,...`
 
+**MongoDB is Source of Truth**: Video metadata (including full perceptual hashes) is stored in MongoDB's `_s3_videos` array. S3 object metadata has a ~100 character limit per field and will truncate long hashes. Deduplication reads from MongoDB only.
+
 **Offset-Tolerant Matching**:
 - Different clips of the same goal may start at different times
 - Algorithm tries all possible time offsets between videos
@@ -202,9 +204,9 @@ Phase 2 (S3 Dedup):
 
 ### Duration Filtering
 
-Videos outside the 5-60 second range are filtered:
-- **< 5s**: Usually just celebrations, not full goal replays
-- **> 60s**: Usually compilations or full match highlights
+Videos outside the >3s to 60s range are filtered:
+- **≤3s**: Usually just celebrations or snippets, not full goal replays
+- **>60s**: Usually compilations or full match highlights
 
 Filtered videos still have their URLs tracked to prevent re-download attempts.
 
@@ -395,7 +397,7 @@ Then triggers **TwitterWorkflow** as child workflow.
 
 | Activity | Purpose | Retries |
 |----------|---------|--------|
-| `fetch_event_data` | Get existing S3 metadata | 2x |
+| `fetch_event_data` | Get existing videos from MongoDB | 2x |
 | `download_single_video` | Download ONE video | 3x, 2.0x from 2s |
 | `validate_video_is_soccer` | AI vision validates soccer content | 2x |
 | `deduplicate_videos` | Perceptual hash comparison | 2x |

@@ -25,7 +25,7 @@ flowchart TB
     
     subgraph PROCESS["⚙️ Processing"]
         DOWNLOAD[Download via yt-dlp]
-        FILTER[Filter 5-60s duration]
+        FILTER[Filter >3s to 60s duration]
         HASH[Perceptual Hash<br/>Deduplicate]
         QUALITY[Quality Compare<br/>Keep best resolution]
     end
@@ -576,7 +576,7 @@ flowchart TB
     
     subgraph EACH["For Each Video"]
         DL[Download via yt-dlp]
-        FILTER{Duration<br/>5-60s?}
+        FILTER{Duration<br/>>3-60s?}
         META[Extract metadata<br/>Resolution, bitrate]
         VALIDATE{AI Validation<br/>Is soccer?}
         HASH[Compute perceptual hash]
@@ -736,7 +736,7 @@ TWITTER_SERVICE_URL=http://twitter:8888
 | Debounce polls | 3 | ~3 minutes |
 | Twitter searches | 3 per event | ~15 min window |
 | Videos per search | 5 max | |
-| Duration filter | 5-60 seconds | |
+| Duration filter | >3s to 60s | Must be strictly >3s |
 | Download timeout | 60s per video | |
 | Tracked teams | 50 | Top European clubs |
 | Aspect ratio min | 1.33 (4:3) | Rejects vertical |

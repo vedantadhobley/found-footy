@@ -56,7 +56,7 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      DownloadWorkflow                                │
 │   - Download videos via yt-dlp                                       │
-│   - Filter by duration (5-60s)                                       │
+│   - Filter by duration (>3s to 60s)                                  │
 │   - Compute perceptual hash                                          │
 │   - Compare quality with existing S3                                 │
 │   - Upload new/better videos                                         │
@@ -312,18 +312,18 @@ regardless of how long the search/download takes.
 DownloadWorkflow
     │
     ├── fetch_event_data
-    │   └── Get existing _s3_videos metadata
+    │   └── Get existing _s3_videos from MongoDB (source of truth - S3 metadata truncates hashes)
     │
     ├── FOR each video URL:
     │   │
     │   ├── download_single_video
     │   │   ├── yt-dlp download to /tmp
     │   │   ├── ffprobe for duration/metadata
-    │   │   └── IF duration < 5s OR > 60s: FILTER (skip)
+    │   │   └── IF duration <= 3s OR > 60s: FILTER (skip)
     │   │
     │   └── deduplicate_videos
     │       ├── Compute perceptual hash
-    │       └── Compare with existing S3 videos
+    │       └── Compare with existing videos (MongoDB data)
     │
     ├── FOR each duplicate with better quality:
     │   └── replace_s3_video (delete old)

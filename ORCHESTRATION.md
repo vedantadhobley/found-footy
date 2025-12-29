@@ -109,7 +109,7 @@ This decoupling allows Twitter searches to run at 3-minute intervals instead of 
 
 ### DownloadWorkflow (Triggered by TwitterWorkflow)
 - Downloads videos from Twitter URLs
-- Applies duration filter (5-60 seconds)
+- Applies duration filter (>3s to 60s)
 - Validates soccer content via vision model (Qwen3-VL)
 - Computes perceptual hash for deduplication (dense 0.25s sampling)
 - Compares with existing S3 videos (requires 3 consecutive frames to match)
