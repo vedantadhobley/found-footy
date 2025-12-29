@@ -21,6 +21,7 @@ from src.data.models import (
     TeamAliasFields,
     create_activation_fields,
 )
+from src.utils.config import MONGODB_URI
 
 
 class FootyMongoStore:
@@ -37,8 +38,9 @@ class FootyMongoStore:
     _indexes_created = False
     
     def __init__(self, connection_url=None):
+        # Use centralized config (can be overridden via parameter or env)
         if connection_url is None:
-            connection_url = os.getenv('MONGODB_URI') or os.getenv('MONGODB_URL', 'mongodb://localhost:27017/')
+            connection_url = os.getenv('MONGODB_URI') or os.getenv('MONGODB_URL') or MONGODB_URI
         
         self.client = MongoClient(connection_url)
         self.db = self.client.found_footy

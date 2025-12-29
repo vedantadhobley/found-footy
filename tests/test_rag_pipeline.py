@@ -505,8 +505,8 @@ async def call_ollama_api(wikidata_aliases: List[str], team_name: str) -> Option
 
 Select the best words for Twitter search. Return a JSON array. /no_think"""
 
-    # Use external llama-server via luv-dev network
-    llama_url = "http://llama-server:8080"
+    # Use external llama-chat via luv-dev network
+    llama_url = "http://llama-chat:8080"
     
     try:
         response = requests.post(

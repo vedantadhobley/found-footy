@@ -1,4 +1,4 @@
-"""S3 storage utilities for Found Footy video downloads"""
+"""S3 storage utilities for Found Footy video downloads (MinIO backend)"""
 import os
 import tempfile
 import boto3
@@ -7,23 +7,32 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from pathlib import Path
 
+from src.utils.config import (
+    S3_ENDPOINT_URL,
+    S3_ACCESS_KEY,
+    S3_SECRET_KEY,
+    S3_BUCKET_NAME,
+    S3_REGION,
+)
+
 
 class FootyS3Store:
-    """S3 storage manager for video files"""
+    """MinIO S3-compatible storage manager for video files"""
     
     def __init__(self):
-        self.endpoint_url = os.getenv('S3_ENDPOINT_URL', 'http://found-footy-minio:9000')
-        self.access_key = os.getenv('S3_ACCESS_KEY', 'ffuser')
-        self.secret_key = os.getenv('S3_SECRET_KEY', 'ffpass--')
-        self.bucket_name = os.getenv('S3_BUCKET_NAME', 'footy-videos')
+        # Use centralized config (can be overridden by env vars)
+        self.endpoint_url = os.getenv('S3_ENDPOINT_URL') or S3_ENDPOINT_URL
+        self.access_key = os.getenv('S3_ACCESS_KEY') or S3_ACCESS_KEY
+        self.secret_key = os.getenv('S3_SECRET_KEY') or S3_SECRET_KEY
+        self.bucket_name = os.getenv('S3_BUCKET_NAME') or S3_BUCKET_NAME
         
-        # Initialize S3 client
+        # Initialize S3 client (MinIO via boto3)
         self.s3_client = boto3.client(
             's3',
             endpoint_url=self.endpoint_url,
             aws_access_key_id=self.access_key,
             aws_secret_access_key=self.secret_key,
-            region_name='us-east-1'  # MinIO default
+            region_name=S3_REGION  # MinIO requires a region but ignores it
         )
         
         self._ensure_bucket_exists()

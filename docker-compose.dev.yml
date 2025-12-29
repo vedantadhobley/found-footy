@@ -8,7 +8,7 @@
 #   7233: Temporal gRPC
 #
 # External services (on luv-dev network):
-#   - llama-server:8080 (LLM API - llama.cpp)
+#   - llama-chat:8080 (LLM API - llama.cpp chat+vision)
 #
 # Internal ports:
 #   - found-footy-postgres:5432 (Temporal metadata)
@@ -166,7 +166,7 @@ services:
     restart: unless-stopped
 
   # LLAMA.CPP SERVER - External service on luv-dev network
-  # Accessed via luv-dev network as llama-server:8080
+  # Accessed via luv-dev network as llama-chat:8080
 
   # TEMPORAL WORKER - Executes workflows
   worker:
@@ -186,13 +186,13 @@ services:
       S3_BUCKET_NAME: footy-videos
       TWITTER_SESSION_URL: http://found-footy-dev-twitter:8888
       FRONTEND_API_URL: http://vedanta-systems-dev-api:3001
-      LLAMA_URL: http://llama-server:8080  # External llama.cpp via luv-dev network
+      LLAMA_URL: http://llama-chat:8080  # External llama.cpp via luv-dev network
     volumes:
       - .:/workspace
       - ~/.config/found-footy:/config  # Cookie backup (shared with twitter service)
     networks:
       - found-footy-dev
-      - luv-dev  # Shared network for frontend API and llama-server
+      - luv-dev  # Shared network for frontend API and llama-chat
     depends_on:
       - temporal
       - mongo

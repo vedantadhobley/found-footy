@@ -14,7 +14,7 @@
 #   - twitter:8888 (API)
 #
 # External services (on luv-prod network):
-#   - llama-server:8080 (LLM API - llama.cpp)
+#   - llama-chat:8080 (LLM API - llama.cpp chat+vision)
 
 name: found-footy-prod
 
@@ -180,12 +180,12 @@ services:
       S3_BUCKET_NAME: footy-videos
       TWITTER_SESSION_URL: http://found-footy-prod-twitter:8888
       FRONTEND_API_URL: http://vedanta-systems-prod-api:3001
-      LLAMA_URL: http://llama-server:8080
+      LLAMA_URL: http://llama-chat:8080
     volumes:
       - ~/.config/found-footy:/config  # Cookie backup (shared with twitter service)
     networks:
       - found-footy-prod
-      - luv-prod  # Need luv-prod network to reach frontend API and llama-server
+      - luv-prod  # Need luv-prod network to reach frontend API and llama-chat
     depends_on:
       - temporal
       - mongo

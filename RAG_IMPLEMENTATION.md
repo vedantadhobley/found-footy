@@ -52,8 +52,8 @@ The LLM is accessed via an external llama.cpp server on the shared network:
 
 | Environment | URL | Model |
 |-------------|-----|-------|
-| Dev | `http://llama-server:8080` (via `luv-dev` network) | Qwen3-VL-8B |
-| Prod | `http://llama-server:8080` (via `luv-prod` network) | Qwen3-VL-8B |
+| Dev | `http://llama-chat:8080` (via `luv-dev` network) | Qwen3-VL-8B |
+| Prod | `http://llama-chat:8080` (via `luv-prod` network) | Qwen3-VL-8B |
 
 The llama.cpp server runs as a shared service (not per-project) and provides an OpenAI-compatible API.
 
@@ -104,10 +104,10 @@ The worker connects to the llama.cpp server via environment variable:
 # docker-compose.yml
 worker:
   environment:
-    LLAMA_URL: http://llama-server:8080  # External llama.cpp server
+    LLAMA_URL: http://llama-chat:8080  # External llama.cpp server
   networks:
     - found-footy-prod
-    - luv-prod  # Shared network with llama-server
+    - luv-prod  # Shared network with llama-chat
 ```
 
 ### API Compatibility
@@ -285,7 +285,7 @@ from datetime import datetime, timezone
 
 
 # Environment-aware URL (set in docker-compose)
-LLAMA_URL = os.getenv("LLAMA_URL", "http://llama-server:8080")
+LLAMA_URL = os.getenv("LLAMA_URL", "http://llama-chat:8080")
 
 SYSTEM_PROMPT = """You are a football/soccer team name expert. Given a team's full name, 
 return exactly 3 short aliases commonly used on Twitter/X to refer to this team.

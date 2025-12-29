@@ -10,6 +10,15 @@ import random
 import time
 
 from src.data.models import EventFields
+from src.utils.config import (
+    LLAMA_CHAT_URL,
+    MIN_ASPECT_RATIO,
+    MIN_VIDEO_DURATION,
+    MAX_VIDEO_DURATION,
+    HASH_VERSION,
+    MAX_HAMMING_DISTANCE,
+    MIN_CONSECUTIVE_MATCHES,
+)
 
 # Global lock and timestamp to rate-limit downloads across all workers
 _download_lock = asyncio.Lock()
@@ -308,26 +317,24 @@ def _process_downloaded_video(
     height = video_meta["height"]
     bitrate = video_meta["bitrate"]
     
-    # Duration filter: >3-60 seconds (typical goal clips)
-    # Exactly 3.00s fails - we want strictly greater than 3 seconds
-    if duration <= 3.0:
+    # Duration filter: typical goal clips
+    # Must be strictly greater than MIN (e.g., exactly 3.00s fails)
+    if duration <= MIN_VIDEO_DURATION:
         activity.logger.warning(
-            f"⏱️ Video {display_idx} too short ({duration:.1f}s <= 3s), skipping"
+            f"⏱️ Video {display_idx} too short ({duration:.1f}s <= {MIN_VIDEO_DURATION}s), skipping"
         )
         os.remove(output_path)
         return None
     
-    if duration > 60.0:
+    if duration > MAX_VIDEO_DURATION:
         activity.logger.warning(
-            f"⏱️ Video {display_idx} too long ({duration:.1f}s > 60s), skipping"
+            f"⏱️ Video {display_idx} too long ({duration:.1f}s > {MAX_VIDEO_DURATION}s), skipping"
         )
         os.remove(output_path)
         return None
     
     # Aspect ratio filter: reject portrait/square videos (< 4:3)
     # Football clips should be landscape (16:9 = 1.78, 4:3 = 1.333...)
-    # Use 1.32 threshold to accept 4:3 with floating point tolerance
-    MIN_ASPECT_RATIO = 1.32  # Accepts 4:3 (1.333) and wider
     if width and height and height > 0:
         aspect_ratio = width / height
         if aspect_ratio < MIN_ASPECT_RATIO:
@@ -662,7 +669,7 @@ async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[st
     """
     import httpx
     
-    llama_url = os.getenv("LLAMA_URL", "http://llama-server:8080")
+    llama_url = LLAMA_CHAT_URL
     
     activity.logger.debug(f"🔍 Calling vision model at {llama_url}")
     
@@ -1020,7 +1027,7 @@ async def upload_single_video(
             "bitrate": int(bitrate) if bitrate else 0,
             "duration": round(duration, 2),
             "source_url": source_url,
-            "hash_version": "dense:0.25",  # Track hash algorithm version
+            "hash_version": HASH_VERSION,  # Track hash algorithm version
         }
     }
 
@@ -1371,8 +1378,8 @@ def _hamming_distance(hex_a: str, hex_b: str) -> int:
 def _perceptual_hashes_match(
     hash_a: str, 
     hash_b: str, 
-    max_hamming: int = 10,
-    min_consecutive_matches: int = 3
+    max_hamming: int = MAX_HAMMING_DISTANCE,
+    min_consecutive_matches: int = MIN_CONSECUTIVE_MATCHES
 ) -> bool:
     """
     Check if two perceptual hashes represent the same video.
@@ -1392,8 +1399,8 @@ def _perceptual_hashes_match(
     Args:
         hash_a: First hash (dense or legacy format)
         hash_b: Second hash (dense or legacy format)
-        max_hamming: Max hamming distance for a frame match (default 10)
-        min_consecutive_matches: Min consecutive frames that must match (default 3)
+        max_hamming: Max hamming distance for a frame match (from config)
+        min_consecutive_matches: Min consecutive frames that must match (from config)
         
     Returns:
         True if videos match (have consecutive matching frames)
@@ -1433,8 +1440,8 @@ def _perceptual_hashes_match(
 def _dense_hashes_match(
     hash_a: str,
     hash_b: str,
-    max_hamming: int = 10,
-    min_consecutive: int = 3
+    max_hamming: int = MAX_HAMMING_DISTANCE,
+    min_consecutive: int = MIN_CONSECUTIVE_MATCHES
 ) -> bool:
     """
     Check if two dense perceptual hashes match with consecutive frame requirement.

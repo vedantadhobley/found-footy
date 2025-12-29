@@ -24,10 +24,10 @@ import os
 import unicodedata
 from datetime import datetime, timezone
 
+from src.utils.config import LLAMA_CHAT_URL
 
-# Environment-aware URL (set in docker-compose)
-# Using llama.cpp server with OpenAI-compatible API
-LLAMA_URL = os.getenv("LLAMA_URL", "http://llama-server:8080")
+# Use centralized config
+LLAMA_URL = LLAMA_CHAT_URL
 LLAMA_MODEL = os.getenv("LLAMA_MODEL", "Qwen3-8B")
 
 # Wikidata API endpoints
