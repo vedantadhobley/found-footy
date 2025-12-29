@@ -94,7 +94,7 @@ This decoupling allows Twitter searches to run at 3-minute intervals instead of 
 
 ### RAGWorkflow (Triggered by Monitor)
 - **Checks cache first** - aliases pre-cached during ingestion
-- If cache miss: runs full Wikidata + Ollama RAG pipeline
+- If cache miss: runs full Wikidata + LLM RAG pipeline
 - Determines team type via API-Football (`team.national` boolean)
 - Saves aliases to `_twitter_aliases` in MongoDB
 - Triggers TwitterWorkflow as child (waits for completion)
@@ -110,8 +110,9 @@ This decoupling allows Twitter searches to run at 3-minute intervals instead of 
 ### DownloadWorkflow (Triggered by TwitterWorkflow)
 - Downloads videos from Twitter URLs
 - Applies duration filter (5-60 seconds)
-- Computes perceptual hash for deduplication
-- Compares quality with existing S3 videos
+- Validates soccer content via vision model (Qwen3-VL)
+- Computes perceptual hash for deduplication (dense 0.25s sampling)
+- Compares with existing S3 videos (requires 3 consecutive frames to match)
 - Uploads new/better videos to S3
 
 ---
@@ -186,7 +187,7 @@ Goal videos appear on Twitter over 5-15 minutes:
 ### Why RAGWorkflow as intermediary?
 
 1. **Clean separation**: Alias lookup is separate from Twitter search
-2. **Future extensibility**: Wikidata + Ollama implementation is isolated
+2. **Future extensibility**: Wikidata + LLM implementation is isolated
 3. **Visibility**: Aliases saved to MongoDB for debugging
 4. **Pre-caching**: Aliases cached during ingestion, fast lookup at runtime
 
@@ -196,7 +197,7 @@ During daily ingest (00:05 UTC), we pre-cache RAG aliases for BOTH teams in ever
 - Ensures aliases are ready before any goals are scored
 - Covers opponent teams (non-tracked teams that play against our tracked teams)
 - Cache lookup is O(1) by team_id at runtime
-- Full RAG pipeline (Wikidata + Ollama) only runs once per team
+- Full RAG pipeline (Wikidata + LLM) only runs once per team
 
 ### Why use API-Football for team type?
 
@@ -254,6 +255,7 @@ def complete_fixture_if_ready(fixture_id):
 - Ignored in completion checks
 - Any running TwitterWorkflow continues but results are orphaned
 
-### LLM unavailable (future)
+### LLM unavailable
 - RAGWorkflow activity falls back to `[team_name]`
 - Search still works, just with single alias
+- Video validation uses fail-closed: skip video if AI unavailable

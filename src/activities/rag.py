@@ -1,5 +1,5 @@
 """
-RAG Activities - Team Alias Lookup with Wikidata + Ollama LLM
+RAG Activities - Team Alias Lookup with Wikidata + LLM
 
 Activities for the RAGWorkflow.
 
@@ -26,8 +26,9 @@ from datetime import datetime, timezone
 
 
 # Environment-aware URL (set in docker-compose)
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama-server:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3-vl:8b-instruct")
+# Using llama.cpp server with OpenAI-compatible API
+LLAMA_URL = os.getenv("LLAMA_URL", "http://llama-server:8080")
+LLAMA_MODEL = os.getenv("LLAMA_MODEL", "Qwen3-8B")
 
 # Wikidata API endpoints
 WIKIDATA_SEARCH_URL = "https://www.wikidata.org/w/api.php"
@@ -471,7 +472,7 @@ def _cache_aliases(
 @activity.defn
 async def get_team_aliases(team_id: int, team_name: str, team_type: Optional[str] = None, country: str = None) -> List[str]:
     """
-    Get team name aliases via Wikidata RAG + Ollama LLM with MongoDB caching.
+    Get team name aliases via Wikidata RAG + LLM with MongoDB caching.
     
     Args:
         team_id: API-Football team ID (cache key)
@@ -545,26 +546,27 @@ async def get_team_aliases(team_id: int, team_name: str, team_type: Optional[str
     # 5. AUGMENT + GENERATE: LLM selects from preprocessed words
     if preprocessed:
         try:
-            # Short timeout - fail fast to fallback if Ollama is frozen
+            # Short timeout - fail fast to fallback if LLM is frozen
             async with httpx.AsyncClient(timeout=10.0) as client:
                 prompt = f"""Words: {json.dumps(preprocessed)}
 
-Select the best words for Twitter search. Return a JSON array."""
+Select the best words for Twitter search. Return a JSON array. /no_think"""
                 
                 response = await client.post(
-                    f"{OLLAMA_URL}/api/generate",
+                    f"{LLAMA_URL}/v1/chat/completions",
                     json={
-                        "model": OLLAMA_MODEL,
-                        "prompt": prompt,
-                        "system": SYSTEM_PROMPT,
-                        "stream": False,
-                        "options": {"temperature": 0.1, "num_predict": 100}
+                        "messages": [
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "max_tokens": 100,
+                        "temperature": 0.1
                     }
                 )
                 response.raise_for_status()
                 
                 result = response.json()
-                text = result.get("response", "").strip()
+                text = result["choices"][0]["message"]["content"].strip()
                 
                 llm_aliases = _parse_llm_response(text)
                 
@@ -596,14 +598,14 @@ Select the best words for Twitter search. Return a JSON array."""
                         # Cache with all API data
                         _cache_aliases(
                             store, team_id, team_name, national, twitter_aliases,
-                            OLLAMA_MODEL, api_country, api_city, qid, wikidata_aliases
+                            LLAMA_MODEL, api_country, api_city, qid, wikidata_aliases
                         )
                         return twitter_aliases
                 
                 activity.logger.warning(f"⚠️ LLM returned invalid format: {text}")
                 
         except httpx.ConnectError:
-            activity.logger.warning("⚠️ Ollama not available, using fallback")
+            activity.logger.warning("⚠️ LLM server not available, using fallback")
         except Exception as e:
             activity.logger.warning(f"⚠️ LLM error: {e}")
     

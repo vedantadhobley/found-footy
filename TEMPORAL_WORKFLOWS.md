@@ -33,8 +33,7 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
                                             ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         RAGWorkflow                                  │
-│   - get_team_aliases(team) → ["Liverpool", "LFC", "Reds"]           │
-│   - save_team_aliases to MongoDB                                     │
+│   - get_team_aliases(team) → ["Liverpool", "LFC", "Reds"]           ││   - Uses Wikidata + llama.cpp LLM for alias selection                ││   - save_team_aliases to MongoDB                                     │
 │   - Start TwitterWorkflow (child, waits)                             │
 │                              │                                       │
 └──────────────────────────────┼──────────────────────────────────────┘
@@ -188,7 +187,7 @@ for event_id in matching_ids:
 ## 3. RAGWorkflow
 
 **Trigger**: Fire-and-forget from MonitorWorkflow when `_monitor_complete=true`  
-**Purpose**: Resolve team aliases via Wikidata RAG + Ollama LLM, then trigger TwitterWorkflow
+**Purpose**: Resolve team aliases via Wikidata RAG + LLM, then trigger TwitterWorkflow
 
 ```
 RAGWorkflow
@@ -203,7 +202,7 @@ RAGWorkflow
     │   ├── Query Wikidata for team QID (uses country + city for disambiguation)
     │   ├── Fetch Wikidata aliases
     │   ├── Preprocess to single words (filter junk)
-    │   ├── Ollama LLM selects best words for Twitter
+    │   ├── llama.cpp LLM selects best words for Twitter
     │   └── Cache with national, country, city, and timestamps
     │
     ├── save_team_aliases
@@ -218,7 +217,7 @@ RAGWorkflow
 | Activity | Timeout | Retries | Purpose |
 |----------|---------|---------|---------|
 | `get_cached_team_aliases` | 10s | 2 | Fast MongoDB cache lookup |
-| `get_team_aliases` | 60s | 2 | Full RAG pipeline (Wikidata + Ollama) |
+| `get_team_aliases` | 60s | 2 | Full RAG pipeline (Wikidata + LLM) |
 | `save_team_aliases` | 10s | 2 | Store to event in MongoDB |
 
 ### Alias Examples (Real Output)
@@ -347,27 +346,64 @@ DownloadWorkflow
 | `upload_single_video` | 30s | 3 | 1.5x from 2s |
 | `mark_download_complete` | 10s | 3 | 2.0x from 1s |
 
-### Perceptual Hash
+### Perceptual Hash (Dense Sampling)
 
 ```python
-def compute_perceptual_hash(file_path):
+def compute_perceptual_hash(file_path, duration):
     """
-    Duration-based perceptual hash.
-    Same video at different bitrates → same hash.
-    """
-    duration = get_video_duration(file_path)
-    frames = extract_frames(file_path, [1.0, 2.0, 3.0])
+    Dense sampling perceptual hash with histogram equalization.
+    Handles videos with different start times (offsets).
     
+    Algorithm:
+    1. Sample frames every 0.25 seconds
+    2. Apply histogram equalization (normalize contrast)
+    3. Resize to 9x8 grayscale
+    4. Compute dHash (64-bit difference hash) per frame
+    
+    Format: "dense:0.25:<ts1>=<hash1>,<ts2>=<hash2>,..."
+    """
+    interval = 0.25
     hashes = []
-    for frame in frames:
-        # 9x8 grayscale, compute horizontal differences
-        img = Image.open(frame).convert('L').resize((9, 8))
-        diff = np.array(img)[:, 1:] > np.array(img)[:, :-1]
-        hash_val = format(int(''.join(str(int(b)) for b in diff.flatten()), 2), '016x')
-        hashes.append(hash_val)
+    t = interval
+    while t < duration - 0.3:
+        frame = extract_frame(file_path, t)
+        img = ImageOps.equalize(frame.convert('L'))  # Histogram equalization
+        img = img.resize((9, 8), Image.Resampling.LANCZOS)
+        
+        # Compute dHash: compare adjacent pixels
+        pixels = list(img.getdata())
+        hash_bits = []
+        for row in range(8):
+            for col in range(8):
+                hash_bits.append('1' if pixels[row*9+col] < pixels[row*9+col+1] else '0')
+        hash_hex = format(int(''.join(hash_bits), 2), '016x')
+        hashes.append(f"{t:.2f}={hash_hex}")
+        t += interval
     
-    return f"{duration:.1f}_{'_'.join(hashes)}"
+    return f"dense:{interval}:{','.join(hashes)}"
 ```
+
+### Matching Algorithm (3 Consecutive Frames)
+
+**Problem**: Single-frame matching causes false positives between similar content (e.g., two goals in same match).
+
+**Solution**: Require 3 consecutive frames to match at a consistent time offset.
+
+```python
+def hashes_match(hash_a, hash_b, max_hamming=10, min_consecutive=3):
+    """
+    Check if two dense hashes represent the same video.
+    
+    Algorithm:
+    1. Try all possible time offsets between videos
+    2. For each offset, count consecutive matching frames
+    3. Return True if any offset has >= 3 consecutive matches
+    
+    A frame matches if hamming distance <= 10 bits (of 64).
+    """
+```
+
+**Why 3 consecutive?** Random similarity might match 1-2 frames, but 3 consecutive frames at the same offset strongly indicates the same video content.
 
 ### Popularity Scoring
 

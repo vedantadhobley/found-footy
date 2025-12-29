@@ -260,6 +260,7 @@ class DownloadWorkflow:
         all_uploads = videos_to_upload + [r["new_video"] for r in videos_to_replace]
         validated_uploads = []
         rejected_count = 0
+        validation_failed_count = 0
         
         workflow.logger.info(f"🔍 Validating {len(all_uploads)} videos with AI vision...")
         
@@ -268,10 +269,12 @@ class DownloadWorkflow:
                 validation = await workflow.execute_activity(
                     download_activities.validate_video_is_soccer,
                     args=[video_info["file_path"], event_id],
-                    start_to_close_timeout=timedelta(seconds=45),  # Vision model can be slow
+                    start_to_close_timeout=timedelta(seconds=60),  # Vision model can be slow
                     retry_policy=RetryPolicy(
-                        maximum_attempts=2,
-                        initial_interval=timedelta(seconds=2),
+                        maximum_attempts=4,  # More retries for transient Ollama failures
+                        initial_interval=timedelta(seconds=3),
+                        backoff_coefficient=2.0,  # 3s, 6s, 12s, 24s
+                        maximum_interval=timedelta(seconds=30),
                     ),
                 )
                 
@@ -283,12 +286,16 @@ class DownloadWorkflow:
                         f"🚫 Video rejected (not soccer): {validation.get('reason', 'unknown')}"
                     )
             except Exception as e:
-                # If validation fails, include the video (fail open)
-                workflow.logger.warning(f"⚠️ Validation failed, including video: {e}")
-                validated_uploads.append(video_info)
+                # FAIL-CLOSED: If validation fails after retries, REJECT the video
+                # This prevents non-soccer content from slipping through
+                validation_failed_count += 1
+                workflow.logger.error(f"🚫 Validation FAILED - rejecting video: {e}")
         
-        if rejected_count > 0:
-            workflow.logger.info(f"🔍 Validation: {len(validated_uploads)} passed, {rejected_count} rejected")
+        if rejected_count > 0 or validation_failed_count > 0:
+            workflow.logger.info(
+                f"🔍 Validation: {len(validated_uploads)} passed, "
+                f"{rejected_count} not soccer, {validation_failed_count} validation errors"
+            )
         
         # =========================================================================
         # Step 6: Upload validated videos to S3

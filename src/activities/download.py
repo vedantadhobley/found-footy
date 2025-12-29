@@ -327,10 +327,11 @@ def _process_downloaded_video(
     height = video_meta["height"]
     bitrate = video_meta["bitrate"]
     
-    # Duration filter: 3-60 seconds (typical goal clips)
-    if duration < 3.0:
+    # Duration filter: >3-60 seconds (typical goal clips)
+    # Exactly 3.00s fails - we want strictly greater than 3 seconds
+    if duration <= 3.0:
         activity.logger.warning(
-            f"⏱️ Video {display_idx} too short ({duration:.1f}s < 3s), skipping"
+            f"⏱️ Video {display_idx} too short ({duration:.1f}s <= 3s), skipping"
         )
         os.remove(output_path)
         return None
@@ -393,22 +394,19 @@ async def deduplicate_videos(
     existing_s3_videos: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
-    Deduplicate videos by perceptual hash WITHIN batch FIRST, then AGAINST existing S3 videos.
+    Smart deduplication that keeps BOTH longest AND largest videos.
     
-    Order matters for efficiency:
-    1. BATCH DEDUP FIRST: Reduce N downloaded videos to unique best-quality videos
+    Two-phase deduplication:
+    1. BATCH DEDUP FIRST: Group downloaded videos into duplicate clusters
     2. S3 DEDUP SECOND: Compare batch winners against existing S3 videos
     
-    This minimizes S3 operations - if we have 3 copies of the same video from different
-    alias searches, we pick the best one BEFORE checking S3, so we only do 1 S3 operation
-    instead of 3.
+    For each duplicate cluster, we keep:
+    - The video with longest duration (more content/context)
+    - The video with largest file size (higher quality)
+    - If same video is both longest AND largest, keep just that one
+    - If different videos, keep BOTH (best of both worlds)
     
-    Outcomes for each batch winner:
-    - NEW: No match in S3 -> upload it
-    - REPLACE: Matches S3 video but new is higher quality -> upload and delete old
-    - SKIP: Matches S3 video but existing is higher quality -> skip (bump popularity)
-    
-    Quality comparison: file_size (larger = better quality/bitrate)
+    Popularity score accumulates from all duplicates to the keepers.
     
     Args:
         downloaded_files: List of download results with file_path, perceptual_hash, file_size, etc.
@@ -435,54 +433,100 @@ async def deduplicate_videos(
     activity.logger.info(f"📥 Deduplicating {len(successful)} successful downloads...")
     
     # =========================================================================
-    # PHASE 1: BATCH DEDUP - Reduce to unique best-quality videos
+    # PHASE 1: BATCH DEDUP - Group into duplicate clusters, keep longest+largest
     # =========================================================================
-    seen_hashes = {}  # perceptual_hash -> file_info (best quality for this hash)
-    batch_duplicates_removed = 0
+    
+    # Build duplicate clusters using union-find approach
+    clusters = []  # List of lists, each inner list is a cluster of duplicates
     
     for file_info in successful:
         perceptual_hash = file_info["perceptual_hash"]
-        file_path = file_info["file_path"]
-        file_size = file_info["file_size"]
-        duration = file_info.get("duration", 0)
         
-        # Check against other videos already seen in this batch
-        found_batch_dup = False
-        for seen_hash, existing in list(seen_hashes.items()):
-            if _perceptual_hashes_match(perceptual_hash, seen_hash):
-                found_batch_dup = True
-                existing["duplicate_count"] = existing.get("duplicate_count", 1) + 1
-                
-                # Compare by file_size - larger = better quality
-                new_file_size = file_size
-                existing_file_size = existing.get("file_size", 0)
-                
-                if new_file_size > existing_file_size:
-                    # New is better - replace in seen_hashes
-                    activity.logger.info(
-                        f"🔄 Batch dup: keeping new ({new_file_size:,} > {existing_file_size:,} bytes, {duration:.1f}s)"
-                    )
-                    os.remove(existing["file_path"])
-                    file_info["duplicate_count"] = existing["duplicate_count"]
-                    del seen_hashes[seen_hash]
-                    seen_hashes[perceptual_hash] = file_info
-                else:
-                    # Existing is better - discard new
-                    activity.logger.info(
-                        f"🔄 Batch dup: keeping existing ({existing_file_size:,} >= {new_file_size:,} bytes)"
-                    )
-                    os.remove(file_path)
-                
-                batch_duplicates_removed += 1
+        # Find which cluster(s) this video matches
+        matching_cluster_idx = None
+        for idx, cluster in enumerate(clusters):
+            for member in cluster:
+                if _perceptual_hashes_match(perceptual_hash, member["perceptual_hash"]):
+                    matching_cluster_idx = idx
+                    break
+            if matching_cluster_idx is not None:
                 break
         
-        if not found_batch_dup:
-            # New unique video in batch
-            file_info["duplicate_count"] = 1
-            seen_hashes[perceptual_hash] = file_info
+        if matching_cluster_idx is not None:
+            clusters[matching_cluster_idx].append(file_info)
+        else:
+            # New cluster
+            clusters.append([file_info])
     
-    batch_winners = list(seen_hashes.values())
-    activity.logger.info(f"📊 Batch dedup: {len(successful)} → {len(batch_winners)} unique ({batch_duplicates_removed} dups removed)")
+    activity.logger.info(f"📊 Found {len(clusters)} unique video clusters from {len(successful)} downloads")
+    
+    # For each cluster, select winners (longest + largest, could be same video)
+    batch_winners = []
+    files_to_remove = []
+    
+    for cluster in clusters:
+        if len(cluster) == 1:
+            # Single video - keep it
+            cluster[0]["duplicate_count"] = 1
+            batch_winners.append(cluster[0])
+            continue
+        
+        # Find longest duration video
+        longest = max(cluster, key=lambda x: x.get("duration", 0))
+        
+        # Find largest file size video
+        largest = max(cluster, key=lambda x: x.get("file_size", 0))
+        
+        # Accumulate popularity from all duplicates
+        total_popularity = len(cluster)
+        
+        if longest["file_path"] == largest["file_path"]:
+            # Same video is both longest AND largest - perfect!
+            winner = longest
+            winner["duplicate_count"] = total_popularity
+            batch_winners.append(winner)
+            activity.logger.info(
+                f"🏆 Cluster winner: {winner.get('duration', 0):.1f}s, {winner.get('file_size', 0):,} bytes "
+                f"(both longest & largest, {len(cluster)} dups)"
+            )
+            # Remove other files in cluster
+            for member in cluster:
+                if member["file_path"] != winner["file_path"]:
+                    files_to_remove.append(member["file_path"])
+        else:
+            # Different videos - keep BOTH
+            # Split popularity evenly (no inflation - if a future video is both longest+largest it inherits both)
+            longest_popularity = (total_popularity + 1) // 2  # Ceiling
+            largest_popularity = total_popularity // 2  # Floor
+            
+            longest["duplicate_count"] = longest_popularity
+            largest["duplicate_count"] = largest_popularity
+            batch_winners.append(longest)
+            batch_winners.append(largest)
+            
+            activity.logger.info(
+                f"🏆 Cluster has 2 winners from {len(cluster)} dups:"
+            )
+            activity.logger.info(
+                f"   📏 Longest: {longest.get('duration', 0):.1f}s, {longest.get('file_size', 0):,} bytes (pop={longest_popularity})"
+            )
+            activity.logger.info(
+                f"   📦 Largest: {largest.get('duration', 0):.1f}s, {largest.get('file_size', 0):,} bytes (pop={largest_popularity})"
+            )
+            
+            # Remove other files in cluster (not the two winners)
+            for member in cluster:
+                if member["file_path"] not in [longest["file_path"], largest["file_path"]]:
+                    files_to_remove.append(member["file_path"])
+    
+    # Clean up discarded files
+    for file_path in files_to_remove:
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
+    
+    activity.logger.info(f"📊 Batch dedup: {len(successful)} → {len(batch_winners)} keepers ({len(files_to_remove)} removed)")
     
     # =========================================================================
     # PHASE 2: S3 DEDUP - Compare batch winners against existing S3 videos
@@ -513,17 +557,25 @@ async def deduplicate_videos(
                 break
         
         if matched_existing:
-            # Found match in S3 - compare quality
+            # Found match in S3 - decide whether to replace or skip
             new_file_size = file_size
+            new_duration = duration
             existing_file_size = matched_existing.get("file_size", 0)
+            existing_duration = matched_existing.get("duration", 0)
             existing_popularity = matched_existing.get("popularity", 1)
             
-            if new_file_size > existing_file_size:
-                # New is better - mark for replacement
-                # Inherit popularity from old + add batch duplicate count
+            # Replace if new is LONGER or LARGER
+            should_replace = (new_duration > existing_duration) or (new_file_size > existing_file_size)
+            
+            if should_replace:
                 new_popularity = existing_popularity + duplicate_count
+                reason = []
+                if new_duration > existing_duration:
+                    reason.append(f"longer ({new_duration:.1f}s > {existing_duration:.1f}s)")
+                if new_file_size > existing_file_size:
+                    reason.append(f"larger ({new_file_size:,} > {existing_file_size:,} bytes)")
                 activity.logger.info(
-                    f"🔄 S3 REPLACE: New is larger ({new_file_size:,} > {existing_file_size:,} bytes, {duration:.1f}s) "
+                    f"🔄 S3 REPLACE: New is {' & '.join(reason)} "
                     f"- popularity {existing_popularity} + {duplicate_count} = {new_popularity}"
                 )
                 file_info["duplicate_count"] = new_popularity
@@ -535,7 +587,7 @@ async def deduplicate_videos(
                 # Existing S3 is better - skip but bump popularity
                 new_popularity = existing_popularity + duplicate_count
                 activity.logger.info(
-                    f"⏭️ S3 SKIP: Existing is larger ({existing_file_size:,} >= {new_file_size:,} bytes) "
+                    f"⏭️ S3 SKIP: Existing is better ({existing_duration:.1f}s, {existing_file_size:,} bytes) "
                     f"- bumping popularity {existing_popularity} → {new_popularity}"
                 )
                 videos_to_bump_popularity.append({
@@ -594,21 +646,29 @@ def _extract_frame_for_vision(file_path: str, timestamp: float) -> Optional[str]
         result = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             timeout=10
         )
         
         if result.returncode != 0 or not result.stdout:
+            activity.logger.warning(
+                f"⚠️ Frame extraction failed at {timestamp}s: "
+                f"returncode={result.returncode}, stderr={result.stderr.decode()[:200] if result.stderr else 'none'}"
+            )
             return None
         
         return base64.b64encode(result.stdout).decode('utf-8')
-    except Exception:
+    except subprocess.TimeoutExpired:
+        activity.logger.warning(f"⚠️ Frame extraction timed out at {timestamp}s")
+        return None
+    except Exception as e:
+        activity.logger.warning(f"⚠️ Frame extraction error at {timestamp}s: {e}")
         return None
 
 
 async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[str, Any]]:
     """
-    Call Ollama vision model with an image.
+    Call vision LLM with an image using llama.cpp OpenAI-compatible API.
     
     Args:
         image_base64: Base64-encoded image
@@ -619,32 +679,51 @@ async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[st
     """
     import httpx
     
-    ollama_url = os.getenv("OLLAMA_URL", "http://ollama-server:11434")
-    # Use qwen3-vl vision model for image analysis
-    vision_model = os.getenv("OLLAMA_VISION_MODEL", "qwen3-vl:8b-instruct")
+    llama_url = os.getenv("LLAMA_URL", "http://llama-server:8080")
+    
+    activity.logger.debug(f"🔍 Calling vision model at {llama_url}")
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
+            # OpenAI-compatible multimodal format for llama.cpp
             response = await client.post(
-                f"{ollama_url}/api/generate",
+                f"{llama_url}/v1/chat/completions",
                 json={
-                    "model": vision_model,
-                    "prompt": prompt,
-                    "images": [image_base64],
-                    "stream": False,
-                    "options": {
-                        "num_predict": 100,  # Short response needed
-                        "temperature": 0.1,   # Deterministic output
-                    }
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{image_base64}"
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    "max_tokens": 50,
+                    "temperature": 0.1
                 }
             )
             
             if response.status_code == 200:
                 return response.json()
             else:
+                activity.logger.warning(
+                    f"⚠️ Vision model returned status {response.status_code}: {response.text[:200]}"
+                )
                 return None
-    except Exception:
-        return None
+    except httpx.ConnectError as e:
+        activity.logger.error(f"❌ Cannot connect to LLM at {llama_url}: {e}")
+        raise  # Propagate connection errors - should retry
+    except httpx.TimeoutException as e:
+        activity.logger.warning(f"⚠️ Vision model request timed out: {e}")
+        raise  # Propagate timeouts - should retry
+    except Exception as e:
+        activity.logger.error(f"❌ Vision model error: {type(e).__name__}: {e}")
+        raise  # Propagate all errors - let retry policy handle
 
 
 @activity.defn
@@ -652,9 +731,9 @@ async def validate_video_is_soccer(file_path: str, event_id: str) -> Dict[str, A
     """
     AI validation to check if video is actually a soccer/football video.
     
-    Uses Ollama qwen3-vl vision model to analyze frames and determine if
-    the video shows soccer gameplay. Extracts 3 frames (25%, 50%, 75%) and
-    checks each for soccer content.
+    Uses vision LLM to analyze frames and determine if the video shows 
+    soccer gameplay. Extracts frames at 25%, 50%, 75% and checks each 
+    for soccer content.
     
     Detection criteria:
     - Soccer/football field (green pitch, white lines)
@@ -742,6 +821,16 @@ If you see ANY of these, answer NO:
         """Parse vision model response, returns True if soccer detected"""
         if not resp:
             return False
+        
+        # Handle llama.cpp OpenAI format
+        if "choices" in resp:
+            content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+            # Check for skip indicator (vision not available)
+            if "SKIP" in content.upper():
+                return True  # Fail open when vision is unavailable
+            return "YES" in content.upper()
+        
+        # Legacy Ollama format
         text = resp.get("response", "").strip().upper()
         return "YES" in text
     
@@ -753,14 +842,9 @@ If you see ANY of these, answer NO:
     frame_75 = _extract_frame_for_vision(file_path, t_75)
     
     if not frame_25 and not frame_75:
-        activity.logger.warning(f"⚠️ Failed to extract frames from {file_path}")
-        return {
-            "is_valid": True,
-            "confidence": 0.3,
-            "reason": "Failed to extract frames for validation",
-            "detected_features": [],
-            "checks_performed": 0,
-        }
+        msg = f"❌ Failed to extract ANY frames from {file_path} - cannot validate"
+        activity.logger.error(msg)
+        raise RuntimeError(msg)  # Let retry policy handle - don't fail-open
     
     # Check 25% first
     checks_performed = 0
@@ -1175,40 +1259,40 @@ def _get_video_metadata(file_path: str) -> dict:
 
 def _generate_perceptual_hash(file_path: str, duration: float) -> str:
     """
-    Generate perceptual hash from video duration and 3 video frames at 25%, 50%, 75%.
+    Generate perceptual hash using dense sampling for offset-tolerant matching.
     
-    Uses difference hash (dHash) algorithm for each frame:
-    1. Extract frame at timestamp
-    2. Resize to 9x8 (for 8x8 hash)
-    3. Convert to grayscale
-    4. Compare adjacent pixels to create 64-bit hash
+    Uses difference hash (dHash) algorithm with histogram equalization:
+    1. Sample frames every 0.25s throughout the video
+    2. Apply histogram equalization to normalize contrast/brightness
+    3. Resize to 9x8, convert to grayscale
+    4. Compare adjacent pixels to create 64-bit hash per frame
     
-    Percentage-based sampling is better than fixed timestamps because:
-    - Scales with duration (6s video → 1.5s, 3s, 4.5s; 30s video → 7.5s, 15s, 22.5s)
-    - Samples actual content throughout the video, not just the intro
-    - Better discrimination for clips of varying lengths
+    Dense sampling (every 0.25s) solves the offset problem:
+    - Different clips of same goal often start at different times
+    - All-pairs comparison finds matching frames regardless of offset
+    - Histogram equalization handles color grading differences
     
-    Duration is a better identifier than file size because:
-    - Same video from different sources has same duration
-    - Different quality encodings have different file sizes but same duration
-    - File size varies with compression, duration is content-invariant
+    Format: "dense:<interval>:<ts1>=<hash1>,<ts2>=<hash2>,..."
+    Example: "dense:0.25:0.25=a3f8b2e1c9d4f5a2,0.50=1e3b8c7d9f2a4b1c,..."
+    
+    Also supports legacy format for backward compatibility.
     
     Args:
         file_path: Path to video file
         duration: Video duration in seconds
         
     Returns:
-        Composite hash string: "duration:hash25:hash50:hash75"
-        Example: "12.5:a3f8b2e1c9d4:f5a21e3b8c7d:9f2a4b1c3e5d"
+        Dense hash string with all frame hashes
     """
     import subprocess
-    from PIL import Image
+    from PIL import Image, ImageOps
     import io
     
-    def extract_frame_hash(timestamp: float) -> str:
-        """Extract frame at timestamp and compute dHash"""
+    interval = 0.25  # Sample every 0.25 seconds
+    
+    def extract_frame_hash_normalized(timestamp: float) -> str:
+        """Extract frame at timestamp, normalize, and compute dHash"""
         try:
-            # Use ffmpeg to extract single frame
             cmd = [
                 "ffmpeg",
                 "-ss", str(timestamp),
@@ -1225,17 +1309,18 @@ def _generate_perceptual_hash(file_path: str, duration: float) -> str:
                 timeout=10
             )
             
-            if result.returncode != 0:
-                return "0" * 16  # Return zeros if frame extraction fails
+            if result.returncode != 0 or not result.stdout:
+                return ""
             
-            # Load image and compute dHash
+            # Load image, convert to grayscale, apply histogram equalization
             img = Image.open(io.BytesIO(result.stdout))
             img = img.convert('L')  # Grayscale
-            img = img.resize((9, 8), Image.Resampling.LANCZOS)  # 9x8 for 8x8 hash
+            img = ImageOps.equalize(img)  # Normalize contrast/brightness
+            img = img.resize((9, 8), Image.Resampling.LANCZOS)
             
             pixels = list(img.getdata())
             
-            # Compute difference hash (compare adjacent horizontal pixels)
+            # Compute difference hash
             hash_bits = []
             for row in range(8):
                 for col in range(8):
@@ -1243,27 +1328,31 @@ def _generate_perceptual_hash(file_path: str, duration: float) -> str:
                     right = pixels[row * 9 + col + 1]
                     hash_bits.append('1' if left < right else '0')
             
-            # Convert binary to hex
             hash_int = int(''.join(hash_bits), 2)
-            return format(hash_int, '016x')  # 16 hex chars (64 bits)
+            return format(hash_int, '016x')
             
         except Exception as e:
             activity.logger.warning(f"⚠️ Failed to extract frame at {timestamp}s: {e}")
-            return "0" * 16
+            return ""
     
-    # Extract hashes at 25%, 50%, 75% through the video
-    # Percentage-based scales with duration and samples actual content throughout
-    t_25 = duration * 0.25
-    t_50 = duration * 0.50
-    t_75 = duration * 0.75
+    # Extract hashes at 0.25s intervals
+    hashes = []
+    t = interval
+    while t < duration - 0.3:  # Stop before last 0.3s to avoid end-of-file issues
+        frame_hash = extract_frame_hash_normalized(t)
+        if frame_hash:
+            hashes.append(f"{t:.2f}={frame_hash}")
+        t += interval
     
-    hash_25 = extract_frame_hash(t_25)
-    hash_50 = extract_frame_hash(t_50)
-    hash_75 = extract_frame_hash(t_75)
+    if not hashes:
+        # Fallback: try at least one frame at 1s
+        frame_hash = extract_frame_hash_normalized(1.0)
+        if frame_hash:
+            hashes.append(f"1.00={frame_hash}")
     
-    # Combine into single string (duration is content-invariant, better for dedup)
-    composite = f"{duration:.2f}:{hash_25}:{hash_50}:{hash_75}"
-    return composite
+    # Format: "dense:<interval>:<hash_list>"
+    hash_list = ",".join(hashes)
+    return f"dense:{interval}:{hash_list}"
 
 
 def _hamming_distance(hex_a: str, hex_b: str) -> int:
@@ -1288,62 +1377,235 @@ def _hamming_distance(hex_a: str, hex_b: str) -> int:
 def _perceptual_hashes_match(
     hash_a: str, 
     hash_b: str, 
-    duration_tolerance: float = 0.5,
-    max_hamming_per_frame: int = 8,
-    max_total_hamming: int = 12
+    max_hamming: int = 10,
+    min_consecutive_matches: int = 3
 ) -> bool:
     """
     Check if two perceptual hashes represent the same video.
     
-    Match criteria:
-    - Duration within ±0.5 seconds (same video, different encodings)
-    - Frame hashes must be similar (using hamming distance)
-      - Each frame hash can differ by at most 8 bits (out of 64)
-      - Total difference across all 3 frames can be at most 12 bits (out of 192)
+    Requires multiple CONSECUTIVE frames to match to avoid false positives
+    from videos with similar content (e.g., goals 1 minute apart).
     
-    The hamming distance tolerance accounts for:
-    - Different video encodings (h264 vs h265, different bitrates)
-    - Slight pixel differences from compression
-    - Minor timestamp drift in frame extraction
+    Supports two formats:
+    1. Dense format (new): "dense:<interval>:<ts1>=<hash1>,<ts2>=<hash2>,..."
+       - Uses sliding window to find consecutive matching frames
+       - Requires min_consecutive_matches frames in a row to match
+       
+    2. Legacy format: "hash1:hash2:hash3" or "duration:hash1:hash2:hash3"
+       - Fixed timestamp comparison (backward compatible)
+       - Requires 2 of 3 frames to match
     
     Args:
-        hash_a: First hash (format: "duration:hash1:hash2:hash3")
-        hash_b: Second hash (format: "duration:hash1:hash2:hash3")
-        duration_tolerance: Max duration difference in seconds (default 0.5s)
-        max_hamming_per_frame: Max bit difference per frame hash (default 8/64 = 12.5%)
-        max_total_hamming: Max total bit difference across all frames (default 12/192 = 6.25%)
+        hash_a: First hash (dense or legacy format)
+        hash_b: Second hash (dense or legacy format)
+        max_hamming: Max hamming distance for a frame match (default 10)
+        min_consecutive_matches: Min consecutive frames that must match (default 3)
         
     Returns:
-        True if videos match
+        True if videos match (have consecutive matching frames)
     """
     try:
-        parts_a = hash_a.split(':')
-        parts_b = hash_b.split(':')
+        # Check if both are dense format
+        is_dense_a = hash_a.startswith("dense:")
+        is_dense_b = hash_b.startswith("dense:")
         
-        if len(parts_a) != 4 or len(parts_b) != 4:
+        if is_dense_a and is_dense_b:
+            # Dense format: require consecutive frames to match
+            return _dense_hashes_match(hash_a, hash_b, max_hamming, min_consecutive_matches)
+        
+        # Legacy format or mixed: use simple matching
+        hashes_a = _parse_perceptual_hash(hash_a)
+        hashes_b = _parse_perceptual_hash(hash_b)
+        
+        if not hashes_a or not hashes_b:
             return False
         
-        duration_a = float(parts_a[0])
-        duration_b = float(parts_b[0])
+        # For legacy format (3 hashes at 25%, 50%, 75%), require 2 of 3 to match
+        matches = 0
+        for h_a in hashes_a:
+            for h_b in hashes_b:
+                dist = _hamming_distance(h_a, h_b)
+                if dist <= max_hamming:
+                    matches += 1
+                    break
         
-        # Duration check (within ±0.5s to allow for encoding differences)
-        duration_diff = abs(duration_a - duration_b)
-        if duration_diff > duration_tolerance:
-            return False
-        
-        # Check hamming distance for each frame hash
-        total_hamming = 0
-        for i in range(1, 4):
-            frame_hamming = _hamming_distance(parts_a[i], parts_b[i])
-            if frame_hamming > max_hamming_per_frame:
-                return False
-            total_hamming += frame_hamming
-        
-        # Check total hamming distance across all frames
-        return total_hamming <= max_total_hamming
+        # Legacy: 2 of 3 frames must match
+        return matches >= 2
         
     except Exception:
         return False
+
+
+def _dense_hashes_match(
+    hash_a: str,
+    hash_b: str,
+    max_hamming: int = 10,
+    min_consecutive: int = 3
+) -> bool:
+    """
+    Check if two dense perceptual hashes match with consecutive frame requirement.
+    
+    For true duplicates (possibly with different start times), consecutive frames
+    in video A should match frames in video B with a CONSISTENT time offset.
+    
+    Algorithm:
+    1. For each possible time offset between A and B
+    2. Count how many consecutive frames match at that offset
+    3. If any offset has >= min_consecutive matches, they're duplicates
+    
+    Args:
+        hash_a: Dense hash "dense:<interval>:<ts1>=<hash1>,..."
+        hash_b: Dense hash "dense:<interval>:<ts2>=<hash2>,..."
+        max_hamming: Max hamming distance for frame match
+        min_consecutive: Min consecutive frames required
+        
+    Returns:
+        True if videos have consecutive matching frames at consistent offset
+    """
+    try:
+        # Parse dense hashes into {timestamp: hash_int}
+        def parse_dense(h):
+            parts = h.split(":", 2)
+            if len(parts) < 3:
+                return {}, 0.25
+            interval = float(parts[1])
+            frames = {}
+            for pair in parts[2].split(","):
+                if "=" in pair:
+                    ts_str, hash_hex = pair.split("=", 1)
+                    frames[float(ts_str)] = int(hash_hex, 16)
+            return frames, interval
+        
+        frames_a, interval_a = parse_dense(hash_a)
+        frames_b, interval_b = parse_dense(hash_b)
+        
+        if len(frames_a) < min_consecutive or len(frames_b) < min_consecutive:
+            return False
+        
+        timestamps_a = sorted(frames_a.keys())
+        timestamps_b = sorted(frames_b.keys())
+        
+        # Try each possible starting alignment between A and B
+        # For each frame in A, try aligning it with each frame in B
+        for start_a in timestamps_a:
+            for start_b in timestamps_b:
+                offset = start_b - start_a  # Time offset: B = A + offset
+                
+                # Count consecutive matches at this offset
+                consecutive = 0
+                max_consecutive = 0
+                
+                for ts_a in timestamps_a:
+                    ts_b = ts_a + offset
+                    
+                    # Find closest timestamp in B (within tolerance)
+                    tolerance = interval_a / 2
+                    matched = False
+                    
+                    for actual_ts_b in timestamps_b:
+                        if abs(actual_ts_b - ts_b) <= tolerance:
+                            h_a = frames_a[ts_a]
+                            h_b = frames_b[actual_ts_b]
+                            dist = bin(h_a ^ h_b).count('1')
+                            if dist <= max_hamming:
+                                matched = True
+                                break
+                    
+                    if matched:
+                        consecutive += 1
+                        max_consecutive = max(max_consecutive, consecutive)
+                        if max_consecutive >= min_consecutive:
+                            return True
+                    else:
+                        consecutive = 0
+        
+        return False
+        
+    except Exception:
+        return False
+
+
+def _get_duration_from_hash(hash_str: str) -> float:
+    """
+    Extract video duration from a perceptual hash string.
+    
+    For dense format, duration is the last timestamp.
+    For legacy format, duration was the first part (if 4 parts).
+    
+    Returns:
+        Duration in seconds, or 0.0 if unable to parse.
+    """
+    if not hash_str:
+        return 0.0
+    
+    try:
+        if hash_str.startswith("dense:"):
+            # Dense format: "dense:<interval>:<ts1>=<hash1>,<ts2>=<hash2>,..."
+            parts = hash_str.split(":", 2)
+            if len(parts) < 3:
+                return 0.0
+            
+            # Get the last timestamp
+            hash_list = parts[2]
+            items = hash_list.split(",")
+            if items:
+                last_item = items[-1]
+                if "=" in last_item:
+                    ts_str, _ = last_item.split("=", 1)
+                    return float(ts_str)
+        else:
+            # Legacy format: "duration:hash1:hash2:hash3" 
+            parts = hash_str.split(":")
+            if len(parts) == 4:
+                # Old format with duration prefix
+                try:
+                    return float(parts[0])
+                except ValueError:
+                    pass
+        return 0.0
+    except Exception:
+        return 0.0
+
+
+def _parse_perceptual_hash(hash_str: str) -> list:
+    """
+    Parse a perceptual hash string into a list of frame hashes.
+    
+    Supports:
+    - Dense format: "dense:0.25:0.25=abc123,0.50=def456,..."
+    - Legacy format: "hash1:hash2:hash3" or "duration:hash1:hash2:hash3"
+    
+    Returns:
+        List of hex hash strings
+    """
+    if not hash_str:
+        return []
+    
+    if hash_str.startswith("dense:"):
+        # Dense format: "dense:<interval>:<ts1>=<hash1>,<ts2>=<hash2>,..."
+        parts = hash_str.split(":", 2)
+        if len(parts) < 3:
+            return []
+        
+        hash_list = parts[2]
+        hashes = []
+        for item in hash_list.split(","):
+            if "=" in item:
+                _, frame_hash = item.split("=", 1)
+                if frame_hash:
+                    hashes.append(frame_hash)
+        return hashes
+    else:
+        # Legacy format: "hash1:hash2:hash3" or "duration:hash1:hash2:hash3"
+        parts = hash_str.split(":")
+        if len(parts) == 4:
+            # Old format with duration prefix - skip it
+            return parts[1:4]
+        elif len(parts) == 3:
+            # New legacy format without duration
+            return parts
+        else:
+            return []
 
 
 def _convert_cookies_to_netscape(json_file: str, netscape_file: str) -> None:

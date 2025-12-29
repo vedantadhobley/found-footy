@@ -45,7 +45,7 @@ class RAGWorkflowInput:
 @workflow.defn
 class RAGWorkflow:
     """
-    Resolve team aliases via cache or Ollama LLM, then trigger Twitter search workflow.
+    Resolve team aliases via cache or LLM, then trigger Twitter search workflow.
     
     This workflow:
     1. Checks cache for pre-computed aliases (from Ingest)
@@ -71,7 +71,7 @@ class RAGWorkflow:
         if aliases:
             workflow.logger.info(f"📦 Cache hit: {aliases}")
         else:
-            # Cache miss - do full RAG lookup (Wikidata + Ollama)
+            # Cache miss - do full RAG lookup (Wikidata + LLM)
             workflow.logger.info(f"🔄 Cache miss, running full RAG pipeline...")
             aliases = await workflow.execute_activity(
                 rag_activities.get_team_aliases,

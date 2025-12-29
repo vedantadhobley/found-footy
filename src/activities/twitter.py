@@ -20,6 +20,51 @@ from src.data.models import EventFields
 
 
 # =============================================================================
+# Activity 0: Check Event Exists (for workflow graceful termination)
+# =============================================================================
+
+@activity.defn
+async def check_event_exists(fixture_id: int, event_id: str) -> Dict[str, Any]:
+    """
+    Check if an event still exists in MongoDB.
+    
+    Used by TwitterWorkflow at the start of each attempt to gracefully
+    terminate if the event was deleted (VAR - count hit 0).
+    
+    We only check existence, not monitor_complete, because:
+    - Once monitor_complete=True, it stays True forever (one-way latch)
+    - If the event exists, the workflow should continue
+    - If the event was deleted (count decremented to 0), workflow should stop
+    
+    Args:
+        fixture_id: The fixture ID
+        event_id: The event ID to check
+    
+    Returns:
+        Dict with:
+        - exists: True if event still in MongoDB
+    """
+    from src.data.mongo_store import FootyMongoStore
+    
+    store = FootyMongoStore()
+    
+    # Check in active collection
+    fixture = store.get_fixture_from_active(fixture_id)
+    if not fixture:
+        activity.logger.warning(f"⚠️ Fixture {fixture_id} not found in active")
+        return {"exists": False}
+    
+    # Find the specific event
+    for evt in fixture.get("events", []):
+        if evt.get(EventFields.EVENT_ID) == event_id:
+            activity.logger.debug(f"✓ Event {event_id} exists")
+            return {"exists": True}
+    
+    activity.logger.warning(f"⚠️ Event {event_id} not found in fixture {fixture_id}")
+    return {"exists": False}
+
+
+# =============================================================================
 # Activity 1: Get Twitter Search Data
 # =============================================================================
 

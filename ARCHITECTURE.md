@@ -82,7 +82,7 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 │                        RAGWorkflow                                   │
 ├─────────────────────────────────────────────────────────────────────┤
 │  1. get_cached_team_aliases(team_id) → cache hit (pre-cached)       │
-│     OR get_team_aliases(team_id, team_name) → Wikidata + Ollama     │
+│  │     OR get_team_aliases(team_id, team_name) → Wikidata + LLM        │
 │  2. save_team_aliases to event in MongoDB                            │
 │  3. Start TwitterWorkflow (child, waits)                             │
 └──────────────────────────────────────┬──────────────────────────────┘
@@ -149,13 +149,22 @@ TwitterWorkflow (per event, self-managing)
 
 ### Perceptual Hash Deduplication
 
-**Problem**: Same video at different resolutions/bitrates = different file hashes but same content
+**Problem**: Same video at different resolutions/bitrates = different file hashes but same content. Additionally, videos of the same goal often have different start/end times (offsets).
 
-**Solution**: Duration-based perceptual hash
-- Extract video duration (0.5s tolerance)
-- Extract 3 frames at 1s, 2s, 3s
-- Compute dHash (64-bit difference hash) for each frame
-- Combine: `{duration:.1f}_{hash1}_{hash2}_{hash3}`
+**Solution**: Dense sampling with histogram equalization
+- Sample frames every **0.25 seconds** throughout video
+- Apply **histogram equalization** to normalize contrast/brightness
+- Compute **dHash** (64-bit difference hash) for each frame
+- Store all hashes: `dense:0.25:<ts>=<hash>,<ts>=<hash>,...`
+
+**Offset-Tolerant Matching**:
+- Different clips of the same goal may start at different times
+- Algorithm tries all possible time offsets between videos
+- Requires **3 consecutive frames** to match at a consistent offset
+- Each frame must have Hamming distance ≤10 bits (of 64)
+
+**Why 3 Consecutive Frames?**
+Single-frame matching causes false positives between similar content (e.g., goals scored 1 minute apart in same match). Requiring 3 consecutive frames ensures the videos share actual continuous content.
 
 **Quality Comparison** (when hashes match):
 ```python
@@ -347,12 +356,12 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 
 ### 3. RAGWorkflow (Per Stable Event)
 
-**Purpose**: Resolve team aliases via Wikidata RAG + Ollama LLM, trigger Twitter workflow
+**Purpose**: Resolve team aliases via Wikidata RAG + LLM, trigger Twitter workflow
 
 | Activity | Purpose | Retries |
-|----------|---------|---------||
+|----------|---------|---------|
 | `get_cached_team_aliases` | Fast MongoDB cache lookup | 2x |
-| `get_team_aliases` | Full RAG pipeline (Wikidata + Ollama) | 2x |
+| `get_team_aliases` | Full RAG pipeline (Wikidata + LLM) | 2x |
 | `save_team_aliases` | Store to event in MongoDB | 2x |
 
 **RAG Pipeline Flow:**
@@ -360,7 +369,7 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 2. If miss: Call API-Football `/teams?id={id}` to get `team.national` boolean
 3. Query Wikidata for team QID and aliases
 4. Preprocess aliases to single words (filter junk, split phrases)
-5. Ollama LLM selects best words for Twitter search
+5. LLM selects best words for Twitter search (llama.cpp server with Qwen3 model)
 6. Add nationality adjectives for national teams ("Belgian", "French")
 7. Cache result with `national` boolean and `created_at` timestamp
 
@@ -382,16 +391,24 @@ Then triggers **TwitterWorkflow** as child workflow.
 
 ### 5. DownloadWorkflow (Per Twitter Attempt)
 
-**Purpose**: Download, filter, deduplicate, upload videos
+**Purpose**: Download, filter, validate, deduplicate, upload videos
 
 | Activity | Purpose | Retries |
-|----------|---------|---------|
+|----------|---------|--------|
 | `fetch_event_data` | Get existing S3 metadata | 2x |
 | `download_single_video` | Download ONE video | 3x, 2.0x from 2s |
+| `validate_video_is_soccer` | AI vision validates soccer content | 2x |
 | `deduplicate_videos` | Perceptual hash comparison | 2x |
 | `replace_s3_video` | Delete old video when replacing | 3x, 2.0x |
 | `upload_single_video` | Upload ONE video to S3 | 3x, 1.5x from 2s |
 | `mark_download_complete` | Update MongoDB, cleanup | 3x, 2.0x |
+
+**AI Video Validation**:
+- Extracts a frame from downloaded video
+- Sends to vision model (Qwen3-VL-8B via llama.cpp)
+- Asks: "Is this a soccer/football match?"
+- Only uploads if validated as soccer content
+- Uses fail-closed policy: if AI unavailable, skip video (don't upload unvalidated)
 
 ---
 

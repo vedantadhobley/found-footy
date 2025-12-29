@@ -13,7 +13,7 @@ import asyncio
 import httpx
 import time
 
-OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://ollama-server:11434')
+LLAMA_URL = os.getenv('LLAMA_URL', 'http://llama-server:8080')
 
 s3 = boto3.client('s3',
     endpoint_url=os.getenv('S3_ENDPOINT_URL'),
@@ -37,13 +37,17 @@ def extract_frame(path, timestamp):
 async def call_vision(frame_b64, prompt):
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
-            f'{OLLAMA_URL}/api/generate',
+            f'{LLAMA_URL}/v1/chat/completions',
             json={
-                'model': 'qwen3-vl:8b-instruct',
-                'prompt': prompt,
-                'images': [frame_b64],
-                'stream': False,
-                'options': {'num_predict': 100, 'temperature': 0.1}
+                'messages': [{
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': prompt},
+                        {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{frame_b64}'}}
+                    ]
+                }],
+                'max_tokens': 100,
+                'temperature': 0.1
             }
         )
         if response.status_code == 200:
@@ -53,8 +57,11 @@ async def call_vision(frame_b64, prompt):
 def parse_response(resp):
     if not resp:
         return None
-    text = resp.get('response', '').strip().upper()
-    return 'YES' in text
+    try:
+        text = resp['choices'][0]['message']['content'].strip().upper()
+        return 'YES' in text
+    except (KeyError, IndexError):
+        return None
 
 PROMPT = """/no_think
 Look at this image and answer: Is this showing a soccer/football match being played?

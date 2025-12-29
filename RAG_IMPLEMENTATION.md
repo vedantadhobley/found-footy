@@ -7,7 +7,8 @@ This document describes the RAG-based team alias generation system for improving
 **Current State**: ✅ **FULLY IMPLEMENTED** - `get_team_aliases(team_id, team_name)` performs true RAG
 
 > **Note**: This document was written during design/development. The actual implementation in `src/activities/rag.py` uses:
-> - Model: `qwen3-vl:8b-instruct` (configurable via `OLLAMA_MODEL` env var)
+> - Model: `Qwen3-VL-8B` via llama.cpp server (configurable via `LLAMA_URL` env var)
+> - Vision: Qwen3-VL-8B also validates video content in `download.py`
 > - Team type detection: API-Football `/teams?id={id}` returns `team.national` boolean
 > - Pre-caching: IngestWorkflow pre-caches aliases for both teams during fixture ingestion
 > 
@@ -47,12 +48,14 @@ Special characters (é, ü, ñ) are handled by **post-processing normalization**
 
 ### Endpoints
 
-| Port | Environment | Internal URL |
-|------|-------------|--------------|
-| `4104` | Dev | `http://found-footy-dev-ollama:11434` |
-| `3104` | Prod | `http://found-footy-prod-ollama:11434` |
+The LLM is accessed via an external llama.cpp server on the shared network:
 
-Test from host: `curl http://localhost:4104/api/generate -d '{"model":"phi3:mini","prompt":"test"}'`
+| Environment | URL | Model |
+|-------------|-----|-------|
+| Dev | `http://llama-server:8080` (via `luv-dev` network) | Qwen3-VL-8B |
+| Prod | `http://llama-server:8080` (via `luv-prod` network) | Qwen3-VL-8B |
+
+The llama.cpp server runs as a shared service (not per-project) and provides an OpenAI-compatible API.
 
 ---
 
@@ -71,7 +74,8 @@ Test from host: `curl http://localhost:4104/api/generate -d '{"model":"phi3:mini
 | MongoDB caching | ✅ Done | By `team_id` as `_id` |
 | Diacritics normalization | ✅ Done | `_normalize_alias()` |
 | Worker registration | ✅ Done | `src/worker.py` |
-| Ollama service | ✅ Running | GPU-accelerated (Vulkan) |
+| LLM service | ✅ Running | llama.cpp with Qwen3-VL-8B |
+| Vision validation | ✅ Done | `validate_video_is_soccer()` in download.py |
 
 **Optional enhancements**:
 - Remove hardcoded nicknames from `team_data.py` (now redundant)
@@ -88,115 +92,113 @@ Test from host: `curl http://localhost:4104/api/generate -d '{"model":"phi3:mini
 
 ---
 
-## Docker Compose Setup
+## LLM Server Setup
 
-The Ollama service runs with Vulkan GPU acceleration:
+The LLM is provided by an external llama.cpp server running on the shared Docker network. Found-footy does not run its own LLM container.
 
-### Production (`docker-compose.yml`)
+### Connection Configuration
+
+The worker connects to the llama.cpp server via environment variable:
 
 ```yaml
-ollama:
-  image: ollama/ollama:latest
-  container_name: found-footy-prod-ollama
-  ports:
-    - "3104:11434"  # Exposed for testing
-  volumes:
-    - ~/.ollama:/root/.ollama  # Shared model store (host bind mount)
-  devices:
-    - /dev/dri:/dev/dri  # GPU access (Vulkan)
-  deploy:
-    resources:
-      limits:
-        memory: 8G
+# docker-compose.yml
+worker:
+  environment:
+    LLAMA_URL: http://llama-server:8080  # External llama.cpp server
   networks:
     - found-footy-prod
+    - luv-prod  # Shared network with llama-server
 ```
 
-### Development (`docker-compose.dev.yml`)
+### API Compatibility
 
-```yaml
-ollama:
-  image: ollama/ollama:latest
-  container_name: found-footy-dev-ollama
-  ports:
-    - "4104:11434"  # Exposed for testing
-  volumes:
-    - ~/.ollama:/root/.ollama  # Shared model store (host bind mount)
-  devices:
-    - /dev/dri:/dev/dri  # GPU access (Vulkan)
-  deploy:
-    resources:
-      limits:
-        memory: 8G
-  networks:
-    - found-footy-dev
+llama.cpp provides an OpenAI-compatible API:
+
+```bash
+# Test from host
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{"role": "user", "content": "Hello"}],
+    "max_tokens": 100
+  }'
 ```
+
+### Current Model
+
+| Model | Size | Features |
+|-------|------|----------|
+| **Qwen3-VL-8B F16** | ~17GB | Vision + Text, used for both RAG alias selection and video validation |
 
 ### Key Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
-| **Ollama** (not llama.cpp) | Built-in model management (`ollama pull/list/rm`), dynamic model switching |
-| **Vulkan** (not ROCm) | Works out of the box with mesa, no driver setup |
-| **8GB memory limit** | Plenty for Phi-3 Mini (2.3GB) with headroom, leaves 120GB for other services |
-| **Port exposed** | For testing via curl; internal access uses docker network |
-| **Shared host volume** | `~/.ollama` shared across dev/prod/host - download models once |
-| **KEEP_ALIVE=-1** | Model stays loaded in GPU memory forever, eliminating cold-start latency (2+ min reload time) |
+| **External server** | Shared across multiple projects, single model loaded |
+| **llama.cpp** (not Ollama) | More control, simpler, no model management overhead |
+| **Qwen3-VL** | Vision-capable for video validation, also excellent for text |
+| **F16 quantization** | Good quality, fits in 128GB unified memory |
+| **OpenAI API format** | Standard interface, easy to switch models |
 
 ---
 
-## Model Setup
+## Model Details
 
-The **phi3:mini** model is automatically pulled on first container start. The entrypoint script handles this:
+The **Qwen3-VL-8B** model handles both text (RAG alias selection) and vision (video validation).
 
-```yaml
-entrypoint: |
-  sh -c '
-    /bin/ollama serve &
-    sleep 5
-    ollama pull $OLLAMA_MODEL  # phi3:mini by default
-    wait
-  '
+### Text Generation (RAG)
+
+For alias selection, use the `/no_think` suffix to skip chain-of-thought reasoning:
+
+```python
+prompt = f'''Words: {json.dumps(preprocessed)}
+
+Select the best words for Twitter search. Return a JSON array. /no_think'''
+
+response = await client.post(
+    f'{LLAMA_URL}/v1/chat/completions',
+    json={
+        'messages': [
+            {'role': 'system', 'content': SYSTEM_PROMPT},
+            {'role': 'user', 'content': prompt}
+        ],
+        'max_tokens': 100,
+        'temperature': 0.1
+    }
+)
 ```
 
-Models are stored in `~/.ollama` on your host. This means:
-- **Shared across dev/prod** - Download once, use everywhere
-- **Shared with host Ollama** - If you install Ollama locally, same models
-- **Survives `docker volume prune`** - It's on your filesystem, not a Docker volume
+### Vision (Video Validation)
 
-### Verify Model is Ready
+For validating soccer content, send image as base64 in OpenAI multimodal format:
 
-```bash
-# Check Ollama healthcheck (waits for model)
-docker inspect found-footy-dev-ollama --format='{{.State.Health.Status}}'
-# Should show: healthy
-
-# Or list models directly
-docker exec found-footy-dev-ollama ollama list
+```python
+response = await client.post(
+    f'{LLAMA_URL}/v1/chat/completions',
+    json={
+        'messages': [{
+            'role': 'user',
+            'content': [
+                {'type': 'text', 'text': 'Is this a soccer/football match? Answer YES or NO only.'},
+                {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{image_b64}'}}
+            ]
+        }],
+        'max_tokens': 10,
+        'temperature': 0.1
+    }
+)
 ```
 
-### Recommended Models
-
-| Model | Size | Speed | Use Case |
-|-------|------|-------|----------|
-| **phi3:mini** | 2.3GB | ~40-50 t/s | ✅ Recommended - fast, good quality |
-| qwen2.5:3b | 2GB | ~50-60 t/s | Better multilingual |
-| mistral:7b | 4GB | ~25-30 t/s | Higher quality, slower |
-
-### Managing Models
+### Health Check
 
 ```bash
-# List models
-docker exec found-footy-dev-ollama ollama list
+# Check if server is running
+curl http://localhost:8080/health
 
-# Pull different model
-docker exec found-footy-dev-ollama ollama pull qwen2.5:3b
-
-# Remove model
-docker exec found-footy-dev-ollama ollama rm phi3:mini
-
-# Model info
-docker exec found-footy-dev-ollama ollama show phi3:mini
+# Or check with a simple completion
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
 ```
 
 ---
@@ -226,7 +228,7 @@ Team aliases are cached using **team_id as `_id`** for O(1) lookups.
     "Atleti", 
     "ATM"
   ],
-  model: "qwen3-vl:8b-instruct",     // Model used (for debugging/retraining)
+  model: "Qwen3-VL-8B",              // Model used (for debugging/retraining)
   created_at: ISODate("..."),
   updated_at: ISODate("...")
 }
@@ -283,8 +285,7 @@ from datetime import datetime, timezone
 
 
 # Environment-aware URL (set in docker-compose)
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://found-footy-dev-ollama:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi3:mini")
+LLAMA_URL = os.getenv("LLAMA_URL", "http://llama-server:8080")
 
 SYSTEM_PROMPT = """You are a football/soccer team name expert. Given a team's full name, 
 return exactly 3 short aliases commonly used on Twitter/X to refer to this team.
@@ -580,32 +581,62 @@ Used by `get_team_nickname()` → `build_twitter_search()` → returns ONE nickn
 
 ## Testing
 
-### 1. Verify Ollama is Running
+> **Note**: The following testing instructions assume the llama.cpp server is running as an external service.
+
+### 1. Verify LLM Server is Running
 
 ```bash
-# Dev
-curl http://localhost:4104/api/tags
+# Check health
+curl http://localhost:8080/health
 
-# Prod
-curl http://localhost:3104/api/tags
+# Or check with a simple completion
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
 ```
 
-### 2. Test Model Directly
+### 2. Test Alias Selection
 
 ```bash
-curl http://localhost:4104/api/generate -d '{
-  "model": "phi3:mini",
-  "prompt": "Team: Atletico de Madrid\n\nReturn JSON array of 3 aliases:",
-  "stream": false
-}'
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "system", "content": "Select the best Twitter search terms from the provided words. Return a JSON array of 3-5 terms."},
+      {"role": "user", "content": "Words: [\"Liverpool\", \"LFC\", \"Reds\", \"Anfield\", \"YNWA\"]\n\nSelect best. /no_think"}
+    ],
+    "max_tokens": 100,
+    "temperature": 0.1
+  }'
 ```
 
-Expected response contains:
+Expected response:
 ```json
-{"response": "[\"Atletico\", \"Atleti\", \"ATM\"]", ...}
+{"choices": [{"message": {"content": "[\"LFC\", \"Reds\", \"Liverpool\"]"}}]}
 ```
 
-### 3. Test via Activity
+### 3. Test Vision (Video Validation)
+
+```bash
+# Extract a frame from a video first
+ffmpeg -i video.mp4 -vframes 1 -f image2pipe -vcodec png - | base64 > frame.b64
+
+# Then test vision
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"messages\": [{
+      \"role\": \"user\",
+      \"content\": [
+        {\"type\": \"text\", \"text\": \"Is this a soccer/football match? Answer YES or NO.\"},
+        {\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/png;base64,$(cat frame.b64)\"}}
+      ]
+    }],
+    \"max_tokens\": 10
+  }"
+```
+
+### 4. Test via Activity in Container
 
 ```python
 # In Python REPL inside worker container

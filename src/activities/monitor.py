@@ -448,13 +448,48 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
             activity.logger.info(f"✨ NEW EVENT: {event_id}")
             new_count += 1
     
-    # REMOVED events (VAR cancelled) - DELETE from MongoDB and S3
+    # =========================================================================
+    # REMOVED events (disappeared from API) - DECREMENT monitor_count
+    # =========================================================================
+    # Instead of immediately deleting, we decrement the monitor count.
+    # This handles API glitches where events temporarily disappear.
+    # 
+    # Debounce down:
+    # - Event present: count goes UP (1 -> 2 -> 3 -> complete)
+    # - Event missing: count goes DOWN (3 -> 2 -> 1 -> 0 -> DELETE)
+    # 
+    # This means an event must be missing for 3+ consecutive polls to be deleted.
+    # API glitches that return empty events for 1-2 polls won't cause data loss.
     removed_ids = active_ids - live_ids
     removed_count = 0
     for event_id in removed_ids:
-        if store.mark_event_removed(fixture_id, event_id):
-            activity.logger.warning(f"🗑️ VAR REMOVED: {event_id} (deleted from DB + S3)")
-            removed_count += 1
+        active_event = active_map[event_id]
+        current_count = active_event.get(EventFields.MONITOR_COUNT, 0)
+        monitor_complete = active_event.get(EventFields.MONITOR_COMPLETE, False)
+        
+        # Decrement the count
+        new_count_val = max(0, current_count - 1)
+        
+        if new_count_val <= 0:
+            # Count hit 0 - actually delete the event
+            # Only delete S3 if monitor was complete (videos were uploaded)
+            if monitor_complete:
+                if store.mark_event_removed(fixture_id, event_id):
+                    activity.logger.warning(f"🗑️ VAR REMOVED: {event_id} (deleted from DB + S3, was at count={current_count})")
+                    removed_count += 1
+            else:
+                # Monitor wasn't complete, just remove from MongoDB (no S3 data)
+                result = store.fixtures_active.update_one(
+                    {"_id": fixture_id},
+                    {"$pull": {"events": {EventFields.EVENT_ID: event_id}}}
+                )
+                if result.modified_count > 0:
+                    activity.logger.warning(f"🗑️ REMOVED: {event_id} (dropped before monitor complete, count={current_count})")
+                    removed_count += 1
+        else:
+            # Decrement count but don't delete yet
+            store.update_event_stable_count(fixture_id, event_id, new_count_val, None)
+            activity.logger.warning(f"⚠️ EVENT MISSING: {event_id} (count {current_count} → {new_count_val}, need 0 to delete)")
     
     # MATCHING events - increment monitor_count
     matching_ids = live_ids & active_ids
@@ -463,20 +498,28 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
     
     for event_id in matching_ids:
         active_event = active_map[event_id]
+        current_count = active_event.get(EventFields.MONITOR_COUNT, 0)
+        monitor_complete = active_event.get(EventFields.MONITOR_COMPLETE, False)
         
         # =====================================================================
-        # CASE 1: _monitor_complete = TRUE -> Already processed, skip
+        # CASE 1: _monitor_complete = TRUE -> Already triggered workflows
         # =====================================================================
-        # TwitterWorkflow now manages its own retry attempts with durable timers.
-        # Monitor's job is done once _monitor_complete=true.
-        if active_event.get(EventFields.MONITOR_COMPLETE):
-            continue  # Already debounced, TwitterWorkflow handles the rest
+        # Still increment count (up to 3) to maintain stability score,
+        # but don't re-trigger downstream workflows.
+        if monitor_complete:
+            if current_count < 3:
+                # Recovering from a decrement - bump back up
+                new_count_val = current_count + 1
+                store.update_event_stable_count(fixture_id, event_id, new_count_val, None)
+                activity.logger.info(f"📈 RECOVERY: {event_id} (count {current_count} → {new_count_val}, monitor_complete=True)")
+            # If already at 3, nothing to do
+            continue
         
         # =====================================================================
         # CASE 2: _monitor_complete = FALSE -> Check/increment monitor count
         # =====================================================================
-        # Increment monitor count
-        new_count_val = active_event.get(EventFields.MONITOR_COUNT, 0) + 1
+        # Increment monitor count (cap at 3)
+        new_count_val = min(current_count + 1, 3)
         
         # Note: No hash/snapshot needed with player_id approach!
         if store.update_event_stable_count(fixture_id, event_id, new_count_val, None):

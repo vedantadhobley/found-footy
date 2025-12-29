@@ -498,33 +498,32 @@ async def call_ollama(prompt: str) -> Optional[str]:
 
 
 async def call_ollama_api(wikidata_aliases: List[str], team_name: str) -> Optional[List[str]]:
-    """Call Ollama API via internal Docker network."""
+    """Call LLM API via llama.cpp server."""
     
     # Build the prompt - input is already single words, just rank them
     prompt = f"""Words: {json.dumps(wikidata_aliases)}
 
-Select the best words for Twitter search. Return a JSON array."""
+Select the best words for Twitter search. Return a JSON array. /no_think"""
 
-    payload = {
-        "model": "qwen3-vl:8b-instruct",
-        "prompt": prompt,
-        "system": SYSTEM_PROMPT,
-        "stream": False,
-        "options": {"temperature": 0.1, "num_predict": 100}
-    }
-    
-    # Use external ollama-server via luv-dev network
-    ollama_url = "http://ollama-server:11434"
+    # Use external llama-server via luv-dev network
+    llama_url = "http://llama-server:8080"
     
     try:
         response = requests.post(
-            f"{ollama_url}/api/generate",
-            json=payload,
+            f"{llama_url}/v1/chat/completions",
+            json={
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": 100,
+                "temperature": 0.1
+            },
             timeout=30
         )
         response.raise_for_status()
         data = response.json()
-        text = data.get("response", "")
+        text = data["choices"][0]["message"]["content"]
         
         # Parse JSON array from response
         start = text.find("[")
@@ -534,7 +533,7 @@ Select the best words for Twitter search. Return a JSON array."""
             if isinstance(aliases, list) and len(aliases) >= 1:
                 return [str(a).strip() for a in aliases[:3]]
     except Exception as e:
-        print(f"  ⚠️ Ollama API error: {e}")
+        print(f"  ⚠️ LLM API error: {e}")
     
     return None
 

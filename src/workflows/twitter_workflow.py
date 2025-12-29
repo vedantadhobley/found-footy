@@ -18,6 +18,11 @@ Attempt Flow:
 3. ATTEMPT 2: Same queries (new videos may have appeared) → dedupe → download
 4. WAIT 3 minutes
 5. ATTEMPT 3: Same queries → dedupe → download → mark _twitter_complete=true
+
+Graceful Termination:
+- At start of each attempt, checks if event still exists in MongoDB
+- If event was deleted (VAR/count hit 0), terminates early
+- Prevents wasted work on events that no longer exist
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -80,6 +85,30 @@ class TwitterWorkflow:
         )
         
         for attempt in range(1, 4):  # Attempts 1, 2, 3
+            # =================================================================
+            # Check if event still exists (graceful termination for VAR/deleted)
+            # =================================================================
+            event_check = await workflow.execute_activity(
+                twitter_activities.check_event_exists,
+                args=[input.fixture_id, input.event_id],
+                start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+            
+            if not event_check.get("exists", False):
+                workflow.logger.warning(
+                    f"⚠️ Event {input.event_id} no longer exists - terminating workflow"
+                )
+                return {
+                    "fixture_id": input.fixture_id,
+                    "event_id": input.event_id,
+                    "total_videos_found": total_videos_found,
+                    "total_videos_uploaded": total_videos_uploaded,
+                    "attempts_completed": attempt - 1,
+                    "terminated_early": True,
+                    "reason": "event_deleted",
+                }
+            
             # Record attempt start time for "START to START" 3-minute spacing
             attempt_start = workflow.now()
             workflow.logger.info(f"🐦 Twitter attempt {attempt}/3 for {input.event_id}")

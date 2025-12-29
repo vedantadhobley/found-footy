@@ -80,7 +80,7 @@ flowchart TB
         direction TB
         APIFB[API-Football<br/>Match data]
         WIKIDATA[Wikidata<br/>Team aliases]
-        OLLAMA[Ollama LLM<br/>Alias selection]
+        LLM[llama.cpp LLM<br/>Alias selection + Vision]
         TWITTER[Twitter/X<br/>Video discovery]
     end
     
@@ -88,8 +88,9 @@ flowchart TB
     MONITOR --> APIFB
     MONITOR --> MONGO
     RAGWF --> WIKIDATA
-    RAGWF --> OLLAMA
+    RAGWF --> LLM
     TWITTERWF --> TWITTER
+    DOWNLOADWF --> LLM
     DOWNLOADWF --> MINIO
     DOWNLOADWF --> MONGO
 ```
@@ -220,38 +221,33 @@ flowchart TB
 
 ### Perceptual Hash Deduplication
 
-**Problem:** Same video at different resolutions = different file hashes
+**Problem:** Same video at different resolutions = different file hashes. Also, videos of the same goal often start at different times.
 
-**Solution:** Duration-based perceptual hash
+**Solution:** Dense sampling with histogram equalization
 
 ```mermaid
 flowchart LR
     subgraph COMPUTE["Compute Hash"]
         direction TB
-        DUR[Extract duration<br/>e.g., 15.2s]
-        F1[Frame @ 1s]
-        F2[Frame @ 2s]
-        F3[Frame @ 3s]
-        H1[dHash 64-bit]
-        H2[dHash 64-bit]
-        H3[dHash 64-bit]
-        
-        DUR --> F1 & F2 & F3
-        F1 --> H1
-        F2 --> H2
-        F3 --> H3
+        SAMPLE[Sample every 0.25s]
+        EQUAL[Histogram equalize]
+        HASH[dHash 64-bit per frame]
     end
     
-    RESULT["15.2:4c33b33b:f8d2d234:48b2a460"]
+    RESULT["dense:0.25:0.25=abc123,0.50=def456,..."]
     
-    H1 & H2 & H3 --> RESULT
+    SAMPLE --> EQUAL --> HASH --> RESULT
 ```
 
-**Hash format:** `{duration}:{frame1_hash}:{frame2_hash}:{frame3_hash}`
+**Hash format:** `dense:<interval>:<ts1>=<hash1>,<ts2>=<hash2>,...`
 
-**Matching tolerance:**
-- Duration: ±0.5 seconds
-- Frame hashes: Hamming distance ≤8 bits per frame, ≤12 total
+**Matching algorithm:**
+- Tries all possible time offsets between videos
+- Requires **3 consecutive frames** to match at consistent offset
+- Each frame: Hamming distance ≤10 bits (of 64)
+- Histogram equalization handles color/brightness differences
+
+**Why 3 consecutive?** Single-frame matching causes false positives between similar content (e.g., two goals in same match).
 
 ### Quality Ranking
 
@@ -426,7 +422,7 @@ found-footy/
 │   │   ├── monitor.py          # Event processing
 │   │   ├── twitter.py          # Twitter search
 │   │   ├── download.py         # Video download/upload
-│   │   └── rag.py              # Team alias RAG (Wikidata + Ollama)
+│   │   └── rag.py              # Team alias RAG (Wikidata + LLM)
 │   │
 │   ├── data/
 │   │   ├── mongo_store.py      # 5-collection MongoDB
@@ -515,7 +511,7 @@ flowchart TB
 ### 3. RAGWorkflow
 
 **Trigger:** Per stable event (fired by Monitor)  
-**Purpose:** Resolve team aliases via Wikidata + Ollama LLM, trigger Twitter
+**Purpose:** Resolve team aliases via Wikidata + LLM, trigger Twitter
 
 ```mermaid
 flowchart TB
@@ -528,7 +524,7 @@ flowchart TB
         WIKI[Query Wikidata<br/>Search for team QID]
         FETCH[Fetch aliases<br/>English only]
         PREPROCESS[Preprocess to words<br/>Filter junk]
-        LLM[Ollama LLM selects<br/>Best search terms]
+        LLM[llama.cpp LLM selects<br/>Best search terms]
     end
     
     SAVE[Save to event<br/>_twitter_aliases]
@@ -582,6 +578,7 @@ flowchart TB
         DL[Download via yt-dlp]
         FILTER{Duration<br/>5-60s?}
         META[Extract metadata<br/>Resolution, bitrate]
+        VALIDATE{AI Validation<br/>Is soccer?}
         HASH[Compute perceptual hash]
         FILTERED[Track as filtered]
     end
@@ -597,12 +594,16 @@ flowchart TB
     
     TRIGGER --> FETCH --> DL
     DL --> FILTER
-    FILTER -->|Yes| META --> HASH
+    FILTER -->|Yes| META --> VALIDATE
+    VALIDATE -->|Yes| HASH
+    VALIDATE -->|No| FILTERED
     FILTER -->|No| FILTERED
     HASH --> DEDUP
     DEDUP --> REPLACE & NEW
     REPLACE & NEW --> SAVE
 ```
+
+**AI Video Validation**: Vision model (Qwen3-VL via llama.cpp) validates each video contains soccer content before upload. Uses fail-closed policy - if AI unavailable, video is skipped.
 
 ---
 
