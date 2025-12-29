@@ -62,63 +62,44 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
     assister_name = event.get("assist", {}).get("player", {}).get("name", "")
     
     # Get existing videos from MongoDB (new _s3_videos schema)
+    # MongoDB is the source of truth - contains full metadata (S3 metadata may be truncated)
     existing_s3_videos_mongo = event.get(EventFields.S3_VIDEOS, [])
     
-    # Build full metadata for existing S3 videos (for quality comparison)
-    # Enrich MongoDB data with S3 metadata for quality comparison
-    existing_s3_videos = []  # List of {s3_url, s3_key, perceptual_hash, width, height, bitrate, file_size, source_url, popularity}
+    # Build existing video list from MongoDB data only (no S3 calls needed)
+    existing_s3_videos = []  # List of video metadata for dedup comparison
     already_downloaded_urls = set()
     
-    if existing_s3_videos_mongo:
-        s3_store = FootyS3Store()
+    for video_obj in existing_s3_videos_mongo:
+        s3_url = video_obj.get("url", "")
+        if not s3_url:
+            continue
         
-        for video_obj in existing_s3_videos_mongo:
-            s3_url = video_obj.get("url", "")
-            if not s3_url:
-                continue
-                
-            try:
-                # Extract S3 key from relative path
-                # Format: /video/footy-videos/{fixture}/{event_id}/file.mp4
-                if not s3_url.startswith("/video/footy-videos/"):
-                    activity.logger.warning(f"⚠️ Unexpected S3 URL format: {s3_url}")
-                    continue
-                
-                s3_key = s3_url.replace("/video/footy-videos/", "")
-                
-                # Use boto3's head_object to get full metadata from S3
-                response = s3_store.s3_client.head_object(Bucket="footy-videos", Key=s3_key)
-                metadata = response.get("Metadata", {})
-                
-                source_url = metadata.get("source_url", "")
-                if source_url:
-                    already_downloaded_urls.add(source_url)
-                
-                # Build full video info for quality comparison (S3 metadata + MongoDB data)
-                video_info = {
-                    "s3_url": s3_url,
-                    "s3_key": s3_key,
-                    "perceptual_hash": video_obj.get("perceptual_hash", "") or metadata.get("perceptual_hash", ""),
-                    "width": int(metadata.get("width", 0)),
-                    "height": int(metadata.get("height", 0)),
-                    "bitrate": float(metadata.get("bitrate", 0)),
-                    "file_size": int(metadata.get("file_size", 0)),
-                    "source_url": source_url,
-                    "duration": float(metadata.get("duration", 0)),
-                    "resolution_score": video_obj.get("resolution_score", 0) or int(metadata.get("resolution_score", 0)),
-                    "popularity": video_obj.get("popularity", 1),  # From MongoDB
-                }
-                existing_s3_videos.append(video_info)
-                activity.logger.debug(f"✓ Existing S3 video: {s3_key} ({video_info['width']}x{video_info['height']}, pop={video_info['popularity']})")
-            except Exception as e:
-                # If we can't get metadata, still track the URL but with limited info
-                activity.logger.warning(f"⚠️ Failed to get S3 metadata for {s3_url}: {e}")
-                existing_s3_videos.append({
-                    "s3_url": s3_url,
-                    "perceptual_hash": video_obj.get("perceptual_hash", ""),
-                    "resolution_score": video_obj.get("resolution_score", 0),
-                    "popularity": video_obj.get("popularity", 1),
-                })
+        # Extract S3 key from URL or use stored key
+        s3_key = video_obj.get("_s3_key", "")
+        if not s3_key and s3_url.startswith("/video/footy-videos/"):
+            s3_key = s3_url.replace("/video/footy-videos/", "")
+        
+        # Track source URL to skip already-downloaded videos
+        source_url = video_obj.get("source_url", "")
+        if source_url:
+            already_downloaded_urls.add(source_url)
+        
+        # Use MongoDB data directly - it has the full untruncated metadata
+        video_info = {
+            "s3_url": s3_url,
+            "s3_key": s3_key,
+            "perceptual_hash": video_obj.get("perceptual_hash", ""),  # Full hash from MongoDB
+            "width": video_obj.get("width", 0),
+            "height": video_obj.get("height", 0),
+            "bitrate": video_obj.get("bitrate", 0),
+            "file_size": video_obj.get("file_size", 0),
+            "source_url": source_url,
+            "duration": video_obj.get("duration", 0),
+            "resolution_score": video_obj.get("resolution_score", 0),
+            "popularity": video_obj.get("popularity", 1),
+        }
+        existing_s3_videos.append(video_info)
+        activity.logger.debug(f"✓ Existing video: {s3_key} ({video_info['width']}x{video_info['height']}, pop={video_info['popularity']})")
     
     # Filter discovered_videos to only NEW ones (URLs not already downloaded)
     videos_to_download = []
@@ -343,13 +324,15 @@ def _process_downloaded_video(
         os.remove(output_path)
         return None
     
-    # Aspect ratio filter: reject non-landscape videos
-    MIN_ASPECT_RATIO = 1.33  # 4:3
-    if width and height:
+    # Aspect ratio filter: reject portrait/square videos (< 4:3)
+    # Football clips should be landscape (16:9 = 1.78, 4:3 = 1.333...)
+    # Use 1.32 threshold to accept 4:3 with floating point tolerance
+    MIN_ASPECT_RATIO = 1.32  # Accepts 4:3 (1.333) and wider
+    if width and height and height > 0:
         aspect_ratio = width / height
         if aspect_ratio < MIN_ASPECT_RATIO:
             activity.logger.warning(
-                f"📐 Video {display_idx} aspect ratio too narrow ({width}x{height} = {aspect_ratio:.2f} < {MIN_ASPECT_RATIO}), skipping"
+                f"📐 Video {display_idx} aspect ratio too narrow ({aspect_ratio:.2f} < {MIN_ASPECT_RATIO}), skipping"
             )
             os.remove(output_path)
             return None
@@ -970,17 +953,16 @@ async def upload_single_video(
     # S3 key: {fixture_id}/{event_id}/{filename}
     s3_key = f"{fixture_id}/{event_id}/{filename}"
     
-    # Metadata (stored in object headers) - includes quality info for cross-retry dedup
+    # S3 metadata - useful tags for manual lookup (not for dedup - MongoDB is source of truth)
+    # Note: S3 metadata has ~2KB limit and truncates values, so we only store simple fields here
     metadata = {
         "player_name": player_name,
         "team_name": team_name,
         "event_id": event_id,
         "fixture_id": str(fixture_id),
-        "popularity": str(popularity),  # How many times this video was seen (dedup count)
-        "source_url": source_url,  # Original tweet URL for dedup tracking
-        "perceptual_hash": perceptual_hash,  # For cross-resolution dedup
+        "popularity": str(popularity),
+        "source_url": source_url,
         "duration": str(duration),
-        # Quality metrics for cross-retry quality comparison
         "width": str(width),
         "height": str(height),
         "bitrate": str(int(bitrate)) if bitrate else "0",
@@ -1012,7 +994,9 @@ async def upload_single_video(
     activity.logger.info(f"✅ Uploaded video {video_index}: {s3_url}")
     
     # Return video object for MongoDB storage
+    # Store ALL metadata in MongoDB to avoid S3 metadata truncation issues
     resolution_score = width * height if width and height else 0
+    aspect_ratio = width / height if width and height and height > 0 else 0
     return {
         "status": "success",
         "s3_url": s3_url,
@@ -1020,13 +1004,23 @@ async def upload_single_video(
         "resolution_score": resolution_score,
         "popularity": popularity,
         # Full video object for MongoDB _s3_videos array
+        # This is the source of truth - S3 metadata may be truncated
         "video_object": {
             "url": s3_url,
-            "perceptual_hash": perceptual_hash,
+            "_s3_key": s3_key,  # For easy S3 operations
+            "perceptual_hash": perceptual_hash,  # Full hash (no truncation)
             "resolution_score": resolution_score,
-            "file_size": file_size,  # For ranking tiebreaker (larger = better quality)
+            "file_size": file_size,
             "popularity": popularity,
             "rank": 0,  # Will be recalculated
+            # Quality metadata for dedup/comparison
+            "width": width,
+            "height": height,
+            "aspect_ratio": round(aspect_ratio, 2),
+            "bitrate": int(bitrate) if bitrate else 0,
+            "duration": round(duration, 2),
+            "source_url": source_url,
+            "hash_version": "dense:0.25",  # Track hash algorithm version
         }
     }
 

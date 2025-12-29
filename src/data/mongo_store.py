@@ -827,6 +827,9 @@ class FootyMongoStore:
         Sorts by popularity (desc) then file_size (desc) - larger files = better quality.
         Rank 1 = best video.
         
+        Only operates on fixtures_active since download workflows complete
+        before fixtures move to completed (based on match status FT/AET/PEN).
+        
         Args:
             fixture_id: Fixture ID
             event_id: Event ID
@@ -835,10 +838,10 @@ class FootyMongoStore:
             True if successful
         """
         try:
-            # Get current fixture
+            # Get current fixture from active collection
             fixture = self.fixtures_active.find_one({"_id": fixture_id})
             if not fixture:
-                print(f"⚠️ Fixture {fixture_id} not found")
+                print(f"⚠️ Fixture {fixture_id} not found in fixtures_active")
                 return False
             
             # Find the event
@@ -866,11 +869,11 @@ class FootyMongoStore:
                 reverse=True
             )
             
-            # Assign ranks (1 = best)
+            # Assign sequential ranks (1 = best)
             for rank, video in enumerate(videos_sorted, start=1):
                 video["rank"] = rank
             
-            # Update in MongoDB (use the underscore-prefixed field)
+            # Update in MongoDB
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
                 {"$set": {f"events.$.{EventFields.S3_VIDEOS}": videos_sorted}}
