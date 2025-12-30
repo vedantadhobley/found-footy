@@ -59,6 +59,9 @@ class TwitterWorkflow:
     6. Waits 3 minutes before next attempt (except after last)
     
     After attempt 3: Marks _twitter_complete=true
+    
+    TIMEOUT: Expected duration ~12 min (3 attempts + 2 waits of 3 min + processing).
+    If workflow runs > 15 min, something is stuck.
     """
     
     @workflow.run
@@ -72,6 +75,11 @@ class TwitterWorkflow:
         Returns:
             Dict with total_videos_found, total_videos_uploaded, attempts completed
         """
+        # Self-imposed deadline - if we're still running after 15 min, mark complete and exit
+        # This prevents stuck workflows from blocking the "extracting" status forever
+        workflow_start = workflow.now()
+        max_duration_seconds = 15 * 60  # 15 minutes
+        
         total_videos_found = 0
         total_videos_uploaded = 0
         
@@ -85,6 +93,31 @@ class TwitterWorkflow:
         )
         
         for attempt in range(1, 4):  # Attempts 1, 2, 3
+            # =================================================================
+            # Self-imposed timeout check - prevent stuck workflows
+            # =================================================================
+            elapsed = (workflow.now() - workflow_start).total_seconds()
+            if elapsed > max_duration_seconds:
+                workflow.logger.warning(
+                    f"⚠️ TwitterWorkflow exceeded {max_duration_seconds}s - marking complete and exiting"
+                )
+                # Mark as complete so UI doesn't show "extracting" forever
+                await workflow.execute_activity(
+                    twitter_activities.mark_twitter_complete,
+                    args=[input.fixture_id, input.event_id],
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
+                return {
+                    "fixture_id": input.fixture_id,
+                    "event_id": input.event_id,
+                    "total_videos_found": total_videos_found,
+                    "total_videos_uploaded": total_videos_uploaded,
+                    "attempts_completed": attempt - 1,
+                    "terminated_early": True,
+                    "reason": "timeout",
+                }
+            
             # =================================================================
             # Check if event still exists (graceful termination for VAR/deleted)
             # =================================================================

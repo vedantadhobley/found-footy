@@ -23,6 +23,7 @@ from temporalio.common import RetryPolicy
 from temporalio.workflow import ParentClosePolicy
 from datetime import timedelta
 from typing import List
+import asyncio
 
 with workflow.unsafe.imports_passed_through():
     from src.activities import monitor as monitor_activities
@@ -92,14 +93,24 @@ class MonitorWorkflow:
             retry_policy=RetryPolicy(maximum_attempts=3),
         )
         
-        # Process each fixture
+        # =========================================================================
+        # Process fixtures IN PARALLEL - each fixture is independent
+        # This significantly speeds up processing when multiple matches are active
+        # =========================================================================
         rag_workflows_started = []
         completed_count = 0
+        needs_frontend_refresh = False
         
-        for fixture_data in fixtures:
+        async def process_fixture(fixture_data: dict):
+            """Process a single fixture - store, process events, trigger RAG workflows"""
+            nonlocal needs_frontend_refresh
+            
             fixture_id = fixture_data.get("fixture", {}).get("id")
             status = fixture_data.get("fixture", {}).get("status", {}).get("short")
             fixture_finished = status in completed_statuses
+            
+            local_rag_workflows = []
+            was_completed = False
             
             # Store in live
             await workflow.execute_activity(
@@ -121,14 +132,9 @@ class MonitorWorkflow:
                 retry_policy=RetryPolicy(maximum_attempts=3),
             )
             
-            # Notify frontend immediately when events transition to _monitor_complete=true
-            # This lets frontend show "extracting" state BEFORE Twitter/Download starts
+            # Flag for frontend refresh if new events triggered
             if result.get("twitter_triggered"):
-                await workflow.execute_activity(
-                    monitor_activities.notify_frontend_refresh,
-                    start_to_close_timeout=timedelta(seconds=5),
-                    retry_policy=RetryPolicy(maximum_attempts=1),
-                )
+                needs_frontend_refresh = True
             
             # Trigger RAGWorkflow for each newly stable event (ONCE per event)
             # RAGWorkflow → TwitterWorkflow handles all 3 attempts internally
@@ -146,7 +152,7 @@ class MonitorWorkflow:
                 minute_str = f"{minute}+{extra}min" if extra else f"{minute}min"
                 rag_workflow_id = f"rag-{team_clean}-{player_last}-{minute_str}-{event_id}"
                 
-                rag_workflows_started.append(rag_workflow_id)
+                local_rag_workflows.append(rag_workflow_id)
                 
                 # Start RAGWorkflow (fire-and-forget)
                 # RAGWorkflow triggers TwitterWorkflow which manages all 3 attempts
@@ -162,7 +168,7 @@ class MonitorWorkflow:
                         extra=extra,
                     ),
                     id=rag_workflow_id,
-                    execution_timeout=timedelta(minutes=25),  # 3 attempts @ ~5min + 2x 3-min timers
+                    execution_timeout=timedelta(minutes=25),
                     parent_close_policy=ParentClosePolicy.ABANDON,
                 )
                 
@@ -180,8 +186,29 @@ class MonitorWorkflow:
                         backoff_coefficient=2.0,
                     ),
                 )
-                if was_completed:
-                    completed_count += 1
+            
+            return {
+                "rag_workflows": local_rag_workflows,
+                "completed": 1 if was_completed else 0,
+            }
+        
+        # Execute all fixture processing in parallel
+        if fixtures:
+            fixture_tasks = [process_fixture(f) for f in fixtures]
+            fixture_results = await asyncio.gather(*fixture_tasks)
+            
+            # Aggregate results
+            for result in fixture_results:
+                rag_workflows_started.extend(result["rag_workflows"])
+                completed_count += result["completed"]
+            
+            # Single frontend notification after all processing
+            if needs_frontend_refresh:
+                await workflow.execute_activity(
+                    monitor_activities.notify_frontend_refresh,
+                    start_to_close_timeout=timedelta(seconds=5),
+                    retry_policy=RetryPolicy(maximum_attempts=1),
+                )
         
         # =================================================================
         # END OF CYCLE: Activate queued fixtures (staging → active)
