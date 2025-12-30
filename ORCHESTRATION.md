@@ -3,11 +3,15 @@
 ## 🎯 Core Principle: Decoupled Workflow Architecture
 
 The system uses a **decoupled architecture** where:
-- **MonitorWorkflow** handles debouncing and triggers RAGWorkflow **ONCE** per event
-- **RAGWorkflow** resolves team aliases (stub now, LLM later) and triggers TwitterWorkflow
+- **MonitorWorkflow** handles debouncing and triggers RAGWorkflow **ONCE** per event (fire-and-forget)
+- **RAGWorkflow** resolves team aliases (~30-90s) and triggers TwitterWorkflow (fire-and-forget)
 - **TwitterWorkflow** manages all 3 search attempts **internally** with 3-minute durable timers
+- **TwitterWorkflow** MUST WAIT for DownloadWorkflow (data integrity requirement)
 
-This decoupling allows Twitter searches to run at 3-minute intervals instead of being tied to Monitor's 1-minute poll cycle.
+This decoupling allows:
+- Twitter searches to run at 3-minute intervals (not tied to Monitor's 1-min poll)
+- RAG to complete quickly without waiting 15+ minutes for Twitter+Download
+- Fixture completion only after all downloads are done
 
 ---
 
@@ -36,19 +40,20 @@ This decoupling allows Twitter searches to run at 3-minute intervals instead of 
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │                    PHASE 2: TWITTER (Self-Managed)                    │   │
 │  │                                                                        │   │
-│  │   RAGWorkflow:                                                         │   │
+│  │   RAGWorkflow (~30-90s, fire-and-forget):                              │   │
 │  │     1. get_team_aliases(team_name) → ["Liverpool", "LFC", "Reds"]      │   │
 │  │     2. save_team_aliases to MongoDB                                    │   │
-│  │     3. Start TwitterWorkflow (child, waits for completion)             │   │
+│  │     3. Start TwitterWorkflow (fire-and-forget, ABANDON policy)         │   │
+│  │     → RAG COMPLETES HERE                                               │   │
 │  │                                                                        │   │
-│  │   TwitterWorkflow (manages all 3 attempts internally):                 │   │
+│  │   TwitterWorkflow (manages all 3 attempts internally, ~12-15 min):     │   │
 │  │     FOR attempt IN [1, 2, 3]:                                          │   │
 │  │       → update_twitter_attempt(attempt)                                │   │
 │  │       → Search all aliases: "Salah Liverpool", "Salah LFC", ...        │   │
 │  │       → Dedupe videos, save to _discovered_videos                      │   │
-│  │       → Trigger DownloadWorkflow                                       │   │
+│  │       → WAIT for DownloadWorkflow (data integrity!)                    │   │
 │  │       → IF attempt < 3: sleep(3 minutes) ← DURABLE TIMER               │   │
-│  │     AFTER attempt 3:                                                   │   │
+│  │     AFTER attempt 3 + ALL downloads complete:                          │   │
 │  │       → set _twitter_complete = TRUE                                   │   │
 │  │                                                                        │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
@@ -92,20 +97,27 @@ This decoupling allows Twitter searches to run at 3-minute intervals instead of 
 - Checks fixture completion eligibility
 - **Does NOT manage Twitter retries** (that's TwitterWorkflow's job now)
 
-### RAGWorkflow (Triggered by Monitor)
+### RAGWorkflow (Triggered by Monitor, ~30-90s)
 - **Checks cache first** - aliases pre-cached during ingestion
 - If cache miss: runs full Wikidata + LLM RAG pipeline
 - Determines team type via API-Football (`team.national` boolean)
 - Saves aliases to `_twitter_aliases` in MongoDB
-- Triggers TwitterWorkflow as child (waits for completion)
+- **Triggers TwitterWorkflow (fire-and-forget with ABANDON policy)**
+- RAG completes immediately - doesn't wait 15+ min for Twitter+Download
 
-### TwitterWorkflow (Triggered by RAGWorkflow)
+### TwitterWorkflow (Triggered by RAGWorkflow, ~12-15 min)
 - **Self-manages all 3 attempts** with durable timers
 - Builds search queries: `{player_last} {alias}` for each alias
 - Deduplicates videos across aliases and previous attempts
-- Triggers DownloadWorkflow after each attempt
+- **WAITS for DownloadWorkflow** after each attempt (data integrity)
 - Updates `_twitter_count` at start of each attempt
-- Sets `_twitter_complete = TRUE` after attempt 3
+- Sets `_twitter_complete = TRUE` **only after all downloads complete**
+
+**Why Twitter WAITS for Download:**
+- Download updates MongoDB with S3 video URLs
+- Fixture completion checks `_twitter_complete` flag
+- If fire-and-forget, fixture could complete before downloads finish
+- This would cause lookups in wrong collection → data loss
 
 ### DownloadWorkflow (Triggered by TwitterWorkflow)
 - Downloads videos from Twitter URLs

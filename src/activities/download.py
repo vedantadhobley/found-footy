@@ -45,10 +45,16 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
     
     store = FootyMongoStore()
     
+    activity.logger.info(
+        f"📥 [DOWNLOAD] fetch_event_data | fixture={fixture_id} | event={event_id}"
+    )
+    
     # Get fixture
     fixture = store.get_fixture_from_active(fixture_id)
     if not fixture:
-        activity.logger.error(f"❌ Fixture {fixture_id} not found")
+        activity.logger.error(
+            f"❌ [DOWNLOAD] Fixture not found | fixture={fixture_id}"
+        )
         return {"status": "error", "error": "fixture_not_found"}
     
     # Find event
@@ -59,12 +65,16 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
             break
     
     if not event:
-        activity.logger.error(f"❌ Event {event_id} not found")
+        activity.logger.error(
+            f"❌ [DOWNLOAD] Event not found | fixture={fixture_id} | event={event_id}"
+        )
         return {"status": "error", "error": "event_not_found"}
     
     discovered_videos = event.get(EventFields.DISCOVERED_VIDEOS, [])
     if not discovered_videos:
-        activity.logger.warning(f"⚠️ No videos to download for {event_id}")
+        activity.logger.warning(
+            f"⚠️ [DOWNLOAD] No discovered videos | event={event_id}"
+        )
         return {"status": "no_videos", "discovered_videos": []}
     
     player_name = event.get("player", {}).get("name", "Unknown")
@@ -118,10 +128,15 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
         if video_url not in already_downloaded_urls:
             videos_to_download.append(video)
         else:
-            activity.logger.debug(f"⏭️ Skipping already downloaded video: {video_url}")
+            activity.logger.debug(
+                f"⏭️ [DOWNLOAD] Skipping already downloaded | url={video_url[:50]}..."
+            )
     
     if not videos_to_download:
-        activity.logger.info(f"⏭️ No new videos to download (all {len(discovered_videos)} already in S3)")
+        activity.logger.info(
+            f"⏭️ [DOWNLOAD] No new videos | event={event_id} | "
+            f"all_already_in_s3={len(discovered_videos)}"
+        )
         return {
             "status": "no_videos",
             "discovered_videos": [],
@@ -130,12 +145,19 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
         }
     
     if existing_s3_videos:
-        activity.logger.info(f"🔍 Have {len(existing_s3_videos)} existing S3 videos for cross-retry quality comparison")
+        activity.logger.info(
+            f"🔍 [DOWNLOAD] Cross-retry comparison | existing_s3={len(existing_s3_videos)}"
+        )
     
     if len(videos_to_download) < len(discovered_videos):
-        activity.logger.info(f"📥 Found {len(videos_to_download)} new videos to download ({len(discovered_videos) - len(videos_to_download)} already in S3)")
+        activity.logger.info(
+            f"📥 [DOWNLOAD] Found new videos | event={event_id} | "
+            f"to_download={len(videos_to_download)} | already_in_s3={len(discovered_videos) - len(videos_to_download)}"
+        )
     else:
-        activity.logger.info(f"📥 Found {len(videos_to_download)} videos to download for {event_id}")
+        activity.logger.info(
+            f"📥 [DOWNLOAD] Found videos | event={event_id} | count={len(videos_to_download)}"
+        )
     
     return {
         "status": "success",
@@ -187,14 +209,17 @@ async def download_single_video(
     # For multi-video: event_id_0_01.mp4, event_id_0_02.mp4, etc.
     output_template = os.path.join(temp_dir, f"{event_id}_{video_index}_%(playlist_index)02d.mp4")
     
-    activity.logger.info(f"📥 Downloading video {video_index}: {video_url[:50]}...")
+    activity.logger.info(
+        f"📥 [DOWNLOAD] Starting download | event={event_id} | video_idx={video_index} | "
+        f"url={video_url[:60]}..."
+    )
     
     # Use shared cookie file from /config mount
     cookies_json_file = "/config/twitter_cookies.json"
     
     if not os.path.exists(cookies_json_file):
-        msg = f"❌ No cookies found at {cookies_json_file} - cannot download"
-        activity.logger.error(msg)
+        msg = f"[DOWNLOAD] No cookies found | path={cookies_json_file}"
+        activity.logger.error(f"❌ {msg}")
         raise RuntimeError(msg)
     
     # Convert cookies to Netscape format for yt-dlp
@@ -239,14 +264,20 @@ async def download_single_video(
         
         if result.returncode != 0:
             error_msg = result.stderr[:200] if result.stderr else "Unknown error"
-            activity.logger.warning(f"⚠️ yt-dlp failed: {error_msg}")
+            activity.logger.warning(
+                f"⚠️ [DOWNLOAD] yt-dlp failed | video_idx={video_index} | error={error_msg}"
+            )
             raise RuntimeError(f"yt-dlp failed: {error_msg}")
             
     except subprocess.TimeoutExpired:
-        activity.logger.warning(f"⚠️ Download timed out for video {video_index}")
+        activity.logger.warning(
+            f"⚠️ [DOWNLOAD] Timeout | video_idx={video_index} | url={video_url[:50]}..."
+        )
         raise RuntimeError("Download timed out")
     except Exception as e:
-        activity.logger.warning(f"⚠️ Download failed: {str(e)[:100]}")
+        activity.logger.warning(
+            f"⚠️ [DOWNLOAD] Failed | video_idx={video_index} | error={str(e)[:100]}"
+        )
         raise
     
     # Find all downloaded files (handles multi-video tweets)
@@ -254,12 +285,14 @@ async def download_single_video(
     downloaded_files = sorted(glob.glob(pattern))
     
     if not downloaded_files:
-        msg = f"❌ Download failed for video {video_index}: no files found after yt-dlp"
-        activity.logger.error(msg)
+        msg = f"[DOWNLOAD] No files after yt-dlp | video_idx={video_index}"
+        activity.logger.error(f"❌ {msg}")
         raise RuntimeError(msg)
     
     if len(downloaded_files) > 1:
-        activity.logger.info(f"📹 Multi-video tweet: found {len(downloaded_files)} videos")
+        activity.logger.info(
+            f"📹 [DOWNLOAD] Multi-video tweet | count={len(downloaded_files)}"
+        )
     
     # Process each downloaded file
     results = []
@@ -283,7 +316,9 @@ async def download_single_video(
         return results[0]
     else:
         # Multi-video tweet - return list
-        activity.logger.info(f"✅ Multi-video tweet: {len(results)} videos passed filters")
+        activity.logger.info(
+            f"✅ [DOWNLOAD] Multi-video passed filters | count={len(results)}"
+        )
         return {"status": "multi_video", "videos": results, "source_url": source_tweet_url}
 
 
@@ -325,14 +360,16 @@ def _process_downloaded_video(
     # Must be strictly greater than MIN (e.g., exactly 3.00s fails)
     if duration <= MIN_VIDEO_DURATION:
         activity.logger.warning(
-            f"⏱️ Video {display_idx} too short ({duration:.1f}s <= {MIN_VIDEO_DURATION}s), skipping"
+            f"⏱️ [DOWNLOAD] Filtered: too short | video={display_idx} | "
+            f"duration={duration:.1f}s | min={MIN_VIDEO_DURATION}s"
         )
         os.remove(output_path)
         return None
     
     if duration > MAX_VIDEO_DURATION:
         activity.logger.warning(
-            f"⏱️ Video {display_idx} too long ({duration:.1f}s > {MAX_VIDEO_DURATION}s), skipping"
+            f"⏱️ [DOWNLOAD] Filtered: too long | video={display_idx} | "
+            f"duration={duration:.1f}s | max={MAX_VIDEO_DURATION}s"
         )
         os.remove(output_path)
         return None
@@ -344,7 +381,8 @@ def _process_downloaded_video(
         aspect_ratio = width / height
         if aspect_ratio < MIN_ASPECT_RATIO:
             activity.logger.warning(
-                f"📐 Video {display_idx} aspect ratio too narrow ({aspect_ratio:.2f} < {MIN_ASPECT_RATIO}), skipping"
+                f"📐 [DOWNLOAD] Filtered: aspect ratio | video={display_idx} | "
+                f"ratio={aspect_ratio:.2f} | min={MIN_ASPECT_RATIO}"
             )
             os.remove(output_path)
             return None
@@ -358,9 +396,8 @@ def _process_downloaded_video(
         quality_info += f"@{bitrate:.0f}kbps"
     
     activity.logger.info(
-        f"✅ Downloaded video {display_idx}: "
-        f"{os.path.basename(output_path)} ({file_size / 1024 / 1024:.2f} MB, "
-        f"{duration:.1f}s, {quality_info}) - awaiting AI validation"
+        f"✅ [DOWNLOAD] Video ready for validation | video={display_idx} | "
+        f"size={file_size / 1024 / 1024:.2f}MB | duration={duration:.1f}s | quality={quality_info}"
     )
     
     # Return without perceptual_hash - will be generated after AI validation
@@ -417,13 +454,20 @@ async def deduplicate_videos(
     filtered_count = sum(1 for f in downloaded_files if f.get("status") == "filtered")
     
     if filtered_count > 0:
-        activity.logger.info(f"🚫 Filtered out {filtered_count} videos by duration")
+        activity.logger.info(
+            f"🚫 [DEDUP] Pre-filtered by duration | count={filtered_count}"
+        )
     
     if not successful:
-        activity.logger.warning("⚠️ No successful downloads to deduplicate")
+        activity.logger.warning(
+            f"⚠️ [DEDUP] No successful downloads to deduplicate"
+        )
         return {"videos_to_upload": [], "videos_to_replace": [], "videos_to_bump_popularity": [], "skipped_urls": []}
     
-    activity.logger.info(f"📥 Deduplicating {len(successful)} successful downloads...")
+    activity.logger.info(
+        f"📥 [DEDUP] Starting deduplication | successful={len(successful)} | "
+        f"existing_s3={len(existing_s3_videos) if existing_s3_videos else 0}"
+    )
     
     # =========================================================================
     # PHASE 1: BATCH DEDUP - Group into duplicate clusters, keep longest+largest
@@ -431,9 +475,14 @@ async def deduplicate_videos(
     
     # Build duplicate clusters using union-find approach
     clusters = []  # List of lists, each inner list is a cluster of duplicates
+    videos_without_hash = 0  # Track videos that bypass dedup
     
     for file_info in successful:
         perceptual_hash = file_info["perceptual_hash"]
+        
+        # Track videos without valid hash - they can't be deduplicated!
+        if not perceptual_hash or perceptual_hash == "dense:0.25:":
+            videos_without_hash += 1
         
         # Find which cluster(s) this video matches
         matching_cluster_idx = None
@@ -451,7 +500,15 @@ async def deduplicate_videos(
             # New cluster
             clusters.append([file_info])
     
-    activity.logger.info(f"📊 Found {len(clusters)} unique video clusters from {len(successful)} downloads")
+    if videos_without_hash > 0:
+        activity.logger.warning(
+            f"⚠️ [DEDUP] Videos without hash | count={videos_without_hash}/{len(successful)} | "
+            f"warning=cannot_deduplicate"
+        )
+    
+    activity.logger.info(
+        f"📊 [DEDUP] Clustered videos | clusters={len(clusters)} | from_downloads={len(successful)}"
+    )
     
     # For each cluster, select winners (longest + largest, could be same video)
     batch_winners = []
@@ -540,6 +597,13 @@ async def deduplicate_videos(
         duration = file_info.get("duration", 0)
         source_url = file_info.get("source_url", "")
         duplicate_count = file_info.get("duplicate_count", 1)
+        
+        # CRITICAL: Warn if video has no hash - dedup will NOT work!
+        if not perceptual_hash or perceptual_hash == "dense:0.25:":
+            activity.logger.warning(
+                f"⚠️ Video has NO perceptual hash! Deduplication BYPASSED for {source_url} "
+                f"- this video will be uploaded even if it's a duplicate!"
+            )
         
         # Check against existing S3 videos
         matched_existing = None
@@ -822,7 +886,10 @@ Answer format (exactly):
 SOCCER: YES or NO
 SCREEN: YES or NO"""
 
-    activity.logger.info(f"🔍 Validating video with AI vision: {event_id}")
+    activity.logger.info(
+        f"🔍 [VALIDATE] Starting AI vision validation | event={event_id} | "
+        f"duration={duration:.1f}s | file={os.path.basename(file_path)}"
+    )
     
     # =========================================================================
     # Smart 2-3 check strategy:
@@ -869,27 +936,42 @@ SCREEN: YES or NO"""
     frame_75 = _extract_frame_for_vision(file_path, t_75)
     
     if not frame_25 and not frame_75:
-        msg = f"❌ Failed to extract ANY frames from {file_path} - cannot validate"
+        msg = f"❌ [VALIDATE] Failed to extract ANY frames | event={event_id} | file={file_path}"
         activity.logger.error(msg)
         raise RuntimeError(msg)  # Let retry policy handle - don't fail-open
     
-    # Check 25% first
+    # =========================================================================
+    # Smart 2-3 check strategy with heartbeats:
+    # 1. Check 25% and 75% first (heartbeat after each)
+    # 2. If both agree → use that result (2 checks)
+    # 3. If they disagree → check 50% as tiebreaker (3 checks, heartbeat after)
+    # =========================================================================
     checks_performed = 0
     soccer_25, screen_25 = None, None
     soccer_75, screen_75 = None, None
     
     if frame_25:
+        activity.heartbeat(f"AI vision check 1/2 (25% frame)...")
         response_25 = await _call_vision_model(frame_25, prompt)
         checks_performed += 1
         soccer_25, screen_25 = parse_response(response_25)
-        activity.logger.info(f"   📸 25% check: SOCCER={'YES' if soccer_25 else 'NO'}, SCREEN={'YES' if screen_25 else 'NO'}")
+        activity.logger.info(
+            f"   📸 [VALIDATE] 25% check | SOCCER={'YES' if soccer_25 else 'NO'} | "
+            f"SCREEN={'YES' if screen_25 else 'NO'}"
+        )
+    
+    # Heartbeat before second check
+    activity.heartbeat(f"AI vision check 2/2 (75% frame)...")
     
     # Check 75%
     if frame_75:
         response_75 = await _call_vision_model(frame_75, prompt)
         checks_performed += 1
         soccer_75, screen_75 = parse_response(response_75)
-        activity.logger.info(f"   📸 75% check: SOCCER={'YES' if soccer_75 else 'NO'}, SCREEN={'YES' if screen_75 else 'NO'}")
+        activity.logger.info(
+            f"   📸 [VALIDATE] 75% check | SOCCER={'YES' if soccer_75 else 'NO'} | "
+            f"SCREEN={'YES' if screen_75 else 'NO'}"
+        )
     
     # Determine soccer result
     if soccer_25 is None and soccer_75 is not None:
@@ -904,10 +986,14 @@ SCREEN: YES or NO"""
         is_soccer = soccer_25
         confidence = 0.95 if is_soccer else 0.90
         soccer_reason = f"Both checks agree: {'soccer' if is_soccer else 'not soccer'}"
-        activity.logger.info(f"   ✓ Soccer check: Both frames agree {'YES' if is_soccer else 'NO'}")
+        activity.logger.info(
+            f"   ✓ [VALIDATE] Both frames agree | is_soccer={'YES' if is_soccer else 'NO'}"
+        )
     else:
         # Disagreement - need tiebreaker at 50%
-        activity.logger.info(f"   ⚖️ Soccer disagreement, checking 50% as tiebreaker...")
+        activity.logger.info(f"   ⚖️ [VALIDATE] Disagreement, checking 50% tiebreaker...")
+        activity.heartbeat("AI vision tiebreaker (50% frame)...")
+        
         t_50 = duration * 0.50
         frame_50 = _extract_frame_for_vision(file_path, t_50)
         
@@ -915,7 +1001,10 @@ SCREEN: YES or NO"""
             response_50 = await _call_vision_model(frame_50, prompt)
             checks_performed += 1
             soccer_50, screen_50 = parse_response(response_50)
-            activity.logger.info(f"   📸 50% tiebreaker: SOCCER={'YES' if soccer_50 else 'NO'}, SCREEN={'YES' if screen_50 else 'NO'}")
+            activity.logger.info(
+                f"   📸 [VALIDATE] 50% tiebreaker | SOCCER={'YES' if soccer_50 else 'NO'} | "
+                f"SCREEN={'YES' if screen_50 else 'NO'}"
+            )
             
             # Count votes (2/3 majority)
             yes_votes = sum([soccer_25 or False, soccer_50, soccer_75 or False])
@@ -940,13 +1029,22 @@ SCREEN: YES or NO"""
     
     if is_screen_recording:
         reason = "Rejected: phone recording of TV/screen detected"
-        activity.logger.warning(f"📺 Video is phone-TV recording ({checks_performed} checks): {event_id}")
+        activity.logger.warning(
+            f"📺 [VALIDATE] REJECTED phone-TV recording | event={event_id} | "
+            f"checks={checks_performed}"
+        )
     elif not is_soccer:
         reason = soccer_reason
-        activity.logger.warning(f"❌ Video NOT soccer ({checks_performed} checks): {event_id}")
+        activity.logger.warning(
+            f"❌ [VALIDATE] REJECTED not soccer | event={event_id} | "
+            f"checks={checks_performed} | reason={soccer_reason}"
+        )
     else:
         reason = soccer_reason
-        activity.logger.info(f"✅ Video validated as soccer ({checks_performed} checks): {event_id}")
+        activity.logger.info(
+            f"✅ [VALIDATE] PASSED validation | event={event_id} | "
+            f"checks={checks_performed} | confidence={confidence:.0%}"
+        )
     
     return {
         "is_valid": is_valid,
@@ -967,6 +1065,10 @@ async def generate_video_hash(file_path: str, duration: float) -> Dict[str, Any]
     Called AFTER AI validation to avoid wasting compute on non-soccer videos.
     Dense sampling at 0.25s intervals with histogram equalization.
     
+    Uses heartbeats every ~10 frames to signal progress to Temporal.
+    This allows long videos to process without timeout as long as
+    they're making progress (not hung).
+    
     Args:
         file_path: Path to video file
         duration: Video duration in seconds
@@ -975,19 +1077,45 @@ async def generate_video_hash(file_path: str, duration: float) -> Dict[str, Any]
         Dict with perceptual_hash string
     """
     if not os.path.exists(file_path):
-        activity.logger.error(f"❌ Video file not found for hashing: {file_path}")
+        activity.logger.error(
+            f"❌ [HASH] File not found | path={file_path}"
+        )
         return {"perceptual_hash": "", "error": "file_not_found"}
     
-    activity.logger.info(f"🔐 Generating perceptual hash for {os.path.basename(file_path)}...")
+    activity.logger.info(
+        f"🔐 [HASH] Starting hash generation | file={os.path.basename(file_path)} | "
+        f"duration={duration:.1f}s"
+    )
     
-    perceptual_hash = _generate_perceptual_hash(file_path, duration)
+    # Pass heartbeat function to signal progress during long hash generation
+    perceptual_hash = _generate_perceptual_hash(file_path, duration, heartbeat_fn=activity.heartbeat)
     
-    # Log hash info
+    # Log hash info and validate result
     if perceptual_hash.startswith("dense:"):
         parts = perceptual_hash.split(":", 2)
-        if len(parts) >= 3:
+        if len(parts) >= 3 and parts[2]:
             frame_count = len(parts[2].split(","))
-            activity.logger.info(f"✅ Generated hash: {frame_count} frames at 0.25s intervals")
+            if frame_count >= 3:
+                activity.logger.info(
+                    f"✅ [HASH] Generated hash | frames={frame_count} | interval=0.25s"
+                )
+            else:
+                activity.logger.warning(
+                    f"⚠️ [HASH] Low frame count | frames={frame_count} | "
+                    f"duration={duration}s | file={os.path.basename(file_path)}"
+                )
+        else:
+            activity.logger.error(
+                f"❌ [HASH] No frames extracted | file={os.path.basename(file_path)} | "
+                f"duration={duration}s"
+            )
+            return {"perceptual_hash": "", "error": "no_frames_extracted"}
+    else:
+        activity.logger.error(
+            f"❌ [HASH] Invalid format | file={os.path.basename(file_path)} | "
+            f"hash_prefix={perceptual_hash[:50]}"
+        )
+        return {"perceptual_hash": "", "error": "invalid_hash_format"}
     
     return {"perceptual_hash": perceptual_hash}
 
@@ -1072,19 +1200,21 @@ async def upload_single_video(
     if bitrate:
         quality_info += f"@{int(bitrate)}kbps"
     activity.logger.info(
-        f"☁️ Uploading video {video_index} to S3: {s3_key} "
-        f"({quality_info}, popularity={popularity})"
+        f"☁️ [UPLOAD] Starting S3 upload | event={event_id} | video_idx={video_index} | "
+        f"quality={quality_info} | popularity={popularity} | key={s3_key}"
     )
     
     s3_store = FootyS3Store()
     s3_url = s3_store.upload_video(file_path, s3_key, metadata=metadata)
     
     if not s3_url:
-        msg = f"❌ Upload failed for video {video_index}: S3 store returned None"
-        activity.logger.error(msg)
+        msg = f"[UPLOAD] S3 returned None | event={event_id} | video_idx={video_index}"
+        activity.logger.error(f"❌ {msg}")
         raise RuntimeError(msg)
     
-    activity.logger.info(f"✅ Uploaded video {video_index}: {s3_url}")
+    activity.logger.info(
+        f"✅ [UPLOAD] Uploaded to S3 | event={event_id} | video_idx={video_index} | url={s3_url}"
+    )
     
     # Return video object for MongoDB storage
     # Store ALL metadata in MongoDB to avoid S3 metadata truncation issues
@@ -1143,21 +1273,30 @@ async def mark_download_complete(
     
     store = FootyMongoStore()
     
+    activity.logger.info(
+        f"💾 [COMPLETE] Saving download results | event={event_id} | video_count={len(video_objects)}"
+    )
+    
     # Save video objects to _s3_videos array
-    activity.logger.info(f"💾 Saving {len(video_objects)} videos for {event_id}")
     success = store.add_videos_to_event(fixture_id, event_id, video_objects)
     
     if not success:
-        activity.logger.warning(f"⚠️ Failed to update event {event_id}")
+        activity.logger.warning(
+            f"⚠️ [COMPLETE] Failed to update event | event={event_id}"
+        )
     else:
         # Recalculate ranks after adding new videos
-        activity.logger.info(f"📊 Recalculating video ranks for {event_id}")
+        activity.logger.info(
+            f"📊 [COMPLETE] Recalculating video ranks | event={event_id}"
+        )
         store.recalculate_video_ranks(fixture_id, event_id)
     
     # Cleanup temp directory
     if temp_dir and os.path.exists(temp_dir):
         shutil.rmtree(temp_dir)
-        activity.logger.info(f"🧹 Cleaned up temp directory: {temp_dir}")
+        activity.logger.info(
+            f"🧹 [COMPLETE] Cleaned up temp dir | path={temp_dir}"
+        )
     
     return success
 
@@ -1185,13 +1324,21 @@ async def replace_s3_video(
     from src.data.mongo_store import FootyMongoStore
     from src.data.s3_store import FootyS3Store
     
+    activity.logger.info(
+        f"🗑️ [REPLACE] Deleting old video | event={event_id} | key={old_s3_key}"
+    )
+    
     # Delete from S3
     s3_store = FootyS3Store()
     try:
         s3_store.s3_client.delete_object(Bucket="footy-videos", Key=old_s3_key)
-        activity.logger.info(f"🗑️ Deleted old S3 video: {old_s3_key}")
+        activity.logger.info(
+            f"✅ [REPLACE] S3 delete successful | key={old_s3_key}"
+        )
     except Exception as e:
-        activity.logger.error(f"❌ Failed to delete old S3 video {old_s3_key}: {e}")
+        activity.logger.error(
+            f"❌ [REPLACE] S3 delete failed | key={old_s3_key} | error={e}"
+        )
         # Continue - we still want to update MongoDB
     
     # Remove from MongoDB _s3_videos array (by URL)
@@ -1206,12 +1353,18 @@ async def replace_s3_video(
             }
         )
         if result.modified_count > 0:
-            activity.logger.info(f"✅ Removed old video from MongoDB: {old_s3_url}")
+            activity.logger.info(
+                f"✅ [REPLACE] MongoDB updated | removed={old_s3_url}"
+            )
         else:
-            activity.logger.warning(f"⚠️ Old video not found in MongoDB (may have been already removed)")
+            activity.logger.warning(
+                f"⚠️ [REPLACE] Video not found in MongoDB | url={old_s3_url}"
+            )
         return True
     except Exception as e:
-        activity.logger.error(f"❌ Failed to update MongoDB after S3 delete: {e}")
+        activity.logger.error(
+            f"❌ [REPLACE] MongoDB update failed | event={event_id} | error={e}"
+        )
         raise
 
 
@@ -1238,12 +1391,21 @@ async def bump_video_popularity(
     from src.data.mongo_store import FootyMongoStore
     
     store = FootyMongoStore()
+    
+    activity.logger.info(
+        f"📈 [POPULARITY] Bumping video popularity | event={event_id} | new_pop={new_popularity}"
+    )
+    
     success = store.update_video_popularity(fixture_id, event_id, s3_url, new_popularity)
     
     if success:
-        activity.logger.info(f"📈 Bumped popularity to {new_popularity} for existing video")
+        activity.logger.info(
+            f"✅ [POPULARITY] Updated | event={event_id} | popularity={new_popularity}"
+        )
     else:
-        activity.logger.warning(f"⚠️ Failed to bump popularity for {s3_url}")
+        activity.logger.warning(
+            f"⚠️ [POPULARITY] Update failed | event={event_id} | url={s3_url}"
+        )
     
     return success
 
@@ -1344,7 +1506,7 @@ def _get_video_metadata(file_path: str) -> dict:
     return result
 
 
-def _generate_perceptual_hash(file_path: str, duration: float) -> str:
+def _generate_perceptual_hash(file_path: str, duration: float, heartbeat_fn=None) -> str:
     """
     Generate perceptual hash using dense sampling for offset-tolerant matching.
     
@@ -1367,6 +1529,7 @@ def _generate_perceptual_hash(file_path: str, duration: float) -> str:
     Args:
         file_path: Path to video file
         duration: Video duration in seconds
+        heartbeat_fn: Optional function to call periodically to signal activity is alive
         
     Returns:
         Dense hash string with all frame hashes
@@ -1425,11 +1588,20 @@ def _generate_perceptual_hash(file_path: str, duration: float) -> str:
     # Extract hashes at 0.25s intervals
     hashes = []
     t = interval
+    frame_count = 0
+    total_frames = int((duration - 0.3) / interval)
+    
     while t < duration - 0.3:  # Stop before last 0.3s to avoid end-of-file issues
         frame_hash = extract_frame_hash_normalized(t)
         if frame_hash:
             hashes.append(f"{t:.2f}={frame_hash}")
         t += interval
+        frame_count += 1
+        
+        # Send heartbeat every 10 frames (~2.5s of video) to prove we're still working
+        # This prevents Temporal from killing us while we're actively processing
+        if heartbeat_fn and frame_count % 10 == 0:
+            heartbeat_fn(f"Processed {frame_count}/{total_frames} frames")
     
     if not hashes:
         # Fallback: try at least one frame at 1s

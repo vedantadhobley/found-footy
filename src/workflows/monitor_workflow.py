@@ -155,7 +155,7 @@ class MonitorWorkflow:
                 local_rag_workflows.append(rag_workflow_id)
                 
                 # Start RAGWorkflow (fire-and-forget)
-                # RAGWorkflow triggers TwitterWorkflow which manages all 3 attempts
+                # RAGWorkflow resolves aliases (~30-90s) then starts TwitterWorkflow
                 await workflow.start_child_workflow(
                     RAGWorkflow.run,
                     RAGWorkflowInput(
@@ -168,7 +168,8 @@ class MonitorWorkflow:
                         extra=extra,
                     ),
                     id=rag_workflow_id,
-                    execution_timeout=timedelta(minutes=25),
+                    # No execution_timeout - RAG manages its own lifecycle
+                    # RAG completes in ~30-90s, then Twitter runs independently
                     parent_close_policy=ParentClosePolicy.ABANDON,
                 )
                 

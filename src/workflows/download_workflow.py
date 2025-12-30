@@ -11,25 +11,19 @@ Orchestrates granular download/upload with per-video retry:
 7. upload_single_video x N - Upload new/replacement videos to S3
 8. mark_download_complete - Update MongoDB, cleanup temp dir
 
-Per-video retry (3 attempts):
-- Each video gets 3 download attempts with exponential backoff (2s, 4s, 8s)
-- Videos that fail all 3 attempts are marked as "failed" and skipped
-- URLs are already saved to _discovered_videos by TwitterWorkflow BEFORE download starts
+Design Philosophy:
+- Per-video retry (3 attempts with exponential backoff)
+- Videos that fail all 3 attempts are logged but don't block workflow
+- Parallel processing where possible (downloads, hashes, uploads)
+- Comprehensive logging at every step with [DOWNLOAD] prefix
+- Activity-level heartbeats for long operations (hash generation)
 
-Optimized Pipeline Order:
+Pipeline Order:
 - AI validation happens BEFORE perceptual hash generation
 - This saves expensive hash computation for non-soccer videos
-- Hash generation is dense sampling at 0.25s intervals (CPU intensive)
+- Hash generation uses heartbeats (sends heartbeat every 10 frames)
 
-URL Tracking (handled by TwitterWorkflow):
-- TwitterWorkflow saves ALL discovered URLs IMMEDIATELY after Twitter search
-- This prevents re-discovery even if DownloadWorkflow crashes or fails
-- Failed downloads won't be retried in future Twitter searches
-
-Cross-retry quality comparison:
-- New videos that match existing S3 by perceptual hash are compared by quality
-- Higher quality new videos REPLACE existing S3 videos (resolution > bitrate > file_size)
-- Lower quality matches are SKIPPED (URL already tracked)
+Started by: TwitterWorkflow (WAITS for completion - data integrity)
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -73,20 +67,38 @@ class DownloadWorkflow:
         Returns:
             Dict with videos_uploaded count and s3_urls list
         """
-        workflow.logger.info(f"⬇️ Starting download for {event_id}")
+        workflow.logger.info(
+            f"⬇️ [DOWNLOAD] STARTED | event={event_id} | "
+            f"videos={len(discovered_videos) if discovered_videos else 0}"
+        )
         
         # =========================================================================
         # Step 1: Get existing S3 video metadata for quality comparison
         # =========================================================================
-        event_data = await workflow.execute_activity(
-            download_activities.fetch_event_data,
-            args=[fixture_id, event_id],
-            start_to_close_timeout=timedelta(seconds=15),
-            retry_policy=RetryPolicy(maximum_attempts=2),
-        )
+        workflow.logger.info(f"📋 [DOWNLOAD] Fetching existing S3 metadata | event={event_id}")
+        
+        try:
+            event_data = await workflow.execute_activity(
+                download_activities.fetch_event_data,
+                args=[fixture_id, event_id],
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=3,
+                    initial_interval=timedelta(seconds=2),
+                    backoff_coefficient=2.0,
+                ),
+            )
+            existing_s3_videos = event_data.get("existing_s3_videos", [])
+            workflow.logger.info(
+                f"✅ [DOWNLOAD] Got event data | event={event_id} | "
+                f"existing_s3_videos={len(existing_s3_videos)}"
+            )
+        except Exception as e:
+            workflow.logger.error(f"❌ [DOWNLOAD] fetch_event_data FAILED | event={event_id} | error={e}")
+            existing_s3_videos = []
         
         if not discovered_videos:
-            workflow.logger.warning(f"⚠️ No videos to download")
+            workflow.logger.warning(f"⚠️ [DOWNLOAD] No videos to download | event={event_id}")
             return {
                 "fixture_id": fixture_id,
                 "event_id": event_id,
@@ -94,34 +106,34 @@ class DownloadWorkflow:
                 "s3_urls": [],
             }
         
-        existing_s3_videos = event_data.get("existing_s3_videos", [])
-        
-        workflow.logger.info(f"📋 Found {len(discovered_videos)} videos to download")
-        if existing_s3_videos:
-            workflow.logger.info(f"📦 Will compare against {len(existing_s3_videos)} existing S3 videos")
+        workflow.logger.info(
+            f"📋 [DOWNLOAD] Processing {len(discovered_videos)} videos | "
+            f"existing_s3={len(existing_s3_videos)} | event={event_id}"
+        )
         
         # Temp directory path with unique run ID to prevent conflicts between concurrent workflows
-        # Each DownloadWorkflow run gets its own temp directory
-        run_id = workflow.info().run_id[:8]  # First 8 chars of workflow run ID
+        run_id = workflow.info().run_id[:8]
         temp_dir = f"/tmp/footy_{event_id}_{run_id}"
         
         # =========================================================================
         # Step 2: Download videos IN PARALLEL (with per-video retry)
         # 403 errors are common (rate limits, expired links) - retry 3x with backoff
-        # Also track filtered URLs (too short/long) for dedup
-        # Multi-video tweets: each tweet may return multiple videos
         # =========================================================================
-        workflow.logger.info(f"📥 Downloading {len(discovered_videos)} videos in parallel...")
+        workflow.logger.info(
+            f"📥 [DOWNLOAD] Downloading {len(discovered_videos)} videos in parallel | event={event_id}"
+        )
         
         download_results = []
         filtered_urls = []  # Track URLs filtered out (too short/long/vertical)
-        failed_urls = []    # Track URLs that failed after 3 retries (don't retry again)
+        failed_urls = []    # Track URLs that failed after 3 retries
         
         # Create download tasks for parallel execution
         async def download_video(idx: int, video: dict):
             video_url = video.get("tweet_url") or video.get("video_page_url")
             if not video_url:
-                workflow.logger.warning(f"⚠️ Video {idx}: No URL, skipping")
+                workflow.logger.warning(
+                    f"⚠️ [DOWNLOAD] Video {idx}: No URL, skipping | event={event_id}"
+                )
                 return None
             
             try:
@@ -138,8 +150,16 @@ class DownloadWorkflow:
                 )
                 return {"idx": idx, "result": result, "url": video_url}
             except Exception as e:
-                workflow.logger.warning(f"⚠️ Video {idx} failed after 3 retries: {str(e)[:100]}")
-                return {"idx": idx, "result": {"status": "failed", "error": str(e)[:200], "source_url": video_url}, "url": video_url, "failed": True}
+                workflow.logger.warning(
+                    f"⚠️ [DOWNLOAD] Video {idx} FAILED after 3 retries | "
+                    f"url={video_url[:50]}... | error={str(e)[:100]} | event={event_id}"
+                )
+                return {
+                    "idx": idx, 
+                    "result": {"status": "failed", "error": str(e)[:200], "source_url": video_url}, 
+                    "url": video_url, 
+                    "failed": True
+                }
         
         # Execute all downloads in parallel
         download_tasks = [download_video(idx, video) for idx, video in enumerate(discovered_videos)]
@@ -155,26 +175,28 @@ class DownloadWorkflow:
             # Handle multi-video tweets - flatten the results
             if result.get("status") == "multi_video":
                 videos = result.get("videos", [])
-                workflow.logger.info(f"📹 Multi-video tweet {outcome['idx']}: {len(videos)} videos")
+                workflow.logger.info(
+                    f"📹 [DOWNLOAD] Multi-video tweet {outcome['idx']}: {len(videos)} videos | event={event_id}"
+                )
                 download_results.extend(videos)
             else:
                 download_results.append(result)
             
-            # Track filtered videos (too short/long/vertical) for dedup
+            # Track filtered videos (too short/long/vertical)
             if result.get("status") == "filtered":
                 source_url = result.get("source_url")
                 if source_url:
                     filtered_urls.append(source_url)
-                    workflow.logger.info(f"📝 Tracking filtered URL for dedup: {result.get('reason')}")
             
             # Track failed URLs
             if outcome.get("failed"):
                 failed_urls.append(outcome["url"])
         
         successful_downloads = sum(1 for r in download_results if r.get("status") == "success")
-        filtered_count = len(filtered_urls)
-        failed_count = len(failed_urls)
-        workflow.logger.info(f"📥 Downloaded {successful_downloads}/{len(discovered_videos)} videos ({filtered_count} filtered, {failed_count} failed)")
+        workflow.logger.info(
+            f"✅ [DOWNLOAD] Downloads complete | success={successful_downloads} | "
+            f"filtered={len(filtered_urls)} | failed={len(failed_urls)} | event={event_id}"
+        )
         
         # =========================================================================
         # Step 3: AI Validation BEFORE hash generation (saves compute)
@@ -186,18 +208,20 @@ class DownloadWorkflow:
         validation_failed_count = 0
         
         if successful_videos:
-            workflow.logger.info(f"🔍 Validating {len(successful_videos)} videos with AI vision...")
+            workflow.logger.info(
+                f"🔍 [DOWNLOAD] Validating {len(successful_videos)} videos with AI vision | event={event_id}"
+            )
         
         for video_info in successful_videos:
             try:
                 validation = await workflow.execute_activity(
                     download_activities.validate_video_is_soccer,
                     args=[video_info["file_path"], event_id],
-                    start_to_close_timeout=timedelta(seconds=60),  # Vision model can be slow
+                    start_to_close_timeout=timedelta(seconds=90),
                     retry_policy=RetryPolicy(
-                        maximum_attempts=4,  # More retries for transient failures
+                        maximum_attempts=4,
                         initial_interval=timedelta(seconds=3),
-                        backoff_coefficient=2.0,  # 3s, 6s, 12s, 24s
+                        backoff_coefficient=2.0,
                         maximum_interval=timedelta(seconds=30),
                     ),
                 )
@@ -207,7 +231,8 @@ class DownloadWorkflow:
                 else:
                     rejected_count += 1
                     workflow.logger.warning(
-                        f"🚫 Video rejected (not soccer): {validation.get('reason', 'unknown')}"
+                        f"🚫 [DOWNLOAD] Video rejected (not soccer) | "
+                        f"reason={validation.get('reason', 'unknown')} | event={event_id}"
                     )
                     # Clean up rejected video file
                     try:
@@ -218,37 +243,45 @@ class DownloadWorkflow:
             except Exception as e:
                 # FAIL-CLOSED: If validation fails after retries, REJECT the video
                 validation_failed_count += 1
-                workflow.logger.error(f"🚫 Validation FAILED - rejecting video: {e}")
+                workflow.logger.error(
+                    f"❌ [DOWNLOAD] Validation FAILED - rejecting video | error={e} | event={event_id}"
+                )
                 try:
                     import os
                     os.remove(video_info["file_path"])
                 except:
                     pass
         
-        if rejected_count > 0 or validation_failed_count > 0:
-            workflow.logger.info(
-                f"🔍 Validation: {len(validated_videos)} passed, "
-                f"{rejected_count} not soccer, {validation_failed_count} validation errors"
-            )
+        workflow.logger.info(
+            f"✅ [DOWNLOAD] Validation complete | passed={len(validated_videos)} | "
+            f"not_soccer={rejected_count} | validation_errors={validation_failed_count} | event={event_id}"
+        )
         
         # =========================================================================
         # Step 4: Generate perceptual hashes IN PARALLEL for validated videos
-        # This is CPU-intensive (0.25s sampling) - parallelism helps significantly
+        # Uses heartbeat-based timeout (heartbeat every 10 frames)
         # =========================================================================
         if validated_videos:
-            workflow.logger.info(f"🔐 Generating perceptual hashes for {len(validated_videos)} validated videos in parallel...")
+            workflow.logger.info(
+                f"🔐 [DOWNLOAD] Generating perceptual hashes for {len(validated_videos)} videos in parallel | event={event_id}"
+            )
         
         async def generate_hash(video_info: dict, idx: int):
             try:
                 hash_result = await workflow.execute_activity(
                     download_activities.generate_video_hash,
                     args=[video_info["file_path"], video_info.get("duration", 0)],
-                    start_to_close_timeout=timedelta(seconds=60),
+                    # Heartbeat-based timeout: activity heartbeats every 10 frames
+                    # If no heartbeat for 30s, activity is truly hung
+                    heartbeat_timeout=timedelta(seconds=30),
+                    start_to_close_timeout=timedelta(seconds=300),
                     retry_policy=RetryPolicy(maximum_attempts=2),
                 )
                 return {"idx": idx, "hash": hash_result.get("perceptual_hash", "")}
             except Exception as e:
-                workflow.logger.warning(f"⚠️ Hash generation failed for video {idx}: {e}")
+                workflow.logger.warning(
+                    f"⚠️ [DOWNLOAD] Hash generation FAILED for video {idx} | error={e} | event={event_id}"
+                )
                 return {"idx": idx, "hash": ""}
         
         # Execute all hash generations in parallel
@@ -256,19 +289,29 @@ class DownloadWorkflow:
         hash_results = await asyncio.gather(*hash_tasks)
         
         # Apply hash results back to video_info objects
+        hashes_generated = sum(1 for r in hash_results if r["hash"])
+        workflow.logger.info(
+            f"✅ [DOWNLOAD] Hash generation complete | generated={hashes_generated}/{len(validated_videos)} | event={event_id}"
+        )
+        
         for hash_result in hash_results:
             validated_videos[hash_result["idx"]]["perceptual_hash"] = hash_result["hash"]
         
         # =========================================================================
         # Step 5: Deduplicate with quality comparison
-        # Returns: videos_to_upload, videos_to_replace, skipped_urls
         # =========================================================================
-        dedup_result = await workflow.execute_activity(
-            download_activities.deduplicate_videos,
-            args=[validated_videos, existing_s3_videos],
-            start_to_close_timeout=timedelta(seconds=30),
-            retry_policy=RetryPolicy(maximum_attempts=2),
-        )
+        workflow.logger.info(f"🔍 [DOWNLOAD] Deduplicating videos | event={event_id}")
+        
+        try:
+            dedup_result = await workflow.execute_activity(
+                download_activities.deduplicate_videos,
+                args=[validated_videos, existing_s3_videos],
+                start_to_close_timeout=timedelta(seconds=60),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+        except Exception as e:
+            workflow.logger.error(f"❌ [DOWNLOAD] Deduplication FAILED | error={e} | event={event_id}")
+            dedup_result = {"videos_to_upload": validated_videos, "videos_to_replace": [], "videos_to_bump_popularity": [], "skipped_urls": []}
         
         videos_to_upload = dedup_result.get("videos_to_upload", [])
         videos_to_replace = dedup_result.get("videos_to_replace", [])
@@ -276,16 +319,22 @@ class DownloadWorkflow:
         skipped_urls = dedup_result.get("skipped_urls", [])
         
         total_to_process = len(videos_to_upload) + len(videos_to_replace)
+        workflow.logger.info(
+            f"✅ [DOWNLOAD] Dedup complete | new={len(videos_to_upload)} | "
+            f"replacements={len(videos_to_replace)} | skipped={len(skipped_urls)} | event={event_id}"
+        )
         
         # URLs to track for dedup (even if we don't upload anything)
         all_processed_urls = skipped_urls + filtered_urls + failed_urls
         
         # =========================================================================
-        # Step 3b: Bump popularity for existing videos IN PARALLEL
+        # Step 5b: Bump popularity for existing videos IN PARALLEL
         # (when we skipped uploading because existing was higher quality)
         # =========================================================================
         if videos_to_bump_popularity:
-            workflow.logger.info(f"📈 Bumping popularity for {len(videos_to_bump_popularity)} existing videos in parallel")
+            workflow.logger.info(
+                f"📈 [DOWNLOAD] Bumping popularity for {len(videos_to_bump_popularity)} existing videos | event={event_id}"
+            )
             
             async def bump_popularity(bump_info: dict):
                 s3_video = bump_info["s3_video"]
@@ -299,32 +348,42 @@ class DownloadWorkflow:
                             s3_video.get("s3_url", ""),
                             new_popularity,
                         ],
-                        start_to_close_timeout=timedelta(seconds=10),
+                        start_to_close_timeout=timedelta(seconds=15),
                         retry_policy=RetryPolicy(
                             maximum_attempts=2,
                             initial_interval=timedelta(seconds=1),
                         ),
                     )
                 except Exception as e:
-                    workflow.logger.warning(f"⚠️ Failed to bump popularity: {e}")
+                    workflow.logger.warning(
+                        f"⚠️ [DOWNLOAD] Failed to bump popularity | error={e} | event={event_id}"
+                    )
             
             bump_tasks = [bump_popularity(info) for info in videos_to_bump_popularity]
             await asyncio.gather(*bump_tasks)
         
         if total_to_process == 0:
-            # No videos to upload - URLs already saved by TwitterWorkflow
-            workflow.logger.info(f"⚠️ No videos to upload ({len(all_processed_urls)} processed)")
-            
-            await workflow.execute_activity(
-                download_activities.mark_download_complete,
-                args=[fixture_id, event_id, [], temp_dir],
-                start_to_close_timeout=timedelta(seconds=10),
-                retry_policy=RetryPolicy(
-                    maximum_attempts=3,
-                    initial_interval=timedelta(seconds=1),
-                    backoff_coefficient=2.0,
-                ),
+            workflow.logger.info(
+                f"⚠️ [DOWNLOAD] No videos to upload (all duplicates/filtered) | "
+                f"processed={len(all_processed_urls)} | event={event_id}"
             )
+            
+            try:
+                await workflow.execute_activity(
+                    download_activities.mark_download_complete,
+                    args=[fixture_id, event_id, [], temp_dir],
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(
+                        maximum_attempts=3,
+                        initial_interval=timedelta(seconds=2),
+                        backoff_coefficient=2.0,
+                    ),
+                )
+            except Exception as e:
+                workflow.logger.error(
+                    f"❌ [DOWNLOAD] mark_download_complete FAILED | error={e} | event={event_id}"
+                )
+            
             return {
                 "fixture_id": fixture_id,
                 "event_id": event_id,
@@ -332,18 +391,16 @@ class DownloadWorkflow:
                 "s3_urls": [],
             }
         
-        workflow.logger.info(
-            f"🔄 Dedup results: {len(videos_to_upload)} new, "
-            f"{len(videos_to_replace)} replacements, {len(skipped_urls)} skipped"
-        )
-        
         # =========================================================================
         # Step 6: Handle replacements - delete old S3 videos IN PARALLEL
         # =========================================================================
         if videos_to_replace:
+            workflow.logger.info(
+                f"🗑️ [DOWNLOAD] Deleting {len(videos_to_replace)} old S3 videos for replacement | event={event_id}"
+            )
+            
             async def delete_old_video(replacement: dict):
                 old_video = replacement["old_s3_video"]
-                workflow.logger.info(f"🗑️ Deleting old S3 video: {old_video.get('s3_key')}")
                 try:
                     await workflow.execute_activity(
                         download_activities.replace_s3_video,
@@ -353,7 +410,7 @@ class DownloadWorkflow:
                             old_video.get("s3_url", ""),
                             old_video.get("s3_key", ""),
                         ],
-                        start_to_close_timeout=timedelta(seconds=15),
+                        start_to_close_timeout=timedelta(seconds=30),
                         retry_policy=RetryPolicy(
                             maximum_attempts=3,
                             initial_interval=timedelta(seconds=2),
@@ -361,17 +418,21 @@ class DownloadWorkflow:
                         ),
                     )
                 except Exception as e:
-                    workflow.logger.warning(f"⚠️ Failed to delete old S3 video: {e}")
+                    workflow.logger.warning(
+                        f"⚠️ [DOWNLOAD] Failed to delete old S3 video | "
+                        f"key={old_video.get('s3_key')} | error={e} | event={event_id}"
+                    )
             
-            # Execute all deletions in parallel
             delete_tasks = [delete_old_video(r) for r in videos_to_replace]
             await asyncio.gather(*delete_tasks)
         
         # =========================================================================
-        # Step 7: Upload videos to S3 IN PARALLEL (already validated and hashed)
+        # Step 7: Upload videos to S3 IN PARALLEL
         # =========================================================================
         all_uploads = videos_to_upload + [r["new_video"] for r in videos_to_replace]
-        workflow.logger.info(f"☁️ Uploading {len(all_uploads)} videos to S3 in parallel...")
+        workflow.logger.info(
+            f"☁️ [DOWNLOAD] Uploading {len(all_uploads)} videos to S3 in parallel | event={event_id}"
+        )
         
         async def upload_video(idx: int, video_info: dict):
             try:
@@ -396,7 +457,7 @@ class DownloadWorkflow:
                         video_info.get("bitrate", 0.0),
                         video_info.get("file_size", 0),
                     ],
-                    start_to_close_timeout=timedelta(seconds=30),
+                    start_to_close_timeout=timedelta(seconds=60),
                     retry_policy=RetryPolicy(
                         maximum_attempts=3,
                         initial_interval=timedelta(seconds=2),
@@ -405,21 +466,21 @@ class DownloadWorkflow:
                 )
                 return {"idx": idx, "result": result, "video_info": video_info}
             except Exception as e:
-                workflow.logger.warning(f"⚠️ Upload {idx} failed: {str(e)[:100]}")
+                workflow.logger.error(
+                    f"❌ [DOWNLOAD] Upload {idx} FAILED | error={str(e)[:100]} | event={event_id}"
+                )
                 return {"idx": idx, "result": None, "error": str(e)}
         
-        # Execute all uploads in parallel
         upload_tasks = [upload_video(idx, video_info) for idx, video_info in enumerate(all_uploads)]
         upload_outcomes = await asyncio.gather(*upload_tasks)
         
-        video_objects = []  # New schema: list of video objects for MongoDB
+        video_objects = []
         successful_video_urls = []
         
         for outcome in upload_outcomes:
             result = outcome.get("result")
             if result and result.get("status") == "success":
                 video_info = outcome["video_info"]
-                # Collect video object for MongoDB
                 video_objects.append(result.get("video_object", {
                     "url": result["s3_url"],
                     "perceptual_hash": result.get("perceptual_hash", ""),
@@ -435,38 +496,56 @@ class DownloadWorkflow:
                         "tweet_url": source_url
                     })
         
-        workflow.logger.info(f"☁️ Uploaded {len(video_objects)}/{len(all_uploads)} videos to S3")
-        
-        # URLs already saved by TwitterWorkflow - no need to save again
-        
-        # =========================================================================
-        # Step 6: Save video objects and cleanup temp directory
-        # This saves to _s3_videos array and recalculates ranks
-        # =========================================================================
-        await workflow.execute_activity(
-            download_activities.mark_download_complete,
-            args=[fixture_id, event_id, video_objects, temp_dir],
-            start_to_close_timeout=timedelta(seconds=10),
-            retry_policy=RetryPolicy(
-                maximum_attempts=3,
-                initial_interval=timedelta(seconds=1),
-                backoff_coefficient=2.0,
-            ),
+        workflow.logger.info(
+            f"✅ [DOWNLOAD] Uploads complete | success={len(video_objects)}/{len(all_uploads)} | event={event_id}"
         )
         
         # =========================================================================
-        # Step 8: Notify frontend to refresh (SSE broadcast)
-        # Only notify if we actually uploaded new videos
+        # Step 8: Save video objects and cleanup temp directory
         # =========================================================================
-        if video_objects:
+        workflow.logger.info(
+            f"💾 [DOWNLOAD] Saving {len(video_objects)} video objects to MongoDB | event={event_id}"
+        )
+        
+        try:
             await workflow.execute_activity(
-                monitor_activities.notify_frontend_refresh,
-                start_to_close_timeout=timedelta(seconds=10),
-                retry_policy=RetryPolicy(maximum_attempts=1),  # Don't retry - frontend may not be running
+                download_activities.mark_download_complete,
+                args=[fixture_id, event_id, video_objects, temp_dir],
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=3,
+                    initial_interval=timedelta(seconds=2),
+                    backoff_coefficient=2.0,
+                ),
+            )
+            workflow.logger.info(f"✅ [DOWNLOAD] Saved to MongoDB | event={event_id}")
+        except Exception as e:
+            workflow.logger.error(
+                f"❌ [DOWNLOAD] mark_download_complete FAILED | error={e} | event={event_id}"
             )
         
+        # =========================================================================
+        # Step 9: Notify frontend to refresh (SSE broadcast)
+        # =========================================================================
+        if video_objects:
+            try:
+                await workflow.execute_activity(
+                    monitor_activities.notify_frontend_refresh,
+                    start_to_close_timeout=timedelta(seconds=15),
+                    retry_policy=RetryPolicy(maximum_attempts=1),
+                )
+                workflow.logger.info(f"📡 [DOWNLOAD] Frontend notified | event={event_id}")
+            except Exception as e:
+                workflow.logger.warning(
+                    f"⚠️ [DOWNLOAD] Frontend notification failed (non-critical) | error={e} | event={event_id}"
+                )
+        
         s3_urls = [v["url"] for v in video_objects]
-        workflow.logger.info(f"✅ Download complete: {len(video_objects)} videos in S3")
+        
+        workflow.logger.info(
+            f"🎉 [DOWNLOAD] WORKFLOW COMPLETE | uploaded={len(video_objects)} | "
+            f"s3_urls={len(s3_urls)} | event={event_id}"
+        )
         
         return {
             "fixture_id": fixture_id,

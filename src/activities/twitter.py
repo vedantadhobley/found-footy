@@ -6,6 +6,8 @@ Three-activity pattern for Twitter search with proper retry semantics:
 2. execute_twitter_search - POST to Firefox automation (the risky call)
 3. save_twitter_results - Persist results back to MongoDB
 
+Logging Convention: All logs prefixed with [TWITTER] for easy filtering.
+
 This separation ensures:
 - Twitter search failures trigger retry (not swallowed)
 - Successful searches don't get lost if save fails
@@ -48,19 +50,21 @@ async def check_event_exists(fixture_id: int, event_id: str) -> Dict[str, Any]:
     
     store = FootyMongoStore()
     
+    activity.logger.info(f"🔍 [TWITTER] check_event_exists | fixture={fixture_id} | event={event_id}")
+    
     # Check in active collection
     fixture = store.get_fixture_from_active(fixture_id)
     if not fixture:
-        activity.logger.warning(f"⚠️ Fixture {fixture_id} not found in active")
+        activity.logger.warning(f"⚠️ [TWITTER] Fixture {fixture_id} not found in active")
         return {"exists": False}
     
     # Find the specific event
     for evt in fixture.get("events", []):
         if evt.get(EventFields.EVENT_ID) == event_id:
-            activity.logger.debug(f"✓ Event {event_id} exists")
+            activity.logger.info(f"✅ [TWITTER] Event exists | event={event_id}")
             return {"exists": True}
     
-    activity.logger.warning(f"⚠️ Event {event_id} not found in fixture {fixture_id}")
+    activity.logger.warning(f"⚠️ [TWITTER] Event NOT FOUND | fixture={fixture_id} | event={event_id}")
     return {"exists": False}
 
 
@@ -90,10 +94,12 @@ async def get_twitter_search_data(fixture_id: int, event_id: str) -> Dict[str, A
     
     store = FootyMongoStore()
     
+    activity.logger.info(f"🔍 [TWITTER] get_twitter_search_data | fixture={fixture_id} | event={event_id}")
+    
     # Fetch fixture from active collection
     fixture = store.get_fixture_from_active(fixture_id)
     if not fixture:
-        msg = f"Fixture {fixture_id} not found in fixtures_active"
+        msg = f"[TWITTER] Fixture {fixture_id} not found in fixtures_active"
         activity.logger.error(f"❌ {msg}")
         raise ValueError(msg)
     
@@ -105,14 +111,14 @@ async def get_twitter_search_data(fixture_id: int, event_id: str) -> Dict[str, A
             break
     
     if not event:
-        msg = f"Event {event_id} not found in fixture {fixture_id}"
+        msg = f"[TWITTER] Event {event_id} not found in fixture {fixture_id}"
         activity.logger.error(f"❌ {msg}")
         raise ValueError(msg)
     
     # Get prebuilt search string (set by process_fixture_events)
     twitter_search = event.get(EventFields.TWITTER_SEARCH, "")
     if not twitter_search:
-        msg = f"No _twitter_search field on event {event_id}"
+        msg = f"[TWITTER] No _twitter_search field on event {event_id}"
         activity.logger.error(f"❌ {msg}")
         raise ValueError(msg)
     
@@ -124,10 +130,10 @@ async def get_twitter_search_data(fixture_id: int, event_id: str) -> Dict[str, A
     # Get match date for filtering (only search tweets from around match time)
     match_date = fixture.get("fixture", {}).get("date", "")
     
-    if existing_urls:
-        activity.logger.info(f"🔍 Got search query: '{twitter_search}' for {event_id} (will skip {len(existing_urls)} existing videos)")
-    else:
-        activity.logger.info(f"🔍 Got search query: '{twitter_search}' for {event_id}")
+    activity.logger.info(
+        f"✅ [TWITTER] Search data ready | query='{twitter_search}' | "
+        f"existing_urls={len(existing_urls)} | event={event_id}"
+    )
     
     return {
         "twitter_search": twitter_search,
@@ -155,6 +161,9 @@ async def execute_twitter_search(
     This is the risky external call that needs proper retry policy.
     If this fails, Temporal will retry the activity (not swallow the error).
     
+    Sends heartbeats during the request to signal progress to Temporal.
+    Browser automation can take 2+ minutes - heartbeats prevent false timeouts.
+    
     Passes exclude_urls to Twitter service so it can skip already-discovered
     videos during scraping, allowing us to find more NEW videos.
     
@@ -172,38 +181,72 @@ async def execute_twitter_search(
         TimeoutError: Search took too long
         RuntimeError: Non-200 response from service (including 503 auth required)
     """
-    session_url = os.getenv("TWITTER_SESSION_URL", "http://twitter:8888")
+    import asyncio
     
+    session_url = os.getenv("TWITTER_SESSION_URL", "http://twitter:8888")
     exclude_urls = existing_video_urls or []
     
-    if exclude_urls:
-        activity.logger.info(f"🐦 Searching Twitter: '{twitter_search}' (excluding {len(exclude_urls)} already-discovered URLs)")
-    else:
-        activity.logger.info(f"🐦 Searching Twitter: '{twitter_search}'")
+    activity.logger.info(
+        f"🐦 [TWITTER] execute_twitter_search | query='{twitter_search}' | "
+        f"max_results={max_results} | excluding={len(exclude_urls)} URLs"
+    )
     if match_date:
-        activity.logger.info(f"📅 Date filter: around {match_date[:10]}")
-    activity.logger.info(f"📡 POST {session_url}/search")
+        activity.logger.info(f"📅 [TWITTER] Date filter: around {match_date[:10]}")
+    
+    # Send heartbeat before starting the request
+    activity.heartbeat(f"Starting search: {twitter_search}")
+    
+    # Use a background task to send heartbeats during the long HTTP request
+    heartbeat_task = None
+    search_complete = False
+    
+    async def heartbeat_loop():
+        """Send heartbeat every 15 seconds while waiting for browser automation"""
+        count = 0
+        while not search_complete:
+            await asyncio.sleep(15)
+            if not search_complete:
+                count += 1
+                activity.heartbeat(f"Searching... ({count * 15}s elapsed)")
+                activity.logger.debug(f"💓 [TWITTER] Heartbeat #{count} | query='{twitter_search}'")
     
     try:
+        # Start heartbeat loop in background
+        heartbeat_task = asyncio.create_task(heartbeat_loop())
+        
+        activity.logger.info(f"📡 [TWITTER] POST {session_url}/search")
+        
         response = requests.post(
             f"{session_url}/search",
             json={
                 "search_query": twitter_search, 
                 "max_results": max_results,
                 "exclude_urls": exclude_urls,
-                "match_date": match_date,  # Pass to service for date filtering
+                "match_date": match_date,
             },
             timeout=120,  # 2 min for browser automation
         )
+        
+        search_complete = True
+        
     except requests.exceptions.ConnectionError as e:
-        activity.logger.error(f"❌ Twitter service unavailable")
+        search_complete = True
+        activity.logger.error(f"❌ [TWITTER] Service UNREACHABLE | url={session_url} | error={e}")
         raise ConnectionError(f"Twitter service at {session_url} unreachable: {e}")
     except requests.exceptions.Timeout:
-        activity.logger.error(f"❌ Search timed out after 120s")
+        search_complete = True
+        activity.logger.error(f"❌ [TWITTER] Search TIMEOUT after 120s | query='{twitter_search}'")
         raise TimeoutError(f"Twitter search timed out for '{twitter_search}'")
+    finally:
+        search_complete = True
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
     
     # Check for 503 - this means authentication is required
-    # This is a FAILURE that should trigger retry (after manual login)
     if response.status_code == 503:
         try:
             error_data = response.json()
@@ -211,21 +254,26 @@ async def execute_twitter_search(
         except:
             error_msg = "Twitter authentication required - manual login needed"
         
-        activity.logger.error(f"❌ TWITTER AUTH FAILED: {error_msg}")
-        activity.logger.error(f"   🔐 Open VNC at http://localhost:4103 to login")
+        activity.logger.error(f"❌ [TWITTER] AUTH FAILED | query='{twitter_search}' | error={error_msg}")
+        activity.logger.error(f"   🔐 [TWITTER] Open VNC at http://localhost:4103 to login")
         raise RuntimeError(f"Twitter authentication required: {error_msg}")
     
     # Check other error responses
     if response.status_code != 200:
-        activity.logger.error(f"❌ Service returned {response.status_code}")
+        activity.logger.error(
+            f"❌ [TWITTER] Service ERROR | status={response.status_code} | "
+            f"query='{twitter_search}' | response={response.text[:200]}"
+        )
         raise RuntimeError(f"Twitter service error {response.status_code}: {response.text}")
     
     # Parse videos from response
-    # Note: exclude_urls filtering already happened server-side in the Twitter service
     data = response.json()
     videos = data.get("videos", [])
     
-    activity.logger.info(f"✅ Found {len(videos)} new videos")
+    activity.logger.info(
+        f"✅ [TWITTER] Search SUCCESS | query='{twitter_search}' | "
+        f"found={len(videos)} videos"
+    )
     
     return {"videos": videos}
 
@@ -261,8 +309,13 @@ async def save_discovered_videos(
     
     store = FootyMongoStore()
     
+    activity.logger.info(
+        f"💾 [TWITTER] save_discovered_videos | fixture={fixture_id} | "
+        f"event={event_id} | count={len(videos)}"
+    )
+    
     if not videos:
-        activity.logger.info(f"No new videos to save for {event_id}")
+        activity.logger.info(f"📭 [TWITTER] No videos to save | event={event_id}")
         return {"saved": True, "video_count": 0}
     
     # Just append videos to _discovered_videos, don't touch _twitter_complete
@@ -277,15 +330,19 @@ async def save_discovered_videos(
         )
         
         if result.modified_count == 0:
-            msg = f"Failed to save discovered videos for {event_id}"
+            msg = f"[TWITTER] Failed to save discovered videos | event={event_id}"
             activity.logger.error(f"❌ {msg}")
             raise RuntimeError(msg)
         
-        activity.logger.info(f"💾 Saved {len(videos)} new discovered videos for {event_id}")
+        activity.logger.info(
+            f"✅ [TWITTER] Saved {len(videos)} discovered video URLs | event={event_id}"
+        )
         return {"saved": True, "video_count": len(videos)}
         
     except Exception as e:
-        activity.logger.error(f"❌ Error saving videos: {e}")
+        activity.logger.error(
+            f"❌ [TWITTER] save_discovered_videos FAILED | event={event_id} | error={e}"
+        )
         raise
 
 
@@ -312,11 +369,18 @@ async def mark_event_twitter_complete(fixture_id: int, event_id: str) -> bool:
     
     store = FootyMongoStore()
     
+    activity.logger.info(
+        f"🏁 [TWITTER] mark_event_twitter_complete | fixture={fixture_id} | event={event_id}"
+    )
+    
     success = store.mark_event_twitter_complete(fixture_id, event_id)
     if success:
-        activity.logger.info(f"✅ Marked {event_id} twitter_complete=true")
+        activity.logger.info(f"✅ [TWITTER] Marked twitter_complete=true | event={event_id}")
     else:
-        activity.logger.warning(f"⚠️ Failed to mark {event_id} twitter_complete (fixture may have moved)")
+        activity.logger.warning(
+            f"⚠️ [TWITTER] Failed to mark twitter_complete | event={event_id} | "
+            f"reason=fixture_may_have_moved"
+        )
     
     return success
 
@@ -344,11 +408,20 @@ async def update_twitter_attempt(fixture_id: int, event_id: str, attempt: int) -
     
     store = FootyMongoStore()
     
+    activity.logger.info(
+        f"📊 [TWITTER] update_twitter_attempt | fixture={fixture_id} | "
+        f"event={event_id} | attempt={attempt}"
+    )
+    
     success = store.update_event_twitter_count(fixture_id, event_id, attempt)
     if success:
-        activity.logger.info(f"📊 Updated twitter_count={attempt} for {event_id}")
+        activity.logger.info(
+            f"✅ [TWITTER] Updated twitter_count={attempt} | event={event_id}"
+        )
     else:
-        activity.logger.warning(f"⚠️ Failed to update twitter_count for {event_id}")
+        activity.logger.warning(
+            f"⚠️ [TWITTER] Failed to update twitter_count | event={event_id} | attempt={attempt}"
+        )
     
     return success
 

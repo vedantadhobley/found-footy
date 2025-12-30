@@ -31,16 +31,20 @@ async def activate_fixtures() -> Dict[str, int]:
     store = FootyMongoStore()
     now = datetime.now(timezone.utc)
     
-    activity.logger.info(f"🕐 Checking for fixtures to activate (current time: {now.isoformat()})")
+    activity.logger.info(
+        f"🕐 [MONITOR] activate_fixtures | checking_time={now.isoformat()}"
+    )
     
     # Get all fixtures from staging
     staging_fixtures = store.get_staging_fixtures()
     
     if not staging_fixtures:
-        activity.logger.info("📋 No fixtures in staging")
+        activity.logger.info("📋 [MONITOR] No fixtures in staging")
         return {"activated_count": 0}
     
-    activity.logger.info(f"📋 Found {len(staging_fixtures)} fixtures in staging")
+    activity.logger.info(
+        f"📋 [MONITOR] Found staging fixtures | count={len(staging_fixtures)}"
+    )
     
     activated_count = 0
     
@@ -61,14 +65,20 @@ async def activate_fixtures() -> Dict[str, int]:
                 if store.activate_fixture(fixture_id):
                     home_team = fixture.get("teams", {}).get("home", {}).get("name", "Unknown")
                     away_team = fixture.get("teams", {}).get("away", {}).get("name", "Unknown")
-                    activity.logger.info(f"✅ Activated fixture {fixture_id}: {home_team} vs {away_team}")
+                    activity.logger.info(
+                        f"✅ [MONITOR] Activated fixture | id={fixture_id} | match={home_team} vs {away_team}"
+                    )
                     activated_count += 1
         
         except Exception as e:
-            activity.logger.error(f"❌ Error activating fixture {fixture.get('_id')}: {e}")
+            activity.logger.error(
+                f"❌ [MONITOR] Activation error | fixture={fixture.get('_id')} | error={e}"
+            )
             continue
     
-    activity.logger.info(f"🎯 Activated {activated_count} fixtures")
+    activity.logger.info(
+        f"🎯 [MONITOR] Activation complete | activated={activated_count}"
+    )
     
     return {"activated_count": activated_count}
 
@@ -91,18 +101,24 @@ async def fetch_staging_fixtures() -> List[Dict[str, Any]]:
     fixture_ids = store.get_staging_fixture_ids()
     
     if not fixture_ids:
-        activity.logger.info("📋 No staging fixtures to fetch")
+        activity.logger.info("📋 [MONITOR] No staging fixtures to fetch")
         return []
     
-    activity.logger.info(f"🌐 Batch fetching data for {len(fixture_ids)} staging fixtures")
+    activity.logger.info(
+        f"🌐 [MONITOR] Fetching staging fixtures | count={len(fixture_ids)}"
+    )
     
     try:
         fresh_data = fixtures_batch(fixture_ids)
-        activity.logger.info(f"✅ Retrieved fresh data for {len(fresh_data)} staging fixtures")
+        activity.logger.info(
+            f"✅ [MONITOR] Retrieved staging data | count={len(fresh_data)}"
+        )
         return fresh_data
     
     except Exception as e:
-        activity.logger.error(f"❌ Failed to batch fetch staging fixtures: {e}")
+        activity.logger.error(
+            f"❌ [MONITOR] Staging fetch failed | error={e}"
+        )
         raise
 
 
@@ -161,18 +177,18 @@ async def process_staging_fixtures(staging_fixtures: List[Dict[str, Any]]) -> Di
                 "new_status": new_status,
             })
             activity.logger.info(
-                f"📌 QUEUED FOR ACTIVATION: {fixture_id} {home_team} vs {away_team} "
-                f"({current_status} → {new_status})"
+                f"📌 [MONITOR] Queued for activation | fixture={fixture_id} | "
+                f"match={home_team} vs {away_team} | status={current_status}→{new_status}"
             )
         elif current_status != new_status:
             # Status changed but still in staging (e.g., TBD → NS)
             activity.logger.info(
-                f"📝 STAGING UPDATE: {fixture_id} {home_team} vs {away_team} "
-                f"({current_status} → {new_status})"
+                f"📝 [MONITOR] Staging status change | fixture={fixture_id} | "
+                f"match={home_team} vs {away_team} | status={current_status}→{new_status}"
             )
     
     activity.logger.info(
-        f"📊 Staging processed: {updated_count} updated, {len(fixtures_to_activate)} queued for activation"
+        f"📊 [MONITOR] Staging processed | updated={updated_count} | queued={len(fixtures_to_activate)}"
     )
     
     return {
@@ -210,19 +226,23 @@ async def activate_pending_fixtures(fixtures_to_activate: List[Dict[str, Any]]) 
         # Get the updated staging document (already has fresh API data)
         staging_doc = store.fixtures_staging.find_one({"_id": fixture_id})
         if not staging_doc:
-            activity.logger.warning(f"⚠️ Fixture {fixture_id} not found in staging for activation")
+            activity.logger.warning(
+                f"⚠️ [MONITOR] Fixture not found in staging | fixture={fixture_id}"
+            )
             continue
         
         # Move to active with _last_activity set
         if store.activate_fixture_with_data(fixture_id, staging_doc):
             activity.logger.info(
-                f"⚽ ACTIVATED: {fixture_id} {home_team} vs {away_team} "
-                f"({old_status} → {new_status})"
+                f"⚽ [MONITOR] ACTIVATED | fixture={fixture_id} | "
+                f"match={home_team} vs {away_team} | status={old_status}→{new_status}"
             )
             activated_count += 1
     
     if activated_count > 0:
-        activity.logger.info(f"🎯 Activated {activated_count} fixtures")
+        activity.logger.info(
+            f"🎯 [MONITOR] Pending activation complete | count={activated_count}"
+        )
     
     return {"activated_count": activated_count}
 
@@ -242,18 +262,24 @@ async def fetch_active_fixtures() -> List[Dict[str, Any]]:
     fixture_ids = store.get_active_fixture_ids()
     
     if not fixture_ids:
-        activity.logger.info("📋 No active fixtures to fetch")
+        activity.logger.info("📋 [MONITOR] No active fixtures to fetch")
         return []
     
-    activity.logger.info(f"🌐 Batch fetching data for {len(fixture_ids)} active fixtures")
+    activity.logger.info(
+        f"🌐 [MONITOR] Fetching active fixtures | count={len(fixture_ids)}"
+    )
     
     try:
         fresh_data = fixtures_batch(fixture_ids)
-        activity.logger.info(f"✅ Retrieved fresh data for {len(fresh_data)} fixtures")
+        activity.logger.info(
+            f"✅ [MONITOR] Retrieved active data | count={len(fresh_data)}"
+        )
         return fresh_data
     
     except Exception as e:
-        activity.logger.error(f"❌ Failed to batch fetch fixtures: {e}")
+        activity.logger.error(
+            f"❌ [MONITOR] Active fetch failed | error={e}"
+        )
         raise
 
 
@@ -275,23 +301,26 @@ async def store_and_compare(fixture_id: int, fixture_data: Dict) -> Dict[str, An
     try:
         # Store in fixtures_live (raw API data with all events)
         store.store_live_fixture(fixture_id, fixture_data)
-        activity.logger.info(f"📥 Stored live data for fixture {fixture_id}")
+        activity.logger.info(
+            f"📥 [MONITOR] Stored live data | fixture={fixture_id}"
+        )
         
         # Compare live vs active
         comparison = store.compare_live_vs_active(fixture_id)
         
         if comparison["needs_debounce"]:
             activity.logger.info(
-                f"🎯 Fixture {fixture_id} needs debounce: "
-                f"NEW={comparison['new_events']}, "
-                f"INCOMPLETE={comparison['incomplete_events']}, "
-                f"REMOVED={comparison['removed_events']}"
+                f"🎯 [MONITOR] Debounce needed | fixture={fixture_id} | "
+                f"new={comparison['new_events']} | incomplete={comparison['incomplete_events']} | "
+                f"removed={comparison['removed_events']}"
             )
         
         return comparison
     
     except Exception as e:
-        activity.logger.error(f"❌ Error processing fixture {fixture_id}: {e}")
+        activity.logger.error(
+            f"❌ [MONITOR] Store/compare failed | fixture={fixture_id} | error={e}"
+        )
         raise
 
 
@@ -319,7 +348,9 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
         # =====================================================================
         fixture = store.get_fixture_from_active(fixture_id)
         if not fixture:
-            activity.logger.warning(f"Fixture {fixture_id} not found in active")
+            activity.logger.warning(
+                f"⚠️ [MONITOR] Fixture not found in active | fixture={fixture_id}"
+            )
             return False
         
         events = fixture.get("events", [])
@@ -336,9 +367,8 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
             
             if monitored < len(valid_events) or twitter_done < len(valid_events):
                 activity.logger.info(
-                    f"⏳ Fixture {fixture_id} events not ready: "
-                    f"monitored={monitored}/{len(valid_events)}, "
-                    f"twitter_complete={twitter_done}/{len(valid_events)}"
+                    f"⏳ [MONITOR] Events not ready | fixture={fixture_id} | "
+                    f"monitored={monitored}/{len(valid_events)} | twitter={twitter_done}/{len(valid_events)}"
                 )
                 return False  # Don't start completion counter yet!
         
@@ -353,13 +383,13 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
         # Log progress
         if count == 1:
             activity.logger.info(
-                f"📊 COMPLETION STARTED: fixture {fixture_id} "
-                f"(all events done, winner={'yes' if winner_exists else 'pending'})"
+                f"📊 [MONITOR] Completion started | fixture={fixture_id} | "
+                f"winner={'yes' if winner_exists else 'pending'}"
             )
         else:
             activity.logger.info(
-                f"📊 COMPLETION CHECK: fixture {fixture_id} "
-                f"(count={count}/3, winner={'yes' if winner_exists else 'pending'})"
+                f"📊 [MONITOR] Completion check | fixture={fixture_id} | "
+                f"count={count}/3 | winner={'yes' if winner_exists else 'pending'}"
             )
         
         # =====================================================================
@@ -367,8 +397,8 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
         # =====================================================================
         if not completion_complete:
             activity.logger.debug(
-                f"Fixture {fixture_id} waiting for completion counter "
-                f"(count={count}/3, winner={winner_exists})"
+                f"[MONITOR] Waiting for completion | fixture={fixture_id} | "
+                f"count={count}/3 | winner={winner_exists}"
             )
             return False
         
@@ -376,13 +406,17 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
         # STEP 4: All ready - complete the fixture
         # =====================================================================
         if store.complete_fixture(fixture_id):
-            activity.logger.info(f"🏁 Moved fixture {fixture_id} to completed")
+            activity.logger.info(
+                f"🏁 [MONITOR] FIXTURE COMPLETED | fixture={fixture_id}"
+            )
             return True
         
         return False
     
     except Exception as e:
-        activity.logger.error(f"❌ Error completing fixture {fixture_id}: {e}")
+        activity.logger.error(
+            f"❌ [MONITOR] Completion error | fixture={fixture_id} | error={e}"
+        )
         return False
 
 
@@ -409,11 +443,15 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
     active_fixture = store.get_fixture_from_active(fixture_id)
     
     if not live_fixture:
-        activity.logger.warning(f"Fixture {fixture_id} not in live")
+        activity.logger.warning(
+            f"⚠️ [MONITOR] Fixture not in live | fixture={fixture_id}"
+        )
         return {"status": "not_found_live"}
     
     if not active_fixture:
-        activity.logger.warning(f"Fixture {fixture_id} not in active")
+        activity.logger.warning(
+            f"⚠️ [MONITOR] Fixture not in active | fixture={fixture_id}"
+        )
         return {"status": "not_found_active"}
     
     live_events = live_fixture.get("events", [])
@@ -445,7 +483,9 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
         
         first_seen = enhanced[EventFields.FIRST_SEEN]
         if store.add_event_to_active(fixture_id, enhanced, first_seen):
-            activity.logger.info(f"✨ NEW EVENT: {event_id}")
+            activity.logger.info(
+                f"✨ [MONITOR] NEW EVENT | fixture={fixture_id} | event={event_id}"
+            )
             new_count += 1
     
     # =========================================================================
@@ -475,7 +515,10 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
             # Only delete S3 if monitor was complete (videos were uploaded)
             if monitor_complete:
                 if store.mark_event_removed(fixture_id, event_id):
-                    activity.logger.warning(f"🗑️ VAR REMOVED: {event_id} (deleted from DB + S3, was at count={current_count})")
+                    activity.logger.warning(
+                        f"🗑️ [MONITOR] VAR REMOVED | event={event_id} | "
+                        f"action=deleted_db_s3 | was_count={current_count}"
+                    )
                     removed_count += 1
             else:
                 # Monitor wasn't complete, just remove from MongoDB (no S3 data)
@@ -484,12 +527,18 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
                     {"$pull": {"events": {EventFields.EVENT_ID: event_id}}}
                 )
                 if result.modified_count > 0:
-                    activity.logger.warning(f"🗑️ REMOVED: {event_id} (dropped before monitor complete, count={current_count})")
+                    activity.logger.warning(
+                        f"🗑️ [MONITOR] REMOVED | event={event_id} | "
+                        f"reason=dropped_before_complete | was_count={current_count}"
+                    )
                     removed_count += 1
         else:
             # Decrement count but don't delete yet
             store.update_event_stable_count(fixture_id, event_id, new_count_val, None)
-            activity.logger.warning(f"⚠️ EVENT MISSING: {event_id} (count {current_count} → {new_count_val}, need 0 to delete)")
+            activity.logger.warning(
+                f"⚠️ [MONITOR] EVENT MISSING | event={event_id} | "
+                f"count={current_count}→{new_count_val} | need_0_to_delete"
+            )
     
     # MATCHING events - increment monitor_count
     matching_ids = live_ids & active_ids
@@ -511,7 +560,10 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
                 # Recovering from a decrement - bump back up
                 new_count_val = current_count + 1
                 store.update_event_stable_count(fixture_id, event_id, new_count_val, None)
-                activity.logger.info(f"📈 RECOVERY: {event_id} (count {current_count} → {new_count_val}, monitor_complete=True)")
+                activity.logger.info(
+                    f"📈 [MONITOR] RECOVERY | event={event_id} | "
+                    f"count={current_count}→{new_count_val} | monitor_complete=True"
+                )
             # If already at 3, nothing to do
             continue
         
@@ -547,13 +599,19 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
                         "minute": live_event.get("time", {}).get("elapsed"),
                         "extra": live_event.get("time", {}).get("extra"),
                     })
-                    activity.logger.info(f"✅ MONITOR COMPLETE: {event_id} (monitor_count=3) → Twitter triggered")
+                    activity.logger.info(
+                        f"✅ [MONITOR] MONITOR COMPLETE | event={event_id} | "
+                        f"monitor_count=3 | trigger=twitter"
+                    )
                 else:
                     activity.logger.warning(
-                        f"⚠️ MONITOR COMPLETE: {event_id} (monitor_count=3) → No player name, skipping Twitter"
+                        f"⚠️ [MONITOR] MONITOR COMPLETE (no player) | event={event_id} | "
+                        f"skip_reason=no_player_name"
                     )
             else:
-                activity.logger.info(f"📊 MONITORING: {event_id} (count={new_count_val}/3)")
+                activity.logger.info(
+                    f"📊 [MONITOR] MONITORING | event={event_id} | count={new_count_val}/3"
+                )
     
     # Sync fixture metadata
     store.sync_fixture_data(fixture_id)
@@ -582,11 +640,15 @@ async def sync_fixture_metadata(fixture_id: int) -> bool:
     
     try:
         if store.sync_fixture_data(fixture_id):
-            activity.logger.debug(f"🔄 Synced fixture {fixture_id} metadata")
+            activity.logger.debug(
+                f"🔄 [MONITOR] Synced metadata | fixture={fixture_id}"
+            )
             return True
         return False
     except Exception as e:
-        activity.logger.error(f"❌ Error syncing fixture {fixture_id}: {e}")
+        activity.logger.error(
+            f"❌ [MONITOR] Sync error | fixture={fixture_id} | error={e}"
+        )
         return False
 
 
@@ -605,15 +667,23 @@ async def notify_frontend_refresh() -> bool:
         response = requests.post(f"{api_url}/api/found-footy/refresh", timeout=5)
         if response.ok:
             result = response.json()
-            activity.logger.info(f"📡 Frontend notified ({result.get('clientsNotified', 0)} clients)")
+            activity.logger.info(
+                f"📡 [MONITOR] Frontend notified | clients={result.get('clientsNotified', 0)}"
+            )
             return True
         else:
-            activity.logger.warning(f"⚠️ Frontend notify failed: {response.status_code}")
+            activity.logger.warning(
+                f"⚠️ [MONITOR] Frontend notify failed | status={response.status_code}"
+            )
             return False
     except requests.exceptions.ConnectionError:
         # Frontend not running is not a fatal error
-        activity.logger.debug("📡 Frontend API not available (connection refused)")
+        activity.logger.debug(
+            "📡 [MONITOR] Frontend API not available | reason=connection_refused"
+        )
         return False
     except Exception as e:
-        activity.logger.warning(f"⚠️ Frontend notify error: {e}")
+        activity.logger.warning(
+            f"⚠️ [MONITOR] Frontend notify error | error={e}"
+        )
         return False

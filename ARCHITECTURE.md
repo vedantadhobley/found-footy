@@ -77,44 +77,51 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 │    Route by status                  Trigger RAG on stable            │
 └──────────────────────────────────────┬──────────────────────────────┘
                                        │
-                                       ▼ (fire-and-forget)
+                                       ▼ (FIRE-AND-FORGET, ABANDON)
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        RAGWorkflow                                   │
+│                   RAGWorkflow (~30-90 seconds)                       │
 ├─────────────────────────────────────────────────────────────────────┤
 │  1. get_cached_team_aliases(team_id) → cache hit (pre-cached)       │
-│  │     OR get_team_aliases(team_id, team_name) → Wikidata + LLM        │
+│  │     OR get_team_aliases(team_id, team_name) → Wikidata + LLM     │
 │  2. save_team_aliases to event in MongoDB                            │
-│  3. Start TwitterWorkflow (child, waits)                             │
+│  3. Start TwitterWorkflow (FIRE-AND-FORGET, ABANDON policy)          │
+│  4. RAG COMPLETES HERE ← doesn't wait for Twitter                    │
 └──────────────────────────────────────┬──────────────────────────────┘
                                        │
-                                       ▼
+                                       ▼ (FIRE-AND-FORGET, ABANDON)
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    TwitterWorkflow (Self-Managing)                   │
+│                TwitterWorkflow (~12-15 minutes)                      │
 ├─────────────────────────────────────────────────────────────────────┤
 │  FOR attempt IN [1, 2, 3]:                                          │
 │    → update_twitter_attempt(attempt)                                 │
 │    → Search each alias: "Salah Liverpool", "Salah LFC", ...         │
 │    → Dedupe videos                                                   │
-│    → Start DownloadWorkflow (child, waits)                          │
+│    → WAIT for DownloadWorkflow (data integrity!)                    │
 │    → IF attempt < 3: workflow.sleep(3 minutes) ← DURABLE TIMER      │
-│  AFTER attempt 3:                                                    │
+│  AFTER all downloads complete:                                       │
 │    → mark_event_twitter_complete                                     │
 └──────────────────────────────────────┬──────────────────────────────┘
                                        │
-                                       ▼
+                                       ▼ (WAITS FOR COMPLETION)
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        DownloadWorkflow                              │
 ├─────────────────────────────────────────────────────────────────────┤
-│  FOR each video URL:                                                 │
-│    1. Download via yt-dlp                                            │
-│    2. Filter by duration (>3s to 60s)                                │
-│    3. AI validation (reject non-football)                            │
-│    4. Compute perceptual hash (validated only)                       │
-│    5. Compare quality with existing S3                               │
-│    6. Upload if new or better quality                                │
-│    7. Replace worse quality versions                                 │
+│  PARALLEL: Download videos via yt-dlp                                │
+│  1. Filter by duration (>3s to 60s)                                  │
+│  2. AI validation (reject non-football)                              │
+│  PARALLEL: Compute perceptual hash (heartbeat every 10 frames)       │
+│  3. Compare quality with existing S3                                 │
+│  PARALLEL: Upload if new or better quality                           │
+│  4. Replace worse quality versions                                   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+**Key Architecture Points:**
+- **Monitor → RAG**: Fire-and-forget (ABANDON policy)
+- **RAG → Twitter**: Fire-and-forget (ABANDON policy) - RAG completes in ~30-90s
+- **Twitter → Download**: WAITS for completion (data integrity requirement)
+- **Heartbeat-based timeouts**: Long activities use `heartbeat_timeout` instead of arbitrary `execution_timeout`
+- **Comprehensive logging**: Every failure path logged with `[WORKFLOW]` prefix
 
 ---
 

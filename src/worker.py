@@ -145,6 +145,11 @@ async def main():
         worker = Worker(
             client,
             task_queue="found-footy",
+            # Higher concurrency to support parallel hash generation across multiple workflows
+            # Each workflow may hash 5-8 videos in parallel. With 3 concurrent workflows,
+            # that's up to 24 hash activities. Plus other activities (MongoDB, S3, etc.)
+            # 50 gives us headroom while still being reasonable for CPU-bound work.
+            max_concurrent_activities=50,
             workflows=[
                 IngestWorkflow,
                 MonitorWorkflow,
