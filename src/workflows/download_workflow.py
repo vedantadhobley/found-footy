@@ -4,15 +4,22 @@ Download Workflow - Video Download/Upload Pipeline
 Orchestrates granular download/upload with per-video retry:
 1. fetch_event_data - Get existing S3 video metadata for quality comparison
 2. download_single_video x N - Download each video individually (3 retries per video)
-3. deduplicate_videos - Hash dedup with quality comparison against existing S3
-4. replace_s3_video x N - Delete old S3 videos being replaced by higher quality
-5. upload_single_video x N - Upload new/replacement videos to S3
-6. mark_download_complete - Update MongoDB, cleanup temp dir
+3. validate_video_is_soccer x N - AI validation BEFORE hash generation (saves compute)
+4. generate_video_hash x N - Generate perceptual hash only for validated videos
+5. deduplicate_videos - Hash dedup with quality comparison against existing S3
+6. replace_s3_video x N - Delete old S3 videos being replaced by higher quality
+7. upload_single_video x N - Upload new/replacement videos to S3
+8. mark_download_complete - Update MongoDB, cleanup temp dir
 
 Per-video retry (3 attempts):
 - Each video gets 3 download attempts with exponential backoff (2s, 4s, 8s)
 - Videos that fail all 3 attempts are marked as "failed" and skipped
 - URLs are already saved to _discovered_videos by TwitterWorkflow BEFORE download starts
+
+Optimized Pipeline Order:
+- AI validation happens BEFORE perceptual hash generation
+- This saves expensive hash computation for non-soccer videos
+- Hash generation is dense sampling at 0.25s intervals (CPU intensive)
 
 URL Tracking (handled by TwitterWorkflow):
 - TwitterWorkflow saves ALL discovered URLs IMMEDIATELY after Twitter search
@@ -153,12 +160,87 @@ class DownloadWorkflow:
         workflow.logger.info(f"📥 Downloaded {successful_downloads}/{len(discovered_videos)} videos ({filtered_count} filtered, {failed_count} failed)")
         
         # =========================================================================
-        # Step 3: Deduplicate with quality comparison
+        # Step 3: AI Validation BEFORE hash generation (saves compute)
+        # Validates videos are soccer content - rejects non-soccer early
+        # =========================================================================
+        successful_videos = [r for r in download_results if r.get("status") == "success"]
+        validated_videos = []
+        rejected_count = 0
+        validation_failed_count = 0
+        
+        if successful_videos:
+            workflow.logger.info(f"🔍 Validating {len(successful_videos)} videos with AI vision...")
+        
+        for video_info in successful_videos:
+            try:
+                validation = await workflow.execute_activity(
+                    download_activities.validate_video_is_soccer,
+                    args=[video_info["file_path"], event_id],
+                    start_to_close_timeout=timedelta(seconds=60),  # Vision model can be slow
+                    retry_policy=RetryPolicy(
+                        maximum_attempts=4,  # More retries for transient failures
+                        initial_interval=timedelta(seconds=3),
+                        backoff_coefficient=2.0,  # 3s, 6s, 12s, 24s
+                        maximum_interval=timedelta(seconds=30),
+                    ),
+                )
+                
+                if validation.get("is_valid", True):
+                    validated_videos.append(video_info)
+                else:
+                    rejected_count += 1
+                    workflow.logger.warning(
+                        f"🚫 Video rejected (not soccer): {validation.get('reason', 'unknown')}"
+                    )
+                    # Clean up rejected video file
+                    try:
+                        import os
+                        os.remove(video_info["file_path"])
+                    except:
+                        pass
+            except Exception as e:
+                # FAIL-CLOSED: If validation fails after retries, REJECT the video
+                validation_failed_count += 1
+                workflow.logger.error(f"🚫 Validation FAILED - rejecting video: {e}")
+                try:
+                    import os
+                    os.remove(video_info["file_path"])
+                except:
+                    pass
+        
+        if rejected_count > 0 or validation_failed_count > 0:
+            workflow.logger.info(
+                f"🔍 Validation: {len(validated_videos)} passed, "
+                f"{rejected_count} not soccer, {validation_failed_count} validation errors"
+            )
+        
+        # =========================================================================
+        # Step 4: Generate perceptual hashes ONLY for validated videos
+        # This is CPU-intensive (0.25s sampling) - skip for rejected videos
+        # =========================================================================
+        if validated_videos:
+            workflow.logger.info(f"🔐 Generating perceptual hashes for {len(validated_videos)} validated videos...")
+        
+        for video_info in validated_videos:
+            try:
+                hash_result = await workflow.execute_activity(
+                    download_activities.generate_video_hash,
+                    args=[video_info["file_path"], video_info.get("duration", 0)],
+                    start_to_close_timeout=timedelta(seconds=60),  # Can be slow for long videos
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
+                video_info["perceptual_hash"] = hash_result.get("perceptual_hash", "")
+            except Exception as e:
+                workflow.logger.warning(f"⚠️ Hash generation failed: {e}")
+                video_info["perceptual_hash"] = ""  # Continue without hash
+        
+        # =========================================================================
+        # Step 5: Deduplicate with quality comparison
         # Returns: videos_to_upload, videos_to_replace, skipped_urls
         # =========================================================================
         dedup_result = await workflow.execute_activity(
             download_activities.deduplicate_videos,
-            args=[download_results, existing_s3_videos],
+            args=[validated_videos, existing_s3_videos],
             start_to_close_timeout=timedelta(seconds=30),
             retry_policy=RetryPolicy(maximum_attempts=2),
         )
@@ -188,7 +270,7 @@ class DownloadWorkflow:
                         args=[
                             fixture_id,
                             event_id,
-                            s3_video.get("url", ""),
+                            s3_video.get("s3_url", ""),  # Key is s3_url, not url
                             new_popularity,
                         ],
                         start_to_close_timeout=timedelta(seconds=10),
@@ -227,7 +309,7 @@ class DownloadWorkflow:
         )
         
         # =========================================================================
-        # Step 4: Handle replacements - delete old S3 videos first
+        # Step 6: Handle replacements - delete old S3 videos first
         # =========================================================================
         for replacement in videos_to_replace:
             old_video = replacement["old_s3_video"]
@@ -254,58 +336,15 @@ class DownloadWorkflow:
                 # Continue anyway - we'll still upload the new one
         
         # =========================================================================
-        # Step 5: Validate videos are soccer content before upload
-        # Uses AI vision to check if video actually shows soccer gameplay
+        # Step 7: Upload videos to S3 (already validated and hashed)
         # =========================================================================
         all_uploads = videos_to_upload + [r["new_video"] for r in videos_to_replace]
-        validated_uploads = []
-        rejected_count = 0
-        validation_failed_count = 0
-        
-        workflow.logger.info(f"🔍 Validating {len(all_uploads)} videos with AI vision...")
-        
-        for video_info in all_uploads:
-            try:
-                validation = await workflow.execute_activity(
-                    download_activities.validate_video_is_soccer,
-                    args=[video_info["file_path"], event_id],
-                    start_to_close_timeout=timedelta(seconds=60),  # Vision model can be slow
-                    retry_policy=RetryPolicy(
-                        maximum_attempts=4,  # More retries for transient Ollama failures
-                        initial_interval=timedelta(seconds=3),
-                        backoff_coefficient=2.0,  # 3s, 6s, 12s, 24s
-                        maximum_interval=timedelta(seconds=30),
-                    ),
-                )
-                
-                if validation.get("is_valid", True):
-                    validated_uploads.append(video_info)
-                else:
-                    rejected_count += 1
-                    workflow.logger.warning(
-                        f"🚫 Video rejected (not soccer): {validation.get('reason', 'unknown')}"
-                    )
-            except Exception as e:
-                # FAIL-CLOSED: If validation fails after retries, REJECT the video
-                # This prevents non-soccer content from slipping through
-                validation_failed_count += 1
-                workflow.logger.error(f"🚫 Validation FAILED - rejecting video: {e}")
-        
-        if rejected_count > 0 or validation_failed_count > 0:
-            workflow.logger.info(
-                f"🔍 Validation: {len(validated_uploads)} passed, "
-                f"{rejected_count} not soccer, {validation_failed_count} validation errors"
-            )
-        
-        # =========================================================================
-        # Step 6: Upload validated videos to S3
-        # =========================================================================
-        workflow.logger.info(f"☁️ Uploading {len(validated_uploads)} videos to S3...")
+        workflow.logger.info(f"☁️ Uploading {len(all_uploads)} videos to S3...")
         
         video_objects = []  # New schema: list of video objects for MongoDB
         successful_video_urls = []
         
-        for idx, video_info in enumerate(validated_uploads):
+        for idx, video_info in enumerate(all_uploads):
             try:
                 result = await workflow.execute_activity(
                     download_activities.upload_single_video,

@@ -52,8 +52,10 @@ API_FOOTBALL_BASE_URL = os.getenv("API_FOOTBALL_BASE_URL", "https://v3.football.
 # =============================================================================
 
 # Aspect ratio filter: reject portrait/square videos (< 4:3)
-# 4:3 = 1.333..., use 1.32 to accept 4:3 with floating point tolerance
-MIN_ASPECT_RATIO = 1.32
+# Disabled to allow stadium phone recordings which may be portrait
+# Phone-TV recordings are now filtered by AI vision instead
+ASPECT_RATIO_FILTER_ENABLED = False
+MIN_ASPECT_RATIO = 1.32  # 4:3 = 1.333..., use 1.32 with tolerance
 
 # Duration filters
 MIN_VIDEO_DURATION = 3.0  # Seconds (must be > 3s)

@@ -106,12 +106,13 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 │                        DownloadWorkflow                              │
 ├─────────────────────────────────────────────────────────────────────┤
 │  FOR each video URL:                                                 │
-│    → Download via yt-dlp                                             │
-│    → Filter by duration (>3s to 60s)                                 │
-│    → Compute perceptual hash                                         │
-│    → Compare quality with existing S3                                │
-│    → Upload if new or better quality                                 │
-│    → Replace worse quality versions                                  │
+│    1. Download via yt-dlp                                            │
+│    2. Filter by duration (>3s to 60s)                                │
+│    3. AI validation (reject non-football)                            │
+│    4. Compute perceptual hash (validated only)                       │
+│    5. Compare quality with existing S3                               │
+│    6. Upload if new or better quality                                │
+│    7. Replace worse quality versions                                 │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 

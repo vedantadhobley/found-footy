@@ -55,12 +55,13 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      DownloadWorkflow                                │
-│   - Download videos via yt-dlp                                       │
-│   - Filter by duration (>3s to 60s)                                  │
-│   - Compute perceptual hash                                          │
-│   - Compare quality with existing S3                                 │
-│   - Upload new/better videos                                         │
-│   - Replace worse quality versions                                   │
+│   1. Download videos via yt-dlp                                      │
+│   2. Filter by duration (>3s to 60s)                                 │
+│   3. AI validation (reject non-football)                             │
+│   4. Compute perceptual hash (validated only)                        │
+│   5. Compare quality with existing S3                                │
+│   6. Upload new/better videos                                        │
+│   7. Replace worse quality versions                                  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -306,7 +307,7 @@ regardless of how long the search/download takes.
 ## 5. DownloadWorkflow
 
 **Trigger**: Child workflow from TwitterWorkflow (per attempt with videos)  
-**Purpose**: Download, filter, deduplicate, upload videos to S3
+**Purpose**: Download, validate, filter, deduplicate, upload videos to S3
 
 ```
 DownloadWorkflow
@@ -321,8 +322,13 @@ DownloadWorkflow
     │   │   ├── ffprobe for duration/metadata
     │   │   └── IF duration <= 3s OR > 60s: FILTER (skip)
     │   │
+    │   ├── validate_video_is_soccer (fail-closed)
+    │   │   └── IF not football content: REJECT (skip)
+    │   │
+    │   ├── generate_video_hash (validated videos only)
+    │   │   └── Compute dense perceptual hash (0.25s sampling)
+    │   │
     │   └── deduplicate_videos
-    │       ├── Compute perceptual hash
     │       └── Compare with existing videos (MongoDB data)
     │
     ├── FOR each duplicate with better quality:
@@ -335,12 +341,17 @@ DownloadWorkflow
         └── Save _s3_videos, cleanup temp dir
 ```
 
+**Optimized Pipeline Order**: AI validation runs BEFORE expensive perceptual hash generation.
+This saves ~0.25s × (frames per video) of CPU for rejected non-football content.
+
 ### Activities
 
 | Activity | Timeout | Retries | Backoff |
 |----------|---------|---------|---------|
 | `fetch_event_data` | 15s | 2 | - |
 | `download_single_video` | 60s | 3 | 2.0x from 2s |
+| `validate_video_is_soccer` | 60s | 4 | 2.0x from 3s |
+| `generate_video_hash` | 30s | 2 | - |
 | `deduplicate_videos` | 30s | 2 | - |
 | `replace_s3_video` | 15s | 3 | 2.0x from 2s |
 | `upload_single_video` | 30s | 3 | 1.5x from 2s |

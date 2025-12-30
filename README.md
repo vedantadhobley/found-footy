@@ -26,8 +26,9 @@ flowchart TB
     subgraph PROCESS["⚙️ Processing"]
         DOWNLOAD[Download via yt-dlp]
         FILTER[Filter >3s to 60s duration]
-        HASH[Perceptual Hash<br/>Deduplicate]
-        QUALITY[Quality Compare<br/>Keep best resolution]
+        AI[AI Vision Validation<br/>Is this soccer?]
+        HASH[Perceptual Hash<br/>Dense 0.25s sampling]
+        DEDUP[Deduplicate<br/>Keep best quality]
     end
     
     subgraph OUTPUT["💾 Output"]
@@ -37,9 +38,9 @@ flowchart TB
     
     API --> GOAL --> STABLE
     STABLE --> TWITTER
-    TWITTER --> DOWNLOAD --> FILTER --> HASH --> QUALITY
-    QUALITY --> S3
-    QUALITY --> META
+    TWITTER --> DOWNLOAD --> FILTER --> AI --> HASH --> DEDUP
+    DEDUP --> S3
+    DEDUP --> META
 ```
 
 **The pipeline handles:**
@@ -566,27 +567,37 @@ flowchart TB
 ### 5. DownloadWorkflow
 
 **Trigger:** Per Twitter search with videos  
-**Purpose:** Download, deduplicate, upload
+**Purpose:** Download, validate, deduplicate, upload
 
 ```mermaid
 flowchart TB
     TRIGGER[Triggered by Twitter<br/>With video URLs]
     
-    FETCH[Fetch event data<br/>Existing S3 videos]
+    FETCH[Fetch event data<br/>Existing S3 videos from MongoDB]
     
-    subgraph EACH["For Each Video"]
+    subgraph DOWNLOAD["1. Download Phase"]
         DL[Download via yt-dlp]
         FILTER{Duration<br/>>3-60s?}
         META[Extract metadata<br/>Resolution, bitrate]
-        VALIDATE{AI Validation<br/>Is soccer?}
-        HASH[Compute perceptual hash]
         FILTERED[Track as filtered]
     end
     
-    DEDUP[Deduplicate<br/>Compare hashes]
+    subgraph VALIDATE["2. AI Validation"]
+        AI{Vision Model<br/>Is soccer?}
+        REJECT[Reject non-soccer]
+    end
     
-    subgraph UPLOAD["Upload Phase"]
-        REPLACE[Replace if better quality]
+    subgraph HASH["3. Hash Generation"]
+        PHASH[Compute perceptual hash<br/>Dense 0.25s sampling]
+    end
+    
+    subgraph DEDUP["4. Deduplication"]
+        COMPARE[Compare hashes<br/>3 consecutive frames]
+        QUALITY[Keep best quality]
+    end
+    
+    subgraph UPLOAD["5. Upload Phase"]
+        REPLACE[Replace if better]
         NEW[Upload new videos]
     end
     
@@ -594,16 +605,17 @@ flowchart TB
     
     TRIGGER --> FETCH --> DL
     DL --> FILTER
-    FILTER -->|Yes| META --> VALIDATE
-    VALIDATE -->|Yes| HASH
-    VALIDATE -->|No| FILTERED
-    FILTER -->|No| FILTERED
-    HASH --> DEDUP
-    DEDUP --> REPLACE & NEW
-    REPLACE & NEW --> SAVE
+    FILTER -->|Pass| META --> AI
+    FILTER -->|Fail| FILTERED
+    AI -->|Soccer| PHASH
+    AI -->|Not soccer| REJECT
+    PHASH --> COMPARE --> QUALITY
+    QUALITY --> REPLACE & NEW --> SAVE
 ```
 
-**AI Video Validation**: Vision model (Qwen3-VL via llama.cpp) validates each video contains soccer content before upload. Uses fail-closed policy - if AI unavailable, video is skipped.
+**Optimized Pipeline Order**: AI validation runs BEFORE perceptual hash generation. This saves expensive hash computation (dense 0.25s sampling with ffmpeg) for non-soccer videos that would be rejected anyway.
+
+**AI Video Validation**: Vision model (Qwen3-VL via llama.cpp) validates each video contains soccer content. Uses fail-closed policy - if AI unavailable, video is skipped.
 
 ---
 
@@ -618,6 +630,7 @@ All activities have exponential backoff:
 | API-Football | 3 | 1s | 2.0× |
 | Twitter search | 3 | 10s | 1.5× |
 | Video download | 3 | 2s | 2.0× |
+| AI validation | 4 | 3s | 2.0× |
 | S3 upload | 3 | 2s | 1.5× |
 
 ---

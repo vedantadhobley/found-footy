@@ -12,6 +12,7 @@ import time
 from src.data.models import EventFields
 from src.utils.config import (
     LLAMA_CHAT_URL,
+    ASPECT_RATIO_FILTER_ENABLED,
     MIN_ASPECT_RATIO,
     MIN_VIDEO_DURATION,
     MAX_VIDEO_DURATION,
@@ -294,7 +295,10 @@ def _process_downloaded_video(
     is_multi_video: bool = False
 ) -> Optional[Dict[str, Any]]:
     """
-    Process a single downloaded video file - get metadata, apply filters, generate hash.
+    Process a single downloaded video file - get metadata and apply basic filters.
+    
+    NOTE: Does NOT generate perceptual hash here. Hash generation happens AFTER
+    AI validation to avoid wasting compute on non-soccer videos.
     
     Args:
         output_path: Path to the downloaded video file
@@ -304,7 +308,7 @@ def _process_downloaded_video(
         is_multi_video: Whether this is from a multi-video tweet
         
     Returns:
-        Dict with video info or None if filtered out
+        Dict with video info (no perceptual_hash yet) or None if filtered out
     """
     from temporalio import activity
     
@@ -334,8 +338,9 @@ def _process_downloaded_video(
         return None
     
     # Aspect ratio filter: reject portrait/square videos (< 4:3)
-    # Football clips should be landscape (16:9 = 1.78, 4:3 = 1.333...)
-    if width and height and height > 0:
+    # Disabled by default to allow stadium phone recordings
+    # Phone-TV recordings are filtered by AI vision instead
+    if ASPECT_RATIO_FILTER_ENABLED and width and height and height > 0:
         aspect_ratio = width / height
         if aspect_ratio < MIN_ASPECT_RATIO:
             activity.logger.warning(
@@ -344,12 +349,9 @@ def _process_downloaded_video(
             os.remove(output_path)
             return None
     
-    # Calculate MD5 hash and size
+    # Calculate MD5 hash and size (fast)
     file_hash = _calculate_md5(output_path)
     file_size = os.path.getsize(output_path)
-    
-    # Generate perceptual hash (duration + frames at 25%, 50%, 75%)
-    perceptual_hash = _generate_perceptual_hash(output_path, duration)
     
     quality_info = f"{width}x{height}" if width and height else "unknown res"
     if bitrate:
@@ -358,14 +360,15 @@ def _process_downloaded_video(
     activity.logger.info(
         f"✅ Downloaded video {display_idx}: "
         f"{os.path.basename(output_path)} ({file_size / 1024 / 1024:.2f} MB, "
-        f"{duration:.1f}s, {quality_info}, phash: {perceptual_hash.split(':')[1][:8]}...)"
+        f"{duration:.1f}s, {quality_info}) - awaiting AI validation"
     )
     
+    # Return without perceptual_hash - will be generated after AI validation
     return {
         "status": "success",
         "file_path": output_path,
         "file_hash": file_hash,
-        "perceptual_hash": perceptual_hash,
+        "perceptual_hash": "",  # Placeholder - generated after AI validation
         "duration": duration,
         "file_size": file_size,
         "video_index": video_index,
@@ -693,7 +696,7 @@ async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[st
                             ]
                         }
                     ],
-                    "max_tokens": 50,
+                    "max_tokens": 100,
                     "temperature": 0.1
                 }
             )
@@ -719,31 +722,43 @@ async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[st
 @activity.defn
 async def validate_video_is_soccer(file_path: str, event_id: str) -> Dict[str, Any]:
     """
-    AI validation to check if video is actually a soccer/football video.
+    AI validation to check if video is soccer AND not a phone-TV recording.
     
-    Uses vision LLM to analyze frames and determine if the video shows 
-    soccer gameplay. Extracts frames at 25%, 50%, 75% and checks each 
-    for soccer content.
+    Uses vision LLM to analyze frames and determine:
+    1. Is this a soccer/football video?
+    2. Is this someone filming a TV screen with their phone?
     
-    Detection criteria:
+    We WANT:
+    - Direct broadcast recordings
+    - Stadium/in-person phone recordings (fans filming live)
+    
+    We REJECT:
+    - Non-soccer content (ads, interviews, other sports)
+    - Phone recordings of TV screens (moiré patterns, bezels, glare)
+    
+    Detection criteria for SOCCER:
     - Soccer/football field (green pitch, white lines)
     - Players in match uniforms
     - Goal posts/nets
     - Match action/gameplay
     
-    Rejects:
-    - Ads/commercials
-    - Interviews/press conferences  
-    - Non-sports content
-    - Still images
-    - Different sports
+    Detection criteria for SCREEN RECORDING (reject):
+    - TV bezel/frame visible around edges
+    - Moiré patterns (wavy interference from filming display)
+    - Screen glare or reflections
+    - Room/furniture visible around TV
+    - Curved or tilted screen perspective
     
     Args:
         file_path: Local path to video file
         event_id: Event ID for logging
     
     Returns:
-        Dict with is_valid (bool), confidence (float), reason (str)
+        Dict with:
+        - is_valid: True if soccer AND not screen recording
+        - is_soccer: True if soccer content detected
+        - is_screen_recording: True if phone-TV recording detected
+        - confidence, reason, checks_performed
     
     Raises:
         FileNotFoundError: If video file doesn't exist
@@ -779,24 +794,33 @@ async def validate_video_is_soccer(file_path: str, event_id: str) -> Dict[str, A
             "checks_performed": 0,
         }
     
-    # Vision prompt for soccer detection
+    # Combined vision prompt for soccer detection AND phone-TV rejection
     prompt = """/no_think
-Look at this image and answer: Is this showing a soccer/football match being played?
+Analyze this image and answer TWO questions:
 
-Answer ONLY with one word: YES or NO
+1. SOCCER: Is this a soccer/football match video? This includes:
+   - Live match footage (players on pitch)
+   - Replays and slow-motion reviews
+   - VAR (Video Assistant Referee) review footage with overlays
+   - Official broadcast with graphics, scoreboards, picture-in-picture
+   - Stadium/fan recording from the stands (real crowd, real environment)
+   Answer YES if any of the above.
 
-If you see ANY of these, answer YES:
-- Soccer/football field with green grass and white lines
-- Players playing soccer/football
-- Soccer goal posts or nets
-- Soccer/football match action
+2. SCREEN: Is this someone filming a TV/monitor screen with their phone/camera?
+   Look for these PHYSICAL artifacts of pointing a camera at a screen:
+   - Moiré patterns (rainbow/wavy interference lines on the display)
+   - Visible TV bezel/frame edges around the picture
+   - Screen glare or reflections from room lighting
+   - Tilted/angled perspective (not straight-on)
+   - Visible room, furniture, or surroundings in frame
+   - Pixelation from screen refresh rate mismatch
+   
+   NOTE: Broadcast overlays, VAR boxes, replay borders, or graphics are NOT screen recordings.
+   Only answer YES if you see evidence of a physical camera filming a physical screen.
 
-If you see ANY of these, answer NO:
-- Advertisements or commercials
-- Interviews or press conferences
-- Still graphics or logos only
-- Different sport (basketball, tennis, etc.)
-- Empty screens or test patterns"""
+Answer format (exactly):
+SOCCER: YES or NO
+SCREEN: YES or NO"""
 
     activity.logger.info(f"🔍 Validating video with AI vision: {event_id}")
     
@@ -807,22 +831,35 @@ If you see ANY of these, answer NO:
     # 3. If they disagree → check 50% as tiebreaker (3 checks)
     # =========================================================================
     
-    def parse_response(resp) -> bool:
-        """Parse vision model response, returns True if soccer detected"""
+    def parse_response(resp) -> tuple[bool, bool]:
+        """Parse vision model response, returns (is_soccer, is_screen_recording)"""
         if not resp:
-            return False
+            return (False, False)
         
         # Handle llama.cpp OpenAI format
         if "choices" in resp:
-            content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+            content = resp.get("choices", [{}])[0].get("message", {}).get("content", "").upper()
             # Check for skip indicator (vision not available)
-            if "SKIP" in content.upper():
-                return True  # Fail open when vision is unavailable
-            return "YES" in content.upper()
+            if "SKIP" in content:
+                return (True, False)  # Fail open when vision is unavailable
+            
+            # Parse the two answers
+            is_soccer = "SOCCER:YES" in content or "SOCCER: YES" in content
+            is_screen = "SCREEN:YES" in content or "SCREEN: YES" in content
+            
+            # Fallback: if format not matched, look for keywords
+            if "SOCCER:" not in content:
+                is_soccer = "YES" in content and "SOCCER" in content
+            if "SCREEN:" not in content:
+                is_screen = "MOIRE" in content or "BEZEL" in content or "TV FRAME" in content
+            
+            return (is_soccer, is_screen)
         
         # Legacy Ollama format
         text = resp.get("response", "").strip().upper()
-        return "YES" in text
+        is_soccer = "SOCCER:YES" in text or ("YES" in text and "SOCCER" in text)
+        is_screen = "SCREEN:YES" in text
+        return (is_soccer, is_screen)
     
     # Extract frames at 25% and 75%
     t_25 = duration * 0.25
@@ -838,72 +875,121 @@ If you see ANY of these, answer NO:
     
     # Check 25% first
     checks_performed = 0
-    vote_25 = None
-    vote_75 = None
+    soccer_25, screen_25 = None, None
+    soccer_75, screen_75 = None, None
     
     if frame_25:
         response_25 = await _call_vision_model(frame_25, prompt)
         checks_performed += 1
-        vote_25 = parse_response(response_25)
-        activity.logger.info(f"   📸 25% check: {'YES' if vote_25 else 'NO'}")
+        soccer_25, screen_25 = parse_response(response_25)
+        activity.logger.info(f"   📸 25% check: SOCCER={'YES' if soccer_25 else 'NO'}, SCREEN={'YES' if screen_25 else 'NO'}")
     
     # Check 75%
     if frame_75:
         response_75 = await _call_vision_model(frame_75, prompt)
         checks_performed += 1
-        vote_75 = parse_response(response_75)
-        activity.logger.info(f"   📸 75% check: {'YES' if vote_75 else 'NO'}")
+        soccer_75, screen_75 = parse_response(response_75)
+        activity.logger.info(f"   📸 75% check: SOCCER={'YES' if soccer_75 else 'NO'}, SCREEN={'YES' if screen_75 else 'NO'}")
     
-    # Handle edge cases where one frame failed
-    if vote_25 is None and vote_75 is not None:
-        is_soccer = vote_75
+    # Determine soccer result
+    if soccer_25 is None and soccer_75 is not None:
+        is_soccer = soccer_75
         confidence = 0.7
-        reason = "Single frame check (25% failed)"
-    elif vote_75 is None and vote_25 is not None:
-        is_soccer = vote_25
+        soccer_reason = "Single frame check (25% failed)"
+    elif soccer_75 is None and soccer_25 is not None:
+        is_soccer = soccer_25
         confidence = 0.7
-        reason = "Single frame check (75% failed)"
-    elif vote_25 == vote_75:
-        # Both agree - no tiebreaker needed
-        is_soccer = vote_25
+        soccer_reason = "Single frame check (75% failed)"
+    elif soccer_25 == soccer_75:
+        is_soccer = soccer_25
         confidence = 0.95 if is_soccer else 0.90
-        reason = f"Both checks agree: {'soccer' if is_soccer else 'not soccer'}"
-        activity.logger.info(f"   ✓ Both frames agree: {'YES' if is_soccer else 'NO'}")
+        soccer_reason = f"Both checks agree: {'soccer' if is_soccer else 'not soccer'}"
+        activity.logger.info(f"   ✓ Soccer check: Both frames agree {'YES' if is_soccer else 'NO'}")
     else:
         # Disagreement - need tiebreaker at 50%
-        activity.logger.info(f"   ⚖️ Disagreement, checking 50% as tiebreaker...")
+        activity.logger.info(f"   ⚖️ Soccer disagreement, checking 50% as tiebreaker...")
         t_50 = duration * 0.50
         frame_50 = _extract_frame_for_vision(file_path, t_50)
         
         if frame_50:
             response_50 = await _call_vision_model(frame_50, prompt)
             checks_performed += 1
-            vote_50 = parse_response(response_50)
-            activity.logger.info(f"   📸 50% tiebreaker: {'YES' if vote_50 else 'NO'}")
+            soccer_50, screen_50 = parse_response(response_50)
+            activity.logger.info(f"   📸 50% tiebreaker: SOCCER={'YES' if soccer_50 else 'NO'}, SCREEN={'YES' if screen_50 else 'NO'}")
             
             # Count votes (2/3 majority)
-            yes_votes = sum([vote_25 or False, vote_50, vote_75 or False])
+            yes_votes = sum([soccer_25 or False, soccer_50, soccer_75 or False])
             is_soccer = yes_votes >= 2
             confidence = 0.85
-            reason = f"Tiebreaker decided: {yes_votes}/3 votes for soccer"
+            soccer_reason = f"Tiebreaker decided: {yes_votes}/3 votes for soccer"
+            
+            # Also factor in screen detection from 50%
+            if screen_50:
+                screen_25 = screen_25 or screen_50
+                screen_75 = screen_75 or screen_50
         else:
-            # Can't extract tiebreaker frame - use 25% result (earlier in video)
-            is_soccer = vote_25 if vote_25 is not None else False
+            is_soccer = soccer_25 if soccer_25 is not None else False
             confidence = 0.6
-            reason = "Tiebreaker failed, using first check"
+            soccer_reason = "Tiebreaker failed, using first check"
     
-    if is_soccer:
-        activity.logger.info(f"✅ Video validated as soccer ({checks_performed} checks): {event_id}")
-    else:
+    # Determine screen recording result (reject if ANY frame detects it)
+    is_screen_recording = (screen_25 or False) or (screen_75 or False)
+    
+    # Final validation: must be soccer AND not a screen recording
+    is_valid = is_soccer and not is_screen_recording
+    
+    if is_screen_recording:
+        reason = "Rejected: phone recording of TV/screen detected"
+        activity.logger.warning(f"📺 Video is phone-TV recording ({checks_performed} checks): {event_id}")
+    elif not is_soccer:
+        reason = soccer_reason
         activity.logger.warning(f"❌ Video NOT soccer ({checks_performed} checks): {event_id}")
+    else:
+        reason = soccer_reason
+        activity.logger.info(f"✅ Video validated as soccer ({checks_performed} checks): {event_id}")
     
     return {
-        "is_valid": is_soccer,
+        "is_valid": is_valid,
         "confidence": confidence,
         "reason": reason,
+        "is_soccer": is_soccer,
+        "is_screen_recording": is_screen_recording,
         "detected_features": ["soccer_field"] if is_soccer else [],
         "checks_performed": checks_performed,
     }
+
+
+@activity.defn
+async def generate_video_hash(file_path: str, duration: float) -> Dict[str, Any]:
+    """
+    Generate perceptual hash for a video file.
+    
+    Called AFTER AI validation to avoid wasting compute on non-soccer videos.
+    Dense sampling at 0.25s intervals with histogram equalization.
+    
+    Args:
+        file_path: Path to video file
+        duration: Video duration in seconds
+        
+    Returns:
+        Dict with perceptual_hash string
+    """
+    if not os.path.exists(file_path):
+        activity.logger.error(f"❌ Video file not found for hashing: {file_path}")
+        return {"perceptual_hash": "", "error": "file_not_found"}
+    
+    activity.logger.info(f"🔐 Generating perceptual hash for {os.path.basename(file_path)}...")
+    
+    perceptual_hash = _generate_perceptual_hash(file_path, duration)
+    
+    # Log hash info
+    if perceptual_hash.startswith("dense:"):
+        parts = perceptual_hash.split(":", 2)
+        if len(parts) >= 3:
+            frame_count = len(parts[2].split(","))
+            activity.logger.info(f"✅ Generated hash: {frame_count} frames at 0.25s intervals")
+    
+    return {"perceptual_hash": perceptual_hash}
 
 
 @activity.defn
@@ -1405,6 +1491,10 @@ def _perceptual_hashes_match(
     Returns:
         True if videos match (have consecutive matching frames)
     """
+    # Early return for empty hashes (videos without hashes can't be compared)
+    if not hash_a or not hash_b:
+        return False
+    
     try:
         # Check if both are dense format
         is_dense_a = hash_a.startswith("dense:")

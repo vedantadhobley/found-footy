@@ -177,11 +177,12 @@ async def main():
                 twitter.save_discovered_videos,
                 twitter.mark_event_twitter_complete,
                 twitter.update_twitter_attempt,
-                # Download activities (8 granular for per-video retry + quality replacement)
+                # Download activities (9 granular for per-video retry + quality replacement)
                 download.fetch_event_data,
                 download.download_single_video,
+                download.validate_video_is_soccer,  # AI vision validation (before hash)
+                download.generate_video_hash,  # Perceptual hash (after validation)
                 download.deduplicate_videos,
-                download.validate_video_is_soccer,  # AI vision validation
                 download.upload_single_video,
                 download.mark_download_complete,
                 download.replace_s3_video,
@@ -191,7 +192,7 @@ async def main():
         
         print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
         print("📋 Workflows: Ingest, Monitor, RAG, Twitter, Download", flush=True)
-        print("🔧 Activities: 27 total (2 ingest, 9 monitor, 4 rag, 6 twitter, 8 download)", flush=True)
+        print("🔧 Activities: 28 total (2 ingest, 9 monitor, 4 rag, 6 twitter, 9 download)", flush=True)
         print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every minute)", flush=True)
         await worker.run()
     except Exception as e:
