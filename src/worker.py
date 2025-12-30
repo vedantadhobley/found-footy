@@ -155,6 +155,7 @@ async def main():
             activities=[
                 # Ingest activities
                 ingest.fetch_todays_fixtures,
+                ingest.fetch_fixtures_by_ids,
                 ingest.categorize_and_store_fixtures,
                 # Monitor activities (staging + active processing)
                 monitor.fetch_staging_fixtures,

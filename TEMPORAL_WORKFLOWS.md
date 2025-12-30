@@ -86,6 +86,36 @@ All workflows use human-readable IDs for easy debugging in Temporal UI:
 
 ---
 
+## Manual Operations from Temporal UI
+
+You can manually trigger workflows from the Temporal UI at `http://localhost:3100`.
+
+### Manual Fixture Ingest
+
+To manually ingest specific fixtures (bypasses team filter):
+
+1. Go to Temporal UI → **Start Workflow**
+2. Fill in:
+   - **Workflow Type**: `IngestWorkflow`
+   - **Workflow ID**: `manual-ingest-{timestamp}` (e.g., `manual-ingest-20251230`)
+   - **Task Queue**: `found-footy`
+   - **Input**:
+     ```json
+     {"fixture_ids": [1379142, 1347263, 1396377]}
+     ```
+
+### Input Options
+
+| Input | Description | Example |
+|-------|-------------|---------|
+| `{}` | Standard daily ingest (today's fixtures for tracked teams) | `{}` |
+| `{"target_date": "2025-12-26"}` | Ingest for a specific date (tracked teams only) | `{"target_date": "2025-12-26"}` |
+| `{"fixture_ids": [1234, 5678]}` | Ingest specific fixtures by ID (any team/league) | `{"fixture_ids": [1379142]}` |
+
+> **Note**: When using `fixture_ids`, the team filter is bypassed - you can ingest fixtures from any team or league.
+
+---
+
 ## 1. IngestWorkflow
 
 **Schedule**: Daily at 00:05 UTC  

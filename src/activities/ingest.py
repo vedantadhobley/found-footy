@@ -51,6 +51,52 @@ async def fetch_todays_fixtures(target_date_str: str | None = None) -> List[Dict
 
 
 @activity.defn
+async def fetch_fixtures_by_ids(fixture_ids: List[int]) -> List[Dict[str, Any]]:
+    """
+    Fetch specific fixtures by their IDs.
+    Used for manual ingest of specific fixtures from Temporal UI.
+    
+    Args:
+        fixture_ids: List of fixture IDs to fetch
+        
+    Returns:
+        List of fixture objects from API-Football
+    """
+    if not fixture_ids:
+        activity.logger.warning("⚠️ No fixture IDs provided")
+        return []
+    
+    activity.logger.info(f"🌐 Fetching {len(fixture_ids)} specific fixtures: {fixture_ids}")
+    
+    try:
+        from src.api.api_client import fixtures_batch
+        
+        # Fetch fixtures by IDs (API supports batch fetch)
+        fixtures = fixtures_batch(fixture_ids)
+        activity.logger.info(f"✅ Retrieved {len(fixtures)} fixtures by ID")
+        
+        # Log which fixtures were found
+        for fixture in fixtures:
+            fixture_id = fixture.get("fixture", {}).get("id")
+            home = fixture.get("teams", {}).get("home", {}).get("name", "?")
+            away = fixture.get("teams", {}).get("away", {}).get("name", "?")
+            status = fixture.get("fixture", {}).get("status", {}).get("short", "?")
+            activity.logger.info(f"  📋 {fixture_id}: {home} vs {away} ({status})")
+        
+        # Warn about any IDs that weren't found
+        found_ids = {f.get("fixture", {}).get("id") for f in fixtures}
+        missing_ids = set(fixture_ids) - found_ids
+        if missing_ids:
+            activity.logger.warning(f"⚠️ Could not find fixtures: {missing_ids}")
+        
+        return fixtures
+    
+    except Exception as e:
+        activity.logger.error(f"❌ Failed to fetch fixtures by ID: {e}")
+        raise
+
+
+@activity.defn
 async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
     """
     Categorize fixtures by status and store in appropriate collections.

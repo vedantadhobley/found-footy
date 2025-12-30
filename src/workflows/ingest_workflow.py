@@ -8,7 +8,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 from datetime import timedelta
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 
 with workflow.unsafe.imports_passed_through():
     from src.activities import ingest as ingest_activities
@@ -18,8 +18,9 @@ with workflow.unsafe.imports_passed_through():
 
 @dataclass
 class IngestWorkflowInput:
-    """Optional input for IngestWorkflow - allows specifying target date for testing"""
+    """Optional input for IngestWorkflow - allows specifying target date or fixture IDs"""
     target_date: Optional[str] = None  # ISO format: "2025-12-26" (None = today)
+    fixture_ids: Optional[List[int]] = None  # Specific fixture IDs to ingest (overrides date-based)
 
 
 @workflow.defn
@@ -30,7 +31,7 @@ class IngestWorkflow:
     async def run(self, input: Optional[IngestWorkflowInput] = None) -> dict:
         """
         Workflow:
-        1. Fetch fixtures for today from API-Football
+        1. Fetch fixtures for today from API-Football (or specific IDs if provided)
         2. Pre-cache RAG aliases for BOTH teams in each fixture (per-team calls)
         3. Route to correct collection:
            - TBD/NS → fixtures_staging
@@ -38,26 +39,43 @@ class IngestWorkflow:
            - FT/AET/PEN → fixtures_completed
         4. Notify frontend to refresh (for upcoming fixtures display)
         """
-        # Parse target date if provided (for testing historical dates)
-        # Pass as ISO string to activity (date objects aren't JSON serializable)
-        target_date_str = None
-        if input and input.target_date:
-            target_date_str = input.target_date  # Already ISO format
-            workflow.logger.info(f"📥 Starting fixture ingest for {input.target_date}")
+        # Check if specific fixture IDs were provided (manual ingest mode)
+        if input and input.fixture_ids and len(input.fixture_ids) > 0:
+            workflow.logger.info(f"📥 Manual ingest mode: fetching {len(input.fixture_ids)} specific fixtures: {input.fixture_ids}")
+            
+            # Fetch specific fixtures by ID
+            fixtures = await workflow.execute_activity(
+                ingest_activities.fetch_fixtures_by_ids,
+                input.fixture_ids,
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=3,
+                    initial_interval=timedelta(seconds=1),
+                    maximum_interval=timedelta(seconds=10),
+                ),
+            )
         else:
-            workflow.logger.info("📥 Starting daily fixture ingest (today)")
-        
-        # Fetch fixtures for target date (or today if not specified)
-        fixtures = await workflow.execute_activity(
-            ingest_activities.fetch_todays_fixtures,
-            target_date_str,  # Pass date string to activity (None = today)
-            start_to_close_timeout=timedelta(seconds=30),
-            retry_policy=RetryPolicy(
-                maximum_attempts=3,
-                initial_interval=timedelta(seconds=1),
-                maximum_interval=timedelta(seconds=10),
-            ),
-        )
+            # Standard date-based ingest
+            # Parse target date if provided (for testing historical dates)
+            # Pass as ISO string to activity (date objects aren't JSON serializable)
+            target_date_str = None
+            if input and input.target_date:
+                target_date_str = input.target_date  # Already ISO format
+                workflow.logger.info(f"📥 Starting fixture ingest for {input.target_date}")
+            else:
+                workflow.logger.info("📥 Starting daily fixture ingest (today)")
+            
+            # Fetch fixtures for target date (or today if not specified)
+            fixtures = await workflow.execute_activity(
+                ingest_activities.fetch_todays_fixtures,
+                target_date_str,  # Pass date string to activity (None = today)
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=3,
+                    initial_interval=timedelta(seconds=1),
+                    maximum_interval=timedelta(seconds=10),
+                ),
+            )
         
         # Pre-cache RAG aliases for EACH team individually
         # This is more modular - can retry per-team instead of per-fixture
