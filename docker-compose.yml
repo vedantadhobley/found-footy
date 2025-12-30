@@ -99,6 +99,7 @@ services:
     environment:
       MONGOKU_DEFAULT_HOST: mongodb://ffuser:ffpass@found-footy-prod-mongo:27017
       MONGOKU_SERVER_ORIGIN: http://localhost:3101
+      MONGOKU_ALLOW_DELETE: "true"
     depends_on:
       mongo:
         condition: service_healthy

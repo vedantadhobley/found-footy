@@ -816,7 +816,7 @@ Analyze this image and answer TWO questions:
    - Pixelation from screen refresh rate mismatch
    
    NOTE: Broadcast overlays, VAR boxes, replay borders, or graphics are NOT screen recordings.
-   Only answer YES if you see evidence of a physical camera filming a physical screen.
+   Only answer YES if you see evidence of a physical camera filming a physical screen, notably with black borders.
 
 Answer format (exactly):
 SOCCER: YES or NO
