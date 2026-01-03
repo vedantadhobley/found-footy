@@ -753,6 +753,7 @@ class FootyMongoStore:
         """
         Add video objects to _s3_videos array.
         Deduplicates by URL to prevent duplicate entries.
+        If a video already exists, updates its popularity to the MAX of existing and new.
         
         Args:
             fixture_id: Fixture ID
@@ -775,7 +776,7 @@ class FootyMongoStore:
                 print(f"✅ No new videos to add for {event_id}")
                 return True
             
-            # Get existing video URLs to avoid duplicates
+            # Get existing videos to check for duplicates
             fixture = self.fixtures_active.find_one(
                 {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id}
             )
@@ -784,23 +785,65 @@ class FootyMongoStore:
                 print(msg)
                 raise RuntimeError(msg)
             
-            # Find the event and get existing URLs
-            existing_urls = set()
-            for evt in fixture.get("events", []):
+            # Find the event and build URL -> existing video map
+            existing_videos_by_url = {}
+            event_idx = None
+            for idx, evt in enumerate(fixture.get("events", [])):
                 if evt.get(EventFields.EVENT_ID) == event_id:
+                    event_idx = idx
                     for video in evt.get(EventFields.S3_VIDEOS, []):
-                        existing_urls.add(video.get("url", ""))
+                        url = video.get("url", "")
+                        if url:
+                            existing_videos_by_url[url] = video
                     break
             
-            # Filter out videos that already exist
-            new_videos = [v for v in video_objects if v.get("url", "") not in existing_urls]
+            # Separate new videos from duplicates that need popularity updates
+            new_videos = []
+            popularity_updates = []  # List of (url, new_popularity)
+            
+            for v in video_objects:
+                url = v.get("url", "")
+                new_pop = v.get("popularity", 1)
+                
+                if url in existing_videos_by_url:
+                    # Video already exists - check if we should bump popularity
+                    existing_pop = existing_videos_by_url[url].get("popularity", 1)
+                    if new_pop > existing_pop:
+                        popularity_updates.append((url, new_pop))
+                        print(f"📈 Existing video {url.split('/')[-1]} popularity {existing_pop} → {new_pop}")
+                else:
+                    new_videos.append(v)
+            
+            # Apply popularity updates to existing videos
+            if popularity_updates:
+                # Get current videos array
+                for evt in fixture.get("events", []):
+                    if evt.get(EventFields.EVENT_ID) == event_id:
+                        videos = evt.get(EventFields.S3_VIDEOS, [])
+                        # Update popularity for matching URLs
+                        for video in videos:
+                            for url, new_pop in popularity_updates:
+                                if video.get("url") == url:
+                                    video["popularity"] = new_pop
+                        # Save back
+                        self.fixtures_active.update_one(
+                            {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                            {"$set": {f"events.$.{EventFields.S3_VIDEOS}": videos}}
+                        )
+                        print(f"📈 Updated popularity for {len(popularity_updates)} existing videos in {event_id}")
+                        break
             
             if not new_videos:
-                print(f"✅ All {len(video_objects)} videos already exist for {event_id}, skipping duplicates")
+                if popularity_updates:
+                    print(f"✅ Updated {len(popularity_updates)} existing videos, no new videos to add for {event_id}")
+                else:
+                    print(f"✅ All {len(video_objects)} videos already exist for {event_id}, skipping duplicates")
                 return True
             
             if len(new_videos) < len(video_objects):
-                print(f"⚠️ Filtered out {len(video_objects) - len(new_videos)} duplicate videos for {event_id}")
+                skipped = len(video_objects) - len(new_videos) - len(popularity_updates)
+                if skipped > 0:
+                    print(f"⚠️ Filtered out {skipped} duplicate videos for {event_id}")
             
             # Append new video objects
             result = self.fixtures_active.update_one(
@@ -817,7 +860,7 @@ class FootyMongoStore:
                 print(msg)
                 raise RuntimeError(msg)
             
-            print(f"✅ Added {len(video_objects)} videos to {event_id}")
+            print(f"✅ Added {len(new_videos)} videos to {event_id}")
             return True
         except Exception as e:
             print(f"❌ FATAL: Error adding videos to event {event_id}: {e}")

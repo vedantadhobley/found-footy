@@ -183,12 +183,13 @@ async def main():
                 twitter.save_discovered_videos,
                 twitter.mark_event_twitter_complete,
                 twitter.update_twitter_attempt,
-                # Download activities (9 granular for per-video retry + quality replacement)
+                # Download activities (10 granular for per-video retry + quality replacement)
                 download.fetch_event_data,
                 download.download_single_video,
-                download.validate_video_is_soccer,  # AI vision validation (before hash)
+                download.deduplicate_by_md5,  # Fast MD5 dedup BEFORE validation (saves compute)
+                download.validate_video_is_soccer,  # AI vision validation (after MD5 dedup)
                 download.generate_video_hash,  # Perceptual hash (after validation)
-                download.deduplicate_videos,
+                download.deduplicate_videos,  # Perceptual hash dedup
                 download.upload_single_video,
                 download.mark_download_complete,
                 download.replace_s3_video,

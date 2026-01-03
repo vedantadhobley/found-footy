@@ -419,6 +419,189 @@ def _process_downloaded_video(
 
 
 @activity.defn
+async def deduplicate_by_md5(
+    downloaded_files: List[Dict[str, Any]],
+    existing_s3_videos: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
+    """
+    Fast MD5-based deduplication for TRUE duplicates (identical files).
+    
+    This runs BEFORE AI validation and perceptual hashing to eliminate
+    exact duplicates early, saving expensive compute.
+    
+    MD5 hash comparison is O(1) per comparison vs perceptual hash which is O(frames).
+    
+    Two-phase deduplication:
+    1. BATCH DEDUP: Group by file_hash, keep highest quality from each group
+    2. S3 DEDUP: Check if file_hash matches any existing S3 video filename
+    
+    Args:
+        downloaded_files: List of download results with file_path, file_hash, file_size, etc.
+        existing_s3_videos: List of existing S3 video metadata from fetch_event_data
+    
+    Returns:
+        Dict with:
+        - unique_videos: Videos that survived MD5 dedup (need AI validation + perceptual hash)
+        - md5_duplicates_removed: Count of duplicates eliminated
+        - s3_matches: Videos that match existing S3 (bump popularity or replace)
+    """
+    successful = [f for f in downloaded_files if f.get("status") == "success"]
+    
+    if not successful:
+        return {
+            "unique_videos": [],
+            "md5_duplicates_removed": 0,
+            "s3_exact_matches": [],
+            "s3_replacements": [],
+        }
+    
+    activity.logger.info(
+        f"🔐 [MD5-DEDUP] Starting fast MD5 deduplication | videos={len(successful)}"
+    )
+    
+    # =========================================================================
+    # PHASE 1: BATCH DEDUP - Group by MD5 hash, keep best quality from each
+    # =========================================================================
+    md5_groups = {}  # file_hash -> list of videos with that hash
+    
+    for video in successful:
+        file_hash = video.get("file_hash", "")
+        if not file_hash:
+            # No hash - can't dedup, keep it
+            activity.logger.warning(f"⚠️ [MD5-DEDUP] Video has no MD5 hash, keeping")
+            if "" not in md5_groups:
+                md5_groups[""] = []
+            md5_groups[""].append(video)
+            continue
+        
+        if file_hash not in md5_groups:
+            md5_groups[file_hash] = []
+        md5_groups[file_hash].append(video)
+    
+    # For each group, keep the best quality video
+    batch_winners = []
+    batch_duplicates_removed = 0
+    files_to_delete = []
+    
+    for file_hash, group in md5_groups.items():
+        if len(group) == 1:
+            # Single video with this hash - keep it
+            group[0]["popularity"] = 1
+            batch_winners.append(group[0])
+        else:
+            # Multiple videos with same MD5 - TRUE DUPLICATES (identical content)
+            # Keep the one with best resolution, accumulate popularity
+            best = max(group, key=lambda v: (v.get("resolution_score", 0), v.get("file_size", 0)))
+            best["popularity"] = len(group)  # All duplicates contribute to popularity
+            batch_winners.append(best)
+            batch_duplicates_removed += len(group) - 1
+            
+            activity.logger.info(
+                f"🗑️ [MD5-DEDUP] Found {len(group)} identical files (MD5={file_hash[:8]}), "
+                f"keeping best ({best.get('width', 0)}x{best.get('height', 0)})"
+            )
+            
+            # Mark other files for deletion
+            for video in group:
+                if video["file_path"] != best["file_path"]:
+                    files_to_delete.append(video["file_path"])
+    
+    # Delete duplicate files
+    for file_path in files_to_delete:
+        try:
+            import os
+            os.remove(file_path)
+        except:
+            pass
+    
+    # =========================================================================
+    # PHASE 2: S3 DEDUP - Check MD5 against existing S3 video filenames
+    # S3 filenames are: {event_id}_{md5[:8]}.mp4
+    # =========================================================================
+    s3_exact_matches = []  # Videos that exactly match S3 (same MD5)
+    s3_replacements = []   # Videos that should replace S3 (same MD5, better quality)
+    unique_videos = []     # Videos with no S3 match
+    
+    existing_s3_list = existing_s3_videos or []
+    
+    # Build map of existing S3 video MD5 hashes (extracted from filename)
+    existing_md5_to_s3 = {}  # md5_prefix -> s3_video_info
+    for s3_video in existing_s3_list:
+        s3_key = s3_video.get("s3_key", "") or s3_video.get("s3_url", "").replace("/video/footy-videos/", "")
+        if s3_key:
+            # Extract MD5 prefix from filename: event_id_{md5[:8]}.mp4
+            filename = s3_key.split("/")[-1]  # Get just the filename
+            if "_" in filename and filename.endswith(".mp4"):
+                # Format: eventid_hash.mp4 -> extract hash
+                parts = filename[:-4].split("_")  # Remove .mp4 and split
+                if parts:
+                    md5_prefix = parts[-1]  # Last part should be the MD5 prefix
+                    if len(md5_prefix) == 8:  # Valid MD5 prefix
+                        existing_md5_to_s3[md5_prefix] = s3_video
+    
+    for video in batch_winners:
+        file_hash = video.get("file_hash", "")
+        md5_prefix = file_hash[:8] if file_hash else ""
+        
+        if md5_prefix and md5_prefix in existing_md5_to_s3:
+            # Found MD5 match in S3!
+            existing_s3 = existing_md5_to_s3[md5_prefix]
+            existing_file_size = existing_s3.get("file_size", 0)
+            existing_resolution = existing_s3.get("resolution_score", 0)
+            existing_popularity = existing_s3.get("popularity", 1)
+            
+            new_file_size = video.get("file_size", 0)
+            new_resolution = video.get("resolution_score", 0)
+            new_popularity = video.get("popularity", 1)
+            
+            # Check if new is better quality
+            is_better = (new_resolution > existing_resolution) or \
+                       (new_resolution == existing_resolution and new_file_size > existing_file_size)
+            
+            if is_better:
+                # Replace S3 video with better quality
+                video["popularity"] = existing_popularity + new_popularity
+                s3_replacements.append({
+                    "new_video": video,
+                    "old_s3_video": existing_s3,
+                })
+                activity.logger.info(
+                    f"🔄 [MD5-DEDUP] S3 replacement | md5={md5_prefix} | "
+                    f"new={new_resolution} > existing={existing_resolution}"
+                )
+            else:
+                # Existing S3 is same/better - just bump popularity
+                s3_exact_matches.append({
+                    "video": video,
+                    "s3_video": existing_s3,
+                    "new_popularity": existing_popularity + new_popularity,
+                })
+                activity.logger.info(
+                    f"⏭️ [MD5-DEDUP] S3 match (keeping existing) | md5={md5_prefix} | "
+                    f"bumping popularity {existing_popularity} → {existing_popularity + new_popularity}"
+                )
+                # Delete local file - not needed
+                try:
+                    import os
+                    os.remove(video["file_path"])
+                except:
+                    pass
+        else:
+            # No S3 match - needs further processing
+            unique_videos.append(video)
+    
+    activity.logger.info(
+        f"✅ [MD5-DEDUP] Complete | unique={len(unique_videos)} | "
+        f"batch_dupes_removed={batch_duplicates_removed} | "
+        f"s3_matches={len(s3_exact_matches)} | s3_replacements={len(s3_replacements)}"
+    )
+    
+    return {
+        "unique_videos": unique_videos,
+        "md5_duplicates_removed": batch_duplicates_removed,
+        "s3_exact_matches": s3_exact_matches,
+        "s3_replacements": s3_replacements,
+    }@activity.defn
 async def deduplicate_videos(
     downloaded_files: List[Dict[str, Any]],
     existing_s3_videos: Optional[List[Dict[str, Any]]] = None
@@ -516,8 +699,9 @@ async def deduplicate_videos(
     
     for cluster in clusters:
         if len(cluster) == 1:
-            # Single video - keep it
-            cluster[0]["duplicate_count"] = 1
+            # Single video - preserve incoming popularity from MD5 dedup
+            if "popularity" not in cluster[0] or cluster[0]["popularity"] < 1:
+                cluster[0]["popularity"] = 1
             batch_winners.append(cluster[0])
             continue
         
@@ -527,13 +711,14 @@ async def deduplicate_videos(
         # Find largest file size video
         largest = max(cluster, key=lambda x: x.get("file_size", 0))
         
-        # Accumulate popularity from all duplicates
-        total_popularity = len(cluster)
+        # Accumulate popularity from ALL videos in cluster (including their MD5 dedup popularity)
+        # This preserves popularity from earlier dedup phases
+        total_popularity = sum(v.get("popularity", 1) for v in cluster)
         
         if longest["file_path"] == largest["file_path"]:
             # Same video is both longest AND largest - perfect!
             winner = longest
-            winner["duplicate_count"] = total_popularity
+            winner["popularity"] = total_popularity
             batch_winners.append(winner)
             activity.logger.info(
                 f"🏆 Cluster winner: {winner.get('duration', 0):.1f}s, {winner.get('file_size', 0):,} bytes "
@@ -549,13 +734,13 @@ async def deduplicate_videos(
             longest_popularity = (total_popularity + 1) // 2  # Ceiling
             largest_popularity = total_popularity // 2  # Floor
             
-            longest["duplicate_count"] = longest_popularity
-            largest["duplicate_count"] = largest_popularity
+            longest["popularity"] = longest_popularity
+            largest["popularity"] = largest_popularity
             batch_winners.append(longest)
             batch_winners.append(largest)
             
             activity.logger.info(
-                f"🏆 Cluster has 2 winners from {len(cluster)} dups:"
+                f"🏆 Cluster has 2 winners from {len(cluster)} videos (total_pop={total_popularity}):"
             )
             activity.logger.info(
                 f"   📏 Longest: {longest.get('duration', 0):.1f}s, {longest.get('file_size', 0):,} bytes (pop={longest_popularity})"
@@ -596,7 +781,7 @@ async def deduplicate_videos(
         file_size = file_info["file_size"]
         duration = file_info.get("duration", 0)
         source_url = file_info.get("source_url", "")
-        duplicate_count = file_info.get("duplicate_count", 1)
+        incoming_popularity = file_info.get("popularity", 1)  # From local dedup
         
         # CRITICAL: Warn if video has no hash - dedup will NOT work!
         if not perceptual_hash or perceptual_hash == "dense:0.25:":
@@ -625,7 +810,7 @@ async def deduplicate_videos(
             should_replace = (new_duration > existing_duration) or (new_file_size > existing_file_size)
             
             if should_replace:
-                new_popularity = existing_popularity + duplicate_count
+                new_popularity = existing_popularity + incoming_popularity
                 reason = []
                 if new_duration > existing_duration:
                     reason.append(f"longer ({new_duration:.1f}s > {existing_duration:.1f}s)")
@@ -633,16 +818,16 @@ async def deduplicate_videos(
                     reason.append(f"larger ({new_file_size:,} > {existing_file_size:,} bytes)")
                 activity.logger.info(
                     f"🔄 S3 REPLACE: New is {' & '.join(reason)} "
-                    f"- popularity {existing_popularity} + {duplicate_count} = {new_popularity}"
+                    f"- popularity {existing_popularity} + {incoming_popularity} = {new_popularity}"
                 )
-                file_info["duplicate_count"] = new_popularity
+                file_info["popularity"] = new_popularity
                 videos_to_replace.append({
                     "new_video": file_info,
                     "old_s3_video": matched_existing
                 })
             else:
                 # Existing S3 is better - skip but bump popularity
-                new_popularity = existing_popularity + duplicate_count
+                new_popularity = existing_popularity + incoming_popularity
                 activity.logger.info(
                     f"⏭️ S3 SKIP: Existing is better ({existing_duration:.1f}s, {existing_file_size:,} bytes) "
                     f"- bumping popularity {existing_popularity} → {new_popularity}"
@@ -1539,6 +1724,12 @@ def _generate_perceptual_hash(file_path: str, duration: float, heartbeat_fn=None
     import io
     
     interval = 0.25  # Sample every 0.25 seconds
+    total_frames = int((duration - 0.3) / interval)
+    
+    # CRITICAL: Send heartbeat IMMEDIATELY before any processing starts
+    # This prevents timeout when multiple videos compete for resources
+    if heartbeat_fn:
+        heartbeat_fn(f"Starting hash generation for {total_frames} frames")
     
     def extract_frame_hash_normalized(timestamp: float) -> str:
         """Extract frame at timestamp, normalize, and compute dHash"""
@@ -1589,22 +1780,23 @@ def _generate_perceptual_hash(file_path: str, duration: float, heartbeat_fn=None
     hashes = []
     t = interval
     frame_count = 0
-    total_frames = int((duration - 0.3) / interval)
     
     while t < duration - 0.3:  # Stop before last 0.3s to avoid end-of-file issues
+        # Send heartbeat BEFORE each ffmpeg call to prevent timeout during resource contention
+        # When multiple videos are processed in parallel, ffmpeg calls can be very slow
+        if heartbeat_fn:
+            heartbeat_fn(f"Processing frame {frame_count + 1}/{total_frames}")
+        
         frame_hash = extract_frame_hash_normalized(t)
         if frame_hash:
             hashes.append(f"{t:.2f}={frame_hash}")
         t += interval
         frame_count += 1
-        
-        # Send heartbeat every 10 frames (~2.5s of video) to prove we're still working
-        # This prevents Temporal from killing us while we're actively processing
-        if heartbeat_fn and frame_count % 10 == 0:
-            heartbeat_fn(f"Processed {frame_count}/{total_frames} frames")
     
     if not hashes:
         # Fallback: try at least one frame at 1s
+        if heartbeat_fn:
+            heartbeat_fn("Fallback: trying single frame at 1s")
         frame_hash = extract_frame_hash_normalized(1.0)
         if frame_hash:
             hashes.append(f"1.00={frame_hash}")
@@ -1714,7 +1906,7 @@ def _dense_hashes_match(
     Algorithm:
     1. For each possible time offset between A and B
     2. Count how many consecutive frames match at that offset
-    3. If any offset has >= min_consecutive matches, they're duplicates
+    3. If any offset has >= min_consecutive matches, videos are duplicates
     
     Args:
         hash_a: Dense hash "dense:<interval>:<ts1>=<hash1>,..."

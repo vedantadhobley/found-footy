@@ -4,14 +4,16 @@ Download Workflow - Video Download/Upload Pipeline
 Orchestrates granular download/upload with per-video retry:
 1. fetch_event_data - Get existing S3 video metadata for quality comparison
 2. download_single_video x N - Download each video individually (3 retries per video)
-3. validate_video_is_soccer x N - AI validation BEFORE hash generation (saves compute)
-4. generate_video_hash x N - Generate perceptual hash only for validated videos
-5. deduplicate_videos - Hash dedup with quality comparison against existing S3
-6. replace_s3_video x N - Delete old S3 videos being replaced by higher quality
-7. upload_single_video x N - Upload new/replacement videos to S3
-8. mark_download_complete - Update MongoDB, cleanup temp dir
+3. deduplicate_by_md5 - FAST MD5 dedup (eliminates true duplicates before expensive steps)
+4. validate_video_is_soccer x N - AI validation (only for MD5-unique videos)
+5. generate_video_hash x N - Generate perceptual hash (only for validated videos)
+6. deduplicate_videos - Perceptual hash dedup with quality comparison against existing S3
+7. replace_s3_video x N - Delete old S3 videos being replaced by higher quality
+8. upload_single_video x N - Upload new/replacement videos to S3
+9. mark_download_complete - Update MongoDB, cleanup temp dir
 
 Design Philosophy:
+- TWO-PHASE DEDUP: MD5 first (fast, exact matches), then perceptual (slow, similar content)
 - Per-video retry (3 attempts with exponential backoff)
 - Videos that fail all 3 attempts are logged but don't block workflow
 - Parallel processing where possible (downloads, hashes, uploads)
@@ -19,8 +21,9 @@ Design Philosophy:
 - Activity-level heartbeats for long operations (hash generation)
 
 Pipeline Order:
+- MD5 dedup happens BEFORE AI validation (saves expensive AI calls for duplicates)
 - AI validation happens BEFORE perceptual hash generation
-- This saves expensive hash computation for non-soccer videos
+- This saves expensive hash computation for non-soccer/duplicate videos
 - Hash generation uses heartbeats (sends heartbeat every 10 frames)
 
 Started by: TwitterWorkflow (WAITS for completion - data integrity)
@@ -199,10 +202,77 @@ class DownloadWorkflow:
         )
         
         # =========================================================================
-        # Step 3: AI Validation BEFORE hash generation (saves compute)
-        # Validates videos are soccer content - rejects non-soccer early
+        # Step 3: MD5 Dedup FIRST - Fast elimination of true duplicates
+        # This saves AI validation and perceptual hash compute for identical files
         # =========================================================================
         successful_videos = [r for r in download_results if r.get("status") == "success"]
+        
+        if successful_videos:
+            workflow.logger.info(
+                f"🔐 [DOWNLOAD] Running fast MD5 dedup | videos={len(successful_videos)} | event={event_id}"
+            )
+            
+            try:
+                md5_result = await workflow.execute_activity(
+                    download_activities.deduplicate_by_md5,
+                    args=[successful_videos, existing_s3_videos],
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
+                
+                # Handle S3 exact matches - bump popularity
+                s3_exact_matches = md5_result.get("s3_exact_matches", [])
+                if s3_exact_matches:
+                    workflow.logger.info(
+                        f"📈 [DOWNLOAD] Bumping popularity for {len(s3_exact_matches)} MD5-matched S3 videos | event={event_id}"
+                    )
+                    for match in s3_exact_matches:
+                        try:
+                            await workflow.execute_activity(
+                                download_activities.bump_video_popularity,
+                                args=[
+                                    fixture_id,
+                                    event_id,
+                                    match["s3_video"].get("s3_url", ""),
+                                    match["new_popularity"],
+                                ],
+                                start_to_close_timeout=timedelta(seconds=15),
+                                retry_policy=RetryPolicy(maximum_attempts=2),
+                            )
+                        except Exception as e:
+                            workflow.logger.warning(
+                                f"⚠️ [DOWNLOAD] Failed to bump MD5-match popularity | error={e}"
+                            )
+                
+                # Handle S3 replacements - queue for later upload after validation
+                md5_s3_replacements = md5_result.get("s3_replacements", [])
+                
+                # Continue with unique videos only
+                successful_videos = md5_result.get("unique_videos", [])
+                md5_dupes_removed = md5_result.get("md5_duplicates_removed", 0)
+                
+                workflow.logger.info(
+                    f"✅ [DOWNLOAD] MD5 dedup complete | unique={len(successful_videos)} | "
+                    f"batch_dupes={md5_dupes_removed} | s3_matches={len(s3_exact_matches)} | "
+                    f"s3_replacements={len(md5_s3_replacements)} | event={event_id}"
+                )
+            except Exception as e:
+                workflow.logger.error(f"❌ [DOWNLOAD] MD5 dedup FAILED | error={e} | event={event_id}")
+                md5_s3_replacements = []
+        else:
+            md5_s3_replacements = []
+        
+        # Add MD5 S3 replacements to the list - they also need validation
+        # Mark them so we know to handle them as replacements later
+        for replacement in md5_s3_replacements:
+            replacement["new_video"]["_is_md5_replacement"] = True
+            replacement["new_video"]["_old_s3_video"] = replacement["old_s3_video"]
+            successful_videos.append(replacement["new_video"])
+        
+        # =========================================================================
+        # Step 4: AI Validation (only for MD5-unique videos - saves compute!)
+        # Validates videos are soccer content - rejects non-soccer early
+        # =========================================================================
         validated_videos = []
         rejected_count = 0
         validation_failed_count = 0
@@ -258,7 +328,7 @@ class DownloadWorkflow:
         )
         
         # =========================================================================
-        # Step 4: Generate perceptual hashes IN PARALLEL for validated videos
+        # Step 5: Generate perceptual hashes IN PARALLEL for validated videos
         # Uses heartbeat-based timeout (heartbeat every 10 frames)
         # =========================================================================
         if validated_videos:
@@ -271,9 +341,10 @@ class DownloadWorkflow:
                 hash_result = await workflow.execute_activity(
                     download_activities.generate_video_hash,
                     args=[video_info["file_path"], video_info.get("duration", 0)],
-                    # Heartbeat-based timeout: activity heartbeats every 10 frames
-                    # If no heartbeat for 30s, activity is truly hung
-                    heartbeat_timeout=timedelta(seconds=30),
+                    # Heartbeat-based timeout: activity heartbeats every 5 frames
+                    # Increased to 60s to handle parallel processing contention
+                    # (multiple videos competing for CPU slows ffmpeg calls)
+                    heartbeat_timeout=timedelta(seconds=60),
                     start_to_close_timeout=timedelta(seconds=300),
                     retry_policy=RetryPolicy(maximum_attempts=2),
                 )
@@ -298,37 +369,73 @@ class DownloadWorkflow:
             validated_videos[hash_result["idx"]]["perceptual_hash"] = hash_result["hash"]
         
         # =========================================================================
-        # Step 5: Deduplicate with quality comparison
+        # Filter out videos with no hash - they can't be deduplicated properly!
+        # Videos without hashes would bypass dedup and create duplicates.
+        # =========================================================================
+        videos_with_hash = []
+        videos_without_hash_count = 0
+        for video_info in validated_videos:
+            if video_info.get("perceptual_hash") and video_info["perceptual_hash"] != "dense:0.25:":
+                videos_with_hash.append(video_info)
+            else:
+                videos_without_hash_count += 1
+                workflow.logger.warning(
+                    f"⚠️ [DOWNLOAD] Skipping video with no hash (cannot deduplicate) | "
+                    f"url={video_info.get('source_url', 'unknown')[:60]}... | event={event_id}"
+                )
+        
+        if videos_without_hash_count > 0:
+            workflow.logger.warning(
+                f"⚠️ [DOWNLOAD] Filtered {videos_without_hash_count} videos with no hash | event={event_id}"
+            )
+        
+        validated_videos = videos_with_hash
+        
+        # =========================================================================
+        # Step 6: Deduplicate with quality comparison (perceptual hash)
         # =========================================================================
         workflow.logger.info(f"🔍 [DOWNLOAD] Deduplicating videos | event={event_id}")
+        
+        # Separate out MD5 replacements - they bypass perceptual dedup (already matched)
+        md5_replacement_videos = []
+        perceptual_dedup_videos = []
+        for video in validated_videos:
+            if video.get("_is_md5_replacement"):
+                md5_replacement_videos.append({
+                    "new_video": video,
+                    "old_s3_video": video.get("_old_s3_video", {}),
+                })
+            else:
+                perceptual_dedup_videos.append(video)
         
         try:
             dedup_result = await workflow.execute_activity(
                 download_activities.deduplicate_videos,
-                args=[validated_videos, existing_s3_videos],
+                args=[perceptual_dedup_videos, existing_s3_videos],
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=RetryPolicy(maximum_attempts=3),
             )
         except Exception as e:
             workflow.logger.error(f"❌ [DOWNLOAD] Deduplication FAILED | error={e} | event={event_id}")
-            dedup_result = {"videos_to_upload": validated_videos, "videos_to_replace": [], "videos_to_bump_popularity": [], "skipped_urls": []}
+            dedup_result = {"videos_to_upload": perceptual_dedup_videos, "videos_to_replace": [], "videos_to_bump_popularity": [], "skipped_urls": []}
         
         videos_to_upload = dedup_result.get("videos_to_upload", [])
-        videos_to_replace = dedup_result.get("videos_to_replace", [])
+        videos_to_replace = dedup_result.get("videos_to_replace", []) + md5_replacement_videos  # Add MD5 replacements
         videos_to_bump_popularity = dedup_result.get("videos_to_bump_popularity", [])
         skipped_urls = dedup_result.get("skipped_urls", [])
         
         total_to_process = len(videos_to_upload) + len(videos_to_replace)
         workflow.logger.info(
             f"✅ [DOWNLOAD] Dedup complete | new={len(videos_to_upload)} | "
-            f"replacements={len(videos_to_replace)} | skipped={len(skipped_urls)} | event={event_id}"
+            f"replacements={len(videos_to_replace)} (incl {len(md5_replacement_videos)} md5) | "
+            f"skipped={len(skipped_urls)} | event={event_id}"
         )
         
         # URLs to track for dedup (even if we don't upload anything)
         all_processed_urls = skipped_urls + filtered_urls + failed_urls
         
         # =========================================================================
-        # Step 5b: Bump popularity for existing videos IN PARALLEL
+        # Step 6b: Bump popularity for existing videos IN PARALLEL
         # (when we skipped uploading because existing was higher quality)
         # =========================================================================
         if videos_to_bump_popularity:
@@ -392,7 +499,7 @@ class DownloadWorkflow:
             }
         
         # =========================================================================
-        # Step 6: Handle replacements - delete old S3 videos IN PARALLEL
+        # Step 7: Handle replacements - delete old S3 videos IN PARALLEL
         # =========================================================================
         if videos_to_replace:
             workflow.logger.info(
@@ -427,7 +534,7 @@ class DownloadWorkflow:
             await asyncio.gather(*delete_tasks)
         
         # =========================================================================
-        # Step 7: Upload videos to S3 IN PARALLEL
+        # Step 8: Upload videos to S3 IN PARALLEL
         # =========================================================================
         all_uploads = videos_to_upload + [r["new_video"] for r in videos_to_replace]
         workflow.logger.info(
@@ -448,7 +555,7 @@ class DownloadWorkflow:
                         video_info.get("file_hash", ""),
                         video_info.get("perceptual_hash", ""),
                         video_info.get("duration", 0.0),
-                        video_info.get("duplicate_count", 1),
+                        video_info.get("popularity", 1),  # Popularity from dedup
                         "",  # assister_name
                         "",  # opponent_team
                         video_info.get("source_url", ""),
@@ -501,7 +608,7 @@ class DownloadWorkflow:
         )
         
         # =========================================================================
-        # Step 8: Save video objects and cleanup temp directory
+        # Step 9: Save video objects and cleanup temp directory
         # =========================================================================
         workflow.logger.info(
             f"💾 [DOWNLOAD] Saving {len(video_objects)} video objects to MongoDB | event={event_id}"
