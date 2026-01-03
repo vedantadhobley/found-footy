@@ -1439,23 +1439,28 @@ async def mark_download_complete(
     event_id: str,
     video_objects: List[Dict[str, Any]],
     temp_dir: str,
+    download_stats: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """
     Save download results (video objects) and cleanup temp directory.
     Then recalculate ranks for all videos in this event.
+    Also saves download stats for visibility into the pipeline.
     
     Args:
         fixture_id: Fixture ID
         event_id: Event ID
         video_objects: List of video objects {url, perceptual_hash, resolution_score, popularity, rank}
         temp_dir: Temporary directory to cleanup
+        download_stats: Optional stats dict {discovered, downloaded, md5_deduped, ai_rejected, 
+                        hash_failed, perceptual_deduped, uploaded, dropped_no_hash}
     
     Returns:
         True if successful
     """
     from src.data.mongo_store import FootyMongoStore
+    from src.data.models import EventFields
     import shutil
-    
+
     store = FootyMongoStore()
     
     activity.logger.info(
@@ -1475,6 +1480,21 @@ async def mark_download_complete(
             f"📊 [COMPLETE] Recalculating video ranks | event={event_id}"
         )
         store.recalculate_video_ranks(fixture_id, event_id)
+    
+    # Save download stats for visibility
+    if download_stats:
+        try:
+            store.fixtures_active.update_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {"$set": {f"events.$.{EventFields.DOWNLOAD_STATS}": download_stats}}
+            )
+            activity.logger.info(
+                f"📊 [COMPLETE] Saved download stats | event={event_id} | stats={download_stats}"
+            )
+        except Exception as e:
+            activity.logger.warning(
+                f"⚠️ [COMPLETE] Failed to save download stats | error={e}"
+            )
     
     # Cleanup temp directory
     if temp_dir and os.path.exists(temp_dir):

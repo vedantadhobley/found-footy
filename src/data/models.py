@@ -306,6 +306,9 @@ class EventFields:
     S3_VIDEOS = "_s3_videos"
     VIDEO_COUNT = "_video_count"
     
+    # Download workflow stats (for debugging/visibility)
+    DOWNLOAD_STATS = "_download_stats"  # {dropped_no_hash, dropped_ai_rejected, etc.}
+    
     # Score context
     SCORE_AFTER = "_score_after"
     SCORING_TEAM = "_scoring_team"
@@ -329,6 +332,7 @@ class EventFields:
             cls.DISCOVERED_VIDEOS,
             cls.S3_VIDEOS,
             cls.VIDEO_COUNT,
+            cls.DOWNLOAD_STATS,
             cls.SCORE_AFTER,
             cls.SCORING_TEAM,
             cls.REMOVED,
@@ -351,6 +355,54 @@ class VideoFields:
 
 
 # =============================================================================
+# DOWNLOAD STATS TYPE
+# =============================================================================
+
+class DownloadStats(TypedDict, total=False):
+    """
+    Statistics from DownloadWorkflow for debugging/visibility.
+    
+    Tracks what happened to videos at each stage of the pipeline.
+    Stored in _download_stats field on events.
+    
+    PIPELINE FLOW:
+    discovered → downloaded → md5_deduped → ai_rejected → hash_failed → perceptual_deduped → uploaded
+    
+    Each stage can reduce the count. The stats help diagnose issues like:
+    - Too many ai_rejected: Search query finding wrong videos
+    - Too many hash_failed: ffmpeg or resource issues  
+    - Too many perceptual_deduped: Multiple sources posting same clip (good!)
+    """
+    # Input
+    discovered: int              # Total discovered videos from Twitter
+    
+    # Download stage
+    downloaded: int              # Successfully downloaded
+    filtered_aspect_duration: int  # Filtered by aspect ratio or duration
+    download_failed: int         # Failed to download (403, timeout, etc.)
+    
+    # MD5 dedup stage
+    md5_deduped: int             # Removed by MD5 dedup (identical files in batch)
+    md5_s3_matched: int          # MD5 matched existing S3 (popularity bumped)
+    
+    # AI validation stage
+    ai_rejected: int             # Rejected by AI validation (not soccer)
+    ai_validation_failed: int    # AI validation error (timeout, etc.)
+    
+    # Hash generation stage
+    hash_generated: int          # Successfully generated perceptual hash
+    hash_failed: int             # Perceptual hash generation failed
+    
+    # Perceptual dedup stage
+    perceptual_deduped: int      # Removed by perceptual dedup (similar content)
+    s3_replaced: int             # Replaced lower quality S3 videos
+    s3_popularity_bumped: int    # Existing S3 kept, popularity bumped
+    
+    # Final output
+    uploaded: int                # Successfully uploaded to S3
+
+
+# =============================================================================
 # S3 VIDEO TYPES
 # =============================================================================
 
@@ -362,11 +414,20 @@ class S3Video(TypedDict, total=False):
     Rank is calculated based on popularity and file size.
     """
     url: str              # Relative URL: /video/footy-videos/{key}
+    _s3_key: str          # S3 key for direct operations
     perceptual_hash: str  # Hash for deduplication
     resolution_score: float
     file_size: int        # File size in bytes
     popularity: int       # Number of times this clip was found (default: 1)
     rank: int             # 1=best, higher=worse
+    # Quality metadata
+    width: int
+    height: int
+    aspect_ratio: float
+    bitrate: int
+    duration: float
+    source_url: str       # Original tweet URL
+    hash_version: str     # Version of hash algorithm used
 
 
 class DiscoveredVideo(TypedDict, total=False):
@@ -446,11 +507,15 @@ class EnhancedEvent(TypedDict, total=False):
     _twitter_complete: bool   # True when Twitter workflow finished
     _twitter_completed_at: datetime
     _twitter_search: str      # Search query for Twitter
+    _twitter_aliases: List[str]  # Team name aliases from RAG
     
     # === Video Storage ===
     _discovered_videos: List[DiscoveredVideo]  # Videos found on Twitter
     _s3_videos: List[S3Video]                  # Videos uploaded to S3
     _video_count: int                          # Total videos discovered
+    
+    # === Download Stats (debugging/visibility) ===
+    _download_stats: DownloadStats             # Stats from DownloadWorkflow
     
     # === Score Context ===
     _score_after: str         # Score after this event (e.g., '2-1')

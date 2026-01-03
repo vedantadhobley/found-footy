@@ -75,6 +75,24 @@ class DownloadWorkflow:
             f"videos={len(discovered_videos) if discovered_videos else 0}"
         )
         
+        # Initialize download stats for visibility into what happened in the pipeline
+        download_stats = {
+            "discovered": len(discovered_videos) if discovered_videos else 0,
+            "downloaded": 0,
+            "filtered_aspect_duration": 0,
+            "download_failed": 0,
+            "md5_deduped": 0,
+            "md5_s3_matched": 0,
+            "ai_rejected": 0,
+            "ai_validation_failed": 0,
+            "hash_generated": 0,
+            "hash_failed": 0,
+            "perceptual_deduped": 0,
+            "s3_replaced": 0,
+            "s3_popularity_bumped": 0,
+            "uploaded": 0,
+        }
+        
         # =========================================================================
         # Step 1: Get existing S3 video metadata for quality comparison
         # =========================================================================
@@ -196,6 +214,10 @@ class DownloadWorkflow:
                 failed_urls.append(outcome["url"])
         
         successful_downloads = sum(1 for r in download_results if r.get("status") == "success")
+        download_stats["downloaded"] = successful_downloads
+        download_stats["filtered_aspect_duration"] = len(filtered_urls)
+        download_stats["download_failed"] = len(failed_urls)
+        
         workflow.logger.info(
             f"✅ [DOWNLOAD] Downloads complete | success={successful_downloads} | "
             f"filtered={len(filtered_urls)} | failed={len(failed_urls)} | event={event_id}"
@@ -250,6 +272,10 @@ class DownloadWorkflow:
                 # Continue with unique videos only
                 successful_videos = md5_result.get("unique_videos", [])
                 md5_dupes_removed = md5_result.get("md5_duplicates_removed", 0)
+                
+                # Update stats
+                download_stats["md5_deduped"] = md5_dupes_removed
+                download_stats["md5_s3_matched"] = len(s3_exact_matches)
                 
                 workflow.logger.info(
                     f"✅ [DOWNLOAD] MD5 dedup complete | unique={len(successful_videos)} | "
@@ -322,6 +348,10 @@ class DownloadWorkflow:
                 except:
                     pass
         
+        # Update stats
+        download_stats["ai_rejected"] = rejected_count
+        download_stats["ai_validation_failed"] = validation_failed_count
+        
         workflow.logger.info(
             f"✅ [DOWNLOAD] Validation complete | passed={len(validated_videos)} | "
             f"not_soccer={rejected_count} | validation_errors={validation_failed_count} | event={event_id}"
@@ -353,7 +383,7 @@ class DownloadWorkflow:
                 workflow.logger.warning(
                     f"⚠️ [DOWNLOAD] Hash generation FAILED for video {idx} | error={e} | event={event_id}"
                 )
-                return {"idx": idx, "hash": ""}
+                return {"idx": idx, "hash": "", "failed": True}
         
         # Execute all hash generations in parallel
         hash_tasks = [generate_hash(video_info, idx) for idx, video_info in enumerate(validated_videos)]
@@ -361,6 +391,12 @@ class DownloadWorkflow:
         
         # Apply hash results back to video_info objects
         hashes_generated = sum(1 for r in hash_results if r["hash"])
+        hashes_failed = sum(1 for r in hash_results if r.get("failed"))
+        
+        # Update stats
+        download_stats["hash_generated"] = hashes_generated
+        download_stats["hash_failed"] = hashes_failed
+        
         workflow.logger.info(
             f"✅ [DOWNLOAD] Hash generation complete | generated={hashes_generated}/{len(validated_videos)} | event={event_id}"
         )
@@ -424,6 +460,11 @@ class DownloadWorkflow:
         videos_to_bump_popularity = dedup_result.get("videos_to_bump_popularity", [])
         skipped_urls = dedup_result.get("skipped_urls", [])
         
+        # Update stats
+        download_stats["perceptual_deduped"] = len(skipped_urls)
+        download_stats["s3_replaced"] = len(videos_to_replace)
+        download_stats["s3_popularity_bumped"] = len(videos_to_bump_popularity)
+        
         total_to_process = len(videos_to_upload) + len(videos_to_replace)
         workflow.logger.info(
             f"✅ [DOWNLOAD] Dedup complete | new={len(videos_to_upload)} | "
@@ -478,7 +519,7 @@ class DownloadWorkflow:
             try:
                 await workflow.execute_activity(
                     download_activities.mark_download_complete,
-                    args=[fixture_id, event_id, [], temp_dir],
+                    args=[fixture_id, event_id, [], temp_dir, download_stats],
                     start_to_close_timeout=timedelta(seconds=30),
                     retry_policy=RetryPolicy(
                         maximum_attempts=3,
@@ -614,10 +655,13 @@ class DownloadWorkflow:
             f"💾 [DOWNLOAD] Saving {len(video_objects)} video objects to MongoDB | event={event_id}"
         )
         
+        # Update final stats
+        download_stats["uploaded"] = len(video_objects)
+        
         try:
             await workflow.execute_activity(
                 download_activities.mark_download_complete,
-                args=[fixture_id, event_id, video_objects, temp_dir],
+                args=[fixture_id, event_id, video_objects, temp_dir, download_stats],
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(
                     maximum_attempts=3,
