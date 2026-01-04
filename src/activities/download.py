@@ -601,7 +601,10 @@ async def deduplicate_by_md5(
         "md5_duplicates_removed": batch_duplicates_removed,
         "s3_exact_matches": s3_exact_matches,
         "s3_replacements": s3_replacements,
-    }@activity.defn
+    }
+
+
+@activity.defn
 async def deduplicate_videos(
     downloaded_files: List[Dict[str, Any]],
     existing_s3_videos: Optional[List[Dict[str, Any]]] = None
@@ -715,44 +718,32 @@ async def deduplicate_videos(
         # This preserves popularity from earlier dedup phases
         total_popularity = sum(v.get("popularity", 1) for v in cluster)
         
+        # Pick single best video: prioritize duration, then file size as tiebreaker
+        # All videos in cluster are perceptual duplicates, so we only need ONE
+        winner = max(cluster, key=lambda x: (x.get("duration", 0), x.get("file_size", 0)))
+        winner["popularity"] = total_popularity
+        batch_winners.append(winner)
+        
+        # Log differently based on whether longest == largest
         if longest["file_path"] == largest["file_path"]:
-            # Same video is both longest AND largest - perfect!
-            winner = longest
-            winner["popularity"] = total_popularity
-            batch_winners.append(winner)
             activity.logger.info(
                 f"🏆 Cluster winner: {winner.get('duration', 0):.1f}s, {winner.get('file_size', 0):,} bytes "
-                f"(both longest & largest, {len(cluster)} dups)"
+                f"(both longest & largest, {len(cluster)} dups, pop={total_popularity})"
             )
-            # Remove other files in cluster
-            for member in cluster:
-                if member["file_path"] != winner["file_path"]:
-                    files_to_remove.append(member["file_path"])
         else:
-            # Different videos - keep BOTH
-            # Split popularity evenly (no inflation - if a future video is both longest+largest it inherits both)
-            longest_popularity = (total_popularity + 1) // 2  # Ceiling
-            largest_popularity = total_popularity // 2  # Floor
-            
-            longest["popularity"] = longest_popularity
-            largest["popularity"] = largest_popularity
-            batch_winners.append(longest)
-            batch_winners.append(largest)
-            
+            # Different videos had longest duration vs largest size
+            # We picked based on (duration, file_size) tuple
             activity.logger.info(
-                f"🏆 Cluster has 2 winners from {len(cluster)} videos (total_pop={total_popularity}):"
+                f"🏆 Cluster winner: {winner.get('duration', 0):.1f}s, {winner.get('file_size', 0):,} bytes "
+                f"({len(cluster)} dups, pop={total_popularity}) | "
+                f"Alternatives: longest={longest.get('duration', 0):.1f}s/{longest.get('file_size', 0):,}b, "
+                f"largest={largest.get('duration', 0):.1f}s/{largest.get('file_size', 0):,}b"
             )
-            activity.logger.info(
-                f"   📏 Longest: {longest.get('duration', 0):.1f}s, {longest.get('file_size', 0):,} bytes (pop={longest_popularity})"
-            )
-            activity.logger.info(
-                f"   📦 Largest: {largest.get('duration', 0):.1f}s, {largest.get('file_size', 0):,} bytes (pop={largest_popularity})"
-            )
-            
-            # Remove other files in cluster (not the two winners)
-            for member in cluster:
-                if member["file_path"] not in [longest["file_path"], largest["file_path"]]:
-                    files_to_remove.append(member["file_path"])
+        
+        # Remove all other files in cluster
+        for member in cluster:
+            if member["file_path"] != winner["file_path"]:
+                files_to_remove.append(member["file_path"])
     
     # Clean up discarded files
     for file_path in files_to_remove:
@@ -1047,13 +1038,22 @@ async def validate_video_is_soccer(file_path: str, event_id: str) -> Dict[str, A
     prompt = """/no_think
 Analyze this image and answer TWO questions:
 
-1. SOCCER: Is this a soccer/football match video? This includes:
-   - Live match footage (players on pitch)
-   - Replays and slow-motion reviews
-   - VAR (Video Assistant Referee) review footage with overlays
-   - Official broadcast with graphics, scoreboards, picture-in-picture
-   - Stadium/fan recording from the stands (real crowd, real environment)
-   Answer YES if any of the above.
+1. SOCCER: Does this show ACTUAL soccer/football match footage? 
+   Answer YES ONLY if you see:
+   - Players actively playing on a soccer pitch/field
+   - Match action, goals, tackles, or plays happening
+   - Replays or slow-motion of match action
+   - VAR review showing match footage
+   - Stadium/fan recording of a live match
+   
+   Answer NO if you see:
+   - People talking in a studio, podcast, or TV show (even with soccer graphics/logos)
+   - News anchors or pundits discussing soccer (no match footage visible)
+   - Just scoreboards, logos, or graphics without actual match action
+   - Interviews, press conferences, or behind-the-scenes content
+   - Advertisements or promotional content
+   
+   The key test: Are there players on a pitch playing soccer? If not, answer NO.
 
 2. SCREEN: Is this someone filming a TV/monitor screen with their phone/camera?
    Look for these PHYSICAL artifacts of pointing a camera at a screen:
