@@ -12,6 +12,8 @@ import time
 from src.data.models import EventFields
 from src.utils.config import (
     LLAMA_CHAT_URL,
+    SHORT_EDGE_FILTER_ENABLED,
+    MIN_SHORT_EDGE,
     ASPECT_RATIO_FILTER_ENABLED,
     MIN_ASPECT_RATIO,
     MIN_VIDEO_DURATION,
@@ -32,13 +34,17 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
     Fetch event from fixtures_active and return discovered videos.
     Also checks S3 for existing videos with full metadata for quality comparison.
     
+    NEW: Also gathers data from OTHER events in the same fixture for cross-event dedup.
+    This prevents videos from one goal being incorrectly saved to another goal's folder.
+    
     Args:
         fixture_id: Fixture ID
         event_id: Event ID
     
     Returns:
-        Dict with discovered_videos, player_name, team_name, event, existing_s3_videos
-        existing_s3_videos contains full metadata including quality info for replacement decisions
+        Dict with discovered_videos, player_name, team_name, event, existing_s3_videos,
+        other_events_urls (URLs from other goals to filter out),
+        other_events_hashes (perceptual hashes from other goals to check against)
     """
     from src.data.mongo_store import FootyMongoStore
     from src.data.s3_store import FootyS3Store
@@ -57,12 +63,32 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
         )
         return {"status": "error", "error": "fixture_not_found"}
     
-    # Find event
+    # Find event and collect OTHER events' data for cross-event dedup
     event = None
+    other_events_urls = set()  # URLs from _discovered_videos of OTHER events
+    other_events_hashes = []   # Perceptual hashes from _s3_videos of OTHER events
+    
     for evt in fixture.get("events", []):
-        if evt.get(EventFields.EVENT_ID) == event_id:
+        evt_id = evt.get(EventFields.EVENT_ID)
+        if evt_id == event_id:
             event = evt
-            break
+        else:
+            # This is a DIFFERENT event - collect its URLs and hashes for cross-event dedup
+            # Collect discovered video URLs (to filter out before download)
+            for video in evt.get(EventFields.DISCOVERED_VIDEOS, []):
+                video_url = video.get("tweet_url") or video.get("video_page_url")
+                if video_url:
+                    other_events_urls.add(video_url)
+            
+            # Collect S3 video hashes (to check against after download)
+            for video_obj in evt.get(EventFields.S3_VIDEOS, []):
+                perceptual_hash = video_obj.get("perceptual_hash", "")
+                if perceptual_hash and perceptual_hash != "dense:0.25:":
+                    other_events_hashes.append({
+                        "event_id": evt_id,
+                        "perceptual_hash": perceptual_hash,
+                        "s3_url": video_obj.get("url", ""),
+                    })
     
     if not event:
         activity.logger.error(
@@ -121,38 +147,59 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
         existing_s3_videos.append(video_info)
         activity.logger.debug(f"✓ Existing video: {s3_key} ({video_info['width']}x{video_info['height']}, pop={video_info['popularity']})")
     
-    # Filter discovered_videos to only NEW ones (URLs not already downloaded)
+    # Filter discovered_videos to only NEW ones:
+    # 1. URLs not already downloaded for THIS event
+    # 2. URLs not already discovered for OTHER events in same fixture (cross-event filter)
     videos_to_download = []
+    skipped_already_downloaded = 0
+    skipped_other_event = 0
+    
     for video in discovered_videos:
         video_url = video.get("tweet_url") or video.get("video_page_url")
-        if video_url not in already_downloaded_urls:
-            videos_to_download.append(video)
-        else:
+        if video_url in already_downloaded_urls:
+            skipped_already_downloaded += 1
             activity.logger.debug(
                 f"⏭️ [DOWNLOAD] Skipping already downloaded | url={video_url[:50]}..."
             )
+        elif video_url in other_events_urls:
+            skipped_other_event += 1
+            activity.logger.info(
+                f"⏭️ [DOWNLOAD] Skipping URL from other event | url={video_url[:50]}..."
+            )
+        else:
+            videos_to_download.append(video)
     
     if not videos_to_download:
         activity.logger.info(
             f"⏭️ [DOWNLOAD] No new videos | event={event_id} | "
-            f"all_already_in_s3={len(discovered_videos)}"
+            f"already_in_s3={skipped_already_downloaded} | other_event_urls={skipped_other_event}"
         )
         return {
             "status": "no_videos",
             "discovered_videos": [],
             "event": event,
             "existing_s3_videos": existing_s3_videos,
+            "other_events_hashes": other_events_hashes,
         }
+    
+    # Log cross-event dedup info
+    if other_events_urls or other_events_hashes:
+        activity.logger.info(
+            f"🔀 [DOWNLOAD] Cross-event dedup data | other_urls={len(other_events_urls)} | "
+            f"other_hashes={len(other_events_hashes)} | filtered_by_url={skipped_other_event}"
+        )
     
     if existing_s3_videos:
         activity.logger.info(
             f"🔍 [DOWNLOAD] Cross-retry comparison | existing_s3={len(existing_s3_videos)}"
         )
     
-    if len(videos_to_download) < len(discovered_videos):
+    total_skipped = skipped_already_downloaded + skipped_other_event
+    if total_skipped > 0:
         activity.logger.info(
             f"📥 [DOWNLOAD] Found new videos | event={event_id} | "
-            f"to_download={len(videos_to_download)} | already_in_s3={len(discovered_videos) - len(videos_to_download)}"
+            f"to_download={len(videos_to_download)} | skipped={total_skipped} "
+            f"(s3={skipped_already_downloaded}, other_event={skipped_other_event})"
         )
     else:
         activity.logger.info(
@@ -166,6 +213,7 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
         "team_name": team_name,
         "event": event,
         "existing_s3_videos": existing_s3_videos,  # Full metadata for quality comparison
+        "other_events_hashes": other_events_hashes,  # Hashes from other events for cross-event dedup
     }
 
 
@@ -373,6 +421,18 @@ def _process_downloaded_video(
         )
         os.remove(output_path)
         return None
+    
+    # Short edge filter: reject low-resolution videos
+    # 720p has short edge 720, but letterboxed HD has ~686px
+    if SHORT_EDGE_FILTER_ENABLED and width and height:
+        short_edge = min(width, height)
+        if short_edge < MIN_SHORT_EDGE:
+            activity.logger.warning(
+                f"📏 [DOWNLOAD] Filtered: low resolution | video={display_idx} | "
+                f"short_edge={short_edge}px | min={MIN_SHORT_EDGE}px | res={width}x{height}"
+            )
+            os.remove(output_path)
+            return None
     
     # Aspect ratio filter: reject portrait/square videos (< 4:3)
     # Disabled by default to allow stadium phone recordings
@@ -607,26 +667,29 @@ async def deduplicate_by_md5(
 @activity.defn
 async def deduplicate_videos(
     downloaded_files: List[Dict[str, Any]],
-    existing_s3_videos: Optional[List[Dict[str, Any]]] = None
+    existing_s3_videos: Optional[List[Dict[str, Any]]] = None,
+    other_events_hashes: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
     Smart deduplication that keeps BOTH longest AND largest videos.
     
-    Two-phase deduplication:
+    Three-phase deduplication:
     1. BATCH DEDUP FIRST: Group downloaded videos into duplicate clusters
-    2. S3 DEDUP SECOND: Compare batch winners against existing S3 videos
+    2. CROSS-EVENT DEDUP: Reject videos that match OTHER goals in same fixture
+    3. S3 DEDUP: Compare batch winners against existing S3 videos for THIS event
     
-    For each duplicate cluster, we keep:
-    - The video with longest duration (more content/context)
-    - The video with largest file size (higher quality)
-    - If same video is both longest AND largest, keep just that one
-    - If different videos, keep BOTH (best of both worlds)
+    For each duplicate cluster, we keep the single best video based on (duration, file_size).
+    
+    Cross-event dedup prevents videos from being incorrectly saved to the wrong goal.
+    If a video matches a hash from another goal in the same fixture, it's DELETED
+    (we already have it for the correct goal, don't save it again for the wrong one).
     
     Popularity score accumulates from all duplicates to the keepers.
     
     Args:
         downloaded_files: List of download results with file_path, perceptual_hash, file_size, etc.
-        existing_s3_videos: List of existing S3 video metadata from fetch_event_data
+        existing_s3_videos: List of existing S3 video metadata for THIS event
+        other_events_hashes: List of perceptual hashes from OTHER events in same fixture
     
     Returns:
         Dict with:
@@ -634,6 +697,7 @@ async def deduplicate_videos(
         - videos_to_replace: List of {new_video, old_s3_video} for replacement
         - videos_to_bump_popularity: List of {s3_video, new_popularity} for existing better videos
         - skipped_urls: List of source URLs that we're not uploading
+        - cross_event_rejected: Count of videos rejected due to cross-event match
     """
     # Filter out failed and filtered downloads
     successful = [f for f in downloaded_files if f.get("status") == "success"]
@@ -648,11 +712,14 @@ async def deduplicate_videos(
         activity.logger.warning(
             f"⚠️ [DEDUP] No successful downloads to deduplicate"
         )
-        return {"videos_to_upload": [], "videos_to_replace": [], "videos_to_bump_popularity": [], "skipped_urls": []}
+        return {"videos_to_upload": [], "videos_to_replace": [], "videos_to_bump_popularity": [], "skipped_urls": [], "cross_event_rejected": 0}
+    
+    other_hashes_list = other_events_hashes or []
     
     activity.logger.info(
         f"📥 [DEDUP] Starting deduplication | successful={len(successful)} | "
-        f"existing_s3={len(existing_s3_videos) if existing_s3_videos else 0}"
+        f"existing_s3={len(existing_s3_videos) if existing_s3_videos else 0} | "
+        f"other_events_hashes={len(other_hashes_list)}"
     )
     
     # =========================================================================
@@ -755,18 +822,69 @@ async def deduplicate_videos(
     activity.logger.info(f"📊 Batch dedup: {len(successful)} → {len(batch_winners)} keepers ({len(files_to_remove)} removed)")
     
     # =========================================================================
-    # PHASE 2: S3 DEDUP - Compare batch winners against existing S3 videos
+    # PHASE 2: CROSS-EVENT DEDUP - Reject videos matching OTHER goals in fixture
+    # This prevents videos from one goal being saved to another goal's folder
+    # =========================================================================
+    cross_event_rejected = 0
+    cross_event_rejected_urls = []
+    after_cross_event = []
+    
+    if other_hashes_list:
+        activity.logger.info(f"🔀 Cross-event dedup: checking {len(batch_winners)} videos against {len(other_hashes_list)} hashes from other goals...")
+        
+        for file_info in batch_winners:
+            perceptual_hash = file_info.get("perceptual_hash", "")
+            file_path = file_info.get("file_path", "")
+            source_url = file_info.get("source_url", "")
+            
+            # Check against other events' hashes
+            matched_other_event = None
+            for other_hash_info in other_hashes_list:
+                other_hash = other_hash_info.get("perceptual_hash", "")
+                if other_hash and perceptual_hash and _perceptual_hashes_match(perceptual_hash, other_hash):
+                    matched_other_event = other_hash_info
+                    break
+            
+            if matched_other_event:
+                # This video matches another goal - REJECT it
+                other_event_id = matched_other_event.get("event_id", "unknown")
+                activity.logger.warning(
+                    f"🚫 [CROSS-EVENT] Rejecting video - matches goal {other_event_id} | "
+                    f"source={source_url[:60]}..."
+                )
+                cross_event_rejected += 1
+                if source_url:
+                    cross_event_rejected_urls.append(source_url)
+                # Delete the file
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+            else:
+                # No cross-event match - keep it
+                after_cross_event.append(file_info)
+        
+        if cross_event_rejected > 0:
+            activity.logger.info(
+                f"🔀 Cross-event dedup: {len(batch_winners)} → {len(after_cross_event)} "
+                f"({cross_event_rejected} rejected as wrong-goal videos)"
+            )
+    else:
+        after_cross_event = batch_winners
+    
+    # =========================================================================
+    # PHASE 3: S3 DEDUP - Compare remaining videos against existing S3 videos for THIS event
     # =========================================================================
     existing_videos_list = existing_s3_videos or []
     if existing_videos_list:
-        activity.logger.info(f"📦 Comparing {len(batch_winners)} batch winners against {len(existing_videos_list)} S3 videos...")
+        activity.logger.info(f"📦 Comparing {len(after_cross_event)} videos against {len(existing_videos_list)} S3 videos...")
     
     videos_to_upload = []  # New videos (no S3 match)
     videos_to_replace = []  # Higher quality than existing S3 video
     videos_to_bump_popularity = []  # Existing S3 is better
-    skipped_urls = []  # URLs we're not uploading
+    skipped_urls = cross_event_rejected_urls.copy()  # Start with cross-event rejected URLs
     
-    for file_info in batch_winners:
+    for file_info in after_cross_event:
         perceptual_hash = file_info["perceptual_hash"]
         file_path = file_info["file_path"]
         file_size = file_info["file_size"]
@@ -836,19 +954,21 @@ async def deduplicate_videos(
             videos_to_upload.append(file_info)
     
     # Log summary
+    cross_event_msg = f", {cross_event_rejected} cross-event rejected" if cross_event_rejected > 0 else ""
     activity.logger.info(
         f"✅ Dedup complete: "
         f"{len(videos_to_upload)} new uploads, "
         f"{len(videos_to_replace)} S3 replacements, "
         f"{len(videos_to_bump_popularity)} popularity bumps, "
-        f"{len(skipped_urls)} skipped"
+        f"{len(skipped_urls)} skipped{cross_event_msg}"
     )
     
     return {
         "videos_to_upload": videos_to_upload,
         "videos_to_replace": videos_to_replace,
         "videos_to_bump_popularity": videos_to_bump_popularity,
-        "skipped_urls": skipped_urls
+        "skipped_urls": skipped_urls,
+        "cross_event_rejected": cross_event_rejected,
     }
 
 

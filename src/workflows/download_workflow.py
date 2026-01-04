@@ -95,8 +95,11 @@ class DownloadWorkflow:
         
         # =========================================================================
         # Step 1: Get existing S3 video metadata for quality comparison
+        # Also gets cross-event dedup data (URLs and hashes from other goals in fixture)
         # =========================================================================
         workflow.logger.info(f"📋 [DOWNLOAD] Fetching existing S3 metadata | event={event_id}")
+        
+        other_events_hashes = []  # Perceptual hashes from other goals in same fixture
         
         try:
             event_data = await workflow.execute_activity(
@@ -110,9 +113,11 @@ class DownloadWorkflow:
                 ),
             )
             existing_s3_videos = event_data.get("existing_s3_videos", [])
+            other_events_hashes = event_data.get("other_events_hashes", [])
             workflow.logger.info(
                 f"✅ [DOWNLOAD] Got event data | event={event_id} | "
-                f"existing_s3_videos={len(existing_s3_videos)}"
+                f"existing_s3_videos={len(existing_s3_videos)} | "
+                f"other_events_hashes={len(other_events_hashes)}"
             )
         except Exception as e:
             workflow.logger.error(f"❌ [DOWNLOAD] fetch_event_data FAILED | event={event_id} | error={e}")
@@ -447,29 +452,32 @@ class DownloadWorkflow:
         try:
             dedup_result = await workflow.execute_activity(
                 download_activities.deduplicate_videos,
-                args=[perceptual_dedup_videos, existing_s3_videos],
+                args=[perceptual_dedup_videos, existing_s3_videos, other_events_hashes],
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=RetryPolicy(maximum_attempts=3),
             )
         except Exception as e:
             workflow.logger.error(f"❌ [DOWNLOAD] Deduplication FAILED | error={e} | event={event_id}")
-            dedup_result = {"videos_to_upload": perceptual_dedup_videos, "videos_to_replace": [], "videos_to_bump_popularity": [], "skipped_urls": []}
+            dedup_result = {"videos_to_upload": perceptual_dedup_videos, "videos_to_replace": [], "videos_to_bump_popularity": [], "skipped_urls": [], "cross_event_rejected": 0}
         
         videos_to_upload = dedup_result.get("videos_to_upload", [])
         videos_to_replace = dedup_result.get("videos_to_replace", []) + md5_replacement_videos  # Add MD5 replacements
         videos_to_bump_popularity = dedup_result.get("videos_to_bump_popularity", [])
         skipped_urls = dedup_result.get("skipped_urls", [])
+        cross_event_rejected = dedup_result.get("cross_event_rejected", 0)
         
         # Update stats
         download_stats["perceptual_deduped"] = len(skipped_urls)
         download_stats["s3_replaced"] = len(videos_to_replace)
         download_stats["s3_popularity_bumped"] = len(videos_to_bump_popularity)
+        download_stats["cross_event_rejected"] = cross_event_rejected
         
         total_to_process = len(videos_to_upload) + len(videos_to_replace)
+        cross_event_msg = f" | cross_event_rejected={cross_event_rejected}" if cross_event_rejected > 0 else ""
         workflow.logger.info(
             f"✅ [DOWNLOAD] Dedup complete | new={len(videos_to_upload)} | "
             f"replacements={len(videos_to_replace)} (incl {len(md5_replacement_videos)} md5) | "
-            f"skipped={len(skipped_urls)} | event={event_id}"
+            f"skipped={len(skipped_urls)}{cross_event_msg} | event={event_id}"
         )
         
         # URLs to track for dedup (even if we don't upload anything)

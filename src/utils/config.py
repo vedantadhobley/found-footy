@@ -51,6 +51,12 @@ API_FOOTBALL_BASE_URL = os.getenv("API_FOOTBALL_BASE_URL", "https://v3.football.
 # Video Processing Configuration
 # =============================================================================
 
+# Short edge filter: reject low-resolution videos
+# 720p HD has short edge of 720px, but letterboxed HD (1280x686) has less
+# Using 680px as threshold to allow letterboxed HD content
+SHORT_EDGE_FILTER_ENABLED = True
+MIN_SHORT_EDGE = 600  # Pixels - allows letterboxed 720p content
+
 # Aspect ratio filter: reject portrait/square videos (< 4:3)
 # Filters videos taller than 4:3 (portrait orientation)
 # Phone-TV recordings are additionally filtered by AI vision
