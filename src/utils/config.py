@@ -71,4 +71,4 @@ MAX_VIDEO_DURATION = 60.0  # Seconds
 HASH_SAMPLE_INTERVAL = 0.25  # Sample frame every 0.25 seconds
 HASH_VERSION = "dense:0.25"  # Track algorithm version in MongoDB
 MAX_HAMMING_DISTANCE = 10  # Max bit difference for duplicate detection
-MIN_CONSECUTIVE_MATCHES = 3  # Min consecutive frames that must match
+MIN_CONSECUTIVE_MATCHES = 5  # Min consecutive frames that must match (1.25s at 0.25s interval)
