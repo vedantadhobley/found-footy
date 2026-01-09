@@ -1158,22 +1158,24 @@ async def validate_video_is_soccer(file_path: str, event_id: str) -> Dict[str, A
     prompt = """/no_think
 Analyze this image and answer TWO questions:
 
-1. SOCCER: Does this show ACTUAL soccer/football match footage? 
-   Answer YES ONLY if you see:
-   - Players actively playing on a soccer pitch/field
-   - Match action, goals, tackles, or plays happening
-   - Replays or slow-motion of match action
-   - VAR review showing match footage
-   - Stadium/fan recording of a live match
+1. SOCCER: Is this from a soccer/football match broadcast or highlight?
+   Answer YES if you see ANY of these:
+   - Players on a soccer pitch/field (wide shots)
+   - Match action, goals, tackles, or plays
+   - Close-up replays or slow-motion of match moments
+   - Player celebrations or reactions during a match
+   - Goal close-ups showing the ball in the net
+   - VAR review footage
+   - Match broadcast graphics/scoreboards with match footage
+   - Stadium/fan recording of live match action
    
    Answer NO if you see:
-   - People talking in a studio, podcast, or TV show (even with soccer graphics/logos)
-   - News anchors or pundits discussing soccer (no match footage visible)
-   - Just scoreboards, logos, or graphics without actual match action
-   - Interviews, press conferences, or behind-the-scenes content
+   - People talking in a studio, podcast, or TV show (even with soccer graphics)
+   - News anchors or pundits at a desk discussing soccer
+   - Press conferences or interviews (not match footage)
+   - Just logos/graphics with NO match footage at all
    - Advertisements or promotional content
-   
-   The key test: Are there players on a pitch playing soccer? If not, answer NO.
+   - Other sports (basketball, tennis, etc.)
 
 2. SCREEN: Is this someone filming a TV/monitor screen with their phone/camera?
    Look for these PHYSICAL artifacts of pointing a camera at a screen:
