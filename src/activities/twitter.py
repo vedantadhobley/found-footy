@@ -153,7 +153,8 @@ async def execute_twitter_search(
     twitter_search: str, 
     max_results: int = 5,
     existing_video_urls: Optional[List[str]] = None,
-    match_date: Optional[str] = None
+    match_date: Optional[str] = None,
+    max_age_minutes: int = 5
 ) -> Dict[str, Any]:
     """
     POST to Twitter browser automation service.
@@ -167,11 +168,15 @@ async def execute_twitter_search(
     Passes exclude_urls to Twitter service so it can skip already-discovered
     videos during scraping, allowing us to find more NEW videos.
     
+    Uses time-based scrolling: scrolls through "Latest" results until finding
+    a tweet older than max_age_minutes, then stops.
+    
     Args:
         twitter_search: Search query (e.g., "Salah Liverpool")
-        max_results: Max videos to return (default 5)
+        max_results: Deprecated, kept for compatibility
         existing_video_urls: List of video URLs already discovered (passed as exclude_urls)
-        match_date: ISO format match date for filtering (e.g., "2025-12-27T15:00:00+00:00")
+        match_date: Deprecated, kept for compatibility
+        max_age_minutes: Only accept tweets from the last N minutes (default: 5)
     
     Returns:
         Dict with videos array (all NEW videos not in exclude_urls)
@@ -188,10 +193,8 @@ async def execute_twitter_search(
     
     activity.logger.info(
         f"🐦 [TWITTER] execute_twitter_search | query='{twitter_search}' | "
-        f"max_results={max_results} | excluding={len(exclude_urls)} URLs"
+        f"max_age={max_age_minutes}min | excluding={len(exclude_urls)} URLs"
     )
-    if match_date:
-        activity.logger.info(f"📅 [TWITTER] Date filter: around {match_date[:10]}")
     
     # Send heartbeat before starting the request
     activity.heartbeat(f"Starting search: {twitter_search}")
@@ -223,6 +226,7 @@ async def execute_twitter_search(
                 "max_results": max_results,
                 "exclude_urls": exclude_urls,
                 "match_date": match_date,
+                "max_age_minutes": max_age_minutes,
             },
             timeout=120,  # 2 min for browser automation
         )

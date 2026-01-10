@@ -441,15 +441,19 @@ Steps:
         print("❌ All authentication methods failed - manual login required", flush=True)
         return False
     
-    def search_videos(self, search_query: str, max_results: int = None, exclude_urls: List[str] = None, match_date: str = None) -> List[Dict[str, Any]]:
+    def search_videos(self, search_query: str, max_results: int = None, exclude_urls: List[str] = None, match_date: str = None, max_age_minutes: int = 5) -> List[Dict[str, Any]]:
         """Search Twitter for videos matching query
+        
+        Uses time-based scrolling: scrolls through results until finding a tweet
+        older than max_age_minutes, then stops. This ensures we get all recent
+        tweets without needing arbitrary limits.
         
         Args:
             search_query: Search terms (e.g., "Messi goal Barcelona")
-            max_results: Maximum videos to return
+            max_results: Maximum videos to return (deprecated, kept for compatibility)
             exclude_urls: List of URLs to skip (already processed videos)
-            match_date: ISO format match date for filtering (e.g., "2025-12-27T15:00:00+00:00")
-                       Will search tweets from 1 day before to 2 days after the match
+            match_date: ISO format match date (deprecated, we now use max_age_minutes)
+            max_age_minutes: Only accept tweets from the last N minutes (default: 5)
             
         Returns:
             List of video dictionaries
@@ -457,8 +461,7 @@ Steps:
         Raises:
             TwitterAuthError: If not authenticated and can't auto-restore
         """
-        if max_results is None:
-            max_results = self.config.default_max_results
+        from datetime import datetime, timezone
         
         if exclude_urls is None:
             exclude_urls = []
@@ -481,26 +484,12 @@ Steps:
             print(f"🔍 Searching: {search_query} (excluding {len(exclude_urls)} already-discovered URLs)", flush=True)
         else:
             print(f"🔍 Searching: {search_query}", flush=True)
+        print(f"   ⏱️  Max tweet age: {max_age_minutes} minutes", flush=True)
         
         try:
-            # Build search URL with video filter
+            # Build search URL with video filter - sorted by "Latest" (f=live)
+            # No date range filter - we'll filter by checking actual tweet timestamps
             video_search_query = f"{search_query} filter:videos"
-            
-            # Add date filtering if match_date is provided
-            # Twitter search supports since:YYYY-MM-DD and until:YYYY-MM-DD
-            # We search from 1 day before (pre-match hype) to 2 days after (highlights posted later)
-            if match_date:
-                try:
-                    from datetime import datetime, timedelta as td
-                    # Parse ISO date (e.g., "2025-12-27T15:00:00+00:00")
-                    match_dt = datetime.fromisoformat(match_date.replace('Z', '+00:00'))
-                    since_date = (match_dt - td(days=1)).strftime('%Y-%m-%d')
-                    until_date = (match_dt + td(days=2)).strftime('%Y-%m-%d')
-                    video_search_query = f"{video_search_query} since:{since_date} until:{until_date}"
-                    print(f"   📅 Date filter: {since_date} to {until_date}", flush=True)
-                except Exception as e:
-                    print(f"   ⚠️ Failed to parse match_date '{match_date}': {e}", flush=True)
-            
             search_url = f"https://twitter.com/search?q={quote(video_search_query)}&src=typed_query&f=live"
             
             print(f"   URL: {search_url}", flush=True)
@@ -533,130 +522,174 @@ Steps:
                 self.authenticated = False
                 raise TwitterAuthError(f"Got logged out during search! Redirected to: {current_url}")
             
-            # Extract tweets - scan up to 50 tweets to find videos
-            tweet_elements = self.driver.find_elements(By.CSS_SELECTOR, "article[data-testid='tweet']")
-            print(f"   📄 Found {len(tweet_elements)} tweets", flush=True)
-            
             discovered_videos = []
+            processed_tweet_urls = set()  # Track processed tweets to avoid duplicates when scrolling
+            found_old_tweet = False
+            scroll_count = 0
+            max_scrolls = 10  # Safety limit to prevent infinite scrolling
             
-            for i, tweet_element in enumerate(tweet_elements[:50]):
-                try:
-                    # Skip promoted/ad tweets
+            # Time-based scrolling: scroll until we find a tweet older than max_age_minutes
+            while not found_old_tweet and scroll_count < max_scrolls:
+                tweet_elements = self.driver.find_elements(By.CSS_SELECTOR, "article[data-testid='tweet']")
+                
+                if scroll_count == 0:
+                    print(f"   📄 Initial load: {len(tweet_elements)} tweets", flush=True)
+                
+                for tweet_element in tweet_elements:
                     try:
-                        # Check for "Promoted" label or ad indicators
-                        promoted_indicators = tweet_element.find_elements(By.XPATH, ".//*[contains(text(), 'Promoted') or contains(text(), 'Ad')]")
-                        if promoted_indicators:
-                            print(f"   ⏭️  Skipping promoted tweet", flush=True)
-                            continue
-                    except:
-                        pass
-                    
-                    # Extract tweet text
-                    tweet_text = "Text not found"
-                    try:
-                        text_element = tweet_element.find_element(By.CSS_SELECTOR, "[data-testid='tweetText']")
-                        if text_element:
-                            tweet_text = text_element.text.strip()
-                    except:
-                        pass
-                    
-                    # Extract tweet URL
-                    tweet_url = None
-                    try:
-                        status_links = tweet_element.find_elements(By.CSS_SELECTOR, "a[href*='/status/']")
-                        for link in status_links:
-                            link_href = link.get_attribute("href")
-                            if link_href and "/status/" in link_href:
-                                tweet_url = link_href
-                                break
-                    except:
-                        pass
-                    
-                    # Check for video and extract duration
-                    has_video = False
-                    video_duration_seconds = None
-                    
-                    for selector in ["video", "[data-testid='videoPlayer']", "[data-testid='videoComponent']"]:
+                        # Extract tweet URL first to check if already processed
+                        tweet_url = None
                         try:
-                            video_elements = tweet_element.find_elements(By.CSS_SELECTOR, selector)
-                            if video_elements:
-                                has_video = True
-                                
-                                # Try to extract duration from video element's duration attribute
-                                try:
-                                    video_elem = video_elements[0]
-                                    duration = video_elem.get_attribute("duration")
-                                    if duration:
-                                        video_duration_seconds = float(duration)
-                                except:
-                                    pass
-                                
-                                # Try to find duration text in player overlay (e.g., "0:15")
-                                if not video_duration_seconds:
+                            status_links = tweet_element.find_elements(By.CSS_SELECTOR, "a[href*='/status/']")
+                            for link in status_links:
+                                link_href = link.get_attribute("href")
+                                if link_href and "/status/" in link_href:
+                                    tweet_url = link_href
+                                    break
+                        except:
+                            pass
+                        
+                        if not tweet_url:
+                            continue
+                            
+                        # Skip if already processed in this scroll session
+                        if tweet_url in processed_tweet_urls:
+                            continue
+                        processed_tweet_urls.add(tweet_url)
+                        
+                        # Extract tweet timestamp from <time datetime="..."> element
+                        tweet_age_minutes = None
+                        try:
+                            time_element = tweet_element.find_element(By.CSS_SELECTOR, "time[datetime]")
+                            datetime_str = time_element.get_attribute("datetime")
+                            if datetime_str:
+                                # Parse ISO format like "2026-01-10T13:05:00.000Z"
+                                tweet_dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
+                                now = datetime.now(timezone.utc)
+                                age = now - tweet_dt
+                                tweet_age_minutes = age.total_seconds() / 60
+                        except:
+                            pass
+                        
+                        # Check if tweet is too old - if so, stop scrolling
+                        if tweet_age_minutes is not None and tweet_age_minutes > max_age_minutes:
+                            print(f"   ⏰ Found tweet {tweet_age_minutes:.1f}min old (>{max_age_minutes}min), stopping scroll", flush=True)
+                            found_old_tweet = True
+                            break
+                        
+                        # Skip promoted/ad tweets
+                        try:
+                            promoted_indicators = tweet_element.find_elements(By.XPATH, ".//*[contains(text(), 'Promoted') or contains(text(), 'Ad')]")
+                            if promoted_indicators:
+                                print(f"   ⏭️  Skipping promoted tweet", flush=True)
+                                continue
+                        except:
+                            pass
+                        
+                        # Extract tweet text
+                        tweet_text = "Text not found"
+                        try:
+                            text_element = tweet_element.find_element(By.CSS_SELECTOR, "[data-testid='tweetText']")
+                            if text_element:
+                                tweet_text = text_element.text.strip()
+                        except:
+                            pass
+                        
+                        # Check for video and extract duration
+                        has_video = False
+                        video_duration_seconds = None
+                        
+                        for selector in ["video", "[data-testid='videoPlayer']", "[data-testid='videoComponent']"]:
+                            try:
+                                video_elements = tweet_element.find_elements(By.CSS_SELECTOR, selector)
+                                if video_elements:
+                                    has_video = True
+                                    
+                                    # Try to extract duration from video element's duration attribute
                                     try:
-                                        # Common selectors for video duration display
-                                        duration_selectors = [
-                                            "[aria-label*='Duration']",
-                                            "[data-testid='videoPlayerDuration']",
-                                            ".r-1e081e0",  # Twitter's duration class
-                                            "div[dir='ltr'][style*='color']",  # Styled duration text
-                                        ]
-                                        for dur_selector in duration_selectors:
-                                            duration_elements = tweet_element.find_elements(By.CSS_SELECTOR, dur_selector)
-                                            for dur_elem in duration_elements:
-                                                dur_text = dur_elem.text.strip()
-                                                # Parse formats like "0:15" or "1:23"
-                                                if ":" in dur_text and len(dur_text) <= 6:
-                                                    parts = dur_text.split(":")
-                                                    if len(parts) == 2:
-                                                        try:
-                                                            minutes = int(parts[0])
-                                                            seconds = int(parts[1])
-                                                            video_duration_seconds = minutes * 60 + seconds
-                                                            break
-                                                        except:
-                                                            pass
-                                            if video_duration_seconds:
-                                                break
+                                        video_elem = video_elements[0]
+                                        duration = video_elem.get_attribute("duration")
+                                        if duration:
+                                            video_duration_seconds = float(duration)
                                     except:
                                         pass
-                                
-                                break
-                        except:
-                            continue
+                                    
+                                    # Try to find duration text in player overlay (e.g., "0:15")
+                                    if not video_duration_seconds:
+                                        try:
+                                            duration_selectors = [
+                                                "[aria-label*='Duration']",
+                                                "[data-testid='videoPlayerDuration']",
+                                                ".r-1e081e0",
+                                                "div[dir='ltr'][style*='color']",
+                                            ]
+                                            for dur_selector in duration_selectors:
+                                                duration_elements = tweet_element.find_elements(By.CSS_SELECTOR, dur_selector)
+                                                for dur_elem in duration_elements:
+                                                    dur_text = dur_elem.text.strip()
+                                                    if ":" in dur_text and len(dur_text) <= 6:
+                                                        parts = dur_text.split(":")
+                                                        if len(parts) == 2:
+                                                            try:
+                                                                minutes = int(parts[0])
+                                                                seconds = int(parts[1])
+                                                                video_duration_seconds = minutes * 60 + seconds
+                                                                break
+                                                            except:
+                                                                pass
+                                                if video_duration_seconds:
+                                                    break
+                                        except:
+                                            pass
+                                    
+                                    break
+                            except:
+                                continue
+                        
+                        if has_video:
+                            # Skip URLs that were already discovered in previous searches
+                            if tweet_url in exclude_set:
+                                print(f"   ⏭️ Skipping already-discovered URL: {tweet_url[:60]}...", flush=True)
+                                continue
+                            
+                            tweet_id = tweet_url.split("/status/")[-1] if "/status/" in tweet_url else f"unknown"
+                            age_str = f"{tweet_age_minutes:.1f}min ago" if tweet_age_minutes else "unknown age"
+                            
+                            video_entry = {
+                                "search_term": search_query,
+                                "tweet_url": tweet_url,
+                                "tweet_id": tweet_id,
+                                "tweet_text": tweet_text[:200],
+                                "username": "Unknown",
+                                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "discovered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "search_index": 0,
+                                "video_index": len(discovered_videos),
+                                "source": "browser_automation",
+                                "requires_ytdlp": True,
+                                "video_page_url": f"https://x.com/i/status/{tweet_id}",
+                                "duration_seconds": video_duration_seconds,
+                                "tweet_age_minutes": tweet_age_minutes
+                            }
+                            
+                            discovered_videos.append(video_entry)
+                            print(f"   ✅ Video #{len(discovered_videos)} ({age_str}): {tweet_text[:50]}...", flush=True)
                     
-                    if has_video and tweet_url:
-                        # Skip URLs that were already discovered/processed
-                        if tweet_url in exclude_set:
-                            print(f"   ⏭️ Skipping already-discovered URL: {tweet_url[:60]}...", flush=True)
-                            continue
-                        
-                        tweet_id = tweet_url.split("/status/")[-1] if "/status/" in tweet_url else f"unknown_{i}"
-                        
-                        video_entry = {
-                            "search_term": search_query,
-                            "tweet_url": tweet_url,
-                            "tweet_id": tweet_id,
-                            "tweet_text": tweet_text[:200],
-                            "username": "Unknown",
-                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "discovered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "search_index": 0,
-                            "video_index": len(discovered_videos),
-                            "source": "browser_automation",
-                            "requires_ytdlp": True,
-                            "video_page_url": f"https://x.com/i/status/{tweet_id}",
-                            "duration_seconds": video_duration_seconds  # May be None if not found
-                        }
-                        
-                        discovered_videos.append(video_entry)
-                        print(f"   ✅ Video #{len(discovered_videos)}: {tweet_text[:50]}...", flush=True)
-                        
-                        if len(discovered_videos) >= max_results:
-                            break
+                    except Exception as e:
+                        continue
                 
-                except Exception as e:
-                    continue
+                # If we haven't found an old tweet yet, scroll down for more
+                if not found_old_tweet:
+                    # If no tweets at all after scrolling, stop (empty results page)
+                    if len(tweet_elements) == 0 and scroll_count >= 1:
+                        print(f"   ⏹️ No tweets found after {scroll_count} scrolls, stopping", flush=True)
+                        break
+                    
+                    scroll_count += 1
+                    self.driver.execute_script("window.scrollBy(0, window.innerHeight);")
+                    time.sleep(1.5)  # Wait for lazy-loaded content
+                    self.last_activity = time.time()
+                    print(f"   📜 Scroll #{scroll_count}, {len(discovered_videos)} videos found so far...", flush=True)
             
             print(f"✅ Search complete - {len(discovered_videos)} videos found", flush=True)
             
@@ -755,6 +788,146 @@ Steps:
             print("❌ Login not detected", flush=True)
             self._launch_manual_firefox()
             return False
+    
+    def download_video_direct(self, tweet_url: str, output_path: str) -> dict:
+        """Download video by navigating to tweet and extracting CDN URL
+        
+        This bypasses yt-dlp entirely by using the browser to:
+        1. Navigate to the tweet
+        2. Extract the video source URL from the video element or page source
+        3. Download directly from video.twimg.com CDN
+        
+        Args:
+            tweet_url: URL of the tweet containing the video
+            output_path: Where to save the downloaded video
+            
+        Returns:
+            Dict with status, path, cdn_url, etc.
+        """
+        import requests
+        import re
+        
+        if not self.authenticated or not self.driver:
+            raise TwitterAuthError("Not authenticated - cannot download video")
+        
+        print(f"🎬 [BROWSER-DL] Navigating to tweet: {tweet_url[:60]}...", flush=True)
+        
+        try:
+            self.driver.set_page_load_timeout(20)
+            self.driver.get(tweet_url)
+            time.sleep(2)  # Wait for video player to initialize
+            self.last_activity = time.time()
+            
+            # Check for auth redirect
+            current_url = self.driver.current_url
+            if "login" in current_url or "flow" in current_url:
+                self.authenticated = False
+                raise TwitterAuthError(f"Got logged out during download! Redirected to: {current_url}")
+            
+            # Method 1: Extract from video element's src attribute
+            video_url = None
+            try:
+                video_elements = self.driver.find_elements(By.CSS_SELECTOR, "video[src]")
+                for video_elem in video_elements:
+                    src = video_elem.get_attribute("src")
+                    if src and "video.twimg.com" in src:
+                        video_url = src
+                        print(f"   ✅ Found video src: {src[:80]}...", flush=True)
+                        break
+            except:
+                pass
+            
+            # Method 2: Look for blob URLs and try to extract from page source
+            if not video_url:
+                try:
+                    page_source = self.driver.page_source
+                    # Look for video.twimg.com URLs in page source
+                    pattern = r'https://video\.twimg\.com/[^"\'>\s]+'
+                    matches = re.findall(pattern, page_source)
+                    if matches:
+                        # Prefer .mp4 URLs
+                        mp4_urls = [m for m in matches if '.mp4' in m]
+                        if mp4_urls:
+                            video_url = mp4_urls[0]
+                        else:
+                            video_url = matches[0]
+                        print(f"   ✅ Found video URL in page source: {video_url[:80]}...", flush=True)
+                except:
+                    pass
+            
+            # Method 3: Execute JS to get video source from media elements
+            if not video_url:
+                try:
+                    video_url = self.driver.execute_script("""
+                        const videos = document.querySelectorAll('video');
+                        for (const v of videos) {
+                            if (v.src && v.src.includes('video.twimg.com')) return v.src;
+                            // Check source elements
+                            const sources = v.querySelectorAll('source');
+                            for (const s of sources) {
+                                if (s.src && s.src.includes('video.twimg.com')) return s.src;
+                            }
+                        }
+                        return null;
+                    """)
+                    if video_url:
+                        print(f"   ✅ Found video via JS: {video_url[:80]}...", flush=True)
+                except:
+                    pass
+            
+            if not video_url:
+                print(f"   ❌ Could not extract video URL from page", flush=True)
+                return {
+                    "status": "error",
+                    "error": "Could not extract video URL - video may be in different format or tweet deleted"
+                }
+            
+            # Download from CDN directly
+            print(f"   📥 Downloading from CDN...", flush=True)
+            
+            # Get cookies from browser for the download request
+            cookies = {}
+            for cookie in self.driver.get_cookies():
+                cookies[cookie['name']] = cookie['value']
+            
+            headers = {
+                'User-Agent': self.driver.execute_script("return navigator.userAgent"),
+                'Referer': 'https://x.com/',
+                'Origin': 'https://x.com'
+            }
+            
+            response = requests.get(video_url, cookies=cookies, headers=headers, stream=True, timeout=30)
+            
+            if response.status_code != 200:
+                print(f"   ❌ CDN returned {response.status_code}", flush=True)
+                return {
+                    "status": "error",
+                    "error": f"CDN returned status {response.status_code}"
+                }
+            
+            # Save video
+            with open(output_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            file_size = os.path.getsize(output_path)
+            print(f"   ✅ Downloaded {file_size / 1024 / 1024:.2f}MB to {output_path}", flush=True)
+            
+            return {
+                "status": "success",
+                "path": output_path,
+                "cdn_url": video_url,
+                "size_bytes": file_size
+            }
+            
+        except TwitterAuthError:
+            raise
+        except Exception as e:
+            print(f"   ❌ Download error: {e}", flush=True)
+            return {
+                "status": "error",
+                "error": str(e)
+            }
     
     def cleanup(self):
         """Cleanup browser session"""

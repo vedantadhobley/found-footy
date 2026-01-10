@@ -453,7 +453,7 @@ class DownloadWorkflow:
             dedup_result = await workflow.execute_activity(
                 download_activities.deduplicate_videos,
                 args=[perceptual_dedup_videos, existing_s3_videos, other_events_hashes],
-                start_to_close_timeout=timedelta(seconds=60),
+                start_to_close_timeout=timedelta(seconds=120),  # Increased from 60s for cross-event checking
                 retry_policy=RetryPolicy(maximum_attempts=3),
             )
         except Exception as e:

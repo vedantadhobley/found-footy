@@ -226,10 +226,18 @@ async def download_single_video(
     source_tweet_url: str = ""
 ) -> Dict[str, Any]:
     """
-    Download video(s) from a tweet with yt-dlp, extract metadata, and calculate hash.
+    Download video from a tweet using Twitter's syndication API + direct CDN download.
     
-    Handles multi-video tweets by downloading ALL videos and returning results for each.
-    Returns a list of results in the "videos" field when multiple videos are found.
+    This approach:
+    1. Extracts tweet_id from the URL
+    2. Calls syndication API to get video CDN URLs (no auth required)
+    3. Downloads best quality variant directly from video.twimg.com CDN
+    
+    Benefits over yt-dlp:
+    - No rate limiting (CDN doesn't require auth)
+    - Fully parallelizable (just HTTP GETs)
+    - Better quality selection (we see all variants with bitrates)
+    - Faster (no yt-dlp overhead)
     
     Args:
         video_url: URL to download (video page URL from Twitter)
@@ -239,135 +247,180 @@ async def download_single_video(
         source_tweet_url: Original tweet URL (for dedup checking)
     
     Returns:
-        Dict with status and either single video info or "videos" list for multi-video tweets
+        Dict with status and video info
     
     Raises:
         Exception: If download fails (for Temporal retry)
     """
-    import subprocess
-    import time
+    import httpx
+    import re
     import json
-    import glob
     
-    # Ensure temp directory exists (activity can do I/O)
+    # Ensure temp directory exists
     os.makedirs(temp_dir, exist_ok=True)
-    
-    # Output template handles multi-video tweets with playlist_index
-    # For single video: event_id_0_01.mp4
-    # For multi-video: event_id_0_01.mp4, event_id_0_02.mp4, etc.
-    output_template = os.path.join(temp_dir, f"{event_id}_{video_index}_%(playlist_index)02d.mp4")
     
     activity.logger.info(
         f"📥 [DOWNLOAD] Starting download | event={event_id} | video_idx={video_index} | "
         f"url={video_url[:60]}..."
     )
     
-    # Use shared cookie file from /config mount
-    cookies_json_file = "/config/twitter_cookies.json"
-    
-    if not os.path.exists(cookies_json_file):
-        msg = f"[DOWNLOAD] No cookies found | path={cookies_json_file}"
+    # Extract tweet_id from URL
+    # Handles: https://x.com/user/status/123, https://x.com/i/status/123, https://twitter.com/...
+    tweet_id_match = re.search(r'/status/(\d+)', video_url)
+    if not tweet_id_match:
+        msg = f"[DOWNLOAD] Could not extract tweet_id from URL: {video_url}"
         activity.logger.error(f"❌ {msg}")
         raise RuntimeError(msg)
     
-    # Convert cookies to Netscape format for yt-dlp
-    temp_cookie_netscape = f"/tmp/cookies_{int(time.time())}_{video_index}.txt"
+    tweet_id = tweet_id_match.group(1)
+    
+    # Call syndication API to get video info
+    syndication_url = f"https://cdn.syndication.twimg.com/tweet-result?id={tweet_id}&token=x"
+    
     try:
-        with open(cookies_json_file, 'r') as f:
-            data = json.load(f)
-        
-        cookies = data.get('cookies', [])
-        with open(temp_cookie_netscape, 'w') as f:
-            f.write("# Netscape HTTP Cookie File\n")
-            f.write("# This is a generated file! Do not edit.\n\n")
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(syndication_url)
             
-            for cookie in cookies:
-                domain = cookie.get('domain', '.x.com')
-                flag = 'TRUE' if domain.startswith('.') else 'FALSE'
-                path = cookie.get('path', '/')
-                secure = 'TRUE' if cookie.get('secure', True) else 'FALSE'
-                expiration = str(int(cookie.get('expiry', 0)))
-                name = cookie.get('name', '')
-                value = cookie.get('value', '')
-                f.write(f"{domain}\t{flag}\t{path}\t{secure}\t{expiration}\t{name}\t{value}\n")
-        
-        # Run yt-dlp - downloads ALL videos from multi-video tweets
-        result = subprocess.run([
-            'yt-dlp',
-            '--cookies', temp_cookie_netscape,
-            '--format', 'best[ext=mp4]/best',
-            '--output', output_template,
-            '--no-warnings',
-            '--quiet',
-            '--socket-timeout', '15',
-            '--retries', '1',
-            video_url
-        ], capture_output=True, text=True, timeout=60)  # Increased timeout for multi-video
-        
-        # Cleanup temp cookie file
-        try:
-            os.remove(temp_cookie_netscape)
-        except:
-            pass
-        
-        if result.returncode != 0:
-            error_msg = result.stderr[:200] if result.stderr else "Unknown error"
-            activity.logger.warning(
-                f"⚠️ [DOWNLOAD] yt-dlp failed | video_idx={video_index} | error={error_msg}"
-            )
-            raise RuntimeError(f"yt-dlp failed: {error_msg}")
+            if response.status_code != 200:
+                msg = f"Syndication API returned {response.status_code}"
+                activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
+                raise RuntimeError(msg)
             
-    except subprocess.TimeoutExpired:
-        activity.logger.warning(
-            f"⚠️ [DOWNLOAD] Timeout | video_idx={video_index} | url={video_url[:50]}..."
-        )
-        raise RuntimeError("Download timed out")
+            tweet_data = response.json()
+    except httpx.TimeoutException:
+        msg = "Syndication API timeout"
+        activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
+        raise RuntimeError(msg)
     except Exception as e:
-        activity.logger.warning(
-            f"⚠️ [DOWNLOAD] Failed | video_idx={video_index} | error={str(e)[:100]}"
-        )
-        raise
+        msg = f"Syndication API error: {str(e)[:100]}"
+        activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
+        raise RuntimeError(msg)
     
-    # Find all downloaded files (handles multi-video tweets)
-    pattern = os.path.join(temp_dir, f"{event_id}_{video_index}_*.mp4")
-    downloaded_files = sorted(glob.glob(pattern))
+    # Extract video variants from response
+    # Prefer mediaDetails path as it includes bitrate info
+    video_variants = []
+    video_width = None
+    video_height = None
     
-    if not downloaded_files:
-        msg = f"[DOWNLOAD] No files after yt-dlp | video_idx={video_index}"
+    # Path 1 (preferred): mediaDetails[].video_info.variants - has bitrates
+    if "mediaDetails" in tweet_data:
+        for media in tweet_data.get("mediaDetails", []):
+            # Get original video dimensions for pre-download filtering
+            original_info = media.get("original_info", {})
+            if original_info.get("width") and original_info.get("height"):
+                video_width = original_info["width"]
+                video_height = original_info["height"]
+            
+            if "video_info" in media and "variants" in media["video_info"]:
+                video_variants.extend(media["video_info"]["variants"])
+    
+    # PRE-DOWNLOAD FILTERING: Check resolution/aspect ratio BEFORE downloading
+    # This saves bandwidth and time by rejecting videos based on metadata
+    if video_width and video_height:
+        # Short edge filter
+        if SHORT_EDGE_FILTER_ENABLED:
+            short_edge = min(video_width, video_height)
+            if short_edge < MIN_SHORT_EDGE:
+                activity.logger.warning(
+                    f"📏 [DOWNLOAD] Pre-filtered: low resolution | video={video_index} | "
+                    f"short_edge={short_edge}px | min={MIN_SHORT_EDGE}px | res={video_width}x{video_height}"
+                )
+                return {"status": "filtered", "reason": "pre_filter_resolution", "source_url": source_tweet_url}
+        
+        # Aspect ratio filter (reject portrait/square videos)
+        if ASPECT_RATIO_FILTER_ENABLED and video_height > 0:
+            aspect_ratio = video_width / video_height
+            if aspect_ratio < MIN_ASPECT_RATIO:
+                activity.logger.warning(
+                    f"📐 [DOWNLOAD] Pre-filtered: portrait/square | video={video_index} | "
+                    f"ratio={aspect_ratio:.2f} | min={MIN_ASPECT_RATIO} | res={video_width}x{video_height}"
+                )
+                return {"status": "filtered", "reason": "pre_filter_aspect_ratio", "source_url": source_tweet_url}
+    
+    # Path 2 (fallback): video.variants - often missing bitrates
+    if not video_variants and "video" in tweet_data and "variants" in tweet_data["video"]:
+        video_variants = tweet_data["video"]["variants"]
+    
+    if not video_variants:
+        msg = f"No video variants found in syndication response"
+        activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
+        raise RuntimeError(msg)
+    
+    # Filter to mp4 only and sort by bitrate (highest first)
+    mp4_variants = [
+        v for v in video_variants 
+        if v.get("type") == "video/mp4" or v.get("content_type") == "video/mp4"
+    ]
+    
+    if not mp4_variants:
+        msg = f"No MP4 variants found"
+        activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
+        raise RuntimeError(msg)
+    
+    # Sort by bitrate descending, pick best quality
+    mp4_variants.sort(key=lambda v: v.get("bitrate", 0), reverse=True)
+    best_variant = mp4_variants[0]
+    cdn_url = best_variant.get("src") or best_variant.get("url")
+    bitrate = best_variant.get("bitrate", 0)
+    
+    activity.logger.info(
+        f"🎬 [DOWNLOAD] Found {len(mp4_variants)} variants, using best: {bitrate/1000:.0f}kbps | "
+        f"video_idx={video_index}"
+    )
+    
+    # Download from CDN
+    output_path = os.path.join(temp_dir, f"{event_id}_{video_index}_01.mp4")
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream("GET", cdn_url) as response:
+                if response.status_code != 200:
+                    msg = f"CDN returned {response.status_code}"
+                    activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
+                    raise RuntimeError(msg)
+                
+                with open(output_path, 'wb') as f:
+                    async for chunk in response.aiter_bytes(chunk_size=8192):
+                        f.write(chunk)
+    except httpx.TimeoutException:
+        msg = "CDN download timeout"
+        activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
+        raise RuntimeError(msg)
+    except Exception as e:
+        msg = f"CDN download error: {str(e)[:100]}"
+        activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
+        raise RuntimeError(msg)
+    
+    # Verify file exists and has content
+    if not os.path.exists(output_path):
+        msg = f"[DOWNLOAD] No file after download | video_idx={video_index}"
         activity.logger.error(f"❌ {msg}")
         raise RuntimeError(msg)
     
-    if len(downloaded_files) > 1:
-        activity.logger.info(
-            f"📹 [DOWNLOAD] Multi-video tweet | count={len(downloaded_files)}"
-        )
+    file_size = os.path.getsize(output_path)
+    if file_size < 1000:  # Less than 1KB is likely an error
+        msg = f"[DOWNLOAD] File too small ({file_size} bytes) | video_idx={video_index}"
+        activity.logger.error(f"❌ {msg}")
+        os.remove(output_path)
+        raise RuntimeError(msg)
     
-    # Process each downloaded file
-    results = []
-    for sub_idx, output_path in enumerate(downloaded_files):
-        sub_result = _process_downloaded_video(
-            output_path, 
-            video_index, 
-            sub_idx, 
-            source_tweet_url,
-            len(downloaded_files) > 1  # is_multi_video
-        )
-        if sub_result:
-            results.append(sub_result)
+    activity.logger.info(
+        f"✅ [DOWNLOAD] Downloaded {file_size / 1024 / 1024:.2f}MB | video_idx={video_index}"
+    )
     
-    # Return based on number of results
-    if len(results) == 0:
-        # All videos were filtered
-        return {"status": "filtered", "reason": "all_filtered", "source_url": source_tweet_url}
-    elif len(results) == 1:
-        # Single video (most common case)
-        return results[0]
-    else:
-        # Multi-video tweet - return list
-        activity.logger.info(
-            f"✅ [DOWNLOAD] Multi-video passed filters | count={len(results)}"
-        )
-        return {"status": "multi_video", "videos": results, "source_url": source_tweet_url}
+    # Process the downloaded video (metadata, filters)
+    result = _process_downloaded_video(
+        output_path, 
+        video_index, 
+        0,  # sub_index 
+        source_tweet_url,
+        False  # is_multi_video - syndication API returns single best video
+    )
+    
+    if result is None:
+        return {"status": "filtered", "reason": "basic_filter", "source_url": source_tweet_url}
+    
+    return result
 
 
 def _process_downloaded_video(

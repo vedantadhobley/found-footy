@@ -281,12 +281,30 @@ class TwitterWorkflow:
             # This is critical for data integrity
             # =================================================================
             if all_videos:
+                # Sort by duration (longest first) and take top 5 to reduce processing time
+                # Videos without duration go to the end (treated as 0)
+                MAX_VIDEOS_TO_DOWNLOAD = 5
+                sorted_videos = sorted(
+                    all_videos, 
+                    key=lambda v: v.get("duration_seconds") or 0, 
+                    reverse=True
+                )
+                videos_to_download = sorted_videos[:MAX_VIDEOS_TO_DOWNLOAD]
+                
+                # Log what we're selecting
+                if len(all_videos) > MAX_VIDEOS_TO_DOWNLOAD:
+                    workflow.logger.info(
+                        f"📊 [TWITTER] Selecting top {MAX_VIDEOS_TO_DOWNLOAD} longest videos from {len(all_videos)} found | "
+                        f"durations: {[v.get('duration_seconds', 0) for v in videos_to_download]}"
+                    )
+                
                 team_clean = input.team_aliases[0].replace(" ", "_").replace(".", "_").replace("-", "_") if input.team_aliases else "Unknown"
-                download_workflow_id = f"download{attempt}-{team_clean}-{player_search}-{video_count}vids-{input.event_id}"
+                # Don't include video count in workflow ID - it causes nondeterminism when code changes
+                download_workflow_id = f"download{attempt}-{team_clean}-{player_search}-{input.event_id}"
                 
                 workflow.logger.info(
                     f"⬇️ [TWITTER] Starting DownloadWorkflow (WAITING for completion) | "
-                    f"download_id={download_workflow_id} | videos={video_count}"
+                    f"download_id={download_workflow_id} | videos={len(videos_to_download)}"
                 )
                 
                 try:
@@ -294,7 +312,7 @@ class TwitterWorkflow:
                     # We MUST wait for Download to complete for data integrity
                     download_result = await workflow.execute_child_workflow(
                         DownloadWorkflow.run,
-                        args=[input.fixture_id, input.event_id, input.player_name, input.team_aliases[0] if input.team_aliases else "", all_videos],
+                        args=[input.fixture_id, input.event_id, input.player_name, input.team_aliases[0] if input.team_aliases else "", videos_to_download],
                         id=download_workflow_id,
                         # No execution_timeout - Download manages its own lifecycle via heartbeats
                     )
