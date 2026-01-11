@@ -746,7 +746,7 @@ TWITTER_SERVICE_URL=http://twitter:8888
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | API daily limit | 7,500 requests | Pro plan |
-| Debounce polls | 3 | ~3 minutes |
+| Debounce polls | 3 | ~1.5 minutes (3 × 30s) |
 | Twitter searches | 3 per event | ~15 min window |
 | Videos per search | 5 max | |
 | Duration filter | >3s to 60s | Must be strictly >3s |

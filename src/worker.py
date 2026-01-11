@@ -104,8 +104,13 @@ async def setup_schedules(client: Client):
         )
         print(f"   ✓ Created '{ingest_schedule_id}' (PAUSED, enable in UI when ready)", flush=True)
     
-    # Schedule 2: MonitorWorkflow - Every minute (ENABLED by default)
-    monitor_schedule_id = "monitor-every-minute"
+    # Schedule 2: MonitorWorkflow - Every 30 seconds (ENABLED by default)
+    # 30s gives faster debounce (1.5 min vs 3 min at 60s) while staying within API limits:
+    # - 2 API calls per cycle (staging batch + active batch)
+    # - 2880 cycles/day × 2 = 5,760 calls/day (Pro plan allows 7,500)
+    # NOTE: Using timestamp-based ID (Temporal adds suffix) to allow parallel runs
+    # for diagnosis. If overlapping occurs, investigate slow activities.
+    monitor_schedule_id = "monitor-every-30s"
     try:
         monitor_handle = client.get_schedule_handle(monitor_schedule_id)
         await monitor_handle.describe()
@@ -116,13 +121,13 @@ async def setup_schedules(client: Client):
             Schedule(
                 action=ScheduleActionStartWorkflow(
                     MonitorWorkflow.run,
-                    id="monitor-scheduled",  # Simple ID - Temporal adds timestamp suffix
+                    id="monitor-scheduled",  # Temporal adds timestamp suffix for unique IDs
                     task_queue="found-footy",
                 ),
-                spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=timedelta(minutes=1))]),
+                spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=timedelta(seconds=30))]),
                 state=ScheduleState(
                     paused=False,
-                    note="Running every minute",
+                    note="Running every 30 seconds",
                 ),
             ),
         )
@@ -200,7 +205,7 @@ async def main():
         print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
         print("📋 Workflows: Ingest, Monitor, RAG, Twitter, Download", flush=True)
         print("🔧 Activities: 28 total (2 ingest, 9 monitor, 4 rag, 6 twitter, 9 download)", flush=True)
-        print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every minute)", flush=True)
+        print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every 30s)", flush=True)
         await worker.run()
     except Exception as e:
         print(f"❌ Worker failed: {e}", file=sys.stderr, flush=True)

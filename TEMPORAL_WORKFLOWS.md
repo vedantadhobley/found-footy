@@ -144,11 +144,11 @@ IngestWorkflow
 
 ## 2. MonitorWorkflow
 
-**Schedule**: Every minute  
+**Schedule**: Every 30 seconds  
 **Purpose**: Poll active fixtures, debounce events, trigger RAG for stable events
 
 ```
-MonitorWorkflow (every 1 min)
+MonitorWorkflow (every 30s)
     │
     ├── fetch_staging_fixtures → process_staging_fixtures
     │   └── Update staging fixtures with fresh API data
@@ -585,24 +585,24 @@ PHASE 2: S3 Dedup
 ```
 T+0:00  Goal scored! Event appears in API
 
-T+1:00  Monitor poll #1
+T+0:30  Monitor poll #1
         → NEW event detected
         → _monitor_count = 1
 
-T+2:00  Monitor poll #2
+T+1:00  Monitor poll #2
         → Event still present
         → _monitor_count = 2
 
-T+3:00  Monitor poll #3
+T+1:30  Monitor poll #3
         → _monitor_count = 3
         → _monitor_complete = TRUE
         → RAGWorkflow started (fire-and-forget)
 
-T+3:05  RAGWorkflow
+T+1:35  RAGWorkflow
         → get_team_aliases("Liverpool") → ["Liverpool"]
         → TwitterWorkflow started
 
-T+3:10  TwitterWorkflow Attempt 1
+T+1:40  TwitterWorkflow Attempt 1
         → _twitter_count = 1
         → Search "Salah Liverpool" → 4 videos
         → DownloadWorkflow → 3 uploaded

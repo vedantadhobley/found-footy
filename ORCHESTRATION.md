@@ -89,7 +89,7 @@ This decoupling allows:
 
 ## 🔄 Workflow Responsibilities
 
-### MonitorWorkflow (Scheduled Every Minute)
+### MonitorWorkflow (Scheduled Every 30 Seconds)
 - Polls active fixtures from API
 - Increments `_monitor_count` for seen events
 - Sets `_monitor_complete = TRUE` when count reaches 3
@@ -133,9 +133,9 @@ This decoupling allows:
 
 ```
 T+0:00  Goal scored! Event appears in API
-T+1:00  Monitor poll #1 → _monitor_count = 1
-T+2:00  Monitor poll #2 → _monitor_count = 2
-T+3:00  Monitor poll #3 → _monitor_count = 3
+T+0:30  Monitor poll #1 → _monitor_count = 1
+T+1:00  Monitor poll #2 → _monitor_count = 2
+T+1:30  Monitor poll #3 → _monitor_count = 3
         → _monitor_complete = TRUE
         → RAGWorkflow triggered (fire-and-forget)
         
