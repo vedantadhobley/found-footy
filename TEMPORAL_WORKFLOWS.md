@@ -6,11 +6,12 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
 
 **Key Features:**
 - **Decoupled architecture** - TwitterWorkflow manages its own retries, not Monitor
-- **Durable timers** - 3-minute spacing between Twitter attempts survives restarts
+- **Durable timers** - 1-minute spacing between Twitter attempts survives restarts
 - **Per-activity retry with exponential backoff** - Granular failure recovery
-- **3 Twitter attempts per event** - Better video quality over time
+- **10 Twitter attempts per event** - Fire-and-forget downloads maximize video capture
 - **Multi-alias search** - Search "Salah Liverpool", "Salah LFC", "Salah Reds"
 - **Cross-retry quality replacement** - Higher resolution videos replace lower ones
+- **Race condition prevention** - `_twitter_complete` set by downloads, not searches
 
 ---
 
@@ -22,7 +23,7 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │   IngestWorkflow                    MonitorWorkflow                  │
-│   (Daily 00:05 UTC)                 (Every 1 Minute)                │
+│   (Daily 00:05 UTC)                 (Every 30 seconds)              │
 │        │                                  │                          │
 │   Fetch fixtures                     Poll API                        │
 │   Route by status                    Debounce events                 │
@@ -33,42 +34,47 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
                                             ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         RAGWorkflow                                  │
-│   - get_team_aliases(team) → ["Liverpool", "LFC", "Reds"]           ││   - Uses Wikidata + llama.cpp LLM for alias selection                ││   - save_team_aliases to MongoDB                                     │
-│   - Start TwitterWorkflow (child, waits)                             │
+│   - get_team_aliases(team) → ["Liverpool", "LFC", "Reds"]           │
+│   - Uses Wikidata + llama.cpp LLM for alias selection               │
+│   - save_team_aliases to MongoDB                                     │
+│   - Start TwitterWorkflow (fire-and-forget, ABANDON)                 │
 │                              │                                       │
 └──────────────────────────────┼──────────────────────────────────────┘
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                 TwitterWorkflow (Self-Managing)                      │
+│                 TwitterWorkflow (Fire-and-Forget Downloads)          │
 │                                                                      │
-│   FOR attempt IN [1, 2, 3]:                                         │
+│   FOR attempt IN [1..10]:                                           │
 │     - update_twitter_attempt(attempt)                                │
-│     - Search each alias with player name                             │
+│     - Search each alias with player name (3-min window)              │
 │     - Dedupe videos (by URL)                                         │
 │     - save_discovered_videos                                         │
-│     - Start DownloadWorkflow (child, waits)                          │
-│     - IF attempt < 3: workflow.sleep(3 min) ← DURABLE TIMER          │
+│     - IF videos: start DownloadWorkflow (FIRE-AND-FORGET)            │
+│     - ELSE: increment_twitter_count (no download to do it)           │
+│     - IF attempt < 10: workflow.sleep(1 min) ← DURABLE TIMER         │
 │                              │                                       │
-│   AFTER attempt 3: mark_event_twitter_complete                       │
+│   Downloads set _twitter_complete when ALL 10 finish                 │
 │                              │                                       │
 └──────────────────────────────┼──────────────────────────────────────┘
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      DownloadWorkflow                                │
-│   1. Download videos via yt-dlp                                      │
-│   2. Filter by duration (>3s to 60s)                                 │
+│   1. Download videos via Twitter syndication API                     │
+│   2. MD5 dedup (fast, exact duplicates)                              │
 │   3. AI validation (reject non-football)                             │
 │   4. Compute perceptual hash (validated only)                        │
-│   5. Compare quality with existing S3                                │
+│   5. Perceptual dedup + cross-event dedup                            │
 │   6. Upload new/better videos                                        │
 │   7. Replace worse quality versions                                  │
+│   8. increment_twitter_count → sets _twitter_complete at count=10    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 **Key Architecture Points:**
-- `start_child_workflow` with `parent_close_policy=ABANDON` for Monitor → RAG
-- `execute_child_workflow` for RAG → Twitter → Download (waits for completion)
-- Durable timers (`workflow.sleep`) in TwitterWorkflow for 3-min spacing
+- `start_child_workflow` with `parent_close_policy=ABANDON` for Monitor → RAG → Twitter
+- `start_child_workflow` with ABANDON for Twitter → Download (fire-and-forget)
+- Downloads run independently, set `_twitter_complete` when all 10 finish
+- Durable timers (`workflow.sleep`) in TwitterWorkflow for 1-min spacing
 
 ---
 
@@ -281,24 +287,24 @@ Team type (club vs national) is determined by API-Football, NOT by team ID:
 ## 4. TwitterWorkflow
 
 **Trigger**: Fire-and-forget from RAGWorkflow (runs independently)  
-**Duration**: ~12-15 minutes (3 attempts + 2 waits of 3 min + downloads)  
-**Purpose**: Search Twitter for videos, manage 3 attempts with durable timers
+**Duration**: ~10 minutes (10 attempts × 1-min spacing)  
+**Purpose**: Search Twitter for videos, fire-and-forget downloads for maximum capture
 
 ```
-TwitterWorkflow (~12-15 min, runs independently)
+TwitterWorkflow (~10 min, runs independently)
     │
-    FOR attempt IN [1, 2, 3]:
+    FOR attempt IN [1..10]:
     │   │
     │   ├── check_event_exists (graceful termination for VAR)
     │   │
     │   ├── update_twitter_attempt(attempt)
-    │   │   └── Set _twitter_count in MongoDB
+    │   │   └── Set _twitter_count in MongoDB (for visibility)
     │   │
     │   ├── get_twitter_search_data
     │   │   └── Get existing video URLs for dedup
     │   │
     │   ├── FOR each alias in team_aliases:
-    │   │   ├── execute_twitter_search("{player_last} {alias}")
+    │   │   ├── execute_twitter_search("{player_last} {alias}", 3-min window)
     │   │   │   └── POST to Firefox service with exclude_urls
     │   │   └── Collect videos, dedupe by URL
     │   │
@@ -306,32 +312,39 @@ TwitterWorkflow (~12-15 min, runs independently)
     │   │   └── Append to _discovered_videos in MongoDB
     │   │
     │   ├── IF videos found:
-    │   │   └── execute_child_workflow(DownloadWorkflow) ← MUST WAIT!
+    │   │   └── start_child_workflow(DownloadWorkflow, ABANDON) ← FIRE-AND-FORGET
     │   │
-    │   └── IF attempt < 3:
-    │       └── workflow.sleep(3 minutes - elapsed) ← DURABLE TIMER
+    │   ├── ELSE (no videos):
+    │   │   └── increment_twitter_count (since no download will do it)
+    │   │
+    │   └── IF attempt < 10:
+    │       └── workflow.sleep(1 minute - elapsed) ← DURABLE TIMER
     │
-    └── mark_event_twitter_complete
-        └── Set _twitter_complete=true ONLY after all downloads done
+    └── Downloads still running will set _twitter_complete when done
 ```
 
-**Why Twitter WAITS for Download (Critical for Data Integrity):**
-- Download updates MongoDB with S3 video URLs
-- We mark `_twitter_complete=true` only after all downloads finish
-- Fixture completion checks `_twitter_complete` flag
-- If fire-and-forget, fixture could move to completed before downloads finish
-- This would cause lookups in wrong collection → **data loss**
+**Why Fire-and-Forget Downloads?**
+- Old approach (3 × 3min blocking): Only 3 search windows, missed lots of content
+- New approach (10 × 1min fire-and-forget): 10 search windows, captures more videos
+- Dedup happens per-batch AND against MongoDB's `_s3_videos` (from prior downloads)
+- Downloads set `_twitter_complete` when ALL 10 finish (prevents race condition)
+
+**Race Condition Prevention:**
+- Problem: Fixture could move to `fixtures_completed` while downloads still running
+- Solution: `_twitter_complete` is only set when count reaches 10
+- Each DownloadWorkflow calls `increment_twitter_count` when complete
+- If no videos found, TwitterWorkflow calls `increment_twitter_count` directly
+- Atomically sets `_twitter_complete=true` when `_twitter_count >= 10`
 
 ### Activities
 
 | Activity | Timeout | Retries | Notes |
 |----------|---------|---------|-------|
 | `check_event_exists` | 30s | 3 | Graceful termination check |
-| `update_twitter_attempt` | 30s | 3 | Update counter in MongoDB |
+| `update_twitter_attempt` | 30s | 3 | Update counter in MongoDB (visibility) |
 | `get_twitter_search_data` | 30s | 3 | Get existing URLs for dedup |
 | `execute_twitter_search` | 180s | 3 | **Heartbeat every 15s** during browser automation |
 | `save_discovered_videos` | 30s | 3 | 2.0x from 2s |
-| `mark_event_twitter_complete` | 30s | 5 | Critical - more retries |
 
 ### Twitter Search Heartbeat Pattern
 
@@ -353,23 +366,23 @@ asyncio.create_task(heartbeat_loop())
 search_complete = True  # Stops heartbeat loop
 ```
 
-### 3-Minute Timer Logic (START-to-START)
+### 1-Minute Timer Logic (START-to-START)
 
 ```python
 # Record attempt start time
 attempt_start = workflow.now()
 
-# ... execute search, download, etc. ...
+# ... execute search, fire-and-forget download ...
 
-# Wait remainder of 3 minutes from START of this attempt
-if attempt < 3:
+# Wait remainder of 1 minute from START of this attempt
+if attempt < 10:
     elapsed = (workflow.now() - attempt_start).total_seconds()
-    wait_seconds = max(180 - elapsed, 30)  # 3 min minus elapsed, min 30s
+    wait_seconds = max(60 - elapsed, 10)  # 1 min minus elapsed, min 10s
     await workflow.sleep(timedelta(seconds=wait_seconds))
 ```
 
-This ensures exactly 3 minutes from the START of one attempt to the START of the next,
-regardless of how long the search/download takes.
+This ensures exactly 1 minute from the START of one attempt to the START of the next.
+Since downloads are fire-and-forget, searches complete quickly (~30s).
 
 ---
 

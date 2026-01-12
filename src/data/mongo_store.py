@@ -513,16 +513,16 @@ class FootyMongoStore:
     
     def update_event_twitter_count(self, fixture_id: int, event_id: str, new_count: int) -> bool:
         """
-        Update Twitter attempt counter.
-        Called by monitor BEFORE triggering Twitter workflow.
+        Update Twitter attempt counter (for visibility at START of each attempt).
+        Called by TwitterWorkflow at the start of each search attempt.
         
-        NOTE: Does NOT set _twitter_complete - that's set by Twitter workflow when it finishes.
-        This ensures we track "attempts started" vs "attempts completed" separately.
+        NOTE: This is for visibility only. The actual completion tracking is done by
+        increment_twitter_count_and_check_complete which is called when downloads finish.
         
         Args:
             fixture_id: Fixture ID
             event_id: Event ID  
-            new_count: New twitter_count value (1, 2, or 3)
+            new_count: New twitter_count value (1-10)
         """
         try:
             result = self.fixtures_active.update_one(
@@ -536,6 +536,77 @@ class FootyMongoStore:
         except Exception as e:
             print(f"❌ Error updating twitter count for {event_id}: {e}")
             return False
+    
+    def increment_twitter_count_and_check_complete(
+        self, 
+        fixture_id: int, 
+        event_id: str,
+        total_attempts: int = 10
+    ) -> dict:
+        """
+        Atomically increment _twitter_count and set _twitter_complete when count reaches total.
+        
+        Called by:
+        - DownloadWorkflow when a download completes
+        - TwitterWorkflow when a search finds no videos (no download triggered)
+        
+        This ensures _twitter_complete is only set after ALL downloads finish,
+        preventing the race condition where fixture moves to completed while
+        downloads are still running.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            total_attempts: Total attempts expected (default 10)
+        
+        Returns:
+            Dict with success, new_count, marked_complete
+        """
+        from datetime import datetime, timezone
+        
+        try:
+            # Atomically increment the count
+            result = self.fixtures_active.find_one_and_update(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {"$inc": {f"events.$.{EventFields.TWITTER_COUNT}": 1}},
+                return_document=True  # Return the document AFTER update
+            )
+            
+            if not result:
+                print(f"❌ Event {event_id} not found in fixtures_active")
+                return {"success": False, "new_count": 0, "marked_complete": False}
+            
+            # Find the event to get the new count
+            new_count = 0
+            for evt in result.get("events", []):
+                if evt.get(EventFields.EVENT_ID) == event_id:
+                    new_count = evt.get(EventFields.TWITTER_COUNT, 0)
+                    break
+            
+            print(f"📊 Incremented _twitter_count to {new_count}/{total_attempts} for {event_id}")
+            
+            # Check if we should mark complete
+            marked_complete = False
+            if new_count >= total_attempts:
+                self.fixtures_active.update_one(
+                    {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                    {"$set": {
+                        f"events.$.{EventFields.TWITTER_COMPLETE}": True,
+                        f"events.$.{EventFields.TWITTER_COMPLETED_AT}": datetime.now(timezone.utc)
+                    }}
+                )
+                marked_complete = True
+                print(f"✅ Marked _twitter_complete=true for {event_id}")
+            
+            return {
+                "success": True,
+                "new_count": new_count,
+                "marked_complete": marked_complete
+            }
+            
+        except Exception as e:
+            print(f"❌ Error incrementing twitter count for {event_id}: {e}")
+            return {"success": False, "new_count": 0, "marked_complete": False}
     
     def mark_event_removed(self, fixture_id: int, event_id: str) -> bool:
         """
@@ -598,67 +669,6 @@ class FootyMongoStore:
         except Exception as e:
             print(f"❌ Error removing event {event_id}: {e}")
             return False
-    
-    def mark_event_twitter_complete(
-        self, 
-        fixture_id: int, 
-        event_id: str, 
-        discovered_videos: List[Dict[str, Any]] | None = None
-    ) -> bool:
-        """
-        Mark event as twitter complete and save discovered video URLs.
-        Called by twitter job when search completes.
-        
-        IMPORTANT: Merges new videos with existing ones (dedup by URL).
-        This handles retry scenarios where we've already discovered some videos.
-        
-        Args:
-            fixture_id: Fixture ID
-            event_id: Event ID
-            discovered_videos: List of video dicts with metadata (tweet_url, tweet_text, etc.)
-        """
-        try:
-            update_doc = {
-                f"events.$.{EventFields.TWITTER_COMPLETE}": True,
-                f"events.$.{EventFields.TWITTER_COMPLETED_AT}": datetime.now(timezone.utc)
-            }
-            
-            # Merge new videos with existing (dedup by URL) - same logic as retry
-            if discovered_videos is not None:
-                # Fetch existing videos to merge
-                existing_videos = []
-                fixture = self.fixtures_active.find_one({"_id": fixture_id})
-                if fixture:
-                    for evt in fixture.get("events", []):
-                        if evt.get(EventFields.EVENT_ID) == event_id:
-                            existing_videos = evt.get(EventFields.DISCOVERED_VIDEOS, [])
-                            break
-                
-                # Create URL set from existing videos (Twitter uses video_page_url)
-                existing_urls = {v.get("video_page_url") or v.get("url") for v in existing_videos if v.get("video_page_url") or v.get("url")}
-                
-                # Add new videos that aren't already in the list
-                merged_videos = existing_videos.copy()
-                for video in discovered_videos:
-                    video_url = video.get("video_page_url") or video.get("url")
-                    if video_url not in existing_urls:
-                        merged_videos.append(video)
-                
-                update_doc[f"events.$.{EventFields.DISCOVERED_VIDEOS}"] = merged_videos
-                update_doc[f"events.$.{EventFields.VIDEO_COUNT}"] = len(merged_videos)
-            
-            result = self.fixtures_active.update_one(
-                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
-                {"$set": update_doc}
-            )
-            if result.modified_count == 0:
-                msg = f"❌ FATAL: Failed to mark event {event_id} twitter complete (0 documents modified)"
-                print(msg)
-                raise RuntimeError(msg)
-            return True
-        except Exception as e:
-            print(f"❌ FATAL: Error marking event {event_id} twitter complete: {e}")
-            raise  # Re-raise - this is critical for pipeline integrity
     
 
     def sync_fixture_data(self, fixture_id: int) -> bool:
@@ -755,6 +765,9 @@ class FootyMongoStore:
         Deduplicates by URL to prevent duplicate entries.
         If a video already exists, updates its popularity to the MAX of existing and new.
         
+        Works on BOTH fixtures_active AND fixtures_completed to handle the race condition
+        where fixture moves to completed while downloads are still running.
+        
         Args:
             fixture_id: Fixture ID
             event_id: Event ID
@@ -763,108 +776,116 @@ class FootyMongoStore:
         Returns:
             True if successful
         """
-        try:
-            if not video_objects:
-                # Verify event exists
-                fixture = self.fixtures_active.find_one(
+        # Try fixtures_active first, then fixtures_completed
+        for collection_name, collection in [
+            ("active", self.fixtures_active),
+            ("completed", self.fixtures_completed)
+        ]:
+            try:
+                if not video_objects:
+                    # Verify event exists
+                    fixture = collection.find_one(
+                        {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id}
+                    )
+                    if not fixture:
+                        continue  # Try next collection
+                    print(f"✅ No new videos to add for {event_id} (in {collection_name})")
+                    return True
+                
+                # Get existing videos to check for duplicates
+                fixture = collection.find_one(
                     {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id}
                 )
                 if not fixture:
-                    msg = f"❌ FATAL: Event {event_id} not found in fixtures_active"
-                    print(msg)
-                    raise RuntimeError(msg)
-                print(f"✅ No new videos to add for {event_id}")
-                return True
-            
-            # Get existing videos to check for duplicates
-            fixture = self.fixtures_active.find_one(
-                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id}
-            )
-            if not fixture:
-                msg = f"❌ FATAL: Event {event_id} not found in fixtures_active"
-                print(msg)
-                raise RuntimeError(msg)
-            
-            # Find the event and build URL -> existing video map
-            existing_videos_by_url = {}
-            event_idx = None
-            for idx, evt in enumerate(fixture.get("events", [])):
-                if evt.get(EventFields.EVENT_ID) == event_id:
-                    event_idx = idx
-                    for video in evt.get(EventFields.S3_VIDEOS, []):
-                        url = video.get("url", "")
-                        if url:
-                            existing_videos_by_url[url] = video
-                    break
-            
-            # Separate new videos from duplicates that need popularity updates
-            new_videos = []
-            popularity_updates = []  # List of (url, new_popularity)
-            
-            for v in video_objects:
-                url = v.get("url", "")
-                new_pop = v.get("popularity", 1)
+                    continue  # Try next collection
                 
-                if url in existing_videos_by_url:
-                    # Video already exists - check if we should bump popularity
-                    existing_pop = existing_videos_by_url[url].get("popularity", 1)
-                    if new_pop > existing_pop:
-                        popularity_updates.append((url, new_pop))
-                        print(f"📈 Existing video {url.split('/')[-1]} popularity {existing_pop} → {new_pop}")
-                else:
-                    new_videos.append(v)
-            
-            # Apply popularity updates to existing videos
-            if popularity_updates:
-                # Get current videos array
-                for evt in fixture.get("events", []):
+                print(f"📦 Found fixture in {collection_name} for {event_id}")
+                
+                # Find the event and build URL -> existing video map
+                existing_videos_by_url = {}
+                event_idx = None
+                for idx, evt in enumerate(fixture.get("events", [])):
                     if evt.get(EventFields.EVENT_ID) == event_id:
-                        videos = evt.get(EventFields.S3_VIDEOS, [])
-                        # Update popularity for matching URLs
-                        for video in videos:
-                            for url, new_pop in popularity_updates:
-                                if video.get("url") == url:
-                                    video["popularity"] = new_pop
-                        # Save back
-                        self.fixtures_active.update_one(
-                            {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
-                            {"$set": {f"events.$.{EventFields.S3_VIDEOS}": videos}}
-                        )
-                        print(f"📈 Updated popularity for {len(popularity_updates)} existing videos in {event_id}")
+                        event_idx = idx
+                        for video in evt.get(EventFields.S3_VIDEOS, []):
+                            url = video.get("url", "")
+                            if url:
+                                existing_videos_by_url[url] = video
                         break
-            
-            if not new_videos:
+                
+                # Separate new videos from duplicates that need popularity updates
+                new_videos = []
+                popularity_updates = []  # List of (url, new_popularity)
+                
+                for v in video_objects:
+                    url = v.get("url", "")
+                    new_pop = v.get("popularity", 1)
+                    
+                    if url in existing_videos_by_url:
+                        # Video already exists - check if we should bump popularity
+                        existing_pop = existing_videos_by_url[url].get("popularity", 1)
+                        if new_pop > existing_pop:
+                            popularity_updates.append((url, new_pop))
+                            print(f"📈 Existing video {url.split('/')[-1]} popularity {existing_pop} → {new_pop}")
+                    else:
+                        new_videos.append(v)
+                
+                # Apply popularity updates to existing videos
                 if popularity_updates:
-                    print(f"✅ Updated {len(popularity_updates)} existing videos, no new videos to add for {event_id}")
-                else:
-                    print(f"✅ All {len(video_objects)} videos already exist for {event_id}, skipping duplicates")
-                return True
-            
-            if len(new_videos) < len(video_objects):
-                skipped = len(video_objects) - len(new_videos) - len(popularity_updates)
-                if skipped > 0:
-                    print(f"⚠️ Filtered out {skipped} duplicate videos for {event_id}")
-            
-            # Append new video objects
-            result = self.fixtures_active.update_one(
-                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
-                {
-                    "$push": {
-                        f"events.$.{EventFields.S3_VIDEOS}": {"$each": new_videos}
+                    # Get current videos array
+                    for evt in fixture.get("events", []):
+                        if evt.get(EventFields.EVENT_ID) == event_id:
+                            videos = evt.get(EventFields.S3_VIDEOS, [])
+                            # Update popularity for matching URLs
+                            for video in videos:
+                                for url, new_pop in popularity_updates:
+                                    if video.get("url") == url:
+                                        video["popularity"] = new_pop
+                            # Save back
+                            collection.update_one(
+                                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                                {"$set": {f"events.$.{EventFields.S3_VIDEOS}": videos}}
+                            )
+                            print(f"📈 Updated popularity for {len(popularity_updates)} existing videos in {event_id} ({collection_name})")
+                            break
+                
+                if not new_videos:
+                    if popularity_updates:
+                        print(f"✅ Updated {len(popularity_updates)} existing videos, no new videos to add for {event_id}")
+                    else:
+                        print(f"✅ All {len(video_objects)} videos already exist for {event_id}, skipping duplicates")
+                    return True
+                
+                if len(new_videos) < len(video_objects):
+                    skipped = len(video_objects) - len(new_videos) - len(popularity_updates)
+                    if skipped > 0:
+                        print(f"⚠️ Filtered out {skipped} duplicate videos for {event_id}")
+                
+                # Append new video objects
+                result = collection.update_one(
+                    {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                    {
+                        "$push": {
+                            f"events.$.{EventFields.S3_VIDEOS}": {"$each": new_videos}
+                        }
                     }
-                }
-            )
-            
-            if result.modified_count == 0:
-                msg = f"❌ FATAL: Failed to add videos to event {event_id} (0 documents modified)"
-                print(msg)
-                raise RuntimeError(msg)
-            
-            print(f"✅ Added {len(new_videos)} videos to {event_id}")
-            return True
-        except Exception as e:
-            print(f"❌ FATAL: Error adding videos to event {event_id}: {e}")
-            raise
+                )
+                
+                if result.modified_count == 0:
+                    print(f"⚠️ 0 documents modified when adding videos to {event_id} ({collection_name})")
+                    continue  # Try next collection
+                
+                print(f"✅ Added {len(new_videos)} videos to {event_id} ({collection_name})")
+                return True
+                
+            except Exception as e:
+                print(f"⚠️ Error adding videos in {collection_name} for {event_id}: {e}")
+                continue
+        
+        # Not found in either collection
+        msg = f"❌ Event {event_id} not found in fixtures_active or fixtures_completed"
+        print(msg)
+        raise RuntimeError(msg)
     
     def recalculate_video_ranks(self, fixture_id: int, event_id: str) -> bool:
         """

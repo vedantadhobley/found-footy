@@ -192,7 +192,6 @@ async def main():
                 twitter.get_twitter_search_data,
                 twitter.execute_twitter_search,
                 twitter.save_discovered_videos,
-                twitter.mark_event_twitter_complete,
                 twitter.update_twitter_attempt,
                 # Download activities (10 granular for per-video retry + quality replacement)
                 download.fetch_event_data,
@@ -205,12 +204,13 @@ async def main():
                 download.mark_download_complete,
                 download.replace_s3_video,
                 download.bump_video_popularity,
+                download.increment_twitter_count,  # Increment count + set _twitter_complete when all done
             ],
         )
         
         print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
         print("📋 Workflows: Ingest, Monitor, RAG, Twitter, Download", flush=True)
-        print("🔧 Activities: 28 total (2 ingest, 9 monitor, 4 rag, 6 twitter, 9 download)", flush=True)
+        print("🔧 Activities: 28 total (2 ingest, 9 monitor, 4 rag, 5 twitter, 10 download)", flush=True)
         print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every 30s)", flush=True)
         await worker.run()
     except Exception as e:

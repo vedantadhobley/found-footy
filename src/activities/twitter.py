@@ -351,46 +351,7 @@ async def save_discovered_videos(
 
 
 # =============================================================================
-# Activity 4: Mark Twitter Complete (called in finally block)
-# =============================================================================
-
-@activity.defn
-async def mark_event_twitter_complete(fixture_id: int, event_id: str) -> bool:
-    """
-    Mark event as twitter_complete=true.
-    
-    Called by Twitter workflow in finally block after downloads finish.
-    This is the signal that all processing for this event attempt is done.
-    
-    Args:
-        fixture_id: The fixture ID
-        event_id: The event ID
-    
-    Returns:
-        True if successful
-    """
-    from src.data.mongo_store import FootyMongoStore
-    
-    store = FootyMongoStore()
-    
-    activity.logger.info(
-        f"🏁 [TWITTER] mark_event_twitter_complete | fixture={fixture_id} | event={event_id}"
-    )
-    
-    success = store.mark_event_twitter_complete(fixture_id, event_id)
-    if success:
-        activity.logger.info(f"✅ [TWITTER] Marked twitter_complete=true | event={event_id}")
-    else:
-        activity.logger.warning(
-            f"⚠️ [TWITTER] Failed to mark twitter_complete | event={event_id} | "
-            f"reason=fixture_may_have_moved"
-        )
-    
-    return success
-
-
-# =============================================================================
-# Activity 5: Update Twitter Attempt Counter
+# Activity 4: Update Twitter Attempt Counter
 # =============================================================================
 
 @activity.defn

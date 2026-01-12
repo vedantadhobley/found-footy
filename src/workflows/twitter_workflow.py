@@ -7,8 +7,15 @@ Downloads are FIRE-AND-FORGET to maximize video capture window.
 Design Philosophy:
 - This workflow runs for ~10 minutes (10 attempts x 1 min spacing)
 - Downloads are fire-and-forget (start_child_workflow with ABANDON policy)
-- Marks _twitter_complete=true after all SEARCHES done (downloads may still be running)
+- _twitter_complete is set by DownloadWorkflow (or this workflow for no-video attempts)
 - More frequent searches = fresher videos = better content
+
+Race Condition Prevention:
+- Problem: Fixture could move to fixtures_completed while downloads still running
+- Solution: _twitter_complete is only set when ALL 10 attempts have finished processing
+- Each DownloadWorkflow increments _twitter_count when complete
+- If no videos found, this workflow increments _twitter_count directly
+- When count reaches 10, _twitter_complete is set atomically
 
 Why Fire-and-Forget Downloads:
 - Old approach (3 x 3min blocking): Only 3 search windows, missed lots of content
@@ -30,7 +37,7 @@ Flow:
 1. ATTEMPT 1: Search (3min window) → dedupe → fire-and-forget Download
 2. WAIT 1 minute (START-to-START spacing)
 ... repeat for 10 attempts ...
-10. Mark _twitter_complete=true (searches done, downloads may still run)
+10. All downloads complete → _twitter_complete=true set by last finisher
 11. Notify frontend
 
 Graceful Termination:
@@ -50,6 +57,7 @@ from typing import List, Optional
 with workflow.unsafe.imports_passed_through():
     from src.activities import twitter as twitter_activities
     from src.activities import monitor as monitor_activities
+    from src.activities import download as download_activities
     from src.workflows.download_workflow import DownloadWorkflow
     from src.utils.event_enhancement import extract_player_search_name
 
@@ -80,10 +88,13 @@ class TwitterWorkflow:
     2. Runs searches for all aliases (3-minute window)
     3. Deduplicates within batch AND against existing videos
     4. STARTS DownloadWorkflow (fire-and-forget, doesn't wait)
-    5. Updates _twitter_count
-    6. Waits 1 minute before next attempt (except after last)
+    5. Waits 1 minute before next attempt (except after last)
     
-    After attempt 10: Marks _twitter_complete=true (downloads may still run)
+    _twitter_complete handling:
+    - DownloadWorkflow increments _twitter_count when complete
+    - If no videos found, this workflow increments directly
+    - When count reaches 10, _twitter_complete=true is set atomically
+    - This prevents fixture from moving to completed while downloads run
     
     Expected duration: ~10 minutes
     """
@@ -336,10 +347,40 @@ class TwitterWorkflow:
                         f"❌ [TWITTER] Failed to START DownloadWorkflow | download_id={download_workflow_id} | "
                         f"error={e} | Continuing to next attempt"
                     )
+                    # Download failed to start - still need to increment count
+                    # so we reach 10 and mark complete
+                    try:
+                        await workflow.execute_activity(
+                            download_activities.increment_twitter_count,
+                            args=[input.fixture_id, input.event_id, 10],
+                            start_to_close_timeout=timedelta(seconds=30),
+                            retry_policy=RetryPolicy(maximum_attempts=3),
+                        )
+                    except Exception as inc_e:
+                        workflow.logger.error(
+                            f"❌ [TWITTER] increment_twitter_count also FAILED | error={inc_e}"
+                        )
             else:
+                # No videos found - we still need to increment the counter
+                # (normally DownloadWorkflow does this, but we didn't start one)
                 workflow.logger.info(
                     f"📭 [TWITTER] No new videos found | event={input.event_id} | attempt={attempt}"
                 )
+                try:
+                    increment_result = await workflow.execute_activity(
+                        download_activities.increment_twitter_count,
+                        args=[input.fixture_id, input.event_id, 10],
+                        start_to_close_timeout=timedelta(seconds=30),
+                        retry_policy=RetryPolicy(maximum_attempts=3),
+                    )
+                    if increment_result.get("marked_complete"):
+                        workflow.logger.info(
+                            f"🏁 [TWITTER] All 10 attempts complete (no downloads pending) | event={input.event_id}"
+                        )
+                except Exception as e:
+                    workflow.logger.error(
+                        f"❌ [TWITTER] increment_twitter_count FAILED | error={e} | event={input.event_id}"
+                    )
             
             # =================================================================
             # Wait for next attempt (1 minute from START of this attempt)
@@ -355,35 +396,17 @@ class TwitterWorkflow:
                 await workflow.sleep(timedelta(seconds=wait_seconds))
         
         # =================================================================
-        # Mark twitter complete after all 10 search attempts
-        # Note: Downloads may still be running (fire-and-forget)
+        # TwitterWorkflow complete - but downloads may still be running!
+        # _twitter_complete is set by the LAST thing to finish:
+        # - If downloads are pending: last DownloadWorkflow sets it
+        # - If no downloads: we already set it via increment_twitter_count above
         # =================================================================
         workflow.logger.info(
             f"✅ [TWITTER] All 10 search attempts COMPLETE | event={input.event_id} | "
-            f"Marking _twitter_complete=true (downloads may still be running)"
+            f"Downloads still running will set _twitter_complete when done"
         )
         
-        try:
-            await workflow.execute_activity(
-                twitter_activities.mark_event_twitter_complete,
-                args=[input.fixture_id, input.event_id],
-                start_to_close_timeout=timedelta(seconds=30),
-                retry_policy=RetryPolicy(
-                    maximum_attempts=5,
-                    initial_interval=timedelta(seconds=2),
-                    backoff_coefficient=2.0,
-                ),
-            )
-            workflow.logger.info(
-                f"✅ [TWITTER] Marked _twitter_complete=true | event={input.event_id}"
-            )
-        except Exception as e:
-            workflow.logger.error(
-                f"❌ [TWITTER] mark_event_twitter_complete FAILED | event={input.event_id} | "
-                f"error={e} | UI may show 'extracting' forever!"
-            )
-        
-        # Notify frontend
+        # Notify frontend (best-effort, non-critical)
         try:
             await workflow.execute_activity(
                 monitor_activities.notify_frontend_refresh,

@@ -706,6 +706,31 @@ class DownloadWorkflow:
                     f"⚠️ [DOWNLOAD] Frontend notification failed (non-critical) | error={e} | event={event_id}"
                 )
         
+        # =========================================================================
+        # Step 10: Increment twitter count and check for completion
+        # This solves the race condition: _twitter_complete is only set after
+        # ALL downloads finish (not just after all searches start)
+        # =========================================================================
+        try:
+            increment_result = await workflow.execute_activity(
+                download_activities.increment_twitter_count,
+                args=[fixture_id, event_id, 10],  # 10 total attempts
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=5,
+                    initial_interval=timedelta(seconds=2),
+                    backoff_coefficient=2.0,
+                ),
+            )
+            if increment_result.get("marked_complete"):
+                workflow.logger.info(
+                    f"🏁 [DOWNLOAD] All 10 attempts complete, marked _twitter_complete=true | event={event_id}"
+                )
+        except Exception as e:
+            workflow.logger.error(
+                f"❌ [DOWNLOAD] increment_twitter_count FAILED | error={e} | event={event_id}"
+            )
+        
         s3_urls = [v["url"] for v in video_objects]
         
         workflow.logger.info(

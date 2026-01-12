@@ -131,9 +131,10 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
             already_downloaded_urls.add(source_url)
         
         # Use MongoDB data directly - it has the full untruncated metadata
+        # NOTE: Use "_s3_key" to match what deduplicate_videos expects
         video_info = {
             "s3_url": s3_url,
-            "s3_key": s3_key,
+            "_s3_key": s3_key,  # Underscore prefix for internal use, matches dedup code
             "perceptual_hash": video_obj.get("perceptual_hash", ""),  # Full hash from MongoDB
             "width": video_obj.get("width", 0),
             "height": video_obj.get("height", 0),
@@ -1691,6 +1692,61 @@ async def mark_download_complete(
         )
     
     return success
+
+
+@activity.defn
+async def increment_twitter_count(
+    fixture_id: int,
+    event_id: str,
+    total_attempts: int = 10
+) -> dict:
+    """
+    Increment _twitter_count and check if we should mark _twitter_complete.
+    
+    Called by:
+    - DownloadWorkflow when a download completes
+    - TwitterWorkflow when a search finds no videos (no download triggered)
+    
+    This solves the race condition where fixture could move to fixtures_completed
+    while downloads are still running. By having downloads set _twitter_complete,
+    we ensure completion only happens after all work is done.
+    
+    Args:
+        fixture_id: Fixture ID
+        event_id: Event ID
+        total_attempts: Total attempts expected (default 10)
+    
+    Returns:
+        Dict with success, new_count, marked_complete
+    """
+    from src.data.mongo_store import FootyMongoStore
+    
+    store = FootyMongoStore()
+    
+    activity.logger.info(
+        f"📊 [DOWNLOAD] Incrementing twitter count | event={event_id}"
+    )
+    
+    result = store.increment_twitter_count_and_check_complete(
+        fixture_id, event_id, total_attempts
+    )
+    
+    if result["success"]:
+        if result["marked_complete"]:
+            activity.logger.info(
+                f"✅ [DOWNLOAD] Twitter count={result['new_count']}, marked _twitter_complete=true | "
+                f"event={event_id}"
+            )
+        else:
+            activity.logger.info(
+                f"📊 [DOWNLOAD] Twitter count={result['new_count']}/{total_attempts} | event={event_id}"
+            )
+    else:
+        activity.logger.error(
+            f"❌ [DOWNLOAD] Failed to increment twitter count | event={event_id}"
+        )
+    
+    return result
 
 
 @activity.defn

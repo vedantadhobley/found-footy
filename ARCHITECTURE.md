@@ -70,7 +70,7 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        SCHEDULED WORKFLOWS                           │
 ├─────────────────────────────────────────────────────────────────────┤
-│  IngestWorkflow (00:05 UTC)     MonitorWorkflow (Every 1 min)       │
+│  IngestWorkflow (00:05 UTC)     MonitorWorkflow (Every 30s)         │
 │         │                                │                           │
 │    Fetch fixtures                   Poll API                         │
 │    Pre-cache RAG aliases            Debounce events                  │
@@ -90,36 +90,37 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
                                        │
                                        ▼ (FIRE-AND-FORGET, ABANDON)
 ┌─────────────────────────────────────────────────────────────────────┐
-│                TwitterWorkflow (~12-15 minutes)                      │
+│                TwitterWorkflow (~10 minutes)                         │
 ├─────────────────────────────────────────────────────────────────────┤
-│  FOR attempt IN [1, 2, 3]:                                          │
+│  FOR attempt IN [1..10]:                                            │
 │    → update_twitter_attempt(attempt)                                 │
 │    → Search each alias: "Salah Liverpool", "Salah LFC", ...         │
 │    → Dedupe videos                                                   │
-│    → WAIT for DownloadWorkflow (data integrity!)                    │
-│    → IF attempt < 3: workflow.sleep(3 minutes) ← DURABLE TIMER      │
-│  AFTER all downloads complete:                                       │
-│    → mark_event_twitter_complete                                     │
+│    → IF videos: start DownloadWorkflow (FIRE-AND-FORGET)            │
+│    → ELSE: increment_twitter_count (no download to do it)            │
+│    → IF attempt < 10: workflow.sleep(1 minute) ← DURABLE TIMER      │
+│  Downloads set _twitter_complete when count reaches 10               │
 └──────────────────────────────────────┬──────────────────────────────┘
                                        │
-                                       ▼ (WAITS FOR COMPLETION)
+                                       ▼ (FIRE-AND-FORGET, ABANDON)
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        DownloadWorkflow                              │
 ├─────────────────────────────────────────────────────────────────────┤
-│  PARALLEL: Download videos via yt-dlp                                │
-│  1. Filter by duration (>3s to 60s)                                  │
+│  PARALLEL: Download videos via Twitter syndication API               │
+│  1. MD5 dedup (fast exact duplicates)                                │
 │  2. AI validation (reject non-football)                              │
 │  PARALLEL: Compute perceptual hash (heartbeat every 10 frames)       │
-│  3. Compare quality with existing S3                                 │
+│  3. Perceptual dedup + cross-event dedup                             │
 │  PARALLEL: Upload if new or better quality                           │
 │  4. Replace worse quality versions                                   │
+│  5. increment_twitter_count → sets _twitter_complete at count=10     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 **Key Architecture Points:**
-- **Monitor → RAG**: Fire-and-forget (ABANDON policy)
-- **RAG → Twitter**: Fire-and-forget (ABANDON policy) - RAG completes in ~30-90s
-- **Twitter → Download**: WAITS for completion (data integrity requirement)
+- **Monitor → RAG → Twitter → Download**: All fire-and-forget (ABANDON policy)
+- **Race condition prevention**: `_twitter_complete` set by downloads, not TwitterWorkflow
+- **increment_twitter_count**: Atomically increments count, sets complete when count=10
 - **Heartbeat-based timeouts**: Long activities use `heartbeat_timeout` instead of arbitrary `execution_timeout`
 - **Comprehensive logging**: Every failure path logged with `[WORKFLOW]` prefix
 
@@ -130,7 +131,7 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 ### Twitter → Download → S3 Flow
 
 ```
-TwitterWorkflow (per event, self-managing)
+TwitterWorkflow (per event, fire-and-forget downloads)
     │
     ├── Attempt 1 (immediate):
     │   ├── Search "Salah Liverpool" → 3 videos
@@ -138,22 +139,30 @@ TwitterWorkflow (per event, self-managing)
     │   ├── Search "Salah Reds" → 1 video  
     │   ├── Dedupe (by URL) → 4 unique
     │   ├── Save to _discovered_videos
-    │   └── DownloadWorkflow → 3 uploaded to S3
+    │   └── START DownloadWorkflow (fire-and-forget) → runs independently
     │
-    ├── sleep(3 min) ← Durable timer
+    ├── sleep(1 min) ← Durable timer
     │
     ├── Attempt 2:
     │   ├── Same 3 searches (exclude already-found URLs)
     │   ├── 1 new video found
-    │   └── DownloadWorkflow → 1 uploaded
+    │   └── START DownloadWorkflow (fire-and-forget)
     │
-    ├── sleep(3 min)
+    ├── sleep(1 min)
     │
-    └── Attempt 3:
+    ... (attempts 3-9 similar) ...
+    │
+    └── Attempt 10:
         ├── Same searches
-        ├── 0 new videos
-        └── mark_event_twitter_complete
+        ├── 0 new videos → increment_twitter_count (no download to do it)
+        └── (Downloads set _twitter_complete when count reaches 10)
 ```
+
+**Race Condition Prevention:**
+- Each DownloadWorkflow calls `increment_twitter_count` when complete
+- If no videos found, TwitterWorkflow calls `increment_twitter_count`
+- When count reaches 10, `_twitter_complete=true` is set atomically
+- Fixture can't move to `fixtures_completed` until `_twitter_complete=true`
 
 ### Perceptual Hash Deduplication
 
@@ -391,13 +400,14 @@ Then triggers **TwitterWorkflow** as child workflow.
 
 | Activity | Purpose | Retries |
 |----------|---------|---------|
-| `update_twitter_attempt` | Set `_twitter_count` | 2x |
+| `update_twitter_attempt` | Set `_twitter_count` (visibility) | 2x |
 | `get_twitter_search_data` | Get existing URLs | 2x |
 | `execute_twitter_search` | POST to Firefox | 3x, 1.5x from 10s |
 | `save_discovered_videos` | Persist to MongoDB | 3x, 2.0x |
-| `mark_event_twitter_complete` | Set completion flag | 3x |
 
-**Key Feature**: Uses `workflow.sleep(3 minutes)` between attempts - durable timer survives restarts.
+**Key Feature**: Uses `workflow.sleep(1 minute)` between attempts - durable timer survives restarts.
+
+**Note**: `_twitter_complete` is set by DownloadWorkflow via `increment_twitter_count`, not by TwitterWorkflow.
 
 ### 5. DownloadWorkflow (Per Twitter Attempt)
 
@@ -405,13 +415,16 @@ Then triggers **TwitterWorkflow** as child workflow.
 
 | Activity | Purpose | Retries |
 |----------|---------|--------|
-| `fetch_event_data` | Get existing videos from MongoDB | 2x |
+| `fetch_event_data` | Get existing videos from MongoDB | 3x |
 | `download_single_video` | Download ONE video | 3x, 2.0x from 2s |
-| `validate_video_is_soccer` | AI vision validates soccer content | 2x |
-| `deduplicate_videos` | Perceptual hash comparison | 2x |
+| `deduplicate_by_md5` | Fast exact duplicate removal | 2x |
+| `validate_video_is_soccer` | AI vision validates soccer content | 4x |
+| `generate_video_hash` | Perceptual hash (heartbeat) | 2x |
+| `deduplicate_videos` | Perceptual + cross-event dedup | 3x |
 | `replace_s3_video` | Delete old video when replacing | 3x, 2.0x |
 | `upload_single_video` | Upload ONE video to S3 | 3x, 1.5x from 2s |
 | `mark_download_complete` | Update MongoDB, cleanup | 3x, 2.0x |
+| `increment_twitter_count` | Increment count, set complete at 10 | 5x |
 
 **AI Video Validation**:
 - Extracts a frame from downloaded video
@@ -430,8 +443,8 @@ Then triggers **TwitterWorkflow** as child workflow.
 | `_monitor_count` | int | Monitor | Times seen by monitor (1, 2, 3+) |
 | `_monitor_complete` | bool | Monitor | true when `_monitor_count >= 3` |
 | `_twitter_aliases` | array | RAGWorkflow | Team search variations |
-| `_twitter_count` | int | TwitterWorkflow | Current attempt (1, 2, 3) |
-| `_twitter_complete` | bool | TwitterWorkflow | true after attempt 3 |
+| `_twitter_count` | int | DownloadWorkflow | Completed attempts count (1-10) |
+| `_twitter_complete` | bool | DownloadWorkflow | true when count reaches 10 |
 | `_first_seen` | datetime | Monitor | When event first appeared |
 | `_twitter_search` | string | Monitor | `{player_last} {team_name}` |
 | `_removed` | bool | Monitor | true if VAR disallowed |
@@ -449,10 +462,10 @@ Store raw API data temporarily for comparison without destroying enhancements.
 Clean separation - alias lookup can be swapped from stub to LLM without touching Twitter logic.
 
 ### Why self-managing TwitterWorkflow?
-Durable timers allow 3-minute spacing between attempts, decoupled from Monitor's 1-minute poll.
+Durable timers allow 1-minute spacing between attempts, decoupled from Monitor's 30-second poll.
 
-### Why 3 Twitter attempts with 3-min spacing?
-Goal videos appear over 5-15 minutes. Early uploads often SD, later often HD.
+### Why 10 Twitter attempts with 1-min spacing?
+Goal videos appear over 5-15 minutes. More frequent searches = fresher videos = better content. Fire-and-forget downloads maximize the video capture window.
 
 ### Why perceptual hashing?
 Same video at different bitrates = different file hashes. Perceptual hash catches duplicates.
