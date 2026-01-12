@@ -986,6 +986,8 @@ async def deduplicate_videos(
                     f"- popularity {existing_popularity} + {incoming_popularity} = {new_popularity}"
                 )
                 file_info["popularity"] = new_popularity
+                # Pass old S3 key so upload can reuse it (keeps shared URLs stable)
+                file_info["_old_s3_key"] = matched_existing.get("_s3_key", "")
                 videos_to_replace.append({
                     "new_video": file_info,
                     "old_s3_video": matched_existing
@@ -1502,6 +1504,7 @@ async def upload_single_video(
     height: int = 0,
     bitrate: float = 0.0,
     file_size: int = 0,
+    existing_s3_key: str = "",  # For replacements: reuse old S3 key to keep URL stable
 ) -> Dict[str, Any]:
     """
     Upload a single video to S3 with metadata and tags.
@@ -1517,6 +1520,7 @@ async def upload_single_video(
         perceptual_hash: Perceptual hash for cross-resolution dedup
         duration: Video duration in seconds
         popularity: Duplicate count (higher = more sources found this video = more trustworthy)
+        existing_s3_key: For replacements - reuse old S3 key so shared URLs stay valid
     
     Returns:
         Dict with s3_url, perceptual_hash, and status
@@ -1526,16 +1530,21 @@ async def upload_single_video(
     """
     from src.data.s3_store import FootyS3Store
     
-    # Use hash in filename for uniqueness (no index needed)
-    if file_hash:
+    # For replacements, reuse the existing S3 key to keep URLs stable
+    # This allows shared links to remain valid when video quality is upgraded
+    if existing_s3_key:
+        s3_key = existing_s3_key
+        activity.logger.info(
+            f"♻️ [UPLOAD] Reusing S3 key for replacement | key={s3_key}"
+        )
+    elif file_hash:
         filename = f"{event_id}_{file_hash[:8]}.mp4"
+        s3_key = f"{fixture_id}/{event_id}/{filename}"
     else:
         # Fallback without hash - use timestamp for uniqueness
         import time
         filename = f"{event_id}_{int(time.time())}.mp4"
-    
-    # S3 key: {fixture_id}/{event_id}/{filename}
-    s3_key = f"{fixture_id}/{event_id}/{filename}"
+        s3_key = f"{fixture_id}/{event_id}/{filename}"
     
     # S3 metadata - useful tags for manual lookup (not for dedup - MongoDB is source of truth)
     # Note: S3 metadata has ~2KB limit and truncates values, so we only store simple fields here
@@ -1690,16 +1699,21 @@ async def replace_s3_video(
     event_id: str,
     old_s3_url: str,
     old_s3_key: str,
+    skip_s3_delete: bool = False,  # True when overwriting with same key (keeps URLs stable)
 ) -> bool:
     """
-    Delete an old S3 video and update MongoDB to remove it from _s3_videos.
+    Remove old video entry from MongoDB, optionally delete from S3.
     Called when a higher quality version is being uploaded to replace it.
+    
+    When skip_s3_delete=True, the S3 file is NOT deleted because the new upload
+    will overwrite the same key. This keeps shared URLs stable.
     
     Args:
         fixture_id: Fixture ID
         event_id: Event ID
         old_s3_url: Full S3 URL to remove from MongoDB
         old_s3_key: S3 key for deletion
+        skip_s3_delete: If True, skip S3 deletion (file will be overwritten)
     
     Returns:
         True if successful
@@ -1707,22 +1721,26 @@ async def replace_s3_video(
     from src.data.mongo_store import FootyMongoStore
     from src.data.s3_store import FootyS3Store
     
-    activity.logger.info(
-        f"🗑️ [REPLACE] Deleting old video | event={event_id} | key={old_s3_key}"
-    )
-    
-    # Delete from S3
-    s3_store = FootyS3Store()
-    try:
-        s3_store.s3_client.delete_object(Bucket="footy-videos", Key=old_s3_key)
+    if skip_s3_delete:
         activity.logger.info(
-            f"✅ [REPLACE] S3 delete successful | key={old_s3_key}"
+            f"♻️ [REPLACE] Skipping S3 delete (will overwrite) | event={event_id} | key={old_s3_key}"
         )
-    except Exception as e:
-        activity.logger.error(
-            f"❌ [REPLACE] S3 delete failed | key={old_s3_key} | error={e}"
+    else:
+        activity.logger.info(
+            f"🗑️ [REPLACE] Deleting old video | event={event_id} | key={old_s3_key}"
         )
-        # Continue - we still want to update MongoDB
+        # Delete from S3
+        s3_store = FootyS3Store()
+        try:
+            s3_store.s3_client.delete_object(Bucket="footy-videos", Key=old_s3_key)
+            activity.logger.info(
+                f"✅ [REPLACE] S3 delete successful | key={old_s3_key}"
+            )
+        except Exception as e:
+            activity.logger.error(
+                f"❌ [REPLACE] S3 delete failed | key={old_s3_key} | error={e}"
+            )
+            # Continue - we still want to update MongoDB
     
     # Remove from MongoDB _s3_videos array (by URL)
     store = FootyMongoStore()

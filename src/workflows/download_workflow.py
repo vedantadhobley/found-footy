@@ -552,10 +552,11 @@ class DownloadWorkflow:
         # =========================================================================
         if videos_to_replace:
             workflow.logger.info(
-                f"🗑️ [DOWNLOAD] Deleting {len(videos_to_replace)} old S3 videos for replacement | event={event_id}"
+                f"♻️ [DOWNLOAD] Preparing {len(videos_to_replace)} video replacements (reusing S3 keys) | event={event_id}"
             )
             
-            async def delete_old_video(replacement: dict):
+            async def remove_old_mongo_entry(replacement: dict):
+                """Remove old MongoDB entry only - S3 will be overwritten with same key"""
                 old_video = replacement["old_s3_video"]
                 try:
                     await workflow.execute_activity(
@@ -564,7 +565,8 @@ class DownloadWorkflow:
                             fixture_id,
                             event_id,
                             old_video.get("s3_url", ""),
-                            old_video.get("s3_key", ""),
+                            old_video.get("_s3_key", ""),
+                            True,  # skip_s3_delete - we'll overwrite with same key
                         ],
                         start_to_close_timeout=timedelta(seconds=30),
                         retry_policy=RetryPolicy(
@@ -575,15 +577,16 @@ class DownloadWorkflow:
                     )
                 except Exception as e:
                     workflow.logger.warning(
-                        f"⚠️ [DOWNLOAD] Failed to delete old S3 video | "
-                        f"key={old_video.get('s3_key')} | error={e} | event={event_id}"
+                        f"⚠️ [DOWNLOAD] Failed to remove old MongoDB entry | "
+                        f"key={old_video.get('_s3_key')} | error={e} | event={event_id}"
                     )
             
-            delete_tasks = [delete_old_video(r) for r in videos_to_replace]
+            delete_tasks = [remove_old_mongo_entry(r) for r in videos_to_replace]
             await asyncio.gather(*delete_tasks)
         
         # =========================================================================
         # Step 8: Upload videos to S3 IN PARALLEL
+        # For replacements, reuse old S3 key to keep shared URLs stable
         # =========================================================================
         all_uploads = videos_to_upload + [r["new_video"] for r in videos_to_replace]
         workflow.logger.info(
@@ -592,6 +595,9 @@ class DownloadWorkflow:
         
         async def upload_video(idx: int, video_info: dict):
             try:
+                # For replacements, _old_s3_key is set - reuse it to keep URLs stable
+                existing_s3_key = video_info.get("_old_s3_key", "")
+                
                 result = await workflow.execute_activity(
                     download_activities.upload_single_video,
                     args=[
@@ -612,6 +618,7 @@ class DownloadWorkflow:
                         video_info.get("height", 0),
                         video_info.get("bitrate", 0.0),
                         video_info.get("file_size", 0),
+                        existing_s3_key,  # Reuse for replacements, empty for new uploads
                     ],
                     start_to_close_timeout=timedelta(seconds=60),
                     retry_policy=RetryPolicy(
