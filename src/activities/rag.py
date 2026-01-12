@@ -7,7 +7,7 @@ True RAG Flow:
 1. Check MongoDB cache (team_aliases collection by team_id)
 2. If miss: Retrieve aliases from Wikidata API
 3. Augment LLM prompt with Wikidata aliases as context
-4. Generate: LLM selects/derives best 3 from Wikidata list
+4. Generate: LLM selects/derives best 5 Twitter search terms
 5. Normalize (remove diacritics)
 6. Cache and return
 
@@ -15,6 +15,12 @@ This is RAG - Retrieval Augmented Generation:
 - Retrieval: Wikidata provides authoritative aliases
 - Augmented: LLM prompt includes retrieved data
 - Generation: LLM derives best Twitter search terms from that data
+
+The LLM handles ALL the intelligence:
+- Filtering out generic words (FC, Club, Real, etc.)
+- Selecting best acronyms (MUFC, LFC, BVB)
+- Deriving nationality adjectives for national teams (Argentina → Argentine)
+- Picking distinctive nicknames (Gunners, Spurs, Reds)
 """
 from temporalio import activity
 from typing import List, Optional
@@ -39,70 +45,55 @@ HEADERS = {
     "User-Agent": "FoundFooty/1.0 (https://github.com/vedanta/found-footy; contact@example.com)"
 }
 
-# RAG System Prompt - LLM selects from preprocessed words
-SYSTEM_PROMPT = """Select the best words for Twitter search from the provided list.
+# Maximum aliases for Twitter search (10 attempts × N aliases = N×10 searches per goal)
+MAX_ALIASES = 5
 
-PRIORITY:
-1. Acronyms (MUFC, BVB, PSG, ATM, LFC) - most valuable
-2. Short nicknames (Spurs, Juve, Barca, Atleti, Bayern)
-3. Distinctive words (Devils, Blues, Gunners, Reds)
+# =============================================================================
+# LLM System Prompts - Different for clubs vs national teams
+# =============================================================================
 
-RULES:
-- ONLY select from the provided list
-- Return ALL good options (no limit)
-- Skip generic words
+CLUB_SYSTEM_PROMPT = """You are selecting Twitter search terms for a football CLUB.
 
-Output: JSON array ["MUFC", "Utd", "Devils"]"""
+From the Wikidata aliases provided, select the TOP 5 best terms for finding goal videos on Twitter.
 
-# Nationality mapping for national teams
-NATIONALITY_MAP = {
-    'argentina': ['Argentinian', 'Argentine'],
-    'brazil': ['Brazilian', 'Brasil'],
-    'france': ['French'],
-    'england': ['English'],
-    'germany': ['German', 'Deutschland'],
-    'spain': ['Spanish', 'Espana'],
-    'italy': ['Italian', 'Italia'],
-    'portugal': ['Portuguese'],
-    'netherlands': ['Dutch', 'Holland'],
-    'belgium': ['Belgian'],
-    'croatia': ['Croatian', 'Hrvatska'],
-    'morocco': ['Moroccan'],
-    'colombia': ['Colombian'],
-    'usa': ['American', 'America'],
-    'mexico': ['Mexican'],
-    'japan': ['Japanese'],
-    'south korea': ['Korean'],
-    'australia': ['Australian'],
-    'poland': ['Polish'],
-    'switzerland': ['Swiss'],
-    'denmark': ['Danish'],
-    'sweden': ['Swedish'],
-    'norway': ['Norwegian'],
-    'wales': ['Welsh'],
-    'scotland': ['Scottish'],
-    'ireland': ['Irish'],
-    'turkey': ['Turkish'],
-    'greece': ['Greek'],
-    'serbia': ['Serbian'],
-    'ukraine': ['Ukrainian'],
-    'czech republic': ['Czech'],
-    'austria': ['Austrian'],
-    'hungary': ['Hungarian'],
-    'romania': ['Romanian'],
-    'senegal': ['Senegalese'],
-    'ghana': ['Ghanaian'],
-    'nigeria': ['Nigerian'],
-    'cameroon': ['Cameroonian'],
-    'egypt': ['Egyptian'],
-    'algeria': ['Algerian'],
-    'tunisia': ['Tunisian'],
-    'uruguay': ['Uruguayan'],
-    'chile': ['Chilean'],
-    'peru': ['Peruvian'],
-    'ecuador': ['Ecuadorian'],
-    'canada': ['Canadian'],
-}
+PRIORITY ORDER:
+1. ACRONYMS (2-5 letters, all caps) - MOST VALUABLE for Twitter search
+   Examples: MUFC, LFC, BVB, PSG, FCB, MCFC, AFC, THFC
+2. SHORT NICKNAMES (≤10 chars) - Very valuable
+   Examples: Spurs, Juve, Barca, Atleti, Bayern, Utd, Gunners
+3. DISTINCTIVE WORDS - Fan names, mascots, colors
+   Examples: Devils, Blues, Reds, Magpies, Hammers, Wolves
+
+SKIP THESE (too generic, will pollute search results):
+- Generic football words: FC, Club, United, City, Real, Athletic, Sporting
+- Articles/prepositions: The, La, El, De, Du, Of, And
+- Generic org words: Association, Society, Union, Racing
+
+OUTPUT: JSON array with exactly 3-5 aliases, acronym first if available.
+Example: ["MUFC", "Utd", "Devils", "Manchester"]"""
+
+NATIONAL_SYSTEM_PROMPT = """You are selecting Twitter search terms for a NATIONAL football team.
+
+From the Wikidata aliases provided, select the TOP 5 best terms for finding goal videos on Twitter.
+IMPORTANT: You MUST derive the nationality adjective from the country name!
+
+PRIORITY ORDER:
+1. NATIONALITY ADJECTIVE - DERIVE THIS from the country name!
+   Argentina → Argentine, Brazil → Brazilian, France → French, Germany → German
+   England → English, Spain → Spanish, Italy → Italian, Morocco → Moroccan
+   This is THE MOST IMPORTANT term for national team searches!
+2. ACRONYMS if available (rare for national teams)
+3. SHORT NICKNAMES or team monikers
+   Examples: Selecao (Brazil), Albiceleste (Argentina), Les Bleus (France)
+   Examples: Three Lions (England), La Roja (Spain), Azzurri (Italy)
+
+SKIP THESE (too generic):
+- The country name itself (redundant with player name)
+- Generic words: National, Team, Football, Men's, Selection
+
+OUTPUT: JSON array with exactly 3-5 aliases, nationality adjective FIRST.
+Example for Argentina: ["Argentine", "Argentinian", "Albiceleste"]
+Example for Brazil: ["Brazilian", "Selecao", "Brasil"]"""
 
 
 def _normalize_alias(alias: str) -> str:
@@ -281,132 +272,56 @@ async def _fetch_wikidata_aliases(qid: str) -> List[str]:
     return []
 
 
-def _preprocess_aliases_to_words(raw_aliases: List[str], team_name: str, team_type: str = "club") -> List[str]:
+def _clean_wikidata_aliases(raw_aliases: List[str], team_name: str) -> List[str]:
     """
-    Heavy preprocessing to convert raw Wikidata aliases to clean single words.
+    Light cleanup of Wikidata aliases - just remove obvious junk.
+    
+    The LLM handles all the smart filtering (generic words, etc.)
+    We only do basic cleanup here:
+    - Remove non-ASCII aliases
+    - Remove concatenated junk (FCBarcelona)
+    - Normalize acronyms with periods (F.C. → FC)
+    - Dedupe
+    
+    NO skip_words list - the LLM decides what's useful!
     """
-    # Words to skip
-    skip_words = {
-        'fc', 'club', 'the', 'la', 'el', 'los', 'las', 'le', 'les', 'de', 'of', 
-        'and', 'del', 'der', 'die', 'das', 'ac', 'as', 'sc', 'cf', 'cd', 'ss',
-        'futbol', 'football', 'soccer', 'calcio', 'association', 'sporting',
-        'national', 'team', "men's", 'mens', 'royal', 'real', 'nt', 'united',
-        'one', 'red', 'west', 'sport', 'three'
-    }
-    
-    team_words = {w.lower() for w in team_name.split()}
-    
-    words = set()
-    acronyms = set()
+    cleaned = set()
     
     for alias in raw_aliases:
-        # Normalize unicode
+        # Normalize unicode (remove diacritics for comparison)
         normalized = unicodedata.normalize('NFKD', alias)
         normalized = ''.join(c for c in normalized if not unicodedata.combining(c))
         
-        # Skip non-ASCII
+        # Skip non-ASCII (can't search Twitter effectively)
         if not all(c.isascii() or c.isspace() for c in normalized):
             continue
         
-        # Skip concatenated junk like "FCBarcelona"
-        if len(normalized) > 4 and ' ' not in normalized and not normalized.isupper():
-            is_concat = False
+        # Skip very long aliases (probably descriptions, not names)
+        if len(normalized) > 30:
+            continue
+        
+        # Skip concatenated junk like "FCBarcelona" (camelCase without spaces)
+        if len(normalized) > 5 and ' ' not in normalized and not normalized.isupper():
+            has_camel = False
             for i in range(1, len(normalized)):
                 if normalized[i-1].islower() and normalized[i].isupper():
-                    is_concat = True
+                    has_camel = True
                     break
-            if is_concat:
-                continue
-            if len(normalized) > 3 and normalized[:2].isupper() and normalized[2].isupper() and normalized[3:4].islower():
+            if has_camel:
                 continue
         
-        # Handle acronyms with periods
+        # Normalize acronyms with periods: F.C. → FC, A.C. → AC
         if '.' in normalized:
             no_periods = normalized.replace('.', '').replace(' ', '').strip()
             if 2 <= len(no_periods) <= 6 and no_periods.isupper():
-                if no_periods.lower() not in acronyms:
-                    acronyms.add(no_periods.lower())
-                    words.add(no_periods)
-            continue
-        
-        # Check if it's a clean acronym
-        no_space = normalized.replace(' ', '')
-        if no_space.isupper() and 2 <= len(no_space) <= 6 and ' ' not in normalized:
-            if no_space in {'SAD', 'PLC', 'LTD', 'INC', 'IM'}:
+                cleaned.add(no_periods)
                 continue
-            if no_space.lower() not in acronyms:
-                acronyms.add(no_space.lower())
-                words.add(no_space)
-            continue
         
-        # Skip weird spaced "acronyms"
-        if len(normalized) <= 4 and ' ' in normalized:
-            continue
-        
-        # Split multi-word aliases
-        for word in normalized.split():
-            word_clean = ''.join(c for c in word if c.isalnum())
-            word_lower = word_clean.lower()
-            
-            if len(word_clean) < 2:
-                continue
-            if word_lower in skip_words:
-                continue
-            if word_lower in team_words:
-                continue
-            if word_lower in {'sad', 'plc', 'ltd', 'inc', 'ev'}:
-                continue
-            
-            words.add(word_clean)
+        # Keep the alias
+        cleaned.add(normalized.strip())
     
-    # For national teams, add nationality adjectives
-    if team_type == "national":
-        team_lower = team_name.lower()
-        if team_lower in NATIONALITY_MAP:
-            for adj in NATIONALITY_MAP[team_lower]:
-                if adj.lower() not in {w.lower() for w in words}:
-                    words.add(adj)
-    
-    # Filter 1-char words
-    words = {w for w in words if len(w) > 1}
-    
-    # Sort: acronyms first, then by length
-    result = sorted(words, key=lambda w: (not w.isupper(), len(w), w.lower()))
-    
-    return result
-
-
-def _add_team_name_words(aliases: List[str], team_name: str) -> List[str]:
-    """Add words from team name to the BEGINNING of the alias list.
-    
-    Team name words are added first because they're the most reliable search terms.
-    E.g., "Liverpool" for Liverpool FC, "Madrid" for Real Madrid.
-    """
-    aliases_lower = {a.lower() for a in aliases}
-    team_words = []  # Collect team name words to prepend
-    
-    name_normalized = team_name.replace('-', ' ')
-    words = name_normalized.split()
-    
-    for word in words:
-        word_clean = _normalize_alias(word)
-        word_lower = word_clean.lower()
-        
-        if len(word_clean) < 2:
-            continue
-        
-        # Skip short all-caps (FC, AC) unless only word
-        if word_clean.isupper() and len(word_clean) <= 3 and len(words) > 1:
-            continue
-        
-        if word_lower in aliases_lower:
-            continue
-        
-        team_words.append(word_clean)
-        aliases_lower.add(word_lower)
-    
-    # Prepend team name words at the beginning
-    return team_words + list(aliases)
+    # Return as list, sorted by length (shorter = more likely useful)
+    return sorted(cleaned, key=lambda x: (len(x), x.lower()))
 
 
 def _parse_llm_response(text: str) -> Optional[List[str]]:
@@ -474,6 +389,11 @@ async def get_team_aliases(team_id: int, team_name: str, team_type: Optional[str
     """
     Get team name aliases via Wikidata RAG + LLM with MongoDB caching.
     
+    The LLM handles ALL intelligence:
+    - Selecting best acronyms (MUFC, LFC, BVB)
+    - Filtering generic words (FC, Club, Real)
+    - For national teams: deriving nationality adjectives (Argentina → Argentine)
+    
     Args:
         team_id: API-Football team ID (cache key)
         team_name: Full team name
@@ -481,7 +401,7 @@ async def get_team_aliases(team_id: int, team_name: str, team_type: Optional[str
         country: Country name (for better search) - can be overridden by API data
     
     Returns:
-        List of normalized aliases for Twitter search
+        List of normalized aliases for Twitter search (max 5)
     """
     from src.data.mongo_store import FootyMongoStore
     from src.api.api_client import get_team_info
@@ -535,31 +455,48 @@ async def get_team_aliases(team_id: int, team_name: str, team_type: Optional[str
     if qid:
         activity.logger.info(f"📚 Found Wikidata QID: {qid}")
         wikidata_aliases = await _fetch_wikidata_aliases(qid)
-        activity.logger.info(f"📚 Wikidata aliases ({len(wikidata_aliases)}): {wikidata_aliases[:5]}...")
+        activity.logger.info(f"📚 Wikidata aliases ({len(wikidata_aliases)}): {wikidata_aliases[:10]}...")
     else:
         activity.logger.warning(f"⚠️ No Wikidata QID found for: {team_name}")
     
-    # 4. Preprocess to single words
-    preprocessed = _preprocess_aliases_to_words(wikidata_aliases, team_name, team_type_str) if wikidata_aliases else []
-    activity.logger.info(f"🔧 Preprocessed to words: {preprocessed}")
+    # 4. Light cleanup (no skip_words - LLM decides what's useful)
+    cleaned_aliases = _clean_wikidata_aliases(wikidata_aliases, team_name) if wikidata_aliases else []
+    activity.logger.info(f"🧹 Cleaned aliases: {cleaned_aliases[:15]}...")
     
-    # 5. AUGMENT + GENERATE: LLM selects from preprocessed words
-    if preprocessed:
+    # 5. AUGMENT + GENERATE: LLM selects best aliases
+    # Use different prompts for clubs vs national teams
+    system_prompt = NATIONAL_SYSTEM_PROMPT if national else CLUB_SYSTEM_PROMPT
+    
+    if cleaned_aliases or national:  # National teams can derive nationality even without Wikidata
         try:
-            # Short timeout - fail fast to fallback if LLM is frozen
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                prompt = f"""Words: {json.dumps(preprocessed)}
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                # Build context-rich prompt for the LLM
+                if national:
+                    prompt = f"""Team: {team_name} (NATIONAL TEAM)
+Country: {effective_country or team_name}
+Wikidata aliases: {json.dumps(cleaned_aliases) if cleaned_aliases else "[]"}
 
-Select the best words for Twitter search. Return a JSON array. /no_think"""
+Select the best 3-5 Twitter search terms. REMEMBER: Derive the nationality adjective!
+Output JSON array only. /no_think"""
+                else:
+                    prompt = f"""Team: {team_name} (CLUB)
+City: {api_city or "Unknown"}
+Country: {effective_country or "Unknown"}  
+Wikidata aliases: {json.dumps(cleaned_aliases)}
+
+Select the best 3-5 Twitter search terms. Include acronym if available.
+Output JSON array only. /no_think"""
+                
+                activity.logger.info(f"🤖 Sending to LLM: {prompt[:100]}...")
                 
                 response = await client.post(
                     f"{LLAMA_URL}/v1/chat/completions",
                     json={
                         "messages": [
-                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "system", "content": system_prompt},
                             {"role": "user", "content": prompt}
                         ],
-                        "max_tokens": 100,
+                        "max_tokens": 150,
                         "temperature": 0.1
                     }
                 )
@@ -567,66 +504,48 @@ Select the best words for Twitter search. Return a JSON array. /no_think"""
                 
                 result = response.json()
                 text = result["choices"][0]["message"]["content"].strip()
+                activity.logger.info(f"🤖 LLM response: {text}")
                 
                 llm_aliases = _parse_llm_response(text)
                 
-                if llm_aliases:
-                    # Validate: must be from preprocessed list
-                    preprocessed_lower = {p.lower() for p in preprocessed}
-                    valid = [a for a in llm_aliases if a.lower() in preprocessed_lower]
+                if llm_aliases and len(llm_aliases) >= 1:
+                    # Normalize all aliases (remove diacritics)
+                    twitter_aliases = [_normalize_alias(a) for a in llm_aliases]
                     
-                    if valid:
-                        activity.logger.info(f"✅ LLM selected: {valid}")
-                        
-                        # Add team name words
-                        valid = _add_team_name_words(valid, team_name)
-                        
-                        # Add nationality adjectives for national teams
-                        if national:
-                            team_lower = team_name.lower()
-                            if team_lower in NATIONALITY_MAP:
-                                valid_lower = {v.lower() for v in valid}
-                                for adj in NATIONALITY_MAP[team_lower]:
-                                    if adj.lower() not in valid_lower:
-                                        valid.append(adj)
-                        
-                        # Normalize all aliases
-                        twitter_aliases = [_normalize_alias(a) for a in valid]
-                        
-                        activity.logger.info(f"✅ Final aliases: {twitter_aliases}")
-                        
-                        # Cache with all API data
-                        _cache_aliases(
-                            store, team_id, team_name, national, twitter_aliases,
-                            LLAMA_MODEL, api_country, api_city, qid, wikidata_aliases
-                        )
-                        return twitter_aliases
+                    # Enforce max limit
+                    twitter_aliases = twitter_aliases[:MAX_ALIASES]
+                    
+                    activity.logger.info(f"✅ Final aliases ({len(twitter_aliases)}): {twitter_aliases}")
+                    
+                    # Cache with all data
+                    _cache_aliases(
+                        store, team_id, team_name, national, twitter_aliases,
+                        LLAMA_MODEL, api_country, api_city, qid, wikidata_aliases
+                    )
+                    return twitter_aliases
                 
-                activity.logger.warning(f"⚠️ LLM returned invalid format: {text}")
+                activity.logger.warning(f"⚠️ LLM returned invalid/empty: {text}")
                 
         except httpx.ConnectError:
             activity.logger.warning("⚠️ LLM server not available, using fallback")
         except Exception as e:
             activity.logger.warning(f"⚠️ LLM error: {e}")
     
-    # Fallback: use preprocessed + team name words
-    fallback = preprocessed[:5] if preprocessed else []
-    fallback = _add_team_name_words(fallback, team_name)
+    # Fallback: Just use first few cleaned aliases + team name
+    fallback = cleaned_aliases[:3] if cleaned_aliases else []
     
-    # Add nationality adjectives for national teams
-    if national:
-        team_lower = team_name.lower()
-        if team_lower in NATIONALITY_MAP:
-            fallback_lower = {f.lower() for f in fallback}
-            for adj in NATIONALITY_MAP[team_lower]:
-                if adj.lower() not in fallback_lower:
-                    fallback.append(adj)
+    # Add team name as fallback (most reliable search term)
+    team_words = [w for w in team_name.split() if len(w) > 2 and w.lower() not in {'fc', 'ac', 'sc', 'cf'}]
+    for word in team_words:
+        if len(fallback) < MAX_ALIASES and word not in fallback:
+            fallback.append(word)
     
-    twitter_aliases = [_normalize_alias(a) for a in fallback]
-    activity.logger.info(f"📋 Fallback aliases: {twitter_aliases}")
+    twitter_aliases = [_normalize_alias(a) for a in fallback][:MAX_ALIASES]
     
-    # Only cache if we got Wikidata data
-    if qid:
+    activity.logger.info(f"📋 Fallback aliases ({len(twitter_aliases)}): {twitter_aliases}")
+    
+    # Only cache if we got something
+    if twitter_aliases:
         _cache_aliases(
             store, team_id, team_name, national, twitter_aliases,
             "fallback", api_country, api_city, qid, wikidata_aliases
