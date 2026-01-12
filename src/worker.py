@@ -74,6 +74,8 @@ async def setup_schedules(client: Client):
         Schedule,
         ScheduleActionStartWorkflow,
         ScheduleIntervalSpec,
+        ScheduleOverlapPolicy,
+        SchedulePolicy,
         ScheduleSpec,
         ScheduleState,
     )
@@ -123,11 +125,15 @@ async def setup_schedules(client: Client):
                     MonitorWorkflow.run,
                     id="monitor-scheduled",  # Temporal adds timestamp suffix for unique IDs
                     task_queue="found-footy",
+                    execution_timeout=timedelta(seconds=25),  # Kill if runs >25s (schedule is 30s)
                 ),
                 spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=timedelta(seconds=30))]),
                 state=ScheduleState(
                     paused=False,
                     note="Running every 30 seconds",
+                ),
+                policy=SchedulePolicy(
+                    overlap=ScheduleOverlapPolicy.SKIP,  # Skip if previous still running
                 ),
             ),
         )

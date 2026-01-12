@@ -1,29 +1,37 @@
 """
-Twitter Workflow - Self-Managing Video Discovery Pipeline
+Twitter Workflow - Fire-and-Forget Video Discovery Pipeline
 
-Orchestrates Twitter video search with 3 attempts, 3-minute spacing.
-MUST wait for Download workflows to complete before marking _twitter_complete.
+Orchestrates Twitter video search with 10 attempts, 1-minute spacing.
+Downloads are FIRE-AND-FORGET to maximize video capture window.
 
 Design Philosophy:
-- This workflow runs for ~12-15 minutes (3 attempts + 2 waits of 3 min)
-- MUST wait for each Download workflow to complete (data integrity requirement)
-- Marks _twitter_complete=true ONLY after all downloads finish
-- Fixture completion depends on _twitter_complete flag
+- This workflow runs for ~10 minutes (10 attempts x 1 min spacing)
+- Downloads are fire-and-forget (start_child_workflow with ABANDON policy)
+- Marks _twitter_complete=true after all SEARCHES done (downloads may still be running)
+- More frequent searches = fresher videos = better content
 
-Why we WAIT for Downloads:
-- Download workflows upload videos and update MongoDB
-- If we fire-and-forget, fixture could move to completed before downloads finish
-- This would cause lookups in wrong collection → data loss
-- Each attempt's Download MUST complete before we continue
+Why Fire-and-Forget Downloads:
+- Old approach (3 x 3min blocking): Only 3 search windows, missed lots of content
+- New approach (10 x 1min fire-and-forget): 10 search windows, captures more videos
+- Dedup happens per-batch AND against MongoDB's _s3_videos (populated by prior downloads)
+- Race window is small since searches are 1min apart and downloads take time
+- Worst case: occasional duplicate (better than zero videos!)
+
+Dedup Flow (per DownloadWorkflow):
+1. fetch_event_data reads existing _s3_videos hashes from MongoDB
+2. Download ALL videos in batch
+3. MD5 dedup (exact duplicates within batch + against S3)
+4. AI validation (only MD5-unique videos)
+5. Perceptual hash generation IN PARALLEL (only AI-validated videos)
+6. Perceptual dedup (batch + against MongoDB's _s3_videos)
+7. Upload to S3, update MongoDB
 
 Flow:
-1. ATTEMPT 1: Search all aliases → dedupe → wait for Download to complete
-2. WAIT 3 minutes (durable timer, START-to-START spacing)
-3. ATTEMPT 2: Search all aliases → dedupe → wait for Download to complete
-4. WAIT 3 minutes
-5. ATTEMPT 3: Search all aliases → dedupe → wait for Download to complete
-6. Mark _twitter_complete=true (ONLY after all downloads done)
-7. Notify frontend
+1. ATTEMPT 1: Search (3min window) → dedupe → fire-and-forget Download
+2. WAIT 1 minute (START-to-START spacing)
+... repeat for 10 attempts ...
+10. Mark _twitter_complete=true (searches done, downloads may still run)
+11. Notify frontend
 
 Graceful Termination:
 - At start of each attempt, checks if event still exists in MongoDB
@@ -31,7 +39,7 @@ Graceful Termination:
 - Prevents wasted work on events that no longer exist
 
 Started by: RAGWorkflow (fire-and-forget, runs independently)
-Waits for: DownloadWorkflow (REQUIRED - must complete before marking done)
+Starts: DownloadWorkflow (fire-and-forget with ABANDON policy)
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -58,38 +66,38 @@ class TwitterWorkflowInput:
 @workflow.defn
 class TwitterWorkflow:
     """
-    Self-managing Twitter search workflow with 3 attempts.
+    Fire-and-forget Twitter search workflow with 10 attempts.
     
-    CRITICAL: This workflow WAITS for Download workflows to complete.
-    We cannot fire-and-forget downloads because:
-    1. Download updates MongoDB with S3 video URLs
-    2. We mark _twitter_complete only after downloads finish
-    3. Fixture completion checks _twitter_complete flag
-    4. Fire-and-forget would cause data loss (fixture moves before downloads done)
+    Downloads are fire-and-forget (ABANDON policy) for faster video capture.
+    Deduplication still works because each DownloadWorkflow:
+    1. Reads existing _s3_videos from MongoDB at start
+    2. Dedupes within batch (MD5 + perceptual)
+    3. Dedupes against MongoDB's S3 videos (from prior downloads)
+    4. AI validates videos before expensive perceptual hashing
     
     Each attempt:
     1. Builds search queries from player name + each team alias
-    2. Runs searches for all aliases
+    2. Runs searches for all aliases (3-minute window)
     3. Deduplicates within batch AND against existing videos
-    4. WAITS for DownloadWorkflow to complete
+    4. STARTS DownloadWorkflow (fire-and-forget, doesn't wait)
     5. Updates _twitter_count
-    6. Waits 3 minutes before next attempt (except after last)
+    6. Waits 1 minute before next attempt (except after last)
     
-    After attempt 3: Marks _twitter_complete=true (all downloads done)
+    After attempt 10: Marks _twitter_complete=true (downloads may still run)
     
-    Expected duration: ~12-15 minutes
+    Expected duration: ~10 minutes
     """
     
     @workflow.run
     async def run(self, input: TwitterWorkflowInput) -> dict:
         """
-        Execute 3 Twitter search attempts with 3-minute spacing.
+        Execute 10 Twitter search attempts with 1-minute spacing.
         
         Args:
             input: TwitterWorkflowInput with fixture_id, event_id, player_name, team_aliases
         
         Returns:
-            Dict with total_videos_found, total_videos_uploaded, attempts completed
+            Dict with total_videos_found, attempts completed
         """
         total_videos_found = 0
         total_videos_uploaded = 0
@@ -102,12 +110,12 @@ class TwitterWorkflow:
             f"player_search='{player_search}' | aliases={input.team_aliases}"
         )
         
-        for attempt in range(1, 4):  # Attempts 1, 2, 3
+        for attempt in range(1, 11):  # Attempts 1-10
             # =================================================================
             # Check if event still exists (graceful termination for VAR/deleted)
             # =================================================================
             workflow.logger.info(
-                f"🔍 [TWITTER] Attempt {attempt}/3 | Checking event exists | event={input.event_id}"
+                f"🔍 [TWITTER] Attempt {attempt}/10 | Checking event exists | event={input.event_id}"
             )
             
             try:
@@ -146,10 +154,10 @@ class TwitterWorkflow:
                     "reason": "event_deleted",
                 }
             
-            # Record attempt start time for "START to START" 3-minute spacing
+            # Record attempt start time for "START to START" 1-minute spacing
             attempt_start = workflow.now()
             workflow.logger.info(
-                f"🐦 [TWITTER] Attempt {attempt}/3 STARTING | event={input.event_id} | "
+                f"🐦 [TWITTER] Attempt {attempt}/10 STARTING | event={input.event_id} | "
                 f"player='{player_search}' | aliases={input.team_aliases}"
             )
             
@@ -213,9 +221,10 @@ class TwitterWorkflow:
                 )
                 
                 try:
+                    # Search with 3-minute window (fresher videos for more frequent searches)
                     search_result = await workflow.execute_activity(
                         twitter_activities.execute_twitter_search,
-                        args=[search_query, 5, list(existing_urls) + list(seen_urls_this_batch), match_date],
+                        args=[search_query, 5, list(existing_urls) + list(seen_urls_this_batch), match_date, 3],
                         start_to_close_timeout=timedelta(seconds=180),  # Browser automation can be slow
                         retry_policy=RetryPolicy(
                             maximum_attempts=3,
@@ -303,30 +312,28 @@ class TwitterWorkflow:
                 download_workflow_id = f"download{attempt}-{team_clean}-{player_search}-{input.event_id}"
                 
                 workflow.logger.info(
-                    f"⬇️ [TWITTER] Starting DownloadWorkflow (WAITING for completion) | "
+                    f"⬇️ [TWITTER] Starting DownloadWorkflow (FIRE-AND-FORGET) | "
                     f"download_id={download_workflow_id} | videos={len(videos_to_download)}"
                 )
                 
                 try:
-                    # EXECUTE (wait) - not START (fire-and-forget)
-                    # We MUST wait for Download to complete for data integrity
-                    download_result = await workflow.execute_child_workflow(
+                    # START (fire-and-forget) - not EXECUTE (wait)
+                    # Downloads run independently, dedup against MongoDB's _s3_videos
+                    from temporalio.workflow import ParentClosePolicy
+                    await workflow.start_child_workflow(
                         DownloadWorkflow.run,
                         args=[input.fixture_id, input.event_id, input.player_name, input.team_aliases[0] if input.team_aliases else "", videos_to_download],
                         id=download_workflow_id,
-                        # No execution_timeout - Download manages its own lifecycle via heartbeats
+                        parent_close_policy=ParentClosePolicy.ABANDON,  # Continue even if parent closes
                     )
                     
-                    s3_count = download_result.get("videos_uploaded", 0)
-                    total_videos_uploaded += s3_count
                     workflow.logger.info(
-                        f"✅ [TWITTER] Download COMPLETE | download_id={download_workflow_id} | "
-                        f"uploaded={s3_count} | total_uploaded_so_far={total_videos_uploaded}"
+                        f"🚀 [TWITTER] Download STARTED (fire-and-forget) | download_id={download_workflow_id}"
                     )
                     
                 except Exception as e:
                     workflow.logger.error(
-                        f"❌ [TWITTER] DownloadWorkflow FAILED | download_id={download_workflow_id} | "
+                        f"❌ [TWITTER] Failed to START DownloadWorkflow | download_id={download_workflow_id} | "
                         f"error={e} | Continuing to next attempt"
                     )
             else:
@@ -335,11 +342,11 @@ class TwitterWorkflow:
                 )
             
             # =================================================================
-            # Wait for next attempt (3 minutes from START of this attempt)
+            # Wait for next attempt (1 minute from START of this attempt)
             # =================================================================
-            if attempt < 3:
+            if attempt < 10:
                 elapsed = (workflow.now() - attempt_start).total_seconds()
-                wait_seconds = max(180 - elapsed, 30)  # 3 min minus elapsed, min 30s
+                wait_seconds = max(60 - elapsed, 10)  # 1 min minus elapsed, min 10s
                 workflow.logger.info(
                     f"⏳ [TWITTER] Attempt {attempt} took {elapsed:.0f}s | "
                     f"Waiting {wait_seconds:.0f}s before attempt {attempt + 1} | "
@@ -348,11 +355,12 @@ class TwitterWorkflow:
                 await workflow.sleep(timedelta(seconds=wait_seconds))
         
         # =================================================================
-        # Mark twitter complete after ALL 3 attempts AND downloads done
+        # Mark twitter complete after all 10 search attempts
+        # Note: Downloads may still be running (fire-and-forget)
         # =================================================================
         workflow.logger.info(
-            f"✅ [TWITTER] All 3 attempts COMPLETE | event={input.event_id} | "
-            f"Marking _twitter_complete=true"
+            f"✅ [TWITTER] All 10 search attempts COMPLETE | event={input.event_id} | "
+            f"Marking _twitter_complete=true (downloads may still be running)"
         )
         
         try:
@@ -390,15 +398,15 @@ class TwitterWorkflow:
         
         workflow.logger.info(
             f"🎉 [TWITTER] WORKFLOW COMPLETE | event={input.event_id} | "
-            f"total_found={total_videos_found} | total_uploaded={total_videos_uploaded} | "
-            f"attempts=3"
+            f"total_found={total_videos_found} | "
+            f"attempts=10 (downloads may still be running)"
         )
         
         return {
             "fixture_id": input.fixture_id,
             "event_id": input.event_id,
             "total_videos_found": total_videos_found,
-            "total_videos_uploaded": total_videos_uploaded,
-            "attempts_completed": 3,
+            "total_videos_uploaded": "N/A (fire-and-forget)",
+            "attempts_completed": 10,
         }
 

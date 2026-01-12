@@ -66,24 +66,20 @@ class MonitorWorkflow:
         # =================================================================
         # STAGING: Fetch and process staging fixtures (updates only, no activation yet)
         # =================================================================
-        t0 = workflow.now()
         staging_fixtures = await workflow.execute_activity(
             monitor_activities.fetch_staging_fixtures,
             start_to_close_timeout=timedelta(seconds=60),
             retry_policy=RetryPolicy(maximum_attempts=3),
         )
-        workflow.logger.info(f"⏱️ fetch_staging_fixtures took {(workflow.now() - t0).total_seconds():.1f}s")
         
         staging_result = {"updated_count": 0, "fixtures_to_activate": []}
         if staging_fixtures:
-            t0 = workflow.now()
             staging_result = await workflow.execute_activity(
                 monitor_activities.process_staging_fixtures,
                 staging_fixtures,
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(maximum_attempts=2),
             )
-            workflow.logger.info(f"⏱️ process_staging_fixtures took {(workflow.now() - t0).total_seconds():.1f}s")
         
         fixtures_to_activate = staging_result.get("fixtures_to_activate", [])
         
@@ -92,13 +88,11 @@ class MonitorWorkflow:
         # =================================================================
         
         # Fetch all active fixtures from API
-        t0 = workflow.now()
         fixtures = await workflow.execute_activity(
             monitor_activities.fetch_active_fixtures,
             start_to_close_timeout=timedelta(seconds=60),
             retry_policy=RetryPolicy(maximum_attempts=3),
         )
-        workflow.logger.info(f"⏱️ fetch_active_fixtures took {(workflow.now() - t0).total_seconds():.1f}s")
         
         # =========================================================================
         # Process fixtures IN PARALLEL - each fixture is independent
@@ -202,10 +196,8 @@ class MonitorWorkflow:
         
         # Execute all fixture processing in parallel
         if fixtures:
-            t0 = workflow.now()
             fixture_tasks = [process_fixture(f) for f in fixtures]
             fixture_results = await asyncio.gather(*fixture_tasks)
-            workflow.logger.info(f"⏱️ process_fixtures (parallel, {len(fixtures)} fixtures) took {(workflow.now() - t0).total_seconds():.1f}s")
             
             # Aggregate results
             for result in fixture_results:
@@ -225,7 +217,6 @@ class MonitorWorkflow:
         # =================================================================
         activated_count = 0
         if fixtures_to_activate:
-            t0 = workflow.now()
             activation_result = await workflow.execute_activity(
                 monitor_activities.activate_pending_fixtures,
                 fixtures_to_activate,
@@ -233,7 +224,6 @@ class MonitorWorkflow:
                 retry_policy=RetryPolicy(maximum_attempts=2),
             )
             activated_count = activation_result.get("activated_count", 0)
-            workflow.logger.info(f"⏱️ activate_pending_fixtures took {(workflow.now() - t0).total_seconds():.1f}s")
         
         # Notify frontend to refresh (SSE broadcast to connected clients)
         await workflow.execute_activity(

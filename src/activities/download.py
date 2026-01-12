@@ -875,55 +875,58 @@ async def deduplicate_videos(
     activity.logger.info(f"📊 Batch dedup: {len(successful)} → {len(batch_winners)} keepers ({len(files_to_remove)} removed)")
     
     # =========================================================================
-    # PHASE 2: CROSS-EVENT DEDUP - Reject videos matching OTHER goals in fixture
-    # This prevents videos from one goal being saved to another goal's folder
+    # PHASE 2: CROSS-EVENT DEDUP - DISABLED
+    # Previously rejected videos matching OTHER goals in fixture.
+    # Disabled because with fire-and-forget downloads, we want maximum video capture.
+    # Within-event dedup (Phase 3) still catches true duplicates for the SAME event.
     # =========================================================================
     cross_event_rejected = 0
     cross_event_rejected_urls = []
-    after_cross_event = []
+    after_cross_event = batch_winners  # Skip cross-event check, pass all through
     
-    if other_hashes_list:
-        activity.logger.info(f"🔀 Cross-event dedup: checking {len(batch_winners)} videos against {len(other_hashes_list)} hashes from other goals...")
-        
-        for file_info in batch_winners:
-            perceptual_hash = file_info.get("perceptual_hash", "")
-            file_path = file_info.get("file_path", "")
-            source_url = file_info.get("source_url", "")
-            
-            # Check against other events' hashes
-            matched_other_event = None
-            for other_hash_info in other_hashes_list:
-                other_hash = other_hash_info.get("perceptual_hash", "")
-                if other_hash and perceptual_hash and _perceptual_hashes_match(perceptual_hash, other_hash):
-                    matched_other_event = other_hash_info
-                    break
-            
-            if matched_other_event:
-                # This video matches another goal - REJECT it
-                other_event_id = matched_other_event.get("event_id", "unknown")
-                activity.logger.warning(
-                    f"🚫 [CROSS-EVENT] Rejecting video - matches goal {other_event_id} | "
-                    f"source={source_url[:60]}..."
-                )
-                cross_event_rejected += 1
-                if source_url:
-                    cross_event_rejected_urls.append(source_url)
-                # Delete the file
-                try:
-                    os.remove(file_path)
-                except Exception:
-                    pass
-            else:
-                # No cross-event match - keep it
-                after_cross_event.append(file_info)
-        
-        if cross_event_rejected > 0:
-            activity.logger.info(
-                f"🔀 Cross-event dedup: {len(batch_winners)} → {len(after_cross_event)} "
-                f"({cross_event_rejected} rejected as wrong-goal videos)"
-            )
-    else:
-        after_cross_event = batch_winners
+    # NOTE: Cross-event dedup code preserved below for reference/re-enabling if needed
+    # if other_hashes_list:
+    #     activity.logger.info(f"🔀 Cross-event dedup: checking {len(batch_winners)} videos against {len(other_hashes_list)} hashes from other goals...")
+    #     
+    #     for file_info in batch_winners:
+    #         perceptual_hash = file_info.get("perceptual_hash", "")
+    #         file_path = file_info.get("file_path", "")
+    #         source_url = file_info.get("source_url", "")
+    #         
+    #         # Check against other events' hashes
+    #         matched_other_event = None
+    #         for other_hash_info in other_hashes_list:
+    #             other_hash = other_hash_info.get("perceptual_hash", "")
+    #             if other_hash and perceptual_hash and _perceptual_hashes_match(perceptual_hash, other_hash):
+    #                 matched_other_event = other_hash_info
+    #                 break
+    #         
+    #         if matched_other_event:
+    #             # This video matches another goal - REJECT it
+    #             other_event_id = matched_other_event.get("event_id", "unknown")
+    #             activity.logger.warning(
+    #                 f"🚫 [CROSS-EVENT] Rejecting video - matches goal {other_event_id} | "
+    #                 f"source={source_url[:60]}..."
+    #             )
+    #             cross_event_rejected += 1
+    #             if source_url:
+    #                 cross_event_rejected_urls.append(source_url)
+    #             # Delete the file
+    #             try:
+    #                 os.remove(file_path)
+    #             except Exception:
+    #                 pass
+    #         else:
+    #             # No cross-event match - keep it
+    #             after_cross_event.append(file_info)
+    #     
+    #     if cross_event_rejected > 0:
+    #         activity.logger.info(
+    #             f"🔀 Cross-event dedup: {len(batch_winners)} → {len(after_cross_event)} "
+    #             f"({cross_event_rejected} rejected as wrong-goal videos)"
+    #         )
+    # else:
+    #     after_cross_event = batch_winners
     
     # =========================================================================
     # PHASE 3: S3 DEDUP - Compare remaining videos against existing S3 videos for THIS event
