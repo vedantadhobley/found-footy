@@ -1,33 +1,31 @@
 """
-Upload Workflow - Serialized S3 Deduplication and Upload
+Upload Workflow - Signal-Based Queue for Serialized S3 Operations
 
-This workflow SERIALIZES S3 operations per event to prevent race conditions.
-Multiple DownloadWorkflows may find videos for the same event simultaneously,
-but only ONE UploadWorkflow runs at a time per event (Temporal guarantees this
-via deterministic workflow ID: `upload-{event_id}`).
+This workflow uses Temporal SIGNALS to queue video upload batches.
+Multiple DownloadWorkflows can signal videos to the same UploadWorkflow,
+and the workflow processes them ONE BATCH AT A TIME in order.
 
-Flow:
-1. DownloadWorkflow downloads, validates, and generates hashes for videos
-2. DownloadWorkflow calls UploadWorkflow as a BLOCKING child workflow
-3. UploadWorkflow:
-   a. Fetches current S3 state (fresh, not stale)
-   b. Deduplicates against S3 (MD5 + perceptual)
-   c. Uploads new/replacement videos
-   d. Updates MongoDB
-   e. Recalculates video ranks
-4. DownloadWorkflow continues after UploadWorkflow completes
+Pattern: Signal-With-Start
+1. DownloadWorkflow uses signal_child_workflow() to send videos
+2. If no UploadWorkflow exists for that event, one is started
+3. If one already exists, videos are added to its queue
+4. UploadWorkflow processes queue items serially (no race conditions!)
+5. When queue is empty and idle timeout reached, workflow completes
 
-The KEY insight: Temporal will queue multiple child workflow calls with the
-same workflow ID. Only one runs at a time, so S3 state is always fresh.
+Why signals instead of child workflows?
+- Child workflows with same ID FAIL if one is already running
+- Signals ADD WORK to a running workflow
+- Perfect for "queue work to a single processor per event"
 
-Started by: DownloadWorkflow (BLOCKING - waits for completion)
+Started by: DownloadWorkflow via signal_child_workflow() / Signal-With-Start
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from datetime import timedelta
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
+from collections import deque
 
 with workflow.unsafe.imports_passed_through():
     from src.activities import upload as upload_activities
@@ -51,7 +49,7 @@ class VideoToUpload:
 
 @dataclass
 class UploadWorkflowInput:
-    """Input for the UploadWorkflow."""
+    """Input for the UploadWorkflow - initial batch of videos."""
     fixture_id: int
     event_id: str
     player_name: str
@@ -60,34 +58,160 @@ class UploadWorkflowInput:
     temp_dir: str  # Temp directory to clean up after upload
 
 
+@dataclass
+class UploadBatchSignal:
+    """Signal payload for adding a batch of videos to the upload queue."""
+    player_name: str
+    team_name: str
+    videos: List[dict]
+    temp_dir: str
+
+
 @workflow.defn
 class UploadWorkflow:
     """
-    Serialized S3 upload workflow.
+    Signal-based queued S3 upload workflow.
     
-    This workflow handles the critical S3 deduplication and upload phase.
-    By using a deterministic workflow ID per event, Temporal ensures only
-    one instance runs at a time, eliminating race conditions.
+    Uses Temporal signals to queue video batches from multiple DownloadWorkflows.
+    Processes batches ONE AT A TIME (serialized) to prevent S3 race conditions.
+    
+    Pattern:
+    - First batch comes via workflow input (from signal-with-start)
+    - Additional batches arrive via add_videos signal
+    - Workflow processes queue until empty, then waits for more or times out
     """
+    
+    def __init__(self):
+        # Queue of batches to process
+        self._pending_batches: deque = deque()
+        # Track if we're currently processing (for wait_condition)
+        self._processing = False
+        # Total stats across all batches
+        self._total_uploaded = 0
+        self._total_batches_processed = 0
+    
+    @workflow.signal
+    def add_videos(self, batch: dict) -> None:
+        """
+        Signal handler to add a batch of videos to the upload queue.
+        
+        Called by DownloadWorkflow when it has videos ready for upload.
+        The batch is queued and will be processed after current work completes.
+        """
+        workflow.logger.info(
+            f"📥 [UPLOAD] Received signal with {len(batch.get('videos', []))} videos | "
+            f"queue_size={len(self._pending_batches)}"
+        )
+        self._pending_batches.append(batch)
     
     @workflow.run
     async def run(self, input: UploadWorkflowInput) -> dict:
         """
-        Execute serialized S3 deduplication and upload.
+        Main workflow loop - processes video batches from queue.
         
         Args:
-            input: UploadWorkflowInput with fixture_id, event_id, videos, etc.
+            input: Initial batch from signal-with-start
         
         Returns:
-            Dict with videos_uploaded count and video_objects list
+            Dict with total videos uploaded across all batches
         """
         fixture_id = input.fixture_id
         event_id = input.event_id
-        videos = input.videos
         
         workflow.logger.info(
-            f"☁️ [UPLOAD] STARTED | event={event_id} | "
-            f"videos_to_process={len(videos)}"
+            f"🚀 [UPLOAD] WORKFLOW STARTED | event={event_id} | "
+            f"initial_videos={len(input.videos)}"
+        )
+        
+        # Add initial batch to queue (from the signal-with-start)
+        if input.videos:
+            self._pending_batches.append({
+                "player_name": input.player_name,
+                "team_name": input.team_name,
+                "videos": input.videos,
+                "temp_dir": input.temp_dir,
+            })
+        
+        # Process batches until queue is empty and we've been idle for a while
+        # The workflow will keep running and accepting signals for new batches
+        idle_timeout = timedelta(minutes=5)  # Stay alive for 5 min after last batch
+        
+        while True:
+            # Wait for either: a batch to process OR timeout if queue is empty
+            try:
+                await workflow.wait_condition(
+                    lambda: len(self._pending_batches) > 0,
+                    timeout=idle_timeout,
+                )
+            except asyncio.TimeoutError:
+                # No new batches for idle_timeout - we can complete
+                workflow.logger.info(
+                    f"⏰ [UPLOAD] Idle timeout reached, completing | "
+                    f"total_uploaded={self._total_uploaded} | "
+                    f"batches_processed={self._total_batches_processed} | event={event_id}"
+                )
+                break
+            
+            # Process all pending batches
+            while self._pending_batches:
+                batch = self._pending_batches.popleft()
+                self._processing = True
+                
+                try:
+                    result = await self._process_batch(
+                        fixture_id=fixture_id,
+                        event_id=event_id,
+                        player_name=batch["player_name"],
+                        team_name=batch["team_name"],
+                        videos=batch["videos"],
+                        temp_dir=batch["temp_dir"],
+                    )
+                    
+                    self._total_uploaded += result.get("videos_uploaded", 0)
+                    self._total_batches_processed += 1
+                    
+                    workflow.logger.info(
+                        f"✅ [UPLOAD] Batch complete | batch_uploaded={result.get('videos_uploaded', 0)} | "
+                        f"total_uploaded={self._total_uploaded} | "
+                        f"queue_remaining={len(self._pending_batches)} | event={event_id}"
+                    )
+                except Exception as e:
+                    workflow.logger.error(
+                        f"❌ [UPLOAD] Batch FAILED | error={e} | event={event_id}"
+                    )
+                    self._total_batches_processed += 1
+                finally:
+                    self._processing = False
+        
+        workflow.logger.info(
+            f"🎉 [UPLOAD] WORKFLOW COMPLETE | total_uploaded={self._total_uploaded} | "
+            f"batches_processed={self._total_batches_processed} | event={event_id}"
+        )
+        
+        return {
+            "fixture_id": fixture_id,
+            "event_id": event_id,
+            "videos_uploaded": self._total_uploaded,
+            "batches_processed": self._total_batches_processed,
+        }
+    
+    async def _process_batch(
+        self,
+        fixture_id: int,
+        event_id: str,
+        player_name: str,
+        team_name: str,
+        videos: List[dict],
+        temp_dir: str,
+    ) -> dict:
+        """
+        Process a single batch of videos.
+        
+        This is the core upload logic - fetches fresh S3 state, deduplicates,
+        uploads, and updates MongoDB.
+        """
+        workflow.logger.info(
+            f"☁️ [UPLOAD] Processing batch | videos={len(videos)} | event={event_id}"
         )
         
         if not videos:
@@ -275,7 +399,7 @@ class UploadWorkflow:
                 f"⚠️ [UPLOAD] No videos to upload (all duplicates) | event={event_id}"
             )
             # Clean up temp files even if nothing to upload
-            await self._cleanup_temp_files(videos, input.temp_dir, event_id)
+            await self._cleanup_temp_files(videos, temp_dir, event_id)
             return {
                 "fixture_id": fixture_id,
                 "event_id": event_id,
@@ -339,8 +463,8 @@ class UploadWorkflow:
                         video_info["file_path"],
                         fixture_id,
                         event_id,
-                        input.player_name,
-                        input.team_name,
+                        player_name,
+                        team_name,
                         idx,
                         video_info.get("file_hash", ""),
                         video_info.get("perceptual_hash", ""),
@@ -452,10 +576,10 @@ class UploadWorkflow:
         # =========================================================================
         # Step 10: Cleanup temp files
         # =========================================================================
-        await self._cleanup_temp_files(videos, input.temp_dir, event_id)
+        await self._cleanup_temp_files(videos, temp_dir, event_id)
         
         workflow.logger.info(
-            f"🎉 [UPLOAD] WORKFLOW COMPLETE | uploaded={len(video_objects)} | event={event_id}"
+            f"✅ [UPLOAD] Batch uploaded={len(video_objects)} | event={event_id}"
         )
         
         return {

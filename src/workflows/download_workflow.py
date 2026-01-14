@@ -6,12 +6,13 @@ Orchestrates video download, validation, and hash generation:
 2. deduplicate_by_md5 - FAST MD5 dedup within batch (eliminates true duplicates)
 3. validate_video_is_soccer x N - AI validation (only for MD5-unique videos)
 4. generate_video_hash x N - Generate perceptual hash (only for validated videos)
-5. Call UploadWorkflow - Serialized S3 dedup/upload (via child workflow)
+5. Signal UploadWorkflow - Queue videos for serialized S3 upload
 6. increment_twitter_count - Track completion progress
 
-Key Design: UploadWorkflow is called as a BLOCKING child workflow with a deterministic
-workflow ID `upload-{event_id}`. This serializes S3 operations per event, preventing
-race conditions when multiple DownloadWorkflows find videos for the same event.
+Key Design: Uses SIGNALS to queue video batches to a single UploadWorkflow per event.
+- If UploadWorkflow doesn't exist, start it with initial batch
+- If it already exists, signal it with the new batch (adds to queue)
+- UploadWorkflow processes batches serially, preventing race conditions
 
 Design Philosophy:
 - Per-video retry (3 attempts with exponential backoff)
@@ -27,7 +28,7 @@ Pipeline Order:
 - Hash generation uses heartbeats (sends heartbeat every 5 frames)
 
 Started by: TwitterWorkflow (WAITS for completion - data integrity)
-Calls: UploadWorkflow (BLOCKING child workflow - serializes S3 ops per event)
+Signals: UploadWorkflow (queues videos for serialized S3 ops per event)
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -367,14 +368,17 @@ class DownloadWorkflow:
         download_stats["sent_to_upload"] = len(videos_to_upload)
         
         # =========================================================================
-        # Step 5: Call UploadWorkflow as BLOCKING child workflow
-        # The workflow ID is deterministic per event: `upload-{event_id}`
-        # This serializes S3 operations - only one upload runs at a time per event
+        # Step 5: Signal UploadWorkflow with videos for serialized S3 upload
+        # Uses deterministic workflow ID `upload-{event_id}` - one per event.
+        # If workflow exists: signal adds batch to queue
+        # If workflow doesn't exist: start it with initial batch
         # =========================================================================
         if videos_to_upload:
             workflow.logger.info(
-                f"☁️ [DOWNLOAD] Starting UploadWorkflow | videos={len(videos_to_upload)} | event={event_id}"
+                f"☁️ [DOWNLOAD] Signaling UploadWorkflow | videos={len(videos_to_upload)} | event={event_id}"
             )
+            
+            upload_workflow_id = f"upload-{event_id}"
             
             upload_input = UploadWorkflowInput(
                 fixture_id=fixture_id,
@@ -386,30 +390,64 @@ class DownloadWorkflow:
             )
             
             try:
-                # Use deterministic workflow ID for serialization
-                upload_result = await workflow.execute_child_workflow(
+                # Try to start the UploadWorkflow with deterministic ID
+                # If it already exists, this will fail and we'll signal instead
+                child_handle = await workflow.start_child_workflow(
                     UploadWorkflow.run,
                     upload_input,
-                    id=f"upload-{event_id}",  # KEY: Deterministic ID serializes per event
+                    id=upload_workflow_id,
                     retry_policy=RetryPolicy(
-                        maximum_attempts=3,
-                        initial_interval=timedelta(seconds=5),
-                        backoff_coefficient=2.0,
+                        maximum_attempts=1,  # Don't retry - we'll signal existing
                     ),
                 )
                 
-                videos_uploaded = upload_result.get("videos_uploaded", 0)
-                s3_urls = upload_result.get("s3_urls", [])
-                
                 workflow.logger.info(
-                    f"✅ [DOWNLOAD] UploadWorkflow complete | uploaded={videos_uploaded} | event={event_id}"
+                    f"✅ [DOWNLOAD] Started new UploadWorkflow | id={upload_workflow_id} | event={event_id}"
                 )
+                
+                # Don't wait for result - UploadWorkflow handles its own lifecycle
+                # It will idle-timeout after 5 mins of no new batches
+                videos_uploaded = len(videos_to_upload)  # Optimistic - actual count in upload workflow
+                
             except Exception as e:
-                workflow.logger.error(
-                    f"❌ [DOWNLOAD] UploadWorkflow FAILED | error={e} | event={event_id}"
-                )
-                videos_uploaded = 0
-                s3_urls = []
+                error_str = str(e)
+                
+                # Check if workflow already exists/running
+                if "already started" in error_str.lower() or "workflow execution already" in error_str.lower():
+                    workflow.logger.info(
+                        f"📨 [DOWNLOAD] UploadWorkflow exists, signaling batch | id={upload_workflow_id} | event={event_id}"
+                    )
+                    
+                    try:
+                        # Get handle to existing workflow and signal it
+                        external_handle = workflow.get_external_workflow_handle(upload_workflow_id)
+                        await external_handle.signal(
+                            UploadWorkflow.add_videos,
+                            {
+                                "player_name": player_name,
+                                "team_name": team_name,
+                                "videos": videos_to_upload,
+                                "temp_dir": temp_dir,
+                            }
+                        )
+                        
+                        workflow.logger.info(
+                            f"✅ [DOWNLOAD] Signaled existing UploadWorkflow | videos={len(videos_to_upload)} | event={event_id}"
+                        )
+                        videos_uploaded = len(videos_to_upload)  # Optimistic
+                        
+                    except Exception as signal_error:
+                        workflow.logger.error(
+                            f"❌ [DOWNLOAD] Failed to signal UploadWorkflow | error={signal_error} | event={event_id}"
+                        )
+                        videos_uploaded = 0
+                else:
+                    workflow.logger.error(
+                        f"❌ [DOWNLOAD] UploadWorkflow FAILED | error={e} | event={event_id}"
+                    )
+                    videos_uploaded = 0
+                    
+            s3_urls = []  # We don't wait for upload results anymore
         else:
             workflow.logger.info(
                 f"⚠️ [DOWNLOAD] No videos to upload (all filtered/failed) | event={event_id}"
