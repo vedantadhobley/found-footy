@@ -7,15 +7,17 @@ src/
 ├── workflows/              # Temporal workflows (orchestration)
 │   ├── ingest_workflow.py      # Daily at 00:05 UTC - fetch and categorize fixtures
 │   ├── monitor_workflow.py     # Every minute - track fixtures, debounce events inline
-│   ├── rag_workflow.py         # Per event - resolve team aliases via Wikidata + LLM
-│   ├── twitter_workflow.py     # Per event - search videos via browser automation
-│   └── download_workflow.py    # Per event - download & upload with per-video retry
+│   ├── rag_workflow.py         # Pre-caching only - resolve team aliases via Wikidata + LLM
+│   ├── twitter_workflow.py     # Per event - resolve aliases, search videos 10×
+│   ├── download_workflow.py    # Per event - download, validate, hash, MD5 dedup
+│   └── upload_workflow.py      # Per event - serialized S3 dedup and upload
 ├── activities/             # Temporal activities (actual work)
-│   ├── ingest.py          # Fetch and categorize fixtures
-│   ├── monitor.py         # Activate, fetch, compare, process_fixture_events
-│   ├── rag.py             # Team alias RAG (Wikidata + LLM)
-│   ├── twitter.py         # 3 activities: get_data, search, save
-│   └── download.py        # 5 activities for download/upload
+│   ├── ingest.py          # Fetch and categorize fixtures (2 activities)
+│   ├── monitor.py         # Activate, fetch, compare, process_fixture_events (9 activities)
+│   ├── rag.py             # Team alias RAG (Wikidata + LLM) (4 activities)
+│   ├── twitter.py         # Check, get_data, search, save, update (5 activities)
+│   ├── download.py        # Download, validate, hash, cleanup, count (5 activities)
+│   └── upload.py          # S3 dedup, upload, save, cleanup (9 activities)
 ├── data/                  # Data layer
 │   ├── mongo_store.py     # MongoDB operations (5-collection architecture)
 │   └── s3_store.py        # MinIO S3 operations
@@ -33,17 +35,24 @@ IngestWorkflow (daily 00:05 UTC)
   ↓
 MonitorWorkflow (every minute)
   ├─> process_fixture_events (inline debounce)
-  └─> TwitterWorkflow (per stable event)
-        ├─> Uses cached aliases (instant) or RAGWorkflow (60s timeout)
-        ↓ triggers if videos found
-      DownloadWorkflow (per event)
+  └─> TwitterWorkflow (per stable event, fire-and-forget)
+        ├─> Resolves aliases at start (from cache)
+        ├─> 10 search attempts with ~3min sleep between
+        ↓ triggers for each batch of videos found
+      DownloadWorkflow (BLOCKING per batch)
+        ├─> Download, validate (AI), hash, MD5 dedup
+        ↓ delegates to
+      UploadWorkflow (BLOCKING, serialized per event)
+        ├─> Deterministic ID: upload-{event_id}
+        └─> S3 dedup, upload, save to MongoDB
 ```
 
 ## Key Features
 
 - **Set-based debounce**: Event ID includes player_id, no hash comparison needed
 - **Inline processing**: MonitorWorkflow processes events directly (no separate EventWorkflow)
-- **Per-video retry**: DownloadWorkflow has 5 granular activities with individual retries
+- **Serialized S3 ops**: UploadWorkflow with deterministic ID prevents race conditions
+- **Per-video retry**: Download activities have individual retries
 - **Firefox automation**: Twitter search via browser with saved profile
 
 ## Quick Start
@@ -66,9 +75,9 @@ open http://localhost:4101
 
 - ✅ IngestWorkflow - Fetches and categorizes fixtures, pre-caches team aliases
 - ✅ MonitorWorkflow - Polls fixtures, debounces events inline
-- ✅ RAGWorkflow - Wikidata RAG + LLM for team aliases
-- ✅ TwitterWorkflow - Searches Twitter via browser automation
-- ✅ DownloadWorkflow - Downloads, deduplicates, uploads to S3
+- ✅ RAGWorkflow - Wikidata RAG + LLM for team aliases (pre-caching only)
+- ✅ TwitterWorkflow - Resolves aliases, searches Twitter 10× via browser automation
+- ✅ DownloadWorkflow - Downloads, validates, hashes, MD5 deduplicates
+- ✅ UploadWorkflow - Serialized S3 deduplication and upload per event
 - ✅ MongoDB 5-collection architecture
 - ✅ Set-based debounce (no hash comparison)
-- ✅ Per-video retry policies

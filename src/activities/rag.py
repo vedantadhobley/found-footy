@@ -52,48 +52,32 @@ MAX_ALIASES = 5
 # LLM System Prompts - Different for clubs vs national teams
 # =============================================================================
 
-CLUB_SYSTEM_PROMPT = """You are selecting Twitter search terms for a football CLUB.
+CLUB_SYSTEM_PROMPT = """Pick UP TO 5 words from the list for Twitter search. Pick all good options.
 
-From the Wikidata aliases provided, select the TOP 5 best terms for finding goal videos on Twitter.
+Priority:
+1. City/team name (Liverpool, Bremen, Newcastle, Celta, Vigo, Atletico, Madrid)
+2. Distinctive team words (Real for Real Madrid, City for Man City, United for Man United)
+3. Acronyms 3+ letters (LFC, MUFC, BVB, PSG, ATM)
+4. Nicknames (Spurs, Juve, Barca, Atleti, Gunners, Reds)
 
-PRIORITY ORDER:
-1. ACRONYMS (2-5 letters, all caps) - MOST VALUABLE for Twitter search
-   Examples: MUFC, LFC, BVB, PSG, FCB, MCFC, AFC, THFC
-2. SHORT NICKNAMES (≤10 chars) - Very valuable
-   Examples: Spurs, Juve, Barca, Atleti, Bayern, Utd, Gunners
-3. DISTINCTIVE WORDS - Fan names, mascots, colors
-   Examples: Devils, Blues, Reds, Magpies, Hammers, Wolves
+SKIP generic words: Club, SAD, Association, Society, Futbol, Football
 
-SKIP THESE (too generic, will pollute search results):
-- Generic football words: FC, Club, United, City, Real, Athletic, Sporting
-- Articles/prepositions: The, La, El, De, Du, Of, And
-- Generic org words: Association, Society, Union, Racing
+Output JSON array only. Include all useful words up to 5."""
 
-OUTPUT: JSON array with exactly 3-5 aliases, acronym first if available.
-Example: ["MUFC", "Utd", "Devils", "Manchester"]"""
+NATIONAL_SYSTEM_PROMPT = """Pick 3-5 words for Twitter search for a national team.
 
-NATIONAL_SYSTEM_PROMPT = """You are selecting Twitter search terms for a NATIONAL football team.
+MUST INCLUDE:
+1. Country name FIRST (Brazil, France, Argentina)
+2. Nationality adjective (Brazilian, French, Argentine)
+3. Nicknames from the list if available (Selecao, Albiceleste, Bleus)
 
-From the Wikidata aliases provided, select the TOP 5 best terms for finding goal videos on Twitter.
-IMPORTANT: You MUST derive the nationality adjective from the country name!
+NEVER pick: National, Team, Football, Selection
 
-PRIORITY ORDER:
-1. NATIONALITY ADJECTIVE - DERIVE THIS from the country name!
-   Argentina → Argentine, Brazil → Brazilian, France → French, Germany → German
-   England → English, Spain → Spanish, Italy → Italian, Morocco → Moroccan
-   This is THE MOST IMPORTANT term for national team searches!
-2. ACRONYMS if available (rare for national teams)
-3. SHORT NICKNAMES or team monikers
-   Examples: Selecao (Brazil), Albiceleste (Argentina), Les Bleus (France)
-   Examples: Three Lions (England), La Roja (Spain), Azzurri (Italy)
+Output JSON array only. Country name must be first."""
 
-SKIP THESE (too generic):
-- The country name itself (redundant with player name)
-- Generic words: National, Team, Football, Men's, Selection
 
-OUTPUT: JSON array with exactly 3-5 aliases, nationality adjective FIRST.
-Example for Argentina: ["Argentine", "Argentinian", "Albiceleste"]
-Example for Brazil: ["Brazilian", "Selecao", "Brasil"]"""
+# In-memory cache for country variations (populated by LLM)
+_country_variations_cache: dict = {}
 
 
 def _normalize_alias(alias: str) -> str:
@@ -109,6 +93,75 @@ def _normalize_alias(alias: str) -> str:
             break
     
     return result.strip()
+
+
+async def _get_country_variations(country: str) -> List[str]:
+    """
+    Get country name variations using LLM (for Wikidata search matching).
+    
+    Examples:
+        Spain → ["spain", "spanish", "espana", "espanol"]
+        Germany → ["germany", "german", "deutschland", "deutsch"]
+        England → ["england", "english", "britain", "british"]
+    
+    Results are cached in memory to avoid repeated LLM calls.
+    """
+    if not country:
+        return []
+    
+    country_lower = country.lower()
+    
+    # Check cache first
+    if country_lower in _country_variations_cache:
+        return _country_variations_cache[country_lower]
+    
+    # Default: just the country name itself
+    variations = [country_lower]
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            prompt = f"""Country: {country}
+
+List ALL common variations of this country name that might appear in text, including:
+- The country name itself
+- Nationality adjective (Spanish, German, French, etc.)
+- Native language name (España, Deutschland, etc.)
+- Common abbreviations
+
+Return JSON array of lowercase strings only. No explanation.
+Example for Spain: ["spain", "spanish", "espana"]
+Example for Germany: ["germany", "german", "deutschland"]
+
+/no_think"""
+            
+            response = await client.post(
+                f"{LLAMA_URL}/v1/chat/completions",
+                json={
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 100,
+                    "temperature": 0.1
+                }
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            text = result["choices"][0]["message"]["content"].strip()
+            
+            # Parse JSON array
+            parsed = _parse_llm_response(text)
+            if parsed:
+                variations = [v.lower().strip() for v in parsed if v.strip()]
+                # Always include the original country name
+                if country_lower not in variations:
+                    variations.insert(0, country_lower)
+                    
+    except Exception as e:
+        # Fallback: simple prefix match (spain matches spanish)
+        pass
+    
+    # Cache the result
+    _country_variations_cache[country_lower] = variations
+    return variations
 
 
 async def _search_wikidata_qid(team_name: str, team_type: str = "club", country: str = None, city: str = None) -> Optional[str]:
@@ -127,23 +180,29 @@ async def _search_wikidata_qid(team_name: str, team_type: str = "club", country:
     # Normalize for search
     normalized = _normalize_alias(team_name)
     
-    # Build search terms - MOST SPECIFIC FIRST
+    # Get country variations for matching (e.g., Spain → ["spain", "spanish", "espana"])
+    country_variations = await _get_country_variations(country) if country else []
+    
+    # Build search terms - FOOTBALL-SPECIFIC FIRST
     search_terms = []
     
     if team_type == "club":
-        # 1. Try with city first (most specific - "Newcastle upon Tyne" is unambiguous)
+        # 1. Try football-specific searches FIRST (most likely to find the club)
+        search_terms.append(f"{normalized} FC")
+        search_terms.append(f"{normalized} football club")
+        search_terms.append(f"FC {normalized}")
+        # 2. Try with city (if available - very specific)
         if city:
             search_terms.append(f"{normalized} {city}")
-        # 2. Try with country
+            search_terms.append(f"{normalized} FC {city}")
+        # 3. Try with country
         if country:
-            search_terms.append(f"{normalized} {country}")
             search_terms.append(f"{normalized} FC {country}")
-        # 3. Standard variations (many teams have suffixes dropped in API)
+            search_terms.append(f"{normalized} {country} football")
+        # 4. Common suffixes
         search_terms.append(f"{normalized} United")
         search_terms.append(f"{normalized} City")
-        search_terms.append(f"{normalized} FC")
-        search_terms.append(f"FC {normalized}")
-        search_terms.append(f"{normalized} football club")
+        # 5. Bare name as last resort
         search_terms.append(normalized)
     else:
         # National teams
@@ -153,7 +212,8 @@ async def _search_wikidata_qid(team_name: str, team_type: str = "club", country:
         search_terms.append(f"{name_for_search} national soccer team")
     
     skip_keywords = ["women", "femen", "reserve", "youth", "junior", " b ", " c ", 
-                     "under-", "u-19", "u-21", "academy", "futsal", "beach", "basketball"]
+                     "under-", "u-19", "u-21", "academy", "futsal", "beach", "basketball",
+                     "stadium", "arena", "list article", "disambiguation"]
     
     # Track candidates - prefer those with detailed descriptions
     best_candidate = None
@@ -203,14 +263,31 @@ async def _search_wikidata_qid(team_name: str, team_type: str = "club", country:
                         # Score the result quality
                         desc_quality = len(desc)
                         
+                        # Check for country match using LLM-generated variations
+                        # e.g., country_variations for "Spain" = ["spain", "spanish", "espana"]
+                        country_matches = False
+                        if country_variations:
+                            for variation in country_variations:
+                                if variation in desc:
+                                    country_matches = True
+                                    break
+                        
                         # Big boost for city match in description
-                        if city and city.lower() in desc:
+                        # Also handle spelling variations (Sevilla vs Seville)
+                        city_matches = False
+                        if city:
+                            city_lower = city.lower()
+                            # Exact match or first 5 chars match (Sevilla/Seville, München/Munich)
+                            if city_lower in desc or (len(city_lower) >= 5 and city_lower[:5] in desc):
+                                city_matches = True
+                        
+                        if city_matches:
                             desc_quality += 200
                             activity.logger.info(f"✅ City match: {qid} ({label}) - {desc}")
                             return qid  # Perfect match - return immediately
                         
                         # Boost for country match
-                        if country and country.lower() in desc:
+                        if country_matches:
                             desc_quality += 100
                         
                         # Boost for location mention
@@ -223,7 +300,7 @@ async def _search_wikidata_qid(team_name: str, team_type: str = "club", country:
                             activity.logger.debug(f"📊 Better candidate: {qid} ({label}) - desc_quality={desc_quality}")
                         
                         # If we have a country match, that's good enough
-                        if country and country.lower() in desc:
+                        if country_matches:
                             activity.logger.info(f"✅ Country match: {qid} ({label}) - {desc}")
                             return qid
                     else:
@@ -272,56 +349,87 @@ async def _fetch_wikidata_aliases(qid: str) -> List[str]:
     return []
 
 
-def _clean_wikidata_aliases(raw_aliases: List[str], team_name: str) -> List[str]:
+def _clean_wikidata_aliases(raw_aliases: List[str]) -> List[str]:
     """
-    Light cleanup of Wikidata aliases - just remove obvious junk.
+    Clean and normalize aliases into individual words for LLM selection.
+    
+    Processing steps:
+    1. Normalize unicode (remove diacritics)
+    2. Drop periods entirely
+    3. Replace dashes with spaces
+    4. Drop CamelCase concatenations (SevillaFC, FCBarcelona)
+    5. Split multi-word aliases into individual words
+    6. Dedupe words
     
     The LLM handles all the smart filtering (generic words, etc.)
-    We only do basic cleanup here:
-    - Remove non-ASCII aliases
-    - Remove concatenated junk (FCBarcelona)
-    - Normalize acronyms with periods (F.C. → FC)
-    - Dedupe
-    
-    NO skip_words list - the LLM decides what's useful!
     """
-    cleaned = set()
+    words = set()
     
     for alias in raw_aliases:
-        # Normalize unicode (remove diacritics for comparison)
+        # Step 1: Normalize unicode (remove diacritics)
         normalized = unicodedata.normalize('NFKD', alias)
         normalized = ''.join(c for c in normalized if not unicodedata.combining(c))
         
         # Skip non-ASCII (can't search Twitter effectively)
-        if not all(c.isascii() or c.isspace() for c in normalized):
+        if not all(c.isascii() or c.isspace() or c == '-' for c in normalized):
             continue
         
         # Skip very long aliases (probably descriptions, not names)
-        if len(normalized) > 30:
+        if len(normalized) > 40:
             continue
         
-        # Skip concatenated junk like "FCBarcelona" (camelCase without spaces)
-        if len(normalized) > 5 and ' ' not in normalized and not normalized.isupper():
-            has_camel = False
-            for i in range(1, len(normalized)):
-                if normalized[i-1].islower() and normalized[i].isupper():
-                    has_camel = True
-                    break
-            if has_camel:
-                continue
+        # Step 2: Drop periods and commas entirely
+        normalized = normalized.replace('.', '').replace(',', '')
         
-        # Normalize acronyms with periods: F.C. → FC, A.C. → AC
-        if '.' in normalized:
-            no_periods = normalized.replace('.', '').replace(' ', '').strip()
-            if 2 <= len(no_periods) <= 6 and no_periods.isupper():
-                cleaned.add(no_periods)
-                continue
+        # Step 3: Replace dashes with spaces
+        normalized = normalized.replace('-', ' ')
         
-        # Keep the alias
-        cleaned.add(normalized.strip())
+        # Step 4: Drop CamelCase concatenations 
+        # Examples: SevillaFC, FCBarcelona, ParisFC, ASRoma, TorinoFC
+        # Detect: lowercase→uppercase OR uppercase→lowercase transitions (except at start)
+        # But keep pure acronyms (PSG, LFC) and normal words (Liverpool, Torino)
+        if len(normalized) > 4 and ' ' not in normalized:
+            # Skip if all same case (pure acronym or normal word)
+            if normalized.isupper() or normalized.islower():
+                pass  # Keep it, will be split below
+            else:
+                # Mixed case - check for concatenation pattern
+                has_concat = False
+                for i in range(1, len(normalized)):
+                    prev_lower = normalized[i-1].islower()
+                    prev_upper = normalized[i-1].isupper()
+                    curr_lower = normalized[i].islower()
+                    curr_upper = normalized[i].isupper()
+                    # lower→UPPER (SevillaFC) or UPPER→lower mid-word (ASRoma, but not Roma)
+                    if (prev_lower and curr_upper) or (prev_upper and curr_lower and i > 1):
+                        has_concat = True
+                        break
+                if has_concat:
+                    continue
+        
+        # Step 5: Split into individual words
+        for word in normalized.split():
+            word = word.strip()
+            
+            # Skip words 2 chars or less (FC, AC, RC, SC, etc. are all useless)
+            if len(word) <= 2:
+                continue
+            
+            # Skip pure numbers (like "1899", "1907")
+            if word.isdigit():
+                continue
+            
+            # Skip generic organizational words (useless for Twitter search)
+            if word.lower() in {'club', 'football', 'futbol', 'calcio', 'fussball', 
+                               'association', 'society', 'sportiva', 'associazione',
+                               'sad', 'sport', 'the'}:
+                continue
+            
+            # Step 6: Add to set (automatic dedup)
+            words.add(word)
     
-    # Return as list, sorted by length (shorter = more likely useful)
-    return sorted(cleaned, key=lambda x: (len(x), x.lower()))
+    # Return as list, sorted: acronyms first (all caps), then by length
+    return sorted(words, key=lambda x: (not x.isupper(), len(x), x.lower()))
 
 
 def _parse_llm_response(text: str) -> Optional[List[str]]:
@@ -459,9 +567,11 @@ async def get_team_aliases(team_id: int, team_name: str, team_type: Optional[str
     else:
         activity.logger.warning(f"⚠️ No Wikidata QID found for: {team_name}")
     
-    # 4. Light cleanup (no skip_words - LLM decides what's useful)
-    cleaned_aliases = _clean_wikidata_aliases(wikidata_aliases, team_name) if wikidata_aliases else []
-    activity.logger.info(f"🧹 Cleaned aliases: {cleaned_aliases[:15]}...")
+    # 4. Process ALL sources into single words: team name + Wikidata aliases
+    # The team name from API is treated the same as Wikidata aliases
+    all_raw_aliases = [team_name] + wikidata_aliases
+    cleaned_aliases = _clean_wikidata_aliases(all_raw_aliases)
+    activity.logger.info(f"🧹 Cleaned word list ({len(cleaned_aliases)}): {cleaned_aliases[:15]}...")
     
     # 5. AUGMENT + GENERATE: LLM selects best aliases
     # Use different prompts for clubs vs national teams
@@ -472,19 +582,16 @@ async def get_team_aliases(team_id: int, team_name: str, team_type: Optional[str
             async with httpx.AsyncClient(timeout=15.0) as client:
                 # Build context-rich prompt for the LLM
                 if national:
-                    prompt = f"""Team: {team_name} (NATIONAL TEAM)
-Country: {effective_country or team_name}
-Wikidata aliases: {json.dumps(cleaned_aliases) if cleaned_aliases else "[]"}
+                    prompt = f"""Country: {effective_country or team_name}
+Available words: {json.dumps(cleaned_aliases) if cleaned_aliases else "[]"}
 
-Select the best 3-5 Twitter search terms. REMEMBER: Derive the nationality adjective!
+Pick 3-5 words from the list above. You MUST also include the country name and nationality adjective.
 Output JSON array only. /no_think"""
                 else:
-                    prompt = f"""Team: {team_name} (CLUB)
-City: {api_city or "Unknown"}
-Country: {effective_country or "Unknown"}  
-Wikidata aliases: {json.dumps(cleaned_aliases)}
+                    prompt = f"""Team: {team_name}
+Available words: {json.dumps(cleaned_aliases)}
 
-Select the best 3-5 Twitter search terms. Include acronym if available.
+Pick 3-5 words from the list above. Only return words that appear in the list.
 Output JSON array only. /no_think"""
                 
                 activity.logger.info(f"🤖 Sending to LLM: {prompt[:100]}...")
@@ -509,8 +616,29 @@ Output JSON array only. /no_think"""
                 llm_aliases = _parse_llm_response(text)
                 
                 if llm_aliases and len(llm_aliases) >= 1:
-                    # Normalize all aliases (remove diacritics)
-                    twitter_aliases = [_normalize_alias(a) for a in llm_aliases]
+                    # Normalize and split any multi-word responses into single words
+                    # Also filter out 2-letter-or-less words (FC, AC, RC, etc.)
+                    allowed_words_lower = {w.lower() for w in cleaned_aliases}
+                    twitter_aliases = []
+                    for alias in llm_aliases:
+                        normalized = _normalize_alias(alias)
+                        for word in normalized.split():
+                            word = word.strip()
+                            # Skip 2-letter-or-less words and duplicates
+                            if len(word) <= 2 or word in twitter_aliases:
+                                continue
+                            
+                            # For NATIONAL teams: Trust the LLM to generate nationality adjectives
+                            # (e.g., Argentina → Argentine, Argentinian)
+                            # For CLUBS: Only accept words from Wikidata to prevent hallucination
+                            if national:
+                                # National teams: accept LLM output (it knows nationality adjectives)
+                                twitter_aliases.append(word)
+                            elif word.lower() in allowed_words_lower:
+                                # Clubs: must be in Wikidata list
+                                twitter_aliases.append(word)
+                            else:
+                                activity.logger.warning(f"🚫 Rejected hallucinated word: '{word}' (not in input list)")
                     
                     # Enforce max limit
                     twitter_aliases = twitter_aliases[:MAX_ALIASES]

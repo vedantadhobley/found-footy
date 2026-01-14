@@ -1,52 +1,49 @@
 """
-Twitter Workflow - Fire-and-Forget Video Discovery Pipeline
+Twitter Workflow - Scheduled Video Discovery Pipeline
 
-Orchestrates Twitter video search with 10 attempts, 1-minute spacing.
-Downloads are FIRE-AND-FORGET to maximize video capture window.
+Orchestrates Twitter video search with 10 attempts on a STRICT 1-minute schedule.
+All searches are spawned on a timer, each runs independently.
 
 Design Philosophy:
-- This workflow runs for ~10 minutes (10 attempts x 1 min spacing)
-- Downloads are fire-and-forget (start_child_workflow with ABANDON policy)
+- Resolves team aliases at start (cache lookup or full RAG pipeline)
+- Searches spawn at T+0, T+60, T+120, T+180... (strict schedule)
+- Each search + download runs as a unit
+- Downloads are BLOCKING child workflows that delegate to UploadWorkflow
+- UploadWorkflow serializes S3 operations per event (deterministic ID)
 - _twitter_complete is set by DownloadWorkflow (or this workflow for no-video attempts)
-- More frequent searches = fresher videos = better content
+- Strict scheduling means searches happen at predictable times regardless of processing
 
 Race Condition Prevention:
-- Problem: Fixture could move to fixtures_completed while downloads still running
-- Solution: _twitter_complete is only set when ALL 10 attempts have finished processing
+- Problem: Multiple downloads could upload the same video to S3
+- Solution: UploadWorkflow with ID `upload-{event_id}` serializes uploads per event
+- Temporal ensures only ONE UploadWorkflow runs at a time per event
+- Each sees fresh S3 state inside the serialized context
+
+_twitter_complete Tracking:
 - Each DownloadWorkflow increments _twitter_count when complete
 - If no videos found, this workflow increments _twitter_count directly
 - When count reaches 10, _twitter_complete is set atomically
+- Fixture can't move to completed until _twitter_complete=true
 
-Why Fire-and-Forget Downloads:
-- Old approach (3 x 3min blocking): Only 3 search windows, missed lots of content
-- New approach (10 x 1min fire-and-forget): 10 search windows, captures more videos
-- Dedup happens per-batch AND against MongoDB's _s3_videos (populated by prior downloads)
-- Race window is small since searches are 1min apart and downloads take time
-- Worst case: occasional duplicate (better than zero videos!)
-
-Dedup Flow (per DownloadWorkflow):
-1. fetch_event_data reads existing _s3_videos hashes from MongoDB
-2. Download ALL videos in batch
-3. MD5 dedup (exact duplicates within batch + against S3)
-4. AI validation (only MD5-unique videos)
-5. Perceptual hash generation IN PARALLEL (only AI-validated videos)
-6. Perceptual dedup (batch + against MongoDB's _s3_videos)
-7. Upload to S3, update MongoDB
+Dedup Flow (per DownloadWorkflow → UploadWorkflow):
+1. DownloadWorkflow: Download → MD5 batch dedup → AI validation → Perceptual hash
+2. UploadWorkflow (serialized): Fetch FRESH S3 state → MD5 dedup vs S3 → Perceptual dedup vs S3
+3. Upload new/better quality videos → Update MongoDB → Recalculate ranks
 
 Flow:
-1. ATTEMPT 1: Search (3min window) → dedupe → fire-and-forget Download
-2. WAIT 1 minute (START-to-START spacing)
-... repeat for 10 attempts ...
-10. All downloads complete → _twitter_complete=true set by last finisher
-11. Notify frontend
+1. Resolve team aliases (cache or RAG pipeline) - blocking, ~30-90s
+2. Start 10 search attempts at T+0, T+60, T+120...
+3. Each search runs: Search → Save → Download (blocking) → Upload (serialized)
+4. Downloads increment _twitter_count when done
+5. When count reaches 10, _twitter_complete is set
 
 Graceful Termination:
-- At start of each attempt, checks if event still exists in MongoDB
-- If event was deleted (VAR/count hit 0), terminates early
-- Prevents wasted work on events that no longer exist
+- Each search child checks if event still exists before searching
+- If event was deleted (VAR/count hit 0), that search exits early
+- Other searches continue on schedule
 
-Started by: RAGWorkflow (fire-and-forget, runs independently)
-Starts: DownloadWorkflow (fire-and-forget with ABANDON policy)
+Started by: MonitorWorkflow (fire-and-forget when _monitor_complete=true)
+Starts: DownloadWorkflow (blocking per search attempt) → UploadWorkflow (serialized)
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -58,6 +55,7 @@ with workflow.unsafe.imports_passed_through():
     from src.activities import twitter as twitter_activities
     from src.activities import monitor as monitor_activities
     from src.activities import download as download_activities
+    from src.activities import rag as rag_activities
     from src.workflows.download_workflow import DownloadWorkflow
     from src.utils.event_enhancement import extract_player_search_name
 
@@ -67,28 +65,25 @@ class TwitterWorkflowInput:
     """Input for TwitterWorkflow"""
     fixture_id: int
     event_id: str
-    player_name: Optional[str]  # Can be None for events without player info
-    team_aliases: List[str]  # ["Liverpool", "LFC", "Reds"] or just ["Liverpool"]
+    team_id: int                    # API-Football team ID (for alias cache lookup)
+    team_name: str                  # "Liverpool" (fallback if no aliases)
+    player_name: Optional[str]      # Can be None for events without player info
 
 
 @workflow.defn
 class TwitterWorkflow:
     """
-    Fire-and-forget Twitter search workflow with 10 attempts.
+    Scheduled Twitter search workflow with 10 attempts on STRICT 1-minute intervals.
     
-    Downloads are fire-and-forget (ABANDON policy) for faster video capture.
-    Deduplication still works because each DownloadWorkflow:
-    1. Reads existing _s3_videos from MongoDB at start
-    2. Dedupes within batch (MD5 + perceptual)
-    3. Dedupes against MongoDB's S3 videos (from prior downloads)
-    4. AI validates videos before expensive perceptual hashing
+    Spawns all 10 searches as parallel async tasks, each with its own timer.
+    Search 1 starts immediately, Search 2 after 60s, Search 3 after 120s, etc.
+    This ensures searches happen at predictable times regardless of processing time.
     
-    Each attempt:
-    1. Builds search queries from player name + each team alias
-    2. Runs searches for all aliases (3-minute window)
-    3. Deduplicates within batch AND against existing videos
-    4. STARTS DownloadWorkflow (fire-and-forget, doesn't wait)
-    5. Waits 1 minute before next attempt (except after last)
+    Downloads are BLOCKING child workflows that call UploadWorkflow:
+    1. DownloadWorkflow downloads, validates, and generates hashes
+    2. UploadWorkflow (ID: upload-{event_id}) serializes S3 operations
+    3. Only ONE UploadWorkflow runs at a time per event
+    4. Each sees fresh S3 state, eliminating race conditions
     
     _twitter_complete handling:
     - DownloadWorkflow increments _twitter_count when complete
@@ -96,30 +91,103 @@ class TwitterWorkflow:
     - When count reaches 10, _twitter_complete=true is set atomically
     - This prevents fixture from moving to completed while downloads run
     
-    Expected duration: ~10 minutes
+    Expected duration: ~10 minutes (9 x 60s intervals + final search time)
     """
     
     @workflow.run
     async def run(self, input: TwitterWorkflowInput) -> dict:
         """
-        Execute 10 Twitter search attempts with 1-minute spacing.
+        Execute 10 Twitter search attempts on a strict 1-minute schedule.
+        
+        First resolves team aliases (cache or RAG), then:
+        - Attempt 1: starts at T+0
+        - Attempt 2: starts at T+60
+        - Attempt 3: starts at T+120
+        - etc.
         
         Args:
-            input: TwitterWorkflowInput with fixture_id, event_id, player_name, team_aliases
+            input: TwitterWorkflowInput with fixture_id, event_id, team_id, team_name, player_name
         
         Returns:
             Dict with total_videos_found, attempts completed
         """
-        total_videos_found = 0
-        total_videos_uploaded = 0
-        
         # Get player search name (handles accents, hyphens, "Jr" suffixes, etc.)
         player_search = extract_player_search_name(input.player_name) if input.player_name else "Unknown"
         
         workflow.logger.info(
             f"🐦 [TWITTER] STARTED | event={input.event_id} | "
-            f"player_search='{player_search}' | aliases={input.team_aliases}"
+            f"team_id={input.team_id} | team_name='{input.team_name}' | "
+            f"player_search='{player_search}'"
         )
+        
+        # =========================================================================
+        # Step 0: Resolve team aliases (cache lookup or full RAG pipeline)
+        # This is a blocking call - we need aliases before searching
+        # =========================================================================
+        workflow.logger.info(f"🔍 [TWITTER] Resolving aliases for team_id={input.team_id}")
+        
+        team_aliases = None
+        cache_hit = False
+        
+        # Try cache first (pre-computed during ingestion)
+        try:
+            team_aliases = await workflow.execute_activity(
+                rag_activities.get_cached_team_aliases,
+                input.team_id,
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=3,
+                    initial_interval=timedelta(seconds=2),
+                    backoff_coefficient=2.0,
+                ),
+            )
+            if team_aliases:
+                cache_hit = True
+                workflow.logger.info(f"📦 [TWITTER] Alias cache HIT | aliases={team_aliases}")
+        except Exception as e:
+            workflow.logger.warning(f"⚠️ [TWITTER] Cache lookup failed | error={e}")
+        
+        # Cache miss - do full RAG lookup
+        if not team_aliases:
+            workflow.logger.info(f"🔄 [TWITTER] Cache MISS | Running full RAG pipeline...")
+            try:
+                team_aliases = await workflow.execute_activity(
+                    rag_activities.get_team_aliases,
+                    args=[input.team_id, input.team_name],
+                    start_to_close_timeout=timedelta(seconds=90),
+                    retry_policy=RetryPolicy(
+                        maximum_attempts=3,
+                        initial_interval=timedelta(seconds=5),
+                        backoff_coefficient=2.0,
+                    ),
+                )
+                workflow.logger.info(f"✅ [TWITTER] RAG SUCCESS | aliases={team_aliases}")
+            except Exception as e:
+                workflow.logger.error(f"❌ [TWITTER] RAG FAILED | error={e}")
+                # Fallback to just team name
+                team_aliases = [input.team_name]
+                workflow.logger.warning(f"⚠️ [TWITTER] Using FALLBACK | aliases={team_aliases}")
+        
+        # Save aliases to event for debugging
+        try:
+            await workflow.execute_activity(
+                rag_activities.save_team_aliases,
+                args=[input.fixture_id, input.event_id, team_aliases],
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+            workflow.logger.info(f"💾 [TWITTER] Aliases saved | aliases={team_aliases}")
+        except Exception as e:
+            workflow.logger.warning(f"⚠️ [TWITTER] Failed to save aliases | error={e}")
+        
+        workflow.logger.info(
+            f"🐦 [TWITTER] Starting 10 search attempts | event={input.event_id} | "
+            f"player='{player_search}' | aliases={team_aliases} | cache_hit={cache_hit}"
+        )
+        
+        # Track cumulative stats across all attempts
+        total_videos_found = 0
+        total_videos_uploaded = 0
         
         for attempt in range(1, 11):  # Attempts 1-10
             # =================================================================
@@ -169,7 +237,7 @@ class TwitterWorkflow:
             attempt_start = workflow.now()
             workflow.logger.info(
                 f"🐦 [TWITTER] Attempt {attempt}/10 STARTING | event={input.event_id} | "
-                f"player='{player_search}' | aliases={input.team_aliases}"
+                f"player='{player_search}' | aliases={team_aliases}"
             )
             
             # =================================================================
@@ -224,7 +292,7 @@ class TwitterWorkflow:
             all_videos = []
             seen_urls_this_batch = set()
             
-            for alias in input.team_aliases:
+            for alias in team_aliases:
                 search_query = f"{player_search} {alias}"
                 workflow.logger.info(
                     f"🔍 [TWITTER] Searching | query='{search_query}' | "
@@ -318,7 +386,7 @@ class TwitterWorkflow:
                         f"durations: {[v.get('duration_seconds', 0) for v in videos_to_download]}"
                     )
                 
-                team_clean = input.team_aliases[0].replace(" ", "_").replace(".", "_").replace("-", "_") if input.team_aliases else "Unknown"
+                team_clean = team_aliases[0].replace(" ", "_").replace(".", "_").replace("-", "_") if team_aliases else "Unknown"
                 # Don't include video count in workflow ID - it causes nondeterminism when code changes
                 download_workflow_id = f"download{attempt}-{team_clean}-{player_search}-{input.event_id}"
                 
@@ -333,7 +401,7 @@ class TwitterWorkflow:
                     from temporalio.workflow import ParentClosePolicy
                     await workflow.start_child_workflow(
                         DownloadWorkflow.run,
-                        args=[input.fixture_id, input.event_id, input.player_name, input.team_aliases[0] if input.team_aliases else "", videos_to_download],
+                        args=[input.fixture_id, input.event_id, input.player_name, team_aliases[0] if team_aliases else "", videos_to_download],
                         id=download_workflow_id,
                         parent_close_policy=ParentClosePolicy.ABANDON,  # Continue even if parent closes
                     )

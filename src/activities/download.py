@@ -1,15 +1,10 @@
-"""Download activities - Granular per-video operations with individual retry"""
+"""Download activities - Video download, validation, and hash generation for DownloadWorkflow"""
 from temporalio import activity
 from typing import Dict, List, Any, Optional
 import os
-import tempfile
 import hashlib
-import yt_dlp
 import asyncio
-import random
-import time
 
-from src.data.models import EventFields
 from src.utils.config import (
     LLAMA_CHAT_URL,
     SHORT_EDGE_FILTER_ENABLED,
@@ -18,204 +13,11 @@ from src.utils.config import (
     MIN_ASPECT_RATIO,
     MIN_VIDEO_DURATION,
     MAX_VIDEO_DURATION,
-    HASH_VERSION,
-    MAX_HAMMING_DISTANCE,
-    MIN_CONSECUTIVE_MATCHES,
 )
 
 # Global lock and timestamp to rate-limit downloads across all workers
 _download_lock = asyncio.Lock()
 _last_download_time = 0
-
-
-@activity.defn
-async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
-    """
-    Fetch event from fixtures_active and return discovered videos.
-    Also checks S3 for existing videos with full metadata for quality comparison.
-    
-    NEW: Also gathers data from OTHER events in the same fixture for cross-event dedup.
-    This prevents videos from one goal being incorrectly saved to another goal's folder.
-    
-    Args:
-        fixture_id: Fixture ID
-        event_id: Event ID
-    
-    Returns:
-        Dict with discovered_videos, player_name, team_name, event, existing_s3_videos,
-        other_events_urls (URLs from other goals to filter out),
-        other_events_hashes (perceptual hashes from other goals to check against)
-    """
-    from src.data.mongo_store import FootyMongoStore
-    from src.data.s3_store import FootyS3Store
-    
-    store = FootyMongoStore()
-    
-    activity.logger.info(
-        f"📥 [DOWNLOAD] fetch_event_data | fixture={fixture_id} | event={event_id}"
-    )
-    
-    # Get fixture
-    fixture = store.get_fixture_from_active(fixture_id)
-    if not fixture:
-        activity.logger.error(
-            f"❌ [DOWNLOAD] Fixture not found | fixture={fixture_id}"
-        )
-        return {"status": "error", "error": "fixture_not_found"}
-    
-    # Find event and collect OTHER events' data for cross-event dedup
-    event = None
-    other_events_urls = set()  # URLs from _discovered_videos of OTHER events
-    other_events_hashes = []   # Perceptual hashes from _s3_videos of OTHER events
-    
-    for evt in fixture.get("events", []):
-        evt_id = evt.get(EventFields.EVENT_ID)
-        if evt_id == event_id:
-            event = evt
-        else:
-            # This is a DIFFERENT event - collect its URLs and hashes for cross-event dedup
-            # Collect discovered video URLs (to filter out before download)
-            for video in evt.get(EventFields.DISCOVERED_VIDEOS, []):
-                video_url = video.get("tweet_url") or video.get("video_page_url")
-                if video_url:
-                    other_events_urls.add(video_url)
-            
-            # Collect S3 video hashes (to check against after download)
-            for video_obj in evt.get(EventFields.S3_VIDEOS, []):
-                perceptual_hash = video_obj.get("perceptual_hash", "")
-                if perceptual_hash and perceptual_hash != "dense:0.25:":
-                    other_events_hashes.append({
-                        "event_id": evt_id,
-                        "perceptual_hash": perceptual_hash,
-                        "s3_url": video_obj.get("url", ""),
-                    })
-    
-    if not event:
-        activity.logger.error(
-            f"❌ [DOWNLOAD] Event not found | fixture={fixture_id} | event={event_id}"
-        )
-        return {"status": "error", "error": "event_not_found"}
-    
-    discovered_videos = event.get(EventFields.DISCOVERED_VIDEOS, [])
-    if not discovered_videos:
-        activity.logger.warning(
-            f"⚠️ [DOWNLOAD] No discovered videos | event={event_id}"
-        )
-        return {"status": "no_videos", "discovered_videos": []}
-    
-    player_name = event.get("player", {}).get("name", "Unknown")
-    team_name = event.get("team", {}).get("name", "Unknown")
-    assister_name = event.get("assist", {}).get("player", {}).get("name", "")
-    
-    # Get existing videos from MongoDB (new _s3_videos schema)
-    # MongoDB is the source of truth - contains full metadata (S3 metadata may be truncated)
-    existing_s3_videos_mongo = event.get(EventFields.S3_VIDEOS, [])
-    
-    # Build existing video list from MongoDB data only (no S3 calls needed)
-    existing_s3_videos = []  # List of video metadata for dedup comparison
-    already_downloaded_urls = set()
-    
-    for video_obj in existing_s3_videos_mongo:
-        s3_url = video_obj.get("url", "")
-        if not s3_url:
-            continue
-        
-        # Extract S3 key from URL or use stored key
-        s3_key = video_obj.get("_s3_key", "")
-        if not s3_key and s3_url.startswith("/video/footy-videos/"):
-            s3_key = s3_url.replace("/video/footy-videos/", "")
-        
-        # Track source URL to skip already-downloaded videos
-        source_url = video_obj.get("source_url", "")
-        if source_url:
-            already_downloaded_urls.add(source_url)
-        
-        # Use MongoDB data directly - it has the full untruncated metadata
-        # NOTE: Use "_s3_key" to match what deduplicate_videos expects
-        video_info = {
-            "s3_url": s3_url,
-            "_s3_key": s3_key,  # Underscore prefix for internal use, matches dedup code
-            "perceptual_hash": video_obj.get("perceptual_hash", ""),  # Full hash from MongoDB
-            "width": video_obj.get("width", 0),
-            "height": video_obj.get("height", 0),
-            "bitrate": video_obj.get("bitrate", 0),
-            "file_size": video_obj.get("file_size", 0),
-            "source_url": source_url,
-            "duration": video_obj.get("duration", 0),
-            "resolution_score": video_obj.get("resolution_score", 0),
-            "popularity": video_obj.get("popularity", 1),
-        }
-        existing_s3_videos.append(video_info)
-        activity.logger.debug(f"✓ Existing video: {s3_key} ({video_info['width']}x{video_info['height']}, pop={video_info['popularity']})")
-    
-    # Filter discovered_videos to only NEW ones:
-    # 1. URLs not already downloaded for THIS event
-    # 2. URLs not already discovered for OTHER events in same fixture (cross-event filter)
-    videos_to_download = []
-    skipped_already_downloaded = 0
-    skipped_other_event = 0
-    
-    for video in discovered_videos:
-        video_url = video.get("tweet_url") or video.get("video_page_url")
-        if video_url in already_downloaded_urls:
-            skipped_already_downloaded += 1
-            activity.logger.debug(
-                f"⏭️ [DOWNLOAD] Skipping already downloaded | url={video_url[:50]}..."
-            )
-        elif video_url in other_events_urls:
-            skipped_other_event += 1
-            activity.logger.info(
-                f"⏭️ [DOWNLOAD] Skipping URL from other event | url={video_url[:50]}..."
-            )
-        else:
-            videos_to_download.append(video)
-    
-    if not videos_to_download:
-        activity.logger.info(
-            f"⏭️ [DOWNLOAD] No new videos | event={event_id} | "
-            f"already_in_s3={skipped_already_downloaded} | other_event_urls={skipped_other_event}"
-        )
-        return {
-            "status": "no_videos",
-            "discovered_videos": [],
-            "event": event,
-            "existing_s3_videos": existing_s3_videos,
-            "other_events_hashes": other_events_hashes,
-        }
-    
-    # Log cross-event dedup info
-    if other_events_urls or other_events_hashes:
-        activity.logger.info(
-            f"🔀 [DOWNLOAD] Cross-event dedup data | other_urls={len(other_events_urls)} | "
-            f"other_hashes={len(other_events_hashes)} | filtered_by_url={skipped_other_event}"
-        )
-    
-    if existing_s3_videos:
-        activity.logger.info(
-            f"🔍 [DOWNLOAD] Cross-retry comparison | existing_s3={len(existing_s3_videos)}"
-        )
-    
-    total_skipped = skipped_already_downloaded + skipped_other_event
-    if total_skipped > 0:
-        activity.logger.info(
-            f"📥 [DOWNLOAD] Found new videos | event={event_id} | "
-            f"to_download={len(videos_to_download)} | skipped={total_skipped} "
-            f"(s3={skipped_already_downloaded}, other_event={skipped_other_event})"
-        )
-    else:
-        activity.logger.info(
-            f"📥 [DOWNLOAD] Found videos | event={event_id} | count={len(videos_to_download)}"
-        )
-    
-    return {
-        "status": "success",
-        "discovered_videos": videos_to_download,
-        "player_name": player_name,
-        "team_name": team_name,
-        "event": event,
-        "existing_s3_videos": existing_s3_videos,  # Full metadata for quality comparison
-        "other_events_hashes": other_events_hashes,  # Hashes from other events for cross-event dedup
-    }
 
 
 @activity.defn
@@ -255,7 +57,6 @@ async def download_single_video(
     """
     import httpx
     import re
-    import json
     
     # Ensure temp directory exists
     os.makedirs(temp_dir, exist_ok=True)
@@ -422,720 +223,6 @@ async def download_single_video(
         return {"status": "filtered", "reason": "basic_filter", "source_url": source_tweet_url}
     
     return result
-
-
-def _process_downloaded_video(
-    output_path: str,
-    video_index: int,
-    sub_index: int,
-    source_tweet_url: str,
-    is_multi_video: bool = False
-) -> Optional[Dict[str, Any]]:
-    """
-    Process a single downloaded video file - get metadata and apply basic filters.
-    
-    NOTE: Does NOT generate perceptual hash here. Hash generation happens AFTER
-    AI validation to avoid wasting compute on non-soccer videos.
-    
-    Args:
-        output_path: Path to the downloaded video file
-        video_index: Main video index
-        sub_index: Sub-index within multi-video tweet (0 for single video)
-        source_tweet_url: Original tweet URL
-        is_multi_video: Whether this is from a multi-video tweet
-        
-    Returns:
-        Dict with video info (no perceptual_hash yet) or None if filtered out
-    """
-    from temporalio import activity
-    
-    display_idx = f"{video_index}.{sub_index}" if is_multi_video else str(video_index)
-    
-    # Get video metadata (duration, resolution, bitrate)
-    video_meta = _get_video_metadata(output_path)
-    duration = video_meta["duration"]
-    width = video_meta["width"]
-    height = video_meta["height"]
-    bitrate = video_meta["bitrate"]
-    
-    # Duration filter: typical goal clips
-    # Must be strictly greater than MIN (e.g., exactly 3.00s fails)
-    if duration <= MIN_VIDEO_DURATION:
-        activity.logger.warning(
-            f"⏱️ [DOWNLOAD] Filtered: too short | video={display_idx} | "
-            f"duration={duration:.1f}s | min={MIN_VIDEO_DURATION}s"
-        )
-        os.remove(output_path)
-        return None
-    
-    if duration > MAX_VIDEO_DURATION:
-        activity.logger.warning(
-            f"⏱️ [DOWNLOAD] Filtered: too long | video={display_idx} | "
-            f"duration={duration:.1f}s | max={MAX_VIDEO_DURATION}s"
-        )
-        os.remove(output_path)
-        return None
-    
-    # Short edge filter: reject low-resolution videos
-    # 720p has short edge 720, but letterboxed HD has ~686px
-    if SHORT_EDGE_FILTER_ENABLED and width and height:
-        short_edge = min(width, height)
-        if short_edge < MIN_SHORT_EDGE:
-            activity.logger.warning(
-                f"📏 [DOWNLOAD] Filtered: low resolution | video={display_idx} | "
-                f"short_edge={short_edge}px | min={MIN_SHORT_EDGE}px | res={width}x{height}"
-            )
-            os.remove(output_path)
-            return None
-    
-    # Aspect ratio filter: reject portrait/square videos (< 4:3)
-    # Disabled by default to allow stadium phone recordings
-    # Phone-TV recordings are filtered by AI vision instead
-    if ASPECT_RATIO_FILTER_ENABLED and width and height and height > 0:
-        aspect_ratio = width / height
-        if aspect_ratio < MIN_ASPECT_RATIO:
-            activity.logger.warning(
-                f"📐 [DOWNLOAD] Filtered: aspect ratio | video={display_idx} | "
-                f"ratio={aspect_ratio:.2f} | min={MIN_ASPECT_RATIO}"
-            )
-            os.remove(output_path)
-            return None
-    
-    # Calculate MD5 hash and size (fast)
-    file_hash = _calculate_md5(output_path)
-    file_size = os.path.getsize(output_path)
-    
-    quality_info = f"{width}x{height}" if width and height else "unknown res"
-    if bitrate:
-        quality_info += f"@{bitrate:.0f}kbps"
-    
-    activity.logger.info(
-        f"✅ [DOWNLOAD] Video ready for validation | video={display_idx} | "
-        f"size={file_size / 1024 / 1024:.2f}MB | duration={duration:.1f}s | quality={quality_info}"
-    )
-    
-    # Return without perceptual_hash - will be generated after AI validation
-    return {
-        "status": "success",
-        "file_path": output_path,
-        "file_hash": file_hash,
-        "perceptual_hash": "",  # Placeholder - generated after AI validation
-        "duration": duration,
-        "file_size": file_size,
-        "video_index": video_index,
-        "sub_index": sub_index,
-        "source_url": source_tweet_url,
-        "width": width,
-        "height": height,
-        "bitrate": bitrate,
-        "resolution_score": width * height if width and height else 0,
-    }
-
-
-@activity.defn
-async def deduplicate_by_md5(
-    downloaded_files: List[Dict[str, Any]],
-    existing_s3_videos: Optional[List[Dict[str, Any]]] = None
-) -> Dict[str, Any]:
-    """
-    Fast MD5-based deduplication for TRUE duplicates (identical files).
-    
-    This runs BEFORE AI validation and perceptual hashing to eliminate
-    exact duplicates early, saving expensive compute.
-    
-    MD5 hash comparison is O(1) per comparison vs perceptual hash which is O(frames).
-    
-    Two-phase deduplication:
-    1. BATCH DEDUP: Group by file_hash, keep highest quality from each group
-    2. S3 DEDUP: Check if file_hash matches any existing S3 video filename
-    
-    Args:
-        downloaded_files: List of download results with file_path, file_hash, file_size, etc.
-        existing_s3_videos: List of existing S3 video metadata from fetch_event_data
-    
-    Returns:
-        Dict with:
-        - unique_videos: Videos that survived MD5 dedup (need AI validation + perceptual hash)
-        - md5_duplicates_removed: Count of duplicates eliminated
-        - s3_matches: Videos that match existing S3 (bump popularity or replace)
-    """
-    successful = [f for f in downloaded_files if f.get("status") == "success"]
-    
-    if not successful:
-        return {
-            "unique_videos": [],
-            "md5_duplicates_removed": 0,
-            "s3_exact_matches": [],
-            "s3_replacements": [],
-        }
-    
-    activity.logger.info(
-        f"🔐 [MD5-DEDUP] Starting fast MD5 deduplication | videos={len(successful)}"
-    )
-    
-    # =========================================================================
-    # PHASE 1: BATCH DEDUP - Group by MD5 hash, keep best quality from each
-    # =========================================================================
-    md5_groups = {}  # file_hash -> list of videos with that hash
-    
-    for video in successful:
-        file_hash = video.get("file_hash", "")
-        if not file_hash:
-            # No hash - can't dedup, keep it
-            activity.logger.warning(f"⚠️ [MD5-DEDUP] Video has no MD5 hash, keeping")
-            if "" not in md5_groups:
-                md5_groups[""] = []
-            md5_groups[""].append(video)
-            continue
-        
-        if file_hash not in md5_groups:
-            md5_groups[file_hash] = []
-        md5_groups[file_hash].append(video)
-    
-    # For each group, keep the best quality video
-    batch_winners = []
-    batch_duplicates_removed = 0
-    files_to_delete = []
-    
-    for file_hash, group in md5_groups.items():
-        if len(group) == 1:
-            # Single video with this hash - keep it
-            group[0]["popularity"] = 1
-            batch_winners.append(group[0])
-        else:
-            # Multiple videos with same MD5 - TRUE DUPLICATES (identical content)
-            # Keep the one with best resolution, accumulate popularity
-            best = max(group, key=lambda v: (v.get("resolution_score", 0), v.get("file_size", 0)))
-            best["popularity"] = len(group)  # All duplicates contribute to popularity
-            batch_winners.append(best)
-            batch_duplicates_removed += len(group) - 1
-            
-            activity.logger.info(
-                f"🗑️ [MD5-DEDUP] Found {len(group)} identical files (MD5={file_hash[:8]}), "
-                f"keeping best ({best.get('width', 0)}x{best.get('height', 0)})"
-            )
-            
-            # Mark other files for deletion
-            for video in group:
-                if video["file_path"] != best["file_path"]:
-                    files_to_delete.append(video["file_path"])
-    
-    # Delete duplicate files
-    for file_path in files_to_delete:
-        try:
-            import os
-            os.remove(file_path)
-        except:
-            pass
-    
-    # =========================================================================
-    # PHASE 2: S3 DEDUP - Check MD5 against existing S3 video filenames
-    # S3 filenames are: {event_id}_{md5[:8]}.mp4
-    # =========================================================================
-    s3_exact_matches = []  # Videos that exactly match S3 (same MD5)
-    s3_replacements = []   # Videos that should replace S3 (same MD5, better quality)
-    unique_videos = []     # Videos with no S3 match
-    
-    existing_s3_list = existing_s3_videos or []
-    
-    # Build map of existing S3 video MD5 hashes (extracted from filename)
-    existing_md5_to_s3 = {}  # md5_prefix -> s3_video_info
-    for s3_video in existing_s3_list:
-        s3_key = s3_video.get("s3_key", "") or s3_video.get("s3_url", "").replace("/video/footy-videos/", "")
-        if s3_key:
-            # Extract MD5 prefix from filename: event_id_{md5[:8]}.mp4
-            filename = s3_key.split("/")[-1]  # Get just the filename
-            if "_" in filename and filename.endswith(".mp4"):
-                # Format: eventid_hash.mp4 -> extract hash
-                parts = filename[:-4].split("_")  # Remove .mp4 and split
-                if parts:
-                    md5_prefix = parts[-1]  # Last part should be the MD5 prefix
-                    if len(md5_prefix) == 8:  # Valid MD5 prefix
-                        existing_md5_to_s3[md5_prefix] = s3_video
-    
-    for video in batch_winners:
-        file_hash = video.get("file_hash", "")
-        md5_prefix = file_hash[:8] if file_hash else ""
-        
-        if md5_prefix and md5_prefix in existing_md5_to_s3:
-            # Found MD5 match in S3!
-            existing_s3 = existing_md5_to_s3[md5_prefix]
-            existing_file_size = existing_s3.get("file_size", 0)
-            existing_resolution = existing_s3.get("resolution_score", 0)
-            existing_popularity = existing_s3.get("popularity", 1)
-            
-            new_file_size = video.get("file_size", 0)
-            new_resolution = video.get("resolution_score", 0)
-            new_popularity = video.get("popularity", 1)
-            
-            # Check if new is better quality
-            is_better = (new_resolution > existing_resolution) or \
-                       (new_resolution == existing_resolution and new_file_size > existing_file_size)
-            
-            if is_better:
-                # Replace S3 video with better quality
-                video["popularity"] = existing_popularity + new_popularity
-                s3_replacements.append({
-                    "new_video": video,
-                    "old_s3_video": existing_s3,
-                })
-                activity.logger.info(
-                    f"🔄 [MD5-DEDUP] S3 replacement | md5={md5_prefix} | "
-                    f"new={new_resolution} > existing={existing_resolution}"
-                )
-            else:
-                # Existing S3 is same/better - just bump popularity
-                s3_exact_matches.append({
-                    "video": video,
-                    "s3_video": existing_s3,
-                    "new_popularity": existing_popularity + new_popularity,
-                })
-                activity.logger.info(
-                    f"⏭️ [MD5-DEDUP] S3 match (keeping existing) | md5={md5_prefix} | "
-                    f"bumping popularity {existing_popularity} → {existing_popularity + new_popularity}"
-                )
-                # Delete local file - not needed
-                try:
-                    import os
-                    os.remove(video["file_path"])
-                except:
-                    pass
-        else:
-            # No S3 match - needs further processing
-            unique_videos.append(video)
-    
-    activity.logger.info(
-        f"✅ [MD5-DEDUP] Complete | unique={len(unique_videos)} | "
-        f"batch_dupes_removed={batch_duplicates_removed} | "
-        f"s3_matches={len(s3_exact_matches)} | s3_replacements={len(s3_replacements)}"
-    )
-    
-    return {
-        "unique_videos": unique_videos,
-        "md5_duplicates_removed": batch_duplicates_removed,
-        "s3_exact_matches": s3_exact_matches,
-        "s3_replacements": s3_replacements,
-    }
-
-
-@activity.defn
-async def deduplicate_videos(
-    downloaded_files: List[Dict[str, Any]],
-    existing_s3_videos: Optional[List[Dict[str, Any]]] = None,
-    other_events_hashes: Optional[List[Dict[str, Any]]] = None
-) -> Dict[str, Any]:
-    """
-    Smart deduplication that keeps BOTH longest AND largest videos.
-    
-    Three-phase deduplication:
-    1. BATCH DEDUP FIRST: Group downloaded videos into duplicate clusters
-    2. CROSS-EVENT DEDUP: Reject videos that match OTHER goals in same fixture
-    3. S3 DEDUP: Compare batch winners against existing S3 videos for THIS event
-    
-    For each duplicate cluster, we keep the single best video based on (duration, file_size).
-    
-    Cross-event dedup prevents videos from being incorrectly saved to the wrong goal.
-    If a video matches a hash from another goal in the same fixture, it's DELETED
-    (we already have it for the correct goal, don't save it again for the wrong one).
-    
-    Popularity score accumulates from all duplicates to the keepers.
-    
-    Args:
-        downloaded_files: List of download results with file_path, perceptual_hash, file_size, etc.
-        existing_s3_videos: List of existing S3 video metadata for THIS event
-        other_events_hashes: List of perceptual hashes from OTHER events in same fixture
-    
-    Returns:
-        Dict with:
-        - videos_to_upload: List of unique videos to upload (no S3 match)
-        - videos_to_replace: List of {new_video, old_s3_video} for replacement
-        - videos_to_bump_popularity: List of {s3_video, new_popularity} for existing better videos
-        - skipped_urls: List of source URLs that we're not uploading
-        - cross_event_rejected: Count of videos rejected due to cross-event match
-    """
-    # Filter out failed and filtered downloads
-    successful = [f for f in downloaded_files if f.get("status") == "success"]
-    filtered_count = sum(1 for f in downloaded_files if f.get("status") == "filtered")
-    
-    if filtered_count > 0:
-        activity.logger.info(
-            f"🚫 [DEDUP] Pre-filtered by duration | count={filtered_count}"
-        )
-    
-    if not successful:
-        activity.logger.warning(
-            f"⚠️ [DEDUP] No successful downloads to deduplicate"
-        )
-        return {"videos_to_upload": [], "videos_to_replace": [], "videos_to_bump_popularity": [], "skipped_urls": [], "cross_event_rejected": 0}
-    
-    other_hashes_list = other_events_hashes or []
-    
-    activity.logger.info(
-        f"📥 [DEDUP] Starting deduplication | successful={len(successful)} | "
-        f"existing_s3={len(existing_s3_videos) if existing_s3_videos else 0} | "
-        f"other_events_hashes={len(other_hashes_list)}"
-    )
-    
-    # =========================================================================
-    # PHASE 1: BATCH DEDUP - Group into duplicate clusters, keep longest+largest
-    # =========================================================================
-    
-    # Build duplicate clusters using union-find approach
-    clusters = []  # List of lists, each inner list is a cluster of duplicates
-    videos_without_hash = 0  # Track videos that bypass dedup
-    
-    for file_info in successful:
-        perceptual_hash = file_info["perceptual_hash"]
-        
-        # Track videos without valid hash - they can't be deduplicated!
-        if not perceptual_hash or perceptual_hash == "dense:0.25:":
-            videos_without_hash += 1
-        
-        # Find which cluster(s) this video matches
-        matching_cluster_idx = None
-        for idx, cluster in enumerate(clusters):
-            for member in cluster:
-                if _perceptual_hashes_match(perceptual_hash, member["perceptual_hash"]):
-                    matching_cluster_idx = idx
-                    break
-            if matching_cluster_idx is not None:
-                break
-        
-        if matching_cluster_idx is not None:
-            clusters[matching_cluster_idx].append(file_info)
-        else:
-            # New cluster
-            clusters.append([file_info])
-    
-    if videos_without_hash > 0:
-        activity.logger.warning(
-            f"⚠️ [DEDUP] Videos without hash | count={videos_without_hash}/{len(successful)} | "
-            f"warning=cannot_deduplicate"
-        )
-    
-    activity.logger.info(
-        f"📊 [DEDUP] Clustered videos | clusters={len(clusters)} | from_downloads={len(successful)}"
-    )
-    
-    # For each cluster, select winners (longest + largest, could be same video)
-    batch_winners = []
-    files_to_remove = []
-    
-    for cluster in clusters:
-        if len(cluster) == 1:
-            # Single video - preserve incoming popularity from MD5 dedup
-            if "popularity" not in cluster[0] or cluster[0]["popularity"] < 1:
-                cluster[0]["popularity"] = 1
-            batch_winners.append(cluster[0])
-            continue
-        
-        # Find longest duration video
-        longest = max(cluster, key=lambda x: x.get("duration", 0))
-        
-        # Find largest file size video
-        largest = max(cluster, key=lambda x: x.get("file_size", 0))
-        
-        # Accumulate popularity from ALL videos in cluster (including their MD5 dedup popularity)
-        # This preserves popularity from earlier dedup phases
-        total_popularity = sum(v.get("popularity", 1) for v in cluster)
-        
-        # Pick single best video: prioritize duration, then file size as tiebreaker
-        # All videos in cluster are perceptual duplicates, so we only need ONE
-        winner = max(cluster, key=lambda x: (x.get("duration", 0), x.get("file_size", 0)))
-        winner["popularity"] = total_popularity
-        batch_winners.append(winner)
-        
-        # Log differently based on whether longest == largest
-        if longest["file_path"] == largest["file_path"]:
-            activity.logger.info(
-                f"🏆 Cluster winner: {winner.get('duration', 0):.1f}s, {winner.get('file_size', 0):,} bytes "
-                f"(both longest & largest, {len(cluster)} dups, pop={total_popularity})"
-            )
-        else:
-            # Different videos had longest duration vs largest size
-            # We picked based on (duration, file_size) tuple
-            activity.logger.info(
-                f"🏆 Cluster winner: {winner.get('duration', 0):.1f}s, {winner.get('file_size', 0):,} bytes "
-                f"({len(cluster)} dups, pop={total_popularity}) | "
-                f"Alternatives: longest={longest.get('duration', 0):.1f}s/{longest.get('file_size', 0):,}b, "
-                f"largest={largest.get('duration', 0):.1f}s/{largest.get('file_size', 0):,}b"
-            )
-        
-        # Remove all other files in cluster
-        for member in cluster:
-            if member["file_path"] != winner["file_path"]:
-                files_to_remove.append(member["file_path"])
-    
-    # Clean up discarded files
-    for file_path in files_to_remove:
-        try:
-            os.remove(file_path)
-        except Exception:
-            pass
-    
-    activity.logger.info(f"📊 Batch dedup: {len(successful)} → {len(batch_winners)} keepers ({len(files_to_remove)} removed)")
-    
-    # =========================================================================
-    # PHASE 2: CROSS-EVENT DEDUP - DISABLED
-    # Previously rejected videos matching OTHER goals in fixture.
-    # Disabled because with fire-and-forget downloads, we want maximum video capture.
-    # Within-event dedup (Phase 3) still catches true duplicates for the SAME event.
-    # =========================================================================
-    cross_event_rejected = 0
-    cross_event_rejected_urls = []
-    after_cross_event = batch_winners  # Skip cross-event check, pass all through
-    
-    # NOTE: Cross-event dedup code preserved below for reference/re-enabling if needed
-    # if other_hashes_list:
-    #     activity.logger.info(f"🔀 Cross-event dedup: checking {len(batch_winners)} videos against {len(other_hashes_list)} hashes from other goals...")
-    #     
-    #     for file_info in batch_winners:
-    #         perceptual_hash = file_info.get("perceptual_hash", "")
-    #         file_path = file_info.get("file_path", "")
-    #         source_url = file_info.get("source_url", "")
-    #         
-    #         # Check against other events' hashes
-    #         matched_other_event = None
-    #         for other_hash_info in other_hashes_list:
-    #             other_hash = other_hash_info.get("perceptual_hash", "")
-    #             if other_hash and perceptual_hash and _perceptual_hashes_match(perceptual_hash, other_hash):
-    #                 matched_other_event = other_hash_info
-    #                 break
-    #         
-    #         if matched_other_event:
-    #             # This video matches another goal - REJECT it
-    #             other_event_id = matched_other_event.get("event_id", "unknown")
-    #             activity.logger.warning(
-    #                 f"🚫 [CROSS-EVENT] Rejecting video - matches goal {other_event_id} | "
-    #                 f"source={source_url[:60]}..."
-    #             )
-    #             cross_event_rejected += 1
-    #             if source_url:
-    #                 cross_event_rejected_urls.append(source_url)
-    #             # Delete the file
-    #             try:
-    #                 os.remove(file_path)
-    #             except Exception:
-    #                 pass
-    #         else:
-    #             # No cross-event match - keep it
-    #             after_cross_event.append(file_info)
-    #     
-    #     if cross_event_rejected > 0:
-    #         activity.logger.info(
-    #             f"🔀 Cross-event dedup: {len(batch_winners)} → {len(after_cross_event)} "
-    #             f"({cross_event_rejected} rejected as wrong-goal videos)"
-    #         )
-    # else:
-    #     after_cross_event = batch_winners
-    
-    # =========================================================================
-    # PHASE 3: S3 DEDUP - Compare remaining videos against existing S3 videos for THIS event
-    # =========================================================================
-    existing_videos_list = existing_s3_videos or []
-    if existing_videos_list:
-        activity.logger.info(f"📦 Comparing {len(after_cross_event)} videos against {len(existing_videos_list)} S3 videos...")
-    
-    videos_to_upload = []  # New videos (no S3 match)
-    videos_to_replace = []  # Higher quality than existing S3 video
-    videos_to_bump_popularity = []  # Existing S3 is better
-    skipped_urls = cross_event_rejected_urls.copy()  # Start with cross-event rejected URLs
-    
-    for file_info in after_cross_event:
-        perceptual_hash = file_info["perceptual_hash"]
-        file_path = file_info["file_path"]
-        file_size = file_info["file_size"]
-        duration = file_info.get("duration", 0)
-        source_url = file_info.get("source_url", "")
-        incoming_popularity = file_info.get("popularity", 1)  # From local dedup
-        
-        # CRITICAL: Warn if video has no hash - dedup will NOT work!
-        if not perceptual_hash or perceptual_hash == "dense:0.25:":
-            activity.logger.warning(
-                f"⚠️ Video has NO perceptual hash! Deduplication BYPASSED for {source_url} "
-                f"- this video will be uploaded even if it's a duplicate!"
-            )
-        
-        # Check against existing S3 videos
-        matched_existing = None
-        for existing in existing_videos_list:
-            existing_hash = existing.get("perceptual_hash", "")
-            if existing_hash and _perceptual_hashes_match(perceptual_hash, existing_hash):
-                matched_existing = existing
-                break
-        
-        if matched_existing:
-            # Found match in S3 - decide whether to replace or skip
-            new_file_size = file_size
-            new_duration = duration
-            existing_file_size = matched_existing.get("file_size", 0)
-            existing_duration = matched_existing.get("duration", 0)
-            existing_popularity = matched_existing.get("popularity", 1)
-            
-            # Replace if new is LONGER or LARGER
-            should_replace = (new_duration > existing_duration) or (new_file_size > existing_file_size)
-            
-            if should_replace:
-                new_popularity = existing_popularity + incoming_popularity
-                reason = []
-                if new_duration > existing_duration:
-                    reason.append(f"longer ({new_duration:.1f}s > {existing_duration:.1f}s)")
-                if new_file_size > existing_file_size:
-                    reason.append(f"larger ({new_file_size:,} > {existing_file_size:,} bytes)")
-                activity.logger.info(
-                    f"🔄 S3 REPLACE: New is {' & '.join(reason)} "
-                    f"- popularity {existing_popularity} + {incoming_popularity} = {new_popularity}"
-                )
-                file_info["popularity"] = new_popularity
-                # Pass old S3 key so upload can reuse it (keeps shared URLs stable)
-                file_info["_old_s3_key"] = matched_existing.get("_s3_key", "")
-                videos_to_replace.append({
-                    "new_video": file_info,
-                    "old_s3_video": matched_existing
-                })
-            else:
-                # Existing S3 is better - skip but bump popularity
-                new_popularity = existing_popularity + incoming_popularity
-                activity.logger.info(
-                    f"⏭️ S3 SKIP: Existing is better ({existing_duration:.1f}s, {existing_file_size:,} bytes) "
-                    f"- bumping popularity {existing_popularity} → {new_popularity}"
-                )
-                videos_to_bump_popularity.append({
-                    "s3_video": matched_existing,
-                    "new_popularity": new_popularity
-                })
-                os.remove(file_path)
-                if source_url:
-                    skipped_urls.append(source_url)
-        else:
-            # No S3 match - this is a new video
-            activity.logger.info(f"✨ NEW: No S3 match ({file_size:,} bytes, {duration:.1f}s)")
-            videos_to_upload.append(file_info)
-    
-    # Log summary
-    cross_event_msg = f", {cross_event_rejected} cross-event rejected" if cross_event_rejected > 0 else ""
-    activity.logger.info(
-        f"✅ Dedup complete: "
-        f"{len(videos_to_upload)} new uploads, "
-        f"{len(videos_to_replace)} S3 replacements, "
-        f"{len(videos_to_bump_popularity)} popularity bumps, "
-        f"{len(skipped_urls)} skipped{cross_event_msg}"
-    )
-    
-    return {
-        "videos_to_upload": videos_to_upload,
-        "videos_to_replace": videos_to_replace,
-        "videos_to_bump_popularity": videos_to_bump_popularity,
-        "skipped_urls": skipped_urls,
-        "cross_event_rejected": cross_event_rejected,
-    }
-
-
-def _extract_frame_for_vision(file_path: str, timestamp: float) -> Optional[str]:
-    """
-    Extract a single frame from video and return as base64.
-    
-    Args:
-        file_path: Path to video file
-        timestamp: Timestamp in seconds to extract frame
-        
-    Returns:
-        Base64-encoded PNG image or None if extraction fails
-    """
-    import subprocess
-    import base64
-    
-    try:
-        cmd = [
-            "ffmpeg",
-            "-ss", str(timestamp),
-            "-i", file_path,
-            "-vframes", "1",
-            "-f", "image2pipe",
-            "-vcodec", "png",
-            "-"
-        ]
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=10
-        )
-        
-        if result.returncode != 0 or not result.stdout:
-            activity.logger.warning(
-                f"⚠️ Frame extraction failed at {timestamp}s: "
-                f"returncode={result.returncode}, stderr={result.stderr.decode()[:200] if result.stderr else 'none'}"
-            )
-            return None
-        
-        return base64.b64encode(result.stdout).decode('utf-8')
-    except subprocess.TimeoutExpired:
-        activity.logger.warning(f"⚠️ Frame extraction timed out at {timestamp}s")
-        return None
-    except Exception as e:
-        activity.logger.warning(f"⚠️ Frame extraction error at {timestamp}s: {e}")
-        return None
-
-
-async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[str, Any]]:
-    """
-    Call vision LLM with an image using llama.cpp OpenAI-compatible API.
-    
-    Args:
-        image_base64: Base64-encoded image
-        prompt: Question to ask about the image
-        
-    Returns:
-        Dict with response content or None if failed
-    """
-    import httpx
-    
-    llama_url = LLAMA_CHAT_URL
-    
-    activity.logger.debug(f"🔍 Calling vision model at {llama_url}")
-    
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # OpenAI-compatible multimodal format for llama.cpp
-            response = await client.post(
-                f"{llama_url}/v1/chat/completions",
-                json={
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{image_base64}"
-                                    }
-                                }
-                            ]
-                        }
-                    ],
-                    "max_tokens": 100,
-                    "temperature": 0.1
-                }
-            )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                activity.logger.warning(
-                    f"⚠️ Vision model returned status {response.status_code}: {response.text[:200]}"
-                )
-                return None
-    except httpx.ConnectError as e:
-        activity.logger.error(f"❌ Cannot connect to LLM at {llama_url}: {e}")
-        raise  # Propagate connection errors - should retry
-    except httpx.TimeoutException as e:
-        activity.logger.warning(f"⚠️ Vision model request timed out: {e}")
-        raise  # Propagate timeouts - should retry
-    except Exception as e:
-        activity.logger.error(f"❌ Vision model error: {type(e).__name__}: {e}")
-        raise  # Propagate all errors - let retry policy handle
 
 
 @activity.defn
@@ -1487,214 +574,6 @@ async def generate_video_hash(file_path: str, duration: float) -> Dict[str, Any]
 
 
 @activity.defn
-async def upload_single_video(
-    file_path: str,
-    fixture_id: int,
-    event_id: str,
-    player_name: str,
-    team_name: str,
-    video_index: int,
-    file_hash: str = "",
-    perceptual_hash: str = "",
-    duration: float = 0.0,
-    popularity: int = 1,
-    assister_name: str = "",
-    opponent_team: str = "",
-    source_url: str = "",
-    width: int = 0,
-    height: int = 0,
-    bitrate: float = 0.0,
-    file_size: int = 0,
-    existing_s3_key: str = "",  # For replacements: reuse old S3 key to keep URL stable
-) -> Dict[str, Any]:
-    """
-    Upload a single video to S3 with metadata and tags.
-    
-    Args:
-        file_path: Local path to video file
-        fixture_id: Fixture ID
-        event_id: Event ID
-        player_name: Player name for metadata
-        team_name: Team name for metadata
-        video_index: Index for logging
-        file_hash: MD5 hash for S3 key (enables dedup checking)
-        perceptual_hash: Perceptual hash for cross-resolution dedup
-        duration: Video duration in seconds
-        popularity: Duplicate count (higher = more sources found this video = more trustworthy)
-        existing_s3_key: For replacements - reuse old S3 key so shared URLs stay valid
-    
-    Returns:
-        Dict with s3_url, perceptual_hash, and status
-    
-    Raises:
-        Exception: If S3 upload fails (for Temporal retry)
-    """
-    from src.data.s3_store import FootyS3Store
-    
-    # For replacements, reuse the existing S3 key to keep URLs stable
-    # This allows shared links to remain valid when video quality is upgraded
-    if existing_s3_key:
-        s3_key = existing_s3_key
-        activity.logger.info(
-            f"♻️ [UPLOAD] Reusing S3 key for replacement | key={s3_key}"
-        )
-    elif file_hash:
-        filename = f"{event_id}_{file_hash[:8]}.mp4"
-        s3_key = f"{fixture_id}/{event_id}/{filename}"
-    else:
-        # Fallback without hash - use timestamp for uniqueness
-        import time
-        filename = f"{event_id}_{int(time.time())}.mp4"
-        s3_key = f"{fixture_id}/{event_id}/{filename}"
-    
-    # S3 metadata - useful tags for manual lookup (not for dedup - MongoDB is source of truth)
-    # Note: S3 metadata has ~2KB limit and truncates values, so we only store simple fields here
-    metadata = {
-        "player_name": player_name,
-        "team_name": team_name,
-        "event_id": event_id,
-        "fixture_id": str(fixture_id),
-        "popularity": str(popularity),
-        "source_url": source_url,
-        "duration": str(duration),
-        "width": str(width),
-        "height": str(height),
-        "bitrate": str(int(bitrate)) if bitrate else "0",
-        "file_size": str(file_size),
-        "resolution_score": str(width * height) if width and height else "0",
-    }
-    
-    if assister_name:
-        metadata["assister_name"] = assister_name
-    if opponent_team:
-        metadata["opponent_team"] = opponent_team
-    
-    quality_info = f"{width}x{height}" if width and height else "unknown"
-    if bitrate:
-        quality_info += f"@{int(bitrate)}kbps"
-    activity.logger.info(
-        f"☁️ [UPLOAD] Starting S3 upload | event={event_id} | video_idx={video_index} | "
-        f"quality={quality_info} | popularity={popularity} | key={s3_key}"
-    )
-    
-    s3_store = FootyS3Store()
-    s3_url = s3_store.upload_video(file_path, s3_key, metadata=metadata)
-    
-    if not s3_url:
-        msg = f"[UPLOAD] S3 returned None | event={event_id} | video_idx={video_index}"
-        activity.logger.error(f"❌ {msg}")
-        raise RuntimeError(msg)
-    
-    activity.logger.info(
-        f"✅ [UPLOAD] Uploaded to S3 | event={event_id} | video_idx={video_index} | url={s3_url}"
-    )
-    
-    # Return video object for MongoDB storage
-    # Store ALL metadata in MongoDB to avoid S3 metadata truncation issues
-    resolution_score = width * height if width and height else 0
-    aspect_ratio = width / height if width and height and height > 0 else 0
-    return {
-        "status": "success",
-        "s3_url": s3_url,
-        "perceptual_hash": perceptual_hash,
-        "resolution_score": resolution_score,
-        "popularity": popularity,
-        # Full video object for MongoDB _s3_videos array
-        # This is the source of truth - S3 metadata may be truncated
-        "video_object": {
-            "url": s3_url,
-            "_s3_key": s3_key,  # For easy S3 operations
-            "perceptual_hash": perceptual_hash,  # Full hash (no truncation)
-            "resolution_score": resolution_score,
-            "file_size": file_size,
-            "popularity": popularity,
-            "rank": 0,  # Will be recalculated
-            # Quality metadata for dedup/comparison
-            "width": width,
-            "height": height,
-            "aspect_ratio": round(aspect_ratio, 2),
-            "bitrate": int(bitrate) if bitrate else 0,
-            "duration": round(duration, 2),
-            "source_url": source_url,
-            "hash_version": HASH_VERSION,  # Track hash algorithm version
-        }
-    }
-
-
-@activity.defn
-async def mark_download_complete(
-    fixture_id: int,
-    event_id: str,
-    video_objects: List[Dict[str, Any]],
-    temp_dir: str,
-    download_stats: Optional[Dict[str, Any]] = None,
-) -> bool:
-    """
-    Save download results (video objects) and cleanup temp directory.
-    Then recalculate ranks for all videos in this event.
-    Also saves download stats for visibility into the pipeline.
-    
-    Args:
-        fixture_id: Fixture ID
-        event_id: Event ID
-        video_objects: List of video objects {url, perceptual_hash, resolution_score, popularity, rank}
-        temp_dir: Temporary directory to cleanup
-        download_stats: Optional stats dict {discovered, downloaded, md5_deduped, ai_rejected, 
-                        hash_failed, perceptual_deduped, uploaded, dropped_no_hash}
-    
-    Returns:
-        True if successful
-    """
-    from src.data.mongo_store import FootyMongoStore
-    from src.data.models import EventFields
-    import shutil
-
-    store = FootyMongoStore()
-    
-    activity.logger.info(
-        f"💾 [COMPLETE] Saving download results | event={event_id} | video_count={len(video_objects)}"
-    )
-    
-    # Save video objects to _s3_videos array
-    success = store.add_videos_to_event(fixture_id, event_id, video_objects)
-    
-    if not success:
-        activity.logger.warning(
-            f"⚠️ [COMPLETE] Failed to update event | event={event_id}"
-        )
-    else:
-        # Recalculate ranks after adding new videos
-        activity.logger.info(
-            f"📊 [COMPLETE] Recalculating video ranks | event={event_id}"
-        )
-        store.recalculate_video_ranks(fixture_id, event_id)
-    
-    # Save download stats for visibility
-    if download_stats:
-        try:
-            store.fixtures_active.update_one(
-                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
-                {"$set": {f"events.$.{EventFields.DOWNLOAD_STATS}": download_stats}}
-            )
-            activity.logger.info(
-                f"📊 [COMPLETE] Saved download stats | event={event_id} | stats={download_stats}"
-            )
-        except Exception as e:
-            activity.logger.warning(
-                f"⚠️ [COMPLETE] Failed to save download stats | error={e}"
-            )
-    
-    # Cleanup temp directory
-    if temp_dir and os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir)
-        activity.logger.info(
-            f"🧹 [COMPLETE] Cleaned up temp dir | path={temp_dir}"
-        )
-    
-    return success
-
-
-@activity.defn
 async def increment_twitter_count(
     fixture_id: int,
     event_id: str,
@@ -1749,122 +628,223 @@ async def increment_twitter_count(
     return result
 
 
-@activity.defn
-async def replace_s3_video(
-    fixture_id: int,
-    event_id: str,
-    old_s3_url: str,
-    old_s3_key: str,
-    skip_s3_delete: bool = False,  # True when overwriting with same key (keeps URLs stable)
-) -> bool:
+# ==============================================================================
+# Helper functions for download activities
+# ==============================================================================
+
+def _process_downloaded_video(
+    output_path: str,
+    video_index: int,
+    sub_index: int,
+    source_tweet_url: str,
+    is_multi_video: bool = False
+) -> Optional[Dict[str, Any]]:
     """
-    Remove old video entry from MongoDB, optionally delete from S3.
-    Called when a higher quality version is being uploaded to replace it.
+    Process a single downloaded video file - get metadata and apply basic filters.
     
-    When skip_s3_delete=True, the S3 file is NOT deleted because the new upload
-    will overwrite the same key. This keeps shared URLs stable.
+    NOTE: Does NOT generate perceptual hash here. Hash generation happens AFTER
+    AI validation to avoid wasting compute on non-soccer videos.
     
     Args:
-        fixture_id: Fixture ID
-        event_id: Event ID
-        old_s3_url: Full S3 URL to remove from MongoDB
-        old_s3_key: S3 key for deletion
-        skip_s3_delete: If True, skip S3 deletion (file will be overwritten)
-    
+        output_path: Path to the downloaded video file
+        video_index: Main video index
+        sub_index: Sub-index within multi-video tweet (0 for single video)
+        source_tweet_url: Original tweet URL
+        is_multi_video: Whether this is from a multi-video tweet
+        
     Returns:
-        True if successful
+        Dict with video info (no perceptual_hash yet) or None if filtered out
     """
-    from src.data.mongo_store import FootyMongoStore
-    from src.data.s3_store import FootyS3Store
+    from temporalio import activity
     
-    if skip_s3_delete:
-        activity.logger.info(
-            f"♻️ [REPLACE] Skipping S3 delete (will overwrite) | event={event_id} | key={old_s3_key}"
-        )
-    else:
-        activity.logger.info(
-            f"🗑️ [REPLACE] Deleting old video | event={event_id} | key={old_s3_key}"
-        )
-        # Delete from S3
-        s3_store = FootyS3Store()
-        try:
-            s3_store.s3_client.delete_object(Bucket="footy-videos", Key=old_s3_key)
-            activity.logger.info(
-                f"✅ [REPLACE] S3 delete successful | key={old_s3_key}"
-            )
-        except Exception as e:
-            activity.logger.error(
-                f"❌ [REPLACE] S3 delete failed | key={old_s3_key} | error={e}"
-            )
-            # Continue - we still want to update MongoDB
+    display_idx = f"{video_index}.{sub_index}" if is_multi_video else str(video_index)
     
-    # Remove from MongoDB _s3_videos array (by URL)
-    store = FootyMongoStore()
-    try:
-        result = store.fixtures_active.update_one(
-            {"_id": fixture_id, "events._event_id": event_id},
-            {
-                "$pull": {
-                    "events.$._s3_videos": {"url": old_s3_url}
-                }
-            }
+    # Get video metadata (duration, resolution, bitrate)
+    video_meta = _get_video_metadata(output_path)
+    duration = video_meta["duration"]
+    width = video_meta["width"]
+    height = video_meta["height"]
+    bitrate = video_meta["bitrate"]
+    
+    # Duration filter: typical goal clips
+    # Must be strictly greater than MIN (e.g., exactly 3.00s fails)
+    if duration <= MIN_VIDEO_DURATION:
+        activity.logger.warning(
+            f"⏱️ [DOWNLOAD] Filtered: too short | video={display_idx} | "
+            f"duration={duration:.1f}s | min={MIN_VIDEO_DURATION}s"
         )
-        if result.modified_count > 0:
-            activity.logger.info(
-                f"✅ [REPLACE] MongoDB updated | removed={old_s3_url}"
-            )
-        else:
+        os.remove(output_path)
+        return None
+    
+    if duration > MAX_VIDEO_DURATION:
+        activity.logger.warning(
+            f"⏱️ [DOWNLOAD] Filtered: too long | video={display_idx} | "
+            f"duration={duration:.1f}s | max={MAX_VIDEO_DURATION}s"
+        )
+        os.remove(output_path)
+        return None
+    
+    # Short edge filter: reject low-resolution videos
+    # 720p has short edge 720, but letterboxed HD has ~686px
+    if SHORT_EDGE_FILTER_ENABLED and width and height:
+        short_edge = min(width, height)
+        if short_edge < MIN_SHORT_EDGE:
             activity.logger.warning(
-                f"⚠️ [REPLACE] Video not found in MongoDB | url={old_s3_url}"
+                f"📏 [DOWNLOAD] Filtered: low resolution | video={display_idx} | "
+                f"short_edge={short_edge}px | min={MIN_SHORT_EDGE}px | res={width}x{height}"
             )
-        return True
-    except Exception as e:
-        activity.logger.error(
-            f"❌ [REPLACE] MongoDB update failed | event={event_id} | error={e}"
-        )
-        raise
-
-
-@activity.defn
-async def bump_video_popularity(
-    fixture_id: int,
-    event_id: str,
-    s3_url: str,
-    new_popularity: int,
-) -> bool:
-    """
-    Bump the popularity count for an existing video.
-    Called when we find a duplicate but the existing video is higher quality.
+            os.remove(output_path)
+            return None
     
-    Args:
-        fixture_id: Fixture ID
-        event_id: Event ID
-        s3_url: S3 URL of the existing video
-        new_popularity: New popularity value
+    # Aspect ratio filter: reject portrait/square videos (< 4:3)
+    # Disabled by default to allow stadium phone recordings
+    # Phone-TV recordings are filtered by AI vision instead
+    if ASPECT_RATIO_FILTER_ENABLED and width and height and height > 0:
+        aspect_ratio = width / height
+        if aspect_ratio < MIN_ASPECT_RATIO:
+            activity.logger.warning(
+                f"📐 [DOWNLOAD] Filtered: aspect ratio | video={display_idx} | "
+                f"ratio={aspect_ratio:.2f} | min={MIN_ASPECT_RATIO}"
+            )
+            os.remove(output_path)
+            return None
     
-    Returns:
-        True if successful
-    """
-    from src.data.mongo_store import FootyMongoStore
+    # Calculate MD5 hash and size (fast)
+    file_hash = _calculate_md5(output_path)
+    file_size = os.path.getsize(output_path)
     
-    store = FootyMongoStore()
+    quality_info = f"{width}x{height}" if width and height else "unknown res"
+    if bitrate:
+        quality_info += f"@{bitrate:.0f}kbps"
     
     activity.logger.info(
-        f"📈 [POPULARITY] Bumping video popularity | event={event_id} | new_pop={new_popularity}"
+        f"✅ [DOWNLOAD] Video ready for validation | video={display_idx} | "
+        f"size={file_size / 1024 / 1024:.2f}MB | duration={duration:.1f}s | quality={quality_info}"
     )
     
-    success = store.update_video_popularity(fixture_id, event_id, s3_url, new_popularity)
+    # Return without perceptual_hash - will be generated after AI validation
+    return {
+        "status": "success",
+        "file_path": output_path,
+        "file_hash": file_hash,
+        "perceptual_hash": "",  # Placeholder - generated after AI validation
+        "duration": duration,
+        "file_size": file_size,
+        "video_index": video_index,
+        "sub_index": sub_index,
+        "source_url": source_tweet_url,
+        "width": width,
+        "height": height,
+        "bitrate": bitrate,
+        "resolution_score": width * height if width and height else 0,
+    }
+
+
+def _extract_frame_for_vision(file_path: str, timestamp: float) -> Optional[str]:
+    """
+    Extract a single frame from video and return as base64.
     
-    if success:
-        activity.logger.info(
-            f"✅ [POPULARITY] Updated | event={event_id} | popularity={new_popularity}"
-        )
-    else:
-        activity.logger.warning(
-            f"⚠️ [POPULARITY] Update failed | event={event_id} | url={s3_url}"
-        )
+    Args:
+        file_path: Path to video file
+        timestamp: Timestamp in seconds to extract frame
+        
+    Returns:
+        Base64-encoded PNG image or None if extraction fails
+    """
+    import subprocess
+    import base64
     
-    return success
+    try:
+        cmd = [
+            "ffmpeg",
+            "-ss", str(timestamp),
+            "-i", file_path,
+            "-vframes", "1",
+            "-f", "image2pipe",
+            "-vcodec", "png",
+            "-"
+        ]
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10
+        )
+        
+        if result.returncode != 0 or not result.stdout:
+            activity.logger.warning(
+                f"⚠️ Frame extraction failed at {timestamp}s: "
+                f"returncode={result.returncode}, stderr={result.stderr.decode()[:200] if result.stderr else 'none'}"
+            )
+            return None
+        
+        return base64.b64encode(result.stdout).decode('utf-8')
+    except subprocess.TimeoutExpired:
+        activity.logger.warning(f"⚠️ Frame extraction timed out at {timestamp}s")
+        return None
+    except Exception as e:
+        activity.logger.warning(f"⚠️ Frame extraction error at {timestamp}s: {e}")
+        return None
+
+
+async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[str, Any]]:
+    """
+    Call vision LLM with an image using llama.cpp OpenAI-compatible API.
+    
+    Args:
+        image_base64: Base64-encoded image
+        prompt: Question to ask about the image
+        
+    Returns:
+        Dict with response content or None if failed
+    """
+    import httpx
+    
+    llama_url = LLAMA_CHAT_URL
+    
+    activity.logger.debug(f"🔍 Calling vision model at {llama_url}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # OpenAI-compatible multimodal format for llama.cpp
+            response = await client.post(
+                f"{llama_url}/v1/chat/completions",
+                json={
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{image_base64}"
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    "max_tokens": 100,
+                    "temperature": 0.1
+                }
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                activity.logger.warning(
+                    f"⚠️ Vision model returned status {response.status_code}: {response.text[:200]}"
+                )
+                return None
+    except httpx.ConnectError as e:
+        activity.logger.error(f"❌ Cannot connect to LLM at {llama_url}: {e}")
+        raise  # Propagate connection errors - should retry
+    except httpx.TimeoutException as e:
+        activity.logger.warning(f"⚠️ Vision model request timed out: {e}")
+        raise  # Propagate timeouts - should retry
+    except Exception as e:
+        activity.logger.error(f"❌ Vision model error: {type(e).__name__}: {e}")
+        raise  # Propagate all errors - let retry policy handle
 
 
 def _calculate_md5(file_path: str) -> str:
@@ -1874,38 +854,6 @@ def _calculate_md5(file_path: str) -> str:
         for chunk in iter(lambda: f.read(4096), b""):
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
-
-
-def _get_video_duration(file_path: str) -> float:
-    """
-    Get video duration in seconds using ffprobe.
-    
-    Args:
-        file_path: Path to video file
-        
-    Returns:
-        Duration in seconds, or 0.0 if failed
-    """
-    import subprocess
-    import json
-    
-    try:
-        cmd = [
-            "ffprobe",
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            file_path
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            duration = float(data.get("format", {}).get("duration", 0))
-            return duration
-    except Exception as e:
-        activity.logger.warning(f"⚠️ Failed to get duration for {file_path}: {e}")
-    
-    return 0.0
 
 
 def _get_video_metadata(file_path: str) -> dict:
@@ -1980,8 +928,6 @@ def _generate_perceptual_hash(file_path: str, duration: float, heartbeat_fn=None
     
     Format: "dense:<interval>:<ts1>=<hash1>,<ts2>=<hash2>,..."
     Example: "dense:0.25:0.25=a3f8b2e1c9d4f5a2,0.50=1e3b8c7d9f2a4b1c,..."
-    
-    Also supports legacy format for backward compatibility.
     
     Args:
         file_path: Path to video file
@@ -2078,340 +1024,23 @@ def _generate_perceptual_hash(file_path: str, duration: float, heartbeat_fn=None
     return f"dense:{interval}:{hash_list}"
 
 
-def _hamming_distance(hex_a: str, hex_b: str) -> int:
+@activity.defn
+async def cleanup_download_temp(temp_dir: str) -> bool:
     """
-    Calculate hamming distance (bit difference) between two hex hashes.
+    Clean up temporary directory.
+    Called by DownloadWorkflow on failure to clean up any downloaded files.
     
     Args:
-        hex_a: First hex hash (e.g., "1fcee5dad69a67cc")
-        hex_b: Second hex hash
-        
-    Returns:
-        Number of differing bits (0-64 for 64-bit hashes)
-    """
-    try:
-        int_a = int(hex_a, 16)
-        int_b = int(hex_b, 16)
-        return bin(int_a ^ int_b).count('1')
-    except (ValueError, TypeError):
-        return 64  # Max distance on error
-
-
-def _perceptual_hashes_match(
-    hash_a: str, 
-    hash_b: str, 
-    max_hamming: int = MAX_HAMMING_DISTANCE,
-    min_consecutive_matches: int = MIN_CONSECUTIVE_MATCHES
-) -> bool:
-    """
-    Check if two perceptual hashes represent the same video.
-    
-    Requires multiple CONSECUTIVE frames to match to avoid false positives
-    from videos with similar content (e.g., goals 1 minute apart).
-    
-    Supports two formats:
-    1. Dense format (new): "dense:<interval>:<ts1>=<hash1>,<ts2>=<hash2>,..."
-       - Uses sliding window to find consecutive matching frames
-       - Requires min_consecutive_matches frames in a row to match
-       
-    2. Legacy format: "hash1:hash2:hash3" or "duration:hash1:hash2:hash3"
-       - Fixed timestamp comparison (backward compatible)
-       - Requires 2 of 3 frames to match
-    
-    Args:
-        hash_a: First hash (dense or legacy format)
-        hash_b: Second hash (dense or legacy format)
-        max_hamming: Max hamming distance for a frame match (from config)
-        min_consecutive_matches: Min consecutive frames that must match (from config)
-        
-    Returns:
-        True if videos match (have consecutive matching frames)
-    """
-    # Early return for empty hashes (videos without hashes can't be compared)
-    if not hash_a or not hash_b:
-        return False
-    
-    try:
-        # Check if both are dense format
-        is_dense_a = hash_a.startswith("dense:")
-        is_dense_b = hash_b.startswith("dense:")
-        
-        if is_dense_a and is_dense_b:
-            # Dense format: require consecutive frames to match
-            return _dense_hashes_match(hash_a, hash_b, max_hamming, min_consecutive_matches)
-        
-        # Legacy format or mixed: use simple matching
-        hashes_a = _parse_perceptual_hash(hash_a)
-        hashes_b = _parse_perceptual_hash(hash_b)
-        
-        if not hashes_a or not hashes_b:
-            return False
-        
-        # For legacy format (3 hashes at 25%, 50%, 75%), require 2 of 3 to match
-        matches = 0
-        for h_a in hashes_a:
-            for h_b in hashes_b:
-                dist = _hamming_distance(h_a, h_b)
-                if dist <= max_hamming:
-                    matches += 1
-                    break
-        
-        # Legacy: 2 of 3 frames must match
-        return matches >= 2
-        
-    except Exception:
-        return False
-
-
-def _dense_hashes_match(
-    hash_a: str,
-    hash_b: str,
-    max_hamming: int = MAX_HAMMING_DISTANCE,
-    min_consecutive: int = MIN_CONSECUTIVE_MATCHES
-) -> bool:
-    """
-    Check if two dense perceptual hashes match with consecutive frame requirement.
-    
-    For true duplicates (possibly with different start times), consecutive frames
-    in video A should match frames in video B with a CONSISTENT time offset.
-    
-    Algorithm:
-    1. For each possible time offset between A and B
-    2. Count how many consecutive frames match at that offset
-    3. If any offset has >= min_consecutive matches, videos are duplicates
-    
-    Args:
-        hash_a: Dense hash "dense:<interval>:<ts1>=<hash1>,..."
-        hash_b: Dense hash "dense:<interval>:<ts2>=<hash2>,..."
-        max_hamming: Max hamming distance for frame match
-        min_consecutive: Min consecutive frames required
-        
-    Returns:
-        True if videos have consecutive matching frames at consistent offset
-    """
-    try:
-        # Parse dense hashes into {timestamp: hash_int}
-        def parse_dense(h):
-            parts = h.split(":", 2)
-            if len(parts) < 3:
-                return {}, 0.25
-            interval = float(parts[1])
-            frames = {}
-            for pair in parts[2].split(","):
-                if "=" in pair:
-                    ts_str, hash_hex = pair.split("=", 1)
-                    frames[float(ts_str)] = int(hash_hex, 16)
-            return frames, interval
-        
-        frames_a, interval_a = parse_dense(hash_a)
-        frames_b, interval_b = parse_dense(hash_b)
-        
-        if len(frames_a) < min_consecutive or len(frames_b) < min_consecutive:
-            return False
-        
-        timestamps_a = sorted(frames_a.keys())
-        timestamps_b = sorted(frames_b.keys())
-        
-        # Try each possible starting alignment between A and B
-        # For each frame in A, try aligning it with each frame in B
-        for start_a in timestamps_a:
-            for start_b in timestamps_b:
-                offset = start_b - start_a  # Time offset: B = A + offset
-                
-                # Count consecutive matches at this offset
-                consecutive = 0
-                max_consecutive = 0
-                
-                for ts_a in timestamps_a:
-                    ts_b = ts_a + offset
-                    
-                    # Find closest timestamp in B (within tolerance)
-                    tolerance = interval_a / 2
-                    matched = False
-                    
-                    for actual_ts_b in timestamps_b:
-                        if abs(actual_ts_b - ts_b) <= tolerance:
-                            h_a = frames_a[ts_a]
-                            h_b = frames_b[actual_ts_b]
-                            dist = bin(h_a ^ h_b).count('1')
-                            if dist <= max_hamming:
-                                matched = True
-                                break
-                    
-                    if matched:
-                        consecutive += 1
-                        max_consecutive = max(max_consecutive, consecutive)
-                        if max_consecutive >= min_consecutive:
-                            return True
-                    else:
-                        consecutive = 0
-        
-        return False
-        
-    except Exception:
-        return False
-
-
-def _get_duration_from_hash(hash_str: str) -> float:
-    """
-    Extract video duration from a perceptual hash string.
-    
-    For dense format, duration is the last timestamp.
-    For legacy format, duration was the first part (if 4 parts).
+        temp_dir: Path to the temporary directory to delete
     
     Returns:
-        Duration in seconds, or 0.0 if unable to parse.
+        True if successful
     """
-    if not hash_str:
-        return 0.0
+    import shutil
     
-    try:
-        if hash_str.startswith("dense:"):
-            # Dense format: "dense:<interval>:<ts1>=<hash1>,<ts2>=<hash2>,..."
-            parts = hash_str.split(":", 2)
-            if len(parts) < 3:
-                return 0.0
-            
-            # Get the last timestamp
-            hash_list = parts[2]
-            items = hash_list.split(",")
-            if items:
-                last_item = items[-1]
-                if "=" in last_item:
-                    ts_str, _ = last_item.split("=", 1)
-                    return float(ts_str)
-        else:
-            # Legacy format: "duration:hash1:hash2:hash3" 
-            parts = hash_str.split(":")
-            if len(parts) == 4:
-                # Old format with duration prefix
-                try:
-                    return float(parts[0])
-                except ValueError:
-                    pass
-        return 0.0
-    except Exception:
-        return 0.0
-
-
-def _parse_perceptual_hash(hash_str: str) -> list:
-    """
-    Parse a perceptual hash string into a list of frame hashes.
+    if temp_dir and os.path.exists(temp_dir):
+        shutil.rmtree(temp_dir)
+        activity.logger.info(f"🧹 [DOWNLOAD] Cleaned up temp dir | path={temp_dir}")
+        return True
     
-    Supports:
-    - Dense format: "dense:0.25:0.25=abc123,0.50=def456,..."
-    - Legacy format: "hash1:hash2:hash3" or "duration:hash1:hash2:hash3"
-    
-    Returns:
-        List of hex hash strings
-    """
-    if not hash_str:
-        return []
-    
-    if hash_str.startswith("dense:"):
-        # Dense format: "dense:<interval>:<ts1>=<hash1>,<ts2>=<hash2>,..."
-        parts = hash_str.split(":", 2)
-        if len(parts) < 3:
-            return []
-        
-        hash_list = parts[2]
-        hashes = []
-        for item in hash_list.split(","):
-            if "=" in item:
-                _, frame_hash = item.split("=", 1)
-                if frame_hash:
-                    hashes.append(frame_hash)
-        return hashes
-    else:
-        # Legacy format: "hash1:hash2:hash3" or "duration:hash1:hash2:hash3"
-        parts = hash_str.split(":")
-        if len(parts) == 4:
-            # Old format with duration prefix - skip it
-            return parts[1:4]
-        elif len(parts) == 3:
-            # New legacy format without duration
-            return parts
-        else:
-            return []
-
-
-def _convert_cookies_to_netscape(json_file: str, netscape_file: str) -> None:
-    """
-    Convert Selenium JSON cookies to Netscape format for yt-dlp.
-    
-    Netscape format (tab-separated):
-    domain\tflag\tpath\tsecure\texpiration\tname\tvalue
-    
-    Args:
-        json_file: Path to JSON cookie file from Selenium
-        netscape_file: Path to write Netscape format cookies
-    """
-    import json
-    
-    with open(json_file, 'r') as f:
-        data = json.load(f)
-    
-    cookies = data.get('cookies', [])
-    
-    with open(netscape_file, 'w') as f:
-        # Netscape cookie file header
-        f.write("# Netscape HTTP Cookie File\n")
-        f.write("# This is a generated file! Do not edit.\n\n")
-        
-        for cookie in cookies:
-            domain = cookie.get('domain', '.x.com')
-            flag = 'TRUE' if domain.startswith('.') else 'FALSE'
-            path = cookie.get('path', '/')
-            secure = 'TRUE' if cookie.get('secure', True) else 'FALSE'
-            expiration = str(int(cookie.get('expiry', 0)))
-            name = cookie.get('name', '')
-            value = cookie.get('value', '')
-            
-            # Write tab-separated line
-            f.write(f"{domain}\t{flag}\t{path}\t{secure}\t{expiration}\t{name}\t{value}\n")
-
-
-def _try_direct_download(video_url: str, output_path: str, cookies_json: str, activity) -> bool:
-    """
-    Try to download video using the Twitter browser session via API call.
-    
-    This sends a request to the Twitter service (Selenium browser) to download
-    the video, which bypasses yt-dlp's detectable patterns entirely.
-    
-    Returns:
-        True if download succeeded, False otherwise
-    """
-    import requests
-    import time
-    
-    try:
-        activity.logger.info(f"🔄 Attempting browser-based download (bypass yt-dlp)")
-        
-        twitter_service_url = os.getenv('TWITTER_SERVICE_URL', 'http://found-footy-twitter:8888')
-        
-        # Request the Twitter service to download the video
-        response = requests.post(
-            f"{twitter_service_url}/download_video",
-            json={
-                "video_url": video_url,
-                "output_path": output_path,
-            },
-            timeout=45,  # 45s total for download (matches activity timeout)
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("status") == "success":
-                file_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
-                activity.logger.info(f"✅ Browser download succeeded ({file_size / 1024 / 1024:.2f} MB)")
-                return True
-            else:
-                activity.logger.warning(f"⚠️ Browser download failed: {result.get('error', 'Unknown error')}")
-                return False
-        else:
-            activity.logger.warning(f"⚠️ Browser download service returned {response.status_code}")
-            return False
-        
-    except Exception as e:
-        activity.logger.warning(f"⚠️ Browser download failed: {str(e)[:200]}")
-        return False
+    return False

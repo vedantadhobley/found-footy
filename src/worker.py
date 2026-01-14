@@ -63,8 +63,9 @@ from src.workflows import (
     RAGWorkflow,
     TwitterWorkflow,
     DownloadWorkflow,
+    UploadWorkflow,
 )
-from src.activities import ingest, monitor, rag, twitter, download
+from src.activities import ingest, monitor, rag, twitter, download, upload
 
 
 async def setup_schedules(client: Client):
@@ -167,6 +168,7 @@ async def main():
                 RAGWorkflow,
                 TwitterWorkflow,
                 DownloadWorkflow,
+                UploadWorkflow,
             ],
             activities=[
                 # Ingest activities
@@ -193,24 +195,28 @@ async def main():
                 twitter.execute_twitter_search,
                 twitter.save_discovered_videos,
                 twitter.update_twitter_attempt,
-                # Download activities (10 granular for per-video retry + quality replacement)
-                download.fetch_event_data,
+                # Download activities (download, validate, hash, cleanup)
                 download.download_single_video,
-                download.deduplicate_by_md5,  # Fast MD5 dedup BEFORE validation (saves compute)
-                download.validate_video_is_soccer,  # AI vision validation (after MD5 dedup)
-                download.generate_video_hash,  # Perceptual hash (after validation)
-                download.deduplicate_videos,  # Perceptual hash dedup
-                download.upload_single_video,
-                download.mark_download_complete,
-                download.replace_s3_video,
-                download.bump_video_popularity,
-                download.increment_twitter_count,  # Increment count + set _twitter_complete when all done
+                download.validate_video_is_soccer,  # AI vision validation
+                download.generate_video_hash,  # Perceptual hash with heartbeat
+                download.increment_twitter_count,  # Increment count + set _twitter_complete when done
+                download.cleanup_download_temp,  # Cleanup on failure
+                # Upload activities (S3 dedup/upload - serialized per event)
+                upload.fetch_event_data,  # Get existing S3 videos
+                upload.deduplicate_by_md5,  # Fast MD5 dedup against S3
+                upload.deduplicate_videos,  # Perceptual hash dedup against S3
+                upload.upload_single_video,
+                upload.replace_s3_video,
+                upload.bump_video_popularity,
+                upload.save_video_objects,
+                upload.recalculate_video_ranks,
+                upload.cleanup_upload_temp,  # Cleanup after successful upload
             ],
         )
         
         print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
-        print("📋 Workflows: Ingest, Monitor, RAG, Twitter, Download", flush=True)
-        print("🔧 Activities: 28 total (2 ingest, 9 monitor, 4 rag, 5 twitter, 10 download)", flush=True)
+        print("📋 Workflows: Ingest, Monitor, RAG, Twitter, Download, Upload", flush=True)
+        print("🔧 Activities: 29 total (2 ingest, 9 monitor, 4 rag, 5 twitter, 5 download, 9 upload)", flush=True)
         print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every 30s)", flush=True)
         await worker.run()
     except Exception as e:

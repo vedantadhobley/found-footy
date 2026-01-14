@@ -3,14 +3,15 @@
 ## 🎯 Core Principle: Decoupled Workflow Architecture
 
 The system uses a **decoupled architecture** where:
-- **MonitorWorkflow** handles debouncing and triggers RAGWorkflow **ONCE** per event (fire-and-forget)
-- **RAGWorkflow** resolves team aliases (~30-90s) and triggers TwitterWorkflow (fire-and-forget)
-- **TwitterWorkflow** manages all 3 search attempts **internally** with 3-minute durable timers
-- **TwitterWorkflow** MUST WAIT for DownloadWorkflow (data integrity requirement)
+- **MonitorWorkflow** handles debouncing and triggers TwitterWorkflow **ONCE** per event (fire-and-forget)
+- **TwitterWorkflow** resolves aliases (cache or RAG) then manages 10 search attempts with 1-minute durable timers
+- **DownloadWorkflow** downloads, validates, and hashes videos (BLOCKING child)
+- **UploadWorkflow** serializes S3 operations per event via deterministic workflow ID
 
 This decoupling allows:
-- Twitter searches to run at 3-minute intervals (not tied to Monitor's 1-min poll)
-- RAG to complete quickly without waiting 15+ minutes for Twitter+Download
+- Twitter searches to run at 1-minute intervals (not tied to Monitor's 30s poll)
+- Alias resolution inside TwitterWorkflow (eliminates double fire-and-forget chain)
+- Serialized S3 uploads via UploadWorkflow (eliminates race conditions)
 - Fixture completion only after all downloads are done
 
 ---
@@ -27,34 +28,32 @@ This decoupling allows:
 │  │                                                                        │   │
 │  │   _monitor_complete = FALSE                                            │   │
 │  │                                                                        │   │
-│  │   Each minute (Monitor poll):                                          │   │
+│  │   Each 30s (Monitor poll):                                             │   │
 │  │     IF event seen: increment _monitor_count                            │   │
 │  │     IF _monitor_count >= 3:                                            │   │
 │  │       → set _monitor_complete = TRUE                                   │   │
-│  │       → set _twitter_count = 1 (initial)                               │   │
-│  │       → trigger RAGWorkflow (ONCE, fire-and-forget)                    │   │
+│  │       → trigger TwitterWorkflow (ONCE, fire-and-forget)                │   │
 │  │                                                                        │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                              │                                               │
-│                              ▼ (RAGWorkflow started)                         │
+│                              ▼ (TwitterWorkflow started)                     │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │                    PHASE 2: TWITTER (Self-Managed)                    │   │
 │  │                                                                        │   │
-│  │   RAGWorkflow (~30-90s, fire-and-forget):                              │   │
-│  │     1. get_team_aliases(team_name) → ["Liverpool", "LFC", "Reds"]      │   │
-│  │     2. save_team_aliases to MongoDB                                    │   │
-│  │     3. Start TwitterWorkflow (fire-and-forget, ABANDON policy)         │   │
-│  │     → RAG COMPLETES HERE                                               │   │
-│  │                                                                        │   │
-│  │   TwitterWorkflow (manages all 3 attempts internally, ~12-15 min):     │   │
-│  │     FOR attempt IN [1, 2, 3]:                                          │   │
+│  │   TwitterWorkflow (~10 min, fire-and-forget from Monitor):             │   │
+│  │     1. Resolve aliases: cache lookup OR RAG pipeline (~30-90s)         │   │
+│  │     2. FOR attempt IN [1..10]:                                         │   │
 │  │       → update_twitter_attempt(attempt)                                │   │
 │  │       → Search all aliases: "Salah Liverpool", "Salah LFC", ...        │   │
 │  │       → Dedupe videos, save to _discovered_videos                      │   │
-│  │       → WAIT for DownloadWorkflow (data integrity!)                    │   │
-│  │       → IF attempt < 3: sleep(3 minutes) ← DURABLE TIMER               │   │
-│  │     AFTER attempt 3 + ALL downloads complete:                          │   │
-│  │       → set _twitter_complete = TRUE                                   │   │
+│  │       → IF videos: start DownloadWorkflow (BLOCKING child)             │   │
+│  │           → DownloadWorkflow: download → validate → hash               │   │
+│  │           → DownloadWorkflow calls UploadWorkflow (BLOCKING, serialized)│   │
+│  │           → DownloadWorkflow: increment_twitter_count                  │   │
+│  │       → ELSE: increment_twitter_count directly                         │   │
+│  │       → IF attempt < 10: sleep(1 minute) ← DURABLE TIMER               │   │
+│  │     WHEN _twitter_count reaches 10:                                    │   │
+│  │       → _twitter_complete = TRUE (set atomically by increment)         │   │
 │  │                                                                        │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                              │                                               │
@@ -81,9 +80,9 @@ This decoupling allows:
 |-------|--------|------|---------|
 | `_monitor_count` | Monitor | Each poll when event seen | Debounce counter (1, 2, 3) |
 | `_monitor_complete` | Monitor | When `_monitor_count >= 3` | Debounce finished |
-| `_twitter_aliases` | RAGWorkflow | After alias lookup | Team search variations |
-| `_twitter_count` | TwitterWorkflow | Start of each attempt | Tracks current attempt (1, 2, 3) |
-| `_twitter_complete` | TwitterWorkflow | After attempt 3 | All searches finished |
+| `_twitter_aliases` | TwitterWorkflow | After alias resolution | Team search variations |
+| `_twitter_count` | DownloadWorkflow | When download completes | Tracks completed attempts (1-10) |
+| `_twitter_complete` | DownloadWorkflow | When count reaches 10 | All attempts finished |
 
 ---
 
@@ -93,39 +92,43 @@ This decoupling allows:
 - Polls active fixtures from API
 - Increments `_monitor_count` for seen events
 - Sets `_monitor_complete = TRUE` when count reaches 3
-- **Triggers RAGWorkflow ONCE** (fire-and-forget)
+- **Triggers TwitterWorkflow ONCE** (fire-and-forget)
 - Checks fixture completion eligibility
-- **Does NOT manage Twitter retries** (that's TwitterWorkflow's job now)
+- **Does NOT manage Twitter retries** (that's TwitterWorkflow's job)
 
-### RAGWorkflow (Triggered by Monitor, ~30-90s)
-- **Checks cache first** - aliases pre-cached during ingestion
-- If cache miss: runs full Wikidata + LLM RAG pipeline
-- Determines team type via API-Football (`team.national` boolean)
-- Saves aliases to `_twitter_aliases` in MongoDB
-- **Triggers TwitterWorkflow (fire-and-forget with ABANDON policy)**
-- RAG completes immediately - doesn't wait 15+ min for Twitter+Download
-
-### TwitterWorkflow (Triggered by RAGWorkflow, ~12-15 min)
-- **Self-manages all 3 attempts** with durable timers
+### TwitterWorkflow (Triggered by Monitor, ~10 min)
+- **Resolves aliases at start**: cache lookup OR full RAG pipeline
+- **Self-manages all 10 attempts** with durable timers (1-min spacing)
 - Builds search queries: `{player_last} {alias}` for each alias
 - Deduplicates videos across aliases and previous attempts
-- **WAITS for DownloadWorkflow** after each attempt (data integrity)
-- Updates `_twitter_count` at start of each attempt
-- Sets `_twitter_complete = TRUE` **only after all downloads complete**
+- **Starts DownloadWorkflow (BLOCKING child)** for each attempt with videos
+- If no videos found, increments `_twitter_count` directly
+- `_twitter_complete` is set atomically when count reaches 10
 
-**Why Twitter WAITS for Download:**
-- Download updates MongoDB with S3 video URLs
-- Fixture completion checks `_twitter_complete` flag
-- If fire-and-forget, fixture could complete before downloads finish
-- This would cause lookups in wrong collection → data loss
-
-### DownloadWorkflow (Triggered by TwitterWorkflow)
-- Downloads videos from Twitter URLs
+### DownloadWorkflow (Triggered by TwitterWorkflow, BLOCKING)
+- Downloads videos from Twitter URLs (parallel)
 - Applies duration filter (>3s to 60s)
+- MD5 batch dedup (within downloaded batch only)
 - Validates soccer content via vision model (Qwen3-VL)
 - Computes perceptual hash for deduplication (dense 0.25s sampling)
-- Compares with existing S3 videos (requires 3 consecutive frames to match)
-- Uploads new/better videos to S3
+- **Calls UploadWorkflow as BLOCKING child** (serialized per event)
+- Increments `_twitter_count` when complete
+
+### UploadWorkflow (Triggered by DownloadWorkflow, SERIALIZED)
+- **Workflow ID: `upload-{event_id}`** - only ONE runs at a time per event
+- Fetches FRESH S3 state inside serialized context
+- MD5 dedup against S3 (exact matches → bump popularity)
+- Perceptual dedup against S3 (similar content → quality comparison)
+- Uploads new/better videos to S3 (parallel)
+- Updates MongoDB `_s3_videos` array
+- Recalculates video ranks
+- Cleans up temp files
+
+**Why UploadWorkflow is Serialized:**
+- Multiple DownloadWorkflows may find videos for the same event simultaneously
+- Without serialization, both would see stale S3 state and upload duplicates
+- Deterministic workflow ID ensures Temporal queues concurrent calls
+- Each sees fresh S3 state when it runs
 
 ---
 
@@ -137,137 +140,103 @@ T+0:30  Monitor poll #1 → _monitor_count = 1
 T+1:00  Monitor poll #2 → _monitor_count = 2
 T+1:30  Monitor poll #3 → _monitor_count = 3
         → _monitor_complete = TRUE
-        → RAGWorkflow triggered (fire-and-forget)
+        → TwitterWorkflow triggered (fire-and-forget)
         
-T+3:05  RAGWorkflow:
-        → get_cached_team_aliases(40) → ["LFC", "Reds", "Anfield", "Liverpool"]
+T+1:35  TwitterWorkflow starts:
+        → get_cached_team_aliases(40) → HIT: ["LFC", "Reds", "Liverpool"]
         → save to _twitter_aliases in event
-        → Start TwitterWorkflow
         
-T+3:10  TwitterWorkflow Attempt 1:
-        → _twitter_count = 1
+T+1:40  TwitterWorkflow Attempt 1:
+        → _twitter_count starts at 0
         → Search "Salah LFC" → 3 videos
         → Search "Salah Reds" → 2 videos (1 dup)
-        → Search "Salah Anfield" → 1 video (all dups)
-        → Search "Salah Liverpool" → 1 video
+        → Search "Salah Liverpool" → 2 videos (1 new)
         → Dedupe → 5 unique videos
-        → DownloadWorkflow → 4 uploaded to S3
-        → Sleep until next 3-min boundary (~T+6:00)
-        
-T+6:00  TwitterWorkflow Attempt 2:
-        → _twitter_count = 2
-        → Same 4 searches (new videos may exist)
+        → Start DownloadWorkflow (BLOCKING)
+          → Download 5 videos
+          → AI validation → 4 pass
+          → Generate hashes
+          → Start UploadWorkflow (upload-{event_id})
+            → Fetch fresh S3 state (empty)
+            → Upload 4 videos to S3
+            → Save to MongoDB
+          → increment_twitter_count → count = 1
+          
+T+2:40  Attempt 1 complete, sleep(1 min)
+
+T+3:40  TwitterWorkflow Attempt 2:
+        → Search same aliases (exclude already-found URLs)
         → 1 new video found
-        → DownloadWorkflow → 1 uploaded
-        → Sleep until ~T+9:00
+        → Start DownloadWorkflow (BLOCKING)
+          → Download → validate → hash
+          → Start UploadWorkflow (upload-{event_id})
+            → Fetch fresh S3 state (4 videos)
+            → Perceptual dedup → 1 new unique
+            → Upload 1 video
+          → increment_twitter_count → count = 2
+          
+T+4:40  Attempt 2 complete, sleep(1 min)
+
+... (attempts 3-9 similar) ...
+
+T+11:40 TwitterWorkflow Attempt 10:
+        → Search same aliases
+        → 0 new videos found
+        → increment_twitter_count directly → count = 10
+        → _twitter_complete = TRUE (set atomically)
         
-T+9:00  TwitterWorkflow Attempt 3:
-        → _twitter_count = 3
-        → Same 4 searches
-        → 0 new videos
-        → _twitter_complete = TRUE
-        
-T+10:00 Monitor sees:
+T+12:00 Monitor poll:
         → Fixture status = FT
-        → All events: _monitor_complete = TRUE
-        → All events: _twitter_complete = TRUE
-        → Move fixture to fixtures_completed
+        → All events have _monitor_complete = TRUE
+        → All events have _twitter_complete = TRUE
+        → Fixture moves to fixtures_completed
 ```
 
 ---
 
 ## 🎯 Key Design Decisions
 
-### Why decouple Twitter from Monitor?
+### Why Twitter directly from Monitor (no separate RAGWorkflow)?
+Previously: Monitor → RAGWorkflow → TwitterWorkflow (double fire-and-forget)
+Problem: Two fire-and-forget hops caused duplicate workflows due to Temporal ID reuse timing
+Solution: Twitter resolves aliases at start, single fire-and-forget from Monitor
 
-**Before**: Monitor triggered TwitterWorkflow on each 1-minute poll
-- 3 attempts at ~1-minute intervals (tied to poll cycle)
-- Monitor logic was complex (tracking `twitter_retry_needed`)
+### Why UploadWorkflow with deterministic ID?
+Problem: Multiple parallel downloads could see stale S3 state and upload duplicates
+Solution: Workflow ID `upload-{event_id}` serializes uploads - Temporal queues concurrent calls
+Benefit: Each upload sees fresh S3 state, proper deduplication guaranteed
 
-**After**: Monitor triggers RAGWorkflow ONCE, TwitterWorkflow self-manages
-- 3 attempts at 3-minute intervals (better for video discovery)
-- Monitor logic is simple (just trigger once)
-- Durable timers survive worker restarts
+### Why 10 Twitter attempts with 1-min spacing?
+Goal videos appear over 5-15 minutes. More frequent searches = more videos captured.
+Blocking downloads ensure reliable completion tracking via `_twitter_count`.
 
-### Why 3-minute spacing?
+### Why Downloads are BLOCKING (not fire-and-forget)?
+- `_twitter_count` must accurately track completed downloads
+- If fire-and-forget, count would increment before downloads finish
+- Fixture could complete before all videos are uploaded
+- BLOCKING ensures completion tracking is reliable
 
-Goal videos appear on Twitter over 5-15 minutes:
-- Attempt 1 (immediately): Catch early uploads
-- Attempt 2 (+3 min): New uploads appearing
-- Attempt 3 (+6 min): Final sweep for late/HD uploads
-
-### Why RAGWorkflow as intermediary?
-
-1. **Clean separation**: Alias lookup is separate from Twitter search
-2. **Future extensibility**: Wikidata + LLM implementation is isolated
-3. **Visibility**: Aliases saved to MongoDB for debugging
-4. **Pre-caching**: Aliases cached during ingestion, fast lookup at runtime
-
-### Why pre-cache aliases during ingestion?
-
-During daily ingest (00:05 UTC), we pre-cache RAG aliases for BOTH teams in every fixture:
-- Ensures aliases are ready before any goals are scored
-- Covers opponent teams (non-tracked teams that play against our tracked teams)
-- Cache lookup is O(1) by team_id at runtime
-- Full RAG pipeline (Wikidata + LLM) only runs once per team
-
-### Why use API-Football for team type?
-
-Team type (club vs national) determines alias generation:
-- National teams get nationality adjectives ("Belgian", "French", "Brazilian")
-- Clubs get standard nickname processing
-
-We use API-Football's `team.national` boolean because:
-- **Authoritative**: API knows definitively if a team is national
-- **No heuristics**: Don't guess based on team_id ranges
-- **Works for all teams**: Mali (ID 1500) is correctly identified as national
-
-### Why durable timers?
-
-Temporal's `workflow.sleep()` survives:
-- Worker restarts
-- Container crashes
-- Network issues
-
-The 3-minute wait is guaranteed even if the worker dies mid-wait.
+### Why RAG resolution inside TwitterWorkflow?
+- Eliminates double fire-and-forget chain (was causing duplicate workflows)
+- Aliases are usually cached (pre-warmed during ingestion)
+- Cache miss is rare (~30-90s RAG pipeline)
+- Simpler architecture with fewer workflows to coordinate
 
 ---
 
-## 🏁 Fixture Completion Logic
+## 🛡️ Race Condition Prevention
 
-A fixture moves to `fixtures_completed` when:
+### S3 Duplicate Prevention
+**Problem**: Two DownloadWorkflows find the same video, both upload it
+**Solution**: UploadWorkflow with deterministic ID serializes uploads per event
+**Guarantee**: Only ONE UploadWorkflow runs at a time per event
 
-1. **Fixture status** is `FT`, `AET`, or `PEN`
-2. **ALL valid events** have `_monitor_complete = TRUE`
-3. **ALL valid events** have `_twitter_complete = TRUE`
+### Fixture Completion Prevention  
+**Problem**: Fixture moves to completed while downloads still running
+**Solution**: `_twitter_complete` only set when `_twitter_count` reaches 10
+**Guarantee**: All 10 download attempts must complete before fixture can complete
 
-```python
-def complete_fixture_if_ready(fixture_id):
-    fixture = get_fixture(fixture_id)
-    valid_events = [e for e in events if not e._removed and e._event_id]
-    
-    all_monitored = all(e._monitor_complete for e in valid_events)
-    all_twitter_done = all(e._twitter_complete for e in valid_events)
-    
-    if all_monitored and all_twitter_done:
-        move_to_completed(fixture_id)
-```
-
----
-
-## 🚨 Error Handling
-
-### TwitterWorkflow fails mid-execution
-- Temporal retries the workflow
-- `_twitter_count` shows how many attempts started
-- Partial videos already downloaded are preserved
-
-### Event removed (VAR disallowed)
-- Event marked `_removed = TRUE` by Monitor
-- Ignored in completion checks
-- Any running TwitterWorkflow continues but results are orphaned
-
-### LLM unavailable
-- RAGWorkflow activity falls back to `[team_name]`
-- Search still works, just with single alias
-- Video validation uses fail-closed: skip video if AI unavailable
+### Alias Resolution Race
+**Problem**: Cache might be stale if team just played for first time
+**Solution**: TwitterWorkflow checks cache, falls back to full RAG pipeline
+**Guarantee**: Aliases are always resolved before search starts

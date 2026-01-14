@@ -482,8 +482,11 @@ class FootyMongoStore:
         """
         Mark event as monitor complete (monitor_count reached threshold).
         Called by monitor activity when event is stable.
-        Sets _twitter_count to 1 to begin Twitter attempts.
         Updates _last_activity to event's _first_seen (when goal was first detected).
+        
+        NOTE: _twitter_count stays at 0 (initialized in create_new_enhanced_event).
+        It gets SET to attempt number by TwitterWorkflow at START of each attempt,
+        then INCREMENTED by DownloadWorkflow at END of each attempt.
         
         NOTE: We use _first_seen (not datetime.now()) because:
         - It reflects when the goal actually happened (within ~1 min of real time)
@@ -494,7 +497,6 @@ class FootyMongoStore:
             update_ops = {
                 "$set": {
                     f"events.$.{EventFields.MONITOR_COMPLETE}": True,
-                    f"events.$.{EventFields.TWITTER_COUNT}": 1
                 }
             }
             
@@ -893,8 +895,8 @@ class FootyMongoStore:
         Sorts by popularity (desc) then file_size (desc) - larger files = better quality.
         Rank 1 = best video.
         
-        Only operates on fixtures_active since download workflows complete
-        before fixtures move to completed (based on match status FT/AET/PEN).
+        Checks both fixtures_active and fixtures_completed since download workflows
+        may complete after the fixture has moved to completed.
         
         Args:
             fixture_id: Fixture ID
@@ -904,10 +906,15 @@ class FootyMongoStore:
             True if successful
         """
         try:
-            # Get current fixture from active collection
+            # Try active first, then completed
             fixture = self.fixtures_active.find_one({"_id": fixture_id})
+            collection = self.fixtures_active
             if not fixture:
-                print(f"⚠️ Fixture {fixture_id} not found in fixtures_active")
+                fixture = self.fixtures_completed.find_one({"_id": fixture_id})
+                collection = self.fixtures_completed
+            
+            if not fixture:
+                print(f"⚠️ Fixture {fixture_id} not found in active or completed")
                 return False
             
             # Find the event
@@ -939,8 +946,8 @@ class FootyMongoStore:
             for rank, video in enumerate(videos_sorted, start=1):
                 video["rank"] = rank
             
-            # Update in MongoDB
-            result = self.fixtures_active.update_one(
+            # Update in the collection where we found it
+            result = collection.update_one(
                 {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
                 {"$set": {f"events.$.{EventFields.S3_VIDEOS}": videos_sorted}}
             )

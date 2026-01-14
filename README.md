@@ -60,15 +60,16 @@ flowchart TB
         direction TB
         INGEST[IngestWorkflow<br/>Daily 00:05 UTC]
         MONITOR[MonitorWorkflow<br/>Every minute]
-        RAGWF[RAGWorkflow<br/>Team alias lookup]
-        TWITTERWF[TwitterWorkflow<br/>3× per event]
+        RAGWF[RAGWorkflow<br/>Pre-caching only]
+        TWITTERWF[TwitterWorkflow<br/>10× per event]
         DOWNLOADWF[DownloadWorkflow<br/>Per video batch]
+        UPLOADWF[UploadWorkflow<br/>Serialized per event]
         
         INGEST -.->|Pre-caches aliases| RAGWF
         INGEST -.->|Populates| MONITOR
-        MONITOR -->|Triggers| RAGWF
-        RAGWF -->|Triggers| TWITTERWF
-        TWITTERWF -->|Triggers| DOWNLOADWF
+        MONITOR -->|Fire-and-forget| TWITTERWF
+        TWITTERWF -->|Blocking| DOWNLOADWF
+        DOWNLOADWF -->|Blocking, serialized| UPLOADWF
     end
     
     subgraph STORAGE["💾 Storage Layer"]
@@ -92,8 +93,8 @@ flowchart TB
     RAGWF --> LLM
     TWITTERWF --> TWITTER
     DOWNLOADWF --> LLM
-    DOWNLOADWF --> MINIO
-    DOWNLOADWF --> MONGO
+    UPLOADWF --> MINIO
+    UPLOADWF --> MONGO
 ```
 
 ---
@@ -499,24 +500,24 @@ flowchart TB
         REMOVE[REMOVED: Mark _removed]
     end
     
-    RAG[🤖 Trigger RAGWorkflow<br/>Fire-and-forget]
+    TWITTER[🐦 Trigger TwitterWorkflow<br/>Fire-and-forget]
     SYNC[Sync fixture metadata<br/>Update API fields]
     COMPLETE[Complete if finished<br/>active → completed]
     
     TRIGGER --> ACTIVATE --> FETCH --> STORE --> PROCESS
     PROCESS --> NEW & MATCH & REMOVE
-    MATCH -->|count=3| RAG
+    MATCH -->|count=3| TWITTER
     PROCESS --> SYNC --> COMPLETE
 ```
 
-### 3. RAGWorkflow
+### 3. RAGWorkflow (Pre-Caching Only)
 
-**Trigger:** Per stable event (fired by Monitor)  
-**Purpose:** Resolve team aliases via Wikidata + LLM, trigger Twitter
+**Trigger:** IngestWorkflow (daily) or manual  
+**Purpose:** Pre-cache team aliases via Wikidata + LLM for faster Twitter searches
 
 ```mermaid
 flowchart TB
-    TRIGGER[Triggered by Monitor<br/>Fire-and-forget]
+    TRIGGER[Triggered by IngestWorkflow<br/>Pre-caching only]
     
     CACHE{Cache hit?}
     CACHED[Return cached aliases<br/>team_aliases collection]
@@ -528,14 +529,14 @@ flowchart TB
         LLM[llama.cpp LLM selects<br/>Best search terms]
     end
     
-    SAVE[Save to event<br/>_twitter_aliases]
-    TWITTER[🐦 Trigger TwitterWorkflow<br/>Child workflow]
+    SAVE[Save to cache<br/>team_aliases collection]
     
     TRIGGER --> CACHE
-    CACHE -->|Yes| CACHED --> SAVE
+    CACHE -->|Yes| CACHED
     CACHE -->|No| WIKI --> FETCH --> PREPROCESS --> LLM --> SAVE
-    SAVE --> TWITTER
 ```
+
+**Note**: RAGWorkflow is only used for pre-caching during IngestWorkflow. TwitterWorkflow resolves aliases at the start of each run using cached data.
 
 **Alias Examples:**
 - `"Liverpool"` → `["Liverpool", "LFC", "Reds", "Anfield"]`
@@ -544,40 +545,45 @@ flowchart TB
 
 ### 4. TwitterWorkflow
 
-**Trigger:** Per stable event (runs 3 times)  
-**Purpose:** Search Twitter with aliases, trigger download
+**Trigger:** Per stable event (runs 10 times)  
+**Purpose:** Resolve aliases, search Twitter, trigger blocking downloads
 
 ```mermaid
 flowchart TB
-    TRIGGER[Triggered by RAGWorkflow<br/>Child workflow]
+    TRIGGER[Triggered by Monitor<br/>Fire-and-forget]
     
-    GET[Get search data<br/>Query + exclude_urls]
-    SEARCH[POST to twitter:8888<br/>Firefox automation]
-    SAVE[Save discovered videos<br/>to MongoDB]
+    ALIASES[Resolve team aliases<br/>From cache or RAG]
     
-    FOUND{Videos found?}
-    DOWNLOAD[Trigger DownloadWorkflow<br/>Blocking child]
-    DONE[Done]
+    subgraph LOOP["10 Search Attempts"]
+        GET[Get search data<br/>Query + exclude_urls]
+        SEARCH[POST to twitter:8888<br/>Firefox automation]
+        SAVE[Save discovered videos<br/>to MongoDB]
+        FOUND{Videos found?}
+        DOWNLOAD[Trigger DownloadWorkflow<br/>BLOCKING child]
+        SLEEP[workflow.sleep ~3 min]
+    end
     
-    TRIGGER --> GET --> SEARCH --> FOUND
-    FOUND -->|Yes| SAVE --> DOWNLOAD --> DONE
-    FOUND -->|No| DONE
+    DONE[Mark _twitter_complete<br/>After attempt 10]
+    
+    TRIGGER --> ALIASES --> GET --> SEARCH --> FOUND
+    FOUND -->|Yes| SAVE --> DOWNLOAD --> SLEEP
+    FOUND -->|No| SLEEP
+    SLEEP --> |Next attempt| GET
+    SLEEP --> |Attempt 10| DONE
 ```
 
 ### 5. DownloadWorkflow
 
 **Trigger:** Per Twitter search with videos  
-**Purpose:** Download, validate, deduplicate, upload
+**Purpose:** Download, validate, deduplicate (MD5 only), delegate to UploadWorkflow
 
 ```mermaid
 flowchart TB
-    TRIGGER[Triggered by Twitter<br/>With video URLs]
-    
-    FETCH[Fetch event data<br/>Existing S3 videos from MongoDB]
+    TRIGGER[Triggered by Twitter<br/>BLOCKING child]
     
     subgraph DOWNLOAD["1. Download Phase"]
         DL[Download via yt-dlp]
-        FILTER{Duration<br/>>3-60s?}
+        FILTER{Duration<br/>3-60s?}
         META[Extract metadata<br/>Resolution, bitrate]
         FILTERED[Track as filtered]
     end
@@ -591,27 +597,51 @@ flowchart TB
         PHASH[Compute perceptual hash<br/>Dense 0.25s sampling]
     end
     
-    subgraph DEDUP["4. Deduplication"]
-        COMPARE[Compare hashes<br/>3 consecutive frames]
-        QUALITY[Keep best quality]
+    subgraph DEDUP["4. Batch MD5 Dedup"]
+        MD5[Compare MD5 hashes<br/>Within batch only]
     end
     
-    subgraph UPLOAD["5. Upload Phase"]
-        REPLACE[Replace if better]
-        NEW[Upload new videos]
-    end
+    UPLOAD[Trigger UploadWorkflow<br/>BLOCKING, serialized]
     
-    SAVE[Save to MongoDB<br/>_s3_videos array]
-    
-    TRIGGER --> FETCH --> DL
+    TRIGGER --> DL
     DL --> FILTER
     FILTER -->|Pass| META --> AI
     FILTER -->|Fail| FILTERED
     AI -->|Soccer| PHASH
     AI -->|Not soccer| REJECT
-    PHASH --> COMPARE --> QUALITY
-    QUALITY --> REPLACE & NEW --> SAVE
+    PHASH --> MD5 --> UPLOAD
 ```
+
+### 6. UploadWorkflow
+
+**Trigger:** Per DownloadWorkflow with validated videos  
+**Purpose:** Serialized S3 deduplication and upload per event
+
+```mermaid
+flowchart TB
+    TRIGGER[Triggered by DownloadWorkflow<br/>Deterministic ID: upload-event_id]
+    
+    FETCH[Fetch S3 state<br/>Fresh inside serialized context]
+    
+    subgraph DEDUP["S3 Deduplication"]
+        COMPARE[Compare perceptual hashes<br/>Against existing S3 videos]
+        QUALITY[Keep best quality<br/>Replace if better]
+    end
+    
+    subgraph UPLOAD["Upload Phase"]
+        REPLACE[Replace inferior videos]
+        NEW[Upload new videos]
+    end
+    
+    SAVE[Save to MongoDB<br/>_s3_videos array]
+    RANKS[Recalculate video ranks]
+    CLEANUP[Cleanup temp dir]
+    
+    TRIGGER --> FETCH --> COMPARE --> QUALITY
+    QUALITY --> REPLACE & NEW --> SAVE --> RANKS --> CLEANUP
+```
+
+**Key Design**: Deterministic workflow ID `upload-{event_id}` ensures only ONE UploadWorkflow runs per event at a time. This serializes S3 operations and eliminates race conditions when parallel DownloadWorkflows complete simultaneously.
 
 **Optimized Pipeline Order**: AI validation runs BEFORE perceptual hash generation. This saves expensive hash computation (dense 0.25s sampling with ffmpeg) for non-soccer videos that would be rejected anyway.
 
