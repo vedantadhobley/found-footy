@@ -895,8 +895,9 @@ class FootyMongoStore:
         Sorts by popularity (desc) then file_size (desc) - larger files = better quality.
         Rank 1 = best video.
         
-        Checks both fixtures_active and fixtures_completed since download workflows
-        may complete after the fixture has moved to completed.
+        Only checks fixtures_active since UploadWorkflow (which calls this) is BLOCKING
+        inside DownloadWorkflow, which must complete before _twitter_count is incremented.
+        Fixture cannot move to completed until all DownloadWorkflows finish.
         
         Args:
             fixture_id: Fixture ID
@@ -906,15 +907,9 @@ class FootyMongoStore:
             True if successful
         """
         try:
-            # Try active first, then completed
             fixture = self.fixtures_active.find_one({"_id": fixture_id})
-            collection = self.fixtures_active
             if not fixture:
-                fixture = self.fixtures_completed.find_one({"_id": fixture_id})
-                collection = self.fixtures_completed
-            
-            if not fixture:
-                print(f"⚠️ Fixture {fixture_id} not found in active or completed")
+                print(f"⚠️ Fixture {fixture_id} not found in fixtures_active")
                 return False
             
             # Find the event
@@ -946,8 +941,8 @@ class FootyMongoStore:
             for rank, video in enumerate(videos_sorted, start=1):
                 video["rank"] = rank
             
-            # Update in the collection where we found it
-            result = collection.update_one(
+            # Update in fixtures_active
+            result = self.fixtures_active.update_one(
                 {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
                 {"$set": {f"events.$.{EventFields.S3_VIDEOS}": videos_sorted}}
             )
