@@ -12,6 +12,93 @@ from src.utils.config import (
 
 
 @activity.defn
+async def queue_videos_for_upload(
+    fixture_id: int,
+    event_id: str,
+    player_name: str,
+    team_name: str,
+    videos: List[dict],
+    temp_dir: str,
+) -> Dict[str, Any]:
+    """
+    Queue videos for upload by signaling the UploadWorkflow.
+    
+    Uses Temporal client's signal-with-start to either:
+    - Start a new UploadWorkflow if none exists for this event
+    - Signal the existing UploadWorkflow to add videos to its queue
+    
+    Temporal guarantees signal ordering, so videos are processed FIFO.
+    
+    Args:
+        fixture_id: Fixture ID
+        event_id: Event ID
+        player_name: Player name for metadata
+        team_name: Team name for metadata
+        videos: List of video dicts ready for upload
+        temp_dir: Temp directory containing video files
+    
+    Returns:
+        Dict with status and workflow info
+    """
+    from temporalio.client import Client
+    from src.workflows.upload_workflow import UploadWorkflow, UploadWorkflowInput
+    
+    temporal_host = os.getenv("TEMPORAL_HOST", "localhost:7233")
+    
+    activity.logger.info(
+        f"📨 [UPLOAD] Queuing {len(videos)} videos for upload | event={event_id}"
+    )
+    
+    try:
+        # Connect to Temporal
+        client = await Client.connect(temporal_host)
+        
+        upload_workflow_id = f"upload-{event_id}"
+        
+        # Use signal-with-start: starts workflow if not exists, signals if exists
+        # The "add_videos" signal will be delivered to add videos to the queue
+        await client.start_workflow(
+            UploadWorkflow.run,
+            UploadWorkflowInput(
+                fixture_id=fixture_id,
+                event_id=event_id,
+                player_name=player_name,
+                team_name=team_name,
+                videos=[],  # Initial input empty - videos come via signal
+                temp_dir=temp_dir,
+            ),
+            id=upload_workflow_id,
+            task_queue="found-footy",
+            start_signal="add_videos",
+            start_signal_args=[{
+                "player_name": player_name,
+                "team_name": team_name,
+                "videos": videos,
+                "temp_dir": temp_dir,
+            }],
+        )
+        
+        activity.logger.info(
+            f"✅ [UPLOAD] Queued videos successfully | workflow={upload_workflow_id} | event={event_id}"
+        )
+        
+        return {
+            "status": "queued",
+            "workflow_id": upload_workflow_id,
+            "videos_queued": len(videos),
+        }
+        
+    except Exception as e:
+        activity.logger.error(
+            f"❌ [UPLOAD] Failed to queue videos | error={e} | event={event_id}"
+        )
+        return {
+            "status": "error",
+            "error": str(e),
+        }
+
+
+@activity.defn
 async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
     """
     Fetch event from fixtures_active and return discovered videos.

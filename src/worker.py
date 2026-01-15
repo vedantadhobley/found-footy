@@ -55,6 +55,7 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("pymongo").setLevel(logging.WARNING)
 
 from temporalio.client import Client
+from temporalio.runtime import Runtime, TelemetryConfig
 from temporalio.worker import Worker
 
 from src.workflows import (
@@ -146,8 +147,15 @@ async def main():
     temporal_host = os.getenv("TEMPORAL_HOST", "localhost:7233")
     print(f"🔌 Connecting to Temporal at {temporal_host}...", flush=True)
     
+    # Create runtime with worker heartbeat disabled (server doesn't support it)
+    # This suppresses "Worker heartbeating configured for runtime, but server does not support it"
+    runtime = Runtime(
+        telemetry=TelemetryConfig(),
+        worker_heartbeat_interval=None,  # Disable worker-level heartbeats
+    )
+    
     try:
-        client = await Client.connect(temporal_host)
+        client = await Client.connect(temporal_host, runtime=runtime)
         print(f"✅ Connected to Temporal server", flush=True)
         
         # Set up schedules (idempotent - safe on every startup)
@@ -195,12 +203,13 @@ async def main():
                 twitter.execute_twitter_search,
                 twitter.save_discovered_videos,
                 twitter.update_twitter_attempt,
-                # Download activities (download, validate, hash, cleanup)
+                # Download activities (download, validate, hash, cleanup, queue)
                 download.download_single_video,
                 download.validate_video_is_soccer,  # AI vision validation
                 download.generate_video_hash,  # Perceptual hash with heartbeat
                 download.increment_twitter_count,  # Increment count + set _twitter_complete when done
                 download.cleanup_download_temp,  # Cleanup on failure
+                download.queue_videos_for_upload,  # Signal-with-start to queue videos for upload
                 # Upload activities (S3 dedup/upload - serialized per event)
                 upload.fetch_event_data,  # Get existing S3 videos
                 upload.deduplicate_by_md5,  # Fast MD5 dedup against S3
@@ -216,7 +225,7 @@ async def main():
         
         print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
         print("📋 Workflows: Ingest, Monitor, RAG, Twitter, Download, Upload", flush=True)
-        print("🔧 Activities: 29 total (2 ingest, 9 monitor, 4 rag, 5 twitter, 5 download, 9 upload)", flush=True)
+        print("🔧 Activities: 30 total (2 ingest, 9 monitor, 3 rag, 5 twitter, 6 download, 9 upload)", flush=True)
         print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every 30s)", flush=True)
         await worker.run()
     except Exception as e:

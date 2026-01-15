@@ -1044,3 +1044,7 @@ async def cleanup_download_temp(temp_dir: str) -> bool:
         return True
     
     return False
+
+
+# Re-export queue_videos_for_upload from upload module so DownloadWorkflow can use it
+from src.activities.upload import queue_videos_for_upload
