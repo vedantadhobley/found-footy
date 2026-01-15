@@ -461,21 +461,44 @@ class FootyMongoStore:
             return False
     
     def update_event_stable_count(self, fixture_id: int, event_id: str, 
-                                   stable_count: int, snapshot: dict | None = None) -> bool:
+                                   stable_count: int, live_event: dict | None = None) -> bool:
         """
-        Update existing event's monitor_count.
+        Update existing event's monitor_count AND sync API data changes.
         
-        Note: snapshot parameter kept for backwards compatibility but ignored.
-        With player_id in event_id, we don't need hash/snapshot tracking!
+        The live_event parameter contains the latest API data for this event.
+        We update fields that may change between API polls:
+        - time (minute/extra time may shift)
+        - assist (assister may be added/changed)
+        - comments (additional info)
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            stable_count: New monitor count value
+            live_event: Latest event data from API (optional, for syncing changes)
         """
         try:
+            update_ops = {f"events.$.{EventFields.MONITOR_COUNT}": stable_count}
+            
+            # Sync API data changes if live_event provided
+            if live_event:
+                # Update time (minute may drift)
+                if "time" in live_event:
+                    update_ops["events.$.time"] = live_event["time"]
+                # Update assist (may be added after initial detection)
+                if "assist" in live_event:
+                    update_ops["events.$.assist"] = live_event["assist"]
+                # Update comments
+                if "comments" in live_event:
+                    update_ops["events.$.comments"] = live_event["comments"]
+            
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
-                {"$set": {f"events.$.{EventFields.MONITOR_COUNT}": stable_count}}
+                {"$set": update_ops}
             )
             return result.modified_count > 0
         except Exception as e:
-            print(f"❌ Error updating monitor count for event {event_id}: {e}")
+            print(f"❌ Error updating event {event_id}: {e}")
             return False
     
     def mark_event_monitor_complete(self, fixture_id: int, event_id: str, event_first_seen: datetime = None) -> bool:
@@ -484,9 +507,8 @@ class FootyMongoStore:
         Called by monitor activity when event is stable.
         Updates _last_activity to event's _first_seen (when goal was first detected).
         
-        NOTE: _twitter_count stays at 0 (initialized in create_new_enhanced_event).
-        It gets SET to attempt number by TwitterWorkflow at START of each attempt,
-        then INCREMENTED by DownloadWorkflow at END of each attempt.
+        NOTE: _twitter_count stays at 0 until incremented.
+        It gets INCREMENTED by DownloadWorkflow at END of each Twitter attempt.
         
         NOTE: We use _first_seen (not datetime.now()) because:
         - It reflects when the goal actually happened (within ~1 min of real time)
@@ -511,35 +533,6 @@ class FootyMongoStore:
             return result.modified_count > 0
         except Exception as e:
             print(f"❌ Error marking event {event_id} monitor complete: {e}")
-            return False
-    
-    def update_event_twitter_count(self, fixture_id: int, event_id: str, new_count: int) -> bool:
-        """
-        Update Twitter current attempt counter (for visibility at START of each attempt).
-        Called by TwitterWorkflow at the start of each search attempt.
-        
-        NOTE: This updates _twitter_attempt (current attempt being processed) NOT _twitter_count.
-        _twitter_count is managed by increment_twitter_count_and_check_complete and tracks
-        COMPLETED attempts, not current attempt.
-        
-        Args:
-            fixture_id: Fixture ID
-            event_id: Event ID  
-            new_count: Current attempt number (1-10)
-        """
-        try:
-            # Update _twitter_attempt (current attempt) NOT _twitter_count (completed count)
-            # This prevents the count from going to 11 when attempt 10 completes
-            result = self.fixtures_active.update_one(
-                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
-                {"$set": {
-                    f"events.$._twitter_attempt": new_count
-                }}
-            )
-            # Use matched_count to check if document was found (modified_count can be 0 if value unchanged)
-            return result.matched_count > 0
-        except Exception as e:
-            print(f"❌ Error updating twitter attempt for {event_id}: {e}")
             return False
     
     def increment_twitter_count_and_check_complete(

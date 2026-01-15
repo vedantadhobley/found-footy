@@ -97,6 +97,7 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        DownloadWorkflow                              │
 ├─────────────────────────────────────────────────────────────────────┤
+│  0. check_event_exists (VAR check - abort if event removed)          │
 │  PARALLEL: Download videos via Twitter syndication API               │
 │  1. MD5 batch dedup (within downloaded batch only)                   │
 │  2. AI validation (reject non-football)                              │
@@ -113,6 +114,7 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 │  - Multiple DownloadWorkflows signal the SAME UploadWorkflow         │
 │  - Videos queued via add_videos signal (FIFO deque)                  │
 │  - Workflow idles for 5 min waiting for more signals                 │
+│  0. Abort if event removed (VAR check via fetch_event_data)          │
 │  1. Receive videos via signal → add to pending queue                 │
 │  2. Process batches: fetch S3 state, dedup, upload                   │
 │  3. Update MongoDB + recalculate video ranks                         │
@@ -405,7 +407,7 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 | `get_cached_team_aliases` | Fast MongoDB cache lookup | 2x |
 | `get_team_aliases` | Full RAG pipeline (Wikidata + LLM) | 2x |
 | `save_team_aliases` | Store to event in MongoDB | 2x |
-| `update_twitter_attempt` | Set `_twitter_count` (visibility) | 2x |
+| `check_event_exists` | VAR check - abort if removed | 3x |
 | `get_twitter_search_data` | Get existing URLs | 2x |
 | `execute_twitter_search` | POST to Firefox | 3x, 1.5x from 10s |
 | `save_discovered_videos` | Persist to MongoDB | 3x, 2.0x |
@@ -429,6 +431,7 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 
 | Activity | Purpose | Retries |
 |----------|---------|--------|
+| `check_event_exists` | VAR check - abort if removed | 1x |
 | `download_single_video` | Download ONE video | 3x, 2.0x from 2s |
 | `validate_video_is_soccer` | AI vision validates soccer content | 4x |
 | `generate_video_hash` | Perceptual hash (heartbeat) | 2x |
@@ -448,7 +451,7 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 
 | Activity | Purpose | Retries |
 |----------|---------|--------|
-| `fetch_event_data` | Get existing S3 videos (FRESH) | 3x |
+| `fetch_event_data` | Get existing S3 videos (also VAR check) | 3x |
 | `deduplicate_by_md5` | Fast exact duplicate removal | 2x |
 | `deduplicate_videos` | Perceptual hash dedup vs S3 | 3x |
 | `bump_video_popularity` | Increment popularity on match | 2x |
@@ -469,10 +472,10 @@ the same event will QUEUE - each sees fresh S3 state when it runs.
 | Field | Type | Set By | Purpose |
 |-------|------|--------|---------|
 | `_event_id` | string | Monitor | Unique: `{fixture}_{team}_{player}_{type}_{seq}` |
-| `_monitor_count` | int | Monitor | Times seen by monitor (1, 2, 3+) |
+| `_monitor_count` | int | Monitor | Debounce count (0=unknown player, 1-3=known) |
 | `_monitor_complete` | bool | Monitor | true when `_monitor_count >= 3` |
 | `_twitter_aliases` | array | TwitterWorkflow | Team search variations |
-| `_twitter_count` | int | DownloadWorkflow | Completed attempts count (1-10) |
+| `_twitter_count` | int | DownloadWorkflow | Completed attempts count (0-10) |
 | `_twitter_complete` | bool | DownloadWorkflow | true when count reaches 10 |
 | `_first_seen` | datetime | Monitor | When event first appeared |
 | `_twitter_search` | string | Monitor | `{player_last} {team_name}` |

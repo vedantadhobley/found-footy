@@ -663,12 +663,18 @@ def create_new_enhanced_event(
     twitter_search: str,
     score_after: str,
     scoring_team: str,
+    initial_monitor_count: int = 1,
 ) -> EnhancedEvent:
     """
     Create an enhanced event dict for insertion into fixtures_active.
     
     This is called when a NEW event is detected (live has it, active doesn't).
-    The event starts with monitor_count=1 and will be debounced over 3 polls.
+    By default, the event starts with monitor_count=1 and will be debounced over 3 polls.
+    
+    For events with unknown players (player_id=0), pass initial_monitor_count=0.
+    This signals to the frontend that the player is not yet identified,
+    and prevents debouncing until the player is known.
+    
     Uses EventFields constants for field names.
     
     Args:
@@ -677,6 +683,7 @@ def create_new_enhanced_event(
         twitter_search: Search query for Twitter
         score_after: Score after this event (e.g., "2-1")
         scoring_team: "home" or "away"
+        initial_monitor_count: Starting monitor count (0 for unknown players, 1 for known)
     
     Returns:
         Enhanced event dict ready for MongoDB insertion
@@ -688,7 +695,7 @@ def create_new_enhanced_event(
         # Identification
         EventFields.EVENT_ID: event_id,
         # Monitor tracking
-        EventFields.MONITOR_COUNT: 1,
+        EventFields.MONITOR_COUNT: initial_monitor_count,
         EventFields.MONITOR_COMPLETE: False,
         EventFields.FIRST_SEEN: datetime.now(timezone.utc),
         # Twitter tracking

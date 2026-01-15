@@ -43,10 +43,11 @@ This decoupling allows:
 │  │   TwitterWorkflow (~10 min, fire-and-forget from Monitor):             │   │
 │  │     1. Resolve aliases: cache lookup OR RAG pipeline (~30-90s)         │   │
 │  │     2. FOR attempt IN [1..10]:                                         │   │
-│  │       → update_twitter_attempt(attempt)                                │   │
+│  │       → check_event_exists (VAR check - abort if removed)              │   │
 │  │       → Search all aliases: "Salah Liverpool", "Salah LFC", ...        │   │
 │  │       → Dedupe videos, save to _discovered_videos                      │   │
 │  │       → IF videos: start DownloadWorkflow (BLOCKING child)             │   │
+│  │           → DownloadWorkflow: check_event_exists (abort if VAR'd)      │   │
 │  │           → DownloadWorkflow: download → validate → hash               │   │
 │  │           → DownloadWorkflow calls UploadWorkflow (BLOCKING, serialized)│   │
 │  │           → DownloadWorkflow: increment_twitter_count                  │   │
@@ -78,10 +79,10 @@ This decoupling allows:
 
 | Field | Set By | When | Purpose |
 |-------|--------|------|---------|
-| `_monitor_count` | Monitor | Each poll when event seen | Debounce counter (1, 2, 3) |
+| `_monitor_count` | Monitor | Each poll when event seen | Debounce counter (0=unknown player, 1-3=known) |
 | `_monitor_complete` | Monitor | When `_monitor_count >= 3` | Debounce finished |
 | `_twitter_aliases` | TwitterWorkflow | After alias resolution | Team search variations |
-| `_twitter_count` | DownloadWorkflow | When download completes | Tracks completed attempts (1-10) |
+| `_twitter_count` | DownloadWorkflow | When download completes (END of attempt) | Tracks completed attempts (1-10) |
 | `_twitter_complete` | DownloadWorkflow | When count reaches 10 | All attempts finished |
 
 ---
@@ -106,6 +107,7 @@ This decoupling allows:
 - `_twitter_complete` is set atomically when count reaches 10
 
 ### DownloadWorkflow (Triggered by TwitterWorkflow, BLOCKING)
+- **Checks event exists at start** (VAR check - aborts if removed)
 - Downloads videos from Twitter URLs (parallel)
 - Applies duration filter (>3s to 60s)
 - MD5 batch dedup (within downloaded batch only)
@@ -117,6 +119,7 @@ This decoupling allows:
 ### UploadWorkflow (Signal-with-Start Pattern)
 - **Workflow ID: `upload-{event_id}`** - namespace-scoped, ONE per event
 - **Receives videos via `add_videos` signal** - queued in FIFO deque
+- **Checks event exists before each batch** (VAR check - aborts workflow if removed)
 - Processes batches: fetch S3 state, MD5/perceptual dedup, upload
 - Updates MongoDB `_s3_videos` array
 - Recalculates video ranks
@@ -249,3 +252,48 @@ Blocking downloads ensure reliable completion tracking via `_twitter_count`.
 **Problem**: Cache might be stale if team just played for first time
 **Solution**: TwitterWorkflow checks cache, falls back to full RAG pipeline
 **Guarantee**: Aliases are always resolved before search starts
+
+### VAR Reversal Handling
+**Problem**: Goal gets VAR'd while downstream workflows are running
+**Solution**: Multi-layer existence checks:
+1. **TwitterWorkflow**: `check_event_exists` at START of each attempt (1-10 loop)
+2. **DownloadWorkflow**: `check_event_exists` at START of workflow
+3. **UploadWorkflow**: `fetch_event_data` returns "event_not_found" → abort workflow
+4. **Monitor**: Decrements `_monitor_count` when event disappears, deletes at 0
+**Guarantee**: Workflows abort gracefully, no orphaned S3 uploads
+
+---
+
+## 👤 Unknown Player Handling
+
+When a goal is first detected, the API may not yet have the scorer identified.
+
+**Detection**: `is_player_known()` checks if player name is None, empty, or "Unknown"
+
+**Behavior**:
+- Event is created with `_monitor_count = 0` (not 1)
+- Event appears in frontend but shows as "Unknown Player"
+- **Debouncing is frozen** - count stays at 0, won't progress to 3
+- **No Twitter search triggered** - player name is required for search
+- API data (time, assist, comments) still synced on each poll
+
+**Resolution**:
+When API identifies the player, `player_id` changes → new `_event_id` generated.
+Old "Unknown" event is removed via normal VAR logic (count decrements to 0).
+New event starts fresh debounce with known player.
+
+**Frontend Use**:
+- `_monitor_count === 0` → Unknown player, waiting for identification
+- `_monitor_count >= 1` → Player is known, debouncing in progress
+
+---
+
+## 📊 API Data Synchronization
+
+Event data from API can change after initial detection:
+- **time**: Minute may drift (e.g., 23' → 23+2')
+- **assist**: Assister may be added later
+- **comments**: Additional context may appear
+
+**Solution**: `update_event_stable_count()` syncs these fields on EVERY poll,
+not just during debounce. This ensures MongoDB stays current with API changes.

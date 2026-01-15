@@ -241,25 +241,6 @@ class TwitterWorkflow:
             )
             
             # =================================================================
-            # Update attempt counter in MongoDB
-            # =================================================================
-            try:
-                await workflow.execute_activity(
-                    twitter_activities.update_twitter_attempt,
-                    args=[input.fixture_id, input.event_id, attempt],
-                    start_to_close_timeout=timedelta(seconds=30),
-                    retry_policy=RetryPolicy(maximum_attempts=3),
-                )
-                workflow.logger.info(
-                    f"✅ [TWITTER] Updated attempt counter | event={input.event_id} | attempt={attempt}"
-                )
-            except Exception as e:
-                workflow.logger.warning(
-                    f"⚠️ [TWITTER] update_twitter_attempt FAILED | event={input.event_id} | "
-                    f"error={e} | Continuing anyway"
-                )
-            
-            # =================================================================
             # Get existing video URLs (for deduplication)
             # =================================================================
             workflow.logger.info(

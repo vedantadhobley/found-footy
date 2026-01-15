@@ -20,6 +20,28 @@ from datetime import datetime, timezone
 from src.data.models import EventFields, create_new_enhanced_event
 
 
+def is_player_known(event: dict) -> bool:
+    """
+    Check if the player name is known (not Unknown or missing).
+    
+    When a goal is first detected, the API may not yet have the scorer identified.
+    In this case, player.name may be None, empty, or "Unknown".
+    
+    We only debounce and trigger workflows when we have an actual player name,
+    since Twitter searches require a player name to be useful.
+    
+    When the player becomes identified, the player_id changes, creating a new
+    event_id. The old "Unknown" event will be removed via VAR logic.
+    """
+    player_name = event.get("player", {}).get("name")
+    if not player_name:
+        return False
+    # Check for common "unknown" variations
+    if player_name.lower() in ("unknown", "tbd", "n/a", ""):
+        return False
+    return True
+
+
 @activity.defn
 async def activate_fixtures() -> Dict[str, int]:
     """
@@ -472,6 +494,11 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
         twitter_search = build_twitter_search(live_event, live_fixture)
         score_context = calculate_score_context(live_fixture, live_event)
         
+        # Determine initial monitor count based on player status
+        # Unknown players (player_id=0) start at 0 to signal frontend they're not yet identified
+        # Known players start at 1 and will debounce up to 3
+        initial_count = 1 if is_player_known(live_event) else 0
+        
         # Create enhanced event using models helper
         enhanced = create_new_enhanced_event(
             live_event=live_event,
@@ -479,12 +506,14 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
             twitter_search=twitter_search,
             score_after=score_context.get(EventFields.SCORE_AFTER, ""),
             scoring_team=score_context.get(EventFields.SCORING_TEAM, ""),
+            initial_monitor_count=initial_count,
         )
         
         first_seen = enhanced[EventFields.FIRST_SEEN]
         if store.add_event_to_active(fixture_id, enhanced, first_seen):
+            player_status = "known" if initial_count == 1 else "UNKNOWN"
             activity.logger.info(
-                f"✨ [MONITOR] NEW EVENT | fixture={fixture_id} | event={event_id}"
+                f"✨ [MONITOR] NEW EVENT | fixture={fixture_id} | event={event_id} | player={player_status}"
             )
             new_count += 1
     
@@ -559,7 +588,9 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
             if current_count < 3:
                 # Recovering from a decrement - bump back up
                 new_count_val = current_count + 1
-                store.update_event_stable_count(fixture_id, event_id, new_count_val, None)
+                # Get live event to sync any API data changes (assist, minute, etc.)
+                live_event = next((e for e in live_events if e.get(EventFields.EVENT_ID) == event_id), None)
+                store.update_event_stable_count(fixture_id, event_id, new_count_val, live_event)
                 activity.logger.info(
                     f"📈 [MONITOR] RECOVERY | event={event_id} | "
                     f"count={current_count}→{new_count_val} | monitor_complete=True"
@@ -570,11 +601,26 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
         # =====================================================================
         # CASE 2: _monitor_complete = FALSE -> Check/increment monitor count
         # =====================================================================
+        
+        # Get live event to check player and sync API data changes
+        live_event = next((e for e in live_events if e.get(EventFields.EVENT_ID) == event_id), None)
+        
+        # Skip debouncing if player is not known (Unknown/missing)
+        # Event stays visible in frontend at count=1, but won't progress
+        # When player is identified, player_id changes -> new event_id -> fresh debounce
+        if live_event and not is_player_known(live_event):
+            # Just sync the API data without incrementing count
+            store.update_event_stable_count(fixture_id, event_id, current_count, live_event)
+            activity.logger.info(
+                f"⏸️ [MONITOR] WAITING FOR PLAYER | event={event_id} | "
+                f"count={current_count} (frozen until player identified)"
+            )
+            continue
+        
         # Increment monitor count (cap at 3)
         new_count_val = min(current_count + 1, 3)
         
-        # Note: No hash/snapshot needed with player_id approach!
-        if store.update_event_stable_count(fixture_id, event_id, new_count_val, None):
+        if store.update_event_stable_count(fixture_id, event_id, new_count_val, live_event):
             updated_count += 1
             
             if new_count_val >= 3:

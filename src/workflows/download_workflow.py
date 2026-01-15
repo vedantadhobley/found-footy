@@ -38,6 +38,7 @@ import asyncio
 
 with workflow.unsafe.imports_passed_through():
     from src.activities import download as download_activities
+    from src.activities import twitter as twitter_activities
 
 
 @workflow.defn
@@ -77,6 +78,29 @@ class DownloadWorkflow:
             f"⬇️ [DOWNLOAD] STARTED | event={event_id} | "
             f"videos={len(discovered_videos) if discovered_videos else 0}"
         )
+        
+        # =========================================================================
+        # Step 0: Check if event still exists (VAR cancellation check)
+        # =========================================================================
+        # If event was VAR'd/removed while queued, abort early to save resources.
+        event_check = await workflow.execute_activity(
+            twitter_activities.check_event_exists,
+            args=[fixture_id, event_id],
+            start_to_close_timeout=timedelta(seconds=10),
+        )
+        
+        if not event_check.get("exists", False):
+            workflow.logger.warning(
+                f"🛑 [DOWNLOAD] Event no longer exists (VAR'd?) | event={event_id} | ABORTING"
+            )
+            return {
+                "fixture_id": fixture_id,
+                "event_id": event_id,
+                "videos_uploaded": 0,
+                "s3_urls": [],
+                "terminated_early": True,
+                "reason": "event_removed",
+            }
         
         # Initialize download stats for visibility into what happened in the pipeline
         download_stats = {

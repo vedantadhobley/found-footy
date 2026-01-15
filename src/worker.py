@@ -197,12 +197,11 @@ async def main():
                 rag.get_team_aliases,
                 rag.save_team_aliases,
                 rag.get_cached_team_aliases,
-                # Twitter activities (5 granular for retry control)
+                # Twitter activities (4 granular for retry control)
                 twitter.check_event_exists,
                 twitter.get_twitter_search_data,
                 twitter.execute_twitter_search,
                 twitter.save_discovered_videos,
-                twitter.update_twitter_attempt,
                 # Download activities (download, validate, hash, cleanup, queue)
                 download.download_single_video,
                 download.validate_video_is_soccer,  # AI vision validation
@@ -225,7 +224,7 @@ async def main():
         
         print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
         print("📋 Workflows: Ingest, Monitor, RAG, Twitter, Download, Upload", flush=True)
-        print("🔧 Activities: 30 total (2 ingest, 9 monitor, 3 rag, 5 twitter, 6 download, 9 upload)", flush=True)
+        print("🔧 Activities: 31 total (3 ingest, 9 monitor, 3 rag, 4 twitter, 6 download, 9 upload)", flush=True)
         print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every 30s)", flush=True)
         await worker.run()
     except Exception as e:

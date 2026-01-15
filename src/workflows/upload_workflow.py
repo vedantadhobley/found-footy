@@ -121,6 +121,21 @@ class UploadWorkflow:
                         temp_dir=batch.get("temp_dir", ""),
                     )
                     
+                    # Check if event was VAR'd - stop processing all batches
+                    if result.get("terminated_early") and result.get("reason") == "event_removed":
+                        workflow.logger.warning(
+                            f"🛑 [UPLOAD] Event removed (VAR'd?) | "
+                            f"stopping workflow | event={event_id}"
+                        )
+                        return {
+                            "fixture_id": fixture_id,
+                            "event_id": event_id,
+                            "videos_uploaded": self._total_uploaded,
+                            "batches_processed": self._total_batches_processed,
+                            "terminated_early": True,
+                            "reason": "event_removed",
+                        }
+                    
                     self._total_uploaded += result.get("videos_uploaded", 0)
                     self._total_batches_processed += 1
                     
@@ -193,6 +208,24 @@ class UploadWorkflow:
                     backoff_coefficient=2.0,
                 ),
             )
+            
+            # =========================================================================
+            # VAR Check: If event was removed, abort this batch (and signal workflow to stop)
+            # =========================================================================
+            if event_data.get("status") == "error" and event_data.get("error") == "event_not_found":
+                workflow.logger.warning(
+                    f"🛑 [UPLOAD] Event no longer exists (VAR'd?) | event={event_id} | ABORTING BATCH"
+                )
+                return {
+                    "fixture_id": fixture_id,
+                    "event_id": event_id,
+                    "videos_uploaded": 0,
+                    "video_objects": [],
+                    "s3_urls": [],
+                    "terminated_early": True,
+                    "reason": "event_removed",
+                }
+            
             existing_s3_videos = event_data.get("existing_s3_videos", [])
             workflow.logger.info(
                 f"✅ [UPLOAD] Got fresh S3 state | existing_videos={len(existing_s3_videos)} | event={event_id}"
