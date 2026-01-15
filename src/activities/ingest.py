@@ -103,8 +103,10 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
     
     Routes to:
     - staging: TBD, NS (not started)
-    - active: LIVE, 1H, HT, 2H, ET, P, BT, SUSP, INT (in progress)
-    - completed: FT, AET, PEN, PST, CANC, ABD, AWD, WO (finished)
+    - active: LIVE, 1H, HT, 2H, ET, P, BT, SUSP, INT, PST (in progress or delayed)
+    - completed: FT, AET, PEN, CANC, ABD, AWD, WO (finished)
+    
+    NOTE: PST (Postponed) is treated as ACTIVE to handle short delays (15-30 min).
     """
     if not fixtures:
         activity.logger.warning("⚠️  No fixtures to categorize")

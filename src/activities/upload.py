@@ -973,6 +973,69 @@ async def recalculate_video_ranks(fixture_id: int, event_id: str) -> bool:
 
 
 @activity.defn
+async def cleanup_individual_files(file_paths: List[str]) -> int:
+    """
+    Clean up individual files (not entire directories).
+    Used to delete files after successful S3 upload.
+    
+    Args:
+        file_paths: List of file paths to delete
+    
+    Returns:
+        Number of files deleted
+    """
+    deleted = 0
+    for file_path in file_paths:
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                deleted += 1
+            except Exception as e:
+                activity.logger.warning(f"⚠️ [UPLOAD] Failed to delete file: {file_path} | error={e}")
+    
+    if deleted > 0:
+        activity.logger.info(f"🧹 [UPLOAD] Deleted {deleted} individual files")
+    
+    return deleted
+
+
+@activity.defn
+async def cleanup_fixture_temp_dirs(fixture_id: int) -> int:
+    """
+    Clean up ALL temp directories for a given fixture.
+    Called by MonitorWorkflow when fixture moves to completed.
+    
+    Matches: /tmp/footy_{fixture_id}_* (all events for this fixture)
+    
+    Args:
+        fixture_id: Fixture ID (e.g., 1378015)
+    
+    Returns:
+        Number of directories deleted
+    """
+    import shutil
+    import glob
+    
+    # Match all temp dirs for this fixture (any event)
+    pattern = f"/tmp/footy_{fixture_id}_*"
+    matching_dirs = glob.glob(pattern)
+    
+    deleted = 0
+    for temp_dir in matching_dirs:
+        if os.path.isdir(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+                deleted += 1
+                activity.logger.info(f"🧹 [CLEANUP] Deleted temp dir | path={temp_dir}")
+            except Exception as e:
+                activity.logger.warning(f"⚠️ [CLEANUP] Failed to delete: {temp_dir} | error={e}")
+    
+    activity.logger.info(f"🧹 [CLEANUP] Fixture cleanup complete | fixture={fixture_id} | dirs_deleted={deleted}")
+    
+    return deleted
+
+
+@activity.defn
 async def cleanup_upload_temp(temp_dir: str) -> bool:
     """
     Clean up temporary directory.

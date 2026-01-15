@@ -65,7 +65,7 @@ MIN_ASPECT_RATIO = 1.32  # 4:3 = 1.333..., use 1.32 with tolerance
 
 # Duration filters
 MIN_VIDEO_DURATION = 3.0  # Seconds (must be > 3s)
-MAX_VIDEO_DURATION = 60.0  # Seconds
+MAX_VIDEO_DURATION = 90.0  # Seconds
 
 # Perceptual hash configuration
 HASH_SAMPLE_INTERVAL = 0.25  # Sample frame every 0.25 seconds

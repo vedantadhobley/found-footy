@@ -1,12 +1,20 @@
 """Fixture status management - pure Python, no orchestration dependencies"""
 
 # FIFA STATUS DEFINITIONS - Centralized and documented
+# 
+# IMPORTANT: PST (Postponed) is treated as ACTIVE, not completed!
+# This is because short delays (15-30 min) are common and the match may still
+# happen the same day. Once PST, we keep monitoring until:
+# - Match starts (1H)
+# - Match is cancelled (CANC) 
+# - Match is truly rescheduled to another day (manual archive or next day cleanup)
+#
 FIXTURE_STATUSES = {
     "completed": {
         "FT": "Match Finished (regular time)",
         "AET": "Match Finished (after extra time)",
         "PEN": "Match Finished (after penalty shootout)",
-        "PST": "Match Postponed (rescheduled to different day)",
+        # PST removed - now treated as active to handle short delays
         "CANC": "Match Cancelled (will not be played)",
         "ABD": "Match Abandoned (may not be rescheduled)",
         "AWD": "Technical Loss (awarded result)",
@@ -21,7 +29,8 @@ FIXTURE_STATUSES = {
         "P": "Penalty Shootout (wait for completion)",
         "SUSP": "Match Suspended (may resume)",
         "INT": "Match Interrupted (should resume)",
-        "LIVE": "Generic live status"
+        "LIVE": "Generic live status",
+        "PST": "Match Postponed (keep monitoring - may resume same day)"
     },
     "staging": {
         "TBD": "Time To Be Defined (pre-match)",

@@ -30,6 +30,7 @@ from collections import deque
 with workflow.unsafe.imports_passed_through():
     from src.activities import upload as upload_activities
     from src.activities import monitor as monitor_activities
+    from src.activities import download as download_activities
 
 
 @dataclass
@@ -139,6 +140,10 @@ class UploadWorkflow:
                     self._total_uploaded += result.get("videos_uploaded", 0)
                     self._total_batches_processed += 1
                     
+                    # Increment twitter count after batch complete
+                    # Each batch = one download workflow run = one twitter search attempt
+                    await self._increment_twitter_count(fixture_id, event_id)
+                    
                     workflow.logger.info(
                         f"✅ [UPLOAD] Batch complete | uploaded={result.get('videos_uploaded', 0)} | "
                         f"total={self._total_uploaded} | event={event_id}"
@@ -148,6 +153,8 @@ class UploadWorkflow:
                         f"❌ [UPLOAD] Batch FAILED | error={e} | event={event_id}"
                     )
                     self._total_batches_processed += 1
+                    # Still increment twitter count even on failure - the attempt is done
+                    await self._increment_twitter_count(fixture_id, event_id)
         
         workflow.logger.info(
             f"🎉 [UPLOAD] WORKFLOW COMPLETE | total_uploaded={self._total_uploaded} | "
@@ -382,8 +389,8 @@ class UploadWorkflow:
             workflow.logger.info(
                 f"⚠️ [UPLOAD] No videos to upload (all duplicates) | event={event_id}"
             )
-            # Clean up temp files even if nothing to upload
-            await self._cleanup_temp_files(videos, temp_dir, event_id)
+            # NOTE: Don't clean up temp dir here - TwitterWorkflow handles cleanup
+            # Individual files may be needed by other batches from same download run
             return {
                 "fixture_id": fixture_id,
                 "event_id": event_id,
@@ -393,41 +400,14 @@ class UploadWorkflow:
             }
         
         # =========================================================================
-        # Step 5: Handle replacements - remove old MongoDB entries
-        # S3 files will be overwritten with same key
+        # Step 5: Prepare replacements (but DON'T remove MongoDB entries yet!)
+        # We'll only remove old entries AFTER successful upload
         # =========================================================================
         if videos_to_replace:
             workflow.logger.info(
                 f"♻️ [UPLOAD] Preparing {len(videos_to_replace)} video replacements | event={event_id}"
             )
-            
-            async def remove_old_mongo_entry(replacement: dict):
-                old_video = replacement["old_s3_video"]
-                try:
-                    await workflow.execute_activity(
-                        upload_activities.replace_s3_video,
-                        args=[
-                            fixture_id,
-                            event_id,
-                            old_video.get("s3_url", ""),
-                            old_video.get("_s3_key", ""),
-                            True,  # skip_s3_delete - we'll overwrite
-                        ],
-                        start_to_close_timeout=timedelta(seconds=30),
-                        retry_policy=RetryPolicy(
-                            maximum_attempts=3,
-                            initial_interval=timedelta(seconds=2),
-                            backoff_coefficient=2.0,
-                        ),
-                    )
-                except Exception as e:
-                    workflow.logger.warning(
-                        f"⚠️ [UPLOAD] Failed to remove old MongoDB entry | "
-                        f"key={old_video.get('_s3_key')} | error={e} | event={event_id}"
-                    )
-            
-            delete_tasks = [remove_old_mongo_entry(r) for r in videos_to_replace]
-            await asyncio.gather(*delete_tasks)
+            # Store the replacement info - we'll remove old entries AFTER successful upload
         
         # =========================================================================
         # Step 6: Upload videos to S3 IN PARALLEL
@@ -482,8 +462,12 @@ class UploadWorkflow:
         
         video_objects = []
         s3_urls = []
+        successful_replacements = []  # Track which replacements succeeded
         
-        for outcome in upload_outcomes:
+        # Split results: first len(videos_to_upload) are new uploads, rest are replacements
+        num_new_uploads = len(videos_to_upload)
+        
+        for i, outcome in enumerate(upload_outcomes):
             result = outcome.get("result")
             if result and result.get("status") == "success":
                 video_objects.append(result.get("video_object", {
@@ -495,6 +479,11 @@ class UploadWorkflow:
                     "rank": 0,
                 }))
                 s3_urls.append(result["s3_url"])
+                
+                # Track successful replacements (indices >= num_new_uploads are replacements)
+                if i >= num_new_uploads:
+                    replacement_idx = i - num_new_uploads
+                    successful_replacements.append(videos_to_replace[replacement_idx])
         
         workflow.logger.info(
             f"✅ [UPLOAD] Uploads complete | success={len(video_objects)}/{len(all_uploads)} | event={event_id}"
@@ -526,6 +515,43 @@ class UploadWorkflow:
                 )
         
         # =========================================================================
+        # Step 7b: Remove old MongoDB entries for SUCCESSFUL replacements only
+        # We do this AFTER saving new videos to ensure we don't lose data if upload fails
+        # =========================================================================
+        if successful_replacements:
+            workflow.logger.info(
+                f"♻️ [UPLOAD] Removing {len(successful_replacements)} replaced MongoDB entries | event={event_id}"
+            )
+            
+            async def remove_old_mongo_entry(replacement: dict):
+                old_video = replacement["old_s3_video"]
+                try:
+                    await workflow.execute_activity(
+                        upload_activities.replace_s3_video,
+                        args=[
+                            fixture_id,
+                            event_id,
+                            old_video.get("s3_url", ""),
+                            old_video.get("_s3_key", ""),
+                            True,  # skip_s3_delete - already overwritten
+                        ],
+                        start_to_close_timeout=timedelta(seconds=30),
+                        retry_policy=RetryPolicy(
+                            maximum_attempts=3,
+                            initial_interval=timedelta(seconds=2),
+                            backoff_coefficient=2.0,
+                        ),
+                    )
+                except Exception as e:
+                    workflow.logger.warning(
+                        f"⚠️ [UPLOAD] Failed to remove old MongoDB entry | "
+                        f"key={old_video.get('_s3_key')} | error={e} | event={event_id}"
+                    )
+            
+            delete_tasks = [remove_old_mongo_entry(r) for r in successful_replacements]
+            await asyncio.gather(*delete_tasks)
+        
+        # =========================================================================
         # Step 8: Recalculate video ranks
         # =========================================================================
         try:
@@ -540,6 +566,7 @@ class UploadWorkflow:
             workflow.logger.warning(
                 f"⚠️ [UPLOAD] Failed to recalculate ranks (non-critical) | error={e} | event={event_id}"
             )
+        
         
         # =========================================================================
         # Step 9: Notify frontend
@@ -558,9 +585,10 @@ class UploadWorkflow:
                 )
         
         # =========================================================================
-        # Step 10: Cleanup temp files
+        # Step 10: Cleanup individual uploaded files (not entire temp dir)
+        # The temp directory is cleaned up by TwitterWorkflow when all 10 attempts complete
         # =========================================================================
-        await self._cleanup_temp_files(videos, temp_dir, event_id)
+        await self._cleanup_uploaded_files(all_uploads, s3_urls, event_id)
         
         workflow.logger.info(
             f"✅ [UPLOAD] Batch uploaded={len(video_objects)} | event={event_id}"
@@ -574,17 +602,64 @@ class UploadWorkflow:
             "s3_urls": s3_urls,
         }
     
-    async def _cleanup_temp_files(self, videos: list, temp_dir: str, event_id: str):
-        """Clean up temporary video files."""
+    async def _cleanup_uploaded_files(self, all_uploads: list, successful_urls: list, event_id: str):
+        """
+        Clean up individual files that were successfully uploaded.
+        Only deletes files after successful S3 upload - leaves others for retry.
+        Does NOT delete the temp directory - that's handled by TwitterWorkflow.
+        """
+        if not successful_urls:
+            return
+        
+        # Find file paths for successfully uploaded videos
+        files_to_delete = []
+        for video in all_uploads:
+            # Check if this video was successfully uploaded
+            file_path = video.get("file_path", "")
+            if file_path and any(url for url in successful_urls if video.get("file_hash", "xxx") in url or video.get("perceptual_hash", "xxx")[:8] in url):
+                files_to_delete.append(file_path)
+        
+        if files_to_delete:
+            try:
+                await workflow.execute_activity(
+                    upload_activities.cleanup_individual_files,
+                    args=[files_to_delete],
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
+                workflow.logger.info(f"🧹 [UPLOAD] Cleaned up {len(files_to_delete)} uploaded files | event={event_id}")
+            except Exception as e:
+                workflow.logger.warning(
+                    f"⚠️ [UPLOAD] Failed to cleanup files (non-critical) | error={e} | event={event_id}"
+                )
+
+    async def _increment_twitter_count(self, fixture_id: int, event_id: str):
+        """
+        Increment twitter count after processing a batch.
+        Each batch = one download workflow run = one twitter search attempt.
+        When count reaches 10, _twitter_complete is set to True.
+        """
         try:
-            await workflow.execute_activity(
-                upload_activities.cleanup_upload_temp,
-                args=[temp_dir],
+            increment_result = await workflow.execute_activity(
+                download_activities.increment_twitter_count,
+                args=[fixture_id, event_id, 10],  # 10 total attempts
                 start_to_close_timeout=timedelta(seconds=30),
-                retry_policy=RetryPolicy(maximum_attempts=2),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=5,
+                    initial_interval=timedelta(seconds=2),
+                    backoff_coefficient=2.0,
+                ),
             )
-            workflow.logger.info(f"🧹 [UPLOAD] Cleaned up temp directory | event={event_id}")
+            if increment_result.get("marked_complete"):
+                workflow.logger.info(
+                    f"🏁 [UPLOAD] All 10 attempts complete, marked _twitter_complete=true | event={event_id}"
+                )
+            else:
+                count = increment_result.get("current_count", "?")
+                workflow.logger.info(
+                    f"📊 [UPLOAD] Twitter count incremented | count={count}/10 | event={event_id}"
+                )
         except Exception as e:
-            workflow.logger.warning(
-                f"⚠️ [UPLOAD] Failed to cleanup temp dir (non-critical) | error={e} | event={event_id}"
+            workflow.logger.error(
+                f"❌ [UPLOAD] increment_twitter_count FAILED | error={e} | event={event_id}"
             )

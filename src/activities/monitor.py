@@ -431,6 +431,7 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
             activity.logger.info(
                 f"🏁 [MONITOR] FIXTURE COMPLETED | fixture={fixture_id}"
             )
+            # Note: Temp directory cleanup is done in MonitorWorkflow after this returns True
             return True
         
         return False

@@ -16,6 +16,7 @@ FIXTURE LIFECYCLE:
   - When status changes NS/TBD → anything else: Queued for activation
 - Active fixtures: Full event monitoring, debouncing, Twitter workflows
   - When status is completed and all events complete: Moved to completed
+  - When fixture completes: Temp directories are cleaned up
 - End of cycle: Complete ready fixtures, then activate queued fixtures
 """
 from temporalio import workflow
@@ -27,6 +28,7 @@ import asyncio
 
 with workflow.unsafe.imports_passed_through():
     from src.activities import monitor as monitor_activities
+    from src.activities import upload as upload_activities
     from src.workflows.twitter_workflow import TwitterWorkflow, TwitterWorkflowInput
     from src.utils.fixture_status import get_completed_statuses
 
@@ -190,6 +192,7 @@ class MonitorWorkflow:
             return {
                 "twitter_workflows": local_twitter_workflows,
                 "completed": 1 if was_completed else 0,
+                "completed_fixture_id": fixture_id if was_completed else None,
             }
         
         # Execute all fixture processing in parallel
@@ -198,9 +201,27 @@ class MonitorWorkflow:
             fixture_results = await asyncio.gather(*fixture_tasks)
             
             # Aggregate results
+            completed_fixture_ids = []
             for result in fixture_results:
                 twitter_workflows_started.extend(result["twitter_workflows"])
                 completed_count += result["completed"]
+                if result.get("completed_fixture_id"):
+                    completed_fixture_ids.append(result["completed_fixture_id"])
+            
+            # Cleanup temp directories for completed fixtures
+            for fixture_id in completed_fixture_ids:
+                try:
+                    await workflow.execute_activity(
+                        upload_activities.cleanup_fixture_temp_dirs,
+                        fixture_id,
+                        start_to_close_timeout=timedelta(seconds=60),
+                        retry_policy=RetryPolicy(maximum_attempts=2),
+                    )
+                    workflow.logger.info(f"🧹 Cleaned up temp dirs for completed fixture {fixture_id}")
+                except Exception as e:
+                    workflow.logger.warning(
+                        f"⚠️ Failed to cleanup temp dirs for fixture {fixture_id} | error={e}"
+                    )
             
             # Single frontend notification after all processing
             if needs_frontend_refresh:

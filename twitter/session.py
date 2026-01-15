@@ -655,12 +655,22 @@ Steps:
                             tweet_id = tweet_url.split("/status/")[-1] if "/status/" in tweet_url else f"unknown"
                             age_str = f"{tweet_age_minutes:.1f}min ago" if tweet_age_minutes else "unknown age"
                             
+                            # Extract username from tweet URL: https://x.com/USERNAME/status/123
+                            username = "Unknown"
+                            try:
+                                # URL format: https://x.com/CBSSportsGolazo/status/2011864786460409910
+                                url_parts = tweet_url.replace("https://", "").replace("http://", "").split("/")
+                                if len(url_parts) >= 3 and url_parts[1] != "i":  # Skip /i/ URLs like x.com/i/status/...
+                                    username = url_parts[1]
+                            except:
+                                pass
+                            
                             video_entry = {
                                 "search_term": search_query,
                                 "tweet_url": tweet_url,
                                 "tweet_id": tweet_id,
                                 "tweet_text": tweet_text[:200],
-                                "username": "Unknown",
+                                "username": username,
                                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                                 "discovered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                                 "search_index": 0,
@@ -673,7 +683,7 @@ Steps:
                             }
                             
                             discovered_videos.append(video_entry)
-                            print(f"   ✅ Video #{len(discovered_videos)} ({age_str}): {tweet_text[:50]}...", flush=True)
+                            print(f"   ✅ Video #{len(discovered_videos)} @{username} ({age_str}): {tweet_text[:50]}...", flush=True)
                     
                     except Exception as e:
                         continue

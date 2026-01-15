@@ -4,6 +4,7 @@ from typing import Dict, List, Any, Optional
 import os
 import hashlib
 import asyncio
+import json
 
 from src.utils.config import (
     LLAMA_CHAT_URL,
@@ -18,6 +19,54 @@ from src.utils.config import (
 # Global lock and timestamp to rate-limit downloads across all workers
 _download_lock = asyncio.Lock()
 _last_download_time = 0
+
+# Twitter cookie cache (loaded once per worker)
+_twitter_cookies_cache: Optional[Dict[str, str]] = None
+_twitter_cookies_loaded = False
+
+# Path to Twitter cookie backup (JSON format from twitter service)
+TWITTER_COOKIE_BACKUP_PATH = os.getenv("TWITTER_COOKIE_BACKUP_PATH", "/config/twitter_cookies.json")
+
+
+def _load_twitter_cookies() -> Dict[str, str]:
+    """Load Twitter cookies from JSON backup file.
+    
+    Returns dict of cookie name -> value for use with httpx.
+    Caches result to avoid repeated file reads.
+    """
+    global _twitter_cookies_cache, _twitter_cookies_loaded
+    
+    if _twitter_cookies_loaded:
+        return _twitter_cookies_cache or {}
+    
+    _twitter_cookies_loaded = True
+    
+    if not os.path.exists(TWITTER_COOKIE_BACKUP_PATH):
+        activity.logger.warning(f"⚠️ [COOKIES] No cookie file at {TWITTER_COOKIE_BACKUP_PATH}")
+        return {}
+    
+    try:
+        with open(TWITTER_COOKIE_BACKUP_PATH, 'r') as f:
+            data = json.load(f)
+        
+        cookies = {}
+        for cookie in data.get("cookies", []):
+            name = cookie.get("name")
+            value = cookie.get("value")
+            if name and value:
+                cookies[name] = value
+        
+        # Log which auth cookies we have (without values)
+        auth_cookies = ["auth_token", "ct0", "twid", "guest_id"]
+        found = [c for c in auth_cookies if c in cookies]
+        activity.logger.info(f"🍪 [COOKIES] Loaded {len(cookies)} cookies, auth: {found}")
+        
+        _twitter_cookies_cache = cookies
+        return cookies
+        
+    except Exception as e:
+        activity.logger.warning(f"⚠️ [COOKIES] Failed to load: {e}")
+        return {}
 
 
 @activity.defn
@@ -79,8 +128,15 @@ async def download_single_video(
     # Call syndication API to get video info
     syndication_url = f"https://cdn.syndication.twimg.com/tweet-result?id={tweet_id}&token=x"
     
+    # Browser-like headers to avoid blocks
+    api_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Referer": "https://twitter.com/",
+    }
+    
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=15.0, headers=api_headers) as client:
             response = await client.get(syndication_url)
             
             if response.status_code != 200:
@@ -165,20 +221,53 @@ async def download_single_video(
     cdn_url = best_variant.get("src") or best_variant.get("url")
     bitrate = best_variant.get("bitrate", 0)
     
+    # Check if this is amplify_video (promoted content that may need auth)
+    is_amplify = "amplify_video" in cdn_url if cdn_url else False
+    
     activity.logger.info(
         f"🎬 [DOWNLOAD] Found {len(mp4_variants)} variants, using best: {bitrate/1000:.0f}kbps | "
-        f"video_idx={video_index}"
+        f"video_idx={video_index} | amplify={is_amplify}"
     )
     
     # Download from CDN
     output_path = os.path.join(temp_dir, f"{event_id}_{video_index}_01.mp4")
     
+    # Load Twitter cookies for authenticated CDN requests
+    twitter_cookies = _load_twitter_cookies()
+    
+    # Browser-like headers to avoid CDN 403 blocks
+    cdn_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "identity",
+        "Referer": "https://twitter.com/",
+        "Origin": "https://twitter.com",
+    }
+    
+    # Add CSRF token header if we have cookies (required for some Twitter endpoints)
+    if twitter_cookies.get("ct0"):
+        cdn_headers["x-csrf-token"] = twitter_cookies["ct0"]
+    
+    # Build cookie string for httpx
+    cookie_str = "; ".join(f"{k}={v}" for k, v in twitter_cookies.items()) if twitter_cookies else ""
+    
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream("GET", cdn_url) as response:
+        async with httpx.AsyncClient(timeout=60.0, headers=cdn_headers) as client:
+            # Add cookies to the request
+            request_cookies = twitter_cookies if twitter_cookies else None
+            async with client.stream("GET", cdn_url, cookies=request_cookies) as response:
                 if response.status_code != 200:
                     msg = f"CDN returned {response.status_code}"
-                    activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
+                    # Log more detail for auth failures
+                    if response.status_code == 403:
+                        has_auth = "auth_token" in twitter_cookies
+                        activity.logger.warning(
+                            f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index} | amplify={is_amplify} | "
+                            f"has_auth_cookie={has_auth}"
+                        )
+                    else:
+                        activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
                     raise RuntimeError(msg)
                 
                 with open(output_path, 'wb') as f:

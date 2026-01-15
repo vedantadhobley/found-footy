@@ -29,6 +29,7 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
 │   Fetch fixtures                     Poll API                        │
 │   Route by status                    Debounce events                 │
 │                                      Trigger Twitter when stable     │
+│                                      Cleanup temp dirs on complete   │
 │                                           │                          │
 └───────────────────────────────────────────┼─────────────────────────┘
                                             │ (fire-and-forget)
@@ -46,7 +47,7 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
 │      - ELSE: increment_twitter_count (no download to do it)          │
 │      - IF attempt < 10: workflow.sleep(1 min) ← DURABLE TIMER        │
 │                              │                                       │
-│   Downloads set _twitter_complete when ALL 10 finish                 │
+│   _twitter_complete set by UploadWorkflow (ensures uploads finish)   │
 │                              │                                       │
 └──────────────────────────────┼──────────────────────────────────────┘
                                ▼ (BLOCKING child workflow)
@@ -56,10 +57,11 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
 │   2. MD5 batch dedup (within downloaded batch only)                  │
 │   3. AI validation (reject non-football)                             │
 │   4. Compute perceptual hash (PARALLEL, heartbeat every 5 frames)    │
-│   5. Start UploadWorkflow (BLOCKING child, serialized per event)     │
-│   6. increment_twitter_count → sets _twitter_complete at count=10    │
+│   5. Queue videos for upload (signal-with-start to UploadWorkflow)   │
+│   6. IF NO videos to upload: increment_twitter_count                 │
+│      (UploadWorkflow handles increment when videos ARE queued)       │
 └──────────────────────────────┼──────────────────────────────────────┘
-                               ▼ (BLOCKING child, SERIALIZED)
+                               ▼ (SIGNAL-WITH-START, SERIALIZED)
 ┌─────────────────────────────────────────────────────────────────────┐
 │           UploadWorkflow (Workflow ID: upload-{event_id})            │
 │   ** Only ONE runs at a time per event - Temporal serializes **      │
@@ -68,8 +70,10 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
 │   3. Perceptual dedup against S3 (similar content)                   │
 │   4. Upload new videos / replace worse quality (PARALLEL)            │
 │   5. Save video objects to MongoDB                                   │
-│   6. Recalculate video ranks                                         │
-│   7. Cleanup temp directory                                          │
+│   6. Remove old MongoDB entries ONLY after successful upload         │
+│   7. Recalculate video ranks                                         │
+│   8. Cleanup individual files (not temp dir - that's per fixture)    │
+│   9. increment_twitter_count → sets _twitter_complete at count=10    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -77,6 +81,9 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
 - `start_child_workflow` with `parent_close_policy=ABANDON` for Monitor → Twitter
 - `execute_child_workflow` (BLOCKING) for Twitter → Download and Download → Upload
 - **Upload serialization**: Deterministic workflow ID `upload-{event_id}` ensures only ONE upload per event runs at a time
+- **Safe replacement**: MongoDB entries removed AFTER successful upload (prevents data loss)
+- **Twitter count**: Incremented by UploadWorkflow after each batch (ensures uploads finish before fixture completes)
+- **Temp cleanup**: Individual files deleted after upload; fixture temp dirs cleaned by MonitorWorkflow on completion
 - Durable timers (`workflow.sleep`) in TwitterWorkflow for 1-min spacing
 
 ---
@@ -465,17 +472,24 @@ UploadWorkflow (ID: upload-{event_id} - SERIALIZED per event)
     ├── PARALLEL: bump_video_popularity × N
     │   └── For videos skipped due to lower quality
     │
-    ├── PARALLEL: replace_s3_video × N
-    │   └── Remove old MongoDB entries (S3 overwritten with same key)
-    │
     ├── PARALLEL: upload_single_video × N
+    │   └── Upload new/replacement videos to S3
     │
     ├── save_video_objects
     │   └── Add to MongoDB _s3_videos array
     │
+    ├── PARALLEL: replace_s3_video × N (AFTER save_video_objects)
+    │   └── Remove old MongoDB entries ONLY after successful upload
+    │   └── Prevents data loss if upload fails
+    │
     ├── recalculate_video_ranks
     │
-    └── cleanup_upload_temp
+    ├── cleanup_individual_files
+    │   └── Delete individual files after successful upload (NOT temp dir)
+    │
+    └── increment_twitter_count
+        └── Each batch = one download run = one Twitter attempt
+        └── Sets _twitter_complete=true when count reaches 10
 ```
 
 **KEY DESIGN: Serialization via Workflow ID**
@@ -498,11 +512,12 @@ state and uploaded the same video twice.
 | `deduplicate_by_md5` | 30s | 2 | Fast exact match check |
 | `deduplicate_videos` | 60s | 3 | Perceptual hash comparison |
 | `bump_video_popularity` | 15s | 2 | MongoDB update |
-| `replace_s3_video` | 30s | 3 | Remove old MongoDB entry |
 | `upload_single_video` | 60s | 3 | S3 upload |
 | `save_video_objects` | 30s | 3 | MongoDB update |
+| `replace_s3_video` | 30s | 3 | Remove old MongoDB entry (AFTER upload) |
 | `recalculate_video_ranks` | 30s | 2 | MongoDB update |
-| `cleanup_upload_temp` | 30s | 2 | Remove temp files |
+| `cleanup_individual_files` | 30s | 2 | Delete individual files after upload |
+| `increment_twitter_count` | 30s | 5 | Sets _twitter_complete at 10 |
 
 ---
 

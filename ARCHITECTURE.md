@@ -103,7 +103,8 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 │  2. AI validation (reject non-football)                              │
 │  PARALLEL: Compute perceptual hash (heartbeat every 5 frames)        │
 │  3. Queue videos for upload (signal-with-start to UploadWorkflow)    │
-│  4. increment_twitter_count → sets _twitter_complete at count=10     │
+│  4. IF NO videos to upload: increment_twitter_count                  │
+│     (UploadWorkflow handles increment when videos ARE queued)        │
 └──────────────────────────────────────┬──────────────────────────────┘
                                        │
                                        ▼ (SIGNAL-WITH-START, serialized)
@@ -117,9 +118,11 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 │  0. Abort if event removed (VAR check via fetch_event_data)          │
 │  1. Receive videos via signal → add to pending queue                 │
 │  2. Process batches: fetch S3 state, dedup, upload                   │
-│  3. Update MongoDB + recalculate video ranks                         │
-│  4. Cleanup temp files                                               │
-│  5. Wait for more signals or timeout after 5 min idle                │
+│  3. Remove old MongoDB entries ONLY after successful upload          │
+│  4. Update MongoDB + recalculate video ranks                         │
+│  5. Cleanup individual files after successful upload                 │
+│  6. increment_twitter_count (each batch = one Twitter attempt)       │
+│  7. Wait for more signals or timeout after 5 min idle                │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -129,7 +132,9 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 - **Download → Upload**: Signal-with-start pattern with deterministic ID `upload-{event_id}`
 - **Race condition prevention**: Multiple DownloadWorkflows signal ONE UploadWorkflow per event
 - **FIFO queue**: UploadWorkflow processes batches in signal order via deque
-- **`_twitter_complete`**: Set by downloads when count reaches 10
+- **`_twitter_complete`**: Set by UploadWorkflow when count reaches 10 (ensures uploads finish first)
+- **Safe replacement**: MongoDB entries only removed AFTER successful S3 upload
+- **Temp cleanup**: Individual files deleted after upload; fixture temp dirs cleaned on completion
 - **Heartbeat-based timeouts**: Long activities use `heartbeat_timeout` instead of arbitrary `execution_timeout`
 - **Comprehensive logging**: Every failure path logged with `[WORKFLOW]` prefix
 

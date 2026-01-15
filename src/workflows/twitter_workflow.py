@@ -455,6 +455,9 @@ class TwitterWorkflow:
             f"Downloads still running will set _twitter_complete when done"
         )
         
+        # NOTE: Temp directory cleanup happens at FIXTURE level when fixture moves to completed
+        # This avoids race conditions with uploads that may still be processing
+        
         # Notify frontend (best-effort, non-critical)
         try:
             await workflow.execute_activity(

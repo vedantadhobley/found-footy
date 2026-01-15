@@ -218,7 +218,9 @@ async def main():
                 upload.bump_video_popularity,
                 upload.save_video_objects,
                 upload.recalculate_video_ranks,
-                upload.cleanup_upload_temp,  # Cleanup after successful upload
+                upload.cleanup_individual_files,  # Cleanup individual files after successful upload
+                upload.cleanup_fixture_temp_dirs,  # Cleanup all temp dirs when fixture completes
+                upload.cleanup_upload_temp,  # Cleanup single temp dir
             ],
         )
         

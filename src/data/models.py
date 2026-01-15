@@ -84,14 +84,14 @@ class FixtureStatus(str, Enum):
     SUSPENDED = "SUSP"
     INTERRUPTED = "INT"
     LIVE = "LIVE"       # In progress (generic)
+    POSTPONED = "PST"   # Postponed - keep monitoring (may resume same day)
     
     # Completed statuses
     FULL_TIME = "FT"
     AFTER_EXTRA_TIME = "AET"
     PENALTIES = "PEN"
     
-    # Cancelled/Postponed statuses
-    POSTPONED = "PST"
+    # Cancelled/Postponed statuses (truly terminal)
     CANCELLED = "CANC"
     ABANDONED = "ABD"
     WALKOVER = "WO"      # Technical win
@@ -104,13 +104,13 @@ class FixtureStatus(str, Enum):
     
     @classmethod
     def active_statuses(cls) -> List[str]:
-        """Statuses for matches in progress."""
-        return ["1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"]
+        """Statuses for matches in progress (including PST for short delays)."""
+        return ["1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE", "PST"]
     
     @classmethod
     def completed_statuses(cls) -> List[str]:
         """Statuses for finished matches (ready for archive)."""
-        return ["FT", "AET", "PEN", "PST", "CANC", "ABD", "WO", "AWD"]
+        return ["FT", "AET", "PEN", "CANC", "ABD", "WO", "AWD"]
 
 
 class EventType(str, Enum):

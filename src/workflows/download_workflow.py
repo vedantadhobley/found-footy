@@ -38,7 +38,6 @@ import asyncio
 
 with workflow.unsafe.imports_passed_through():
     from src.activities import download as download_activities
-    from src.activities import twitter as twitter_activities
 
 
 @workflow.defn
@@ -50,6 +49,8 @@ class DownloadWorkflow:
     - Each video download is independent
     - Failures don't cascade (partial success preserved)
     - UploadWorkflow serializes S3 operations per event
+    
+    Note: VAR check is done by TwitterWorkflow before spawning this workflow.
     """
     
     @workflow.run
@@ -78,29 +79,6 @@ class DownloadWorkflow:
             f"⬇️ [DOWNLOAD] STARTED | event={event_id} | "
             f"videos={len(discovered_videos) if discovered_videos else 0}"
         )
-        
-        # =========================================================================
-        # Step 0: Check if event still exists (VAR cancellation check)
-        # =========================================================================
-        # If event was VAR'd/removed while queued, abort early to save resources.
-        event_check = await workflow.execute_activity(
-            twitter_activities.check_event_exists,
-            args=[fixture_id, event_id],
-            start_to_close_timeout=timedelta(seconds=10),
-        )
-        
-        if not event_check.get("exists", False):
-            workflow.logger.warning(
-                f"🛑 [DOWNLOAD] Event no longer exists (VAR'd?) | event={event_id} | ABORTING"
-            )
-            return {
-                "fixture_id": fixture_id,
-                "event_id": event_id,
-                "videos_uploaded": 0,
-                "s3_urls": [],
-                "terminated_early": True,
-                "reason": "event_removed",
-            }
         
         # Initialize download stats for visibility into what happened in the pipeline
         download_stats = {
@@ -439,6 +417,10 @@ class DownloadWorkflow:
                 videos_uploaded = 0
             
             s3_urls = []  # We don't wait for upload results - it happens async in UploadWorkflow
+            
+            # NOTE: Don't increment twitter count here!
+            # UploadWorkflow will increment after processing this batch.
+            # This ensures _twitter_complete isn't set until uploads are actually done.
         else:
             workflow.logger.info(
                 f"⚠️ [DOWNLOAD] No videos to upload (all filtered/failed) | event={event_id}"
@@ -456,11 +438,9 @@ class DownloadWorkflow:
                 )
             except Exception as e:
                 workflow.logger.warning(f"⚠️ [DOWNLOAD] Failed to cleanup temp dir | error={e}")
-        
-        # =========================================================================
-        # Step 6: Increment twitter count and check for completion
-        # =========================================================================
-        await self._increment_twitter_count(fixture_id, event_id)
+            
+            # Increment twitter count here since no upload workflow will do it
+            await self._increment_twitter_count(fixture_id, event_id)
         
         workflow.logger.info(
             f"🎉 [DOWNLOAD] WORKFLOW COMPLETE | uploaded={videos_uploaded} | "
