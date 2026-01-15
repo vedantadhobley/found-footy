@@ -515,28 +515,31 @@ class FootyMongoStore:
     
     def update_event_twitter_count(self, fixture_id: int, event_id: str, new_count: int) -> bool:
         """
-        Update Twitter attempt counter (for visibility at START of each attempt).
+        Update Twitter current attempt counter (for visibility at START of each attempt).
         Called by TwitterWorkflow at the start of each search attempt.
         
-        NOTE: This is for visibility only. The actual completion tracking is done by
-        increment_twitter_count_and_check_complete which is called when downloads finish.
+        NOTE: This updates _twitter_attempt (current attempt being processed) NOT _twitter_count.
+        _twitter_count is managed by increment_twitter_count_and_check_complete and tracks
+        COMPLETED attempts, not current attempt.
         
         Args:
             fixture_id: Fixture ID
             event_id: Event ID  
-            new_count: New twitter_count value (1-10)
+            new_count: Current attempt number (1-10)
         """
         try:
+            # Update _twitter_attempt (current attempt) NOT _twitter_count (completed count)
+            # This prevents the count from going to 11 when attempt 10 completes
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
                 {"$set": {
-                    f"events.$.{EventFields.TWITTER_COUNT}": new_count
+                    f"events.$._twitter_attempt": new_count
                 }}
             )
             # Use matched_count to check if document was found (modified_count can be 0 if value unchanged)
             return result.matched_count > 0
         except Exception as e:
-            print(f"❌ Error updating twitter count for {event_id}: {e}")
+            print(f"❌ Error updating twitter attempt for {event_id}: {e}")
             return False
     
     def increment_twitter_count_and_check_complete(
