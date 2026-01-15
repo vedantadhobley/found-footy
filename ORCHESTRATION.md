@@ -111,24 +111,27 @@ This decoupling allows:
 - MD5 batch dedup (within downloaded batch only)
 - Validates soccer content via vision model (Qwen3-VL)
 - Computes perceptual hash for deduplication (dense 0.25s sampling)
-- **Calls UploadWorkflow as BLOCKING child** (serialized per event)
+- **Queues videos for upload via signal-with-start** (serialized per event)
 - Increments `_twitter_count` when complete
 
-### UploadWorkflow (Triggered by DownloadWorkflow, SERIALIZED)
-- **Workflow ID: `upload-{event_id}`** - only ONE runs at a time per event
-- Fetches FRESH S3 state inside serialized context
-- MD5 dedup against S3 (exact matches → bump popularity)
-- Perceptual dedup against S3 (similar content → quality comparison)
-- Uploads new/better videos to S3 (parallel)
+### UploadWorkflow (Signal-with-Start Pattern)
+- **Workflow ID: `upload-{event_id}`** - namespace-scoped, ONE per event
+- **Receives videos via `add_videos` signal** - queued in FIFO deque
+- Processes batches: fetch S3 state, MD5/perceptual dedup, upload
 - Updates MongoDB `_s3_videos` array
 - Recalculates video ranks
 - Cleans up temp files
+- **Idles for 5 minutes** waiting for more signals, then completes
 
-**Why UploadWorkflow is Serialized:**
-- Multiple DownloadWorkflows may find videos for the same event simultaneously
-- Without serialization, both would see stale S3 state and upload duplicates
-- Deterministic workflow ID ensures Temporal queues concurrent calls
-- Each sees fresh S3 state when it runs
+**Signal-with-Start Pattern:**
+- `queue_videos_for_upload` activity uses Temporal Client API (not child workflow)
+- `client.start_workflow(..., start_signal="add_videos", start_signal_args=[videos])`
+- If workflow not running: START it AND deliver signal atomically
+- If workflow already running: just SIGNAL it (videos added to queue)
+- **Key insight**: Client API workflow IDs are namespace-scoped (global)
+- Child workflow IDs are parent-scoped (would cause "already started" errors)
+- Multiple DownloadWorkflows for SAME event → ONE UploadWorkflow, FIFO queue
+- Multiple events → PARALLEL UploadWorkflows (different IDs)
 
 ---
 
@@ -201,10 +204,16 @@ Previously: Monitor → RAGWorkflow → TwitterWorkflow (double fire-and-forget)
 Problem: Two fire-and-forget hops caused duplicate workflows due to Temporal ID reuse timing
 Solution: Twitter resolves aliases at start, single fire-and-forget from Monitor
 
-### Why UploadWorkflow with deterministic ID?
-Problem: Multiple parallel downloads could see stale S3 state and upload duplicates
-Solution: Workflow ID `upload-{event_id}` serializes uploads - Temporal queues concurrent calls
-Benefit: Each upload sees fresh S3 state, proper deduplication guaranteed
+### Why Signal-with-Start for UploadWorkflow?
+Problem: Multiple parallel DownloadWorkflows for SAME event need serialized uploads
+Failed approaches:
+- Child workflow with same ID → "Workflow execution already started" error
+- Child workflow IDs are parent-scoped, not namespace-scoped
+Solution: Activity uses Client API's signal-with-start pattern
+- Workflow ID `upload-{event_id}` is namespace-scoped (global)
+- Signal-with-start: start if not exists, signal if exists (atomic)
+- Videos queued in FIFO deque, processed in order
+Benefit: No errors, proper serialization, parallel uploads for DIFFERENT events
 
 ### Why 10 Twitter attempts with 1-min spacing?
 Goal videos appear over 5-15 minutes. More frequent searches = more videos captured.

@@ -101,29 +101,32 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 │  1. MD5 batch dedup (within downloaded batch only)                   │
 │  2. AI validation (reject non-football)                              │
 │  PARALLEL: Compute perceptual hash (heartbeat every 5 frames)        │
-│  3. Call UploadWorkflow (BLOCKING child, serialized per event)       │
+│  3. Queue videos for upload (signal-with-start to UploadWorkflow)    │
 │  4. increment_twitter_count → sets _twitter_complete at count=10     │
 └──────────────────────────────────────┬──────────────────────────────┘
                                        │
-                                       ▼ (BLOCKING child, serialized)
+                                       ▼ (SIGNAL-WITH-START, serialized)
 ┌─────────────────────────────────────────────────────────────────────┐
 │                  UploadWorkflow (ID: upload-{event_id})              │
 ├─────────────────────────────────────────────────────────────────────┤
-│  ** SERIALIZED: Only ONE runs at a time per event **                 │
-│  1. Fetch FRESH S3 state (inside serialized context)                 │
-│  2. MD5 dedup against S3 (exact matches)                             │
-│  3. Perceptual dedup against S3 (similar content)                    │
-│  4. Upload new videos / replace lower quality                        │
-│  5. Update MongoDB + recalculate video ranks                         │
-│  6. Cleanup temp files                                               │
+│  ** SERIALIZED via Signal-with-Start pattern **                      │
+│  - Multiple DownloadWorkflows signal the SAME UploadWorkflow         │
+│  - Videos queued via add_videos signal (FIFO deque)                  │
+│  - Workflow idles for 5 min waiting for more signals                 │
+│  1. Receive videos via signal → add to pending queue                 │
+│  2. Process batches: fetch S3 state, dedup, upload                   │
+│  3. Update MongoDB + recalculate video ranks                         │
+│  4. Cleanup temp files                                               │
+│  5. Wait for more signals or timeout after 5 min idle                │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 **Key Architecture Points:**
 - **Monitor → Twitter**: Fire-and-forget (ABANDON policy)
 - **Twitter → Download**: BLOCKING child (waits for completion)
-- **Download → Upload**: BLOCKING child with deterministic ID `upload-{event_id}`
-- **Race condition prevention**: UploadWorkflow serializes S3 ops per event via workflow ID
+- **Download → Upload**: Signal-with-start pattern with deterministic ID `upload-{event_id}`
+- **Race condition prevention**: Multiple DownloadWorkflows signal ONE UploadWorkflow per event
+- **FIFO queue**: UploadWorkflow processes batches in signal order via deque
 - **`_twitter_complete`**: Set by downloads when count reaches 10
 - **Heartbeat-based timeouts**: Long activities use `heartbeat_timeout` instead of arbitrary `execution_timeout`
 - **Comprehensive logging**: Every failure path logged with `[WORKFLOW]` prefix
@@ -174,12 +177,15 @@ TwitterWorkflow (per event, resolves aliases then searches)
         └── 0 new videos → increment_twitter_count (no download to do it)
 ```
 
-**Race Condition Prevention (via UploadWorkflow Serialization):**
+**Race Condition Prevention (via Signal-with-Start Pattern):**
 - Multiple DownloadWorkflows may find videos for the same event simultaneously
-- Each calls UploadWorkflow with ID `upload-{event_id}` as a BLOCKING child
-- Temporal ensures only ONE workflow with that ID runs at a time
-- Subsequent calls QUEUE and wait - S3 state is always fresh when they run
-- No "re-fetch S3 right before dedup" hack needed - proper serialization instead
+- Each signals UploadWorkflow via `queue_videos_for_upload` activity
+- Activity uses Temporal Client API's signal-with-start:
+  - If UploadWorkflow not running: START it AND signal with videos
+  - If UploadWorkflow already running: just SIGNAL with videos (FIFO queue)
+- UploadWorkflow ID `upload-{event_id}` is namespace-scoped (global)
+- Videos processed in FIFO order via internal deque
+- No "Workflow execution already started" errors - signals always succeed
 
 ### Perceptual Hash Deduplication
 
