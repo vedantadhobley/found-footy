@@ -3,6 +3,7 @@ Ingest Workflow - Daily at 00:05 UTC
 
 Fetches today's fixtures and routes them to correct collections based on status.
 Pre-caches RAG aliases for both teams in each fixture (per-team for modularity).
+Cleans up fixtures older than 14 days from MongoDB and S3.
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -14,6 +15,12 @@ with workflow.unsafe.imports_passed_through():
     from src.activities import ingest as ingest_activities
     from src.activities import monitor as monitor_activities
     from src.activities import rag as rag_activities
+
+
+# Retention period for fixtures (in days)
+# Ingestion runs at 00:05 UTC, so "day 1" is yesterday
+# With 14 days retention: keeps 14 days before yesterday, deletes anything older
+FIXTURE_RETENTION_DAYS = 14
 
 
 @dataclass
@@ -132,6 +139,18 @@ class IngestWorkflow:
             ),
         )
         
+        # Cleanup old fixtures (older than 14 days)
+        # This runs at the end of ingestion to keep the database clean
+        cleanup_result = await workflow.execute_activity(
+            ingest_activities.cleanup_old_fixtures,
+            FIXTURE_RETENTION_DAYS,
+            start_to_close_timeout=timedelta(seconds=120),  # May take time to delete many S3 objects
+            retry_policy=RetryPolicy(
+                maximum_attempts=2,
+                initial_interval=timedelta(seconds=5),
+            ),
+        )
+        
         # Notify frontend to refresh (shows upcoming fixtures)
         await workflow.execute_activity(
             monitor_activities.notify_frontend_refresh,
@@ -144,10 +163,12 @@ class IngestWorkflow:
         result["rag_success"] = rag_success
         result["rag_failed"] = rag_failed
         result["unique_teams"] = len(teams_processed)
+        result["cleanup"] = cleanup_result
         
         workflow.logger.info(
             f"✅ Ingest complete: {result.get('staging', 0)} staging, "
             f"{result.get('active', 0)} active, {result.get('completed', 0)} completed, "
-            f"{rag_success}/{len(teams_processed)} teams RAG cached"
+            f"{rag_success}/{len(teams_processed)} teams RAG cached, "
+            f"{cleanup_result.get('deleted_fixtures', 0)} old fixtures cleaned up"
         )
         return result

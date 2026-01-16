@@ -379,12 +379,16 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 
 ### 1. IngestWorkflow (Daily 00:05 UTC)
 
-**Purpose**: Fetch today's fixtures and route by status
+**Purpose**: Fetch today's fixtures, route by status, cleanup old data (14-day retention)
 
 | Activity | Purpose | Retries |
 |----------|---------|---------|
 | `fetch_todays_fixtures` | Call API-Football | 3x, 2.0x backoff from 1s |
+| `fetch_fixtures_by_ids` | Manual ingest by ID | 3x, 2.0x backoff from 1s |
 | `categorize_and_store_fixtures` | Route by status | 3x, 2.0x backoff from 1s |
+| `cleanup_old_fixtures` | Delete fixtures >14 days old | 2x |
+
+**Retention Policy**: Keeps 14 days of fixture history. Since ingestion runs at 00:05 UTC (before today's matches), "Day 1" = yesterday. Deletes both MongoDB documents and S3 videos.
 
 ### 2. MonitorWorkflow (Every Minute)
 

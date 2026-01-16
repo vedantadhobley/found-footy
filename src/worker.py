@@ -183,6 +183,7 @@ async def main():
                 ingest.fetch_todays_fixtures,
                 ingest.fetch_fixtures_by_ids,
                 ingest.categorize_and_store_fixtures,
+                ingest.cleanup_old_fixtures,  # Delete fixtures older than 14 days
                 # Monitor activities (staging + active processing)
                 monitor.fetch_staging_fixtures,
                 monitor.process_staging_fixtures,
@@ -227,7 +228,7 @@ async def main():
         
         print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
         print("📋 Workflows: Ingest, Monitor, RAG, Twitter, Download, Upload", flush=True)
-        print("🔧 Activities: 32 total (3 ingest, 9 monitor, 3 rag, 4 twitter, 6 download, 10 upload)", flush=True)
+        print("🔧 Activities: 33 total (4 ingest, 9 monitor, 3 rag, 4 twitter, 6 download, 10 upload)", flush=True)
         print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every 30s)", flush=True)
         await worker.run()
     except Exception as e:

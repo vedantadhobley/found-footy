@@ -1,7 +1,7 @@
 """Ingest activities"""
 from temporalio import activity
 from typing import Dict, List, Any
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 
 @activity.defn
@@ -178,4 +178,146 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
     
     except Exception as e:
         activity.logger.error(f"❌ Failed to categorize/store fixtures: {e}")
+        raise
+
+
+@activity.defn
+async def cleanup_old_fixtures(retention_days: int = 14) -> Dict[str, Any]:
+    """
+    Delete fixtures older than retention_days from MongoDB and S3.
+    
+    The retention period is calculated from "yesterday" (the day before this runs),
+    since ingestion runs at 00:05 UTC when today's fixtures haven't happened yet.
+    
+    Example: If run on Jan 16 with retention_days=14:
+    - Today = Jan 16 (doesn't count - fixtures haven't happened)
+    - Day 1 = Jan 15 (yesterday, keep)
+    - Day 2 = Jan 14 (keep)
+    - ...
+    - Day 14 = Jan 2 (keep)
+    - Day 15 = Jan 1 → DELETE
+    
+    Formula: cutoff = today - retention_days
+    - cutoff = Jan 16 - 14 = Jan 2
+    - Delete fixtures with date < Jan 2 (i.e., Jan 1 and earlier)
+    - Keep fixtures from Jan 2 through Jan 15 (14 days)
+    
+    Args:
+        retention_days: Number of days of fixtures to keep (default 14)
+        
+    Returns:
+        Dict with counts of deleted fixtures and videos
+    """
+    from src.data.mongo_store import FootyMongoStore
+    from src.data.s3_store import FootyS3Store
+    
+    # Calculate cutoff: today - retention_days
+    # Example: Jan 16 - 14 = Jan 2
+    # Delete fixtures with date < Jan 2 (keeps Jan 2 through Jan 15 = 14 days)
+    cutoff_date = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=retention_days)
+    
+    activity.logger.info(
+        f"🧹 [CLEANUP] Starting old fixture cleanup | retention={retention_days} days | "
+        f"cutoff={cutoff_date.strftime('%Y-%m-%d')}"
+    )
+    
+    store = FootyMongoStore()
+    s3_store = FootyS3Store()
+    
+    deleted_fixtures = 0
+    deleted_videos = 0
+    failed_s3_deletes = 0
+    
+    try:
+        # Find all fixtures in fixtures_completed older than cutoff
+        # The date is stored as ISO string in fixture.date
+        old_fixtures = list(store.fixtures_completed.find({
+            "fixture.date": {"$lt": cutoff_date.isoformat()}
+        }))
+        
+        if not old_fixtures:
+            activity.logger.info(f"✅ [CLEANUP] No fixtures older than {cutoff_date.strftime('%Y-%m-%d')} found")
+            return {
+                "cutoff_date": cutoff_date.isoformat(),
+                "deleted_fixtures": 0,
+                "deleted_videos": 0,
+                "failed_s3_deletes": 0,
+            }
+        
+        activity.logger.info(f"🗑️ [CLEANUP] Found {len(old_fixtures)} fixtures to delete")
+        
+        for fixture in old_fixtures:
+            fixture_id = fixture.get("_id") or fixture.get("fixture", {}).get("id")
+            fixture_date = fixture.get("fixture", {}).get("date", "unknown")
+            home_team = fixture.get("teams", {}).get("home", {}).get("name", "?")
+            away_team = fixture.get("teams", {}).get("away", {}).get("name", "?")
+            
+            # Count videos for logging
+            fixture_video_count = 0
+            for event in fixture.get("events", []):
+                s3_videos = event.get("_s3_videos", [])
+                fixture_video_count += len(s3_videos)
+                
+                # Delete each video from S3
+                for video in s3_videos:
+                    s3_key = video.get("_s3_key", "")
+                    if s3_key:
+                        try:
+                            s3_store.s3_client.delete_object(
+                                Bucket=s3_store.bucket_name, 
+                                Key=s3_key
+                            )
+                            deleted_videos += 1
+                        except Exception as e:
+                            activity.logger.warning(
+                                f"⚠️ [CLEANUP] Failed to delete S3 video | key={s3_key} | error={e}"
+                            )
+                            failed_s3_deletes += 1
+            
+            # Also delete any S3 objects with the fixture prefix (catch-all for orphaned files)
+            try:
+                prefix = f"{fixture_id}/"
+                response = s3_store.s3_client.list_objects_v2(
+                    Bucket=s3_store.bucket_name,
+                    Prefix=prefix
+                )
+                for obj in response.get("Contents", []):
+                    try:
+                        s3_store.s3_client.delete_object(
+                            Bucket=s3_store.bucket_name,
+                            Key=obj["Key"]
+                        )
+                        # Only count if not already counted from _s3_videos
+                        if "_s3_key" not in str(obj["Key"]):
+                            deleted_videos += 1
+                    except Exception as e:
+                        activity.logger.warning(f"⚠️ [CLEANUP] Failed to delete orphan S3 | key={obj['Key']}")
+                        failed_s3_deletes += 1
+            except Exception as e:
+                activity.logger.warning(f"⚠️ [CLEANUP] Failed to list S3 prefix {prefix}: {e}")
+            
+            # Delete fixture from MongoDB
+            result = store.fixtures_completed.delete_one({"_id": fixture_id})
+            if result.deleted_count > 0:
+                deleted_fixtures += 1
+                activity.logger.info(
+                    f"🗑️ [CLEANUP] Deleted fixture | id={fixture_id} | "
+                    f"date={fixture_date[:10] if fixture_date else '?'} | "
+                    f"{home_team} vs {away_team} | videos={fixture_video_count}"
+                )
+        
+        activity.logger.info(
+            f"✅ [CLEANUP] Complete | deleted_fixtures={deleted_fixtures} | "
+            f"deleted_videos={deleted_videos} | failed_s3={failed_s3_deletes}"
+        )
+        
+        return {
+            "cutoff_date": cutoff_date.isoformat(),
+            "deleted_fixtures": deleted_fixtures,
+            "deleted_videos": deleted_videos,
+            "failed_s3_deletes": failed_s3_deletes,
+        }
+        
+    except Exception as e:
+        activity.logger.error(f"❌ [CLEANUP] Failed: {e}")
         raise

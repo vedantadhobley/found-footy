@@ -135,7 +135,7 @@ To manually ingest specific fixtures (bypasses team filter):
 ## 1. IngestWorkflow
 
 **Schedule**: Daily at 00:05 UTC  
-**Purpose**: Fetch today's fixtures and route to correct collections
+**Purpose**: Fetch today's fixtures, route to correct collections, cleanup old data
 
 ```
 IngestWorkflow
@@ -143,18 +143,40 @@ IngestWorkflow
     ├── fetch_todays_fixtures
     │   └── GET /fixtures?date=today from API-Football
     │
-    └── categorize_and_store_fixtures
-        ├── TBD, NS → fixtures_staging
-        ├── LIVE, 1H, HT, 2H → fixtures_active
-        └── FT, AET, PEN → fixtures_completed
+    ├── PRE-CACHE RAG aliases for each team
+    │   └── Per-team calls with retry (failure doesn't block ingest)
+    │
+    ├── categorize_and_store_fixtures
+    │   ├── TBD, NS → fixtures_staging
+    │   ├── LIVE, 1H, HT, 2H → fixtures_active
+    │   └── FT, AET, PEN → fixtures_completed
+    │
+    └── cleanup_old_fixtures (14 day retention)
+        ├── Delete fixtures from fixtures_completed older than 14 days
+        ├── Delete all S3 videos for those fixtures
+        └── "Day 1" = yesterday (since ingest runs at 00:05 before today's matches)
 ```
+
+### Retention Policy
+
+The application maintains **14 days of fixture history**. Since ingestion runs at 00:05 UTC:
+- Today's fixtures haven't happened yet, so they don't count
+- Day 1 = yesterday, Day 14 = 14 days before today
+- Example: If run on Jan 16:
+  - Keep: Jan 2 through Jan 15 (14 days)
+  - Delete: Jan 1 and earlier
+  - Cutoff = Jan 16 - 14 = Jan 2
+
+Both MongoDB documents and S3 videos are deleted during cleanup.
 
 ### Activities
 
 | Activity | Timeout | Retries | Backoff |
 |----------|---------|---------|---------|
 | `fetch_todays_fixtures` | 30s | 3 | 2.0x from 1s |
+| `fetch_fixtures_by_ids` | 30s | 3 | 2.0x from 1s |
 | `categorize_and_store_fixtures` | 30s | 3 | 2.0x from 1s |
+| `cleanup_old_fixtures` | 120s | 2 | - |
 
 ---
 
