@@ -472,7 +472,42 @@ the same event will QUEUE - each sees fresh S3 state when it runs.
 
 ---
 
-## 📝 Event Enhancement Fields
+## � Frontend Notifications (SSE Broadcast)
+
+The `notify_frontend_refresh` activity triggers an SSE broadcast to all connected browser clients, telling them to refetch data.
+
+### When Notifications Happen
+
+| Workflow | Trigger Point | Condition |
+|----------|---------------|-----------|
+| **MonitorWorkflow** | After processing active fixtures | Only if new Twitter workflows were started |
+| **MonitorWorkflow** | End of every 30s cycle | Always (ensures UI stays fresh) |
+| **TwitterWorkflow** | After all 10 search attempts complete | Always |
+| **UploadWorkflow** | After each batch upload completes | Only if videos were added or updated |
+| **IngestWorkflow** | After ingesting fixtures | Always |
+
+### Video Upload Notification Order
+
+When a video is uploaded, the notification happens **after** all processing is complete:
+
+```
+1. Upload to S3
+2. Save to MongoDB (new videos) OR update in-place (replacements)
+3. Recalculate video ranks ← Ensures rank is correct
+4. Notify frontend ← Browser sees video with proper rank
+```
+
+This ordering prevents the brief "rank=0" display that would occur if we notified before rank calculation.
+
+### Notification Frequency
+
+- **Normal operation**: ~every 30 seconds from MonitorWorkflow
+- **During active events**: Additional notifications from UploadWorkflow after each batch
+- **Multiple rapid uploads**: Each batch triggers its own notification
+
+---
+
+## �📝 Event Enhancement Fields
 
 | Field | Type | Set By | Purpose |
 |-------|------|--------|---------|
