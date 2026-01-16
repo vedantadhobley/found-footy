@@ -470,20 +470,26 @@ class UploadWorkflow:
         for i, outcome in enumerate(upload_outcomes):
             result = outcome.get("result")
             if result and result.get("status") == "success":
-                video_objects.append(result.get("video_object", {
+                video_obj = result.get("video_object", {
                     "url": result["s3_url"],
                     "perceptual_hash": result.get("perceptual_hash", ""),
                     "resolution_score": result.get("resolution_score", 0),
                     "file_size": 0,
                     "popularity": result.get("popularity", 1),
                     "rank": 0,
-                }))
+                })
                 s3_urls.append(result["s3_url"])
                 
                 # Track successful replacements (indices >= num_new_uploads are replacements)
                 if i >= num_new_uploads:
                     replacement_idx = i - num_new_uploads
-                    successful_replacements.append(videos_to_replace[replacement_idx])
+                    # Store the new video object with the replacement info
+                    replacement_info = videos_to_replace[replacement_idx].copy()
+                    replacement_info["new_video_object"] = video_obj
+                    successful_replacements.append(replacement_info)
+                else:
+                    # Only add to video_objects if it's a NEW upload (not a replacement)
+                    video_objects.append(video_obj)
         
         workflow.logger.info(
             f"✅ [UPLOAD] Uploads complete | success={len(video_objects)}/{len(all_uploads)} | event={event_id}"
@@ -515,25 +521,26 @@ class UploadWorkflow:
                 )
         
         # =========================================================================
-        # Step 7b: Remove old MongoDB entries for SUCCESSFUL replacements only
-        # We do this AFTER saving new videos to ensure we don't lose data if upload fails
+        # Step 7b: Atomic in-place update for SUCCESSFUL replacements
+        # Since we reuse the same S3 key/URL, we update the existing MongoDB entry in-place
+        # This avoids the race condition where video disappears between remove and add
         # =========================================================================
         if successful_replacements:
             workflow.logger.info(
-                f"♻️ [UPLOAD] Removing {len(successful_replacements)} replaced MongoDB entries | event={event_id}"
+                f"♻️ [UPLOAD] Updating {len(successful_replacements)} videos in-place | event={event_id}"
             )
             
-            async def remove_old_mongo_entry(replacement: dict):
+            async def update_video_in_place(replacement: dict):
                 old_video = replacement["old_s3_video"]
+                new_video_obj = replacement["new_video_object"]
                 try:
                     await workflow.execute_activity(
-                        upload_activities.replace_s3_video,
+                        upload_activities.update_video_in_place,
                         args=[
                             fixture_id,
                             event_id,
-                            old_video.get("s3_url", ""),
-                            old_video.get("_s3_key", ""),
-                            True,  # skip_s3_delete - already overwritten
+                            old_video.get("s3_url", ""),  # URL stays the same
+                            new_video_obj,  # New metadata
                         ],
                         start_to_close_timeout=timedelta(seconds=30),
                         retry_policy=RetryPolicy(
@@ -544,12 +551,12 @@ class UploadWorkflow:
                     )
                 except Exception as e:
                     workflow.logger.warning(
-                        f"⚠️ [UPLOAD] Failed to remove old MongoDB entry | "
-                        f"key={old_video.get('_s3_key')} | error={e} | event={event_id}"
+                        f"⚠️ [UPLOAD] Failed to update video in-place | "
+                        f"url={old_video.get('s3_url', '').split('/')[-1]} | error={e} | event={event_id}"
                     )
             
-            delete_tasks = [remove_old_mongo_entry(r) for r in successful_replacements]
-            await asyncio.gather(*delete_tasks)
+            update_tasks = [update_video_in_place(r) for r in successful_replacements]
+            await asyncio.gather(*update_tasks)
         
         # =========================================================================
         # Step 8: Recalculate video ranks
@@ -569,9 +576,10 @@ class UploadWorkflow:
         
         
         # =========================================================================
-        # Step 9: Notify frontend
+        # Step 9: Notify frontend (for both new videos AND in-place updates)
         # =========================================================================
-        if video_objects:
+        videos_changed = len(video_objects) + len(successful_replacements)
+        if videos_changed > 0:
             try:
                 await workflow.execute_activity(
                     monitor_activities.notify_frontend_refresh,

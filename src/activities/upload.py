@@ -799,6 +799,85 @@ async def upload_single_video(
 
 
 @activity.defn
+async def update_video_in_place(
+    fixture_id: int,
+    event_id: str,
+    s3_url: str,
+    new_video_object: Dict[str, Any],
+) -> bool:
+    """
+    Atomically update an existing video entry in MongoDB.
+    Used for in-place replacements where the S3 URL stays the same.
+    
+    This avoids the race condition of add+remove where the video temporarily disappears.
+    
+    Args:
+        fixture_id: Fixture ID
+        event_id: Event ID
+        s3_url: The S3 URL (stays the same, used to find the entry)
+        new_video_object: New video metadata to replace the old entry
+    
+    Returns:
+        True if successful
+    """
+    from src.data.mongo_store import FootyMongoStore
+    
+    store = FootyMongoStore()
+    
+    activity.logger.info(
+        f"♻️ [REPLACE] Atomic in-place update | event={event_id} | url={s3_url.split('/')[-1]}"
+    )
+    
+    # Try both active and completed collections
+    for collection_name, collection in [
+        ("active", store.fixtures_active),
+        ("completed", store.fixtures_completed)
+    ]:
+        try:
+            # First find the event and get the video array index
+            fixture = collection.find_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id}
+            )
+            if not fixture:
+                continue
+            
+            # Find event index and video index
+            for event_idx, evt in enumerate(fixture.get("events", [])):
+                if evt.get(EventFields.EVENT_ID) == event_id:
+                    videos = evt.get(EventFields.S3_VIDEOS, [])
+                    for video_idx, video in enumerate(videos):
+                        if video.get("url") == s3_url:
+                            # Found it! Update in place using positional operator
+                            update_path = f"events.{event_idx}.{EventFields.S3_VIDEOS}.{video_idx}"
+                            result = collection.update_one(
+                                {"_id": fixture_id},
+                                {"$set": {update_path: new_video_object}}
+                            )
+                            if result.modified_count > 0:
+                                activity.logger.info(
+                                    f"✅ [REPLACE] In-place update complete | event={event_id} | "
+                                    f"collection={collection_name}"
+                                )
+                                return True
+                            else:
+                                activity.logger.warning(
+                                    f"⚠️ [REPLACE] No modification made | event={event_id}"
+                                )
+                                return False
+                    break
+            
+        except Exception as e:
+            activity.logger.error(
+                f"❌ [REPLACE] In-place update failed | collection={collection_name} | error={e}"
+            )
+    
+    activity.logger.warning(
+        f"⚠️ [REPLACE] Video not found for in-place update | event={event_id} | url={s3_url}"
+    )
+    return False
+
+
+@activity.defn
 async def replace_s3_video(
     fixture_id: int,
     event_id: str,
@@ -809,6 +888,9 @@ async def replace_s3_video(
     """
     Remove old video entry from MongoDB, optionally delete from S3.
     Called when a higher quality version is being uploaded to replace it.
+    
+    NOTE: For same-URL replacements (where S3 key is reused), use update_video_in_place
+    instead to avoid the race condition where video temporarily disappears.
     
     When skip_s3_delete=True, the S3 file is NOT deleted because the new upload
     will overwrite the same key. This keeps shared URLs stable.

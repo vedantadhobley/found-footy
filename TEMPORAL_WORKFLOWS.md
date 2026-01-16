@@ -474,13 +474,14 @@ UploadWorkflow (ID: upload-{event_id} - SERIALIZED per event)
     │
     ├── PARALLEL: upload_single_video × N
     │   └── Upload new/replacement videos to S3
+    │   └── Replacements reuse existing S3 key (URL stays stable)
     │
-    ├── save_video_objects
+    ├── save_video_objects (NEW videos only)
     │   └── Add to MongoDB _s3_videos array
     │
-    ├── PARALLEL: replace_s3_video × N (AFTER save_video_objects)
-    │   └── Remove old MongoDB entries ONLY after successful upload
-    │   └── Prevents data loss if upload fails
+    ├── PARALLEL: update_video_in_place × N (for REPLACEMENTS)
+    │   └── Atomic in-place MongoDB update (no add+remove race condition)
+    │   └── Video never disappears during upgrade
     │
     ├── recalculate_video_ranks
     │
@@ -513,8 +514,8 @@ state and uploaded the same video twice.
 | `deduplicate_videos` | 60s | 3 | Perceptual hash comparison |
 | `bump_video_popularity` | 15s | 2 | MongoDB update |
 | `upload_single_video` | 60s | 3 | S3 upload |
-| `save_video_objects` | 30s | 3 | MongoDB update |
-| `replace_s3_video` | 30s | 3 | Remove old MongoDB entry (AFTER upload) |
+| `save_video_objects` | 30s | 3 | MongoDB update (new videos only) |
+| `update_video_in_place` | 30s | 3 | Atomic in-place update for replacements |
 | `recalculate_video_ranks` | 30s | 2 | MongoDB update |
 | `cleanup_individual_files` | 30s | 2 | Delete individual files after upload |
 | `increment_twitter_count` | 30s | 5 | Sets _twitter_complete at 10 |

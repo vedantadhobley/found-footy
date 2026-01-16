@@ -214,6 +214,7 @@ async def main():
                 upload.deduplicate_by_md5,  # Fast MD5 dedup against S3
                 upload.deduplicate_videos,  # Perceptual hash dedup against S3
                 upload.upload_single_video,
+                upload.update_video_in_place,  # Atomic in-place update for replacements
                 upload.replace_s3_video,
                 upload.bump_video_popularity,
                 upload.save_video_objects,
@@ -226,7 +227,7 @@ async def main():
         
         print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
         print("📋 Workflows: Ingest, Monitor, RAG, Twitter, Download, Upload", flush=True)
-        print("🔧 Activities: 31 total (3 ingest, 9 monitor, 3 rag, 4 twitter, 6 download, 9 upload)", flush=True)
+        print("🔧 Activities: 32 total (3 ingest, 9 monitor, 3 rag, 4 twitter, 6 download, 10 upload)", flush=True)
         print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every 30s)", flush=True)
         await worker.run()
     except Exception as e:

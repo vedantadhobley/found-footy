@@ -460,9 +460,9 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 | `deduplicate_by_md5` | Fast exact duplicate removal | 2x |
 | `deduplicate_videos` | Perceptual hash dedup vs S3 | 3x |
 | `bump_video_popularity` | Increment popularity on match | 2x |
-| `replace_s3_video` | Remove old MongoDB entry | 3x |
+| `update_video_in_place` | Atomic in-place update for replacements | 3x |
 | `upload_single_video` | Upload ONE video to S3 | 3x |
-| `save_video_objects` | Save to MongoDB _s3_videos | 3x |
+| `save_video_objects` | Save to MongoDB _s3_videos (new videos) | 3x |
 | `recalculate_video_ranks` | Recompute video ranks | 2x |
 | `cleanup_upload_temp` | Remove temp directory | 2x |
 
