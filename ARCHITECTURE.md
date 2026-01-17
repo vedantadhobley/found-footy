@@ -18,6 +18,53 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 
 ---
 
+## 🏗️ Multi-Worker Architecture
+
+**Python GIL Limitation**: Python's Global Interpreter Lock limits each process to one CPU core for CPU-bound work (like workflow replay). To utilize multiple cores, we run **multiple worker replicas**.
+
+```
+                    ┌─────────────────┐
+                    │  Temporal Server │
+                    │  (coordination) │
+                    └────────┬────────┘
+                             │
+        ┌───────────┬────────┼────────┬───────────┐
+        ▼           ▼        ▼        ▼           ▼
+   ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐
+   │Worker 1 │ │Worker 2 │ │Worker 3 │ │Worker 4 │
+   │(Python) │ │(Python) │ │(Python) │ │(Python) │
+   │Own GIL  │ │Own GIL  │ │Own GIL  │ │Own GIL  │
+   └─────────┘ └─────────┘ └─────────┘ └─────────┘
+```
+
+**Configuration** (per worker):
+- `max_concurrent_workflow_tasks=10` → 40 total across 4 workers
+- `max_concurrent_activities=30` → 120 total across 4 workers
+- `sticky_queue_schedule_to_start_timeout=10s` → Default, works well with low contention
+
+**Scaling**:
+```bash
+# Scale workers (default is 4 replicas)
+docker compose up -d --scale worker=8
+
+# Or modify docker-compose.yml deploy.replicas
+```
+
+**Why This Is Safe** (no race conditions):
+| Guarantee | Scope | Enforced By |
+|-----------|-------|-------------|
+| Workflow ID Uniqueness | Only one running per ID | Temporal Server |
+| Task Exclusivity | Each task goes to ONE worker | Temporal Server |
+| Signal Ordering | FIFO within a workflow | Temporal Server |
+| Sticky Queue | Same workflow prefers same worker | Worker cache (optimization) |
+
+Child workflows (Twitter→Download→Upload) can run on **different workers** - this is safe because:
+1. `UploadWorkflow` ID is `upload-{event_id}` - Temporal prevents duplicates
+2. Signals are delivered in order regardless of which worker sends them
+3. All serialization is at Temporal Server level, not worker level
+
+---
+
 ## 📊 Data Flow
 
 ```
@@ -605,12 +652,27 @@ fixtures_completed: Forever (archive)
 
 ### Check Workflow Status
 ```
-Temporal UI: http://localhost:4100
+Temporal UI: http://localhost:3100
 ```
 
 ### Check MongoDB
 ```
-MongoDB Express: http://localhost:4101
+Mongoku: http://localhost:3101
+```
+
+### Multi-Worker Operations
+```bash
+# Check all workers are running
+docker ps --filter "name=found-footy-prod-worker"
+
+# Logs from all workers
+for i in 1 2 3 4; do echo "=== Worker $i ===" && docker logs found-footy-prod-worker-$i --since 30s 2>&1 | tail -10; done
+
+# Check for "Task not found" errors (indicates replay issues)
+docker logs found-footy-prod-worker-1 2>&1 | grep -c "Task not found"
+
+# Scale workers up/down
+docker compose up -d --scale worker=8
 ```
 
 ### Common Issues

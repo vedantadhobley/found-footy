@@ -57,6 +57,7 @@ async def queue_videos_for_upload(
         
         # Use signal-with-start: starts workflow if not exists, signals if exists
         # The "add_videos" signal will be delivered to add videos to the queue
+        from datetime import timedelta
         await client.start_workflow(
             UploadWorkflow.run,
             UploadWorkflowInput(
@@ -76,6 +77,9 @@ async def queue_videos_for_upload(
                 "videos": videos,
                 "temp_dir": temp_dir,
             }],
+            # Increase task timeout from 10s to 60s - large histories need more
+            # time to replay, otherwise we get "Task not found" errors
+            task_timeout=timedelta(seconds=60),
         )
         
         activity.logger.info(

@@ -138,7 +138,7 @@ class DownloadWorkflow:
                 result = await workflow.execute_activity(
                     download_activities.download_single_video,
                     args=[video_url, idx, event_id, temp_dir, video_url],
-                    start_to_close_timeout=timedelta(seconds=90),
+                    start_to_close_timeout=timedelta(seconds=45),
                     retry_policy=RetryPolicy(
                         maximum_attempts=3,
                         initial_interval=timedelta(seconds=2),

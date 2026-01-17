@@ -285,7 +285,7 @@ class TwitterWorkflow:
                     search_result = await workflow.execute_activity(
                         twitter_activities.execute_twitter_search,
                         args=[search_query, 5, list(existing_urls) + list(seen_urls_this_batch), match_date, 3],
-                        start_to_close_timeout=timedelta(seconds=180),  # Browser automation can be slow
+                        start_to_close_timeout=timedelta(seconds=60),  # Actual searches take ~6s each
                         retry_policy=RetryPolicy(
                             maximum_attempts=3,
                             initial_interval=timedelta(seconds=10),
@@ -385,6 +385,9 @@ class TwitterWorkflow:
                         args=[input.fixture_id, input.event_id, input.player_name, team_aliases[0] if team_aliases else "", videos_to_download],
                         id=download_workflow_id,
                         parent_close_policy=ParentClosePolicy.ABANDON,  # Continue even if parent closes
+                        # Increase task timeout from 10s to 60s - large histories need more
+                        # time to replay, otherwise we get "Task not found" errors
+                        task_timeout=timedelta(seconds=60),
                     )
                     
                     workflow.logger.info(

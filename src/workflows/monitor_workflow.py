@@ -172,6 +172,9 @@ class MonitorWorkflow:
                     # No execution_timeout - Twitter manages its own lifecycle
                     # Twitter runs ~10-12 minutes (alias lookup + 10 search attempts)
                     parent_close_policy=ParentClosePolicy.ABANDON,
+                    # Increase task timeout from 10s to 60s - large histories (300+ events)
+                    # need more time to replay, otherwise we get "Task not found" errors
+                    task_timeout=timedelta(seconds=60),
                 )
                 
                 workflow.logger.info(f"🐦 Started TwitterWorkflow: {twitter_workflow_id}")

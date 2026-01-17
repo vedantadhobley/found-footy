@@ -57,6 +57,7 @@ logging.getLogger("pymongo").setLevel(logging.WARNING)
 from temporalio.client import Client
 from temporalio.runtime import Runtime, TelemetryConfig
 from temporalio.worker import Worker
+from datetime import timedelta
 
 from src.workflows import (
     IngestWorkflow,
@@ -162,14 +163,27 @@ async def main():
         await setup_schedules(client)
         
         # Create worker that listens on task queue
+        # 
+        # MULTI-WORKER DEPLOYMENT:
+        # With 4 worker replicas (docker-compose deploy.replicas: 4), each worker
+        # handles a portion of the workload. Temporal distributes tasks automatically.
+        # 
+        # Per-worker limits (multiplied by replica count for total capacity):
+        # - 4 workers × 10 workflow tasks = 40 concurrent workflow executions
+        # - 4 workers × 30 activities = 120 concurrent activities
+        #
         worker = Worker(
             client,
             task_queue="found-footy",
-            # Higher concurrency to support parallel hash generation across multiple workflows
-            # Each workflow may hash 5-8 videos in parallel. With 3 concurrent workflows,
-            # that's up to 24 hash activities. Plus other activities (MongoDB, S3, etc.)
-            # 50 gives us headroom while still being reasonable for CPU-bound work.
-            max_concurrent_activities=50,
+            # Activities are I/O bound (MongoDB, S3, HTTP), can run more per worker
+            max_concurrent_activities=30,
+            # Workflow tasks are CPU bound (replay/execution), keep lower per worker
+            # With 4 workers: 4 × 10 = 40 concurrent workflow tasks total
+            max_concurrent_workflow_tasks=10,
+            # Sticky queue: try to keep workflow tasks on the same worker to avoid replay
+            # Default 10s is fine - with 4 workers and lower concurrency per worker,
+            # there's less contention so sticky tasks get picked up quickly
+            sticky_queue_schedule_to_start_timeout=timedelta(seconds=10),
             workflows=[
                 IngestWorkflow,
                 MonitorWorkflow,

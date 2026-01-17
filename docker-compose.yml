@@ -163,12 +163,23 @@ services:
       - found-footy-prod
     restart: unless-stopped
 
-  # TEMPORAL WORKER - Executes workflows
+  # TEMPORAL WORKERS - Execute workflows (multiple replicas for parallelism)
+  # 
+  # Python's GIL limits each process to one core for CPU-bound work.
+  # Running multiple worker replicas lets us use more cores.
+  # 
+  # Temporal guarantees:
+  # - Each workflow ID runs on only ONE worker at a time
+  # - Task distribution is automatic across workers
+  # - Serialization (e.g., UploadWorkflow ID uniqueness) is enforced by Temporal Server
+  # 
+  # To scale: docker-compose up -d --scale worker=4
+  #
   worker:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: found-footy-prod-worker
+    # No container_name - allows multiple replicas with auto-generated names
     env_file:
       - .env
     environment:
@@ -191,6 +202,12 @@ services:
       - temporal
       - mongo
     restart: unless-stopped
+    deploy:
+      replicas: 4  # 4 worker processes - adjust based on workload
+      resources:
+        limits:
+          cpus: '2'      # Each worker gets up to 2 CPUs
+          memory: 4G     # Each worker gets up to 4GB RAM
     command: python /app/src/worker.py
 
 volumes:

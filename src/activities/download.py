@@ -136,7 +136,9 @@ async def download_single_video(
     }
     
     try:
-        async with httpx.AsyncClient(timeout=15.0, headers=api_headers) as client:
+        # 5s timeout - if syndication API doesn't respond quickly, it's probably going to fail
+        # Longer timeouts just delay the inevitable retry
+        async with httpx.AsyncClient(timeout=5.0, headers=api_headers) as client:
             response = await client.get(syndication_url)
             
             if response.status_code != 200:
