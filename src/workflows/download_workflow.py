@@ -110,8 +110,10 @@ class DownloadWorkflow:
         )
         
         # Temp directory path with unique run ID to prevent conflicts between concurrent workflows
+        # Uses /tmp/found-footy which is mounted as a shared volume across all worker replicas
+        # This ensures activities on any worker can access files downloaded by other workers
         run_id = workflow.info().run_id[:8]
-        temp_dir = f"/tmp/footy_{event_id}_{run_id}"
+        temp_dir = f"/tmp/found-footy/{event_id}_{run_id}"
         
         # =========================================================================
         # Step 1: Download videos IN PARALLEL (with per-video retry)

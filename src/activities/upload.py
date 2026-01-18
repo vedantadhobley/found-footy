@@ -1091,7 +1091,7 @@ async def cleanup_fixture_temp_dirs(fixture_id: int) -> int:
     Clean up ALL temp directories for a given fixture.
     Called by MonitorWorkflow when fixture moves to completed.
     
-    Matches: /tmp/footy_{fixture_id}_* (all events for this fixture)
+    Matches: /tmp/found-footy/{fixture_id}_* (all events for this fixture)
     
     Args:
         fixture_id: Fixture ID (e.g., 1378015)
@@ -1103,7 +1103,8 @@ async def cleanup_fixture_temp_dirs(fixture_id: int) -> int:
     import glob
     
     # Match all temp dirs for this fixture (any event)
-    pattern = f"/tmp/footy_{fixture_id}_*"
+    # Uses /tmp/found-footy which is mounted as a shared volume across workers
+    pattern = f"/tmp/found-footy/{fixture_id}_*"
     matching_dirs = glob.glob(pattern)
     
     deleted = 0

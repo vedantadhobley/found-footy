@@ -193,8 +193,10 @@ services:
       TWITTER_SESSION_URL: http://found-footy-prod-twitter:8888
       FRONTEND_API_URL: http://vedanta-systems-prod-api:3001
       LLAMA_URL: http://llama-chat:8080
+      FOOTY_TEMP_DIR: /tmp/found-footy  # Shared temp storage across workers
     volumes:
       - ~/.config/found-footy:/config  # Cookie backup (shared with twitter service)
+      - found-footy-prod-temp:/tmp/found-footy  # Shared temp for video downloads
     networks:
       - found-footy-prod
       - luv-prod  # Need luv-prod network to reach frontend API and llama-chat
@@ -225,6 +227,9 @@ volumes:
     driver: local
   found-footy-prod-twitter-cookies:
     name: found-footy-prod-twitter-cookies
+    driver: local
+  found-footy-prod-temp:
+    name: found-footy-prod-temp
     driver: local
 
 networks:

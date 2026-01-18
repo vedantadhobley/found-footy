@@ -16,16 +16,16 @@ flowchart TB
     
     subgraph DETECT["🔍 Detection"]
         GOAL[Goal Detected!<br/>Player scores]
-        STABLE[Stable after 3 polls<br/>~3 minutes]
+        STABLE[Stable after 3 polls<br/>~90 seconds]
     end
     
     subgraph DISCOVER["🐦 Discovery"]
-        TWITTER[Twitter Search<br/>3 attempts × 5 videos]
+        TWITTER[Twitter Search<br/>10 attempts × 5 videos]
     end
     
     subgraph PROCESS["⚙️ Processing"]
-        DOWNLOAD[Download via yt-dlp]
-        FILTER[Filter >3s to 60s duration]
+        DOWNLOAD[Download via syndication API]
+        FILTER[Filter 3-60s duration<br/>Aspect ratio ≥1.33]
         AI[AI Vision Validation<br/>Is this soccer?]
         HASH[Perceptual Hash<br/>Dense 0.25s sampling]
         DEDUP[Deduplicate<br/>Keep best quality]
@@ -58,24 +58,32 @@ flowchart TB
 flowchart TB
     subgraph TEMPORAL["⏰ Temporal.io Orchestration"]
         direction TB
-        INGEST[IngestWorkflow<br/>Daily 00:05 UTC]
-        MONITOR[MonitorWorkflow<br/>Every minute]
-        RAGWF[RAGWorkflow<br/>Pre-caching only]
-        TWITTERWF[TwitterWorkflow<br/>10× per event]
-        DOWNLOADWF[DownloadWorkflow<br/>Per video batch]
-        UPLOADWF[UploadWorkflow<br/>Serialized per event]
+        SERVER[Temporal Server<br/>Workflow coordination]
         
-        INGEST -.->|Pre-caches aliases| RAGWF
-        INGEST -.->|Populates| MONITOR
-        MONITOR -->|Fire-and-forget| TWITTERWF
-        TWITTERWF -->|Blocking| DOWNLOADWF
-        DOWNLOADWF -->|Blocking, serialized| UPLOADWF
+        subgraph WORKERS["👷 Worker Pool (4 replicas)"]
+            W1[Worker 1]
+            W2[Worker 2]
+            W3[Worker 3]
+            W4[Worker 4]
+        end
+        
+        subgraph WORKFLOWS["📋 Workflows"]
+            INGEST[IngestWorkflow<br/>Daily 00:05 UTC]
+            MONITOR[MonitorWorkflow<br/>Every 30 seconds]
+            TWITTERWF[TwitterWorkflow<br/>10× per event]
+            DOWNLOADWF[DownloadWorkflow<br/>Per video batch]
+            UPLOADWF[UploadWorkflow<br/>Serialized per event]
+        end
+        
+        SERVER --> WORKERS
+        WORKERS --> WORKFLOWS
     end
     
     subgraph STORAGE["💾 Storage Layer"]
         direction TB
         MONGO[(MongoDB<br/>5 Collections)]
         MINIO[(MinIO S3<br/>Video files)]
+        TEMP[/tmp/found-footy<br/>Shared volume/]
     end
     
     subgraph EXTERNAL["🌐 External Services"]
@@ -89,13 +97,14 @@ flowchart TB
     INGEST --> APIFB
     MONITOR --> APIFB
     MONITOR --> MONGO
-    RAGWF --> WIKIDATA
-    RAGWF --> LLM
     TWITTERWF --> TWITTER
     DOWNLOADWF --> LLM
+    DOWNLOADWF --> TEMP
     UPLOADWF --> MINIO
     UPLOADWF --> MONGO
 ```
+
+**Multi-Worker Architecture**: Python's GIL limits each process to one CPU core. We run **4 worker replicas** to parallelize workflow execution. Each worker handles 10 workflow tasks and 30 activities concurrently. All workers share a temp volume at `/tmp/found-footy` for video processing.
 
 ---
 
@@ -143,23 +152,25 @@ flowchart TB
     COUNT2[stable_count = 2]
     COUNT3[stable_count = 3<br/>✅ STABLE]
     
-    TWITTER1[🐦 Twitter Search #1<br/>Find early uploads]
-    TWITTER2[🐦 Twitter Search #2<br/>+5 min, find more]
-    TWITTER3[🐦 Twitter Search #3<br/>+5 min, final search]
+    subgraph TWITTER["🐦 Twitter Search (10 attempts)"]
+        T1[Attempt 1: Immediate]
+        T2[Attempt 2-9: +1 min each]
+        T10[Attempt 10: Final]
+    end
     
-    DOWNLOAD[⬇️ Download Videos<br/>Filter & dedupe]
+    DOWNLOAD[⬇️ Download Videos<br/>Filter, validate, dedupe]
     COMPLETE[✅ Event Complete<br/>_twitter_complete = true]
     
     NEW --> COUNT1
-    COUNT1 -->|+1 min poll| COUNT2
-    COUNT2 -->|+1 min poll| COUNT3
-    COUNT3 --> TWITTER1
-    TWITTER1 --> DOWNLOAD
-    TWITTER1 -.->|+5 min| TWITTER2
-    TWITTER2 --> DOWNLOAD
-    TWITTER2 -.->|+5 min| TWITTER3
-    TWITTER3 --> DOWNLOAD
-    TWITTER3 --> COMPLETE
+    COUNT1 -->|+30s poll| COUNT2
+    COUNT2 -->|+30s poll| COUNT3
+    COUNT3 --> T1
+    T1 --> DOWNLOAD
+    T1 -->|+1 min| T2
+    T2 --> DOWNLOAD
+    T2 -->|+1 min each| T10
+    T10 --> DOWNLOAD
+    T10 --> COMPLETE
     
     VAR[❌ VAR Disallowed<br/>Event disappears from API]
     COUNT1 & COUNT2 -.->|Event removed| VAR
@@ -168,6 +179,11 @@ flowchart TB
     style COMPLETE fill:#e8f5e9,color:#000
     style VAR fill:#ffebee,color:#000
 ```
+
+**10 Search Attempts**: Each event gets 10 Twitter search attempts, spaced ~1 minute apart. This captures:
+- Early uploads (often lower quality)
+- Peak uploads (~2-5 min after goal)
+- Late uploads (often best quality)
 
 ---
 
@@ -196,30 +212,39 @@ matching_ids = live_ids & active_ids  # EXISTS → increment count
 
 ```mermaid
 flowchart TB
-    subgraph ATTEMPT["Each Twitter Attempt"]
-        SEARCH[Search query:<br/>Salah Liverpool]
+    subgraph ALIASES["1. Resolve Team Aliases"]
+        CACHE{Cache hit?}
+        RAG[RAG Pipeline<br/>Wikidata + LLM]
+        RESULT["['Liverpool', 'LFC', 'Reds']"]
+        CACHE -->|Yes| RESULT
+        CACHE -->|No| RAG --> RESULT
+    end
+    
+    subgraph SEARCH["2. Search Each Alias"]
+        Q1["Search: 'Salah Liverpool'"]
+        Q2["Search: 'Salah LFC'"]
+        Q3["Search: 'Salah Reds'"]
         EXCLUDE[Pass exclude_urls<br/>Skip already found]
-        RESULTS[Get up to 5 NEW videos]
     end
     
-    subgraph STRATEGY["3-Attempt Strategy"]
-        A1[Attempt 1: Immediately<br/>Early uploads, often SD]
-        A2[Attempt 2: +5 minutes<br/>More uploads available]
-        A3[Attempt 3: +5 minutes<br/>Best quality uploads]
+    subgraph STRATEGY["3. 10-Attempt Strategy (~10 min total)"]
+        A1[Attempt 1: Immediate]
+        A2[Attempts 2-9: +1 min each]
+        A10[Attempt 10: Final]
     end
     
-    A1 --> SEARCH
-    A2 --> SEARCH
-    A3 --> SEARCH
-    SEARCH --> EXCLUDE --> RESULTS
+    RESULT --> Q1 & Q2 & Q3
+    Q1 & Q2 & Q3 --> EXCLUDE
+    A1 & A2 & A10 --> SEARCH
     
-    RESULTS -->|Up to 15 unique videos| TOTAL[Total: 5 x 3 = 15 videos]
+    EXCLUDE -->|Up to 5 NEW per attempt| TOTAL[Total: Up to 50 unique videos]
 ```
 
-**Key feature: URL Exclusion**
-- Each search passes `exclude_urls` containing previously discovered videos
-- Twitter service skips these during scraping
-- Result: 15 unique videos instead of the same 5 repeated
+**Key Features:**
+- **Multi-alias search**: Searches "Salah Liverpool", "Salah LFC", "Salah Reds" per attempt
+- **URL Exclusion**: Each search passes `exclude_urls` to skip already-discovered videos
+- **10 attempts**: Captures early SD uploads through late HD uploads
+- **Result**: Up to 50 unique videos per event (5 per attempt × 10 attempts)
 
 ### Perceptual Hash Deduplication
 
@@ -304,7 +329,12 @@ flowchart TB
         direction TB
         
         subgraph CORE["Core Services"]
-            WORKER[Worker<br/>Temporal activities]
+            subgraph WORKERS["Worker Pool (4 replicas)"]
+                W1[Worker 1<br/>2 CPU / 4GB]
+                W2[Worker 2<br/>2 CPU / 4GB]
+                W3[Worker 3<br/>2 CPU / 4GB]
+                W4[Worker 4<br/>2 CPU / 4GB]
+            end
             TEMPORAL[Temporal Server<br/>Workflow orchestration]
             POSTGRES[(PostgreSQL<br/>Temporal metadata)]
         end
@@ -312,6 +342,7 @@ flowchart TB
         subgraph DATA["Data Layer"]
             MONGO[(MongoDB<br/>Application data)]
             MINIO[(MinIO<br/>S3-compatible storage)]
+            TEMP[/tmp/found-footy<br/>Shared temp volume/]
         end
         
         subgraph TWITTER["Twitter Automation"]
@@ -327,14 +358,17 @@ flowchart TB
         end
     end
     
-    WORKER --> TEMPORAL
+    W1 & W2 & W3 & W4 --> TEMPORAL
+    W1 & W2 & W3 & W4 --> TEMP
     TEMPORAL --> POSTGRES
-    WORKER --> MONGO
-    WORKER --> MINIO
-    WORKER --> TWITTERSVC
+    W1 & W2 & W3 & W4 --> MONGO
+    W1 & W2 & W3 & W4 --> MINIO
+    W1 & W2 & W3 & W4 --> TWITTERSVC
     TWITTERSVC --> FIREFOX
     FIREFOX --> VNC
 ```
+
+**Multi-Worker Design**: 4 worker replicas share the workload. All workers mount a shared temp volume at `/tmp/found-footy` so videos downloaded by any worker can be processed by any other worker.
 
 ### Port Allocation
 
@@ -482,12 +516,12 @@ flowchart TB
 
 ### 2. MonitorWorkflow
 
-**Schedule:** Every minute  
-**Purpose:** Activate fixtures, detect events, trigger RAG → Twitter pipeline
+**Schedule:** Every 30 seconds  
+**Purpose:** Activate fixtures, detect events, trigger Twitter pipeline
 
 ```mermaid
 flowchart TB
-    TRIGGER[⏰ Every minute]
+    TRIGGER[⏰ Every 30 seconds]
     
     ACTIVATE[Activate ready fixtures<br/>staging → active]
     FETCH[Fetch active fixtures<br/>from API-Football]
@@ -545,107 +579,120 @@ flowchart TB
 
 ### 4. TwitterWorkflow
 
-**Trigger:** Per stable event (runs 10 times)  
-**Purpose:** Resolve aliases, search Twitter, trigger blocking downloads
+**Trigger:** Per stable event (fire-and-forget from Monitor)  
+**Purpose:** Resolve aliases, search Twitter 10 times, trigger blocking downloads
 
 ```mermaid
 flowchart TB
     TRIGGER[Triggered by Monitor<br/>Fire-and-forget]
     
-    ALIASES[Resolve team aliases<br/>From cache or RAG]
+    ALIASES[Resolve team aliases<br/>From cache or RAG pipeline]
     
-    subgraph LOOP["10 Search Attempts"]
+    subgraph LOOP["10 Search Attempts (~10 min total)"]
         GET[Get search data<br/>Query + exclude_urls]
-        SEARCH[POST to twitter:8888<br/>Firefox automation]
+        SEARCH[Search each alias<br/>via Firefox automation]
         SAVE[Save discovered videos<br/>to MongoDB]
         FOUND{Videos found?}
-        DOWNLOAD[Trigger DownloadWorkflow<br/>BLOCKING child]
-        SLEEP[workflow.sleep ~3 min]
+        DOWNLOAD[DownloadWorkflow<br/>BLOCKING child]
+        COUNT[increment_twitter_count<br/>If no videos]
+        SLEEP[workflow.sleep 1 min<br/>DURABLE TIMER]
     end
     
-    DONE[Mark _twitter_complete<br/>After attempt 10]
+    DONE[_twitter_complete = true<br/>Set by UploadWorkflow at count=10]
     
-    TRIGGER --> ALIASES --> GET --> SEARCH --> FOUND
-    FOUND -->|Yes| SAVE --> DOWNLOAD --> SLEEP
-    FOUND -->|No| SLEEP
-    SLEEP --> |Next attempt| GET
-    SLEEP --> |Attempt 10| DONE
+    TRIGGER --> ALIASES --> GET --> SEARCH --> SAVE --> FOUND
+    FOUND -->|Yes| DOWNLOAD --> SLEEP
+    FOUND -->|No| COUNT --> SLEEP
+    SLEEP -->|Attempts 1-9| GET
+    SLEEP -->|Attempt 10| DONE
 ```
+
+**Key Points:**
+- **Blocking downloads**: Waits for download to complete before next search
+- **Durable timers**: `workflow.sleep(60)` survives worker restarts
+- **Count tracking**: UploadWorkflow increments count (not TwitterWorkflow) to ensure uploads complete
 
 ### 5. DownloadWorkflow
 
-**Trigger:** Per Twitter search with videos  
-**Purpose:** Download, validate, deduplicate (MD5 only), delegate to UploadWorkflow
+**Trigger:** Per Twitter search with videos (blocking child of TwitterWorkflow)  
+**Purpose:** Download, validate, deduplicate, queue for upload
 
 ```mermaid
 flowchart TB
     TRIGGER[Triggered by Twitter<br/>BLOCKING child]
     
-    subgraph DOWNLOAD["1. Download Phase"]
-        DL[Download via yt-dlp]
-        FILTER{Duration<br/>3-60s?}
+    subgraph DOWNLOAD["1. Download Phase (PARALLEL)"]
+        DL[Download via syndication API<br/>to /tmp/found-footy/event_id]
+        FILTER{Duration 3-60s?<br/>Aspect ratio ≥1.33?}
         META[Extract metadata<br/>Resolution, bitrate]
         FILTERED[Track as filtered]
     end
     
-    subgraph VALIDATE["2. AI Validation"]
+    subgraph DEDUP1["2. MD5 Batch Dedup"]
+        MD5[Compare MD5 hashes<br/>Within batch only]
+    end
+    
+    subgraph VALIDATE["3. AI Validation (sequential)"]
         AI{Vision Model<br/>Is soccer?}
         REJECT[Reject non-soccer]
     end
     
-    subgraph HASH["3. Hash Generation"]
-        PHASH[Compute perceptual hash<br/>Dense 0.25s sampling]
+    subgraph HASH["4. Hash Generation (PARALLEL)"]
+        PHASH[Perceptual hash<br/>Dense 0.25s sampling<br/>Heartbeat every 5 frames]
     end
     
-    subgraph DEDUP["4. Batch MD5 Dedup"]
-        MD5[Compare MD5 hashes<br/>Within batch only]
-    end
-    
-    UPLOAD[Trigger UploadWorkflow<br/>BLOCKING, serialized]
+    UPLOAD[Signal UploadWorkflow<br/>via signal-with-start]
     
     TRIGGER --> DL
     DL --> FILTER
-    FILTER -->|Pass| META --> AI
+    FILTER -->|Pass| META --> MD5
     FILTER -->|Fail| FILTERED
+    MD5 --> AI
     AI -->|Soccer| PHASH
     AI -->|Not soccer| REJECT
-    PHASH --> MD5 --> UPLOAD
+    PHASH --> UPLOAD
 ```
+
+**Shared Temp Volume**: Downloaded videos go to `/tmp/found-footy/{event_id}_{run_id}/`. This is a Docker volume shared across all 4 workers, so any worker can process files downloaded by any other worker.
 
 ### 6. UploadWorkflow
 
-**Trigger:** Per DownloadWorkflow with validated videos  
+**Trigger:** Via signal-with-start from DownloadWorkflow  
 **Purpose:** Serialized S3 deduplication and upload per event
 
 ```mermaid
 flowchart TB
-    TRIGGER[Triggered by DownloadWorkflow<br/>Deterministic ID: upload-event_id]
+    TRIGGER[Signal-with-start<br/>ID: upload-event_id<br/>SERIALIZED per event]
     
-    FETCH[Fetch S3 state<br/>Fresh inside serialized context]
+    QUEUE[Receive videos via signal<br/>Add to pending queue]
     
-    subgraph DEDUP["S3 Deduplication"]
-        COMPARE[Compare perceptual hashes<br/>Against existing S3 videos]
-        QUALITY[Keep best quality<br/>Replace if better]
+    subgraph BATCH["Process Each Batch"]
+        FETCH[Fetch FRESH S3 state<br/>Inside serialized context]
+        MD5[MD5 dedup vs S3<br/>Bump popularity on match]
+        PHASH[Perceptual dedup vs S3<br/>Replace if better quality]
     end
     
-    subgraph UPLOAD["Upload Phase"]
-        REPLACE[Replace inferior videos]
+    subgraph UPLOAD["Upload Phase (PARALLEL)"]
+        REPLACE[Replace inferior videos<br/>Reuse S3 key for stable URLs]
         NEW[Upload new videos]
     end
     
     SAVE[Save to MongoDB<br/>_s3_videos array]
     RANKS[Recalculate video ranks]
-    CLEANUP[Cleanup temp dir]
+    CLEANUP[Cleanup uploaded files<br/>Not entire temp dir]
+    COUNT[increment_twitter_count<br/>Sets complete at 10]
+    WAIT{More signals<br/>within 5 min?}
+    DONE[Workflow complete]
     
-    TRIGGER --> FETCH --> COMPARE --> QUALITY
-    QUALITY --> REPLACE & NEW --> SAVE --> RANKS --> CLEANUP
+    TRIGGER --> QUEUE --> FETCH --> MD5 --> PHASH
+    PHASH --> REPLACE & NEW --> SAVE --> RANKS --> CLEANUP --> COUNT --> WAIT
+    WAIT -->|Yes| QUEUE
+    WAIT -->|No| DONE
 ```
 
-**Key Design**: Deterministic workflow ID `upload-{event_id}` ensures only ONE UploadWorkflow runs per event at a time. This serializes S3 operations and eliminates race conditions when parallel DownloadWorkflows complete simultaneously.
+**Signal-with-Start Pattern**: Multiple DownloadWorkflows can signal the same UploadWorkflow. Videos queue up and are processed in FIFO order. This prevents race conditions when parallel downloads complete simultaneously.
 
-**Optimized Pipeline Order**: AI validation runs BEFORE perceptual hash generation. This saves expensive hash computation (dense 0.25s sampling with ffmpeg) for non-soccer videos that would be rejected anyway.
-
-**AI Video Validation**: Vision model (Qwen3-VL via llama.cpp) validates each video contains soccer content. Uses fail-closed policy - if AI unavailable, video is skipped.
+**Safe Replacement**: When replacing an inferior video, the S3 key is reused so shared URLs remain valid. MongoDB entries are only removed AFTER successful upload to prevent data loss.
 
 ---
 
@@ -775,12 +822,17 @@ TWITTER_SERVICE_URL=http://twitter:8888
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
+| Worker replicas | 4 | Each: 2 CPU, 4GB RAM |
+| Workflow tasks/worker | 10 | 40 total concurrent |
+| Activities/worker | 30 | 120 total concurrent |
 | API daily limit | 7,500 requests | Pro plan |
-| Debounce polls | 3 | ~1.5 minutes (3 × 30s) |
-| Twitter searches | 3 per event | ~15 min window |
-| Videos per search | 5 max | |
-| Duration filter | >3s to 60s | Must be strictly >3s |
-| Download timeout | 60s per video | |
+| Monitor interval | 30 seconds | Debounce polling |
+| Debounce polls | 3 | ~90 seconds (3 × 30s) |
+| Twitter searches | 10 per event | ~10 min window |
+| Videos per search | 5 max | Up to 50 total |
+| Duration filter | 3-60s | Strictly within range |
+| Download timeout | 45s per video | |
+| Hash heartbeat | 60s | Long videos OK if progressing |
 | Tracked teams | 50 | Top European clubs |
 | Aspect ratio min | 1.33 (4:3) | Rejects vertical |
 
@@ -788,7 +840,7 @@ TWITTER_SERVICE_URL=http://twitter:8888
 
 ## 📚 Additional Documentation
 
-- **[ARCHITECTURE.md](./ARCHITECTURE.md)** — Detailed collection schemas, workflow internals
+- **[ARCHITECTURE.md](./ARCHITECTURE.md)** — Multi-worker setup, collection schemas, workflow internals
 - **[TEMPORAL_WORKFLOWS.md](./TEMPORAL_WORKFLOWS.md)** — Activity specifications, retry policies
 - **[TWITTER_AUTH.md](./TWITTER_AUTH.md)** — Browser automation, cookie management
 

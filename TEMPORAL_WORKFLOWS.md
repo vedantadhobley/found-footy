@@ -454,7 +454,7 @@ DownloadWorkflow (parallel processing, heartbeat-based timeouts)
 - **Parallel processing**: Downloads and hashes run concurrently
 - **Batch-only MD5 dedup**: DownloadWorkflow only dedupes within its batch (S3 dedup in UploadWorkflow)
 - **Heartbeat-based timeouts**: Hash generation uses `heartbeat_timeout=60s`
-- **Unique temp dirs**: Each workflow run gets `/tmp/footy_{event_id}_{run_id}/` to prevent conflicts
+- **Unique temp dirs**: Each workflow run gets `/tmp/found-footy/{event_id}_{run_id}/` to prevent conflicts
 - **AI before hash**: Validation runs BEFORE expensive hash generation
 - **Upload delegation**: S3 operations delegated to UploadWorkflow for serialization
 
