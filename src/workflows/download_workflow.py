@@ -140,7 +140,7 @@ class DownloadWorkflow:
                 result = await workflow.execute_activity(
                     download_activities.download_single_video,
                     args=[video_url, idx, event_id, temp_dir, video_url],
-                    start_to_close_timeout=timedelta(seconds=45),
+                    start_to_close_timeout=timedelta(seconds=90),  # Supports up to 90s videos
                     retry_policy=RetryPolicy(
                         maximum_attempts=3,
                         initial_interval=timedelta(seconds=2),
@@ -315,9 +315,9 @@ class DownloadWorkflow:
                 hash_result = await workflow.execute_activity(
                     download_activities.generate_video_hash,
                     args=[video_info["file_path"], video_info.get("duration", 0)],
-                    # Heartbeat-based timeout: activity heartbeats every 5 frames
-                    # Increased to 60s to handle parallel processing contention
-                    heartbeat_timeout=timedelta(seconds=60),
+                    # Heartbeat-based timeout: activity heartbeats every frame
+                    # 90s allows for resource contention during parallel processing
+                    heartbeat_timeout=timedelta(seconds=90),
                     start_to_close_timeout=timedelta(seconds=300),
                     retry_policy=RetryPolicy(maximum_attempts=2),
                 )

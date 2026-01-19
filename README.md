@@ -830,9 +830,9 @@ TWITTER_SERVICE_URL=http://twitter:8888
 | Debounce polls | 3 | ~90 seconds (3 × 30s) |
 | Twitter searches | 10 per event | ~10 min window |
 | Videos per search | 5 max | Up to 50 total |
-| Duration filter | 3-60s | Strictly within range |
-| Download timeout | 45s per video | |
-| Hash heartbeat | 60s | Long videos OK if progressing |
+| Duration filter | 3-90s | Strictly within range |
+| Download timeout | 90s per video | Supports max-length videos |
+| Hash heartbeat | 90s | Handles resource contention |
 | Tracked teams | 50 | Top European clubs |
 | Aspect ratio min | 1.33 (4:3) | Rejects vertical |
 

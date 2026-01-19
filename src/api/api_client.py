@@ -50,7 +50,7 @@ def fixtures(date_param=None):
     date_str = _coerce_date_param(date_param)
     url = f"{BASE_URL}/fixtures"
     headers = get_api_headers()
-    resp = requests.get(url, headers=headers, params={"date": date_str})
+    resp = requests.get(url, headers=headers, params={"date": date_str}, timeout=10)
     resp.raise_for_status()
     items = resp.json().get("response", [])
     return items  # raw items
@@ -64,7 +64,7 @@ def fixtures_events(fixture_id):
     url = f"{BASE_URL}/fixtures/events"
     headers = get_api_headers()
     
-    resp = requests.get(url, headers=headers, params={"fixture": str(fixture_id)})
+    resp = requests.get(url, headers=headers, params={"fixture": str(fixture_id)}, timeout=10)
     resp.raise_for_status()
     events = resp.json().get("response", [])
     
@@ -79,7 +79,7 @@ def fixtures_batch(fixture_ids_list):
     ids_str = "-".join(map(str, fixture_ids_list))
     url = f"{BASE_URL}/fixtures"
     headers = get_api_headers()
-    resp = requests.get(url, headers=headers, params={"ids": ids_str})
+    resp = requests.get(url, headers=headers, params={"ids": ids_str}, timeout=10)
     resp.raise_for_status()
     return resp.json().get("response", [])  # raw items
 

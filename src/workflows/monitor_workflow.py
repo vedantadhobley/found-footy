@@ -68,20 +68,25 @@ class MonitorWorkflow:
         # =================================================================
         # STAGING: Fetch and process staging fixtures (updates only, no activation yet)
         # =================================================================
+        t0 = workflow.now()
         staging_fixtures = await workflow.execute_activity(
             monitor_activities.fetch_staging_fixtures,
-            start_to_close_timeout=timedelta(seconds=60),
-            retry_policy=RetryPolicy(maximum_attempts=3),
+            start_to_close_timeout=timedelta(seconds=15),  # API has 10s timeout, allow buffer
+            retry_policy=RetryPolicy(maximum_attempts=2),
         )
+        t1 = workflow.now()
+        staging_ms = (t1 - t0).total_seconds() * 1000
         
         staging_result = {"updated_count": 0, "fixtures_to_activate": []}
         if staging_fixtures:
             staging_result = await workflow.execute_activity(
                 monitor_activities.process_staging_fixtures,
                 staging_fixtures,
-                start_to_close_timeout=timedelta(seconds=30),
+                start_to_close_timeout=timedelta(seconds=10),  # Pure MongoDB ops
                 retry_policy=RetryPolicy(maximum_attempts=2),
             )
+        t2 = workflow.now()
+        process_staging_ms = (t2 - t1).total_seconds() * 1000
         
         fixtures_to_activate = staging_result.get("fixtures_to_activate", [])
         
@@ -92,8 +97,15 @@ class MonitorWorkflow:
         # Fetch all active fixtures from API
         fixtures = await workflow.execute_activity(
             monitor_activities.fetch_active_fixtures,
-            start_to_close_timeout=timedelta(seconds=60),
-            retry_policy=RetryPolicy(maximum_attempts=3),
+            start_to_close_timeout=timedelta(seconds=15),  # API has 10s timeout, allow buffer
+            retry_policy=RetryPolicy(maximum_attempts=2),
+        )
+        t3 = workflow.now()
+        fetch_active_ms = (t3 - t2).total_seconds() * 1000
+        
+        workflow.logger.info(
+            f"⏱️ [MONITOR] Timing | fetch_staging={staging_ms:.0f}ms | "
+            f"process_staging={process_staging_ms:.0f}ms | fetch_active={fetch_active_ms:.0f}ms"
         )
         
         # =========================================================================
