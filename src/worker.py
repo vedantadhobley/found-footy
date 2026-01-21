@@ -81,6 +81,7 @@ async def setup_schedules(client: Client):
         SchedulePolicy,
         ScheduleSpec,
         ScheduleState,
+        ScheduleUpdate,
     )
     
     print("📅 Setting up workflow schedules...", flush=True)
@@ -119,38 +120,46 @@ async def setup_schedules(client: Client):
     # scheduled trigger is skipped. This prevents race conditions from timeouts
     # and ensures each monitor runs to completion. A 45s monitor means one skipped
     # cycle, then the next starts at 60s - no big deal.
+    #
+    # IMPORTANT: We always UPDATE existing schedules to ensure config changes take effect!
+    # Previously, we only created schedules if they didn't exist, which meant:
+    # - Old schedule with 25s execution_timeout persisted even after code removed it
+    # - Workflows kept timing out because Temporal used the old schedule config
     monitor_schedule_id = "monitor-every-30s"
+    
+    # Define the schedule config (used for both create and update)
+    monitor_schedule = Schedule(
+        action=ScheduleActionStartWorkflow(
+            MonitorWorkflow.run,
+            id="monitor-scheduled",  # Temporal adds timestamp suffix for unique IDs
+            task_queue="found-footy",
+            # NO execution_timeout - let monitor run to completion
+            # If it takes 45s, the 30s scheduled one skips (SKIP overlap policy)
+            # This prevents race conditions from timeouts killing workflows mid-execution
+            #
+            # task_timeout: How long a workflow task (replay + new work) can take
+            # Default is 10s which is too short when processing many fixtures in parallel
+            # 60s allows for replay of large histories + parallel activity scheduling
+            task_timeout=timedelta(seconds=60),
+        ),
+        spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=timedelta(seconds=30))]),
+        state=ScheduleState(
+            paused=False,
+            note="Running every 30 seconds",
+        ),
+        policy=SchedulePolicy(
+            overlap=ScheduleOverlapPolicy.SKIP,  # Skip if previous still running
+        ),
+    )
+    
     try:
         monitor_handle = client.get_schedule_handle(monitor_schedule_id)
         await monitor_handle.describe()
-        print(f"   ✓ Schedule '{monitor_schedule_id}' exists", flush=True)
+        # Schedule exists - update it to ensure config is current
+        await monitor_handle.update(lambda _: ScheduleUpdate(schedule=monitor_schedule))
+        print(f"   ✓ Schedule '{monitor_schedule_id}' updated", flush=True)
     except Exception:
-        await client.create_schedule(
-            monitor_schedule_id,
-            Schedule(
-                action=ScheduleActionStartWorkflow(
-                    MonitorWorkflow.run,
-                    id="monitor-scheduled",  # Temporal adds timestamp suffix for unique IDs
-                    task_queue="found-footy",
-                    # NO execution_timeout - let monitor run to completion
-                    # If it takes 45s, the 30s scheduled one skips (SKIP overlap policy)
-                    # This prevents race conditions from timeouts killing workflows mid-execution
-                    #
-                    # task_timeout: How long a workflow task (replay + new work) can take
-                    # Default is 10s which is too short when processing many fixtures in parallel
-                    # 60s allows for replay of large histories + parallel activity scheduling
-                    task_timeout=timedelta(seconds=60),
-                ),
-                spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=timedelta(seconds=30))]),
-                state=ScheduleState(
-                    paused=False,
-                    note="Running every 30 seconds",
-                ),
-                policy=SchedulePolicy(
-                    overlap=ScheduleOverlapPolicy.SKIP,  # Skip if previous still running
-                ),
-            ),
-        )
+        await client.create_schedule(monitor_schedule_id, monitor_schedule)
         print(f"   ✓ Created '{monitor_schedule_id}' (ENABLED)", flush=True)
 
 
