@@ -198,7 +198,14 @@ class MonitorWorkflow:
                 # CRITICAL: Mark _monitor_complete=True AFTER TwitterWorkflow started successfully
                 # This prevents the race condition where timeout between setting complete
                 # and starting Twitter leaves the goal stuck forever.
-                first_seen_str = first_seen.isoformat() if first_seen else None
+                # Note: first_seen may already be a string (from MongoDB) or datetime
+                if first_seen is None:
+                    first_seen_str = None
+                elif isinstance(first_seen, str):
+                    first_seen_str = first_seen
+                else:
+                    first_seen_str = first_seen.isoformat()
+                    
                 await workflow.execute_activity(
                     monitor_activities.confirm_twitter_workflow_started,
                     args=[fixture_id, event_id, first_seen_str],
