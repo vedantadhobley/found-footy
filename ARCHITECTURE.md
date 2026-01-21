@@ -48,13 +48,22 @@ The **Scaler Service** monitors Temporal task queue depth and automatically scal
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
+│                     docker compose up -d                             │
+├─────────────────────────────────────────────────────────────────────┤
+│  Starts: postgres, mongo, temporal, minio, scaler                    │
+│  Does NOT start: workers, twitter (they use profiles: ["managed"])   │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
 │                        SCALER SERVICE                                │
 ├─────────────────────────────────────────────────────────────────────┤
-│  1. Query Temporal describe_task_queue API (every 30s)               │
-│  2. Calculate: backlog_per_worker = pending_tasks / running_workers  │
-│  3. Scale up if: backlog_per_worker > 5                              │
-│  4. Scale down if: backlog_per_worker < 2 (with 60s cooldown)        │
-│  5. Uses python-on-whales for Docker Compose control                 │
+│  1. Auto-starts minimum instances (2 workers, 2 twitter)             │
+│  2. Query Temporal describe_task_queue API (every 30s)               │
+│  3. Calculate: backlog_per_worker = pending_tasks / running_workers  │
+│  4. Scale up if: backlog_per_worker > 5                              │
+│  5. Scale down if: backlog_per_worker < 2 (with 60s cooldown)        │
+│  6. Uses python-on-whales with profiles: ["managed"]                 │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -68,9 +77,12 @@ The **Scaler Service** monitors Temporal task queue depth and automatically scal
 | SCALE_COOLDOWN | 60s | Minimum time between scaling actions |
 
 ```bash
-# Manual scaling (if needed)
-docker compose up -d worker-3 twitter-3
-docker compose stop worker-3
+# Start entire stack (one command)
+docker compose up -d
+
+# Manual scaling (if needed, uses managed profile)
+docker compose --profile managed up -d worker-3 twitter-3
+docker compose --profile managed stop worker-3
 ```
 
 **Why This Is Safe** (no race conditions):

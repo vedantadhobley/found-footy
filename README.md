@@ -383,38 +383,48 @@ The **Scaler Service** automatically scales workers and Twitter instances based 
 
 ```mermaid
 flowchart LR
-    TQ[Temporal Task Queue] -->|Query depth| SCALER[Scaler Service]
-    SCALER -->|python-on-whales| DOCKER[Docker Compose]
-    DOCKER --> W[Workers 1-8]
-    DOCKER --> T[Twitter 1-8]
+    subgraph STARTUP["docker compose up -d"]
+        INFRA[Infrastructure<br/>postgres, mongo, temporal, minio]
+        SCALER[Scaler Service]
+    end
+    
+    subgraph MANAGED["Managed by Scaler"]
+        W[Workers 1-8]
+        T[Twitter 1-8]
+    end
+    
+    STARTUP --> SCALER
+    SCALER -->|Query depth| TQ[Temporal Task Queue]
+    SCALER -->|Auto-start/stop| MANAGED
 ```
 
 **How it works:**
+- `docker compose up -d` starts infrastructure + scaler only
+- Scaler auto-starts minimum instances (2 workers, 2 twitter)
+- All workers/twitter use `profiles: ["managed"]` — not started by default
 - Scaler queries Temporal's `describe_task_queue` API every 30 seconds
-- Calculates `backlog_per_worker = pending_tasks / running_workers`
 - Scales up when backlog is high, down when idle (with cooldown)
 - Uses `python-on-whales` for clean Docker Compose integration
 - Twitter instances checked for busy state before scale-down
 
 | Service | Default | Max | Notes |
 |---------|---------|-----|-------|
-| Workers | 2 | 8 | Temporal distributes work automatically |
+| Workers | 2 | 8 | Managed by scaler, uses `profiles: ["managed"]` |
 | Twitter | 2 | 8 | twitter-1 has VNC, twitter-2+ are headless |
-| Scaler | 1 | 1 | Always running, monitors task queue |
+| Scaler | 1 | 1 | Always running, starts with `docker compose up -d` |
 
 ```bash
-# Build shared images
-docker compose build worker   # Builds image for all worker-N
-docker compose build twitter  # Builds image for all twitter-N
-
-# Start stack (scaler runs automatically)
+# Start entire stack (scaler will bring up workers/twitter)
 docker compose up -d
 
-# Manual scaling (if needed)
-docker compose up -d twitter-3 worker-3
+# Rebuild all app images
+docker compose build worker twitter scaler
 
 # Check scaler logs
 docker compose logs -f scaler
+
+# Manual scaling (bypasses scaler, uses managed profile)
+docker compose --profile managed up -d twitter-3 worker-3
 ```
 
 **Twitter load balancing**: Each search randomly selects from healthy instances:
