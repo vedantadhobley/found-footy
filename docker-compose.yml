@@ -392,7 +392,8 @@ services:
     restart: unless-stopped
 
   # ===========================================================================
-  # SCALER SERVICE (optional) - Auto-scales workers/twitter based on load
+  # SCALER SERVICE - Auto-scales workers/twitter based on Temporal task queue depth
+  # Uses python-on-whales for Docker Compose control + Temporal metrics API
   # ===========================================================================
   scaler:
     build:
@@ -401,14 +402,15 @@ services:
     container_name: found-footy-prod-scaler
     environment:
       PYTHONPATH: /app
-      MONGODB_URI: mongodb://ffuser:ffpass@found-footy-prod-mongo:27017/found_footy?authSource=admin
       TEMPORAL_HOST: found-footy-prod-temporal:7233
-      COMPOSE_DIR: /home/vedanta/workspace/dev/found-footy
-      MIN_TWITTER_INSTANCES: "2"
-      MAX_TWITTER_INSTANCES: "8"
-      MIN_WORKER_INSTANCES: "2"
-      MAX_WORKER_INSTANCES: "8"
-      SCALE_CHECK_INTERVAL: "30"
+      COMPOSE_FILE: /workspace/docker-compose.yml
+      # Scaling thresholds
+      MIN_INSTANCES: "2"
+      MAX_INSTANCES: "8"
+      SCALE_UP_THRESHOLD: "5"      # Scale up when > 5 pending tasks per worker
+      SCALE_DOWN_THRESHOLD: "2"    # Scale down when < 2 pending tasks per worker
+      CHECK_INTERVAL: "30"         # Check every 30 seconds
+      SCALE_COOLDOWN: "60"         # 60 seconds between scaling actions
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /home/vedanta/workspace/dev/found-footy:/workspace:ro
@@ -416,10 +418,8 @@ services:
       - found-footy-prod
     depends_on:
       - temporal
-      - mongo
     restart: unless-stopped
     command: python /app/src/scaler/scaler_service.py
-    profiles: ["scaler"]
 
 # =============================================================================
 # VOLUMES

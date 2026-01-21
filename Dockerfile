@@ -18,6 +18,8 @@ RUN apt-get update && apt-get install -y \
     websockify \
     # ffmpeg for video processing
     ffmpeg \
+    # Docker CLI - required by python-on-whales for container management
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Google Chrome (for undetected-chromedriver)

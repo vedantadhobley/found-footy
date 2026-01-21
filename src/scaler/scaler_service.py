@@ -1,328 +1,323 @@
 """
 Dynamic Scaler Service
 
-Monitors application load and scales Twitter browser instances and workers dynamically.
+Monitors Temporal task queue depth and scales workers/Twitter instances accordingly.
 
-Scaling Rules (unified for both Twitter and Workers):
-- Scale up when: active_goals > instances * 3
-- Scale down when: active_goals < instances * 2 AND instance is not busy
-- Min: 2, Max: 8
+Scaling Logic:
+- Scale based on Temporal task queue backlog (pending workflow/activity tasks)
+- Scale up when: backlog_per_worker > threshold (default: 5 pending tasks per worker)
+- Scale down when: backlog_per_worker < threshold/2 AND instance is idle
+- Min: 2, Max: 8 for both workers and Twitter
 
-The scaler runs as a background service, checking metrics every 30 seconds.
-Uses docker compose commands for clean container management.
+Uses python-on-whales for clean Docker Compose integration.
 """
 
 import asyncio
 import os
-import requests
-import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 
-# Compose project directory (where docker-compose.yml is)
-# When running in container, use mounted workspace; otherwise use local path
-COMPOSE_DIR = os.getenv("COMPOSE_DIR", "/home/vedanta/workspace/dev/found-footy")
+import requests
+from python_on_whales import DockerClient
+from temporalio.client import Client
+
+# Force unbuffered output
+sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
+sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
+
+# Configuration
 PROJECT_NAME = "found-footy-prod"
+COMPOSE_FILE = os.getenv("COMPOSE_FILE", "/workspace/docker-compose.yml")
+TEMPORAL_HOST = os.getenv("TEMPORAL_HOST", "found-footy-prod-temporal:7233")
+TASK_QUEUE = "found-footy"
+
+# Scaling thresholds
+SCALE_UP_THRESHOLD = 5      # Scale up when > 5 pending tasks per worker
+SCALE_DOWN_THRESHOLD = 2    # Scale down when < 2 pending tasks per worker
+MIN_INSTANCES = 2
+MAX_INSTANCES = 8
+CHECK_INTERVAL = 30         # seconds
+SCALE_COOLDOWN = 60         # seconds between scaling actions
+
+
+class TemporalMetrics:
+    """Fetch metrics from Temporal task queue."""
+    
+    def __init__(self, client: Client):
+        self.client = client
+    
+    async def get_task_queue_depth(self) -> dict:
+        """
+        Get pending task counts from Temporal task queue.
+        
+        Returns dict with workflow_tasks, activity_tasks, and poller counts.
+        """
+        try:
+            from temporalio.api.enums.v1 import TaskQueueType
+            from temporalio.api.taskqueue.v1 import TaskQueue
+            from temporalio.api.workflowservice.v1 import DescribeTaskQueueRequest
+            
+            # Query workflow task queue
+            workflow_req = DescribeTaskQueueRequest(
+                namespace="default",
+                task_queue=TaskQueue(name=TASK_QUEUE),
+                task_queue_type=TaskQueueType.TASK_QUEUE_TYPE_WORKFLOW,
+            )
+            workflow_resp = await self.client.workflow_service.describe_task_queue(workflow_req)
+            
+            workflow_backlog = 0
+            if hasattr(workflow_resp, 'task_queue_status') and workflow_resp.task_queue_status:
+                workflow_backlog = workflow_resp.task_queue_status.backlog_count_hint
+            
+            # Query activity task queue
+            activity_req = DescribeTaskQueueRequest(
+                namespace="default",
+                task_queue=TaskQueue(name=TASK_QUEUE),
+                task_queue_type=TaskQueueType.TASK_QUEUE_TYPE_ACTIVITY,
+            )
+            activity_resp = await self.client.workflow_service.describe_task_queue(activity_req)
+            
+            activity_backlog = 0
+            if hasattr(activity_resp, 'task_queue_status') and activity_resp.task_queue_status:
+                activity_backlog = activity_resp.task_queue_status.backlog_count_hint
+            
+            return {
+                "workflow_tasks": workflow_backlog,
+                "activity_tasks": activity_backlog,
+                "total": workflow_backlog + activity_backlog,
+                "workflow_pollers": len(workflow_resp.pollers) if workflow_resp.pollers else 0,
+                "activity_pollers": len(activity_resp.pollers) if activity_resp.pollers else 0,
+            }
+        except Exception as e:
+            print(f"❌ Error getting task queue metrics: {e}")
+            return {"workflow_tasks": 0, "activity_tasks": 0, "total": 0, 
+                    "workflow_pollers": 0, "activity_pollers": 0}
+
 
 class ScalerService:
-    """Manages dynamic scaling of Twitter browsers and workers."""
+    """Manages dynamic scaling of workers and Twitter instances."""
     
-    def __init__(self):
-        # Scaling configuration
-        self.twitter_min = int(os.getenv("MIN_TWITTER_INSTANCES", "2"))
-        self.twitter_max = int(os.getenv("MAX_TWITTER_INSTANCES", "8"))
-        self.worker_min = int(os.getenv("MIN_WORKER_INSTANCES", "2"))
-        self.worker_max = int(os.getenv("MAX_WORKER_INSTANCES", "8"))
-        self.check_interval = int(os.getenv("SCALE_CHECK_INTERVAL", "30"))
+    def __init__(self, docker: DockerClient, temporal_client: Client):
+        self.docker = docker
+        self.temporal = TemporalMetrics(temporal_client)
         
-        # Use workspace mount if running in container
-        self.compose_file = os.getenv("COMPOSE_DIR", COMPOSE_DIR) + "/docker-compose.yml"
-        if os.path.exists("/workspace/docker-compose.yml"):
-            self.compose_file = "/workspace/docker-compose.yml"
+        # Scaling config from env
+        self.min_instances = int(os.getenv("MIN_INSTANCES", MIN_INSTANCES))
+        self.max_instances = int(os.getenv("MAX_INSTANCES", MAX_INSTANCES))
+        self.check_interval = int(os.getenv("CHECK_INTERVAL", CHECK_INTERVAL))
+        self.scale_cooldown = int(os.getenv("SCALE_COOLDOWN", SCALE_COOLDOWN))
+        self.scale_up_threshold = int(os.getenv("SCALE_UP_THRESHOLD", SCALE_UP_THRESHOLD))
+        self.scale_down_threshold = int(os.getenv("SCALE_DOWN_THRESHOLD", SCALE_DOWN_THRESHOLD))
         
-        # Cooldown to prevent thrashing (seconds)
-        self.scale_cooldown = 60  # 1 minute between scaling actions
-        self.last_twitter_scale = 0
+        # Cooldown tracking
         self.last_worker_scale = 0
-        
-        # MongoDB connection for metrics
-        self.mongo_store = None
-        
-    def _get_mongo_store(self):
-        """Lazy-load MongoDB store."""
-        if self.mongo_store is None:
-            from src.data.mongo_store import FootyMongoStore
-            self.mongo_store = FootyMongoStore()
-        return self.mongo_store
+        self.last_twitter_scale = 0
     
-    def _run_compose(self, *args) -> tuple[bool, str]:
-        """Run a docker compose command."""
-        cmd = ["docker", "compose", "-f", self.compose_file, "--profile", "scale", *args]
-        print(f"🔧 Running: {' '.join(cmd)}")
+    def get_running_services(self, prefix: str) -> list[str]:
+        """Get list of running services matching prefix (e.g., 'worker-', 'twitter-')."""
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            return result.returncode == 0, result.stdout + result.stderr
-        except subprocess.TimeoutExpired:
-            return False, "Command timed out"
+            containers = self.docker.ps(filters={"name": f"{PROJECT_NAME}-{prefix}"})
+            return [c.name for c in containers if c.state.running]
         except Exception as e:
-            return False, str(e)
-
-    def get_pending_goals_count(self) -> int:
-        """Get count of goals still being processed (not _twitter_complete)."""
-        try:
-            store = self._get_mongo_store()
-            pipeline = [
-                {"$unwind": "$events"},
-                {"$match": {
-                    "events.type": "Goal",
-                    "events._twitter_complete": {"$ne": True}
-                }},
-                {"$count": "pending"}
-            ]
-            result = list(store.fixtures_active.aggregate(pipeline))
-            return result[0]["pending"] if result else 0
-        except Exception as e:
-            print(f"❌ Error getting pending goals: {e}")
-            return 0
-
-    def get_active_twitter_workflows_count(self) -> int:
-        """Get count of currently running Twitter workflows from active fixtures."""
-        try:
-            store = self._get_mongo_store()
-            # Count goals that are being searched (have _twitter_count but not complete)
-            pipeline = [
-                {"$unwind": "$events"},
-                {"$match": {
-                    "events.type": "Goal",
-                    "events._twitter_count": {"$exists": True, "$gt": 0},
-                    "events._twitter_complete": {"$ne": True}
-                }},
-                {"$count": "active"}
-            ]
-            result = list(store.fixtures_active.aggregate(pipeline))
-            return result[0]["active"] if result else 0
-        except Exception as e:
-            print(f"❌ Error getting active workflows: {e}")
-            return 0
-    
-    def get_running_containers(self, service_prefix: str) -> list[str]:
-        """Get list of running container names matching prefix."""
-        cmd = ["docker", "ps", "--filter", f"name={PROJECT_NAME}-{service_prefix}",
-               "--format", "{{.Names}}"]
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                return [n.strip() for n in result.stdout.strip().split('\n') if n.strip()]
-            return []
-        except Exception as e:
-            print(f"❌ Error listing containers: {e}")
+            print(f"❌ Error listing {prefix} containers: {e}")
             return []
     
+    def get_running_count(self, prefix: str) -> int:
+        """Get count of running instances for a service type."""
+        return len(self.get_running_services(prefix))
+    
+    def scale_up(self, service_type: str, target: int) -> bool:
+        """Scale up by starting additional instances."""
+        current = self.get_running_count(service_type)
+        if current >= target:
+            return True
+        
+        # Start instances from current+1 to target
+        for i in range(current + 1, target + 1):
+            service_name = f"{service_type}{i}"
+            try:
+                print(f"🚀 Starting {service_name}...")
+                self.docker.compose.up([service_name], detach=True)
+                print(f"✅ Started {service_name}")
+            except Exception as e:
+                print(f"❌ Failed to start {service_name}: {e}")
+                return False
+        
+        return True
+    
+    def scale_down(self, service_type: str, target: int) -> bool:
+        """Scale down by stopping excess instances (highest numbered first)."""
+        current = self.get_running_count(service_type)
+        if current <= target:
+            return True
+        
+        # Stop instances from current down to target+1
+        for i in range(current, target, -1):
+            service_name = f"{service_type}{i}"
+            try:
+                # Check if Twitter instance is busy before stopping
+                if service_type == "twitter-":
+                    if self._is_twitter_busy(i):
+                        print(f"⏳ {service_name} is busy, skipping")
+                        continue
+                
+                print(f"🛑 Stopping {service_name}...")
+                self.docker.compose.stop([service_name])
+                print(f"✅ Stopped {service_name}")
+            except Exception as e:
+                print(f"❌ Failed to stop {service_name}: {e}")
+        
+        return True
+    
+    def _is_twitter_busy(self, instance_num: int) -> bool:
+        """Check if a Twitter instance is currently processing."""
+        try:
+            url = f"http://{PROJECT_NAME}-twitter-{instance_num}:8888/status"
+            resp = requests.get(url, timeout=2)
+            if resp.status_code == 200:
+                return resp.json().get("busy", False)
+        except:
+            pass
+        return False  # Assume not busy if unreachable
+    
+    def calculate_target_workers(self, metrics: dict) -> int:
+        """
+        Calculate target worker count based on task queue depth.
+        
+        Logic:
+        - backlog_per_worker = total_pending / current_workers
+        - Scale up if backlog_per_worker > SCALE_UP_THRESHOLD
+        - Scale down if backlog_per_worker < SCALE_DOWN_THRESHOLD
+        """
+        current = self.get_running_count("worker-")
+        if current == 0:
+            return self.min_instances
+        
+        total_pending = metrics["total"]
+        backlog_per_worker = total_pending / current
+        
+        if backlog_per_worker > self.scale_up_threshold:
+            # Need more workers - target enough so backlog_per_worker <= threshold
+            target = max(current + 1, (total_pending + self.scale_up_threshold - 1) // self.scale_up_threshold)
+            return min(self.max_instances, target)
+        elif backlog_per_worker < self.scale_down_threshold and current > self.min_instances:
+            # Can reduce workers
+            return current - 1
+        
+        return current
+    
+    def calculate_target_twitter(self, metrics: dict) -> int:
+        """
+        Calculate target Twitter instance count.
+        
+        Twitter scales similarly to workers - based on activity backlog.
+        Most activities are Twitter searches, downloads, etc.
+        """
+        current = self.get_running_count("twitter-")
+        if current == 0:
+            return self.min_instances
+        
+        # Use activity backlog for Twitter (that's where searches run)
+        activity_pending = metrics["activity_tasks"]
+        backlog_per_instance = activity_pending / current if current > 0 else activity_pending
+        
+        if backlog_per_instance > self.scale_up_threshold:
+            target = max(current + 1, (activity_pending + self.scale_up_threshold - 1) // self.scale_up_threshold)
+            return min(self.max_instances, target)
+        elif backlog_per_instance < self.scale_down_threshold and current > self.min_instances:
+            return current - 1
+        
+        return current
+    
+    # Legacy compatibility methods
     def get_running_twitter_count(self) -> int:
         """Get count of running Twitter instances."""
-        containers = self.get_running_containers("twitter")
-        return len(containers)
+        return self.get_running_count("twitter-")
     
     def get_running_worker_count(self) -> int:
         """Get count of running worker instances."""
-        containers = self.get_running_containers("worker")
-        return len(containers)
+        return self.get_running_count("worker-")
     
-    def is_twitter_instance_busy(self, instance_num: int) -> bool:
-        """Check if a Twitter instance is currently processing a search."""
-        import requests
-        url = f"http://{PROJECT_NAME}-twitter-{instance_num}:8888/status"
-        try:
-            resp = requests.get(url, timeout=2)
-            if resp.status_code == 200:
-                data = resp.json()
-                return data.get("busy", False)
-        except:
-            pass
-        return False  # If we can't reach it, assume not busy
-    
-    def find_idle_twitter_instance(self, start_from: int) -> int:
-        """Find the highest-numbered idle Twitter instance >= start_from.
-        
-        Returns instance number or 0 if none found idle.
-        """
-        # Check from highest to start_from
-        for i in range(start_from, self.twitter_min, -1):
-            if not self.is_twitter_instance_busy(i):
-                return i
-        return 0  # None found idle
-    
-    def start_service(self, service_name: str) -> bool:
-        """Start a service using docker compose up."""
-        print(f"🚀 Starting {service_name}...")
-        success, output = self._run_compose("up", "-d", service_name)
-        if success:
-            print(f"✅ Started {service_name}")
-        else:
-            print(f"❌ Failed to start {service_name}: {output}")
-        return success
-    
-    def stop_service(self, service_name: str) -> bool:
-        """Stop a service using docker compose stop."""
-        print(f"🛑 Stopping {service_name}...")
-        success, output = self._run_compose("stop", service_name)
-        if success:
-            print(f"✅ Stopped {service_name}")
-        else:
-            print(f"❌ Failed to stop {service_name}: {output}")
-        return success
-
     def scale_twitter(self, target_count: int) -> bool:
-        """Scale Twitter instances to target count."""
-        target_count = max(self.twitter_min, min(self.twitter_max, target_count))
-        current_count = self.get_running_twitter_count()
-        
-        if current_count == target_count:
-            return True
-        
-        # Check cooldown
-        if time.time() - self.last_twitter_scale < self.scale_cooldown:
-            print(f"⏳ Twitter scaling in cooldown ({self.scale_cooldown}s), skipping")
-            return False
-        
-        print(f"📊 Scaling Twitter: {current_count} → {target_count}")
-        
-        if target_count > current_count:
-            # Scale up - start next instances
-            for i in range(current_count + 1, target_count + 1):
-                self.start_service(f"twitter-{i}")
-        else:
-            # Scale down - stop highest numbered IDLE instances first
-            stopped = 0
-            for i in range(current_count, target_count, -1):
-                if self.is_twitter_instance_busy(i):
-                    print(f"⏳ twitter-{i} is busy, skipping scale-down")
-                    continue
-                self.stop_service(f"twitter-{i}")
-                stopped += 1
-            if stopped == 0:
-                print(f"⚠️ All instances busy, cannot scale down yet")
-                return False
-        
-        self.last_twitter_scale = time.time()
+        """Scale Twitter instances to target count (legacy interface)."""
+        current = self.get_running_count("twitter-")
+        if target_count > current:
+            return self.scale_up("twitter-", target_count)
+        elif target_count < current:
+            return self.scale_down("twitter-", target_count)
         return True
-
+    
     def scale_workers(self, target_count: int) -> bool:
-        """Scale worker instances to target count."""
-        target_count = max(self.worker_min, min(self.worker_max, target_count))
-        current_count = self.get_running_worker_count()
-        
-        if current_count == target_count:
-            return True
-        
-        # Check cooldown
-        if time.time() - self.last_worker_scale < self.scale_cooldown:
-            print(f"⏳ Worker scaling in cooldown ({self.scale_cooldown}s), skipping")
-            return False
-        
-        print(f"📊 Scaling Workers: {current_count} → {target_count}")
-        
-        if target_count > current_count:
-            # Scale up
-            for i in range(current_count + 1, target_count + 1):
-                self.start_service(f"worker-{i}")
-        else:
-            # Scale down
-            for i in range(current_count, target_count, -1):
-                self.stop_service(f"worker-{i}")
-        
-        self.last_worker_scale = time.time()
+        """Scale worker instances to target count (legacy interface)."""
+        current = self.get_running_count("worker-")
+        if target_count > current:
+            return self.scale_up("worker-", target_count)
+        elif target_count < current:
+            return self.scale_down("worker-", target_count)
         return True
-
-    def calculate_target_twitter_instances(self) -> int:
-        """Calculate target number of Twitter instances based on load.
-        
-        Logic: 1 browser per 3 active goals (each browser does ~8 searches/min)
-        - Scale up when: active_goals > instances * 3
-        - Scale down when: active_goals < instances * 2 (with some buffer)
-        """
-        pending_goals = self.get_pending_goals_count()
-        active_searches = self.get_active_twitter_workflows_count()
-        current = self.get_running_twitter_count()
-        
-        # Use whichever is higher - pending or actively searching
-        load = max(pending_goals, active_searches)
-        
-        print(f"📊 Twitter metrics: pending={pending_goals}, active={active_searches}, load={load}, instances={current}")
-        
-        # Target: 1 instance per 3 concurrent goals
-        # Scale up threshold: load > current * 3
-        # Scale down threshold: load < current * 2
-        if load > current * 3:
-            # Need more browsers
-            target = (load + 2) // 3  # Round up
-            return min(self.twitter_max, max(target, current + 1))
-        elif load < current * 2 and current > self.twitter_min:
-            # Can reduce browsers
-            return current - 1
-        
-        return current
-
-    def calculate_target_worker_instances(self) -> int:
-        """Calculate target number of worker instances based on load.
-        
-        Logic: 1 worker per 3 active goals (similar to Twitter)
-        - Scale up when: active_goals > workers * 3
-        - Scale down when: active_goals < workers * 2
-        """
-        pending_goals = self.get_pending_goals_count()
-        active_searches = self.get_active_twitter_workflows_count()
-        current = self.get_running_worker_count()
-        
-        # Use whichever is higher
-        load = max(pending_goals, active_searches)
-        
-        print(f"📊 Worker metrics: pending={pending_goals}, active={active_searches}, load={load}, workers={current}")
-        
-        # Same logic as Twitter
-        if load > current * 3:
-            target = (load + 2) // 3
-            return min(self.worker_max, max(target, current + 1))
-        elif load < current * 2 and current > self.worker_min:
-            return current - 1
-        
-        return current
-
     async def run_scaling_loop(self):
-        """Main scaling loop - checks metrics and scales every interval seconds."""
+        """Main scaling loop."""
         print(f"🚀 Scaler service started")
-        print(f"   Twitter: min={self.twitter_min}, max={self.twitter_max}")
-        print(f"   Workers: min={self.worker_min}, max={self.worker_max}")
+        print(f"   Task queue: {TASK_QUEUE}")
+        print(f"   Instances: min={self.min_instances}, max={self.max_instances}")
+        print(f"   Scale up threshold: {self.scale_up_threshold} pending/worker")
+        print(f"   Scale down threshold: {self.scale_down_threshold} pending/worker")
         print(f"   Check interval: {self.check_interval}s")
         print(f"   Cooldown: {self.scale_cooldown}s")
         
-        # Ensure minimum instances are running on startup
-        print(f"\n🔧 Ensuring minimum instances are running...")
-        current_twitter = self.get_running_twitter_count()
-        current_workers = self.get_running_worker_count()
-        
-        if current_twitter < self.twitter_min:
-            for i in range(1, self.twitter_min + 1):
-                self.start_service(f"twitter-{i}")
-        
-        if current_workers < self.worker_min:
-            for i in range(1, self.worker_min + 1):
-                self.start_service(f"worker-{i}")
+        # Ensure minimum instances on startup
+        print(f"\n🔧 Ensuring minimum instances...")
+        self.scale_up("worker-", self.min_instances)
+        self.scale_up("twitter-", self.min_instances)
         
         print(f"\n📊 Starting monitoring loop...")
         
         while True:
             try:
                 print(f"\n{'='*60}")
-                print(f"⏰ {datetime.now().strftime('%H:%M:%S')} - Checking scaling metrics")
+                print(f"⏰ {datetime.now().strftime('%H:%M:%S')} - Checking metrics")
                 
-                # Scale Twitter instances
-                target_twitter = self.calculate_target_twitter_instances()
-                self.scale_twitter(target_twitter)
+                # Get Temporal task queue metrics
+                metrics = await self.temporal.get_task_queue_depth()
+                
+                current_workers = self.get_running_count("worker-")
+                current_twitter = self.get_running_count("twitter-")
+                
+                print(f"📊 Task Queue: workflow={metrics['workflow_tasks']} activity={metrics['activity_tasks']} total={metrics['total']}")
+                print(f"📊 Workers: {current_workers} running, {metrics['workflow_pollers']} polling")
+                print(f"📊 Twitter: {current_twitter} running")
+                
+                # Calculate targets
+                target_workers = self.calculate_target_workers(metrics)
+                target_twitter = self.calculate_target_twitter(metrics)
                 
                 # Scale workers
-                target_workers = self.calculate_target_worker_instances()
-                self.scale_workers(target_workers)
+                now = time.time()
+                if target_workers != current_workers:
+                    if now - self.last_worker_scale >= self.scale_cooldown:
+                        print(f"📈 Workers: {current_workers} → {target_workers}")
+                        if target_workers > current_workers:
+                            self.scale_up("worker-", target_workers)
+                        else:
+                            self.scale_down("worker-", target_workers)
+                        self.last_worker_scale = now
+                    else:
+                        remaining = int(self.scale_cooldown - (now - self.last_worker_scale))
+                        print(f"⏳ Workers scaling in cooldown ({remaining}s remaining)")
+                
+                # Scale Twitter
+                if target_twitter != current_twitter:
+                    if now - self.last_twitter_scale >= self.scale_cooldown:
+                        print(f"📈 Twitter: {current_twitter} → {target_twitter}")
+                        if target_twitter > current_twitter:
+                            self.scale_up("twitter-", target_twitter)
+                        else:
+                            self.scale_down("twitter-", target_twitter)
+                        self.last_twitter_scale = now
+                    else:
+                        remaining = int(self.scale_cooldown - (now - self.last_twitter_scale))
+                        print(f"⏳ Twitter scaling in cooldown ({remaining}s remaining)")
                 
             except Exception as e:
                 print(f"❌ Scaler error: {e}")
@@ -337,8 +332,6 @@ def get_healthy_twitter_urls() -> list[str]:
     Get list of healthy Twitter instance URLs.
     Used by workers to discover available Twitter browsers.
     """
-    import requests
-    
     all_urls = [
         f"http://{PROJECT_NAME}-twitter-{i}:8888"
         for i in range(1, 9)  # twitter-1 through twitter-8
@@ -357,8 +350,16 @@ def get_healthy_twitter_urls() -> list[str]:
 
 
 async def main():
-    """Run the scaler service."""
-    scaler = ScalerService()
+    """Initialize and run the scaler."""
+    print("🔌 Connecting to Temporal...")
+    temporal_client = await Client.connect(TEMPORAL_HOST)
+    print("✅ Connected to Temporal")
+    
+    print("🐳 Initializing Docker client...")
+    docker = DockerClient(compose_files=[COMPOSE_FILE])
+    print(f"✅ Docker client ready (compose file: {COMPOSE_FILE})")
+    
+    scaler = ScalerService(docker, temporal_client)
     await scaler.run_scaling_loop()
 
 

@@ -36,3 +36,4 @@ pytest-cov
 pytest-mock
 pytest-asyncio
 httpx
+python-on-whales>=0.60.0

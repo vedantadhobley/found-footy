@@ -42,12 +42,35 @@ This prevents data loss - we can compare fresh API data against enhanced data wi
 - `max_concurrent_activities=30` → 120 total across 4 workers
 - `sticky_queue_schedule_to_start_timeout=10s` → Default, works well with low contention
 
-**Scaling**:
-```bash
-# Scale workers (default is 4 replicas)
-docker compose up -d --scale worker=8
+**Auto-Scaling**:
 
-# Or modify docker-compose.yml deploy.replicas
+The **Scaler Service** monitors Temporal task queue depth and automatically scales workers and Twitter instances:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        SCALER SERVICE                                │
+├─────────────────────────────────────────────────────────────────────┤
+│  1. Query Temporal describe_task_queue API (every 30s)               │
+│  2. Calculate: backlog_per_worker = pending_tasks / running_workers  │
+│  3. Scale up if: backlog_per_worker > 5                              │
+│  4. Scale down if: backlog_per_worker < 2 (with 60s cooldown)        │
+│  5. Uses python-on-whales for Docker Compose control                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+| Config | Default | Description |
+|--------|---------|-------------|
+| MIN_INSTANCES | 2 | Minimum workers/Twitter instances |
+| MAX_INSTANCES | 8 | Maximum workers/Twitter instances |
+| SCALE_UP_THRESHOLD | 5 | Scale up when > 5 pending tasks/worker |
+| SCALE_DOWN_THRESHOLD | 2 | Scale down when < 2 pending tasks/worker |
+| CHECK_INTERVAL | 30s | How often to check metrics |
+| SCALE_COOLDOWN | 60s | Minimum time between scaling actions |
+
+```bash
+# Manual scaling (if needed)
+docker compose up -d worker-3 twitter-3
+docker compose stop worker-3
 ```
 
 **Why This Is Safe** (no race conditions):

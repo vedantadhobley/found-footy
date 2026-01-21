@@ -329,14 +329,14 @@ flowchart TB
         direction TB
         
         subgraph CORE["Core Services"]
-            subgraph WORKERS["Worker Pool (4 replicas)"]
-                W1[Worker 1<br/>2 CPU / 4GB]
-                W2[Worker 2<br/>2 CPU / 4GB]
-                W3[Worker 3<br/>2 CPU / 4GB]
-                W4[Worker 4<br/>2 CPU / 4GB]
+            subgraph WORKERS["Worker Pool (2-8 auto-scaled)"]
+                W1[Worker 1]
+                W2[Worker 2]
+                WN[Worker 3-8...]
             end
             TEMPORAL[Temporal Server<br/>Workflow orchestration]
             POSTGRES[(PostgreSQL<br/>Temporal metadata)]
+            SCALER[Scaler Service<br/>Auto-scaling via Temporal metrics]
         end
         
         subgraph DATA["Data Layer"]
@@ -345,51 +345,76 @@ flowchart TB
             TEMP[/tmp/found-footy<br/>Shared temp volume/]
         end
         
-        subgraph TWITTER["Twitter Automation"]
-            TWITTERSVC[Twitter Service<br/>FastAPI :8888]
+        subgraph TWITTER["Twitter Automation (2-8 auto-scaled)"]
+            T1[Twitter 1<br/>VNC :3103]
+            T2[Twitter 2-8<br/>Headless]
             FIREFOX[Firefox + Selenium]
-            VNC[noVNC :6080<br/>Browser GUI access]
         end
         
         subgraph UI["Management UIs"]
-            TEMPUI[Temporal UI :8080]
-            MONGOKU[Mongoku :3100]
-            MINIOUI[MinIO Console :9001]
+            TEMPUI[Temporal UI :3100]
+            MONGOKU[Mongoku :3101]
+            MINIOUI[MinIO Console :3102]
         end
     end
     
-    W1 & W2 & W3 & W4 --> TEMPORAL
-    W1 & W2 & W3 & W4 --> TEMP
+    SCALER -->|Query task queue| TEMPORAL
+    SCALER -->|Scale up/down| WORKERS & TWITTER
+    W1 & W2 & WN --> TEMPORAL
+    W1 & W2 & WN --> TEMP
     TEMPORAL --> POSTGRES
-    W1 & W2 & W3 & W4 --> MONGO
-    W1 & W2 & W3 & W4 --> MINIO
-    W1 & W2 & W3 & W4 --> TWITTERSVC
-    TWITTERSVC --> FIREFOX
-    FIREFOX --> VNC
+    W1 & W2 & WN --> MONGO
+    W1 & W2 & WN --> MINIO
+    W1 & W2 & WN --> T1 & T2
+    T1 & T2 --> FIREFOX
 ```
 
 **Multi-Worker Design**: Workers share the workload via Temporal's task queue. All workers mount a shared temp volume at `/tmp/found-footy` so videos downloaded by any worker can be processed by any other worker. Workflows are sticky to one worker (to avoid history replay), but activities and child workflows are distributed across all available workers.
 
-### Scaling (Production)
+### Auto-Scaling (Production)
+
+The **Scaler Service** automatically scales workers and Twitter instances based on **Temporal task queue depth**:
+
+| Metric | Scale Up | Scale Down |
+|--------|----------|------------|
+| Backlog per worker | > 5 pending tasks | < 2 pending tasks |
+| Cooldown | 60 seconds between scaling actions |
+| Instances | min=2, max=8 for both workers and Twitter |
+
+```mermaid
+flowchart LR
+    TQ[Temporal Task Queue] -->|Query depth| SCALER[Scaler Service]
+    SCALER -->|python-on-whales| DOCKER[Docker Compose]
+    DOCKER --> W[Workers 1-8]
+    DOCKER --> T[Twitter 1-8]
+```
+
+**How it works:**
+- Scaler queries Temporal's `describe_task_queue` API every 30 seconds
+- Calculates `backlog_per_worker = pending_tasks / running_workers`
+- Scales up when backlog is high, down when idle (with cooldown)
+- Uses `python-on-whales` for clean Docker Compose integration
+- Twitter instances checked for busy state before scale-down
 
 | Service | Default | Max | Notes |
 |---------|---------|-----|-------|
 | Workers | 2 | 8 | Temporal distributes work automatically |
 | Twitter | 2 | 8 | twitter-1 has VNC, twitter-2+ are headless |
+| Scaler | 1 | 1 | Always running, monitors task queue |
 
 ```bash
 # Build shared images
 docker compose build worker   # Builds image for all worker-N
 docker compose build twitter  # Builds image for all twitter-N
 
-# Start minimum (default)
+# Start stack (scaler runs automatically)
 docker compose up -d
 
-# Scale up specific instances
+# Manual scaling (if needed)
 docker compose up -d twitter-3 worker-3
 
-# Scale down (doesn't lose in-flight work)
-docker compose stop twitter-3
+# Check scaler logs
+docker compose logs -f scaler
 ```
 
 **Twitter load balancing**: Each search randomly selects from healthy instances:
