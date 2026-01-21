@@ -356,8 +356,9 @@ async def main():
     print("✅ Connected to Temporal")
     
     print("🐳 Initializing Docker client...")
-    docker = DockerClient(compose_files=[COMPOSE_FILE])
-    print(f"✅ Docker client ready (compose file: {COMPOSE_FILE})")
+    # Use 'managed' profile to access worker-N and twitter-N services
+    docker = DockerClient(compose_files=[COMPOSE_FILE], compose_profiles=["managed"])
+    print(f"✅ Docker client ready (compose file: {COMPOSE_FILE}, profile: managed)")
     
     scaler = ScalerService(docker, temporal_client)
     await scaler.run_scaling_loop()

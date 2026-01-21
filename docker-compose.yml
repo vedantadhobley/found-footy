@@ -133,12 +133,14 @@ services:
 
   # ===========================================================================
   # TWITTER SERVICES (1-8) - Firefox browser instances for Twitter scraping
+  # ALL managed by scaler service - use profiles: ["managed"]
   # twitter-1: VNC enabled (port 3103) for debugging/re-auth
   # twitter-2+: Headless (no VNC, no ports) for scalability
   # ===========================================================================
   twitter-1:
     <<: *twitter-vnc
     container_name: found-footy-prod-twitter-1
+    profiles: ["managed"]
     ports:
       - "3103:6080"
     environment:
@@ -148,6 +150,7 @@ services:
   twitter-2:
     <<: *twitter-headless
     container_name: found-footy-prod-twitter-2
+    profiles: ["managed"]
     environment:
       <<: *twitter-headless-env
       TWITTER_INSTANCE_ID: "2"
@@ -155,57 +158,59 @@ services:
   twitter-3:
     <<: *twitter-headless
     container_name: found-footy-prod-twitter-3
+    profiles: ["managed"]
     environment:
       <<: *twitter-headless-env
       TWITTER_INSTANCE_ID: "3"
-    profiles: ["scale"]
 
   twitter-4:
     <<: *twitter-headless
     container_name: found-footy-prod-twitter-4
+    profiles: ["managed"]
     environment:
       <<: *twitter-headless-env
       TWITTER_INSTANCE_ID: "4"
-    profiles: ["scale"]
 
   twitter-5:
     <<: *twitter-headless
     container_name: found-footy-prod-twitter-5
+    profiles: ["managed"]
     environment:
       <<: *twitter-headless-env
       TWITTER_INSTANCE_ID: "5"
-    profiles: ["scale"]
 
   twitter-6:
     <<: *twitter-headless
     container_name: found-footy-prod-twitter-6
+    profiles: ["managed"]
     environment:
       <<: *twitter-headless-env
       TWITTER_INSTANCE_ID: "6"
-    profiles: ["scale"]
 
   twitter-7:
     <<: *twitter-headless
     container_name: found-footy-prod-twitter-7
+    profiles: ["managed"]
     environment:
       <<: *twitter-headless-env
       TWITTER_INSTANCE_ID: "7"
-    profiles: ["scale"]
 
   twitter-8:
     <<: *twitter-headless
     container_name: found-footy-prod-twitter-8
+    profiles: ["managed"]
     environment:
       <<: *twitter-headless-env
       TWITTER_INSTANCE_ID: "8"
-    profiles: ["scale"]
 
   # ===========================================================================
   # WORKER SERVICES (1-8) - Temporal workflow workers
+  # ALL managed by scaler service - use profiles: ["managed"]
   # ===========================================================================
   worker-1:
     <<: *worker-common
     container_name: found-footy-prod-worker-1
+    profiles: ["managed"]
     environment:
       <<: *worker-env
       WORKER_INSTANCE_ID: "1"
@@ -213,6 +218,7 @@ services:
   worker-2:
     <<: *worker-common
     container_name: found-footy-prod-worker-2
+    profiles: ["managed"]
     environment:
       <<: *worker-env
       WORKER_INSTANCE_ID: "2"
@@ -220,50 +226,50 @@ services:
   worker-3:
     <<: *worker-common
     container_name: found-footy-prod-worker-3
+    profiles: ["managed"]
     environment:
       <<: *worker-env
       WORKER_INSTANCE_ID: "3"
-    profiles: ["scale"]
 
   worker-4:
     <<: *worker-common
     container_name: found-footy-prod-worker-4
+    profiles: ["managed"]
     environment:
       <<: *worker-env
       WORKER_INSTANCE_ID: "4"
-    profiles: ["scale"]
 
   worker-5:
     <<: *worker-common
     container_name: found-footy-prod-worker-5
+    profiles: ["managed"]
     environment:
       <<: *worker-env
       WORKER_INSTANCE_ID: "5"
-    profiles: ["scale"]
 
   worker-6:
     <<: *worker-common
     container_name: found-footy-prod-worker-6
+    profiles: ["managed"]
     environment:
       <<: *worker-env
       WORKER_INSTANCE_ID: "6"
-    profiles: ["scale"]
 
   worker-7:
     <<: *worker-common
     container_name: found-footy-prod-worker-7
+    profiles: ["managed"]
     environment:
       <<: *worker-env
       WORKER_INSTANCE_ID: "7"
-    profiles: ["scale"]
 
   worker-8:
     <<: *worker-common
     container_name: found-footy-prod-worker-8
+    profiles: ["managed"]
     environment:
       <<: *worker-env
       WORKER_INSTANCE_ID: "8"
-    profiles: ["scale"]
 
   # ===========================================================================
   # INFRASTRUCTURE SERVICES
@@ -394,6 +400,7 @@ services:
   # ===========================================================================
   # SCALER SERVICE - Auto-scales workers/twitter based on Temporal task queue depth
   # Uses python-on-whales for Docker Compose control + Temporal metrics API
+  # Starts automatically and manages all worker-N and twitter-N services
   # ===========================================================================
   scaler:
     build:
