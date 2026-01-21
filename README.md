@@ -336,7 +336,7 @@ flowchart TB
             end
             TEMPORAL[Temporal Server<br/>Workflow orchestration]
             POSTGRES[(PostgreSQL<br/>Temporal metadata)]
-            SCALER[Scaler Service<br/>Auto-scaling via Temporal metrics]
+            SCALER[Scaler Service<br/>Auto-scaling via Temporal + MongoDB]
         end
         
         subgraph DATA["Data Layer"]
@@ -359,6 +359,7 @@ flowchart TB
     end
     
     SCALER -->|Query task queue| TEMPORAL
+    SCALER -->|Query active goals| MONGO
     SCALER -->|Scale up/down| WORKERS & TWITTER
     W1 & W2 & WN --> TEMPORAL
     W1 & W2 & WN --> TEMP
@@ -373,13 +374,24 @@ flowchart TB
 
 ### Auto-Scaling (Production)
 
-The **Scaler Service** automatically scales workers and Twitter instances based on **Temporal task queue depth**:
+The **Scaler Service** automatically scales workers and Twitter instances:
 
-| Metric | Scale Up | Scale Down |
-|--------|----------|------------|
-| Backlog per worker | > 5 pending tasks | < 2 pending tasks |
+| Service | Metric Source | Scale Up | Scale Down |
+|---------|---------------|----------|------------|
+| **Workers** | Temporal task queue depth | > 5 pending tasks/worker | < 2 pending tasks/worker |
+| **Twitter** | MongoDB active goals | > 2 goals/instance | < 1 goal/instance |
+
+**Why different metrics?**
+- Workers scale on **Temporal queue depth** (pending tasks backlog)
+- Twitter scales on **active goals** (goals with `_monitor_complete=true` but `_twitter_complete=false`)
+- Twitter searches complete quickly (~3s), so queue is always near-empty even when busy
+- Active goals = actual workload indicator (each goal runs 10 searches over ~10 min)
+
+| Config | Value |
+|--------|-------|
+| Instances | min=2, max=8 |
+| Check interval | 30 seconds |
 | Cooldown | 60 seconds between scaling actions |
-| Instances | min=2, max=8 for both workers and Twitter |
 
 ```mermaid
 flowchart LR
@@ -395,6 +407,7 @@ flowchart LR
     
     STARTUP --> SCALER
     SCALER -->|Query depth| TQ[Temporal Task Queue]
+    SCALER -->|Query active goals| MONGO[(MongoDB)]
     SCALER -->|Auto-start/stop| MANAGED
 ```
 
@@ -402,8 +415,8 @@ flowchart LR
 - `docker compose up -d` starts infrastructure + scaler only
 - Scaler auto-starts minimum instances (2 workers, 2 twitter)
 - All workers/twitter use `profiles: ["managed"]` — not started by default
-- Scaler queries Temporal's `describe_task_queue` API every 30 seconds
-- Scales up when backlog is high, down when idle (with cooldown)
+- Scaler queries Temporal + MongoDB every 30 seconds
+- Scales up when load is high, down when idle (with cooldown)
 - Uses `python-on-whales` for clean Docker Compose integration
 - Twitter instances checked for busy state before scale-down
 
@@ -420,7 +433,7 @@ docker compose up -d
 # Rebuild all app images
 docker compose build worker twitter scaler
 
-# Check scaler logs
+# Check scaler logs (shows active goals + queue depth)
 docker compose logs -f scaler
 
 # Manual scaling (bypasses scaler, uses managed profile)
