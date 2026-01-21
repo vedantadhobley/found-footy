@@ -202,6 +202,22 @@ async def process_staging_fixtures(staging_fixtures: List[Dict[str, Any]]) -> Di
                 f"📌 [MONITOR] Queued for activation | fixture={fixture_id} | "
                 f"match={home_team} vs {away_team} | status={current_status}→{new_status}"
             )
+        elif new_status not in staging_statuses:
+            # RECOVERY: Fixture has live status but is still in staging
+            # This can happen if a previous activation attempt failed mid-workflow
+            # Check if it's NOT already in fixtures_active
+            if not store.fixtures_active.find_one({"_id": fixture_id}):
+                fixtures_to_activate.append({
+                    "fixture_id": fixture_id,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "old_status": current_status,
+                    "new_status": new_status,
+                })
+                activity.logger.warning(
+                    f"🔧 [MONITOR] RECOVERY: Missed activation detected | fixture={fixture_id} | "
+                    f"match={home_team} vs {away_team} | status={current_status} (should be active)"
+                )
         elif current_status != new_status:
             # Status changed but still in staging (e.g., TBD → NS)
             activity.logger.info(
