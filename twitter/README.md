@@ -1,6 +1,6 @@
 # Twitter Scraper Service 🐦
 
-Independent microservice for scraping Twitter videos using Firefox with VNC access.
+Independent microservice for scraping Twitter videos using Firefox.
 
 ## Overview
 
@@ -10,9 +10,10 @@ This service provides a REST API for searching Twitter videos. It uses a **two-m
 2. **Scraping Mode**: Selenium uses the authenticated profile for automation
 
 **Key Features:**
-- ✅ VNC GUI access at http://localhost:4103 (dev) or http://localhost:3103 (prod)
+- ✅ **VNC GUI access** on twitter-1 only (http://localhost:3103 prod, http://localhost:4103 dev)
+- ✅ **Headless mode** for twitter-2+ (no VNC, better scalability)
 - ✅ **No bot detection** - manual Firefox for login
-- ✅ Persistent Firefox profile + cookie backup
+- ✅ Persistent Firefox profile + cookie backup (shared across all instances)
 - ✅ Automatic cookie restore on startup
 - ✅ Selenium-powered scraping after auth
 - ✅ **URL exclusion** - skip already-discovered videos
@@ -26,7 +27,8 @@ twitter/
 ├── session.py           # Browser session manager (dual-mode)
 ├── auth.py              # Authentication helpers
 ├── config.py            # Configuration from environment
-├── start_with_vnc.sh    # Startup script with VNC server
+├── start_with_vnc.sh    # Startup script WITH VNC (twitter-1)
+├── start_headless.sh    # Startup script WITHOUT VNC (twitter-2+)
 └── README.md            # This file
 ```
 
@@ -126,10 +128,17 @@ Logs show when URLs are skipped:
 
 ## Ports
 
-| Environment | VNC Port | API Port |
-|-------------|----------|----------|
-| Development | 4103 | 8888 (internal) |
-| Production | 3103 | 8888 (internal) |
+| Instance | Mode | VNC Port | API Port |
+|----------|------|----------|----------|
+| twitter-1 (prod) | VNC | 3103 | 8888 (internal) |
+| twitter-2+ (prod) | Headless | None | 8888 (internal) |
+| twitter (dev) | VNC | 4103 | 8888 (internal) |
+
+**Why headless for twitter-2+?**
+VNC is only needed for initial login and debugging. Once cookies are saved to `~/.config/found-footy/twitter_cookies.json`, all instances restore from the same backup. Headless mode:
+- Reduces resource usage (no Xvfb, x11vnc, websockify)
+- Eliminates port conflicts when scaling
+- Faster startup
 
 ## Cookie Backup
 

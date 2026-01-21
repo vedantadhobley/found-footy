@@ -1,51 +1,273 @@
 # Production Docker Compose - Temporal orchestration
 #
-# Port allocation: found-footy uses 3100-3109 (production)
+# Port allocation: found-footy uses 3100-3119 (production)
 #   3100: Temporal UI
 #   3101: MongoDB Compass (web GUI)
 #   3102: MinIO Console
-#   3103: Twitter Firefox VNC (browser GUI)
+#   3103: Twitter-1 VNC (only instance with GUI for debugging/re-auth)
 #
 # Internal ports (not exposed):
 #   - postgres:5432 (Temporal metadata)
 #   - mongo:27017 (Application data)
 #   - minio:9000 (S3 storage)
 #   - temporal:7233 (gRPC)
-#   - twitter:8888 (API)
+#   - twitter-N:8888 (API)
 #
 # External services (on luv-prod network):
 #   - llama-chat:8080 (LLM API - llama.cpp chat+vision)
+#
+# SCALING:
+#   - Twitter browsers: min 2, max 8 (twitter-1 through twitter-8)
+#     - twitter-1: VNC enabled (port 3103) for debugging/re-auth
+#     - twitter-2+: Headless (no VNC) for scalability
+#   - Workers: min 2, max 8 (worker-1 through worker-8)
+#   - Scaler service monitors load and starts/stops instances
+#   - Start minimum: docker compose up -d
+#   - Scale up: docker compose up -d twitter-3
+#   - Scale down: docker compose stop twitter-3
+#
+# BUILD SHORTCUTS:
+#   - docker compose build worker - Builds worker image (used by all worker-N)
+#   - docker compose build twitter - Builds twitter image (used by all twitter-N)
+#   - docker compose up -d worker-1 worker-2 - Restarts running workers with new image
 
 name: found-footy-prod
 
+# =============================================================================
+# EXTENSION FIELDS (YAML anchors for DRY config)
+# =============================================================================
+
+# Base twitter config (shared by all instances)
+x-twitter-base: &twitter-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: found-footy-prod-twitter:latest
+  env_file:
+    - .env
+  volumes:
+    - found-footy-prod-twitter-cookies:/data
+    - ~/.config/found-footy:/config
+  networks:
+    - found-footy-prod
+  restart: unless-stopped
+
+# Twitter with VNC (for twitter-1 only - debugging/re-auth)
+x-twitter-vnc: &twitter-vnc
+  <<: *twitter-base
+  environment: &twitter-vnc-env
+    PYTHONPATH: /app
+    TWITTER_COOKIES_FILE: /data/twitter_cookies.pkl
+    TWITTER_COOKIE_BACKUP_PATH: /config/twitter_cookies.json
+    TWITTER_SERVICE_HOST: "0.0.0.0"
+    TWITTER_SERVICE_PORT: "8888"
+    TWITTER_HEADLESS: "false"
+    DISPLAY: ":99"
+  command: bash /app/twitter/start_with_vnc.sh
+
+# Twitter headless (for twitter-2+ - scalable, no GUI)
+x-twitter-headless: &twitter-headless
+  <<: *twitter-base
+  environment: &twitter-headless-env
+    PYTHONPATH: /app
+    TWITTER_COOKIES_FILE: /data/twitter_cookies.pkl
+    TWITTER_COOKIE_BACKUP_PATH: /config/twitter_cookies.json
+    TWITTER_SERVICE_HOST: "0.0.0.0"
+    TWITTER_SERVICE_PORT: "8888"
+    TWITTER_HEADLESS: "true"
+  command: bash /app/twitter/start_headless.sh
+
+x-worker-common: &worker-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: found-footy-prod-worker:latest
+  env_file:
+    - .env
+  environment: &worker-env
+    PYTHONPATH: /app
+    TEMPORAL_HOST: found-footy-prod-temporal:7233
+    MONGODB_URI: mongodb://ffuser:ffpass@found-footy-prod-mongo:27017/found_footy?authSource=admin
+    S3_ENDPOINT_URL: http://found-footy-prod-minio:9000
+    S3_ACCESS_KEY: ffuser
+    S3_SECRET_KEY: ffpass--
+    S3_BUCKET_NAME: footy-videos
+    FRONTEND_API_URL: http://vedanta-systems-prod-api:3001
+    LLAMA_URL: http://llama-chat:8080
+    FOOTY_TEMP_DIR: /tmp/found-footy
+  volumes:
+    - ~/.config/found-footy:/config
+    - found-footy-prod-temp:/tmp/found-footy
+  networks:
+    - found-footy-prod
+    - luv-prod
+  depends_on:
+    - temporal
+    - mongo
+  restart: unless-stopped
+  deploy:
+    resources:
+      limits:
+        cpus: '2'
+        memory: 4G
+  command: python /app/src/worker.py
+
+# =============================================================================
+# SERVICES
+# =============================================================================
+
 services:
-  # TWITTER SERVICE - handles Twitter scraping with GUI access
+  # ===========================================================================
+  # BUILD-ONLY SERVICES (for docker compose build worker/twitter)
+  # ===========================================================================
+  
+  # Build-only: docker compose build twitter builds image used by all twitter-N
   twitter:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: found-footy-prod-twitter
+    <<: *twitter-base
+    profiles: ["build-only"]
+
+  # Build-only: docker compose build worker builds image used by all worker-N
+  worker:
+    <<: *worker-common
+    profiles: ["build-only"]
+
+  # ===========================================================================
+  # TWITTER SERVICES (1-8) - Firefox browser instances for Twitter scraping
+  # twitter-1: VNC enabled (port 3103) for debugging/re-auth
+  # twitter-2+: Headless (no VNC, no ports) for scalability
+  # ===========================================================================
+  twitter-1:
+    <<: *twitter-vnc
+    container_name: found-footy-prod-twitter-1
     ports:
-      - "3103:6080"  # noVNC Browser - view Firefox at http://localhost:3103
-    env_file:
-      - .env
+      - "3103:6080"
     environment:
-      PYTHONPATH: /app
-      TWITTER_COOKIES_FILE: /data/twitter_cookies.pkl
-      TWITTER_COOKIE_BACKUP_PATH: /config/twitter_cookies.json
-      TWITTER_SERVICE_HOST: "0.0.0.0"
-      TWITTER_SERVICE_PORT: "8888"
-      TWITTER_HEADLESS: "false"  # GUI mode - full browser visible via noVNC
-      DISPLAY: ":99"
-      VNC_PORT: "5900"
-      NOVNC_PORT: "6080"
-    volumes:
-      - found-footy-prod-twitter-cookies:/data
-      - ~/.config/found-footy:/config
-    networks:
-      - found-footy-prod
-    restart: unless-stopped
-    command: bash /app/twitter/start_with_vnc.sh
+      <<: *twitter-vnc-env
+      TWITTER_INSTANCE_ID: "1"
+
+  twitter-2:
+    <<: *twitter-headless
+    container_name: found-footy-prod-twitter-2
+    environment:
+      <<: *twitter-headless-env
+      TWITTER_INSTANCE_ID: "2"
+
+  twitter-3:
+    <<: *twitter-headless
+    container_name: found-footy-prod-twitter-3
+    environment:
+      <<: *twitter-headless-env
+      TWITTER_INSTANCE_ID: "3"
+    profiles: ["scale"]
+
+  twitter-4:
+    <<: *twitter-headless
+    container_name: found-footy-prod-twitter-4
+    environment:
+      <<: *twitter-headless-env
+      TWITTER_INSTANCE_ID: "4"
+    profiles: ["scale"]
+
+  twitter-5:
+    <<: *twitter-headless
+    container_name: found-footy-prod-twitter-5
+    environment:
+      <<: *twitter-headless-env
+      TWITTER_INSTANCE_ID: "5"
+    profiles: ["scale"]
+
+  twitter-6:
+    <<: *twitter-headless
+    container_name: found-footy-prod-twitter-6
+    environment:
+      <<: *twitter-headless-env
+      TWITTER_INSTANCE_ID: "6"
+    profiles: ["scale"]
+
+  twitter-7:
+    <<: *twitter-headless
+    container_name: found-footy-prod-twitter-7
+    environment:
+      <<: *twitter-headless-env
+      TWITTER_INSTANCE_ID: "7"
+    profiles: ["scale"]
+
+  twitter-8:
+    <<: *twitter-headless
+    container_name: found-footy-prod-twitter-8
+    environment:
+      <<: *twitter-headless-env
+      TWITTER_INSTANCE_ID: "8"
+    profiles: ["scale"]
+
+  # ===========================================================================
+  # WORKER SERVICES (1-8) - Temporal workflow workers
+  # ===========================================================================
+  worker-1:
+    <<: *worker-common
+    container_name: found-footy-prod-worker-1
+    environment:
+      <<: *worker-env
+      WORKER_INSTANCE_ID: "1"
+
+  worker-2:
+    <<: *worker-common
+    container_name: found-footy-prod-worker-2
+    environment:
+      <<: *worker-env
+      WORKER_INSTANCE_ID: "2"
+
+  worker-3:
+    <<: *worker-common
+    container_name: found-footy-prod-worker-3
+    environment:
+      <<: *worker-env
+      WORKER_INSTANCE_ID: "3"
+    profiles: ["scale"]
+
+  worker-4:
+    <<: *worker-common
+    container_name: found-footy-prod-worker-4
+    environment:
+      <<: *worker-env
+      WORKER_INSTANCE_ID: "4"
+    profiles: ["scale"]
+
+  worker-5:
+    <<: *worker-common
+    container_name: found-footy-prod-worker-5
+    environment:
+      <<: *worker-env
+      WORKER_INSTANCE_ID: "5"
+    profiles: ["scale"]
+
+  worker-6:
+    <<: *worker-common
+    container_name: found-footy-prod-worker-6
+    environment:
+      <<: *worker-env
+      WORKER_INSTANCE_ID: "6"
+    profiles: ["scale"]
+
+  worker-7:
+    <<: *worker-common
+    container_name: found-footy-prod-worker-7
+    environment:
+      <<: *worker-env
+      WORKER_INSTANCE_ID: "7"
+    profiles: ["scale"]
+
+  worker-8:
+    <<: *worker-common
+    container_name: found-footy-prod-worker-8
+    environment:
+      <<: *worker-env
+      WORKER_INSTANCE_ID: "8"
+    profiles: ["scale"]
+
+  # ===========================================================================
+  # INFRASTRUCTURE SERVICES
+  # ===========================================================================
 
   # POSTGRESQL - Temporal metadata storage
   postgres:
@@ -72,6 +294,7 @@ services:
   mongo:
     image: mongo:7-jammy
     container_name: found-footy-prod-mongo
+    command: mongod --wiredTigerCacheSizeGB 0.25
     environment:
       MONGO_INITDB_ROOT_USERNAME: ffuser
       MONGO_INITDB_ROOT_PASSWORD: ffpass
@@ -90,16 +313,21 @@ services:
       - found-footy-prod
       - luv-prod
 
-  # MONGOKU - MongoDB web GUI (supports integer IDs)
-  mongoku:
-    image: huggingface/mongoku:latest
-    container_name: found-footy-prod-mongoku
+  # MONGO EXPRESS - Lightweight MongoDB web GUI
+  mongo-express:
+    image: mongo-express:latest
+    container_name: found-footy-prod-mongo-express
     ports:
-      - "3101:3100"  # Mongoku Web UI
+      - "3101:8081"
     environment:
-      MONGOKU_DEFAULT_HOST: mongodb://ffuser:ffpass@found-footy-prod-mongo:27017
-      MONGOKU_SERVER_ORIGIN: http://localhost:3101
-      MONGOKU_ALLOW_DELETE: "true"
+      ME_CONFIG_MONGODB_SERVER: found-footy-prod-mongo
+      ME_CONFIG_MONGODB_PORT: "27017"
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ffuser
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ffpass
+      ME_CONFIG_BASICAUTH: "false"
+      ME_CONFIG_OPTIONS_EDITORTHEME: "ambiance"
+      ME_CONFIG_REQUEST_SIZE: "100kb"
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
     depends_on:
       mongo:
         condition: service_healthy
@@ -163,54 +391,39 @@ services:
       - found-footy-prod
     restart: unless-stopped
 
-  # TEMPORAL WORKERS - Execute workflows (multiple replicas for parallelism)
-  # 
-  # Python's GIL limits each process to one core for CPU-bound work.
-  # Running multiple worker replicas lets us use more cores.
-  # 
-  # Temporal guarantees:
-  # - Each workflow ID runs on only ONE worker at a time
-  # - Task distribution is automatic across workers
-  # - Serialization (e.g., UploadWorkflow ID uniqueness) is enforced by Temporal Server
-  # 
-  # To scale: docker-compose up -d --scale worker=4
-  #
-  worker:
+  # ===========================================================================
+  # SCALER SERVICE (optional) - Auto-scales workers/twitter based on load
+  # ===========================================================================
+  scaler:
     build:
       context: .
       dockerfile: Dockerfile
-    # No container_name - allows multiple replicas with auto-generated names
-    env_file:
-      - .env
+    container_name: found-footy-prod-scaler
     environment:
       PYTHONPATH: /app
-      TEMPORAL_HOST: found-footy-prod-temporal:7233
       MONGODB_URI: mongodb://ffuser:ffpass@found-footy-prod-mongo:27017/found_footy?authSource=admin
-      S3_ENDPOINT_URL: http://found-footy-prod-minio:9000
-      S3_ACCESS_KEY: ffuser
-      S3_SECRET_KEY: ffpass--
-      S3_BUCKET_NAME: footy-videos
-      TWITTER_SESSION_URL: http://found-footy-prod-twitter:8888
-      FRONTEND_API_URL: http://vedanta-systems-prod-api:3001
-      LLAMA_URL: http://llama-chat:8080
-      FOOTY_TEMP_DIR: /tmp/found-footy  # Shared temp storage across workers
+      TEMPORAL_HOST: found-footy-prod-temporal:7233
+      COMPOSE_DIR: /home/vedanta/workspace/dev/found-footy
+      MIN_TWITTER_INSTANCES: "2"
+      MAX_TWITTER_INSTANCES: "8"
+      MIN_WORKER_INSTANCES: "2"
+      MAX_WORKER_INSTANCES: "8"
+      SCALE_CHECK_INTERVAL: "30"
     volumes:
-      - ~/.config/found-footy:/config  # Cookie backup (shared with twitter service)
-      - found-footy-prod-temp:/tmp/found-footy  # Shared temp for video downloads
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /home/vedanta/workspace/dev/found-footy:/workspace:ro
     networks:
       - found-footy-prod
-      - luv-prod  # Need luv-prod network to reach frontend API and llama-chat
     depends_on:
       - temporal
       - mongo
     restart: unless-stopped
-    deploy:
-      replicas: 4  # 4 worker processes - adjust based on workload
-      resources:
-        limits:
-          cpus: '2'      # Each worker gets up to 2 CPUs
-          memory: 4G     # Each worker gets up to 4GB RAM
-    command: python /app/src/worker.py
+    command: python /app/src/scaler/scaler_service.py
+    profiles: ["scaler"]
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
 
 volumes:
   found-footy-prod-postgres-data:
@@ -232,12 +445,14 @@ volumes:
     name: found-footy-prod-temp
     driver: local
 
+# =============================================================================
+# NETWORKS
+# =============================================================================
+
 networks:
-  # Internal network for this project
   found-footy-prod:
     name: found-footy-prod
     driver: bridge
   
-  # Shared network - frontend (vedanta-systems-prod) joins this to communicate
   luv-prod:
     external: true

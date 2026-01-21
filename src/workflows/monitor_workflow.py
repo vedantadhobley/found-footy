@@ -160,6 +160,7 @@ class MonitorWorkflow:
                 team_name = event_info["team_name"]
                 minute = event_info["minute"]
                 extra = event_info.get("extra")
+                first_seen = event_info.get("first_seen")
                 
                 # Build human-readable workflow ID
                 player_last = player_name.split()[-1] if player_name else "Unknown"
@@ -181,6 +182,9 @@ class MonitorWorkflow:
                         player_name=player_name,
                     ),
                     id=twitter_workflow_id,
+                    # IMPORTANT: Explicitly set task_queue to prevent inheritance issues
+                    # during workflow replay that could route to wrong/non-existent queues
+                    task_queue="found-footy",
                     # No execution_timeout - Twitter manages its own lifecycle
                     # Twitter runs ~10-12 minutes (alias lookup + 10 search attempts)
                     parent_close_policy=ParentClosePolicy.ABANDON,
@@ -190,6 +194,17 @@ class MonitorWorkflow:
                 )
                 
                 workflow.logger.info(f"🐦 Started TwitterWorkflow: {twitter_workflow_id}")
+                
+                # CRITICAL: Mark _monitor_complete=True AFTER TwitterWorkflow started successfully
+                # This prevents the race condition where timeout between setting complete
+                # and starting Twitter leaves the goal stuck forever.
+                first_seen_str = first_seen.isoformat() if first_seen else None
+                await workflow.execute_activity(
+                    monitor_activities.confirm_twitter_workflow_started,
+                    args=[fixture_id, event_id, first_seen_str],
+                    start_to_close_timeout=timedelta(seconds=5),
+                    retry_policy=RetryPolicy(maximum_attempts=3),
+                )
             
             # Check if fixture is finished and should be completed
             if fixture_finished:

@@ -113,8 +113,12 @@ async def setup_schedules(client: Client):
     # 30s gives faster debounce (1.5 min vs 3 min at 60s) while staying within API limits:
     # - 2 API calls per cycle (staging batch + active batch)
     # - 2880 cycles/day × 2 = 5,760 calls/day (Pro plan allows 7,500)
-    # NOTE: Using timestamp-based ID (Temporal adds suffix) to allow parallel runs
-    # for diagnosis. If overlapping occurs, investigate slow activities.
+    #
+    # OVERLAP POLICY: SKIP
+    # If a monitor takes longer than 30s (e.g., slow API response), the next
+    # scheduled trigger is skipped. This prevents race conditions from timeouts
+    # and ensures each monitor runs to completion. A 45s monitor means one skipped
+    # cycle, then the next starts at 60s - no big deal.
     monitor_schedule_id = "monitor-every-30s"
     try:
         monitor_handle = client.get_schedule_handle(monitor_schedule_id)
@@ -128,7 +132,9 @@ async def setup_schedules(client: Client):
                     MonitorWorkflow.run,
                     id="monitor-scheduled",  # Temporal adds timestamp suffix for unique IDs
                     task_queue="found-footy",
-                    execution_timeout=timedelta(seconds=25),  # Must complete within 25s (schedule is 30s)
+                    # NO execution_timeout - let monitor run to completion
+                    # If it takes 45s, the 30s scheduled one skips (SKIP overlap policy)
+                    # This prevents race conditions from timeouts killing workflows mid-execution
                 ),
                 spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=timedelta(seconds=30))]),
                 state=ScheduleState(
@@ -136,7 +142,7 @@ async def setup_schedules(client: Client):
                     note="Running every 30 seconds",
                 ),
                 policy=SchedulePolicy(
-                    overlap=ScheduleOverlapPolicy.SKIP,  # Skip if previous still running (shouldn't happen)
+                    overlap=ScheduleOverlapPolicy.SKIP,  # Skip if previous still running
                 ),
             ),
         )
@@ -206,6 +212,7 @@ async def main():
                 monitor.store_and_compare,
                 monitor.process_fixture_events,
                 monitor.sync_fixture_metadata,
+                monitor.confirm_twitter_workflow_started,
                 monitor.complete_fixture_if_ready,
                 monitor.notify_frontend_refresh,
                 # RAG activities (team alias lookup)

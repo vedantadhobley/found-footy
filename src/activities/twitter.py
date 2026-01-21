@@ -187,13 +187,38 @@ async def execute_twitter_search(
         RuntimeError: Non-200 response from service (including 503 auth required)
     """
     import asyncio
+    import random
     
-    session_url = os.getenv("TWITTER_SESSION_URL", "http://twitter:8888")
+    # Discover healthy Twitter instances dynamically
+    # Check all possible instances (1-8) and use healthy ones
+    all_twitter_urls = [
+        f"http://found-footy-prod-twitter-{i}:8888"
+        for i in range(1, 9)
+    ]
+    
+    # Quick health check to find running instances (2s timeout)
+    healthy_urls = []
+    for url in all_twitter_urls:
+        try:
+            resp = requests.get(f"{url}/health", timeout=2)
+            if resp.status_code == 200:
+                healthy_urls.append(url)
+        except:
+            pass  # Instance not running
+    
+    # Fallback to first 2 if none respond (shouldn't happen)
+    if not healthy_urls:
+        healthy_urls = all_twitter_urls[:2]
+    
+    # Random selection for load distribution
+    session_url = random.choice(healthy_urls)
+    
     exclude_urls = existing_video_urls or []
     
     activity.logger.info(
         f"🐦 [TWITTER] execute_twitter_search | query='{twitter_search}' | "
-        f"max_age={max_age_minutes}min | excluding={len(exclude_urls)} URLs"
+        f"max_age={max_age_minutes}min | excluding={len(exclude_urls)} URLs | "
+        f"instance={session_url} | healthy={len(healthy_urls)}"
     )
     
     # Send heartbeat before starting the request

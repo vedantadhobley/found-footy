@@ -388,6 +388,7 @@ class TwitterWorkflow:
                         # Increase task timeout from 10s to 60s - large histories need more
                         # time to replay, otherwise we get "Task not found" errors
                         task_timeout=timedelta(seconds=60),
+                        task_queue="found-footy",  # Explicit queue - don't inherit from parent
                     )
                     
                     workflow.logger.info(

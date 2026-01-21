@@ -31,8 +31,11 @@ This decoupling allows:
 │  │   Each 30s (Monitor poll):                                             │   │
 │  │     IF event seen: increment _monitor_count                            │   │
 │  │     IF _monitor_count >= 3:                                            │   │
-│  │       → set _monitor_complete = TRUE                                   │   │
-│  │       → trigger TwitterWorkflow (ONCE, fire-and-forget)                │   │
+│  │       → start_child_workflow(TwitterWorkflow) [fire-and-forget]        │   │
+│  │       → THEN set _monitor_complete = TRUE (after Twitter starts!)      │   │
+│  │                                                                        │   │
+│  │   RECOVERY: If count=3 AND monitor_complete=FALSE (stuck goal):        │   │
+│  │       → retry Twitter start on next poll                               │   │
 │  │                                                                        │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                              │                                               │
@@ -80,7 +83,7 @@ This decoupling allows:
 | Field | Set By | When | Purpose |
 |-------|--------|------|---------|
 | `_monitor_count` | Monitor | Each poll when event seen | Debounce counter (0=unknown player, 1-3=known) |
-| `_monitor_complete` | Monitor | When `_monitor_count >= 3` | Debounce finished |
+| `_monitor_complete` | Monitor | AFTER TwitterWorkflow starts successfully | Debounce finished, Twitter triggered |
 | `_twitter_aliases` | TwitterWorkflow | After alias resolution | Team search variations |
 | `_twitter_count` | DownloadWorkflow | When download completes (END of attempt) | Tracks completed attempts (1-10) |
 | `_twitter_complete` | DownloadWorkflow | When count reaches 10 | All attempts finished |
@@ -92,10 +95,12 @@ This decoupling allows:
 ### MonitorWorkflow (Scheduled Every 30 Seconds)
 - Polls active fixtures from API
 - Increments `_monitor_count` for seen events
-- Sets `_monitor_complete = TRUE` when count reaches 3
-- **Triggers TwitterWorkflow ONCE** (fire-and-forget)
+- When count reaches 3: **Triggers TwitterWorkflow** (fire-and-forget)
+- **THEN** sets `_monitor_complete = TRUE` (after Twitter starts successfully)
+- Includes **CASE 2 recovery**: if `count=3 AND monitor_complete=FALSE` (stuck), retries Twitter start
 - Checks fixture completion eligibility
 - **Does NOT manage Twitter retries** (that's TwitterWorkflow's job)
+- **NO execution timeout** — uses SKIP overlap policy (if still running, next scheduled is skipped)
 
 ### TwitterWorkflow (Triggered by Monitor, ~10 min)
 - **Resolves aliases at start**: cache lookup OR full RAG pipeline

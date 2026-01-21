@@ -69,10 +69,11 @@ services:
       - luv-dev
 
   # MONGODB - application data storage (standalone, no replica set needed)
+  # Tuned for low CPU: 256MB cache (default uses 50% of RAM)
   mongo:
     image: mongo:7-jammy
     container_name: found-footy-dev-mongo
-    # No port mapping - accessed via Mongoku dashboard
+    command: mongod --wiredTigerCacheSizeGB 0.25
     environment:
       MONGO_INITDB_ROOT_USERNAME: ffuser
       MONGO_INITDB_ROOT_PASSWORD: ffpass

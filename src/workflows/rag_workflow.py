@@ -194,6 +194,7 @@ class RAGWorkflow:
                 ),
                 id=twitter_workflow_id,
                 parent_close_policy=ParentClosePolicy.ABANDON,
+                task_queue="found-footy",  # Explicit queue - don't inherit from parent
                 # No execution_timeout - Twitter manages its own lifecycle
             )
             workflow.logger.info(

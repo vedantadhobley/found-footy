@@ -63,10 +63,12 @@ class TwitterSessionManager:
         self.last_activity = time.time()  # Initialize to now, not 0!
         self.startup_complete = False
         self.manual_firefox_pid = None
+        self.busy = False  # True when a search is in progress
         self._initialized = True
         
-        # Profile directory shared between manual Firefox and Selenium
-        self.profile_dir = "/data/firefox_profile"
+        # Profile directory - use instance-specific path for parallel instances
+        instance_id = os.environ.get('TWITTER_INSTANCE_ID', '1')
+        self.profile_dir = f"/data/firefox_profile_{instance_id}"
         
         # Backup cookie file - configurable via env var
         default_backup_path = os.path.expanduser("~/.config/found-footy/twitter_cookies.json")
@@ -387,13 +389,32 @@ Steps:
         2. If browser dead/missing → try restore from cookie backup
         3. If cookies fail → we need manual login (returns False)
         
+        OPTIMIZATION: If we've searched successfully in the last 60 seconds,
+        skip the full verification (which loads x.com/home) and just check
+        the browser is alive. This saves ~3-4 seconds per search!
+        
         Returns:
             True if authenticated and ready for search
             False if manual login required (caller should handle gracefully)
         """
+        # OPTIMIZATION: Skip full verify if we were active recently
+        # (less than 60 seconds since last successful activity)
+        if self.driver and self.authenticated:
+            time_since_activity = time.time() - self.last_activity
+            if time_since_activity < 60:
+                try:
+                    # Quick check - is browser alive? (just check we can get URL)
+                    _ = self.driver.current_url
+                    # Browser is alive and we were active recently - trust it
+                    return True
+                except WebDriverException:
+                    print("   ⚠️  Browser session died, will try cookie restore...", flush=True)
+                    self.driver = None
+                    self.authenticated = False
+        
         print("🔐 Ensuring Twitter authentication...", flush=True)
         
-        # Step 1: Check if existing session is valid
+        # Step 1: Check if existing session is valid (full verification)
         if self.driver and self.authenticated:
             print("   📋 Checking existing session...", flush=True)
             try:
@@ -461,6 +482,19 @@ Steps:
         Raises:
             TwitterAuthError: If not authenticated and can't auto-restore
         """
+        from datetime import datetime, timezone
+        
+        # Mark as busy for scaler
+        self.busy = True
+        
+        try:
+            return self._do_search(search_query, max_results, exclude_urls, match_date, max_age_minutes)
+        finally:
+            # Always mark as not busy when done
+            self.busy = False
+
+    def _do_search(self, search_query: str, max_results: int = None, exclude_urls: List[str] = None, match_date: str = None, max_age_minutes: int = 5) -> List[Dict[str, Any]]:
+        """Internal search implementation."""
         from datetime import datetime, timezone
         
         if exclude_urls is None:
@@ -702,6 +736,9 @@ Steps:
                     print(f"   📜 Scroll #{scroll_count}, {len(discovered_videos)} videos found so far...", flush=True)
             
             print(f"✅ Search complete - {len(discovered_videos)} videos found", flush=True)
+            
+            # Update last_activity after successful search
+            self.last_activity = time.time()
             
             # Backup cookies after successful search (keeps them fresh)
             self._backup_cookies_to_host()

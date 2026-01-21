@@ -368,7 +368,35 @@ flowchart TB
     FIREFOX --> VNC
 ```
 
-**Multi-Worker Design**: 4 worker replicas share the workload. All workers mount a shared temp volume at `/tmp/found-footy` so videos downloaded by any worker can be processed by any other worker.
+**Multi-Worker Design**: Workers share the workload via Temporal's task queue. All workers mount a shared temp volume at `/tmp/found-footy` so videos downloaded by any worker can be processed by any other worker. Workflows are sticky to one worker (to avoid history replay), but activities and child workflows are distributed across all available workers.
+
+### Scaling (Production)
+
+| Service | Default | Max | Notes |
+|---------|---------|-----|-------|
+| Workers | 2 | 8 | Temporal distributes work automatically |
+| Twitter | 2 | 8 | twitter-1 has VNC, twitter-2+ are headless |
+
+```bash
+# Build shared images
+docker compose build worker   # Builds image for all worker-N
+docker compose build twitter  # Builds image for all twitter-N
+
+# Start minimum (default)
+docker compose up -d
+
+# Scale up specific instances
+docker compose up -d twitter-3 worker-3
+
+# Scale down (doesn't lose in-flight work)
+docker compose stop twitter-3
+```
+
+**Twitter load balancing**: Each search randomly selects from healthy instances:
+```python
+healthy_urls = [url for url in all_twitter_urls if health_check(url)]
+session_url = random.choice(healthy_urls)
+```
 
 ### Port Allocation
 
@@ -377,7 +405,7 @@ flowchart TB
 | Temporal UI | 4100 | 3100 | Workflow monitoring |
 | Mongoku | 4101 | 3101 | MongoDB GUI |
 | MinIO Console | 4102 | 3102 | S3 management |
-| Twitter VNC | 4103 | 3103 | Browser access |
+| Twitter-1 VNC | 4103 | 3103 | Browser access (only instance with VNC) |
 | Temporal gRPC | 7233 | 7233 | Workflow API |
 
 ### Internal Services (Docker network only)

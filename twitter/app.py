@@ -24,10 +24,51 @@ sys.stderr.reconfigure(line_buffering=True)
 config = TwitterConfig()
 twitter_session = TwitterSessionManager(config)
 
+# Instance identification for registry
+import os
+import socket
+INSTANCE_ID = os.getenv("TWITTER_INSTANCE_ID", socket.gethostname())
+SERVICE_PORT = os.getenv("TWITTER_SERVICE_PORT", "8888")
+CONTAINER_NAME = os.getenv("HOSTNAME", f"twitter-{INSTANCE_ID}")
+
+
+def get_instance_url() -> str:
+    """Get the URL other services should use to reach this instance."""
+    # In Docker, use container name for internal communication
+    return f"http://{CONTAINER_NAME}:{SERVICE_PORT}"
+
+
+def register_with_registry():
+    """Register this instance with the service registry."""
+    try:
+        from src.scaler.registry import registry
+        url = get_instance_url()
+        registry.register(INSTANCE_ID, url)
+        print(f"✅ Registered with registry: {INSTANCE_ID} at {url}", flush=True)
+    except Exception as e:
+        print(f"⚠️ Could not register with registry (non-fatal): {e}", flush=True)
+
+
+def heartbeat_loop():
+    """Send periodic heartbeat to registry."""
+    import time
+    while True:
+        try:
+            from src.scaler.registry import registry
+            registry.heartbeat(INSTANCE_ID)
+        except Exception:
+            pass
+        time.sleep(10)  # Heartbeat every 10 seconds
+
 
 def background_startup():
     """Run startup in background thread so FastAPI can start immediately"""
     twitter_session.startup()
+    # Register with registry after startup
+    register_with_registry()
+    # Start heartbeat in another thread
+    heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+    heartbeat_thread.start()
 
 
 @asynccontextmanager
@@ -36,9 +77,14 @@ async def lifespan(app: FastAPI):
     # Start browser auth in background thread
     startup_thread = threading.Thread(target=background_startup, daemon=True)
     startup_thread.start()
-    print("🚀 FastAPI started - browser auth running in background", flush=True)
+    print(f"🚀 FastAPI started - instance {INSTANCE_ID} - browser auth running in background", flush=True)
     yield
-    # Shutdown
+    # Shutdown - unregister from registry
+    try:
+        from src.scaler.registry import registry
+        registry.unregister(INSTANCE_ID)
+    except Exception:
+        pass
     twitter_session.cleanup()
 
 
@@ -107,6 +153,21 @@ async def health_check():
                 "message": "Not authenticated - open http://localhost:4103 to login via VNC"
             }
         )
+
+
+@app.get("/status")
+async def get_status():
+    """Get detailed status including whether instance is busy.
+    
+    Used by scaler to determine if safe to scale down.
+    """
+    return {
+        "instance_id": INSTANCE_ID,
+        "healthy": twitter_session.startup_complete and twitter_session.authenticated,
+        "authenticated": twitter_session.authenticated,
+        "busy": getattr(twitter_session, 'busy', False),
+        "search_in_progress": getattr(twitter_session, 'busy', False),
+    }
 
 
 @app.post("/search")
