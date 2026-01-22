@@ -17,8 +17,16 @@ from temporalio import activity
 from typing import Dict, List, Any, Optional
 import os
 import requests
+import itertools
 
 from src.data.models import EventFields
+
+
+# Round-robin counter for distributing requests across Twitter instances
+# Using itertools.cycle for thread-safe round-robin selection
+_twitter_instance_cycle = None
+_twitter_healthy_cache = []
+_twitter_cache_time = 0
 
 
 # =============================================================================
@@ -187,31 +195,49 @@ async def execute_twitter_search(
         RuntimeError: Non-200 response from service (including 503 auth required)
     """
     import asyncio
-    import random
+    import time
+    
+    global _twitter_instance_cycle, _twitter_healthy_cache, _twitter_cache_time
     
     # Discover healthy Twitter instances dynamically
     # Check all possible instances (1-8) and use healthy ones
-    all_twitter_urls = [
-        f"http://found-footy-prod-twitter-{i}:8888"
-        for i in range(1, 9)
-    ]
+    # Cache health check results for 30 seconds to reduce overhead
+    current_time = time.time()
     
-    # Quick health check to find running instances (2s timeout)
-    healthy_urls = []
-    for url in all_twitter_urls:
-        try:
-            resp = requests.get(f"{url}/health", timeout=2)
-            if resp.status_code == 200:
-                healthy_urls.append(url)
-        except:
-            pass  # Instance not running
+    if current_time - _twitter_cache_time > 30 or not _twitter_healthy_cache:
+        all_twitter_urls = [
+            f"http://found-footy-prod-twitter-{i}:8888"
+            for i in range(1, 9)
+        ]
+        
+        # Quick health check to find running instances (2s timeout)
+        healthy_urls = []
+        for url in all_twitter_urls:
+            try:
+                resp = requests.get(f"{url}/health", timeout=2)
+                if resp.status_code == 200:
+                    healthy_urls.append(url)
+            except:
+                pass  # Instance not running
+        
+        # Fallback to first 2 if none respond (shouldn't happen)
+        if not healthy_urls:
+            healthy_urls = all_twitter_urls[:2]
+        
+        # Update cache and reset round-robin cycle if instances changed
+        if set(healthy_urls) != set(_twitter_healthy_cache):
+            _twitter_instance_cycle = itertools.cycle(healthy_urls)
+            activity.logger.info(f"🔄 [TWITTER] Instance pool changed: {len(healthy_urls)} instances")
+        
+        _twitter_healthy_cache = healthy_urls
+        _twitter_cache_time = current_time
+    else:
+        healthy_urls = _twitter_healthy_cache
     
-    # Fallback to first 2 if none respond (shouldn't happen)
-    if not healthy_urls:
-        healthy_urls = all_twitter_urls[:2]
-    
-    # Random selection for load distribution
-    session_url = random.choice(healthy_urls)
+    # Round-robin selection (guaranteed even distribution)
+    if _twitter_instance_cycle is None:
+        _twitter_instance_cycle = itertools.cycle(healthy_urls)
+    session_url = next(_twitter_instance_cycle)
     
     exclude_urls = existing_video_urls or []
     

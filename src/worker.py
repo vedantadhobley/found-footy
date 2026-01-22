@@ -134,13 +134,13 @@ async def setup_schedules(client: Client):
             id="monitor-scheduled",  # Temporal adds timestamp suffix for unique IDs
             task_queue="found-footy",
             # NO execution_timeout - let monitor run to completion
-            # If it takes 45s, the 30s scheduled one skips (SKIP overlap policy)
+            # If it takes 90s due to slow API, the 30s scheduled one skips (SKIP overlap policy)
             # This prevents race conditions from timeouts killing workflows mid-execution
             #
             # task_timeout: How long a workflow task (replay + new work) can take
-            # Default is 10s which is too short when processing many fixtures in parallel
-            # 60s allows for replay of large histories + parallel activity scheduling
-            task_timeout=timedelta(seconds=60),
+            # During CL peak, API can take 20-35s per call, monitor can take 90-120s total
+            # Set to 180s to avoid spurious "Task not found" warnings from premature retries
+            task_timeout=timedelta(seconds=180),
         ),
         spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=timedelta(seconds=30))]),
         state=ScheduleState(

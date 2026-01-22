@@ -4,32 +4,37 @@
 #   3100: Temporal UI
 #   3101: MongoDB Compass (web GUI)
 #   3102: MinIO Console
-#   3103: Twitter-1 VNC (only instance with GUI for debugging/re-auth)
+#   3103: Twitter VNC (manual service for cookie re-auth)
 #
 # Internal ports (not exposed):
 #   - postgres:5432 (Temporal metadata)
 #   - mongo:27017 (Application data)
 #   - minio:9000 (S3 storage)
 #   - temporal:7233 (gRPC)
-#   - twitter-N:8888 (API)
+#   - twitter instances:8888 (API)
 #
 # External services (on luv-prod network):
 #   - llama-chat:8080 (LLM API - llama.cpp chat+vision)
 #
-# SCALING:
-#   - Twitter browsers: min 2, max 8 (twitter-1 through twitter-8)
-#     - twitter-1: VNC enabled (port 3103) for debugging/re-auth
-#     - twitter-2+: Headless (no VNC) for scalability
-#   - Workers: min 2, max 8 (worker-1 through worker-8)
-#   - Scaler service monitors load and starts/stops instances
-#   - Start minimum: docker compose up -d
-#   - Scale up: docker compose up -d twitter-3
-#   - Scale down: docker compose stop twitter-3
+# SCALING (using --scale):
+#   - Twitter browsers: headless, scalable from 2-8
+#   - Workers: scalable from 2-8
+#   - Scaler service monitors load and uses --scale to adjust
 #
-# BUILD SHORTCUTS:
-#   - docker compose build worker - Builds worker image (used by all worker-N)
-#   - docker compose build twitter - Builds twitter image (used by all twitter-N)
-#   - docker compose up -d worker-1 worker-2 - Restarts running workers with new image
+# COMMON OPERATIONS:
+#   Start with defaults (2 workers, 2 twitter):
+#     docker compose up -d
+#
+#   Rebuild and restart everything:
+#     docker compose up -d --build
+#
+#   Scale manually:
+#     docker compose up -d --scale worker=4 --scale twitter=4
+#
+#   Cookie re-auth (when cookies expire):
+#     docker compose up -d twitter-vnc
+#     # Open http://localhost:3103 and login
+#     docker compose stop twitter-vnc
 
 name: found-footy-prod
 
@@ -52,7 +57,7 @@ x-twitter-base: &twitter-base
     - found-footy-prod
   restart: unless-stopped
 
-# Twitter with VNC (for twitter-1 only - debugging/re-auth)
+# Twitter with VNC (for twitter-vnc only - cookie re-auth)
 x-twitter-vnc: &twitter-vnc
   <<: *twitter-base
   environment: &twitter-vnc-env
@@ -65,7 +70,7 @@ x-twitter-vnc: &twitter-vnc
     DISPLAY: ":99"
   command: bash /app/twitter/start_with_vnc.sh
 
-# Twitter headless (for twitter-2+ - scalable, no GUI)
+# Twitter headless (for main twitter service - scalable)
 x-twitter-headless: &twitter-headless
   <<: *twitter-base
   environment: &twitter-headless-env
@@ -118,158 +123,39 @@ x-worker-common: &worker-common
 
 services:
   # ===========================================================================
-  # BUILD-ONLY SERVICES (for docker compose build worker/twitter)
+  # SCALABLE SERVICES (use --scale to adjust)
   # ===========================================================================
   
-  # Build-only: docker compose build twitter builds image used by all twitter-N
+  # Twitter browser service - headless, scalable
+  # Usage: docker compose up -d --scale twitter=4
+  # Container names: found-footy-prod-twitter-1, found-footy-prod-twitter-2, etc.
   twitter:
-    <<: *twitter-base
-    profiles: ["build-only"]
+    <<: *twitter-headless
+    deploy:
+      replicas: 2
 
-  # Build-only: docker compose build worker builds image used by all worker-N
+  # Worker service - scalable
+  # Usage: docker compose up -d --scale worker=4
+  # Container names: found-footy-prod-worker-1, found-footy-prod-worker-2, etc.
   worker:
     <<: *worker-common
-    profiles: ["build-only"]
+    deploy:
+      replicas: 2
 
   # ===========================================================================
-  # TWITTER SERVICES (1-8) - Firefox browser instances for Twitter scraping
-  # ALL managed by scaler service - use profiles: ["managed"]
-  # twitter-1: VNC enabled (port 3103) for debugging/re-auth
-  # twitter-2+: Headless (no VNC, no ports) for scalability
+  # MANUAL SERVICES
   # ===========================================================================
-  twitter-1:
+  
+  # Twitter VNC - Manual service for cookie re-auth when cookies expire
+  # Usage: docker compose up -d twitter-vnc
+  #        Open http://localhost:3103 and login to Twitter
+  #        docker compose stop twitter-vnc
+  twitter-vnc:
     <<: *twitter-vnc
-    container_name: found-footy-prod-twitter-1
-    profiles: ["managed"]
+    container_name: found-footy-prod-twitter-vnc
+    profiles: ["vnc"]
     ports:
       - "3103:6080"
-    environment:
-      <<: *twitter-vnc-env
-      TWITTER_INSTANCE_ID: "1"
-
-  twitter-2:
-    <<: *twitter-headless
-    container_name: found-footy-prod-twitter-2
-    profiles: ["managed"]
-    environment:
-      <<: *twitter-headless-env
-      TWITTER_INSTANCE_ID: "2"
-
-  twitter-3:
-    <<: *twitter-headless
-    container_name: found-footy-prod-twitter-3
-    profiles: ["managed"]
-    environment:
-      <<: *twitter-headless-env
-      TWITTER_INSTANCE_ID: "3"
-
-  twitter-4:
-    <<: *twitter-headless
-    container_name: found-footy-prod-twitter-4
-    profiles: ["managed"]
-    environment:
-      <<: *twitter-headless-env
-      TWITTER_INSTANCE_ID: "4"
-
-  twitter-5:
-    <<: *twitter-headless
-    container_name: found-footy-prod-twitter-5
-    profiles: ["managed"]
-    environment:
-      <<: *twitter-headless-env
-      TWITTER_INSTANCE_ID: "5"
-
-  twitter-6:
-    <<: *twitter-headless
-    container_name: found-footy-prod-twitter-6
-    profiles: ["managed"]
-    environment:
-      <<: *twitter-headless-env
-      TWITTER_INSTANCE_ID: "6"
-
-  twitter-7:
-    <<: *twitter-headless
-    container_name: found-footy-prod-twitter-7
-    profiles: ["managed"]
-    environment:
-      <<: *twitter-headless-env
-      TWITTER_INSTANCE_ID: "7"
-
-  twitter-8:
-    <<: *twitter-headless
-    container_name: found-footy-prod-twitter-8
-    profiles: ["managed"]
-    environment:
-      <<: *twitter-headless-env
-      TWITTER_INSTANCE_ID: "8"
-
-  # ===========================================================================
-  # WORKER SERVICES (1-8) - Temporal workflow workers
-  # ALL managed by scaler service - use profiles: ["managed"]
-  # ===========================================================================
-  worker-1:
-    <<: *worker-common
-    container_name: found-footy-prod-worker-1
-    profiles: ["managed"]
-    environment:
-      <<: *worker-env
-      WORKER_INSTANCE_ID: "1"
-
-  worker-2:
-    <<: *worker-common
-    container_name: found-footy-prod-worker-2
-    profiles: ["managed"]
-    environment:
-      <<: *worker-env
-      WORKER_INSTANCE_ID: "2"
-
-  worker-3:
-    <<: *worker-common
-    container_name: found-footy-prod-worker-3
-    profiles: ["managed"]
-    environment:
-      <<: *worker-env
-      WORKER_INSTANCE_ID: "3"
-
-  worker-4:
-    <<: *worker-common
-    container_name: found-footy-prod-worker-4
-    profiles: ["managed"]
-    environment:
-      <<: *worker-env
-      WORKER_INSTANCE_ID: "4"
-
-  worker-5:
-    <<: *worker-common
-    container_name: found-footy-prod-worker-5
-    profiles: ["managed"]
-    environment:
-      <<: *worker-env
-      WORKER_INSTANCE_ID: "5"
-
-  worker-6:
-    <<: *worker-common
-    container_name: found-footy-prod-worker-6
-    profiles: ["managed"]
-    environment:
-      <<: *worker-env
-      WORKER_INSTANCE_ID: "6"
-
-  worker-7:
-    <<: *worker-common
-    container_name: found-footy-prod-worker-7
-    profiles: ["managed"]
-    environment:
-      <<: *worker-env
-      WORKER_INSTANCE_ID: "7"
-
-  worker-8:
-    <<: *worker-common
-    container_name: found-footy-prod-worker-8
-    profiles: ["managed"]
-    environment:
-      <<: *worker-env
-      WORKER_INSTANCE_ID: "8"
 
   # ===========================================================================
   # INFRASTRUCTURE SERVICES
@@ -399,8 +285,7 @@ services:
 
   # ===========================================================================
   # SCALER SERVICE - Auto-scales workers/twitter based on Temporal task queue depth
-  # Uses python-on-whales for Docker Compose control + Temporal metrics API
-  # Starts automatically and manages all worker-N and twitter-N services
+  # Uses --scale to adjust worker and twitter replicas
   # ===========================================================================
   scaler:
     build:
@@ -410,6 +295,7 @@ services:
     environment:
       PYTHONPATH: /app
       TEMPORAL_HOST: found-footy-prod-temporal:7233
+      MONGODB_URI: mongodb://ffuser:ffpass@found-footy-prod-mongo:27017/found_footy?authSource=admin
       COMPOSE_FILE: /workspace/docker-compose.yml
       # Scaling thresholds
       MIN_INSTANCES: "2"

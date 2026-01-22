@@ -268,49 +268,42 @@ class TwitterWorkflow:
                 match_date = ""
             
             # =================================================================
-            # Run searches for each alias, collect all videos
+            # Build single search query with OR operator for all aliases
+            # Twitter supports: "player (alias1 OR alias2 OR alias3)"
             # =================================================================
-            all_videos = []
-            seen_urls_this_batch = set()
+            if len(team_aliases) > 1:
+                # Multiple aliases: use OR operator
+                aliases_or = " OR ".join(team_aliases)
+                search_query = f"{player_search} ({aliases_or})"
+            else:
+                # Single alias: simple query
+                search_query = f"{player_search} {team_aliases[0]}"
             
-            for alias in team_aliases:
-                search_query = f"{player_search} {alias}"
-                workflow.logger.info(
-                    f"🔍 [TWITTER] Searching | query='{search_query}' | "
-                    f"excluding={len(existing_urls) + len(seen_urls_this_batch)} URLs"
+            workflow.logger.info(
+                f"🔍 [TWITTER] Search | query='{search_query}' | excluding={len(existing_urls)} URLs"
+            )
+            
+            # Execute single search with combined query
+            all_videos = []
+            try:
+                search_result = await workflow.execute_activity(
+                    twitter_activities.execute_twitter_search,
+                    args=[search_query, 5, list(existing_urls), match_date, 3],
+                    start_to_close_timeout=timedelta(seconds=60),
+                    retry_policy=RetryPolicy(
+                        maximum_attempts=3,
+                        initial_interval=timedelta(seconds=10),
+                        backoff_coefficient=1.5,
+                    ),
                 )
-                
-                try:
-                    # Search with 3-minute window (fresher videos for more frequent searches)
-                    search_result = await workflow.execute_activity(
-                        twitter_activities.execute_twitter_search,
-                        args=[search_query, 5, list(existing_urls) + list(seen_urls_this_batch), match_date, 3],
-                        start_to_close_timeout=timedelta(seconds=60),  # Actual searches take ~6s each
-                        retry_policy=RetryPolicy(
-                            maximum_attempts=3,
-                            initial_interval=timedelta(seconds=10),
-                            backoff_coefficient=1.5,
-                        ),
-                    )
-                    
-                    videos = search_result.get("videos", [])
-                    workflow.logger.info(
-                        f"✅ [TWITTER] Search complete | query='{search_query}' | found={len(videos)} videos"
-                    )
-                    
-                    # Dedupe within this batch (by URL)
-                    for video in videos:
-                        url = video.get("video_page_url") or video.get("url", "")
-                        if url and url not in seen_urls_this_batch:
-                            seen_urls_this_batch.add(url)
-                            all_videos.append(video)
-                            
-                except Exception as e:
-                    workflow.logger.warning(
-                        f"⚠️ [TWITTER] Search FAILED | query='{search_query}' | error={e} | "
-                        f"Continuing with other aliases"
-                    )
-                    continue
+                all_videos = search_result.get("videos", [])
+                workflow.logger.info(
+                    f"✅ [TWITTER] Search complete | query='{search_query}' | found={len(all_videos)} videos"
+                )
+            except Exception as e:
+                workflow.logger.warning(
+                    f"⚠️ [TWITTER] Search FAILED | query='{search_query}' | error={e}"
+                )
             
             video_count = len(all_videos)
             total_videos_found += video_count

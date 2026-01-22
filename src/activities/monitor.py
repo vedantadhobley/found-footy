@@ -16,6 +16,7 @@ See src/data/models.py for data model documentation.
 from temporalio import activity
 from typing import Dict, List, Any
 from datetime import datetime, timezone
+import os
 
 from src.data.models import EventFields, create_new_enhanced_event
 
@@ -597,22 +598,46 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
         monitor_complete = active_event.get(EventFields.MONITOR_COMPLETE, False)
         
         # =====================================================================
-        # CASE 1: _monitor_complete = TRUE -> Already triggered workflows
+        # CASE 1: _monitor_complete = TRUE -> Check if Twitter needs restart
         # =====================================================================
-        # Still increment count (up to 3) to maintain stability score,
-        # but don't re-trigger downstream workflows.
+        # If monitor is complete but Twitter is not, check if Twitter workflow
+        # is actually running. If not, we need to restart it.
         if monitor_complete:
-            if current_count < 3:
-                # Recovering from a decrement - bump back up
-                new_count_val = current_count + 1
-                # Get live event to sync any API data changes (assist, minute, etc.)
-                live_event = next((e for e in live_events if e.get(EventFields.EVENT_ID) == event_id), None)
-                store.update_event_stable_count(fixture_id, event_id, new_count_val, live_event)
-                activity.logger.info(
-                    f"📈 [MONITOR] RECOVERY | event={event_id} | "
-                    f"count={current_count}→{new_count_val} | monitor_complete=True"
-                )
-            # If already at 3, nothing to do
+            twitter_complete = active_event.get(EventFields.TWITTER_COMPLETE, False)
+            
+            # CASE 1A: Twitter also complete - nothing to do, just sync counts
+            if twitter_complete:
+                if current_count < 3:
+                    # Recovering from a decrement - bump back up
+                    new_count_val = current_count + 1
+                    live_event = next((e for e in live_events if e.get(EventFields.EVENT_ID) == event_id), None)
+                    store.update_event_stable_count(fixture_id, event_id, new_count_val, live_event)
+                    activity.logger.info(
+                        f"📈 [MONITOR] RECOVERY | event={event_id} | "
+                        f"count={current_count}→{new_count_val} | monitor_complete=True"
+                    )
+                continue
+            
+            # CASE 1B: Monitor complete but Twitter NOT complete - restart Twitter!
+            # This happens when Twitter workflow was terminated mid-execution
+            twitter_count = active_event.get(EventFields.TWITTER_COUNT, 0)
+            live_event = next((e for e in live_events if e.get(EventFields.EVENT_ID) == event_id), None)
+            if live_event:
+                player_name = live_event.get("player", {}).get("name")
+                if player_name:
+                    twitter_triggered.append({
+                        "event_id": event_id,
+                        "player_name": player_name,
+                        "team_id": live_event.get("team", {}).get("id"),
+                        "team_name": live_event.get("team", {}).get("name", "Unknown"),
+                        "minute": live_event.get("time", {}).get("elapsed"),
+                        "extra": live_event.get("time", {}).get("extra"),
+                        "first_seen": active_event.get(EventFields.FIRST_SEEN),
+                    })
+                    activity.logger.warning(
+                        f"🔄 [MONITOR] RESTART TWITTER | event={event_id} | "
+                        f"monitor_complete=True | twitter_complete=False | twitter_count={twitter_count}"
+                    )
             continue
         
         # =====================================================================
@@ -786,6 +811,71 @@ async def confirm_twitter_workflow_started(fixture_id: int, event_id: str, first
             f"❌ [MONITOR] Failed to confirm Twitter start | event={event_id} | error={e}"
         )
         return False
+
+
+@activity.defn
+async def check_twitter_workflow_running(workflow_id: str) -> Dict[str, Any]:
+    """
+    Check if a Twitter workflow with the given ID is currently running or completed.
+    
+    This is used before attempting to restart a Twitter workflow to avoid:
+    1. Starting duplicates when one is already running
+    2. Restarting completed workflows unnecessarily
+    
+    Args:
+        workflow_id: The Twitter workflow ID (e.g., "twitter-Liverpool-Gakpo-90min-...")
+    
+    Returns:
+        Dict with:
+        - exists: bool - whether workflow exists
+        - running: bool - whether workflow is currently running
+        - status: str - workflow status (RUNNING, COMPLETED, FAILED, etc.)
+    """
+    from temporalio.client import Client, WorkflowExecutionStatus
+    from temporalio.service import RPCError
+    
+    temporal_host = os.getenv("TEMPORAL_HOST", "localhost:7233")
+    
+    try:
+        client = await Client.connect(temporal_host)
+        handle = client.get_workflow_handle(workflow_id)
+        desc = await handle.describe()
+        
+        status_name = desc.status.name if desc.status else "UNKNOWN"
+        is_running = desc.status == WorkflowExecutionStatus.RUNNING
+        
+        activity.logger.info(
+            f"🔍 [MONITOR] Workflow check | id={workflow_id} | status={status_name} | running={is_running}"
+        )
+        
+        return {
+            "exists": True,
+            "running": is_running,
+            "status": status_name,
+        }
+    except RPCError as e:
+        if "not found" in str(e).lower():
+            activity.logger.info(
+                f"🔍 [MONITOR] Workflow check | id={workflow_id} | NOT_FOUND"
+            )
+            return {
+                "exists": False,
+                "running": False,
+                "status": "NOT_FOUND",
+            }
+        activity.logger.warning(f"⚠️ [MONITOR] Workflow check error | id={workflow_id} | error={e}")
+        return {
+            "exists": False,
+            "running": False,
+            "status": "ERROR",
+        }
+    except Exception as e:
+        activity.logger.warning(f"⚠️ [MONITOR] Workflow check error | id={workflow_id} | error={e}")
+        return {
+            "exists": False,
+            "running": False,
+            "status": "ERROR",
+        }
 
 
 @activity.defn

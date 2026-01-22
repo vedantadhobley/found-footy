@@ -12,7 +12,7 @@ Scaling Logic:
   - Scale down when: active_goals < instances (with cooldown)
 - Min: 2, Max: 8 for both workers and Twitter
 
-Uses python-on-whales for clean Docker Compose integration.
+Uses --scale flag for clean Docker Compose scaling.
 """
 
 import asyncio
@@ -38,9 +38,9 @@ MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://ffuser:ffpass@found-footy-prod
 TASK_QUEUE = "found-footy"
 
 # Scaling thresholds
-SCALE_UP_THRESHOLD = 5      # Workers: Scale up when > 5 pending tasks per worker
-SCALE_DOWN_THRESHOLD = 2    # Workers: Scale down when < 2 pending tasks per worker
-TWITTER_GOALS_PER_INSTANCE = 2  # Twitter: Each instance handles ~2 concurrent goals
+SCALE_UP_THRESHOLD = 5      # Workers: Scale up when > 5 active workflows per worker
+SCALE_DOWN_THRESHOLD = 2    # Workers: Scale down when < 2 active workflows per worker
+TWITTER_GOALS_PER_INSTANCE = 2  # Twitter: 2 goals per instance (searches are fast with OR syntax)
 MIN_INSTANCES = 2
 MAX_INSTANCES = 8
 CHECK_INTERVAL = 30         # seconds
@@ -99,6 +99,39 @@ class TemporalMetrics:
             print(f"❌ Error getting task queue metrics: {e}")
             return {"workflow_tasks": 0, "activity_tasks": 0, "total": 0, 
                     "workflow_pollers": 0, "activity_pollers": 0}
+
+    async def get_active_workflow_count(self) -> int:
+        """
+        Count running workflows in the default namespace.
+        
+        Uses ListWorkflowExecutions with RUNNING status filter.
+        Returns count of active (running) workflows.
+        """
+        try:
+            from temporalio.api.workflowservice.v1 import ListWorkflowExecutionsRequest
+            
+            # Query for running workflows
+            request = ListWorkflowExecutionsRequest(
+                namespace="default",
+                query="ExecutionStatus = 'Running'",
+                page_size=100,  # We just need count, not all details
+            )
+            
+            count = 0
+            while True:
+                response = await self.client.workflow_service.list_workflow_executions(request)
+                count += len(response.executions)
+                
+                # Check for more pages
+                if response.next_page_token:
+                    request.next_page_token = response.next_page_token
+                else:
+                    break
+            
+            return count
+        except Exception as e:
+            print(f"❌ Error counting active workflows: {e}")
+            return 0
 
 
 class MongoMetrics:
@@ -185,7 +218,7 @@ class MongoMetrics:
 
 
 class ScalerService:
-    """Manages dynamic scaling of workers and Twitter instances."""
+    """Manages dynamic scaling of workers and Twitter instances using --scale."""
     
     def __init__(self, docker: DockerClient, temporal_client: Client):
         self.docker = docker
@@ -205,94 +238,79 @@ class ScalerService:
         self.last_worker_scale = 0
         self.last_twitter_scale = 0
     
-    def get_running_services(self, prefix: str) -> list[str]:
-        """Get list of running services matching prefix (e.g., 'worker-', 'twitter-')."""
+    def get_running_services(self, service_name: str) -> list[str]:
+        """Get list of running containers for a scaled service."""
         try:
-            containers = self.docker.ps(filters={"name": f"{PROJECT_NAME}-{prefix}"})
+            # With --scale, containers are named: found-footy-prod-twitter-1, found-footy-prod-twitter-2, etc.
+            containers = self.docker.ps(filters={"name": f"{PROJECT_NAME}-{service_name}-"})
             return [c.name for c in containers if c.state.running]
         except Exception as e:
-            print(f"❌ Error listing {prefix} containers: {e}")
+            print(f"❌ Error listing {service_name} containers: {e}")
             return []
     
-    def get_running_count(self, prefix: str) -> int:
-        """Get count of running instances for a service type."""
-        return len(self.get_running_services(prefix))
+    def get_running_count(self, service_name: str) -> int:
+        """Get count of running instances for a service."""
+        return len(self.get_running_services(service_name))
     
+    def scale_service(self, service_name: str, target: int) -> bool:
+        """
+        Scale a service to target count using docker compose --scale.
+        
+        This is idempotent - if already at target, it's a no-op.
+        """
+        current = self.get_running_count(service_name)
+        if current == target:
+            return True
+        
+        try:
+            print(f"🔄 Scaling {service_name}: {current} → {target}")
+            # Use docker compose up with --scale
+            self.docker.compose.up(
+                [service_name],
+                detach=True,
+                scales={service_name: target}
+            )
+            print(f"✅ Scaled {service_name} to {target}")
+            return True
+        except Exception as e:
+            print(f"❌ Failed to scale {service_name}: {e}")
+            return False
+    
+    # Legacy compatibility - these now just call scale_service
     def scale_up(self, service_type: str, target: int) -> bool:
         """Scale up by starting additional instances."""
-        current = self.get_running_count(service_type)
-        if current >= target:
-            return True
-        
-        # Start instances from current+1 to target
-        for i in range(current + 1, target + 1):
-            service_name = f"{service_type}{i}"
-            try:
-                print(f"🚀 Starting {service_name}...")
-                self.docker.compose.up([service_name], detach=True)
-                print(f"✅ Started {service_name}")
-            except Exception as e:
-                print(f"❌ Failed to start {service_name}: {e}")
-                return False
-        
-        return True
+        # Convert old 'worker-' prefix to 'worker' service name
+        service_name = service_type.rstrip('-')
+        return self.scale_service(service_name, target)
     
     def scale_down(self, service_type: str, target: int) -> bool:
-        """Scale down by stopping excess instances (highest numbered first)."""
-        current = self.get_running_count(service_type)
-        if current <= target:
-            return True
-        
-        # Stop instances from current down to target+1
-        for i in range(current, target, -1):
-            service_name = f"{service_type}{i}"
-            try:
-                # Check if Twitter instance is busy before stopping
-                if service_type == "twitter-":
-                    if self._is_twitter_busy(i):
-                        print(f"⏳ {service_name} is busy, skipping")
-                        continue
-                
-                print(f"🛑 Stopping {service_name}...")
-                self.docker.compose.stop([service_name])
-                print(f"✅ Stopped {service_name}")
-            except Exception as e:
-                print(f"❌ Failed to stop {service_name}: {e}")
-        
-        return True
+        """Scale down by stopping excess instances."""
+        service_name = service_type.rstrip('-')
+        return self.scale_service(service_name, target)
     
-    def _is_twitter_busy(self, instance_num: int) -> bool:
-        """Check if a Twitter instance is currently processing."""
-        try:
-            url = f"http://{PROJECT_NAME}-twitter-{instance_num}:8888/status"
-            resp = requests.get(url, timeout=2)
-            if resp.status_code == 200:
-                return resp.json().get("busy", False)
-        except:
-            pass
-        return False  # Assume not busy if unreachable
-    
-    def calculate_target_workers(self, metrics: dict) -> int:
+    def calculate_target_workers(self, active_workflows: int) -> int:
         """
-        Calculate target worker count based on task queue depth.
+        Calculate target worker count based on active workflow count.
         
         Logic:
-        - backlog_per_worker = total_pending / current_workers
-        - Scale up if backlog_per_worker > SCALE_UP_THRESHOLD
-        - Scale down if backlog_per_worker < SCALE_DOWN_THRESHOLD
+        - workflows_per_worker = active_workflows / current_workers
+        - Scale up if workflows_per_worker > SCALE_UP_THRESHOLD (5)
+        - Scale down if workflows_per_worker < SCALE_DOWN_THRESHOLD (2)
+        
+        This is more accurate than queue depth because Temporal drains
+        queues very fast, but active workflows represent actual work.
         """
-        current = self.get_running_count("worker-")
+        current = self.get_running_count("worker")
         if current == 0:
             return self.min_instances
         
-        total_pending = metrics["total"]
-        backlog_per_worker = total_pending / current
+        workflows_per_worker = active_workflows / current
         
-        if backlog_per_worker > self.scale_up_threshold:
-            # Need more workers - target enough so backlog_per_worker <= threshold
-            target = max(current + 1, (total_pending + self.scale_up_threshold - 1) // self.scale_up_threshold)
+        if workflows_per_worker > self.scale_up_threshold:
+            # Need more workers - target enough so workflows_per_worker <= threshold
+            target = max(current + 1, (active_workflows + self.scale_up_threshold - 1) // self.scale_up_threshold)
             return min(self.max_instances, target)
-        elif backlog_per_worker < self.scale_down_threshold and current > self.min_instances:
+        elif workflows_per_worker < self.scale_down_threshold and current > self.min_instances:
             # Can reduce workers
             return current - 1
         
@@ -315,7 +333,7 @@ class ScalerService:
         This is more accurate than Temporal queue depth because Twitter searches
         complete quickly (~2-3s), so the queue is usually empty even when busy.
         """
-        current = self.get_running_count("twitter-")
+        current = self.get_running_count("twitter")
         if current == 0:
             return self.min_instances
         
@@ -340,44 +358,34 @@ class ScalerService:
     # Legacy compatibility methods
     def get_running_twitter_count(self) -> int:
         """Get count of running Twitter instances."""
-        return self.get_running_count("twitter-")
+        return self.get_running_count("twitter")
     
     def get_running_worker_count(self) -> int:
         """Get count of running worker instances."""
-        return self.get_running_count("worker-")
+        return self.get_running_count("worker")
     
     def scale_twitter(self, target_count: int) -> bool:
         """Scale Twitter instances to target count (legacy interface)."""
-        current = self.get_running_count("twitter-")
-        if target_count > current:
-            return self.scale_up("twitter-", target_count)
-        elif target_count < current:
-            return self.scale_down("twitter-", target_count)
-        return True
+        return self.scale_service("twitter", target_count)
     
     def scale_workers(self, target_count: int) -> bool:
         """Scale worker instances to target count (legacy interface)."""
-        current = self.get_running_count("worker-")
-        if target_count > current:
-            return self.scale_up("worker-", target_count)
-        elif target_count < current:
-            return self.scale_down("worker-", target_count)
-        return True
+        return self.scale_service("worker", target_count)
     async def run_scaling_loop(self):
         """Main scaling loop."""
         print(f"🚀 Scaler service started")
         print(f"   Task queue: {TASK_QUEUE}")
         print(f"   Instances: min={self.min_instances}, max={self.max_instances}")
-        print(f"   Worker scale up threshold: {self.scale_up_threshold} pending/worker")
-        print(f"   Worker scale down threshold: {self.scale_down_threshold} pending/worker")
+        print(f"   Worker scale up threshold: {self.scale_up_threshold} workflows/worker")
+        print(f"   Worker scale down threshold: {self.scale_down_threshold} workflows/worker")
         print(f"   Twitter goals per instance: {self.twitter_goals_per_instance}")
         print(f"   Check interval: {self.check_interval}s")
         print(f"   Cooldown: {self.scale_cooldown}s")
         
         # Ensure minimum instances on startup
         print(f"\n🔧 Ensuring minimum instances...")
-        self.scale_up("worker-", self.min_instances)
-        self.scale_up("twitter-", self.min_instances)
+        self.scale_service("worker", self.min_instances)
+        self.scale_service("twitter", self.min_instances)
         
         print(f"\n📊 Starting monitoring loop...")
         
@@ -386,34 +394,32 @@ class ScalerService:
                 print(f"\n{'='*60}")
                 print(f"⏰ {datetime.now().strftime('%H:%M:%S')} - Checking metrics")
                 
-                # Get Temporal task queue metrics
+                # Get Temporal metrics
                 metrics = await self.temporal.get_task_queue_depth()
+                active_workflows = await self.temporal.get_active_workflow_count()
                 
                 # Get MongoDB goal metrics
                 active_goals = self.mongo.get_active_twitter_goals()
                 goals_summary = self.mongo.get_goals_summary()
                 
-                current_workers = self.get_running_count("worker-")
-                current_twitter = self.get_running_count("twitter-")
+                current_workers = self.get_running_count("worker")
+                current_twitter = self.get_running_count("twitter")
                 
-                print(f"📊 Task Queue: workflow={metrics['workflow_tasks']} activity={metrics['activity_tasks']} total={metrics['total']}")
+                print(f"📊 Active Workflows: {active_workflows} ({active_workflows/current_workers:.1f}/worker)")
                 print(f"📊 Workers: {current_workers} running, {metrics['workflow_pollers']} polling")
-                print(f"📊 Twitter: {current_twitter} running, {active_goals} active goals")
+                print(f"📊 Twitter: {current_twitter} running, {active_goals} active goals ({active_goals/current_twitter:.1f}/instance)")
                 print(f"📊 Goals: total={goals_summary.get('total', 0)} monitor✓={goals_summary.get('monitor_complete', 0)} twitter✓={goals_summary.get('twitter_complete', 0)} upload✓={goals_summary.get('upload_complete', 0)}")
                 
                 # Calculate targets
-                target_workers = self.calculate_target_workers(metrics)
+                target_workers = self.calculate_target_workers(active_workflows)
                 target_twitter = self.calculate_target_twitter(metrics)
                 
                 # Scale workers
                 now = time.time()
                 if target_workers != current_workers:
                     if now - self.last_worker_scale >= self.scale_cooldown:
-                        print(f"📈 Workers: {current_workers} → {target_workers}")
-                        if target_workers > current_workers:
-                            self.scale_up("worker-", target_workers)
-                        else:
-                            self.scale_down("worker-", target_workers)
+                        print(f"📈 Workers: {current_workers} → {target_workers} (workflows={active_workflows})")
+                        self.scale_service("worker", target_workers)
                         self.last_worker_scale = now
                     else:
                         remaining = int(self.scale_cooldown - (now - self.last_worker_scale))
@@ -423,10 +429,7 @@ class ScalerService:
                 if target_twitter != current_twitter:
                     if now - self.last_twitter_scale >= self.scale_cooldown:
                         print(f"📈 Twitter: {current_twitter} → {target_twitter} (active_goals={active_goals})")
-                        if target_twitter > current_twitter:
-                            self.scale_up("twitter-", target_twitter)
-                        else:
-                            self.scale_down("twitter-", target_twitter)
+                        self.scale_service("twitter", target_twitter)
                         self.last_twitter_scale = now
                     else:
                         remaining = int(self.scale_cooldown - (now - self.last_twitter_scale))
@@ -438,12 +441,16 @@ class ScalerService:
                 traceback.print_exc()
             
             await asyncio.sleep(self.check_interval)
-
-
+    
 def get_healthy_twitter_urls() -> list[str]:
     """
     Get list of healthy Twitter instance URLs.
     Used by workers to discover available Twitter browsers.
+    
+    With --scale, containers are named:
+    - found-footy-prod-twitter-1
+    - found-footy-prod-twitter-2
+    etc.
     """
     all_urls = [
         f"http://{PROJECT_NAME}-twitter-{i}:8888"
@@ -469,11 +476,11 @@ async def main():
     print("✅ Connected to Temporal")
     
     print("🐳 Initializing Docker client...")
-    # Use 'managed' profile to access worker-N and twitter-N services
-    docker = DockerClient(compose_files=[COMPOSE_FILE], compose_profiles=["managed"])
-    print(f"✅ Docker client ready (compose file: {COMPOSE_FILE}, profile: managed)")
+    docker = DockerClient(compose_files=[COMPOSE_FILE])
+    print(f"✅ Docker client ready (compose file: {COMPOSE_FILE})")
     
     scaler = ScalerService(docker, temporal_client)
+    
     await scaler.run_scaling_loop()
 
 

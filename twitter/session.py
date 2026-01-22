@@ -67,8 +67,18 @@ class TwitterSessionManager:
         self._initialized = True
         
         # Profile directory - use instance-specific path for parallel instances
-        instance_id = os.environ.get('TWITTER_INSTANCE_ID', '1')
+        # With docker compose --scale, container names are like: found-footy-prod-twitter-1
+        # Extract instance number from hostname or use TWITTER_INSTANCE_ID env var
+        instance_id = os.environ.get('TWITTER_INSTANCE_ID')
+        if not instance_id:
+            hostname = os.environ.get('HOSTNAME', '')
+            # Try to extract number from end of hostname (e.g., "115ca28fe001" won't work, but that's a container ID)
+            # With --scale, the container name is the hostname: found-footy-prod-twitter-1
+            # Actually, HOSTNAME is just the container ID. Use a hash of it for uniqueness.
+            import hashlib
+            instance_id = hashlib.md5(hostname.encode()).hexdigest()[:8]
         self.profile_dir = f"/data/firefox_profile_{instance_id}"
+        print(f"   📁 Using Firefox profile: {self.profile_dir}")
         
         # Backup cookie file - configurable via env var
         default_backup_path = os.path.expanduser("~/.config/found-footy/twitter_cookies.json")

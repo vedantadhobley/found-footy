@@ -168,6 +168,27 @@ class MonitorWorkflow:
                 minute_str = f"{minute}+{extra}min" if extra else f"{minute}min"
                 twitter_workflow_id = f"twitter-{team_clean}-{player_last}-{minute_str}-{event_id}"
                 
+                # Check if Twitter workflow is already running or completed
+                # This prevents unnecessary restart attempts and log spam
+                workflow_status = await workflow.execute_activity(
+                    monitor_activities.check_twitter_workflow_running,
+                    twitter_workflow_id,
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
+                
+                if workflow_status.get("running"):
+                    workflow.logger.info(
+                        f"⏭️ [MONITOR] Twitter workflow already running | id={twitter_workflow_id}"
+                    )
+                    continue
+                
+                if workflow_status.get("status") == "COMPLETED":
+                    workflow.logger.info(
+                        f"✅ [MONITOR] Twitter workflow already completed | id={twitter_workflow_id}"
+                    )
+                    continue
+                
                 local_twitter_workflows.append(twitter_workflow_id)
                 
                 # Start TwitterWorkflow (fire-and-forget)
