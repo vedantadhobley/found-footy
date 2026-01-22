@@ -102,10 +102,8 @@ app = FastAPI(
 class VideoSearchRequest(BaseModel):
     """Request model for video search"""
     search_query: str
-    max_results: int = 5  # Deprecated - kept for compatibility
     exclude_urls: List[str] = []
-    match_date: str = ""  # Deprecated - kept for compatibility
-    max_age_minutes: int = 5  # Only accept tweets from the last N minutes
+    max_age_minutes: int = 5  # Stop scrolling when tweet is older than this
 
 
 class AuthRequest(BaseModel):
@@ -175,17 +173,15 @@ async def search_videos(request: VideoSearchRequest):
     """Search Twitter for videos
     
     Uses time-based scrolling: scrolls through "Latest" results until finding
-    a tweet older than max_age_minutes, then stops.
+    a tweet older than max_age_minutes, then stops. Returns ALL videos found.
     
     Args:
         search_query: Search terms (e.g., "Messi Barcelona goal")
-        max_results: Deprecated, kept for compatibility
         exclude_urls: List of URLs to skip (already processed)
-        match_date: Deprecated, kept for compatibility
-        max_age_minutes: Only accept tweets from the last N minutes (default: 5)
+        max_age_minutes: Stop scrolling when tweet is older than this (default: 5)
         
     Returns:
-        JSON with discovered videos
+        JSON with discovered videos (all videos found, no limit)
         
     Raises:
         503 Service Unavailable if not authenticated (manual login required)
@@ -193,11 +189,9 @@ async def search_videos(request: VideoSearchRequest):
     """
     try:
         videos = twitter_session.search_videos(
-            request.search_query,
-            request.max_results,
-            request.exclude_urls,
-            request.match_date,
-            request.max_age_minutes
+            search_query=request.search_query,
+            exclude_urls=request.exclude_urls,
+            max_age_minutes=request.max_age_minutes
         )
         return {
             "status": "success",

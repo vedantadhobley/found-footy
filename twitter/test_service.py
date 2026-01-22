@@ -61,7 +61,7 @@ def test_search():
     try:
         response = requests.post(
             f"{BASE_URL}/search",
-            json={"search_query": search_query, "max_results": 2},
+            json={"search_query": search_query, "max_age_minutes": 5},
             timeout=30
         )
         

@@ -472,22 +472,19 @@ Steps:
         print("❌ All authentication methods failed - manual login required", flush=True)
         return False
     
-    def search_videos(self, search_query: str, max_results: int = None, exclude_urls: List[str] = None, match_date: str = None, max_age_minutes: int = 5) -> List[Dict[str, Any]]:
+    def search_videos(self, search_query: str, exclude_urls: List[str] = None, max_age_minutes: int = 5) -> List[Dict[str, Any]]:
         """Search Twitter for videos matching query
         
-        Uses time-based scrolling: scrolls through results until finding a tweet
-        older than max_age_minutes, then stops. This ensures we get all recent
-        tweets without needing arbitrary limits.
+        Uses time-based scrolling: scrolls through "Latest" results until finding
+        a tweet older than max_age_minutes, then stops. Returns ALL videos found.
         
         Args:
             search_query: Search terms (e.g., "Messi goal Barcelona")
-            max_results: Maximum videos to return (deprecated, kept for compatibility)
             exclude_urls: List of URLs to skip (already processed videos)
-            match_date: ISO format match date (deprecated, we now use max_age_minutes)
-            max_age_minutes: Only accept tweets from the last N minutes (default: 5)
+            max_age_minutes: Stop scrolling when tweet is older than this (default: 5)
             
         Returns:
-            List of video dictionaries
+            List of video dictionaries (all videos found, no limit)
             
         Raises:
             TwitterAuthError: If not authenticated and can't auto-restore
@@ -498,12 +495,12 @@ Steps:
         self.busy = True
         
         try:
-            return self._do_search(search_query, max_results, exclude_urls, match_date, max_age_minutes)
+            return self._do_search(search_query, exclude_urls, max_age_minutes)
         finally:
             # Always mark as not busy when done
             self.busy = False
 
-    def _do_search(self, search_query: str, max_results: int = None, exclude_urls: List[str] = None, match_date: str = None, max_age_minutes: int = 5) -> List[Dict[str, Any]]:
+    def _do_search(self, search_query: str, exclude_urls: List[str] = None, max_age_minutes: int = 5) -> List[Dict[str, Any]]:
         """Internal search implementation."""
         from datetime import datetime, timezone
         

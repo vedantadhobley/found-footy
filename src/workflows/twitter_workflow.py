@@ -284,11 +284,12 @@ class TwitterWorkflow:
             )
             
             # Execute single search with combined query
+            # Returns ALL videos found (limited to 5 longest for download later)
             all_videos = []
             try:
                 search_result = await workflow.execute_activity(
                     twitter_activities.execute_twitter_search,
-                    args=[search_query, 5, list(existing_urls), match_date, 3],
+                    args=[search_query, list(existing_urls), 3],  # max_age_minutes=3
                     start_to_close_timeout=timedelta(seconds=60),
                     retry_policy=RetryPolicy(
                         maximum_attempts=3,

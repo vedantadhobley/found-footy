@@ -159,9 +159,7 @@ async def get_twitter_search_data(fixture_id: int, event_id: str) -> Dict[str, A
 @activity.defn
 async def execute_twitter_search(
     twitter_search: str, 
-    max_results: int = 5,
     existing_video_urls: Optional[List[str]] = None,
-    match_date: Optional[str] = None,
     max_age_minutes: int = 5
 ) -> Dict[str, Any]:
     """
@@ -177,14 +175,12 @@ async def execute_twitter_search(
     videos during scraping, allowing us to find more NEW videos.
     
     Uses time-based scrolling: scrolls through "Latest" results until finding
-    a tweet older than max_age_minutes, then stops.
+    a tweet older than max_age_minutes, then stops. Returns ALL videos found.
     
     Args:
         twitter_search: Search query (e.g., "Salah Liverpool")
-        max_results: Deprecated, kept for compatibility
         existing_video_urls: List of video URLs already discovered (passed as exclude_urls)
-        match_date: Deprecated, kept for compatibility
-        max_age_minutes: Only accept tweets from the last N minutes (default: 5)
+        max_age_minutes: Stop scrolling when tweet is older than this (default: 5)
     
     Returns:
         Dict with videos array (all NEW videos not in exclude_urls)
@@ -274,9 +270,7 @@ async def execute_twitter_search(
             f"{session_url}/search",
             json={
                 "search_query": twitter_search, 
-                "max_results": max_results,
                 "exclude_urls": exclude_urls,
-                "match_date": match_date,
                 "max_age_minutes": max_age_minutes,
             },
             timeout=120,  # 2 min for browser automation

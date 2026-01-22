@@ -28,7 +28,6 @@ class TwitterConfig:
     port: int = int(os.getenv('TWITTER_SERVICE_PORT', 8888))
     
     # Search defaults
-    default_max_results: int = 3
     search_timeout: int = 5  # seconds to wait for page load
     
     def __post_init__(self):

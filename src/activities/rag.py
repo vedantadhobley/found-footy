@@ -45,14 +45,15 @@ HEADERS = {
     "User-Agent": "FoundFooty/1.0 (https://github.com/vedanta/found-footy; contact@example.com)"
 }
 
-# Maximum aliases for Twitter search (10 attempts × N aliases = N×10 searches per goal)
-MAX_ALIASES = 5
+# Maximum aliases for Twitter search (now using OR syntax, so just 1 search per attempt)
+# Limit is mainly to keep queries focused and avoid false matches
+MAX_ALIASES = 10
 
 # =============================================================================
 # LLM System Prompts - Different for clubs vs national teams
 # =============================================================================
 
-CLUB_SYSTEM_PROMPT = """Pick UP TO 5 words from the list for Twitter search. Pick all good options.
+CLUB_SYSTEM_PROMPT = """Pick UP TO 10 words from the list for Twitter search. Pick all good options.
 
 Priority:
 1. City/team name (Liverpool, Bremen, Newcastle, Celta, Vigo, Atletico, Madrid)
@@ -62,7 +63,7 @@ Priority:
 
 SKIP generic words: Club, SAD, Association, Society, Futbol, Football
 
-Output JSON array only. Include all useful words up to 5."""
+Output JSON array only. Include all useful words up to 10."""
 
 NATIONAL_SYSTEM_PROMPT = """Pick 3-5 words for Twitter search for a national team.
 

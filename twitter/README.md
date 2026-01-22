@@ -10,14 +10,15 @@ This service provides a REST API for searching Twitter videos. It uses a **two-m
 2. **Scraping Mode**: Selenium uses the authenticated profile for automation
 
 **Key Features:**
-- ✅ **VNC GUI access** on twitter-1 only (http://localhost:3103 prod, http://localhost:4103 dev)
-- ✅ **Headless mode** for twitter-2+ (no VNC, better scalability)
+- ✅ **VNC GUI access** on twitter-vnc only (http://localhost:3103 prod, http://localhost:4103 dev)
+- ✅ **Headless mode** for scaled twitter instances (no VNC, better scalability)
 - ✅ **No bot detection** - manual Firefox for login
 - ✅ Persistent Firefox profile + cookie backup (shared across all instances)
 - ✅ Automatic cookie restore on startup
 - ✅ Selenium-powered scraping after auth
 - ✅ **URL exclusion** - skip already-discovered videos
-- ✅ **5 videos per search** (configurable via `max_results`)
+- ✅ **Time-based scrolling** - returns ALL videos found within max_age_minutes
+- ✅ **OR syntax search** - single search with multiple team aliases
 
 ## Structure
 
@@ -71,17 +72,19 @@ curl -X POST http://localhost:8888/search \
   -H "Content-Type: application/json" \
   -d '{
     "search_query": "Salah Liverpool goal",
-    "max_results": 5,
-    "exclude_urls": []
+    "exclude_urls": [],
+    "max_age_minutes": 5
   }'
 ```
 
 **Parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `search_query` | string | required | Search terms |
-| `max_results` | int | 5 | Maximum videos to return |
+| `search_query` | string | required | Search terms (supports OR syntax: `player (team1 OR team2)`) |
 | `exclude_urls` | list | [] | URLs to skip during scraping |
+| `max_age_minutes` | int | 5 | Stop scrolling when tweet is older than this |
+
+**Returns:** ALL videos found within the time window (no limit).
 
 **Response:**
 ```json
@@ -108,15 +111,15 @@ curl -X POST http://localhost:8888/search \
 The `exclude_urls` parameter prevents re-discovering the same videos:
 
 ```bash
-# First search
+# First search - returns all videos within 5 min
 curl -X POST http://localhost:8888/search \
-  -d '{"search_query": "Salah goal", "max_results": 5, "exclude_urls": []}'
-# Returns: video1, video2, video3, video4, video5
+  -d '{"search_query": "Salah goal", "exclude_urls": []}'
+# Returns: video1, video2, video3, ... (all found)
 
 # Second search - skip previously found
 curl -X POST http://localhost:8888/search \
-  -d '{"search_query": "Salah goal", "max_results": 5, "exclude_urls": ["https://x.com/i/status/video1", "https://x.com/i/status/video2", ...]}'
-# Returns: video6, video7, video8, video9, video10 (NEW videos)
+  -d '{"search_query": "Salah goal", "exclude_urls": ["https://x.com/i/status/video1", "https://x.com/i/status/video2", ...]}'
+# Returns: only NEW videos not in exclude_urls
 ```
 
 Logs show when URLs are skipped:
@@ -130,15 +133,17 @@ Logs show when URLs are skipped:
 
 | Instance | Mode | VNC Port | API Port |
 |----------|------|----------|----------|
-| twitter-1 (prod) | VNC | 3103 | 8888 (internal) |
-| twitter-2+ (prod) | Headless | None | 8888 (internal) |
+| twitter-vnc (prod) | VNC | 3103 | 8888 (internal) |
+| twitter (prod, scaled) | Headless | None | 8888 (internal) |
 | twitter (dev) | VNC | 4103 | 8888 (internal) |
 
-**Why headless for twitter-2+?**
+**Why headless for scaled instances?**
 VNC is only needed for initial login and debugging. Once cookies are saved to `~/.config/found-footy/twitter_cookies.json`, all instances restore from the same backup. Headless mode:
 - Reduces resource usage (no Xvfb, x11vnc, websockify)
 - Eliminates port conflicts when scaling
 - Faster startup
+
+Use `twitter-vnc` service for manual cookie re-auth when needed.
 
 ## Cookie Backup
 
@@ -158,20 +163,26 @@ Called by TwitterWorkflow's `execute_twitter_search` activity:
 response = requests.post(
     "http://twitter:8888/search",
     json={
-        "search_query": "Liverpool goal",
-        "max_results": 5,
-        "exclude_urls": existing_video_urls  # From previous attempts
+        "search_query": "Salah (Liverpool OR LFC OR Reds)",  # OR syntax for aliases
+        "exclude_urls": existing_video_urls,  # From previous attempts
+        "max_age_minutes": 3  # Stop at tweets older than 3 min
     },
     timeout=120
 )
 ```
 
-Each event gets **3 Twitter searches** with cumulative `exclude_urls`:
+**Search Flow:**
+1. Twitter returns ALL videos found within `max_age_minutes`
+2. Workflow saves all to `_discovered_videos` in MongoDB
+3. Workflow selects **top 5 longest videos** for download
+4. Each attempt adds found URLs to `exclude_urls` for next attempt
+
+Each event gets **10 search attempts** over ~10 minutes:
 - Attempt 1: `exclude_urls=[]`
 - Attempt 2: `exclude_urls=[URLs from attempt 1]`
-- Attempt 3: `exclude_urls=[URLs from attempts 1 & 2]`
+- etc.
 
-This enables finding up to **15 unique videos per event** (5 × 3 attempts).
+This enables continuous discovery as new videos are posted.
 
 ## Video Discovery
 
@@ -224,4 +235,4 @@ Key messages:
 | `TWITTER_COOKIE_BACKUP_PATH` | `/config/twitter_cookies.json` | Cookie backup |
 | `TWITTER_HEADLESS` | false | Headless browser mode |
 | `TWITTER_SEARCH_TIMEOUT` | 5 | Seconds to wait for results |
-| `TWITTER_DEFAULT_MAX_RESULTS` | 5 | Default max videos |
+| `MONGODB_URI` | (required) | MongoDB connection for registry |

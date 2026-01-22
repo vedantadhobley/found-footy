@@ -20,7 +20,7 @@ This document describes the RAG-based team alias generation system for improving
 
 1. **Retrieve**: Fetch all known aliases from Wikidata API (search for QID, then fetch entity data)
 2. **Augment**: Include those aliases as context in the LLM prompt
-3. **Generate**: LLM selects/derives the BEST 3 aliases optimized for Twitter search
+3. **Generate**: LLM selects/derives the BEST aliases (up to 10) optimized for Twitter search
 
 We don't trust the model's training data alone. RAG ensures we have authoritative, curated alias data from Wikidata, with the LLM acting as an intelligent filter/deriver.
 
@@ -39,10 +39,15 @@ Wikidata for Atlético Madrid (Q8701) returns 46+ aliases:
 **Solution**: LLM processes these WITH the context that it's for Twitter search:
 ```
 Input: 46 Wikidata aliases + "optimize for Twitter search"
-Output: ["ATM", "Atletico", "El Atleti"]  ← Short, from Wikidata list only
+Output: ["ATM", "Atletico", "Madrid", "Atleti", "Colchoneros"]  ← Short, from Wikidata list
 ```
 
-**Key constraint**: The LLM can ONLY select from the provided Wikidata list. It cannot hallucinate aliases like "Colchoneros" (which is NOT in Wikidata). The code validates LLM output against the Wikidata list.
+**Twitter Search**: Uses OR syntax to combine all aliases in a single search:
+```
+"Griezmann (ATM OR Atletico OR Madrid OR Atleti OR Colchoneros)"
+```
+
+**Key constraint**: The LLM can ONLY select from the provided Wikidata list. It cannot hallucinate aliases. The code validates LLM output against the Wikidata list.
 
 Special characters (é, ü, ñ) are handled by **post-processing normalization**, not the LLM.
 

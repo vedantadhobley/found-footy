@@ -95,13 +95,15 @@ Or if login needed:
 ```bash
 curl -X POST http://localhost:8888/search \
   -H "Content-Type: application/json" \
-  -d '{"search_query": "Salah Liverpool goal", "max_results": 5, "exclude_urls": []}'
+  -d '{"search_query": "Salah Liverpool goal", "exclude_urls": [], "max_age_minutes": 5}'
 ```
 
 **Parameters:**
-- `search_query` (required): Search terms
-- `max_results` (default: 5): Maximum videos to return
+- `search_query` (required): Search terms (supports OR syntax: `player (team1 OR team2)`)
 - `exclude_urls` (default: []): URLs to skip during scraping
+- `max_age_minutes` (default: 5): Stop scrolling when tweet is older than this
+
+**Returns:** ALL videos found within the time window (no limit).
 
 Returns:
 ```json
@@ -144,9 +146,9 @@ The `exclude_urls` parameter allows the caller to skip already-discovered videos
 response = requests.post(
     "http://twitter:8888/search",
     json={
-        "search_query": "Salah Liverpool",
-        "max_results": 5,
-        "exclude_urls": ["https://x.com/user/status/123", "https://x.com/user/status/456"]
+        "search_query": "Salah (Liverpool OR LFC)",
+        "exclude_urls": ["https://x.com/user/status/123", "https://x.com/user/status/456"],
+        "max_age_minutes": 3
     }
 )
 ```
@@ -269,15 +271,15 @@ The Twitter service is called by `execute_twitter_search` activity:
 @activity.defn
 async def execute_twitter_search(
     twitter_search: str, 
-    max_results: int = 5,
-    existing_video_urls: Optional[List[str]] = None
+    existing_video_urls: Optional[List[str]] = None,
+    max_age_minutes: int = 5
 ) -> Dict[str, Any]:
     response = requests.post(
         f"{session_url}/search",
         json={
-            "search_query": twitter_search, 
-            "max_results": max_results,
-            "exclude_urls": existing_video_urls or []
+            "search_query": twitter_search,  # e.g., "Salah (Liverpool OR LFC OR Reds)"
+            "exclude_urls": existing_video_urls or [],
+            "max_age_minutes": max_age_minutes
         },
         timeout=120
     )
@@ -285,5 +287,10 @@ async def execute_twitter_search(
 
 This activity has:
 - **3 retries** with 1.5x exponential backoff from 10s
-- **150s timeout** for browser automation
+- **120s timeout** for browser automation
 - **503 handling** - raises RuntimeError to trigger retry
+
+**Flow:**
+1. Returns ALL videos found within `max_age_minutes`
+2. Workflow selects top 5 longest for download
+3. Each attempt adds found URLs to `exclude_urls`
