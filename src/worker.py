@@ -227,6 +227,7 @@ async def main():
                 monitor.process_fixture_events,
                 monitor.sync_fixture_metadata,
                 monitor.confirm_twitter_workflow_started,
+                monitor.check_twitter_workflow_running,
                 monitor.complete_fixture_if_ready,
                 monitor.notify_frontend_refresh,
                 # RAG activities (team alias lookup)
