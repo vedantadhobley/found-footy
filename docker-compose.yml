@@ -80,6 +80,7 @@ x-twitter-headless: &twitter-headless
     TWITTER_SERVICE_HOST: "0.0.0.0"
     TWITTER_SERVICE_PORT: "8888"
     TWITTER_HEADLESS: "true"
+    MONGODB_URI: mongodb://ffuser:ffpass@found-footy-prod-mongo:27017/found_footy?authSource=admin
   command: bash /app/twitter/start_headless.sh
 
 x-worker-common: &worker-common
