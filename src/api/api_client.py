@@ -73,15 +73,31 @@ def fixtures_events(fixture_id):
 def fixtures_batch(fixture_ids_list):
     """
     Batch fixtures by ids (raw schema).
+    API-Football allows maximum 20 IDs per request, so we chunk if needed.
     """
     if not fixture_ids_list:
         return []
-    ids_str = "-".join(map(str, fixture_ids_list))
-    url = f"{BASE_URL}/fixtures"
-    headers = get_api_headers()
-    resp = requests.get(url, headers=headers, params={"ids": ids_str}, timeout=10)
-    resp.raise_for_status()
-    return resp.json().get("response", [])  # raw items
+    
+    MAX_IDS_PER_REQUEST = 20
+    all_fixtures = []
+    
+    # Chunk the IDs if more than 20
+    for i in range(0, len(fixture_ids_list), MAX_IDS_PER_REQUEST):
+        chunk = fixture_ids_list[i:i + MAX_IDS_PER_REQUEST]
+        ids_str = "-".join(map(str, chunk))
+        url = f"{BASE_URL}/fixtures"
+        headers = get_api_headers()
+        resp = requests.get(url, headers=headers, params={"ids": ids_str}, timeout=10)
+        resp.raise_for_status()
+        
+        data = resp.json()
+        # Check for API errors (returned as 200 with errors field)
+        if data.get("errors"):
+            print(f"⚠️ API-Football errors: {data['errors']}")
+        
+        all_fixtures.extend(data.get("response", []))
+    
+    return all_fixtures
 
 def filter_fixtures_by_teams(fixtures_list, team_ids):
     """Filter fixtures that include any of the specified team IDs"""
