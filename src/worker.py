@@ -86,29 +86,34 @@ async def setup_schedules(client: Client):
     
     print("📅 Setting up workflow schedules...", flush=True)
     
-    # Schedule 1: IngestWorkflow - Daily at 00:05 UTC (PAUSED by default)
+    # Schedule 1: IngestWorkflow - Daily at 00:05 UTC
+    # Fetches today's fixtures from all top-5 European leagues (96 teams)
+    # and pre-caches RAG aliases for Twitter search
     ingest_schedule_id = "ingest-daily"
+    
+    # Define the schedule config (used for both create and update)
+    ingest_schedule = Schedule(
+        action=ScheduleActionStartWorkflow(
+            IngestWorkflow.run,
+            id="ingest-scheduled",  # Simple ID - Temporal adds timestamp suffix
+            task_queue="found-footy",
+        ),
+        spec=ScheduleSpec(cron_expressions=["5 0 * * *"]),  # 00:05 UTC daily
+        state=ScheduleState(
+            paused=False,
+            note="Daily fixture ingestion for top-5 leagues",
+        ),
+    )
+    
     try:
         ingest_handle = client.get_schedule_handle(ingest_schedule_id)
         await ingest_handle.describe()
-        print(f"   ✓ Schedule '{ingest_schedule_id}' exists", flush=True)
+        # Schedule exists - update it to ensure config is current
+        await ingest_handle.update(lambda _: ScheduleUpdate(schedule=ingest_schedule))
+        print(f"   ✓ Schedule '{ingest_schedule_id}' updated (ENABLED)", flush=True)
     except Exception:
-        await client.create_schedule(
-            ingest_schedule_id,
-            Schedule(
-                action=ScheduleActionStartWorkflow(
-                    IngestWorkflow.run,
-                    id="ingest-scheduled",  # Simple ID - Temporal adds timestamp suffix
-                    task_queue="found-footy",
-                ),
-                spec=ScheduleSpec(cron_expressions=["5 0 * * *"]),  # 00:05 UTC daily
-                state=ScheduleState(
-                    paused=True,
-                    note="Paused: Still in development",
-                ),
-            ),
-        )
-        print(f"   ✓ Created '{ingest_schedule_id}' (PAUSED, enable in UI when ready)", flush=True)
+        await client.create_schedule(ingest_schedule_id, ingest_schedule)
+        print(f"   ✓ Created '{ingest_schedule_id}' (ENABLED)", flush=True)
     
     # Schedule 2: MonitorWorkflow - Every 30 seconds (ENABLED by default)
     # 30s gives faster debounce (1.5 min vs 3 min at 60s) while staying within API limits:

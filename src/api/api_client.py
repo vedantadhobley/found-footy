@@ -136,6 +136,79 @@ def parse_team_ids_parameter(team_ids_param):
     return []
 
 
+def get_current_season(league_id: int) -> int | None:
+    """
+    Get the current season year for a league from API-Football.
+    
+    The API returns seasons array with 'current: true' for active season.
+    European leagues use the starting year (2025 = 2025-26 season).
+    
+    Args:
+        league_id: API-Football league ID
+        
+    Returns:
+        Season year (e.g., 2025) or None if not found
+    """
+    url = f"{BASE_URL}/leagues"
+    headers = get_api_headers()
+    
+    try:
+        resp = requests.get(url, headers=headers, params={"id": league_id}, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        leagues = data.get("response", [])
+        if not leagues:
+            logger.warning(f"No league found for ID {league_id}")
+            return None
+        
+        # Find the current season
+        seasons = leagues[0].get("seasons", [])
+        for season in seasons:
+            if season.get("current") is True:
+                return season.get("year")
+        
+        # Fallback: return the most recent season
+        if seasons:
+            latest = max(seasons, key=lambda s: s.get("year", 0))
+            logger.warning(f"No current season marked for league {league_id}, using latest: {latest.get('year')}")
+            return latest.get("year")
+        
+        return None
+    except Exception as e:
+        logger.error(f"Failed to get current season for league {league_id}: {e}")
+        return None
+
+
+def get_teams_for_league(league_id: int, season: int) -> list[int]:
+    """
+    Get all team IDs for a league in a specific season.
+    
+    Args:
+        league_id: API-Football league ID
+        season: Season year (e.g., 2025 for 2025-26)
+        
+    Returns:
+        List of team IDs
+    """
+    url = f"{BASE_URL}/teams"
+    headers = get_api_headers()
+    
+    try:
+        resp = requests.get(url, headers=headers, params={"league": league_id, "season": season}, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        teams = data.get("response", [])
+        team_ids = [t.get("team", {}).get("id") for t in teams if t.get("team", {}).get("id")]
+        
+        logger.info(f"Found {len(team_ids)} teams for league {league_id} season {season}")
+        return team_ids
+    except Exception as e:
+        logger.error(f"Failed to get teams for league {league_id} season {season}: {e}")
+        return []
+
+
 def get_team_info(team_id: int) -> dict | None:
     """
     Fetch full team info from API-Football.

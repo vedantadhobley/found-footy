@@ -1282,3 +1282,54 @@ class FootyMongoStore:
         except Exception as e:
             print(f"❌ Error clearing team aliases: {e}")
             return 0
+
+    # === Top-Flight Teams Cache ===
+    
+    def get_top_flight_cache(self) -> dict | None:
+        """
+        Get cached top-flight team IDs.
+        
+        Returns:
+            Dict with 'team_ids', 'season', 'cached_at' or None if not cached
+        """
+        try:
+            doc = self.db.top_flight_cache.find_one({"_id": "top_5_leagues"})
+            return doc
+        except Exception as e:
+            print(f"❌ Error getting top-flight cache: {e}")
+            return None
+    
+    def save_top_flight_cache(self, team_ids: list[int], season: int) -> bool:
+        """
+        Save top-flight team IDs to cache.
+        
+        Args:
+            team_ids: List of team IDs from all top 5 leagues
+            season: Season year (e.g., 2025)
+        """
+        try:
+            self.db.top_flight_cache.update_one(
+                {"_id": "top_5_leagues"},
+                {
+                    "$set": {
+                        "team_ids": team_ids,
+                        "season": season,
+                        "cached_at": datetime.now(timezone.utc),
+                        "count": len(team_ids),
+                    }
+                },
+                upsert=True,
+            )
+            return True
+        except Exception as e:
+            print(f"❌ Error saving top-flight cache: {e}")
+            return False
+    
+    def clear_top_flight_cache(self) -> bool:
+        """Clear the top-flight teams cache (forces refresh on next call)."""
+        try:
+            self.db.top_flight_cache.delete_one({"_id": "top_5_leagues"})
+            return True
+        except Exception as e:
+            print(f"❌ Error clearing top-flight cache: {e}")
+            return False
