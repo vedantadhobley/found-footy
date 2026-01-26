@@ -95,6 +95,9 @@ def get_top_flight_team_ids(force_refresh: bool = False) -> list[int]:
         if cached:
             cached_at = cached.get("cached_at")
             if cached_at:
+                # Ensure cached_at is timezone-aware (MongoDB may return naive datetime)
+                if cached_at.tzinfo is None:
+                    cached_at = cached_at.replace(tzinfo=timezone.utc)
                 age = datetime.now(timezone.utc) - cached_at
                 if age < timedelta(hours=TOP_FLIGHT_CACHE_HOURS):
                     team_ids = cached.get("team_ids", [])

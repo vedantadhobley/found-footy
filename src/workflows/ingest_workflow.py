@@ -1,9 +1,15 @@
 """
 Ingest Workflow - Daily at 00:05 UTC
 
-Fetches today's fixtures and routes them to correct collections based on status.
+Fetches fixtures for today, tomorrow, and day after (UTC) and routes them to correct collections.
+3 days are fetched to handle timezone edge cases and allow frontend to show "tomorrow" fixtures
+for users in any timezone.
+
 Pre-caches RAG aliases for both teams in each fixture (per-team for modularity).
 Cleans up fixtures older than 14 days from MongoDB and S3.
+
+Duplicate handling: The categorize_and_store_fixtures activity skips fixtures
+that already exist in any collection (monitor workflow handles updates).
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -26,25 +32,30 @@ FIXTURE_RETENTION_DAYS = 14
 @dataclass
 class IngestWorkflowInput:
     """Optional input for IngestWorkflow - allows specifying target date or fixture IDs"""
-    target_date: Optional[str] = None  # ISO format: "2025-12-26" (None = today)
+    target_date: Optional[str] = None  # ISO format: "2025-12-26" (None = today+tomorrow)
     fixture_ids: Optional[List[int]] = None  # Specific fixture IDs to ingest (overrides date-based)
 
 
 @workflow.defn
 class IngestWorkflow:
-    """Fetch today's fixtures, pre-cache RAG aliases, and categorize by status"""
+    """Fetch today's and tomorrow's fixtures, pre-cache RAG aliases, and categorize by status"""
     
     @workflow.run
     async def run(self, input: Optional[IngestWorkflowInput] = None) -> dict:
         """
         Workflow:
-        1. Fetch fixtures for today from API-Football (or specific IDs if provided)
-        2. Pre-cache RAG aliases for BOTH teams in each fixture (per-team calls)
-        3. Route to correct collection:
+        1. Fetch fixtures for today AND tomorrow (UTC) from API-Football
+           - If fixture_ids provided: fetch only those specific fixtures
+           - If target_date provided: fetch only that date (for manual/testing)
+           - Otherwise: fetch today + tomorrow to handle timezone edge cases
+        2. Skip fixtures that already exist (monitor workflow handles updates)
+        3. Pre-cache RAG aliases for BOTH teams in each fixture (per-team calls)
+        4. Route NEW fixtures to correct collection:
            - TBD/NS → fixtures_staging
            - LIVE/1H/HT/2H/ET/P/BT → fixtures_active  
            - FT/AET/PEN → fixtures_completed
-        4. Notify frontend to refresh (for upcoming fixtures display)
+        5. Cleanup old fixtures (older than 14 days)
+        6. Notify frontend to refresh (for upcoming fixtures display)
         """
         # Check if specific fixture IDs were provided (manual ingest mode)
         if input and input.fixture_ids and len(input.fixture_ids) > 0:
@@ -61,27 +72,84 @@ class IngestWorkflow:
                     maximum_interval=timedelta(seconds=10),
                 ),
             )
-        else:
-            # Standard date-based ingest
-            # Parse target date if provided (for testing historical dates)
-            # Pass as ISO string to activity (date objects aren't JSON serializable)
-            target_date_str = None
-            if input and input.target_date:
-                target_date_str = input.target_date  # Already ISO format
-                workflow.logger.info(f"📥 Starting fixture ingest for {input.target_date}")
-            else:
-                workflow.logger.info("📥 Starting daily fixture ingest (today)")
+        elif input and input.target_date:
+            # Manual date-based ingest (for testing historical dates)
+            # Only fetches the specified date, not tomorrow
+            workflow.logger.info(f"📥 Manual ingest mode: fetching fixtures for {input.target_date}")
             
-            # Fetch fixtures for target date (or today if not specified)
             fixtures = await workflow.execute_activity(
                 ingest_activities.fetch_todays_fixtures,
-                target_date_str,  # Pass date string to activity (None = today)
+                input.target_date,
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(
                     maximum_attempts=3,
                     initial_interval=timedelta(seconds=1),
                     maximum_interval=timedelta(seconds=10),
                 ),
+            )
+        else:
+            # Standard daily ingest: fetch today, tomorrow, and day after (UTC)
+            # This allows frontend to show "tomorrow" fixtures for users in any timezone
+            # Day+2 handles edge case where user's "tomorrow" is actually 2 days ahead in UTC
+            
+            # Use workflow.now() for determinism (not datetime.now())
+            now_utc = workflow.now()
+            today_utc = now_utc.date()
+            tomorrow_utc = today_utc + timedelta(days=1)
+            day_after_utc = today_utc + timedelta(days=2)
+            
+            today_str = today_utc.isoformat()
+            tomorrow_str = tomorrow_utc.isoformat()
+            day_after_str = day_after_utc.isoformat()
+            
+            workflow.logger.info(f"📥 Starting daily fixture ingest for {today_str}, {tomorrow_str}, and {day_after_str}")
+            
+            # Fetch fixtures for all 3 days in sequence
+            today_fixtures = await workflow.execute_activity(
+                ingest_activities.fetch_todays_fixtures,
+                today_str,
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=3,
+                    initial_interval=timedelta(seconds=1),
+                    maximum_interval=timedelta(seconds=10),
+                ),
+            )
+            
+            tomorrow_fixtures = await workflow.execute_activity(
+                ingest_activities.fetch_todays_fixtures,
+                tomorrow_str,
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=3,
+                    initial_interval=timedelta(seconds=1),
+                    maximum_interval=timedelta(seconds=10),
+                ),
+            )
+            
+            day_after_fixtures = await workflow.execute_activity(
+                ingest_activities.fetch_todays_fixtures,
+                day_after_str,
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=3,
+                    initial_interval=timedelta(seconds=1),
+                    maximum_interval=timedelta(seconds=10),
+                ),
+            )
+            
+            # Combine and deduplicate by fixture ID
+            seen_ids = set()
+            fixtures = []
+            for fixture in today_fixtures + tomorrow_fixtures + day_after_fixtures:
+                fixture_id = fixture.get("fixture", {}).get("id")
+                if fixture_id and fixture_id not in seen_ids:
+                    seen_ids.add(fixture_id)
+                    fixtures.append(fixture)
+            
+            workflow.logger.info(
+                f"📊 Fetched {len(today_fixtures)} today + {len(tomorrow_fixtures)} tomorrow + "
+                f"{len(day_after_fixtures)} day after = {len(fixtures)} unique fixtures"
             )
         
         # Pre-cache RAG aliases for EACH team individually
@@ -168,6 +236,7 @@ class IngestWorkflow:
         workflow.logger.info(
             f"✅ Ingest complete: {result.get('staging', 0)} staging, "
             f"{result.get('active', 0)} active, {result.get('completed', 0)} completed, "
+            f"{result.get('skipped', 0)} skipped (already exist), "
             f"{rag_success}/{len(teams_processed)} teams RAG cached, "
             f"{cleanup_result.get('deleted_fixtures', 0)} old fixtures cleaned up"
         )

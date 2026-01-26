@@ -7,16 +7,17 @@ from datetime import date, datetime, timedelta, timezone
 @activity.defn
 async def fetch_todays_fixtures(target_date_str: str | None = None) -> List[Dict[str, Any]]:
     """
-    Fetch fixtures for the given date (defaults to today).
-    Filters to only tracked teams (50 teams: 25 UEFA + 25 FIFA).
+    Fetch fixtures for the given date (defaults to today UTC).
+    Filters to only tracked teams from top-5 leagues + national teams.
     
     Args:
-        target_date_str: ISO format date string (e.g., "2025-12-26") or None for today
+        target_date_str: ISO format date string (e.g., "2025-12-26") or None for today UTC
     """
     if target_date_str:
         target_date = date.fromisoformat(target_date_str)
     else:
-        target_date = date.today()
+        # Use UTC date, not server local time
+        target_date = datetime.now(timezone.utc).date()
     
     activity.logger.info(f"🌐 Fetching fixtures for {target_date}")
     
@@ -101,6 +102,9 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
     """
     Categorize fixtures by status and store in appropriate collections.
     
+    Skips fixtures that already exist in any collection (staging/active/completed).
+    The monitor workflow keeps existing fixtures updated, so ingest only adds NEW ones.
+    
     Routes to:
     - staging: TBD, NS (not started)
     - active: LIVE, 1H, HT, 2H, ET, P, BT, SUSP, INT, PST (in progress or delayed)
@@ -110,7 +114,7 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
     """
     if not fixtures:
         activity.logger.warning("⚠️  No fixtures to categorize")
-        return {"staging": 0, "active": 0, "completed": 0}
+        return {"staging": 0, "active": 0, "completed": 0, "skipped": 0}
     
     try:
         from src.utils.fixture_status import (
@@ -119,6 +123,31 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
             get_staging_statuses,
         )
         from src.data.mongo_store import FootyMongoStore
+        
+        store = FootyMongoStore()
+        
+        # Get all existing fixture IDs across all collections
+        existing_ids = set()
+        existing_ids.update(store.get_staging_fixture_ids())
+        existing_ids.update(store.get_active_fixture_ids())
+        existing_ids.update([f["_id"] for f in store.get_completed_fixtures()])
+        
+        # Filter out fixtures that already exist
+        new_fixtures = []
+        skipped_count = 0
+        for fixture in fixtures:
+            fixture_id = fixture.get("fixture", {}).get("id")
+            if fixture_id in existing_ids:
+                skipped_count += 1
+            else:
+                new_fixtures.append(fixture)
+        
+        if skipped_count > 0:
+            activity.logger.info(f"⏭️  Skipped {skipped_count} fixtures that already exist")
+        
+        if not new_fixtures:
+            activity.logger.info("✅ No new fixtures to add (all already exist)")
+            return {"staging": 0, "active": 0, "completed": 0, "skipped": skipped_count}
         
         # Get status sets
         completed_statuses = set(get_completed_statuses())
@@ -129,7 +158,7 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
         active_fixtures = []
         completed_fixtures = []
         
-        for fixture in fixtures:
+        for fixture in new_fixtures:
             status = fixture.get("fixture", {}).get("status", {}).get("short", "")
             fixture_id = fixture.get("fixture", {}).get("id", "unknown")
             
@@ -150,7 +179,7 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
                 staging_fixtures.append(fixture)
         
         activity.logger.info(
-            f"📊 Categorized {len(fixtures)} fixtures: "
+            f"📊 Categorized {len(new_fixtures)} NEW fixtures: "
             f"{len(staging_fixtures)} staging, "
             f"{len(active_fixtures)} active, "
             f"{len(completed_fixtures)} completed"
@@ -162,8 +191,7 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
         if completed_fixtures:
             activity.logger.info(f"🏁 {len(completed_fixtures)} fixtures already FINISHED - skip monitoring")
         
-        # Store in collections
-        store = FootyMongoStore()
+        # Store in collections (store already initialized above)
         staging_count = store.bulk_insert_fixtures(staging_fixtures, "fixtures_staging") if staging_fixtures else 0
         active_count = store.bulk_insert_fixtures(active_fixtures, "fixtures_active") if active_fixtures else 0
         completed_count = store.bulk_insert_fixtures(completed_fixtures, "fixtures_completed") if completed_fixtures else 0
@@ -174,6 +202,7 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
             "staging": staging_count,
             "active": active_count,
             "completed": completed_count,
+            "skipped": skipped_count,
         }
     
     except Exception as e:
