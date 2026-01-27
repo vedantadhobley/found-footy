@@ -6,7 +6,7 @@
 src/
 ├── workflows/              # Temporal workflows (orchestration)
 │   ├── ingest_workflow.py      # Daily at 00:05 UTC - fetch and categorize fixtures
-│   ├── monitor_workflow.py     # Every minute - track fixtures, debounce events inline
+│   ├── monitor_workflow.py     # Every 30 seconds - track fixtures, debounce events inline
 │   ├── rag_workflow.py         # Pre-caching only - resolve team aliases via Wikidata + LLM
 │   ├── twitter_workflow.py     # Per event - resolve aliases, search videos 10×
 │   ├── download_workflow.py    # Per event - download, validate, hash, MD5 dedup
@@ -23,7 +23,7 @@ src/
 │   └── s3_store.py        # MinIO S3 operations
 ├── utils/                 # Utilities
 │   ├── event_config.py    # Event filtering (Goals only)
-│   └── team_data.py       # 50 tracked teams (IDs only)
+│   └── team_data.py       # Dynamic top-5 league teams (96+) + national teams
 └── worker.py              # Temporal worker (runs workflows & activities)
 ```
 
@@ -31,9 +31,11 @@ src/
 
 ```
 IngestWorkflow (daily 00:05 UTC)
+  ├─> Fetch 3 days of fixtures (today+tomorrow+day_after)
+  ├─> Skip fixtures that already exist (duplicate detection)
   ├─> Pre-cache team aliases via RAGWorkflow (both teams)
   ↓
-MonitorWorkflow (every minute)
+MonitorWorkflow (every 30 seconds)
   ├─> process_fixture_events (inline debounce)
   └─> TwitterWorkflow (per stable event, fire-and-forget)
         ├─> Resolves aliases at start (from cache)

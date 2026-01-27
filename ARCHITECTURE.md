@@ -109,7 +109,8 @@ Child workflows (Twitter→Download→Upload) can run on **different workers** -
                     ▼                              ▼
             IngestWorkflow                  MonitorWorkflow
            (Daily 00:05 UTC)               (Every 30 seconds)
-                    │                              │
+    (Fetches today+tomorrow+day_after)              │
+                    │                              ▼
                     ▼                              ▼
            fixtures_staging ──────────────► fixtures_active
            (TBD, NS fixtures)    activate    (live matches)
@@ -154,9 +155,11 @@ Child workflows (Twitter→Download→Upload) can run on **different workers** -
 ├─────────────────────────────────────────────────────────────────────┤
 │  IngestWorkflow (00:05 UTC)     MonitorWorkflow (Every 30s)         │
 │         │                                │                           │
-│    Fetch fixtures                   Poll API                         │
-│    Pre-cache RAG aliases            Debounce events                  │
-│    Route by status                  Trigger Twitter on stable        │
+│    Fetch 3 days of fixtures         Poll API                        │
+│    (today+tomorrow+day_after)       Debounce events                  │
+│    Skip existing fixtures           Trigger Twitter on stable        │
+│    Pre-cache RAG aliases                                             │
+│    Route by status                                                   │
 └──────────────────────────────────────┬──────────────────────────────┘
                                        │
                                        ▼ (FIRE-AND-FORGET, ABANDON)
@@ -461,18 +464,24 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 
 ### 1. IngestWorkflow (Daily 00:05 UTC)
 
-**Purpose**: Fetch today's fixtures, route by status, cleanup old data (14-day retention)
+**Purpose**: Fetch fixtures for today + tomorrow + day after, route by status, cleanup old data (14-day retention)
 
 | Activity | Purpose | Retries |
 |----------|---------|---------|
-| `fetch_todays_fixtures` | Call API-Football | 3x, 2.0x backoff from 1s |
+| `fetch_todays_fixtures` | Fetch fixtures for a date from API-Football | 3x, 2.0x backoff from 1s |
 | `fetch_fixtures_by_ids` | Manual ingest by ID | 3x, 2.0x backoff from 1s |
-| `categorize_and_store_fixtures` | Route by status | 3x, 2.0x backoff from 1s |
+| `categorize_and_store_fixtures` | Route by status, skip existing | 3x, 2.0x backoff from 1s |
 | `cleanup_old_fixtures` | Delete fixtures >14 days old | 2x |
+
+**3-Day Fetch**: Fetches today + tomorrow + day after (UTC) to handle timezone edge cases. Allows frontend to show "tomorrow" fixtures for users in any timezone.
+
+**Duplicate Detection**: Fixtures already in staging/active/completed are skipped (monitor handles updates).
+
+**Dynamic Team Tracking**: Tracks ~96 teams from top 5 leagues (fetched from API, cached 24h) plus 15 national teams.
 
 **Retention Policy**: Keeps 14 days of fixture history. Since ingestion runs at 00:05 UTC (before today's matches), "Day 1" = yesterday. Deletes both MongoDB documents and S3 videos.
 
-### 2. MonitorWorkflow (Every Minute)
+### 2. MonitorWorkflow (Every 30 Seconds)
 
 **Purpose**: Activate fixtures, detect events, trigger RAG for stable events
 

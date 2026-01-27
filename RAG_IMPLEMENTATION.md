@@ -575,12 +575,13 @@ Used by `get_team_nickname()` → `build_twitter_search()` → returns ONE nickn
 2. **Always use `get_team_aliases()`** which returns 3 aliases via LLM + cache
 3. **TwitterWorkflow already handles multiple aliases** - it loops through the list
 
-### Migration Path
+### Current State (Implemented)
 
-1. Deploy with LLM + cache implementation
-2. Let cache populate naturally (first goal for each team triggers LLM)
-3. Once stable, remove `get_team_nickname()` usage from `build_twitter_search()`
-4. Eventually simplify `team_data.py` to just team IDs (for tracking purposes)
+`team_data.py` now uses **dynamic team tracking**:
+- Fetches all teams from top 5 European leagues via API-Football
+- Caches team IDs in MongoDB (refreshed every 24 hours)
+- Falls back to legacy `TOP_UEFA_IDS` if API fails
+- National teams (`TOP_FIFA_IDS`) are still statically defined
 
 ---
 

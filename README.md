@@ -44,7 +44,8 @@ flowchart TB
 ```
 
 **The pipeline handles:**
-- 🎯 **50 top European clubs** — Premier League, La Liga, Bundesliga, Serie A, Ligue 1, Champions League
+- 🎯 **96+ top-5 league teams** — All clubs from Premier League, La Liga, Bundesliga, Serie A, Ligue 1 (dynamically tracked via API)
+- 🌍 **15 national teams** — Top FIFA-ranked nations
 - ⏱️ **Real-time detection** — Goals detected within minutes of scoring
 - 🔄 **VAR handling** — Disallowed goals automatically detected and marked
 - 📊 **Quality ranking** — Videos ranked by resolution, with duplicates removed
@@ -68,7 +69,7 @@ flowchart TB
         end
         
         subgraph WORKFLOWS["📋 Workflows"]
-            INGEST[IngestWorkflow<br/>Daily 00:05 UTC]
+            INGEST[IngestWorkflow<br/>Daily 00:05 UTC<br/>3-day fetch]
             MONITOR[MonitorWorkflow<br/>Every 30 seconds]
             TWITTERWF[TwitterWorkflow<br/>10× per event]
             DOWNLOADWF[DownloadWorkflow<br/>Per video batch]
@@ -122,9 +123,9 @@ flowchart TB
         COMPLETED[(fixtures_completed<br/>Archive)]
     end
     
-    API[API-Football] -->|Daily ingest| STAGING
+    API[API-Football] -->|Daily 3-day ingest| STAGING
     STAGING -->|Start time reached| ACTIVE
-    API -->|Every minute| LIVE
+    API -->|Every 30 seconds| LIVE
     LIVE <-->|Compare events| ACTIVE
     ACTIVE -->|Match finished| COMPLETED
     LIVE -.->|Deleted after| COMPLETED
@@ -142,6 +143,22 @@ flowchart TB
 | **fixtures_active** | Enhanced events with video tracking | ~90 minutes |
 | **fixtures_completed** | Permanent archive | Forever |
 | **team_aliases** | Cached team aliases from RAG pipeline | Persistent |
+| **top_flight_cache** | Cached team IDs from top 5 leagues | 24 hours |
+
+### Tracked Teams
+
+**Dynamic Top-5 League Tracking**: Teams are fetched from API-Football for the current season and cached for 24 hours.
+
+| League | Country | Teams |
+|--------|---------|-------|
+| Premier League | England | 20 |
+| La Liga | Spain | 20 |
+| Bundesliga | Germany | 18 |
+| Serie A | Italy | 20 |
+| Ligue 1 | France | 18 |
+| **Total Clubs** | | **~96** |
+
+Plus **15 national teams** (static): Spain, Argentina, France, England, Brazil, Portugal, Netherlands, Belgium, Germany, Croatia, Morocco, Italy, Colombia, USA, Mexico.
 
 ### Event Lifecycle
 

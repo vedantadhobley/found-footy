@@ -124,8 +124,8 @@ To manually ingest specific fixtures (bypasses team filter):
 
 | Input | Description | Example |
 |-------|-------------|---------|
-| `{}` | Standard daily ingest (today's fixtures for tracked teams) | `{}` |
-| `{"target_date": "2025-12-26"}` | Ingest for a specific date (tracked teams only) | `{"target_date": "2025-12-26"}` |
+| `{}` | Standard daily ingest (today + tomorrow + day after for tracked teams) | `{}` |
+| `{"target_date": "2025-12-26"}` | Ingest for a specific date only (tracked teams only) | `{"target_date": "2025-12-26"}` |
 | `{"fixture_ids": [1234, 5678]}` | Ingest specific fixtures by ID (any team/league) | `{"fixture_ids": [1379142]}` |
 
 > **Note**: When using `fixture_ids`, the team filter is bypassed - you can ingest fixtures from any team or league.
@@ -135,13 +135,14 @@ To manually ingest specific fixtures (bypasses team filter):
 ## 1. IngestWorkflow
 
 **Schedule**: Daily at 00:05 UTC  
-**Purpose**: Fetch today's fixtures, route to correct collections, cleanup old data
+**Purpose**: Fetch fixtures for today + tomorrow + day after, route to correct collections, cleanup old data
 
 ```
 IngestWorkflow
     │
-    ├── fetch_todays_fixtures
-    │   └── GET /fixtures?date=today from API-Football
+    ├── fetch_todays_fixtures (×3 days)
+    │   └── GET /fixtures?date={today,tomorrow,day_after} from API-Football
+    │   └── Deduplicate by fixture ID (skip already existing)
     │
     ├── PRE-CACHE RAG aliases for each team
     │   └── Per-team calls with retry (failure doesn't block ingest)
