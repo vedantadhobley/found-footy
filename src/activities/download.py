@@ -415,16 +415,24 @@ Analyze this image and answer TWO questions:
    - Other sports (basketball, tennis, etc.)
 
 2. SCREEN: Is this someone filming a TV/monitor screen with their phone/camera?
-   Look for these PHYSICAL artifacts of pointing a camera at a screen:
-   - Moiré patterns (rainbow/wavy interference lines on the display)
-   - Visible TV bezel/frame edges around the picture
-   - Screen glare or reflections from room lighting
-   - Tilted/angled perspective (not straight-on)
-   - Visible room, furniture, or surroundings in frame
-   - Pixelation from screen refresh rate mismatch
+   This is ONLY for detecting amateur phone recordings of TV screens, NOT professional broadcasts.
    
-   NOTE: Broadcast overlays, VAR boxes, replay borders, or graphics are NOT screen recordings.
-   Only answer YES if you see evidence of a physical camera filming a physical screen, notably with black borders.
+   Answer YES ONLY if you see MULTIPLE of these PHYSICAL artifacts:
+   - Moiré patterns (rainbow/wavy interference lines on the display)
+   - Visible TV bezel/frame edges around the picture (thick black borders with TV hardware visible)
+   - Screen glare or reflections from room lighting
+   - Tilted/angled perspective showing someone filmed a screen from the side
+   - Visible room, furniture, walls, or surroundings around the TV
+   - Severe pixelation from screen refresh rate mismatch
+   
+   IMPORTANT - These are NOT screen recordings, answer NO:
+   - Professional broadcast overlays, scoreboards, or graphics
+   - VAR boxes, replay borders, or picture-in-picture
+   - Watermarks or channel logos
+   - Black letterbox bars (16:9 vs 4:3 aspect ratio difference)
+   - Clean professional broadcast footage with any overlays
+   
+   When in doubt, answer NO. Only reject obvious phone-filming-TV scenarios.
 
 Answer format (exactly):
 SOCCER: YES or NO
@@ -517,6 +525,35 @@ SCREEN: YES or NO"""
             f"SCREEN={'YES' if screen_75 else 'NO'}"
         )
     
+    # =========================================================================
+    # Determine BOTH soccer and screen results using same tiebreaker logic
+    # For screen detection: we need BOTH frames to agree, or 2/3 majority
+    # This prevents false positives from broadcast overlays/graphics
+    # =========================================================================
+    
+    # Check if we need tiebreaker (disagreement on either soccer OR screen)
+    soccer_disagree = soccer_25 is not None and soccer_75 is not None and soccer_25 != soccer_75
+    screen_disagree = screen_25 is not None and screen_75 is not None and screen_25 != screen_75
+    need_tiebreaker = soccer_disagree or screen_disagree
+    
+    soccer_50, screen_50 = None, None
+    
+    if need_tiebreaker:
+        activity.logger.info(f"   ⚖️ [VALIDATE] Disagreement detected, checking 50% tiebreaker...")
+        activity.heartbeat("AI vision tiebreaker (50% frame)...")
+        
+        t_50 = duration * 0.50
+        frame_50 = _extract_frame_for_vision(file_path, t_50)
+        
+        if frame_50:
+            response_50 = await _call_vision_model(frame_50, prompt)
+            checks_performed += 1
+            soccer_50, screen_50 = parse_response(response_50)
+            activity.logger.info(
+                f"   📸 [VALIDATE] 50% tiebreaker | SOCCER={'YES' if soccer_50 else 'NO'} | "
+                f"SCREEN={'YES' if screen_50 else 'NO'}"
+            )
+    
     # Determine soccer result
     if soccer_25 is None and soccer_75 is not None:
         is_soccer = soccer_75
@@ -534,39 +571,42 @@ SCREEN: YES or NO"""
             f"   ✓ [VALIDATE] Both frames agree | is_soccer={'YES' if is_soccer else 'NO'}"
         )
     else:
-        # Disagreement - need tiebreaker at 50%
-        activity.logger.info(f"   ⚖️ [VALIDATE] Disagreement, checking 50% tiebreaker...")
-        activity.heartbeat("AI vision tiebreaker (50% frame)...")
-        
-        t_50 = duration * 0.50
-        frame_50 = _extract_frame_for_vision(file_path, t_50)
-        
-        if frame_50:
-            response_50 = await _call_vision_model(frame_50, prompt)
-            checks_performed += 1
-            soccer_50, screen_50 = parse_response(response_50)
-            activity.logger.info(
-                f"   📸 [VALIDATE] 50% tiebreaker | SOCCER={'YES' if soccer_50 else 'NO'} | "
-                f"SCREEN={'YES' if screen_50 else 'NO'}"
-            )
-            
-            # Count votes (2/3 majority)
+        # Disagreement - use tiebreaker (2/3 majority)
+        if soccer_50 is not None:
             yes_votes = sum([soccer_25 or False, soccer_50, soccer_75 or False])
             is_soccer = yes_votes >= 2
             confidence = 0.85
             soccer_reason = f"Tiebreaker decided: {yes_votes}/3 votes for soccer"
-            
-            # Also factor in screen detection from 50%
-            if screen_50:
-                screen_25 = screen_25 or screen_50
-                screen_75 = screen_75 or screen_50
         else:
             is_soccer = soccer_25 if soccer_25 is not None else False
             confidence = 0.6
             soccer_reason = "Tiebreaker failed, using first check"
     
-    # Determine screen recording result (reject if ANY frame detects it)
-    is_screen_recording = (screen_25 or False) or (screen_75 or False)
+    # Determine screen recording result (same tiebreaker logic - need agreement or 2/3 majority)
+    if screen_25 is None and screen_75 is not None:
+        is_screen_recording = screen_75
+    elif screen_75 is None and screen_25 is not None:
+        is_screen_recording = screen_25
+    elif screen_25 == screen_75:
+        # Both agree
+        is_screen_recording = screen_25 or False
+        activity.logger.info(
+            f"   ✓ [VALIDATE] Both frames agree | is_screen={'YES' if is_screen_recording else 'NO'}"
+        )
+    else:
+        # Disagreement - use tiebreaker (2/3 majority to REJECT)
+        if screen_50 is not None:
+            screen_votes = sum([screen_25 or False, screen_50, screen_75 or False])
+            is_screen_recording = screen_votes >= 2  # Need 2/3 to reject
+            activity.logger.info(
+                f"   ⚖️ [VALIDATE] Screen tiebreaker: {screen_votes}/3 votes for screen recording"
+            )
+        else:
+            # Tiebreaker failed, default to NOT rejecting (benefit of the doubt)
+            is_screen_recording = False
+            activity.logger.info(
+                f"   ⚖️ [VALIDATE] Screen disagreement, no tiebreaker - defaulting to NOT screen"
+            )
     
     # Final validation: must be soccer AND not a screen recording
     is_valid = is_soccer and not is_screen_recording

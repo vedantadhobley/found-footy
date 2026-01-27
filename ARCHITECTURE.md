@@ -185,7 +185,8 @@ Child workflows (Twitter→Download→Upload) can run on **different workers** -
 │  0. check_event_exists (VAR check - abort if event removed)          │
 │  PARALLEL: Download videos via Twitter syndication API               │
 │  1. MD5 batch dedup (within downloaded batch only)                   │
-│  2. AI validation (reject non-football)                              │
+│  2. AI validation (reject non-football + phone-TV recordings)        │
+│     Uses 2/3 majority tiebreaker for both checks                     │
 │  PARALLEL: Compute perceptual hash (heartbeat every 5 frames)        │
 │  3. Queue videos for upload (signal-with-start to UploadWorkflow)    │
 │  4. IF NO videos to upload: increment_twitter_count                  │

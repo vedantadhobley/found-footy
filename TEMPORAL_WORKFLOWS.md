@@ -55,7 +55,8 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
 │                      DownloadWorkflow                                │
 │   1. Download videos via Twitter syndication API (PARALLEL)          │
 │   2. MD5 batch dedup (within downloaded batch only)                  │
-│   3. AI validation (reject non-football)                             │
+│   3. AI validation (reject non-football + phone-TV recordings)       │
+│      Uses 2/3 majority tiebreaker for both checks                    │
 │   4. Compute perceptual hash (PARALLEL, heartbeat every 5 frames)    │
 │   5. Queue videos for upload (signal-with-start to UploadWorkflow)   │
 │   6. IF NO videos to upload: increment_twitter_count                 │
@@ -553,7 +554,7 @@ Heartbeats prove the activity is making progress - if no heartbeat for the speci
 **Activities using heartbeats:**
 
 1. **`execute_twitter_search`**: Heartbeat every 15s during browser automation
-2. **`validate_video_is_soccer`**: Heartbeat between each AI vision call (25%, 75%, 50% tiebreaker)
+2. **`validate_video_is_soccer`**: Heartbeat between each AI vision call (25%, 75%, 50% tiebreaker). Validates both soccer content AND rejects phone-TV recordings using 2/3 majority vote
 3. **`generate_video_hash`**: Heartbeat every 5 frames
 
 ### Hash Generation Heartbeat

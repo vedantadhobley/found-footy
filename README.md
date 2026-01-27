@@ -726,8 +726,10 @@ flowchart TB
     end
     
     subgraph VALIDATE["3. AI Validation (sequential)"]
-        AI{Vision Model<br/>Is soccer?}
-        REJECT[Reject non-soccer]
+        AI{Vision Model<br/>Is soccer?<br/>Is phone-TV recording?}
+        REJECT[Reject non-soccer<br/>or phone-TV recordings]
+        direction TB
+        NOTE[2/3 majority tiebreaker<br/>for both checks]
     end
     
     subgraph HASH["4. Hash Generation (PARALLEL)"]
