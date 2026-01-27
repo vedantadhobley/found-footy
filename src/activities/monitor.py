@@ -461,16 +461,20 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
 
 
 @activity.defn
-async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
+async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Dict[str, Any]:
     """
-    Process fixture events using pure set comparison.
+    Process fixture events using pure set comparison with workflow-ID-based tracking.
     
     Algorithm:
     1. Get event_ids from live and active (sets)
-    2. NEW = live_ids - active_ids → add with monitor_count=1
-    3. REMOVED = active_ids - live_ids → delete entirely (VAR)
-    4. MATCHING = live_ids & active_ids → increment monitor_count
-    5. At monitor_count >= 3 → mark complete, trigger Twitter
+    2. NEW = live_ids - active_ids → add event (player must be known)
+    3. REMOVED = active_ids - live_ids → decrement monitor count, delete if 0 (VAR)
+    4. MATCHING = live_ids & active_ids → register workflow ID, check trigger condition
+    5. Trigger Twitter when: len(_monitor_workflows) >= 3 AND _monitor_complete = false
+    
+    Args:
+        fixture_id: The fixture ID to process
+        workflow_id: The current MonitorWorkflow ID (for tracking which workflows processed events)
     
     See src/data/models.py for event field documentation.
     """
@@ -502,7 +506,7 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
     active_map = {e[EventFields.EVENT_ID]: e for e in active_events if e.get(EventFields.EVENT_ID)}
     active_ids = set(active_map.keys())
     
-    # NEW events
+    # NEW events - add to active with initial state
     new_ids = live_ids - active_ids
     new_count = 0
     for event_id in new_ids:
@@ -547,6 +551,8 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
     # 
     # This means an event must be missing for 3+ consecutive polls to be deleted.
     # API glitches that return empty events for 1-2 polls won't cause data loss.
+    #
+    # NOTE: We still use _monitor_count for VAR removal logic (separate from workflow tracking)
     removed_ids = active_ids - live_ids
     removed_count = 0
     for event_id in removed_ids:
@@ -587,7 +593,9 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
                 f"count={current_count}→{new_count_val} | need_0_to_delete"
             )
     
-    # MATCHING events - increment monitor_count
+    # =========================================================================
+    # MATCHING events - Register workflow and check trigger condition
+    # =========================================================================
     matching_ids = live_ids & active_ids
     updated_count = 0
     twitter_triggered = []
@@ -596,87 +604,47 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
         active_event = active_map[event_id]
         current_count = active_event.get(EventFields.MONITOR_COUNT, 0)
         monitor_complete = active_event.get(EventFields.MONITOR_COMPLETE, False)
+        twitter_complete = active_event.get(EventFields.TWITTER_COMPLETE, False)
         
-        # =====================================================================
-        # CASE 1: _monitor_complete = TRUE -> Check if Twitter needs restart
-        # =====================================================================
-        # If monitor is complete but Twitter is not, check if Twitter workflow
-        # is actually running. If not, we need to restart it.
-        if monitor_complete:
-            twitter_complete = active_event.get(EventFields.TWITTER_COMPLETE, False)
-            
-            # CASE 1A: Twitter also complete - nothing to do, just sync counts
-            if twitter_complete:
-                if current_count < 3:
-                    # Recovering from a decrement - bump back up
-                    new_count_val = current_count + 1
-                    live_event = next((e for e in live_events if e.get(EventFields.EVENT_ID) == event_id), None)
-                    store.update_event_stable_count(fixture_id, event_id, new_count_val, live_event)
-                    activity.logger.info(
-                        f"📈 [MONITOR] RECOVERY | event={event_id} | "
-                        f"count={current_count}→{new_count_val} | monitor_complete=True"
-                    )
-                continue
-            
-            # CASE 1B: Monitor complete but Twitter NOT complete - restart Twitter!
-            # This happens when Twitter workflow was terminated mid-execution
-            twitter_count = active_event.get(EventFields.TWITTER_COUNT, 0)
-            live_event = next((e for e in live_events if e.get(EventFields.EVENT_ID) == event_id), None)
-            if live_event:
-                player_name = live_event.get("player", {}).get("name")
-                if player_name:
-                    twitter_triggered.append({
-                        "event_id": event_id,
-                        "player_name": player_name,
-                        "team_id": live_event.get("team", {}).get("id"),
-                        "team_name": live_event.get("team", {}).get("name", "Unknown"),
-                        "minute": live_event.get("time", {}).get("elapsed"),
-                        "extra": live_event.get("time", {}).get("extra"),
-                        "first_seen": active_event.get(EventFields.FIRST_SEEN),
-                    })
-                    activity.logger.warning(
-                        f"🔄 [MONITOR] RESTART TWITTER | event={event_id} | "
-                        f"monitor_complete=True | twitter_complete=False | twitter_count={twitter_count}"
-                    )
-            continue
-        
-        # =====================================================================
-        # CASE 2: _monitor_complete = FALSE, count = 3 -> STUCK! Need to retry Twitter
-        # =====================================================================
-        # This happens if a previous workflow timed out after incrementing to 3
-        # but before starting TwitterWorkflow. We need to retry.
-        if current_count >= 3 and not monitor_complete:
-            live_event = next((e for e in live_events if e.get(EventFields.EVENT_ID) == event_id), None)
-            if live_event:
-                player_name = live_event.get("player", {}).get("name")
-                if player_name:
-                    twitter_triggered.append({
-                        "event_id": event_id,
-                        "player_name": player_name,
-                        "team_id": live_event.get("team", {}).get("id"),
-                        "team_name": live_event.get("team", {}).get("name", "Unknown"),
-                        "minute": live_event.get("time", {}).get("elapsed"),
-                        "extra": live_event.get("time", {}).get("extra"),
-                        "first_seen": active_event.get(EventFields.FIRST_SEEN),
-                    })
-                    activity.logger.warning(
-                        f"🔄 [MONITOR] RETRY STUCK EVENT | event={event_id} | "
-                        f"count=3 | monitor_complete=False | retrying_twitter_start"
-                    )
-            continue
-        
-        # =====================================================================
-        # CASE 3: _monitor_complete = FALSE, count < 3 -> Normal increment
-        # =====================================================================
-        
-        # Get live event to check player and sync API data changes
+        # Get live event for API data sync
         live_event = next((e for e in live_events if e.get(EventFields.EVENT_ID) == event_id), None)
         
-        # Skip debouncing if player is not known (Unknown/missing)
-        # Event stays visible in frontend at count=1, but won't progress
-        # When player is identified, player_id changes -> new event_id -> fresh debounce
+        # =====================================================================
+        # CASE 1: Both monitor and twitter complete - nothing to do
+        # =====================================================================
+        if monitor_complete and twitter_complete:
+            # Just recover count if needed (from previous decrements)
+            if current_count < 3:
+                new_count_val = current_count + 1
+                store.update_event_stable_count(fixture_id, event_id, new_count_val, live_event)
+                activity.logger.info(
+                    f"📈 [MONITOR] RECOVERY | event={event_id} | "
+                    f"count={current_count}→{new_count_val} | fully_complete"
+                )
+            continue
+        
+        # =====================================================================
+        # CASE 2: Monitor complete but Twitter NOT complete
+        # =====================================================================
+        # Twitter workflow already started but hasn't finished yet.
+        # The while loop in TwitterWorkflow will handle retries if needed.
+        # We don't re-trigger here - just let Twitter continue its work.
+        if monitor_complete and not twitter_complete:
+            # Get download workflow count to show progress
+            download_count = store.get_download_workflow_count(fixture_id, event_id)
+            activity.logger.info(
+                f"⏳ [MONITOR] TWITTER IN PROGRESS | event={event_id} | "
+                f"download_workflows={download_count}/10"
+            )
+            continue
+        
+        # =====================================================================
+        # CASE 3: Monitor NOT complete - register workflow and check trigger
+        # =====================================================================
+        
+        # Skip if player is not known (Unknown/missing)
+        # Event stays visible in frontend, but won't progress to Twitter
         if live_event and not is_player_known(live_event):
-            # Just sync the API data without incrementing count
             store.update_event_stable_count(fixture_id, event_id, current_count, live_event)
             activity.logger.info(
                 f"⏸️ [MONITOR] WAITING FOR PLAYER | event={event_id} | "
@@ -684,52 +652,57 @@ async def process_fixture_events(fixture_id: int) -> Dict[str, Any]:
             )
             continue
         
-        # Increment monitor count (cap at 3)
+        # Increment monitor count (for VAR decrement logic and frontend display)
         new_count_val = min(current_count + 1, 3)
-        
         if store.update_event_stable_count(fixture_id, event_id, new_count_val, live_event):
             updated_count += 1
+        
+        # Register this workflow ID in the _monitor_workflows array
+        # This is the NEW workflow-ID-based tracking
+        if workflow_id:
+            store.add_monitor_workflow(fixture_id, event_id, workflow_id)
+        
+        # Get current workflow count and monitor_complete status
+        monitor_workflow_count = store.get_monitor_workflow_count(fixture_id, event_id)
+        monitor_complete_check = store.get_monitor_complete(fixture_id, event_id)
+        
+        # NEW TRIGGER CONDITION: len(_monitor_workflows) >= 3 AND _monitor_complete = false
+        should_trigger = monitor_workflow_count >= 3 and not monitor_complete_check
+        
+        if should_trigger:
+            player_name = live_event.get("player", {}).get("name") if live_event else None
+            team_name = live_event.get("team", {}).get("name", "Unknown") if live_event else "Unknown"
+            team_id = live_event.get("team", {}).get("id") if live_event else None
             
-            if new_count_val >= 3:
-                # Count reached 3 - prepare for Twitter trigger
-                # IMPORTANT: We do NOT set _monitor_complete here!
-                # The workflow will set it AFTER successfully starting TwitterWorkflow.
-                # This prevents the race condition where we set complete=True but
-                # the workflow times out before starting Twitter.
-                
-                live_event = next(e for e in live_events if e.get(EventFields.EVENT_ID) == event_id)
-                player_name = live_event.get("player", {}).get("name")
-                team_name = live_event.get("team", {}).get("name", "Unknown")
-                team_id = live_event.get("team", {}).get("id")
-                
-                # Only trigger Twitter search if we have a player name
-                # Without a player name, Twitter search would be too broad/noisy
-                if player_name:
-                    twitter_triggered.append({
-                        "event_id": event_id,
-                        "player_name": player_name,
-                        "team_id": team_id,
-                        "team_name": team_name,
-                        "minute": live_event.get("time", {}).get("elapsed"),
-                        "extra": live_event.get("time", {}).get("extra"),
-                        "first_seen": active_event.get(EventFields.FIRST_SEEN),
-                    })
-                    activity.logger.info(
-                        f"🎯 [MONITOR] READY FOR TWITTER | event={event_id} | "
-                        f"monitor_count=3 | pending_twitter_start"
-                    )
-                else:
-                    # No player name - mark complete without Twitter
-                    first_seen = active_event.get(EventFields.FIRST_SEEN)
-                    store.mark_event_monitor_complete(fixture_id, event_id, first_seen)
-                    activity.logger.warning(
-                        f"⚠️ [MONITOR] MONITOR COMPLETE (no player) | event={event_id} | "
-                        f"skip_reason=no_player_name"
-                    )
-            else:
+            if player_name:
+                twitter_triggered.append({
+                    "event_id": event_id,
+                    "player_name": player_name,
+                    "team_id": team_id,
+                    "team_name": team_name,
+                    "minute": live_event.get("time", {}).get("elapsed") if live_event else None,
+                    "extra": live_event.get("time", {}).get("extra") if live_event else None,
+                    "first_seen": active_event.get(EventFields.FIRST_SEEN),
+                })
                 activity.logger.info(
-                    f"📊 [MONITOR] MONITORING | event={event_id} | count={new_count_val}/3"
+                    f"🎯 [MONITOR] READY FOR TWITTER | event={event_id} | "
+                    f"monitor_workflows={monitor_workflow_count} | _monitor_complete=False"
                 )
+            else:
+                # No player name - mark complete without Twitter
+                # (This shouldn't happen since we check is_player_known above, but just in case)
+                first_seen = active_event.get(EventFields.FIRST_SEEN)
+                store.mark_event_monitor_complete(fixture_id, event_id)
+                activity.logger.warning(
+                    f"⚠️ [MONITOR] MONITOR COMPLETE (no player) | event={event_id} | "
+                    f"skip_reason=no_player_name"
+                )
+        else:
+            activity.logger.info(
+                f"📊 [MONITOR] MONITORING | event={event_id} | "
+                f"count={new_count_val}/3 | workflows={monitor_workflow_count}/3 | "
+                f"complete={monitor_complete_check}"
+            )
     
     # Sync fixture metadata
     store.sync_fixture_data(fixture_id)
@@ -773,6 +746,14 @@ async def sync_fixture_metadata(fixture_id: int) -> bool:
 @activity.defn
 async def confirm_twitter_workflow_started(fixture_id: int, event_id: str, first_seen: str = None) -> bool:
     """
+    DEPRECATED: Use set_monitor_complete (in twitter.py) instead.
+    
+    The new pattern has TwitterWorkflow call set_monitor_complete at its START,
+    which is more reliable than having MonitorWorkflow call this after starting the child.
+    This ensures _monitor_complete is only set when Twitter actually starts running.
+    
+    Keeping this for backward compatibility during transition.
+    
     Mark event as _monitor_complete=True AFTER TwitterWorkflow has been successfully started.
     
     This is called by the workflow AFTER start_child_workflow succeeds, preventing
@@ -803,7 +784,7 @@ async def confirm_twitter_workflow_started(fixture_id: int, event_id: str, first
         
         store.mark_event_monitor_complete(fixture_id, event_id, first_seen_dt)
         activity.logger.info(
-            f"✅ [MONITOR] CONFIRMED Twitter started | event={event_id} | _monitor_complete=True"
+            f"✅ [MONITOR] DEPRECATED: CONFIRMED Twitter started | event={event_id} | _monitor_complete=True"
         )
         return True
     except Exception as e:
@@ -824,6 +805,7 @@ async def check_twitter_workflow_running(workflow_id: str) -> Dict[str, Any]:
     
     Args:
         workflow_id: The Twitter workflow ID (e.g., "twitter-Liverpool-Gakpo-90min-...")
+    
     
     Returns:
         Dict with:
@@ -913,3 +895,69 @@ async def notify_frontend_refresh() -> bool:
             f"⚠️ [MONITOR] Frontend notify error | error={e}"
         )
         return False
+
+
+# =============================================================================
+# WORKFLOW TRACKING (Workflow-ID-based)
+# =============================================================================
+
+@activity.defn
+async def register_monitor_workflow(
+    fixture_id: int,
+    event_id: str,
+    workflow_id: str
+) -> Dict[str, Any]:
+    """
+    Register a MonitorWorkflow as having processed this event.
+    Uses $addToSet for idempotency - adding the same ID twice is a no-op.
+    
+    Returns count AND current _monitor_complete status for spawn decision.
+    The caller uses: should_trigger = (count >= 3 AND not monitor_complete)
+    
+    Args:
+        fixture_id: Fixture ID
+        event_id: Event ID
+        workflow_id: The MonitorWorkflow ID (e.g., "monitor-27_01_2026-15:30")
+    
+    Returns:
+        Dict with success, count, monitor_complete, should_trigger_twitter
+    """
+    from src.data.mongo_store import FootyMongoStore
+    
+    store = FootyMongoStore()
+    
+    try:
+        # Add workflow ID to array (idempotent via $addToSet)
+        success = store.add_monitor_workflow(fixture_id, event_id, workflow_id)
+        
+        # Get current count and completion status
+        count = store.get_monitor_workflow_count(fixture_id, event_id)
+        monitor_complete = store.get_monitor_complete(fixture_id, event_id)
+        
+        # Determine if we should trigger Twitter
+        # Only trigger if count >= 3 AND monitor_complete is still False
+        # (If monitor_complete is True, Twitter already started)
+        should_trigger = count >= 3 and not monitor_complete
+        
+        activity.logger.info(
+            f"📊 [MONITOR] register_monitor_workflow | event={event_id} | "
+            f"workflow={workflow_id} | count={count} | complete={monitor_complete} | "
+            f"should_trigger={should_trigger}"
+        )
+        
+        return {
+            "success": success,
+            "count": count,
+            "monitor_complete": monitor_complete,
+            "should_trigger_twitter": should_trigger
+        }
+    except Exception as e:
+        activity.logger.error(
+            f"❌ [MONITOR] register_monitor_workflow failed | event={event_id} | error={e}"
+        )
+        return {
+            "success": False,
+            "count": 0,
+            "monitor_complete": False,
+            "should_trigger_twitter": False
+        }

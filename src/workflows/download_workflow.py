@@ -2,12 +2,12 @@
 Download Workflow - Video Download and Validation Pipeline
 
 Orchestrates video download, validation, and hash generation:
-1. download_single_video x N - Download each video individually (3 retries per video)
-2. deduplicate_by_md5 - FAST MD5 dedup within batch (eliminates true duplicates)
-3. validate_video_is_soccer x N - AI validation (only for MD5-unique videos)
-4. generate_video_hash x N - Generate perceptual hash (only for validated videos)
-5. queue_videos_for_upload - Signal UploadWorkflow for FIFO queue processing
-6. increment_twitter_count - Track completion progress
+1. register_download_workflow - FIRST THING: Register ourselves (proves we're running!)
+2. download_single_video x N - Download each video individually (3 retries per video)
+3. deduplicate_by_md5 - FAST MD5 dedup within batch (eliminates true duplicates)
+4. validate_video_is_soccer x N - AI validation (only for MD5-unique videos)
+5. generate_video_hash x N - Generate perceptual hash (only for validated videos)
+6. queue_videos_for_upload - ALWAYS signal UploadWorkflow (even with 0 videos)
 
 Key Design: Uses signal-with-start to queue video batches to UploadWorkflow.
 - queue_videos_for_upload activity uses Temporal client to signal-with-start
@@ -15,12 +15,20 @@ Key Design: Uses signal-with-start to queue video batches to UploadWorkflow.
 - Only ONE UploadWorkflow per event, processes batches sequentially
 - Different events can have parallel UploadWorkflows
 
+Workflow-ID-Based Tracking (NEW):
+- register_download_workflow is called FIRST (before any other work)
+- Uses $addToSet for idempotency (same workflow ID won't double-count)
+- If workflow fails to start: doesn't register → count stays low → Twitter retries
+- If workflow crashes and restarts: re-registers → no-op (already in array)
+- UploadWorkflow checks count and marks _twitter_complete when 10 reached
+
 Design Philosophy:
 - Per-video retry (3 attempts with exponential backoff)
 - Videos that fail all 3 attempts are logged but don't block workflow
 - Parallel processing where possible (downloads, hashes)
 - Comprehensive logging at every step with [DOWNLOAD] prefix
 - Activity-level heartbeats for long operations (hash generation)
+- ALWAYS signal UploadWorkflow - ensures completion check happens
 
 Pipeline Order:
 - MD5 batch dedup happens BEFORE AI validation (saves expensive AI calls)
@@ -49,6 +57,8 @@ class DownloadWorkflow:
     - Each video download is independent
     - Failures don't cascade (partial success preserved)
     - UploadWorkflow serializes S3 operations per event
+    
+    Key: Registers itself at START (proves we're running!) before any other work.
     
     Note: VAR check is done by TwitterWorkflow before spawning this workflow.
     """
@@ -80,6 +90,37 @@ class DownloadWorkflow:
             f"videos={len(discovered_videos) if discovered_videos else 0}"
         )
         
+        # =========================================================================
+        # Step 0: REGISTER OURSELVES (proves we're running!)
+        # This is CRITICAL - it must be the FIRST thing we do.
+        # If we crash after this, we're still counted (which is correct).
+        # If we never run this, TwitterWorkflow will keep spawning us.
+        # =========================================================================
+        workflow_id = workflow.info().workflow_id
+        workflow.logger.info(f"🔒 [DOWNLOAD] Registering workflow | id={workflow_id} | event={event_id}")
+        
+        try:
+            register_result = await workflow.execute_activity(
+                download_activities.register_download_workflow,
+                args=[fixture_id, event_id, workflow_id],
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=5,  # Important - retry hard
+                    initial_interval=timedelta(seconds=2),
+                    backoff_coefficient=2.0,
+                ),
+            )
+            download_count = register_result.get("count", 0)
+            workflow.logger.info(
+                f"✅ [DOWNLOAD] Registered | workflow={workflow_id} | "
+                f"download_count={download_count}/10 | event={event_id}"
+            )
+        except Exception as e:
+            workflow.logger.error(
+                f"❌ [DOWNLOAD] FAILED to register workflow | event={event_id} | error={e} | "
+                f"Continuing anyway - Twitter may spawn duplicate"
+            )
+        
         # Initialize download stats for visibility into what happened in the pipeline
         download_stats = {
             "discovered": len(discovered_videos) if discovered_videos else 0,
@@ -95,9 +136,9 @@ class DownloadWorkflow:
         }
         
         if not discovered_videos:
-            workflow.logger.warning(f"⚠️ [DOWNLOAD] No videos to download | event={event_id}")
-            # Still need to increment twitter count to track completion
-            await self._increment_twitter_count(fixture_id, event_id)
+            workflow.logger.info(f"📭 [DOWNLOAD] No videos to download | event={event_id}")
+            # ALWAYS signal UploadWorkflow - it will check count and mark complete if needed
+            await self._signal_upload_workflow(fixture_id, event_id, [], "/tmp/dummy")
             return {
                 "fixture_id": fixture_id,
                 "event_id": event_id,
@@ -377,60 +418,24 @@ class DownloadWorkflow:
         # This guarantees FIFO ordering - Temporal delivers signals in order.
         # Only ONE UploadWorkflow runs per event, processing batches sequentially.
         # =========================================================================
+        # ALWAYS signal UploadWorkflow - even with 0 videos
+        # UploadWorkflow will check count and mark _twitter_complete when 10 reached
+        # =========================================================================
         if videos_to_upload:
             workflow.logger.info(
                 f"☁️ [DOWNLOAD] Queuing videos for upload | videos={len(videos_to_upload)} | event={event_id}"
             )
-            
-            try:
-                queue_result = await workflow.execute_activity(
-                    download_activities.queue_videos_for_upload,
-                    args=[
-                        fixture_id,
-                        event_id,
-                        player_name,
-                        team_name,
-                        videos_to_upload,
-                        temp_dir,
-                    ],
-                    start_to_close_timeout=timedelta(seconds=30),
-                    retry_policy=RetryPolicy(
-                        maximum_attempts=3,
-                        initial_interval=timedelta(seconds=2),
-                        backoff_coefficient=2.0,
-                    ),
-                )
-                
-                if queue_result.get("status") == "queued":
-                    videos_uploaded = len(videos_to_upload)  # Queued for upload
-                    workflow.logger.info(
-                        f"✅ [DOWNLOAD] Videos queued for upload | count={videos_uploaded} | event={event_id}"
-                    )
-                else:
-                    workflow.logger.error(
-                        f"❌ [DOWNLOAD] Failed to queue videos | error={queue_result.get('error')} | event={event_id}"
-                    )
-                    videos_uploaded = 0
-                    
-            except Exception as e:
-                workflow.logger.error(
-                    f"❌ [DOWNLOAD] queue_videos_for_upload FAILED | error={e} | event={event_id}"
-                )
-                videos_uploaded = 0
-            
+            await self._signal_upload_workflow(fixture_id, event_id, videos_to_upload, temp_dir, player_name, team_name)
+            videos_uploaded = len(videos_to_upload)
             s3_urls = []  # We don't wait for upload results - it happens async in UploadWorkflow
-            
-            # NOTE: Don't increment twitter count here!
-            # UploadWorkflow will increment after processing this batch.
-            # This ensures _twitter_complete isn't set until uploads are actually done.
         else:
             workflow.logger.info(
-                f"⚠️ [DOWNLOAD] No videos to upload (all filtered/failed) | event={event_id}"
+                f"📭 [DOWNLOAD] No videos to upload (all filtered/failed) | event={event_id}"
             )
             videos_uploaded = 0
             s3_urls = []
             
-            # Clean up temp directory since we're not calling UploadWorkflow
+            # Clean up temp directory since no uploads to do
             try:
                 await workflow.execute_activity(
                     download_activities.cleanup_download_temp,
@@ -441,8 +446,8 @@ class DownloadWorkflow:
             except Exception as e:
                 workflow.logger.warning(f"⚠️ [DOWNLOAD] Failed to cleanup temp dir | error={e}")
             
-            # Increment twitter count here since no upload workflow will do it
-            await self._increment_twitter_count(fixture_id, event_id)
+            # STILL signal UploadWorkflow with empty list - it will check count
+            await self._signal_upload_workflow(fixture_id, event_id, [], temp_dir)
         
         workflow.logger.info(
             f"🎉 [DOWNLOAD] WORKFLOW COMPLETE | uploaded={videos_uploaded} | "
@@ -456,24 +461,45 @@ class DownloadWorkflow:
             "s3_urls": s3_urls,
         }
     
-    async def _increment_twitter_count(self, fixture_id: int, event_id: str):
-        """Increment twitter count and check for completion."""
+    async def _signal_upload_workflow(
+        self, 
+        fixture_id: int, 
+        event_id: str, 
+        videos: list, 
+        temp_dir: str,
+        player_name: str = "",
+        team_name: str = ""
+    ):
+        """Signal UploadWorkflow with videos (or empty list for completion check)."""
         try:
-            increment_result = await workflow.execute_activity(
-                download_activities.increment_twitter_count,
-                args=[fixture_id, event_id, 10],  # 10 total attempts
+            queue_result = await workflow.execute_activity(
+                download_activities.queue_videos_for_upload,
+                args=[
+                    fixture_id,
+                    event_id,
+                    player_name,
+                    team_name,
+                    videos,  # May be empty - that's fine
+                    temp_dir,
+                ],
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(
-                    maximum_attempts=5,
+                    maximum_attempts=3,
                     initial_interval=timedelta(seconds=2),
                     backoff_coefficient=2.0,
                 ),
             )
-            if increment_result.get("marked_complete"):
+            
+            if queue_result.get("status") == "queued":
                 workflow.logger.info(
-                    f"🏁 [DOWNLOAD] All 10 attempts complete, marked _twitter_complete=true | event={event_id}"
+                    f"✅ [DOWNLOAD] Signaled UploadWorkflow | videos={len(videos)} | event={event_id}"
+                )
+            else:
+                workflow.logger.error(
+                    f"❌ [DOWNLOAD] Failed to signal UploadWorkflow | error={queue_result.get('error')} | event={event_id}"
                 )
         except Exception as e:
             workflow.logger.error(
-                f"❌ [DOWNLOAD] increment_twitter_count FAILED | error={e} | event={event_id}"
+                f"❌ [DOWNLOAD] queue_videos_for_upload FAILED | error={e} | event={event_id}"
             )
+

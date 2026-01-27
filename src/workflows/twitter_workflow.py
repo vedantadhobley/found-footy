@@ -1,49 +1,47 @@
 """
 Twitter Workflow - Scheduled Video Discovery Pipeline
 
-Orchestrates Twitter video search with 10 attempts on a STRICT 1-minute schedule.
-All searches are spawned on a timer, each runs independently.
+Orchestrates Twitter video search with up to 10 download workflows on a ~1-minute schedule.
+Uses workflow-ID-based tracking for reliable completion detection.
 
 Design Philosophy:
 - Resolves team aliases at start (cache lookup or full RAG pipeline)
-- Searches spawn at T+0, T+60, T+120, T+180... (strict schedule)
-- Each search + download runs as a unit
-- Downloads are BLOCKING child workflows that delegate to UploadWorkflow
-- UploadWorkflow serializes S3 operations per event (deterministic ID)
-- _twitter_complete is set by DownloadWorkflow (or this workflow for no-video attempts)
-- Strict scheduling means searches happen at predictable times regardless of processing
+- Uses WHILE loop that checks download workflow count (exits when 10 reached)
+- Each iteration: search → ALWAYS start DownloadWorkflow (even with 0 videos)
+- DownloadWorkflow registers itself at START, so failed starts don't count
+- UploadWorkflow sets _twitter_complete when 10 download workflows have registered
+- Max 15 attempts safety limit prevents infinite loops
+
+Workflow-ID-Based Tracking (NEW):
+- OLD: Counter incremented after each attempt (could lose counts on failures)
+- NEW: Array of workflow IDs, checked at start of each iteration
+  - DownloadWorkflow registers itself in _download_workflows at its START
+  - TwitterWorkflow checks len(_download_workflows) >= 10 to exit
+  - UploadWorkflow checks and marks _twitter_complete when count reaches 10
+  - $addToSet ensures idempotent registration (no double-counting)
+
+_monitor_complete:
+- Set by THIS workflow at the VERY START (not by MonitorWorkflow)
+- Ensures the flag is only set when Twitter ACTUALLY STARTS running
+- If Twitter fails to start, _monitor_complete stays false → retry spawn
 
 Race Condition Prevention:
-- Problem: Multiple downloads could upload the same video to S3
-- Solution: UploadWorkflow with ID `upload-{event_id}` serializes uploads per event
-- Temporal ensures only ONE UploadWorkflow runs at a time per event
-- Each sees fresh S3 state inside the serialized context
-
-_twitter_complete Tracking:
-- Each DownloadWorkflow increments _twitter_count when complete
-- If no videos found, this workflow increments _twitter_count directly
-- When count reaches 10, _twitter_complete is set atomically
-- Fixture can't move to completed until _twitter_complete=true
-
-Dedup Flow (per DownloadWorkflow → UploadWorkflow):
-1. DownloadWorkflow: Download → MD5 batch dedup → AI validation → Perceptual hash
-2. UploadWorkflow (serialized): Fetch FRESH S3 state → MD5 dedup vs S3 → Perceptual dedup vs S3
-3. Upload new/better quality videos → Update MongoDB → Recalculate ranks
+- DownloadWorkflow → UploadWorkflow (signal-with-start pattern)
+- UploadWorkflow serializes S3 operations per event (ID: upload-{event_id})
+- Each sees fresh S3 state, eliminating race conditions
 
 Flow:
-1. Resolve team aliases (cache or RAG pipeline) - blocking, ~30-90s
-2. Start 10 search attempts at T+0, T+60, T+120...
-3. Each search runs: Search → Save → Download (blocking) → Upload (serialized)
-4. Downloads increment _twitter_count when done
-5. When count reaches 10, _twitter_complete is set
+1. Set _monitor_complete = true (we're running!)
+2. Resolve team aliases (cache or RAG pipeline) - blocking, ~30-90s
+3. WHILE download_count < 10 (max 15 attempts):
+   a. Check download workflow count
+   b. Search Twitter
+   c. ALWAYS start DownloadWorkflow (registers itself, signals UploadWorkflow)
+   d. Wait ~60 seconds
+4. UploadWorkflow marks _twitter_complete when count reaches 10
 
-Graceful Termination:
-- Each search child checks if event still exists before searching
-- If event was deleted (VAR/count hit 0), that search exits early
-- Other searches continue on schedule
-
-Started by: MonitorWorkflow (fire-and-forget when _monitor_complete=true)
-Starts: DownloadWorkflow (blocking per search attempt) → UploadWorkflow (serialized)
+Started by: MonitorWorkflow (fire-and-forget when monitor_workflows >= 3)
+Starts: DownloadWorkflow (fire-and-forget) → UploadWorkflow (signal-with-start)
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -73,44 +71,45 @@ class TwitterWorkflowInput:
 @workflow.defn
 class TwitterWorkflow:
     """
-    Scheduled Twitter search workflow with 10 attempts on STRICT 1-minute intervals.
+    Twitter search workflow with workflow-ID-based tracking.
     
-    Spawns all 10 searches as parallel async tasks, each with its own timer.
-    Search 1 starts immediately, Search 2 after 60s, Search 3 after 120s, etc.
-    This ensures searches happen at predictable times regardless of processing time.
+    Uses a WHILE loop that checks download workflow count (not a fixed FOR loop).
+    Continues until 10 DownloadWorkflows have registered themselves.
+    Max 15 attempts safety limit prevents infinite loops.
     
-    Downloads are BLOCKING child workflows that call UploadWorkflow:
-    1. DownloadWorkflow downloads, validates, and generates hashes
-    2. UploadWorkflow (ID: upload-{event_id}) serializes S3 operations
-    3. Only ONE UploadWorkflow runs at a time per event
-    4. Each sees fresh S3 state, eliminating race conditions
+    Key changes from counter-based approach:
+    1. Sets _monitor_complete at START (proves we're running)
+    2. WHILE loop checks len(_download_workflows) each iteration
+    3. ALWAYS starts DownloadWorkflow (even with 0 videos)
+    4. Failed starts don't register → count stays low → we retry
+    5. UploadWorkflow marks _twitter_complete when count reaches 10
     
-    _twitter_complete handling:
-    - DownloadWorkflow increments _twitter_count when complete
-    - If no videos found, this workflow increments directly
-    - When count reaches 10, _twitter_complete=true is set atomically
-    - This prevents fixture from moving to completed while downloads run
+    Downloads are fire-and-forget child workflows:
+    1. DownloadWorkflow registers itself, downloads, validates, generates hashes
+    2. DownloadWorkflow signals UploadWorkflow (signal-with-start pattern)
+    3. UploadWorkflow (ID: upload-{event_id}) serializes S3 operations
+    4. UploadWorkflow checks count and marks _twitter_complete when 10 reached
     
-    Expected duration: ~10 minutes (9 x 60s intervals + final search time)
+    Expected duration: ~10-15 minutes (depends on how quickly 10 downloads register)
     """
     
     @workflow.run
     async def run(self, input: TwitterWorkflowInput) -> dict:
         """
-        Execute 10 Twitter search attempts on a strict 1-minute schedule.
+        Execute Twitter search attempts until 10 DownloadWorkflows have registered.
         
-        First resolves team aliases (cache or RAG), then:
-        - Attempt 1: starts at T+0
-        - Attempt 2: starts at T+60
-        - Attempt 3: starts at T+120
-        - etc.
+        First sets _monitor_complete (proves we're running), then resolves team aliases,
+        then loops until download count >= 10 (max 15 attempts safety limit).
         
         Args:
             input: TwitterWorkflowInput with fixture_id, event_id, team_id, team_name, player_name
         
         Returns:
-            Dict with total_videos_found, attempts completed
+            Dict with total_videos_found, attempts completed, download count
         """
+        MAX_ATTEMPTS = 15  # Safety limit - should only need 10, but handles start failures
+        REQUIRED_DOWNLOADS = 10
+        
         # Get player search name (handles accents, hyphens, "Jr" suffixes, etc.)
         player_search = extract_player_search_name(input.player_name) if input.player_name else "Unknown"
         
@@ -121,7 +120,32 @@ class TwitterWorkflow:
         )
         
         # =========================================================================
-        # Step 0: Resolve team aliases (cache lookup or full RAG pipeline)
+        # Step 0: Set _monitor_complete = true (proves we're running!)
+        # This is CRITICAL - it must be the FIRST thing we do.
+        # If we crash after this, MonitorWorkflow won't re-spawn us (which is correct).
+        # If we never run this, MonitorWorkflow will retry spawning us.
+        # =========================================================================
+        workflow.logger.info(f"🔒 [TWITTER] Setting _monitor_complete=true | event={input.event_id}")
+        try:
+            await workflow.execute_activity(
+                twitter_activities.set_monitor_complete,
+                args=[input.fixture_id, input.event_id],
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=5,  # Important - retry hard
+                    initial_interval=timedelta(seconds=2),
+                    backoff_coefficient=2.0,
+                ),
+            )
+            workflow.logger.info(f"✅ [TWITTER] _monitor_complete=true SET | event={input.event_id}")
+        except Exception as e:
+            workflow.logger.error(
+                f"❌ [TWITTER] FAILED to set _monitor_complete | event={input.event_id} | error={e} | "
+                f"Continuing anyway - monitor may retry spawn"
+            )
+        
+        # =========================================================================
+        # Step 1: Resolve team aliases (cache lookup or full RAG pipeline)
         # This is a blocking call - we need aliases before searching
         # =========================================================================
         workflow.logger.info(f"🔍 [TWITTER] Resolving aliases for team_id={input.team_id}")
@@ -181,20 +205,62 @@ class TwitterWorkflow:
             workflow.logger.warning(f"⚠️ [TWITTER] Failed to save aliases | error={e}")
         
         workflow.logger.info(
-            f"🐦 [TWITTER] Starting 10 search attempts | event={input.event_id} | "
-            f"player='{player_search}' | aliases={team_aliases} | cache_hit={cache_hit}"
+            f"🐦 [TWITTER] Starting search loop | event={input.event_id} | "
+            f"player='{player_search}' | aliases={team_aliases} | cache_hit={cache_hit} | "
+            f"max_attempts={MAX_ATTEMPTS} | required_downloads={REQUIRED_DOWNLOADS}"
         )
         
         # Track cumulative stats across all attempts
         total_videos_found = 0
-        total_videos_uploaded = 0
+        attempt = 0
         
-        for attempt in range(1, 11):  # Attempts 1-10
+        # =========================================================================
+        # MAIN LOOP: Continue until 10 DownloadWorkflows have registered
+        # =========================================================================
+        while attempt < MAX_ATTEMPTS:
+            attempt += 1
+            
+            # =================================================================
+            # Check download workflow count - exit if we have 10
+            # =================================================================
+            workflow.logger.info(
+                f"📊 [TWITTER] Attempt {attempt}/{MAX_ATTEMPTS} | Checking download count | event={input.event_id}"
+            )
+            
+            try:
+                count_result = await workflow.execute_activity(
+                    twitter_activities.get_download_workflow_count,
+                    args=[input.fixture_id, input.event_id],
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(
+                        maximum_attempts=3,
+                        initial_interval=timedelta(seconds=2),
+                        backoff_coefficient=2.0,
+                    ),
+                )
+                download_count = count_result.get("count", 0)
+                workflow.logger.info(
+                    f"📊 [TWITTER] Download count: {download_count}/{REQUIRED_DOWNLOADS} | event={input.event_id}"
+                )
+                
+                if download_count >= REQUIRED_DOWNLOADS:
+                    workflow.logger.info(
+                        f"✅ [TWITTER] Download count reached {REQUIRED_DOWNLOADS} | "
+                        f"Exiting loop | event={input.event_id}"
+                    )
+                    break
+            except Exception as e:
+                workflow.logger.warning(
+                    f"⚠️ [TWITTER] get_download_workflow_count FAILED | event={input.event_id} | "
+                    f"error={e} | Continuing with search"
+                )
+                download_count = 0
+            
             # =================================================================
             # Check if event still exists (graceful termination for VAR/deleted)
             # =================================================================
             workflow.logger.info(
-                f"🔍 [TWITTER] Attempt {attempt}/10 | Checking event exists | event={input.event_id}"
+                f"🔍 [TWITTER] Attempt {attempt}/{MAX_ATTEMPTS} | Checking event exists | event={input.event_id}"
             )
             
             try:
@@ -227,7 +293,7 @@ class TwitterWorkflow:
                     "fixture_id": input.fixture_id,
                     "event_id": input.event_id,
                     "total_videos_found": total_videos_found,
-                    "total_videos_uploaded": total_videos_uploaded,
+                    "download_count": download_count,
                     "attempts_completed": attempt - 1,
                     "terminated_early": True,
                     "reason": "event_deleted",
@@ -236,8 +302,8 @@ class TwitterWorkflow:
             # Record attempt start time for "START to START" 1-minute spacing
             attempt_start = workflow.now()
             workflow.logger.info(
-                f"🐦 [TWITTER] Attempt {attempt}/10 STARTING | event={input.event_id} | "
-                f"player='{player_search}' | aliases={team_aliases}"
+                f"🐦 [TWITTER] Attempt {attempt}/{MAX_ATTEMPTS} STARTING | event={input.event_id} | "
+                f"player='{player_search}' | aliases={team_aliases} | download_count={download_count}"
             )
             
             # =================================================================
@@ -340,13 +406,15 @@ class TwitterWorkflow:
                     )
             
             # =================================================================
-            # Execute DownloadWorkflow - MUST WAIT for completion
-            # This is critical for data integrity
+            # ALWAYS Execute DownloadWorkflow - even with 0 videos
+            # DownloadWorkflow registers itself at START, signals UploadWorkflow
+            # This ensures we always increment the download count
             # =================================================================
+            
+            # Sort by duration (longest first) and take top 5 to reduce processing time
+            # Videos without duration go to the end (treated as 0)
+            MAX_VIDEOS_TO_DOWNLOAD = 5
             if all_videos:
-                # Sort by duration (longest first) and take top 5 to reduce processing time
-                # Videos without duration go to the end (treated as 0)
-                MAX_VIDEOS_TO_DOWNLOAD = 5
                 sorted_videos = sorted(
                     all_videos, 
                     key=lambda v: v.get("duration_seconds") or 0, 
@@ -360,97 +428,71 @@ class TwitterWorkflow:
                         f"📊 [TWITTER] Selecting top {MAX_VIDEOS_TO_DOWNLOAD} longest videos from {len(all_videos)} found | "
                         f"durations: {[v.get('duration_seconds', 0) for v in videos_to_download]}"
                     )
-                
-                team_clean = team_aliases[0].replace(" ", "_").replace(".", "_").replace("-", "_") if team_aliases else "Unknown"
-                # Don't include video count in workflow ID - it causes nondeterminism when code changes
-                download_workflow_id = f"download{attempt}-{team_clean}-{player_search}-{input.event_id}"
-                
-                workflow.logger.info(
-                    f"⬇️ [TWITTER] Starting DownloadWorkflow (FIRE-AND-FORGET) | "
-                    f"download_id={download_workflow_id} | videos={len(videos_to_download)}"
-                )
-                
-                try:
-                    # START (fire-and-forget) - not EXECUTE (wait)
-                    # Downloads run independently, dedup against MongoDB's _s3_videos
-                    from temporalio.workflow import ParentClosePolicy
-                    await workflow.start_child_workflow(
-                        DownloadWorkflow.run,
-                        args=[input.fixture_id, input.event_id, input.player_name, team_aliases[0] if team_aliases else "", videos_to_download],
-                        id=download_workflow_id,
-                        parent_close_policy=ParentClosePolicy.ABANDON,  # Continue even if parent closes
-                        # Increase task timeout from 10s to 60s - large histories need more
-                        # time to replay, otherwise we get "Task not found" errors
-                        task_timeout=timedelta(seconds=60),
-                        task_queue="found-footy",  # Explicit queue - don't inherit from parent
-                    )
-                    
-                    workflow.logger.info(
-                        f"🚀 [TWITTER] Download STARTED (fire-and-forget) | download_id={download_workflow_id}"
-                    )
-                    
-                except Exception as e:
-                    workflow.logger.error(
-                        f"❌ [TWITTER] Failed to START DownloadWorkflow | download_id={download_workflow_id} | "
-                        f"error={e} | Continuing to next attempt"
-                    )
-                    # Download failed to start - still need to increment count
-                    # so we reach 10 and mark complete
-                    try:
-                        await workflow.execute_activity(
-                            download_activities.increment_twitter_count,
-                            args=[input.fixture_id, input.event_id, 10],
-                            start_to_close_timeout=timedelta(seconds=30),
-                            retry_policy=RetryPolicy(maximum_attempts=3),
-                        )
-                    except Exception as inc_e:
-                        workflow.logger.error(
-                            f"❌ [TWITTER] increment_twitter_count also FAILED | error={inc_e}"
-                        )
             else:
-                # No videos found - we still need to increment the counter
-                # (normally DownloadWorkflow does this, but we didn't start one)
+                videos_to_download = []  # Empty list - DownloadWorkflow will still register itself
                 workflow.logger.info(
-                    f"📭 [TWITTER] No new videos found | event={input.event_id} | attempt={attempt}"
+                    f"📭 [TWITTER] No videos found | Starting DownloadWorkflow anyway for tracking | "
+                    f"event={input.event_id}"
                 )
-                try:
-                    increment_result = await workflow.execute_activity(
-                        download_activities.increment_twitter_count,
-                        args=[input.fixture_id, input.event_id, 10],
-                        start_to_close_timeout=timedelta(seconds=30),
-                        retry_policy=RetryPolicy(maximum_attempts=3),
-                    )
-                    if increment_result.get("marked_complete"):
-                        workflow.logger.info(
-                            f"🏁 [TWITTER] All 10 attempts complete (no downloads pending) | event={input.event_id}"
-                        )
-                except Exception as e:
-                    workflow.logger.error(
-                        f"❌ [TWITTER] increment_twitter_count FAILED | error={e} | event={input.event_id}"
-                    )
+            
+            team_clean = team_aliases[0].replace(" ", "_").replace(".", "_").replace("-", "_") if team_aliases else "Unknown"
+            # Don't include video count in workflow ID - it causes nondeterminism when code changes
+            download_workflow_id = f"download{attempt}-{team_clean}-{player_search}-{input.event_id}"
+            
+            workflow.logger.info(
+                f"⬇️ [TWITTER] Starting DownloadWorkflow (FIRE-AND-FORGET) | "
+                f"download_id={download_workflow_id} | videos={len(videos_to_download)}"
+            )
+            
+            try:
+                # START (fire-and-forget) - not EXECUTE (wait)
+                # DownloadWorkflow registers itself at START, then signals UploadWorkflow
+                from temporalio.workflow import ParentClosePolicy
+                await workflow.start_child_workflow(
+                    DownloadWorkflow.run,
+                    args=[input.fixture_id, input.event_id, input.player_name, team_aliases[0] if team_aliases else "", videos_to_download],
+                    id=download_workflow_id,
+                    parent_close_policy=ParentClosePolicy.ABANDON,  # Continue even if parent closes
+                    # Increase task timeout from 10s to 60s - large histories need more
+                    # time to replay, otherwise we get "Task not found" errors
+                    task_timeout=timedelta(seconds=60),
+                    task_queue="found-footy",  # Explicit queue - don't inherit from parent
+                )
+                
+                workflow.logger.info(
+                    f"🚀 [TWITTER] Download STARTED (fire-and-forget) | download_id={download_workflow_id}"
+                )
+                
+            except Exception as e:
+                # Download failed to START - it didn't register, so count stays low
+                # The while loop will naturally retry on the next iteration
+                workflow.logger.error(
+                    f"❌ [TWITTER] Failed to START DownloadWorkflow | download_id={download_workflow_id} | "
+                    f"error={e} | Will retry on next iteration (count stays low)"
+                )
             
             # =================================================================
             # Wait for next attempt (1 minute from START of this attempt)
             # =================================================================
-            if attempt < 10:
-                elapsed = (workflow.now() - attempt_start).total_seconds()
-                wait_seconds = max(60 - elapsed, 10)  # 1 min minus elapsed, min 10s
-                workflow.logger.info(
-                    f"⏳ [TWITTER] Attempt {attempt} took {elapsed:.0f}s | "
-                    f"Waiting {wait_seconds:.0f}s before attempt {attempt + 1} | "
-                    f"event={input.event_id}"
-                )
-                await workflow.sleep(timedelta(seconds=wait_seconds))
+            elapsed = (workflow.now() - attempt_start).total_seconds()
+            wait_seconds = max(60 - elapsed, 10)  # 1 min minus elapsed, min 10s
+            workflow.logger.info(
+                f"⏳ [TWITTER] Attempt {attempt} took {elapsed:.0f}s | "
+                f"Waiting {wait_seconds:.0f}s before next iteration | "
+                f"event={input.event_id}"
+            )
+            await workflow.sleep(timedelta(seconds=wait_seconds))
         
         # =================================================================
-        # TwitterWorkflow complete - but downloads may still be running!
-        # _twitter_complete is set by the LAST thing to finish:
-        # - If downloads are pending: last DownloadWorkflow sets it
-        # - If no downloads: we already set it via increment_twitter_count above
+        # TwitterWorkflow complete - either we reached 10 downloads or hit max attempts
+        # _twitter_complete is set by UploadWorkflow when it sees 10 downloads
         # =================================================================
+        final_download_count = download_count if 'download_count' in dir() else 0
+        exit_reason = "download_count_reached" if final_download_count >= REQUIRED_DOWNLOADS else "max_attempts_reached"
+        
         workflow.logger.info(
-            f"✅ [TWITTER] All 10 search attempts COMPLETE | event={input.event_id} | "
-            f"Downloads still running will set _twitter_complete when done"
+            f"✅ [TWITTER] Loop COMPLETE | event={input.event_id} | "
+            f"reason={exit_reason} | download_count={final_download_count} | attempts={attempt}"
         )
         
         # NOTE: Temp directory cleanup happens at FIXTURE level when fixture moves to completed
@@ -471,15 +513,15 @@ class TwitterWorkflow:
         
         workflow.logger.info(
             f"🎉 [TWITTER] WORKFLOW COMPLETE | event={input.event_id} | "
-            f"total_found={total_videos_found} | "
-            f"attempts=10 (downloads may still be running)"
+            f"total_found={total_videos_found} | download_count={final_download_count} | "
+            f"attempts={attempt} | reason={exit_reason}"
         )
         
         return {
             "fixture_id": input.fixture_id,
             "event_id": input.event_id,
             "total_videos_found": total_videos_found,
-            "total_videos_uploaded": "N/A (fire-and-forget)",
-            "attempts_completed": 10,
+            "download_count": final_download_count,
+            "attempts_completed": attempt,
+            "exit_reason": exit_reason,
         }
-

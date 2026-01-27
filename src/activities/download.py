@@ -69,6 +69,111 @@ def _load_twitter_cookies() -> Dict[str, str]:
         return {}
 
 
+# =============================================================================
+# Workflow Tracking Activities
+# =============================================================================
+
+@activity.defn
+async def register_download_workflow(
+    fixture_id: int,
+    event_id: str,
+    workflow_id: str
+) -> Dict[str, Any]:
+    """
+    Register a DownloadWorkflow as having started for this event.
+    
+    Called by DownloadWorkflow at the VERY START of its run.
+    Uses $addToSet for idempotency - same workflow ID won't double-count.
+    
+    This is the key to the new tracking approach:
+    - If workflow starts → registers → we know it ran
+    - If workflow fails to start → doesn't register → count stays low → TwitterWorkflow retries
+    - If workflow crashes and restarts → re-registers → no-op (idempotent)
+    
+    Args:
+        fixture_id: Fixture ID
+        event_id: Event ID
+        workflow_id: The DownloadWorkflow ID (e.g., "download1-Everton-Barry-1379194_45_343684_Goal_1")
+    
+    Returns:
+        Dict with success, count (current count after registration)
+    """
+    from src.data.mongo_store import FootyMongoStore
+    
+    store = FootyMongoStore()
+    
+    try:
+        # Add workflow ID to array (idempotent via $addToSet)
+        success = store.add_download_workflow(fixture_id, event_id, workflow_id)
+        
+        # Get current count after registration
+        count = store.get_download_workflow_count(fixture_id, event_id)
+        
+        activity.logger.info(
+            f"📊 [DOWNLOAD] register_download_workflow | event={event_id} | "
+            f"workflow={workflow_id} | count={count} | success={success}"
+        )
+        
+        return {
+            "success": success,
+            "count": count
+        }
+    except Exception as e:
+        activity.logger.error(
+            f"❌ [DOWNLOAD] register_download_workflow failed | event={event_id} | error={e}"
+        )
+        return {
+            "success": False,
+            "count": 0
+        }
+
+
+@activity.defn
+async def check_and_mark_twitter_complete(
+    fixture_id: int,
+    event_id: str,
+    required_count: int = 10
+) -> Dict[str, Any]:
+    """
+    Check if _download_workflows count >= required_count and mark _twitter_complete if so.
+    
+    This is the new idempotent replacement for increment_twitter_count_and_check_complete.
+    Called by UploadWorkflow after each batch and as a failsafe before idle timeout exit.
+    
+    Args:
+        fixture_id: Fixture ID
+        event_id: Event ID
+        required_count: Number of download workflows required for completion (default 10)
+    
+    Returns:
+        Dict with count, was_already_complete, marked_complete
+    """
+    from src.data.mongo_store import FootyMongoStore
+    
+    store = FootyMongoStore()
+    
+    try:
+        result = store.check_and_mark_twitter_complete(fixture_id, event_id, required_count)
+        
+        activity.logger.info(
+            f"📊 [DOWNLOAD] check_and_mark_twitter_complete | event={event_id} | "
+            f"count={result['count']}/{required_count} | "
+            f"was_complete={result['was_already_complete']} | "
+            f"marked={result['marked_complete']}"
+        )
+        
+        return result
+    except Exception as e:
+        activity.logger.error(
+            f"❌ [DOWNLOAD] check_and_mark_twitter_complete failed | event={event_id} | error={e}"
+        )
+        return {
+            "count": 0,
+            "was_already_complete": False,
+            "marked_complete": False
+        }
+
+
 @activity.defn
 async def download_single_video(
     video_url: str, 
@@ -711,6 +816,14 @@ async def increment_twitter_count(
     total_attempts: int = 10
 ) -> dict:
     """
+    DEPRECATED: Use check_and_mark_twitter_complete instead.
+    
+    This activity uses counter-based tracking which has race condition issues.
+    The new workflow-ID-based tracking (register_download_workflow + check_and_mark_twitter_complete)
+    is idempotent and handles retries correctly.
+    
+    Keeping this for backward compatibility during transition.
+    
     Increment _twitter_count and check if we should mark _twitter_complete.
     
     Called by:
@@ -734,7 +847,7 @@ async def increment_twitter_count(
     store = FootyMongoStore()
     
     activity.logger.info(
-        f"📊 [DOWNLOAD] Incrementing twitter count | event={event_id}"
+        f"📊 [DOWNLOAD] DEPRECATED: Incrementing twitter count | event={event_id}"
     )
     
     result = store.increment_twitter_count_and_check_complete(

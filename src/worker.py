@@ -235,6 +235,7 @@ async def main():
                 monitor.check_twitter_workflow_running,
                 monitor.complete_fixture_if_ready,
                 monitor.notify_frontend_refresh,
+                monitor.register_monitor_workflow,  # NEW: Workflow-ID-based tracking
                 # RAG activities (team alias lookup)
                 rag.get_team_aliases,
                 rag.save_team_aliases,
@@ -244,13 +245,17 @@ async def main():
                 twitter.get_twitter_search_data,
                 twitter.execute_twitter_search,
                 twitter.save_discovered_videos,
+                twitter.set_monitor_complete,  # NEW: Called at start of TwitterWorkflow
+                twitter.get_download_workflow_count,  # NEW: For while loop condition
                 # Download activities (download, validate, hash, cleanup, queue)
                 download.download_single_video,
                 download.validate_video_is_soccer,  # AI vision validation
                 download.generate_video_hash,  # Perceptual hash with heartbeat
-                download.increment_twitter_count,  # Increment count + set _twitter_complete when done
+                download.increment_twitter_count,  # DEPRECATED: Will be removed after refactor
                 download.cleanup_download_temp,  # Cleanup on failure
                 download.queue_videos_for_upload,  # Signal-with-start to queue videos for upload
+                download.register_download_workflow,  # NEW: Called at start of DownloadWorkflow
+                download.check_and_mark_twitter_complete,  # NEW: Check count and mark complete
                 # Upload activities (S3 dedup/upload - serialized per event)
                 upload.fetch_event_data,  # Get existing S3 videos
                 upload.deduplicate_by_md5,  # Fast MD5 dedup against S3

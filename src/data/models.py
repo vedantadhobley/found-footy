@@ -289,17 +289,21 @@ class EventFields:
     # Identification
     EVENT_ID = "_event_id"
     
-    # Monitor tracking
-    MONITOR_COUNT = "_monitor_count"
-    MONITOR_COMPLETE = "_monitor_complete"
+    # Monitor tracking (workflow-ID-based)
+    MONITOR_WORKFLOWS = "_monitor_workflows"  # Array of MonitorWorkflow IDs that processed this event
+    MONITOR_COMPLETE = "_monitor_complete"    # True when TwitterWorkflow actually starts
     FIRST_SEEN = "_first_seen"
     
-    # Twitter tracking
-    TWITTER_COUNT = "_twitter_count"
-    TWITTER_COMPLETE = "_twitter_complete"
+    # Twitter/Download tracking (workflow-ID-based)
+    DOWNLOAD_WORKFLOWS = "_download_workflows"  # Array of DownloadWorkflow IDs that ran for this event
+    TWITTER_COMPLETE = "_twitter_complete"      # True when len(_download_workflows) >= 10
     TWITTER_COMPLETED_AT = "_twitter_completed_at"
     TWITTER_SEARCH = "_twitter_search"
     TWITTER_ALIASES = "_twitter_aliases"  # Team name aliases from RAG
+    
+    # DEPRECATED - kept for migration compatibility, will be removed
+    MONITOR_COUNT = "_monitor_count"    # DEPRECATED: Use MONITOR_WORKFLOWS
+    TWITTER_COUNT = "_twitter_count"    # DEPRECATED: Use DOWNLOAD_WORKFLOWS
     
     # Video storage
     DISCOVERED_VIDEOS = "_discovered_videos"
@@ -321,10 +325,10 @@ class EventFields:
         """All enhanced event fields (underscore-prefixed)."""
         return [
             cls.EVENT_ID,
-            cls.MONITOR_COUNT,
+            cls.MONITOR_WORKFLOWS,
             cls.MONITOR_COMPLETE,
             cls.FIRST_SEEN,
-            cls.TWITTER_COUNT,
+            cls.DOWNLOAD_WORKFLOWS,
             cls.TWITTER_COMPLETE,
             cls.TWITTER_COMPLETED_AT,
             cls.TWITTER_SEARCH,
@@ -336,6 +340,9 @@ class EventFields:
             cls.SCORE_AFTER,
             cls.SCORING_TEAM,
             cls.REMOVED,
+            # DEPRECATED - kept for compatibility
+            cls.MONITOR_COUNT,
+            cls.TWITTER_COUNT,
         ]
 
 

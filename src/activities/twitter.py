@@ -30,6 +30,78 @@ _twitter_cache_time = 0
 
 
 # =============================================================================
+# Workflow Tracking Activities
+# =============================================================================
+
+@activity.defn
+async def set_monitor_complete(fixture_id: int, event_id: str) -> Dict[str, Any]:
+    """
+    Set _monitor_complete = true for an event.
+    
+    Called by TwitterWorkflow at the VERY START to confirm it actually started.
+    This ensures the flag is only set when Twitter workflow ACTUALLY STARTS running,
+    not just when MonitorWorkflow attempts to spawn it.
+    
+    If Twitter fails to start (Temporal issue, etc.), _monitor_complete stays false,
+    and the next monitor workflow will see (count >= 3 AND complete = false) → retry spawn.
+    
+    Args:
+        fixture_id: Fixture ID
+        event_id: Event ID
+    
+    Returns:
+        Dict with success
+    """
+    from src.data.mongo_store import FootyMongoStore
+    
+    store = FootyMongoStore()
+    
+    try:
+        success = store.mark_monitor_complete(fixture_id, event_id)
+        activity.logger.info(
+            f"✅ [TWITTER] set_monitor_complete | event={event_id} | success={success}"
+        )
+        return {"success": success}
+    except Exception as e:
+        activity.logger.error(
+            f"❌ [TWITTER] set_monitor_complete failed | event={event_id} | error={e}"
+        )
+        return {"success": False}
+
+
+@activity.defn
+async def get_download_workflow_count(fixture_id: int, event_id: str) -> Dict[str, Any]:
+    """
+    Get the current count of download workflows that have run for this event.
+    
+    Called by TwitterWorkflow at the start of each iteration to determine if
+    we've reached 10 download workflows (and can exit the loop).
+    
+    Args:
+        fixture_id: Fixture ID
+        event_id: Event ID
+    
+    Returns:
+        Dict with count
+    """
+    from src.data.mongo_store import FootyMongoStore
+    
+    store = FootyMongoStore()
+    
+    try:
+        count = store.get_download_workflow_count(fixture_id, event_id)
+        activity.logger.info(
+            f"📊 [TWITTER] get_download_workflow_count | event={event_id} | count={count}"
+        )
+        return {"count": count}
+    except Exception as e:
+        activity.logger.error(
+            f"❌ [TWITTER] get_download_workflow_count failed | event={event_id} | error={e}"
+        )
+        return {"count": 0}
+
+
+# =============================================================================
 # Activity 0: Check Event Exists (for workflow graceful termination)
 # =============================================================================
 

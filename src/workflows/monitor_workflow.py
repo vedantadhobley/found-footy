@@ -140,9 +140,11 @@ class MonitorWorkflow:
             )
             
             # Process events inline (no EventWorkflow needed!)
+            # Pass workflow_id for workflow-ID-based tracking
+            monitor_workflow_id = workflow.info().workflow_id
             result = await workflow.execute_activity(
                 monitor_activities.process_fixture_events,
-                fixture_id,
+                args=[fixture_id, monitor_workflow_id],
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=RetryPolicy(maximum_attempts=3),
             )
@@ -216,23 +218,11 @@ class MonitorWorkflow:
                 
                 workflow.logger.info(f"🐦 Started TwitterWorkflow: {twitter_workflow_id}")
                 
-                # CRITICAL: Mark _monitor_complete=True AFTER TwitterWorkflow started successfully
-                # This prevents the race condition where timeout between setting complete
-                # and starting Twitter leaves the goal stuck forever.
-                # Note: first_seen may already be a string (from MongoDB) or datetime
-                if first_seen is None:
-                    first_seen_str = None
-                elif isinstance(first_seen, str):
-                    first_seen_str = first_seen
-                else:
-                    first_seen_str = first_seen.isoformat()
-                    
-                await workflow.execute_activity(
-                    monitor_activities.confirm_twitter_workflow_started,
-                    args=[fixture_id, event_id, first_seen_str],
-                    start_to_close_timeout=timedelta(seconds=5),
-                    retry_policy=RetryPolicy(maximum_attempts=3),
-                )
+                # NOTE: _monitor_complete is now set by TwitterWorkflow at its START
+                # This ensures the flag is only set when Twitter actually starts running,
+                # not just when MonitorWorkflow attempts to spawn it.
+                # If Twitter fails to start, _monitor_complete stays false, and the next
+                # monitor will see (count >= 3 AND complete = false) → retry spawn.
             
             # Check if fixture is finished and should be completed
             if fixture_finished:

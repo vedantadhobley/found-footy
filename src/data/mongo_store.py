@@ -542,6 +542,14 @@ class FootyMongoStore:
         total_attempts: int = 10
     ) -> dict:
         """
+        DEPRECATED: Use check_and_mark_twitter_complete instead.
+        
+        This function uses counter-based tracking which has race condition issues.
+        The new workflow-ID-based tracking (add_download_workflow + check_and_mark_twitter_complete)
+        is idempotent and handles retries correctly.
+        
+        Keeping this for backward compatibility during transition.
+        
         Atomically increment _twitter_count and set _twitter_complete when count reaches total.
         
         Called by:
@@ -605,6 +613,221 @@ class FootyMongoStore:
         except Exception as e:
             print(f"❌ Error incrementing twitter count for {event_id}: {e}")
             return {"success": False, "new_count": 0, "marked_complete": False}
+
+    # ==========================================================================
+    # WORKFLOW TRACKING (Workflow-ID-based)
+    # ==========================================================================
+    
+    def add_monitor_workflow(self, fixture_id: int, event_id: str, workflow_id: str) -> bool:
+        """
+        Add a MonitorWorkflow ID to the event's _monitor_workflows array.
+        Uses $addToSet for idempotency - adding the same ID twice is a no-op.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            workflow_id: The MonitorWorkflow ID (e.g., "monitor-27_01_2026-15:30")
+            
+        Returns:
+            True if document was modified (new ID added), False otherwise
+        """
+        try:
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {"$addToSet": {f"events.$.{EventFields.MONITOR_WORKFLOWS}": workflow_id}}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error adding monitor workflow {workflow_id} to {event_id}: {e}")
+            return False
+
+    def add_download_workflow(self, fixture_id: int, event_id: str, workflow_id: str) -> bool:
+        """
+        Add a DownloadWorkflow ID to the event's _download_workflows array.
+        Uses $addToSet for idempotency - adding the same ID twice is a no-op.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID  
+            workflow_id: The DownloadWorkflow ID (e.g., "download1-Everton-Barry-1379194_45_343684_Goal_1")
+            
+        Returns:
+            True if document was modified (new ID added), False otherwise
+        """
+        try:
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {"$addToSet": {f"events.$.{EventFields.DOWNLOAD_WORKFLOWS}": workflow_id}}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error adding download workflow {workflow_id} to {event_id}: {e}")
+            return False
+
+    def get_monitor_workflow_count(self, fixture_id: int, event_id: str) -> int:
+        """
+        Return the number of MonitorWorkflows that have processed this event.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            
+        Returns:
+            Length of _monitor_workflows array (0 if not found or empty)
+        """
+        try:
+            fixture = self.fixtures_active.find_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {f"events.$": 1}
+            )
+            if fixture and fixture.get("events"):
+                return len(fixture["events"][0].get(EventFields.MONITOR_WORKFLOWS, []))
+            return 0
+        except Exception as e:
+            print(f"❌ Error getting monitor workflow count for {event_id}: {e}")
+            return 0
+
+    def get_download_workflow_count(self, fixture_id: int, event_id: str) -> int:
+        """
+        Return the number of DownloadWorkflows that have run for this event.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            
+        Returns:
+            Length of _download_workflows array (0 if not found or empty)
+        """
+        try:
+            fixture = self.fixtures_active.find_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {f"events.$": 1}
+            )
+            if fixture and fixture.get("events"):
+                return len(fixture["events"][0].get(EventFields.DOWNLOAD_WORKFLOWS, []))
+            return 0
+        except Exception as e:
+            print(f"❌ Error getting download workflow count for {event_id}: {e}")
+            return 0
+
+    def get_monitor_complete(self, fixture_id: int, event_id: str) -> bool:
+        """
+        Return the current value of _monitor_complete for an event.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            
+        Returns:
+            Value of _monitor_complete (False if not found or not set)
+        """
+        try:
+            fixture = self.fixtures_active.find_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {f"events.$": 1}
+            )
+            if fixture and fixture.get("events"):
+                return fixture["events"][0].get(EventFields.MONITOR_COMPLETE, False)
+            return False
+        except Exception as e:
+            print(f"❌ Error getting monitor complete status for {event_id}: {e}")
+            return False
+
+    def mark_monitor_complete(self, fixture_id: int, event_id: str) -> bool:
+        """
+        Set _monitor_complete = true for an event.
+        Called by TwitterWorkflow at the VERY START to confirm it actually started.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            
+        Returns:
+            True if document was modified, False otherwise
+        """
+        try:
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {"$set": {f"events.$.{EventFields.MONITOR_COMPLETE}": True}}
+            )
+            if result.modified_count > 0:
+                print(f"✅ Set _monitor_complete=true for {event_id}")
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error setting monitor complete for {event_id}: {e}")
+            return False
+
+    def mark_twitter_complete(self, fixture_id: int, event_id: str) -> bool:
+        """
+        Set _twitter_complete = true for an event.
+        Called by UploadWorkflow when _download_workflows count reaches 10.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            
+        Returns:
+            True if document was modified, False otherwise
+        """
+        try:
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {"$set": {
+                    f"events.$.{EventFields.TWITTER_COMPLETE}": True,
+                    f"events.$.{EventFields.TWITTER_COMPLETED_AT}": datetime.now(timezone.utc)
+                }}
+            )
+            if result.modified_count > 0:
+                print(f"✅ Set _twitter_complete=true for {event_id}")
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error setting twitter complete for {event_id}: {e}")
+            return False
+
+    def check_and_mark_twitter_complete(self, fixture_id: int, event_id: str, required_count: int = 10) -> dict:
+        """
+        Check if _download_workflows count >= required_count and mark _twitter_complete if so.
+        
+        This is the new idempotent replacement for increment_twitter_count_and_check_complete.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            required_count: Number of download workflows required for completion (default 10)
+            
+        Returns:
+            Dict with count, was_already_complete, marked_complete
+        """
+        try:
+            count = self.get_download_workflow_count(fixture_id, event_id)
+            
+            # Check if already complete
+            fixture = self.fixtures_active.find_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {f"events.$": 1}
+            )
+            was_already_complete = False
+            if fixture and fixture.get("events"):
+                was_already_complete = fixture["events"][0].get(EventFields.TWITTER_COMPLETE, False)
+            
+            marked_complete = False
+            if count >= required_count and not was_already_complete:
+                self.mark_twitter_complete(fixture_id, event_id)
+                marked_complete = True
+                print(f"✅ {event_id}: {count}/{required_count} download workflows - marking twitter complete")
+            elif count >= required_count:
+                print(f"ℹ️ {event_id}: {count}/{required_count} download workflows - already complete")
+            else:
+                print(f"📊 {event_id}: {count}/{required_count} download workflows - not yet complete")
+            
+            return {
+                "count": count,
+                "was_already_complete": was_already_complete,
+                "marked_complete": marked_complete
+            }
+        except Exception as e:
+            print(f"❌ Error checking/marking twitter complete for {event_id}: {e}")
+            return {"count": 0, "was_already_complete": False, "marked_complete": False}
     
     def mark_event_removed(self, fixture_id: int, event_id: str) -> bool:
         """
