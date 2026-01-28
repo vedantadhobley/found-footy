@@ -1,8 +1,20 @@
 # Workflow-ID-Based Tracking Refactor
 
+## Status: ✅ IMPLEMENTED (January 28, 2026)
+
+This refactor has been fully implemented and deployed:
+- ✅ Workflow-ID arrays tracking (`_monitor_workflows`, `_download_workflows`)
+- ✅ Idempotent `$addToSet` operations replace fragile `$inc` counters
+- ✅ Renamed `_twitter_complete` → `_download_complete` (source-agnostic naming)
+- ✅ Migrated 380 historical events in production MongoDB
+- ✅ Removed all backwards compatibility code
+- ⏳ VAR/cancelled goal tracking (next iteration)
+
+---
+
 ## Overview
 
-This document outlines a significant architectural change to how we track workflow execution and determine event completion. We are moving from **counter-based tracking** (`_monitor_count`, `_twitter_count`) to **workflow-ID-based tracking** (`_monitor_workflows`, `_download_workflows`).
+This document outlines a significant architectural change to how we track workflow execution and determine event completion. We moved from **counter-based tracking** (`_monitor_count`, `_twitter_count`) to **workflow-ID-based tracking** (`_monitor_workflows`, `_download_workflows`).
 
 ---
 
