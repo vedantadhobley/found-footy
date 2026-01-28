@@ -463,27 +463,30 @@ class EnhancedEvent(TypedDict, total=False):
     
     Extends raw API event data with:
     - Unique identifier (_event_id)
-    - Debounce tracking (_monitor_count, _monitor_complete)
-    - Twitter workflow tracking (_twitter_count, _twitter_complete)
+    - Debounce tracking (_monitor_workflows, _monitor_complete)
+    - Twitter workflow tracking (_download_workflows, _twitter_complete)
     - Video storage (_discovered_videos, _s3_videos)
     - Score context (_score_after, _scoring_team)
     
+    WORKFLOW-ID TRACKING (NEW)
+    ──────────────────────────
+    Instead of fragile counters that can fail to increment, we track workflow IDs
+    in arrays. The array length IS the count. $addToSet makes this idempotent.
+    
+    _monitor_workflows: Array of MonitorWorkflow IDs that saw this event
+    _download_workflows: Array of DownloadWorkflow IDs (completed attempts)
+    
     DEBOUNCE PATTERN
     ────────────────
-    Events must appear in 3 consecutive API polls before we consider them "real".
-    This handles:
-    - API delays (event appears, disappears, reappears)
-    - VAR reviews (goal counted, then cancelled)
-    - Minute drift (goal at 44' then 45')
-    
-    _monitor_count increments each poll while event is present.
-    At count=3, _monitor_complete=True and Twitter workflow is triggered.
+    Events must be seen by 3 different MonitorWorkflows before we trigger Twitter.
+    When len(_monitor_workflows) >= 3, TwitterWorkflow is started.
+    TwitterWorkflow sets _monitor_complete=True at its very start.
     
     TWITTER WORKFLOW
     ────────────────
     After monitor complete, we search Twitter for video clips.
-    Up to 3 attempts (_twitter_count) spaced across polls.
-    _twitter_complete=True when workflow finishes (success or max attempts).
+    Each DownloadWorkflow registers its ID at the very start.
+    _twitter_complete=True when len(_download_workflows) >= 10.
     
     VAR HANDLING
     ────────────
@@ -505,13 +508,13 @@ class EnhancedEvent(TypedDict, total=False):
     _event_id: str
     
     # === Monitor/Debounce Tracking ===
-    _monitor_count: int       # Consecutive polls event has appeared (0-3)
-    _monitor_complete: bool   # True when monitor_count >= 3 (debounce finished)
+    _monitor_workflows: List[str]  # Workflow IDs that saw this event (debounce)
+    _monitor_complete: bool   # True when TwitterWorkflow starts (set by Twitter)
     _first_seen: datetime     # When event was first detected
     
     # === Twitter Workflow Tracking ===
-    _twitter_count: int       # Twitter search attempts (0-3)
-    _twitter_complete: bool   # True when Twitter workflow finished
+    _download_workflows: List[str]  # DownloadWorkflow IDs (completed attempts)
+    _twitter_complete: bool   # True when len(_download_workflows) >= 10
     _twitter_completed_at: datetime
     _twitter_search: str      # Search query for Twitter
     _twitter_aliases: List[str]  # Team name aliases from RAG

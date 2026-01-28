@@ -82,11 +82,11 @@ This decoupling allows:
 
 | Field | Set By | When | Purpose |
 |-------|--------|------|---------|
-| `_monitor_count` | Monitor | Each poll when event seen | Debounce counter (0=unknown player, 1-3=known) |
-| `_monitor_complete` | Monitor | AFTER TwitterWorkflow starts successfully | Debounce finished, Twitter triggered |
+| `_monitor_workflows` | Monitor | Each poll when event seen | Array of workflow IDs (debounce via array length) |
+| `_monitor_complete` | TwitterWorkflow | At VERY START of workflow | Debounce finished, Twitter triggered |
 | `_twitter_aliases` | TwitterWorkflow | After alias resolution | Team search variations |
-| `_twitter_count` | DownloadWorkflow | When download completes (END of attempt) | Tracks completed attempts (1-10) |
-| `_twitter_complete` | DownloadWorkflow | When count reaches 10 | All attempts finished |
+| `_download_workflows` | DownloadWorkflow | At VERY START of each download | Array of workflow IDs (tracks attempts) |
+| `_twitter_complete` | UploadWorkflow | When len(_download_workflows) >= 10 | All attempts finished |
 
 ---
 
@@ -94,32 +94,32 @@ This decoupling allows:
 
 ### MonitorWorkflow (Scheduled Every 30 Seconds)
 - Polls active fixtures from API
-- Increments `_monitor_count` for seen events
-- When count reaches 3: **Triggers TwitterWorkflow** (fire-and-forget)
-- **THEN** sets `_monitor_complete = TRUE` (after Twitter starts successfully)
-- Includes **CASE 2 recovery**: if `count=3 AND monitor_complete=FALSE` (stuck), retries Twitter start
+- Adds workflow ID to `_monitor_workflows` array for seen events (via $addToSet)
+- When array length reaches 3: **Triggers TwitterWorkflow** (fire-and-forget)
+- TwitterWorkflow sets `_monitor_complete = TRUE` at its start (not Monitor)
+- Includes **CASE 2 recovery**: if `workflows>=3 AND monitor_complete=FALSE` (stuck), retries Twitter start
 - Checks fixture completion eligibility
 - **Does NOT manage Twitter retries** (that's TwitterWorkflow's job)
 - **NO execution timeout** — uses SKIP overlap policy (if still running, next scheduled is skipped)
 
 ### TwitterWorkflow (Triggered by Monitor, ~10 min)
+- **Sets `_monitor_complete = TRUE` at VERY START** (before any other work)
 - **Resolves aliases at start**: cache lookup OR full RAG pipeline
-- **Self-manages all 10 attempts** with durable timers (1-min spacing)
+- **WHILE `get_download_workflow_count() < 10`**: loop with durable timers (1-min spacing)
 - Builds search queries: `{player_last} {alias}` for each alias
 - Deduplicates videos across aliases and previous attempts
-- **Starts DownloadWorkflow (BLOCKING child)** for each attempt with videos
-- If no videos found, increments `_twitter_count` directly
-- `_twitter_complete` is set atomically when count reaches 10
+- **ALWAYS starts DownloadWorkflow (BLOCKING child)** - even with 0 videos
+- `_twitter_complete` is set by UploadWorkflow when `len(_download_workflows) >= 10`
 
 ### DownloadWorkflow (Triggered by TwitterWorkflow, BLOCKING)
-- **Checks event exists at start** (VAR check - aborts if removed)
+- **Registers workflow ID at VERY START** via `register_download_workflow`
+- **Checks event exists** (VAR check - aborts if removed)
 - Downloads videos from Twitter URLs (parallel)
 - Applies duration filter (>3s to 60s)
 - MD5 batch dedup (within downloaded batch only)
 - Validates soccer content via vision model (Qwen3-VL)
 - Computes perceptual hash for deduplication (dense 0.25s sampling)
-- **Queues videos for upload via signal-with-start** (serialized per event)
-- Increments `_twitter_count` when complete
+- **ALWAYS signals UploadWorkflow** (even with 0 videos - for completion tracking)
 
 ### UploadWorkflow (Signal-with-Start Pattern)
 - **Workflow ID: `upload-{event_id}`** - namespace-scoped, ONE per event
@@ -147,54 +147,61 @@ This decoupling allows:
 
 ```
 T+0:00  Goal scored! Event appears in API
-T+0:30  Monitor poll #1 → _monitor_count = 1
-T+1:00  Monitor poll #2 → _monitor_count = 2
-T+1:30  Monitor poll #3 → _monitor_count = 3
-        → _monitor_complete = TRUE
+T+0:30  Monitor poll #1 → _monitor_workflows = ["monitor-T0:30"]
+T+1:00  Monitor poll #2 → _monitor_workflows = ["monitor-T0:30", "monitor-T1:00"]
+T+1:30  Monitor poll #3 → _monitor_workflows = [..., "monitor-T1:30"] (len=3)
         → TwitterWorkflow triggered (fire-and-forget)
         
 T+1:35  TwitterWorkflow starts:
+        → set_monitor_complete(true) ← FIRST THING
         → get_cached_team_aliases(40) → HIT: ["LFC", "Reds", "Liverpool"]
         → save to _twitter_aliases in event
         
 T+1:40  TwitterWorkflow Attempt 1:
-        → _twitter_count starts at 0
+        → get_download_workflow_count() returns 0
         → Search "Salah LFC" → 3 videos
         → Search "Salah Reds" → 2 videos (1 dup)
         → Search "Salah Liverpool" → 2 videos (1 new)
         → Dedupe → 5 unique videos
         → Start DownloadWorkflow (BLOCKING)
+          → register_download_workflow() ← FIRST THING (len=1)
           → Download 5 videos
           → AI validation → 4 pass
           → Generate hashes
-          → Start UploadWorkflow (upload-{event_id})
+          → Signal UploadWorkflow (upload-{event_id})
             → Fetch fresh S3 state (empty)
             → Upload 4 videos to S3
             → Save to MongoDB
-          → increment_twitter_count → count = 1
+            → check_and_mark_twitter_complete() → len=1, not complete
           
 T+2:40  Attempt 1 complete, sleep(1 min)
 
 T+3:40  TwitterWorkflow Attempt 2:
+        → get_download_workflow_count() returns 1
         → Search same aliases (exclude already-found URLs)
         → 1 new video found
         → Start DownloadWorkflow (BLOCKING)
+          → register_download_workflow() ← FIRST THING (len=2)
           → Download → validate → hash
-          → Start UploadWorkflow (upload-{event_id})
+          → Signal UploadWorkflow (upload-{event_id})
             → Fetch fresh S3 state (4 videos)
             → Perceptual dedup → 1 new unique
             → Upload 1 video
-          → increment_twitter_count → count = 2
+            → check_and_mark_twitter_complete() → len=2, not complete
           
 T+4:40  Attempt 2 complete, sleep(1 min)
 
 ... (attempts 3-9 similar) ...
 
 T+11:40 TwitterWorkflow Attempt 10:
+        → get_download_workflow_count() returns 9
         → Search same aliases
         → 0 new videos found
-        → increment_twitter_count directly → count = 10
-        → _twitter_complete = TRUE (set atomically)
+        → Start DownloadWorkflow (BLOCKING, even with 0 videos!)
+          → register_download_workflow() ← FIRST THING (len=10)
+          → Signal UploadWorkflow (empty batch)
+            → check_and_mark_twitter_complete() → len=10!
+            → _twitter_complete = TRUE
         
 T+12:00 Monitor poll:
         → Fixture status = FT

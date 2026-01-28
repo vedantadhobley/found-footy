@@ -810,9 +810,9 @@ The `while count < 10` loop naturally handles start failures by retrying until 1
 
 ### Phase 5: Cleanup ✅
 - [x] Remove old counter increment code paths - DEPRECATED with comments
-- [ ] Update logging to reference new fields (`_download_workflows` instead of `_twitter_count`)
+- [x] Update logging to reference new fields (`_download_workflows` instead of `_twitter_count`)
 - [ ] Simplify/remove CASE 2 "stuck event" logic in `process_fixture_events` - Kept for safety
-- [ ] Update documentation (ARCHITECTURE.md, TEMPORAL_WORKFLOWS.md, ORCHESTRATION.md)
+- [x] Update documentation (ARCHITECTURE.md, TEMPORAL_WORKFLOWS.md, ORCHESTRATION.md)
 
 ### Phase 6: VAR Removal Refactor (`_drop_workflows`)
 - [ ] Add `DROP_WORKFLOWS` field to `EventFields` in `models.py`

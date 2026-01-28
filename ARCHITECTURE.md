@@ -124,8 +124,8 @@ Child workflows (Twitter→Download→Upload) can run on **different workers** -
                                     Compare IDs      On _monitor_complete
                                     (set ops)              │
                                           │                ▼
-                                    Increment       TwitterWorkflow
-                                    counters        (fire-and-forget)
+                                    Register        TwitterWorkflow
+                                    workflow IDs    (fire-and-forget)
                                                           │
                                                           ▼
                                                    DownloadWorkflow
@@ -172,25 +172,23 @@ Child workflows (Twitter→Download→Upload) can run on **different workers** -
 │     → update_twitter_attempt(attempt)                                │
 │     → Search each alias: "Salah Liverpool", "Salah LFC", ...        │
 │     → Dedupe videos                                                  │
-│     → IF videos: start DownloadWorkflow (BLOCKING child)             │
-│     → ELSE: increment_twitter_count (no download to do it)           │
-│     → IF attempt < 10: workflow.sleep(1 minute) ← DURABLE TIMER     │
-│  Downloads set _twitter_complete when count reaches 10               │
+│     → ALWAYS start DownloadWorkflow (BLOCKING child, even 0 videos)  │
+│     → WHILE len(_download_workflows) < 10: continue loop             │
+│  _twitter_complete set when len(_download_workflows) >= 10           │
 └──────────────────────────────────────┬──────────────────────────────┘
                                        │
                                        ▼ (BLOCKING child workflow)
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        DownloadWorkflow                              │
 ├─────────────────────────────────────────────────────────────────────┤
-│  0. check_event_exists (VAR check - abort if event removed)          │
+│  0. register_download_workflow (at VERY START - tracks attempt)      │
+│  1. check_event_exists (VAR check - abort if event removed)          │
 │  PARALLEL: Download videos via Twitter syndication API               │
-│  1. MD5 batch dedup (within downloaded batch only)                   │
-│  2. AI validation (reject non-football + phone-TV recordings)        │
+│  2. MD5 batch dedup (within downloaded batch only)                   │
+│  3. AI validation (reject non-football + phone-TV recordings)        │
 │     Uses 2/3 majority tiebreaker for both checks                     │
 │  PARALLEL: Compute perceptual hash (heartbeat every 5 frames)        │
-│  3. Queue videos for upload (signal-with-start to UploadWorkflow)    │
-│  4. IF NO videos to upload: increment_twitter_count                  │
-│     (UploadWorkflow handles increment when videos ARE queued)        │
+│  4. ALWAYS signal UploadWorkflow (even with 0 videos)                │
 └──────────────────────────────────────┬──────────────────────────────┘
                                        │
                                        ▼ (SIGNAL-WITH-START, serialized)
@@ -207,7 +205,7 @@ Child workflows (Twitter→Download→Upload) can run on **different workers** -
 │  3. Remove old MongoDB entries ONLY after successful upload          │
 │  4. Update MongoDB + recalculate video ranks                         │
 │  5. Cleanup individual files after successful upload                 │
-│  6. increment_twitter_count (each batch = one Twitter attempt)       │
+│  6. check_and_mark_twitter_complete (if _download_workflows >= 10)   │
 │  7. Wait for more signals or timeout after 5 min idle                │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -218,7 +216,8 @@ Child workflows (Twitter→Download→Upload) can run on **different workers** -
 - **Download → Upload**: Signal-with-start pattern with deterministic ID `upload-{event_id}`
 - **Race condition prevention**: Multiple DownloadWorkflows signal ONE UploadWorkflow per event
 - **FIFO queue**: UploadWorkflow processes batches in signal order via deque
-- **`_twitter_complete`**: Set by UploadWorkflow when count reaches 10 (ensures uploads finish first)
+- **Workflow-ID tracking**: `_monitor_workflows` and `_download_workflows` arrays replace fragile counters
+- **`_twitter_complete`**: Set when `len(_download_workflows) >= 10` (ensures all attempts finished)
 - **Safe replacement**: MongoDB entries only removed AFTER successful S3 upload
 - **Temp cleanup**: Individual files deleted after upload; fixture temp dirs cleaned on completion
 - **Heartbeat-based timeouts**: Long activities use `heartbeat_timeout` instead of arbitrary `execution_timeout`
@@ -267,7 +266,7 @@ TwitterWorkflow (per event, resolves aliases then searches)
     ... (attempts 3-10 similar) ...
     │
     └── Attempt 10:
-        └── 0 new videos → increment_twitter_count (no download to do it)
+        └── 0 new videos → DownloadWorkflow still runs (registers workflow ID)
 ```
 
 **Race Condition Prevention (via Signal-with-Start Pattern):**
@@ -411,10 +410,10 @@ Enhanced fixtures with video tracking. Events array **grows incrementally**, **n
       
       // ========== ENHANCED FIELDS ==========
       "_event_id": "5000_40_234_Goal_1",
-      "_monitor_count": 5,
+      "_monitor_workflows": ["monitor-2025-11-24T15:23:00Z", "monitor-2025-11-24T15:23:30Z", "monitor-2025-11-24T15:24:00Z"],
       "_monitor_complete": true,
       "_twitter_aliases": ["Liverpool", "LFC", "Reds"],
-      "_twitter_count": 3,
+      "_download_workflows": ["download1-Liverpool-Szoboszlai-...", "download2-...", "download3-..."],
       "_twitter_complete": true,
       "_first_seen": "2025-11-24T15:23:45Z",
       "_twitter_search": "Szoboszlai Liverpool",
@@ -524,7 +523,7 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 
 **Key Feature**: Uses `workflow.sleep(1 minute)` between attempts - durable timer survives restarts.
 
-**Note**: `_twitter_complete` is set by DownloadWorkflow via `increment_twitter_count`, not by TwitterWorkflow.
+**Note**: `_twitter_complete` is set when `len(_download_workflows) >= 10`, checked by UploadWorkflow after each batch.
 
 ### 4. DownloadWorkflow (Per Twitter Attempt)
 
@@ -537,7 +536,8 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 | `validate_video_is_soccer` | AI vision validates soccer content | 4x |
 | `generate_video_hash` | Perceptual hash (heartbeat) | 2x |
 | `cleanup_download_temp` | Clean temp files if no videos | 2x |
-| `increment_twitter_count` | Increment count, set complete at 10 | 5x |
+| `register_download_workflow` | Add workflow ID to array | 3x |
+| `check_and_mark_twitter_complete` | Set complete when 10 workflows | 3x |
 
 **AI Video Validation**:
 - Extracts a frame from downloaded video
@@ -608,11 +608,11 @@ This ordering prevents the brief "rank=0" display that would occur if we notifie
 | Field | Type | Set By | Purpose |
 |-------|------|--------|---------|
 | `_event_id` | string | Monitor | Unique: `{fixture}_{team}_{player}_{type}_{seq}` |
-| `_monitor_count` | int | Monitor | Debounce count (0=unknown player, 1-3=known) |
-| `_monitor_complete` | bool | Monitor | true when `_monitor_count >= 3` |
+| `_monitor_workflows` | array | Monitor | Workflow IDs that saw this event (debounce) |
+| `_monitor_complete` | bool | TwitterWorkflow | true at start of TwitterWorkflow |
 | `_twitter_aliases` | array | TwitterWorkflow | Team search variations |
-| `_twitter_count` | int | DownloadWorkflow | Completed attempts count (0-10) |
-| `_twitter_complete` | bool | DownloadWorkflow | true when count reaches 10 |
+| `_download_workflows` | array | DownloadWorkflow | Workflow IDs for completed attempts |
+| `_twitter_complete` | bool | UploadWorkflow | true when `len(_download_workflows) >= 10` |
 | `_first_seen` | datetime | Monitor | When event first appeared |
 | `_twitter_search` | string | Monitor | `{player_last} {team_name}` |
 | `_removed` | bool | Monitor | true if VAR disallowed |
