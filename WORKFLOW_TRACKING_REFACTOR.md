@@ -10,13 +10,13 @@ This document outlines a significant architectural change to how we track workfl
 
 ### Root Cause: Counter Increment Failures
 
-A few weeks ago, we encountered a critical bug where events would run "forever" because the `_twitter_count` counter failed to reach 10, and `_twitter_complete` was never set to `true`.
+A few weeks ago, we encountered a critical bug where events would run "forever" because the `_twitter_count` counter failed to reach 10, and `_download_complete` was never set to `true`.
 
 **What happened:**
 1. TwitterWorkflow triggers DownloadWorkflow 10 times
 2. DownloadWorkflow (or UploadWorkflow) is supposed to call `increment_twitter_count` after each attempt
 3. If the increment fails (network issue, crash, race condition), the counter stays stuck
-4. MonitorWorkflow sees `_twitter_complete = false` and keeps trying to restart workflows
+4. MonitorWorkflow sees `_download_complete = false` and keeps trying to restart workflows
 5. The event never completes
 
 **Why counters are fragile:**
@@ -30,7 +30,7 @@ A few weeks ago, we encountered a critical bug where events would run "forever" 
 We've implemented several workarounds that add complexity:
 
 1. **`check_twitter_workflow_running`** - Query Temporal to see if workflow exists
-2. **Stuck event detection** - MonitorWorkflow checks for `_monitor_complete=true` but `_twitter_complete=false`
+2. **Stuck event detection** - MonitorWorkflow checks for `_monitor_complete=true` but `_download_complete=false`
 3. **Double-increment protection** - UploadWorkflow and DownloadWorkflow both try to increment
 4. **Conditional UploadWorkflow calls** - Only call if there are videos to upload (creates two code paths)
 
@@ -83,7 +83,7 @@ DROP_WORKFLOWS = "_drop_workflows"           # Array of MonitorWorkflow IDs (for
 
 # KEEP - These remain as derived booleans
 MONITOR_COMPLETE = "_monitor_complete"       # True when len(_monitor_workflows) >= 3
-TWITTER_COMPLETE = "_twitter_complete"       # True when len(_download_workflows) >= 10
+DOWNLOAD_COMPLETE = "_download_complete"     # True when len(_download_workflows) >= 10
 ```
 
 ### VAR Removal Logic (`_drop_workflows`)
@@ -140,7 +140,7 @@ Monitor-6: Event MISSING → _drop_workflows = [monitor-4, monitor-5, monitor-6]
   
   // KEEP: Derived completion booleans
   "_monitor_complete": true,
-  "_twitter_complete": false,
+  "_download_complete": false,
   
   // KEEP: Other fields unchanged
   "_first_seen": "2026-01-27T15:30:00Z",
@@ -369,7 +369,7 @@ while True:
     await wait_condition(pending_batches > 0, timeout=5min)
     if timeout:
         # FAILSAFE: Check completion one final time before exiting
-        await check_and_mark_twitter_complete(fixture_id, event_id)
+        await check_and_mark_download_complete(fixture_id, event_id)
         break  # Exit after 5 minutes of no signals
     
     process_batch(...)
@@ -377,14 +377,14 @@ while True:
     # Check completion after each batch
     download_count = get_download_workflow_count(fixture_id, event_id)
     if download_count >= 10:
-        mark_twitter_complete(fixture_id, event_id)
+        mark_download_complete(fixture_id, event_id)
         log("All 10 download workflows registered - marking complete")
 ```
 
 **Key Changes:**
 - Remove `increment_twitter_count` activity entirely
 - Check `_download_workflows` array length to determine completion
-- Set `_twitter_complete = true` when 10 download workflows are registered
+- Set `_download_complete = true` when 10 download workflows are registered
 - **FAILSAFE**: Before exiting on idle timeout, check one final time if 10 download workflows are registered and mark complete if so
 
 **Why the Failsafe?**
@@ -396,7 +396,7 @@ The UploadWorkflow stays alive for 5 minutes after the last signal. In normal op
 
 But if something goes wrong (e.g., the check-after-batch fails, network hiccup, etc.):
 - All 10 download workflows have registered themselves in `_download_workflows`
-- But `_twitter_complete` wasn't set for some reason
+- But `_download_complete` wasn't set for some reason
 - The failsafe catches this: before exiting, check one more time
 
 This is a belt-and-suspenders approach. The array is the source of truth - if it has 10 entries, the event IS complete, so we should mark it as such.
@@ -464,13 +464,13 @@ def get_download_workflow_count(self, fixture_id: int, event_id: str) -> int:
         return len(fixture["events"][0].get(EventFields.DOWNLOAD_WORKFLOWS, []))
     return 0
 
-def mark_twitter_complete(self, fixture_id: int, event_id: str) -> bool:
-    """Set _twitter_complete = true for an event."""
+def mark_download_complete(self, fixture_id: int, event_id: str) -> bool:
+    """Set _download_complete = true for an event."""
     result = self.fixtures_active.update_one(
         {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
         {"$set": {
-            f"events.$.{EventFields.TWITTER_COMPLETE}": True,
-            f"events.$.{EventFields.TWITTER_COMPLETED_AT}": datetime.now(timezone.utc)
+            f"events.$.{EventFields.DOWNLOAD_COMPLETE}": True,
+            f"events.$.{EventFields.DOWNLOAD_COMPLETED_AT}": datetime.now(timezone.utc)
         }}
     )
     return result.modified_count > 0
@@ -574,7 +574,7 @@ async def get_download_workflow_count(
     return {"count": count, "is_complete": count >= 10}
 
 @activity.defn
-async def check_and_mark_twitter_complete(
+async def check_and_mark_download_complete(
     fixture_id: int, 
     event_id: str
 ) -> Dict[str, Any]:
@@ -583,7 +583,7 @@ async def check_and_mark_twitter_complete(
     count = store.get_download_workflow_count(fixture_id, event_id)
     
     if count >= 10:
-        store.mark_twitter_complete(fixture_id, event_id)
+        store.mark_download_complete(fixture_id, event_id)
         return {"count": count, "marked_complete": True}
     
     return {"count": count, "marked_complete": False}
@@ -591,7 +591,7 @@ async def check_and_mark_twitter_complete(
 
 ### Activities to Remove/Deprecate
 
-- `increment_twitter_count` - Replaced by `register_download_workflow` + `check_and_mark_twitter_complete`
+- `increment_twitter_count` - Replaced by `register_download_workflow` + `check_and_mark_download_complete`
 - `update_event_stable_count` - Replaced by `register_monitor_workflow`
 - `confirm_twitter_workflow_started` - Replaced by `set_monitor_complete` (called from Twitter workflow itself)
 
@@ -682,7 +682,7 @@ TwitterWorkflow          MongoDB              DownloadWorkflow         UploadWor
      │                      │                       │                       │
      │                      │◀──check_complete──────────────────────────────│
      │                      │──count=10, complete=true─────────────────────▶│
-     │                      │◀──mark_twitter_complete───────────────────────│
+     │                      │◀──mark_download_complete───────────────────────│
      │                      │                       │                       │
      │──get_download_count──▶│                       │                       │
      │◀──count=10───────────│                       │                       │
@@ -768,15 +768,15 @@ The `while count < 10` loop naturally handles start failures by retrying until 1
 - [x] Add `get_monitor_workflow_count()` in `mongo_store.py`
 - [x] Add `get_download_workflow_count()` in `mongo_store.py`
 - [x] Add `set_monitor_complete()` in `mongo_store.py` - named `mark_monitor_complete()`
-- [x] Add `mark_twitter_complete()` in `mongo_store.py`
-- [x] Add `check_and_mark_twitter_complete()` in `mongo_store.py`
+- [x] Add `mark_download_complete()` in `mongo_store.py`
+- [x] Add `check_and_mark_download_complete()` in `mongo_store.py`
 
 ### Phase 3: Activities ✅
 - [x] Add `register_monitor_workflow` activity in `monitor.py`
 - [x] Add `set_monitor_complete` activity in `twitter.py`
 - [x] Add `register_download_workflow` activity in `download.py`
 - [x] Add `get_download_workflow_count` activity in `twitter.py`
-- [x] Add `check_and_mark_twitter_complete` activity in `download.py`
+- [x] Add `check_and_mark_download_complete` activity in `download.py`
 - [x] Remove/deprecate `increment_twitter_count` activity - DEPRECATED
 
 ### Phase 4: Workflow Updates ✅
@@ -804,9 +804,9 @@ The `while count < 10` loop naturally handles start failures by retrying until 1
 - [x] Remove `_increment_twitter_count` helper method
 
 **UploadWorkflow:** ✅
-- [x] Add `check_and_mark_twitter_complete` after each batch
-- [x] Add failsafe `check_and_mark_twitter_complete` before idle timeout exit
-- [x] Remove `_increment_twitter_count` calls - replaced with `_check_and_mark_twitter_complete`
+- [x] Add `check_and_mark_download_complete` after each batch
+- [x] Add failsafe `check_and_mark_download_complete` before idle timeout exit
+- [x] Remove `_increment_twitter_count` calls - replaced with `_check_and_mark_download_complete`
 
 ### Phase 5: Cleanup ✅
 - [x] Remove old counter increment code paths - DEPRECATED with comments
@@ -844,7 +844,7 @@ The `while count < 10` loop naturally handles start failures by retrying until 1
 | `src/data/mongo_store.py` | Add workflow array helper functions, add `mark_monitor_complete` |
 | `src/activities/monitor.py` | Add `register_monitor_workflow` activity, update `process_fixture_events` trigger logic |
 | `src/activities/twitter.py` | Add `set_monitor_complete` activity |
-| `src/activities/download.py` | Add `register_download_workflow`, `get_download_workflow_count`, `check_and_mark_twitter_complete` |
+| `src/activities/download.py` | Add `register_download_workflow`, `get_download_workflow_count`, `check_and_mark_download_complete` |
 | `src/workflows/monitor_workflow.py` | Pass workflow ID to activities, check `_monitor_complete` before spawning Twitter |
 | `src/workflows/twitter_workflow.py` | Add `set_monitor_complete` at START, change for→while loop, always call download |
 | `src/workflows/download_workflow.py` | Add `register_download_workflow` at START, always signal upload |
@@ -878,7 +878,7 @@ This correctly reflects reality: we want 10 workflows to *actually run*, not jus
 
 **New behavior:** Same - a new UploadWorkflow starts, processes the signal, checks count (already 10), and exits.
 
-**Not a problem:** The completion check is idempotent. Marking `_twitter_complete=true` when it's already true is a no-op.
+**Not a problem:** The completion check is idempotent. Marking `_download_complete=true` when it's already true is a no-op.
 
 ### 3. Race: Two DownloadWorkflows Register "Simultaneously"
 
@@ -906,11 +906,11 @@ This correctly reflects reality: we want 10 workflows to *actually run*, not jus
 
 **Current behavior:** Events that are VAR'd have `_removed: true` set. Workflows check `check_event_exists` and exit early.
 
-**New behavior:** Same - but the array will have < 10 entries. `_twitter_complete` won't be set.
+**New behavior:** Same - but the array will have < 10 entries. `_download_complete` won't be set.
 
 **Is this a problem?** No - VAR'd events shouldn't be marked complete. The `_removed` flag handles this separately.
 
-**Consideration:** Should we mark `_twitter_complete=true` for VAR'd events to prevent them from appearing as "incomplete"? This is existing behavior - the VAR'd event completion is a separate concern.
+**Consideration:** Should we mark `_download_complete=true` for VAR'd events to prevent them from appearing as "incomplete"? This is existing behavior - the VAR'd event completion is a separate concern.
 
 ### 6. TwitterWorkflow While Loop Termination
 
@@ -956,7 +956,7 @@ After implementing this refactor, we can simplify/remove:
 2. **CASE 2 in process_fixture_events** - "Stuck event" detection (count=3, monitor_complete=false) - replaced by array-based tracking
 3. **Conditional increment in TwitterWorkflow** - No longer needed (DownloadWorkflow always signals UploadWorkflow)
 4. **Conditional increment in DownloadWorkflow** - No longer needed (always signals UploadWorkflow)
-5. **`increment_twitter_count` activity** - Replaced entirely by `check_and_mark_twitter_complete`
+5. **`increment_twitter_count` activity** - Replaced entirely by `check_and_mark_download_complete`
 
 ### 9. Logging Changes Needed
 
@@ -966,7 +966,7 @@ Update log messages to reference new fields:
 |---------|---------|
 | `_monitor_count=3` | `_monitor_workflows=3` |
 | `_twitter_count=7` | `_download_workflows=7` |
-| `increment_twitter_count` | `check_and_mark_twitter_complete` |
+| `increment_twitter_count` | `check_and_mark_download_complete` |
 
 ### 10. Frontend/API Impact
 
@@ -989,5 +989,5 @@ Before deploying to production:
 - [ ] VAR'd event mid-workflow (graceful termination)
 - [ ] Workflow restart/retry scenarios
 - [ ] Check MongoDB documents have correct array contents
-- [ ] Verify `_twitter_complete` is set correctly at count=10
+- [ ] Verify `_download_complete` is set correctly at count=10
 - [ ] Verify failsafe triggers on UploadWorkflow idle timeout |

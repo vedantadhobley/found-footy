@@ -9,7 +9,7 @@ Design Philosophy:
 - Uses WHILE loop that checks download workflow count (exits when 10 reached)
 - Each iteration: search → ALWAYS start DownloadWorkflow (even with 0 videos)
 - DownloadWorkflow registers itself at START, so failed starts don't count
-- UploadWorkflow sets _twitter_complete when 10 download workflows have registered
+- UploadWorkflow sets _download_complete when 10 download workflows have registered
 - Max 15 attempts safety limit prevents infinite loops
 
 Workflow-ID-Based Tracking (NEW):
@@ -17,7 +17,7 @@ Workflow-ID-Based Tracking (NEW):
 - NEW: Array of workflow IDs, checked at start of each iteration
   - DownloadWorkflow registers itself in _download_workflows at its START
   - TwitterWorkflow checks len(_download_workflows) >= 10 to exit
-  - UploadWorkflow checks and marks _twitter_complete when count reaches 10
+  - UploadWorkflow checks and marks _download_complete when count reaches 10
   - $addToSet ensures idempotent registration (no double-counting)
 
 _monitor_complete:
@@ -38,7 +38,7 @@ Flow:
    b. Search Twitter
    c. ALWAYS start DownloadWorkflow (registers itself, signals UploadWorkflow)
    d. Wait ~60 seconds
-4. UploadWorkflow marks _twitter_complete when count reaches 10
+4. UploadWorkflow marks _download_complete when count reaches 10
 
 Started by: MonitorWorkflow (fire-and-forget when monitor_workflows >= 3)
 Starts: DownloadWorkflow (fire-and-forget) → UploadWorkflow (signal-with-start)
@@ -82,13 +82,13 @@ class TwitterWorkflow:
     2. WHILE loop checks len(_download_workflows) each iteration
     3. ALWAYS starts DownloadWorkflow (even with 0 videos)
     4. Failed starts don't register → count stays low → we retry
-    5. UploadWorkflow marks _twitter_complete when count reaches 10
+    5. UploadWorkflow marks _download_complete when count reaches 10
     
     Downloads are fire-and-forget child workflows:
     1. DownloadWorkflow registers itself, downloads, validates, generates hashes
     2. DownloadWorkflow signals UploadWorkflow (signal-with-start pattern)
     3. UploadWorkflow (ID: upload-{event_id}) serializes S3 operations
-    4. UploadWorkflow checks count and marks _twitter_complete when 10 reached
+    4. UploadWorkflow checks count and marks _download_complete when 10 reached
     
     Expected duration: ~10-15 minutes (depends on how quickly 10 downloads register)
     """
@@ -485,7 +485,7 @@ class TwitterWorkflow:
         
         # =================================================================
         # TwitterWorkflow complete - either we reached 10 downloads or hit max attempts
-        # _twitter_complete is set by UploadWorkflow when it sees 10 downloads
+        # _download_complete is set by UploadWorkflow when it sees 10 downloads
         # =================================================================
         final_download_count = download_count if 'download_count' in dir() else 0
         exit_reason = "download_count_reached" if final_download_count >= REQUIRED_DOWNLOADS else "max_attempts_reached"

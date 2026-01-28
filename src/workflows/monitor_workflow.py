@@ -8,8 +8,8 @@ ORCHESTRATION MODEL:
 - Monitor is the single orchestrator for event monitoring and debouncing
 - Monitor triggers TwitterWorkflow ONCE when _monitor_complete=true
 - TwitterWorkflow resolves aliases (cache or RAG) then runs 10 search attempts
-- Twitter workflow sets: _twitter_complete (when all 10 attempts done)
-- Fixture completes when ALL events have _monitor_complete=true AND _twitter_complete=true
+- Twitter workflow sets: _download_complete (when all 10 attempts done)
+- Fixture completes when ALL events have _monitor_complete=true AND _download_complete=true
 
 FIXTURE LIFECYCLE:
 - Staging fixtures: Polled for updates (times, status, metadata)

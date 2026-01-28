@@ -20,7 +20,7 @@ Workflow-ID-Based Tracking (NEW):
 - Uses $addToSet for idempotency (same workflow ID won't double-count)
 - If workflow fails to start: doesn't register → count stays low → Twitter retries
 - If workflow crashes and restarts: re-registers → no-op (already in array)
-- UploadWorkflow checks count and marks _twitter_complete when 10 reached
+- UploadWorkflow checks count and marks _download_complete when 10 reached
 
 Design Philosophy:
 - Per-video retry (3 attempts with exponential backoff)
@@ -419,7 +419,7 @@ class DownloadWorkflow:
         # Only ONE UploadWorkflow runs per event, processing batches sequentially.
         # =========================================================================
         # ALWAYS signal UploadWorkflow - even with 0 videos
-        # UploadWorkflow will check count and mark _twitter_complete when 10 reached
+        # UploadWorkflow will check count and mark _download_complete when 10 reached
         # =========================================================================
         if videos_to_upload:
             workflow.logger.info(

@@ -12,7 +12,7 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
 - **10 Twitter attempts per event** - Blocking downloads ensure reliable completion tracking
 - **Multi-alias search** - Search "Salah Liverpool", "Salah LFC", "Salah Reds"
 - **Cross-retry quality replacement** - Higher resolution videos replace lower ones
-- **Race condition prevention** - `_twitter_complete` set by downloads, not searches
+- **Race condition prevention** - `_download_complete` set by downloads, not searches
 
 ---
 
@@ -46,7 +46,7 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
 │      - ALWAYS: start DownloadWorkflow (BLOCKING child, even 0 vids) │
 │      - IF attempt < 10: workflow.sleep(1 min) ← DURABLE TIMER        │
 │                              │                                       │
-│   _twitter_complete set when len(_download_workflows) >= 10          │
+│   _download_complete set when len(_download_workflows) >= 10          │
 │                              │                                       │
 └──────────────────────────────┼──────────────────────────────────────┘
                                ▼ (BLOCKING child workflow)
@@ -72,7 +72,7 @@ This system uses Temporal.io to orchestrate the discovery, tracking, and archiva
 │   6. Remove old MongoDB entries ONLY after successful upload         │
 │   7. Recalculate video ranks                                         │
 │   8. Cleanup individual files (not temp dir - that's per fixture)    │
-│   9. check_and_mark_twitter_complete (if _download_workflows >= 10)  │
+│   9. check_and_mark_download_complete (if _download_workflows >= 10)  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -360,13 +360,13 @@ TwitterWorkflow (~10 min, fire-and-forget from Monitor)
     │   └── IF attempt < 10:
     │       └── workflow.sleep(1 minute - elapsed) ← DURABLE TIMER
     │
-    └── _twitter_complete set when len(_download_workflows) >= 10
+    └── _download_complete set when len(_download_workflows) >= 10
 ```
 
 **Why BLOCKING Downloads?**
 - `_download_workflows` array must track all completed attempts
 - Each DownloadWorkflow registers its ID at the very start
-- UploadWorkflow checks array length and sets `_twitter_complete` when >= 10
+- UploadWorkflow checks array length and sets `_download_complete` when >= 10
 - BLOCKING ensures each attempt completes before the next starts
 
 **Why Alias Resolution Inside Twitter?**
@@ -512,8 +512,8 @@ UploadWorkflow (ID: upload-{event_id} - SERIALIZED per event)
     ├── cleanup_individual_files
     │   └── Delete individual files after successful upload (NOT temp dir)
     │
-    └── check_and_mark_twitter_complete
-        └── If len(_download_workflows) >= 10: set _twitter_complete=true
+    └── check_and_mark_download_complete
+        └── If len(_download_workflows) >= 10: set _download_complete=true
 ```
 
 **KEY DESIGN: Serialization via Workflow ID**
@@ -541,7 +541,7 @@ state and uploaded the same video twice.
 | `update_video_in_place` | 30s | 3 | Atomic in-place update for replacements |
 | `recalculate_video_ranks` | 30s | 2 | MongoDB update |
 | `cleanup_individual_files` | 30s | 2 | Delete individual files after upload |
-| `check_and_mark_twitter_complete` | 30s | 3 | Sets _twitter_complete when >= 10 workflows |
+| `check_and_mark_download_complete` | 30s | 3 | Sets _download_complete when >= 10 workflows |
 
 ---
 
@@ -691,7 +691,7 @@ PHASE 2: S3 Dedup
 | `_monitor_complete` | bool | TwitterWorkflow | At start of TwitterWorkflow |
 | `_twitter_aliases` | array | TwitterWorkflow | At start (alias resolution) |
 | `_download_workflows` | array | DownloadWorkflow | At start of each download |
-| `_twitter_complete` | bool | UploadWorkflow | When len(_download_workflows) >= 10 |
+| `_download_complete` | bool | UploadWorkflow | When len(_download_workflows) >= 10 |
 | `_first_seen` | datetime | Monitor | When first detected |
 | `_removed` | bool | Monitor | When VAR disallows |
 | `_discovered_videos` | array | TwitterWorkflow | After each search |
@@ -727,7 +727,7 @@ T+1:40  TwitterWorkflow Attempt 1
         → DownloadWorkflow (BLOCKING)
           → register_download_workflow() ← FIRST THING (len=1)
           → 3 uploaded
-          → check_and_mark_twitter_complete() → len=1, not complete
+          → check_and_mark_download_complete() → len=1, not complete
         → workflow.sleep(~3 min)
 
 T+6:00  TwitterWorkflow Attempt 2
@@ -736,7 +736,7 @@ T+6:00  TwitterWorkflow Attempt 2
         → DownloadWorkflow (BLOCKING)
           → register_download_workflow() ← (len=2)
           → 1 uploaded
-          → check_and_mark_twitter_complete() → len=2, not complete
+          → check_and_mark_download_complete() → len=2, not complete
         → workflow.sleep(~3 min)
 
 ...     (Attempts 3-9 continue with sleep between each)
@@ -746,12 +746,12 @@ T+30:00 TwitterWorkflow Attempt 10
         → Search → 0 new videos
         → DownloadWorkflow (BLOCKING, even with 0 videos!)
           → register_download_workflow() ← (len=10)
-          → check_and_mark_twitter_complete() → len=10!
-          → _twitter_complete = TRUE
+          → check_and_mark_download_complete() → len=10!
+          → _download_complete = TRUE
 
 T+31:00 Monitor poll after Twitter complete
         → Fixture status = FT
-        → All events: _monitor_complete = TRUE, _twitter_complete = TRUE
+        → All events: _monitor_complete = TRUE, _download_complete = TRUE
         → complete_fixture_if_ready: _completion_count = 1
 
 T+31:30 Monitor poll #2
@@ -772,7 +772,7 @@ complete_fixture_if_ready flow:
     ├── 1. Check ALL events have _monitor_complete = TRUE
     │   └── If not: return False (don't increment counter)
     │
-    ├── 2. Check ALL events have _twitter_complete = TRUE
+    ├── 2. Check ALL events have _download_complete = TRUE
     │   └── If not: return False (don't increment counter)
     │
     ├── 3. ONLY NOW: increment _completion_count (1 → 2 → 3)

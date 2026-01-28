@@ -439,7 +439,7 @@ class FootyMongoStore:
         - _event_id: Unique event identifier
         - _monitor_count: Number of consecutive unchanged polls
         - _monitor_complete: True when monitor_count reaches threshold
-        - _twitter_complete: True when videos downloaded
+        - _download_complete: True when videos downloaded
         - _first_seen: Timestamp when first detected
         - _score_after: Score after this event
         - _scoring_team: Which team scored ("home" or "away")
@@ -542,21 +542,21 @@ class FootyMongoStore:
         total_attempts: int = 10
     ) -> dict:
         """
-        DEPRECATED: Use check_and_mark_twitter_complete instead.
+        DEPRECATED: Use check_and_mark_download_complete instead.
         
         This function uses counter-based tracking which has race condition issues.
-        The new workflow-ID-based tracking (add_download_workflow + check_and_mark_twitter_complete)
+        The new workflow-ID-based tracking (add_download_workflow + check_and_mark_download_complete)
         is idempotent and handles retries correctly.
         
         Keeping this for backward compatibility during transition.
         
-        Atomically increment _twitter_count and set _twitter_complete when count reaches total.
+        Atomically increment _twitter_count and set _download_complete when count reaches total.
         
         Called by:
         - DownloadWorkflow when a download completes
         - TwitterWorkflow when a search finds no videos (no download triggered)
         
-        This ensures _twitter_complete is only set after ALL downloads finish,
+        This ensures _download_complete is only set after ALL downloads finish,
         preventing the race condition where fixture moves to completed while
         downloads are still running.
         
@@ -597,12 +597,12 @@ class FootyMongoStore:
                 self.fixtures_active.update_one(
                     {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
                     {"$set": {
-                        f"events.$.{EventFields.TWITTER_COMPLETE}": True,
-                        f"events.$.{EventFields.TWITTER_COMPLETED_AT}": datetime.now(timezone.utc)
+                        f"events.$.{EventFields.DOWNLOAD_COMPLETE}": True,
+                        f"events.$.{EventFields.DOWNLOAD_COMPLETED_AT}": datetime.now(timezone.utc)
                     }}
                 )
                 marked_complete = True
-                print(f"✅ Marked _twitter_complete=true for {event_id}")
+                print(f"✅ Marked _download_complete=true for {event_id}")
             
             return {
                 "success": True,
@@ -757,9 +757,9 @@ class FootyMongoStore:
             print(f"❌ Error setting monitor complete for {event_id}: {e}")
             return False
 
-    def mark_twitter_complete(self, fixture_id: int, event_id: str) -> bool:
+    def mark_download_complete(self, fixture_id: int, event_id: str) -> bool:
         """
-        Set _twitter_complete = true for an event.
+        Set _download_complete = true for an event.
         Called by UploadWorkflow when _download_workflows count reaches 10.
         
         Args:
@@ -770,23 +770,24 @@ class FootyMongoStore:
             True if document was modified, False otherwise
         """
         try:
+            now = datetime.now(timezone.utc)
             result = self.fixtures_active.update_one(
                 {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
                 {"$set": {
-                    f"events.$.{EventFields.TWITTER_COMPLETE}": True,
-                    f"events.$.{EventFields.TWITTER_COMPLETED_AT}": datetime.now(timezone.utc)
+                    f"events.$.{EventFields.DOWNLOAD_COMPLETE}": True,
+                    f"events.$.{EventFields.DOWNLOAD_COMPLETED_AT}": now,
                 }}
             )
             if result.modified_count > 0:
-                print(f"✅ Set _twitter_complete=true for {event_id}")
+                print(f"✅ Set _download_complete=true for {event_id}")
             return result.modified_count > 0
         except Exception as e:
-            print(f"❌ Error setting twitter complete for {event_id}: {e}")
+            print(f"❌ Error setting download complete for {event_id}: {e}")
             return False
 
-    def check_and_mark_twitter_complete(self, fixture_id: int, event_id: str, required_count: int = 10) -> dict:
+    def check_and_mark_download_complete(self, fixture_id: int, event_id: str, required_count: int = 10) -> dict:
         """
-        Check if _download_workflows count >= required_count and mark _twitter_complete if so.
+        Check if _download_workflows count >= required_count and mark _download_complete if so.
         
         This is the new idempotent replacement for increment_twitter_count_and_check_complete.
         
@@ -808,13 +809,13 @@ class FootyMongoStore:
             )
             was_already_complete = False
             if fixture and fixture.get("events"):
-                was_already_complete = fixture["events"][0].get(EventFields.TWITTER_COMPLETE, False)
+                was_already_complete = fixture["events"][0].get(EventFields.DOWNLOAD_COMPLETE, False)
             
             marked_complete = False
             if count >= required_count and not was_already_complete:
-                self.mark_twitter_complete(fixture_id, event_id)
+                self.mark_download_complete(fixture_id, event_id)
                 marked_complete = True
-                print(f"✅ {event_id}: {count}/{required_count} download workflows - marking twitter complete")
+                print(f"✅ {event_id}: {count}/{required_count} download workflows - marking download complete")
             elif count >= required_count:
                 print(f"ℹ️ {event_id}: {count}/{required_count} download workflows - already complete")
             else:
@@ -826,7 +827,7 @@ class FootyMongoStore:
                 "marked_complete": marked_complete
             }
         except Exception as e:
-            print(f"❌ Error checking/marking twitter complete for {event_id}: {e}")
+            print(f"❌ Error checking/marking download complete for {event_id}: {e}")
             return {"count": 0, "was_already_complete": False, "marked_complete": False}
     
     def mark_event_removed(self, fixture_id: int, event_id: str) -> bool:
@@ -1324,7 +1325,7 @@ class FootyMongoStore:
         Criteria:
         1. _completion_complete = True (counter >= 3 OR winner exists)
         2. All events have _monitor_complete = True
-        3. All events have _twitter_complete = True
+        3. All events have _download_complete = True
         """
         try:
             fixture_doc = self.fixtures_active.find_one({"_id": fixture_id})
@@ -1348,9 +1349,9 @@ class FootyMongoStore:
                 
                 if valid_events:
                     all_monitored = all(e.get(EventFields.MONITOR_COMPLETE, False) for e in valid_events)
-                    all_twitter_done = all(e.get(EventFields.TWITTER_COMPLETE, False) for e in valid_events)
+                    all_download_done = all(e.get(EventFields.DOWNLOAD_COMPLETE, False) for e in valid_events)
                     
-                    if not (all_monitored and all_twitter_done):
+                    if not (all_monitored and all_download_done):
                         return False
             
             return True
@@ -1365,7 +1366,7 @@ class FootyMongoStore:
         Prerequisites (checked by is_completion_ready):
         - _completion_complete: true (counter >= 3 OR winner data exists)
         - All valid events have _monitor_complete: true
-        - All valid events have _twitter_complete: true
+        - All valid events have _download_complete: true
         
         This method just does the move - use is_completion_ready to check first.
         """

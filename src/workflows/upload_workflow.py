@@ -103,7 +103,7 @@ class UploadWorkflow:
                 )
                 # Failsafe: Check if all download workflows registered before exiting
                 # This catches edge cases where check was missed during processing
-                await self._check_and_mark_twitter_complete(fixture_id, event_id)
+                await self._check_and_mark_download_complete(fixture_id, event_id)
                 break
             
             # Process ONE batch at a time (FIFO)
@@ -145,7 +145,7 @@ class UploadWorkflow:
                     
                     # Check if all 10 download workflows have registered
                     # Uses workflow-ID-based tracking instead of counter increments
-                    await self._check_and_mark_twitter_complete(fixture_id, event_id)
+                    await self._check_and_mark_download_complete(fixture_id, event_id)
                     
                     workflow.logger.info(
                         f"✅ [UPLOAD] Batch complete | uploaded={result.get('videos_uploaded', 0)} | "
@@ -157,7 +157,7 @@ class UploadWorkflow:
                     )
                     self._total_batches_processed += 1
                     # Still check completion even on failure - the download workflow ran
-                    await self._check_and_mark_twitter_complete(fixture_id, event_id)
+                    await self._check_and_mark_download_complete(fixture_id, event_id)
         
         workflow.logger.info(
             f"🎉 [UPLOAD] WORKFLOW COMPLETE | total_uploaded={self._total_uploaded} | "
@@ -654,16 +654,16 @@ class UploadWorkflow:
                     f"⚠️ [UPLOAD] Failed to cleanup files (non-critical) | error={e} | event={event_id}"
                 )
 
-    async def _check_and_mark_twitter_complete(self, fixture_id: int, event_id: str):
+    async def _check_and_mark_download_complete(self, fixture_id: int, event_id: str):
         """
-        Check if all 10 download workflows have registered and mark _twitter_complete if so.
+        Check if all 10 download workflows have registered and mark _download_complete if so.
         
         Uses workflow-ID-based tracking: counts entries in _download_workflows array.
         This is idempotent - calling it multiple times is safe.
         """
         try:
             result = await workflow.execute_activity(
-                download_activities.check_and_mark_twitter_complete,
+                download_activities.check_and_mark_download_complete,
                 args=[fixture_id, event_id, 10],  # 10 total attempts required
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(
@@ -674,7 +674,7 @@ class UploadWorkflow:
             )
             if result.get("marked_complete"):
                 workflow.logger.info(
-                    f"🏁 [UPLOAD] All 10 download workflows registered, marked _twitter_complete=true | event={event_id}"
+                    f"🏁 [UPLOAD] All 10 download workflows registered, marked _download_complete=true | event={event_id}"
                 )
             else:
                 count = result.get("download_count", "?")
@@ -683,5 +683,5 @@ class UploadWorkflow:
                 )
         except Exception as e:
             workflow.logger.error(
-                f"❌ [UPLOAD] check_and_mark_twitter_complete FAILED | error={e} | event={event_id}"
+                f"❌ [UPLOAD] check_and_mark_download_complete FAILED | error={e} | event={event_id}"
             )

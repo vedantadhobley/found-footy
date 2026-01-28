@@ -174,7 +174,7 @@ Child workflows (Twitter→Download→Upload) can run on **different workers** -
 │     → Dedupe videos                                                  │
 │     → ALWAYS start DownloadWorkflow (BLOCKING child, even 0 videos)  │
 │     → WHILE len(_download_workflows) < 10: continue loop             │
-│  _twitter_complete set when len(_download_workflows) >= 10           │
+│  _download_complete set when len(_download_workflows) >= 10           │
 └──────────────────────────────────────┬──────────────────────────────┘
                                        │
                                        ▼ (BLOCKING child workflow)
@@ -205,7 +205,7 @@ Child workflows (Twitter→Download→Upload) can run on **different workers** -
 │  3. Remove old MongoDB entries ONLY after successful upload          │
 │  4. Update MongoDB + recalculate video ranks                         │
 │  5. Cleanup individual files after successful upload                 │
-│  6. check_and_mark_twitter_complete (if _download_workflows >= 10)   │
+│  6. check_and_mark_download_complete (if _download_workflows >= 10)   │
 │  7. Wait for more signals or timeout after 5 min idle                │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -217,7 +217,7 @@ Child workflows (Twitter→Download→Upload) can run on **different workers** -
 - **Race condition prevention**: Multiple DownloadWorkflows signal ONE UploadWorkflow per event
 - **FIFO queue**: UploadWorkflow processes batches in signal order via deque
 - **Workflow-ID tracking**: `_monitor_workflows` and `_download_workflows` arrays replace fragile counters
-- **`_twitter_complete`**: Set when `len(_download_workflows) >= 10` (ensures all attempts finished)
+- **`_download_complete`**: Set when `len(_download_workflows) >= 10` (ensures all attempts finished)
 - **Safe replacement**: MongoDB entries only removed AFTER successful S3 upload
 - **Temp cleanup**: Individual files deleted after upload; fixture temp dirs cleaned on completion
 - **Heartbeat-based timeouts**: Long activities use `heartbeat_timeout` instead of arbitrary `execution_timeout`
@@ -414,7 +414,7 @@ Enhanced fixtures with video tracking. Events array **grows incrementally**, **n
       "_monitor_complete": true,
       "_twitter_aliases": ["Liverpool", "LFC", "Reds"],
       "_download_workflows": ["download1-Liverpool-Szoboszlai-...", "download2-...", "download3-..."],
-      "_twitter_complete": true,
+      "_download_complete": true,
       "_first_seen": "2025-11-24T15:23:45Z",
       "_twitter_search": "Szoboszlai Liverpool",
       
@@ -523,7 +523,7 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 
 **Key Feature**: Uses `workflow.sleep(1 minute)` between attempts - durable timer survives restarts.
 
-**Note**: `_twitter_complete` is set when `len(_download_workflows) >= 10`, checked by UploadWorkflow after each batch.
+**Note**: `_download_complete` is set when `len(_download_workflows) >= 10`, checked by UploadWorkflow after each batch.
 
 ### 4. DownloadWorkflow (Per Twitter Attempt)
 
@@ -537,7 +537,7 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 | `generate_video_hash` | Perceptual hash (heartbeat) | 2x |
 | `cleanup_download_temp` | Clean temp files if no videos | 2x |
 | `register_download_workflow` | Add workflow ID to array | 3x |
-| `check_and_mark_twitter_complete` | Set complete when 10 workflows | 3x |
+| `check_and_mark_download_complete` | Set complete when 10 workflows | 3x |
 
 **AI Video Validation**:
 - Extracts a frame from downloaded video
@@ -612,7 +612,7 @@ This ordering prevents the brief "rank=0" display that would occur if we notifie
 | `_monitor_complete` | bool | TwitterWorkflow | true at start of TwitterWorkflow |
 | `_twitter_aliases` | array | TwitterWorkflow | Team search variations |
 | `_download_workflows` | array | DownloadWorkflow | Workflow IDs for completed attempts |
-| `_twitter_complete` | bool | UploadWorkflow | true when `len(_download_workflows) >= 10` |
+| `_download_complete` | bool | UploadWorkflow | true when `len(_download_workflows) >= 10` |
 | `_first_seen` | datetime | Monitor | When event first appeared |
 | `_twitter_search` | string | Monitor | `{player_last} {team_name}` |
 | `_removed` | bool | Monitor | true if VAR disallowed |
@@ -724,7 +724,7 @@ docker compose up -d --scale worker=8
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Fixture stuck in active | Events missing `_twitter_complete` | Check TwitterWorkflow in Temporal UI |
+| Fixture stuck in active | Events missing `_download_complete` | Check TwitterWorkflow in Temporal UI |
 | Videos not uploading | S3 connection failed | Check MinIO is running |
 | Duplicate videos | Upload serialization failed | Check UploadWorkflow logs |
 | Twitter search empty | Browser session expired | Re-login via VNC (port 4103) |

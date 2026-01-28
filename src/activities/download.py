@@ -129,13 +129,13 @@ async def register_download_workflow(
 
 
 @activity.defn
-async def check_and_mark_twitter_complete(
+async def check_and_mark_download_complete(
     fixture_id: int,
     event_id: str,
     required_count: int = 10
 ) -> Dict[str, Any]:
     """
-    Check if _download_workflows count >= required_count and mark _twitter_complete if so.
+    Check if _download_workflows count >= required_count and mark _download_complete if so.
     
     This is the new idempotent replacement for increment_twitter_count_and_check_complete.
     Called by UploadWorkflow after each batch and as a failsafe before idle timeout exit.
@@ -153,10 +153,10 @@ async def check_and_mark_twitter_complete(
     store = FootyMongoStore()
     
     try:
-        result = store.check_and_mark_twitter_complete(fixture_id, event_id, required_count)
+        result = store.check_and_mark_download_complete(fixture_id, event_id, required_count)
         
         activity.logger.info(
-            f"📊 [DOWNLOAD] check_and_mark_twitter_complete | event={event_id} | "
+            f"📊 [DOWNLOAD] check_and_mark_download_complete | event={event_id} | "
             f"count={result['count']}/{required_count} | "
             f"was_complete={result['was_already_complete']} | "
             f"marked={result['marked_complete']}"
@@ -165,7 +165,7 @@ async def check_and_mark_twitter_complete(
         return result
     except Exception as e:
         activity.logger.error(
-            f"❌ [DOWNLOAD] check_and_mark_twitter_complete failed | event={event_id} | error={e}"
+            f"❌ [DOWNLOAD] check_and_mark_download_complete failed | event={event_id} | error={e}"
         )
         return {
             "count": 0,
@@ -816,22 +816,22 @@ async def increment_twitter_count(
     total_attempts: int = 10
 ) -> dict:
     """
-    DEPRECATED: Use check_and_mark_twitter_complete instead.
+    DEPRECATED: Use check_and_mark_download_complete instead.
     
     This activity uses counter-based tracking which has race condition issues.
-    The new workflow-ID-based tracking (register_download_workflow + check_and_mark_twitter_complete)
+    The new workflow-ID-based tracking (register_download_workflow + check_and_mark_download_complete)
     is idempotent and handles retries correctly.
     
     Keeping this for backward compatibility during transition.
     
-    Increment _twitter_count and check if we should mark _twitter_complete.
+    Increment _twitter_count and check if we should mark _download_complete.
     
     Called by:
     - DownloadWorkflow when a download completes
     - TwitterWorkflow when a search finds no videos (no download triggered)
     
     This solves the race condition where fixture could move to fixtures_completed
-    while downloads are still running. By having downloads set _twitter_complete,
+    while downloads are still running. By having downloads set _download_complete,
     we ensure completion only happens after all work is done.
     
     Args:
@@ -857,7 +857,7 @@ async def increment_twitter_count(
     if result["success"]:
         if result["marked_complete"]:
             activity.logger.info(
-                f"✅ [DOWNLOAD] Twitter count={result['new_count']}, marked _twitter_complete=true | "
+                f"✅ [DOWNLOAD] Twitter count={result['new_count']}, marked _download_complete=true | "
                 f"event={event_id}"
             )
         else:

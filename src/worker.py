@@ -255,7 +255,7 @@ async def main():
                 download.cleanup_download_temp,  # Cleanup on failure
                 download.queue_videos_for_upload,  # Signal-with-start to queue videos for upload
                 download.register_download_workflow,  # NEW: Called at start of DownloadWorkflow
-                download.check_and_mark_twitter_complete,  # NEW: Check count and mark complete
+                download.check_and_mark_download_complete,  # NEW: Check count and mark complete
                 # Upload activities (S3 dedup/upload - serialized per event)
                 upload.fetch_event_data,  # Get existing S3 videos
                 upload.deduplicate_by_md5,  # Fast MD5 dedup against S3

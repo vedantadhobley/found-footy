@@ -13,7 +13,7 @@ Why fire-and-forget Twitter from RAG?
 - RAG's job is ONLY alias resolution - a quick lookup task
 - Twitter runs for 10-15 minutes (3 attempts with 3-min waits)
 - No reason for RAG to hold resources waiting for Twitter
-- Twitter handles marking _twitter_complete after all downloads finish
+- Twitter handles marking _download_complete after all downloads finish
 
 Flow:
 1. Check cache for pre-computed aliases (from Ingest)
@@ -64,8 +64,8 @@ class RAGWorkflow:
     IMPORTANT: This workflow does NOT wait for TwitterWorkflow to complete.
     It fires off TwitterWorkflow and returns immediately. This is safe because:
     - TwitterWorkflow manages its own lifecycle (3 attempts, waits for downloads)
-    - TwitterWorkflow marks _twitter_complete only after all downloads finish
-    - Fixture completion logic checks _twitter_complete flag
+    - TwitterWorkflow marks _download_complete only after all downloads finish
+    - Fixture completion logic checks _download_complete flag
     
     This workflow:
     1. Checks cache for pre-computed aliases (from Ingest) - fast path
@@ -168,7 +168,7 @@ class RAGWorkflow:
         # We don't wait for Twitter - it runs independently and handles:
         # - 3 search attempts with 3-min spacing
         # - Waiting for each Download workflow to complete
-        # - Marking _twitter_complete when all done
+        # - Marking _download_complete when all done
         # =========================================================================
         player_last = input.player_name.split()[-1] if input.player_name else "Unknown"
         team_clean = input.team_name.replace(" ", "_").replace(".", "_").replace("-", "_")

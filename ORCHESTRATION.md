@@ -57,17 +57,17 @@ This decoupling allows:
 │  │       → ELSE: increment_twitter_count directly                         │   │
 │  │       → IF attempt < 10: sleep(1 minute) ← DURABLE TIMER               │   │
 │  │     WHEN _twitter_count reaches 10:                                    │   │
-│  │       → _twitter_complete = TRUE (set atomically by increment)         │   │
+│  │       → _download_complete = TRUE (set atomically by increment)         │   │
 │  │                                                                        │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                              │                                               │
-│                              ▼ (_twitter_complete = TRUE)                    │
+│                              ▼ (_download_complete = TRUE)                    │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │                         PHASE 3: COMPLETE                             │   │
 │  │                                                                        │   │
 │  │   When fixture status = FT/AET/PEN AND:                                │   │
 │  │     ALL events have _monitor_complete = TRUE                           │   │
-│  │     ALL events have _twitter_complete = TRUE                           │   │
+│  │     ALL events have _download_complete = TRUE                           │   │
 │  │                                                                        │   │
 │  │   → Fixture moves to fixtures_completed                                │   │
 │  │                                                                        │   │
@@ -86,7 +86,7 @@ This decoupling allows:
 | `_monitor_complete` | TwitterWorkflow | At VERY START of workflow | Debounce finished, Twitter triggered |
 | `_twitter_aliases` | TwitterWorkflow | After alias resolution | Team search variations |
 | `_download_workflows` | DownloadWorkflow | At VERY START of each download | Array of workflow IDs (tracks attempts) |
-| `_twitter_complete` | UploadWorkflow | When len(_download_workflows) >= 10 | All attempts finished |
+| `_download_complete` | UploadWorkflow | When len(_download_workflows) >= 10 | All attempts finished |
 
 ---
 
@@ -109,7 +109,7 @@ This decoupling allows:
 - Builds search queries: `{player_last} {alias}` for each alias
 - Deduplicates videos across aliases and previous attempts
 - **ALWAYS starts DownloadWorkflow (BLOCKING child)** - even with 0 videos
-- `_twitter_complete` is set by UploadWorkflow when `len(_download_workflows) >= 10`
+- `_download_complete` is set by UploadWorkflow when `len(_download_workflows) >= 10`
 
 ### DownloadWorkflow (Triggered by TwitterWorkflow, BLOCKING)
 - **Registers workflow ID at VERY START** via `register_download_workflow`
@@ -172,7 +172,7 @@ T+1:40  TwitterWorkflow Attempt 1:
             → Fetch fresh S3 state (empty)
             → Upload 4 videos to S3
             → Save to MongoDB
-            → check_and_mark_twitter_complete() → len=1, not complete
+            → check_and_mark_download_complete() → len=1, not complete
           
 T+2:40  Attempt 1 complete, sleep(1 min)
 
@@ -187,7 +187,7 @@ T+3:40  TwitterWorkflow Attempt 2:
             → Fetch fresh S3 state (4 videos)
             → Perceptual dedup → 1 new unique
             → Upload 1 video
-            → check_and_mark_twitter_complete() → len=2, not complete
+            → check_and_mark_download_complete() → len=2, not complete
           
 T+4:40  Attempt 2 complete, sleep(1 min)
 
@@ -200,13 +200,13 @@ T+11:40 TwitterWorkflow Attempt 10:
         → Start DownloadWorkflow (BLOCKING, even with 0 videos!)
           → register_download_workflow() ← FIRST THING (len=10)
           → Signal UploadWorkflow (empty batch)
-            → check_and_mark_twitter_complete() → len=10!
-            → _twitter_complete = TRUE
+            → check_and_mark_download_complete() → len=10!
+            → _download_complete = TRUE
         
 T+12:00 Monitor poll:
         → Fixture status = FT
         → All events have _monitor_complete = TRUE
-        → All events have _twitter_complete = TRUE
+        → All events have _download_complete = TRUE
         → Fixture moves to fixtures_completed
 ```
 
@@ -257,7 +257,7 @@ Blocking downloads ensure reliable completion tracking via `_twitter_count`.
 
 ### Fixture Completion Prevention  
 **Problem**: Fixture moves to completed while downloads still running
-**Solution**: `_twitter_complete` only set when `_twitter_count` reaches 10
+**Solution**: `_download_complete` only set when `_twitter_count` reaches 10
 **Guarantee**: All 10 download attempts must complete before fixture can complete
 
 ### Alias Resolution Race

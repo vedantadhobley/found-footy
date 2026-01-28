@@ -52,7 +52,7 @@ FIXTURE LIFECYCLE
 5. COMPLETION (active → completed)
    - Triggered when status changes to FT, AET, PEN, etc.
    - Requires completion counter (3 polls) OR winner data populated
-   - All events must be monitor_complete AND twitter_complete
+   - All events must be monitor_complete AND download_complete
 """
 
 from datetime import datetime
@@ -296,8 +296,8 @@ class EventFields:
     
     # Twitter/Download tracking (workflow-ID-based)
     DOWNLOAD_WORKFLOWS = "_download_workflows"  # Array of DownloadWorkflow IDs that ran for this event
-    TWITTER_COMPLETE = "_twitter_complete"      # True when len(_download_workflows) >= 10
-    TWITTER_COMPLETED_AT = "_twitter_completed_at"
+    DOWNLOAD_COMPLETE = "_download_complete"      # True when len(_download_workflows) >= 10
+    DOWNLOAD_COMPLETED_AT = "_download_completed_at"
     TWITTER_SEARCH = "_twitter_search"
     TWITTER_ALIASES = "_twitter_aliases"  # Team name aliases from RAG
     
@@ -329,8 +329,8 @@ class EventFields:
             cls.MONITOR_COMPLETE,
             cls.FIRST_SEEN,
             cls.DOWNLOAD_WORKFLOWS,
-            cls.TWITTER_COMPLETE,
-            cls.TWITTER_COMPLETED_AT,
+            cls.DOWNLOAD_COMPLETE,
+            cls.DOWNLOAD_COMPLETED_AT,
             cls.TWITTER_SEARCH,
             cls.TWITTER_ALIASES,
             cls.DISCOVERED_VIDEOS,
@@ -464,7 +464,7 @@ class EnhancedEvent(TypedDict, total=False):
     Extends raw API event data with:
     - Unique identifier (_event_id)
     - Debounce tracking (_monitor_workflows, _monitor_complete)
-    - Twitter workflow tracking (_download_workflows, _twitter_complete)
+    - Twitter workflow tracking (_download_workflows, _download_complete)
     - Video storage (_discovered_videos, _s3_videos)
     - Score context (_score_after, _scoring_team)
     
@@ -486,7 +486,7 @@ class EnhancedEvent(TypedDict, total=False):
     ────────────────
     After monitor complete, we search Twitter for video clips.
     Each DownloadWorkflow registers its ID at the very start.
-    _twitter_complete=True when len(_download_workflows) >= 10.
+    _download_complete=True when len(_download_workflows) >= 10.
     
     VAR HANDLING
     ────────────
@@ -512,10 +512,10 @@ class EnhancedEvent(TypedDict, total=False):
     _monitor_complete: bool   # True when TwitterWorkflow starts (set by Twitter)
     _first_seen: datetime     # When event was first detected
     
-    # === Twitter Workflow Tracking ===
+    # === Download Workflow Tracking ===
     _download_workflows: List[str]  # DownloadWorkflow IDs (completed attempts)
-    _twitter_complete: bool   # True when len(_download_workflows) >= 10
-    _twitter_completed_at: datetime
+    _download_complete: bool   # True when len(_download_workflows) >= 10
+    _download_completed_at: datetime
     _twitter_search: str      # Search query for Twitter
     _twitter_aliases: List[str]  # Team name aliases from RAG
     
@@ -564,7 +564,7 @@ class FixtureEnhancement(TypedDict, total=False):
     1. _completion_count >= 3 (3 consecutive polls showing completed status)
     2. Winner data populated (teams.home.winner or teams.away.winner is True)
     
-    Additionally, all events must be _monitor_complete AND _twitter_complete.
+    Additionally, all events must be _monitor_complete AND _download_complete.
     """
     _activated_at: datetime         # When fixture moved from staging to active
     _last_activity: datetime        # Set on activation, updated when goals confirmed
@@ -627,7 +627,7 @@ class CompletedFixture(TypedDict, total=False):
     Fixture in fixtures_completed collection.
     
     Same structure as ActiveFixture but with _completed_at timestamp.
-    All events have _monitor_complete=True and _twitter_complete=True.
+    All events have _monitor_complete=True and _download_complete=True.
     """
     _id: int
     fixture: APIFixture
@@ -712,12 +712,12 @@ def create_new_enhanced_event(
         EventFields.FIRST_SEEN: datetime.now(timezone.utc),
         # Monitor tracking (new workflow-ID-based)
         EventFields.MONITOR_WORKFLOWS: initial_monitor_workflows or [],
-        # Twitter/Download tracking (old counter-based - DEPRECATED)
+        # Download tracking (old counter-based - DEPRECATED)
         EventFields.TWITTER_COUNT: 0,
-        EventFields.TWITTER_COMPLETE: False,
         EventFields.TWITTER_SEARCH: twitter_search,
-        # Twitter/Download tracking (new workflow-ID-based)
+        # Download tracking (new workflow-ID-based)
         EventFields.DOWNLOAD_WORKFLOWS: [],
+        EventFields.DOWNLOAD_COMPLETE: False,
         # Video storage
         EventFields.DISCOVERED_VIDEOS: [],
         EventFields.S3_VIDEOS: [],

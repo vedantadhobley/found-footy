@@ -176,7 +176,7 @@ flowchart TB
     end
     
     DOWNLOAD[⬇️ Download Videos<br/>Filter, validate, dedupe]
-    COMPLETE[✅ Event Complete<br/>_twitter_complete = true]
+    COMPLETE[✅ Event Complete<br/>_download_complete = true]
     
     NEW --> COUNT1
     COUNT1 -->|+30s poll| COUNT2
@@ -400,7 +400,7 @@ The **Scaler Service** automatically scales workers and Twitter instances:
 
 **Why different metrics?**
 - Workers scale on **Temporal queue depth** (pending tasks backlog)
-- Twitter scales on **active goals** (goals with `_monitor_complete=true` but `_twitter_complete=false`)
+- Twitter scales on **active goals** (goals with `_monitor_complete=true` but `_download_complete=false`)
 - Twitter searches complete quickly (~3s), so queue is always near-empty even when busy
 - Active goals = actual workload indicator (each goal runs 10 searches over ~10 min)
 
@@ -691,7 +691,7 @@ flowchart TB
         SLEEP[workflow.sleep 1 min<br/>DURABLE TIMER]
     end
     
-    DONE[_twitter_complete = true<br/>Set by UploadWorkflow at count=10]
+    DONE[_download_complete = true<br/>Set by UploadWorkflow at count=10]
     
     TRIGGER --> ALIASES --> GET --> SEARCH --> SAVE --> FOUND
     FOUND -->|Yes| DOWNLOAD --> SLEEP
@@ -826,7 +826,7 @@ Events are stored with both raw API fields and enhancement fields:
   "_stable_count": 3,
   "_monitor_complete": true,
   "_twitter_count": 3,
-  "_twitter_complete": true,
+  "_download_complete": true,
   "_twitter_search": "Salah Liverpool",
   "_first_seen": "2025-01-01T15:45:00Z",
   "_removed": false,
@@ -882,7 +882,7 @@ for obj in s3.s3_client.list_objects_v2(Bucket='footy-videos').get('Contents', [
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Fixture stuck in active | Events missing `_twitter_complete` | Check worker logs for Twitter errors |
+| Fixture stuck in active | Events missing `_download_complete` | Check worker logs for Twitter errors |
 | Twitter search empty | Session expired | Re-login via VNC (port 4103) |
 | Videos not uploading | S3 connection failed | Check MinIO is running |
 | Same videos repeatedly | `exclude_urls` not passed | Check TwitterWorkflow activities |

@@ -146,7 +146,7 @@ class MongoMetrics:
         Get count of goal events actively being searched on Twitter.
         
         Events are embedded in fixtures as an 'events' array.
-        Active goal = _monitor_complete=true AND _twitter_complete not true
+        Active goal = _monitor_complete=true AND _download_complete not true
         These are goals in the Twitter search pipeline (10 attempts over ~10 minutes each).
         """
         try:
@@ -156,9 +156,9 @@ class MongoMetrics:
                 {"$match": {
                     "events._monitor_complete": True,
                     "$or": [
-                        {"events._twitter_complete": {"$exists": False}},
-                        {"events._twitter_complete": False},
-                        {"events._twitter_complete": None}
+                        {"events._download_complete": {"$exists": False}},
+                        {"events._download_complete": False},
+                        {"events._download_complete": None}
                     ]
                 }},
                 {"$count": "active_goals"}
@@ -179,7 +179,7 @@ class MongoMetrics:
         try:
             total = 0
             monitor_complete = 0
-            twitter_complete = 0
+            download_complete = 0
             upload_complete = 0
             
             for collection in ["fixtures_active", "fixtures_live", "fixtures_completed"]:
@@ -191,8 +191,8 @@ class MongoMetrics:
                         "monitor_complete": {
                             "$sum": {"$cond": [{"$eq": ["$events._monitor_complete", True]}, 1, 0]}
                         },
-                        "twitter_complete": {
-                            "$sum": {"$cond": [{"$eq": ["$events._twitter_complete", True]}, 1, 0]}
+                        "download_complete": {
+                            "$sum": {"$cond": [{"$eq": ["$events._download_complete", True]}, 1, 0]}
                         },
                         "upload_complete": {
                             "$sum": {"$cond": [{"$eq": ["$events._upload_complete", True]}, 1, 0]}
@@ -203,18 +203,18 @@ class MongoMetrics:
                 if result:
                     total += result[0].get("total", 0)
                     monitor_complete += result[0].get("monitor_complete", 0)
-                    twitter_complete += result[0].get("twitter_complete", 0)
+                    download_complete += result[0].get("download_complete", 0)
                     upload_complete += result[0].get("upload_complete", 0)
             
             return {
                 "total": total,
                 "monitor_complete": monitor_complete,
-                "twitter_complete": twitter_complete,
+                "download_complete": download_complete,
                 "upload_complete": upload_complete
             }
         except Exception as e:
             print(f"❌ Error getting goals summary: {e}")
-            return {"total": 0, "monitor_complete": 0, "twitter_complete": 0, "upload_complete": 0}
+            return {"total": 0, "monitor_complete": 0, "download_complete": 0, "upload_complete": 0}
 
 
 class ScalerService:
@@ -325,7 +325,7 @@ class ScalerService:
         ~10 minutes, so we need to know how many goals are "in flight".
         
         Logic:
-        - active_goals = goals with _monitor_complete=true AND _twitter_complete not true
+        - active_goals = goals with _monitor_complete=true AND _download_complete not true
         - Each Twitter instance can handle ~2-3 concurrent goals efficiently
         - Scale up if active_goals > instances * TWITTER_GOALS_PER_INSTANCE
         - Scale down if active_goals < instances (with cooldown to avoid flapping)
@@ -408,7 +408,7 @@ class ScalerService:
                 print(f"📊 Active Workflows: {active_workflows} ({active_workflows/current_workers:.1f}/worker)")
                 print(f"📊 Workers: {current_workers} running, {metrics['workflow_pollers']} polling")
                 print(f"📊 Twitter: {current_twitter} running, {active_goals} active goals ({active_goals/current_twitter:.1f}/instance)")
-                print(f"📊 Goals: total={goals_summary.get('total', 0)} monitor✓={goals_summary.get('monitor_complete', 0)} twitter✓={goals_summary.get('twitter_complete', 0)} upload✓={goals_summary.get('upload_complete', 0)}")
+                print(f"📊 Goals: total={goals_summary.get('total', 0)} monitor✓={goals_summary.get('monitor_complete', 0)} download✓={goals_summary.get('download_complete', 0)} upload✓={goals_summary.get('upload_complete', 0)}")
                 
                 # Calculate targets
                 target_workers = self.calculate_target_workers(active_workflows)

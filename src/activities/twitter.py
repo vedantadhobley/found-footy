@@ -426,7 +426,7 @@ async def save_discovered_videos(
     """
     Append newly discovered videos to _discovered_videos array.
     
-    Does NOT set _twitter_complete - that's handled by Download workflow
+    Does NOT set _download_complete - that's handled by Download workflow
     after it knows final S3 count.
     
     Args:
@@ -453,7 +453,7 @@ async def save_discovered_videos(
         activity.logger.info(f"📭 [TWITTER] No videos to save | event={event_id}")
         return {"saved": True, "video_count": 0}
     
-    # Just append videos to _discovered_videos, don't touch _twitter_complete
+    # Just append videos to _discovered_videos, don't touch _download_complete
     try:
         result = store.fixtures_active.update_one(
             {"_id": fixture_id, "events._event_id": event_id},

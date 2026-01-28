@@ -370,7 +370,7 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
     
     Completion flow (in order):
     1. Check all events have _monitor_complete = True
-    2. Check all events have _twitter_complete = True  
+    2. Check all events have _download_complete = True  
     3. ONLY THEN start/increment the completion counter
     4. When counter >= 3 (or winner data exists), move to completed
     
@@ -402,12 +402,12 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
         
         if valid_events:
             monitored = sum(1 for e in valid_events if e.get(EventFields.MONITOR_COMPLETE))
-            twitter_done = sum(1 for e in valid_events if e.get(EventFields.TWITTER_COMPLETE))
+            download_done = sum(1 for e in valid_events if e.get(EventFields.DOWNLOAD_COMPLETE))
             
-            if monitored < len(valid_events) or twitter_done < len(valid_events):
+            if monitored < len(valid_events) or download_done < len(valid_events):
                 activity.logger.info(
                     f"⏳ [MONITOR] Events not ready | fixture={fixture_id} | "
-                    f"monitored={monitored}/{len(valid_events)} | twitter={twitter_done}/{len(valid_events)}"
+                    f"monitored={monitored}/{len(valid_events)} | download={download_done}/{len(valid_events)}"
                 )
                 return False  # Don't start completion counter yet!
         
@@ -608,15 +608,15 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
         active_event = active_map[event_id]
         current_count = active_event.get(EventFields.MONITOR_COUNT, 0)
         monitor_complete = active_event.get(EventFields.MONITOR_COMPLETE, False)
-        twitter_complete = active_event.get(EventFields.TWITTER_COMPLETE, False)
+        download_complete = active_event.get(EventFields.DOWNLOAD_COMPLETE, False)
         
         # Get live event for API data sync
         live_event = next((e for e in live_events if e.get(EventFields.EVENT_ID) == event_id), None)
         
         # =====================================================================
-        # CASE 1: Both monitor and twitter complete - nothing to do
+        # CASE 1: Both monitor and download complete - nothing to do
         # =====================================================================
-        if monitor_complete and twitter_complete:
+        if monitor_complete and download_complete:
             # Just recover count if needed (from previous decrements)
             if current_count < 3:
                 new_count_val = current_count + 1
@@ -628,12 +628,12 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
             continue
         
         # =====================================================================
-        # CASE 2: Monitor complete but Twitter NOT complete
+        # CASE 2: Monitor complete but download NOT complete
         # =====================================================================
-        # Twitter workflow already started but hasn't finished yet.
-        # The while loop in TwitterWorkflow will handle retries if needed.
-        # We don't re-trigger here - just let Twitter continue its work.
-        if monitor_complete and not twitter_complete:
+        # Download workflow already started but hasn't finished yet.
+        # The while loop in DownloadWorkflow will handle retries if needed.
+        # We don't re-trigger here - just let download continue its work.
+        if monitor_complete and not download_complete:
             # Get download workflow count to show progress
             download_count = store.get_download_workflow_count(fixture_id, event_id)
             activity.logger.info(
