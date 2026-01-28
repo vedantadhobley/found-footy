@@ -18,6 +18,7 @@ from typing import Dict, List, Any, Optional
 import os
 import requests
 import itertools
+import os
 
 from src.data.models import EventFields
 
@@ -27,6 +28,12 @@ from src.data.models import EventFields
 _twitter_instance_cycle = None
 _twitter_healthy_cache = []
 _twitter_cache_time = 0
+
+# Environment-aware Twitter URL configuration
+# In dev: single instance at found-footy-dev-twitter:8888
+# In prod: scaled instances at found-footy-prod-twitter-{1-8}:8888
+TWITTER_SESSION_URL = os.getenv("TWITTER_SESSION_URL", "http://found-footy-prod-twitter:8888")
+TWITTER_SCALED = os.getenv("TWITTER_SCALED", "false").lower() == "true"
 
 
 # =============================================================================
@@ -268,15 +275,22 @@ async def execute_twitter_search(
     global _twitter_instance_cycle, _twitter_healthy_cache, _twitter_cache_time
     
     # Discover healthy Twitter instances dynamically
-    # Check all possible instances (1-8) and use healthy ones
+    # In dev: single instance via TWITTER_SESSION_URL
+    # In prod: scaled instances (found-footy-prod-twitter-1 through 8)
     # Cache health check results for 30 seconds to reduce overhead
     current_time = time.time()
     
     if current_time - _twitter_cache_time > 30 or not _twitter_healthy_cache:
-        all_twitter_urls = [
-            f"http://found-footy-prod-twitter-{i}:8888"
-            for i in range(1, 9)
-        ]
+        # Build list of Twitter URLs based on environment
+        if TWITTER_SCALED:
+            # Production: check scaled instances (1-8)
+            all_twitter_urls = [
+                f"http://found-footy-prod-twitter-{i}:8888"
+                for i in range(1, 9)
+            ]
+        else:
+            # Dev/single instance: use TWITTER_SESSION_URL
+            all_twitter_urls = [TWITTER_SESSION_URL]
         
         # Quick health check to find running instances (2s timeout)
         healthy_urls = []

@@ -101,6 +101,7 @@ x-worker-common: &worker-common
     FRONTEND_API_URL: http://vedanta-systems-prod-api:3001
     LLAMA_URL: http://llama-chat:8080
     FOOTY_TEMP_DIR: /tmp/found-footy
+    TWITTER_SCALED: "true"  # Use scaled Twitter instances (found-footy-prod-twitter-1 through 8)
   volumes:
     - ~/.config/found-footy:/config
     - found-footy-prod-temp:/tmp/found-footy

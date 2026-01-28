@@ -475,9 +475,13 @@ async def deduplicate_videos(
     # Build duplicate clusters using union-find approach
     clusters = []  # List of lists, each inner list is a cluster of duplicates
     videos_without_hash = 0  # Track videos that bypass dedup
+    comparisons_done = 0
     
-    for file_info in successful:
+    for file_idx, file_info in enumerate(successful):
         perceptual_hash = file_info["perceptual_hash"]
+        
+        # Heartbeat every video to signal progress (comparison can be slow)
+        activity.heartbeat(f"batch_dedup:{file_idx+1}/{len(successful)}")
         
         # Track videos without valid hash - they can't be deduplicated!
         if not perceptual_hash or perceptual_hash == "dense:0.25:":
@@ -487,6 +491,7 @@ async def deduplicate_videos(
         matching_cluster_idx = None
         for idx, cluster in enumerate(clusters):
             for member in cluster:
+                comparisons_done += 1
                 if _perceptual_hashes_match(perceptual_hash, member["perceptual_hash"]):
                     matching_cluster_idx = idx
                     break
@@ -579,7 +584,10 @@ async def deduplicate_videos(
     videos_to_bump_popularity = []  # Existing S3 is better
     skipped_urls = []
     
-    for file_info in batch_winners:
+    for winner_idx, file_info in enumerate(batch_winners):
+        # Heartbeat every video to signal progress during S3 comparison
+        activity.heartbeat(f"s3_dedup:{winner_idx+1}/{len(batch_winners)}")
+        
         perceptual_hash = file_info["perceptual_hash"]
         file_path = file_info["file_path"]
         file_size = file_info["file_size"]

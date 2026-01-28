@@ -330,16 +330,26 @@ class UploadWorkflow:
             dedup_result = await workflow.execute_activity(
                 upload_activities.deduplicate_videos,
                 args=[perceptual_dedup_videos, existing_s3_videos],
-                start_to_close_timeout=timedelta(seconds=60),
+                # Heartbeat-based timeout: activity heartbeats every video comparison.
+                # 120s heartbeat allows time for complex hash comparisons between heartbeats.
+                # 1 hour start_to_close is a safety ceiling - heartbeat is the real control.
+                heartbeat_timeout=timedelta(seconds=120),
+                start_to_close_timeout=timedelta(hours=1),
                 retry_policy=RetryPolicy(maximum_attempts=3),
             )
         except Exception as e:
-            workflow.logger.error(f"❌ [UPLOAD] Perceptual dedup FAILED | error={e} | event={event_id}")
+            # CRITICAL: Do NOT upload videos as new when dedup fails!
+            # That's what caused the duplicate video bug. Instead, skip them entirely.
+            # The videos will be retried in the next download batch.
+            workflow.logger.error(
+                f"❌ [UPLOAD] Perceptual dedup FAILED - SKIPPING BATCH to avoid duplicates | "
+                f"error={e} | videos={len(perceptual_dedup_videos)} | event={event_id}"
+            )
             dedup_result = {
-                "videos_to_upload": perceptual_dedup_videos,
+                "videos_to_upload": [],  # EMPTY - don't upload anything!
                 "videos_to_replace": [],
                 "videos_to_bump_popularity": [],
-                "skipped_urls": [],
+                "skipped_urls": [v.get("source_url", "") for v in perceptual_dedup_videos],
             }
         
         videos_to_upload = dedup_result.get("videos_to_upload", [])

@@ -671,6 +671,7 @@ def create_new_enhanced_event(
     score_after: str,
     scoring_team: str,
     initial_monitor_count: int = 1,
+    initial_monitor_workflows: List[str] = None,
 ) -> EnhancedEvent:
     """
     Create an enhanced event dict for insertion into fixtures_active.
@@ -691,6 +692,7 @@ def create_new_enhanced_event(
         score_after: Score after this event (e.g., "2-1")
         scoring_team: "home" or "away"
         initial_monitor_count: Starting monitor count (0 for unknown players, 1 for known)
+        initial_monitor_workflows: List of workflow IDs that have processed this event
     
     Returns:
         Enhanced event dict ready for MongoDB insertion
@@ -701,14 +703,18 @@ def create_new_enhanced_event(
         **live_event,
         # Identification
         EventFields.EVENT_ID: event_id,
-        # Monitor tracking
+        # Monitor tracking (old counter-based - DEPRECATED but kept for VAR logic)
         EventFields.MONITOR_COUNT: initial_monitor_count,
         EventFields.MONITOR_COMPLETE: False,
         EventFields.FIRST_SEEN: datetime.now(timezone.utc),
-        # Twitter tracking
+        # Monitor tracking (new workflow-ID-based)
+        EventFields.MONITOR_WORKFLOWS: initial_monitor_workflows or [],
+        # Twitter/Download tracking (old counter-based - DEPRECATED)
         EventFields.TWITTER_COUNT: 0,
         EventFields.TWITTER_COMPLETE: False,
         EventFields.TWITTER_SEARCH: twitter_search,
+        # Twitter/Download tracking (new workflow-ID-based)
+        EventFields.DOWNLOAD_WORKFLOWS: [],
         # Video storage
         EventFields.DISCOVERED_VIDEOS: [],
         EventFields.S3_VIDEOS: [],

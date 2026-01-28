@@ -519,9 +519,12 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
         # Determine initial monitor count based on player status
         # Unknown players (player_id=0) start at 0 to signal frontend they're not yet identified
         # Known players start at 1 and will debounce up to 3
-        initial_count = 1 if is_player_known(live_event) else 0
+        player_known = is_player_known(live_event)
+        initial_count = 1 if player_known else 0
         
         # Create enhanced event using models helper
+        # Only include workflow_id in _monitor_workflows if player is known
+        # Unknown players stay at 0 workflows (like old counter staying at 0)
         enhanced = create_new_enhanced_event(
             live_event=live_event,
             event_id=event_id,
@@ -529,6 +532,7 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
             score_after=score_context.get(EventFields.SCORE_AFTER, ""),
             scoring_team=score_context.get(EventFields.SCORING_TEAM, ""),
             initial_monitor_count=initial_count,
+            initial_monitor_workflows=[workflow_id] if workflow_id and player_known else [],
         )
         
         first_seen = enhanced[EventFields.FIRST_SEEN]
@@ -659,7 +663,9 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
         
         # Register this workflow ID in the _monitor_workflows array
         # This is the NEW workflow-ID-based tracking
-        if workflow_id:
+        # Only register if player is known - unknown players stay at 0 workflows
+        # (like old counter staying at 0) until they get a name
+        if workflow_id and is_player_known(live_event):
             store.add_monitor_workflow(fixture_id, event_id, workflow_id)
         
         # Get current workflow count and monitor_complete status

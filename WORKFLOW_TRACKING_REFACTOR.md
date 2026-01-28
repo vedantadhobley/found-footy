@@ -76,13 +76,47 @@ TWITTER_COUNT = "_twitter_count"       # Integer: 0-10
 ```python
 # src/data/models.py - EventFields class
 
-# NEW - Workflow-ID-based
-MONITOR_WORKFLOWS = "_monitor_workflows"     # Array of MonitorWorkflow IDs
-DOWNLOAD_WORKFLOWS = "_download_workflows"   # Array of DownloadWorkflow IDs
+# NEW - Workflow-ID-based tracking
+MONITOR_WORKFLOWS = "_monitor_workflows"     # Array of MonitorWorkflow IDs (for trigger)
+DOWNLOAD_WORKFLOWS = "_download_workflows"   # Array of DownloadWorkflow IDs (for completion)
+DROP_WORKFLOWS = "_drop_workflows"           # Array of MonitorWorkflow IDs (for VAR removal)
 
 # KEEP - These remain as derived booleans
 MONITOR_COMPLETE = "_monitor_complete"       # True when len(_monitor_workflows) >= 3
 TWITTER_COMPLETE = "_twitter_complete"       # True when len(_download_workflows) >= 10
+```
+
+### VAR Removal Logic (`_drop_workflows`)
+
+When a goal is VAR'd (removed from the API), we need to debounce before deleting to handle API glitches.
+
+**Old Approach (Counter-based):**
+```
+Event present: count UP (1 → 2 → 3)
+Event missing: count DOWN (3 → 2 → 1 → 0 → DELETE)
+```
+
+**New Approach (Workflow-ID-based):**
+```
+Event SEEN:    Clear _drop_workflows entirely → []
+Event MISSING: $addToSet workflow_id to _drop_workflows
+               If len(_drop_workflows) >= 3 → DELETE event
+```
+
+Key differences:
+1. **No up/down counting** - Binary state: seen = clear all, missing = accumulate
+2. **Full reset on reappearance** - If event flickers back, we reset completely (not decrement)
+3. **Idempotent** - Same workflow ID won't be added twice (`$addToSet`)
+4. **3 unique misses required** - Must be missing for 3 unique monitor workflow runs
+
+**Example Timeline:**
+```
+Monitor-1: Event SEEN    → _drop_workflows = []
+Monitor-2: Event MISSING → _drop_workflows = [monitor-2]
+Monitor-3: Event SEEN    → _drop_workflows = []           ← Full reset!
+Monitor-4: Event MISSING → _drop_workflows = [monitor-4]
+Monitor-5: Event MISSING → _drop_workflows = [monitor-4, monitor-5]
+Monitor-6: Event MISSING → _drop_workflows = [monitor-4, monitor-5, monitor-6] → DELETE
 ```
 
 ### Example Event Document
@@ -93,15 +127,16 @@ TWITTER_COMPLETE = "_twitter_complete"       # True when len(_download_workflows
   
   // NEW: Workflow tracking arrays
   "_monitor_workflows": [
-    "monitor-27_01_2026-15:30",
-    "monitor-27_01_2026-15:31",
-    "monitor-27_01_2026-15:32"
+    "monitor-scheduled-2026-01-27T15:30:00Z",
+    "monitor-scheduled-2026-01-27T15:30:30Z",
+    "monitor-scheduled-2026-01-27T15:31:00Z"
   ],
   "_download_workflows": [
     "download1-Everton-Barry-1379194_45_343684_Goal_1",
     "download2-Everton-Barry-1379194_45_343684_Goal_1",
     // ... up to 10
   ],
+  "_drop_workflows": [],  // Empty when event is present, accumulates when missing
   
   // KEEP: Derived completion booleans
   "_monitor_complete": true,
@@ -213,12 +248,15 @@ if workflow_count >= 3 and not monitor_complete:
 
 **Debounce Timing:**
 ```
-Monitor-1 (T+0:00):  add to array → count=1 → no action
-Monitor-2 (T+0:30):  add to array → count=2 → no action  
-Monitor-3 (T+1:00):  add to array → count=3 → len >= 3 AND not complete → SPAWN TWITTER
+Monitor-1 (T+0:00):  NEW event discovered → create with _monitor_workflows=[workflow-1] → count=1 → no action
+Monitor-2 (T+0:30):  EXISTING event → $addToSet workflow-2 → count=2 → no action  
+Monitor-3 (T+1:00):  EXISTING event → $addToSet workflow-3 → count=3 → len >= 3 AND not complete → SPAWN TWITTER
                      TwitterWorkflow starts → sets _monitor_complete = true
-Monitor-4 (T+1:30):  add to array → count=4 → len >= 3 BUT complete = true → no action
+Monitor-4 (T+1:30):  EXISTING event → $addToSet workflow-4 → count=4 → len >= 3 BUT complete = true → no action
 ```
+
+**IMPORTANT:** The workflow that DISCOVERS a new event must also be added to `_monitor_workflows`.
+This is done by passing `initial_monitor_workflows=[workflow_id]` to `create_new_enhanced_event()`.
 
 **Failure Recovery:**
 ```
@@ -722,6 +760,7 @@ The `while count < 10` loop naturally handles start failures by retrying until 1
 ### Phase 1: Model Updates ✅
 - [x] Add `MONITOR_WORKFLOWS` and `DOWNLOAD_WORKFLOWS` to `EventFields` in `models.py`
 - [x] Remove `MONITOR_COUNT` and `TWITTER_COUNT` from `EventFields` (or deprecate) - DEPRECATED
+- [x] Include `initial_monitor_workflows` param in `create_new_enhanced_event()` - **BUG FIX: The discovering workflow must be added to the array**
 
 ### Phase 2: MongoDB Store Functions ✅
 - [x] Add `add_monitor_workflow()` in `mongo_store.py`
@@ -775,7 +814,19 @@ The `while count < 10` loop naturally handles start failures by retrying until 1
 - [ ] Simplify/remove CASE 2 "stuck event" logic in `process_fixture_events` - Kept for safety
 - [ ] Update documentation (ARCHITECTURE.md, TEMPORAL_WORKFLOWS.md, ORCHESTRATION.md)
 
-### Phase 6: Testing
+### Phase 6: VAR Removal Refactor (`_drop_workflows`)
+- [ ] Add `DROP_WORKFLOWS` field to `EventFields` in `models.py`
+- [ ] Add `_drop_workflows: []` to `create_new_enhanced_event()` initial state
+- [ ] Add `add_drop_workflow()` in `mongo_store.py` - Uses `$addToSet`
+- [ ] Add `clear_drop_workflows()` in `mongo_store.py` - Sets `_drop_workflows: []`
+- [ ] Add `get_drop_workflow_count()` in `mongo_store.py`
+- [ ] Update `process_fixture_events` REMOVED events logic:
+  - [ ] When event SEEN (MATCHING): Call `clear_drop_workflows()` to reset
+  - [ ] When event MISSING (REMOVED): Call `add_drop_workflow(workflow_id)`
+  - [ ] When `len(_drop_workflows) >= 3`: Delete event (and S3 if completed)
+- [ ] Remove old `_monitor_count` decrement logic
+
+### Phase 7: Testing
 - [ ] Deploy to dev environment
 - [ ] Monitor today's fixtures
 - [ ] Verify events complete properly with new tracking
