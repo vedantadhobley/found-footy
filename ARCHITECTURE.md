@@ -239,8 +239,9 @@ TwitterWorkflow (per event, resolves aliases then searches)
     │   ├── Search "Salah Liverpool" → 3 videos
     │   ├── Search "Salah LFC" → 2 videos
     │   ├── Search "Salah Reds" → 1 video  
-    │   ├── Dedupe (by URL) → 4 unique
-    │   ├── Save to _discovered_videos
+    │   ├── Dedupe (by URL) → 6 unique
+    │   ├── Select top 5 longest videos
+    │   ├── Save selected 5 to _discovered_videos (not all found!)
     │   └── START DownloadWorkflow (BLOCKING) → waits for completion
     │         │
     │         ├── Download 4 videos in parallel
@@ -301,10 +302,29 @@ TwitterWorkflow (per event, resolves aliases then searches)
 Single-frame matching causes false positives between similar content (e.g., goals scored 1 minute apart in same match). Requiring 3 consecutive frames ensures the videos share actual continuous content.
 
 **Quality Comparison** (when hashes match):
+
+Uses **percentage-based duration comparison** (15% threshold):
+- If durations differ by **≤15%** → videos are "same clip" → prefer **larger file** (higher resolution)
+- If durations differ by **>15%** → videos are "different clips" → prefer **longer duration**
+
 ```python
-# Larger file = better quality (higher bitrate/resolution)
-if new_file_size > existing_file_size:
-    replace_video()  # Delete old, upload new with combined popularity
+DURATION_SIMILARITY_THRESHOLD = 0.15  # 15%
+
+# Why percentage? Absolute thresholds don't scale:
+# - 10s vs 15s = 50% diff → clearly different clips, want longer
+# - 60s vs 65s = 8% diff → same clip, slightly trimmed, want better quality
+
+max_duration = max(new_duration, existing_duration)
+duration_diff_pct = abs(new_duration - existing_duration) / max_duration
+
+if duration_diff_pct <= 0.15:
+    # Similar duration → prefer resolution (file size)
+    if new_file_size > existing_file_size:
+        replace_video()
+else:
+    # Different duration → prefer longer (more complete)
+    if new_duration > existing_duration:
+        replace_video()
 ```
 
 ### Popularity Scoring
@@ -324,12 +344,13 @@ Batch: Video A (720p, pop=1), Video B (1080p, pop=1), Video C (480p, pop=1) - al
 S3: Video D (360p, pop=2) - same content
 
 Phase 1 (Batch Dedup):
-├── A arrives: pop=1
-├── B arrives: matches A, B is larger → keep B, pop=1+1=2, delete A
-└── C arrives: matches B, B is larger → keep B, pop=2+1=3, delete C
+├── A (720p, 30s), B (1080p, 31s), C (480p, 28s) - all within 15% duration
+├── Similar durations → prefer resolution → keep B (1080p, largest)
+└── B wins with pop=1+1+1=3, delete A and C
 
 Phase 2 (S3 Dedup):
-└── B (10MB, pop=3) vs D (1MB, pop=2)
+└── B (10MB, 31s, pop=3) vs D (1MB, 30s, pop=2)
+    → Durations within 15% → compare file size
     → B is larger → REPLACE
     → Upload B with pop=3+2=5, delete D
 ```

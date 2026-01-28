@@ -526,36 +526,40 @@ async def deduplicate_videos(
             batch_winners.append(cluster[0])
             continue
         
-        # Find longest duration video
-        longest = max(cluster, key=lambda x: x.get("duration", 0))
-        
-        # Find largest file size video
-        largest = max(cluster, key=lambda x: x.get("file_size", 0))
-        
         # Accumulate popularity from ALL videos in cluster (including their MD5 dedup popularity)
         # This preserves popularity from earlier dedup phases
         total_popularity = sum(v.get("popularity", 1) for v in cluster)
         
-        # Pick single best video: prioritize duration, then file size as tiebreaker
-        # All videos in cluster are perceptual duplicates, so we only need ONE
-        winner = max(cluster, key=lambda x: (x.get("duration", 0), x.get("file_size", 0)))
+        # Pick single best video using smart duration comparison:
+        # - If durations differ by >15%, prefer longer video (more complete clip)
+        # - If durations are within 15%, prefer higher resolution (larger file)
+        # 
+        # Why percentage? 10s vs 15s is 50% different (different clips!), but
+        # 60s vs 65s is only 8% different (same clip, one slightly trimmed)
+        winner = _pick_best_video_from_cluster(cluster)
         winner["popularity"] = total_popularity
         batch_winners.append(winner)
         
-        # Log differently based on whether longest == largest
-        if longest["file_path"] == largest["file_path"]:
+        # Find longest and largest for logging
+        longest = max(cluster, key=lambda x: x.get("duration", 0))
+        largest = max(cluster, key=lambda x: x.get("file_size", 0))
+        
+        # Log selection with rationale
+        max_duration = longest.get("duration", 0) or 1
+        durations_similar = all(
+            (max_duration - v.get("duration", 0)) / max_duration <= DURATION_SIMILARITY_THRESHOLD
+            for v in cluster
+        )
+        
+        if durations_similar:
             activity.logger.info(
                 f"🏆 Cluster winner: {winner.get('duration', 0):.1f}s, {winner.get('file_size', 0):,} bytes "
-                f"(both longest & largest, {len(cluster)} dups, pop={total_popularity})"
+                f"(preferred RESOLUTION - similar durations, {len(cluster)} dups, pop={total_popularity})"
             )
         else:
-            # Different videos had longest duration vs largest size
-            # We picked based on (duration, file_size) tuple
             activity.logger.info(
                 f"🏆 Cluster winner: {winner.get('duration', 0):.1f}s, {winner.get('file_size', 0):,} bytes "
-                f"({len(cluster)} dups, pop={total_popularity}) | "
-                f"Alternatives: longest={longest.get('duration', 0):.1f}s/{longest.get('file_size', 0):,}b, "
-                f"largest={largest.get('duration', 0):.1f}s/{largest.get('file_size', 0):,}b"
+                f"(preferred LENGTH - varying durations, {len(cluster)} dups, pop={total_popularity})"
             )
         
         # Remove all other files in cluster
@@ -618,18 +622,15 @@ async def deduplicate_videos(
             existing_duration = matched_existing.get("duration", 0)
             existing_popularity = matched_existing.get("popularity", 1)
             
-            # Replace if new is LONGER or LARGER
-            should_replace = (new_duration > existing_duration) or (new_file_size > existing_file_size)
+            # Use smart comparison: percentage-based duration similarity
+            should_replace, reason = _should_replace_s3_video(
+                new_duration, new_file_size, existing_duration, existing_file_size
+            )
             
             if should_replace:
                 new_popularity = existing_popularity + incoming_popularity
-                reason = []
-                if new_duration > existing_duration:
-                    reason.append(f"longer ({new_duration:.1f}s > {existing_duration:.1f}s)")
-                if new_file_size > existing_file_size:
-                    reason.append(f"larger ({new_file_size:,} > {existing_file_size:,} bytes)")
                 activity.logger.info(
-                    f"🔄 S3 REPLACE: New is {' & '.join(reason)} "
+                    f"🔄 S3 REPLACE: New is {reason} "
                     f"- popularity {existing_popularity} + {incoming_popularity} = {new_popularity}"
                 )
                 file_info["popularity"] = new_popularity
@@ -1172,6 +1173,108 @@ def _hamming_distance(hex_a: str, hex_b: str) -> int:
         return bin(int_a ^ int_b).count('1')
     except (ValueError, TypeError):
         return 64  # Max distance on error
+
+
+# Threshold for "same duration" - if videos differ by less than this percentage,
+# they're considered the same length and we prefer higher resolution (file size)
+DURATION_SIMILARITY_THRESHOLD = 0.15  # 15%
+
+
+def _pick_best_video_from_cluster(cluster: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Pick the best video from a cluster of perceptual duplicates.
+    
+    Uses percentage-based duration comparison:
+    - If videos are within 15% duration of each other → prefer larger file (higher resolution)
+    - If videos differ by >15% → prefer longer duration (more complete clip)
+    
+    Why percentage? Because:
+    - 10s vs 15s = 50% difference → clearly different clips, want longer
+    - 60s vs 65s = 8% difference → same clip, slightly trimmed, want better quality
+    
+    Args:
+        cluster: List of video dicts with 'duration' and 'file_size' keys
+        
+    Returns:
+        The best video from the cluster
+    """
+    if len(cluster) == 1:
+        return cluster[0]
+    
+    # Find the longest video as reference point
+    longest = max(cluster, key=lambda x: x.get("duration", 0))
+    max_duration = longest.get("duration", 0) or 1  # Avoid division by zero
+    
+    # Check if all videos are "similar duration" (within threshold of longest)
+    all_similar_duration = True
+    for video in cluster:
+        video_duration = video.get("duration", 0)
+        if max_duration > 0:
+            # Calculate how much shorter this video is as a percentage
+            duration_diff = (max_duration - video_duration) / max_duration
+            if duration_diff > DURATION_SIMILARITY_THRESHOLD:
+                all_similar_duration = False
+                break
+    
+    if all_similar_duration:
+        # All videos are similar length - prefer higher resolution (larger file)
+        return max(cluster, key=lambda x: x.get("file_size", 0))
+    else:
+        # Videos have significantly different lengths - prefer longest
+        # Use file_size as tiebreaker for same-duration videos
+        return max(cluster, key=lambda x: (x.get("duration", 0), x.get("file_size", 0)))
+
+
+def _should_replace_s3_video(
+    new_duration: float, 
+    new_file_size: int, 
+    existing_duration: float, 
+    existing_file_size: int
+) -> tuple[bool, str]:
+    """
+    Decide whether a new video should replace an existing S3 video.
+    
+    Uses percentage-based duration comparison:
+    - If durations are within 15% → replace only if larger (better quality)
+    - If new is significantly longer → replace (more complete)
+    - If existing is significantly longer → keep existing
+    
+    Args:
+        new_duration: Duration of new video in seconds
+        new_file_size: File size of new video in bytes
+        existing_duration: Duration of existing S3 video in seconds
+        existing_file_size: File size of existing S3 video in bytes
+        
+    Returns:
+        Tuple of (should_replace: bool, reason: str)
+    """
+    # Handle edge cases
+    if new_duration <= 0 and existing_duration <= 0:
+        # No duration info - fall back to file size
+        if new_file_size > existing_file_size:
+            return True, f"larger ({new_file_size:,} > {existing_file_size:,} bytes)"
+        return False, ""
+    
+    max_duration = max(new_duration, existing_duration)
+    if max_duration <= 0:
+        max_duration = 1  # Avoid division by zero
+    
+    # Calculate percentage difference relative to longer video
+    duration_diff_pct = abs(new_duration - existing_duration) / max_duration
+    
+    if duration_diff_pct <= DURATION_SIMILARITY_THRESHOLD:
+        # Similar duration - compare by file size (resolution/quality)
+        if new_file_size > existing_file_size:
+            return True, (
+                f"higher quality ({new_file_size:,} > {existing_file_size:,} bytes, "
+                f"similar duration {new_duration:.1f}s ≈ {existing_duration:.1f}s)"
+            )
+        return False, ""
+    else:
+        # Significantly different duration - prefer longer
+        if new_duration > existing_duration:
+            return True, f"longer ({new_duration:.1f}s > {existing_duration:.1f}s)"
+        return False, ""
 
 
 def _perceptual_hashes_match(

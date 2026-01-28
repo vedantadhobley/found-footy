@@ -345,8 +345,11 @@ TwitterWorkflow (~10 min, fire-and-forget from Monitor)
     │   │   │   └── POST to Firefox service with exclude_urls
     │   │   └── Collect videos, dedupe by URL
     │   │
-    │   ├── save_discovered_videos
+    │   ├── Select top 5 longest videos from all found
+    │   │
+    │   ├── save_discovered_videos (ONLY selected 5)
     │   │   └── Append to _discovered_videos in MongoDB
+    │   │   └── Unselected videos remain discoverable in future attempts
     │   │
     │   ├── IF videos found:
     │   │   └── execute_child_workflow(DownloadWorkflow) ← BLOCKING
@@ -662,21 +665,34 @@ def hashes_match(hash_a, hash_b, max_hamming=10, min_consecutive=3):
 
 **Two-Phase Deduplication** (batch-first for efficiency):
 
+Uses **percentage-based duration comparison** (15% threshold):
+- Durations within 15% → "same clip" → prefer **larger file** (higher resolution)
+- Durations differ >15% → "different clips" → prefer **longer duration**
+
 ```
 PHASE 1: Batch Dedup
-├── Compare videos within current download batch
-├── Keep highest quality (largest file_size)
+├── Compare videos within current download batch (perceptual hash matching)
+├── Check duration similarity:
+│   ├── IF all within 15% of longest → prefer RESOLUTION (largest file_size)
+│   └── IF durations vary >15% → prefer LENGTH (longest duration)
 ├── Sum popularities: winner.pop += loser.pop
 └── Delete lower quality local files
 
 PHASE 2: S3 Dedup
 ├── Compare batch winners against existing S3 videos
-├── IF batch > S3 quality: REPLACE (upload batch, delete S3)
+├── Check duration similarity (same 15% threshold):
+│   ├── IF within 15%: compare by file_size
+│   └── IF >15% different: compare by duration
+├── IF batch wins: REPLACE (upload batch, delete S3)
 │   └── New popularity = batch.pop + s3.pop
-├── IF S3 > batch quality: SKIP (keep S3)
+├── IF S3 wins: SKIP (keep S3)
 │   └── Bump S3 popularity += batch.pop
 └── IF no S3 match: UPLOAD (new video)
 ```
+
+**Why percentage-based?**
+- 10s vs 15s = 50% diff → different clips, keep longer (more complete)
+- 60s vs 65s = 8% diff → same clip trimmed differently, keep higher resolution
 
 **Why batch-first?** If 3 copies of same video come from different alias searches (Liverpool, LFC, Reds), we reduce to 1 winner BEFORE hitting S3. This means 1 S3 operation instead of 3.
 

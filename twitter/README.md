@@ -173,9 +173,11 @@ response = requests.post(
 
 **Search Flow:**
 1. Twitter returns ALL videos found within `max_age_minutes`
-2. Workflow saves all to `_discovered_videos` in MongoDB
-3. Workflow selects **top 5 longest videos** for download
-4. Each attempt adds found URLs to `exclude_urls` for next attempt
+2. Workflow selects **top 5 longest videos** for download
+3. Workflow saves ONLY selected videos to `_discovered_videos` in MongoDB
+4. Each attempt adds downloaded URLs to `exclude_urls` for next attempt
+
+**Why save after selection?** Videos not selected for download should remain discoverable in future attempts. Previously, saving all found videos would permanently exclude them even if never downloaded.
 
 Each event gets **10 search attempts** over ~10 minutes:
 - Attempt 1: `exclude_urls=[]`

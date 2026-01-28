@@ -380,32 +380,6 @@ class TwitterWorkflow:
             )
             
             # =================================================================
-            # Save discovered videos to MongoDB
-            # =================================================================
-            if all_videos:
-                workflow.logger.info(
-                    f"💾 [TWITTER] Saving {video_count} URLs to _discovered_videos | event={input.event_id}"
-                )
-                try:
-                    await workflow.execute_activity(
-                        twitter_activities.save_discovered_videos,
-                        args=[input.fixture_id, input.event_id, all_videos],
-                        start_to_close_timeout=timedelta(seconds=30),
-                        retry_policy=RetryPolicy(
-                            maximum_attempts=3,
-                            initial_interval=timedelta(seconds=2),
-                            backoff_coefficient=2.0,
-                        ),
-                    )
-                    workflow.logger.info(
-                        f"✅ [TWITTER] Saved URLs | event={input.event_id} | count={video_count}"
-                    )
-                except Exception as e:
-                    workflow.logger.error(
-                        f"❌ [TWITTER] save_discovered_videos FAILED | event={input.event_id} | error={e}"
-                    )
-            
-            # =================================================================
             # ALWAYS Execute DownloadWorkflow - even with 0 videos
             # DownloadWorkflow registers itself at START, signals UploadWorkflow
             # This ensures we always increment the download count
@@ -434,6 +408,33 @@ class TwitterWorkflow:
                     f"📭 [TWITTER] No videos found | Starting DownloadWorkflow anyway for tracking | "
                     f"event={input.event_id}"
                 )
+            
+            # =================================================================
+            # Save ONLY the videos we're actually downloading to _discovered_videos
+            # This ensures we don't permanently skip videos we never tried
+            # =================================================================
+            if videos_to_download:
+                workflow.logger.info(
+                    f"💾 [TWITTER] Saving {len(videos_to_download)} URLs to _discovered_videos | event={input.event_id}"
+                )
+                try:
+                    await workflow.execute_activity(
+                        twitter_activities.save_discovered_videos,
+                        args=[input.fixture_id, input.event_id, videos_to_download],
+                        start_to_close_timeout=timedelta(seconds=30),
+                        retry_policy=RetryPolicy(
+                            maximum_attempts=3,
+                            initial_interval=timedelta(seconds=2),
+                            backoff_coefficient=2.0,
+                        ),
+                    )
+                    workflow.logger.info(
+                        f"✅ [TWITTER] Saved URLs | event={input.event_id} | count={len(videos_to_download)}"
+                    )
+                except Exception as e:
+                    workflow.logger.error(
+                        f"❌ [TWITTER] save_discovered_videos FAILED | event={input.event_id} | error={e}"
+                    )
             
             team_clean = team_aliases[0].replace(" ", "_").replace(".", "_").replace("-", "_") if team_aliases else "Unknown"
             # Don't include video count in workflow ID - it causes nondeterminism when code changes
