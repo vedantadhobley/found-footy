@@ -10,7 +10,7 @@ This service provides a REST API for searching Twitter videos. It uses a **two-m
 2. **Scraping Mode**: Selenium uses the authenticated profile for automation
 
 **Key Features:**
-- ✅ **VNC GUI access** on twitter-vnc only (http://localhost:3103 prod, http://localhost:4103 dev)
+- ✅ **VNC GUI access** on twitter-vnc only (http://localhost:3203 prod, http://localhost:4203 dev)
 - ✅ **Headless mode** for scaled twitter instances (no VNC, better scalability)
 - ✅ **No bot detection** - manual Firefox for login
 - ✅ Persistent Firefox profile + cookie backup (shared across all instances)
@@ -51,7 +51,7 @@ If `authenticated: false`, login via VNC.
 
 ### 3. First-Time Login
 
-1. Open http://localhost:4103 (VNC)
+1. Open http://localhost:4203 (VNC)
 2. Login to Twitter in Firefox (no bot detection!)
 3. Service auto-detects login success
 4. Cookies backed up automatically
@@ -133,9 +133,9 @@ Logs show when URLs are skipped:
 
 | Instance | Mode | VNC Port | API Port |
 |----------|------|----------|----------|
-| twitter-vnc (prod) | VNC | 3103 | 8888 (internal) |
+| twitter-vnc (prod) | VNC | 3203 | 8888 (internal) |
 | twitter (prod, scaled) | Headless | None | 8888 (internal) |
-| twitter (dev) | VNC | 4103 | 8888 (internal) |
+| twitter (dev) | VNC | 4203 | 8888 (internal) |
 
 **Why headless for scaled instances?**
 VNC is only needed for initial login and debugging. Once cookies are saved to `~/.config/found-footy/twitter_cookies.json`, all instances restore from the same backup. Headless mode:
@@ -203,7 +203,7 @@ Videos are found by:
 ## Troubleshooting
 
 ### Can't login / bot detection
-Use VNC at http://localhost:4103 - it's real Firefox, no Selenium.
+Use VNC at http://localhost:4203 - it's real Firefox, no Selenium.
 
 ### Session expired
 Login via VNC again, or restart container (auto-restores cookies).

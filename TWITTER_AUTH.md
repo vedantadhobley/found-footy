@@ -20,9 +20,9 @@ The Twitter service uses **browser automation with VNC access** for authenticati
 │  └─────────────────┘                                │
 └─────────────────────────────────────────────────────┘
         │
-        │ Port 4103 (dev) / 3103 (prod)
+        │ Port 4203 (dev) / 3203 (prod)
         ▼
-    http://localhost:4103 → VNC browser GUI
+    http://localhost:4203 → VNC browser GUI
 ```
 
 ## How It Works
@@ -64,7 +64,7 @@ curl http://localhost:8888/health
 If `authenticated: false`, open VNC:
 
 ```
-http://localhost:4103
+http://localhost:4203
 ```
 
 This opens a browser showing Firefox. Log into Twitter:
@@ -88,7 +88,7 @@ Returns:
 
 Or if login needed:
 ```json
-{"status": "unhealthy", "authenticated": false, "message": "Not authenticated - open http://localhost:4103 to login via VNC"}
+{"status": "unhealthy", "authenticated": false, "message": "Not authenticated - open http://localhost:4203 to login via VNC"}
 ```
 
 ### POST /search
@@ -177,7 +177,7 @@ This file is:
 
 ### "authenticated: false" or 503 errors
 
-1. Open VNC: http://localhost:4103
+1. Open VNC: http://localhost:4203
 2. Log into Twitter manually
 3. Wait for auto-detection (service logs show success)
 
@@ -237,7 +237,7 @@ If you're getting the same videos repeatedly:
 | `TWITTER_SERVICE_PORT` | 8888 | API port |
 | `TWITTER_COOKIE_BACKUP_PATH` | `/config/twitter_cookies.json` | Cookie backup location |
 | `TWITTER_HEADLESS` | false | Run browser headless (no GUI) |
-| `VNC_PUBLIC_URL` | http://localhost:4103 | VNC URL in notifications |
+| `VNC_PUBLIC_URL` | http://localhost:4203 | VNC URL in notifications |
 
 ## Session Lifecycle
 
@@ -260,8 +260,8 @@ stateDiagram-v2
 
 | Environment | VNC Port | API Port |
 |-------------|----------|----------|
-| Development | 4103 | 8888 (internal) |
-| Production | 3103 | 8888 (internal) |
+| Development | 4203 | 8888 (internal) |
+| Production | 3203 | 8888 (internal) |
 
 ## Integration with Temporal
 

@@ -67,10 +67,10 @@ docker compose -f docker-compose.dev.yml up -d
 docker compose -f docker-compose.dev.yml logs -f worker
 
 # Temporal UI
-open http://localhost:4100
+open http://localhost:4200
 
 # MongoDB Express
-open http://localhost:4101
+open http://localhost:4201
 ```
 
 ## Implementation Status

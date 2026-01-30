@@ -30,36 +30,38 @@ def normalize_accents(text: str) -> str:
     return ascii_text
 
 
-def extract_player_search_name(player_name: str) -> str:
+def extract_player_search_names(player_name: str) -> list[str]:
     """
-    Extract the best search name from a player's full name.
+    Extract searchable names from a player's full name.
     
-    Uses the longest word from the surname, which is typically the most
-    distinctive and searchable part of the name.
+    Returns multiple names when both first name and surname are good search terms.
+    This allows Twitter search to use OR: "(Florian OR Wirtz) (LFC OR Liverpool)"
     
     Examples:
-        "M. Salah" -> "Salah"
-        "K. De Bruyne" -> "Bruyne"  
-        "C. Hudson-Odoi" -> "Hudson"  (both 6 chars, prefer last)
-        "T. Alexander-Arnold" -> "Alexander"  (longer than Arnold)
-        "R. Diaz Belloli" -> "Belloli"  (longer than Diaz)
-        "Vinícius Júnior" -> "Vinicius"  (longer than Junior)
+        "M. Salah" -> ["Salah"]
+        "K. De Bruyne" -> ["Bruyne"]  
+        "Florian Wirtz" -> ["Florian", "Wirtz"]  (both 5+ chars, include both!)
+        "Vinícius Júnior" -> ["Vinicius", "Junior"]  (both 6+ chars)
+        "T. Alexander-Arnold" -> ["Alexander", "Arnold"]  (hyphenated = both parts)
+        "R. Diaz Belloli" -> ["Belloli", "Diaz"]  (both 4+ chars)
+        "C. Ronaldo" -> ["Ronaldo"]  (initial skipped)
     
     Rules:
     1. Normalize accented characters
-    2. Replace hyphens with spaces
-    3. Skip initial if present (single letter or letter+period)
-    4. Use the longest word from remaining parts
-    5. On ties, prefer the LAST word (typically the family name)
+    2. Replace hyphens with spaces (for hyphenated names)
+    3. Skip initials (single letter or letter+period)
+    4. Include ALL name parts that are 4+ characters (searchable length)
+    5. Order by length descending (longest/most distinctive first)
+    6. For very common short names, still include if it's the only surname
     
     Args:
-        player_name: Full player name from API (e.g., "K. De Bruyne")
+        player_name: Full player name from API (e.g., "Florian Wirtz")
         
     Returns:
-        Search-friendly name (e.g., "Bruyne")
+        List of search-friendly names (e.g., ["Florian", "Wirtz"])
     """
     if not player_name or player_name == "Unknown":
-        return "Unknown"
+        return ["Unknown"]
     
     # Normalize accents first
     name = normalize_accents(player_name)
@@ -71,7 +73,7 @@ def extract_player_search_name(player_name: str) -> str:
     parts = name.split()
     
     if len(parts) == 1:
-        return parts[0]
+        return [parts[0]]
     
     # Check if first part is an initial (single letter or letter with period)
     first = parts[0]
@@ -79,20 +81,29 @@ def extract_player_search_name(player_name: str) -> str:
     
     if is_initial:
         # Skip the initial, work with surname parts
-        surname_parts = parts[1:]
+        name_parts = parts[1:]
     else:
         # No initial - use all parts
-        surname_parts = parts
+        name_parts = parts
     
-    if len(surname_parts) == 1:
-        return surname_parts[0]
+    if len(name_parts) == 1:
+        return [name_parts[0]]
     
-    # Find the longest word
-    # On ties, prefer the LAST word (typically the actual family name)
-    # We reverse the list so that when max() finds equal lengths, it gets the last one
-    longest = max(reversed(surname_parts), key=len)
+    # Filter to searchable names (4+ chars is a good threshold)
+    # Shorter names like "De" or "Van" are not useful alone
+    MIN_SEARCH_LENGTH = 4
+    searchable = [p for p in name_parts if len(p) >= MIN_SEARCH_LENGTH]
     
-    return longest
+    # If nothing passes the filter, fall back to the longest name
+    if not searchable:
+        longest = max(name_parts, key=len)
+        return [longest]
+    
+    # Sort by length descending (most distinctive first)
+    searchable.sort(key=len, reverse=True)
+    
+    # Limit to max 3 names to avoid overly complex queries
+    return searchable[:3]
 
 
 def extract_team_search_name(team_name: str) -> str:
@@ -209,7 +220,8 @@ def build_twitter_search(event: dict, fixture: dict) -> str:
     """
     # Get player's search name (handles De Bruyne, Hudson-Odoi, accents, etc.)
     player_name = event.get("player", {}).get("name", "Unknown")
-    player_search_name = extract_player_search_name(player_name)
+    player_search_names = extract_player_search_names(player_name)
+    player_search_name = player_search_names[0] if player_search_names else "Unknown"
     
     # Get team info from fixture
     event_team_id = event.get("team", {}).get("id")

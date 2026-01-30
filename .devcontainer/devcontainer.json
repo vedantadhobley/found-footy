@@ -51,25 +51,25 @@
   
   // CRITICAL: Explicit port forwarding to prevent VS Code from guessing wrong
   // Only forward USER-FACING dashboards (not backend services)
-  "forwardPorts": [3100, 3101, 3102, 3103],
+  "forwardPorts": [3200, 3201, 3202, 3203],
   "portsAttributes": {
-    "3100": {
-      "label": "Dagster UI",
+    "3200": {
+      "label": "Temporal UI",
       "onAutoForward": "notify"
     },
-    "3101": {
+    "3201": {
       "label": "MongoDB Express",
       "onAutoForward": "notify"
     },
-    "3102": {
+    "3202": {
       "label": "MinIO Console",
       "onAutoForward": "notify"
     },
-    "3103": {
+    "3203": {
       "label": "Twitter Login UI",
       "onAutoForward": "notify"
     }
   },
   
-  "postCreateCommand": "echo '✅ Dev container ready! Dagster UI: http://localhost:3100'"
+  "postCreateCommand": "echo '✅ Dev container ready! Temporal UI: http://localhost:3200'"
 }

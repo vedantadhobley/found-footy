@@ -103,7 +103,7 @@ All workflows use human-readable IDs for easy debugging in Temporal UI:
 
 ## Manual Operations from Temporal UI
 
-You can manually trigger workflows from the Temporal UI at `http://localhost:3100`.
+You can manually trigger workflows from the Temporal UI at `http://localhost:3200`.
 
 ### Manual Fixture Ingest
 

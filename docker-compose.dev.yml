@@ -1,10 +1,10 @@
 # Development Docker Compose - Temporal orchestration
 #
-# Port allocation: found-footy uses 4100-4109 (dev)
-#   4100: Temporal UI
-#   4101: MongoDB Compass (web GUI)
-#   4102: MinIO Console
-#   4103: Twitter Firefox VNC (browser GUI)
+# Port allocation: found-footy uses 4200-4209 (dev)
+#   4200: Temporal UI
+#   4201: MongoDB Mongoku (web GUI)
+#   4202: MinIO Console
+#   4203: Twitter Firefox VNC (browser GUI)
 #   7233: Temporal gRPC
 #
 # External services (on luv-dev network):
@@ -25,7 +25,7 @@ services:
       dockerfile: Dockerfile.dev
     container_name: found-footy-dev-twitter
     ports:
-      - "4103:6080"  # noVNC Browser - view Firefox at http://localhost:4103
+      - "4203:6080"  # noVNC Browser - view Firefox at http://localhost:4203
     env_file:
       - .env
     environment:
@@ -97,10 +97,10 @@ services:
     image: huggingface/mongoku:latest
     container_name: found-footy-dev-mongoku
     ports:
-      - "4101:3100"  # Mongoku Web UI
+      - "4201:3100"  # Mongoku Web UI
     environment:
       MONGOKU_DEFAULT_HOST: mongodb://ffuser:ffpass@found-footy-dev-mongo:27017
-      MONGOKU_SERVER_ORIGIN: http://localhost:4101
+      MONGOKU_SERVER_ORIGIN: http://localhost:4201
       MONGOKU_ALLOW_DELETE: "true"
     depends_on:
       mongo:
@@ -115,7 +115,7 @@ services:
     container_name: found-footy-dev-minio
     command: server /data --console-address ":9001"
     ports:
-      - "4102:9001"  # MinIO Console
+      - "4202:9001"  # MinIO Console
     environment:
       MINIO_ROOT_USER: ffuser
       MINIO_ROOT_PASSWORD: ffpass--
@@ -157,10 +157,10 @@ services:
     image: temporalio/ui:latest
     container_name: found-footy-dev-temporal-ui
     ports:
-      - "4100:8080"  # Temporal UI
+      - "4200:8080"  # Temporal UI
     environment:
       - TEMPORAL_ADDRESS=found-footy-dev-temporal:7233
-      - TEMPORAL_CORS_ORIGINS=http://localhost:4100
+      - TEMPORAL_CORS_ORIGINS=http://localhost:4200
     depends_on:
       - temporal
     networks:

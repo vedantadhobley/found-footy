@@ -718,12 +718,12 @@ fixtures_completed: Forever (archive)
 
 ### Check Workflow Status
 ```
-Temporal UI: http://localhost:3100
+Temporal UI: http://localhost:3200
 ```
 
 ### Check MongoDB
 ```
-Mongoku: http://localhost:3101
+Mongoku: http://localhost:3201
 ```
 
 ### Multi-Worker Operations
@@ -748,5 +748,5 @@ docker compose up -d --scale worker=8
 | Fixture stuck in active | Events missing `_download_complete` | Check TwitterWorkflow in Temporal UI |
 | Videos not uploading | S3 connection failed | Check MinIO is running |
 | Duplicate videos | Upload serialization failed | Check UploadWorkflow logs |
-| Twitter search empty | Browser session expired | Re-login via VNC (port 4103) |
+| Twitter search empty | Browser session expired | Re-login via VNC (port 4203) |
 | Alias resolution slow | Cache miss, RAG pipeline running | Normal for first-time teams |

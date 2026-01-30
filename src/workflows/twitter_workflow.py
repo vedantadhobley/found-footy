@@ -55,7 +55,7 @@ with workflow.unsafe.imports_passed_through():
     from src.activities import download as download_activities
     from src.activities import rag as rag_activities
     from src.workflows.download_workflow import DownloadWorkflow
-    from src.utils.event_enhancement import extract_player_search_name
+    from src.utils.event_enhancement import extract_player_search_names
 
 
 @dataclass
@@ -110,13 +110,15 @@ class TwitterWorkflow:
         MAX_ATTEMPTS = 15  # Safety limit - should only need 10, but handles start failures
         REQUIRED_DOWNLOADS = 10
         
-        # Get player search name (handles accents, hyphens, "Jr" suffixes, etc.)
-        player_search = extract_player_search_name(input.player_name) if input.player_name else "Unknown"
+        # Get player search names (handles accents, hyphens, returns multiple names for OR search)
+        # e.g., "Florian Wirtz" -> ["Florian", "Wirtz"] for "(Florian OR Wirtz)" query
+        player_names = extract_player_search_names(input.player_name) if input.player_name else ["Unknown"]
+        player_search = player_names[0]  # Primary name for logging/IDs
         
         workflow.logger.info(
             f"🐦 [TWITTER] STARTED | event={input.event_id} | "
             f"team_id={input.team_id} | team_name='{input.team_name}' | "
-            f"player_search='{player_search}'"
+            f"player_names={player_names}"
         )
         
         # =========================================================================
@@ -206,7 +208,7 @@ class TwitterWorkflow:
         
         workflow.logger.info(
             f"🐦 [TWITTER] Starting search loop | event={input.event_id} | "
-            f"player='{player_search}' | aliases={team_aliases} | cache_hit={cache_hit} | "
+            f"player_names={player_names} | aliases={team_aliases} | cache_hit={cache_hit} | "
             f"max_attempts={MAX_ATTEMPTS} | required_downloads={REQUIRED_DOWNLOADS}"
         )
         
@@ -303,7 +305,7 @@ class TwitterWorkflow:
             attempt_start = workflow.now()
             workflow.logger.info(
                 f"🐦 [TWITTER] Attempt {attempt}/{MAX_ATTEMPTS} STARTING | event={input.event_id} | "
-                f"player='{player_search}' | aliases={team_aliases} | download_count={download_count}"
+                f"player_names={player_names} | aliases={team_aliases} | download_count={download_count}"
             )
             
             # =================================================================
@@ -334,16 +336,26 @@ class TwitterWorkflow:
                 match_date = ""
             
             # =================================================================
-            # Build single search query with OR operator for all aliases
-            # Twitter supports: "player (alias1 OR alias2 OR alias3)"
+            # Build search query with OR operators for player names AND team aliases
+            # Twitter supports nested OR: "(Florian OR Wirtz) (LFC OR Liverpool)"
+            # This dramatically improves search coverage for well-known players
             # =================================================================
-            if len(team_aliases) > 1:
-                # Multiple aliases: use OR operator
-                aliases_or = " OR ".join(team_aliases)
-                search_query = f"{player_search} ({aliases_or})"
+            
+            # Build player part: "(Florian OR Wirtz)" or just "Salah"
+            if len(player_names) > 1:
+                player_or = " OR ".join(player_names)
+                player_part = f"({player_or})"
             else:
-                # Single alias: simple query
-                search_query = f"{player_search} {team_aliases[0]}"
+                player_part = player_names[0]
+            
+            # Build team part: "(LFC OR Liverpool)" or just "Liverpool"
+            if len(team_aliases) > 1:
+                aliases_or = " OR ".join(team_aliases)
+                team_part = f"({aliases_or})"
+            else:
+                team_part = team_aliases[0]
+            
+            search_query = f"{player_part} {team_part}"
             
             workflow.logger.info(
                 f"🔍 [TWITTER] Search | query='{search_query}' | excluding={len(existing_urls)} URLs"

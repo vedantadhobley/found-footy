@@ -38,13 +38,13 @@ End-to-end pipeline test:
 
 ```bash
 # Temporal UI - watch workflows
-http://localhost:4100
+http://localhost:4200
 
 # Twitter VNC - see Firefox browser
-http://localhost:4103
+http://localhost:4203
 
 # MongoDB Express - check collections
-http://localhost:4101
+http://localhost:4201
 
 # Worker logs
 docker logs -f found-footy-worker

@@ -1,10 +1,10 @@
 # Production Docker Compose - Temporal orchestration
 #
-# Port allocation: found-footy uses 3100-3119 (production)
-#   3100: Temporal UI
-#   3101: MongoDB Compass (web GUI)
-#   3102: MinIO Console
-#   3103: Twitter VNC (manual service for cookie re-auth)
+# Port allocation: found-footy uses 3200-3219 (production)
+#   3200: Temporal UI
+#   3201: MongoDB Express (web GUI)
+#   3202: MinIO Console
+#   3203: Twitter VNC (manual service for cookie re-auth)
 #
 # Internal ports (not exposed):
 #   - postgres:5432 (Temporal metadata)
@@ -33,7 +33,7 @@
 #
 #   Cookie re-auth (when cookies expire):
 #     docker compose up -d twitter-vnc
-#     # Open http://localhost:3103 and login
+#     # Open http://localhost:3203 and login
 #     docker compose stop twitter-vnc
 
 name: found-footy-prod
@@ -150,14 +150,14 @@ services:
   
   # Twitter VNC - Manual service for cookie re-auth when cookies expire
   # Usage: docker compose up -d twitter-vnc
-  #        Open http://localhost:3103 and login to Twitter
+  #        Open http://localhost:3203 and login to Twitter
   #        docker compose stop twitter-vnc
   twitter-vnc:
     <<: *twitter-vnc
     container_name: found-footy-prod-twitter-vnc
     profiles: ["vnc"]
     ports:
-      - "3103:6080"
+      - "3203:6080"
 
   # ===========================================================================
   # INFRASTRUCTURE SERVICES
@@ -212,7 +212,7 @@ services:
     image: mongo-express:latest
     container_name: found-footy-prod-mongo-express
     ports:
-      - "3101:8081"
+      - "3201:8081"
     environment:
       ME_CONFIG_MONGODB_SERVER: found-footy-prod-mongo
       ME_CONFIG_MONGODB_PORT: "27017"
@@ -235,7 +235,7 @@ services:
     container_name: found-footy-prod-minio
     command: server /data --console-address ":9001"
     ports:
-      - "3102:9001"
+      - "3202:9001"
     environment:
       MINIO_ROOT_USER: ffuser
       MINIO_ROOT_PASSWORD: ffpass--
@@ -275,10 +275,10 @@ services:
     image: temporalio/ui:latest
     container_name: found-footy-prod-temporal-ui
     ports:
-      - "3100:8080"
+      - "3200:8080"
     environment:
       - TEMPORAL_ADDRESS=found-footy-prod-temporal:7233
-      - TEMPORAL_CORS_ORIGINS=http://localhost:3100
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3200
     depends_on:
       - temporal
     networks:

@@ -664,7 +664,7 @@ asyncio.run(test())
 ### 4. Verify Cache
 
 ```bash
-# Connect to Mongoku at localhost:4101 (dev) or 3101 (prod)
+# Connect to Mongoku at localhost:4201 (dev) or 3201 (prod)
 # Or via mongosh:
 docker exec found-footy-dev-mongo mongosh found_footy -u ffuser -p ffpass --authenticationDatabase admin --eval "db.llm_team_aliases.find().pretty()"
 ```

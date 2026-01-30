@@ -363,15 +363,15 @@ flowchart TB
         end
         
         subgraph TWITTER["Twitter Automation (2-8 auto-scaled)"]
-            T1[Twitter 1<br/>VNC :3103]
+            T1[Twitter 1<br/>VNC :3203]
             T2[Twitter 2-8<br/>Headless]
             FIREFOX[Firefox + Selenium]
         end
         
         subgraph UI["Management UIs"]
-            TEMPUI[Temporal UI :3100]
-            MONGOKU[Mongoku :3101]
-            MINIOUI[MinIO Console :3102]
+            TEMPUI[Temporal UI :3200]
+            MONGOKU[Mongoku :3201]
+            MINIOUI[MinIO Console :3202]
         end
     end
     
@@ -467,10 +467,10 @@ session_url = random.choice(healthy_urls)
 
 | Service | Dev Port | Prod Port | Purpose |
 |---------|----------|-----------|---------|
-| Temporal UI | 4100 | 3100 | Workflow monitoring |
-| Mongoku | 4101 | 3101 | MongoDB GUI |
-| MinIO Console | 4102 | 3102 | S3 management |
-| Twitter-1 VNC | 4103 | 3103 | Browser access (only instance with VNC) |
+| Temporal UI | 4200 | 3200 | Workflow monitoring |
+| Mongoku | 4201 | 3201 | MongoDB GUI |
+| MinIO Console | 4202 | 3202 | S3 management |
+| Twitter-1 VNC | 4203 | 3203 | Browser access (only instance with VNC) |
 | Temporal gRPC | 7233 | 7233 | Workflow API |
 
 ### Internal Services (Docker network only)
@@ -505,7 +505,7 @@ cp .env.example .env
 docker compose -f docker-compose.dev.yml up -d
 
 # 3. First-time Twitter login
-# Open http://localhost:4103 (VNC browser)
+# Open http://localhost:4203 (VNC browser)
 # Log into Twitter in the Firefox window
 # Cookies are saved automatically
 
@@ -514,12 +514,12 @@ curl http://localhost:8888/health
 # Should return: {"status": "healthy", "authenticated": true}
 
 # 5. Access UIs (via SSH tunnel if remote)
-ssh -L 4100:localhost:4100 -L 4101:localhost:4101 \
-    -L 4102:localhost:4102 -L 4103:localhost:4103 user@server
+ssh -L 4200:localhost:4200 -L 4201:localhost:4201 \
+    -L 4202:localhost:4202 -L 4203:localhost:4203 user@server
 
-# Temporal UI: http://localhost:4100
-# MongoDB:     http://localhost:4101
-# MinIO:       http://localhost:4102
+# Temporal UI: http://localhost:4200
+# MongoDB:     http://localhost:4201
+# MinIO:       http://localhost:4202
 ```
 
 ### Test the Pipeline
@@ -858,13 +858,13 @@ Events are stored with both raw API fields and enhancement fields:
 ### Check Workflow Status
 ```bash
 # Temporal UI
-open http://localhost:4100
+open http://localhost:4200
 ```
 
 ### Check Event Data
 ```bash
 # MongoDB (via Mongoku)
-open http://localhost:4101
+open http://localhost:4201
 # Navigate: found_footy → fixtures_active → events array
 ```
 
@@ -883,7 +883,7 @@ for obj in s3.s3_client.list_objects_v2(Bucket='footy-videos').get('Contents', [
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | Fixture stuck in active | Events missing `_download_complete` | Check worker logs for Twitter errors |
-| Twitter search empty | Session expired | Re-login via VNC (port 4103) |
+| Twitter search empty | Session expired | Re-login via VNC (port 4203) |
 | Videos not uploading | S3 connection failed | Check MinIO is running |
 | Same videos repeatedly | `exclude_urls` not passed | Check TwitterWorkflow activities |
 

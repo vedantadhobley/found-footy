@@ -1002,4 +1002,42 @@ Before deploying to production:
 - [ ] Workflow restart/retry scenarios
 - [ ] Check MongoDB documents have correct array contents
 - [ ] Verify `_download_complete` is set correctly at count=10
-- [ ] Verify failsafe triggers on UploadWorkflow idle timeout |
+- [ ] Verify failsafe triggers on UploadWorkflow idle timeout
+
+---
+
+## Pending Cleanup (TODO)
+
+Items to delete once the refactor is stable and no in-flight workflows need them:
+
+### Deprecated Activities (still registered in worker.py)
+
+| Activity | Location | Replacement |
+|----------|----------|-------------|
+| `increment_twitter_count` | `src/activities/download.py#L813` | `check_and_mark_download_complete` |
+| `confirm_twitter_workflow_started` | `src/activities/monitor.py#L753` | `set_monitor_complete` (in twitter.py) |
+
+### Deprecated Store Methods
+
+| Method | Location | Replacement |
+|--------|----------|-------------|
+| `increment_twitter_count_and_check_complete` | `src/data/mongo_store.py#L538` | `check_and_mark_download_complete` |
+| `activate_fixture` | `src/data/mongo_store.py#L246` | `activate_fixture_with_data` |
+
+### Deleted Functions (completed)
+
+| Function | Location | Date | Notes |
+|----------|----------|------|-------|
+| `extract_player_search_name` (singular) | `src/utils/event_enhancement.py` | 2026-01-29 | Replaced by `extract_player_search_names` (plural, returns list) |
+
+### Worker Registration Cleanup
+
+When ready to remove deprecated activities, update `src/worker.py`:
+- Line ~234: Remove `monitor.confirm_twitter_workflow_started`
+- Line ~254: Remove `download.increment_twitter_count`
+
+### Documentation Updates Needed
+
+- [ ] `ORCHESTRATION.md` - References old `increment_twitter_count` flow
+- [ ] `README.md` - Mermaid diagrams reference old counter logic
+- [ ] `RAG_IMPLEMENTATION.md` - Minor references to old patterns
