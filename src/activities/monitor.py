@@ -544,19 +544,22 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
             new_count += 1
     
     # =========================================================================
-    # REMOVED events (disappeared from API) - DECREMENT monitor_count
+    # REMOVED events (disappeared from API) - Track with _drop_workflows
     # =========================================================================
-    # Instead of immediately deleting, we decrement the monitor count.
-    # This handles API glitches where events temporarily disappear.
+    # Instead of immediately deleting, we track which monitor workflows saw
+    # the event missing using _drop_workflows array.
     # 
-    # Debounce down:
-    # - Event present: count goes UP (1 -> 2 -> 3 -> complete)
-    # - Event missing: count goes DOWN (3 -> 2 -> 1 -> 0 -> DELETE)
-    # 
-    # This means an event must be missing for 3+ consecutive polls to be deleted.
-    # API glitches that return empty events for 1-2 polls won't cause data loss.
+    # NEW APPROACH (Workflow-ID-based):
+    # - Event MISSING: Add workflow_id to _drop_workflows via $addToSet
+    # - If len(_drop_workflows) >= 3: DELETE the event
+    # - Event REAPPEARS: FULL RESET - clear _drop_workflows entirely
     #
-    # NOTE: We still use _monitor_count for VAR removal logic (separate from workflow tracking)
+    # This means 3 unique monitor runs must see the event missing to delete.
+    # API glitches that return empty events for 1-2 polls won't cause data loss.
+    # If event flickers back, we start the drop count from scratch.
+    #
+    # OLD APPROACH (counter-based - kept for backwards compatibility):
+    # We still decrement _monitor_count but don't use it for deletion decisions.
     removed_ids = active_ids - live_ids
     removed_count = 0
     for event_id in removed_ids:
@@ -564,17 +567,23 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
         current_count = active_event.get(EventFields.MONITOR_COUNT, 0)
         monitor_complete = active_event.get(EventFields.MONITOR_COMPLETE, False)
         
-        # Decrement the count
+        # OLD: Decrement the counter (kept for backwards compatibility, not used for decisions)
         new_count_val = max(0, current_count - 1)
+        store.update_event_stable_count(fixture_id, event_id, new_count_val, None)
         
-        if new_count_val <= 0:
-            # Count hit 0 - actually delete the event
+        # NEW: Add this workflow to drop_workflows and check if threshold reached
+        drop_count, should_delete = store.add_drop_workflow_and_check(
+            fixture_id, event_id, workflow_id
+        )
+        
+        if should_delete:
+            # 3+ unique monitors saw event missing - actually delete the event
             # Only delete S3 if monitor was complete (videos were uploaded)
             if monitor_complete:
                 if store.mark_event_removed(fixture_id, event_id):
                     activity.logger.warning(
                         f"🗑️ [MONITOR] VAR REMOVED | event={event_id} | "
-                        f"action=deleted_db_s3 | was_count={current_count}"
+                        f"action=deleted_db_s3 | drop_workflows={drop_count}"
                     )
                     removed_count += 1
             else:
@@ -586,15 +595,14 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
                 if result.modified_count > 0:
                     activity.logger.warning(
                         f"🗑️ [MONITOR] REMOVED | event={event_id} | "
-                        f"reason=dropped_before_complete | was_count={current_count}"
+                        f"reason=dropped_before_complete | drop_workflows={drop_count}"
                     )
                     removed_count += 1
         else:
-            # Decrement count but don't delete yet
-            store.update_event_stable_count(fixture_id, event_id, new_count_val, None)
+            # Not enough monitors have seen it missing yet
             activity.logger.warning(
                 f"⚠️ [MONITOR] EVENT MISSING | event={event_id} | "
-                f"count={current_count}→{new_count_val} | need_0_to_delete"
+                f"drop_workflows={drop_count}/3 | need_3_to_delete"
             )
     
     # =========================================================================
@@ -612,6 +620,14 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
         
         # Get live event for API data sync
         live_event = next((e for e in live_events if e.get(EventFields.EVENT_ID) == event_id), None)
+        
+        # =====================================================================
+        # FULL RESET: Event is PRESENT - clear any accumulated drop workflows
+        # =====================================================================
+        # If event was previously missing but reappeared, we clear _drop_workflows
+        # entirely. This means if it disappears again, the drop count starts from 0.
+        # This handles API flickering gracefully - one reappearance = full reset.
+        store.clear_drop_workflows(fixture_id, event_id)
         
         # =====================================================================
         # CASE 1: Both monitor and download complete - nothing to do

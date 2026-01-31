@@ -710,6 +710,98 @@ class FootyMongoStore:
             print(f"❌ Error getting download workflow count for {event_id}: {e}")
             return 0
 
+    # ==========================================================================
+    # DROP WORKFLOW TRACKING (VAR/Cancelled Event Removal)
+    # ==========================================================================
+
+    def clear_drop_workflows(self, fixture_id: int, event_id: str) -> bool:
+        """
+        Clear _drop_workflows when event is present in API.
+        
+        This performs a FULL RESET - if an event reappears after being missing,
+        we clear all accumulated drop workflows so the counter starts from scratch.
+        This handles API flickering where an event temporarily disappears.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            
+        Returns:
+            True if document was modified (had workflows to clear), False otherwise
+        """
+        try:
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {"$set": {f"events.$.{EventFields.DROP_WORKFLOWS}": []}}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"❌ Error clearing drop workflows for {event_id}: {e}")
+            return False
+
+    def add_drop_workflow_and_check(
+        self, fixture_id: int, event_id: str, workflow_id: str
+    ) -> tuple[int, bool]:
+        """
+        Add workflow ID to _drop_workflows and check if deletion threshold reached.
+        
+        Uses $addToSet for idempotency - the same workflow ID won't be added twice.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            workflow_id: The MonitorWorkflow ID that saw this event MISSING
+            
+        Returns:
+            Tuple of (count, should_delete):
+            - count: Number of workflows that have seen event missing
+            - should_delete: True if count >= 3 (threshold reached)
+        """
+        DROP_THRESHOLD = 3
+        
+        try:
+            result = self.fixtures_active.find_one_and_update(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {"$addToSet": {f"events.$.{EventFields.DROP_WORKFLOWS}": workflow_id}},
+                return_document=True,  # Return the updated document
+                projection={f"events.$": 1}
+            )
+            
+            if not result or not result.get("events"):
+                return (0, False)
+            
+            drop_workflows = result["events"][0].get(EventFields.DROP_WORKFLOWS, [])
+            count = len(drop_workflows)
+            should_delete = count >= DROP_THRESHOLD
+            
+            return (count, should_delete)
+        except Exception as e:
+            print(f"❌ Error adding drop workflow {workflow_id} to {event_id}: {e}")
+            return (0, False)
+
+    def get_drop_workflow_count(self, fixture_id: int, event_id: str) -> int:
+        """
+        Return the number of MonitorWorkflows that have seen this event MISSING.
+        
+        Args:
+            fixture_id: Fixture ID
+            event_id: Event ID
+            
+        Returns:
+            Length of _drop_workflows array (0 if not found or empty)
+        """
+        try:
+            fixture = self.fixtures_active.find_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {f"events.$": 1}
+            )
+            if fixture and fixture.get("events"):
+                return len(fixture["events"][0].get(EventFields.DROP_WORKFLOWS, []))
+            return 0
+        except Exception as e:
+            print(f"❌ Error getting drop workflow count for {event_id}: {e}")
+            return 0
+
     def get_monitor_complete(self, fixture_id: int, event_id: str) -> bool:
         """
         Return the current value of _monitor_complete for an event.

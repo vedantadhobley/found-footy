@@ -301,6 +301,12 @@ class EventFields:
     TWITTER_SEARCH = "_twitter_search"
     TWITTER_ALIASES = "_twitter_aliases"  # Team name aliases from RAG
     
+    # VAR/Drop tracking (workflow-ID-based)
+    # Tracks MonitorWorkflow IDs that saw this event MISSING from API
+    # When len >= 3, event is deleted (VAR'd or cancelled)
+    # FULL RESET: If event reappears, this array is cleared entirely
+    DROP_WORKFLOWS = "_drop_workflows"
+    
     # DEPRECATED - kept for migration compatibility, will be removed
     MONITOR_COUNT = "_monitor_count"    # DEPRECATED: Use MONITOR_WORKFLOWS
     TWITTER_COUNT = "_twitter_count"    # DEPRECATED: Use DOWNLOAD_WORKFLOWS
@@ -333,6 +339,7 @@ class EventFields:
             cls.DOWNLOAD_COMPLETED_AT,
             cls.TWITTER_SEARCH,
             cls.TWITTER_ALIASES,
+            cls.DROP_WORKFLOWS,
             cls.DISCOVERED_VIDEOS,
             cls.S3_VIDEOS,
             cls.VIDEO_COUNT,
@@ -718,6 +725,8 @@ def create_new_enhanced_event(
         # Download tracking (new workflow-ID-based)
         EventFields.DOWNLOAD_WORKFLOWS: [],
         EventFields.DOWNLOAD_COMPLETE: False,
+        # Drop/VAR tracking (new workflow-ID-based)
+        EventFields.DROP_WORKFLOWS: [],
         # Video storage
         EventFields.DISCOVERED_VIDEOS: [],
         EventFields.S3_VIDEOS: [],

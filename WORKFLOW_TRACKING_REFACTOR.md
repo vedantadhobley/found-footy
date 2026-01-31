@@ -1041,3 +1041,243 @@ When ready to remove deprecated activities, update `src/worker.py`:
 - [ ] `ORCHESTRATION.md` - References old `increment_twitter_count` flow
 - [ ] `README.md` - Mermaid diagrams reference old counter logic
 - [ ] `RAG_IMPLEMENTATION.md` - Minor references to old patterns
+
+---
+
+## VAR/Cancelled Goal Removal: Drop Workflow Implementation
+
+### Current State (Counter-Based)
+
+Currently, when an event (goal) disappears from the API (VAR'd, cancelled, etc.), we use a counter-based debounce:
+
+```python
+# In process_fixture_events()
+if event_in_mongo but NOT in api_events:
+    new_count = current_count - 1  # Decrement
+    if new_count <= 0:
+        # Delete event and videos from MongoDB/S3
+    else:
+        # Update count, keep monitoring
+```
+
+**Problems with this approach:**
+1. Same fragility as increment counters - decrements can fail
+2. No audit trail - we don't know WHICH monitor runs saw the event missing
+3. Race conditions possible with parallel monitors
+4. Counter resets on reappearance are state-dependent (not idempotent)
+
+### Proposed Solution: Drop Workflows Pattern
+
+Instead of decrementing counters, we track which MonitorWorkflow runs saw the event as MISSING.
+
+**New Field:** \`_drop_workflows: string[]\`
+
+**Logic:**
+\`\`\`
+Event PRESENT in API:  Clear _drop_workflows → []
+Event MISSING from API: \$addToSet current workflow ID to _drop_workflows
+                        If len(_drop_workflows) >= 3 → DELETE event and videos
+\`\`\`
+
+### Implementation Plan
+
+#### Step 1: Add \`_drop_workflows\` Field to Model
+
+\`\`\`python
+# src/data/models.py - EventFields class
+DROP_WORKFLOWS = "_drop_workflows"  # Array of MonitorWorkflow IDs that saw event MISSING
+\`\`\`
+
+#### Step 2: New Store Methods
+
+\`\`\`python
+# src/data/mongo_store.py
+
+def clear_drop_workflows(self, fixture_id: str, event_id: str) -> bool:
+    """Clear _drop_workflows when event is present in API (idempotent)."""
+    result = self.events_collection.update_one(
+        {"fixture_id": fixture_id, "_event_id": event_id},
+        {"\$set": {EventFields.DROP_WORKFLOWS: []}}
+    )
+    return result.modified_count > 0
+
+def add_drop_workflow_and_check(
+    self, fixture_id: str, event_id: str, workflow_id: str
+) -> tuple[int, bool]:
+    """
+    Add workflow ID to _drop_workflows and check if threshold reached.
+    Returns (count, should_delete).
+    """
+    DROP_THRESHOLD = 3
+    
+    result = self.events_collection.find_one_and_update(
+        {"fixture_id": fixture_id, "_event_id": event_id},
+        {"\$addToSet": {EventFields.DROP_WORKFLOWS: workflow_id}},
+        return_document=ReturnDocument.AFTER
+    )
+    
+    if not result:
+        return (0, False)
+    
+    drop_workflows = result.get(EventFields.DROP_WORKFLOWS, [])
+    count = len(drop_workflows)
+    should_delete = count >= DROP_THRESHOLD
+    
+    return (count, should_delete)
+\`\`\`
+
+#### Step 3: Update MonitorWorkflow Activity
+
+\`\`\`python
+# In process_fixture_events() - src/activities/monitor.py
+
+# When processing existing events:
+for event_id in events_in_mongo:
+    if event_id in api_events:
+        # Event still present - clear any pending drop workflows
+        store.clear_drop_workflows(fixture_id, event_id)
+        # Continue normal processing...
+    else:
+        # Event MISSING from API - add to drop tracking
+        drop_count, should_delete = store.add_drop_workflow_and_check(
+            fixture_id, event_id, monitor_workflow_id
+        )
+        
+        if should_delete:
+            logger.warning(f"VAR/Cancelled: {event_id} missing for {drop_count} monitors - DELETING")
+            # Cancel any running workflows for this event
+            await cancel_event_workflows(fixture_id, event_id)
+            # Delete from MongoDB
+            store.delete_event(fixture_id, event_id)
+            # Delete from S3
+            await delete_event_videos_from_s3(fixture_id, event_id)
+        else:
+            logger.info(f"VAR check: {event_id} missing (drop_count={drop_count}/3)")
+\`\`\`
+
+#### Step 4: Workflow Cancellation Helper
+
+\`\`\`python
+# src/activities/monitor.py
+
+async def cancel_event_workflows(fixture_id: str, event_id: str):
+    """Cancel running TwitterWorkflow and DownloadWorkflows for a VAR'd event."""
+    client = await get_temporal_client()
+    
+    # Twitter workflow ID pattern
+    twitter_workflow_id = f"twitter-{fixture_id}-{event_id}"
+    try:
+        handle = client.get_workflow_handle(twitter_workflow_id)
+        await handle.cancel()
+        logger.info(f"Cancelled TwitterWorkflow: {twitter_workflow_id}")
+    except Exception as e:
+        logger.debug(f"TwitterWorkflow not running or already complete: {e}")
+    
+    # Upload workflow ID pattern  
+    upload_workflow_id = f"upload-{event_id}"
+    try:
+        handle = client.get_workflow_handle(upload_workflow_id)
+        await handle.cancel()
+        logger.info(f"Cancelled UploadWorkflow: {upload_workflow_id}")
+    except Exception as e:
+        logger.debug(f"UploadWorkflow not running or already complete: {e}")
+\`\`\`
+
+### Timeline Example
+
+\`\`\`
+T+0:00  Monitor-A: Goal scored, event created
+T+0:30  Monitor-B: Event present → _drop_workflows = [] (stays empty)
+T+1:00  Monitor-C: Event present → _drop_workflows = []
+T+1:30  Monitor-D: VAR review starts...
+T+2:00  Monitor-E: Event MISSING → _drop_workflows = [monitor-E] (count=1)
+T+2:30  Monitor-F: Event MISSING → _drop_workflows = [monitor-E, monitor-F] (count=2)
+T+3:00  Monitor-G: Event MISSING → _drop_workflows = [E, F, G] → count=3 → DELETE!
+
+Alternative - VAR overturned but goal stands:
+T+2:00  Monitor-E: Event MISSING → _drop_workflows = [monitor-E] (count=1)
+T+2:30  Monitor-F: Event PRESENT → _drop_workflows = [] ← FULL RESET!
+T+3:00  Monitor-G: Event PRESENT → _drop_workflows = []
+\`\`\`
+
+### Key Benefits Over Counter Approach
+
+| Aspect | Counter (Current) | Drop Workflows (Proposed) |
+|--------|-------------------|---------------------------|
+| **Idempotency** | No - decrement can double-fire | Yes - \`\$addToSet\` is idempotent |
+| **Audit Trail** | None | Full - see which monitors saw missing |
+| **Reset** | Decrement logic | Full clear on presence |
+| **Race Safety** | Possible issues | Atomic \`\$addToSet\` |
+| **Debugging** | "Why is count at 1?" | "monitor-E and monitor-F saw it missing" |
+
+### Migration Path
+
+1. **Add new field** - `_drop_workflows` defaults to `[]` ✅ DONE
+2. **Run both systems in parallel** - Counter AND drop_workflows tracking ✅ DONE
+3. **Validate** - Check that both systems agree on deletion decisions ⏳ TESTING
+4. **Switch over** - Use drop_workflows for deletion decisions ✅ DONE
+5. **Remove counters** - Delete counter-based code ⏳ NEXT STEP
+
+### Implementation Status (January 30, 2026)
+
+**Implemented:**
+- `_drop_workflows` field added to `EventFields` in [models.py](src/data/models.py)
+- `create_new_enhanced_event()` initializes `_drop_workflows: []`
+- Store methods in [mongo_store.py](src/data/mongo_store.py):
+  - `clear_drop_workflows(fixture_id, event_id)` - FULL RESET when event present
+  - `add_drop_workflow_and_check(fixture_id, event_id, workflow_id)` - Returns (count, should_delete)
+  - `get_drop_workflow_count(fixture_id, event_id)` - For debugging/visibility
+- Monitor activity in [monitor.py](src/activities/monitor.py) updated:
+  - REMOVED events: Uses `add_drop_workflow_and_check()` for deletion decisions
+  - MATCHING events: Calls `clear_drop_workflows()` for FULL RESET
+  - Counter still decremented for backwards compatibility (not used for decisions)
+
+**Key Behavior - FULL RESET:**
+When an event REAPPEARS in the API after being missing, we CLEAR ALL `_drop_workflows`.
+This means if the event disappears again, the drop count starts from scratch (not resume).
+
+Example:
+```
+Monitor-1: Event MISSING → _drop_workflows = [monitor-1] (count=1)
+Monitor-2: Event MISSING → _drop_workflows = [monitor-1, monitor-2] (count=2)
+Monitor-3: Event PRESENT → _drop_workflows = [] ← FULL RESET!
+Monitor-4: Event MISSING → _drop_workflows = [monitor-4] (count=1, starts fresh)
+```
+
+**Testing Checklist:**
+- [ ] New event created with `_drop_workflows: []`
+- [ ] Event missing → workflow ID added to `_drop_workflows`
+- [ ] Event present → `_drop_workflows` cleared entirely
+- [ ] 3 unique missing monitors → event deleted
+- [ ] API flicker (missing then present) → count resets to 0
+
+### Considerations
+
+**Timing of deletion:**
+- 3 monitor runs = ~1.5 minutes (monitors run every 30 seconds)
+- This is usually enough for VAR decisions to settle
+- Could increase to 4-5 for extra safety if needed
+
+**S3 video cleanup:**
+- Videos uploaded before VAR decision need deletion
+- The \`delete_event_videos_from_s3\` activity should list and delete all videos for the event
+- Consider soft-delete (move to archive prefix) initially for recovery
+
+**Running workflow cancellation:**
+- TwitterWorkflow may be mid-search when VAR'd
+- DownloadWorkflow may be mid-download
+- Temporal cancellation is graceful - workflows can handle CancelledError
+- UploadWorkflow will naturally time out if no more videos arrive
+
+### Why This Fits the Workflow-ID Pattern
+
+This approach is consistent with how we handle \`_monitor_workflows\` and \`_download_workflows\`:
+
+\`\`\`python
+# All three use the same pattern:
+_monitor_workflows:  Track unique monitors that SAW the event  → triggers search
+_download_workflows: Track unique downloads that COMPLETED     → marks complete  
+_drop_workflows:     Track unique monitors that saw MISSING    → triggers deletion
+\`\`\`
+
+All use \`\$addToSet\` for idempotent, auditable tracking. The array length determines when thresholds are reached.
