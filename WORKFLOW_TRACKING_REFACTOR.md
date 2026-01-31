@@ -1281,3 +1281,128 @@ _drop_workflows:     Track unique monitors that saw MISSING    → triggers dele
 \`\`\`
 
 All use \`\$addToSet\` for idempotent, auditable tracking. The array length determines when thresholds are reached.
+
+---
+
+## API Rate Limiting: Two-Loop Monitoring Architecture (TODO)
+
+### The Problem
+
+We're hitting API rate limits because we poll ALL fixtures every 30 seconds, including staging fixtures that haven't even started yet. With 50+ fixtures staged for a day, this burns through API quota quickly.
+
+### Current Activation Logic
+
+**Location:** `src/activities/monitor.py` → `activate_fixtures()`
+
+**Current behavior:**
+```python
+# Fixtures move staging → active based on TIME only
+if fixture_date <= now:
+    store.activate_fixture(fixture_id)
+```
+
+We activate fixtures when `fixture_date <= now` (kickoff time reached), regardless of API status.
+
+**The issue:** 
+- Fixture might still show `NS` (Not Started) in the API for several minutes after scheduled kickoff
+- We immediately start 30s polling on a fixture that has no events yet
+- Staging fixtures are polled at 30s just to check "has it started yet?"
+
+### Proposed Solution: Two Monitoring Loops
+
+Split monitoring into two separate loops with different intervals:
+
+| Loop | Collection | Interval | Purpose | API Calls |
+|------|------------|----------|---------|-----------|
+| **Staging Monitor** | `fixtures_staging` | 2-5 min | Check if status changed to active (1H, HT, 2H) | Low |
+| **Active Monitor** | `fixtures_active` | 30s | Poll for events/goals in live matches | High (but justified) |
+
+### Implementation Plan
+
+#### Step 1: New Staging Monitor Workflow
+
+```python
+# New workflow: StagingMonitorWorkflow
+# Runs every 2-5 minutes, checks staging fixtures for status changes
+
+@workflow.defn
+class StagingMonitorWorkflow:
+    @workflow.run
+    async def run(self):
+        while True:
+            # Check all staging fixtures
+            await workflow.execute_activity(
+                check_staging_fixture_statuses,
+                start_to_close_timeout=timedelta(minutes=2)
+            )
+            # Sleep 3 minutes between checks
+            await asyncio.sleep(180)
+```
+
+#### Step 2: New Activity - Check Staging Status
+
+```python
+@activity.defn
+async def check_staging_fixture_statuses() -> Dict[str, Any]:
+    """
+    Check staging fixtures for status changes.
+    Move to active only when API confirms match is in progress.
+    """
+    store = FootyMongoStore()
+    staging_fixtures = store.get_staging_fixtures()
+    
+    activated = 0
+    for fixture in staging_fixtures:
+        fixture_id = fixture["_id"]
+        
+        # Only check fixtures past their start time (don't poll future matches)
+        if fixture_date > now:
+            continue
+        
+        # Fetch current status from API
+        api_status = await fetch_fixture_status(fixture_id)
+        
+        # Only activate if ACTUALLY in progress
+        if api_status in ACTIVE_STATUSES:  # 1H, HT, 2H, ET, BT, P
+            store.activate_fixture_with_status(fixture_id, api_status)
+            activated += 1
+    
+    return {"checked": len(staging_fixtures), "activated": activated}
+```
+
+#### Step 3: Modify Active Monitor
+
+Keep the 30s loop, but it only processes `fixtures_active` (matches confirmed in-progress).
+
+### API Savings Calculation
+
+**Current (worst case):**
+- 50 staging fixtures × 2 calls/fixture × 120 polls/hour = **12,000 calls/hour**
+
+**Proposed:**
+- Staging: 50 fixtures × 1 call × 20 polls/hour = **1,000 calls/hour**
+- Active: ~5 live matches × 2 calls × 120 polls/hour = **1,200 calls/hour**
+- **Total: 2,200 calls/hour (82% reduction)**
+
+### Migration Steps
+
+1. Create `StagingMonitorWorkflow` with 3-minute interval
+2. Create `check_staging_fixture_statuses` activity
+3. Modify `activate_fixtures()` to check API status, not just time
+4. Update MonitorWorkflow to only process active fixtures (already does this)
+5. Deploy and test with reduced staging poll rate
+
+### Considerations
+
+**Delayed activation:**
+- If staging monitor runs every 3 min, worst case is 3 min delay from actual kickoff to activation
+- Acceptable tradeoff for 82% API savings
+
+**Batch API calls:**
+- Consider fetching multiple fixture statuses in one API call if supported
+- API-Football has `/fixtures?ids=123,456,789` endpoint
+
+**Status edge cases:**
+- Match postponed (PST) → keep in staging
+- Match cancelled (CANC) → remove from staging
+- Match abandoned (ABD) → handle gracefully
