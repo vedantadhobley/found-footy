@@ -760,17 +760,22 @@ class FootyMongoStore:
         DROP_THRESHOLD = 3
         
         try:
-            result = self.fixtures_active.find_one_and_update(
+            # First, do the $addToSet update
+            update_result = self.fixtures_active.update_one(
                 {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
-                {"$addToSet": {f"events.$.{EventFields.DROP_WORKFLOWS}": workflow_id}},
-                return_document=True,  # Return the updated document
-                projection={f"events.$": 1}
+                {"$addToSet": {f"events.$.{EventFields.DROP_WORKFLOWS}": workflow_id}}
             )
             
-            if not result or not result.get("events"):
+            # Then fetch the updated count (can't use positional $ with return_document)
+            fixture = self.fixtures_active.find_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {f"events.$": 1}
+            )
+            
+            if not fixture or not fixture.get("events"):
                 return (0, False)
             
-            drop_workflows = result["events"][0].get(EventFields.DROP_WORKFLOWS, [])
+            drop_workflows = fixture["events"][0].get(EventFields.DROP_WORKFLOWS, [])
             count = len(drop_workflows)
             should_delete = count >= DROP_THRESHOLD
             
