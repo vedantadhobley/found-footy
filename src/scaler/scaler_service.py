@@ -389,11 +389,19 @@ class ScalerService:
         
         print(f"\n📊 Starting monitoring loop...")
         
+        # Track previous state for change detection
+        last_state = {
+            "active_workflows": None,
+            "current_workers": None,
+            "current_twitter": None,
+            "active_goals": None,
+            "goals_total": None,
+        }
+        last_log_time = 0
+        HEARTBEAT_INTERVAL = 30  # Log at least every 30s even if no changes
+        
         while True:
             try:
-                print(f"\n{'='*60}")
-                print(f"⏰ {datetime.now().strftime('%H:%M:%S')} - Checking metrics")
-                
                 # Get Temporal metrics
                 metrics = await self.temporal.get_task_queue_depth()
                 active_workflows = await self.temporal.get_active_workflow_count()
@@ -405,10 +413,29 @@ class ScalerService:
                 current_workers = self.get_running_count("worker")
                 current_twitter = self.get_running_count("twitter")
                 
-                print(f"📊 Active Workflows: {active_workflows} ({active_workflows/current_workers:.1f}/worker)")
-                print(f"📊 Workers: {current_workers} running, {metrics['workflow_pollers']} polling")
-                print(f"📊 Twitter: {current_twitter} running, {active_goals} active goals ({active_goals/current_twitter:.1f}/instance)")
-                print(f"📊 Goals: total={goals_summary.get('total', 0)} monitor✓={goals_summary.get('monitor_complete', 0)} download✓={goals_summary.get('download_complete', 0)} upload✓={goals_summary.get('upload_complete', 0)}")
+                # Detect changes
+                current_state = {
+                    "active_workflows": active_workflows,
+                    "current_workers": current_workers,
+                    "current_twitter": current_twitter,
+                    "active_goals": active_goals,
+                    "goals_total": goals_summary.get('total', 0),
+                }
+                
+                state_changed = current_state != last_state
+                time_since_last_log = time.time() - last_log_time
+                should_log = state_changed or time_since_last_log >= HEARTBEAT_INTERVAL
+                
+                if should_log:
+                    change_indicator = "🔄" if state_changed else "💤"
+                    print(f"\n{'='*60}")
+                    print(f"⏰ {datetime.now().strftime('%H:%M:%S')} - {change_indicator} {'State changed' if state_changed else 'Heartbeat'}")
+                    print(f"📊 Active Workflows: {active_workflows} ({active_workflows/current_workers:.1f}/worker)")
+                    print(f"📊 Workers: {current_workers} running, {metrics['workflow_pollers']} polling")
+                    print(f"📊 Twitter: {current_twitter} running, {active_goals} active goals ({active_goals/current_twitter:.1f}/instance)")
+                    print(f"📊 Goals: total={goals_summary.get('total', 0)} monitor✓={goals_summary.get('monitor_complete', 0)} download✓={goals_summary.get('download_complete', 0)} upload✓={goals_summary.get('upload_complete', 0)}")
+                    last_log_time = time.time()
+                    last_state = current_state.copy()
                 
                 # Calculate targets
                 target_workers = self.calculate_target_workers(active_workflows)
