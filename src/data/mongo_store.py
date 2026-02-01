@@ -149,6 +149,9 @@ class FootyMongoStore:
             raise ValueError(f"Unknown collection: {collection_name}")
         
         try:
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            
             docs = []
             for fixture in raw_fixtures:
                 fixture_id = self._extract_fixture_id(fixture)
@@ -157,6 +160,12 @@ class FootyMongoStore:
                 
                 doc = dict(fixture)
                 doc["_id"] = fixture_id
+                
+                # For staging fixtures, set _last_monitor to ingestion time
+                # This prevents immediate re-polling in the same interval
+                if collection_name == "fixtures_staging":
+                    doc["_last_monitor"] = now
+                
                 docs.append(doc)
             
             if docs:
@@ -1002,10 +1011,11 @@ class FootyMongoStore:
         
         Also regenerates display titles for all events.
         
-        Note: _last_activity is only set when an event (goal) is confirmed,
-        not when the match starts. This is handled by mark_event_monitor_complete.
+        IMPORTANT: Sets _last_activity when status changes from NS/TBD to a live status.
+        This is the moment the match actually kicks off and should appear at top of frontend.
         """
         from src.utils.fixture_status import get_staging_statuses, get_active_statuses
+        from datetime import datetime, timezone
         
         try:
             live_fixture = self.get_live_fixture(fixture_id)
@@ -1021,6 +1031,9 @@ class FootyMongoStore:
             update_doc = dict(live_fixture)
             update_doc["_id"] = fixture_id
             
+            # Always update _last_monitor for observability
+            update_doc[FixtureFields.LAST_MONITOR] = datetime.now(timezone.utc)
+            
             # Check if match just started (NS/TBD → active status)
             old_status = active_fixture.get("fixture", {}).get("status", {}).get("short", "")
             new_status = live_fixture.get("fixture", {}).get("status", {}).get("short", "")
@@ -1029,13 +1042,17 @@ class FootyMongoStore:
             active_statuses = get_active_statuses()    # ["1H", "HT", "2H", etc.]
             
             if old_status in staging_statuses and new_status in active_statuses:
-                # Match just started - but don't set _last_activity yet
-                # It will only be set when an actual event (goal) happens
-                print(f"⚽ Match {fixture_id} started! ({old_status} → {new_status})")
+                # Match just started! Set _last_activity NOW
+                # This is when the fixture should jump to the top of the frontend
+                print(f"⚽ Match {fixture_id} KICKED OFF! ({old_status} → {new_status}) - setting _last_activity")
+                update_doc[FixtureFields.LAST_ACTIVITY] = datetime.now(timezone.utc)
             
             # Preserve all our enhanced fixture-level fields (underscore prefixed)
             for key in active_fixture:
                 if key.startswith("_") and key != "_id":
+                    # Don't overwrite _last_activity if we just set it above
+                    if key == FixtureFields.LAST_ACTIVITY and FixtureFields.LAST_ACTIVITY in update_doc:
+                        continue
                     update_doc[key] = active_fixture[key]
             
             # Build lookup of live events by event_id for merging

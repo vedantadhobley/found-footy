@@ -12,18 +12,19 @@ ORCHESTRATION MODEL:
 - Fixture completes when ALL events have _monitor_complete=true AND _download_complete=true
 
 FIXTURE LIFECYCLE:
-- Staging fixtures: Polled for updates (times, status, metadata)
-  - When status changes NS/TBD → anything else: Queued for activation
-- Active fixtures: Full event monitoring, debouncing, Twitter workflows
+- Staging fixtures: Polled every 15 minutes (on :00/:15/:30/:45 intervals)
+  - Pre-activate fixtures with kickoff <= now + 30 minutes
+  - Pre-activated fixtures have NO _last_activity (null)
+- Active fixtures: Polled every 30 seconds
+  - When status changes NS/TBD → live: Set _last_activity = now
   - When status is completed and all events complete: Moved to completed
   - When fixture completes: Temp directories are cleaned up
-- End of cycle: Complete ready fixtures, then activate queued fixtures
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from temporalio.workflow import ParentClosePolicy
 from datetime import timedelta
-from typing import List
+from typing import List, Optional
 import asyncio
 
 with workflow.unsafe.imports_passed_through():
@@ -41,7 +42,7 @@ class MonitorWorkflow:
     async def run(self) -> dict:
         """
         Workflow:
-        1. Fetch and process staging fixtures (update data, detect status changes)
+        1. Check staging fixtures - poll those not in current 15-min interval
         2. Batch fetch all active fixtures from API
         3. For each active fixture:
            - Filter to trackable events (Goals only)
@@ -51,12 +52,15 @@ class MonitorWorkflow:
            - Trigger TwitterWorkflow for stable events
            - Trigger retry TwitterWorkflow for events needing more videos
         4. Complete finished fixtures (active → completed)
-        5. Activate queued fixtures (staging → active)
-        6. Notify frontend
+        5. Notify frontend
         
         VAR handling: Events removed from API are DELETED from MongoDB + S3.
         This frees the sequence ID slot so if the same player scores again,
         the new goal gets the same sequence number without collision.
+        
+        Staging polling: Uses per-fixture _last_monitor timestamp to determine
+        which fixtures need polling. Only fetches from API if fixture's interval
+        differs from current interval. This reduces staging API calls by ~97%.
         """
         cycle_start = workflow.now()
         
@@ -66,32 +70,26 @@ class MonitorWorkflow:
         completed_statuses = get_completed_statuses()
         
         # =================================================================
-        # STAGING: Fetch and process staging fixtures (updates only, no activation yet)
+        # STAGING: Check fixtures and poll those not in current interval
+        # Activity handles interval comparison internally using _last_monitor
         # =================================================================
         t0 = workflow.now()
-        staging_fixtures = await workflow.execute_activity(
-            monitor_activities.fetch_staging_fixtures,
-            start_to_close_timeout=timedelta(seconds=15),  # API has 10s timeout, allow buffer
+        staging_result = await workflow.execute_activity(
+            monitor_activities.pre_activate_upcoming_fixtures,
+            args=[30],  # 30 minute lookahead for pre-activation
+            start_to_close_timeout=timedelta(seconds=30),
             retry_policy=RetryPolicy(maximum_attempts=2),
         )
         t1 = workflow.now()
         staging_ms = (t1 - t0).total_seconds() * 1000
         
-        staging_result = {"updated_count": 0, "fixtures_to_activate": []}
-        if staging_fixtures:
-            staging_result = await workflow.execute_activity(
-                monitor_activities.process_staging_fixtures,
-                staging_fixtures,
-                start_to_close_timeout=timedelta(seconds=10),  # Pure MongoDB ops
-                retry_policy=RetryPolicy(maximum_attempts=2),
-            )
-        t2 = workflow.now()
-        process_staging_ms = (t2 - t1).total_seconds() * 1000
-        
-        fixtures_to_activate = staging_result.get("fixtures_to_activate", [])
+        staging_polled = staging_result.get("polled", 0)
+        staging_updated = staging_result.get("updated", 0)
+        staging_activated = staging_result.get("activated", 0)
+        staging_skipped = staging_result.get("skipped", False)
         
         # =================================================================
-        # ACTIVE: Fetch and process active fixtures (event monitoring)
+        # ACTIVE: Fetch and process active fixtures (every 30s)
         # =================================================================
         
         # Fetch all active fixtures from API
@@ -100,13 +98,18 @@ class MonitorWorkflow:
             start_to_close_timeout=timedelta(seconds=15),  # API has 10s timeout, allow buffer
             retry_policy=RetryPolicy(maximum_attempts=2),
         )
-        t3 = workflow.now()
-        fetch_active_ms = (t3 - t2).total_seconds() * 1000
+        t2 = workflow.now()
+        fetch_active_ms = (t2 - t1).total_seconds() * 1000
         
-        workflow.logger.info(
-            f"⏱️ [MONITOR] Timing | fetch_staging={staging_ms:.0f}ms | "
-            f"process_staging={process_staging_ms:.0f}ms | fetch_active={fetch_active_ms:.0f}ms"
-        )
+        if staging_skipped:
+            workflow.logger.debug(
+                f"⏱️ [MONITOR] Timing | staging=skipped | fetch_active={fetch_active_ms:.0f}ms"
+            )
+        else:
+            workflow.logger.info(
+                f"⏱️ [MONITOR] Timing | staging={staging_ms:.0f}ms | fetch_active={fetch_active_ms:.0f}ms | "
+                f"polled={staging_polled} | updated={staging_updated} | activated={staging_activated}"
+            )
         
         # =========================================================================
         # Process fixtures IN PARALLEL - each fixture is independent
@@ -279,19 +282,6 @@ class MonitorWorkflow:
                     retry_policy=RetryPolicy(maximum_attempts=1),
                 )
         
-        # =================================================================
-        # END OF CYCLE: Activate queued fixtures (staging → active)
-        # =================================================================
-        activated_count = 0
-        if fixtures_to_activate:
-            activation_result = await workflow.execute_activity(
-                monitor_activities.activate_pending_fixtures,
-                fixtures_to_activate,
-                start_to_close_timeout=timedelta(seconds=30),
-                retry_policy=RetryPolicy(maximum_attempts=2),
-            )
-            activated_count = activation_result.get("activated_count", 0)
-        
         # Notify frontend to refresh (SSE broadcast to connected clients)
         await workflow.execute_activity(
             monitor_activities.notify_frontend_refresh,
@@ -302,14 +292,15 @@ class MonitorWorkflow:
         total_time = (workflow.now() - cycle_start).total_seconds()
         workflow.logger.info(
             f"✅ Monitor complete ({total_time:.1f}s): "
-            f"staging={staging_result.get('updated_count', 0)} updated/{activated_count} activated, "
+            f"staging={'skipped' if staging_skipped else f'polled {staging_polled}'} ({staging_updated} updated/{staging_activated} activated), "
             f"active={len(fixtures)} processed/{completed_count} completed, "
             f"{len(twitter_workflows_started)} Twitter workflows started"
         )
         
         return {
-            "staging_updated": staging_result.get("updated_count", 0),
-            "staging_activated": activated_count,
+            "staging_polled": staging_polled,
+            "staging_updated": staging_updated,
+            "staging_activated": staging_activated,
             "active_fixtures_processed": len(fixtures),
             "active_fixtures_completed": completed_count,
             "twitter_workflows_started": len(twitter_workflows_started),

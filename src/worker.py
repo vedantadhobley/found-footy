@@ -225,17 +225,18 @@ async def main():
                 ingest.cleanup_old_fixtures,  # Delete fixtures older than 14 days
                 # Monitor activities (staging + active processing)
                 monitor.fetch_staging_fixtures,
-                monitor.process_staging_fixtures,
-                monitor.activate_pending_fixtures,
+                monitor.pre_activate_upcoming_fixtures,  # NEW: Time-based pre-activation
+                monitor.process_staging_fixtures,  # DEPRECATED: Kept for compatibility
+                monitor.activate_pending_fixtures,  # DEPRECATED: Kept for compatibility
                 monitor.fetch_active_fixtures,
                 monitor.store_and_compare,
                 monitor.process_fixture_events,
                 monitor.sync_fixture_metadata,
-                monitor.confirm_twitter_workflow_started,
+                monitor.confirm_twitter_workflow_started,  # DEPRECATED: Use set_monitor_complete
                 monitor.check_twitter_workflow_running,
                 monitor.complete_fixture_if_ready,
                 monitor.notify_frontend_refresh,
-                monitor.register_monitor_workflow,  # NEW: Workflow-ID-based tracking
+                monitor.register_monitor_workflow,  # Workflow-ID-based tracking
                 # RAG activities (team alias lookup)
                 rag.get_team_aliases,
                 rag.save_team_aliases,

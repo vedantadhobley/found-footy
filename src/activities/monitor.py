@@ -43,19 +43,25 @@ def is_player_known(event: dict) -> bool:
     return True
 
 
+# =============================================================================
+# DEPRECATED: Old time-based activation (never called, will be removed)
+# =============================================================================
+
 @activity.defn
 async def activate_fixtures() -> Dict[str, int]:
     """
-    Move fixtures from staging to active if start time reached.
-    Fixtures are stored with empty events array - will be populated by monitor.
+    DEPRECATED: This activity is dead code and will be removed.
+    
+    Use pre_activate_upcoming_fixtures instead, which is called from the
+    MonitorWorkflow on 15-minute intervals.
     """
     from src.data.mongo_store import FootyMongoStore
     
     store = FootyMongoStore()
     now = datetime.now(timezone.utc)
     
-    activity.logger.info(
-        f"🕐 [MONITOR] activate_fixtures | checking_time={now.isoformat()}"
+    activity.logger.warning(
+        f"⚠️ [MONITOR] DEPRECATED activate_fixtures called - this should not happen"
     )
     
     # Get all fixtures from staging
@@ -106,6 +112,10 @@ async def activate_fixtures() -> Dict[str, int]:
     return {"activated_count": activated_count}
 
 
+# =============================================================================
+# ACTIVE: Staging fixture fetching (still used)
+# =============================================================================
+
 @activity.defn
 async def fetch_staging_fixtures() -> List[Dict[str, Any]]:
     """
@@ -146,18 +156,177 @@ async def fetch_staging_fixtures() -> List[Dict[str, Any]]:
 
 
 @activity.defn
-async def process_staging_fixtures(staging_fixtures: List[Dict[str, Any]]) -> Dict[str, Any]:
+async def pre_activate_upcoming_fixtures(lookahead_minutes: int = 30) -> Dict[str, Any]:
     """
-    Process staging fixtures:
-    1. Update fixture data in staging (times, status, metadata)
-    2. Detect status changes from NS/TBD → any other status
-    3. Return list of fixtures ready to activate (don't move yet!)
+    Check staging fixtures and poll those not in the current 15-minute interval.
+    Pre-activate fixtures with kickoff time within the lookahead window.
     
-    Activation happens at the END of the monitor cycle to avoid double-fetching.
+    Called every monitor cycle (~30s), but only polls API for fixtures whose
+    _last_monitor timestamp is in a different 15-minute interval than now.
+    
+    Interval calculation: (hour * 4) + (minute // 15) → 0-95 per day
+    - 08:00-08:14 = interval 32
+    - 08:15-08:29 = interval 33
+    - etc.
+    
+    Fixtures are moved to active with NO _last_activity - they'll appear
+    at the bottom of the frontend sorted by kickoff time until they actually start.
+    
+    When the match actually kicks off (status NS→1H), sync_fixture_data() will
+    set _last_activity and the fixture will jump to the top.
+    
+    Args:
+        lookahead_minutes: Pre-activate if kickoff <= now + this many minutes
     
     Returns:
-        - updated_count: Number of fixtures updated in staging
-        - fixtures_to_activate: List of {fixture_id, fixture_data} to activate later
+        - polled: Number of fixtures fetched from API
+        - updated: Number of fixtures updated in staging  
+        - activated: Number of fixtures pre-activated
+        - skipped: True if all fixtures already in current interval
+    """
+    from src.data.mongo_store import FootyMongoStore
+    from src.api.api_client import fixtures_batch
+    from datetime import datetime, timezone, timedelta
+    
+    store = FootyMongoStore()
+    now = datetime.now(timezone.utc)
+    current_interval = (now.hour * 4) + (now.minute // 15)
+    
+    # Get all staging fixtures from MongoDB
+    all_staging = store.get_staging_fixtures()
+    
+    if not all_staging:
+        activity.logger.debug("📋 [MONITOR] No staging fixtures")
+        return {"polled": 0, "updated": 0, "activated": 0, "skipped": True}
+    
+    # Filter to fixtures NOT in current interval
+    fixtures_to_poll = []
+    for fixture in all_staging:
+        last_monitor = fixture.get("_last_monitor")
+        if last_monitor is None:
+            # Never monitored - shouldn't happen if set at ingestion, but handle it
+            fixtures_to_poll.append(fixture)
+        else:
+            fixture_interval = (last_monitor.hour * 4) + (last_monitor.minute // 15)
+            if fixture_interval != current_interval:
+                fixtures_to_poll.append(fixture)
+    
+    if not fixtures_to_poll:
+        # All fixtures already polled this interval
+        activity.logger.info(
+            f"📋 [MONITOR] Staging skip | interval={current_interval} ({now.strftime('%H:%M')}) | "
+            f"all {len(all_staging)} fixtures in current interval"
+        )
+        return {"polled": 0, "updated": 0, "activated": 0, "skipped": True}
+    
+    # Fetch only the stale fixtures from API
+    fixture_ids = [f["_id"] for f in fixtures_to_poll]
+    
+    activity.logger.info(
+        f"📋 [MONITOR] Staging poll | interval={current_interval} ({now.strftime('%H:%M')}) | "
+        f"polling {len(fixture_ids)}/{len(all_staging)} fixtures"
+    )
+    
+    live_data = fixtures_batch(fixture_ids)
+    
+    if not live_data:
+        activity.logger.warning("⚠️ [MONITOR] No data from API for staging fixtures")
+        return {"polled": 0, "updated": 0, "activated": 0, "emergency_activated": 0, "skipped": False}
+    
+    # Get active statuses for failsafe check
+    from src.utils.fixture_status import get_active_statuses
+    active_statuses = set(get_active_statuses())
+    
+    # Process each fixture
+    lookahead_cutoff = now + timedelta(minutes=lookahead_minutes)
+    updated_count = 0
+    activated_count = 0
+    emergency_activated_count = 0
+    
+    for fixture_data in live_data:
+        fixture_id = fixture_data.get("fixture", {}).get("id")
+        if not fixture_id:
+            continue
+        
+        home_team = fixture_data.get("teams", {}).get("home", {}).get("name", "Unknown")
+        away_team = fixture_data.get("teams", {}).get("away", {}).get("name", "Unknown")
+        status = fixture_data.get("fixture", {}).get("status", {}).get("short", "")
+        
+        # FAILSAFE: If status is active (1H, 2H, HT, etc.), immediately move to active!
+        # This catches games that started early or API anomalies
+        if status in active_statuses:
+            if store.activate_fixture_with_data(fixture_id, fixture_data):
+                store.fixtures_staging.delete_one({"_id": fixture_id})
+                activity.logger.warning(
+                    f"🚨 [MONITOR] EMERGENCY ACTIVATION | fixture={fixture_id} | "
+                    f"match={home_team} vs {away_team} | status={status} | "
+                    f"Game started while still in staging!"
+                )
+                emergency_activated_count += 1
+            continue
+        
+        # Parse fixture date
+        fixture_date_str = fixture_data.get("fixture", {}).get("date")
+        if not fixture_date_str:
+            continue
+            
+        try:
+            fixture_date = datetime.fromisoformat(fixture_date_str.replace('Z', '+00:00'))
+        except (ValueError, TypeError):
+            activity.logger.warning(
+                f"⚠️ [MONITOR] Invalid date | fixture={fixture_id} | date={fixture_date_str}"
+            )
+            continue
+        
+        # Check if fixture should be pre-activated (kickoff within lookahead window)
+        if fixture_date <= lookahead_cutoff:
+            # Pre-activate: move to active collection
+            if store.activate_fixture_with_data(fixture_id, fixture_data):
+                # Delete from staging
+                store.fixtures_staging.delete_one({"_id": fixture_id})
+                minutes_until = int((fixture_date - now).total_seconds() / 60)
+                activity.logger.info(
+                    f"⏰ [MONITOR] PRE-ACTIVATED | fixture={fixture_id} | "
+                    f"match={home_team} vs {away_team} | kickoff_in={minutes_until}min"
+                )
+                activated_count += 1
+        else:
+            # Update staging with fresh data + new timestamp
+            fixture_data["_last_monitor"] = now
+            store.update_staging_fixture(fixture_id, fixture_data)
+            updated_count += 1
+    
+    log_msg = (
+        f"📊 [MONITOR] Staging complete | polled={len(live_data)} | "
+        f"updated={updated_count} | activated={activated_count}"
+    )
+    if emergency_activated_count > 0:
+        log_msg += f" | 🚨 emergency={emergency_activated_count}"
+    activity.logger.info(log_msg)
+    
+    return {
+        "polled": len(live_data),
+        "updated": updated_count,
+        "activated": activated_count,
+        "emergency_activated": emergency_activated_count,
+        "skipped": False,
+    }
+
+
+# =============================================================================
+# DEPRECATED: Old staging processing (kept for reference, will be removed)
+# =============================================================================
+
+@activity.defn
+async def process_staging_fixtures(staging_fixtures: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    DEPRECATED: Use pre_activate_upcoming_fixtures instead.
+    
+    This was the old status-change based activation. Now we use time-based
+    pre-activation (kickoff <= now + 30min) and set _last_activity when
+    the status actually changes to a live status.
+    
+    Kept for backward compatibility during transition.
     """
     from src.data.mongo_store import FootyMongoStore
     from src.utils.fixture_status import get_staging_statuses
@@ -236,13 +405,19 @@ async def process_staging_fixtures(staging_fixtures: List[Dict[str, Any]]) -> Di
     }
 
 
+# =============================================================================
+# DEPRECATED: Old activation method (kept for reference, will be removed)
+# =============================================================================
+
 @activity.defn
 async def activate_pending_fixtures(fixtures_to_activate: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Activate fixtures that were detected as started/changed during staging processing.
-    Called at the END of the monitor cycle after all other processing is done.
+    DEPRECATED: Activation now happens in pre_activate_upcoming_fixtures.
     
-    This avoids double-fetching fixtures that just activated.
+    This was the old end-of-cycle activation. Now we pre-activate based on
+    kickoff time during the staging poll.
+    
+    Kept for backward compatibility during transition.
     
     Args:
         fixtures_to_activate: List of {fixture_id, home_team, away_team, old_status, new_status}

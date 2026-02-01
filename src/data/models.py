@@ -259,6 +259,7 @@ class FixtureFields:
     """
     ACTIVATED_AT = "_activated_at"
     LAST_ACTIVITY = "_last_activity"
+    LAST_MONITOR = "_last_monitor"  # For staging: tracks when fixture was last polled
     COMPLETION_COUNT = "_completion_count"
     COMPLETION_COMPLETE = "_completion_complete"
     COMPLETION_FIRST_SEEN = "_completion_first_seen"
@@ -270,6 +271,7 @@ class FixtureFields:
         return [
             cls.ACTIVATED_AT,
             cls.LAST_ACTIVITY,
+            cls.LAST_MONITOR,
             cls.COMPLETION_COUNT,
             cls.COMPLETION_COMPLETE,
             cls.COMPLETION_FIRST_SEEN,
@@ -740,20 +742,24 @@ def create_new_enhanced_event(
 
 def create_activation_fields() -> FixtureEnhancement:
     """
-    Create the enhanced fields for fixture activation.
+    Create the enhanced fields for fixture activation (pre-activation).
     
     These fields are added when a fixture moves from staging to active.
     Uses FixtureFields constants for field names.
     
+    NOTE: _last_activity is NOT set here. It remains null until the match
+    actually starts (status changes from NS/TBD to 1H/2H/etc).
+    This is handled by sync_fixture_data() when it detects the status change.
+    
     Returns:
-        Dict with _activated_at, _last_activity, _completion_count, _completion_complete
+        Dict with _activated_at, _completion_count, _completion_complete
     """
     from datetime import datetime, timezone
     
     now = datetime.now(timezone.utc)
     return {
         FixtureFields.ACTIVATED_AT: now,
-        FixtureFields.LAST_ACTIVITY: now,
+        # _last_activity intentionally NOT set - will be set when match actually starts
         FixtureFields.COMPLETION_COUNT: 0,
         FixtureFields.COMPLETION_COMPLETE: False,
     }
