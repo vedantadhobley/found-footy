@@ -558,6 +558,10 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
     # API glitches that return empty events for 1-2 polls won't cause data loss.
     # If event flickers back, we start the drop count from scratch.
     #
+    # EXCEPTION: Unknown scorer events (player_id=0) are deleted immediately
+    # when they disappear - no need to wait for 3 monitors. These are clearly
+    # placeholder events that got removed/replaced by the actual scorer.
+    #
     # OLD APPROACH (counter-based - kept for backwards compatibility):
     # We still decrement _monitor_count but don't use it for deletion decisions.
     removed_ids = active_ids - live_ids
@@ -566,6 +570,25 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
         active_event = active_map[event_id]
         current_count = active_event.get(EventFields.MONITOR_COUNT, 0)
         monitor_complete = active_event.get(EventFields.MONITOR_COMPLETE, False)
+        
+        # Check if this is an unknown scorer event (player_id=0 or no player name)
+        player_id = active_event.get("player", {}).get("id", 0)
+        player_name = active_event.get("player", {}).get("name", "")
+        is_unknown_scorer = player_id == 0 or not player_name or player_name.lower() in ("unknown", "tbd", "n/a")
+        
+        if is_unknown_scorer:
+            # Unknown scorer events - delete immediately, no need to wait
+            result = store.fixtures_active.update_one(
+                {"_id": fixture_id},
+                {"$pull": {"events": {EventFields.EVENT_ID: event_id}}}
+            )
+            if result.modified_count > 0:
+                activity.logger.info(
+                    f"🗑️ [MONITOR] UNKNOWN REMOVED | event={event_id} | "
+                    f"reason=unknown_scorer_disappeared | player_id={player_id}"
+                )
+                removed_count += 1
+            continue
         
         # OLD: Decrement the counter (kept for backwards compatibility, not used for decisions)
         new_count_val = max(0, current_count - 1)

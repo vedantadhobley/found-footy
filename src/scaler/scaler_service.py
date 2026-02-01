@@ -175,46 +175,67 @@ class MongoMetrics:
             return 0
     
     def get_goals_summary(self) -> dict:
-        """Get summary of goal events in various states across all fixture collections."""
+        """Get useful summary stats: in-progress goals, total videos in S3, today's goals."""
         try:
-            total = 0
-            monitor_complete = 0
-            download_complete = 0
-            upload_complete = 0
+            from datetime import datetime, timezone
             
-            for collection in ["fixtures_active", "fixtures_live", "fixtures_completed"]:
+            # Goals in progress (in active/live fixtures, not yet download_complete)
+            in_progress = 0
+            for collection in ["fixtures_active", "fixtures_live"]:
                 pipeline = [
                     {"$unwind": "$events"},
-                    {"$group": {
-                        "_id": None,
-                        "total": {"$sum": 1},
-                        "monitor_complete": {
-                            "$sum": {"$cond": [{"$eq": ["$events._monitor_complete", True]}, 1, 0]}
-                        },
-                        "download_complete": {
-                            "$sum": {"$cond": [{"$eq": ["$events._download_complete", True]}, 1, 0]}
-                        },
-                        "upload_complete": {
-                            "$sum": {"$cond": [{"$eq": ["$events._upload_complete", True]}, 1, 0]}
-                        },
-                    }}
+                    {"$match": {"events._download_complete": {"$ne": True}}},
+                    {"$count": "count"}
                 ]
                 result = list(self.db[collection].aggregate(pipeline))
                 if result:
-                    total += result[0].get("total", 0)
-                    monitor_complete += result[0].get("monitor_complete", 0)
-                    download_complete += result[0].get("download_complete", 0)
-                    upload_complete += result[0].get("upload_complete", 0)
+                    in_progress += result[0].get("count", 0)
+            
+            # Total videos in S3 (count _s3_videos array entries across all collections)
+            total_videos = 0
+            for collection in ["fixtures_active", "fixtures_live", "fixtures_completed"]:
+                pipeline = [
+                    {"$unwind": "$events"},
+                    {"$unwind": {"path": "$events._s3_videos", "preserveNullAndEmptyArrays": False}},
+                    {"$count": "count"}
+                ]
+                result = list(self.db[collection].aggregate(pipeline))
+                if result:
+                    total_videos += result[0].get("count", 0)
+            
+            # Today's goals (events created today based on fixture date)
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            todays_goals = 0
+            for collection in ["fixtures_active", "fixtures_live", "fixtures_completed"]:
+                pipeline = [
+                    {"$match": {"date": {"$regex": f"^{today}"}}},
+                    {"$unwind": "$events"},
+                    {"$count": "count"}
+                ]
+                result = list(self.db[collection].aggregate(pipeline))
+                if result:
+                    todays_goals += result[0].get("count", 0)
+            
+            # Total goals all-time
+            total_goals = 0
+            for collection in ["fixtures_active", "fixtures_live", "fixtures_completed"]:
+                pipeline = [
+                    {"$unwind": "$events"},
+                    {"$count": "count"}
+                ]
+                result = list(self.db[collection].aggregate(pipeline))
+                if result:
+                    total_goals += result[0].get("count", 0)
             
             return {
-                "total": total,
-                "monitor_complete": monitor_complete,
-                "download_complete": download_complete,
-                "upload_complete": upload_complete
+                "in_progress": in_progress,
+                "total_videos": total_videos,
+                "todays_goals": todays_goals,
+                "total_goals": total_goals
             }
         except Exception as e:
             print(f"❌ Error getting goals summary: {e}")
-            return {"total": 0, "monitor_complete": 0, "download_complete": 0, "upload_complete": 0}
+            return {"in_progress": 0, "total_videos": 0, "todays_goals": 0, "total_goals": 0}
 
 
 class ScalerService:
@@ -419,7 +440,7 @@ class ScalerService:
                     "current_workers": current_workers,
                     "current_twitter": current_twitter,
                     "active_goals": active_goals,
-                    "goals_total": goals_summary.get('total', 0),
+                    "goals_total": goals_summary.get('total_goals', 0),
                 }
                 
                 state_changed = current_state != last_state
@@ -433,7 +454,7 @@ class ScalerService:
                     print(f"📊 Active Workflows: {active_workflows} ({active_workflows/current_workers:.1f}/worker)")
                     print(f"📊 Workers: {current_workers} running, {metrics['workflow_pollers']} polling")
                     print(f"📊 Twitter: {current_twitter} running, {active_goals} active goals ({active_goals/current_twitter:.1f}/instance)")
-                    print(f"📊 Goals: total={goals_summary.get('total', 0)} monitor✓={goals_summary.get('monitor_complete', 0)} download✓={goals_summary.get('download_complete', 0)} upload✓={goals_summary.get('upload_complete', 0)}")
+                    print(f"📊 Goals: {goals_summary.get('in_progress', 0)} in progress | {goals_summary.get('todays_goals', 0)} today | {goals_summary.get('total_goals', 0)} all-time | {goals_summary.get('total_videos', 0)} videos in S3")
                     last_log_time = time.time()
                     last_state = current_state.copy()
                 
