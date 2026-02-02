@@ -225,14 +225,11 @@ async def main():
                 ingest.cleanup_old_fixtures,  # Delete fixtures older than 14 days
                 # Monitor activities (staging + active processing)
                 monitor.fetch_staging_fixtures,
-                monitor.pre_activate_upcoming_fixtures,  # NEW: Time-based pre-activation
-                monitor.process_staging_fixtures,  # DEPRECATED: Kept for compatibility
-                monitor.activate_pending_fixtures,  # DEPRECATED: Kept for compatibility
+                monitor.pre_activate_upcoming_fixtures,  # Time-based pre-activation
                 monitor.fetch_active_fixtures,
                 monitor.store_and_compare,
                 monitor.process_fixture_events,
                 monitor.sync_fixture_metadata,
-                monitor.confirm_twitter_workflow_started,  # DEPRECATED: Use set_monitor_complete
                 monitor.check_twitter_workflow_running,
                 monitor.complete_fixture_if_ready,
                 monitor.notify_frontend_refresh,
@@ -252,7 +249,6 @@ async def main():
                 download.download_single_video,
                 download.validate_video_is_soccer,  # AI vision validation
                 download.generate_video_hash,  # Perceptual hash with heartbeat
-                download.increment_twitter_count,  # DEPRECATED: Will be removed after refactor
                 download.cleanup_download_temp,  # Cleanup on failure
                 download.queue_videos_for_upload,  # Signal-with-start to queue videos for upload
                 download.register_download_workflow,  # NEW: Called at start of DownloadWorkflow
@@ -275,7 +271,7 @@ async def main():
         
         print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
         print("📋 Workflows: Ingest, Monitor, RAG, Twitter, Download, Upload", flush=True)
-        print("🔧 Activities: 33 total (4 ingest, 9 monitor, 3 rag, 4 twitter, 6 download, 10 upload)", flush=True)
+        print("🔧 Activities: 29 total (4 ingest, 6 monitor, 3 rag, 4 twitter, 5 download, 10 upload)", flush=True)
         print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every 30s)", flush=True)
         await worker.run()
     except Exception as e:

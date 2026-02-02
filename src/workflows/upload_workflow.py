@@ -143,10 +143,6 @@ class UploadWorkflow:
                     self._total_uploaded += result.get("videos_uploaded", 0)
                     self._total_batches_processed += 1
                     
-                    # Check if all 10 download workflows have registered
-                    # Uses workflow-ID-based tracking instead of counter increments
-                    await self._check_and_mark_download_complete(fixture_id, event_id)
-                    
                     workflow.logger.info(
                         f"✅ [UPLOAD] Batch complete | uploaded={result.get('videos_uploaded', 0)} | "
                         f"total={self._total_uploaded} | event={event_id}"
@@ -156,8 +152,6 @@ class UploadWorkflow:
                         f"❌ [UPLOAD] Batch FAILED | error={e} | event={event_id}"
                     )
                     self._total_batches_processed += 1
-                    # Still check completion even on failure - the download workflow ran
-                    await self._check_and_mark_download_complete(fixture_id, event_id)
         
         workflow.logger.info(
             f"🎉 [UPLOAD] WORKFLOW COMPLETE | total_uploaded={self._total_uploaded} | "

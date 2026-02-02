@@ -369,11 +369,12 @@ Filtered videos still have their URLs tracked to prevent re-download attempts.
 
 ### fixtures_staging
 
-Fixtures waiting to start (status TBD, NS).
+Fixtures waiting to start (status TBD, NS). Polled every 15 minutes via interval-based polling.
 
 ```json
 {
   "_id": 5000,
+  "_last_monitor": "2025-11-24T08:15:00Z",
   "fixture": {
     "id": 5000,
     "date": "2025-11-24T15:00:00Z",
@@ -386,6 +387,8 @@ Fixtures waiting to start (status TBD, NS).
   "league": {"id": 39, "name": "Premier League"}
 }
 ```
+
+**`_last_monitor`**: Timestamp of last API poll. Used for interval calculation - only poll if fixture's interval differs from current interval.
 
 ### fixtures_live
 
@@ -504,18 +507,26 @@ Archive with all enhancements intact. fixtures_live entry deleted.
 
 ### 2. MonitorWorkflow (Every 30 Seconds)
 
-**Purpose**: Activate fixtures, detect events, trigger RAG for stable events
+**Purpose**: Poll staging fixtures (interval-based), activate fixtures, detect events, trigger downloads
 
 | Activity | Purpose | Retries |
 |----------|---------|---------|
-| `fetch_staging_fixtures` | Get staging fixture data | 3x |
-| `process_staging_fixtures` | Update staging from API | 3x |
-| `activate_pending_fixtures` | Move staging → active | 2x |
+| `pre_activate_upcoming_fixtures` | Poll staging (15-min intervals), pre-activate upcoming | 3x |
 | `fetch_active_fixtures` | Batch fetch from API | 3x |
 | `store_and_compare` | Filter events, store in live | 3x, 2.0x backoff |
-| `process_fixture_events` | Increment counts, detect stable | 3x |
+| `process_fixture_events` | Register workflows, detect stable | 3x |
 | `complete_fixture_if_ready` | Move to completed | 3x, 2.0x backoff |
 | `notify_frontend_refresh` | SSE broadcast | 1x |
+
+**Staging Interval Polling**: Instead of polling staging fixtures every 30 seconds, we use 15-minute intervals:
+- Each fixture has `_last_monitor` timestamp set at ingestion
+- On each monitor cycle, calculate current interval: `(hour * 4) + (minute // 15)`
+- Only poll fixtures whose `_last_monitor` is in a different interval
+- Reduces staging API calls by ~97% (from 5,760 to 192 requests/day for 27 fixtures)
+
+**Pre-Activation**: Fixtures are activated when `kickoff <= now + 30min`, not on status change.
+
+**Emergency Activation**: If a staging fixture has an active status (1H, HT, 2H, etc.), it's immediately activated regardless of kickoff time. This catches games that started earlier than scheduled.
 
 **Key Change**: Monitor now triggers **TwitterWorkflow** directly when events reach `_monitor_complete=true`. TwitterWorkflow resolves aliases at start (cache or RAG pipeline).
 

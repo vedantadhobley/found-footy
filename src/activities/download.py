@@ -809,69 +809,6 @@ async def generate_video_hash(file_path: str, duration: float) -> Dict[str, Any]
     return {"perceptual_hash": perceptual_hash}
 
 
-@activity.defn
-async def increment_twitter_count(
-    fixture_id: int,
-    event_id: str,
-    total_attempts: int = 10
-) -> dict:
-    """
-    DEPRECATED: Use check_and_mark_download_complete instead.
-    
-    This activity uses counter-based tracking which has race condition issues.
-    The new workflow-ID-based tracking (register_download_workflow + check_and_mark_download_complete)
-    is idempotent and handles retries correctly.
-    
-    Keeping this for backward compatibility during transition.
-    
-    Increment _twitter_count and check if we should mark _download_complete.
-    
-    Called by:
-    - DownloadWorkflow when a download completes
-    - TwitterWorkflow when a search finds no videos (no download triggered)
-    
-    This solves the race condition where fixture could move to fixtures_completed
-    while downloads are still running. By having downloads set _download_complete,
-    we ensure completion only happens after all work is done.
-    
-    Args:
-        fixture_id: Fixture ID
-        event_id: Event ID
-        total_attempts: Total attempts expected (default 10)
-    
-    Returns:
-        Dict with success, new_count, marked_complete
-    """
-    from src.data.mongo_store import FootyMongoStore
-    
-    store = FootyMongoStore()
-    
-    activity.logger.info(
-        f"📊 [DOWNLOAD] DEPRECATED: Incrementing twitter count | event={event_id}"
-    )
-    
-    result = store.increment_twitter_count_and_check_complete(
-        fixture_id, event_id, total_attempts
-    )
-    
-    if result["success"]:
-        if result["marked_complete"]:
-            activity.logger.info(
-                f"✅ [DOWNLOAD] Twitter count={result['new_count']}, marked _download_complete=true | "
-                f"event={event_id}"
-            )
-        else:
-            activity.logger.info(
-                f"📊 [DOWNLOAD] Twitter count={result['new_count']}/{total_attempts} | event={event_id}"
-            )
-    else:
-        activity.logger.error(
-            f"❌ [DOWNLOAD] Failed to increment twitter count | event={event_id}"
-        )
-    
-    return result
-
-
 # ==============================================================================
 # Helper functions for download activities
 # ==============================================================================

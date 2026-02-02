@@ -1,9 +1,17 @@
 """
 Ingest Workflow - Daily at 00:05 UTC
 
-Fetches fixtures for today, tomorrow, and day after (UTC) and routes them to correct collections.
-3 days are fetched to handle timezone edge cases and allow frontend to show "tomorrow" fixtures
-for users in any timezone.
+Fetches fixtures with smart lookahead to ensure frontend always has upcoming fixtures to display.
+
+Standard behavior (tomorrow has fixtures):
+  - Fetch today, tomorrow, day_after (3 days for timezone coverage)
+
+Lookahead behavior (tomorrow is empty):
+  - Fetch today + tomorrow (always needed for "today" timezone coverage)
+  - Look ahead up to 30 days to find next day with fixtures
+  - Fetch that day + day after (timezone coverage)
+
+This handles international breaks and off-season gaps gracefully.
 
 Pre-caches RAG aliases for both teams in each fixture (per-team for modularity).
 Cleans up fixtures older than 14 days from MongoDB and S3.
@@ -88,23 +96,29 @@ class IngestWorkflow:
                 ),
             )
         else:
-            # Standard daily ingest: fetch today, tomorrow, and day after (UTC)
-            # This allows frontend to show "tomorrow" fixtures for users in any timezone
-            # Day+2 handles edge case where user's "tomorrow" is actually 2 days ahead in UTC
+            # Standard daily ingest with lookahead for gaps in fixture schedule
+            #
+            # Logic:
+            # 1. Always fetch TODAY (even if empty - needed for current day display)
+            # 2. Always fetch TOMORROW (needed for "today" view across all timezones)
+            # 3. If TOMORROW has fixtures → also fetch day_after (timezone coverage)
+            # 4. If TOMORROW is empty → look ahead up to 30 days to find next day with fixtures
+            #    → fetch that day + the day after (timezone coverage)
+            #
+            # This ensures frontend always has at least one upcoming day with fixtures,
+            # even during international breaks or off-season gaps.
             
             # Use workflow.now() for determinism (not datetime.now())
             now_utc = workflow.now()
             today_utc = now_utc.date()
             tomorrow_utc = today_utc + timedelta(days=1)
-            day_after_utc = today_utc + timedelta(days=2)
             
             today_str = today_utc.isoformat()
             tomorrow_str = tomorrow_utc.isoformat()
-            day_after_str = day_after_utc.isoformat()
             
-            workflow.logger.info(f"📥 Starting daily fixture ingest for {today_str}, {tomorrow_str}, and {day_after_str}")
+            workflow.logger.info(f"📥 Starting daily fixture ingest for {today_str}")
             
-            # Fetch fixtures for all 3 days in sequence
+            # Always fetch today
             today_fixtures = await workflow.execute_activity(
                 ingest_activities.fetch_todays_fixtures,
                 today_str,
@@ -116,6 +130,7 @@ class IngestWorkflow:
                 ),
             )
             
+            # Always fetch tomorrow (needed for "today" timezone coverage)
             tomorrow_fixtures = await workflow.execute_activity(
                 ingest_activities.fetch_todays_fixtures,
                 tomorrow_str,
@@ -127,30 +142,100 @@ class IngestWorkflow:
                 ),
             )
             
-            day_after_fixtures = await workflow.execute_activity(
-                ingest_activities.fetch_todays_fixtures,
-                day_after_str,
-                start_to_close_timeout=timedelta(seconds=30),
-                retry_policy=RetryPolicy(
-                    maximum_attempts=3,
-                    initial_interval=timedelta(seconds=1),
-                    maximum_interval=timedelta(seconds=10),
-                ),
-            )
+            # Determine what additional days to fetch based on tomorrow's fixtures
+            extra_fixtures = []
+            
+            if len(tomorrow_fixtures) > 0:
+                # Tomorrow has fixtures - fetch day_after for timezone handling
+                day_after_utc = today_utc + timedelta(days=2)
+                day_after_str = day_after_utc.isoformat()
+                
+                workflow.logger.info(f"📅 Tomorrow ({tomorrow_str}) has {len(tomorrow_fixtures)} fixtures, fetching day after ({day_after_str})")
+                
+                day_after_fixtures = await workflow.execute_activity(
+                    ingest_activities.fetch_todays_fixtures,
+                    day_after_str,
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(
+                        maximum_attempts=3,
+                        initial_interval=timedelta(seconds=1),
+                        maximum_interval=timedelta(seconds=10),
+                    ),
+                )
+                extra_fixtures = day_after_fixtures
+                
+                workflow.logger.info(
+                    f"📊 Fetched {len(today_fixtures)} today + {len(tomorrow_fixtures)} tomorrow + "
+                    f"{len(day_after_fixtures)} day after (standard 3-day fetch)"
+                )
+            else:
+                # Tomorrow is empty - look ahead up to 30 days to find next day with fixtures
+                workflow.logger.info(f"📅 Tomorrow ({tomorrow_str}) has no fixtures, looking ahead...")
+                
+                MAX_LOOKAHEAD_DAYS = 30
+                next_match_day = None
+                next_match_fixtures = []
+                
+                for days_ahead in range(2, MAX_LOOKAHEAD_DAYS + 2):  # Start at day+2 (we already checked tomorrow)
+                    check_date = today_utc + timedelta(days=days_ahead)
+                    check_date_str = check_date.isoformat()
+                    
+                    check_fixtures = await workflow.execute_activity(
+                        ingest_activities.fetch_todays_fixtures,
+                        check_date_str,
+                        start_to_close_timeout=timedelta(seconds=30),
+                        retry_policy=RetryPolicy(
+                            maximum_attempts=3,
+                            initial_interval=timedelta(seconds=1),
+                            maximum_interval=timedelta(seconds=10),
+                        ),
+                    )
+                    
+                    if len(check_fixtures) > 0:
+                        next_match_day = check_date
+                        next_match_fixtures = check_fixtures
+                        workflow.logger.info(f"🔍 Found {len(check_fixtures)} fixtures on {check_date_str} (day +{days_ahead})")
+                        break
+                
+                if next_match_day:
+                    # Found a day with fixtures - fetch the day after for timezone handling
+                    next_match_day_str = next_match_day.isoformat()
+                    next_match_day_after = next_match_day + timedelta(days=1)
+                    next_match_day_after_str = next_match_day_after.isoformat()
+                    
+                    workflow.logger.info(f"📅 Fetching day after next match day ({next_match_day_after_str}) for timezone handling")
+                    
+                    next_match_day_after_fixtures = await workflow.execute_activity(
+                        ingest_activities.fetch_todays_fixtures,
+                        next_match_day_after_str,
+                        start_to_close_timeout=timedelta(seconds=30),
+                        retry_policy=RetryPolicy(
+                            maximum_attempts=3,
+                            initial_interval=timedelta(seconds=1),
+                            maximum_interval=timedelta(seconds=10),
+                        ),
+                    )
+                    
+                    extra_fixtures = next_match_fixtures + next_match_day_after_fixtures
+                    
+                    workflow.logger.info(
+                        f"📊 Fetched {len(today_fixtures)} today + 0 tomorrow + "
+                        f"{len(next_match_fixtures)} on {next_match_day_str} + "
+                        f"{len(next_match_day_after_fixtures)} on {next_match_day_after_str} (lookahead mode)"
+                    )
+                else:
+                    workflow.logger.warning(f"⚠️ No fixtures found in next {MAX_LOOKAHEAD_DAYS} days - may be off-season")
             
             # Combine and deduplicate by fixture ID
             seen_ids = set()
             fixtures = []
-            for fixture in today_fixtures + tomorrow_fixtures + day_after_fixtures:
+            for fixture in today_fixtures + tomorrow_fixtures + extra_fixtures:
                 fixture_id = fixture.get("fixture", {}).get("id")
                 if fixture_id and fixture_id not in seen_ids:
                     seen_ids.add(fixture_id)
                     fixtures.append(fixture)
             
-            workflow.logger.info(
-                f"📊 Fetched {len(today_fixtures)} today + {len(tomorrow_fixtures)} tomorrow + "
-                f"{len(day_after_fixtures)} day after = {len(fixtures)} unique fixtures"
-            )
+            workflow.logger.info(f"📊 Total unique fixtures to process: {len(fixtures)}")
         
         # Pre-cache RAG aliases for EACH team individually
         # This is more modular - can retry per-team instead of per-fixture

@@ -29,12 +29,12 @@ This decoupling allows:
 │  │   _monitor_complete = FALSE                                            │   │
 │  │                                                                        │   │
 │  │   Each 30s (Monitor poll):                                             │   │
-│  │     IF event seen: increment _monitor_count                            │   │
-│  │     IF _monitor_count >= 3:                                            │   │
+│  │     IF event seen: $addToSet workflow_id to _monitor_workflows         │   │
+│  │     IF len(_monitor_workflows) >= 3 AND _monitor_complete = FALSE:     │   │
 │  │       → start_child_workflow(TwitterWorkflow) [fire-and-forget]        │   │
-│  │       → THEN set _monitor_complete = TRUE (after Twitter starts!)      │   │
+│  │       → TwitterWorkflow sets _monitor_complete = TRUE at its START     │   │
 │  │                                                                        │   │
-│  │   RECOVERY: If count=3 AND monitor_complete=FALSE (stuck goal):        │   │
+│  │   RECOVERY: If len >= 3 AND monitor_complete=FALSE (stuck goal):       │   │
 │  │       → retry Twitter start on next poll                               │   │
 │  │                                                                        │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
@@ -44,20 +44,20 @@ This decoupling allows:
 │  │                    PHASE 2: TWITTER (Self-Managed)                    │   │
 │  │                                                                        │   │
 │  │   TwitterWorkflow (~10 min, fire-and-forget from Monitor):             │   │
+│  │     0. set_monitor_complete(true) ← FIRST THING                        │   │
 │  │     1. Resolve aliases: cache lookup OR RAG pipeline (~30-90s)         │   │
-│  │     2. FOR attempt IN [1..10]:                                         │   │
+│  │     2. WHILE len(_download_workflows) < 10:                            │   │
 │  │       → check_event_exists (VAR check - abort if removed)              │   │
 │  │       → Search all aliases: "Salah Liverpool", "Salah LFC", ...        │   │
 │  │       → Dedupe videos, save to _discovered_videos                      │   │
-│  │       → IF videos: start DownloadWorkflow (BLOCKING child)             │   │
+│  │       → ALWAYS start DownloadWorkflow (BLOCKING child, even 0 videos)  │   │
+│  │           → DownloadWorkflow: register_download_workflow ← FIRST THING │   │
 │  │           → DownloadWorkflow: check_event_exists (abort if VAR'd)      │   │
 │  │           → DownloadWorkflow: download → validate → hash               │   │
-│  │           → DownloadWorkflow calls UploadWorkflow (BLOCKING, serialized)│   │
-│  │           → DownloadWorkflow: increment_twitter_count                  │   │
-│  │       → ELSE: increment_twitter_count directly                         │   │
-│  │       → IF attempt < 10: sleep(1 minute) ← DURABLE TIMER               │   │
-│  │     WHEN _twitter_count reaches 10:                                    │   │
-│  │       → _download_complete = TRUE (set atomically by increment)         │   │
+│  │           → DownloadWorkflow: signal UploadWorkflow (even empty batch) │   │
+│  │       → sleep(1 minute) ← DURABLE TIMER                                │   │
+│  │     UploadWorkflow calls check_and_mark_download_complete at idle:     │   │
+│  │       → IF len(_download_workflows) >= 10: _download_complete = TRUE   │   │
 │  │                                                                        │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                              │                                               │
@@ -232,11 +232,11 @@ Benefit: No errors, proper serialization, parallel uploads for DIFFERENT events
 
 ### Why 10 Twitter attempts with 1-min spacing?
 Goal videos appear over 5-15 minutes. More frequent searches = more videos captured.
-Blocking downloads ensure reliable completion tracking via `_twitter_count`.
+Blocking downloads with workflow-ID registration ensures reliable completion tracking.
 
 ### Why Downloads are BLOCKING (not fire-and-forget)?
-- `_twitter_count` must accurately track completed downloads
-- If fire-and-forget, count would increment before downloads finish
+- `_download_workflows` array must accurately track completed downloads
+- If fire-and-forget, workflow IDs would register before downloads finish
 - Fixture could complete before all videos are uploaded
 - BLOCKING ensures completion tracking is reliable
 
@@ -245,6 +245,12 @@ Blocking downloads ensure reliable completion tracking via `_twitter_count`.
 - Aliases are usually cached (pre-warmed during ingestion)
 - Cache miss is rare (~30-90s RAG pipeline)
 - Simpler architecture with fewer workflows to coordinate
+
+### Why Workflow-ID Arrays instead of Counters?
+- **Idempotent**: `$addToSet` is atomic - re-registering same ID is a no-op
+- **Auditable**: Array shows exactly which workflows ran
+- **Failure-resistant**: If workflow crashes and restarts, it re-registers same ID
+- **Debuggable**: "download8 never registered" vs "count stuck at 7"
 
 ---
 
@@ -257,8 +263,9 @@ Blocking downloads ensure reliable completion tracking via `_twitter_count`.
 
 ### Fixture Completion Prevention  
 **Problem**: Fixture moves to completed while downloads still running
-**Solution**: `_download_complete` only set when `_twitter_count` reaches 10
-**Guarantee**: All 10 download attempts must complete before fixture can complete
+**Solution**: `_download_complete` only set when `len(_download_workflows) >= 10`
+**Guarantee**: All 10 download workflows must register before fixture can complete
+**When**: UploadWorkflow calls `check_and_mark_download_complete` at idle timeout
 
 ### Alias Resolution Race
 **Problem**: Cache might be stale if team just played for first time
@@ -268,10 +275,10 @@ Blocking downloads ensure reliable completion tracking via `_twitter_count`.
 ### VAR Reversal Handling
 **Problem**: Goal gets VAR'd while downstream workflows are running
 **Solution**: Multi-layer existence checks:
-1. **TwitterWorkflow**: `check_event_exists` at START of each attempt (1-10 loop)
+1. **TwitterWorkflow**: `check_event_exists` at START of each attempt
 2. **DownloadWorkflow**: `check_event_exists` at START of workflow
 3. **UploadWorkflow**: `fetch_event_data` returns "event_not_found" → abort workflow
-4. **Monitor**: Decrements `_monitor_count` when event disappears, deletes at 0
+4. **Monitor**: Tracks missing events in `_drop_workflows`, deletes when len >= 3
 **Guarantee**: Workflows abort gracefully, no orphaned S3 uploads
 
 ---
@@ -283,20 +290,20 @@ When a goal is first detected, the API may not yet have the scorer identified.
 **Detection**: `is_player_known()` checks if player name is None, empty, or "Unknown"
 
 **Behavior**:
-- Event is created with `_monitor_count = 0` (not 1)
+- Event is created with empty `_monitor_workflows` array
 - Event appears in frontend but shows as "Unknown Player"
-- **Debouncing is frozen** - count stays at 0, won't progress to 3
+- **Debouncing is frozen** - no workflow IDs added, won't progress to 3
 - **No Twitter search triggered** - player name is required for search
 - API data (time, assist, comments) still synced on each poll
 
 **Resolution**:
 When API identifies the player, `player_id` changes → new `_event_id` generated.
-Old "Unknown" event is removed via normal VAR logic (count decrements to 0).
+Old "Unknown" event is removed via normal VAR logic (`_drop_workflows` reaches 3).
 New event starts fresh debounce with known player.
 
 **Frontend Use**:
-- `_monitor_count === 0` → Unknown player, waiting for identification
-- `_monitor_count >= 1` → Player is known, debouncing in progress
+- `len(_monitor_workflows) === 0` → Unknown player, waiting for identification
+- `len(_monitor_workflows) >= 1` → Player is known, debouncing in progress
 
 ---
 
@@ -307,5 +314,5 @@ Event data from API can change after initial detection:
 - **assist**: Assister may be added later
 - **comments**: Additional context may appear
 
-**Solution**: `update_event_stable_count()` syncs these fields on EVERY poll,
+**Solution**: Monitor syncs these fields on EVERY poll via the live event comparison,
 not just during debounce. This ensures MongoDB stays current with API changes.

@@ -250,35 +250,6 @@ class FootyMongoStore:
             print(f"❌ Error activating fixture with data {fixture_id}: {e}")
             return False
 
-    def activate_fixture(self, fixture_id: int) -> bool:
-        """
-        DEPRECATED: Use activate_fixture_with_data() instead.
-        
-        Move fixture from staging to active with EMPTY events array.
-        This is the old time-based activation method, kept for backwards compatibility.
-        """
-        try:
-            staging_doc = self.fixtures_staging.find_one({"_id": fixture_id})
-            if not staging_doc:
-                return False
-            
-            # Initialize with empty events array
-            staging_doc["events"] = []
-            
-            # Add fixture-level tracking fields from models.py
-            staging_doc.update(create_activation_fields())
-            
-            self.fixtures_active.replace_one(
-                {"_id": fixture_id},
-                staging_doc,
-                upsert=True
-            )
-            self.fixtures_staging.delete_one({"_id": fixture_id})
-            return True
-        except Exception as e:
-            print(f"❌ Error activating fixture {fixture_id}: {e}")
-            return False
-
     # === Live Operations (Temporary Raw Data Storage) ===
     
     def store_live_fixture(self, fixture_id: int, api_data: dict) -> bool:
@@ -543,85 +514,6 @@ class FootyMongoStore:
         except Exception as e:
             print(f"❌ Error marking event {event_id} monitor complete: {e}")
             return False
-    
-    def increment_twitter_count_and_check_complete(
-        self, 
-        fixture_id: int, 
-        event_id: str,
-        total_attempts: int = 10
-    ) -> dict:
-        """
-        DEPRECATED: Use check_and_mark_download_complete instead.
-        
-        This function uses counter-based tracking which has race condition issues.
-        The new workflow-ID-based tracking (add_download_workflow + check_and_mark_download_complete)
-        is idempotent and handles retries correctly.
-        
-        Keeping this for backward compatibility during transition.
-        
-        Atomically increment _twitter_count and set _download_complete when count reaches total.
-        
-        Called by:
-        - DownloadWorkflow when a download completes
-        - TwitterWorkflow when a search finds no videos (no download triggered)
-        
-        This ensures _download_complete is only set after ALL downloads finish,
-        preventing the race condition where fixture moves to completed while
-        downloads are still running.
-        
-        Args:
-            fixture_id: Fixture ID
-            event_id: Event ID
-            total_attempts: Total attempts expected (default 10)
-        
-        Returns:
-            Dict with success, new_count, marked_complete
-        """
-        from datetime import datetime, timezone
-        
-        try:
-            # Atomically increment the count
-            result = self.fixtures_active.find_one_and_update(
-                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
-                {"$inc": {f"events.$.{EventFields.TWITTER_COUNT}": 1}},
-                return_document=True  # Return the document AFTER update
-            )
-            
-            if not result:
-                print(f"❌ Event {event_id} not found in fixtures_active")
-                return {"success": False, "new_count": 0, "marked_complete": False}
-            
-            # Find the event to get the new count
-            new_count = 0
-            for evt in result.get("events", []):
-                if evt.get(EventFields.EVENT_ID) == event_id:
-                    new_count = evt.get(EventFields.TWITTER_COUNT, 0)
-                    break
-            
-            print(f"📊 Incremented _twitter_count to {new_count}/{total_attempts} for {event_id}")
-            
-            # Check if we should mark complete
-            marked_complete = False
-            if new_count >= total_attempts:
-                self.fixtures_active.update_one(
-                    {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
-                    {"$set": {
-                        f"events.$.{EventFields.DOWNLOAD_COMPLETE}": True,
-                        f"events.$.{EventFields.DOWNLOAD_COMPLETED_AT}": datetime.now(timezone.utc)
-                    }}
-                )
-                marked_complete = True
-                print(f"✅ Marked _download_complete=true for {event_id}")
-            
-            return {
-                "success": True,
-                "new_count": new_count,
-                "marked_complete": marked_complete
-            }
-            
-        except Exception as e:
-            print(f"❌ Error incrementing twitter count for {event_id}: {e}")
-            return {"success": False, "new_count": 0, "marked_complete": False}
 
     # ==========================================================================
     # WORKFLOW TRACKING (Workflow-ID-based)
@@ -1229,9 +1121,9 @@ class FootyMongoStore:
         Sorts by popularity (desc) then file_size (desc) - larger files = better quality.
         Rank 1 = best video.
         
-        Only checks fixtures_active since UploadWorkflow (which calls this) is BLOCKING
-        inside DownloadWorkflow, which must complete before _twitter_count is incremented.
-        Fixture cannot move to completed until all DownloadWorkflows finish.
+        Only checks fixtures_active since _download_complete is only set after ALL
+        batches are processed by UploadWorkflow (on idle timeout). This ensures
+        ranking is complete before fixture can move to completed.
         
         Args:
             fixture_id: Fixture ID
