@@ -6,6 +6,7 @@ import hashlib
 import asyncio
 import json
 
+from src.utils.footy_logging import log
 from src.utils.config import (
     LLAMA_CHAT_URL,
     SHORT_EDGE_FILTER_ENABLED,
@@ -42,7 +43,8 @@ def _load_twitter_cookies() -> Dict[str, str]:
     _twitter_cookies_loaded = True
     
     if not os.path.exists(TWITTER_COOKIE_BACKUP_PATH):
-        activity.logger.warning(f"⚠️ [COOKIES] No cookie file at {TWITTER_COOKIE_BACKUP_PATH}")
+        log.warning(activity.logger, "download", "cookies_missing",
+                    "No cookie file found", path=TWITTER_COOKIE_BACKUP_PATH)
         return {}
     
     try:
@@ -59,13 +61,15 @@ def _load_twitter_cookies() -> Dict[str, str]:
         # Log which auth cookies we have (without values)
         auth_cookies = ["auth_token", "ct0", "twid", "guest_id"]
         found = [c for c in auth_cookies if c in cookies]
-        activity.logger.info(f"🍪 [COOKIES] Loaded {len(cookies)} cookies, auth: {found}")
+        log.info(activity.logger, "download", "cookies_loaded",
+                 "Loaded Twitter cookies", count=len(cookies), auth_cookies=found)
         
         _twitter_cookies_cache = cookies
         return cookies
         
     except Exception as e:
-        activity.logger.warning(f"⚠️ [COOKIES] Failed to load: {e}")
+        log.warning(activity.logger, "download", "cookies_load_failed",
+                    "Failed to load cookies", error=str(e))
         return {}
 
 
@@ -109,19 +113,18 @@ async def register_download_workflow(
         # Get current count after registration
         count = store.get_download_workflow_count(fixture_id, event_id)
         
-        activity.logger.info(
-            f"📊 [DOWNLOAD] register_download_workflow | event={event_id} | "
-            f"workflow={workflow_id} | count={count} | success={success}"
-        )
+        log.info(activity.logger, "download", "workflow_registered",
+                 "Registered download workflow",
+                 event_id=event_id, workflow_id=workflow_id, count=count, success=success)
         
         return {
             "success": success,
             "count": count
         }
     except Exception as e:
-        activity.logger.error(
-            f"❌ [DOWNLOAD] register_download_workflow failed | event={event_id} | error={e}"
-        )
+        log.error(activity.logger, "download", "workflow_register_failed",
+                  "Failed to register download workflow",
+                  event_id=event_id, error=str(e), error_type=type(e).__name__)
         return {
             "success": False,
             "count": 0
@@ -155,18 +158,16 @@ async def check_and_mark_download_complete(
     try:
         result = store.check_and_mark_download_complete(fixture_id, event_id, required_count)
         
-        activity.logger.info(
-            f"📊 [DOWNLOAD] check_and_mark_download_complete | event={event_id} | "
-            f"count={result['count']}/{required_count} | "
-            f"was_complete={result['was_already_complete']} | "
-            f"marked={result['marked_complete']}"
-        )
+        log.info(activity.logger, "download", "completion_check",
+                 "Checked download completion",
+                 event_id=event_id, count=result['count'], required=required_count,
+                 was_complete=result['was_already_complete'], marked=result['marked_complete'])
         
         return result
     except Exception as e:
-        activity.logger.error(
-            f"❌ [DOWNLOAD] check_and_mark_download_complete failed | event={event_id} | error={e}"
-        )
+        log.error(activity.logger, "download", "completion_check_failed",
+                  "Failed to check download completion",
+                  event_id=event_id, error=str(e), error_type=type(e).__name__)
         return {
             "count": 0,
             "was_already_complete": False,
@@ -215,18 +216,18 @@ async def download_single_video(
     # Ensure temp directory exists
     os.makedirs(temp_dir, exist_ok=True)
     
-    activity.logger.info(
-        f"📥 [DOWNLOAD] Starting download | event={event_id} | video_idx={video_index} | "
-        f"url={video_url[:60]}..."
-    )
+    log.info(activity.logger, "download", "download_started",
+             "Starting video download",
+             event_id=event_id, video_idx=video_index, url=video_url[:60])
     
     # Extract tweet_id from URL
     # Handles: https://x.com/user/status/123, https://x.com/i/status/123, https://twitter.com/...
     tweet_id_match = re.search(r'/status/(\d+)', video_url)
     if not tweet_id_match:
-        msg = f"[DOWNLOAD] Could not extract tweet_id from URL: {video_url}"
-        activity.logger.error(f"❌ {msg}")
-        raise RuntimeError(msg)
+        log.error(activity.logger, "download", "tweet_id_extraction_failed",
+                  "Could not extract tweet_id from URL",
+                  event_id=event_id, video_idx=video_index, url=video_url)
+        raise RuntimeError(f"Could not extract tweet_id from URL: {video_url}")
     
     tweet_id = tweet_id_match.group(1)
     
@@ -247,19 +248,21 @@ async def download_single_video(
             response = await client.get(syndication_url)
             
             if response.status_code != 200:
-                msg = f"Syndication API returned {response.status_code}"
-                activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
-                raise RuntimeError(msg)
+                log.warning(activity.logger, "download", "syndication_api_error",
+                            "Syndication API returned error",
+                            video_idx=video_index, status_code=response.status_code)
+                raise RuntimeError(f"Syndication API returned {response.status_code}")
             
             tweet_data = response.json()
     except httpx.TimeoutException:
-        msg = "Syndication API timeout"
-        activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
-        raise RuntimeError(msg)
+        log.warning(activity.logger, "download", "syndication_timeout",
+                    "Syndication API timeout", video_idx=video_index)
+        raise RuntimeError("Syndication API timeout")
     except Exception as e:
-        msg = f"Syndication API error: {str(e)[:100]}"
-        activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
-        raise RuntimeError(msg)
+        log.warning(activity.logger, "download", "syndication_error",
+                    "Syndication API error",
+                    video_idx=video_index, error=str(e)[:100])
+        raise RuntimeError(f"Syndication API error: {str(e)[:100]}")
     
     # Extract video variants from response
     # Prefer mediaDetails path as it includes bitrate info
@@ -286,20 +289,20 @@ async def download_single_video(
         if SHORT_EDGE_FILTER_ENABLED:
             short_edge = min(video_width, video_height)
             if short_edge < MIN_SHORT_EDGE:
-                activity.logger.warning(
-                    f"📏 [DOWNLOAD] Pre-filtered: low resolution | video={video_index} | "
-                    f"short_edge={short_edge}px | min={MIN_SHORT_EDGE}px | res={video_width}x{video_height}"
-                )
+                log.info(activity.logger, "download", "filtered_resolution",
+                         "Pre-filtered: low resolution",
+                         video_idx=video_index, short_edge=short_edge,
+                         min_edge=MIN_SHORT_EDGE, width=video_width, height=video_height)
                 return {"status": "filtered", "reason": "pre_filter_resolution", "source_url": source_tweet_url}
         
         # Aspect ratio filter (reject portrait/square videos)
         if ASPECT_RATIO_FILTER_ENABLED and video_height > 0:
             aspect_ratio = video_width / video_height
             if aspect_ratio < MIN_ASPECT_RATIO:
-                activity.logger.warning(
-                    f"📐 [DOWNLOAD] Pre-filtered: portrait/square | video={video_index} | "
-                    f"ratio={aspect_ratio:.2f} | min={MIN_ASPECT_RATIO} | res={video_width}x{video_height}"
-                )
+                log.info(activity.logger, "download", "filtered_aspect",
+                         "Pre-filtered: portrait/square",
+                         video_idx=video_index, aspect_ratio=round(aspect_ratio, 2),
+                         min_ratio=MIN_ASPECT_RATIO, width=video_width, height=video_height)
                 return {"status": "filtered", "reason": "pre_filter_aspect_ratio", "source_url": source_tweet_url}
     
     # Path 2 (fallback): video.variants - often missing bitrates
@@ -307,9 +310,9 @@ async def download_single_video(
         video_variants = tweet_data["video"]["variants"]
     
     if not video_variants:
-        msg = f"No video variants found in syndication response"
-        activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
-        raise RuntimeError(msg)
+        log.warning(activity.logger, "download", "no_variants",
+                    "No video variants in syndication response", video_idx=video_index)
+        raise RuntimeError("No video variants found in syndication response")
     
     # Filter to mp4 only and sort by bitrate (highest first)
     mp4_variants = [
@@ -318,9 +321,9 @@ async def download_single_video(
     ]
     
     if not mp4_variants:
-        msg = f"No MP4 variants found"
-        activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
-        raise RuntimeError(msg)
+        log.warning(activity.logger, "download", "no_mp4_variants",
+                    "No MP4 variants found", video_idx=video_index)
+        raise RuntimeError("No MP4 variants found")
     
     # Sort by bitrate descending, pick best quality
     mp4_variants.sort(key=lambda v: v.get("bitrate", 0), reverse=True)
@@ -331,10 +334,10 @@ async def download_single_video(
     # Check if this is amplify_video (promoted content that may need auth)
     is_amplify = "amplify_video" in cdn_url if cdn_url else False
     
-    activity.logger.info(
-        f"🎬 [DOWNLOAD] Found {len(mp4_variants)} variants, using best: {bitrate/1000:.0f}kbps | "
-        f"video_idx={video_index} | amplify={is_amplify}"
-    )
+    log.info(activity.logger, "download", "variant_selected",
+             "Selected best video variant",
+             video_idx=video_index, variant_count=len(mp4_variants),
+             bitrate_kbps=int(bitrate/1000), is_amplify=is_amplify)
     
     # Download from CDN
     output_path = os.path.join(temp_dir, f"{event_id}_{video_index}_01.mp4")
@@ -365,46 +368,48 @@ async def download_single_video(
             request_cookies = twitter_cookies if twitter_cookies else None
             async with client.stream("GET", cdn_url, cookies=request_cookies) as response:
                 if response.status_code != 200:
-                    msg = f"CDN returned {response.status_code}"
                     # Log more detail for auth failures
                     if response.status_code == 403:
                         has_auth = "auth_token" in twitter_cookies
-                        activity.logger.warning(
-                            f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index} | amplify={is_amplify} | "
-                            f"has_auth_cookie={has_auth}"
-                        )
+                        log.warning(activity.logger, "download", "cdn_auth_failed",
+                                    "CDN returned 403",
+                                    video_idx=video_index, is_amplify=is_amplify, has_auth=has_auth)
                     else:
-                        activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
-                    raise RuntimeError(msg)
+                        log.warning(activity.logger, "download", "cdn_error",
+                                    "CDN returned error",
+                                    video_idx=video_index, status_code=response.status_code)
+                    raise RuntimeError(f"CDN returned {response.status_code}")
                 
                 with open(output_path, 'wb') as f:
                     async for chunk in response.aiter_bytes(chunk_size=8192):
                         f.write(chunk)
     except httpx.TimeoutException:
-        msg = "CDN download timeout"
-        activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
-        raise RuntimeError(msg)
+        log.warning(activity.logger, "download", "cdn_timeout",
+                    "CDN download timeout", video_idx=video_index)
+        raise RuntimeError("CDN download timeout")
     except Exception as e:
-        msg = f"CDN download error: {str(e)[:100]}"
-        activity.logger.warning(f"⚠️ [DOWNLOAD] {msg} | video_idx={video_index}")
-        raise RuntimeError(msg)
+        log.warning(activity.logger, "download", "cdn_download_error",
+                    "CDN download error",
+                    video_idx=video_index, error=str(e)[:100])
+        raise RuntimeError(f"CDN download error: {str(e)[:100]}")
     
     # Verify file exists and has content
     if not os.path.exists(output_path):
-        msg = f"[DOWNLOAD] No file after download | video_idx={video_index}"
-        activity.logger.error(f"❌ {msg}")
-        raise RuntimeError(msg)
+        log.error(activity.logger, "download", "file_missing",
+                  "No file after download", video_idx=video_index)
+        raise RuntimeError(f"No file after download | video_idx={video_index}")
     
     file_size = os.path.getsize(output_path)
     if file_size < 1000:  # Less than 1KB is likely an error
-        msg = f"[DOWNLOAD] File too small ({file_size} bytes) | video_idx={video_index}"
-        activity.logger.error(f"❌ {msg}")
+        log.error(activity.logger, "download", "file_too_small",
+                  "Downloaded file too small",
+                  video_idx=video_index, file_size=file_size)
         os.remove(output_path)
-        raise RuntimeError(msg)
+        raise RuntimeError(f"File too small ({file_size} bytes) | video_idx={video_index}")
     
-    activity.logger.info(
-        f"✅ [DOWNLOAD] Downloaded {file_size / 1024 / 1024:.2f}MB | video_idx={video_index}"
-    )
+    log.info(activity.logger, "download", "downloaded",
+             "Video downloaded successfully",
+             video_idx=video_index, file_size_mb=round(file_size / 1024 / 1024, 2))
     
     # Process the downloaded video (metadata, filters)
     result = _process_downloaded_video(
@@ -467,9 +472,10 @@ async def validate_video_is_soccer(file_path: str, event_id: str) -> Dict[str, A
     """
     # Verify file exists before validation
     if not os.path.exists(file_path):
-        msg = f"❌ FATAL: Video file not found for validation: {file_path}"
-        activity.logger.error(msg)
-        raise FileNotFoundError(msg)
+        log.error(activity.logger, "download", "validate_file_missing",
+                  "Video file not found for validation",
+                  event_id=event_id, file_path=file_path)
+        raise FileNotFoundError(f"Video file not found for validation: {file_path}")
     
     # Get video duration for frame extraction
     duration = 0.0
@@ -483,7 +489,8 @@ async def validate_video_is_soccer(file_path: str, event_id: str) -> Dict[str, A
         if result.returncode == 0 and result.stdout.strip():
             duration = float(result.stdout.strip())
     except Exception as e:
-        activity.logger.warning(f"⚠️ Failed to get duration: {e}")
+        log.warning(activity.logger, MODULE, "get_duration_failed",
+                    "Failed to get duration", error=str(e))
         duration = 10.0  # Assume 10s if can't read
     
     if duration < 1.0:
@@ -543,10 +550,10 @@ Answer format (exactly):
 SOCCER: YES or NO
 SCREEN: YES or NO"""
 
-    activity.logger.info(
-        f"🔍 [VALIDATE] Starting AI vision validation | event={event_id} | "
-        f"duration={duration:.1f}s | file={os.path.basename(file_path)}"
-    )
+    log.info(activity.logger, "download", "validate_started",
+             "Starting AI vision validation",
+             event_id=event_id, duration=round(duration, 1),
+             file=os.path.basename(file_path))
     
     # =========================================================================
     # Smart 2-3 check strategy:
@@ -593,9 +600,10 @@ SCREEN: YES or NO"""
     frame_75 = _extract_frame_for_vision(file_path, t_75)
     
     if not frame_25 and not frame_75:
-        msg = f"❌ [VALIDATE] Failed to extract ANY frames | event={event_id} | file={file_path}"
-        activity.logger.error(msg)
-        raise RuntimeError(msg)  # Let retry policy handle - don't fail-open
+        log.error(activity.logger, "download", "frame_extraction_failed",
+                  "Failed to extract ANY frames",
+                  event_id=event_id, file=file_path)
+        raise RuntimeError("Failed to extract frames for validation")
     
     # =========================================================================
     # Smart 2-3 check strategy with heartbeats:
@@ -612,10 +620,9 @@ SCREEN: YES or NO"""
         response_25 = await _call_vision_model(frame_25, prompt)
         checks_performed += 1
         soccer_25, screen_25 = parse_response(response_25)
-        activity.logger.info(
-            f"   📸 [VALIDATE] 25% check | SOCCER={'YES' if soccer_25 else 'NO'} | "
-            f"SCREEN={'YES' if screen_25 else 'NO'}"
-        )
+        log.info(activity.logger, "download", "vision_check",
+                 "Vision check completed",
+                 check_pct=25, is_soccer=soccer_25, is_screen=screen_25)
     
     # Heartbeat before second check
     activity.heartbeat(f"AI vision check 2/2 (75% frame)...")
@@ -625,10 +632,9 @@ SCREEN: YES or NO"""
         response_75 = await _call_vision_model(frame_75, prompt)
         checks_performed += 1
         soccer_75, screen_75 = parse_response(response_75)
-        activity.logger.info(
-            f"   📸 [VALIDATE] 75% check | SOCCER={'YES' if soccer_75 else 'NO'} | "
-            f"SCREEN={'YES' if screen_75 else 'NO'}"
-        )
+        log.info(activity.logger, "download", "vision_check",
+                 "Vision check completed",
+                 check_pct=75, is_soccer=soccer_75, is_screen=screen_75)
     
     # =========================================================================
     # Determine BOTH soccer and screen results using same tiebreaker logic
@@ -644,7 +650,8 @@ SCREEN: YES or NO"""
     soccer_50, screen_50 = None, None
     
     if need_tiebreaker:
-        activity.logger.info(f"   ⚖️ [VALIDATE] Disagreement detected, checking 50% tiebreaker...")
+        log.info(activity.logger, "download", "vision_tiebreaker",
+                 "Disagreement detected, checking 50% tiebreaker")
         activity.heartbeat("AI vision tiebreaker (50% frame)...")
         
         t_50 = duration * 0.50
@@ -654,10 +661,9 @@ SCREEN: YES or NO"""
             response_50 = await _call_vision_model(frame_50, prompt)
             checks_performed += 1
             soccer_50, screen_50 = parse_response(response_50)
-            activity.logger.info(
-                f"   📸 [VALIDATE] 50% tiebreaker | SOCCER={'YES' if soccer_50 else 'NO'} | "
-                f"SCREEN={'YES' if screen_50 else 'NO'}"
-            )
+            log.info(activity.logger, "download", "vision_check",
+                     "Vision tiebreaker completed",
+                     check_pct=50, is_soccer=soccer_50, is_screen=screen_50)
     
     # Determine soccer result
     if soccer_25 is None and soccer_75 is not None:
@@ -672,9 +678,6 @@ SCREEN: YES or NO"""
         is_soccer = soccer_25
         confidence = 0.95 if is_soccer else 0.90
         soccer_reason = f"Both checks agree: {'soccer' if is_soccer else 'not soccer'}"
-        activity.logger.info(
-            f"   ✓ [VALIDATE] Both frames agree | is_soccer={'YES' if is_soccer else 'NO'}"
-        )
     else:
         # Disagreement - use tiebreaker (2/3 majority)
         if soccer_50 is not None:
@@ -695,45 +698,34 @@ SCREEN: YES or NO"""
     elif screen_25 == screen_75:
         # Both agree
         is_screen_recording = screen_25 or False
-        activity.logger.info(
-            f"   ✓ [VALIDATE] Both frames agree | is_screen={'YES' if is_screen_recording else 'NO'}"
-        )
     else:
         # Disagreement - use tiebreaker (2/3 majority to REJECT)
         if screen_50 is not None:
             screen_votes = sum([screen_25 or False, screen_50, screen_75 or False])
             is_screen_recording = screen_votes >= 2  # Need 2/3 to reject
-            activity.logger.info(
-                f"   ⚖️ [VALIDATE] Screen tiebreaker: {screen_votes}/3 votes for screen recording"
-            )
         else:
             # Tiebreaker failed, default to NOT rejecting (benefit of the doubt)
             is_screen_recording = False
-            activity.logger.info(
-                f"   ⚖️ [VALIDATE] Screen disagreement, no tiebreaker - defaulting to NOT screen"
-            )
     
     # Final validation: must be soccer AND not a screen recording
     is_valid = is_soccer and not is_screen_recording
     
     if is_screen_recording:
         reason = "Rejected: phone recording of TV/screen detected"
-        activity.logger.warning(
-            f"📺 [VALIDATE] REJECTED phone-TV recording | event={event_id} | "
-            f"checks={checks_performed}"
-        )
+        log.info(activity.logger, "download", "validate_rejected",
+                 "Video rejected: phone-TV recording",
+                 event_id=event_id, checks=checks_performed, is_screen=True)
     elif not is_soccer:
         reason = soccer_reason
-        activity.logger.warning(
-            f"❌ [VALIDATE] REJECTED not soccer | event={event_id} | "
-            f"checks={checks_performed} | reason={soccer_reason}"
-        )
+        log.info(activity.logger, "download", "validate_rejected",
+                 "Video rejected: not soccer",
+                 event_id=event_id, checks=checks_performed, reason=soccer_reason)
     else:
         reason = soccer_reason
-        activity.logger.info(
-            f"✅ [VALIDATE] PASSED validation | event={event_id} | "
-            f"checks={checks_performed} | confidence={confidence:.0%}"
-        )
+        log.info(activity.logger, "download", "validate_passed",
+                 "Video passed validation",
+                 event_id=event_id, checks=checks_performed,
+                 confidence=round(confidence, 2))
     
     return {
         "is_valid": is_valid,
@@ -766,15 +758,13 @@ async def generate_video_hash(file_path: str, duration: float) -> Dict[str, Any]
         Dict with perceptual_hash string
     """
     if not os.path.exists(file_path):
-        activity.logger.error(
-            f"❌ [HASH] File not found | path={file_path}"
-        )
+        log.error(activity.logger, "download", "hash_file_missing",
+                  "File not found for hash generation", file_path=file_path)
         return {"perceptual_hash": "", "error": "file_not_found"}
     
-    activity.logger.info(
-        f"🔐 [HASH] Starting hash generation | file={os.path.basename(file_path)} | "
-        f"duration={duration:.1f}s"
-    )
+    log.info(activity.logger, "download", "hash_started",
+             "Starting hash generation",
+             file=os.path.basename(file_path), duration=round(duration, 1))
     
     # Pass heartbeat function to signal progress during long hash generation
     perceptual_hash = _generate_perceptual_hash(file_path, duration, heartbeat_fn=activity.heartbeat)
@@ -785,25 +775,23 @@ async def generate_video_hash(file_path: str, duration: float) -> Dict[str, Any]
         if len(parts) >= 3 and parts[2]:
             frame_count = len(parts[2].split(","))
             if frame_count >= 3:
-                activity.logger.info(
-                    f"✅ [HASH] Generated hash | frames={frame_count} | interval=0.25s"
-                )
+                log.info(activity.logger, "download", "hash_generated",
+                         "Hash generated successfully",
+                         frame_count=frame_count, interval=0.25)
             else:
-                activity.logger.warning(
-                    f"⚠️ [HASH] Low frame count | frames={frame_count} | "
-                    f"duration={duration}s | file={os.path.basename(file_path)}"
-                )
+                log.warning(activity.logger, "download", "hash_low_frames",
+                            "Low frame count in hash",
+                            frame_count=frame_count, duration=duration,
+                            file=os.path.basename(file_path))
         else:
-            activity.logger.error(
-                f"❌ [HASH] No frames extracted | file={os.path.basename(file_path)} | "
-                f"duration={duration}s"
-            )
+            log.error(activity.logger, "download", "hash_no_frames",
+                      "No frames extracted for hash",
+                      file=os.path.basename(file_path), duration=duration)
             return {"perceptual_hash": "", "error": "no_frames_extracted"}
     else:
-        activity.logger.error(
-            f"❌ [HASH] Invalid format | file={os.path.basename(file_path)} | "
-            f"hash_prefix={perceptual_hash[:50]}"
-        )
+        log.error(activity.logger, "download", "hash_invalid_format",
+                  "Invalid hash format",
+                  file=os.path.basename(file_path), hash_prefix=perceptual_hash[:50])
         return {"perceptual_hash": "", "error": "invalid_hash_format"}
     
     return {"perceptual_hash": perceptual_hash}
@@ -850,18 +838,18 @@ def _process_downloaded_video(
     # Duration filter: typical goal clips
     # Must be strictly greater than MIN (e.g., exactly 3.00s fails)
     if duration <= MIN_VIDEO_DURATION:
-        activity.logger.warning(
-            f"⏱️ [DOWNLOAD] Filtered: too short | video={display_idx} | "
-            f"duration={duration:.1f}s | min={MIN_VIDEO_DURATION}s"
-        )
+        log.info(activity.logger, "download", "filtered_duration",
+                 "Filtered: too short",
+                 video_idx=display_idx, duration=round(duration, 1),
+                 min_duration=MIN_VIDEO_DURATION)
         os.remove(output_path)
         return None
     
     if duration > MAX_VIDEO_DURATION:
-        activity.logger.warning(
-            f"⏱️ [DOWNLOAD] Filtered: too long | video={display_idx} | "
-            f"duration={duration:.1f}s | max={MAX_VIDEO_DURATION}s"
-        )
+        log.info(activity.logger, "download", "filtered_duration",
+                 "Filtered: too long",
+                 video_idx=display_idx, duration=round(duration, 1),
+                 max_duration=MAX_VIDEO_DURATION)
         os.remove(output_path)
         return None
     
@@ -870,10 +858,10 @@ def _process_downloaded_video(
     if SHORT_EDGE_FILTER_ENABLED and width and height:
         short_edge = min(width, height)
         if short_edge < MIN_SHORT_EDGE:
-            activity.logger.warning(
-                f"📏 [DOWNLOAD] Filtered: low resolution | video={display_idx} | "
-                f"short_edge={short_edge}px | min={MIN_SHORT_EDGE}px | res={width}x{height}"
-            )
+            log.info(activity.logger, "download", "filtered_resolution",
+                     "Filtered: low resolution",
+                     video_idx=display_idx, short_edge=short_edge,
+                     min_edge=MIN_SHORT_EDGE, width=width, height=height)
             os.remove(output_path)
             return None
     
@@ -883,10 +871,10 @@ def _process_downloaded_video(
     if ASPECT_RATIO_FILTER_ENABLED and width and height and height > 0:
         aspect_ratio = width / height
         if aspect_ratio < MIN_ASPECT_RATIO:
-            activity.logger.warning(
-                f"📐 [DOWNLOAD] Filtered: aspect ratio | video={display_idx} | "
-                f"ratio={aspect_ratio:.2f} | min={MIN_ASPECT_RATIO}"
-            )
+            log.info(activity.logger, "download", "filtered_aspect",
+                     "Filtered: aspect ratio",
+                     video_idx=display_idx, aspect_ratio=round(aspect_ratio, 2),
+                     min_ratio=MIN_ASPECT_RATIO)
             os.remove(output_path)
             return None
     
@@ -898,10 +886,11 @@ def _process_downloaded_video(
     if bitrate:
         quality_info += f"@{bitrate:.0f}kbps"
     
-    activity.logger.info(
-        f"✅ [DOWNLOAD] Video ready for validation | video={display_idx} | "
-        f"size={file_size / 1024 / 1024:.2f}MB | duration={duration:.1f}s | quality={quality_info}"
-    )
+    log.info(activity.logger, "download", "video_ready",
+             "Video ready for validation",
+             video_idx=display_idx, file_size_mb=round(file_size / 1024 / 1024, 2),
+             duration=round(duration, 1), width=width, height=height,
+             bitrate_kbps=int(bitrate) if bitrate else 0)
     
     # Return without perceptual_hash - will be generated after AI validation
     return {
@@ -953,18 +942,19 @@ def _extract_frame_for_vision(file_path: str, timestamp: float) -> Optional[str]
         )
         
         if result.returncode != 0 or not result.stdout:
-            activity.logger.warning(
-                f"⚠️ Frame extraction failed at {timestamp}s: "
-                f"returncode={result.returncode}, stderr={result.stderr.decode()[:200] if result.stderr else 'none'}"
-            )
+            log.warning(activity.logger, "download", "frame_extraction_failed",
+                        "Frame extraction failed",
+                        timestamp=timestamp, returncode=result.returncode)
             return None
         
         return base64.b64encode(result.stdout).decode('utf-8')
     except subprocess.TimeoutExpired:
-        activity.logger.warning(f"⚠️ Frame extraction timed out at {timestamp}s")
+        log.warning(activity.logger, "download", "frame_extraction_timeout",
+                    "Frame extraction timed out", timestamp=timestamp)
         return None
     except Exception as e:
-        activity.logger.warning(f"⚠️ Frame extraction error at {timestamp}s: {e}")
+        log.warning(activity.logger, "download", "frame_extraction_error",
+                    "Frame extraction error", timestamp=timestamp, error=str(e))
         return None
 
 
@@ -983,7 +973,8 @@ async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[st
     
     llama_url = LLAMA_CHAT_URL
     
-    activity.logger.debug(f"🔍 Calling vision model at {llama_url}")
+    log.debug(activity.logger, "download", "vision_call",
+              "Calling vision model", url=llama_url)
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1013,19 +1004,24 @@ async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[st
             if response.status_code == 200:
                 return response.json()
             else:
-                activity.logger.warning(
-                    f"⚠️ Vision model returned status {response.status_code}: {response.text[:200]}"
-                )
+                log.warning(activity.logger, "download", "vision_http_error",
+                            "Vision model returned error",
+                            status_code=response.status_code)
                 return None
     except httpx.ConnectError as e:
-        activity.logger.error(f"❌ Cannot connect to LLM at {llama_url}: {e}")
-        raise  # Propagate connection errors - should retry
+        log.error(activity.logger, "download", "vision_connect_failed",
+                  "Cannot connect to LLM",
+                  url=llama_url, error=str(e), error_type="ConnectError")
+        raise
     except httpx.TimeoutException as e:
-        activity.logger.warning(f"⚠️ Vision model request timed out: {e}")
-        raise  # Propagate timeouts - should retry
+        log.warning(activity.logger, "download", "vision_timeout",
+                    "Vision model request timed out", error=str(e))
+        raise
     except Exception as e:
-        activity.logger.error(f"❌ Vision model error: {type(e).__name__}: {e}")
-        raise  # Propagate all errors - let retry policy handle
+        log.error(activity.logger, "download", "vision_error",
+                  "Vision model error",
+                  error=str(e), error_type=type(e).__name__)
+        raise
 
 
 def _calculate_md5(file_path: str) -> str:
@@ -1087,7 +1083,9 @@ def _get_video_metadata(file_path: str) -> dict:
                     break
                     
     except Exception as e:
-        activity.logger.warning(f"⚠️ Failed to get video metadata for {file_path}: {e}")
+        log.warning(activity.logger, "download", "metadata_failed",
+                    "Failed to get video metadata",
+                    file_path=file_path, error=str(e))
     
     return result
 
@@ -1172,7 +1170,9 @@ def _generate_perceptual_hash(file_path: str, duration: float, heartbeat_fn=None
             return format(hash_int, '016x')
             
         except Exception as e:
-            activity.logger.warning(f"⚠️ Failed to extract frame at {timestamp}s: {e}")
+            log.warning(activity.logger, "download", "hash_frame_failed",
+                        "Failed to extract frame for hash",
+                        timestamp=timestamp, error=str(e))
             return ""
     
     # Extract hashes at 0.25s intervals
@@ -1221,7 +1221,8 @@ async def cleanup_download_temp(temp_dir: str) -> bool:
     
     if temp_dir and os.path.exists(temp_dir):
         shutil.rmtree(temp_dir)
-        activity.logger.info(f"🧹 [DOWNLOAD] Cleaned up temp dir | path={temp_dir}")
+        log.info(activity.logger, "download", "temp_cleaned",
+                 "Cleaned up temp directory", path=temp_dir)
         return True
     
     return False

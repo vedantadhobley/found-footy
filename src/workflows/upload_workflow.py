@@ -31,6 +31,9 @@ with workflow.unsafe.imports_passed_through():
     from src.activities import upload as upload_activities
     from src.activities import monitor as monitor_activities
     from src.activities import download as download_activities
+    from src.utils.footy_logging import log
+
+MODULE = "upload_workflow"
 
 
 @dataclass
@@ -67,10 +70,9 @@ class UploadWorkflow:
         Temporal guarantees signals are delivered in order.
         """
         videos = batch.get("videos", [])
-        workflow.logger.info(
-            f"📥 [UPLOAD] Received batch signal | videos={len(videos)} | "
-            f"queue_size={len(self._pending_batches)}"
-        )
+        log.info(workflow.logger, MODULE, "batch_received",
+                 "Received batch signal",
+                 videos=len(videos), queue_size=len(self._pending_batches))
         self._pending_batches.append(batch)
     
     @workflow.run
@@ -81,9 +83,8 @@ class UploadWorkflow:
         fixture_id = input.fixture_id
         event_id = input.event_id
         
-        workflow.logger.info(
-            f"🚀 [UPLOAD] WORKFLOW STARTED | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "workflow_started",
+                 "UploadWorkflow STARTED", event_id=event_id)
         
         # Process batches until idle timeout
         idle_timeout = timedelta(minutes=5)
@@ -96,11 +97,10 @@ class UploadWorkflow:
                     timeout=idle_timeout,
                 )
             except asyncio.TimeoutError:
-                workflow.logger.info(
-                    f"⏰ [UPLOAD] Idle timeout, completing | "
-                    f"total_uploaded={self._total_uploaded} | "
-                    f"batches={self._total_batches_processed} | event={event_id}"
-                )
+                log.info(workflow.logger, MODULE, "idle_timeout",
+                         "Idle timeout, completing",
+                         total_uploaded=self._total_uploaded,
+                         batches=self._total_batches_processed, event_id=event_id)
                 # Failsafe: Check if all download workflows registered before exiting
                 # This catches edge cases where check was missed during processing
                 await self._check_and_mark_download_complete(fixture_id, event_id)
@@ -110,10 +110,10 @@ class UploadWorkflow:
             if self._pending_batches:
                 batch = self._pending_batches.popleft()
                 
-                workflow.logger.info(
-                    f"☁️ [UPLOAD] Processing batch | videos={len(batch.get('videos', []))} | "
-                    f"queue_remaining={len(self._pending_batches)} | event={event_id}"
-                )
+                log.info(workflow.logger, MODULE, "processing_batch",
+                         "Processing batch",
+                         videos=len(batch.get('videos', [])),
+                         queue_remaining=len(self._pending_batches), event_id=event_id)
                 
                 try:
                     result = await self._process_batch(
@@ -127,10 +127,9 @@ class UploadWorkflow:
                     
                     # Check if event was VAR'd - stop processing all batches
                     if result.get("terminated_early") and result.get("reason") == "event_removed":
-                        workflow.logger.warning(
-                            f"🛑 [UPLOAD] Event removed (VAR'd?) | "
-                            f"stopping workflow | event={event_id}"
-                        )
+                        log.warning(workflow.logger, MODULE, "event_removed",
+                                    "Event removed (VAR'd?) - stopping workflow",
+                                    event_id=event_id)
                         return {
                             "fixture_id": fixture_id,
                             "event_id": event_id,
@@ -143,20 +142,19 @@ class UploadWorkflow:
                     self._total_uploaded += result.get("videos_uploaded", 0)
                     self._total_batches_processed += 1
                     
-                    workflow.logger.info(
-                        f"✅ [UPLOAD] Batch complete | uploaded={result.get('videos_uploaded', 0)} | "
-                        f"total={self._total_uploaded} | event={event_id}"
-                    )
+                    log.info(workflow.logger, MODULE, "batch_complete",
+                             "Batch complete",
+                             uploaded=result.get('videos_uploaded', 0),
+                             total=self._total_uploaded, event_id=event_id)
                 except Exception as e:
-                    workflow.logger.error(
-                        f"❌ [UPLOAD] Batch FAILED | error={e} | event={event_id}"
-                    )
+                    log.error(workflow.logger, MODULE, "batch_failed",
+                              "Batch FAILED", error=str(e), event_id=event_id)
                     self._total_batches_processed += 1
         
-        workflow.logger.info(
-            f"🎉 [UPLOAD] WORKFLOW COMPLETE | total_uploaded={self._total_uploaded} | "
-            f"batches={self._total_batches_processed} | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "workflow_complete",
+                 "UploadWorkflow COMPLETE",
+                 total_uploaded=self._total_uploaded,
+                 batches=self._total_batches_processed, event_id=event_id)
         
         return {
             "fixture_id": fixture_id,
@@ -180,12 +178,12 @@ class UploadWorkflow:
         This is the core upload logic - fetches fresh S3 state, deduplicates,
         uploads, and updates MongoDB.
         """
-        workflow.logger.info(
-            f"☁️ [UPLOAD] Processing batch | videos={len(videos)} | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "process_batch_start",
+                 "Processing batch", videos=len(videos), event_id=event_id)
         
         if not videos:
-            workflow.logger.warning(f"⚠️ [UPLOAD] No videos to upload | event={event_id}")
+            log.warning(workflow.logger, MODULE, "no_videos",
+                        "No videos to upload", event_id=event_id)
             return {
                 "fixture_id": fixture_id,
                 "event_id": event_id,
@@ -199,7 +197,8 @@ class UploadWorkflow:
         # This is the key - we fetch S3 state INSIDE the serialized workflow,
         # guaranteeing no other upload can modify S3 while we're working.
         # =========================================================================
-        workflow.logger.info(f"📋 [UPLOAD] Fetching fresh S3 state | event={event_id}")
+        log.info(workflow.logger, MODULE, "fetching_s3_state",
+                 "Fetching fresh S3 state", event_id=event_id)
         
         try:
             event_data = await workflow.execute_activity(
@@ -217,9 +216,9 @@ class UploadWorkflow:
             # VAR Check: If event was removed, abort this batch (and signal workflow to stop)
             # =========================================================================
             if event_data.get("status") == "error" and event_data.get("error") == "event_not_found":
-                workflow.logger.warning(
-                    f"🛑 [UPLOAD] Event no longer exists (VAR'd?) | event={event_id} | ABORTING BATCH"
-                )
+                log.warning(workflow.logger, MODULE, "event_not_found",
+                            "Event no longer exists (VAR'd?) - ABORTING BATCH",
+                            event_id=event_id)
                 return {
                     "fixture_id": fixture_id,
                     "event_id": event_id,
@@ -231,20 +230,20 @@ class UploadWorkflow:
                 }
             
             existing_s3_videos = event_data.get("existing_s3_videos", [])
-            workflow.logger.info(
-                f"✅ [UPLOAD] Got fresh S3 state | existing_videos={len(existing_s3_videos)} | event={event_id}"
-            )
+            log.info(workflow.logger, MODULE, "got_s3_state",
+                     "Got fresh S3 state",
+                     existing_videos=len(existing_s3_videos), event_id=event_id)
         except Exception as e:
-            workflow.logger.error(f"❌ [UPLOAD] fetch_event_data FAILED | error={e} | event={event_id}")
+            log.error(workflow.logger, MODULE, "fetch_event_data_failed",
+                      "fetch_event_data FAILED", error=str(e), event_id=event_id)
             existing_s3_videos = []
         
         # =========================================================================
         # Step 2: MD5 Deduplication against S3
         # Fast check for exact file matches
         # =========================================================================
-        workflow.logger.info(
-            f"🔐 [UPLOAD] Running MD5 dedup | videos={len(videos)} | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "md5_dedup_start",
+                 "Running MD5 dedup", videos=len(videos), event_id=event_id)
         
         try:
             md5_result = await workflow.execute_activity(
@@ -257,9 +256,9 @@ class UploadWorkflow:
             # Handle S3 exact matches - bump popularity
             s3_exact_matches = md5_result.get("s3_exact_matches", [])
             if s3_exact_matches:
-                workflow.logger.info(
-                    f"📈 [UPLOAD] Bumping popularity for {len(s3_exact_matches)} MD5-matched S3 videos | event={event_id}"
-                )
+                log.info(workflow.logger, MODULE, "md5_bump_popularity",
+                         "Bumping popularity for MD5-matched S3 videos",
+                         count=len(s3_exact_matches), event_id=event_id)
                 for match in s3_exact_matches:
                     try:
                         await workflow.execute_activity(
@@ -274,9 +273,9 @@ class UploadWorkflow:
                             retry_policy=RetryPolicy(maximum_attempts=2),
                         )
                     except Exception as e:
-                        workflow.logger.warning(
-                            f"⚠️ [UPLOAD] Failed to bump MD5-match popularity | error={e}"
-                        )
+                        log.warning(workflow.logger, MODULE, "md5_bump_failed",
+                                    "Failed to bump MD5-match popularity",
+                                    error=str(e))
             
             # Handle MD5 S3 replacements - queue for later
             md5_s3_replacements = md5_result.get("s3_replacements", [])
@@ -285,13 +284,14 @@ class UploadWorkflow:
             videos_after_md5 = md5_result.get("unique_videos", [])
             md5_dupes_removed = md5_result.get("md5_duplicates_removed", 0)
             
-            workflow.logger.info(
-                f"✅ [UPLOAD] MD5 dedup complete | unique={len(videos_after_md5)} | "
-                f"batch_dupes={md5_dupes_removed} | s3_matches={len(s3_exact_matches)} | "
-                f"s3_replacements={len(md5_s3_replacements)} | event={event_id}"
-            )
+            log.info(workflow.logger, MODULE, "md5_dedup_complete",
+                     "MD5 dedup complete",
+                     unique=len(videos_after_md5), batch_dupes=md5_dupes_removed,
+                     s3_matches=len(s3_exact_matches),
+                     s3_replacements=len(md5_s3_replacements), event_id=event_id)
         except Exception as e:
-            workflow.logger.error(f"❌ [UPLOAD] MD5 dedup FAILED | error={e} | event={event_id}")
+            log.error(workflow.logger, MODULE, "md5_dedup_failed",
+                      "MD5 dedup FAILED", error=str(e), event_id=event_id)
             videos_after_md5 = videos
             md5_s3_replacements = []
         
@@ -316,9 +316,9 @@ class UploadWorkflow:
             else:
                 perceptual_dedup_videos.append(video)
         
-        workflow.logger.info(
-            f"🔍 [UPLOAD] Running perceptual dedup | videos={len(perceptual_dedup_videos)} | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "perceptual_dedup_start",
+                 "Running perceptual dedup",
+                 videos=len(perceptual_dedup_videos), event_id=event_id)
         
         try:
             dedup_result = await workflow.execute_activity(
@@ -335,10 +335,9 @@ class UploadWorkflow:
             # CRITICAL: Do NOT upload videos as new when dedup fails!
             # That's what caused the duplicate video bug. Instead, skip them entirely.
             # The videos will be retried in the next download batch.
-            workflow.logger.error(
-                f"❌ [UPLOAD] Perceptual dedup FAILED - SKIPPING BATCH to avoid duplicates | "
-                f"error={e} | videos={len(perceptual_dedup_videos)} | event={event_id}"
-            )
+            log.error(workflow.logger, MODULE, "perceptual_dedup_failed",
+                      "Perceptual dedup FAILED - SKIPPING BATCH to avoid duplicates",
+                      error=str(e), videos=len(perceptual_dedup_videos), event_id=event_id)
             dedup_result = {
                 "videos_to_upload": [],  # EMPTY - don't upload anything!
                 "videos_to_replace": [],
@@ -352,19 +351,19 @@ class UploadWorkflow:
         skipped_urls = dedup_result.get("skipped_urls", [])
         
         total_to_process = len(videos_to_upload) + len(videos_to_replace)
-        workflow.logger.info(
-            f"✅ [UPLOAD] Perceptual dedup complete | new={len(videos_to_upload)} | "
-            f"replacements={len(videos_to_replace)} | skipped={len(skipped_urls)} | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "perceptual_dedup_complete",
+                 "Perceptual dedup complete",
+                 new=len(videos_to_upload), replacements=len(videos_to_replace),
+                 skipped=len(skipped_urls), event_id=event_id)
         
         # =========================================================================
         # Step 4: Bump popularity for existing videos
         # (when we skipped uploading because existing was higher quality)
         # =========================================================================
         if videos_to_bump_popularity:
-            workflow.logger.info(
-                f"📈 [UPLOAD] Bumping popularity for {len(videos_to_bump_popularity)} existing videos | event={event_id}"
-            )
+            log.info(workflow.logger, MODULE, "bump_popularity_start",
+                     "Bumping popularity for existing videos",
+                     count=len(videos_to_bump_popularity), event_id=event_id)
             
             async def bump_popularity(bump_info: dict):
                 s3_video = bump_info["s3_video"]
@@ -385,17 +384,16 @@ class UploadWorkflow:
                         ),
                     )
                 except Exception as e:
-                    workflow.logger.warning(
-                        f"⚠️ [UPLOAD] Failed to bump popularity | error={e} | event={event_id}"
-                    )
+                    log.warning(workflow.logger, MODULE, "bump_popularity_failed",
+                                "Failed to bump popularity",
+                                error=str(e), event_id=event_id)
             
             bump_tasks = [bump_popularity(info) for info in videos_to_bump_popularity]
             await asyncio.gather(*bump_tasks)
         
         if total_to_process == 0:
-            workflow.logger.info(
-                f"⚠️ [UPLOAD] No videos to upload (all duplicates) | event={event_id}"
-            )
+            log.info(workflow.logger, MODULE, "all_duplicates",
+                     "No videos to upload (all duplicates)", event_id=event_id)
             # NOTE: Don't clean up temp dir here - TwitterWorkflow handles cleanup
             # Individual files may be needed by other batches from same download run
             return {
@@ -411,18 +409,18 @@ class UploadWorkflow:
         # We'll only remove old entries AFTER successful upload
         # =========================================================================
         if videos_to_replace:
-            workflow.logger.info(
-                f"♻️ [UPLOAD] Preparing {len(videos_to_replace)} video replacements | event={event_id}"
-            )
+            log.info(workflow.logger, MODULE, "preparing_replacements",
+                     "Preparing video replacements",
+                     count=len(videos_to_replace), event_id=event_id)
             # Store the replacement info - we'll remove old entries AFTER successful upload
         
         # =========================================================================
         # Step 6: Upload videos to S3 IN PARALLEL
         # =========================================================================
         all_uploads = videos_to_upload + [r["new_video"] for r in videos_to_replace]
-        workflow.logger.info(
-            f"☁️ [UPLOAD] Uploading {len(all_uploads)} videos to S3 | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "uploading_to_s3",
+                 "Uploading videos to S3",
+                 count=len(all_uploads), event_id=event_id)
         
         async def upload_video(idx: int, video_info: dict):
             try:
@@ -459,9 +457,9 @@ class UploadWorkflow:
                 )
                 return {"idx": idx, "result": result, "video_info": video_info}
             except Exception as e:
-                workflow.logger.error(
-                    f"❌ [UPLOAD] Upload {idx} FAILED | error={str(e)[:100]} | event={event_id}"
-                )
+                log.error(workflow.logger, MODULE, "upload_failed",
+                          "Upload FAILED", idx=idx,
+                          error=str(e)[:100], event_id=event_id)
                 return {"idx": idx, "result": None, "error": str(e)}
         
         upload_tasks = [upload_video(idx, video_info) for idx, video_info in enumerate(all_uploads)]
@@ -498,17 +496,17 @@ class UploadWorkflow:
                     # Only add to video_objects if it's a NEW upload (not a replacement)
                     video_objects.append(video_obj)
         
-        workflow.logger.info(
-            f"✅ [UPLOAD] Uploads complete | success={len(video_objects)}/{len(all_uploads)} | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "uploads_complete",
+                 "Uploads complete",
+                 success=len(video_objects), total=len(all_uploads), event_id=event_id)
         
         # =========================================================================
         # Step 7: Update MongoDB with video objects
         # =========================================================================
         if video_objects:
-            workflow.logger.info(
-                f"💾 [UPLOAD] Saving {len(video_objects)} video objects to MongoDB | event={event_id}"
-            )
+            log.info(workflow.logger, MODULE, "saving_to_mongodb",
+                     "Saving video objects to MongoDB",
+                     count=len(video_objects), event_id=event_id)
             
             try:
                 await workflow.execute_activity(
@@ -521,11 +519,12 @@ class UploadWorkflow:
                         backoff_coefficient=2.0,
                     ),
                 )
-                workflow.logger.info(f"✅ [UPLOAD] Saved to MongoDB | event={event_id}")
+                log.info(workflow.logger, MODULE, "saved_to_mongodb",
+                         "Saved to MongoDB", event_id=event_id)
             except Exception as e:
-                workflow.logger.error(
-                    f"❌ [UPLOAD] save_video_objects FAILED | error={e} | event={event_id}"
-                )
+                log.error(workflow.logger, MODULE, "save_to_mongodb_failed",
+                          "save_video_objects FAILED",
+                          error=str(e), event_id=event_id)
         
         # =========================================================================
         # Step 7b: Atomic in-place update for SUCCESSFUL replacements
@@ -533,9 +532,9 @@ class UploadWorkflow:
         # This avoids the race condition where video disappears between remove and add
         # =========================================================================
         if successful_replacements:
-            workflow.logger.info(
-                f"♻️ [UPLOAD] Updating {len(successful_replacements)} videos in-place | event={event_id}"
-            )
+            log.info(workflow.logger, MODULE, "updating_in_place",
+                     "Updating videos in-place",
+                     count=len(successful_replacements), event_id=event_id)
             
             async def update_video_in_place(replacement: dict):
                 old_video = replacement["old_s3_video"]
@@ -557,10 +556,10 @@ class UploadWorkflow:
                         ),
                     )
                 except Exception as e:
-                    workflow.logger.warning(
-                        f"⚠️ [UPLOAD] Failed to update video in-place | "
-                        f"url={old_video.get('s3_url', '').split('/')[-1]} | error={e} | event={event_id}"
-                    )
+                    log.warning(workflow.logger, MODULE, "update_in_place_failed",
+                                "Failed to update video in-place",
+                                url=old_video.get('s3_url', '').split('/')[-1],
+                                error=str(e), event_id=event_id)
             
             update_tasks = [update_video_in_place(r) for r in successful_replacements]
             await asyncio.gather(*update_tasks)
@@ -575,11 +574,12 @@ class UploadWorkflow:
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(maximum_attempts=2),
             )
-            workflow.logger.info(f"✅ [UPLOAD] Recalculated video ranks | event={event_id}")
+            log.info(workflow.logger, MODULE, "ranks_recalculated",
+                     "Recalculated video ranks", event_id=event_id)
         except Exception as e:
-            workflow.logger.warning(
-                f"⚠️ [UPLOAD] Failed to recalculate ranks (non-critical) | error={e} | event={event_id}"
-            )
+            log.warning(workflow.logger, MODULE, "recalculate_ranks_failed",
+                        "Failed to recalculate ranks (non-critical)",
+                        error=str(e), event_id=event_id)
         
         
         # =========================================================================
@@ -593,11 +593,12 @@ class UploadWorkflow:
                     start_to_close_timeout=timedelta(seconds=15),
                     retry_policy=RetryPolicy(maximum_attempts=1),
                 )
-                workflow.logger.info(f"📡 [UPLOAD] Frontend notified | event={event_id}")
+                log.info(workflow.logger, MODULE, "frontend_notified",
+                         "Frontend notified", event_id=event_id)
             except Exception as e:
-                workflow.logger.warning(
-                    f"⚠️ [UPLOAD] Frontend notification failed (non-critical) | error={e} | event={event_id}"
-                )
+                log.warning(workflow.logger, MODULE, "frontend_notify_failed",
+                            "Frontend notification failed (non-critical)",
+                            error=str(e), event_id=event_id)
         
         # =========================================================================
         # Step 10: Cleanup individual uploaded files (not entire temp dir)
@@ -605,9 +606,9 @@ class UploadWorkflow:
         # =========================================================================
         await self._cleanup_uploaded_files(all_uploads, s3_urls, event_id)
         
-        workflow.logger.info(
-            f"✅ [UPLOAD] Batch uploaded={len(video_objects)} | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "batch_uploaded",
+                 "Batch uploaded",
+                 uploaded=len(video_objects), event_id=event_id)
         
         return {
             "fixture_id": fixture_id,
@@ -642,11 +643,13 @@ class UploadWorkflow:
                     start_to_close_timeout=timedelta(seconds=30),
                     retry_policy=RetryPolicy(maximum_attempts=2),
                 )
-                workflow.logger.info(f"🧹 [UPLOAD] Cleaned up {len(files_to_delete)} uploaded files | event={event_id}")
+                log.info(workflow.logger, MODULE, "files_cleaned_up",
+                         "Cleaned up uploaded files",
+                         count=len(files_to_delete), event_id=event_id)
             except Exception as e:
-                workflow.logger.warning(
-                    f"⚠️ [UPLOAD] Failed to cleanup files (non-critical) | error={e} | event={event_id}"
-                )
+                log.warning(workflow.logger, MODULE, "cleanup_files_failed",
+                            "Failed to cleanup files (non-critical)",
+                            error=str(e), event_id=event_id)
 
     async def _check_and_mark_download_complete(self, fixture_id: int, event_id: str):
         """
@@ -667,15 +670,15 @@ class UploadWorkflow:
                 ),
             )
             if result.get("marked_complete"):
-                workflow.logger.info(
-                    f"🏁 [UPLOAD] All 10 download workflows registered, marked _download_complete=true | event={event_id}"
-                )
+                log.info(workflow.logger, MODULE, "download_complete_marked",
+                         "All 10 download workflows registered, marked _download_complete=true",
+                         event_id=event_id)
             else:
                 count = result.get("download_count", "?")
-                workflow.logger.info(
-                    f"📊 [UPLOAD] Download workflow count checked | count={count}/10 | event={event_id}"
-                )
+                log.info(workflow.logger, MODULE, "download_count_checked",
+                         "Download workflow count checked",
+                         count=count, event_id=event_id)
         except Exception as e:
-            workflow.logger.error(
-                f"❌ [UPLOAD] check_and_mark_download_complete FAILED | error={e} | event={event_id}"
-            )
+            log.error(workflow.logger, MODULE, "check_download_complete_failed",
+                      "check_and_mark_download_complete FAILED",
+                      error=str(e), event_id=event_id)

@@ -56,6 +56,9 @@ with workflow.unsafe.imports_passed_through():
     from src.activities import rag as rag_activities
     from src.workflows.download_workflow import DownloadWorkflow
     from src.utils.event_enhancement import extract_player_search_names
+    from src.utils.footy_logging import log
+
+MODULE = "twitter_workflow"
 
 
 @dataclass
@@ -115,11 +118,9 @@ class TwitterWorkflow:
         player_names = extract_player_search_names(input.player_name) if input.player_name else ["Unknown"]
         player_search = player_names[0]  # Primary name for logging/IDs
         
-        workflow.logger.info(
-            f"🐦 [TWITTER] STARTED | event={input.event_id} | "
-            f"team_id={input.team_id} | team_name='{input.team_name}' | "
-            f"player_names={player_names}"
-        )
+        log.info(workflow.logger, MODULE, "started", "TwitterWorkflow started",
+                 event_id=input.event_id, team_id=input.team_id,
+                 team_name=input.team_name, player_names=player_names)
         
         # =========================================================================
         # Step 0: Set _monitor_complete = true (proves we're running!)
@@ -127,7 +128,8 @@ class TwitterWorkflow:
         # If we crash after this, MonitorWorkflow won't re-spawn us (which is correct).
         # If we never run this, MonitorWorkflow will retry spawning us.
         # =========================================================================
-        workflow.logger.info(f"🔒 [TWITTER] Setting _monitor_complete=true | event={input.event_id}")
+        log.info(workflow.logger, MODULE, "set_monitor_complete_start",
+                 "Setting _monitor_complete=true", event_id=input.event_id)
         try:
             await workflow.execute_activity(
                 twitter_activities.set_monitor_complete,
@@ -139,18 +141,19 @@ class TwitterWorkflow:
                     backoff_coefficient=2.0,
                 ),
             )
-            workflow.logger.info(f"✅ [TWITTER] _monitor_complete=true SET | event={input.event_id}")
+            log.info(workflow.logger, MODULE, "set_monitor_complete_success",
+                     "_monitor_complete=true SET", event_id=input.event_id)
         except Exception as e:
-            workflow.logger.error(
-                f"❌ [TWITTER] FAILED to set _monitor_complete | event={input.event_id} | error={e} | "
-                f"Continuing anyway - monitor may retry spawn"
-            )
+            log.error(workflow.logger, MODULE, "set_monitor_complete_failed",
+                      "FAILED to set _monitor_complete - Continuing anyway",
+                      event_id=input.event_id, error=str(e))
         
         # =========================================================================
         # Step 1: Resolve team aliases (cache lookup or full RAG pipeline)
         # This is a blocking call - we need aliases before searching
         # =========================================================================
-        workflow.logger.info(f"🔍 [TWITTER] Resolving aliases for team_id={input.team_id}")
+        log.info(workflow.logger, MODULE, "resolving_aliases",
+                 "Resolving team aliases", team_id=input.team_id)
         
         team_aliases = None
         cache_hit = False
@@ -169,13 +172,16 @@ class TwitterWorkflow:
             )
             if team_aliases:
                 cache_hit = True
-                workflow.logger.info(f"📦 [TWITTER] Alias cache HIT | aliases={team_aliases}")
+                log.info(workflow.logger, MODULE, "alias_cache_hit",
+                         "Alias cache HIT", aliases=team_aliases)
         except Exception as e:
-            workflow.logger.warning(f"⚠️ [TWITTER] Cache lookup failed | error={e}")
+            log.warning(workflow.logger, MODULE, "alias_cache_lookup_failed",
+                        "Cache lookup failed", error=str(e))
         
         # Cache miss - do full RAG lookup
         if not team_aliases:
-            workflow.logger.info(f"🔄 [TWITTER] Cache MISS | Running full RAG pipeline...")
+            log.info(workflow.logger, MODULE, "alias_cache_miss",
+                     "Cache MISS - Running full RAG pipeline")
             try:
                 team_aliases = await workflow.execute_activity(
                     rag_activities.get_team_aliases,
@@ -187,12 +193,15 @@ class TwitterWorkflow:
                         backoff_coefficient=2.0,
                     ),
                 )
-                workflow.logger.info(f"✅ [TWITTER] RAG SUCCESS | aliases={team_aliases}")
+                log.info(workflow.logger, MODULE, "rag_success",
+                         "RAG SUCCESS", aliases=team_aliases)
             except Exception as e:
-                workflow.logger.error(f"❌ [TWITTER] RAG FAILED | error={e}")
+                log.error(workflow.logger, MODULE, "rag_failed",
+                          "RAG FAILED", error=str(e))
                 # Fallback to just team name
                 team_aliases = [input.team_name]
-                workflow.logger.warning(f"⚠️ [TWITTER] Using FALLBACK | aliases={team_aliases}")
+                log.warning(workflow.logger, MODULE, "alias_fallback",
+                            "Using FALLBACK", aliases=team_aliases)
         
         # Save aliases to event for debugging
         try:
@@ -202,15 +211,17 @@ class TwitterWorkflow:
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(maximum_attempts=2),
             )
-            workflow.logger.info(f"💾 [TWITTER] Aliases saved | aliases={team_aliases}")
+            log.info(workflow.logger, MODULE, "aliases_saved",
+                     "Aliases saved", aliases=team_aliases)
         except Exception as e:
-            workflow.logger.warning(f"⚠️ [TWITTER] Failed to save aliases | error={e}")
+            log.warning(workflow.logger, MODULE, "aliases_save_failed",
+                        "Failed to save aliases", error=str(e))
         
-        workflow.logger.info(
-            f"🐦 [TWITTER] Starting search loop | event={input.event_id} | "
-            f"player_names={player_names} | aliases={team_aliases} | cache_hit={cache_hit} | "
-            f"max_attempts={MAX_ATTEMPTS} | required_downloads={REQUIRED_DOWNLOADS}"
-        )
+        log.info(workflow.logger, MODULE, "search_loop_start",
+                 "Starting search loop", event_id=input.event_id,
+                 player_names=player_names, aliases=team_aliases,
+                 cache_hit=cache_hit, max_attempts=MAX_ATTEMPTS,
+                 required_downloads=REQUIRED_DOWNLOADS)
         
         # Track cumulative stats across all attempts
         total_videos_found = 0
@@ -225,9 +236,9 @@ class TwitterWorkflow:
             # =================================================================
             # Check download workflow count - exit if we have 10
             # =================================================================
-            workflow.logger.info(
-                f"📊 [TWITTER] Attempt {attempt}/{MAX_ATTEMPTS} | Checking download count | event={input.event_id}"
-            )
+            log.info(workflow.logger, MODULE, "checking_download_count",
+                     "Checking download count", attempt=attempt,
+                     max_attempts=MAX_ATTEMPTS, event_id=input.event_id)
             
             try:
                 count_result = await workflow.execute_activity(
@@ -241,29 +252,27 @@ class TwitterWorkflow:
                     ),
                 )
                 download_count = count_result.get("count", 0)
-                workflow.logger.info(
-                    f"📊 [TWITTER] Download count: {download_count}/{REQUIRED_DOWNLOADS} | event={input.event_id}"
-                )
+                log.info(workflow.logger, MODULE, "download_count",
+                         "Got download count", count=download_count,
+                         required=REQUIRED_DOWNLOADS, event_id=input.event_id)
                 
                 if download_count >= REQUIRED_DOWNLOADS:
-                    workflow.logger.info(
-                        f"✅ [TWITTER] Download count reached {REQUIRED_DOWNLOADS} | "
-                        f"Exiting loop | event={input.event_id}"
-                    )
+                    log.info(workflow.logger, MODULE, "download_count_reached",
+                             "Download count reached - Exiting loop",
+                             count=download_count, event_id=input.event_id)
                     break
             except Exception as e:
-                workflow.logger.warning(
-                    f"⚠️ [TWITTER] get_download_workflow_count FAILED | event={input.event_id} | "
-                    f"error={e} | Continuing with search"
-                )
+                log.warning(workflow.logger, MODULE, "get_download_count_failed",
+                            "get_download_workflow_count FAILED - Continuing",
+                            event_id=input.event_id, error=str(e))
                 download_count = 0
             
             # =================================================================
             # Check if event still exists (graceful termination for VAR/deleted)
             # =================================================================
-            workflow.logger.info(
-                f"🔍 [TWITTER] Attempt {attempt}/{MAX_ATTEMPTS} | Checking event exists | event={input.event_id}"
-            )
+            log.info(workflow.logger, MODULE, "checking_event_exists",
+                     "Checking if event exists", attempt=attempt,
+                     max_attempts=MAX_ATTEMPTS, event_id=input.event_id)
             
             try:
                 event_check = await workflow.execute_activity(
@@ -276,21 +285,19 @@ class TwitterWorkflow:
                         backoff_coefficient=2.0,
                     ),
                 )
-                workflow.logger.info(
-                    f"✅ [TWITTER] Event check complete | event={input.event_id} | exists={event_check.get('exists')}"
-                )
+                log.info(workflow.logger, MODULE, "event_check_complete",
+                         "Event check complete", event_id=input.event_id,
+                         exists=event_check.get('exists'))
             except Exception as e:
-                workflow.logger.warning(
-                    f"⚠️ [TWITTER] check_event_exists FAILED | event={input.event_id} | "
-                    f"error={e} | Assuming event exists, continuing"
-                )
+                log.warning(workflow.logger, MODULE, "check_event_exists_failed",
+                            "check_event_exists FAILED - Assuming event exists",
+                            event_id=input.event_id, error=str(e))
                 event_check = {"exists": True}
             
             if not event_check.get("exists", False):
-                workflow.logger.warning(
-                    f"⚠️ [TWITTER] Event NO LONGER EXISTS | event={input.event_id} | "
-                    f"Terminating workflow early (VAR reversal or deletion)"
-                )
+                log.warning(workflow.logger, MODULE, "event_deleted",
+                            "Event NO LONGER EXISTS - Terminating early (VAR reversal or deletion)",
+                            event_id=input.event_id)
                 return {
                     "fixture_id": input.fixture_id,
                     "event_id": input.event_id,
@@ -303,17 +310,16 @@ class TwitterWorkflow:
             
             # Record attempt start time for "START to START" 1-minute spacing
             attempt_start = workflow.now()
-            workflow.logger.info(
-                f"🐦 [TWITTER] Attempt {attempt}/{MAX_ATTEMPTS} STARTING | event={input.event_id} | "
-                f"player_names={player_names} | aliases={team_aliases} | download_count={download_count}"
-            )
+            log.info(workflow.logger, MODULE, "attempt_start",
+                     "Attempt STARTING", attempt=attempt, max_attempts=MAX_ATTEMPTS,
+                     event_id=input.event_id, player_names=player_names,
+                     aliases=team_aliases, download_count=download_count)
             
             # =================================================================
             # Get existing video URLs (for deduplication)
             # =================================================================
-            workflow.logger.info(
-                f"📋 [TWITTER] Fetching existing video URLs | event={input.event_id}"
-            )
+            log.info(workflow.logger, MODULE, "fetching_existing_urls",
+                     "Fetching existing video URLs", event_id=input.event_id)
             
             try:
                 search_data = await workflow.execute_activity(
@@ -324,14 +330,14 @@ class TwitterWorkflow:
                 )
                 existing_urls = search_data.get("existing_video_urls", [])
                 match_date = search_data.get("match_date", "")
-                workflow.logger.info(
-                    f"✅ [TWITTER] Got search data | event={input.event_id} | "
-                    f"existing_urls={len(existing_urls)} | match_date={match_date[:10] if match_date else 'N/A'}"
-                )
+                log.info(workflow.logger, MODULE, "got_search_data",
+                         "Got search data", event_id=input.event_id,
+                         existing_urls_count=len(existing_urls),
+                         match_date=match_date[:10] if match_date else "N/A")
             except Exception as e:
-                workflow.logger.error(
-                    f"❌ [TWITTER] get_twitter_search_data FAILED | event={input.event_id} | error={e}"
-                )
+                log.error(workflow.logger, MODULE, "get_search_data_failed",
+                          "get_twitter_search_data FAILED",
+                          event_id=input.event_id, error=str(e))
                 existing_urls = []
                 match_date = ""
             
@@ -357,9 +363,9 @@ class TwitterWorkflow:
             
             search_query = f"{player_part} {team_part}"
             
-            workflow.logger.info(
-                f"🔍 [TWITTER] Search | query='{search_query}' | excluding={len(existing_urls)} URLs"
-            )
+            log.info(workflow.logger, MODULE, "search_query",
+                     "Search query built", query=search_query,
+                     excluding_count=len(existing_urls))
             
             # Execute single search with combined query
             # Returns ALL videos found (limited to 5 longest for download later)
@@ -376,20 +382,19 @@ class TwitterWorkflow:
                     ),
                 )
                 all_videos = search_result.get("videos", [])
-                workflow.logger.info(
-                    f"✅ [TWITTER] Search complete | query='{search_query}' | found={len(all_videos)} videos"
-                )
+                log.info(workflow.logger, MODULE, "search_complete",
+                         "Search complete", query=search_query,
+                         found=len(all_videos))
             except Exception as e:
-                workflow.logger.warning(
-                    f"⚠️ [TWITTER] Search FAILED | query='{search_query}' | error={e}"
-                )
+                log.warning(workflow.logger, MODULE, "search_failed",
+                            "Search FAILED", query=search_query, error=str(e))
             
             video_count = len(all_videos)
             total_videos_found += video_count
-            workflow.logger.info(
-                f"📹 [TWITTER] Attempt {attempt} search complete | event={input.event_id} | "
-                f"unique_videos={video_count} | total_found_so_far={total_videos_found}"
-            )
+            log.info(workflow.logger, MODULE, "attempt_search_complete",
+                     "Attempt search complete", attempt=attempt,
+                     event_id=input.event_id, unique_videos=video_count,
+                     total_found_so_far=total_videos_found)
             
             # =================================================================
             # ALWAYS Execute DownloadWorkflow - even with 0 videos
@@ -410,25 +415,24 @@ class TwitterWorkflow:
                 
                 # Log what we're selecting
                 if len(all_videos) > MAX_VIDEOS_TO_DOWNLOAD:
-                    workflow.logger.info(
-                        f"📊 [TWITTER] Selecting top {MAX_VIDEOS_TO_DOWNLOAD} longest videos from {len(all_videos)} found | "
-                        f"durations: {[v.get('duration_seconds', 0) for v in videos_to_download]}"
-                    )
+                    log.info(workflow.logger, MODULE, "selecting_top_videos",
+                             "Selecting top longest videos",
+                             selected=MAX_VIDEOS_TO_DOWNLOAD, total=len(all_videos),
+                             durations=[v.get('duration_seconds', 0) for v in videos_to_download])
             else:
                 videos_to_download = []  # Empty list - DownloadWorkflow will still register itself
-                workflow.logger.info(
-                    f"📭 [TWITTER] No videos found | Starting DownloadWorkflow anyway for tracking | "
-                    f"event={input.event_id}"
-                )
+                log.info(workflow.logger, MODULE, "no_videos_found",
+                         "No videos found - Starting DownloadWorkflow anyway for tracking",
+                         event_id=input.event_id)
             
             # =================================================================
             # Save ONLY the videos we're actually downloading to _discovered_videos
             # This ensures we don't permanently skip videos we never tried
             # =================================================================
             if videos_to_download:
-                workflow.logger.info(
-                    f"💾 [TWITTER] Saving {len(videos_to_download)} URLs to _discovered_videos | event={input.event_id}"
-                )
+                log.info(workflow.logger, MODULE, "saving_discovered_videos",
+                         "Saving URLs to _discovered_videos",
+                         count=len(videos_to_download), event_id=input.event_id)
                 try:
                     await workflow.execute_activity(
                         twitter_activities.save_discovered_videos,
@@ -440,22 +444,21 @@ class TwitterWorkflow:
                             backoff_coefficient=2.0,
                         ),
                     )
-                    workflow.logger.info(
-                        f"✅ [TWITTER] Saved URLs | event={input.event_id} | count={len(videos_to_download)}"
-                    )
+                    log.info(workflow.logger, MODULE, "urls_saved",
+                             "Saved URLs", event_id=input.event_id,
+                             count=len(videos_to_download))
                 except Exception as e:
-                    workflow.logger.error(
-                        f"❌ [TWITTER] save_discovered_videos FAILED | event={input.event_id} | error={e}"
-                    )
+                    log.error(workflow.logger, MODULE, "save_discovered_videos_failed",
+                              "save_discovered_videos FAILED",
+                              event_id=input.event_id, error=str(e))
             
             team_clean = team_aliases[0].replace(" ", "_").replace(".", "_").replace("-", "_") if team_aliases else "Unknown"
             # Don't include video count in workflow ID - it causes nondeterminism when code changes
             download_workflow_id = f"download{attempt}-{team_clean}-{player_search}-{input.event_id}"
             
-            workflow.logger.info(
-                f"⬇️ [TWITTER] Starting DownloadWorkflow (FIRE-AND-FORGET) | "
-                f"download_id={download_workflow_id} | videos={len(videos_to_download)}"
-            )
+            log.info(workflow.logger, MODULE, "starting_download_workflow",
+                     "Starting DownloadWorkflow (FIRE-AND-FORGET)",
+                     download_id=download_workflow_id, videos=len(videos_to_download))
             
             try:
                 # START (fire-and-forget) - not EXECUTE (wait)
@@ -472,28 +475,26 @@ class TwitterWorkflow:
                     task_queue="found-footy",  # Explicit queue - don't inherit from parent
                 )
                 
-                workflow.logger.info(
-                    f"🚀 [TWITTER] Download STARTED (fire-and-forget) | download_id={download_workflow_id}"
-                )
+                log.info(workflow.logger, MODULE, "download_started",
+                         "Download STARTED (fire-and-forget)",
+                         download_id=download_workflow_id)
                 
             except Exception as e:
                 # Download failed to START - it didn't register, so count stays low
                 # The while loop will naturally retry on the next iteration
-                workflow.logger.error(
-                    f"❌ [TWITTER] Failed to START DownloadWorkflow | download_id={download_workflow_id} | "
-                    f"error={e} | Will retry on next iteration (count stays low)"
-                )
+                log.error(workflow.logger, MODULE, "download_start_failed",
+                          "Failed to START DownloadWorkflow - Will retry on next iteration",
+                          download_id=download_workflow_id, error=str(e))
             
             # =================================================================
             # Wait for next attempt (1 minute from START of this attempt)
             # =================================================================
             elapsed = (workflow.now() - attempt_start).total_seconds()
             wait_seconds = max(60 - elapsed, 10)  # 1 min minus elapsed, min 10s
-            workflow.logger.info(
-                f"⏳ [TWITTER] Attempt {attempt} took {elapsed:.0f}s | "
-                f"Waiting {wait_seconds:.0f}s before next iteration | "
-                f"event={input.event_id}"
-            )
+            log.info(workflow.logger, MODULE, "waiting_for_next_attempt",
+                     "Waiting before next iteration",
+                     attempt=attempt, elapsed_s=int(elapsed),
+                     wait_s=int(wait_seconds), event_id=input.event_id)
             await workflow.sleep(timedelta(seconds=wait_seconds))
         
         # =================================================================
@@ -503,10 +504,10 @@ class TwitterWorkflow:
         final_download_count = download_count if 'download_count' in dir() else 0
         exit_reason = "download_count_reached" if final_download_count >= REQUIRED_DOWNLOADS else "max_attempts_reached"
         
-        workflow.logger.info(
-            f"✅ [TWITTER] Loop COMPLETE | event={input.event_id} | "
-            f"reason={exit_reason} | download_count={final_download_count} | attempts={attempt}"
-        )
+        log.info(workflow.logger, MODULE, "loop_complete",
+                 "Search loop COMPLETE", event_id=input.event_id,
+                 reason=exit_reason, download_count=final_download_count,
+                 attempts=attempt)
         
         # NOTE: Temp directory cleanup happens at FIXTURE level when fixture moves to completed
         # This avoids race conditions with uploads that may still be processing
@@ -518,17 +519,17 @@ class TwitterWorkflow:
                 start_to_close_timeout=timedelta(seconds=15),
                 retry_policy=RetryPolicy(maximum_attempts=2),
             )
-            workflow.logger.info(f"📡 [TWITTER] Frontend notified | event={input.event_id}")
+            log.info(workflow.logger, MODULE, "frontend_notified",
+                     "Frontend notified", event_id=input.event_id)
         except Exception as e:
-            workflow.logger.warning(
-                f"⚠️ [TWITTER] Frontend notification FAILED | event={input.event_id} | error={e}"
-            )
+            log.warning(workflow.logger, MODULE, "frontend_notify_failed",
+                        "Frontend notification FAILED",
+                        event_id=input.event_id, error=str(e))
         
-        workflow.logger.info(
-            f"🎉 [TWITTER] WORKFLOW COMPLETE | event={input.event_id} | "
-            f"total_found={total_videos_found} | download_count={final_download_count} | "
-            f"attempts={attempt} | reason={exit_reason}"
-        )
+        log.info(workflow.logger, MODULE, "workflow_complete",
+                 "TwitterWorkflow COMPLETE", event_id=input.event_id,
+                 total_found=total_videos_found, download_count=final_download_count,
+                 attempts=attempt, exit_reason=exit_reason)
         
         return {
             "fixture_id": input.fixture_id,

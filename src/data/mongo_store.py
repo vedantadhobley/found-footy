@@ -22,6 +22,24 @@ from src.data.models import (
     create_activation_fields,
 )
 from src.utils.config import MONGODB_URI
+from src.utils.footy_logging import log, get_fallback_logger
+
+MODULE = "mongo_store"
+
+
+def _log_info(action: str, msg: str, **kwargs):
+    """Log info using fallback logger."""
+    log.info(get_fallback_logger(), MODULE, action, msg, **kwargs)
+
+
+def _log_warning(action: str, msg: str, **kwargs):
+    """Log warning using fallback logger."""
+    log.warning(get_fallback_logger(), MODULE, action, msg, **kwargs)
+
+
+def _log_error(action: str, msg: str, **kwargs):
+    """Log error using fallback logger."""
+    log.error(get_fallback_logger(), MODULE, action, msg, error=kwargs.get('error', ''), **{k: v for k, v in kwargs.items() if k != 'error'})
 
 
 class FootyMongoStore:
@@ -87,7 +105,7 @@ class FootyMongoStore:
             
             FootyMongoStore._indexes_created = True
         except Exception as e:
-            print(f"⚠️ MongoDB index error: {e}")
+            _log_warning("index_error", "MongoDB index error", error=str(e))
 
     # === Helper Methods ===
     
@@ -173,7 +191,7 @@ class FootyMongoStore:
                 return len(result.inserted_ids)
             return 0
         except Exception as e:
-            print(f"❌ Error inserting to {collection_name}: {e}")
+            _log_error("insert_error", "Error inserting to collection", collection=collection_name, error=str(e))
             return 0
     
     def fixtures_insert_staging(self, raw_fixtures: List[dict]) -> int:
@@ -185,7 +203,7 @@ class FootyMongoStore:
         try:
             return list(self.fixtures_staging.find({}))
         except Exception as e:
-            print(f"❌ Error getting staging fixtures: {e}")
+            _log_error("staging_fixtures_error", "Error getting staging fixtures", error=str(e))
             return []
 
     def get_staging_fixture_ids(self) -> List[int]:
@@ -194,7 +212,7 @@ class FootyMongoStore:
             fixtures = list(self.fixtures_staging.find({}, {"_id": 1}))
             return [f["_id"] for f in fixtures]
         except Exception as e:
-            print(f"❌ Error getting staging fixture IDs: {e}")
+            _log_error("staging_ids_error", "Error getting staging fixture IDs", error=str(e))
             return []
 
     def update_staging_fixture(self, fixture_id: int, api_data: dict) -> bool:
@@ -213,7 +231,7 @@ class FootyMongoStore:
             )
             return result.modified_count > 0 or result.matched_count > 0
         except Exception as e:
-            print(f"❌ Error updating staging fixture {fixture_id}: {e}")
+            _log_error("update_staging_error", "Error updating staging fixture", fixture_id=fixture_id, error=str(e))
             return False
 
     def activate_fixture_with_data(self, fixture_id: int, api_data: dict) -> bool:
@@ -229,7 +247,7 @@ class FootyMongoStore:
             # Remove from staging first
             staging_result = self.fixtures_staging.delete_one({"_id": fixture_id})
             if staging_result.deleted_count == 0:
-                print(f"⚠️ Fixture {fixture_id} not found in staging")
+                _log_warning("fixture_not_in_staging", "Fixture not found in staging", fixture_id=fixture_id)
                 # Continue anyway - might be a race condition
             
             # Build active document from fresh API data
@@ -247,7 +265,7 @@ class FootyMongoStore:
             )
             return True
         except Exception as e:
-            print(f"❌ Error activating fixture with data {fixture_id}: {e}")
+            _log_error("activate_fixture_error", "Error activating fixture with data", fixture_id=fixture_id, error=str(e))
             return False
 
     # === Live Operations (Temporary Raw Data Storage) ===
@@ -299,7 +317,7 @@ class FootyMongoStore:
             )
             return True
         except Exception as e:
-            print(f"❌ Error storing live fixture {fixture_id}: {e}")
+            _log_error("store_live_error", "Error storing live fixture", fixture_id=fixture_id, error=str(e))
             return False
     
     def get_live_fixture(self, fixture_id: int) -> dict | None:
@@ -307,7 +325,7 @@ class FootyMongoStore:
         try:
             return self.fixtures_live.find_one({"_id": fixture_id})
         except Exception as e:
-            print(f"❌ Error getting live fixture {fixture_id}: {e}")
+            _log_error("get_live_error", "Error getting live fixture", fixture_id=fixture_id, error=str(e))
             return None
 
     # === Active Operations ===
@@ -317,7 +335,7 @@ class FootyMongoStore:
         try:
             return self.fixtures_active.find_one({"_id": fixture_id})
         except Exception as e:
-            print(f"❌ Error getting fixture {fixture_id} from active: {e}")
+            _log_error("get_active_error", "Error getting fixture from active", fixture_id=fixture_id, error=str(e))
             return None
     
     def get_active_fixtures(self) -> List[dict]:
@@ -325,7 +343,7 @@ class FootyMongoStore:
         try:
             return list(self.fixtures_active.find({}))
         except Exception as e:
-            print(f"❌ Error getting active fixtures: {e}")
+            _log_error("get_active_fixtures_error", "Error getting active fixtures", error=str(e))
             return []
     
     def get_active_fixture_ids(self) -> List[int]:
@@ -334,7 +352,7 @@ class FootyMongoStore:
             fixtures = list(self.fixtures_active.find({}, {"_id": 1}))
             return [f["_id"] for f in fixtures]
         except Exception as e:
-            print(f"❌ Error getting active fixture IDs: {e}")
+            _log_error("get_active_ids_error", "Error getting active fixture IDs", error=str(e))
             return []
 
     # === Comparison Logic (3 Cases for Debounce Trigger) ===
@@ -403,9 +421,8 @@ class FootyMongoStore:
                 "total_active_events": len(active_events)
             }
         except Exception as e:
-            print(f"❌ Error comparing live vs active for fixture {fixture_id}: {e}")
             import traceback
-            traceback.print_exc()
+            _log_error("compare_error", "Error comparing live vs active", fixture_id=fixture_id, error=str(e), traceback=traceback.format_exc())
             return {"needs_debounce": False, "reason": "error", "error": str(e)}
 
     # === Event Enhancement Operations (In-Place Updates to fixtures_active) ===
@@ -437,7 +454,7 @@ class FootyMongoStore:
             )
             return result.modified_count > 0
         except Exception as e:
-            print(f"❌ Error adding event to active fixture {fixture_id}: {e}")
+            _log_error("add_event_error", "Error adding event to active fixture", fixture_id=fixture_id, error=str(e))
             return False
     
     def update_event_stable_count(self, fixture_id: int, event_id: str, 
@@ -478,7 +495,7 @@ class FootyMongoStore:
             )
             return result.modified_count > 0
         except Exception as e:
-            print(f"❌ Error updating event {event_id}: {e}")
+            _log_error("update_event_error", "Error updating event", event_id=event_id, error=str(e))
             return False
     
     def mark_event_monitor_complete(self, fixture_id: int, event_id: str, event_first_seen: datetime = None) -> bool:
@@ -512,7 +529,7 @@ class FootyMongoStore:
             )
             return result.modified_count > 0
         except Exception as e:
-            print(f"❌ Error marking event {event_id} monitor complete: {e}")
+            _log_error("mark_monitor_complete_error", "Error marking event monitor complete", event_id=event_id, error=str(e))
             return False
 
     # ==========================================================================
@@ -539,7 +556,7 @@ class FootyMongoStore:
             )
             return result.modified_count > 0
         except Exception as e:
-            print(f"❌ Error adding monitor workflow {workflow_id} to {event_id}: {e}")
+            _log_error("add_monitor_workflow_error", "Error adding monitor workflow", workflow_id=workflow_id, event_id=event_id, error=str(e))
             return False
 
     def add_download_workflow(self, fixture_id: int, event_id: str, workflow_id: str) -> bool:
@@ -562,7 +579,7 @@ class FootyMongoStore:
             )
             return result.modified_count > 0
         except Exception as e:
-            print(f"❌ Error adding download workflow {workflow_id} to {event_id}: {e}")
+            _log_error("add_download_workflow_error", "Error adding download workflow", workflow_id=workflow_id, event_id=event_id, error=str(e))
             return False
 
     def get_monitor_workflow_count(self, fixture_id: int, event_id: str) -> int:
@@ -585,7 +602,7 @@ class FootyMongoStore:
                 return len(fixture["events"][0].get(EventFields.MONITOR_WORKFLOWS, []))
             return 0
         except Exception as e:
-            print(f"❌ Error getting monitor workflow count for {event_id}: {e}")
+            _log_error("get_monitor_count_error", "Error getting monitor workflow count", event_id=event_id, error=str(e))
             return 0
 
     def get_download_workflow_count(self, fixture_id: int, event_id: str) -> int:
@@ -608,7 +625,7 @@ class FootyMongoStore:
                 return len(fixture["events"][0].get(EventFields.DOWNLOAD_WORKFLOWS, []))
             return 0
         except Exception as e:
-            print(f"❌ Error getting download workflow count for {event_id}: {e}")
+            _log_error("get_download_count_error", "Error getting download workflow count", event_id=event_id, error=str(e))
             return 0
 
     # ==========================================================================
@@ -637,7 +654,7 @@ class FootyMongoStore:
             )
             return result.modified_count > 0
         except Exception as e:
-            print(f"❌ Error clearing drop workflows for {event_id}: {e}")
+            _log_error("clear_drop_workflows_error", "Error clearing drop workflows", event_id=event_id, error=str(e))
             return False
 
     def add_drop_workflow_and_check(
@@ -682,7 +699,7 @@ class FootyMongoStore:
             
             return (count, should_delete)
         except Exception as e:
-            print(f"❌ Error adding drop workflow {workflow_id} to {event_id}: {e}")
+            _log_error("add_drop_workflow_error", "Error adding drop workflow", workflow_id=workflow_id, event_id=event_id, error=str(e))
             return (0, False)
 
     def get_drop_workflow_count(self, fixture_id: int, event_id: str) -> int:
@@ -705,7 +722,7 @@ class FootyMongoStore:
                 return len(fixture["events"][0].get(EventFields.DROP_WORKFLOWS, []))
             return 0
         except Exception as e:
-            print(f"❌ Error getting drop workflow count for {event_id}: {e}")
+            _log_error("get_drop_count_error", "Error getting drop workflow count", event_id=event_id, error=str(e))
             return 0
 
     def get_monitor_complete(self, fixture_id: int, event_id: str) -> bool:
@@ -728,7 +745,7 @@ class FootyMongoStore:
                 return fixture["events"][0].get(EventFields.MONITOR_COMPLETE, False)
             return False
         except Exception as e:
-            print(f"❌ Error getting monitor complete status for {event_id}: {e}")
+            _log_error("get_monitor_complete_error", "Error getting monitor complete status", event_id=event_id, error=str(e))
             return False
 
     def mark_monitor_complete(self, fixture_id: int, event_id: str) -> bool:
@@ -749,10 +766,10 @@ class FootyMongoStore:
                 {"$set": {f"events.$.{EventFields.MONITOR_COMPLETE}": True}}
             )
             if result.modified_count > 0:
-                print(f"✅ Set _monitor_complete=true for {event_id}")
+                _log_info("monitor_complete_set", "Set _monitor_complete=true", event_id=event_id)
             return result.modified_count > 0
         except Exception as e:
-            print(f"❌ Error setting monitor complete for {event_id}: {e}")
+            _log_error("set_monitor_complete_error", "Error setting monitor complete", event_id=event_id, error=str(e))
             return False
 
     def mark_download_complete(self, fixture_id: int, event_id: str) -> bool:
@@ -777,10 +794,10 @@ class FootyMongoStore:
                 }}
             )
             if result.modified_count > 0:
-                print(f"✅ Set _download_complete=true for {event_id}")
+                _log_info("download_complete_set", "Set _download_complete=true", event_id=event_id)
             return result.modified_count > 0
         except Exception as e:
-            print(f"❌ Error setting download complete for {event_id}: {e}")
+            _log_error("set_download_complete_error", "Error setting download complete", event_id=event_id, error=str(e))
             return False
 
     def check_and_mark_download_complete(self, fixture_id: int, event_id: str, required_count: int = 10) -> dict:
@@ -813,11 +830,14 @@ class FootyMongoStore:
             if count >= required_count and not was_already_complete:
                 self.mark_download_complete(fixture_id, event_id)
                 marked_complete = True
-                print(f"✅ {event_id}: {count}/{required_count} download workflows - marking download complete")
+                _log_info("download_workflows_complete", "Download workflows threshold reached - marking complete", 
+                         event_id=event_id, count=count, required=required_count)
             elif count >= required_count:
-                print(f"ℹ️ {event_id}: {count}/{required_count} download workflows - already complete")
+                _log_info("download_already_complete", "Download workflows threshold reached - already complete",
+                         event_id=event_id, count=count, required=required_count)
             else:
-                print(f"📊 {event_id}: {count}/{required_count} download workflows - not yet complete")
+                _log_info("download_not_complete", "Download workflows not yet complete",
+                         event_id=event_id, count=count, required=required_count)
             
             return {
                 "count": count,
@@ -825,7 +845,7 @@ class FootyMongoStore:
                 "marked_complete": marked_complete
             }
         except Exception as e:
-            print(f"❌ Error checking/marking download complete for {event_id}: {e}")
+            _log_error("check_download_complete_error", "Error checking/marking download complete", event_id=event_id, error=str(e))
             return {"count": 0, "was_already_complete": False, "marked_complete": False}
     
     def mark_event_removed(self, fixture_id: int, event_id: str) -> bool:
@@ -862,18 +882,28 @@ class FootyMongoStore:
                 # Step 2: Delete videos from S3
                 if s3_urls:
                     s3_store = FootyS3Store()
+                    deleted_count = 0
+                    failed_count = 0
                     for s3_url in s3_urls:
                         # Extract S3 key from relative path
                         # Format: /video/footy-videos/{key}
                         try:
                             if not s3_url.startswith("/video/footy-videos/"):
-                                print(f"⚠️ Unexpected S3 URL format: {s3_url}")
+                                _log_warning("unexpected_s3_url", "Unexpected S3 URL format", s3_url=s3_url)
+                                failed_count += 1
                                 continue
                             key = s3_url.replace("/video/footy-videos/", "")
                             s3_store.delete_video(key)
-                            print(f"🗑️ Deleted S3 video for VAR'd goal: {key}")
+                            deleted_count += 1
+                            _log_info("var_video_deleted", "Deleted S3 video for VAR'd goal", key=key)
                         except Exception as e:
-                            print(f"⚠️ Failed to delete S3 video {s3_url}: {e}")
+                            failed_count += 1
+                            _log_warning("s3_delete_failed", "Failed to delete S3 video", s3_url=s3_url, error=str(e))
+                    
+                    # Log summary of S3 deletions
+                    if failed_count > 0:
+                        _log_warning("var_s3_delete_summary", f"VAR S3 cleanup: {deleted_count} deleted, {failed_count} failed",
+                                     event_id=event_id, deleted=deleted_count, failed=failed_count)
             
             # Step 3: Remove event from MongoDB array entirely
             result = self.fixtures_active.update_one(
@@ -882,12 +912,12 @@ class FootyMongoStore:
             )
             
             if result.modified_count > 0:
-                print(f"🗑️ Removed VAR'd event from MongoDB: {event_id}")
+                _log_info("var_event_removed", "Removed VAR'd event from MongoDB", event_id=event_id)
                 return True
             return False
             
         except Exception as e:
-            print(f"❌ Error removing event {event_id}: {e}")
+            _log_error("remove_event_error", "Error removing event", event_id=event_id, error=str(e))
             return False
     
 
@@ -936,7 +966,8 @@ class FootyMongoStore:
             if old_status in staging_statuses and new_status in active_statuses:
                 # Match just started! Set _last_activity NOW
                 # This is when the fixture should jump to the top of the frontend
-                print(f"⚽ Match {fixture_id} KICKED OFF! ({old_status} → {new_status}) - setting _last_activity")
+                _log_info("match_kickoff", "Match KICKED OFF - setting _last_activity",
+                         fixture_id=fixture_id, old_status=old_status, new_status=new_status)
                 update_doc[FixtureFields.LAST_ACTIVITY] = datetime.now(timezone.utc)
             
             # Preserve all our enhanced fixture-level fields (underscore prefixed)
@@ -976,10 +1007,10 @@ class FootyMongoStore:
             )
             if result.modified_count > 0:
                 live_status = live_fixture.get("fixture", {}).get("status", {}).get("short")
-                print(f"🔄 Synced fixture {fixture_id}: status={live_status}")
+                _log_info("fixture_synced", "Synced fixture", fixture_id=fixture_id, status=live_status)
             return result.modified_count > 0
         except Exception as e:
-            print(f"❌ Error syncing fixture data for {fixture_id}: {e}")
+            _log_error("sync_fixture_error", "Error syncing fixture data", fixture_id=fixture_id, error=str(e))
             return False
     
     def add_videos_to_event(
@@ -1017,7 +1048,7 @@ class FootyMongoStore:
                     )
                     if not fixture:
                         continue  # Try next collection
-                    print(f"✅ No new videos to add for {event_id} (in {collection_name})")
+                    _log_info("no_new_videos", "No new videos to add", event_id=event_id, collection=collection_name)
                     return True
                 
                 # Get existing videos to check for duplicates
@@ -1027,7 +1058,7 @@ class FootyMongoStore:
                 if not fixture:
                     continue  # Try next collection
                 
-                print(f"📦 Found fixture in {collection_name} for {event_id}")
+                _log_info("fixture_found", "Found fixture for event", event_id=event_id, collection=collection_name)
                 
                 # Find the event and build URL -> existing video map
                 existing_videos_by_url = {}
@@ -1054,7 +1085,8 @@ class FootyMongoStore:
                         existing_pop = existing_videos_by_url[url].get("popularity", 1)
                         if new_pop > existing_pop:
                             popularity_updates.append((url, new_pop))
-                            print(f"📈 Existing video {url.split('/')[-1]} popularity {existing_pop} → {new_pop}")
+                            _log_info("popularity_bump", "Existing video popularity bump", 
+                                     video=url.split('/')[-1], old_pop=existing_pop, new_pop=new_pop)
                     else:
                         new_videos.append(v)
                 
@@ -1074,20 +1106,24 @@ class FootyMongoStore:
                                 {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
                                 {"$set": {f"events.$.{EventFields.S3_VIDEOS}": videos}}
                             )
-                            print(f"📈 Updated popularity for {len(popularity_updates)} existing videos in {event_id} ({collection_name})")
+                            _log_info("popularity_updated", "Updated popularity for existing videos",
+                                     event_id=event_id, count=len(popularity_updates), collection=collection_name)
                             break
                 
                 if not new_videos:
                     if popularity_updates:
-                        print(f"✅ Updated {len(popularity_updates)} existing videos, no new videos to add for {event_id}")
+                        _log_info("videos_updated_no_new", "Updated existing videos, no new videos",
+                                 event_id=event_id, updated_count=len(popularity_updates))
                     else:
-                        print(f"✅ All {len(video_objects)} videos already exist for {event_id}, skipping duplicates")
+                        _log_info("videos_all_exist", "All videos already exist, skipping duplicates",
+                                 event_id=event_id, video_count=len(video_objects))
                     return True
                 
                 if len(new_videos) < len(video_objects):
                     skipped = len(video_objects) - len(new_videos) - len(popularity_updates)
                     if skipped > 0:
-                        print(f"⚠️ Filtered out {skipped} duplicate videos for {event_id}")
+                        _log_warning("duplicate_videos_filtered", "Filtered out duplicate videos", 
+                                    event_id=event_id, skipped=skipped)
                 
                 # Append new video objects
                 result = collection.update_one(
@@ -1100,20 +1136,22 @@ class FootyMongoStore:
                 )
                 
                 if result.modified_count == 0:
-                    print(f"⚠️ 0 documents modified when adding videos to {event_id} ({collection_name})")
+                    _log_warning("no_docs_modified", "0 documents modified when adding videos",
+                                event_id=event_id, collection=collection_name)
                     continue  # Try next collection
                 
-                print(f"✅ Added {len(new_videos)} videos to {event_id} ({collection_name})")
+                _log_info("videos_added", "Added videos to event", 
+                         event_id=event_id, count=len(new_videos), collection=collection_name)
                 return True
                 
             except Exception as e:
-                print(f"⚠️ Error adding videos in {collection_name} for {event_id}: {e}")
+                _log_warning("add_videos_error", "Error adding videos", 
+                            event_id=event_id, collection=collection_name, error=str(e))
                 continue
         
         # Not found in either collection
-        msg = f"❌ Event {event_id} not found in fixtures_active or fixtures_completed"
-        print(msg)
-        raise RuntimeError(msg)
+        _log_error("event_not_found", "Event not found in fixtures_active or fixtures_completed", event_id=event_id)
+        raise RuntimeError(f"Event {event_id} not found in fixtures_active or fixtures_completed")
     
     def recalculate_video_ranks(self, fixture_id: int, event_id: str) -> bool:
         """
@@ -1135,7 +1173,7 @@ class FootyMongoStore:
         try:
             fixture = self.fixtures_active.find_one({"_id": fixture_id})
             if not fixture:
-                print(f"⚠️ Fixture {fixture_id} not found in fixtures_active")
+                _log_warning("fixture_not_found", "Fixture not found in fixtures_active", fixture_id=fixture_id)
                 return False
             
             # Find the event
@@ -1148,7 +1186,7 @@ class FootyMongoStore:
                     break
             
             if event is None:
-                print(f"⚠️ Event {event_id} not found")
+                _log_warning("event_not_found", "Event not found", event_id=event_id)
                 return False
             
             # Get videos and sort them
@@ -1173,10 +1211,10 @@ class FootyMongoStore:
                 {"$set": {f"events.$.{EventFields.S3_VIDEOS}": videos_sorted}}
             )
             
-            print(f"📊 Recalculated ranks for {len(videos)} videos in {event_id}")
+            _log_info("ranks_recalculated", "Recalculated ranks for videos", event_id=event_id, count=len(videos))
             return True
         except Exception as e:
-            print(f"❌ Error recalculating video ranks: {e}")
+            _log_error("recalculate_ranks_error", "Error recalculating video ranks", error=str(e))
             return False
     
     def update_video_popularity(
@@ -1217,15 +1255,15 @@ class FootyMongoStore:
             )
             
             if result.modified_count > 0:
-                print(f"📈 Updated popularity to {new_popularity} for {s3_url}")
+                _log_info("popularity_updated", "Updated popularity for video", s3_url=s3_url, new_popularity=new_popularity)
                 # Recalculate ranks
                 self.recalculate_video_ranks(fixture_id, event_id)
                 return True
             else:
-                print(f"⚠️ Video not found for popularity update: {s3_url}")
+                _log_warning("video_not_found_popularity", "Video not found for popularity update", s3_url=s3_url)
                 return False
         except Exception as e:
-            print(f"❌ Error updating video popularity: {e}")
+            _log_error("update_popularity_error", "Error updating video popularity", error=str(e))
             return False
 
     # === Completion Operations ===
@@ -1321,7 +1359,7 @@ class FootyMongoStore:
                 "winner_exists": winner_exists,
             }
         except Exception as e:
-            print(f"❌ Error incrementing completion count for {fixture_id}: {e}")
+            _log_error("increment_completion_error", f"Error incrementing completion count for {fixture_id}", error=str(e), fixture_id=fixture_id)
             return {"completion_count": 0, "completion_complete": False, "winner_exists": False}
     
     def is_completion_ready(self, fixture_id: int) -> bool:
@@ -1362,7 +1400,7 @@ class FootyMongoStore:
             
             return True
         except Exception as e:
-            print(f"❌ Error checking completion ready for {fixture_id}: {e}")
+            _log_error("completion_ready_check_error", f"Error checking completion ready for {fixture_id}", error=str(e), fixture_id=fixture_id)
             return False
 
     def complete_fixture(self, fixture_id: int) -> bool:
@@ -1379,7 +1417,7 @@ class FootyMongoStore:
         try:
             fixture_doc = self.fixtures_active.find_one({"_id": fixture_id})
             if not fixture_doc:
-                print(f"⚠️ Fixture {fixture_id} not found in active")
+                _log_warning("fixture_not_found_complete", f"Fixture {fixture_id} not found in active for completion", fixture_id=fixture_id)
                 return False
             
             # Add completion timestamp
@@ -1394,7 +1432,7 @@ class FootyMongoStore:
             
             return True
         except Exception as e:
-            print(f"❌ Error completing fixture {fixture_id}: {e}")
+            _log_error("complete_fixture_error", f"Error completing fixture {fixture_id}", error=str(e), fixture_id=fixture_id)
             return False
     
     def get_completed_fixtures(self) -> List[dict]:
@@ -1402,7 +1440,7 @@ class FootyMongoStore:
         try:
             return list(self.fixtures_completed.find({}))
         except Exception as e:
-            print(f"❌ Error getting completed fixtures: {e}")
+            _log_error("get_completed_fixtures_error", "Error getting completed fixtures", error=str(e))
             return []
 
     # === Team Aliases Methods ===
@@ -1420,7 +1458,7 @@ class FootyMongoStore:
         try:
             return self.team_aliases.find_one({"_id": team_id})
         except Exception as e:
-            print(f"❌ Error getting team alias for {team_id}: {e}")
+            _log_error("get_team_alias_error", f"Error getting team alias for {team_id}", error=str(e), team_id=team_id)
             return None
     
     def upsert_team_alias(
@@ -1484,7 +1522,7 @@ class FootyMongoStore:
             )
             return True
         except Exception as e:
-            print(f"❌ Error upserting team alias for {team_id}: {e}")
+            _log_error("upsert_team_alias_error", f"Error upserting team alias for {team_id}", error=str(e), team_id=team_id)
             return False
     
     def get_all_team_aliases(self) -> List[dict]:
@@ -1492,7 +1530,7 @@ class FootyMongoStore:
         try:
             return list(self.team_aliases.find({}))
         except Exception as e:
-            print(f"❌ Error getting all team aliases: {e}")
+            _log_error("get_all_team_aliases_error", "Error getting all team aliases", error=str(e))
             return []
     
     def delete_team_alias(self, team_id: int) -> bool:
@@ -1501,7 +1539,7 @@ class FootyMongoStore:
             result = self.team_aliases.delete_one({"_id": team_id})
             return result.deleted_count > 0
         except Exception as e:
-            print(f"❌ Error deleting team alias for {team_id}: {e}")
+            _log_error("delete_team_alias_error", f"Error deleting team alias for {team_id}", error=str(e), team_id=team_id)
             return False
     
     def clear_team_aliases(self) -> int:
@@ -1510,7 +1548,7 @@ class FootyMongoStore:
             result = self.team_aliases.delete_many({})
             return result.deleted_count
         except Exception as e:
-            print(f"❌ Error clearing team aliases: {e}")
+            _log_error("clear_team_aliases_error", "Error clearing team aliases", error=str(e))
             return 0
 
     # === Top-Flight Teams Cache ===
@@ -1526,7 +1564,7 @@ class FootyMongoStore:
             doc = self.db.top_flight_cache.find_one({"_id": "top_5_leagues"})
             return doc
         except Exception as e:
-            print(f"❌ Error getting top-flight cache: {e}")
+            _log_error("get_top_flight_cache_error", "Error getting top-flight cache", error=str(e))
             return None
     
     def save_top_flight_cache(self, team_ids: list[int], season: int) -> bool:
@@ -1552,7 +1590,7 @@ class FootyMongoStore:
             )
             return True
         except Exception as e:
-            print(f"❌ Error saving top-flight cache: {e}")
+            _log_error("save_top_flight_cache_error", "Error saving top-flight cache", error=str(e))
             return False
     
     def clear_top_flight_cache(self) -> bool:
@@ -1561,5 +1599,5 @@ class FootyMongoStore:
             self.db.top_flight_cache.delete_one({"_id": "top_5_leagues"})
             return True
         except Exception as e:
-            print(f"❌ Error clearing top-flight cache: {e}")
+            _log_error("clear_top_flight_cache_error", "Error clearing top-flight cache", error=str(e))
             return False

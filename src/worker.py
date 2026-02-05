@@ -1,58 +1,30 @@
 """
 Temporal Worker - Executes workflows and activities
+
+Logging: Uses structured JSON logging for Grafana Loki.
+Set LOG_FORMAT=pretty for development-friendly output.
 """
 import asyncio
-import logging
 import os
-import re
 import sys
 
 # Force unbuffered output
 sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
 sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
 
+# Configure structured logging BEFORE importing temporalio
+from src.utils.footy_logging import configure_logging, get_fallback_logger, log
+configure_logging()
 
-class CleanTemporalFormatter(logging.Formatter):
-    """
-    Custom formatter that strips Temporal's context dict from activity/workflow logs.
-    
-    Temporal SDK appends context dicts to logs like:
-    - Activities: {'activity_id': ..., 'workflow_id': ...}
-    - Workflows: {'attempt': ..., 'namespace': ..., 'workflow_id': ...}
-    
-    This is verbose for development - we strip it and show just the message.
-    """
-    
-    # Regex to match trailing context dicts (both activity and workflow patterns)
-    CONTEXT_PATTERN = re.compile(r"\s*\(\{'.+\}\)\s*$")
-    
-    def format(self, record):
-        msg = record.getMessage()
-        # Strip the Temporal context dict from the end of the message
-        cleaned = self.CONTEXT_PATTERN.sub("", msg)
-        return cleaned
+MODULE = "worker"
 
+def _log_info(action: str, msg: str, **kwargs):
+    """Log info using fallback logger."""
+    log.info(get_fallback_logger(), MODULE, action, msg, **kwargs)
 
-# Configure logging BEFORE importing temporalio
-# This ensures activity.logger.info() and workflow.logger.info() show up
-handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(CleanTemporalFormatter())
-
-logging.basicConfig(
-    level=logging.INFO,
-    handlers=[handler],
-    force=True,  # Override any existing config
-)
-
-# Set the specific temporalio loggers to INFO
-logging.getLogger("temporalio.activity").setLevel(logging.INFO)
-logging.getLogger("temporalio.workflow").setLevel(logging.INFO)
-
-# Reduce noise from other loggers
-logging.getLogger("temporalio.worker").setLevel(logging.WARNING)
-logging.getLogger("temporalio.client").setLevel(logging.WARNING)
-logging.getLogger("urllib3").setLevel(logging.WARNING)
-logging.getLogger("pymongo").setLevel(logging.WARNING)
+def _log_error(action: str, msg: str, **kwargs):
+    """Log error using fallback logger."""
+    log.error(get_fallback_logger(), MODULE, action, msg, error=kwargs.get('error', ''), **{k: v for k, v in kwargs.items() if k != 'error'})
 
 from temporalio.client import Client
 from temporalio.runtime import Runtime, TelemetryConfig
@@ -84,7 +56,7 @@ async def setup_schedules(client: Client):
         ScheduleUpdate,
     )
     
-    print("📅 Setting up workflow schedules...", flush=True)
+    _log_info("setup_schedules", "Setting up workflow schedules")
     
     # Schedule 1: IngestWorkflow - Daily at 00:05 UTC
     # Fetches today's fixtures from all top-5 European leagues (96 teams)
@@ -110,10 +82,10 @@ async def setup_schedules(client: Client):
         await ingest_handle.describe()
         # Schedule exists - update it to ensure config is current
         await ingest_handle.update(lambda _: ScheduleUpdate(schedule=ingest_schedule))
-        print(f"   ✓ Schedule '{ingest_schedule_id}' updated (ENABLED)", flush=True)
+        _log_info("schedule_updated", f"Schedule '{ingest_schedule_id}' updated (ENABLED)", schedule_id=ingest_schedule_id)
     except Exception:
         await client.create_schedule(ingest_schedule_id, ingest_schedule)
-        print(f"   ✓ Created '{ingest_schedule_id}' (ENABLED)", flush=True)
+        _log_info("schedule_created", f"Created '{ingest_schedule_id}' (ENABLED)", schedule_id=ingest_schedule_id)
     
     # Schedule 2: MonitorWorkflow - Every 30 seconds (ENABLED by default)
     # 30s gives faster debounce (1.5 min vs 3 min at 60s) while staying within API limits:
@@ -162,16 +134,16 @@ async def setup_schedules(client: Client):
         await monitor_handle.describe()
         # Schedule exists - update it to ensure config is current
         await monitor_handle.update(lambda _: ScheduleUpdate(schedule=monitor_schedule))
-        print(f"   ✓ Schedule '{monitor_schedule_id}' updated", flush=True)
+        _log_info("schedule_updated", f"Schedule '{monitor_schedule_id}' updated", schedule_id=monitor_schedule_id)
     except Exception:
         await client.create_schedule(monitor_schedule_id, monitor_schedule)
-        print(f"   ✓ Created '{monitor_schedule_id}' (ENABLED)", flush=True)
+        _log_info("schedule_created", f"Created '{monitor_schedule_id}' (ENABLED)", schedule_id=monitor_schedule_id)
 
 
 async def main():
     # Connect to Temporal server (use env var for Docker, fallback to localhost)
     temporal_host = os.getenv("TEMPORAL_HOST", "localhost:7233")
-    print(f"🔌 Connecting to Temporal at {temporal_host}...", flush=True)
+    _log_info("connecting", f"Connecting to Temporal at {temporal_host}", temporal_host=temporal_host)
     
     # Create runtime with worker heartbeat disabled (server doesn't support it)
     # This suppresses "Worker heartbeating configured for runtime, but server does not support it"
@@ -182,7 +154,7 @@ async def main():
     
     try:
         client = await Client.connect(temporal_host, runtime=runtime)
-        print(f"✅ Connected to Temporal server", flush=True)
+        _log_info("connected", "Connected to Temporal server", temporal_host=temporal_host)
         
         # Set up schedules (idempotent - safe on every startup)
         await setup_schedules(client)
@@ -269,15 +241,14 @@ async def main():
             ],
         )
         
-        print("🚀 Worker started - listening on 'found-footy' task queue", flush=True)
-        print("📋 Workflows: Ingest, Monitor, RAG, Twitter, Download, Upload", flush=True)
-        print("🔧 Activities: 42 total (4 ingest, 10 monitor, 3 rag, 6 twitter, 7 download, 12 upload)", flush=True)
-        print("📅 Schedules: IngestWorkflow (paused), MonitorWorkflow (every 30s)", flush=True)
+        _log_info("worker_started", "Worker started - listening on 'found-footy' task queue", task_queue="found-footy")
+        _log_info("workflows_registered", "Workflows: Ingest, Monitor, RAG, Twitter, Download, Upload", workflow_count=6)
+        _log_info("activities_registered", "Activities: 42 total (4 ingest, 10 monitor, 3 rag, 6 twitter, 7 download, 12 upload)", activity_count=42)
+        _log_info("schedules_configured", "Schedules: IngestWorkflow (daily 00:05 UTC), MonitorWorkflow (every 30s)")
         await worker.run()
     except Exception as e:
-        print(f"❌ Worker failed: {e}", file=sys.stderr, flush=True)
         import traceback
-        traceback.print_exc()
+        _log_error("worker_failed", "Worker failed", error=str(e), traceback=traceback.format_exc())
         sys.exit(1)
 
 
@@ -285,4 +256,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n👋 Worker stopped")
+        _log_info("worker_stopped", "Worker stopped")

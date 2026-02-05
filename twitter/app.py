@@ -15,10 +15,9 @@ from pydantic import BaseModel
 
 from .config import TwitterConfig
 from .session import TwitterSessionManager, TwitterAuthError
+from .twitter_logging import log
 
-# Force unbuffered output so logs show immediately
-sys.stdout.reconfigure(line_buffering=True)
-sys.stderr.reconfigure(line_buffering=True)
+MODULE = "twitter_app"
 
 # Initialize configuration and session manager
 config = TwitterConfig()
@@ -44,9 +43,11 @@ def register_with_registry():
         from src.scaler.registry import registry
         url = get_instance_url()
         registry.register(INSTANCE_ID, url)
-        print(f"✅ Registered with registry: {INSTANCE_ID} at {url}", flush=True)
+        log.info(MODULE, "registry_registered", "Registered with registry",
+                 instance_id=INSTANCE_ID, url=url)
     except Exception as e:
-        print(f"⚠️ Could not register with registry (non-fatal): {e}", flush=True)
+        log.warning(MODULE, "registry_failed", "Could not register with registry (non-fatal)",
+                    error=str(e))
 
 
 def heartbeat_loop():
@@ -77,7 +78,8 @@ async def lifespan(app: FastAPI):
     # Start browser auth in background thread
     startup_thread = threading.Thread(target=background_startup, daemon=True)
     startup_thread.start()
-    print(f"🚀 FastAPI started - instance {INSTANCE_ID} - browser auth running in background", flush=True)
+    log.info(MODULE, "fastapi_started", "FastAPI started - browser auth running in background",
+             instance_id=INSTANCE_ID)
     yield
     # Shutdown - unregister from registry
     try:

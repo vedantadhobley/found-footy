@@ -1,11 +1,13 @@
 # API-Football client - no orchestration dependencies
-import logging
 import os
 from datetime import date
 
 import requests
 
-logger = logging.getLogger(__name__)
+from src.utils.footy_logging import log, get_fallback_logger
+
+MODULE = "api_client"
+logger = get_fallback_logger()
 
 # api-football.com direct endpoint
 BASE_URL = "https://v3.football.api-sports.io"
@@ -93,7 +95,8 @@ def fixtures_batch(fixture_ids_list):
         data = resp.json()
         # Check for API errors (returned as 200 with errors field)
         if data.get("errors"):
-            print(f"⚠️ API-Football errors: {data['errors']}")
+            # API errors are important but not fatal - log at warning level
+            log.warning(logger, MODULE, "api_errors", "API-Football returned errors", errors=data['errors'])
         
         all_fixtures.extend(data.get("response", []))
     
@@ -159,7 +162,7 @@ def get_current_season(league_id: int) -> int | None:
         
         leagues = data.get("response", [])
         if not leagues:
-            logger.warning(f"No league found for ID {league_id}")
+            log.warning(logger, MODULE, "league_not_found", "No league found", league_id=league_id)
             return None
         
         # Find the current season
@@ -171,12 +174,12 @@ def get_current_season(league_id: int) -> int | None:
         # Fallback: return the most recent season
         if seasons:
             latest = max(seasons, key=lambda s: s.get("year", 0))
-            logger.warning(f"No current season marked for league {league_id}, using latest: {latest.get('year')}")
+            log.warning(logger, MODULE, "season_fallback", "No current season marked, using latest", league_id=league_id, season=latest.get('year'))
             return latest.get("year")
         
         return None
     except Exception as e:
-        logger.error(f"Failed to get current season for league {league_id}: {e}")
+        log.error(logger, MODULE, "season_fetch_failed", "Failed to get current season", league_id=league_id, error=str(e))
         return None
 
 
@@ -202,10 +205,10 @@ def get_teams_for_league(league_id: int, season: int) -> list[int]:
         teams = data.get("response", [])
         team_ids = [t.get("team", {}).get("id") for t in teams if t.get("team", {}).get("id")]
         
-        logger.info(f"Found {len(team_ids)} teams for league {league_id} season {season}")
+        log.info(logger, MODULE, "teams_fetched", "Fetched teams for league", league_id=league_id, season=season, count=len(team_ids))
         return team_ids
     except Exception as e:
-        logger.error(f"Failed to get teams for league {league_id} season {season}: {e}")
+        log.error(logger, MODULE, "teams_fetch_failed", "Failed to get teams for league", league_id=league_id, season=season, error=str(e))
         return []
 
 
@@ -245,7 +248,7 @@ def get_team_info(team_id: int) -> dict | None:
         
         return None
     except Exception as e:
-        logger.warning(f"Failed to fetch team info for {team_id}: {e}")
+        log.warning(logger, MODULE, "team_info_failed", "Failed to fetch team info", team_id=team_id, error=str(e))
         return None
 
 

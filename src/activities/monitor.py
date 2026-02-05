@@ -19,6 +19,9 @@ from datetime import datetime, timezone
 import os
 
 from src.data.models import EventFields, create_new_enhanced_event
+from src.utils.footy_logging import log
+
+MODULE = "monitor"
 
 
 def is_player_known(event: dict) -> bool:
@@ -65,24 +68,21 @@ async def fetch_staging_fixtures() -> List[Dict[str, Any]]:
     fixture_ids = store.get_staging_fixture_ids()
     
     if not fixture_ids:
-        activity.logger.info("📋 [MONITOR] No staging fixtures to fetch")
+        log.info(activity.logger, MODULE, "staging_empty", "No staging fixtures to fetch")
         return []
     
-    activity.logger.info(
-        f"🌐 [MONITOR] Fetching staging fixtures | count={len(fixture_ids)}"
-    )
+    log.info(activity.logger, MODULE, "staging_fetch_started", "Fetching staging fixtures",
+             count=len(fixture_ids))
     
     try:
         fresh_data = fixtures_batch(fixture_ids)
-        activity.logger.info(
-            f"✅ [MONITOR] Retrieved staging data | count={len(fresh_data)}"
-        )
+        log.info(activity.logger, MODULE, "staging_fetch_success", "Retrieved staging data",
+                 count=len(fresh_data))
         return fresh_data
     
     except Exception as e:
-        activity.logger.error(
-            f"❌ [MONITOR] Staging fetch failed | error={e}"
-        )
+        log.error(activity.logger, MODULE, "staging_fetch_failed", "Staging fetch failed",
+                  error=str(e))
         raise
 
 
@@ -127,7 +127,7 @@ async def pre_activate_upcoming_fixtures(lookahead_minutes: int = 30) -> Dict[st
     all_staging = store.get_staging_fixtures()
     
     if not all_staging:
-        activity.logger.debug("📋 [MONITOR] No staging fixtures")
+        log.debug(activity.logger, MODULE, "staging_empty", "No staging fixtures")
         return {"polled": 0, "updated": 0, "activated": 0, "skipped": True}
     
     # Filter to fixtures NOT in current interval
@@ -144,24 +144,22 @@ async def pre_activate_upcoming_fixtures(lookahead_minutes: int = 30) -> Dict[st
     
     if not fixtures_to_poll:
         # All fixtures already polled this interval
-        activity.logger.info(
-            f"📋 [MONITOR] Staging skip | interval={current_interval} ({now.strftime('%H:%M')}) | "
-            f"all {len(all_staging)} fixtures in current interval"
-        )
+        log.info(activity.logger, MODULE, "staging_skip", "All fixtures in current interval",
+                 interval=current_interval, time=now.strftime('%H:%M'),
+                 fixture_count=len(all_staging))
         return {"polled": 0, "updated": 0, "activated": 0, "skipped": True}
     
     # Fetch only the stale fixtures from API
     fixture_ids = [f["_id"] for f in fixtures_to_poll]
     
-    activity.logger.info(
-        f"📋 [MONITOR] Staging poll | interval={current_interval} ({now.strftime('%H:%M')}) | "
-        f"polling {len(fixture_ids)}/{len(all_staging)} fixtures"
-    )
+    log.info(activity.logger, MODULE, "staging_poll", "Polling staging fixtures",
+             interval=current_interval, time=now.strftime('%H:%M'),
+             polling=len(fixture_ids), total=len(all_staging))
     
     live_data = fixtures_batch(fixture_ids)
     
     if not live_data:
-        activity.logger.warning("⚠️ [MONITOR] No data from API for staging fixtures")
+        log.warning(activity.logger, MODULE, "staging_no_data", "No data from API for staging fixtures")
         return {"polled": 0, "updated": 0, "activated": 0, "emergency_activated": 0, "skipped": False}
     
     # Get active statuses for failsafe check
@@ -188,11 +186,8 @@ async def pre_activate_upcoming_fixtures(lookahead_minutes: int = 30) -> Dict[st
         if status in active_statuses:
             if store.activate_fixture_with_data(fixture_id, fixture_data):
                 store.fixtures_staging.delete_one({"_id": fixture_id})
-                activity.logger.warning(
-                    f"🚨 [MONITOR] EMERGENCY ACTIVATION | fixture={fixture_id} | "
-                    f"match={home_team} vs {away_team} | status={status} | "
-                    f"Game started while still in staging!"
-                )
+                log.warning(activity.logger, MODULE, "emergency_activation", "Game started while still in staging",
+                            fixture_id=fixture_id, match=f"{home_team} vs {away_team}", status=status)
                 emergency_activated_count += 1
             continue
         
@@ -204,9 +199,8 @@ async def pre_activate_upcoming_fixtures(lookahead_minutes: int = 30) -> Dict[st
         try:
             fixture_date = datetime.fromisoformat(fixture_date_str.replace('Z', '+00:00'))
         except (ValueError, TypeError):
-            activity.logger.warning(
-                f"⚠️ [MONITOR] Invalid date | fixture={fixture_id} | date={fixture_date_str}"
-            )
+            log.warning(activity.logger, MODULE, "invalid_date", "Invalid fixture date",
+                        fixture_id=fixture_id, date=fixture_date_str)
             continue
         
         # Check if fixture should be pre-activated (kickoff within lookahead window)
@@ -216,10 +210,9 @@ async def pre_activate_upcoming_fixtures(lookahead_minutes: int = 30) -> Dict[st
                 # Delete from staging
                 store.fixtures_staging.delete_one({"_id": fixture_id})
                 minutes_until = int((fixture_date - now).total_seconds() / 60)
-                activity.logger.info(
-                    f"⏰ [MONITOR] PRE-ACTIVATED | fixture={fixture_id} | "
-                    f"match={home_team} vs {away_team} | kickoff_in={minutes_until}min"
-                )
+                log.info(activity.logger, MODULE, "pre_activated", "Fixture pre-activated",
+                         fixture_id=fixture_id, match=f"{home_team} vs {away_team}",
+                         kickoff_in_minutes=minutes_until)
                 activated_count += 1
         else:
             # Update staging with fresh data + new timestamp
@@ -227,13 +220,9 @@ async def pre_activate_upcoming_fixtures(lookahead_minutes: int = 30) -> Dict[st
             store.update_staging_fixture(fixture_id, fixture_data)
             updated_count += 1
     
-    log_msg = (
-        f"📊 [MONITOR] Staging complete | polled={len(live_data)} | "
-        f"updated={updated_count} | activated={activated_count}"
-    )
-    if emergency_activated_count > 0:
-        log_msg += f" | 🚨 emergency={emergency_activated_count}"
-    activity.logger.info(log_msg)
+    log.info(activity.logger, MODULE, "staging_complete", "Staging cycle complete",
+             polled=len(live_data), updated=updated_count, activated=activated_count,
+             emergency_activated=emergency_activated_count if emergency_activated_count > 0 else None)
     
     return {
         "polled": len(live_data),
@@ -259,24 +248,21 @@ async def fetch_active_fixtures() -> List[Dict[str, Any]]:
     fixture_ids = store.get_active_fixture_ids()
     
     if not fixture_ids:
-        activity.logger.info("📋 [MONITOR] No active fixtures to fetch")
+        log.info(activity.logger, MODULE, "active_empty", "No active fixtures to fetch")
         return []
     
-    activity.logger.info(
-        f"🌐 [MONITOR] Fetching active fixtures | count={len(fixture_ids)}"
-    )
+    log.info(activity.logger, MODULE, "active_fetch_started", "Fetching active fixtures",
+             count=len(fixture_ids))
     
     try:
         fresh_data = fixtures_batch(fixture_ids)
-        activity.logger.info(
-            f"✅ [MONITOR] Retrieved active data | count={len(fresh_data)}"
-        )
+        log.info(activity.logger, MODULE, "active_fetch_success", "Retrieved active data",
+                 count=len(fresh_data))
         return fresh_data
     
     except Exception as e:
-        activity.logger.error(
-            f"❌ [MONITOR] Active fetch failed | error={e}"
-        )
+        log.error(activity.logger, MODULE, "active_fetch_failed", "Active fetch failed",
+                  error=str(e))
         raise
 
 
@@ -298,26 +284,23 @@ async def store_and_compare(fixture_id: int, fixture_data: Dict) -> Dict[str, An
     try:
         # Store in fixtures_live (raw API data with all events)
         store.store_live_fixture(fixture_id, fixture_data)
-        activity.logger.info(
-            f"📥 [MONITOR] Stored live data | fixture={fixture_id}"
-        )
+        log.info(activity.logger, MODULE, "live_stored", "Stored live data",
+                 fixture_id=fixture_id)
         
         # Compare live vs active
         comparison = store.compare_live_vs_active(fixture_id)
         
         if comparison["needs_debounce"]:
-            activity.logger.info(
-                f"🎯 [MONITOR] Debounce needed | fixture={fixture_id} | "
-                f"new={comparison['new_events']} | incomplete={comparison['incomplete_events']} | "
-                f"removed={comparison['removed_events']}"
-            )
+            log.info(activity.logger, MODULE, "debounce_needed", "Debounce required",
+                     fixture_id=fixture_id, new_events=comparison['new_events'],
+                     incomplete_events=comparison['incomplete_events'],
+                     removed_events=comparison['removed_events'])
         
         return comparison
     
     except Exception as e:
-        activity.logger.error(
-            f"❌ [MONITOR] Store/compare failed | fixture={fixture_id} | error={e}"
-        )
+        log.error(activity.logger, MODULE, "store_compare_failed", "Store/compare failed",
+                  fixture_id=fixture_id, error=str(e))
         raise
 
 
@@ -345,9 +328,8 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
         # =====================================================================
         fixture = store.get_fixture_from_active(fixture_id)
         if not fixture:
-            activity.logger.warning(
-                f"⚠️ [MONITOR] Fixture not found in active | fixture={fixture_id}"
-            )
+            log.warning(activity.logger, MODULE, "fixture_not_found", "Fixture not found in active",
+                        fixture_id=fixture_id)
             return False
         
         events = fixture.get("events", [])
@@ -363,10 +345,9 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
             download_done = sum(1 for e in valid_events if e.get(EventFields.DOWNLOAD_COMPLETE))
             
             if monitored < len(valid_events) or download_done < len(valid_events):
-                activity.logger.info(
-                    f"⏳ [MONITOR] Events not ready | fixture={fixture_id} | "
-                    f"monitored={monitored}/{len(valid_events)} | download={download_done}/{len(valid_events)}"
-                )
+                log.info(activity.logger, MODULE, "events_not_ready", "Events not ready for completion",
+                         fixture_id=fixture_id, monitored=monitored, download=download_done,
+                         total=len(valid_events))
                 return False  # Don't start completion counter yet!
         
         # =====================================================================
@@ -379,42 +360,35 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
         
         # Log progress
         if count == 1:
-            activity.logger.info(
-                f"📊 [MONITOR] Completion started | fixture={fixture_id} | "
-                f"winner={'yes' if winner_exists else 'pending'}"
-            )
+            log.info(activity.logger, MODULE, "completion_started", "Completion counter started",
+                     fixture_id=fixture_id, winner="yes" if winner_exists else "pending")
         else:
-            activity.logger.info(
-                f"📊 [MONITOR] Completion check | fixture={fixture_id} | "
-                f"count={count}/3 | winner={'yes' if winner_exists else 'pending'}"
-            )
+            log.info(activity.logger, MODULE, "completion_check", "Completion check",
+                     fixture_id=fixture_id, count=count, max_count=3,
+                     winner="yes" if winner_exists else "pending")
         
         # =====================================================================
         # STEP 3: Check if completion counter is satisfied
         # =====================================================================
         if not completion_complete:
-            activity.logger.debug(
-                f"[MONITOR] Waiting for completion | fixture={fixture_id} | "
-                f"count={count}/3 | winner={winner_exists}"
-            )
+            log.debug(activity.logger, MODULE, "completion_waiting", "Waiting for completion",
+                      fixture_id=fixture_id, count=count, max_count=3, winner=winner_exists)
             return False
         
         # =====================================================================
         # STEP 4: All ready - complete the fixture
         # =====================================================================
         if store.complete_fixture(fixture_id):
-            activity.logger.info(
-                f"🏁 [MONITOR] FIXTURE COMPLETED | fixture={fixture_id}"
-            )
+            log.info(activity.logger, MODULE, "fixture_completed", "Fixture completed",
+                     fixture_id=fixture_id)
             # Note: Temp directory cleanup is done in MonitorWorkflow after this returns True
             return True
         
         return False
     
     except Exception as e:
-        activity.logger.error(
-            f"❌ [MONITOR] Completion error | fixture={fixture_id} | error={e}"
-        )
+        log.error(activity.logger, MODULE, "completion_error", "Completion error",
+                  fixture_id=fixture_id, error=str(e))
         return False
 
 
@@ -445,15 +419,13 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
     active_fixture = store.get_fixture_from_active(fixture_id)
     
     if not live_fixture:
-        activity.logger.warning(
-            f"⚠️ [MONITOR] Fixture not in live | fixture={fixture_id}"
-        )
+        log.warning(activity.logger, MODULE, "not_found_live", "Fixture not in live",
+                    fixture_id=fixture_id)
         return {"status": "not_found_live"}
     
     if not active_fixture:
-        activity.logger.warning(
-            f"⚠️ [MONITOR] Fixture not in active | fixture={fixture_id}"
-        )
+        log.warning(activity.logger, MODULE, "not_found_active", "Fixture not in active",
+                    fixture_id=fixture_id)
         return {"status": "not_found_active"}
     
     live_events = live_fixture.get("events", [])
@@ -496,9 +468,8 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
         first_seen = enhanced[EventFields.FIRST_SEEN]
         if store.add_event_to_active(fixture_id, enhanced, first_seen):
             player_status = "known" if initial_count == 1 else "UNKNOWN"
-            activity.logger.info(
-                f"✨ [MONITOR] NEW EVENT | fixture={fixture_id} | event={event_id} | player={player_status}"
-            )
+            log.info(activity.logger, MODULE, "new_event", "New event added",
+                     fixture_id=fixture_id, event_id=event_id, player_status=player_status)
             new_count += 1
     
     # =========================================================================
@@ -541,10 +512,8 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
                 {"$pull": {"events": {EventFields.EVENT_ID: event_id}}}
             )
             if result.modified_count > 0:
-                activity.logger.info(
-                    f"🗑️ [MONITOR] UNKNOWN REMOVED | event={event_id} | "
-                    f"reason=unknown_scorer_disappeared | player_id={player_id}"
-                )
+                log.info(activity.logger, MODULE, "unknown_removed", "Unknown scorer event removed",
+                         event_id=event_id, reason="unknown_scorer_disappeared", player_id=player_id)
                 removed_count += 1
             continue
         
@@ -562,10 +531,8 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
             # Only delete S3 if monitor was complete (videos were uploaded)
             if monitor_complete:
                 if store.mark_event_removed(fixture_id, event_id):
-                    activity.logger.warning(
-                        f"🗑️ [MONITOR] VAR REMOVED | event={event_id} | "
-                        f"action=deleted_db_s3 | drop_workflows={drop_count}"
-                    )
+                    log.warning(activity.logger, MODULE, "var_removed", "VAR removed event",
+                                event_id=event_id, action="deleted_db_s3", drop_workflows=drop_count)
                     removed_count += 1
             else:
                 # Monitor wasn't complete, just remove from MongoDB (no S3 data)
@@ -574,17 +541,13 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
                     {"$pull": {"events": {EventFields.EVENT_ID: event_id}}}
                 )
                 if result.modified_count > 0:
-                    activity.logger.warning(
-                        f"🗑️ [MONITOR] REMOVED | event={event_id} | "
-                        f"reason=dropped_before_complete | drop_workflows={drop_count}"
-                    )
+                    log.warning(activity.logger, MODULE, "removed_before_complete", "Event removed before completion",
+                                event_id=event_id, reason="dropped_before_complete", drop_workflows=drop_count)
                     removed_count += 1
         else:
             # Not enough monitors have seen it missing yet
-            activity.logger.warning(
-                f"⚠️ [MONITOR] EVENT MISSING | event={event_id} | "
-                f"drop_workflows={drop_count}/3 | need_3_to_delete"
-            )
+            log.warning(activity.logger, MODULE, "event_missing", "Event missing from API",
+                        event_id=event_id, drop_workflows=drop_count, need_to_delete=3)
     
     # =========================================================================
     # MATCHING events - Register workflow and check trigger condition
@@ -618,10 +581,9 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
             if current_count < 3:
                 new_count_val = current_count + 1
                 store.update_event_stable_count(fixture_id, event_id, new_count_val, live_event)
-                activity.logger.info(
-                    f"📈 [MONITOR] RECOVERY | event={event_id} | "
-                    f"count={current_count}→{new_count_val} | fully_complete"
-                )
+                log.info(activity.logger, MODULE, "recovery", "Event count recovered",
+                         event_id=event_id, old_count=current_count, new_count=new_count_val,
+                         status="fully_complete")
             continue
         
         # =====================================================================
@@ -633,10 +595,8 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
         if monitor_complete and not download_complete:
             # Get download workflow count to show progress
             download_count = store.get_download_workflow_count(fixture_id, event_id)
-            activity.logger.info(
-                f"⏳ [MONITOR] TWITTER IN PROGRESS | event={event_id} | "
-                f"download_workflows={download_count}/10"
-            )
+            log.info(activity.logger, MODULE, "twitter_in_progress", "Twitter/download in progress",
+                     event_id=event_id, download_workflows=download_count, max_workflows=10)
             continue
         
         # =====================================================================
@@ -647,10 +607,8 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
         # Event stays visible in frontend, but won't progress to Twitter
         if live_event and not is_player_known(live_event):
             store.update_event_stable_count(fixture_id, event_id, current_count, live_event)
-            activity.logger.info(
-                f"⏸️ [MONITOR] WAITING FOR PLAYER | event={event_id} | "
-                f"count={current_count} (frozen until player identified)"
-            )
+            log.info(activity.logger, MODULE, "waiting_for_player", "Waiting for player identification",
+                     event_id=event_id, count=current_count)
             continue
         
         # Increment monitor count (for VAR decrement logic and frontend display)
@@ -687,25 +645,19 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
                     "extra": live_event.get("time", {}).get("extra") if live_event else None,
                     "first_seen": active_event.get(EventFields.FIRST_SEEN),
                 })
-                activity.logger.info(
-                    f"🎯 [MONITOR] READY FOR TWITTER | event={event_id} | "
-                    f"monitor_workflows={monitor_workflow_count} | _monitor_complete=False"
-                )
+                log.info(activity.logger, MODULE, "ready_for_twitter", "Event ready for Twitter",
+                         event_id=event_id, monitor_workflows=monitor_workflow_count)
             else:
                 # No player name - mark complete without Twitter
                 # (This shouldn't happen since we check is_player_known above, but just in case)
                 first_seen = active_event.get(EventFields.FIRST_SEEN)
                 store.mark_event_monitor_complete(fixture_id, event_id)
-                activity.logger.warning(
-                    f"⚠️ [MONITOR] MONITOR COMPLETE (no player) | event={event_id} | "
-                    f"skip_reason=no_player_name"
-                )
+                log.warning(activity.logger, MODULE, "monitor_complete_no_player", "Monitor complete without player",
+                            event_id=event_id, skip_reason="no_player_name")
         else:
-            activity.logger.info(
-                f"📊 [MONITOR] MONITORING | event={event_id} | "
-                f"count={new_count_val}/3 | workflows={monitor_workflow_count}/3 | "
-                f"complete={monitor_complete_check}"
-            )
+            log.info(activity.logger, MODULE, "monitoring", "Monitoring event",
+                     event_id=event_id, count=new_count_val, max_count=3,
+                     workflows=monitor_workflow_count, complete=monitor_complete_check)
     
     # Sync fixture metadata
     store.sync_fixture_data(fixture_id)
@@ -734,15 +686,13 @@ async def sync_fixture_metadata(fixture_id: int) -> bool:
     
     try:
         if store.sync_fixture_data(fixture_id):
-            activity.logger.debug(
-                f"🔄 [MONITOR] Synced metadata | fixture={fixture_id}"
-            )
+            log.debug(activity.logger, MODULE, "metadata_synced", "Synced metadata",
+                      fixture_id=fixture_id)
             return True
         return False
     except Exception as e:
-        activity.logger.error(
-            f"❌ [MONITOR] Sync error | fixture={fixture_id} | error={e}"
-        )
+        log.error(activity.logger, MODULE, "sync_error", "Sync error",
+                  fixture_id=fixture_id, error=str(e))
         return False
 
 
@@ -778,9 +728,8 @@ async def check_twitter_workflow_running(workflow_id: str) -> Dict[str, Any]:
         status_name = desc.status.name if desc.status else "UNKNOWN"
         is_running = desc.status == WorkflowExecutionStatus.RUNNING
         
-        activity.logger.info(
-            f"🔍 [MONITOR] Workflow check | id={workflow_id} | status={status_name} | running={is_running}"
-        )
+        log.info(activity.logger, MODULE, "workflow_check", "Workflow status checked",
+                 workflow_id=workflow_id, status=status_name, running=is_running)
         
         return {
             "exists": True,
@@ -789,22 +738,23 @@ async def check_twitter_workflow_running(workflow_id: str) -> Dict[str, Any]:
         }
     except RPCError as e:
         if "not found" in str(e).lower():
-            activity.logger.info(
-                f"🔍 [MONITOR] Workflow check | id={workflow_id} | NOT_FOUND"
-            )
+            log.info(activity.logger, MODULE, "workflow_not_found", "Workflow not found",
+                     workflow_id=workflow_id)
             return {
                 "exists": False,
                 "running": False,
                 "status": "NOT_FOUND",
             }
-        activity.logger.warning(f"⚠️ [MONITOR] Workflow check error | id={workflow_id} | error={e}")
+        log.warning(activity.logger, MODULE, "workflow_check_error", "Workflow check RPC error",
+                    workflow_id=workflow_id, error=str(e))
         return {
             "exists": False,
             "running": False,
             "status": "ERROR",
         }
     except Exception as e:
-        activity.logger.warning(f"⚠️ [MONITOR] Workflow check error | id={workflow_id} | error={e}")
+        log.warning(activity.logger, MODULE, "workflow_check_error", "Workflow check error",
+                    workflow_id=workflow_id, error=str(e))
         return {
             "exists": False,
             "running": False,
@@ -827,25 +777,21 @@ async def notify_frontend_refresh() -> bool:
         response = requests.post(f"{api_url}/api/found-footy/refresh", timeout=5)
         if response.ok:
             result = response.json()
-            activity.logger.info(
-                f"📡 [MONITOR] Frontend notified | clients={result.get('clientsNotified', 0)}"
-            )
+            log.info(activity.logger, MODULE, "frontend_notified", "Frontend notified",
+                     clients=result.get('clientsNotified', 0))
             return True
         else:
-            activity.logger.warning(
-                f"⚠️ [MONITOR] Frontend notify failed | status={response.status_code}"
-            )
+            log.warning(activity.logger, MODULE, "frontend_notify_failed", "Frontend notify failed",
+                        status_code=response.status_code)
             return False
     except requests.exceptions.ConnectionError:
         # Frontend not running is not a fatal error
-        activity.logger.debug(
-            "📡 [MONITOR] Frontend API not available | reason=connection_refused"
-        )
+        log.debug(activity.logger, MODULE, "frontend_unavailable", "Frontend API not available",
+                  reason="connection_refused")
         return False
     except Exception as e:
-        activity.logger.warning(
-            f"⚠️ [MONITOR] Frontend notify error | error={e}"
-        )
+        log.warning(activity.logger, MODULE, "frontend_notify_error", "Frontend notify error",
+                    error=str(e))
         return False
 
 
@@ -891,11 +837,9 @@ async def register_monitor_workflow(
         # (If monitor_complete is True, Twitter already started)
         should_trigger = count >= 3 and not monitor_complete
         
-        activity.logger.info(
-            f"📊 [MONITOR] register_monitor_workflow | event={event_id} | "
-            f"workflow={workflow_id} | count={count} | complete={monitor_complete} | "
-            f"should_trigger={should_trigger}"
-        )
+        log.info(activity.logger, MODULE, "register_monitor_workflow", "Monitor workflow registered",
+                 event_id=event_id, workflow_id=workflow_id, count=count,
+                 complete=monitor_complete, should_trigger=should_trigger)
         
         return {
             "success": success,
@@ -904,9 +848,8 @@ async def register_monitor_workflow(
             "should_trigger_twitter": should_trigger
         }
     except Exception as e:
-        activity.logger.error(
-            f"❌ [MONITOR] register_monitor_workflow failed | event={event_id} | error={e}"
-        )
+        log.error(activity.logger, MODULE, "register_workflow_failed", "Register monitor workflow failed",
+                  event_id=event_id, error=str(e))
         return {
             "success": False,
             "count": 0,

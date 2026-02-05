@@ -29,6 +29,9 @@ with workflow.unsafe.imports_passed_through():
     from src.activities import ingest as ingest_activities
     from src.activities import monitor as monitor_activities
     from src.activities import rag as rag_activities
+    from src.utils.footy_logging import log
+
+MODULE = "ingest_workflow"
 
 
 # Retention period for fixtures (in days)
@@ -67,7 +70,9 @@ class IngestWorkflow:
         """
         # Check if specific fixture IDs were provided (manual ingest mode)
         if input and input.fixture_ids and len(input.fixture_ids) > 0:
-            workflow.logger.info(f"📥 Manual ingest mode: fetching {len(input.fixture_ids)} specific fixtures: {input.fixture_ids}")
+            log.info(workflow.logger, MODULE, "manual_ingest_by_ids",
+                     "Manual ingest mode: fetching specific fixtures",
+                     count=len(input.fixture_ids), fixture_ids=input.fixture_ids)
             
             # Fetch specific fixtures by ID
             fixtures = await workflow.execute_activity(
@@ -83,7 +88,9 @@ class IngestWorkflow:
         elif input and input.target_date:
             # Manual date-based ingest (for testing historical dates)
             # Only fetches the specified date, not tomorrow
-            workflow.logger.info(f"📥 Manual ingest mode: fetching fixtures for {input.target_date}")
+            log.info(workflow.logger, MODULE, "manual_ingest_by_date",
+                     "Manual ingest mode: fetching fixtures for date",
+                     target_date=input.target_date)
             
             fixtures = await workflow.execute_activity(
                 ingest_activities.fetch_todays_fixtures,
@@ -116,7 +123,8 @@ class IngestWorkflow:
             today_str = today_utc.isoformat()
             tomorrow_str = tomorrow_utc.isoformat()
             
-            workflow.logger.info(f"📥 Starting daily fixture ingest for {today_str}")
+            log.info(workflow.logger, MODULE, "daily_ingest_start",
+                     "Starting daily fixture ingest", date=today_str)
             
             # Always fetch today
             today_fixtures = await workflow.execute_activity(
@@ -150,7 +158,10 @@ class IngestWorkflow:
                 day_after_utc = today_utc + timedelta(days=2)
                 day_after_str = day_after_utc.isoformat()
                 
-                workflow.logger.info(f"📅 Tomorrow ({tomorrow_str}) has {len(tomorrow_fixtures)} fixtures, fetching day after ({day_after_str})")
+                log.info(workflow.logger, MODULE, "fetching_day_after",
+                         "Tomorrow has fixtures, fetching day after",
+                         tomorrow=tomorrow_str, tomorrow_count=len(tomorrow_fixtures),
+                         day_after=day_after_str)
                 
                 day_after_fixtures = await workflow.execute_activity(
                     ingest_activities.fetch_todays_fixtures,
@@ -164,13 +175,15 @@ class IngestWorkflow:
                 )
                 extra_fixtures = day_after_fixtures
                 
-                workflow.logger.info(
-                    f"📊 Fetched {len(today_fixtures)} today + {len(tomorrow_fixtures)} tomorrow + "
-                    f"{len(day_after_fixtures)} day after (standard 3-day fetch)"
-                )
+                log.info(workflow.logger, MODULE, "standard_fetch_complete",
+                         "Standard 3-day fetch complete",
+                         today_count=len(today_fixtures), tomorrow_count=len(tomorrow_fixtures),
+                         day_after_count=len(day_after_fixtures))
             else:
                 # Tomorrow is empty - look ahead up to 30 days to find next day with fixtures
-                workflow.logger.info(f"📅 Tomorrow ({tomorrow_str}) has no fixtures, looking ahead...")
+                log.info(workflow.logger, MODULE, "looking_ahead",
+                         "Tomorrow has no fixtures, looking ahead",
+                         tomorrow=tomorrow_str)
                 
                 MAX_LOOKAHEAD_DAYS = 30
                 next_match_day = None
@@ -194,7 +207,10 @@ class IngestWorkflow:
                     if len(check_fixtures) > 0:
                         next_match_day = check_date
                         next_match_fixtures = check_fixtures
-                        workflow.logger.info(f"🔍 Found {len(check_fixtures)} fixtures on {check_date_str} (day +{days_ahead})")
+                        log.info(workflow.logger, MODULE, "found_fixtures_ahead",
+                                 "Found fixtures",
+                                 date=check_date_str, count=len(check_fixtures),
+                                 days_ahead=days_ahead)
                         break
                 
                 if next_match_day:
@@ -203,7 +219,9 @@ class IngestWorkflow:
                     next_match_day_after = next_match_day + timedelta(days=1)
                     next_match_day_after_str = next_match_day_after.isoformat()
                     
-                    workflow.logger.info(f"📅 Fetching day after next match day ({next_match_day_after_str}) for timezone handling")
+                    log.info(workflow.logger, MODULE, "fetching_day_after_next",
+                             "Fetching day after next match day for timezone handling",
+                             next_match_day_after=next_match_day_after_str)
                     
                     next_match_day_after_fixtures = await workflow.execute_activity(
                         ingest_activities.fetch_todays_fixtures,
@@ -218,13 +236,17 @@ class IngestWorkflow:
                     
                     extra_fixtures = next_match_fixtures + next_match_day_after_fixtures
                     
-                    workflow.logger.info(
-                        f"📊 Fetched {len(today_fixtures)} today + 0 tomorrow + "
-                        f"{len(next_match_fixtures)} on {next_match_day_str} + "
-                        f"{len(next_match_day_after_fixtures)} on {next_match_day_after_str} (lookahead mode)"
-                    )
+                    log.info(workflow.logger, MODULE, "lookahead_fetch_complete",
+                             "Lookahead mode fetch complete",
+                             today_count=len(today_fixtures), tomorrow_count=0,
+                             next_match_day=next_match_day_str,
+                             next_match_count=len(next_match_fixtures),
+                             next_match_day_after=next_match_day_after_str,
+                             next_match_day_after_count=len(next_match_day_after_fixtures))
                 else:
-                    workflow.logger.warning(f"⚠️ No fixtures found in next {MAX_LOOKAHEAD_DAYS} days - may be off-season")
+                    log.warning(workflow.logger, MODULE, "no_fixtures_found",
+                                "No fixtures found in lookahead - may be off-season",
+                                max_lookahead_days=MAX_LOOKAHEAD_DAYS)
             
             # Combine and deduplicate by fixture ID
             seen_ids = set()
@@ -235,7 +257,8 @@ class IngestWorkflow:
                     seen_ids.add(fixture_id)
                     fixtures.append(fixture)
             
-            workflow.logger.info(f"📊 Total unique fixtures to process: {len(fixtures)}")
+            log.info(workflow.logger, MODULE, "total_unique_fixtures",
+                     "Total unique fixtures to process", count=len(fixtures))
         
         # Pre-cache RAG aliases for EACH team individually
         # This is more modular - can retry per-team instead of per-fixture
@@ -275,10 +298,13 @@ class IngestWorkflow:
                     rag_success += 1
                 except Exception as e:
                     # Don't fail ingestion if RAG fails - aliases can be generated later
-                    workflow.logger.warning(f"⚠️ RAG pre-cache failed for {team_name} ({team_id}): {e}")
+                    log.warning(workflow.logger, MODULE, "rag_precache_failed",
+                                "RAG pre-cache failed",
+                                team_name=team_name, team_id=team_id, error=str(e))
                     rag_failed += 1
         
-        workflow.logger.info(f"🤖 Pre-cached RAG aliases: {rag_success} teams OK, {rag_failed} failed")
+        log.info(workflow.logger, MODULE, "rag_precache_complete",
+                 "Pre-cached RAG aliases", success=rag_success, failed=rag_failed)
         
         # Categorize and store
         result = await workflow.execute_activity(
@@ -318,11 +344,10 @@ class IngestWorkflow:
         result["unique_teams"] = len(teams_processed)
         result["cleanup"] = cleanup_result
         
-        workflow.logger.info(
-            f"✅ Ingest complete: {result.get('staging', 0)} staging, "
-            f"{result.get('active', 0)} active, {result.get('completed', 0)} completed, "
-            f"{result.get('skipped', 0)} skipped (already exist), "
-            f"{rag_success}/{len(teams_processed)} teams RAG cached, "
-            f"{cleanup_result.get('deleted_fixtures', 0)} old fixtures cleaned up"
-        )
+        log.info(workflow.logger, MODULE, "ingest_complete",
+                 "Ingest complete",
+                 staging=result.get('staging', 0), active=result.get('active', 0),
+                 completed=result.get('completed', 0), skipped=result.get('skipped', 0),
+                 rag_success=rag_success, unique_teams=len(teams_processed),
+                 deleted_fixtures=cleanup_result.get('deleted_fixtures', 0))
         return result

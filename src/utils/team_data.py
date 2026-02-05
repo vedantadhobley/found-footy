@@ -1,8 +1,10 @@
 """Team data management - pure Python, no orchestration dependencies"""
-import logging
 from datetime import datetime, timezone, timedelta
 
-logger = logging.getLogger(__name__)
+from src.utils.footy_logging import log, get_fallback_logger
+
+MODULE = "team_data"
+logger = get_fallback_logger()
 
 # =============================================================================
 # TOP 5 EUROPEAN LEAGUES
@@ -101,11 +103,11 @@ def get_top_flight_team_ids(force_refresh: bool = False) -> list[int]:
                 age = datetime.now(timezone.utc) - cached_at
                 if age < timedelta(hours=TOP_FLIGHT_CACHE_HOURS):
                     team_ids = cached.get("team_ids", [])
-                    logger.info(f"Using cached top-flight teams ({len(team_ids)} teams, cached {age.total_seconds()/3600:.1f}h ago)")
+                    log.info(logger, MODULE, "cache_hit", "Using cached top-flight teams", count=len(team_ids), cache_age_hours=round(age.total_seconds()/3600, 1))
                     return team_ids
     
     # Fetch fresh data from API
-    logger.info("Fetching top-flight teams from API-Football...")
+    log.info(logger, MODULE, "fetch_started", "Fetching top-flight teams from API-Football")
     all_team_ids = set()
     season = None
     
@@ -114,27 +116,27 @@ def get_top_flight_team_ids(force_refresh: bool = False) -> list[int]:
         if season is None:
             season = get_current_season(league_id)
             if season is None:
-                logger.error(f"Could not determine current season for {league_name}")
+                log.error(logger, MODULE, "season_unknown", "Could not determine current season", league_name=league_name)
                 continue
-            logger.info(f"Current season: {season}")
+            log.info(logger, MODULE, "season_determined", "Current season determined", season=season)
         
         # Get teams for this league
         team_ids = get_teams_for_league(league_id, season)
         if team_ids:
-            logger.info(f"  {league_name}: {len(team_ids)} teams")
+            log.info(logger, MODULE, "league_teams_fetched", "Fetched teams for league", league_name=league_name, count=len(team_ids))
             all_team_ids.update(team_ids)
         else:
-            logger.warning(f"  {league_name}: No teams found!")
+            log.warning(logger, MODULE, "league_no_teams", "No teams found for league", league_name=league_name)
     
     team_ids_list = list(all_team_ids)
     
     if team_ids_list:
         # Cache the results
         store.save_top_flight_cache(team_ids_list, season)
-        logger.info(f"Cached {len(team_ids_list)} top-flight teams for season {season}")
+        log.info(logger, MODULE, "cache_saved", "Cached top-flight teams", count=len(team_ids_list), season=season)
     else:
         # Fallback to legacy list if API failed completely
-        logger.warning("API fetch failed, using legacy TOP_UEFA_IDS as fallback")
+        log.warning(logger, MODULE, "fallback_used", "API fetch failed, using legacy TOP_UEFA_IDS as fallback", fallback_count=len(TOP_UEFA_IDS))
         team_ids_list = TOP_UEFA_IDS
     
     return team_ids_list

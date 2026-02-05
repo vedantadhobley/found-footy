@@ -46,6 +46,9 @@ import asyncio
 
 with workflow.unsafe.imports_passed_through():
     from src.activities import download as download_activities
+    from src.utils.footy_logging import log
+
+MODULE = "download_workflow"
 
 
 @workflow.defn
@@ -85,10 +88,8 @@ class DownloadWorkflow:
         Returns:
             Dict with videos_uploaded count and s3_urls list
         """
-        workflow.logger.info(
-            f"⬇️ [DOWNLOAD] STARTED | event={event_id} | "
-            f"videos={len(discovered_videos) if discovered_videos else 0}"
-        )
+        log.info(workflow.logger, MODULE, "started", "DownloadWorkflow STARTED",
+                 event_id=event_id, videos=len(discovered_videos) if discovered_videos else 0)
         
         # =========================================================================
         # Step 0: REGISTER OURSELVES (proves we're running!)
@@ -97,7 +98,8 @@ class DownloadWorkflow:
         # If we never run this, TwitterWorkflow will keep spawning us.
         # =========================================================================
         workflow_id = workflow.info().workflow_id
-        workflow.logger.info(f"🔒 [DOWNLOAD] Registering workflow | id={workflow_id} | event={event_id}")
+        log.info(workflow.logger, MODULE, "registering_workflow",
+                 "Registering workflow", workflow_id=workflow_id, event_id=event_id)
         
         try:
             register_result = await workflow.execute_activity(
@@ -111,15 +113,13 @@ class DownloadWorkflow:
                 ),
             )
             download_count = register_result.get("count", 0)
-            workflow.logger.info(
-                f"✅ [DOWNLOAD] Registered | workflow={workflow_id} | "
-                f"download_count={download_count}/10 | event={event_id}"
-            )
+            log.info(workflow.logger, MODULE, "registered",
+                     "Workflow registered", workflow_id=workflow_id,
+                     download_count=download_count, event_id=event_id)
         except Exception as e:
-            workflow.logger.error(
-                f"❌ [DOWNLOAD] FAILED to register workflow | event={event_id} | error={e} | "
-                f"Continuing anyway - Twitter may spawn duplicate"
-            )
+            log.error(workflow.logger, MODULE, "register_failed",
+                      "FAILED to register workflow - Continuing anyway",
+                      event_id=event_id, error=str(e))
         
         # Initialize download stats for visibility into what happened in the pipeline
         download_stats = {
@@ -136,7 +136,8 @@ class DownloadWorkflow:
         }
         
         if not discovered_videos:
-            workflow.logger.info(f"📭 [DOWNLOAD] No videos to download | event={event_id}")
+            log.info(workflow.logger, MODULE, "no_videos",
+                     "No videos to download", event_id=event_id)
             # ALWAYS signal UploadWorkflow - it will check count and mark complete if needed
             await self._signal_upload_workflow(fixture_id, event_id, [], "/tmp/dummy")
             return {
@@ -146,9 +147,8 @@ class DownloadWorkflow:
                 "s3_urls": [],
             }
         
-        workflow.logger.info(
-            f"📋 [DOWNLOAD] Processing {len(discovered_videos)} videos | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "processing",
+                 "Processing videos", count=len(discovered_videos), event_id=event_id)
         
         # Temp directory path with unique run ID to prevent conflicts between concurrent workflows
         # Uses /tmp/found-footy which is mounted as a shared volume across all worker replicas
@@ -160,9 +160,9 @@ class DownloadWorkflow:
         # Step 1: Download videos IN PARALLEL (with per-video retry)
         # 403 errors are common (rate limits, expired links) - retry 3x with backoff
         # =========================================================================
-        workflow.logger.info(
-            f"📥 [DOWNLOAD] Downloading {len(discovered_videos)} videos in parallel | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "downloading",
+                 "Downloading videos in parallel",
+                 count=len(discovered_videos), event_id=event_id)
         
         download_results = []
         filtered_urls = []  # Track URLs filtered out (too short/long/vertical)
@@ -172,9 +172,9 @@ class DownloadWorkflow:
         async def download_video(idx: int, video: dict):
             video_url = video.get("tweet_url") or video.get("video_page_url")
             if not video_url:
-                workflow.logger.warning(
-                    f"⚠️ [DOWNLOAD] Video {idx}: No URL, skipping | event={event_id}"
-                )
+                log.warning(workflow.logger, MODULE, "video_no_url",
+                            "Video has no URL, skipping",
+                            idx=idx, event_id=event_id)
                 return None
             
             try:
@@ -191,10 +191,10 @@ class DownloadWorkflow:
                 )
                 return {"idx": idx, "result": result, "url": video_url}
             except Exception as e:
-                workflow.logger.warning(
-                    f"⚠️ [DOWNLOAD] Video {idx} FAILED after 3 retries | "
-                    f"url={video_url[:50]}... | error={str(e)[:100]} | event={event_id}"
-                )
+                log.warning(workflow.logger, MODULE, "video_failed",
+                            "Video FAILED after 3 retries",
+                            idx=idx, url=video_url[:50], error=str(e)[:100],
+                            event_id=event_id)
                 return {
                     "idx": idx, 
                     "result": {"status": "failed", "error": str(e)[:200], "source_url": video_url}, 
@@ -216,9 +216,9 @@ class DownloadWorkflow:
             # Handle multi-video tweets - flatten the results
             if result.get("status") == "multi_video":
                 videos = result.get("videos", [])
-                workflow.logger.info(
-                    f"📹 [DOWNLOAD] Multi-video tweet {outcome['idx']}: {len(videos)} videos | event={event_id}"
-                )
+                log.info(workflow.logger, MODULE, "multi_video_tweet",
+                         "Multi-video tweet found",
+                         idx=outcome['idx'], count=len(videos), event_id=event_id)
                 download_results.extend(videos)
             else:
                 download_results.append(result)
@@ -238,10 +238,9 @@ class DownloadWorkflow:
         download_stats["filtered_aspect_duration"] = len(filtered_urls)
         download_stats["download_failed"] = len(failed_urls)
         
-        workflow.logger.info(
-            f"✅ [DOWNLOAD] Downloads complete | success={successful_downloads} | "
-            f"filtered={len(filtered_urls)} | failed={len(failed_urls)} | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "downloads_complete",
+                 "Downloads complete", success=successful_downloads,
+                 filtered=len(filtered_urls), failed=len(failed_urls), event_id=event_id)
         
         # =========================================================================
         # Step 2: MD5 Dedup within batch - Fast elimination of true duplicates
@@ -250,9 +249,9 @@ class DownloadWorkflow:
         successful_videos = [r for r in download_results if r.get("status") == "success"]
         
         if successful_videos:
-            workflow.logger.info(
-                f"🔐 [DOWNLOAD] Running fast MD5 batch dedup | videos={len(successful_videos)} | event={event_id}"
-            )
+            log.info(workflow.logger, MODULE, "md5_dedup_start",
+                     "Running fast MD5 batch dedup",
+                     videos=len(successful_videos), event_id=event_id)
             
             # Simple batch dedup by MD5 - just remove identical files within this batch
             seen_hashes = {}
@@ -265,9 +264,9 @@ class DownloadWorkflow:
                     unique_videos.append(video)
                 elif file_hash in seen_hashes:
                     batch_dupes += 1
-                    workflow.logger.debug(
-                        f"🔁 [DOWNLOAD] Batch duplicate: {video.get('source_url', '')[:50]}..."
-                    )
+                    log.debug(workflow.logger, MODULE, "batch_duplicate",
+                              "Batch duplicate found",
+                              url=video.get('source_url', '')[:50])
                 else:
                     seen_hashes[file_hash] = True
                     unique_videos.append(video)
@@ -275,10 +274,9 @@ class DownloadWorkflow:
             download_stats["md5_batch_deduped"] = batch_dupes
             successful_videos = unique_videos
             
-            workflow.logger.info(
-                f"✅ [DOWNLOAD] MD5 batch dedup complete | unique={len(successful_videos)} | "
-                f"batch_dupes={batch_dupes} | event={event_id}"
-            )
+            log.info(workflow.logger, MODULE, "md5_dedup_complete",
+                     "MD5 batch dedup complete",
+                     unique=len(successful_videos), batch_dupes=batch_dupes, event_id=event_id)
         
         # =========================================================================
         # Step 3: AI Validation (only for MD5-unique videos - saves compute!)
@@ -289,9 +287,9 @@ class DownloadWorkflow:
         validation_failed_count = 0
         
         if successful_videos:
-            workflow.logger.info(
-                f"🔍 [DOWNLOAD] Validating {len(successful_videos)} videos with AI vision | event={event_id}"
-            )
+            log.info(workflow.logger, MODULE, "ai_validation_start",
+                     "Validating videos with AI vision",
+                     count=len(successful_videos), event_id=event_id)
         
         for video_info in successful_videos:
             try:
@@ -311,10 +309,9 @@ class DownloadWorkflow:
                     validated_videos.append(video_info)
                 else:
                     rejected_count += 1
-                    workflow.logger.warning(
-                        f"🚫 [DOWNLOAD] Video rejected (not soccer) | "
-                        f"reason={validation.get('reason', 'unknown')} | event={event_id}"
-                    )
+                    log.warning(workflow.logger, MODULE, "video_rejected",
+                                "Video rejected (not soccer)",
+                                reason=validation.get('reason', 'unknown'), event_id=event_id)
                     # Clean up rejected video file
                     try:
                         import os
@@ -324,9 +321,9 @@ class DownloadWorkflow:
             except Exception as e:
                 # FAIL-CLOSED: If validation fails after retries, REJECT the video
                 validation_failed_count += 1
-                workflow.logger.error(
-                    f"❌ [DOWNLOAD] Validation FAILED - rejecting video | error={e} | event={event_id}"
-                )
+                log.error(workflow.logger, MODULE, "validation_failed",
+                          "Validation FAILED - rejecting video",
+                          error=str(e), event_id=event_id)
                 try:
                     import os
                     os.remove(video_info["file_path"])
@@ -337,19 +334,19 @@ class DownloadWorkflow:
         download_stats["ai_rejected"] = rejected_count
         download_stats["ai_validation_failed"] = validation_failed_count
         
-        workflow.logger.info(
-            f"✅ [DOWNLOAD] Validation complete | passed={len(validated_videos)} | "
-            f"not_soccer={rejected_count} | validation_errors={validation_failed_count} | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "validation_complete",
+                 "Validation complete", passed=len(validated_videos),
+                 not_soccer=rejected_count, validation_errors=validation_failed_count,
+                 event_id=event_id)
         
         # =========================================================================
         # Step 4: Generate perceptual hashes IN PARALLEL for validated videos
         # Uses heartbeat-based timeout (heartbeat every 5 frames)
         # =========================================================================
         if validated_videos:
-            workflow.logger.info(
-                f"🔐 [DOWNLOAD] Generating perceptual hashes for {len(validated_videos)} videos in parallel | event={event_id}"
-            )
+            log.info(workflow.logger, MODULE, "hash_generation_start",
+                     "Generating perceptual hashes in parallel",
+                     count=len(validated_videos), event_id=event_id)
         
         async def generate_hash(video_info: dict, idx: int):
             try:
@@ -364,9 +361,9 @@ class DownloadWorkflow:
                 )
                 return {"idx": idx, "hash": hash_result.get("perceptual_hash", "")}
             except Exception as e:
-                workflow.logger.warning(
-                    f"⚠️ [DOWNLOAD] Hash generation FAILED for video {idx} | error={e} | event={event_id}"
-                )
+                log.warning(workflow.logger, MODULE, "hash_generation_failed",
+                            "Hash generation FAILED for video",
+                            idx=idx, error=str(e), event_id=event_id)
                 return {"idx": idx, "hash": "", "failed": True}
         
         # Execute all hash generations in parallel
@@ -381,9 +378,9 @@ class DownloadWorkflow:
         download_stats["hash_generated"] = hashes_generated
         download_stats["hash_failed"] = hashes_failed
         
-        workflow.logger.info(
-            f"✅ [DOWNLOAD] Hash generation complete | generated={hashes_generated}/{len(validated_videos)} | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "hash_generation_complete",
+                 "Hash generation complete",
+                 generated=hashes_generated, total=len(validated_videos), event_id=event_id)
         
         for hash_result in hash_results:
             validated_videos[hash_result["idx"]]["perceptual_hash"] = hash_result["hash"]
@@ -399,15 +396,14 @@ class DownloadWorkflow:
                 videos_with_hash.append(video_info)
             else:
                 videos_without_hash_count += 1
-                workflow.logger.warning(
-                    f"⚠️ [DOWNLOAD] Skipping video with no hash (cannot deduplicate) | "
-                    f"url={video_info.get('source_url', 'unknown')[:60]}... | event={event_id}"
-                )
+                log.warning(workflow.logger, MODULE, "video_no_hash",
+                            "Skipping video with no hash (cannot deduplicate)",
+                            url=video_info.get('source_url', 'unknown')[:60], event_id=event_id)
         
         if videos_without_hash_count > 0:
-            workflow.logger.warning(
-                f"⚠️ [DOWNLOAD] Filtered {videos_without_hash_count} videos with no hash | event={event_id}"
-            )
+            log.warning(workflow.logger, MODULE, "filtered_no_hash",
+                        "Filtered videos with no hash",
+                        count=videos_without_hash_count, event_id=event_id)
         
         videos_to_upload = videos_with_hash
         download_stats["sent_to_upload"] = len(videos_to_upload)
@@ -422,16 +418,15 @@ class DownloadWorkflow:
         # UploadWorkflow will check count and mark _download_complete when 10 reached
         # =========================================================================
         if videos_to_upload:
-            workflow.logger.info(
-                f"☁️ [DOWNLOAD] Queuing videos for upload | videos={len(videos_to_upload)} | event={event_id}"
-            )
+            log.info(workflow.logger, MODULE, "queuing_upload",
+                     "Queuing videos for upload",
+                     videos=len(videos_to_upload), event_id=event_id)
             await self._signal_upload_workflow(fixture_id, event_id, videos_to_upload, temp_dir, player_name, team_name)
             videos_uploaded = len(videos_to_upload)
             s3_urls = []  # We don't wait for upload results - it happens async in UploadWorkflow
         else:
-            workflow.logger.info(
-                f"📭 [DOWNLOAD] No videos to upload (all filtered/failed) | event={event_id}"
-            )
+            log.info(workflow.logger, MODULE, "no_videos_to_upload",
+                     "No videos to upload (all filtered/failed)", event_id=event_id)
             videos_uploaded = 0
             s3_urls = []
             
@@ -444,15 +439,15 @@ class DownloadWorkflow:
                     retry_policy=RetryPolicy(maximum_attempts=2),
                 )
             except Exception as e:
-                workflow.logger.warning(f"⚠️ [DOWNLOAD] Failed to cleanup temp dir | error={e}")
+                log.warning(workflow.logger, MODULE, "cleanup_failed",
+                            "Failed to cleanup temp dir", error=str(e))
             
             # STILL signal UploadWorkflow with empty list - it will check count
             await self._signal_upload_workflow(fixture_id, event_id, [], temp_dir)
         
-        workflow.logger.info(
-            f"🎉 [DOWNLOAD] WORKFLOW COMPLETE | uploaded={videos_uploaded} | "
-            f"s3_urls={len(s3_urls)} | event={event_id}"
-        )
+        log.info(workflow.logger, MODULE, "workflow_complete",
+                 "DownloadWorkflow COMPLETE",
+                 uploaded=videos_uploaded, s3_urls=len(s3_urls), event_id=event_id)
         
         return {
             "fixture_id": fixture_id,
@@ -491,15 +486,15 @@ class DownloadWorkflow:
             )
             
             if queue_result.get("status") == "queued":
-                workflow.logger.info(
-                    f"✅ [DOWNLOAD] Signaled UploadWorkflow | videos={len(videos)} | event={event_id}"
-                )
+                log.info(workflow.logger, MODULE, "upload_signaled",
+                         "Signaled UploadWorkflow",
+                         videos=len(videos), event_id=event_id)
             else:
-                workflow.logger.error(
-                    f"❌ [DOWNLOAD] Failed to signal UploadWorkflow | error={queue_result.get('error')} | event={event_id}"
-                )
+                log.error(workflow.logger, MODULE, "upload_signal_failed",
+                          "Failed to signal UploadWorkflow",
+                          error=queue_result.get('error'), event_id=event_id)
         except Exception as e:
-            workflow.logger.error(
-                f"❌ [DOWNLOAD] queue_videos_for_upload FAILED | error={e} | event={event_id}"
-            )
+            log.error(workflow.logger, MODULE, "queue_videos_failed",
+                      "queue_videos_for_upload FAILED",
+                      error=str(e), event_id=event_id)
 

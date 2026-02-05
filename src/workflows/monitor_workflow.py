@@ -32,6 +32,9 @@ with workflow.unsafe.imports_passed_through():
     from src.activities import upload as upload_activities
     from src.workflows.twitter_workflow import TwitterWorkflow, TwitterWorkflowInput
     from src.utils.fixture_status import get_completed_statuses
+    from src.utils.footy_logging import log
+
+MODULE = "monitor_workflow"
 
 
 @workflow.defn
@@ -64,7 +67,7 @@ class MonitorWorkflow:
         """
         cycle_start = workflow.now()
         
-        workflow.logger.info("👁️ Starting monitor cycle")
+        log.info(workflow.logger, MODULE, "cycle_start", "Starting monitor cycle")
         
         # Get completed statuses for checking if fixtures are finished
         completed_statuses = get_completed_statuses()
@@ -102,14 +105,12 @@ class MonitorWorkflow:
         fetch_active_ms = (t2 - t1).total_seconds() * 1000
         
         if staging_skipped:
-            workflow.logger.debug(
-                f"⏱️ [MONITOR] Timing | staging=skipped | fetch_active={fetch_active_ms:.0f}ms"
-            )
+            log.debug(workflow.logger, MODULE, "timing", "Monitor timing",
+                       staging="skipped", fetch_active_ms=int(fetch_active_ms))
         else:
-            workflow.logger.info(
-                f"⏱️ [MONITOR] Timing | staging={staging_ms:.0f}ms | fetch_active={fetch_active_ms:.0f}ms | "
-                f"polled={staging_polled} | updated={staging_updated} | activated={staging_activated}"
-            )
+            log.info(workflow.logger, MODULE, "timing", "Monitor timing",
+                      staging_ms=int(staging_ms), fetch_active_ms=int(fetch_active_ms),
+                      polled=staging_polled, updated=staging_updated, activated=staging_activated)
         
         # =========================================================================
         # Process fixtures IN PARALLEL - each fixture is independent
@@ -183,15 +184,13 @@ class MonitorWorkflow:
                 )
                 
                 if workflow_status.get("running"):
-                    workflow.logger.info(
-                        f"⏭️ [MONITOR] Twitter workflow already running | id={twitter_workflow_id}"
-                    )
+                    log.info(workflow.logger, MODULE, "twitter_already_running",
+                             "Twitter workflow already running", workflow_id=twitter_workflow_id)
                     continue
                 
                 if workflow_status.get("status") == "COMPLETED":
-                    workflow.logger.info(
-                        f"✅ [MONITOR] Twitter workflow already completed | id={twitter_workflow_id}"
-                    )
+                    log.info(workflow.logger, MODULE, "twitter_already_completed",
+                             "Twitter workflow already completed", workflow_id=twitter_workflow_id)
                     continue
                 
                 local_twitter_workflows.append(twitter_workflow_id)
@@ -219,7 +218,8 @@ class MonitorWorkflow:
                     task_timeout=timedelta(seconds=60),
                 )
                 
-                workflow.logger.info(f"🐦 Started TwitterWorkflow: {twitter_workflow_id}")
+                log.info(workflow.logger, MODULE, "twitter_workflow_started",
+                         "Started TwitterWorkflow", workflow_id=twitter_workflow_id)
                 
                 # NOTE: _monitor_complete is now set by TwitterWorkflow at its START
                 # This ensures the flag is only set when Twitter actually starts running,
@@ -268,11 +268,12 @@ class MonitorWorkflow:
                         start_to_close_timeout=timedelta(seconds=60),
                         retry_policy=RetryPolicy(maximum_attempts=2),
                     )
-                    workflow.logger.info(f"🧹 Cleaned up temp dirs for completed fixture {fixture_id}")
+                    log.info(workflow.logger, MODULE, "cleanup_success",
+                             "Cleaned up temp dirs for completed fixture", fixture_id=fixture_id)
                 except Exception as e:
-                    workflow.logger.warning(
-                        f"⚠️ Failed to cleanup temp dirs for fixture {fixture_id} | error={e}"
-                    )
+                    log.warning(workflow.logger, MODULE, "cleanup_failed",
+                                "Failed to cleanup temp dirs for fixture",
+                                fixture_id=fixture_id, error=str(e))
             
             # Single frontend notification after all processing
             if needs_frontend_refresh:
@@ -290,12 +291,15 @@ class MonitorWorkflow:
         )
         
         total_time = (workflow.now() - cycle_start).total_seconds()
-        workflow.logger.info(
-            f"✅ Monitor complete ({total_time:.1f}s): "
-            f"staging={'skipped' if staging_skipped else f'polled {staging_polled}'} ({staging_updated} updated/{staging_activated} activated), "
-            f"active={len(fixtures)} processed/{completed_count} completed, "
-            f"{len(twitter_workflows_started)} Twitter workflows started"
-        )
+        log.info(workflow.logger, MODULE, "cycle_complete", "Monitor cycle complete",
+                 total_time_s=round(total_time, 1),
+                 staging_skipped=staging_skipped,
+                 staging_polled=staging_polled,
+                 staging_updated=staging_updated,
+                 staging_activated=staging_activated,
+                 active_processed=len(fixtures),
+                 active_completed=completed_count,
+                 twitter_started=len(twitter_workflows_started))
         
         return {
             "staging_polled": staging_polled,

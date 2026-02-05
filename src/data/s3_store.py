@@ -14,6 +14,21 @@ from src.utils.config import (
     S3_BUCKET_NAME,
     S3_REGION,
 )
+from src.utils.footy_logging import get_fallback_logger, log
+
+MODULE = "s3_store"
+
+def _log_info(action: str, msg: str, **kwargs):
+    """Log info using fallback logger."""
+    log.info(get_fallback_logger(), MODULE, action, msg, **kwargs)
+
+def _log_warning(action: str, msg: str, **kwargs):
+    """Log warning using fallback logger."""
+    log.warning(get_fallback_logger(), MODULE, action, msg, **kwargs)
+
+def _log_error(action: str, msg: str, **kwargs):
+    """Log error using fallback logger."""
+    log.error(get_fallback_logger(), MODULE, action, msg, error=kwargs.get('error', ''), **{k: v for k, v in kwargs.items() if k != 'error'})
 
 
 class FootyS3Store:
@@ -41,30 +56,30 @@ class FootyS3Store:
         """Create bucket if it doesn't exist - REQUIRED for all operations"""
         try:
             self.s3_client.head_bucket(Bucket=self.bucket_name)
-            print(f"✅ S3 bucket '{self.bucket_name}' exists")
+            _log_info("bucket_exists", f"S3 bucket '{self.bucket_name}' exists", bucket=self.bucket_name)
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code')
             # Handle both 404 (numeric) and 'NoSuchBucket' (string) error codes
             if error_code == 404 or error_code == '404' or 'NoSuchBucket' in str(e):
-                print(f"📦 Bucket '{self.bucket_name}' doesn't exist, creating...")
+                _log_info("bucket_creating", f"Bucket '{self.bucket_name}' doesn't exist, creating...", bucket=self.bucket_name)
                 try:
                     self.s3_client.create_bucket(Bucket=self.bucket_name)
-                    print(f"✅ Created S3 bucket: {self.bucket_name}")
+                    _log_info("bucket_created", f"Created S3 bucket: {self.bucket_name}", bucket=self.bucket_name)
                 except ClientError as create_error:
                     # Check if bucket was created by another process (race condition)
                     if 'BucketAlreadyOwnedByYou' in str(create_error):
-                        print(f"✅ Bucket {self.bucket_name} already exists (created by another process)")
+                        _log_info("bucket_exists_race", f"Bucket {self.bucket_name} already exists (created by another process)", bucket=self.bucket_name)
                     else:
-                        print(f"❌ FATAL: Failed to create bucket: {create_error}")
+                        _log_error("bucket_create_failed", f"FATAL: Failed to create bucket", error=str(create_error), bucket=self.bucket_name)
                         raise  # Re-raise - this is a fatal error
             else:
-                print(f"❌ FATAL: Error checking bucket: {e}")
+                _log_error("bucket_check_failed", f"FATAL: Error checking bucket", error=str(e), bucket=self.bucket_name)
                 raise  # Re-raise - this is a fatal error
         except NoCredentialsError as e:
-            print(f"❌ FATAL: S3 credentials not configured: {e}")
+            _log_error("no_credentials", f"FATAL: S3 credentials not configured", error=str(e))
             raise
         except Exception as e:
-            print(f"❌ FATAL: Unexpected S3 error: {e}")
+            _log_error("unexpected_s3_error", f"FATAL: Unexpected S3 error", error=str(e))
             raise
     
     def upload_video(self, local_file_path: str, s3_key: str, metadata: Dict[str, Any] = None) -> Optional[str]:
@@ -115,7 +130,7 @@ class FootyS3Store:
             except ClientError as upload_error:
                 # If bucket disappeared, recreate and retry ONCE
                 if 'NoSuchBucket' in str(upload_error):
-                    print(f"⚠️ Bucket disappeared, recreating and retrying upload...")
+                    _log_warning("bucket_disappeared", "Bucket disappeared, recreating and retrying upload...", bucket=self.bucket_name)
                     self._ensure_bucket_exists()
                     # Retry upload
                     self.s3_client.upload_file(
@@ -130,13 +145,12 @@ class FootyS3Store:
             # Return relative path for frontend video proxy (not internal MinIO URL)
             # Frontend API will serve videos via /video/{bucket}/{path}
             s3_url = f"/video/{self.bucket_name}/{s3_key}"
-            print(f"✅ Uploaded: {s3_key}")
+            _log_info("video_uploaded", f"Uploaded: {s3_key}", s3_key=s3_key)
             return s3_url
             
         except Exception as e:
-            print(f"❌ FATAL: Upload failed for {s3_key}: {e}")
             import traceback
-            traceback.print_exc()
+            _log_error("upload_failed", f"FATAL: Upload failed for {s3_key}", error=str(e), s3_key=s3_key, traceback=traceback.format_exc())
             raise  # RAISE instead of returning None - let caller handle retry
     
     def upload_video_file(self, local_file_path: str, goal_id: str, video_index: int, 
@@ -177,7 +191,7 @@ class FootyS3Store:
                 return {"status": "error", "error": "Upload failed", "s3_key": None}
             
         except Exception as e:
-            print(f"❌ Upload failed: {e}")
+            _log_error("upload_video_file_failed", f"Upload failed", error=str(e), goal_id=goal_id)
             return {"status": "error", "error": str(e), "s3_key": None}
     
     def list_goal_videos(self, goal_id: str) -> list:
@@ -203,7 +217,7 @@ class FootyS3Store:
             return videos
         
         except Exception as e:
-            print(f"❌ Error listing videos: {e}")
+            _log_error("list_goal_videos_error", f"Error listing videos", error=str(e), goal_id=goal_id)
             return []
     
     def get_existing_video_hashes(self, fixture_id: int, event_id: str) -> Dict[str, Dict[str, Any]]:
@@ -238,7 +252,7 @@ class FootyS3Store:
             return existing_hashes
         
         except Exception as e:
-            print(f"❌ Error getting S3 hashes: {e}")
+            _log_error("get_hashes_error", f"Error getting S3 hashes", error=str(e), fixture_id=fixture_id, event_id=event_id)
             return {}
     
     def get_bucket_stats(self) -> Dict[str, Any]:
@@ -274,7 +288,7 @@ class FootyS3Store:
             tags = {tag['Key']: tag['Value'] for tag in response.get('TagSet', [])}
             return tags
         except Exception as e:
-            print(f"❌ Error getting tags: {e}")
+            _log_error("get_tags_error", f"Error getting tags", error=str(e), s3_key=s3_key)
             return {}
     
     def list_videos_by_fixture(self, fixture_id: int) -> list:
@@ -305,7 +319,7 @@ class FootyS3Store:
             
             return videos
         except Exception as e:
-            print(f"❌ Error listing videos: {e}")
+            _log_error("list_videos_by_fixture_error", f"Error listing videos", error=str(e), fixture_id=fixture_id)
             return []
     
     def tag_fixture_directory(self, fixture_id: int, home_team: str, away_team: str) -> bool:
@@ -343,18 +357,18 @@ class FootyS3Store:
                     Tagging={'TagSet': tag_set}
                 )
             
-            print(f"✅ Tagged {len(videos)} videos in fixture {fixture_id}")
+            _log_info("fixture_tagged", f"Tagged {len(videos)} videos in fixture {fixture_id}", fixture_id=fixture_id, video_count=len(videos))
             return True
         except Exception as e:
-            print(f"❌ Error tagging fixture directory: {e}")
+            _log_error("tag_fixture_error", f"Error tagging fixture directory", error=str(e), fixture_id=fixture_id)
             return False
     
     def delete_video(self, s3_key: str) -> bool:
         """Delete a video from S3"""
         try:
             self.s3_client.delete_object(Bucket=self.bucket_name, Key=s3_key)
-            print(f"🗑️ Deleted: {s3_key}")
+            _log_info("video_deleted", f"Deleted: {s3_key}", s3_key=s3_key)
             return True
         except Exception as e:
-            print(f"❌ Delete failed: {e}")
+            _log_error("delete_failed", f"Delete failed", error=str(e), s3_key=s3_key)
             return False

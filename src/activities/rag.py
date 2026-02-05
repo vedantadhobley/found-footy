@@ -31,6 +31,9 @@ import unicodedata
 from datetime import datetime, timezone
 
 from src.utils.config import LLAMA_CHAT_URL
+from src.utils.footy_logging import log
+
+MODULE = "rag"
 
 # Use centralized config
 LLAMA_URL = LLAMA_CHAT_URL
@@ -284,7 +287,8 @@ async def _search_wikidata_qid(team_name: str, team_type: str = "club", country:
                         
                         if city_matches:
                             desc_quality += 200
-                            activity.logger.info(f"✅ City match: {qid} ({label}) - {desc}")
+                            log.info(activity.logger, MODULE, "city_match", "City match found",
+                                     qid=qid, label=label, description=desc)
                             return qid  # Perfect match - return immediately
                         
                         # Boost for country match
@@ -298,11 +302,13 @@ async def _search_wikidata_qid(team_name: str, team_type: str = "club", country:
                         if desc_quality > best_desc_length:
                             best_candidate = qid
                             best_desc_length = desc_quality
-                            activity.logger.debug(f"📊 Better candidate: {qid} ({label}) - desc_quality={desc_quality}")
+                            log.debug(activity.logger, MODULE, "better_candidate", "Better candidate found",
+                                      qid=qid, label=label, desc_quality=desc_quality)
                         
                         # If we have a country match, that's good enough
                         if country_matches:
-                            activity.logger.info(f"✅ Country match: {qid} ({label}) - {desc}")
+                            log.info(activity.logger, MODULE, "country_match", "Country match found",
+                                     qid=qid, label=label, description=desc)
                             return qid
                     else:
                         if "national" not in desc or ("football" not in desc and "soccer" not in desc):
@@ -311,12 +317,18 @@ async def _search_wikidata_qid(team_name: str, team_type: str = "club", country:
                         return qid
                     
             except Exception as e:
-                activity.logger.warning(f"⚠️ Search error for '{search_term}': {e}")
+                log.warning(activity.logger, MODULE, "search_error", "Wikidata search error",
+                            search_term=search_term, error=str(e))
                 continue
     
     # Return best candidate found (even if not perfect)
     if best_candidate:
-        activity.logger.info(f"📋 Best candidate: {best_candidate} (desc_quality={best_desc_length})")
+        log.info(activity.logger, MODULE, "best_candidate", "Best candidate selected",
+                 qid=best_candidate, desc_quality=best_desc_length,
+                 search_terms_tried=len(search_terms))
+    else:
+        log.warning(activity.logger, MODULE, "no_wikidata_match", "No Wikidata match found after all search terms",
+                    team_name=team_name, team_type=team_type, search_terms_tried=len(search_terms))
     return best_candidate
 
 
@@ -345,7 +357,8 @@ async def _fetch_wikidata_aliases(qid: str) -> List[str]:
             return aliases
             
     except Exception as e:
-        activity.logger.warning(f"⚠️ Wikidata fetch error: {e}")
+        log.warning(activity.logger, MODULE, "wikidata_fetch_error", "Wikidata fetch error",
+                    error=str(e))
     
     return []
 
@@ -522,7 +535,8 @@ async def get_team_aliases(team_id: int, team_name: str, team_type: Optional[str
     cached = _get_cached_aliases(store, team_id)
     if cached:
         aliases = cached.get(TeamAliasFields.TWITTER_ALIASES, [])
-        activity.logger.info(f"📦 Cache hit: {aliases}")
+        log.info(activity.logger, MODULE, "cache_hit", "Cache hit",
+                 aliases=aliases)
         return aliases
     
     # 2. Get FULL team info from API (do this ONCE, use all the data)
@@ -541,38 +555,42 @@ async def get_team_aliases(team_id: int, team_name: str, team_type: Optional[str
         api_country = team_data.get("country")  # e.g., "England"
         api_city = venue_data.get("city")       # e.g., "Newcastle upon Tyne"
         
-        activity.logger.info(
-            f"🔍 API team info: {team_name} | national={national} | "
-            f"country={api_country} | city={api_city}"
-        )
+        log.info(activity.logger, MODULE, "api_team_info", "API team info retrieved",
+                 team_name=team_name, national=national, country=api_country, city=api_city)
     else:
         # API failed, try to use the passed hints
         national = team_type == "national" if team_type else False
-        activity.logger.warning(f"⚠️ API lookup failed for team {team_id}, using hints")
+        log.warning(activity.logger, MODULE, "api_lookup_failed", "API lookup failed, using hints",
+                    team_id=team_id)
     
     # Use API country if available, otherwise use passed country
     effective_country = api_country or country
     
     team_type_str = "national" if national else "club"
     
-    activity.logger.info(f"🔍 Getting aliases for team {team_id}: {team_name} ({team_type_str})")
-    activity.logger.info(f"🔄 Cache miss, starting RAG pipeline...")
+    log.info(activity.logger, MODULE, "get_aliases_started", "Getting aliases for team",
+             team_id=team_id, team_name=team_name, team_type=team_type_str)
+    log.info(activity.logger, MODULE, "cache_miss", "Cache miss, starting RAG pipeline")
     
     # 3. RETRIEVE: Get aliases from Wikidata (pass country AND city for better search)
     wikidata_aliases = []
     qid = await _search_wikidata_qid(team_name, team_type_str, effective_country, api_city)
     if qid:
-        activity.logger.info(f"📚 Found Wikidata QID: {qid}")
+        log.info(activity.logger, MODULE, "wikidata_qid_found", "Found Wikidata QID",
+                 qid=qid)
         wikidata_aliases = await _fetch_wikidata_aliases(qid)
-        activity.logger.info(f"📚 Wikidata aliases ({len(wikidata_aliases)}): {wikidata_aliases[:10]}...")
+        log.info(activity.logger, MODULE, "wikidata_aliases", "Wikidata aliases retrieved",
+                 count=len(wikidata_aliases), sample=wikidata_aliases[:10])
     else:
-        activity.logger.warning(f"⚠️ No Wikidata QID found for: {team_name}")
+        log.warning(activity.logger, MODULE, "no_wikidata_qid", "No Wikidata QID found",
+                    team_name=team_name)
     
     # 4. Process ALL sources into single words: team name + Wikidata aliases
     # The team name from API is treated the same as Wikidata aliases
     all_raw_aliases = [team_name] + wikidata_aliases
     cleaned_aliases = _clean_wikidata_aliases(all_raw_aliases)
-    activity.logger.info(f"🧹 Cleaned word list ({len(cleaned_aliases)}): {cleaned_aliases[:15]}...")
+    log.info(activity.logger, MODULE, "cleaned_aliases", "Cleaned word list",
+             count=len(cleaned_aliases), sample=cleaned_aliases[:15])
     
     # 5. AUGMENT + GENERATE: LLM selects best aliases
     # Use different prompts for clubs vs national teams
@@ -595,7 +613,8 @@ Available words: {json.dumps(cleaned_aliases)}
 Pick 3-5 words from the list above. Only return words that appear in the list.
 Output JSON array only. /no_think"""
                 
-                activity.logger.info(f"🤖 Sending to LLM: {prompt[:100]}...")
+                log.info(activity.logger, MODULE, "llm_request", "Sending to LLM",
+                         prompt_preview=prompt[:100])
                 
                 response = await client.post(
                     f"{LLAMA_URL}/v1/chat/completions",
@@ -612,7 +631,8 @@ Output JSON array only. /no_think"""
                 
                 result = response.json()
                 text = result["choices"][0]["message"]["content"].strip()
-                activity.logger.info(f"🤖 LLM response: {text}")
+                log.info(activity.logger, MODULE, "llm_response", "LLM response received",
+                         response=text)
                 
                 llm_aliases = _parse_llm_response(text)
                 
@@ -621,6 +641,7 @@ Output JSON array only. /no_think"""
                     # Also filter out 2-letter-or-less words (FC, AC, RC, etc.)
                     allowed_words_lower = {w.lower() for w in cleaned_aliases}
                     twitter_aliases = []
+                    hallucinated_count = 0
                     for alias in llm_aliases:
                         normalized = _normalize_alias(alias)
                         for word in normalized.split():
@@ -639,12 +660,21 @@ Output JSON array only. /no_think"""
                                 # Clubs: must be in Wikidata list
                                 twitter_aliases.append(word)
                             else:
-                                activity.logger.warning(f"🚫 Rejected hallucinated word: '{word}' (not in input list)")
+                                hallucinated_count += 1
+                                log.debug(activity.logger, MODULE, "hallucination_rejected", "Rejected hallucinated word",
+                                            word=word)
+                    
+                    # Log summary of hallucinations if any
+                    if hallucinated_count > 0:
+                        log.warning(activity.logger, MODULE, "hallucinations_filtered", 
+                                    f"Filtered {hallucinated_count} hallucinated words from LLM response",
+                                    rejected=hallucinated_count, accepted=len(twitter_aliases))
                     
                     # Enforce max limit
                     twitter_aliases = twitter_aliases[:MAX_ALIASES]
                     
-                    activity.logger.info(f"✅ Final aliases ({len(twitter_aliases)}): {twitter_aliases}")
+                    log.info(activity.logger, MODULE, "final_aliases", "Final aliases selected",
+                             count=len(twitter_aliases), aliases=twitter_aliases)
                     
                     # Cache with all data
                     _cache_aliases(
@@ -653,12 +683,15 @@ Output JSON array only. /no_think"""
                     )
                     return twitter_aliases
                 
-                activity.logger.warning(f"⚠️ LLM returned invalid/empty: {text}")
+                log.warning(activity.logger, MODULE, "llm_invalid", "LLM returned invalid/empty",
+                            response=text)
                 
         except httpx.ConnectError:
-            activity.logger.warning("⚠️ LLM server not available, using fallback")
+            log.warning(activity.logger, MODULE, "llm_unavailable", "LLM server not available, using fallback",
+                        llm_url=LLAMA_URL)
         except Exception as e:
-            activity.logger.warning(f"⚠️ LLM error: {e}")
+            log.warning(activity.logger, MODULE, "llm_error", "LLM error",
+                        error=str(e))
     
     # Fallback: Just use first few cleaned aliases + team name
     fallback = cleaned_aliases[:3] if cleaned_aliases else []
@@ -671,7 +704,8 @@ Output JSON array only. /no_think"""
     
     twitter_aliases = [_normalize_alias(a) for a in fallback][:MAX_ALIASES]
     
-    activity.logger.info(f"📋 Fallback aliases ({len(twitter_aliases)}): {twitter_aliases}")
+    log.info(activity.logger, MODULE, "fallback_aliases", "Using fallback aliases",
+             count=len(twitter_aliases), aliases=twitter_aliases)
     
     # Only cache if we got something
     if twitter_aliases:
@@ -691,7 +725,8 @@ async def save_team_aliases(fixture_id: int, event_id: str, aliases: List[str]) 
     from src.data.mongo_store import FootyMongoStore
     from src.data.models import EventFields
     
-    activity.logger.info(f"💾 Saving aliases for {event_id}: {aliases}")
+    log.info(activity.logger, MODULE, "save_aliases_started", "Saving aliases",
+             event_id=event_id, aliases=aliases)
     
     store = FootyMongoStore()
     
@@ -702,14 +737,17 @@ async def save_team_aliases(fixture_id: int, event_id: str, aliases: List[str]) 
         )
         
         if result.modified_count > 0:
-            activity.logger.info(f"✅ Saved aliases for {event_id}")
+            log.info(activity.logger, MODULE, "save_aliases_success", "Saved aliases",
+                     event_id=event_id)
             return True
         else:
-            activity.logger.warning(f"⚠️ No document modified for {event_id}")
+            log.warning(activity.logger, MODULE, "save_aliases_no_modify", "No document modified",
+                        event_id=event_id)
             return False
             
     except Exception as e:
-        activity.logger.error(f"❌ Error saving aliases: {e}")
+        log.error(activity.logger, MODULE, "save_aliases_error", "Error saving aliases",
+                  error=str(e))
         return False
 
 

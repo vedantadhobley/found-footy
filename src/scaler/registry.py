@@ -14,6 +14,11 @@ from datetime import datetime, timezone
 from typing import Optional, List
 import threading
 
+from src.scaler.scaler_logging import ScalerLogger
+
+MODULE = "registry"
+log = ScalerLogger()
+
 
 class TwitterRegistry:
     """
@@ -74,10 +79,10 @@ class TwitterRegistry:
                 },
                 upsert=True
             )
-            print(f"✅ Registered Twitter instance: {instance_id} at {url}")
+            log.info(MODULE, "instance_registered", f"Registered Twitter instance: {instance_id} at {url}", instance_id=instance_id, url=url)
             return True
         except Exception as e:
-            print(f"❌ Failed to register Twitter instance: {e}")
+            log.error(MODULE, "register_failed", f"Failed to register Twitter instance: {instance_id}", error=str(e), instance_id=instance_id)
             return False
     
     def unregister(self, instance_id: str) -> bool:
@@ -88,10 +93,10 @@ class TwitterRegistry:
                 {"instance_id": instance_id},
                 {"$set": {"status": "unavailable"}}
             )
-            print(f"🛑 Unregistered Twitter instance: {instance_id}")
+            log.info(MODULE, "instance_unregistered", f"Unregistered Twitter instance: {instance_id}", instance_id=instance_id)
             return True
         except Exception as e:
-            print(f"❌ Failed to unregister Twitter instance: {e}")
+            log.error(MODULE, "unregister_failed", f"Failed to unregister Twitter instance: {instance_id}", error=str(e), instance_id=instance_id)
             return False
     
     def heartbeat(self, instance_id: str) -> bool:
@@ -104,7 +109,7 @@ class TwitterRegistry:
             )
             return True
         except Exception as e:
-            print(f"❌ Heartbeat failed for {instance_id}: {e}")
+            log.error(MODULE, "heartbeat_failed", f"Heartbeat failed for {instance_id}", error=str(e), instance_id=instance_id)
             return False
     
     def get_available_instances(self, max_age_seconds: int = 30) -> List[str]:
@@ -129,6 +134,11 @@ class TwitterRegistry:
             
             urls = [i["url"] for i in instances]
             
+            # Log if instance count changed (cache refresh with change)
+            if self._local_cache and len(urls) != len(self._local_cache):
+                log.info(MODULE, "instance_cache_refreshed", "Twitter instance cache refreshed",
+                         previous_count=len(self._local_cache), new_count=len(urls))
+            
             # Update cache
             self._local_cache = urls
             self._cache_time = now
@@ -136,7 +146,7 @@ class TwitterRegistry:
             return urls
             
         except Exception as e:
-            print(f"❌ Failed to get Twitter instances: {e}")
+            log.error(MODULE, "get_instances_failed", "Failed to get Twitter instances", error=str(e))
             # Return cached or default on error
             if self._local_cache:
                 return self._local_cache
@@ -154,7 +164,7 @@ class TwitterRegistry:
         instances = self.get_available_instances()
         
         if not instances:
-            print(f"⚠️ No Twitter instances available, using default: {self._default_url}")
+            log.warning(MODULE, "no_instances_available", f"No Twitter instances available, using default", default_url=self._default_url)
             return self._default_url
         
         if len(instances) == 1:

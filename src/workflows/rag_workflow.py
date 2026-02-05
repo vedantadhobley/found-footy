@@ -42,6 +42,9 @@ from typing import List, Optional
 with workflow.unsafe.imports_passed_through():
     from src.activities import rag as rag_activities
     from src.workflows.twitter_workflow import TwitterWorkflow, TwitterWorkflowInput
+    from src.utils.footy_logging import log
+
+MODULE = "rag_workflow"
 
 
 @dataclass
@@ -79,16 +82,16 @@ class RAGWorkflow:
     
     @workflow.run
     async def run(self, input: RAGWorkflowInput) -> dict:
-        workflow.logger.info(
-            f"🔍 [RAG] STARTED | event={input.event_id} | "
-            f"team_id={input.team_id} | team_name='{input.team_name}' | "
-            f"player='{input.player_name}' | minute={input.minute}"
-        )
+        log.info(workflow.logger, MODULE, "started", "RAGWorkflow STARTED",
+                 event_id=input.event_id, team_id=input.team_id,
+                 team_name=input.team_name, player=input.player_name,
+                 minute=input.minute)
         
         # =========================================================================
         # Step 1: Try fast cache lookup first (pre-cached during ingestion)
         # =========================================================================
-        workflow.logger.info(f"🔍 [RAG] Checking alias cache for team_id={input.team_id}")
+        log.info(workflow.logger, MODULE, "checking_cache",
+                 "Checking alias cache", team_id=input.team_id)
         
         aliases = None
         cache_hit = False
@@ -106,17 +109,16 @@ class RAGWorkflow:
             )
             if aliases:
                 cache_hit = True
-                workflow.logger.info(f"📦 [RAG] Cache HIT | team_id={input.team_id} | aliases={aliases}")
+                log.info(workflow.logger, MODULE, "cache_hit",
+                         "Cache HIT", team_id=input.team_id, aliases=aliases)
         except Exception as e:
-            workflow.logger.error(
-                f"❌ [RAG] Cache lookup FAILED | team_id={input.team_id} | error={e}"
-            )
+            log.error(workflow.logger, MODULE, "cache_lookup_failed",
+                      "Cache lookup FAILED", team_id=input.team_id, error=str(e))
         
         if not aliases:
             # Cache miss - do full RAG lookup (Wikidata + LLM)
-            workflow.logger.info(
-                f"🔄 [RAG] Cache MISS | team_id={input.team_id} | Running full RAG pipeline..."
-            )
+            log.info(workflow.logger, MODULE, "cache_miss",
+                     "Cache MISS - Running full RAG pipeline", team_id=input.team_id)
             
             try:
                 aliases = await workflow.execute_activity(
@@ -129,23 +131,21 @@ class RAGWorkflow:
                         backoff_coefficient=2.0,
                     ),
                 )
-                workflow.logger.info(
-                    f"✅ [RAG] Full RAG SUCCESS | team_id={input.team_id} | aliases={aliases}"
-                )
+                log.info(workflow.logger, MODULE, "rag_success",
+                         "Full RAG SUCCESS", team_id=input.team_id, aliases=aliases)
             except Exception as e:
-                workflow.logger.error(
-                    f"❌ [RAG] Full RAG FAILED | team_id={input.team_id} | error={e}"
-                )
+                log.error(workflow.logger, MODULE, "rag_failed",
+                          "Full RAG FAILED", team_id=input.team_id, error=str(e))
                 # Fallback to just team name - better than nothing
                 aliases = [input.team_name]
-                workflow.logger.warning(
-                    f"⚠️ [RAG] Using FALLBACK aliases | team_id={input.team_id} | aliases={aliases}"
-                )
+                log.warning(workflow.logger, MODULE, "using_fallback",
+                            "Using FALLBACK aliases", team_id=input.team_id, aliases=aliases)
         
         # =========================================================================
         # Step 2: Save aliases to MongoDB for debugging/visibility
         # =========================================================================
-        workflow.logger.info(f"💾 [RAG] Saving aliases to MongoDB | event={input.event_id}")
+        log.info(workflow.logger, MODULE, "saving_aliases",
+                 "Saving aliases to MongoDB", event_id=input.event_id)
         
         try:
             await workflow.execute_activity(
@@ -154,14 +154,12 @@ class RAGWorkflow:
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(maximum_attempts=3),
             )
-            workflow.logger.info(
-                f"✅ [RAG] Aliases saved | event={input.event_id} | aliases={aliases}"
-            )
+            log.info(workflow.logger, MODULE, "aliases_saved",
+                     "Aliases saved", event_id=input.event_id, aliases=aliases)
         except Exception as e:
-            workflow.logger.warning(
-                f"⚠️ [RAG] Failed to save aliases | event={input.event_id} | error={e} | "
-                f"Continuing anyway - aliases will still be passed to Twitter"
-            )
+            log.warning(workflow.logger, MODULE, "save_aliases_failed",
+                        "Failed to save aliases - Continuing anyway",
+                        event_id=input.event_id, error=str(e))
         
         # =========================================================================
         # Step 3: START TwitterWorkflow (fire-and-forget)
@@ -176,10 +174,9 @@ class RAGWorkflow:
         
         twitter_workflow_id = f"twitter-{team_clean}-{player_last}-{minute_str}-{input.event_id}"
         
-        workflow.logger.info(
-            f"🐦 [RAG] Starting TwitterWorkflow (fire-and-forget) | "
-            f"twitter_id={twitter_workflow_id} | aliases={aliases}"
-        )
+        log.info(workflow.logger, MODULE, "starting_twitter",
+                 "Starting TwitterWorkflow (fire-and-forget)",
+                 twitter_id=twitter_workflow_id, aliases=aliases)
         
         try:
             # START child workflow - don't wait (fire-and-forget)
@@ -197,21 +194,18 @@ class RAGWorkflow:
                 task_queue="found-footy",  # Explicit queue - don't inherit from parent
                 # No execution_timeout - Twitter manages its own lifecycle
             )
-            workflow.logger.info(
-                f"✅ [RAG] TwitterWorkflow STARTED | twitter_id={twitter_workflow_id}"
-            )
+            log.info(workflow.logger, MODULE, "twitter_started",
+                     "TwitterWorkflow STARTED", twitter_id=twitter_workflow_id)
         except Exception as e:
-            workflow.logger.error(
-                f"❌ [RAG] Failed to start TwitterWorkflow | "
-                f"twitter_id={twitter_workflow_id} | error={e}"
-            )
+            log.error(workflow.logger, MODULE, "twitter_start_failed",
+                      "Failed to start TwitterWorkflow",
+                      twitter_id=twitter_workflow_id, error=str(e))
             # Re-raise - this is a critical failure
             raise
         
-        workflow.logger.info(
-            f"✅ [RAG] COMPLETED | event={input.event_id} | cache_hit={cache_hit} | "
-            f"aliases={aliases} | twitter_id={twitter_workflow_id}"
-        )
+        log.info(workflow.logger, MODULE, "completed", "RAGWorkflow COMPLETED",
+                 event_id=input.event_id, cache_hit=cache_hit,
+                 aliases=aliases, twitter_id=twitter_workflow_id)
         
         return {
             "status": "completed",

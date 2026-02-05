@@ -3,6 +3,10 @@ from temporalio import activity
 from typing import Dict, List, Any
 from datetime import date, datetime, timedelta, timezone
 
+from src.utils.footy_logging import log
+
+MODULE = "ingest"
+
 
 @activity.defn
 async def fetch_todays_fixtures(target_date_str: str | None = None) -> List[Dict[str, Any]]:
@@ -19,7 +23,8 @@ async def fetch_todays_fixtures(target_date_str: str | None = None) -> List[Dict
         # Use UTC date, not server local time
         target_date = datetime.now(timezone.utc).date()
     
-    activity.logger.info(f"🌐 Fetching fixtures for {target_date}")
+    log.info(activity.logger, MODULE, "fetch_fixtures_started", "Fetching fixtures for date",
+             target_date=str(target_date))
     
     try:
         # Import here to avoid circular imports
@@ -28,7 +33,8 @@ async def fetch_todays_fixtures(target_date_str: str | None = None) -> List[Dict
         
         # Get all fixtures for the date
         all_fixtures = get_fixtures_for_date(target_date)
-        activity.logger.info(f"📥 Retrieved {len(all_fixtures)} total fixtures from API")
+        log.info(activity.logger, MODULE, "fixtures_retrieved", "Retrieved fixtures from API",
+                 total=len(all_fixtures))
         
         # Filter to only our tracked teams
         tracked_team_ids = set(get_team_ids())
@@ -39,15 +45,15 @@ async def fetch_todays_fixtures(target_date_str: str | None = None) -> List[Dict
             or fixture.get("teams", {}).get("away", {}).get("id") in tracked_team_ids
         ]
         
-        activity.logger.info(
-            f"✅ Filtered to {len(filtered_fixtures)} fixtures for our {len(tracked_team_ids)} tracked teams "
-            f"(removed {len(all_fixtures) - len(filtered_fixtures)} irrelevant fixtures)"
-        )
+        log.info(activity.logger, MODULE, "fixtures_filtered", "Filtered to tracked teams",
+                 filtered=len(filtered_fixtures), tracked_teams=len(tracked_team_ids),
+                 removed=len(all_fixtures) - len(filtered_fixtures))
         
         return filtered_fixtures
     
     except Exception as e:
-        activity.logger.error(f"❌ Failed to fetch fixtures: {e}")
+        log.error(activity.logger, MODULE, "fetch_fixtures_failed", "Failed to fetch fixtures",
+                  error=str(e))
         raise
 
 
@@ -64,17 +70,19 @@ async def fetch_fixtures_by_ids(fixture_ids: List[int]) -> List[Dict[str, Any]]:
         List of fixture objects from API-Football
     """
     if not fixture_ids:
-        activity.logger.warning("⚠️ No fixture IDs provided")
+        log.warning(activity.logger, MODULE, "no_fixture_ids", "No fixture IDs provided")
         return []
     
-    activity.logger.info(f"🌐 Fetching {len(fixture_ids)} specific fixtures: {fixture_ids}")
+    log.info(activity.logger, MODULE, "fetch_by_ids_started", "Fetching specific fixtures",
+             fixture_ids=fixture_ids, count=len(fixture_ids))
     
     try:
         from src.api.api_client import fixtures_batch
         
         # Fetch fixtures by IDs (API supports batch fetch)
         fixtures = fixtures_batch(fixture_ids)
-        activity.logger.info(f"✅ Retrieved {len(fixtures)} fixtures by ID")
+        log.info(activity.logger, MODULE, "fetch_by_ids_success", "Retrieved fixtures by ID",
+                 count=len(fixtures))
         
         # Log which fixtures were found
         for fixture in fixtures:
@@ -82,18 +90,21 @@ async def fetch_fixtures_by_ids(fixture_ids: List[int]) -> List[Dict[str, Any]]:
             home = fixture.get("teams", {}).get("home", {}).get("name", "?")
             away = fixture.get("teams", {}).get("away", {}).get("name", "?")
             status = fixture.get("fixture", {}).get("status", {}).get("short", "?")
-            activity.logger.info(f"  📋 {fixture_id}: {home} vs {away} ({status})")
+            log.info(activity.logger, MODULE, "fixture_found", "Fixture found",
+                     fixture_id=fixture_id, home=home, away=away, status=status)
         
         # Warn about any IDs that weren't found
         found_ids = {f.get("fixture", {}).get("id") for f in fixtures}
         missing_ids = set(fixture_ids) - found_ids
         if missing_ids:
-            activity.logger.warning(f"⚠️ Could not find fixtures: {missing_ids}")
+            log.warning(activity.logger, MODULE, "fixtures_not_found", "Some fixtures not found",
+                        missing_ids=list(missing_ids))
         
         return fixtures
     
     except Exception as e:
-        activity.logger.error(f"❌ Failed to fetch fixtures by ID: {e}")
+        log.error(activity.logger, MODULE, "fetch_by_ids_failed", "Failed to fetch fixtures by ID",
+                  error=str(e))
         raise
 
 
@@ -113,7 +124,7 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
     NOTE: PST (Postponed) is treated as ACTIVE to handle short delays (15-30 min).
     """
     if not fixtures:
-        activity.logger.warning("⚠️  No fixtures to categorize")
+        log.warning(activity.logger, MODULE, "no_fixtures", "No fixtures to categorize")
         return {"staging": 0, "active": 0, "completed": 0, "skipped": 0}
     
     try:
@@ -143,10 +154,11 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
                 new_fixtures.append(fixture)
         
         if skipped_count > 0:
-            activity.logger.info(f"⏭️  Skipped {skipped_count} fixtures that already exist")
+            log.info(activity.logger, MODULE, "skipped_existing", "Skipped existing fixtures",
+                     count=skipped_count)
         
         if not new_fixtures:
-            activity.logger.info("✅ No new fixtures to add (all already exist)")
+            log.info(activity.logger, MODULE, "no_new_fixtures", "No new fixtures to add - all already exist")
             return {"staging": 0, "active": 0, "completed": 0, "skipped": skipped_count}
         
         # Get status sets
@@ -163,7 +175,8 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
             fixture_id = fixture.get("fixture", {}).get("id", "unknown")
             
             if not status:
-                activity.logger.warning(f"⚠️  Fixture {fixture_id} has no status, defaulting to staging")
+                log.warning(activity.logger, MODULE, "no_status", "Fixture has no status, defaulting to staging",
+                            fixture_id=fixture_id)
                 staging_fixtures.append(fixture)
                 continue
             
@@ -175,28 +188,29 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
             elif status in staging_statuses:
                 staging_fixtures.append(fixture)
             else:
-                activity.logger.warning(f"⚠️  Unknown status '{status}' for fixture {fixture_id}, defaulting to staging")
+                log.warning(activity.logger, MODULE, "unknown_status", "Unknown status, defaulting to staging",
+                            fixture_id=fixture_id, status=status)
                 staging_fixtures.append(fixture)
         
-        activity.logger.info(
-            f"📊 Categorized {len(new_fixtures)} NEW fixtures: "
-            f"{len(staging_fixtures)} staging, "
-            f"{len(active_fixtures)} active, "
-            f"{len(completed_fixtures)} completed"
-        )
+        log.info(activity.logger, MODULE, "categorized", "Categorized new fixtures",
+                 total=len(new_fixtures), staging=len(staging_fixtures),
+                 active=len(active_fixtures), completed=len(completed_fixtures))
         
         if active_fixtures:
-            activity.logger.info(f"🔥 {len(active_fixtures)} fixtures already LIVE - will catch goals immediately!")
+            log.info(activity.logger, MODULE, "live_fixtures", "Fixtures already live - will catch goals immediately",
+                     count=len(active_fixtures))
         
         if completed_fixtures:
-            activity.logger.info(f"🏁 {len(completed_fixtures)} fixtures already FINISHED - skip monitoring")
+            log.info(activity.logger, MODULE, "finished_fixtures", "Fixtures already finished - skip monitoring",
+                     count=len(completed_fixtures))
         
         # Store in collections (store already initialized above)
         staging_count = store.bulk_insert_fixtures(staging_fixtures, "fixtures_staging") if staging_fixtures else 0
         active_count = store.bulk_insert_fixtures(active_fixtures, "fixtures_active") if active_fixtures else 0
         completed_count = store.bulk_insert_fixtures(completed_fixtures, "fixtures_completed") if completed_fixtures else 0
         
-        activity.logger.info(f"✅ Stored fixtures: {staging_count} staging, {active_count} active, {completed_count} completed")
+        log.info(activity.logger, MODULE, "stored", "Stored fixtures",
+                 staging=staging_count, active=active_count, completed=completed_count)
         
         return {
             "staging": staging_count,
@@ -206,7 +220,8 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
         }
     
     except Exception as e:
-        activity.logger.error(f"❌ Failed to categorize/store fixtures: {e}")
+        log.error(activity.logger, MODULE, "categorize_failed", "Failed to categorize/store fixtures",
+                  error=str(e))
         raise
 
 
@@ -245,10 +260,8 @@ async def cleanup_old_fixtures(retention_days: int = 14) -> Dict[str, Any]:
     # Delete fixtures with date < Jan 2 (keeps Jan 2 through Jan 15 = 14 days)
     cutoff_date = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=retention_days)
     
-    activity.logger.info(
-        f"🧹 [CLEANUP] Starting old fixture cleanup | retention={retention_days} days | "
-        f"cutoff={cutoff_date.strftime('%Y-%m-%d')}"
-    )
+    log.info(activity.logger, MODULE, "cleanup_started", "Starting old fixture cleanup",
+             retention_days=retention_days, cutoff=cutoff_date.strftime('%Y-%m-%d'))
     
     store = FootyMongoStore()
     s3_store = FootyS3Store()
@@ -265,7 +278,8 @@ async def cleanup_old_fixtures(retention_days: int = 14) -> Dict[str, Any]:
         }))
         
         if not old_fixtures:
-            activity.logger.info(f"✅ [CLEANUP] No fixtures older than {cutoff_date.strftime('%Y-%m-%d')} found")
+            log.info(activity.logger, MODULE, "cleanup_none_found", "No old fixtures found",
+                     cutoff=cutoff_date.strftime('%Y-%m-%d'))
             return {
                 "cutoff_date": cutoff_date.isoformat(),
                 "deleted_fixtures": 0,
@@ -273,7 +287,8 @@ async def cleanup_old_fixtures(retention_days: int = 14) -> Dict[str, Any]:
                 "failed_s3_deletes": 0,
             }
         
-        activity.logger.info(f"🗑️ [CLEANUP] Found {len(old_fixtures)} fixtures to delete")
+        log.info(activity.logger, MODULE, "cleanup_found", "Found fixtures to delete",
+                 count=len(old_fixtures))
         
         for fixture in old_fixtures:
             fixture_id = fixture.get("_id") or fixture.get("fixture", {}).get("id")
@@ -298,9 +313,8 @@ async def cleanup_old_fixtures(retention_days: int = 14) -> Dict[str, Any]:
                             )
                             deleted_videos += 1
                         except Exception as e:
-                            activity.logger.warning(
-                                f"⚠️ [CLEANUP] Failed to delete S3 video | key={s3_key} | error={e}"
-                            )
+                            log.warning(activity.logger, MODULE, "s3_delete_failed", "Failed to delete S3 video",
+                                        s3_key=s3_key, error=str(e))
                             failed_s3_deletes += 1
             
             # Also delete any S3 objects with the fixture prefix (catch-all for orphaned files)
@@ -320,25 +334,24 @@ async def cleanup_old_fixtures(retention_days: int = 14) -> Dict[str, Any]:
                         if "_s3_key" not in str(obj["Key"]):
                             deleted_videos += 1
                     except Exception as e:
-                        activity.logger.warning(f"⚠️ [CLEANUP] Failed to delete orphan S3 | key={obj['Key']}")
+                        log.warning(activity.logger, MODULE, "orphan_s3_delete_failed", "Failed to delete orphan S3",
+                                    key=obj['Key'])
                         failed_s3_deletes += 1
             except Exception as e:
-                activity.logger.warning(f"⚠️ [CLEANUP] Failed to list S3 prefix {prefix}: {e}")
+                log.warning(activity.logger, MODULE, "s3_list_failed", "Failed to list S3 prefix",
+                            prefix=prefix, error=str(e))
             
             # Delete fixture from MongoDB
             result = store.fixtures_completed.delete_one({"_id": fixture_id})
             if result.deleted_count > 0:
                 deleted_fixtures += 1
-                activity.logger.info(
-                    f"🗑️ [CLEANUP] Deleted fixture | id={fixture_id} | "
-                    f"date={fixture_date[:10] if fixture_date else '?'} | "
-                    f"{home_team} vs {away_team} | videos={fixture_video_count}"
-                )
+                log.info(activity.logger, MODULE, "fixture_deleted", "Deleted fixture",
+                         fixture_id=fixture_id, date=fixture_date[:10] if fixture_date else "?",
+                         home=home_team, away=away_team, videos=fixture_video_count)
         
-        activity.logger.info(
-            f"✅ [CLEANUP] Complete | deleted_fixtures={deleted_fixtures} | "
-            f"deleted_videos={deleted_videos} | failed_s3={failed_s3_deletes}"
-        )
+        log.info(activity.logger, MODULE, "cleanup_complete", "Cleanup complete",
+                 deleted_fixtures=deleted_fixtures, deleted_videos=deleted_videos,
+                 failed_s3=failed_s3_deletes)
         
         return {
             "cutoff_date": cutoff_date.isoformat(),
@@ -348,5 +361,6 @@ async def cleanup_old_fixtures(retention_days: int = 14) -> Dict[str, Any]:
         }
         
     except Exception as e:
-        activity.logger.error(f"❌ [CLEANUP] Failed: {e}")
+        log.error(activity.logger, MODULE, "cleanup_failed", "Cleanup failed",
+                  error=str(e))
         raise

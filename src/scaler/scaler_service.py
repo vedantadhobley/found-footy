@@ -26,6 +26,10 @@ from pymongo import MongoClient
 from python_on_whales import DockerClient
 from temporalio.client import Client
 
+from src.scaler.scaler_logging import log
+
+MODULE = "scaler"
+
 # Force unbuffered output
 sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
 sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
@@ -96,7 +100,7 @@ class TemporalMetrics:
                 "activity_pollers": len(activity_resp.pollers) if activity_resp.pollers else 0,
             }
         except Exception as e:
-            print(f"❌ Error getting task queue metrics: {e}")
+            log.error(MODULE, "task_queue_error", "Error getting task queue metrics", error=str(e))
             return {"workflow_tasks": 0, "activity_tasks": 0, "total": 0, 
                     "workflow_pollers": 0, "activity_pollers": 0}
 
@@ -130,7 +134,7 @@ class TemporalMetrics:
             
             return count
         except Exception as e:
-            print(f"❌ Error counting active workflows: {e}")
+            log.error(MODULE, "workflow_count_error", "Error counting active workflows", error=str(e))
             return 0
 
 
@@ -171,7 +175,7 @@ class MongoMetrics:
                     total += result[0].get("active_goals", 0)
             return total
         except Exception as e:
-            print(f"❌ Error getting active Twitter goals: {e}")
+            log.error(MODULE, "active_goals_error", "Error getting active Twitter goals", error=str(e))
             return 0
     
     def get_goals_summary(self) -> dict:
@@ -234,7 +238,7 @@ class MongoMetrics:
                 "total_goals": total_goals
             }
         except Exception as e:
-            print(f"❌ Error getting goals summary: {e}")
+            log.error(MODULE, "goals_summary_error", "Error getting goals summary", error=str(e))
             return {"in_progress": 0, "total_videos": 0, "todays_goals": 0, "total_goals": 0}
 
 
@@ -266,7 +270,7 @@ class ScalerService:
             containers = self.docker.ps(filters={"name": f"{PROJECT_NAME}-{service_name}-"})
             return [c.name for c in containers if c.state.running]
         except Exception as e:
-            print(f"❌ Error listing {service_name} containers: {e}")
+            log.error(MODULE, "container_list_error", "Error listing containers", service=service_name, error=str(e))
             return []
     
     def get_running_count(self, service_name: str) -> int:
@@ -284,17 +288,26 @@ class ScalerService:
             return True
         
         try:
-            print(f"🔄 Scaling {service_name}: {current} → {target}")
+            log.info(MODULE, "scaling", "Scaling service", service=service_name, current=current, target=target)
             # Use docker compose up with --scale
             self.docker.compose.up(
                 [service_name],
                 detach=True,
                 scales={service_name: target}
             )
-            print(f"✅ Scaled {service_name} to {target}")
-            return True
+            
+            # Verify scaling succeeded (brief wait then check)
+            import time
+            time.sleep(2)
+            actual = self.get_running_count(service_name)
+            if actual == target:
+                log.info(MODULE, "scaled", "Scaled service successfully", service=service_name, target=target, actual=actual)
+            else:
+                log.warning(MODULE, "scale_mismatch", "Scale target not reached", 
+                           service=service_name, target=target, actual=actual)
+            return actual == target
         except Exception as e:
-            print(f"❌ Failed to scale {service_name}: {e}")
+            log.error(MODULE, "scale_failed", "Failed to scale service", service=service_name, error=str(e))
             return False
     
     # Legacy compatibility - these now just call scale_service
@@ -394,21 +407,22 @@ class ScalerService:
         return self.scale_service("worker", target_count)
     async def run_scaling_loop(self):
         """Main scaling loop."""
-        print(f"🚀 Scaler service started")
-        print(f"   Task queue: {TASK_QUEUE}")
-        print(f"   Instances: min={self.min_instances}, max={self.max_instances}")
-        print(f"   Worker scale up threshold: {self.scale_up_threshold} workflows/worker")
-        print(f"   Worker scale down threshold: {self.scale_down_threshold} workflows/worker")
-        print(f"   Twitter goals per instance: {self.twitter_goals_per_instance}")
-        print(f"   Check interval: {self.check_interval}s")
-        print(f"   Cooldown: {self.scale_cooldown}s")
+        log.info(MODULE, "startup", "Scaler service started",
+                 task_queue=TASK_QUEUE,
+                 min_instances=self.min_instances,
+                 max_instances=self.max_instances,
+                 scale_up_threshold=self.scale_up_threshold,
+                 scale_down_threshold=self.scale_down_threshold,
+                 twitter_goals_per_instance=self.twitter_goals_per_instance,
+                 check_interval=self.check_interval,
+                 cooldown=self.scale_cooldown)
         
         # Ensure minimum instances on startup
-        print(f"\n🔧 Ensuring minimum instances...")
+        log.info(MODULE, "ensuring_min_instances", "Ensuring minimum instances")
         self.scale_service("worker", self.min_instances)
         self.scale_service("twitter", self.min_instances)
         
-        print(f"\n📊 Starting monitoring loop...")
+        log.info(MODULE, "monitoring_started", "Starting monitoring loop")
         
         # Track previous state for change detection
         last_state = {
@@ -448,13 +462,21 @@ class ScalerService:
                 should_log = state_changed or time_since_last_log >= HEARTBEAT_INTERVAL
                 
                 if should_log:
-                    change_indicator = "🔄" if state_changed else "💤"
-                    print(f"\n{'='*60}")
-                    print(f"⏰ {datetime.now().strftime('%H:%M:%S')} - {change_indicator} {'State changed' if state_changed else 'Heartbeat'}")
-                    print(f"📊 Active Workflows: {active_workflows} ({active_workflows/current_workers:.1f}/worker)")
-                    print(f"📊 Workers: {current_workers} running, {metrics['workflow_pollers']} polling")
-                    print(f"📊 Twitter: {current_twitter} running, {active_goals} active goals ({active_goals/current_twitter:.1f}/instance)")
-                    print(f"📊 Goals: {goals_summary.get('in_progress', 0)} in progress | {goals_summary.get('todays_goals', 0)} today | {goals_summary.get('total_goals', 0)} all-time | {goals_summary.get('total_videos', 0)} videos in S3")
+                    workflows_per_worker = active_workflows / current_workers if current_workers > 0 else 0
+                    goals_per_instance = active_goals / current_twitter if current_twitter > 0 else 0
+                    log.info(MODULE, "heartbeat" if not state_changed else "state_changed",
+                             "Scaler status",
+                             active_workflows=active_workflows,
+                             workflows_per_worker=round(workflows_per_worker, 1),
+                             workers_running=current_workers,
+                             workflow_pollers=metrics['workflow_pollers'],
+                             twitter_running=current_twitter,
+                             active_goals=active_goals,
+                             goals_per_instance=round(goals_per_instance, 1),
+                             goals_in_progress=goals_summary.get('in_progress', 0),
+                             goals_today=goals_summary.get('todays_goals', 0),
+                             goals_total=goals_summary.get('total_goals', 0),
+                             videos_total=goals_summary.get('total_videos', 0))
                     last_log_time = time.time()
                     last_state = current_state.copy()
                 
@@ -466,27 +488,28 @@ class ScalerService:
                 now = time.time()
                 if target_workers != current_workers:
                     if now - self.last_worker_scale >= self.scale_cooldown:
-                        print(f"📈 Workers: {current_workers} → {target_workers} (workflows={active_workflows})")
+                        log.info(MODULE, "scaling_workers", "Scaling workers",
+                                 current=current_workers, target=target_workers, active_workflows=active_workflows)
                         self.scale_service("worker", target_workers)
                         self.last_worker_scale = now
                     else:
                         remaining = int(self.scale_cooldown - (now - self.last_worker_scale))
-                        print(f"⏳ Workers scaling in cooldown ({remaining}s remaining)")
+                        log.debug(MODULE, "worker_cooldown", "Workers scaling in cooldown", remaining_seconds=remaining)
                 
                 # Scale Twitter
                 if target_twitter != current_twitter:
                     if now - self.last_twitter_scale >= self.scale_cooldown:
-                        print(f"📈 Twitter: {current_twitter} → {target_twitter} (active_goals={active_goals})")
+                        log.info(MODULE, "scaling_twitter", "Scaling Twitter",
+                                 current=current_twitter, target=target_twitter, active_goals=active_goals)
                         self.scale_service("twitter", target_twitter)
                         self.last_twitter_scale = now
                     else:
                         remaining = int(self.scale_cooldown - (now - self.last_twitter_scale))
-                        print(f"⏳ Twitter scaling in cooldown ({remaining}s remaining)")
+                        log.debug(MODULE, "twitter_cooldown", "Twitter scaling in cooldown", remaining_seconds=remaining)
                 
             except Exception as e:
-                print(f"❌ Scaler error: {e}")
                 import traceback
-                traceback.print_exc()
+                log.error(MODULE, "scaler_error", "Scaler error", error=str(e), traceback=traceback.format_exc())
             
             await asyncio.sleep(self.check_interval)
     
@@ -506,26 +529,38 @@ def get_healthy_twitter_urls() -> list[str]:
     ]
     
     healthy = []
+    unhealthy = 0
     for url in all_urls:
         try:
             resp = requests.get(f"{url}/health", timeout=2)
             if resp.status_code == 200:
                 healthy.append(url)
-        except:
-            pass
+            else:
+                unhealthy += 1
+        except requests.exceptions.RequestException:
+            unhealthy += 1
     
-    return healthy if healthy else all_urls[:2]  # Fallback to first 2
+    if unhealthy > 0 and healthy:
+        log.info(MODULE, "twitter_discovery", "Twitter instance discovery",
+                 healthy=len(healthy), unhealthy=unhealthy)
+    
+    if not healthy:
+        log.warning(MODULE, "no_healthy_twitter", "No healthy Twitter instances found, using fallback",
+                    fallback_count=2)
+        return all_urls[:2]  # Fallback to first 2
+    
+    return healthy
 
 
 async def main():
     """Initialize and run the scaler."""
-    print("🔌 Connecting to Temporal...")
+    log.info(MODULE, "connecting_temporal", "Connecting to Temporal", host=TEMPORAL_HOST)
     temporal_client = await Client.connect(TEMPORAL_HOST)
-    print("✅ Connected to Temporal")
+    log.info(MODULE, "connected_temporal", "Connected to Temporal")
     
-    print("🐳 Initializing Docker client...")
+    log.info(MODULE, "init_docker", "Initializing Docker client", compose_file=COMPOSE_FILE)
     docker = DockerClient(compose_files=[COMPOSE_FILE])
-    print(f"✅ Docker client ready (compose file: {COMPOSE_FILE})")
+    log.info(MODULE, "docker_ready", "Docker client ready")
     
     scaler = ScalerService(docker, temporal_client)
     

@@ -32,6 +32,9 @@ from selenium.common.exceptions import WebDriverException
 from urllib.parse import quote
 
 from .config import TwitterConfig
+from .twitter_logging import log
+
+MODULE = "twitter_session"
 
 
 class TwitterAuthError(Exception):
@@ -78,7 +81,7 @@ class TwitterSessionManager:
             import hashlib
             instance_id = hashlib.md5(hostname.encode()).hexdigest()[:8]
         self.profile_dir = f"/data/firefox_profile_{instance_id}"
-        print(f"   📁 Using Firefox profile: {self.profile_dir}")
+        log.info(MODULE, "profile_dir", "Using Firefox profile", profile_dir=self.profile_dir)
         
         # Backup cookie file - configurable via env var
         default_backup_path = os.path.expanduser("~/.config/found-footy/twitter_cookies.json")
@@ -96,8 +99,8 @@ class TwitterSessionManager:
         if os.path.exists(self._login_notification_file):
             self._login_notification_sent = True
         
-        print(f"🔧 TwitterSessionManager initialized")
-        print(f"   📁 Cookie backup: {self.cookie_backup_file}")
+        log.info(MODULE, "initialized", "TwitterSessionManager initialized",
+                 cookie_backup=self.cookie_backup_file)
     
     def _setup_browser(self, headless: bool = None) -> bool:
         """Setup Firefox browser with Selenium
@@ -126,19 +129,18 @@ class TwitterSessionManager:
             options.add_argument("-profile")
             options.add_argument(self.profile_dir)
             
-            print(f"   📁 Using Firefox profile: {self.profile_dir}", flush=True)
+            log.debug(MODULE, "browser_profile", "Using Firefox profile", profile_dir=self.profile_dir)
             
             service = FirefoxService(executable_path="/usr/local/bin/geckodriver")
             self.driver = webdriver.Firefox(service=service, options=options)
             
             mode = "headless" if headless else "GUI"
-            print(f"✅ Browser created ({mode} mode)", flush=True)
+            log.info(MODULE, "browser_created", "Browser created", mode=mode)
             return True
             
         except Exception as e:
-            print(f"❌ Browser setup failed: {e}", flush=True)
             import traceback
-            traceback.print_exc()
+            log.error(MODULE, "browser_setup_failed", "Browser setup failed", error=str(e), traceback=traceback.format_exc())
             return False
     
     def _verify_logged_in(self) -> bool:
@@ -157,18 +159,18 @@ class TwitterSessionManager:
             current_url = self.driver.current_url
             # Check for login/flow redirects which indicate NOT logged in
             if "login" in current_url or "flow" in current_url:
-                print(f"   ❌ Not logged in (redirected to: {current_url})", flush=True)
+                log.info(MODULE, "not_logged_in", "Not logged in - redirected", current_url=current_url)
                 return False
             
             if "home" in current_url:
-                print(f"   ✅ Logged in (at: {current_url})", flush=True)
+                log.info(MODULE, "logged_in", "Logged in", current_url=current_url)
                 return True
             
-            print(f"   ⚠️  Unknown state (at: {current_url})", flush=True)
+            log.warning(MODULE, "login_unknown_state", "Unknown login state", current_url=current_url)
             return False
             
         except Exception as e:
-            print(f"   ❌ Login check failed: {e}", flush=True)
+            log.error(MODULE, "login_check_failed", "Login check failed", error=str(e))
             return False
     
     def _restore_cookies_from_backup(self) -> bool:
@@ -180,7 +182,8 @@ class TwitterSessionManager:
             True if restore successful AND login verified
         """
         if not os.path.exists(self.cookie_backup_file):
-            print(f"   ⚠️  No cookie backup at {self.cookie_backup_file}", flush=True)
+            log.warning(MODULE, "no_cookie_backup", "No cookie backup found",
+                        path=self.cookie_backup_file)
             return False
         
         try:
@@ -190,16 +193,17 @@ class TwitterSessionManager:
             cookies = backup_data.get('cookies', [])
             exported_at = backup_data.get('exported_at', 'unknown')
             
-            print(f"   📦 Found backup from {exported_at} with {len(cookies)} cookies", flush=True)
+            log.info(MODULE, "cookie_backup_found", "Found cookie backup",
+                     exported_at=exported_at, cookie_count=len(cookies))
             
             if not cookies:
-                print(f"   ❌ Backup file is empty", flush=True)
+                log.warning(MODULE, "cookie_backup_empty", "Backup file is empty")
                 return False
             
             # Check for critical auth cookie
             cookie_names = [c.get('name') for c in cookies]
             if 'auth_token' not in cookie_names:
-                print(f"   ❌ Backup missing auth_token cookie", flush=True)
+                log.warning(MODULE, "cookie_missing_auth", "Backup missing auth_token cookie")
                 return False
             
             # Setup browser if needed
@@ -208,7 +212,7 @@ class TwitterSessionManager:
                     return False
             
             # Navigate to Twitter (cookies need matching domain)
-            print(f"   🌐 Navigating to x.com...", flush=True)
+            log.info(MODULE, "navigating_xcom", "Navigating to x.com")
             self.driver.get("https://x.com")
             time.sleep(2)
             
@@ -235,24 +239,23 @@ class TwitterSessionManager:
                 except Exception as e:
                     failed += 1
             
-            print(f"   ✅ Added {added} cookies ({failed} failed)", flush=True)
+            log.info(MODULE, "cookies_added", "Added cookies", added=added, failed=failed)
             
             # VERIFY login actually works
-            print(f"   🔍 Verifying login...", flush=True)
+            log.info(MODULE, "verifying_login", "Verifying login...")
             if self._verify_logged_in():
                 self.authenticated = True
                 self.last_activity = time.time()
-                print(f"   ✅ Cookie restore SUCCESSFUL - authenticated!", flush=True)
+                log.info(MODULE, "cookie_restore_success", "Cookie restore SUCCESSFUL - authenticated")
                 return True
             else:
-                print(f"   ❌ Cookies restored but login FAILED - cookies may be expired", flush=True)
+                log.warning(MODULE, "cookie_restore_failed", "Cookies restored but login FAILED - cookies may be expired")
                 self.authenticated = False
                 return False
                 
         except Exception as e:
-            print(f"   ❌ Cookie restore error: {e}", flush=True)
             import traceback
-            traceback.print_exc()
+            log.error(MODULE, "cookie_restore_error", "Cookie restore error", error=str(e), traceback=traceback.format_exc())
             return False
     
     def _backup_cookies_to_host(self) -> bool:
@@ -262,7 +265,7 @@ class TwitterSessionManager:
             True if backup successful
         """
         if not self.driver:
-            print("   ⚠️  No browser to backup cookies from", flush=True)
+            log.warning(MODULE, "no_browser_for_backup", "No browser to backup cookies from")
             return False
         
         try:
@@ -272,13 +275,13 @@ class TwitterSessionManager:
             twitter_cookies = [c for c in cookies if 'x.com' in c.get('domain', '')]
             
             if not twitter_cookies:
-                print("   ⚠️  No Twitter cookies to backup", flush=True)
+                log.warning(MODULE, "no_twitter_cookies", "No Twitter cookies to backup")
                 return False
             
             # Check for auth_token
             has_auth = any(c['name'] == 'auth_token' for c in twitter_cookies)
             if not has_auth:
-                print("   ⚠️  No auth_token in cookies - not backing up", flush=True)
+                log.warning(MODULE, "no_auth_token_backup", "No auth_token in cookies - not backing up")
                 return False
             
             backup_data = {
@@ -289,11 +292,11 @@ class TwitterSessionManager:
             with open(self.cookie_backup_file, 'w') as f:
                 json.dump(backup_data, f, indent=2)
             
-            print(f"   💾 Backed up {len(twitter_cookies)} cookies to {self.cookie_backup_file}", flush=True)
+            log.info(MODULE, "cookies_backed_up", "Backed up cookies", count=len(twitter_cookies), file=self.cookie_backup_file)
             return True
             
         except Exception as e:
-            print(f"   ❌ Cookie backup failed: {e}", flush=True)
+            log.error(MODULE, "cookie_backup_failed", "Cookie backup failed", error=str(e))
             return False
     
     def _launch_manual_firefox(self, url: str = "https://x.com/i/flow/login") -> bool:
@@ -314,11 +317,11 @@ class TwitterSessionManager:
             )
             
             self.manual_firefox_pid = proc.pid
-            print(f"🦊 Manual Firefox launched (PID: {proc.pid})", flush=True)
+            log.info(MODULE, "firefox_launched", "Manual Firefox launched", pid=proc.pid)
             return True
             
         except Exception as e:
-            print(f"❌ Failed to launch Firefox: {e}", flush=True)
+            log.error(MODULE, "firefox_launch_failed", "Failed to launch Firefox", error=str(e))
             return False
     
     def _kill_manual_firefox(self):
@@ -373,11 +376,11 @@ Steps:
             with open(self._login_notification_file, 'w') as f:
                 f.write(time.strftime("%Y-%m-%dT%H:%M:%SZ"))
             
-            print(f"   📧 Notification sent to {notify_email}", flush=True)
+            log.info(MODULE, "notification_sent", "Notification sent", email=notify_email)
             return True
             
         except Exception as e:
-            print(f"   ❌ Notification failed: {e}", flush=True)
+            log.error(MODULE, "notification_failed", "Notification failed", error=str(e))
             return False
     
     def _clear_login_notification_flag(self):
@@ -418,15 +421,15 @@ Steps:
                     # Browser is alive and we were active recently - trust it
                     return True
                 except WebDriverException:
-                    print("   ⚠️  Browser session died, will try cookie restore...", flush=True)
+                    log.warning(MODULE, "browser_session_died", "Browser session died, will try cookie restore")
                     self.driver = None
                     self.authenticated = False
         
-        print("🔐 Ensuring Twitter authentication...", flush=True)
+        log.info(MODULE, "ensuring_auth", "Ensuring Twitter authentication")
         
         # Step 1: Check if existing session is valid (full verification)
         if self.driver and self.authenticated:
-            print("   📋 Checking existing session...", flush=True)
+            log.info(MODULE, "checking_session", "Checking existing session")
             try:
                 # Quick check - is browser alive?
                 _ = self.driver.current_url
@@ -434,10 +437,10 @@ Steps:
                 # Full verify - are we actually logged in?
                 if self._verify_logged_in():
                     self.last_activity = time.time()
-                    print("✅ Existing session is valid", flush=True)
+                    log.info(MODULE, "session_valid", "Existing session is valid")
                     return True
                 else:
-                    print("   ⚠️  Session invalid, will try cookie restore...", flush=True)
+                    log.warning(MODULE, "session_invalid", "Session invalid, will try cookie restore")
                     self.authenticated = False
                     # Close the invalid browser
                     try:
@@ -446,30 +449,30 @@ Steps:
                         pass
                     self.driver = None
             except WebDriverException:
-                print("   ⚠️  Browser session died, will try cookie restore...", flush=True)
+                log.warning(MODULE, "browser_session_died", "Browser session died, will try cookie restore")
                 self.driver = None
                 self.authenticated = False
         
         # Step 2: Try to restore from cookie backup
-        print("   🍪 Attempting cookie restore...", flush=True)
+        log.info(MODULE, "attempting_cookie_restore", "Attempting cookie restore")
         if self._restore_cookies_from_backup():
             self._backup_cookies_to_host()  # Re-backup in case format changed
             self._clear_login_notification_flag()
-            print("✅ Authenticated via cookie restore!", flush=True)
+            log.info(MODULE, "auth_cookie_restore", "Authenticated via cookie restore")
             return True
         
         # Step 3: Try checking profile directly (maybe manual login happened)
-        print("   📁 Checking Firefox profile...", flush=True)
+        log.info(MODULE, "checking_profile", "Checking Firefox profile")
         if self._setup_browser(headless=True) and self._verify_logged_in():
             self.authenticated = True
             self.last_activity = time.time()
             self._backup_cookies_to_host()
             self._clear_login_notification_flag()
-            print("✅ Authenticated via Firefox profile!", flush=True)
+            log.info(MODULE, "auth_firefox_profile", "Authenticated via Firefox profile")
             return True
         
         # Step 4: All automatic methods failed - need manual login
-        print("❌ All authentication methods failed - manual login required", flush=True)
+        log.error(MODULE, "auth_failed", "All authentication methods failed - manual login required")
         return False
     
     def search_videos(self, search_query: str, exclude_urls: List[str] = None, max_age_minutes: int = 5) -> List[Dict[str, Any]]:
@@ -518,14 +521,13 @@ Steps:
                 f"Open VNC at http://localhost:4103 to login. "
                 f"Cookie backup exists: {os.path.exists(self.cookie_backup_file)}"
             )
-            print(f"❌ {error_msg}", flush=True)
+            log.error(MODULE, "search_auth_failed", error_msg, cookie_backup_exists=os.path.exists(self.cookie_backup_file))
             raise TwitterAuthError(error_msg)
         
         if exclude_urls:
-            print(f"🔍 Searching: {search_query} (excluding {len(exclude_urls)} already-discovered URLs)", flush=True)
+            log.info(MODULE, "search_start", "Searching", query=search_query, exclude_count=len(exclude_urls), max_age_minutes=max_age_minutes)
         else:
-            print(f"🔍 Searching: {search_query}", flush=True)
-        print(f"   ⏱️  Max tweet age: {max_age_minutes} minutes", flush=True)
+            log.info(MODULE, "search_start", "Searching", query=search_query, max_age_minutes=max_age_minutes)
         
         try:
             # Build search URL with video filter - sorted by "Latest" (f=live)
@@ -533,7 +535,7 @@ Steps:
             video_search_query = f"{search_query} filter:videos"
             search_url = f"https://twitter.com/search?q={quote(video_search_query)}&src=typed_query&f=live"
             
-            print(f"   URL: {search_url}", flush=True)
+            log.debug(MODULE, "search_url", "Search URL built", url=search_url)
             
             # Set a reasonable timeout - if page takes >30s, something is WRONG
             self.driver.set_page_load_timeout(30)
@@ -542,13 +544,12 @@ Steps:
                 self.driver.get(search_url)
             except Exception as e:
                 # Page load timeout or other error
-                print(f"❌ Page load failed after 30s: {e}", flush=True)
-                print(f"   Current URL: {self.driver.current_url}", flush=True)
+                log.error(MODULE, "page_load_failed", "Page load failed after 30s", error=str(e), current_url=self.driver.current_url)
                 
                 # Try to get page source to see if we got blocked/challenged
                 try:
                     page_source = self.driver.page_source[:500]
-                    print(f"   Page preview: {page_source}", flush=True)
+                    log.debug(MODULE, "page_preview", "Page preview", content=page_source)
                 except:
                     pass
                 
@@ -574,7 +575,7 @@ Steps:
                 tweet_elements = self.driver.find_elements(By.CSS_SELECTOR, "article[data-testid='tweet']")
                 
                 if scroll_count == 0:
-                    print(f"   📄 Initial load: {len(tweet_elements)} tweets", flush=True)
+                    log.info(MODULE, "initial_tweets", "Initial load", tweet_count=len(tweet_elements))
                 
                 for tweet_element in tweet_elements:
                     try:
@@ -614,7 +615,7 @@ Steps:
                         
                         # Check if tweet is too old - if so, stop scrolling
                         if tweet_age_minutes is not None and tweet_age_minutes > max_age_minutes:
-                            print(f"   ⏰ Found tweet {tweet_age_minutes:.1f}min old (>{max_age_minutes}min), stopping scroll", flush=True)
+                            log.info(MODULE, "old_tweet_found", "Found old tweet, stopping scroll", age_minutes=round(tweet_age_minutes, 1), max_age=max_age_minutes)
                             found_old_tweet = True
                             break
                         
@@ -622,7 +623,7 @@ Steps:
                         try:
                             promoted_indicators = tweet_element.find_elements(By.XPATH, ".//*[contains(text(), 'Promoted') or contains(text(), 'Ad')]")
                             if promoted_indicators:
-                                print(f"   ⏭️  Skipping promoted tweet", flush=True)
+                                log.debug(MODULE, "skip_promoted", "Skipping promoted tweet")
                                 continue
                         except:
                             pass
@@ -690,7 +691,7 @@ Steps:
                         if has_video:
                             # Skip URLs that were already discovered in previous searches
                             if tweet_url in exclude_set:
-                                print(f"   ⏭️ Skipping already-discovered URL: {tweet_url[:60]}...", flush=True)
+                                log.debug(MODULE, "skip_discovered", "Skipping already-discovered URL", url=tweet_url[:60])
                                 continue
                             
                             tweet_id = tweet_url.split("/status/")[-1] if "/status/" in tweet_url else f"unknown"
@@ -724,7 +725,7 @@ Steps:
                             }
                             
                             discovered_videos.append(video_entry)
-                            print(f"   ✅ Video #{len(discovered_videos)} @{username} ({age_str}): {tweet_text[:50]}...", flush=True)
+                            log.info(MODULE, "video_found", "Video found", video_num=len(discovered_videos), username=username, age=age_str, text=tweet_text[:50])
                     
                     except Exception as e:
                         continue
@@ -733,16 +734,16 @@ Steps:
                 if not found_old_tweet:
                     # If no tweets at all after scrolling, stop (empty results page)
                     if len(tweet_elements) == 0 and scroll_count >= 1:
-                        print(f"   ⏹️ No tweets found after {scroll_count} scrolls, stopping", flush=True)
+                        log.info(MODULE, "no_tweets_found", "No tweets found, stopping", scroll_count=scroll_count)
                         break
                     
                     scroll_count += 1
                     self.driver.execute_script("window.scrollBy(0, window.innerHeight);")
                     time.sleep(1.5)  # Wait for lazy-loaded content
                     self.last_activity = time.time()
-                    print(f"   📜 Scroll #{scroll_count}, {len(discovered_videos)} videos found so far...", flush=True)
+                    log.debug(MODULE, "scroll_progress", "Scrolling", scroll_num=scroll_count, videos_found=len(discovered_videos))
             
-            print(f"✅ Search complete - {len(discovered_videos)} videos found", flush=True)
+            log.info(MODULE, "search_complete", "Search complete", videos_found=len(discovered_videos))
             
             # Update last_activity after successful search
             self.last_activity = time.time()
@@ -755,9 +756,8 @@ Steps:
         except TwitterAuthError:
             raise
         except Exception as e:
-            print(f"❌ Search error: {e}", flush=True)
             import traceback
-            traceback.print_exc()
+            log.error(MODULE, "search_error", "Search error", error=str(e), traceback=traceback.format_exc())
             # Re-raise as auth error if it looks like an auth issue
             if "login" in str(e).lower():
                 raise TwitterAuthError(f"Search failed due to auth issue: {e}")
@@ -769,9 +769,8 @@ Steps:
         Returns:
             True if authenticated, False if manual login needed
         """
-        print("🚀 Starting Twitter Session Service...", flush=True)
-        print("   📺 VNC: http://localhost:4103", flush=True)
-        print(flush=True)
+        log.info(MODULE, "startup", "Starting Twitter Session Service")
+        log.info(MODULE, "vnc_url", "VNC available", url="http://localhost:4103")
         
         vnc_host = os.environ.get('VNC_PUBLIC_URL', 'http://localhost:4103')
         
@@ -781,17 +780,11 @@ Steps:
             
             # Try to authenticate
             if self.ensure_authenticated():
-                print("✅ Twitter service ready!", flush=True)
+                log.info(MODULE, "service_ready", "Twitter service ready")
                 return True
             
             # Need manual login
-            print(flush=True)
-            print("=" * 60, flush=True)
-            print("🔐 MANUAL TWITTER LOGIN REQUIRED", flush=True)
-            print("=" * 60, flush=True)
-            print(f"   VNC URL: {vnc_host}", flush=True)
-            print("   Login will be auto-detected", flush=True)
-            print("=" * 60, flush=True)
+            log.warning(MODULE, "manual_login_required", "Manual Twitter login required", vnc_url=vnc_host)
             
             self._send_login_notification(vnc_host)
             self._launch_manual_firefox()
@@ -806,7 +799,7 @@ Steps:
                     if os.path.exists(cookies_db):
                         mtime = os.path.getmtime(cookies_db)
                         if time.time() - mtime < check_interval + 5:
-                            print("🔍 Cookie change detected, verifying...", flush=True)
+                            log.info(MODULE, "cookie_change_detected", "Cookie change detected, verifying")
                             time.sleep(3)
                             self._kill_manual_firefox()
                             time.sleep(2)
@@ -816,7 +809,7 @@ Steps:
                                 self.last_activity = time.time()
                                 self._backup_cookies_to_host()
                                 self._clear_login_notification_flag()
-                                print("✅ Login successful!", flush=True)
+                                log.info(MODULE, "login_successful", "Login successful")
                                 return
                             else:
                                 self._launch_manual_firefox()
@@ -826,7 +819,7 @@ Steps:
     
     def verify_and_switch_to_selenium(self) -> bool:
         """After manual login, verify and switch to Selenium"""
-        print("🔍 Verifying manual login...", flush=True)
+        log.info(MODULE, "verifying_manual_login", "Verifying manual login")
         
         self._kill_manual_firefox()
         time.sleep(2)
@@ -836,10 +829,10 @@ Steps:
             self.last_activity = time.time()
             self._backup_cookies_to_host()
             self._clear_login_notification_flag()
-            print("✅ Login verified! Ready for scraping", flush=True)
+            log.info(MODULE, "login_verified", "Login verified! Ready for scraping")
             return True
         else:
-            print("❌ Login not detected", flush=True)
+            log.error(MODULE, "login_not_detected", "Login not detected")
             self._launch_manual_firefox()
             return False
     
@@ -864,7 +857,7 @@ Steps:
         if not self.authenticated or not self.driver:
             raise TwitterAuthError("Not authenticated - cannot download video")
         
-        print(f"🎬 [BROWSER-DL] Navigating to tweet: {tweet_url[:60]}...", flush=True)
+        log.info(MODULE, "browser_download_start", "Navigating to tweet", url=tweet_url[:60])
         
         try:
             self.driver.set_page_load_timeout(20)
@@ -886,7 +879,7 @@ Steps:
                     src = video_elem.get_attribute("src")
                     if src and "video.twimg.com" in src:
                         video_url = src
-                        print(f"   ✅ Found video src: {src[:80]}...", flush=True)
+                        log.info(MODULE, "video_src_found", "Found video src", src=src[:80])
                         break
             except:
                 pass
@@ -905,7 +898,7 @@ Steps:
                             video_url = mp4_urls[0]
                         else:
                             video_url = matches[0]
-                        print(f"   ✅ Found video URL in page source: {video_url[:80]}...", flush=True)
+                        log.info(MODULE, "video_url_page_source", "Found video URL in page source", url=video_url[:80])
                 except:
                     pass
             
@@ -925,19 +918,19 @@ Steps:
                         return null;
                     """)
                     if video_url:
-                        print(f"   ✅ Found video via JS: {video_url[:80]}...", flush=True)
+                        log.info(MODULE, "video_url_js", "Found video via JS", url=video_url[:80])
                 except:
                     pass
             
             if not video_url:
-                print(f"   ❌ Could not extract video URL from page", flush=True)
+                log.error(MODULE, "video_extraction_failed", "Could not extract video URL from page")
                 return {
                     "status": "error",
                     "error": "Could not extract video URL - video may be in different format or tweet deleted"
                 }
             
             # Download from CDN directly
-            print(f"   📥 Downloading from CDN...", flush=True)
+            log.info(MODULE, "cdn_download_start", "Downloading from CDN")
             
             # Get cookies from browser for the download request
             cookies = {}
@@ -953,7 +946,7 @@ Steps:
             response = requests.get(video_url, cookies=cookies, headers=headers, stream=True, timeout=30)
             
             if response.status_code != 200:
-                print(f"   ❌ CDN returned {response.status_code}", flush=True)
+                log.error(MODULE, "cdn_error", "CDN returned error", status_code=response.status_code)
                 return {
                     "status": "error",
                     "error": f"CDN returned status {response.status_code}"
@@ -965,7 +958,7 @@ Steps:
                     f.write(chunk)
             
             file_size = os.path.getsize(output_path)
-            print(f"   ✅ Downloaded {file_size / 1024 / 1024:.2f}MB to {output_path}", flush=True)
+            log.info(MODULE, "download_success", "Downloaded video", size_mb=round(file_size / 1024 / 1024, 2), path=output_path)
             
             return {
                 "status": "success",
@@ -977,7 +970,7 @@ Steps:
         except TwitterAuthError:
             raise
         except Exception as e:
-            print(f"   ❌ Download error: {e}", flush=True)
+            log.error(MODULE, "download_error", "Download error", error=str(e))
             return {
                 "status": "error",
                 "error": str(e)
