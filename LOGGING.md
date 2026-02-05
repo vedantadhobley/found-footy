@@ -484,9 +484,12 @@ In production, logs are JSON for Loki ingestion.
 ### monitor (Fixture Monitoring Activity)
 **Staging:**
 - `staging_empty` - No staging fixtures to fetch
+- `staging_poll` - Polling staging fixtures for updates
+- `staging_skip` - Staging poll skipped (no staging fixtures or not needed)
 - `staging_fetch_started` - Fetching staging fixtures (count)
 - `staging_fetch_success` - Retrieved staging data (count)
 - `staging_fetch_failed` - Staging fetch failed (error)
+- `staging_complete` - Staging processing complete
 
 **Pre-activation:**
 - `pre_activate_started` - Pre-activation check started (staging_count, lookahead_minutes)
@@ -845,255 +848,271 @@ In production, logs are JSON for Loki ingestion.
 
 ## Loki Query Reference for Grafana
 
+> **Note**: Promtail indexes `module`, `action`, and `level` as native Loki labels for found-footy containers.
+> This means you can filter by these in the label selector `{}` without needing `| json |` parsing,
+> which is significantly faster. Use `| json` only when you need to access numeric or context fields.
+
 ### Service Filtering
 
 ```logql
 # Temporal Worker logs
-{container=~"found-footy-worker.*"}
+{container=~"found-footy-prod-worker-.*"}
 
 # Twitter Service logs
-{container=~"found-footy-twitter.*"}
+{container=~"found-footy-prod-twitter-.*"}
 
 # Scaler Service logs
-{container=~"found-footy-scaler.*"}
+{container=~"found-footy-prod-scaler"}
 ```
 
-### Module-Level Queries
+### Module-Level Queries (Label-Based)
 
 ```logql
-# All download activity logs
-{container=~"found-footy-worker.*"} | json | module="download"
+# All download activity logs (uses indexed label - fast)
+{module="download"}
 
 # All upload activity logs
-{container=~"found-footy-worker.*"} | json | module="upload"
+{module="upload"}
 
-# All Twitter activity logs (worker calling Twitter service)
-{container=~"found-footy-worker.*"} | json | module="twitter"
+# All Twitter activity logs
+{module="twitter"}
 
 # All monitor activity logs
-{container=~"found-footy-worker.*"} | json | module="monitor"
+{module="monitor"}
 
 # All RAG activity logs
-{container=~"found-footy-worker.*"} | json | module="rag"
+{module="rag"}
 
 # All ingest activity logs
-{container=~"found-footy-worker.*"} | json | module="ingest"
+{module="ingest"}
 
 # MongoDB data layer logs
-{container=~"found-footy-worker.*"} | json | module="mongo_store"
+{module="mongo_store"}
 
 # S3 data layer logs
-{container=~"found-footy-worker.*"} | json | module="s3_store"
+{module="s3_store"}
+
+# Scaler logs
+{module="scaler"}
 ```
 
 ### Error Monitoring
 
 ```logql
-# All errors across all services
-{container=~"found-footy.*"} | json | level="error"
+# All errors across all found-footy services
+{container=~"found-footy-.*", level="ERROR"}
 
-# All warnings across all services
-{container=~"found-footy.*"} | json | level="warning"
+# All warnings
+{container=~"found-footy-.*", level="WARNING"}
 
-# Download failures specifically
-{container=~"found-footy-worker.*"} | json | module="download" | action=~".*failed.*|.*error.*"
+# Download failures
+{module="download", action=~".*failed.*|.*error.*"}
 
 # Upload failures
-{container=~"found-footy-worker.*"} | json | module="upload" | action=~".*failed.*|.*error.*"
+{module="upload", action=~".*failed.*|.*error.*"}
 
 # Twitter search failures
-{container=~"found-footy-worker.*"} | json | module="twitter" | action=~"auth_failed|search_timeout|service_error|instances_unavailable"
+{module="twitter", action=~"auth_failed|search_timeout|service_error|instances_unavailable"}
 
 # MongoDB operation failures
-{container=~"found-footy-worker.*"} | json | module="mongo_store" | level="error"
+{module="mongo_store", level="ERROR"}
 
 # S3 operation failures
-{container=~"found-footy-worker.*"} | json | module="s3_store" | level="error"
+{module="s3_store", level="ERROR"}
+
+# Errors by module (for dashboards)
+sum by (module) (count_over_time({container=~"found-footy-.*", level="ERROR"} [$__interval]))
 ```
 
 ### Video Processing Pipeline
 
 ```logql
 # Video downloads started
-{container=~"found-footy-worker.*"} | json | module="download" | action="download_started"
+{module="download", action="download_started"}
 
 # Videos successfully downloaded
-{container=~"found-footy-worker.*"} | json | module="download" | action="downloaded"
+{module="download", action="downloaded"}
 
 # Videos filtered by resolution
-{container=~"found-footy-worker.*"} | json | module="download" | action="filtered_resolution"
+{module="download", action="filtered_resolution"}
 
 # Videos filtered by aspect ratio
-{container=~"found-footy-worker.*"} | json | module="download" | action="filtered_aspect"
+{module="download", action="filtered_aspect"}
 
 # Videos filtered by duration
-{container=~"found-footy-worker.*"} | json | module="download" | action="filtered_duration"
+{module="download", action="filtered_duration"}
 
 # Validation passes/failures
-{container=~"found-footy-worker.*"} | json | module="download" | action=~"validate_passed|validate_rejected"
+{module="download", action=~"validate_passed|validate_rejected"}
 
 # Hash generation
-{container=~"found-footy-worker.*"} | json | module="download" | action="hash_generated"
+{module="download", action="hash_generated"}
 
 # S3 uploads
-{container=~"found-footy-worker.*"} | json | module="s3_store" | action="video_uploaded"
+{module="s3_store", action="video_uploaded"}
 ```
 
 ### Deduplication Monitoring
 
 ```logql
 # Deduplication started
-{container=~"found-footy-worker.*"} | json | module="upload" | action="dedup_started"
+{module="upload", action="dedup_started"}
 
 # Deduplication clusters formed
-{container=~"found-footy-worker.*"} | json | module="upload" | action="dedup_clustered"
+{module="upload", action="dedup_clustered"}
 
 # Batch dedup completion with stats
-{container=~"found-footy-worker.*"} | json | module="upload" | action="batch_dedup_complete"
+{module="upload", action="batch_dedup_complete"}
 
 # Dedup complete with summary
-{container=~"found-footy-worker.*"} | json | module="upload" | action="dedup_complete"
+{module="upload", action="dedup_complete"}
 
 # New unique videos
-{container=~"found-footy-worker.*"} | json | module="upload" | action="new_video"
+{module="upload", action="new_video"}
 ```
 
 ### Twitter Search Monitoring
 
 ```logql
 # Twitter searches started
-{container=~"found-footy-worker.*"} | json | module="twitter" | action="execute_search_started"
+{module="twitter", action="execute_search_started"}
 
 # Twitter searches completed
-{container=~"found-footy-worker.*"} | json | module="twitter" | action="search_success"
+{module="twitter", action="search_success"}
 
 # Twitter instance health issues
-{container=~"found-footy-worker.*"} | json | module="twitter" | action=~"instance_unhealthy|instance_unreachable|no_healthy_instances"
+{module="twitter", action=~"instance_unhealthy|instance_unreachable|no_healthy_instances"}
 
-# Twitter service logs
-{container=~"found-footy-twitter.*"} | json | module="twitter_session"
+# Twitter service logs (browser automation)
+{module="twitter_session"}
 
 # Videos found by Twitter search
-{container=~"found-footy-twitter.*"} | json | module="twitter_session" | action="video_found"
+{module="twitter_session", action="video_found"}
 ```
 
 ### Fixture Lifecycle
 
 ```logql
 # Staging fixtures fetched
-{container=~"found-footy-worker.*"} | json | module="monitor" | action="staging_fetch_success"
+{module="monitor", action="staging_fetch_success"}
+
+# Staging polling
+{module="monitor", action="staging_poll"}
+
+# Staging skipped
+{module="monitor", action="staging_skip"}
 
 # Fixtures pre-activated
-{container=~"found-footy-worker.*"} | json | module="monitor" | action="pre_activate_success"
+{module="monitor", action="pre_activate_success"}
 
 # New events detected
-{container=~"found-footy-worker.*"} | json | module="monitor" | action="new_event"
+{module="monitor", action="new_event"}
 
 # Events confirmed after debounce
-{container=~"found-footy-worker.*"} | json | module="monitor" | action="event_debounced"
+{module="monitor", action="event_debounced"}
 
 # VAR removals detected
-{container=~"found-footy-worker.*"} | json | module="monitor" | action="var_detected"
+{module="monitor", action="var_detected"}
 
 # Fixtures completed
-{container=~"found-footy-worker.*"} | json | module="monitor" | action="fixture_completed"
-
-# Fixture lifecycle in MongoDB
-{container=~"found-footy-worker.*"} | json | module="mongo_store" | action=~"staging_stored|active_fixture_added|fixture_completed"
+{module="monitor", action="fixture_completed"}
 ```
 
 ### Scaler Metrics
 
 ```logql
-# Scaler heartbeats (regular status)
-{container=~"found-footy-scaler.*"} | json | module="scaler" | action="heartbeat"
+# Scaler heartbeats (regular status with all numeric fields)
+{module="scaler", action="heartbeat"}
 
 # State changes (scaling decisions)
-{container=~"found-footy-scaler.*"} | json | module="scaler" | action="state_changed"
+{module="scaler", action="state_changed"}
 
 # Scaling events
-{container=~"found-footy-scaler.*"} | json | module="scaler" | action=~"scaling|scaled|scaling_workers|scaling_twitter"
+{module="scaler", action=~"scaling|scaled|scaling_workers|scaling_twitter"}
 
 # Scale mismatches (target not reached)
-{container=~"found-footy-scaler.*"} | json | module="scaler" | action="scale_mismatch"
+{module="scaler", action="scale_mismatch"}
 
-# Twitter discovery
-{container=~"found-footy-scaler.*"} | json | module="scaler" | action="twitter_discovery"
+# Extract numeric metrics from heartbeat (for stat panels / time series)
+last_over_time({module="scaler"} | json | unwrap active_workflows [5m])
+last_over_time({module="scaler"} | json | unwrap goals_in_progress [5m])
+last_over_time({module="scaler"} | json | unwrap goals_total [5m])
+last_over_time({module="scaler"} | json | unwrap videos_total [5m])
 ```
 
 ### RAG Pipeline
 
 ```logql
 # Cache hits (fast path)
-{container=~"found-footy-worker.*"} | json | module="rag" | action="cache_hit"
+{module="rag", action="cache_hit"}
 
 # Cache misses (RAG triggered)
-{container=~"found-footy-worker.*"} | json | module="rag" | action="cache_miss"
+{module="rag", action="cache_miss"}
 
 # Wikidata best candidates found
-{container=~"found-footy-worker.*"} | json | module="rag" | action="best_candidate"
+{module="rag", action="best_candidate"}
 
 # No Wikidata matches
-{container=~"found-footy-worker.*"} | json | module="rag" | action="no_wikidata_match"
+{module="rag", action="no_wikidata_match"}
 
 # Hallucinations filtered
-{container=~"found-footy-worker.*"} | json | module="rag" | action="hallucinations_filtered"
+{module="rag", action="hallucinations_filtered"}
 
 # Final aliases generated
-{container=~"found-footy-worker.*"} | json | module="rag" | action="final_aliases"
+{module="rag", action="final_aliases"}
 
 # LLM unavailable (using fallback)
-{container=~"found-footy-worker.*"} | json | module="rag" | action="llm_unavailable"
+{module="rag", action="llm_unavailable"}
 ```
 
 ### Worker Lifecycle
 
 ```logql
 # Worker startup
-{container=~"found-footy-worker.*"} | json | module="worker" | action="worker_started"
+{module="worker", action="worker_started"}
 
 # Schedule management
-{container=~"found-footy-worker.*"} | json | module="worker" | action=~"schedule_created|schedule_updated"
+{module="worker", action=~"schedule_created|schedule_updated"}
+
+# Monitor workflow cycles
+{module="monitor_workflow", action="cycle_complete"}
 
 # Worker failures
-{container=~"found-footy-worker.*"} | json | module="worker" | action="worker_failed"
+{module="worker", action="worker_failed"}
 ```
 
 ### Aggregation Queries for Dashboards
 
 ```logql
-# Count downloads per minute
-sum by (action) (rate({container=~"found-footy-worker.*"} | json | module="download" | action=~"downloaded|filtered_.*" [1m]))
-
-# Error rate by module
-sum by (module) (rate({container=~"found-footy.*"} | json | level="error" [5m]))
+# Count downloads per interval (for time series panels)
+sum(count_over_time({module="download", action="downloaded"} [$__interval]))
 
 # Video processing stages funnel
-sum by (action) (count_over_time({container=~"found-footy-worker.*"} | json | module="download" | action=~"download_started|downloaded|validate_passed|hash_generated|video_ready" [1h]))
+sum by (action) (count_over_time({module="download", action=~"download_started|downloaded|validate_passed|hash_generated"} [$__interval]))
 
 # Twitter search success rate
-sum(rate({container=~"found-footy-worker.*"} | json | module="twitter" | action="search_success" [5m])) 
-  / 
-sum(rate({container=~"found-footy-worker.*"} | json | module="twitter" | action="execute_search_started" [5m]))
+sum(count_over_time({module="twitter", action="search_success"} [$__interval]))
+  /
+sum(count_over_time({module="twitter", action="execute_search_started"} [$__interval]))
 
 # Deduplication efficiency
-avg_over_time({container=~"found-footy-worker.*"} | json | module="upload" | action="batch_dedup_complete" | unwrap removed [1h])
+avg_over_time({module="upload", action="batch_dedup_complete"} | json | unwrap removed [1h])
 ```
 
 ### Specific Field Extraction
 
 ```logql
-# Extract fixture_id from logs
-{container=~"found-footy-worker.*"} | json | fixture_id!="" | line_format "{{.fixture_id}}: {{.action}} - {{.msg}}"
+# Extract fixture_id from logs (requires json parsing for context fields)
+{module="monitor"} | json | fixture_id!="" | line_format "{{.fixture_id}}: {{.action}} - {{.msg}}"
 
-# Extract event_id from logs
-{container=~"found-footy-worker.*"} | json | event_id!="" | line_format "{{.event_id}}: {{.action}}"
+# Track specific event through pipeline
+{container=~"found-footy-.*"} | json | event_id="1234567_goal_45"
 
-# Track specific fixture through pipeline
-{container=~"found-footy-worker.*"} | json | fixture_id="1234567"
+# Human-readable log format
+{container=~"found-footy-prod-.*"} | json | line_format "[{{.module}}] {{.action}}: {{.msg}}"
 
-# Track specific event
-{container=~"found-footy-worker.*"} | json | event_id="1234567_goal_45"
+# Error logs with error details
+{container=~"found-footy-prod-.*", level="ERROR"} | json | line_format "[{{.module}}] {{.action}}: {{.msg}} | error={{.error}}"
 ```
 
 ---

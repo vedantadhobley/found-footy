@@ -309,9 +309,13 @@ class DownloadWorkflow:
                     validated_videos.append(video_info)
                 else:
                     rejected_count += 1
-                    log.warning(workflow.logger, MODULE, "video_rejected",
-                                "Video rejected (not soccer)",
-                                reason=validation.get('reason', 'unknown'), event_id=event_id)
+                    log.info(workflow.logger, MODULE, "video_rejected",
+                             "Video filtered by AI validation",
+                             reason=validation.get('reason', 'unknown'),
+                             is_soccer=validation.get('is_soccer', False),
+                             is_screen_recording=validation.get('is_screen_recording', False),
+                             confidence=validation.get('confidence', 0),
+                             event_id=event_id)
                     # Clean up rejected video file
                     try:
                         import os

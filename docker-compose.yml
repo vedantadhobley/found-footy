@@ -188,7 +188,7 @@ services:
   mongo:
     image: mongo:7-jammy
     container_name: found-footy-prod-mongo
-    command: mongod --wiredTigerCacheSizeGB 0.25
+    command: mongod --wiredTigerCacheSizeGB 0.25 --setParameter diagnosticDataCollectionEnabled=false --quiet
     environment:
       MONGO_INITDB_ROOT_USERNAME: ffuser
       MONGO_INITDB_ROOT_PASSWORD: ffpass
@@ -198,7 +198,7 @@ services:
       - found-footy-prod-mongo-config:/data/configdb
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
-      interval: 10s
+      interval: 30s
       timeout: 5s
       retries: 5
       start_period: 10s

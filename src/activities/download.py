@@ -18,6 +18,12 @@ from src.utils.config import (
 )
 
 # Global lock and timestamp to rate-limit downloads across all workers
+
+# Semaphore to limit concurrent LLM requests per worker process.
+# llama.cpp processes requests serially - if we fire too many concurrent
+# vision requests they queue server-side, causing timeouts and ReadErrors.
+# This ensures we queue in our code (fast, controlled) instead of overwhelming the server.
+_LLM_SEMAPHORE = asyncio.Semaphore(1)
 _download_lock = asyncio.Lock()
 _last_download_time = 0
 
@@ -962,6 +968,9 @@ async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[st
     """
     Call vision LLM with an image using llama.cpp OpenAI-compatible API.
     
+    Uses a semaphore to limit concurrent requests per worker (llama.cpp is
+    single-slot for inference). Retries with backoff on transient failures.
+    
     Args:
         image_base64: Base64-encoded image
         prompt: Question to ask about the image
@@ -972,56 +981,75 @@ async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[st
     import httpx
     
     llama_url = LLAMA_CHAT_URL
+    max_retries = 3
     
-    log.debug(activity.logger, "download", "vision_call",
-              "Calling vision model", url=llama_url)
-    
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # OpenAI-compatible multimodal format for llama.cpp
-            response = await client.post(
-                f"{llama_url}/v1/chat/completions",
-                json={
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{image_base64}"
-                                    }
-                                }
-                            ]
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_base64}"
                         }
-                    ],
-                    "max_tokens": 100,
-                    "temperature": 0.1
-                }
-            )
-            
-            if response.status_code == 200:
-                return response.json()
+                    }
+                ]
+            }
+        ],
+        "max_tokens": 100,
+        "temperature": 0.1
+    }
+    
+    for attempt in range(1, max_retries + 1):
+        try:
+            async with _LLM_SEMAPHORE:
+                log.debug(activity.logger, "download", "vision_call",
+                          "Calling vision model", url=llama_url, attempt=attempt)
+                
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    response = await client.post(
+                        f"{llama_url}/v1/chat/completions",
+                        json=payload,
+                    )
+                    
+                    if response.status_code == 200:
+                        return response.json()
+                    else:
+                        log.warning(activity.logger, "download", "vision_http_error",
+                                    "Vision model returned error",
+                                    status_code=response.status_code, attempt=attempt)
+                        if attempt < max_retries:
+                            await asyncio.sleep(2 * attempt)
+                            continue
+                        return None
+        except httpx.ConnectError as e:
+            log.error(activity.logger, "download", "vision_connect_failed",
+                      "Cannot connect to LLM",
+                      url=llama_url, error=str(e), error_type="ConnectError")
+            raise
+        except (httpx.TimeoutException, httpx.ReadError) as e:
+            error_type = type(e).__name__
+            if attempt < max_retries:
+                wait = 3 * attempt
+                log.warning(activity.logger, "download", "vision_retry",
+                            f"Vision model {error_type}, retrying in {wait}s",
+                            attempt=attempt, max_retries=max_retries, error_type=error_type)
+                await asyncio.sleep(wait)
+                continue
             else:
-                log.warning(activity.logger, "download", "vision_http_error",
-                            "Vision model returned error",
-                            status_code=response.status_code)
-                return None
-    except httpx.ConnectError as e:
-        log.error(activity.logger, "download", "vision_connect_failed",
-                  "Cannot connect to LLM",
-                  url=llama_url, error=str(e), error_type="ConnectError")
-        raise
-    except httpx.TimeoutException as e:
-        log.warning(activity.logger, "download", "vision_timeout",
-                    "Vision model request timed out", error=str(e))
-        raise
-    except Exception as e:
-        log.error(activity.logger, "download", "vision_error",
-                  "Vision model error",
-                  error=str(e), error_type=type(e).__name__)
-        raise
+                log.warning(activity.logger, "download", "vision_timeout",
+                            f"Vision model {error_type} after {max_retries} attempts",
+                            error=str(e), error_type=error_type)
+                raise
+        except Exception as e:
+            log.error(activity.logger, "download", "vision_error",
+                      "Vision model error",
+                      error=str(e), error_type=type(e).__name__)
+            raise
+    
+    return None
 
 
 def _calculate_md5(file_path: str) -> str:

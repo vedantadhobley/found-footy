@@ -24,6 +24,7 @@ The LLM handles ALL the intelligence:
 """
 from temporalio import activity
 from typing import List, Optional
+import asyncio
 import httpx
 import json
 import os
@@ -37,6 +38,10 @@ MODULE = "rag"
 
 # Use centralized config
 LLAMA_URL = LLAMA_CHAT_URL
+
+# Semaphore to limit concurrent LLM requests per worker process.
+# llama.cpp processes requests serially - concurrent requests cause timeouts.
+_LLM_SEMAPHORE = asyncio.Semaphore(1)
 LLAMA_MODEL = os.getenv("LLAMA_MODEL", "Qwen3-8B")
 
 # Wikidata API endpoints
@@ -598,93 +603,110 @@ async def get_team_aliases(team_id: int, team_name: str, team_type: Optional[str
     
     if cleaned_aliases or national:  # National teams can derive nationality even without Wikidata
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                # Build context-rich prompt for the LLM
-                if national:
-                    prompt = f"""Country: {effective_country or team_name}
+            # Build context-rich prompt for the LLM
+            if national:
+                prompt = f"""Country: {effective_country or team_name}
 Available words: {json.dumps(cleaned_aliases) if cleaned_aliases else "[]"}
 
 Pick 3-5 words from the list above. You MUST also include the country name and nationality adjective.
 Output JSON array only. /no_think"""
-                else:
-                    prompt = f"""Team: {team_name}
+            else:
+                prompt = f"""Team: {team_name}
 Available words: {json.dumps(cleaned_aliases)}
 
 Pick 3-5 words from the list above. Only return words that appear in the list.
 Output JSON array only. /no_think"""
+            
+            log.info(activity.logger, MODULE, "llm_request", "Sending to LLM",
+                     prompt_preview=prompt[:100])
+            
+            result = None
+            for attempt in range(1, 4):
+                try:
+                    async with _LLM_SEMAPHORE:
+                        async with httpx.AsyncClient(timeout=45.0) as client:
+                            response = await client.post(
+                                f"{LLAMA_URL}/v1/chat/completions",
+                                json={
+                                    "messages": [
+                                        {"role": "system", "content": system_prompt},
+                                        {"role": "user", "content": prompt}
+                                    ],
+                                    "max_tokens": 150,
+                                    "temperature": 0.1
+                                }
+                            )
+                            response.raise_for_status()
+                            result = response.json()
+                            break
+                except (httpx.TimeoutException, httpx.ReadError) as retry_err:
+                    if attempt < 3:
+                        wait = 3 * attempt
+                        log.warning(activity.logger, MODULE, "llm_retry",
+                                    f"LLM {type(retry_err).__name__}, retrying in {wait}s",
+                                    attempt=attempt, error_type=type(retry_err).__name__)
+                        await asyncio.sleep(wait)
+                        continue
+                    raise
+            
+            if not result:
+                raise httpx.TimeoutException("All LLM retries exhausted")
+            
+            text = result["choices"][0]["message"]["content"].strip()
+            log.info(activity.logger, MODULE, "llm_response", "LLM response received",
+                     response=text)
+            
+            llm_aliases = _parse_llm_response(text)
+            
+            if llm_aliases and len(llm_aliases) >= 1:
+                # Normalize and split any multi-word responses into single words
+                # Also filter out 2-letter-or-less words (FC, AC, RC, etc.)
+                allowed_words_lower = {w.lower() for w in cleaned_aliases}
+                twitter_aliases = []
+                hallucinated_count = 0
+                for alias in llm_aliases:
+                    normalized = _normalize_alias(alias)
+                    for word in normalized.split():
+                        word = word.strip()
+                        # Skip 2-letter-or-less words and duplicates
+                        if len(word) <= 2 or word in twitter_aliases:
+                            continue
+                        
+                        # For NATIONAL teams: Trust the LLM to generate nationality adjectives
+                        # (e.g., Argentina → Argentine, Argentinian)
+                        # For CLUBS: Only accept words from Wikidata to prevent hallucination
+                        if national:
+                            # National teams: accept LLM output (it knows nationality adjectives)
+                            twitter_aliases.append(word)
+                        elif word.lower() in allowed_words_lower:
+                            # Clubs: must be in Wikidata list
+                            twitter_aliases.append(word)
+                        else:
+                            hallucinated_count += 1
+                            log.debug(activity.logger, MODULE, "hallucination_rejected", "Rejected hallucinated word",
+                                        word=word)
                 
-                log.info(activity.logger, MODULE, "llm_request", "Sending to LLM",
-                         prompt_preview=prompt[:100])
+                # Log summary of hallucinations if any
+                if hallucinated_count > 0:
+                    log.warning(activity.logger, MODULE, "hallucinations_filtered", 
+                                f"Filtered {hallucinated_count} hallucinated words from LLM response",
+                                rejected=hallucinated_count, accepted=len(twitter_aliases))
                 
-                response = await client.post(
-                    f"{LLAMA_URL}/v1/chat/completions",
-                    json={
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "max_tokens": 150,
-                        "temperature": 0.1
-                    }
+                # Enforce max limit
+                twitter_aliases = twitter_aliases[:MAX_ALIASES]
+                
+                log.info(activity.logger, MODULE, "final_aliases", "Final aliases selected",
+                         count=len(twitter_aliases), aliases=twitter_aliases)
+                
+                # Cache with all data
+                _cache_aliases(
+                    store, team_id, team_name, national, twitter_aliases,
+                    LLAMA_MODEL, api_country, api_city, qid, wikidata_aliases
                 )
-                response.raise_for_status()
-                
-                result = response.json()
-                text = result["choices"][0]["message"]["content"].strip()
-                log.info(activity.logger, MODULE, "llm_response", "LLM response received",
-                         response=text)
-                
-                llm_aliases = _parse_llm_response(text)
-                
-                if llm_aliases and len(llm_aliases) >= 1:
-                    # Normalize and split any multi-word responses into single words
-                    # Also filter out 2-letter-or-less words (FC, AC, RC, etc.)
-                    allowed_words_lower = {w.lower() for w in cleaned_aliases}
-                    twitter_aliases = []
-                    hallucinated_count = 0
-                    for alias in llm_aliases:
-                        normalized = _normalize_alias(alias)
-                        for word in normalized.split():
-                            word = word.strip()
-                            # Skip 2-letter-or-less words and duplicates
-                            if len(word) <= 2 or word in twitter_aliases:
-                                continue
-                            
-                            # For NATIONAL teams: Trust the LLM to generate nationality adjectives
-                            # (e.g., Argentina → Argentine, Argentinian)
-                            # For CLUBS: Only accept words from Wikidata to prevent hallucination
-                            if national:
-                                # National teams: accept LLM output (it knows nationality adjectives)
-                                twitter_aliases.append(word)
-                            elif word.lower() in allowed_words_lower:
-                                # Clubs: must be in Wikidata list
-                                twitter_aliases.append(word)
-                            else:
-                                hallucinated_count += 1
-                                log.debug(activity.logger, MODULE, "hallucination_rejected", "Rejected hallucinated word",
-                                            word=word)
-                    
-                    # Log summary of hallucinations if any
-                    if hallucinated_count > 0:
-                        log.warning(activity.logger, MODULE, "hallucinations_filtered", 
-                                    f"Filtered {hallucinated_count} hallucinated words from LLM response",
-                                    rejected=hallucinated_count, accepted=len(twitter_aliases))
-                    
-                    # Enforce max limit
-                    twitter_aliases = twitter_aliases[:MAX_ALIASES]
-                    
-                    log.info(activity.logger, MODULE, "final_aliases", "Final aliases selected",
-                             count=len(twitter_aliases), aliases=twitter_aliases)
-                    
-                    # Cache with all data
-                    _cache_aliases(
-                        store, team_id, team_name, national, twitter_aliases,
-                        LLAMA_MODEL, api_country, api_city, qid, wikidata_aliases
-                    )
-                    return twitter_aliases
-                
-                log.warning(activity.logger, MODULE, "llm_invalid", "LLM returned invalid/empty",
-                            response=text)
+                return twitter_aliases
+            
+            log.warning(activity.logger, MODULE, "llm_invalid", "LLM returned invalid/empty",
+                        response=text)
                 
         except httpx.ConnectError:
             log.warning(activity.logger, MODULE, "llm_unavailable", "LLM server not available, using fallback",
