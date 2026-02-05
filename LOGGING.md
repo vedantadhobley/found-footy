@@ -119,77 +119,10 @@ Actions follow a consistent naming pattern:
 
 ## Grafana Loki Queries
 
-### Basic Filtering
-
-```logql
-# All logs from upload module
-{app="found-footy"} | json | module="upload"
-
-# All errors
-{app="found-footy"} | json | level="ERROR"
-
-# Specific action
-{app="found-footy"} | json | module="download" action="video_rejected"
-```
-
-### Event Tracking
-
-```logql
-# All logs for a specific event
-{app="found-footy"} | json | event_id="goal_123_456"
-
-# Track event through pipeline
-{app="found-footy"} | json | event_id="goal_123_456"
-  | line_format "{{.ts}} [{{.module}}] {{.action}}: {{.msg}}"
-```
-
-### Workflow Monitoring
-
-```logql
-# Monitor workflow cycles
-{app="found-footy"} | json | module="monitor_workflow" action="cycle_complete"
-
-# Twitter workflow completions
-{app="found-footy"} | json | module="twitter_workflow" action="workflow_complete"
-
-# Download failures
-{app="found-footy"} | json | module="download" level="ERROR"
-```
-
-### Performance Metrics
-
-```logql
-# Upload durations
-{app="found-footy"} | json | module="upload" action="s3_upload_success"
-  | unwrap duration_s | avg_over_time(5m)
-
-# Download success rate
-sum(count_over_time({app="found-footy"} | json | module="download" action="downloads_complete"[5m]))
-/
-sum(count_over_time({app="found-footy"} | json | module="download" action="downloading"[5m]))
-```
-
-### Deduplication Analysis
-
-```logql
-# MD5 duplicates found
-{app="found-footy"} | json | module="upload" action="md5_dedup_complete"
-  | line_format "batch_dupes={{.batch_dupes}} s3_matches={{.s3_matches}}"
-
-# Perceptual hash deduplication
-{app="found-footy"} | json | module="upload" action="perceptual_dedup_complete"
-```
-
-### Error Dashboard
-
-```logql
-# All errors by module
-sum by (module) (count_over_time({app="found-footy"} | json | level="ERROR"[1h]))
-
-# Recent errors with details
-{app="found-footy"} | json | level="ERROR"
-  | line_format "{{.ts}} [{{.module}}] {{.action}}: {{.msg}} | error={{.error}}"
-```
+> **See [Loki Query Reference for Grafana](#loki-query-reference-for-grafana)** below for the full
+> query reference. Promtail indexes `module`, `action`, and `level` as native Loki labels,
+> so queries use label selectors like `{module="download", level="ERROR"}` — no `| json |`
+> parsing needed for filtering.
 
 ## Usage in Code
 
@@ -1034,10 +967,15 @@ sum by (module) (count_over_time({container=~"found-footy-.*", level="ERROR"} [$
 {module="scaler", action="scale_mismatch"}
 
 # Extract numeric metrics from heartbeat (for stat panels / time series)
-last_over_time({module="scaler"} | json | unwrap active_workflows [5m])
-last_over_time({module="scaler"} | json | unwrap goals_in_progress [5m])
-last_over_time({module="scaler"} | json | unwrap goals_total [5m])
-last_over_time({module="scaler"} | json | unwrap videos_total [5m])
+# ⚠️ IMPORTANT: Always filter action="heartbeat" when using unwrap.
+# {module="scaler"} alone matches TWO streams (heartbeat + state_changed),
+# both containing the same numeric fields. Without the action filter,
+# unwrap returns 2 series and stat panels render both values overlapping.
+# Wrap with max() for single-value panels.
+max(last_over_time({module="scaler", action="heartbeat"} | json | unwrap active_workflows [$__range]))
+max(last_over_time({module="scaler", action="heartbeat"} | json | unwrap goals_in_progress [$__range]))
+max(last_over_time({module="scaler", action="heartbeat"} | json | unwrap goals_total [$__range]))
+max(last_over_time({module="scaler", action="heartbeat"} | json | unwrap videos_total [$__range]))
 ```
 
 ### RAG Pipeline
@@ -1098,6 +1036,61 @@ sum(count_over_time({module="twitter", action="execute_search_started"} [$__inte
 # Deduplication efficiency
 avg_over_time({module="upload", action="batch_dedup_complete"} | json | unwrap removed [1h])
 ```
+
+### Grafana Dashboard — Error Severity
+
+The Grafana dashboard splits errors into two categories because **not all errors are equal**:
+video download failures are expected (CDN blocks, rate limits, bad resolution), but infrastructure
+failures (LLM down, MongoDB unreachable, S3 broken) require immediate attention.
+
+#### 🔥 Critical Infrastructure Errors
+
+These modules represent core infrastructure — ANY error is a red alert:
+
+| Module | What it means |
+|--------|---------------|
+| `rag` | LLM / Wikidata RAG pipeline broken |
+| `mongo_store` | MongoDB operations failing |
+| `s3_store` | S3/MinIO storage broken |
+| `scaler` | Auto-scaler can't manage workers |
+| `worker` | Temporal worker crashed |
+| `registry` | Twitter instance registry broken |
+| `ingest` | Fixture ingestion pipeline failing |
+| `api_client` | API-Football client errors |
+
+Plus these specific actions from the `download` module (vision API failures):
+- `vision_connect_failed` — Vision API unreachable
+- `vision_error` — Vision API returned an error
+- `vision_timeout` — Vision API timed out
+
+```logql
+# Critical infrastructure errors (for stat panels and alerting)
+count_over_time({container=~"found-footy-.*", level="ERROR", module=~"rag|mongo_store|s3_store|scaler|worker|registry|ingest|api_client"} [$__range])
+
+# Critical vision errors from download module
+count_over_time({container=~"found-footy-.*", level="ERROR", module="download", action=~"vision_connect_failed|vision_error|vision_timeout"} [$__range])
+
+# Critical failures timeline — sum by module/action for individual failure identification
+sum by (module, action) (count_over_time({container=~"found-footy-.*", level="ERROR", module=~"rag|mongo_store|s3_store|scaler|worker|registry|ingest|api_client"} [$__interval]))
+```
+
+#### 📡 Expected Pipeline Noise
+
+These are normal operational errors that don't need immediate attention:
+
+- **Download module** (excluding vision actions) — CDN blocks, rate limits, resolution/aspect/duration filters
+- **Twitter modules** (`twitter`, `twitter_session`, `twitter_auth`) — auth failures, timeouts, instance health
+
+```logql
+# Download errors (expected noise, excluding vision failures)
+count_over_time({container=~"found-footy-.*", level="ERROR", module="download", action!~"vision_connect_failed|vision_error|vision_timeout"} [$__range])
+
+# Twitter errors (expected noise)
+count_over_time({container=~"found-footy-.*", level="ERROR", module=~"twitter|twitter_session|twitter_auth"} [$__range])
+```
+
+> **Dashboard layout**: Critical errors are shown as always-visible stat panels that turn red on ANY error.
+> Expected noise is in a **collapsed row** that can be expanded when needed.
 
 ### Specific Field Extraction
 
