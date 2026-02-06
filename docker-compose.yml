@@ -255,6 +255,7 @@ services:
       - luv-prod
 
   # TEMPORAL SERVER - Workflow orchestration
+  # LOG_LEVEL=warn suppresses noisy physicalTaskQueueManager Started/Stopped churn
   temporal:
     image: temporalio/auto-setup:latest
     container_name: found-footy-prod-temporal
@@ -265,6 +266,7 @@ services:
       - POSTGRES_PWD=ffpass
       - POSTGRES_SEEDS=found-footy-prod-postgres
       - BIND_ON_IP=0.0.0.0
+      - LOG_LEVEL=warn
     depends_on:
       postgres:
         condition: service_healthy
