@@ -20,10 +20,8 @@ from src.utils.config import (
 # Global lock and timestamp to rate-limit downloads across all workers
 
 # Semaphore to limit concurrent LLM requests per worker process.
-# llama.cpp processes requests serially - if we fire too many concurrent
-# vision requests they queue server-side, causing timeouts and ReadErrors.
-# This ensures we queue in our code (fast, controlled) instead of overwhelming the server.
-_LLM_SEMAPHORE = asyncio.Semaphore(1)
+# llama-chat runs --parallel 4 with 2 workers, so allow 2 concurrent per worker.
+_LLM_SEMAPHORE = asyncio.Semaphore(2)
 _download_lock = asyncio.Lock()
 _last_download_time = 0
 
