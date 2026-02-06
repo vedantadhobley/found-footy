@@ -185,10 +185,12 @@ services:
       - luv-prod
 
   # MONGODB - application data storage (standalone, no replica set needed)
+  # Logs redirected to file inside container to avoid noisy NETWORK/ACCESS
+  # INFO messages flooding Loki. Debug with: docker exec found-footy-prod-mongo cat /var/log/mongod.log
   mongo:
     image: mongo:7-jammy
     container_name: found-footy-prod-mongo
-    command: mongod --wiredTigerCacheSizeGB 0.25 --setParameter diagnosticDataCollectionEnabled=false --quiet
+    command: mongod --wiredTigerCacheSizeGB 0.25 --setParameter diagnosticDataCollectionEnabled=false --quiet --logpath /tmp/mongod.log --logappend
     environment:
       MONGO_INITDB_ROOT_USERNAME: ffuser
       MONGO_INITDB_ROOT_PASSWORD: ffpass
