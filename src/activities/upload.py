@@ -126,7 +126,7 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
     fixture = store.get_fixture_from_active(fixture_id)
     if not fixture:
         log.error(activity.logger, MODULE, "fixture_not_found", "Fixture not found",
-                  fixture_id=fixture_id)
+                  fixture_id=fixture_id, event_id=event_id)
         return {"status": "error", "error": "fixture_not_found"}
     
     # Find event
@@ -192,7 +192,7 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
         }
         existing_s3_videos.append(video_info)
         log.debug(activity.logger, MODULE, "existing_video", "Found existing video",
-                  s3_key=s3_key, width=video_info['width'], height=video_info['height'],
+                  event_id=event_id, s3_key=s3_key, width=video_info['width'], height=video_info['height'],
                   popularity=video_info['popularity'])
     
     # Filter discovered_videos to only NEW ones (URLs not already downloaded for this event)
@@ -204,7 +204,7 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
         if video_url in already_downloaded_urls:
             skipped_already_downloaded += 1
             log.debug(activity.logger, MODULE, "skip_already_downloaded", "Skipping already downloaded",
-                      url=video_url[:50])
+                      event_id=event_id, url=video_url[:50])
         else:
             videos_to_download.append(video)
     
@@ -220,7 +220,7 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
     
     if existing_s3_videos:
         log.info(activity.logger, MODULE, "existing_for_dedup", "Existing S3 videos for dedup",
-                 count=len(existing_s3_videos))
+                 event_id=event_id, count=len(existing_s3_videos))
     
     log.info(activity.logger, MODULE, "videos_found", "Found videos to process",
              event_id=event_id, to_download=len(videos_to_download),
@@ -239,7 +239,8 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
 @activity.defn
 async def deduplicate_by_md5(
     downloaded_files: List[Dict[str, Any]],
-    existing_s3_videos: Optional[List[Dict[str, Any]]] = None
+    existing_s3_videos: Optional[List[Dict[str, Any]]] = None,
+    event_id: str = "",
 ) -> Dict[str, Any]:
     """
     Fast MD5-based deduplication for TRUE duplicates (identical files).
@@ -268,7 +269,8 @@ async def deduplicate_by_md5(
     successful = [f for f in downloaded_files if f.get("status") == "success"]
     
     if not successful:
-        log.info(activity.logger, MODULE, "md5_dedup_no_downloads", "No successful downloads to deduplicate")
+        log.info(activity.logger, MODULE, "md5_dedup_no_downloads", "No successful downloads to deduplicate",
+                 event_id=event_id)
         return {
             "unique_videos": [],
             "md5_duplicates_removed": 0,
@@ -277,7 +279,7 @@ async def deduplicate_by_md5(
         }
     
     log.info(activity.logger, MODULE, "md5_dedup_started", "Starting MD5 deduplication",
-             downloads=len(successful), existing_s3=len(existing_s3_videos) if existing_s3_videos else 0)
+             event_id=event_id, downloads=len(successful), existing_s3=len(existing_s3_videos) if existing_s3_videos else 0)
     
     # =========================================================================
     # PHASE 1: BATCH DEDUP - Group by MD5 hash, keep best quality from each group
@@ -308,7 +310,7 @@ async def deduplicate_by_md5(
             batch_duplicates_removed += len(group) - 1
             
             log.info(activity.logger, MODULE, "md5_identical_found", "Found identical files",
-                     count=len(group), md5_prefix=file_hash[:8], 
+                     event_id=event_id, count=len(group), md5_prefix=file_hash[:8], 
                      winner_width=best.get('width', 0), winner_height=best.get('height', 0))
             
             # Mark other files for deletion
@@ -324,11 +326,11 @@ async def deduplicate_by_md5(
         except Exception as e:
             delete_failures += 1
             log.warning(activity.logger, MODULE, "delete_file_failed", "Failed to delete duplicate file",
-                        file_path=file_path, error=str(e)[:100])
+                        event_id=event_id, file_path=file_path, error=str(e)[:100])
     
     if delete_failures > 0:
         log.warning(activity.logger, MODULE, "batch_delete_failures", f"{delete_failures} file deletions failed",
-                    failed=delete_failures, total=len(files_to_delete))
+                    event_id=event_id, failed=delete_failures, total=len(files_to_delete))
     
     # =========================================================================
     # PHASE 2: S3 DEDUP - Check MD5 against existing S3 video filenames
@@ -382,7 +384,7 @@ async def deduplicate_by_md5(
                     "old_s3_video": existing_s3,
                 })
                 log.info(activity.logger, MODULE, "md5_s3_replacement", "S3 replacement found",
-                         md5_prefix=md5_prefix, new_resolution=new_resolution,
+                         event_id=event_id, md5_prefix=md5_prefix, new_resolution=new_resolution,
                          existing_resolution=existing_resolution)
             else:
                 # Existing S3 is same/better - just bump popularity
@@ -392,23 +394,23 @@ async def deduplicate_by_md5(
                     "new_popularity": existing_popularity + new_popularity,
                 })
                 log.info(activity.logger, MODULE, "md5_s3_match", "S3 match - keeping existing",
-                         md5_prefix=md5_prefix, old_popularity=existing_popularity,
+                         event_id=event_id, md5_prefix=md5_prefix, old_popularity=existing_popularity,
                          new_popularity=existing_popularity + new_popularity)
                 # Delete local file - not needed
                 try:
                     os.remove(video["file_path"])
                     log.debug(activity.logger, MODULE, "local_file_deleted", "Deleted local file after S3 match",
-                              file_path=video["file_path"])
+                              event_id=event_id, file_path=video["file_path"])
                 except Exception as e:
                     log.warning(activity.logger, MODULE, "delete_after_s3_match_failed", 
                                 "Failed to delete local file after S3 match",
-                                file_path=video["file_path"], error=str(e)[:100])
+                                event_id=event_id, file_path=video["file_path"], error=str(e)[:100])
         else:
             # No S3 match - needs further processing
             unique_videos.append(video)
     
     log.info(activity.logger, MODULE, "md5_dedup_complete", "MD5 deduplication complete",
-             unique=len(unique_videos), batch_dupes_removed=batch_duplicates_removed,
+             event_id=event_id, unique=len(unique_videos), batch_dupes_removed=batch_duplicates_removed,
              s3_matches=len(s3_exact_matches), s3_replacements=len(s3_replacements))
     
     return {
@@ -422,7 +424,8 @@ async def deduplicate_by_md5(
 @activity.defn
 async def deduplicate_videos(
     downloaded_files: List[Dict[str, Any]],
-    existing_s3_videos: Optional[List[Dict[str, Any]]] = None
+    existing_s3_videos: Optional[List[Dict[str, Any]]] = None,
+    event_id: str = "",
 ) -> Dict[str, Any]:
     """
     Smart deduplication that keeps BOTH longest AND largest videos.
@@ -451,14 +454,15 @@ async def deduplicate_videos(
     
     if filtered_count > 0:
         log.info(activity.logger, MODULE, "dedup_prefiltered", "Pre-filtered by duration",
-                 count=filtered_count)
+                 event_id=event_id, count=filtered_count)
     
     if not successful:
-        log.warning(activity.logger, MODULE, "dedup_no_downloads", "No successful downloads to deduplicate")
+        log.warning(activity.logger, MODULE, "dedup_no_downloads", "No successful downloads to deduplicate",
+                    event_id=event_id)
         return {"videos_to_upload": [], "videos_to_replace": [], "videos_to_bump_popularity": [], "skipped_urls": []}
     
     log.info(activity.logger, MODULE, "dedup_started", "Starting deduplication",
-             successful=len(successful), existing_s3=len(existing_s3_videos) if existing_s3_videos else 0)
+             event_id=event_id, successful=len(successful), existing_s3=len(existing_s3_videos) if existing_s3_videos else 0)
     
     # =========================================================================
     # PHASE 1: BATCH DEDUP - Group into duplicate clusters, keep longest+largest
@@ -498,10 +502,10 @@ async def deduplicate_videos(
     
     if videos_without_hash > 0:
         log.warning(activity.logger, MODULE, "dedup_missing_hash", "Videos without hash cannot be deduplicated",
-                    count=videos_without_hash, total=len(successful))
+                    event_id=event_id, count=videos_without_hash, total=len(successful))
     
     log.info(activity.logger, MODULE, "dedup_clustered", "Clustered videos",
-             clusters=len(clusters), from_downloads=len(successful))
+             event_id=event_id, clusters=len(clusters), from_downloads=len(successful))
     
     # For each cluster, select winners (longest + largest, could be same video)
     batch_winners = []
@@ -542,12 +546,12 @@ async def deduplicate_videos(
         
         if durations_similar:
             log.info(activity.logger, MODULE, "cluster_winner_resolution", "Cluster winner selected",
-                     duration=round(winner.get('duration', 0), 1),
+                     event_id=event_id, duration=round(winner.get('duration', 0), 1),
                      file_size=winner.get('file_size', 0), selection="resolution",
                      cluster_size=len(cluster), popularity=total_popularity)
         else:
             log.info(activity.logger, MODULE, "cluster_winner_length", "Cluster winner selected",
-                     duration=round(winner.get('duration', 0), 1),
+                     event_id=event_id, duration=round(winner.get('duration', 0), 1),
                      file_size=winner.get('file_size', 0), selection="length",
                      cluster_size=len(cluster), popularity=total_popularity)
         
@@ -564,13 +568,13 @@ async def deduplicate_videos(
         except Exception as e:
             cleanup_failures += 1
             log.debug(activity.logger, MODULE, "cleanup_file_failed", "Failed to remove discarded file",
-                      file_path=file_path, error=str(e)[:50])
+                      event_id=event_id, file_path=file_path, error=str(e)[:50])
     
     if cleanup_failures > 0:
         log.warning(activity.logger, MODULE, "cleanup_failures", f"{cleanup_failures} cleanup deletions failed",
-                    failed=cleanup_failures, total=len(files_to_remove))
+                    event_id=event_id, failed=cleanup_failures, total=len(files_to_remove))
     log.info(activity.logger, MODULE, "batch_dedup_complete", "Batch dedup complete",
-             input=len(successful), keepers=len(batch_winners), removed=len(files_to_remove))
+             event_id=event_id, input=len(successful), keepers=len(batch_winners), removed=len(files_to_remove))
     
     # =========================================================================
     # PHASE 2: S3 DEDUP - Compare batch winners against existing S3 videos for THIS event
@@ -578,7 +582,7 @@ async def deduplicate_videos(
     existing_videos_list = existing_s3_videos or []
     if existing_videos_list:
         log.info(activity.logger, MODULE, "s3_comparison_started", "Comparing against S3 videos",
-                 batch_winners=len(batch_winners), s3_videos=len(existing_videos_list))
+                 event_id=event_id, batch_winners=len(batch_winners), s3_videos=len(existing_videos_list))
     
     videos_to_upload = []  # New videos (no S3 match)
     videos_to_replace = []  # Higher quality than existing S3 video
@@ -599,7 +603,7 @@ async def deduplicate_videos(
         # CRITICAL: Warn if video has no hash - dedup will NOT work!
         if not perceptual_hash or perceptual_hash == "dense:0.25:":
             log.warning(activity.logger, MODULE, "dedup_bypassed", "Video has no perceptual hash - deduplication bypassed",
-                        source_url=source_url)
+                        event_id=event_id, source_url=source_url)
         
         # Check against existing S3 videos
         matched_existing = None
@@ -625,7 +629,7 @@ async def deduplicate_videos(
             if should_replace:
                 new_popularity = existing_popularity + incoming_popularity
                 log.info(activity.logger, MODULE, "s3_replace", f"S3 replacement - new is {reason}",
-                         existing_popularity=existing_popularity, added_popularity=incoming_popularity,
+                         event_id=event_id, existing_popularity=existing_popularity, added_popularity=incoming_popularity,
                          total_popularity=new_popularity)
                 file_info["popularity"] = new_popularity
                 # Pass old S3 key so upload can reuse it (keeps shared URLs stable)
@@ -638,7 +642,7 @@ async def deduplicate_videos(
                 # Existing S3 is better - skip but bump popularity
                 new_popularity = existing_popularity + incoming_popularity
                 log.info(activity.logger, MODULE, "s3_skip", "Existing S3 is better",
-                         existing_duration=round(existing_duration, 1),
+                         event_id=event_id, existing_duration=round(existing_duration, 1),
                          existing_size=existing_file_size, old_popularity=existing_popularity,
                          new_popularity=new_popularity)
                 videos_to_bump_popularity.append({
@@ -651,12 +655,12 @@ async def deduplicate_videos(
         else:
             # No S3 match - this is a new video
             log.info(activity.logger, MODULE, "new_video", "No S3 match - new video",
-                     file_size=file_size, duration=round(duration, 1))
+                     event_id=event_id, file_size=file_size, duration=round(duration, 1))
             videos_to_upload.append(file_info)
     
     # Log summary
     log.info(activity.logger, MODULE, "dedup_complete", "Deduplication complete",
-             new_uploads=len(videos_to_upload), s3_replacements=len(videos_to_replace),
+             event_id=event_id, new_uploads=len(videos_to_upload), s3_replacements=len(videos_to_replace),
              popularity_bumps=len(videos_to_bump_popularity), skipped=len(skipped_urls))
     
     return {
@@ -717,7 +721,7 @@ async def upload_single_video(
     if existing_s3_key:
         s3_key = existing_s3_key
         log.info(activity.logger, MODULE, "reusing_s3_key", "Reusing S3 key for replacement",
-                 s3_key=s3_key)
+                 event_id=event_id, s3_key=s3_key)
     elif file_hash:
         filename = f"{event_id}_{file_hash[:8]}.mp4"
         s3_key = f"{fixture_id}/{event_id}/{filename}"
@@ -865,7 +869,7 @@ async def update_video_in_place(
             
         except Exception as e:
             log.error(activity.logger, MODULE, "replace_failed", "In-place update failed",
-                      collection=collection_name, error=str(e))
+                      event_id=event_id, collection=collection_name, error=str(e))
     
     log.warning(activity.logger, MODULE, "replace_not_found", "Video not found for in-place update",
                  event_id=event_id, url=s3_url)
@@ -914,10 +918,10 @@ async def replace_s3_video(
         try:
             s3_store.s3_client.delete_object(Bucket="footy-videos", Key=old_s3_key)
             log.info(activity.logger, MODULE, "s3_delete_success", "S3 delete successful",
-                     s3_key=old_s3_key)
+                     event_id=event_id, s3_key=old_s3_key)
         except Exception as e:
             log.error(activity.logger, MODULE, "s3_delete_failed", "S3 delete failed",
-                      s3_key=old_s3_key, error=str(e))
+                      event_id=event_id, s3_key=old_s3_key, error=str(e))
             # Continue - we still want to update MongoDB
     
     # Remove from MongoDB _s3_videos array (by URL)
@@ -933,10 +937,10 @@ async def replace_s3_video(
         )
         if result.modified_count > 0:
             log.info(activity.logger, MODULE, "mongo_remove_success", "MongoDB updated - video removed",
-                     old_s3_url=old_s3_url)
+                     event_id=event_id, old_s3_url=old_s3_url)
         else:
             log.warning(activity.logger, MODULE, "mongo_remove_not_found", "Video not found in MongoDB",
-                        url=old_s3_url)
+                        event_id=event_id, url=old_s3_url)
         return True
     except Exception as e:
         log.error(activity.logger, MODULE, "mongo_remove_failed", "MongoDB update failed",

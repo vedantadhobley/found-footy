@@ -13,7 +13,7 @@ import asyncio
 import httpx
 import time
 
-LLAMA_URL = os.getenv('LLAMA_URL', 'http://llama-chat:8080')
+LLAMA_URL = os.getenv('LLAMA_URL', 'http://localhost:8080')
 
 s3 = boto3.client('s3',
     endpoint_url=os.getenv('S3_ENDPOINT_URL'),

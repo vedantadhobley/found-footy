@@ -40,7 +40,7 @@ MODULE = "rag"
 LLAMA_URL = LLAMA_CHAT_URL
 
 # Semaphore to limit concurrent LLM requests per worker process.
-# llama-chat runs --parallel 4 with 2 workers, so allow 2 concurrent per worker.
+# joi llama-chat runs --parallel 4 with 2 workers, so allow 2 concurrent per worker.
 _LLM_SEMAPHORE = asyncio.Semaphore(2)
 LLAMA_MODEL = os.getenv("LLAMA_MODEL", "Qwen3-8B")
 

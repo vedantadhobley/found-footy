@@ -53,14 +53,15 @@ Special characters (é, ü, ñ) are handled by **post-processing normalization**
 
 ### Endpoints
 
-The LLM is accessed via an external llama.cpp server on the shared network:
+The LLM is accessed via joi's llama.cpp server over Tailscale MagicDNS:
 
 | Environment | URL | Model |
 |-------------|-----|-------|
-| Dev | `http://llama-chat:8080` (via `luv-dev` network) | Qwen3-VL-8B |
-| Prod | `http://llama-chat:8080` (via `luv-prod` network) | Qwen3-VL-8B |
+| Dev | `http://joi.tailf424db.ts.net:3100` (set via `LLAMA_URL` in `.env`) | Qwen3-VL-8B |
+| Prod | `http://joi.tailf424db.ts.net:3100` (set via `LLAMA_URL` in `.env`) | Qwen3-VL-8B |
 
-The llama.cpp server runs as a shared service (not per-project) and provides an OpenAI-compatible API.
+The llama.cpp server runs on joi (dedicated GPU server) and provides an OpenAI-compatible API.
+DNS resolution: container → Docker DNS → systemd-resolved → Tailscale MagicDNS → joi.
 
 ---
 
@@ -99,20 +100,26 @@ The llama.cpp server runs as a shared service (not per-project) and provides an 
 
 ## LLM Server Setup
 
-The LLM is provided by an external llama.cpp server running on the shared Docker network. Found-footy does not run its own LLM container.
+The LLM is provided by an external llama.cpp server on joi, accessed via Tailscale MagicDNS. Found-footy does not run its own LLM container.
 
 ### Connection Configuration
 
-The worker connects to the llama.cpp server via environment variable:
+The `LLAMA_URL` is set in `.env` (gitignored) and interpolated into docker-compose:
+
+```bash
+# .env
+LLAMA_URL=http://joi.tailf424db.ts.net:3100
+```
 
 ```yaml
 # docker-compose.yml
 worker:
+  env_file: .env
   environment:
-    LLAMA_URL: http://llama-chat:8080  # External llama.cpp server
+    LLAMA_URL: ${LLAMA_URL}
   networks:
     - found-footy-prod
-    - luv-prod  # Shared network with llama-chat
+    - luv-prod  # Needed for DNS resolution chain
 ```
 
 ### API Compatibility
@@ -121,7 +128,7 @@ llama.cpp provides an OpenAI-compatible API:
 
 ```bash
 # Test from host
-curl http://localhost:8080/v1/chat/completions \
+curl http://joi.tailf424db.ts.net:3100/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "messages": [{"role": "user", "content": "Hello"}],
@@ -198,10 +205,10 @@ response = await client.post(
 
 ```bash
 # Check if server is running
-curl http://localhost:8080/health
+curl http://joi.tailf424db.ts.net:3100/health
 
 # Or check with a simple completion
-curl http://localhost:8080/v1/chat/completions \
+curl http://joi.tailf424db.ts.net:3100/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
 ```
@@ -289,8 +296,8 @@ import unicodedata
 from datetime import datetime, timezone
 
 
-# Environment-aware URL (set in docker-compose)
-LLAMA_URL = os.getenv("LLAMA_URL", "http://llama-chat:8080")
+# Environment-aware URL (set in .env / docker-compose)
+LLAMA_URL = os.getenv("LLAMA_URL", "http://localhost:8080")
 
 SYSTEM_PROMPT = """You are a football/soccer team name expert. Given a team's full name, 
 return exactly 3 short aliases commonly used on Twitter/X to refer to this team.
@@ -593,10 +600,10 @@ Used by `get_team_nickname()` → `build_twitter_search()` → returns ONE nickn
 
 ```bash
 # Check health
-curl http://localhost:8080/health
+curl http://joi.tailf424db.ts.net:3100/health
 
 # Or check with a simple completion
-curl http://localhost:8080/v1/chat/completions \
+curl http://joi.tailf424db.ts.net:3100/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
 ```
@@ -604,11 +611,7 @@ curl http://localhost:8080/v1/chat/completions \
 ### 2. Test Alias Selection
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "system", "content": "Select the best Twitter search terms from the provided words. Return a JSON array of 3-5 terms."},
+curl http://joi.tailf424db.ts.net:3100/v1/chat/completions \
       {"role": "user", "content": "Words: [\"Liverpool\", \"LFC\", \"Reds\", \"Anfield\", \"YNWA\"]\n\nSelect best. /no_think"}
     ],
     "max_tokens": 100,
@@ -628,7 +631,7 @@ Expected response:
 ffmpeg -i video.mp4 -vframes 1 -f image2pipe -vcodec png - | base64 > frame.b64
 
 # Then test vision
-curl http://localhost:8080/v1/chat/completions \
+curl http://joi.tailf424db.ts.net:3100/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d "{
     \"messages\": [{

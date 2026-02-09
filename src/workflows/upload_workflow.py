@@ -248,7 +248,7 @@ class UploadWorkflow:
         try:
             md5_result = await workflow.execute_activity(
                 upload_activities.deduplicate_by_md5,
-                args=[videos, existing_s3_videos],
+                args=[videos, existing_s3_videos, event_id],
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(maximum_attempts=2),
             )
@@ -323,7 +323,7 @@ class UploadWorkflow:
         try:
             dedup_result = await workflow.execute_activity(
                 upload_activities.deduplicate_videos,
-                args=[perceptual_dedup_videos, existing_s3_videos],
+                args=[perceptual_dedup_videos, existing_s3_videos, event_id],
                 # Heartbeat-based timeout: activity heartbeats every video comparison.
                 # 120s heartbeat allows time for complex hash comparisons between heartbeats.
                 # 1 hour start_to_close is a safety ceiling - heartbeat is the real control.

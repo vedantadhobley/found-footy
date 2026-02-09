@@ -13,8 +13,8 @@
 #   - temporal:7233 (gRPC)
 #   - twitter instances:8888 (API)
 #
-# External services (on luv-prod network):
-#   - llama-chat:8080 (LLM API - llama.cpp chat+vision)
+# External services (via Tailscale MagicDNS):
+#   - joi.tailf424db.ts.net:3100 (LLM API - llama.cpp chat+vision)
 #
 # SCALING (using --scale):
 #   - Twitter browsers: headless, scalable from 2-8
@@ -99,7 +99,7 @@ x-worker-common: &worker-common
     S3_SECRET_KEY: ffpass--
     S3_BUCKET_NAME: footy-videos
     FRONTEND_API_URL: http://vedanta-systems-prod-api:3001
-    LLAMA_URL: http://llama-chat:8080
+    LLAMA_URL: ${LLAMA_URL}
     FOOTY_TEMP_DIR: /tmp/found-footy
     TWITTER_SCALED: "true"  # Use scaled Twitter instances (found-footy-prod-twitter-1 through 8)
   volumes:

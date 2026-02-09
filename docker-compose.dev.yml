@@ -7,8 +7,8 @@
 #   4203: Twitter Firefox VNC (browser GUI)
 #   7233: Temporal gRPC
 #
-# External services (on luv-dev network):
-#   - llama-chat:8080 (LLM API - llama.cpp chat+vision)
+# External services (via Tailscale MagicDNS):
+#   - joi.tailf424db.ts.net:3100 (LLM API - llama.cpp chat+vision)
 #
 # Internal ports:
 #   - found-footy-postgres:5432 (Temporal metadata)
@@ -167,8 +167,7 @@ services:
       - found-footy-dev
     restart: unless-stopped
 
-  # LLAMA.CPP SERVER - External service on luv-dev network
-  # Accessed via luv-dev network as llama-chat:8080
+  # LLAMA.CPP SERVER - Accessed via Tailscale MagicDNS at joi.tailf424db.ts.net:3100
 
   # TEMPORAL WORKER - Executes workflows
   worker:
@@ -188,13 +187,13 @@ services:
       S3_BUCKET_NAME: footy-videos
       TWITTER_SESSION_URL: http://found-footy-dev-twitter:8888
       FRONTEND_API_URL: http://vedanta-systems-dev-api:3001
-      LLAMA_URL: http://llama-chat:8080  # External llama.cpp via luv-dev network
+      LLAMA_URL: ${LLAMA_URL}
     volumes:
       - .:/workspace
       - ~/.config/found-footy:/config  # Cookie backup (shared with twitter service)
     networks:
       - found-footy-dev
-      - luv-dev  # Shared network for frontend API and llama-chat
+      - luv-dev  # Shared network for frontend API
     depends_on:
       - temporal
       - mongo

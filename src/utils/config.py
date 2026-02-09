@@ -11,16 +11,16 @@ This file only provides fallback defaults for local development.
 import os
 
 # =============================================================================
-# LLM Configuration (llama.cpp server on external luv network)
+# LLM Configuration
+# Set LLAMA_URL and LLAMA_EMBED_URL in .env or docker-compose environment.
+# Defaults to localhost for local development / testing.
 # =============================================================================
 
-# Chat + Vision model (Qwen3-VL-8B)
-# Container: llama-chat on luv-prod/luv-dev network
-LLAMA_CHAT_URL = os.getenv("LLAMA_URL", "http://llama-chat:8080")
+# Chat + Vision model
+LLAMA_CHAT_URL = os.getenv("LLAMA_URL", "http://localhost:8080")
 
-# Embedding model (Qwen3-Embedding-8B)
-# Container: llama-embed on luv-prod/luv-dev network  
-LLAMA_EMBED_URL = os.getenv("LLAMA_EMBED_URL", "http://llama-embed:8080")
+# Embedding model
+LLAMA_EMBED_URL = os.getenv("LLAMA_EMBED_URL", "http://localhost:8081")
 
 # =============================================================================
 # Database Configuration
