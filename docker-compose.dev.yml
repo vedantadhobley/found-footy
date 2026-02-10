@@ -8,7 +8,7 @@
 #   7233: Temporal gRPC
 #
 # External services (via Tailscale MagicDNS):
-#   - joi.tailf424db.ts.net:3100 (LLM API - llama.cpp chat+vision)
+#   - joi:3100 (LLM API - llama.cpp chat+vision)
 #
 # Internal ports:
 #   - found-footy-postgres:5432 (Temporal metadata)
@@ -167,7 +167,7 @@ services:
       - found-footy-dev
     restart: unless-stopped
 
-  # LLAMA.CPP SERVER - Accessed via Tailscale MagicDNS at joi.tailf424db.ts.net:3100
+  # LLAMA.CPP SERVER - Accessed via Tailscale MagicDNS at joi:3100
 
   # TEMPORAL WORKER - Executes workflows
   worker:
