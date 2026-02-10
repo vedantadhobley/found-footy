@@ -14,7 +14,7 @@
 #   - twitter instances:8888 (API)
 #
 # External services (via Tailscale MagicDNS):
-#   - joi:3100 (LLM API - llama.cpp chat+vision)
+#   - joi:3101 (LLM API - llama.cpp chat+vision)
 #
 # SCALING (using --scale):
 #   - Twitter browsers: headless, scalable from 2-8

@@ -57,8 +57,8 @@ The LLM is accessed via joi's llama.cpp server over Tailscale MagicDNS:
 
 | Environment | URL | Model |
 |-------------|-----|-------|
-| Dev | `http://joi:3100` (set via `LLAMA_URL` in `.env`) | Qwen3-VL-8B |
-| Prod | `http://joi:3100` (set via `LLAMA_URL` in `.env`) | Qwen3-VL-8B |
+| Dev | `http://joi:3101` (set via `LLAMA_URL` in `.env`) | Qwen3-VL-8B |
+| Prod | `http://joi:3101` (set via `LLAMA_URL` in `.env`) | Qwen3-VL-8B |
 
 The llama.cpp server runs on joi (dedicated GPU server) and provides an OpenAI-compatible API.
 DNS resolution: container → Docker DNS → systemd-resolved → Tailscale MagicDNS → joi.
@@ -108,7 +108,7 @@ The `LLAMA_URL` is set in `.env` (gitignored) and interpolated into docker-compo
 
 ```bash
 # .env
-LLAMA_URL=http://joi:3100
+LLAMA_URL=http://joi:3101
 ```
 
 ```yaml
@@ -128,7 +128,7 @@ llama.cpp provides an OpenAI-compatible API:
 
 ```bash
 # Test from host
-curl http://joi:3100/v1/chat/completions \
+curl http://joi:3101/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "messages": [{"role": "user", "content": "Hello"}],
@@ -205,10 +205,10 @@ response = await client.post(
 
 ```bash
 # Check if server is running
-curl http://joi:3100/health
+curl http://joi:3101/health
 
 # Or check with a simple completion
-curl http://joi:3100/v1/chat/completions \
+curl http://joi:3101/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
 ```
@@ -600,10 +600,10 @@ Used by `get_team_nickname()` → `build_twitter_search()` → returns ONE nickn
 
 ```bash
 # Check health
-curl http://joi:3100/health
+curl http://joi:3101/health
 
 # Or check with a simple completion
-curl http://joi:3100/v1/chat/completions \
+curl http://joi:3101/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages": [{"role": "user", "content": "hi"}], "max_tokens": 10}'
 ```
@@ -611,7 +611,7 @@ curl http://joi:3100/v1/chat/completions \
 ### 2. Test Alias Selection
 
 ```bash
-curl http://joi:3100/v1/chat/completions \
+curl http://joi:3101/v1/chat/completions \
       {"role": "user", "content": "Words: [\"Liverpool\", \"LFC\", \"Reds\", \"Anfield\", \"YNWA\"]\n\nSelect best. /no_think"}
     ],
     "max_tokens": 100,
@@ -631,7 +631,7 @@ Expected response:
 ffmpeg -i video.mp4 -vframes 1 -f image2pipe -vcodec png - | base64 > frame.b64
 
 # Then test vision
-curl http://joi:3100/v1/chat/completions \
+curl http://joi:3101/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d "{
     \"messages\": [{
