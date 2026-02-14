@@ -230,19 +230,453 @@ This is already done implicitly — `fetch_event_data()` loads the full video ob
 
 ---
 
+## Current Models & Data Flow (Comprehensive Reference)
+
+### Model Definitions (`src/data/models.py`)
+
+#### `APIEventTime` (TypedDict)
+Source of truth for when an event happened. Comes from the API's `event.time` object.
+```python
+class APIEventTime(TypedDict, total=False):
+    elapsed: Optional[int]   # Base minute (e.g. 45)
+    extra: Optional[int]     # Added time (e.g. 2 for 45+2)
+```
+**No changes needed** — this is the API input we compare against.
+
+#### `EventFields` (Constants class)
+String constants for all underscore-prefixed enhanced fields on events. Prevents typos.
+```python
+class EventFields:
+    EVENT_ID = "_event_id"
+    MONITOR_WORKFLOWS = "_monitor_workflows"
+    MONITOR_COMPLETE = "_monitor_complete"
+    FIRST_SEEN = "_first_seen"
+    DOWNLOAD_WORKFLOWS = "_download_workflows"
+    DOWNLOAD_COMPLETE = "_download_complete"
+    DOWNLOAD_COMPLETED_AT = "_download_completed_at"
+    TWITTER_SEARCH = "_twitter_search"
+    TWITTER_ALIASES = "_twitter_aliases"
+    DROP_WORKFLOWS = "_drop_workflows"
+    DISCOVERED_VIDEOS = "_discovered_videos"
+    S3_VIDEOS = "_s3_videos"
+    VIDEO_COUNT = "_video_count"
+    DOWNLOAD_STATS = "_download_stats"
+    SCORE_AFTER = "_score_after"
+    SCORING_TEAM = "_scoring_team"
+    REMOVED = "_removed"
+    # DEPRECATED
+    MONITOR_COUNT = "_monitor_count"
+    TWITTER_COUNT = "_twitter_count"
+```
+**No changes needed** — event-level fields don't change. Videos within `_s3_videos` get new fields, but those are defined in `VideoFields` / `S3Video`.
+
+#### `VideoFields` (Constants class)
+String constants for fields on video objects within `_s3_videos`. Currently only covers 6 of the 13+ actual fields:
+```python
+class VideoFields:
+    URL = "url"
+    PERCEPTUAL_HASH = "perceptual_hash"
+    RESOLUTION_SCORE = "resolution_score"
+    FILE_SIZE = "file_size"
+    POPULARITY = "popularity"
+    RANK = "rank"
+```
+**⚠️ Gap:** The `S3Video` TypedDict has `width`, `height`, `aspect_ratio`, `bitrate`, `duration`, `source_url`, `hash_version`, `_s3_key` — none of these have `VideoFields` constants. This is a pre-existing gap, not caused by this refactor.
+
+**Changes needed:**
+```python
+class VideoFields:
+    # ... existing fields ...
+    # NEW: Timestamp verification fields
+    TIMESTAMP_BUCKET = "timestamp_bucket"
+    EXTRACTED_MINUTE = "extracted_minute"
+```
+
+#### `S3Video` (TypedDict)
+Full schema for video objects stored in MongoDB's `_s3_videos` array. This is the source of truth — S3 metadata may be truncated.
+```python
+class S3Video(TypedDict, total=False):
+    url: str                  # Relative URL: /video/footy-videos/{key}
+    _s3_key: str              # S3 key for direct operations
+    perceptual_hash: str      # Hash for deduplication
+    resolution_score: float
+    file_size: int            # File size in bytes
+    popularity: int           # Times this clip was found (default: 1)
+    rank: int                 # 1=best, higher=worse
+    # Quality metadata
+    width: int
+    height: int
+    aspect_ratio: float
+    bitrate: int
+    duration: float
+    source_url: str           # Original tweet URL
+    hash_version: str         # Version of hash algorithm used
+```
+**Changes needed:**
+```python
+class S3Video(TypedDict, total=False):
+    # ... all existing fields ...
+    # NEW: Timestamp verification fields
+    timestamp_bucket: str     # "A" (verified match) | "C" (no clock visible) — "B" is never stored
+    extracted_minute: Optional[int]  # Game clock minute extracted by AI (None if not visible)
+```
+
+#### `DownloadStats` (TypedDict)
+Pipeline stage counters stored in `_download_stats` on events. Tracks what happened to each video.
+```python
+class DownloadStats(TypedDict, total=False):
+    discovered: int               # Total discovered from Twitter
+    downloaded: int               # Successfully downloaded
+    filtered_aspect_duration: int # Filtered by aspect/duration
+    download_failed: int          # Failed to download
+    md5_deduped: int              # Removed by MD5 dedup
+    md5_s3_matched: int           # MD5 matched existing S3
+    ai_rejected: int              # Not soccer
+    ai_validation_failed: int     # AI timeout/error
+    hash_generated: int           # Hash generated ok
+    hash_failed: int              # Hash failed
+    perceptual_deduped: int       # Perceptual dedup removed
+    s3_replaced: int              # Replaced lower quality S3
+    s3_popularity_bumped: int     # Existing S3 kept, popularity bumped
+    uploaded: int                 # Successfully uploaded
+```
+**Changes needed:**
+```python
+class DownloadStats(TypedDict, total=False):
+    # ... all existing fields ...
+    # NEW: Timestamp rejection tracking
+    timestamp_rejected: int       # Bucket B — clock visible but wrong minute
+```
+
+#### `DiscoveredVideo` (TypedDict)
+Raw video metadata from Twitter scraper. Stored in `_discovered_videos`.
+```python
+class DiscoveredVideo(TypedDict, total=False):
+    video_page_url: str
+    video_url: str
+    tweet_url: str
+    tweet_text: str
+    username: str
+    views: int
+    likes: int
+    retweets: int
+```
+**No changes needed** — these are pre-download, timestamp extraction happens during validation.
+
+#### `EnhancedEvent` (TypedDict)
+Full event structure with all tracking fields. Contains `_s3_videos: List[S3Video]`.
+**No direct changes needed** — inherits S3Video changes automatically.
+
+### Workflow Input Types
+
+#### `TwitterWorkflowInput` (dataclass) — `src/workflows/twitter_workflow.py:65`
+```python
+@dataclass
+class TwitterWorkflowInput:
+    fixture_id: int
+    event_id: str
+    team_id: int                    # API-Football team ID
+    team_name: str                  # "Liverpool"
+    player_name: Optional[str]      # Can be None
+```
+**Changes needed:**
+```python
+@dataclass
+class TwitterWorkflowInput:
+    fixture_id: int
+    event_id: str
+    team_id: int
+    team_name: str
+    player_name: Optional[str]
+    # NEW: Event minute for timestamp verification
+    event_minute: int = 0                    # API elapsed minute
+    event_extra: Optional[int] = None        # API extra time (45+2 → extra=2)
+```
+Fields are appended with defaults so existing Temporal workflow histories remain compatible.
+
+#### `DownloadWorkflow.run()` — `src/workflows/download_workflow.py:71`
+Currently takes positional args (not a dataclass):
+```python
+async def run(self, fixture_id: int, event_id: str, player_name: str,
+              team_name: str, discovered_videos: list) -> dict:
+```
+**Changes needed:**
+```python
+async def run(self, fixture_id: int, event_id: str, player_name: str,
+              team_name: str, discovered_videos: list,
+              event_minute: int = 0, event_extra: int = None) -> dict:
+```
+Appended with defaults for Temporal replay compatibility.
+
+### Activity Signatures
+
+#### `validate_video_is_soccer()` — `src/activities/download.py:434`
+```python
+async def validate_video_is_soccer(file_path: str, event_id: str) -> Dict[str, Any]:
+```
+**Changes needed:**
+```python
+async def validate_video_is_soccer(
+    file_path: str, event_id: str,
+    event_minute: int = 0, event_extra: int = None
+) -> Dict[str, Any]:
+```
+Return value currently:
+```python
+{
+    "is_valid": bool,
+    "confidence": float,
+    "reason": str,
+    "is_soccer": bool,
+    "is_screen_recording": bool,
+    "detected_features": list,
+    "checks_performed": int,
+}
+```
+**New return value:**
+```python
+{
+    "is_valid": bool,
+    "confidence": float,
+    "reason": str,
+    "is_soccer": bool,
+    "is_screen_recording": bool,
+    "detected_features": list,
+    "checks_performed": int,
+    # NEW
+    "clock_verified": bool,            # True if extracted clock matches API time ±1
+    "extracted_minute": int | None,     # Best extracted clock minute (None if no clock)
+    "timestamp_bucket": str,           # "A", "B", or "C"
+}
+```
+
+#### `upload_single_video()` — `src/activities/upload.py:700`
+```python
+async def upload_single_video(
+    file_path, fixture_id, event_id, player_name, team_name,
+    video_index, file_hash, perceptual_hash, duration, popularity,
+    assister_name, opponent_team, source_url,
+    width, height, bitrate, file_size, existing_s3_key
+) -> Dict[str, Any]:
+```
+Returns a `video_object` dict that goes into MongoDB:
+```python
+"video_object": {
+    "url", "_s3_key", "perceptual_hash", "resolution_score",
+    "file_size", "popularity", "rank",
+    "width", "height", "aspect_ratio", "bitrate",
+    "duration", "source_url", "hash_version",
+}
+```
+**Changes needed:** Add `timestamp_bucket` and `extracted_minute` params, include in `video_object`:
+```python
+async def upload_single_video(
+    ...,
+    existing_s3_key: str = "",
+    # NEW
+    timestamp_bucket: str = "C",
+    extracted_minute: int = None,
+) -> Dict[str, Any]:
+
+# In video_object:
+"video_object": {
+    # ... all existing fields ...
+    "timestamp_bucket": timestamp_bucket,
+    "extracted_minute": extracted_minute,
+}
+```
+
+#### `deduplicate_videos()` — `src/activities/upload.py:425`
+```python
+async def deduplicate_videos(
+    downloaded_files: List[Dict[str, Any]],
+    existing_s3_videos: Optional[List[Dict[str, Any]]] = None,
+    event_id: str = "",
+) -> Dict[str, Any]:
+```
+**Signature stays the same** — bucket info is already on each `downloaded_files` item (added by DownloadWorkflow after validation). The function's internal logic changes to:
+1. Separate inputs into buckets A, B, C using `video_info["timestamp_bucket"]`
+2. Discard bucket B entirely (log count)
+3. Run Phase 1 (batch clustering) independently within A and within C
+4. Run Phase 2 (S3 comparison) scoped by bucket — A winners vs A S3 videos, C winners vs C S3 videos
+5. Legacy S3 videos (no `timestamp_bucket` field) → treated as bucket C
+
+### Complete Data Flow (End-to-End)
+
+```
+API event.time → {elapsed: 45, extra: 2}
+        │
+        ▼
+MonitorWorkflow (monitor_workflow.py:155)
+├── process_fixture_events() returns twitter_triggered list
+│   └── Each item has: {event_id, player_name, team_id, team_name, minute, extra, first_seen}
+│                                                                    ▲▲▲▲▲▲  ▲▲▲▲▲
+│                                                              ALREADY EXISTS in monitor
+├── Creates TwitterWorkflowInput(
+│       fixture_id, event_id, team_id, team_name, player_name,
+│       event_minute=minute, event_extra=extra     ◄── NEW: pass through
+│   )
+└── Starts TwitterWorkflow
+        │
+        ▼
+TwitterWorkflow (twitter_workflow.py:100)
+├── Resolves team aliases
+├── Searches Twitter, gets discovered_videos
+├── Starts DownloadWorkflow(
+│       fixture_id, event_id, player_name, team_name, discovered_videos,
+│       event_minute=input.event_minute,            ◄── NEW: pass through
+│       event_extra=input.event_extra               ◄── NEW: pass through
+│   )
+        │
+        ▼
+DownloadWorkflow (download_workflow.py:71)
+├── Step 1: Download videos in parallel
+├── Step 2: MD5 batch dedup (bucket-agnostic)
+├── Step 3: AI Validation
+│   └── validate_video_is_soccer(
+│           file_path, event_id,
+│           event_minute, event_extra               ◄── NEW: pass minute/extra
+│       )
+│       Returns: {is_valid, clock_verified, extracted_minute, timestamp_bucket, ...}
+│                                                    ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+│                                                    NEW: attach to video_info
+│   After validation, for each passing video:
+│       video_info["clock_verified"] = validation["clock_verified"]
+│       video_info["extracted_minute"] = validation["extracted_minute"]
+│       video_info["timestamp_bucket"] = validation["timestamp_bucket"]
+│   
+│   For bucket B videos: REJECT (don't proceed to hash generation)
+│       download_stats["timestamp_rejected"] += 1
+│
+├── Step 4: Generate perceptual hashes (only bucket A + C videos)
+├── Step 5: Signal UploadWorkflow with video_info list
+│           (each video_info now has timestamp_bucket + extracted_minute)
+        │
+        ▼
+UploadWorkflow (upload_workflow.py)
+├── Step 3: fetch_event_data()
+│   └── Loads existing_s3_videos from MongoDB
+│       (automatically includes timestamp_bucket + extracted_minute if stored)
+├── Step 4: deduplicate_videos(downloaded_files, existing_s3_videos)
+│   └── Phase 1: Batch dedup SCOPED BY BUCKET (A vs A, C vs C only)
+│   └── Phase 2: S3 dedup SCOPED BY BUCKET
+├── Step 6: upload_single_video(
+│       ...,
+│       timestamp_bucket=video_info["timestamp_bucket"],     ◄── NEW
+│       extracted_minute=video_info.get("extracted_minute"),  ◄── NEW
+│   )
+│   └── Returns video_object with timestamp_bucket + extracted_minute
+├── Step 7: save_video_objects() → MongoDB
+│   └── video_object now includes timestamp_bucket + extracted_minute
+```
+
+### The `video_info` dict lifecycle
+
+The `video_info` dict is a plain dict (not a TypedDict) that accumulates fields as it moves through the DownloadWorkflow pipeline. Here's every field at each stage:
+
+**After download_single_video():**
+```python
+{
+    "status": "success",
+    "file_path": "/tmp/found-footy/{event_id}_{run_id}/video_0.mp4",
+    "file_hash": "abc123...",       # MD5 hash
+    "file_size": 2500000,
+    "duration": 45.2,
+    "width": 1280,
+    "height": 720,
+    "bitrate": 3500000,
+    "source_url": "https://twitter.com/...",
+}
+```
+
+**After validate_video_is_soccer() — NEW fields attached:**
+```python
+{
+    # ... all download fields ...
+    "clock_verified": True,          # ◄── NEW
+    "extracted_minute": 46,          # ◄── NEW (None if no clock)
+    "timestamp_bucket": "A",         # ◄── NEW ("A", "B", or "C")
+}
+```
+Bucket B videos are REMOVED from the pipeline at this stage.
+
+**After generate_video_hash():**
+```python
+{
+    # ... all above fields ...
+    "perceptual_hash": "dense:0.25:a1b2c3...",
+}
+```
+
+**After batch MD5 dedup (within DownloadWorkflow):**
+```python
+{
+    # ... all above fields ...
+    "popularity": 2,                 # Bumped if MD5 duplicates found
+}
+```
+
+**Sent to UploadWorkflow via signal — all fields above are preserved.**
+
+**After upload_single_video() → video_object for MongoDB:**
+```python
+{
+    "url": "/video/footy-videos/...",
+    "_s3_key": "footy-videos/...",
+    "perceptual_hash": "dense:0.25:a1b2c3...",
+    "resolution_score": 921600,
+    "file_size": 2500000,
+    "popularity": 2,
+    "rank": 0,
+    "width": 1280,
+    "height": 720,
+    "aspect_ratio": 1.78,
+    "bitrate": 3500000,
+    "duration": 45.2,
+    "source_url": "https://twitter.com/...",
+    "hash_version": "dense:0.25",
+    "timestamp_bucket": "A",         # ◄── NEW
+    "extracted_minute": 46,          # ◄── NEW
+}
+```
+
+### Call Sites That Need Changes
+
+| Location | Current call | Change needed |
+|----------|-------------|---------------|
+| `monitor_workflow.py:201` | `TwitterWorkflowInput(fixture_id, event_id, team_id, team_name, player_name)` | Add `event_minute=minute, event_extra=extra` |
+| `twitter_workflow.py:485` | `args=[input.fixture_id, input.event_id, input.player_name, team_aliases[0], videos_to_download]` | Append `input.event_minute, input.event_extra` |
+| `download_workflow.py:300` | `args=[video_info["file_path"], event_id]` | Append `event_minute, event_extra` |
+| `download_workflow.py:309` | Checks `validation.get("is_valid")` only | Also check `timestamp_bucket == "B"` → reject |
+| `download_workflow.py:315` | Appends to `validated_videos` | Attach `clock_verified`, `extracted_minute`, `timestamp_bucket` to `video_info` |
+| `upload_workflow.py:438` | `args=[..., existing_s3_key]` | Append `timestamp_bucket, extracted_minute` |
+
+### Backward Compatibility
+
+1. **Temporal replay safety:** All new params use defaults (`event_minute=0`, `event_extra=None`, `timestamp_bucket="C"`, `extracted_minute=None`). In-flight workflows replay cleanly — they get bucket C (no clock info), matching current behavior.
+
+2. **MongoDB migration:** None needed. Existing `_s3_videos` documents without `timestamp_bucket` are treated as bucket C. The `total=False` on `S3Video` TypedDict means all fields are optional. `fetch_event_data()` loads full video objects, so new fields are automatically available when present.
+
+3. **DownloadStats:** Existing stats objects without `timestamp_rejected` are valid — `TypedDict(total=False)` makes it optional.
+
+---
+
 ## Implementation Order
 
 1. ✅ Create branch `refactor/valid-deduplication`
-2. ⬜ Add `event_minute` + `event_extra` to workflow inputs (TwitterWorkflowInput, DownloadWorkflow)
-3. ⬜ Update vision prompt to extract game clock
-4. ⬜ Add CLOCK parsing to `parse_response()`
-5. ⬜ Add timestamp validation logic + bucket assignment
-6. ⬜ Wire event_minute through monitor → twitter → download → validate
-7. ⬜ Add `clock_verified`, `extracted_minute`, `timestamp_bucket` to video_info pipeline
-8. ⬜ Update `deduplicate_videos()` to scope dedup by timestamp bucket (batch + S3)
-9. ⬜ Store `timestamp_bucket` + `extracted_minute` in MongoDB video objects
-10. ⬜ Test with live data
-11. ⬜ Deploy and monitor clock extraction accuracy + bucket distribution
+2. ⬜ Add `event_minute` + `event_extra` to workflow inputs (`TwitterWorkflowInput`, `DownloadWorkflow.run()`)
+3. ⬜ Update vision prompt to extract game clock (add CLOCK question)
+4. ⬜ Add CLOCK parsing to `parse_response()` inner function
+5. ⬜ Add timestamp validation logic + bucket assignment in `validate_video_is_soccer()`
+6. ⬜ Wire `event_minute`/`event_extra` through monitor → twitter → download → validate call sites
+7. ⬜ Attach `clock_verified`, `extracted_minute`, `timestamp_bucket` to `video_info` in DownloadWorkflow
+8. ⬜ Add bucket B rejection in DownloadWorkflow (between validation and hash generation)
+9. ⬜ Update `deduplicate_videos()` for bucket-scoped dedup (batch + S3 phases)
+10. ⬜ Add `timestamp_bucket` + `extracted_minute` params to `upload_single_video()`, include in `video_object`
+11. ⬜ Pass new fields through `upload_workflow.py` call site
+12. ⬜ Add `timestamp_rejected` to `download_stats` initialization in DownloadWorkflow
+13. ⬜ Test with live data
+14. ⬜ Deploy and monitor clock extraction accuracy + bucket distribution
 
 ---
 
@@ -250,9 +684,10 @@ This is already done implicitly — `fetch_event_data()` loads the full video ob
 
 | File | Changes |
 |------|---------|
-| `src/workflows/twitter_workflow.py` | Add `event_minute`, `event_extra` to `TwitterWorkflowInput` |
-| `src/workflows/download_workflow.py` | Pass minute/extra to validate activity, attach bucket to video_info |
-| `src/workflows/monitor_workflow.py` | Pass minute/extra to TwitterWorkflowInput |
-| `src/activities/download.py` | Update prompt, add CLOCK parsing, timestamp validation, bucket assignment |
-| `src/activities/upload.py` | Bucket-scoped dedup in `deduplicate_videos()`, reject bucket B, store new fields |
-| `src/workflows/upload_workflow.py` | Include `timestamp_bucket` + `extracted_minute` in video objects saved to MongoDB |
+| `src/data/models.py` | Add `TIMESTAMP_BUCKET` + `EXTRACTED_MINUTE` to `VideoFields`, add fields to `S3Video` TypedDict, add `timestamp_rejected` to `DownloadStats` |
+| `src/workflows/twitter_workflow.py` | Add `event_minute`, `event_extra` to `TwitterWorkflowInput` dataclass; pass to `DownloadWorkflow.run()` args |
+| `src/workflows/download_workflow.py` | Accept `event_minute`/`event_extra` in `run()`; pass to `validate_video_is_soccer()`; attach bucket fields to `video_info`; reject bucket B; add `timestamp_rejected` to `download_stats` |
+| `src/workflows/monitor_workflow.py` | Pass `event_minute=minute, event_extra=extra` to `TwitterWorkflowInput` |
+| `src/activities/download.py` | Update prompt with CLOCK question; update `parse_response()` to return 3-tuple; add timestamp validation + bucket assignment; update `validate_video_is_soccer()` signature + return value |
+| `src/activities/upload.py` | Bucket-scoped dedup in `deduplicate_videos()` (both phases); add `timestamp_bucket`/`extracted_minute` params to `upload_single_video()`; include in `video_object` |
+| `src/workflows/upload_workflow.py` | Pass `timestamp_bucket` + `extracted_minute` from `video_info` to `upload_single_video()` args |
