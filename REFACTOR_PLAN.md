@@ -134,36 +134,99 @@ If neither the 25% nor 75% frame has a visible game clock, we **cannot verify** 
 
 ---
 
-## Phase 2: Disable Perceptual Hash Deduplication
+## Phase 2: Timestamp-Bucketed Deduplication
 
-### What to disable
+### The problem with current dedup
 
-The perceptual hash comparison in `upload.py` → `deduplicate_videos()` that:
-- Groups videos by hamming distance of perceptual hashes
-- Replaces "shorter" videos with "longer" ones (the broken logic)
-- Uses `MIN_CONSECUTIVE_MATCHES=3` which is too loose
+The current perceptual hash dedup is **event-scoped** — it only compares videos within the same `event_id`. But it has no way to distinguish a clip of the actual goal from a clip of a different moment in the same match (e.g. a 30th-minute highlight vs the 75th-minute goal we actually want). Hash similarity between two broadcast clips of the same match is high regardless of which minute they show.
 
-### What to keep
+### The bucket strategy
 
-- **MD5 deduplication** — exact file matches should still be deduplicated (this is reliable)
-- **Perceptual hash generation** — keep generating hashes for future use / metrics
-- **S3 upload** — all unique-by-MD5 videos should be uploaded
+Timestamp extraction from Phase 1 gives us a **verified game minute** for each video. We use this to sort videos into three trust buckets before dedup:
 
-### How to disable
+| Bucket | Criteria | Dedup behavior |
+|--------|----------|----------------|
+| **A: Verified match** | Extracted clock minute is within ±1 of expected API time `(elapsed + extra - 1)` | Dedup within this bucket only. These are confirmed clips of the right moment. |
+| **B: Verified mismatch** | Extracted clock minute exists but is **outside** the ±1 range | **Reject entirely** — this is a clip of the wrong part of the match. Don't upload, don't dedup. |
+| **C: No timestamp** | No clock visible in either the 25% or 75% frame | Dedup within this bucket only. Cannot verify, but may still be valid (cropped scoreboard, close-up replays, fan recordings). |
 
-In `deduplicate_videos()`: skip the hamming distance comparison, just pass through all videos as "new". Keep the function signature and logging so we can re-enable later.
+This is a **massive improvement** over the current approach because:
+1. Bucket B clips (wrong minute) are rejected outright — they previously polluted dedup clusters and could replace correct clips
+2. Bucket A and C are deduplicated independently — a verified 30th-minute clip can never match against a no-timestamp clip that might be from minute 75
+3. S3 dedup gets the same benefit — when comparing against existing S3 videos, only compare within the same bucket
 
----
+### How this applies to both dedup phases
 
-## Phase 3: Re-enable Smart Deduplication (FUTURE)
+#### Batch dedup (`deduplicate_videos` Phase 1)
 
-Once timestamp verification is working and we have data on clock extraction accuracy:
+Currently: all downloaded videos in a single event are compared against each other using perceptual hashes.
 
-1. Use timestamp as primary grouping signal (videos showing same game minute)
-2. Only compare perceptual hashes WITHIN the same timestamp group
-3. Raise `MIN_CONSECUTIVE_MATCHES` threshold
-4. Remove "longer = better" replacement logic
-5. Consider content-aware ranking instead (broadcast quality, resolution, bitrate)
+**New behavior:**
+1. Assign each video to bucket A, B, or C based on its extracted timestamp
+2. Discard bucket B entirely (log as `timestamp_rejected`)
+3. Run perceptual hash clustering **only within bucket A** and **only within bucket C** separately
+4. Select cluster winners from each bucket independently
+5. Bucket A winners and bucket C winners both proceed to S3 dedup
+
+#### S3 dedup (`deduplicate_videos` Phase 2)
+
+Currently: batch winners are compared against all existing S3 videos for the event using perceptual hashes.
+
+**New behavior:**
+1. Each S3 video in MongoDB has a stored `timestamp_bucket` ("A", "C", or legacy "" for pre-migration videos)
+2. Batch winners are only compared against S3 videos **in the same bucket**
+3. A bucket-A winner is only compared to existing bucket-A S3 videos
+4. A bucket-C winner is only compared to existing bucket-C S3 videos
+5. Legacy S3 videos (no bucket) are treated as bucket C for comparison purposes
+
+This prevents the exact scenario that caused the Szoboszlai bug: a meme video (which would be bucket C or B) replacing a verified goal clip (bucket A).
+
+### Storage changes
+
+The video object stored in MongoDB `_s3_videos` array currently has:
+```
+{url, perceptual_hash, resolution_score, file_size, popularity, rank}
+```
+
+**Add two new fields:**
+```
+{
+  url, perceptual_hash, resolution_score, file_size, popularity, rank,
+  timestamp_bucket: "A" | "C",    // Which bucket this video belongs to (B is never stored)
+  extracted_minute: int | null     // The game clock minute extracted by AI (null if no clock)
+}
+```
+
+These fields are also added to the video metadata flowing through the download → upload pipeline:
+- `validate_video_is_soccer()` returns `extracted_minutes: [int|None, int|None]` and `clock_verified: bool`
+- DownloadWorkflow attaches these to `video_info` dict before passing to UploadWorkflow
+- UploadWorkflow includes them in the video object saved to MongoDB
+
+**No schema migration needed** — existing S3 videos without `timestamp_bucket` are treated as bucket C (no timestamp info). New videos get the bucket assigned at validation time.
+
+### The `video_info` dict through the pipeline
+
+```
+DownloadWorkflow
+  ├── download_video()       → {file_path, file_hash, file_size, duration, ...}
+  ├── validate_video()       → adds {clock_verified, extracted_minute, timestamp_bucket}
+  ├── generate_hash()        → adds {perceptual_hash}
+  └── signal UploadWorkflow  → full video_info with all fields
+
+UploadWorkflow
+  ├── deduplicate_by_md5()   → filters exact dupes (bucket-agnostic, MD5 is MD5)
+  ├── deduplicate_videos()   → bucket-scoped perceptual hash dedup
+  ├── upload_single_video()  → S3 upload with metadata
+  └── save_video_objects()   → MongoDB with timestamp_bucket + extracted_minute
+```
+
+MD5 dedup stays bucket-agnostic because identical files are identical regardless of what minute they show.
+
+### Fetch event data changes
+
+`fetch_event_data()` in upload.py already loads `existing_s3_videos` from MongoDB with `perceptual_hash`. It needs to also load `timestamp_bucket` and `extracted_minute` so that `deduplicate_videos()` can scope S3 comparisons by bucket.
+
+This is already done implicitly — `fetch_event_data()` loads the full video object from `_s3_videos`, so any new fields we store will automatically be available. No code change needed here.
 
 ---
 
@@ -173,12 +236,13 @@ Once timestamp verification is working and we have data on clock extraction accu
 2. ⬜ Add `event_minute` + `event_extra` to workflow inputs (TwitterWorkflowInput, DownloadWorkflow)
 3. ⬜ Update vision prompt to extract game clock
 4. ⬜ Add CLOCK parsing to `parse_response()`
-5. ⬜ Add timestamp validation logic
+5. ⬜ Add timestamp validation logic + bucket assignment
 6. ⬜ Wire event_minute through monitor → twitter → download → validate
-7. ⬜ Add `clock_verified` to validation return + store in video metadata
-8. ⬜ Disable perceptual hash deduplication in `deduplicate_videos()`
-9. ⬜ Test with live data
-10. ⬜ Deploy and monitor clock extraction accuracy
+7. ⬜ Add `clock_verified`, `extracted_minute`, `timestamp_bucket` to video_info pipeline
+8. ⬜ Update `deduplicate_videos()` to scope dedup by timestamp bucket (batch + S3)
+9. ⬜ Store `timestamp_bucket` + `extracted_minute` in MongoDB video objects
+10. ⬜ Test with live data
+11. ⬜ Deploy and monitor clock extraction accuracy + bucket distribution
 
 ---
 
@@ -187,8 +251,8 @@ Once timestamp verification is working and we have data on clock extraction accu
 | File | Changes |
 |------|---------|
 | `src/workflows/twitter_workflow.py` | Add `event_minute`, `event_extra` to `TwitterWorkflowInput` |
-| `src/workflows/download_workflow.py` | Pass minute/extra to validate activity |
+| `src/workflows/download_workflow.py` | Pass minute/extra to validate activity, attach bucket to video_info |
 | `src/workflows/monitor_workflow.py` | Pass minute/extra to TwitterWorkflowInput |
-| `src/activities/download.py` | Update prompt, add CLOCK parsing, add timestamp validation |
-| `src/activities/upload.py` | Disable perceptual hash comparison in `deduplicate_videos()` |
-| `src/data/models.py` | Add clock_verified field if needed |
+| `src/activities/download.py` | Update prompt, add CLOCK parsing, timestamp validation, bucket assignment |
+| `src/activities/upload.py` | Bucket-scoped dedup in `deduplicate_videos()`, reject bucket B, store new fields |
+| `src/workflows/upload_workflow.py` | Include `timestamp_bucket` + `extracted_minute` in video objects saved to MongoDB |
