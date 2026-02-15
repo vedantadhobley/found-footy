@@ -5,6 +5,7 @@ import os
 import hashlib
 import asyncio
 import json
+import re
 
 from src.utils.footy_logging import log
 from src.utils.config import (
@@ -75,6 +76,217 @@ def _load_twitter_cookies() -> Dict[str, str]:
         log.warning(activity.logger, "download", "cookies_load_failed",
                     "Failed to load cookies", error=str(e))
         return {}
+
+
+# =============================================================================
+# Broadcast Clock Parsing
+# =============================================================================
+
+def parse_broadcast_clock(raw_clock: str | None) -> int | None:
+    """
+    Parse raw broadcast clock text into absolute match minute.
+    
+    Broadcast clocks appear in 5 distinct format categories:
+    
+    A) Running match clock (most common):
+       "34:12" → 34, "84:28" → 84, "112:54" → 112
+    
+    B) Period indicator + time (relative or absolute):
+       "2H 5:00" → 50 (relative: 45+5)
+       "2H 67:00" → 67 (absolute: 67 >= 45)
+       "ET 04:04" → 94 (relative: 90+4)
+       "ET 102:53" → 102 (absolute: 102 >= 90)
+    
+    C) Compact stoppage (base + added minutes):
+       "45+2" → 47, "45+2:30" → 47, "90+3" → 93
+    
+    D) Broadcast stoppage display (frozen base + allocated time + sub-clock):
+       "45:00 +2 00:43" → 45 (base=45, sub-clock 0 mins elapsed)
+       "90:00 +4 02:17" → 92 (base=90, sub-clock 2 mins elapsed)
+       "90:00 +5 03:45" → 93 (base=90, sub-clock 3 mins elapsed)
+       The main clock freezes at the period boundary (45:00, 90:00).
+       +N is the total allocated stoppage time.
+       MM:SS after that is a running sub-clock within the stoppage.
+       Actual minute = base_minutes + sub-clock_minutes.
+    
+    E) Base time + stoppage (no space, colon in base):
+       "90:00+3:15" → 93, "45:00+2" → 47
+    
+    Smart detection for relative vs absolute with period indicators:
+    - ET + minutes >= 90 → already absolute (don't add 90)
+    - ET + minutes <= 30 → relative to ET start (add 90)
+    - 2H + minutes >= 45 → already absolute (don't add 45)
+    - 2H + minutes < 45 → relative to 2H start (add 45)
+    
+    Args:
+        raw_clock: Raw text from AI vision model (e.g., "45:00 +2 00:43")
+    
+    Returns:
+        Absolute match minute (0-120+), or None if unparseable
+    """
+    if not raw_clock or raw_clock.upper() in ("NONE", "HT", "FT", "HALF TIME", "FULL TIME"):
+        return None
+    
+    text = raw_clock.upper().strip()
+    
+    # Detect period indicators (but don't apply offset yet)
+    has_et = bool(re.search(r'\b(ET|AET|EXTRA\s*TIME)\b', text))
+    has_2h = bool(re.search(r'\b(2H|2ND\s*HALF)\b', text))
+    has_1h = bool(re.search(r'\b(1H|1ST\s*HALF)\b', text))
+    
+    # Remove indicators for time parsing
+    clean_text = re.sub(r'\b(ET|AET|EXTRA\s*TIME|2H|2ND\s*HALF|1H|1ST\s*HALF)\b', '', text).strip()
+    
+    # =========================================================================
+    # Pattern D: Broadcast stoppage display with running sub-clock
+    # "45:00 +2 00:43" → base=45, sub-clock elapsed=0 min → 45
+    # "90:00 +4 02:17" → base=90, sub-clock elapsed=2 min → 92
+    # The main clock freezes at the period boundary. The sub-clock counts
+    # how much of the allocated stoppage has elapsed.
+    # Actual minute = base_minutes + sub_clock_minutes
+    # =========================================================================
+    broadcast_stoppage = re.match(
+        r'(\d{1,3}):(\d{2})\s*\+\s*\d+\s+(\d{1,2}):(\d{2})',
+        clean_text
+    )
+    if broadcast_stoppage:
+        base_min = int(broadcast_stoppage.group(1))
+        elapsed_added_min = int(broadcast_stoppage.group(3))
+        return base_min + elapsed_added_min
+    
+    # =========================================================================
+    # Pattern E: Base time with stoppage (no space, colon in base)
+    # "90:00+3:15" → base=90, added=3 → 93
+    # "45:00+2" → base=45, added=2 → 47
+    # =========================================================================
+    base_stoppage = re.match(
+        r'(\d{1,3}):(\d{2})\+(\d+)(?::(\d{2}))?$',
+        clean_text
+    )
+    if base_stoppage:
+        base_min = int(base_stoppage.group(1))
+        added_min = int(base_stoppage.group(3))
+        return base_min + added_min
+    
+    # =========================================================================
+    # Pattern C: Compact stoppage "45+2:30" or "90+3" or "45+2"
+    # Base is stated directly (no colon before the +)
+    # =========================================================================
+    stoppage_match = re.match(r'(\d+)\s*\+\s*(\d+)', clean_text)
+    if stoppage_match:
+        base_min = int(stoppage_match.group(1))
+        added_min = int(stoppage_match.group(2))
+        return base_min + added_min
+    
+    # =========================================================================
+    # Patterns A & B: Standard MM:SS or just MM (with optional period offset)
+    # =========================================================================
+    time_match = re.search(r'(\d{1,3}):(\d{2})', clean_text)
+    if not time_match:
+        # Try just minutes
+        just_minutes = re.match(r'^(\d{1,3})$', clean_text.strip())
+        if just_minutes:
+            minutes = int(just_minutes.group(1))
+        else:
+            return None  # Can't parse
+    else:
+        minutes = int(time_match.group(1))
+    
+    # SMART OFFSET LOGIC: Determine if time is relative or absolute
+    if has_et:
+        if minutes >= 90:
+            return minutes  # Already absolute (e.g., "ET 102:53")
+        elif minutes <= 30:
+            return 90 + minutes  # Relative to ET start (e.g., "ET 04:04")
+        else:
+            return minutes  # Ambiguous (31-89), assume absolute
+    
+    elif has_2h:
+        if minutes >= 45:
+            return minutes  # Already absolute (e.g., "2H 67:00")
+        else:
+            return 45 + minutes  # Relative to 2H start (e.g., "2H 5:00")
+    
+    elif has_1h:
+        return minutes  # First half, no offset needed
+    
+    else:
+        # No indicator — assume absolute (most common)
+        return minutes
+
+
+def validate_timestamp(
+    extracted_clocks: list[str | None],
+    api_elapsed: int,
+    api_extra: int | None
+) -> tuple[bool, int | None, str]:
+    """
+    Check if EITHER extracted clock matches the API-reported event time.
+    
+    Two-phase comparison:
+    1. Direct match: parsed clock minute within ±1 of expected
+    2. Stoppage-time OCR correction: if the vision model dropped the leading
+       digit (e.g., read "92:36" as "02:36"), try rebasing with api_elapsed
+    
+    Args:
+        extracted_clocks: Raw clock text from 25% and 75% frames
+        api_elapsed: API elapsed minute (e.g., 90 for stoppage, 30 for regular)
+        api_extra: API extra/stoppage minutes (e.g., 3), or None
+    
+    Returns:
+        Tuple of:
+        - clock_verified: True if at least one clock matches
+        - extracted_minute: The matching minute (or best guess), None if no clock visible
+        - timestamp_bucket: "A" (verified), "B" (mismatch), or "C" (no clock)
+    """
+    # Guard: if no API time available (e.g., in-flight replay with default=0),
+    # we can't validate — default to bucket C
+    if not api_elapsed:
+        return (False, None, "C")
+    
+    # API reports the minute AFTER the goal happened
+    # Expected broadcast minute = elapsed + extra - 1
+    expected = api_elapsed + (api_extra or 0) - 1
+    
+    # Parse all clocks
+    parsed_minutes = []
+    for raw in extracted_clocks:
+        parsed = parse_broadcast_clock(raw)
+        if parsed is not None:
+            parsed_minutes.append(parsed)
+    
+    if not parsed_minutes:
+        # No clock visible in any frame → Bucket C
+        return (False, None, "C")
+    
+    # Phase 1: Direct match — parsed minute within ±1 of expected
+    for minute in parsed_minutes:
+        if abs(minute - expected) <= 1:
+            return (True, minute, "A")
+    
+    # Phase 2: Stoppage-time OCR correction
+    #
+    # During stoppage, api_elapsed is the period boundary (45, 90, 105, 120)
+    # and the broadcast clock shows (api_elapsed + N):SS where N is minutes
+    # into stoppage. Vision models sometimes drop the leading digit:
+    #   Screen: "92:36 +8"  →  AI reads: "02:36 +8"  →  parser returns: 2
+    #
+    # Since api_elapsed IS the dropped base, we can recover:
+    #   corrected = api_elapsed + parsed = 90 + 2 = 92
+    #
+    # The ±1 comparison against expected naturally constrains which parsed
+    # values can match: only minutes ≈ api_extra (±1) will pass.
+    # e.g., for 90+3 (expected=92): only parsed 1-3 produce corrected 91-93.
+    if api_extra is not None:
+        for minute in parsed_minutes:
+            corrected = api_elapsed + minute
+            if abs(corrected - expected) <= 1:
+                return (True, corrected, "A")
+    
+    # Clock visible but wrong time → Bucket B (reject)
+    # Return the closest one for logging purposes
+    closest = min(parsed_minutes, key=lambda m: abs(m - expected))
+    return (False, closest, "B")
 
 
 # =============================================================================
@@ -507,9 +719,9 @@ async def validate_video_is_soccer(file_path: str, event_id: str) -> Dict[str, A
             "checks_performed": 0,
         }
     
-    # Combined vision prompt for soccer detection AND phone-TV rejection
+    # Combined vision prompt for soccer detection, phone-TV rejection, AND clock extraction
     prompt = """/no_think
-Analyze this image and answer TWO questions:
+Analyze this image and answer THREE questions:
 
 1. SOCCER: Is this from a soccer/football match broadcast or highlight?
    Answer YES if you see ANY of these:
@@ -550,9 +762,25 @@ Analyze this image and answer TWO questions:
    
    When in doubt, answer NO. Only reject obvious phone-filming-TV scenarios.
 
+3. CLOCK: What does the game clock/match timer show on the broadcast scoreboard?
+   
+   Report EXACTLY what you see on screen, including any period/half indicators.
+   
+   Examples of what you might see:
+   - "34:12" (just the time)
+   - "2H 15:30" (half indicator + time)  
+   - "ET 04:04" (extra time indicator + time)
+   - "45+2:30" (stoppage time format)
+   - "90:00+3" (alternative stoppage format)
+   - "105:47" (extra time shown as absolute)
+   
+   Copy the clock display EXACTLY as shown, including any text like "ET", "2H", "1H", "AET", etc.
+   If no game clock/timer is visible (e.g., close-up replay, celebration), answer NONE.
+
 Answer format (exactly):
 SOCCER: YES or NO
-SCREEN: YES or NO"""
+SCREEN: YES or NO
+CLOCK: <exact text from screen> or NONE"""
 
     log.info(activity.logger, "download", "validate_started",
              "Starting AI vision validation",
@@ -566,35 +794,57 @@ SCREEN: YES or NO"""
     # 3. If they disagree → check 50% as tiebreaker (3 checks)
     # =========================================================================
     
-    def parse_response(resp) -> tuple[bool, bool]:
-        """Parse vision model response, returns (is_soccer, is_screen_recording)"""
+    def parse_response(resp) -> tuple[bool, bool, str | None]:
+        """Parse vision model response, returns (is_soccer, is_screen_recording, raw_clock)"""
         if not resp:
-            return (False, False)
+            return (False, False, None)
         
         # Handle llama.cpp OpenAI format
         if "choices" in resp:
-            content = resp.get("choices", [{}])[0].get("message", {}).get("content", "").upper()
+            content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+            content_upper = content.upper()
+            
             # Check for skip indicator (vision not available)
-            if "SKIP" in content:
-                return (True, False)  # Fail open when vision is unavailable
+            if "SKIP" in content_upper:
+                return (True, False, None)  # Fail open when vision is unavailable
             
-            # Parse the two answers
-            is_soccer = "SOCCER:YES" in content or "SOCCER: YES" in content
-            is_screen = "SCREEN:YES" in content or "SCREEN: YES" in content
-            
+            # Parse SOCCER answer
+            is_soccer = "SOCCER:YES" in content_upper or "SOCCER: YES" in content_upper
             # Fallback: if format not matched, look for keywords
-            if "SOCCER:" not in content:
-                is_soccer = "YES" in content and "SOCCER" in content
-            if "SCREEN:" not in content:
-                is_screen = "MOIRE" in content or "BEZEL" in content or "TV FRAME" in content
+            if "SOCCER:" not in content_upper:
+                is_soccer = "YES" in content_upper and "SOCCER" in content_upper
             
-            return (is_soccer, is_screen)
+            # Parse SCREEN answer
+            is_screen = "SCREEN:YES" in content_upper or "SCREEN: YES" in content_upper
+            if "SCREEN:" not in content_upper:
+                is_screen = "MOIRE" in content_upper or "BEZEL" in content_upper or "TV FRAME" in content_upper
+            
+            # Parse CLOCK answer - extract the raw text after "CLOCK:"
+            raw_clock = None
+            clock_match = re.search(r'CLOCK:\s*(.+?)(?:\n|$)', content, re.IGNORECASE)
+            if clock_match:
+                clock_value = clock_match.group(1).strip()
+                # Filter out "NONE" responses
+                if clock_value.upper() not in ("NONE", "N/A", "NOT VISIBLE", "NO CLOCK"):
+                    raw_clock = clock_value
+            
+            return (is_soccer, is_screen, raw_clock)
         
         # Legacy Ollama format
-        text = resp.get("response", "").strip().upper()
-        is_soccer = "SOCCER:YES" in text or ("YES" in text and "SOCCER" in text)
-        is_screen = "SCREEN:YES" in text
-        return (is_soccer, is_screen)
+        text = resp.get("response", "").strip()
+        text_upper = text.upper()
+        is_soccer = "SOCCER:YES" in text_upper or ("YES" in text_upper and "SOCCER" in text_upper)
+        is_screen = "SCREEN:YES" in text_upper
+        
+        # Parse CLOCK from legacy format
+        raw_clock = None
+        clock_match = re.search(r'CLOCK:\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
+        if clock_match:
+            clock_value = clock_match.group(1).strip()
+            if clock_value.upper() not in ("NONE", "N/A", "NOT VISIBLE", "NO CLOCK"):
+                raw_clock = clock_value
+        
+        return (is_soccer, is_screen, raw_clock)
     
     # Extract frames at 25% and 75%
     t_25 = duration * 0.25
@@ -616,17 +866,17 @@ SCREEN: YES or NO"""
     # 3. If they disagree → check 50% as tiebreaker (3 checks, heartbeat after)
     # =========================================================================
     checks_performed = 0
-    soccer_25, screen_25 = None, None
-    soccer_75, screen_75 = None, None
+    soccer_25, screen_25, clock_25 = None, None, None
+    soccer_75, screen_75, clock_75 = None, None, None
     
     if frame_25:
         activity.heartbeat(f"AI vision check 1/2 (25% frame)...")
         response_25 = await _call_vision_model(frame_25, prompt)
         checks_performed += 1
-        soccer_25, screen_25 = parse_response(response_25)
+        soccer_25, screen_25, clock_25 = parse_response(response_25)
         log.info(activity.logger, "download", "vision_check",
                  "Vision check completed",
-                 check_pct=25, is_soccer=soccer_25, is_screen=screen_25)
+                 check_pct=25, is_soccer=soccer_25, is_screen=screen_25, clock=clock_25)
     
     # Heartbeat before second check
     activity.heartbeat(f"AI vision check 2/2 (75% frame)...")
@@ -635,10 +885,10 @@ SCREEN: YES or NO"""
     if frame_75:
         response_75 = await _call_vision_model(frame_75, prompt)
         checks_performed += 1
-        soccer_75, screen_75 = parse_response(response_75)
+        soccer_75, screen_75, clock_75 = parse_response(response_75)
         log.info(activity.logger, "download", "vision_check",
                  "Vision check completed",
-                 check_pct=75, is_soccer=soccer_75, is_screen=screen_75)
+                 check_pct=75, is_soccer=soccer_75, is_screen=screen_75, clock=clock_75)
     
     # =========================================================================
     # Determine BOTH soccer and screen results using same tiebreaker logic
@@ -651,7 +901,7 @@ SCREEN: YES or NO"""
     screen_disagree = screen_25 is not None and screen_75 is not None and screen_25 != screen_75
     need_tiebreaker = soccer_disagree or screen_disagree
     
-    soccer_50, screen_50 = None, None
+    soccer_50, screen_50, clock_50 = None, None, None
     
     if need_tiebreaker:
         log.info(activity.logger, "download", "vision_tiebreaker",
@@ -664,10 +914,10 @@ SCREEN: YES or NO"""
         if frame_50:
             response_50 = await _call_vision_model(frame_50, prompt)
             checks_performed += 1
-            soccer_50, screen_50 = parse_response(response_50)
+            soccer_50, screen_50, clock_50 = parse_response(response_50)
             log.info(activity.logger, "download", "vision_check",
                      "Vision tiebreaker completed",
-                     check_pct=50, is_soccer=soccer_50, is_screen=screen_50)
+                     check_pct=50, is_soccer=soccer_50, is_screen=screen_50, clock=clock_50)
     
     # Determine soccer result
     if soccer_25 is None and soccer_75 is not None:
@@ -714,22 +964,29 @@ SCREEN: YES or NO"""
     # Final validation: must be soccer AND not a screen recording
     is_valid = is_soccer and not is_screen_recording
     
+    # Collect all extracted clocks for timestamp validation
+    extracted_clocks = [clock_25, clock_75]
+    if clock_50 is not None:
+        extracted_clocks.append(clock_50)
+    
     if is_screen_recording:
         reason = "Rejected: phone recording of TV/screen detected"
         log.info(activity.logger, "download", "validate_rejected",
                  "Video rejected: phone-TV recording",
-                 event_id=event_id, checks=checks_performed, is_screen=True)
+                 event_id=event_id, checks=checks_performed, is_screen=True,
+                 clocks=extracted_clocks)
     elif not is_soccer:
         reason = soccer_reason
         log.info(activity.logger, "download", "validate_rejected",
                  "Video rejected: not soccer",
-                 event_id=event_id, checks=checks_performed, reason=soccer_reason)
+                 event_id=event_id, checks=checks_performed, reason=soccer_reason,
+                 clocks=extracted_clocks)
     else:
         reason = soccer_reason
         log.info(activity.logger, "download", "validate_passed",
                  "Video passed validation",
                  event_id=event_id, checks=checks_performed,
-                 confidence=round(confidence, 2))
+                 confidence=round(confidence, 2), clocks=extracted_clocks)
     
     return {
         "is_valid": is_valid,
@@ -739,6 +996,8 @@ SCREEN: YES or NO"""
         "is_screen_recording": is_screen_recording,
         "detected_features": ["soccer_field"] if is_soccer else [],
         "checks_performed": checks_performed,
+        # NEW: Clock extraction data for timestamp validation
+        "extracted_clocks": extracted_clocks,  # Raw clock text from each frame
     }
 
 
