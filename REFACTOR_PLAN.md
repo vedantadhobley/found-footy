@@ -56,71 +56,222 @@ Currently the function takes only `file_path` and `event_id`. The event minute i
 
 The 25% and 75% frames are the key ones for timestamp extraction — they represent early and late points in the video. The game clock should be visible in most broadcast frames.
 
+**CRITICAL:** We do NOT ask the AI to parse/convert the time. Broadcast clock formats are wildly inconsistent, and we need deterministic parsing logic. Instead, we ask the AI to report **exactly what it sees** on screen, and WE parse it.
+
+### Broadcast clock format complexity
+
+Broadcasts display game time in many different formats:
+
+| Format seen on screen | What it means | Absolute minute |
+|----------------------|---------------|-----------------|
+| `34:12` | Normal first half | 34 |
+| `84:28` | Normal second half (full display) | 84 |
+| `112:54` | Extra time (full display) | 112 |
+| `2H 5:00` | Second half, 5 min in | 45 + 5 = 50 |
+| `1H 35:00` | First half, 35 min in | 35 |
+| `ET 04:04` | Extra time, 4 min in | 90 + 4 = 94 |
+| `AET 04:04` | After extra time, 4 min in | 90 + 4 = 94 |
+| `ET 15:00 +2:43` | Extra time with stoppage | 90 + 15 = 105 |
+| `45+2:30` | First half stoppage time | 45 + 2 = 47 |
+| `90+3:15` | Second half stoppage time | 90 + 3 = 93 |
+| `105+2` | First ET period stoppage | 105 + 2 = 107 |
+| `HT` | Half time (no clock) | Cannot determine |
+| `FT` | Full time (no clock) | Cannot determine |
+
+**Key insight:** The AI should report the RAW text it sees. Our code parses it.
+
 **Updated prompt** — add a third question to the existing prompt:
 
 ```
-3. CLOCK: What game time is shown on the broadcast clock/scoreboard?
-   Look for a digital clock display showing MM:SS format (e.g. "34:12", "90:00+3")
+3. CLOCK: What does the game clock/match timer show on the broadcast scoreboard?
    
-   If you can see a game clock, report JUST the minutes as a number.
-   Examples: "34:12" → CLOCK: 34
-             "90:00" → CLOCK: 90
-             "45:30+2" → CLOCK: 47
+   Report EXACTLY what you see on screen, including any text indicators.
    
-   If no clock is visible, answer: CLOCK: NONE
+   Examples of what you might see:
+   - "34:12" (just time)
+   - "2H 15:30" (half indicator + time)  
+   - "ET 04:04" (extra time indicator + time)
+   - "45+2:30" (stoppage time format)
+   - "90:00+3" (alternative stoppage format)
+   - "HT" or "FT" (half/full time, no clock visible)
+   
+   Copy the clock display exactly as shown. If no clock/timer is visible, answer NONE.
 
 Answer format (exactly):
 SOCCER: YES or NO
 SCREEN: YES or NO
-CLOCK: <number> or NONE
+CLOCK: <exact text from screen> or NONE
+```
+
+### Clock parsing logic (our code, not AI)
+
+```python
+import re
+
+def parse_broadcast_clock(raw_clock: str | None) -> int | None:
+    """
+    Parse raw broadcast clock text into absolute match minute.
+    
+    Handles all common broadcast formats:
+    - Normal: "34:12" → 34
+    - Full display: "84:28", "112:54" → 84, 112
+    - Half indicators: "1H 35:00" → 35, "2H 5:00" → 50
+    - Extra time: "ET 04:04" → 94, "AET 15:00" → 105
+    - Stoppage: "45+2:30" → 47, "90+3" → 93
+    - Combined: "ET 15:00 +2:43" → 105
+    
+    Returns:
+        Absolute match minute (0-120+), or None if unparseable
+    """
+    if not raw_clock or raw_clock.upper() in ("NONE", "HT", "FT", "HALF TIME", "FULL TIME"):
+        return None
+    
+    text = raw_clock.upper().strip()
+    
+    # Determine base offset from period indicators
+    base_offset = 0
+    
+    # Extra time indicators: ET, AET, EXTRA TIME
+    if re.search(r'\b(ET|AET|EXTRA\s*TIME)\b', text):
+        base_offset = 90
+        # Remove the indicator for further parsing
+        text = re.sub(r'\b(ET|AET|EXTRA\s*TIME)\b', '', text).strip()
+    
+    # Second half indicators: 2H, 2ND HALF
+    elif re.search(r'\b(2H|2ND\s*HALF)\b', text):
+        base_offset = 45
+        text = re.sub(r'\b(2H|2ND\s*HALF)\b', '', text).strip()
+    
+    # First half indicators: 1H, 1ST HALF (explicit, no offset)
+    elif re.search(r'\b(1H|1ST\s*HALF)\b', text):
+        base_offset = 0
+        text = re.sub(r'\b(1H|1ST\s*HALF)\b', '', text).strip()
+    
+    # Now parse the time portion
+    # Pattern 1: Stoppage time format "45+2:30" or "90+3" or "45+2"
+    stoppage_match = re.match(r'(\d+)\s*\+\s*(\d+)', text)
+    if stoppage_match:
+        base_min = int(stoppage_match.group(1))
+        added_min = int(stoppage_match.group(2))
+        return base_min + added_min
+    
+    # Pattern 2: Standard MM:SS format
+    time_match = re.search(r'(\d{1,3}):(\d{2})', text)
+    if time_match:
+        minutes = int(time_match.group(1))
+        return base_offset + minutes
+    
+    # Pattern 3: Just minutes (rare, but handle it)
+    just_minutes = re.match(r'^(\d{1,3})$', text.strip())
+    if just_minutes:
+        return base_offset + int(just_minutes.group(1))
+    
+    # Pattern 4: Handle trailing stoppage like "15:00 +2:43" (ignore the +seconds)
+    # We already have the base time, the + portion is seconds of stoppage
+    trailing_stoppage = re.search(r'(\d{1,3}):(\d{2})\s*\+', text)
+    if trailing_stoppage:
+        minutes = int(trailing_stoppage.group(1))
+        return base_offset + minutes
+    
+    return None  # Couldn't parse
 ```
 
 ### Timestamp validation logic
 
 ```python
-def validate_timestamp(extracted_minutes: list[int | None], api_elapsed: int, api_extra: int | None) -> bool:
+def validate_timestamp(
+    extracted_clocks: list[str | None],  # Raw clock text from 25% and 75% frames
+    api_elapsed: int,
+    api_extra: int | None
+) -> tuple[bool, int | None, str]:
     """
-    Check if any extracted game clock time matches the API-reported event time.
+    Check if EITHER extracted clock matches the API-reported event time.
+    
+    Success criteria: At least ONE of the two frame checks must be within
+    the acceptable range. We don't require both.
     
     Args:
-        extracted_minutes: Clock minutes extracted from 25% and 75% frames (may be None if not visible)
+        extracted_clocks: Raw clock text from 25% and 75% frames
         api_elapsed: API elapsed minute (e.g. 45)
         api_extra: API extra time (e.g. 2), or None
     
     Returns:
-        True if at least one extracted time is within ±1 of the expected broadcast minute
+        Tuple of:
+        - clock_verified: True if at least one clock matches
+        - extracted_minute: The matching minute (or best guess), None if no clock visible
+        - timestamp_bucket: "A" (verified), "B" (mismatch), or "C" (no clock)
     """
-    # API reports +1 from when goal happened
+    # API reports the minute AFTER the goal happened
     # Expected broadcast minute = elapsed + extra - 1
     expected = api_elapsed + (api_extra or 0) - 1
     
-    for extracted in extracted_minutes:
-        if extracted is None:
-            continue
-        if abs(extracted - expected) <= 1:
-            return True
+    # Parse all clocks
+    parsed_minutes = []
+    for raw in extracted_clocks:
+        parsed = parse_broadcast_clock(raw)
+        if parsed is not None:
+            parsed_minutes.append(parsed)
     
-    return False
+    if not parsed_minutes:
+        # No clock visible in any frame → Bucket C
+        return (False, None, "C")
+    
+    # Check if ANY parsed minute is within ±1 of expected
+    for minute in parsed_minutes:
+        if abs(minute - expected) <= 1:
+            # Match found! → Bucket A
+            return (True, minute, "A")
+    
+    # Clock visible but wrong time → Bucket B (reject)
+    # Return the closest one for logging purposes
+    closest = min(parsed_minutes, key=lambda m: abs(m - expected))
+    return (False, closest, "B")
 ```
+
+### Test cases for clock parsing
+
+| Raw clock text | Parsed minute | Notes |
+|----------------|---------------|-------|
+| `"34:12"` | 34 | Standard first half |
+| `"84:28"` | 84 | Standard second half |
+| `"112:54"` | 112 | Standard extra time |
+| `"2H 5:00"` | 50 | 45 + 5 |
+| `"2H 15:30"` | 60 | 45 + 15 |
+| `"1H 35:00"` | 35 | Explicit first half |
+| `"ET 04:04"` | 94 | 90 + 4 |
+| `"AET 04:04"` | 94 | 90 + 4 (same as ET) |
+| `"ET 15:00"` | 105 | 90 + 15 |
+| `"ET 15:00 +2:43"` | 105 | 90 + 15 (ignore +seconds) |
+| `"45+2:30"` | 47 | First half stoppage |
+| `"45+2"` | 47 | Stoppage without seconds |
+| `"90+3:15"` | 93 | Second half stoppage |
+| `"90+3"` | 93 | Stoppage without seconds |
+| `"105+2"` | 107 | ET stoppage |
+| `"HT"` | None | Half time, no clock |
+| `"FT"` | None | Full time, no clock |
+| `None` | None | No clock visible |
+| `"NONE"` | None | AI reported no clock |
 
 ### What passes, what fails
 
-| API time | Expected clock | Extracted clock | Result |
-|----------|---------------|-----------------|--------|
-| 45+2     | 46            | [45, 47]        | PASS (45 is within ±1 of 46) |
-| 30       | 29            | [28, 30]        | PASS (28 is within ±1 of 29, 30 is within ±1 of 29) |
-| 90+3     | 92            | [None, 91]      | PASS (91 is within ±1 of 92) |
-| 30       | 29            | [65, 72]        | FAIL (wrong part of match) |
-| 30       | 29            | [None, None]    | ??? (no clock visible — see below) |
+| API time | Expected | Frame 25% clock | Frame 75% clock | Result |
+|----------|----------|-----------------|-----------------|--------|
+| 45+2 | 46 | `"45:30"` | `"47:12"` | **PASS** (45 is within ±1 of 46) |
+| 95 | 94 | `"ET 04:04"` | `"ET 05:30"` | **PASS** (94 matches, 95 is ±1) |
+| 50 | 49 | `"2H 5:00"` | `"2H 6:30"` | **PASS** (50 is within ±1 of 49) |
+| 30 | 29 | `"65:00"` | `"72:00"` | **FAIL** (both clocks are wrong half) |
+| 30 | 29 | `None` | `"28:45"` | **PASS** (28 is within ±1 of 29, only one needed) |
+| 30 | 29 | `None` | `None` | **BUCKET C** (no clock, cannot verify) |
+| 30 | 29 | `"HT"` | `"HT"` | **BUCKET C** (HT = no usable clock) |
 
-### When no clock is visible
+### When no clock is visible (Bucket C)
 
-If neither the 25% nor 75% frame has a visible game clock, we **cannot verify** the timestamp. Options:
+If neither frame has a parseable game clock, we **cannot verify** the timestamp. Options:
 - **Option A: Pass anyway** — fail open, rely on soccer detection only (current behavior)
 - **Option B: Soft fail** — mark as "unverified" but still allow, lower ranking priority
 - **Option C: Hard fail** — reject videos with no visible clock
 
-**Current recommendation: Option A (fail open)** — many valid clips crop out the scoreboard. We should not reject them, but we can use "clock verified" as a quality signal for ranking.
+**Current recommendation: Option A (fail open)** — many valid clips crop out the scoreboard (close-up celebrations, replays, fan recordings). We should not reject them, but we use `timestamp_bucket="C"` to keep them separate from verified clips during deduplication.
 
 ### Data flow changes needed
 
@@ -128,9 +279,11 @@ If neither the 25% nor 75% frame has a visible game clock, we **cannot verify** 
 2. **`DownloadWorkflowInput`** — add `event_minute: int` and `event_extra: Optional[int]` fields  
 3. **`validate_video_is_soccer()`** — add `event_minute: int` and `event_extra: Optional[int]` params
 4. **`monitor_workflow.py`** — already has `minute` and `extra` in `twitter_triggered`, just needs to pass them through
-5. **Vision prompt** — add CLOCK question
-6. **Parse response** — extract CLOCK value
-7. **Return value** — add `clock_verified: bool`, `extracted_minutes: list[int|None]`
+5. **Vision prompt** — add CLOCK question (report raw text, not parsed minutes)
+6. **Parse response** — extract raw CLOCK value as string
+7. **Parse clock text** — call `parse_broadcast_clock()` on raw text to get absolute minute
+8. **Validate timestamp** — call `validate_timestamp()` with parsed minutes + API time
+9. **Return value** — add `clock_verified: bool`, `extracted_minute: int|None`, `timestamp_bucket: str`
 
 ---
 
@@ -198,7 +351,10 @@ The video object stored in MongoDB `_s3_videos` array currently has:
 ```
 
 These fields are also added to the video metadata flowing through the download → upload pipeline:
-- `validate_video_is_soccer()` returns `extracted_minutes: [int|None, int|None]` and `clock_verified: bool`
+- `validate_video_is_soccer()` extracts raw clock text from 25% and 75% frames
+- Internally calls `parse_broadcast_clock()` to convert "ET 04:04" → 94, "2H 5:00" → 50, etc.
+- Calls `validate_timestamp()` to check if EITHER frame matches API time (only one needs to match!)
+- Returns `clock_verified: bool`, `extracted_minute: int|None`, `timestamp_bucket: str`
 - DownloadWorkflow attaches these to `video_info` dict before passing to UploadWorkflow
 - UploadWorkflow includes them in the video object saved to MongoDB
 
