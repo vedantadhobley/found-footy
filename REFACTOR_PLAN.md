@@ -105,6 +105,15 @@ CLOCK: <exact text from screen> or NONE
 
 ### Clock parsing logic (our code, not AI)
 
+The key insight: some broadcasts show **relative** time (e.g., "ET 04:04" = 4 minutes into extra time) while others show **absolute** time (e.g., "ET 102:53" = 102nd minute, already includes the 90). We need to detect which format is being used.
+
+**Heuristics for format detection:**
+- If minutes >= 90 and we see "ET": already absolute, don't add 90
+- If minutes < 30 and we see "ET": relative to ET start, add 90
+- If minutes >= 45 and we see "2H": already absolute, don't add 45  
+- If minutes < 45 and we see "2H": relative to 2H start, add 45
+- Stoppage format like "45+2" is always explicit: 45 + 2 = 47
+
 ```python
 import re
 
@@ -112,11 +121,20 @@ def parse_broadcast_clock(raw_clock: str | None) -> int | None:
     """
     Parse raw broadcast clock text into absolute match minute.
     
+    SMART FORMAT DETECTION:
+    - Detects whether time is relative (to period start) or absolute (from match start)
+    - "ET 04:04" → 94 (4 mins into ET, so 90+4)
+    - "ET 102:53" → 102 (already absolute, 102 >= 90 so don't add)
+    - "2H 5:00" → 50 (5 mins into 2H, so 45+5)
+    - "2H 67:00" → 67 (already absolute, 67 >= 45 so don't add)
+    
     Handles all common broadcast formats:
     - Normal: "34:12" → 34
     - Full display: "84:28", "112:54" → 84, 112
-    - Half indicators: "1H 35:00" → 35, "2H 5:00" → 50
-    - Extra time: "ET 04:04" → 94, "AET 15:00" → 105
+    - Half indicators (relative): "1H 35:00" → 35, "2H 5:00" → 50
+    - Half indicators (absolute): "2H 67:00" → 67
+    - Extra time (relative): "ET 04:04" → 94, "AET 15:00" → 105
+    - Extra time (absolute): "ET 102:53" → 102
     - Stoppage: "45+2:30" → 47, "90+3" → 93
     - Combined: "ET 15:00 +2:43" → 105
     
@@ -128,52 +146,67 @@ def parse_broadcast_clock(raw_clock: str | None) -> int | None:
     
     text = raw_clock.upper().strip()
     
-    # Determine base offset from period indicators
-    base_offset = 0
+    # Detect period indicators (but don't apply offset yet - we need to check if time is relative or absolute)
+    has_et = bool(re.search(r'\b(ET|AET|EXTRA\s*TIME)\b', text))
+    has_2h = bool(re.search(r'\b(2H|2ND\s*HALF)\b', text))
+    has_1h = bool(re.search(r'\b(1H|1ST\s*HALF)\b', text))
     
-    # Extra time indicators: ET, AET, EXTRA TIME
-    if re.search(r'\b(ET|AET|EXTRA\s*TIME)\b', text):
-        base_offset = 90
-        # Remove the indicator for further parsing
-        text = re.sub(r'\b(ET|AET|EXTRA\s*TIME)\b', '', text).strip()
+    # Remove indicators for time parsing
+    clean_text = re.sub(r'\b(ET|AET|EXTRA\s*TIME|2H|2ND\s*HALF|1H|1ST\s*HALF)\b', '', text).strip()
     
-    # Second half indicators: 2H, 2ND HALF
-    elif re.search(r'\b(2H|2ND\s*HALF)\b', text):
-        base_offset = 45
-        text = re.sub(r'\b(2H|2ND\s*HALF)\b', '', text).strip()
-    
-    # First half indicators: 1H, 1ST HALF (explicit, no offset)
-    elif re.search(r'\b(1H|1ST\s*HALF)\b', text):
-        base_offset = 0
-        text = re.sub(r'\b(1H|1ST\s*HALF)\b', '', text).strip()
-    
-    # Now parse the time portion
     # Pattern 1: Stoppage time format "45+2:30" or "90+3" or "45+2"
-    stoppage_match = re.match(r'(\d+)\s*\+\s*(\d+)', text)
+    # This is ALWAYS explicit - the base is stated directly
+    stoppage_match = re.match(r'(\d+)\s*\+\s*(\d+)', clean_text)
     if stoppage_match:
         base_min = int(stoppage_match.group(1))
         added_min = int(stoppage_match.group(2))
         return base_min + added_min
     
-    # Pattern 2: Standard MM:SS format
-    time_match = re.search(r'(\d{1,3}):(\d{2})', text)
-    if time_match:
+    # Pattern 2: Standard MM:SS format (or just MM)
+    time_match = re.search(r'(\d{1,3}):(\d{2})', clean_text)
+    if not time_match:
+        # Try just minutes
+        just_minutes = re.match(r'^(\d{1,3})$', clean_text.strip())
+        if just_minutes:
+            minutes = int(just_minutes.group(1))
+        else:
+            return None  # Can't parse
+    else:
         minutes = int(time_match.group(1))
-        return base_offset + minutes
     
-    # Pattern 3: Just minutes (rare, but handle it)
-    just_minutes = re.match(r'^(\d{1,3})$', text.strip())
-    if just_minutes:
-        return base_offset + int(just_minutes.group(1))
+    # SMART OFFSET LOGIC: Determine if time is relative or absolute
+    if has_et:
+        # Extra time indicator present
+        if minutes >= 90:
+            # Already absolute (e.g., "ET 102:53")
+            return minutes
+        elif minutes <= 30:
+            # Relative to ET start (e.g., "ET 04:04" or "ET 15:00")
+            # ET periods are 15 mins each, so max relative would be ~30
+            return 90 + minutes
+        else:
+            # Ambiguous (31-89) - rare, assume absolute
+            # This handles edge cases like "ET 45:00" which would be weird but possible
+            return minutes
     
-    # Pattern 4: Handle trailing stoppage like "15:00 +2:43" (ignore the +seconds)
-    # We already have the base time, the + portion is seconds of stoppage
-    trailing_stoppage = re.search(r'(\d{1,3}):(\d{2})\s*\+', text)
-    if trailing_stoppage:
-        minutes = int(trailing_stoppage.group(1))
-        return base_offset + minutes
+    elif has_2h:
+        # Second half indicator present
+        if minutes >= 45:
+            # Already absolute (e.g., "2H 67:00")
+            return minutes
+        else:
+            # Relative to 2H start (e.g., "2H 5:00")
+            return 45 + minutes
     
-    return None  # Couldn't parse
+    elif has_1h:
+        # First half indicator - always relative (or already 0-45 absolute)
+        # Either way, no offset needed
+        return minutes
+    
+    else:
+        # No indicator - assume absolute (most common format)
+        # "34:12" → 34, "84:28" → 84, "112:54" → 112
+        return minutes
 ```
 
 ### Timestamp validation logic
@@ -232,21 +265,24 @@ def validate_timestamp(
 
 | Raw clock text | Parsed minute | Notes |
 |----------------|---------------|-------|
-| `"34:12"` | 34 | Standard first half |
-| `"84:28"` | 84 | Standard second half |
-| `"112:54"` | 112 | Standard extra time |
-| `"2H 5:00"` | 50 | 45 + 5 |
-| `"2H 15:30"` | 60 | 45 + 15 |
+| `"34:12"` | 34 | Standard first half (no indicator) |
+| `"84:28"` | 84 | Standard second half (no indicator) |
+| `"112:54"` | 112 | Standard extra time (no indicator) |
+| `"2H 5:00"` | 50 | 45 + 5 (relative, 5 < 45) |
+| `"2H 15:30"` | 60 | 45 + 15 (relative, 15 < 45) |
+| `"2H 67:00"` | 67 | Already absolute (67 >= 45, don't add) |
 | `"1H 35:00"` | 35 | Explicit first half |
-| `"ET 04:04"` | 94 | 90 + 4 |
+| `"ET 04:04"` | 94 | 90 + 4 (relative, 4 < 30) |
 | `"AET 04:04"` | 94 | 90 + 4 (same as ET) |
-| `"ET 15:00"` | 105 | 90 + 15 |
+| `"ET 15:00"` | 105 | 90 + 15 (relative, 15 < 30) |
+| `"ET 102:53"` | 102 | Already absolute (102 >= 90, don't add) |
+| `"ET 95:00"` | 95 | Already absolute (95 >= 90, don't add) |
 | `"ET 15:00 +2:43"` | 105 | 90 + 15 (ignore +seconds) |
-| `"45+2:30"` | 47 | First half stoppage |
+| `"45+2:30"` | 47 | First half stoppage (explicit base) |
 | `"45+2"` | 47 | Stoppage without seconds |
-| `"90+3:15"` | 93 | Second half stoppage |
+| `"90+3:15"` | 93 | Second half stoppage (explicit base) |
 | `"90+3"` | 93 | Stoppage without seconds |
-| `"105+2"` | 107 | ET stoppage |
+| `"105+2"` | 107 | ET stoppage (explicit base) |
 | `"HT"` | None | Half time, no clock |
 | `"FT"` | None | Full time, no clock |
 | `None` | None | No clock visible |
