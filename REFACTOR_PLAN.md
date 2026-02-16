@@ -613,24 +613,24 @@ This is a **massive improvement** over the current approach because:
 
 #### Batch dedup (`deduplicate_videos` Phase 1)
 
-Currently: all downloaded videos in a single event are compared against each other using perceptual hashes.
+Currently: all downloaded videos in a single event are compared against each other using perceptual hashes. Perceptually similar videos are grouped into clusters, and the best video from each cluster survives (best = longest, or highest resolution if durations are similar). There can be many clusters — one survivor per cluster, not one overall winner.
 
 **New behavior:**
 1. Rejected videos were already discarded in the DownloadWorkflow (before reaching dedup)
 2. Separate remaining videos into verified (`timestamp_verified=True`) and unverified (`timestamp_verified=False`)
 3. Run perceptual hash clustering **only within verified** and **only within unverified** separately
-4. Select cluster winners from each group independently
-5. All winners proceed to S3 dedup
+4. A verified video is never compared against an unverified video — they can't end up in the same cluster
+5. All survivors from both groups proceed to S3 dedup
 
 #### S3 dedup (`deduplicate_videos` Phase 2)
 
-Currently: batch winners are compared against all existing S3 videos for the event using perceptual hashes.
+Currently: each cluster survivor is compared against all existing S3 videos for the event using perceptual hashes.
 
 **New behavior:**
 1. Each S3 video in MongoDB has a stored `timestamp_verified` field (true, false, or absent for legacy videos)
-2. Batch winners are only compared against S3 videos **in the same verification group**
-3. A verified winner is only compared to existing verified S3 videos
-4. An unverified winner is only compared to existing unverified S3 videos
+2. Each survivor is only compared against S3 videos **in the same verification group**
+3. A verified video is only compared to existing verified S3 videos
+4. An unverified video is only compared to existing unverified S3 videos
 5. Legacy S3 videos (no `timestamp_verified` field) are treated as unverified
 
 This prevents the exact scenario that caused the Szoboszlai bug: a meme video (unverified or rejected) replacing a verified goal clip.
@@ -1417,26 +1417,27 @@ Phase 2 modifies `deduplicate_videos()` to compare videos only within the same v
 
 **File:** `src/activities/upload.py`, inside `deduplicate_videos()`, Phase 1 section (lines ~479-560)
 
-**Current behavior:** All `successful` videos fed into a single cluster-building loop. One set of clusters, one set of winners.
+**Current behavior:** All `successful` videos fed into a single cluster-building loop. One set of clusters, one survivor per cluster.
 
-**New behavior:**
+**New behavior:** Split videos by verification status first, then cluster within each group:
 ```python
 # After filtering successful downloads:
 verified = [f for f in successful if f.get("timestamp_verified", False)]
 unverified = [f for f in successful if not f.get("timestamp_verified", False)]
 
-# Run clustering independently
+# Run clustering independently — verified videos only compared against
+# other verified, unverified only against other unverified
 verified_clusters = _build_clusters(verified)    # extract to helper
 unverified_clusters = _build_clusters(unverified)
 
-# Pick winners from each group independently
-batch_winners = []
+# Pick best from each cluster in both groups
+cluster_survivors = []
 for cluster in verified_clusters:
-    winner = _pick_best_video_from_cluster(cluster) if len(cluster) > 1 else cluster[0]
-    batch_winners.append(winner)
+    survivor = _pick_best_video_from_cluster(cluster) if len(cluster) > 1 else cluster[0]
+    cluster_survivors.append(survivor)
 for cluster in unverified_clusters:
-    winner = _pick_best_video_from_cluster(cluster) if len(cluster) > 1 else cluster[0]
-    batch_winners.append(winner)
+    survivor = _pick_best_video_from_cluster(cluster) if len(cluster) > 1 else cluster[0]
+    cluster_survivors.append(survivor)
 ```
 
 **Helper to extract:** The cluster-building loop (lines ~487-520) should become a `_build_clusters(videos: list) -> list[list]` helper function since it's now called twice.
@@ -1447,16 +1448,16 @@ for cluster in unverified_clusters:
 
 **File:** `src/activities/upload.py`, inside `deduplicate_videos()`, Phase 2 section (lines ~585-670)
 
-**Current behavior:** Each batch winner is compared against ALL `existing_videos_list` entries.
+**Current behavior:** Each cluster survivor is compared against ALL `existing_videos_list` entries.
 
-**New behavior:** Each batch winner is only compared against S3 videos in the same verification group:
+**New behavior:** Each survivor is only compared against S3 videos in the same verification group:
 ```python
 # Pre-split existing S3 videos by verification status
 # Legacy videos (no timestamp_verified field) → treated as unverified
 existing_verified = [v for v in existing_videos_list if v.get("timestamp_verified", False)]
 existing_unverified = [v for v in existing_videos_list if not v.get("timestamp_verified", False)]
 
-for file_info in batch_winners:
+for file_info in cluster_survivors:
     is_verified = file_info.get("timestamp_verified", False)
     comparison_pool = existing_verified if is_verified else existing_unverified
     
