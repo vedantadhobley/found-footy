@@ -268,7 +268,7 @@ STOPPAGE_CLOCK: <exact sub-timer text> or NONE
 
 Currently returns 3-tuple: `(is_soccer, is_screen, raw_clock)`
 
-**New return:** 5-tuple: `(is_soccer, is_screen, raw_clock, raw_added, raw_stoppage_clock)`
+**New return:** dict: `{is_soccer, is_screen, raw_clock, raw_added, raw_stoppage_clock}`
 
 Each raw value is the string exactly as reported by the AI, or `None` if the AI said NONE or the field was missing.
 
@@ -577,10 +577,10 @@ If neither frame has a parseable game clock, we **cannot verify** the timestamp.
 3. **`validate_video_is_soccer()`** — add `event_minute: int` and `event_extra: Optional[int]` params
 4. **`monitor_workflow.py`** — already has `minute` and `extra` in `twitter_triggered`, just needs to pass them through
 5. **Vision prompt** — update to structured three-field prompt (CLOCK / ADDED / STOPPAGE_CLOCK)
-6. **Parse response** — return dict with named keys (not positional tuple) — see Pre-Implementation Review below
+6. **Parse response** — return dict with named keys: `{is_soccer, is_screen, raw_clock, raw_added, raw_stoppage_clock}`
 7. **Parse clock fields** — call `parse_clock_field()` + `parse_stoppage_clock_field()` + `compute_absolute_minute()` per frame
 8. **Validate timestamp** — call `validate_timestamp()` with structured frame data + API time
-9. **Return value** — add `clock_verified: bool`, `extracted_minute: int|None`, `timestamp_status: str`
+9. **Return value** — add `clock_verified: bool`, `extracted_minute: int|None`, `timestamp_status: str`. `is_valid` absorbs timestamp rejection.
 
 ---
 
@@ -912,9 +912,9 @@ Return value currently:
 **New return value:**
 ```python
 {
-    "is_valid": bool,
+    "is_valid": bool,              # soccer AND not screen AND timestamp not rejected
     "confidence": float,
-    "reason": str,
+    "reason": str,                 # includes timestamp rejection reason if applicable
     "is_soccer": bool,
     "is_screen_recording": bool,
     "detected_features": list,
@@ -922,11 +922,12 @@ Return value currently:
     # NEW: Structured clock extraction
     "clock_verified": bool,            # True if extracted clock matches API time ±1
     "extracted_minute": int | None,     # Best extracted clock minute (None if no clock)
-    "timestamp_verified": bool,        # True=verified, False=unverified (rejected videos don't reach here)
+    "timestamp_status": str,           # "verified" / "unverified" / "rejected"
     "extracted_clocks": list[dict],    # Raw structured data per frame:
                                        #   [{clock, added, stoppage_clock}, ...]
 }
 ```
+Note: `is_valid` now incorporates timestamp rejection. `timestamp_status` is still returned separately for logging/analytics but DownloadWorkflow only needs to check `is_valid`.
 
 #### `upload_single_video()` — `src/activities/upload.py:700`
 ```python
@@ -1017,14 +1018,14 @@ DownloadWorkflow (download_workflow.py:71)
 │       Returns: {is_valid, clock_verified, extracted_minute, timestamp_status, ...}
 │                                                    ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 │                                                    NEW: attach to video_info
-│   After validation, for each passing video:
+│   After validation, for each passing video (is_valid=True):
 │       video_info["clock_verified"] = validation["clock_verified"]
 │       video_info["extracted_minute"] = validation["extracted_minute"]
 │       video_info["timestamp_verified"] = (validation["timestamp_status"] == "verified")
 │   
-│   For rejected videos (timestamp_status == "rejected"):
-│       DISCARD — don't proceed to hash generation
-│       download_stats["timestamp_rejected"] += 1
+│   Rejected videos (timestamp_status == "rejected") have is_valid=False
+│       → caught by existing `if not is_valid` check
+│       → download_stats["timestamp_rejected"] += 1 (tracked separately for stats)
 │
 ├── Step 4: Generate perceptual hashes (only verified + unverified videos)
 ├── Step 5: Signal UploadWorkflow with video_info list
@@ -1125,7 +1126,7 @@ Rejected videos (clock visible but wrong minute) are DISCARDED at this stage —
 | `monitor_workflow.py:201` | `TwitterWorkflowInput(fixture_id, event_id, team_id, team_name, player_name)` | Add `event_minute=minute, event_extra=extra` |
 | `twitter_workflow.py:485` | `args=[input.fixture_id, input.event_id, input.player_name, team_aliases[0], videos_to_download]` | Append `input.event_minute, input.event_extra` |
 | `download_workflow.py:300` | `args=[video_info["file_path"], event_id]` | Append `event_minute, event_extra` |
-| `download_workflow.py:309` | Checks `validation.get("is_valid")` only | Also check `timestamp_status == "rejected"` → discard |
+| `download_workflow.py:309` | Checks `validation.get("is_valid")` only | Same check — `is_valid` now includes timestamp rejection. Count `timestamp_status=="rejected"` separately for stats. |
 | `download_workflow.py:315` | Appends to `validated_videos` | Attach `clock_verified`, `extracted_minute`, `timestamp_verified` to `video_info` |
 | `upload_workflow.py:438` | `args=[..., existing_s3_key]` | Append `timestamp_verified, extracted_minute` |
 
@@ -1141,13 +1142,11 @@ Rejected videos (clock visible but wrong minute) are DISCARDED at this stage —
 
 ## Pre-Implementation Review (2026-02-15)
 
-Code review of the plan against the actual codebase surfaced 6 items that need to be addressed during implementation. All have clear resolutions — documented here so nothing is missed.
+Code review of the plan against the actual codebase. Updated 2026-02-15 after discussion.
 
-### 1. `parse_response()` return type: dict, not tuple
+### 1. `parse_response()` returns dict ✅ RESOLVED
 
-**Issue:** The plan originally said `parse_response()` returns a 5-tuple `(is_soccer, is_screen, raw_clock, raw_added, raw_stoppage_clock)`. But `validate_timestamp()` takes `list[dict]` where each dict has `{clock, added, stoppage_clock}` keys. Meanwhile, the working batch test script (`scripts/test_structured_extraction.py`) already uses `parse_structured_response()` returning a dict.
-
-**Resolution:** `parse_response()` (nested inside `validate_video_is_soccer()`) will return a **dict** instead of a tuple:
+`parse_response()` (nested inside `validate_video_is_soccer()`) returns a dict with named keys, matching the pattern used in `scripts/test_structured_extraction.py`:
 
 ```python
 def parse_response(resp) -> dict:
@@ -1161,113 +1160,114 @@ def parse_response(resp) -> dict:
     }
 ```
 
-This is a local change — `parse_response()` is a nested function, not exported. The existing soccer/screen tiebreaker logic just indexes by key instead of position.
+This is a local change — `parse_response()` is a nested function, not exported. The existing soccer/screen tiebreaker logic indexes by key instead of position. All downstream code updated to match.
 
-### 2. Tiebreaker (50%) frame: extract clock from it too
+### 2. Tiebreaker (50%) frame: extract but don't use for validation ✅ RESOLVED
 
-**Issue:** When 25% and 75% frames disagree on soccer/screen, a 50% frame is extracted as tiebreaker. The plan didn't specify whether to extract clock data from it.
+The 50% tiebreaker frame is only extracted when 25% and 75% disagree on soccer/screen detection. Clock data IS extracted from it (because CLOCK/ADDED/STOPPAGE_CLOCK are part of the prompt) but it is **not passed to `validate_timestamp()`**. Only the 25% and 75% frames are used for timestamp validation because:
 
-**Resolution:** Yes — always pass all analyzed frames (2 or 3) to `validate_timestamp()`. The algorithm already uses "any frame matches" logic, so a third frame is free additional signal. If the tiebreaker frame happens to show a clock that matches, we benefit; if not, no harm.
+- The 50% frame doesn't run every time — validation can't depend on it
+- Its timestamp is almost certainly between the 25% and 75% values, adding no new signal
+- If both 25% and 75% fail timestamp validation, a middle frame won't help
 
-Implementation: after the tiebreaker LLM call, append its parsed dict to the same `frame_clocks` list that collects 25% and 75% results.
+The prompt stays consistent across all frames (no prompt variant without clock questions), keeping the AI querying logic uniform.
 
-### 3. `is_valid` stays separate from timestamp rejection
+### 3. `is_valid` absorbs timestamp rejection ⚠️ DESIGN DECISION
 
-**Issue:** Currently `is_valid = is_soccer AND NOT is_screen`. Does timestamp rejection change the meaning of `is_valid`?
+**Current `is_valid`:** `is_soccer AND NOT is_screen`
 
-**Resolution:** No. Keep `is_valid` meaning exactly what it means today (soccer content + not screen recording). Timestamp status is a **separate** field. The DownloadWorkflow gets **two independent rejection checks**:
+**Proposed change:** Fold timestamp rejection into `is_valid` at the AI validation layer:
 
 ```python
-# Existing check — unchanged:
-if not validation.get("is_valid", True):
-    rejected_count += 1    # not soccer or screen recording
-    continue
-
-# NEW check — timestamp rejection:
-if validation.get("timestamp_status") == "rejected":
-    timestamp_rejected_count += 1    # wrong minute
-    continue
-
-# Both passed — attach verification fields and keep
-video_info["clock_verified"] = validation.get("clock_verified", False)
-video_info["extracted_minute"] = validation.get("extracted_minute")
-video_info["timestamp_verified"] = validation.get("timestamp_status") == "verified"
-validated_videos.append(video_info)
+is_valid = is_soccer and not is_screen_recording and (timestamp_status != "rejected")
 ```
 
-This means a video can be valid soccer (`is_valid=True`) but still get discarded if it shows the wrong game minute (`timestamp_status="rejected"`). These are conceptually different reasons for rejection.
+This means:
+- `is_valid=True` → video is soccer, not a screen recording, AND clock either matches or isn't visible
+- `is_valid=False` → rejected for any reason (not soccer, screen recording, OR wrong game minute)
 
-### 4. Complete `validate_video_is_soccer()` return dict
+**Advantage:** DownloadWorkflow stays simple — one `if validation.get("is_valid")` check, no second rejection branch. The `reason` field already explains WHY a video was rejected ("not soccer", "screen recording", "wrong game minute: expected 46, got 72").
 
-**Issue:** The plan listed fields to add but didn't show the complete return value.
+**The `timestamp_status` field still exists** for logging and analytics. It's returned alongside `is_valid` so we can track rejection reasons in `download_stats`, but DownloadWorkflow doesn't need to check it separately.
 
-**Resolution:** The full return dict after changes:
-
+**Impact on DownloadWorkflow:**
 ```python
-{
-    # EXISTING (unchanged):
-    "is_valid": bool,              # soccer AND not screen recording
-    "is_soccer": bool,
-    "is_screen_recording": bool,
-    "confidence": float,
-    "reason": str,
-    "checks_performed": int,
-    
-    # NEW:
-    "clock_verified": bool,        # True if extracted clock matched API time
-    "extracted_minute": int | None, # Absolute game minute from AI (None if no clock)
-    "timestamp_status": str,       # "verified" / "unverified" / "rejected"
-    "extracted_clocks": list[dict], # Raw structured data per frame (for logging/debugging)
-}
-```
-
-The `extracted_clocks` list contains one dict per analyzed frame (2-3 frames), each with `{raw_clock, raw_added, raw_stoppage_clock}` — the raw AI output before any parsing. This is only for structured logging and debugging.
-
-### 5. DownloadWorkflow rejection/attachment — exact placement
-
-**Issue:** The plan described what happens in prose but the exact placement in the validation loop matters.
-
-**Resolution:** The change goes in `download_workflow.py` inside the `for video_info in successful_videos:` loop, right after the existing `validation.get("is_valid")` check (~line 307-315). Here's the exact diff:
-
-```python
-# BEFORE (current code):
+# NO CHANGE to the existing check:
 if validation.get("is_valid", True):
+    # Attach verification fields
+    video_info["clock_verified"] = validation.get("clock_verified", False)
+    video_info["extracted_minute"] = validation.get("extracted_minute")
+    video_info["timestamp_verified"] = validation.get("timestamp_status") == "verified"
     validated_videos.append(video_info)
 else:
     rejected_count += 1
-    # ... log + cleanup ...
-
-# AFTER:
-if validation.get("is_valid", True):
-    # NEW: Check timestamp rejection (video is soccer but wrong minute)
-    if validation.get("timestamp_status") == "rejected":
-        timestamp_rejected_count += 1
-        log.info(workflow.logger, MODULE, "timestamp_rejected",
-                 "Video rejected — wrong game minute",
-                 extracted_minute=validation.get("extracted_minute"),
-                 event_id=event_id)
-        try:
-            os.remove(video_info["file_path"])
-        except:
-            pass
-    else:
-        # Attach verification fields
-        video_info["clock_verified"] = validation.get("clock_verified", False)
-        video_info["extracted_minute"] = validation.get("extracted_minute")
-        video_info["timestamp_verified"] = validation.get("timestamp_status") == "verified"
-        validated_videos.append(video_info)
-else:
-    rejected_count += 1
-    # ... existing log + cleanup (unchanged) ...
+    # reason already explains why (not soccer / screen / wrong minute)
+    log.info(workflow.logger, MODULE, "video_rejected",
+             "Video filtered by AI validation",
+             reason=validation.get('reason', 'unknown'),
+             timestamp_status=validation.get('timestamp_status'),
+             ...)
 ```
 
-Also add `timestamp_rejected_count = 0` to the stats initialization and `download_stats["timestamp_rejected"] = timestamp_rejected_count` to the stats update.
+**Tracking timestamp rejections separately:** We still need `timestamp_rejected` in `download_stats` for visibility. `validate_video_is_soccer()` returns `timestamp_status` in the dict, so DownloadWorkflow can count it even though `is_valid` already handles the rejection:
 
-### 6. Internal flow through `validate_video_is_soccer()`
+```python
+if not validation.get("is_valid", True):
+    rejected_count += 1
+    if validation.get("timestamp_status") == "rejected":
+        timestamp_rejected_count += 1
+    ...
+```
 
-**Issue:** The plan described the external interface changes but not how the internal logic of the function changes.
+### 4. No string-based field lookups — use model constants ✅ RESOLVED
 
-**Resolution:** The function's internal flow becomes:
+Every MongoDB field name must be referenced through model constants (`VideoFields`, `EventFields`, etc.), never as raw strings. The existing `VideoFields` class is incomplete — it only has 6 of the 15+ fields in `S3Video`. This refactor will fix the whole class.
+
+**Current `VideoFields` (incomplete):**
+```python
+class VideoFields:
+    URL = "url"
+    PERCEPTUAL_HASH = "perceptual_hash"
+    RESOLUTION_SCORE = "resolution_score"
+    FILE_SIZE = "file_size"
+    POPULARITY = "popularity"
+    RANK = "rank"
+```
+
+**Updated `VideoFields` (complete):**
+```python
+class VideoFields:
+    """Constants for video object fields in _s3_videos."""
+    # Existing fields
+    URL = "url"
+    S3_KEY = "_s3_key"
+    PERCEPTUAL_HASH = "perceptual_hash"
+    RESOLUTION_SCORE = "resolution_score"
+    FILE_SIZE = "file_size"
+    POPULARITY = "popularity"
+    RANK = "rank"
+    # Quality metadata
+    WIDTH = "width"
+    HEIGHT = "height"
+    ASPECT_RATIO = "aspect_ratio"
+    BITRATE = "bitrate"
+    DURATION = "duration"
+    SOURCE_URL = "source_url"
+    HASH_VERSION = "hash_version"
+    # NEW: Timestamp verification
+    TIMESTAMP_VERIFIED = "timestamp_verified"
+    EXTRACTED_MINUTE = "extracted_minute"
+```
+
+This applies to all video field access in `upload.py`, `upload_workflow.py`, and `download_workflow.py`. The `S3Video` TypedDict documents the schema; `VideoFields` provides the lookup constants.
+
+**Also applies to `video_info` dict fields** added by DownloadWorkflow (e.g., `video_info[VideoFields.TIMESTAMP_VERIFIED]`). Even though `video_info` is a plain dict (not typed), using constants prevents typos in string keys.
+
+### 5. Validation placement ✅ RESOLVED
+
+Timestamp rejection is handled inside `validate_video_is_soccer()` itself (per item #3 above). The function already determines `is_valid` — timestamp status is just another factor in that determination. No separate check needed in DownloadWorkflow.
+
+### 6. Internal flow through `validate_video_is_soccer()` ✅ RESOLVED
 
 ```
 validate_video_is_soccer(file_path, event_id, event_minute, event_extra)
@@ -1279,22 +1279,83 @@ validate_video_is_soccer(file_path, event_id, event_minute, event_extra)
 ├── Soccer/screen tiebreaker logic (UNCHANGED in structure)
 │   ├── If 25% and 75% agree → use that result
 │   └── If disagree → extract 50% frame, call LLM, majority vote
-│   NOTE: clock data from tiebreaker frame is also collected
+│   (50% clock data extracted but NOT used for timestamp validation)
 │
-├── Determine is_valid (is_soccer AND NOT is_screen) — UNCHANGED
+├── Determine is_soccer and is_screen_recording — UNCHANGED
 │
-├── NEW: Collect frame_clocks list from all analyzed frames
+├── NEW: Collect frame_clocks from 25% and 75% frames ONLY
 │   └── [{"clock": raw_clock_25, "added": raw_added_25, "stoppage_clock": raw_stoppage_25},
-│        {"clock": raw_clock_75, "added": raw_added_75, "stoppage_clock": raw_stoppage_75},
-│        ... (optional 50% frame if tiebreaker triggered)]
+│        {"clock": raw_clock_75, "added": raw_added_75, "stoppage_clock": raw_stoppage_75}]
 │
 ├── NEW: Call validate_timestamp(frame_clocks, event_minute, event_extra)
 │   └── Returns (clock_verified, extracted_minute, timestamp_status)
 │
-└── Return combined dict with all existing + new fields
+├── NEW: Compute is_valid = is_soccer AND NOT is_screen AND timestamp_status != "rejected"
+│
+└── Return combined dict with all fields
 ```
 
-Key implementation detail: the `frame_clocks` list is built as frames are analyzed, not in a separate pass. Each `parse_response()` call produces both the soccer/screen bools (for tiebreaker) and the clock fields (for timestamp validation). We just need to collect both.
+### 7. `fetch_event_data()` must pass through new fields ⚠️ NEW FINDING
+
+**Issue:** `fetch_event_data()` in [upload.py:163-193](src/activities/upload.py#L163-L193) manually picks fields from MongoDB documents into a new `video_info` dict. It does NOT pass through all fields — only explicitly listed ones:
+
+```python
+# Current code — only these fields are extracted:
+video_info = {
+    "s3_url": ..., "_s3_key": ..., "perceptual_hash": ...,
+    "width": ..., "height": ..., "bitrate": ..., "file_size": ...,
+    "source_url": ..., "duration": ..., "resolution_score": ...,
+    "popularity": ...,
+}
+```
+
+**If we don't add `timestamp_verified` and `extracted_minute` here, S3 dedup scoping (Phase 2) will not work** — existing S3 videos would appear to have no verification status.
+
+**Fix:** Add the new fields to the cherry-pick list:
+```python
+video_info = {
+    # ... existing fields ...
+    VideoFields.TIMESTAMP_VERIFIED: video_obj.get(VideoFields.TIMESTAMP_VERIFIED, False),
+    VideoFields.EXTRACTED_MINUTE: video_obj.get(VideoFields.EXTRACTED_MINUTE),
+}
+```
+
+Legacy videos (no `timestamp_verified` field) default to `False` (unverified), which is correct.
+
+### 8. `upload_single_video()` positional args are fragile ⚠️ NEW FINDING
+
+**Issue:** `upload_single_video()` takes **18 positional parameters**, and the call site in [upload_workflow.py:430-449](src/workflows/upload_workflow.py#L430-L449) passes them all as a positional `args=[]` list. Adding two more (`timestamp_verified`, `extracted_minute`) makes this 20 positional params, which is brittle and error-prone.
+
+**This is a pre-existing problem**, not caused by this refactor. But we're making it worse. Consider:
+
+```python
+# Current call site (upload_workflow.py:430-449):
+args=[
+    video_info["file_path"],      # 0
+    fixture_id,                    # 1
+    event_id,                      # 2
+    player_name,                   # 3
+    team_name,                     # 4
+    idx,                           # 5
+    video_info.get("file_hash"),   # 6
+    video_info.get("perceptual_hash"),  # 7
+    video_info.get("duration"),    # 8
+    video_info.get("popularity"),  # 9
+    "",                            # 10 assister_name
+    "",                            # 11 opponent_team
+    video_info.get("source_url"),  # 12
+    video_info.get("width"),       # 13
+    video_info.get("height"),      # 14
+    video_info.get("bitrate"),     # 15
+    video_info.get("file_size"),   # 16
+    existing_s3_key,               # 17
+    # NEW:
+    video_info.get("timestamp_verified", False),  # 18
+    video_info.get("extracted_minute"),            # 19
+]
+```
+
+**Resolution for now:** Append with defaults. The signature has `timestamp_verified: bool = False, extracted_minute: int = None` at the end, so Temporal replay safety is preserved. A wider refactor to use dataclasses/kwargs is out of scope but should be tracked.
 
 ### Batch test validation (2026-02-15)
 
@@ -1326,13 +1387,13 @@ The structured extraction prompt and parsing logic were validated on 10 real pro
 | 1 | Create branch `refactor/valid-deduplication` | ✅ Done | |
 | 2 | Add `event_minute` + `event_extra` to workflow inputs | ⬜ TODO | `TwitterWorkflowInput`, `DownloadWorkflow.run()` |
 | 3 | Update vision prompt to structured three-field extraction | 🟡 Redesigned | Current: single CLOCK. New: CLOCK + ADDED + STOPPAGE_CLOCK. Tested on 7 videos. |
-| 4 | Update `parse_response()` to extract 5-tuple | 🟡 Redesigned | Current: 3-tuple. New: `(is_soccer, is_screen, raw_clock, raw_added, raw_stoppage_clock)` |
+| 4 | Update `parse_response()` to return dict | 🟡 Redesigned | Current: 3-tuple. New: dict with `is_soccer`, `is_screen`, `raw_clock`, `raw_added`, `raw_stoppage_clock` |
 | 5 | Add structured parsing functions | 🟡 Redesigned | `parse_clock_field()`, `parse_added_field()`, `parse_stoppage_clock_field()`, `compute_absolute_minute()`. Current `parse_broadcast_clock()` kept as fallback. |
 | 6 | Add `validate_timestamp()` function | ✅ Done | Returns "verified"/"unverified"/"rejected". Update input to accept structured frame data. |
 | 7 | Wire `event_minute`/`event_extra` through call sites | ⬜ TODO | monitor → twitter → download → validate |
 | 8 | Add timestamp validation to `validate_video_is_soccer()` | ⬜ TODO | Call `validate_timestamp()`, add verification fields to return |
 | 9 | Attach verification fields to `video_info` in DownloadWorkflow | ⬜ TODO | Needs #7 + #8 first |
-| 10 | Add rejected video discard in DownloadWorkflow | ⬜ TODO | Between validation and hash generation |
+| 10 | ~~Add rejected video discard in DownloadWorkflow~~ | ✅ Absorbed | Handled by `is_valid` inside `validate_video_is_soccer()` — no separate check needed |
 
 ### Phase 2: Verification-Scoped Deduplication (NOT STARTED)
 
@@ -1362,11 +1423,11 @@ The structured extraction prompt and parsing logic were validated on 10 real pro
 
 | File | Status | Changes |
 |------|--------|---------|
-| `src/activities/download.py` | 🟡 Partial | ✅ Prompt + `parse_response()` + `parse_broadcast_clock()` + `validate_timestamp()` + `extracted_clocks` return. 🟡 Redesign: Switch to structured three-field prompt, add `parse_clock_field()` + `parse_added_field()` + `parse_stoppage_clock_field()` + `compute_absolute_minute()`, update `parse_response()` → 5-tuple, keep `parse_broadcast_clock()` as fallback. ⬜ Still need: signature change for `event_minute`/`event_extra`, call `validate_timestamp()`, return verification fields |
+| `src/activities/download.py` | 🟡 Partial | ✅ Prompt + `parse_response()` + `parse_broadcast_clock()` + `validate_timestamp()` + `extracted_clocks` return. 🟡 Redesign: Switch to structured three-field prompt, add `parse_clock_field()` + `parse_added_field()` + `parse_stoppage_clock_field()` + `compute_absolute_minute()`, update `parse_response()` → dict, keep `parse_broadcast_clock()` as fallback. ⬜ Still need: signature change for `event_minute`/`event_extra`, call `validate_timestamp()`, fold timestamp rejection into `is_valid`, return verification fields |
 | `src/data/models.py` | ⬜ TODO | Add `TIMESTAMP_VERIFIED` + `EXTRACTED_MINUTE` to `VideoFields`, add fields to `S3Video` TypedDict, add `timestamp_rejected` to `DownloadStats` |
 | `src/workflows/monitor_workflow.py` | ⬜ TODO | Pass `event_minute=minute, event_extra=extra` to `TwitterWorkflowInput` |
 | `src/workflows/twitter_workflow.py` | ⬜ TODO | Add `event_minute`, `event_extra` to `TwitterWorkflowInput` dataclass; pass to `DownloadWorkflow.run()` args |
-| `src/workflows/download_workflow.py` | ⬜ TODO | Accept `event_minute`/`event_extra` in `run()`; pass to `validate_video_is_soccer()`; attach verification fields to `video_info`; discard rejected videos; add `timestamp_rejected` to `download_stats` |
+| `src/workflows/download_workflow.py` | ⬜ TODO | Accept `event_minute`/`event_extra` in `run()`; pass to `validate_video_is_soccer()`; attach verification fields to `video_info`; count `timestamp_rejected` in `download_stats` (rejection itself handled by existing `is_valid` check) |
 | `src/activities/upload.py` | ⬜ TODO | Verification-scoped dedup in `deduplicate_videos()` (both phases); add `timestamp_verified`/`extracted_minute` params to `upload_single_video()`; include in `video_object` |
 | `src/workflows/upload_workflow.py` | ⬜ TODO | Pass `timestamp_verified` + `extracted_minute` from `video_info` to `upload_single_video()` args |
 
