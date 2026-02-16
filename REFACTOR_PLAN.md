@@ -24,8 +24,8 @@
 - ✅ Workers rebuilt and running (`docker compose up -d --build worker`)
 
 **Phase 2 — Next:**
-1. Scope `deduplicate_videos()` by `timestamp_verified` — verified vs verified, unverified vs unverified
-2. Validate Phase 1 data quality from today's live games before implementing Phase 2
+1. Split `deduplicate_videos()` calls by `timestamp_verified` at the workflow level — parallel via `asyncio.gather()`
+2. Add `timestamp_verified` as primary ranking key in `recalculate_video_ranks()`
 
 ---
 
@@ -695,7 +695,7 @@ DownloadWorkflow
 
 UploadWorkflow
   ├── deduplicate_by_md5()   → filters exact dupes
-  ├── deduplicate_videos()   → scoped perceptual hash dedup (verified vs verified, unverified vs unverified)
+  ├── deduplicate_videos()   → perceptual hash dedup (called TWICE in parallel: verified pool + unverified pool)
   ├── upload_single_video()  → S3 upload with metadata
   └── save_video_objects()   → MongoDB with timestamp_verified + extracted_minute
 ```
@@ -977,11 +977,7 @@ async def deduplicate_videos(
     event_id: str = "",
 ) -> Dict[str, Any]:
 ```
-**Signature stays the same** — verification info is already on each `downloaded_files` item (added by DownloadWorkflow after validation). The function's internal logic changes to:
-1. Separate inputs by `timestamp_verified` (true or false); rejected videos were already discarded earlier
-2. Run Phase 1 (batch clustering) independently within verified and within unverified
-3. Run Phase 2 (S3 comparison) scoped — verified winners vs verified S3 videos, unverified winners vs unverified S3 videos
-4. Legacy S3 videos (no `timestamp_verified` field) → treated as unverified
+**Signature stays the same. Internal logic stays the same.** The function doesn't need to know about verification status at all. Scoping is done at the workflow level — `upload_workflow.py` splits videos into verified/unverified pools and calls `deduplicate_videos()` twice in parallel (via `asyncio.gather()`), each time with a different subset. See Task 11+12 details in Phase 2 section.
 
 ### Complete Data Flow (End-to-End)
 
@@ -1037,20 +1033,24 @@ DownloadWorkflow (download_workflow.py:71)
         │
         ▼
 UploadWorkflow (upload_workflow.py)
-├── Step 3: fetch_event_data()
+├── Step 1: fetch_event_data()
 │   └── Loads existing_s3_videos from MongoDB
 │       (automatically includes timestamp_verified + extracted_minute if stored)
-├── Step 4: deduplicate_videos(downloaded_files, existing_s3_videos)
-│   └── Phase 1: Batch dedup SCOPED BY VERIFICATION (verified vs verified, unverified vs unverified)
-│   └── Phase 2: S3 dedup SCOPED BY VERIFICATION
+├── Step 2: deduplicate_by_md5() — UNSCOPED (identical files = identical verification)
+├── Step 3: Split by timestamp_verified → parallel dedup
+│   ├── verified_videos + verified_s3 → deduplicate_videos()  ─┐
+│   └── unverified_videos + unverified_s3 → deduplicate_videos() ─┤ asyncio.gather()
+│   └── Merge: videos_to_upload + videos_to_replace + bumps     ◄─┘
 ├── Step 6: upload_single_video(
 │       ...,
-│       timestamp_verified=video_info["timestamp_verified"],     ◄── NEW
-│       extracted_minute=video_info.get("extracted_minute"),      ◄── NEW
+│       timestamp_verified=video_info["timestamp_verified"],     ◄── ALREADY DONE (Phase 1)
+│       extracted_minute=video_info.get("extracted_minute"),      ◄── ALREADY DONE (Phase 1)
 │   )
 │   └── Returns video_object with timestamp_verified + extracted_minute
 ├── Step 7: save_video_objects() → MongoDB
 │   └── video_object now includes timestamp_verified + extracted_minute
+├── Step 8: recalculate_video_ranks()
+│   └── NEW: timestamp_verified as primary sort key (verified > unverified)
 ```
 
 ### The `video_info` dict lifecycle
@@ -1399,14 +1399,14 @@ The structured extraction prompt and parsing logic were validated on 10 real pro
 
 ### Phase 2: Verification-Scoped Deduplication (NOT STARTED)
 
-Phase 2 modifies `deduplicate_videos()` to compare videos only within the same verification group. This prevents a verified goal clip from being replaced by an unverified clip of a different match moment.
+Phase 2 scopes deduplication by verification status — verified videos only compared against verified, unverified only against unverified. This prevents a verified goal clip from being replaced by an unverified clip of a different match moment.
 
-**Prerequisites:** Phase 1 must be live and producing reliable `timestamp_verified` values. Check today's game data first.
+**Prerequisites:** Phase 1 must be live and producing reliable `timestamp_verified` values. ✅ Validated 2026-02-16 (6 verified correct, 2 unverified correct, 0 false rejections).
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 11 | Scope batch dedup (Phase 1 inside `deduplicate_videos`) | ⬜ TODO | See implementation details below |
-| 12 | Scope S3 dedup (Phase 2 inside `deduplicate_videos`) | ⬜ TODO | See implementation details below |
+| 11 | Split + parallel dedup at workflow level | ⬜ TODO | See implementation details below |
+| 12 | Merge parallel dedup results | ⬜ TODO | See implementation details below |
 | 13 | Rank verified videos above unverified | ⬜ TODO | See implementation details below |
 | 14 | Add integration tests for scoped dedup | ⬜ TODO | Test verified-vs-verified and unverified-vs-unverified clustering |
 | 15 | Test with live data | ⬜ TODO | Verify dedup + ranking decisions match expectations |
@@ -1414,66 +1414,335 @@ Phase 2 modifies `deduplicate_videos()` to compare videos only within the same v
 
 **Note:** Tasks 12-14 from the old plan (upload_single_video params, upload_workflow passthrough, download_stats tracking) were completed as part of Phase 1 since they were needed to get verification data flowing.
 
-#### Task 11: Scope batch dedup — implementation details
+#### Key design decision: split at workflow level, not inside the activity
 
-**File:** `src/activities/upload.py`, inside `deduplicate_videos()`, Phase 1 section (lines ~479-560)
+The original plan modified the internals of `deduplicate_videos()` to split/cluster/merge within one activity call. The new approach is better: **split at the workflow level** in `upload_workflow.py` and call `deduplicate_videos()` twice in parallel via `asyncio.gather()`.
 
-**Current behavior:** All `successful` videos fed into a single cluster-building loop. One set of clusters, one survivor per cluster.
+**Why this is better:**
+1. **Real parallelism** — Temporal activities genuinely run on separate threads. Two independent pools with no shared state = free speedup.
+2. **Zero activity changes** — `deduplicate_videos()` already takes a list of videos and a list of S3 videos, clusters them, and returns results. It doesn't need to know about verification status at all. The scoping is purely about what you feed it.
+3. **Same pattern already used** — the workflow already uses `asyncio.gather()` for parallel uploads (line ~465), parallel popularity bumps (line ~397), and parallel hash generation (download_workflow.py line ~393). This is the established pattern.
+4. **Simpler to reason about** — each dedup call is a standalone operation on a standalone pool. No interleaving of verified/unverified logic inside a single function.
 
-**New behavior:** Split videos by verification status first, then cluster within each group:
+**What stays the same:**
+- `deduplicate_videos()` activity code — completely unchanged
+- `deduplicate_by_md5()` activity code — stays verification-agnostic (identical files are identical regardless of timestamp)
+- `fetch_event_data()` — already cherry-picks `timestamp_verified` from MongoDB (added in Phase 1, commit `4dcf3bc`)
+- All helper functions (`_perceptual_hashes_match`, `_pick_best_video_from_cluster`, `_should_replace_s3_video`, `_dense_hashes_match`)
+
+#### Task 11+12: Split dedup at workflow level — implementation details
+
+**File:** `src/workflows/upload_workflow.py`, inside `_process_batch()`, Step 3 (lines ~320-365)
+
+##### What the current code does (line by line)
+
+The current Step 3 in `_process_batch()` at [upload_workflow.py](src/workflows/upload_workflow.py#L320-L365):
+
 ```python
-# After filtering successful downloads:
-verified = [f for f in successful if f.get("timestamp_verified", False)]
-unverified = [f for f in successful if not f.get("timestamp_verified", False)]
+# Lines 320-330: Separate MD5 replacements from perceptual dedup candidates
+md5_replacement_videos = []
+perceptual_dedup_videos = []
+for video in videos_after_md5:
+    if video.get("_is_md5_replacement"):
+        md5_replacement_videos.append({
+            "new_video": video,
+            "old_s3_video": video.get("_old_s3_video", {}),
+        })
+    else:
+        perceptual_dedup_videos.append(video)
 
-# Run clustering independently — verified videos only compared against
-# other verified, unverified only against other unverified
-verified_clusters = _build_clusters(verified)    # extract to helper
-unverified_clusters = _build_clusters(unverified)
+# Lines 336-340: Single call to deduplicate_videos with ALL videos + ALL S3
+dedup_result = await workflow.execute_activity(
+    upload_activities.deduplicate_videos,
+    args=[perceptual_dedup_videos, existing_s3_videos, event_id],
+    heartbeat_timeout=timedelta(seconds=120),
+    start_to_close_timeout=timedelta(hours=1),
+    retry_policy=RetryPolicy(maximum_attempts=3),
+)
 
-# Pick best from each cluster in both groups
-cluster_survivors = []
-for cluster in verified_clusters:
-    survivor = _pick_best_video_from_cluster(cluster) if len(cluster) > 1 else cluster[0]
-    cluster_survivors.append(survivor)
-for cluster in unverified_clusters:
-    survivor = _pick_best_video_from_cluster(cluster) if len(cluster) > 1 else cluster[0]
-    cluster_survivors.append(survivor)
+# Lines 356-363: Merge results
+videos_to_upload = dedup_result.get("videos_to_upload", [])
+videos_to_replace = dedup_result.get("videos_to_replace", []) + md5_replacement_videos
+videos_to_bump_popularity = dedup_result.get("videos_to_bump_popularity", [])
+skipped_urls = dedup_result.get("skipped_urls", [])
 ```
 
-**Helper to extract:** The cluster-building loop (lines ~487-520) should become a `_build_clusters(videos: list) -> list[list]` helper function since it's now called twice.
+##### What the new code does
 
-**Logging:** Add `verified_count` and `unverified_count` to the `dedup_clustered` log line so we can see the split.
+Replace the single `deduplicate_videos` call with a split → parallel calls → merge:
 
-#### Task 12: Scope S3 dedup — implementation details
-
-**File:** `src/activities/upload.py`, inside `deduplicate_videos()`, Phase 2 section (lines ~585-670)
-
-**Current behavior:** Each cluster survivor is compared against ALL `existing_videos_list` entries.
-
-**New behavior:** Each survivor is only compared against S3 videos in the same verification group:
 ```python
-# Pre-split existing S3 videos by verification status
-# Legacy videos (no timestamp_verified field) → treated as unverified
-existing_verified = [v for v in existing_videos_list if v.get("timestamp_verified", False)]
-existing_unverified = [v for v in existing_videos_list if not v.get("timestamp_verified", False)]
+# Lines 320-330: UNCHANGED — separate MD5 replacements from perceptual dedup candidates
+md5_replacement_videos = []
+perceptual_dedup_videos = []
+for video in videos_after_md5:
+    if video.get("_is_md5_replacement"):
+        md5_replacement_videos.append({
+            "new_video": video,
+            "old_s3_video": video.get("_old_s3_video", {}),
+        })
+    else:
+        perceptual_dedup_videos.append(video)
 
-for file_info in cluster_survivors:
-    is_verified = file_info.get("timestamp_verified", False)
-    comparison_pool = existing_verified if is_verified else existing_unverified
-    
-    # Only compare against same-group S3 videos
-    matched_existing = None
-    for existing in comparison_pool:
-        if _perceptual_hashes_match(file_info["perceptual_hash"], existing.get("perceptual_hash", "")):
-            matched_existing = existing
-            break
-    # ... rest of replace/skip/new logic unchanged
+# ===== NEW: Split by verification status =====
+# Incoming videos have timestamp_verified set by DownloadWorkflow (Phase 1)
+# S3 videos have timestamp_verified set from MongoDB (via fetch_event_data)
+# Legacy S3 videos without the field default to False (unverified)
+verified_videos = [v for v in perceptual_dedup_videos if v.get("timestamp_verified", False)]
+unverified_videos = [v for v in perceptual_dedup_videos if not v.get("timestamp_verified", False)]
+
+verified_s3 = [v for v in existing_s3_videos if v.get("timestamp_verified", False)]
+unverified_s3 = [v for v in existing_s3_videos if not v.get("timestamp_verified", False)]
+
+log.info(workflow.logger, MODULE, "scoped_dedup_split",
+         "Split videos by verification status",
+         verified_new=len(verified_videos), unverified_new=len(unverified_videos),
+         verified_s3=len(verified_s3), unverified_s3=len(unverified_s3),
+         event_id=event_id)
+
+# ===== NEW: Run dedup in parallel — two independent pools =====
+# deduplicate_videos() doesn't change. It takes a list and deduplicates it.
+# We just call it twice with different inputs.
+dedup_coros = []
+
+if verified_videos or verified_s3:
+    dedup_coros.append(
+        workflow.execute_activity(
+            upload_activities.deduplicate_videos,
+            args=[verified_videos, verified_s3, event_id],
+            heartbeat_timeout=timedelta(seconds=120),
+            start_to_close_timeout=timedelta(hours=1),
+            retry_policy=RetryPolicy(maximum_attempts=3),
+        )
+    )
+else:
+    dedup_coros.append(asyncio.coroutine(lambda: {
+        "videos_to_upload": [], "videos_to_replace": [],
+        "videos_to_bump_popularity": [], "skipped_urls": [],
+    })())  # ← SEE NOTE BELOW ON EMPTY POOL HANDLING
+
+if unverified_videos or unverified_s3:
+    dedup_coros.append(
+        workflow.execute_activity(
+            upload_activities.deduplicate_videos,
+            args=[unverified_videos, unverified_s3, event_id],
+            heartbeat_timeout=timedelta(seconds=120),
+            start_to_close_timeout=timedelta(hours=1),
+            retry_policy=RetryPolicy(maximum_attempts=3),
+        )
+    )
+else:
+    dedup_coros.append(asyncio.coroutine(lambda: {
+        "videos_to_upload": [], "videos_to_replace": [],
+        "videos_to_bump_popularity": [], "skipped_urls": [],
+    })())
+
+verified_result, unverified_result = await asyncio.gather(*dedup_coros)
+
+# ===== NEW: Merge results from both pools =====
+videos_to_upload = (
+    verified_result.get("videos_to_upload", []) +
+    unverified_result.get("videos_to_upload", [])
+)
+videos_to_replace = (
+    verified_result.get("videos_to_replace", []) +
+    unverified_result.get("videos_to_replace", []) +
+    md5_replacement_videos
+)
+videos_to_bump_popularity = (
+    verified_result.get("videos_to_bump_popularity", []) +
+    unverified_result.get("videos_to_bump_popularity", [])
+)
+skipped_urls = (
+    verified_result.get("skipped_urls", []) +
+    unverified_result.get("skipped_urls", [])
+)
 ```
 
-**Logging:** Add `verification_group="verified"/"unverified"` to the `s3_replace`, `s3_skip`, and `new_video` log lines.
+##### Empty pool handling — important detail
 
-**Key edge case:** `fetch_event_data()` in upload.py already cherry-picks `timestamp_verified` and `extracted_minute` from MongoDB video objects (added in Phase 1). Legacy S3 videos without these fields default to `False`/`None`, which is correct — they're treated as unverified.
+When one pool is empty (e.g., batch has 3 verified videos and 0 unverified), we should NOT call `deduplicate_videos()` with an empty list. The activity would still run (Temporal schedules it, heartbeats, etc.) and log confusing "0 videos" messages.
+
+**Two approaches:**
+1. **Inline empty result** — create a dummy coroutine that returns the empty result dict (shown in pseudocode above). This avoids calling the activity at all.
+2. **Just call it** — `deduplicate_videos()` already handles empty inputs gracefully (lines 460-462: `if not successful: return {empty}`). The overhead is one unnecessary activity invocation (~30ms Temporal scheduling + activity start).
+
+**Recommendation:** Approach 2 (just call it). Simpler code, no weird coroutine construction, and the activity already handles it. The 30ms overhead is negligible. The pseudocode above shows approach 1 for illustration but implementation should use approach 2:
+
+```python
+# SIMPLER — always call both, let the activity handle empty inputs
+verified_result, unverified_result = await asyncio.gather(
+    workflow.execute_activity(
+        upload_activities.deduplicate_videos,
+        args=[verified_videos, verified_s3, event_id],
+        heartbeat_timeout=timedelta(seconds=120),
+        start_to_close_timeout=timedelta(hours=1),
+        retry_policy=RetryPolicy(maximum_attempts=3),
+    ),
+    workflow.execute_activity(
+        upload_activities.deduplicate_videos,
+        args=[unverified_videos, unverified_s3, event_id],
+        heartbeat_timeout=timedelta(seconds=120),
+        start_to_close_timeout=timedelta(hours=1),
+        retry_policy=RetryPolicy(maximum_attempts=3),
+    ),
+)
+```
+
+##### Error handling — what happens if ONE pool fails?
+
+Currently, if `deduplicate_videos` fails, Step 3 catches the exception and returns an empty result to **skip the entire batch** (lines 346-355):
+
+```python
+except Exception as e:
+    log.error(...)
+    dedup_result = {
+        "videos_to_upload": [],      # EMPTY — don't upload anything!
+        "videos_to_replace": [],
+        "videos_to_bump_popularity": [],
+        "skipped_urls": [v.get("source_url", "") for v in perceptual_dedup_videos],
+    }
+```
+
+With `asyncio.gather()`, if EITHER dedup call raises, `gather` propagates the exception and we want the same behavior — skip the entire batch. The existing `try/except` around the entire block still works because `asyncio.gather()` raises the first exception from any task.
+
+**But there's a subtlety:** if verified dedup succeeds and unverified fails (or vice versa), `gather` cancels the other task and raises. We lose the successful result too. This is actually the **correct** behavior — partial dedup could lead to inconsistent state (e.g., uploading verified videos but not their unverified counterparts from the same batch, breaking popularity accounting).
+
+If we wanted to handle them independently (succeed on one pool even if the other fails), we'd use `asyncio.gather(return_exceptions=True)` and check each result. But that adds complexity for a rare edge case, and the current "skip batch on failure" approach is deliberately conservative. **Keep the existing behavior: if either fails, skip the whole batch.**
+
+##### Temporal replay safety
+
+`asyncio.gather()` on two `workflow.execute_activity()` calls is replay-safe in Temporal. Temporal records each activity invocation as a separate event in the workflow history. On replay, both activities are replayed from history in the same order. The `gather` just means they're scheduled concurrently (both start without waiting for the other).
+
+This is identical to how parallel uploads are already done at [upload_workflow.py line ~465](src/workflows/upload_workflow.py#L465):
+```python
+upload_tasks = [upload_video(idx, video_info) for idx, video_info in enumerate(all_uploads)]
+upload_outcomes = await asyncio.gather(*upload_tasks)
+```
+
+##### What each `video_info` dict looks like when it enters the split
+
+By the time videos reach Step 3 (perceptual dedup), each `video_info` dict has these fields:
+
+```python
+{
+    # From download_single_video() in DownloadWorkflow:
+    "status": "success",
+    "file_path": "/tmp/found-footy/{event_id}_{run_id}/video_0.mp4",
+    "file_hash": "abc123...",       # MD5
+    "file_size": 2500000,
+    "duration": 45.2,
+    "width": 1280,
+    "height": 720,
+    "bitrate": 3500000,
+    "source_url": "https://twitter.com/...",
+
+    # From validate_video_is_soccer() in DownloadWorkflow Step 3:
+    "clock_verified": True,                    # ← used for logging
+    "extracted_minute": 46,                    # ← stored in MongoDB
+    "timestamp_verified": True,                # ← THIS IS THE SPLIT KEY
+    "timestamp_status": "verified",            # ← stored in MongoDB
+
+    # From generate_video_hash() in DownloadWorkflow Step 4:
+    "perceptual_hash": "dense:0.25:0.25=a1b2c3,...",
+
+    # From MD5 batch dedup in UploadWorkflow Step 2:
+    "popularity": 2,                           # accumulated from MD5 dupes
+}
+```
+
+The split key is `timestamp_verified` (bool). It was set in DownloadWorkflow at [download_workflow.py line ~317](src/workflows/download_workflow.py#L317):
+```python
+video_info["timestamp_verified"] = validation.get("timestamp_status") == "verified"
+```
+
+##### What each existing S3 video dict looks like
+
+Existing S3 videos come from `fetch_event_data()` at [upload.py lines ~183-199](src/activities/upload.py#L183-L199). Each dict has:
+
+```python
+{
+    "s3_url": "/video/footy-videos/...",
+    "_s3_key": "footy-videos/...",
+    "perceptual_hash": "dense:0.25:...",
+    "width": 1280,
+    "height": 720,
+    "bitrate": 3500000,
+    "file_size": 2500000,
+    "source_url": "https://twitter.com/...",
+    "duration": 45.2,
+    "resolution_score": 921600,
+    "popularity": 3,
+
+    # Phase 1 fields (added in commit 4dcf3bc):
+    "timestamp_verified": True,                # ← THE SPLIT KEY (defaults to False for legacy)
+    "extracted_minute": 46,                    # ← None for legacy
+    "timestamp_status": "verified",            # ← "unverified" for legacy
+}
+```
+
+These fields were added to the cherry-pick list in `fetch_event_data()` at [upload.py lines ~195-197](src/activities/upload.py#L195-L197):
+```python
+"timestamp_verified": video_obj.get("timestamp_verified", False),
+"extracted_minute": video_obj.get("extracted_minute"),
+"timestamp_status": video_obj.get("timestamp_status", "unverified"),
+```
+
+Legacy S3 videos (uploaded before Phase 1) don't have these fields in MongoDB, so they default to `False`/`None`/`"unverified"` — they land in the unverified pool. This is intentionally correct: we can't verify them, so they should compete against other unverified videos.
+
+##### Concurrency model — why this is safe
+
+The upload workflow serialization guarantees that the parallel dedup cannot race with itself:
+
+```
+TwitterWorkflow starts 10 DownloadWorkflows (parallel)
+    │
+    ├── DownloadWF-1 finishes first → signals UploadWF
+    ├── DownloadWF-5 finishes second → signals UploadWF
+    ├── DownloadWF-3 finishes third → signals UploadWF
+    └── ... (7 more, in whatever order they finish)
+
+UploadWorkflow (ONE per event, ID: upload-{event_id})
+    │
+    ├── Process batch from DL-1 SERIALLY:
+    │   ├── Fetch fresh S3 state
+    │   ├── MD5 dedup
+    │   ├── Split by timestamp_verified
+    │   ├── asyncio.gather(                         ← PARALLEL within batch
+    │   │       dedup(verified_new, verified_s3),
+    │   │       dedup(unverified_new, unverified_s3),
+    │   │   )
+    │   ├── Merge results
+    │   ├── Upload to S3
+    │   └── Save to MongoDB
+    │
+    ├── Process batch from DL-5 SERIALLY:           ← SERIAL between batches
+    │   ├── Fetch fresh S3 state (sees DL-1's uploads!)
+    │   ├── ... same steps ...
+    │
+    └── Process batch from DL-3 SERIALLY:
+        ├── Fetch fresh S3 state (sees DL-1 + DL-5's uploads!)
+        └── ... same steps ...
+```
+
+The two `deduplicate_videos()` calls within a batch run in parallel, but they operate on completely disjoint sets:
+- **Verified pool:** verified new videos + verified S3 videos
+- **Unverified pool:** unverified new videos + unverified S3 videos
+
+No video appears in both pools (the split is by `timestamp_verified`, which is a bool with no ambiguity). No shared mutable state. No cross-pool references. This is embarrassingly parallel.
+
+Between batches, the workflow re-fetches S3 state (Step 1), which sees all uploads from previous batches. So batch 2's verified pool includes S3 videos uploaded by batch 1's verified pool. This is the same serialization guarantee that exists today.
+
+##### What about MD5 dedup (Step 2)?
+
+MD5 dedup (`deduplicate_by_md5`) stays **unscoped** — it runs on ALL videos regardless of verification status. This is correct because:
+
+1. MD5 dedup checks if two files are **byte-identical** (same MD5 hash = same file)
+2. If two files are byte-identical, they will have the same frames, same clock, same everything
+3. Therefore they will have the same `timestamp_verified` value
+4. There's no risk of a verified video matching an unverified video by MD5 — if they're byte-identical, they have the same verification status
+
+The MD5 dedup output feeds into the verification split. After MD5 dedup removes true duplicates, the remaining unique videos are split into verified/unverified for perceptual dedup.
 
 #### Task 13: Rank verified videos above unverified — implementation details
 
@@ -1481,7 +1750,7 @@ for file_info in cluster_survivors:
 
 **Why this matters:** Timestamp verification isn't just a dedup signal — it's a **quality signal for the frontend**. A verified video (clock matches the event time) is objectively more trustworthy than an unverified one (no visible clock — could be celebration close-up, fan recording, or wrong match). The frontend should always show verified clips first.
 
-**Current ranking sort key:**
+**Current code** at [mongo_store.py line 1200](src/data/mongo_store.py#L1200):
 ```python
 videos_sorted = sorted(
     videos,
@@ -1491,7 +1760,7 @@ videos_sorted = sorted(
 ```
 Sorts by `(popularity desc, file_size desc)`. A highly-popular unverified video can outrank a less-popular verified one.
 
-**New ranking sort key:**
+**New code — one-line change:**
 ```python
 videos_sorted = sorted(
     videos,
@@ -1506,9 +1775,9 @@ videos_sorted = sorted(
 
 Since Python sorts `True > False`, all verified videos rank above all unverified ones. Within each group, the existing popularity + file_size tiebreaker applies.
 
-**This is a one-line change** — just add `v.get("timestamp_verified", False)` as the first element of the sort tuple.
-
 **Backward compatibility:** Legacy videos without `timestamp_verified` default to `False`, so they sort into the unverified group — same position they'd have had before. No ranking regression for existing data.
+
+**This function is called from:** [upload_workflow.py Step 8 (line ~580)](src/workflows/upload_workflow.py#L580) after every batch upload, via the `recalculate_video_ranks` activity wrapper at [upload.py line 1036](src/activities/upload.py#L1036). No changes needed to the call site or the activity wrapper.
 
 ### Test Files Created
 
@@ -1549,8 +1818,9 @@ Since Python sorts `True > False`, all verified videos rank above all unverified
 
 | File | Status | What Needs to Change |
 |------|--------|---------|
-| `src/activities/upload.py` | ⬜ TODO | Scope batch dedup + S3 dedup by `timestamp_verified` inside `deduplicate_videos()` — see Task 11 & 12 details above |
-| `src/data/mongo_store.py` | ⬜ TODO | Add `timestamp_verified` as primary sort key in `recalculate_video_ranks()` — see Task 13 details above |
+| `src/workflows/upload_workflow.py` | ⬜ TODO | `_process_batch()` Step 3: split `perceptual_dedup_videos` and `existing_s3_videos` by `timestamp_verified`, call `deduplicate_videos()` twice via `asyncio.gather()`, merge results. ~20 lines changed. See Task 11+12 above. |
+| `src/data/mongo_store.py` | ⬜ TODO | `recalculate_video_ranks()` line ~1200: add `v.get("timestamp_verified", False)` as first sort key element. 1 line changed. See Task 13 above. |
+| `src/activities/upload.py` | ⬜ NO CHANGE | `deduplicate_videos()` stays exactly as-is. The scoping happens at the workflow level by controlling what gets passed in. |
 
 ### Files Created During This Refactor
 
