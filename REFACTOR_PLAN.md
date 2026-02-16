@@ -1407,9 +1407,10 @@ Phase 2 modifies `deduplicate_videos()` to compare videos only within the same v
 |---|------|--------|-------|
 | 11 | Scope batch dedup (Phase 1 inside `deduplicate_videos`) | ⬜ TODO | See implementation details below |
 | 12 | Scope S3 dedup (Phase 2 inside `deduplicate_videos`) | ⬜ TODO | See implementation details below |
-| 13 | Add integration tests for scoped dedup | ⬜ TODO | Test verified-vs-verified and unverified-vs-unverified clustering |
-| 14 | Test with live data | ⬜ TODO | Verify dedup decisions match expectations |
-| 15 | Deploy and monitor | ⬜ TODO | Track verified/unverified distribution |
+| 13 | Rank verified videos above unverified | ⬜ TODO | See implementation details below |
+| 14 | Add integration tests for scoped dedup | ⬜ TODO | Test verified-vs-verified and unverified-vs-unverified clustering |
+| 15 | Test with live data | ⬜ TODO | Verify dedup + ranking decisions match expectations |
+| 16 | Deploy and monitor | ⬜ TODO | Track verified/unverified distribution, check frontend ranking |
 
 **Note:** Tasks 12-14 from the old plan (upload_single_video params, upload_workflow passthrough, download_stats tracking) were completed as part of Phase 1 since they were needed to get verification data flowing.
 
@@ -1474,6 +1475,41 @@ for file_info in cluster_survivors:
 
 **Key edge case:** `fetch_event_data()` in upload.py already cherry-picks `timestamp_verified` and `extracted_minute` from MongoDB video objects (added in Phase 1). Legacy S3 videos without these fields default to `False`/`None`, which is correct — they're treated as unverified.
 
+#### Task 13: Rank verified videos above unverified — implementation details
+
+**File:** `src/data/mongo_store.py`, inside `recalculate_video_ranks()` (line ~1200)
+
+**Why this matters:** Timestamp verification isn't just a dedup signal — it's a **quality signal for the frontend**. A verified video (clock matches the event time) is objectively more trustworthy than an unverified one (no visible clock — could be celebration close-up, fan recording, or wrong match). The frontend should always show verified clips first.
+
+**Current ranking sort key:**
+```python
+videos_sorted = sorted(
+    videos,
+    key=lambda v: (v.get("popularity", 1), v.get("file_size", 0)),
+    reverse=True
+)
+```
+Sorts by `(popularity desc, file_size desc)`. A highly-popular unverified video can outrank a less-popular verified one.
+
+**New ranking sort key:**
+```python
+videos_sorted = sorted(
+    videos,
+    key=lambda v: (
+        v.get("timestamp_verified", False),  # Verified always first
+        v.get("popularity", 1),               # Then by popularity
+        v.get("file_size", 0),                # Then by quality
+    ),
+    reverse=True
+)
+```
+
+Since Python sorts `True > False`, all verified videos rank above all unverified ones. Within each group, the existing popularity + file_size tiebreaker applies.
+
+**This is a one-line change** — just add `v.get("timestamp_verified", False)` as the first element of the sort tuple.
+
+**Backward compatibility:** Legacy videos without `timestamp_verified` default to `False`, so they sort into the unverified group — same position they'd have had before. No ranking regression for existing data.
+
 ### Test Files Created
 
 | File | Purpose | Status |
@@ -1514,6 +1550,7 @@ for file_info in cluster_survivors:
 | File | Status | What Needs to Change |
 |------|--------|---------|
 | `src/activities/upload.py` | ⬜ TODO | Scope batch dedup + S3 dedup by `timestamp_verified` inside `deduplicate_videos()` — see Task 11 & 12 details above |
+| `src/data/mongo_store.py` | ⬜ TODO | Add `timestamp_verified` as primary sort key in `recalculate_video_ranks()` — see Task 13 details above |
 
 ### Files Created During This Refactor
 
