@@ -9,7 +9,7 @@
 | Phase | Status | Progress |
 |-------|--------|----------|
 | Phase 1: AI Clock Extraction | ✅ Complete | 10/10 tasks — deployed at `4dcf3bc` |
-| Phase 2: Verification-Scoped Dedup | ⬜ Not Started | 0/6 tasks done |
+| Phase 2: Verification-Scoped Dedup | 🔧 In Progress | 3/6 tasks done |
 
 **Phase 1 — Deployed (2026-02-16):**
 - ✅ Structured 5-field vision prompt (SOCCER / SCREEN / CLOCK / ADDED / STOPPAGE_CLOCK)
@@ -23,9 +23,11 @@
 - ✅ 58 unit tests passing (updated for structured dicts + 4 new test classes)
 - ✅ Workers rebuilt and running (`docker compose up -d --build worker`)
 
-**Phase 2 — Next:**
-1. Split `deduplicate_videos()` calls by `timestamp_verified` at the workflow level — parallel via `asyncio.gather()`
-2. Add `timestamp_verified` as primary ranking key in `recalculate_video_ranks()`
+**Phase 2 — In Progress:**
+- ✅ Split `deduplicate_videos()` calls by `timestamp_verified` at the workflow level — parallel via `asyncio.gather()`
+- ✅ Merge parallel dedup results (verified + unverified pools)
+- ✅ Add `timestamp_verified` as primary ranking key in `recalculate_video_ranks()`
+- ⬜ Integration tests, live data validation, deploy & monitor
 
 ---
 
@@ -1397,7 +1399,7 @@ The structured extraction prompt and parsing logic were validated on 10 real pro
 | 9 | Attach verification fields to `video_info` in DownloadWorkflow | ✅ Done | `clock_verified`, `extracted_minute`, `timestamp_verified` on each video_info |
 | 10 | ~~Add rejected video discard in DownloadWorkflow~~ | ✅ Absorbed | Handled by `is_valid` inside `validate_video_is_soccer()` |
 
-### Phase 2: Verification-Scoped Deduplication (NOT STARTED)
+### Phase 2: Verification-Scoped Deduplication (IN PROGRESS)
 
 Phase 2 scopes deduplication by verification status — verified videos only compared against verified, unverified only against unverified. This prevents a verified goal clip from being replaced by an unverified clip of a different match moment.
 
@@ -1405,9 +1407,9 @@ Phase 2 scopes deduplication by verification status — verified videos only com
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 11 | Split + parallel dedup at workflow level | ⬜ TODO | See implementation details below |
-| 12 | Merge parallel dedup results | ⬜ TODO | See implementation details below |
-| 13 | Rank verified videos above unverified | ⬜ TODO | See implementation details below |
+| 11 | Split + parallel dedup at workflow level | ✅ Done | `upload_workflow.py` — split by `timestamp_verified`, `asyncio.gather()` two `deduplicate_videos` calls |
+| 12 | Merge parallel dedup results | ✅ Done | Concatenate `videos_to_upload`, `videos_to_replace`, `videos_to_bump_popularity`, `skipped_urls` |
+| 13 | Rank verified videos above unverified | ✅ Done | `mongo_store.py` — `(timestamp_verified, popularity, file_size)` sort key |
 | 14 | Add integration tests for scoped dedup | ⬜ TODO | Test verified-vs-verified and unverified-vs-unverified clustering |
 | 15 | Test with live data | ⬜ TODO | Verify dedup + ranking decisions match expectations |
 | 16 | Deploy and monitor | ⬜ TODO | Track verified/unverified distribution, check frontend ranking |

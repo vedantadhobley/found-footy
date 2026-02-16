@@ -1194,10 +1194,15 @@ class FootyMongoStore:
             if not videos:
                 return True
             
-            # Sort by popularity (desc) then file_size (desc) - bigger file = better quality
+            # Sort by: verified first, then popularity (desc), then file_size (desc)
+            # Verified videos always rank above unverified — they're confirmed correct minute
             videos_sorted = sorted(
                 videos, 
-                key=lambda v: (v.get("popularity", 1), v.get("file_size", 0)),
+                key=lambda v: (
+                    v.get("timestamp_verified", False),  # Verified > unverified
+                    v.get("popularity", 1),
+                    v.get("file_size", 0),
+                ),
                 reverse=True
             )
             

@@ -316,39 +316,79 @@ class UploadWorkflow:
             else:
                 perceptual_dedup_videos.append(video)
         
+        # ===================================================================
+        # Split by verification status for scoped dedup
+        # Verified videos only compared against verified, unverified against unverified.
+        # This prevents a verified goal clip from being replaced by an unverified
+        # clip of a different match moment (same broadcast = similar hashes).
+        # ===================================================================
+        verified_videos = [v for v in perceptual_dedup_videos if v.get("timestamp_verified", False)]
+        unverified_videos = [v for v in perceptual_dedup_videos if not v.get("timestamp_verified", False)]
+        
+        verified_s3 = [v for v in existing_s3_videos if v.get("timestamp_verified", False)]
+        unverified_s3 = [v for v in existing_s3_videos if not v.get("timestamp_verified", False)]
+        
         log.info(workflow.logger, MODULE, "perceptual_dedup_start",
-                 "Running perceptual dedup",
-                 videos=len(perceptual_dedup_videos), event_id=event_id)
+                 "Running scoped perceptual dedup",
+                 verified_new=len(verified_videos), unverified_new=len(unverified_videos),
+                 verified_s3=len(verified_s3), unverified_s3=len(unverified_s3),
+                 event_id=event_id)
+        
+        dedup_retry_policy = RetryPolicy(maximum_attempts=3)
         
         try:
-            dedup_result = await workflow.execute_activity(
-                upload_activities.deduplicate_videos,
-                args=[perceptual_dedup_videos, existing_s3_videos, event_id],
-                # Heartbeat-based timeout: activity heartbeats every video comparison.
-                # 120s heartbeat allows time for complex hash comparisons between heartbeats.
-                # 1 hour start_to_close is a safety ceiling - heartbeat is the real control.
-                heartbeat_timeout=timedelta(seconds=120),
-                start_to_close_timeout=timedelta(hours=1),
-                retry_policy=RetryPolicy(maximum_attempts=3),
+            # Run both pools in parallel — completely independent, no shared state
+            verified_result, unverified_result = await asyncio.gather(
+                workflow.execute_activity(
+                    upload_activities.deduplicate_videos,
+                    args=[verified_videos, verified_s3, event_id],
+                    heartbeat_timeout=timedelta(seconds=120),
+                    start_to_close_timeout=timedelta(hours=1),
+                    retry_policy=dedup_retry_policy,
+                ),
+                workflow.execute_activity(
+                    upload_activities.deduplicate_videos,
+                    args=[unverified_videos, unverified_s3, event_id],
+                    heartbeat_timeout=timedelta(seconds=120),
+                    start_to_close_timeout=timedelta(hours=1),
+                    retry_policy=dedup_retry_policy,
+                ),
             )
         except Exception as e:
             # CRITICAL: Do NOT upload videos as new when dedup fails!
             # That's what caused the duplicate video bug. Instead, skip them entirely.
-            # The videos will be retried in the next download batch.
+            # If either pool fails, gather raises and we skip the whole batch.
             log.error(workflow.logger, MODULE, "perceptual_dedup_failed",
                       "Perceptual dedup FAILED - SKIPPING BATCH to avoid duplicates",
                       error=str(e), videos=len(perceptual_dedup_videos), event_id=event_id)
-            dedup_result = {
-                "videos_to_upload": [],  # EMPTY - don't upload anything!
-                "videos_to_replace": [],
+            verified_result = {
+                "videos_to_upload": [], "videos_to_replace": [],
+                "videos_to_bump_popularity": [], "skipped_urls": [],
+            }
+            unverified_result = {
+                "videos_to_upload": [], "videos_to_replace": [],
                 "videos_to_bump_popularity": [],
                 "skipped_urls": [v.get("source_url", "") for v in perceptual_dedup_videos],
             }
         
-        videos_to_upload = dedup_result.get("videos_to_upload", [])
-        videos_to_replace = dedup_result.get("videos_to_replace", []) + md5_replacement_videos
-        videos_to_bump_popularity = dedup_result.get("videos_to_bump_popularity", [])
-        skipped_urls = dedup_result.get("skipped_urls", [])
+        # Merge results from both pools
+        videos_to_upload = (
+            verified_result.get("videos_to_upload", []) +
+            unverified_result.get("videos_to_upload", [])
+        )
+        videos_to_replace = (
+            verified_result.get("videos_to_replace", []) +
+            unverified_result.get("videos_to_replace", []) +
+            md5_replacement_videos
+        )
+        videos_to_bump_popularity = (
+            verified_result.get("videos_to_bump_popularity", []) +
+            unverified_result.get("videos_to_bump_popularity", [])
+        )
+        skipped_urls = (
+            verified_result.get("skipped_urls", []) +
+            unverified_result.get("skipped_urls", [])
+        )
         
         total_to_process = len(videos_to_upload) + len(videos_to_replace)
         log.info(workflow.logger, MODULE, "perceptual_dedup_complete",
