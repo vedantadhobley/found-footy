@@ -697,6 +697,7 @@ async def upload_single_video(
     existing_s3_key: str = "",  # For replacements: reuse old S3 key to keep URL stable
     timestamp_verified: bool = False,  # True if clock matched API time
     extracted_minute: int = None,       # Best extracted clock minute
+    timestamp_status: str = "unverified",  # "verified" / "unverified" / "rejected" (rejected never stored)
 ) -> Dict[str, Any]:
     """
     Upload a single video to S3 with metadata and tags.
@@ -808,6 +809,7 @@ async def upload_single_video(
             # Timestamp verification (Phase 1)
             "timestamp_verified": timestamp_verified,
             "extracted_minute": extracted_minute,
+            "timestamp_status": timestamp_status,
         }
     }
 

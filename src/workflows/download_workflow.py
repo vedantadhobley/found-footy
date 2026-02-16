@@ -315,6 +315,7 @@ class DownloadWorkflow:
                     video_info["clock_verified"] = validation.get("clock_verified", False)
                     video_info["extracted_minute"] = validation.get("extracted_minute")
                     video_info["timestamp_verified"] = validation.get("timestamp_status") == "verified"
+                    video_info["timestamp_status"] = validation.get("timestamp_status", "unverified")
                     validated_videos.append(video_info)
                 else:
                     rejected_count += 1
