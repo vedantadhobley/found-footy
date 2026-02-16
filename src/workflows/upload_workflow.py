@@ -447,6 +447,8 @@ class UploadWorkflow:
                         video_info.get("bitrate", 0.0),
                         video_info.get("file_size", 0),
                         existing_s3_key,
+                        video_info.get("timestamp_verified", False),
+                        video_info.get("extracted_minute"),
                     ],
                     start_to_close_timeout=timedelta(seconds=60),
                     retry_policy=RetryPolicy(

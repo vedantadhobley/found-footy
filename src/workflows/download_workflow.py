@@ -74,6 +74,8 @@ class DownloadWorkflow:
         player_name: str = "",
         team_name: str = "",
         discovered_videos: list = None,
+        event_minute: int = 0,
+        event_extra: int | None = None,
     ) -> dict:
         """
         Execute the video download pipeline.
@@ -84,6 +86,8 @@ class DownloadWorkflow:
             player_name: Player name for S3 metadata
             team_name: Team name for S3 metadata
             discovered_videos: List of videos from Twitter search (passed directly)
+            event_minute: API elapsed minute (e.g., 45, 90) — default 0 for Temporal replay safety
+            event_extra: API extra/stoppage minutes (e.g., 3), or None
         
         Returns:
             Dict with videos_uploaded count and s3_urls list
@@ -130,6 +134,7 @@ class DownloadWorkflow:
             "md5_batch_deduped": 0,
             "ai_rejected": 0,
             "ai_validation_failed": 0,
+            "timestamp_rejected": 0,
             "hash_generated": 0,
             "hash_failed": 0,
             "sent_to_upload": 0,
@@ -295,7 +300,7 @@ class DownloadWorkflow:
             try:
                 validation = await workflow.execute_activity(
                     download_activities.validate_video_is_soccer,
-                    args=[video_info["file_path"], event_id],
+                    args=[video_info["file_path"], event_id, event_minute, event_extra],
                     start_to_close_timeout=timedelta(seconds=90),
                     retry_policy=RetryPolicy(
                         maximum_attempts=4,
@@ -306,15 +311,23 @@ class DownloadWorkflow:
                 )
                 
                 if validation.get("is_valid", True):
+                    # Attach verification fields to video_info for downstream
+                    video_info["clock_verified"] = validation.get("clock_verified", False)
+                    video_info["extracted_minute"] = validation.get("extracted_minute")
+                    video_info["timestamp_verified"] = validation.get("timestamp_status") == "verified"
                     validated_videos.append(video_info)
                 else:
                     rejected_count += 1
+                    # Track timestamp rejections separately for stats
+                    if validation.get("timestamp_status") == "rejected":
+                        download_stats["timestamp_rejected"] += 1
                     log.info(workflow.logger, MODULE, "video_rejected",
                              "Video filtered by AI validation",
                              reason=validation.get('reason', 'unknown'),
                              is_soccer=validation.get('is_soccer', False),
                              is_screen_recording=validation.get('is_screen_recording', False),
                              confidence=validation.get('confidence', 0),
+                             timestamp_status=validation.get('timestamp_status', 'unknown'),
                              event_id=event_id)
                     # Clean up rejected video file
                     try:

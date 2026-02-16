@@ -189,6 +189,10 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
             "duration": video_obj.get("duration", 0),
             "resolution_score": video_obj.get("resolution_score", 0),
             "popularity": video_obj.get("popularity", 1),
+            # Timestamp verification fields (Phase 1)
+            "timestamp_verified": video_obj.get("timestamp_verified", False),
+            "extracted_minute": video_obj.get("extracted_minute"),
+            "timestamp_status": video_obj.get("timestamp_status", "unverified"),
         }
         existing_s3_videos.append(video_info)
         log.debug(activity.logger, MODULE, "existing_video", "Found existing video",
@@ -691,6 +695,8 @@ async def upload_single_video(
     bitrate: float = 0.0,
     file_size: int = 0,
     existing_s3_key: str = "",  # For replacements: reuse old S3 key to keep URL stable
+    timestamp_verified: bool = False,  # True if clock matched API time
+    extracted_minute: int = None,       # Best extracted clock minute
 ) -> Dict[str, Any]:
     """
     Upload a single video to S3 with metadata and tags.
@@ -799,6 +805,9 @@ async def upload_single_video(
             "duration": round(duration, 2),
             "source_url": source_url,
             "hash_version": HASH_VERSION,  # Track hash algorithm version
+            # Timestamp verification (Phase 1)
+            "timestamp_verified": timestamp_verified,
+            "extracted_minute": extracted_minute,
         }
     }
 

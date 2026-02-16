@@ -205,6 +205,8 @@ class MonitorWorkflow:
                         team_id=team_id,
                         team_name=team_name,
                         player_name=player_name,
+                        event_minute=minute,
+                        event_extra=extra,
                     ),
                     id=twitter_workflow_id,
                     # IMPORTANT: Explicitly set task_queue to prevent inheritance issues

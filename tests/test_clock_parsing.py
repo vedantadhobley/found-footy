@@ -5,7 +5,14 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.activities.download import parse_broadcast_clock, validate_timestamp
+from src.activities.download import (
+    parse_broadcast_clock,
+    validate_timestamp,
+    parse_clock_field,
+    parse_added_field,
+    parse_stoppage_clock_field,
+    compute_absolute_minute,
+)
 
 
 class TestParseBroadcastClock:
@@ -154,143 +161,264 @@ class TestParseBroadcastClock:
 
 
 class TestValidateTimestamp:
-    """Test cases for validate_timestamp() function."""
+    """Test cases for validate_timestamp() function.
+    
+    Now accepts structured frame dicts with raw_clock, raw_added, raw_stoppage_clock keys.
+    Returns timestamp_status as "verified" / "unverified" / "rejected".
+    """
+    
+    def _frame(self, clock=None, added=None, stoppage=None):
+        """Helper to build a structured frame dict."""
+        return {"raw_clock": clock, "raw_added": added, "raw_stoppage_clock": stoppage}
     
     def test_match_exact(self):
         # API says 46th minute goal (elapsed=46), expected clock = 45
-        clock_verified, extracted, bucket = validate_timestamp(["45:30"], 46, None)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("45:30")], 46, None)
         assert clock_verified is True
         assert extracted == 45
-        assert bucket == "A"
+        assert status == "verified"
     
     def test_match_within_tolerance(self):
         # API says 46th minute (expected broadcast = 45), clock shows 46 (within ±1 of 45)
-        clock_verified, extracted, bucket = validate_timestamp(["46:12"], 46, None)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("46:12")], 46, None)
         assert clock_verified is True
         assert extracted == 46
-        assert bucket == "A"
+        assert status == "verified"
     
     def test_extra_time_match(self):
         # API says 95th minute (90 + 5 extra), expected = 94
-        clock_verified, extracted, bucket = validate_timestamp(["ET 04:04"], 90, 5)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("ET 04:04")], 90, 5)
         assert clock_verified is True
         assert extracted == 94  # 90 + 4
-        assert bucket == "A"
+        assert status == "verified"
     
     def test_mismatch_wrong_half(self):
         # API says 30th minute goal, but clock shows 65
-        clock_verified, extracted, bucket = validate_timestamp(["65:00"], 30, None)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("65:00")], 30, None)
         assert clock_verified is False
         assert extracted == 65  # Returns closest for logging
-        assert bucket == "B"
+        assert status == "rejected"
     
     def test_no_clock_visible(self):
         # No clock in any frame
-        clock_verified, extracted, bucket = validate_timestamp([None, None], 30, None)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame(None), self._frame(None)], 30, None)
         assert clock_verified is False
         assert extracted is None
-        assert bucket == "C"
+        assert status == "unverified"
     
     def test_one_frame_matches(self):
         # Only one frame has clock, but it matches
-        clock_verified, extracted, bucket = validate_timestamp([None, "29:45"], 30, None)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame(None), self._frame("29:45")], 30, None)
         assert clock_verified is True
         assert extracted == 29
-        assert bucket == "A"
+        assert status == "verified"
     
     def test_multiple_clocks_one_matches(self):
         # Two frames, one wrong, one right - should pass
-        clock_verified, extracted, bucket = validate_timestamp(["65:00", "28:30"], 30, None)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("65:00"), self._frame("28:30")], 30, None)
         assert clock_verified is True
         assert extracted == 28
-        assert bucket == "A"
+        assert status == "verified"
     
     def test_half_time_no_clock(self):
         # HT means no usable clock
-        clock_verified, extracted, bucket = validate_timestamp(["HT", "HT"], 30, None)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("HT"), self._frame("HT")], 30, None)
         assert clock_verified is False
         assert extracted is None
-        assert bucket == "C"
+        assert status == "unverified"
     
     def test_2h_relative_format(self):
         # API says 50th minute (45 + 5 into 2H), clock shows "2H 5:00"
-        clock_verified, extracted, bucket = validate_timestamp(["2H 5:00"], 50, None)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("2H 5:00")], 50, None)
         # Expected = 50 - 1 = 49, clock parses to 50 (45 + 5), diff = 1, within ±1
         assert clock_verified is True
         assert extracted == 50
-        assert bucket == "A"
+        assert status == "verified"
     
     def test_api_elapsed_zero_guard(self):
-        # When Temporal replays an in-flight workflow with default event_minute=0,
-        # we can't validate — should return bucket C, not bucket B
-        clock_verified, extracted, bucket = validate_timestamp(["34:12", "35:30"], 0, None)
+        # When Temporal replays with default event_minute=0, can't validate
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("34:12"), self._frame("35:30")], 0, None)
         assert clock_verified is False
         assert extracted is None
-        assert bucket == "C"
+        assert status == "unverified"
     
     def test_api_elapsed_none_guard(self):
         # Same guard for None
-        clock_verified, extracted, bucket = validate_timestamp(["67:00"], 0, 0)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("67:00")], 0, 0)
         assert clock_verified is False
         assert extracted is None
-        assert bucket == "C"
+        assert status == "unverified"
     
-    def test_broadcast_stoppage_match(self):
-        # API says 90+3 (expected=92), broadcast shows "90:00 +4 02:17" → 92
-        clock_verified, extracted, bucket = validate_timestamp(["90:00 +4 02:17"], 90, 3)
+    def test_structured_stoppage_match(self):
+        # Structured: CLOCK=90:00, STOPPAGE_CLOCK=02:17 → 90+2=92
+        # API says 90+3 (expected=92)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("90:00", "+4", "02:17")], 90, 3)
         assert clock_verified is True
         assert extracted == 92
-        assert bucket == "A"
+        assert status == "verified"
     
-    def test_broadcast_stoppage_first_half(self):
-        # API says 45+1 (expected=45), broadcast shows "45:00 +2 00:43" → 45
-        clock_verified, extracted, bucket = validate_timestamp(["45:00 +2 00:43"], 45, 1)
+    def test_structured_stoppage_first_half(self):
+        # CLOCK=45:00, STOPPAGE_CLOCK=00:43 → 45+0=45
+        # API says 45+1 (expected=45)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("45:00", "+2", "00:43")], 45, 1)
         assert clock_verified is True
         assert extracted == 45
-        assert bucket == "A"
+        assert status == "verified"
     
     # OCR resilience fallback tests
-    # Vision models sometimes drop the leading digit (92:36 → 02:36)
     def test_subclock_only_second_half(self):
-        # AI misreads "92:36 +8" as "02:36 +8" (drops leading 9)
-        # Parser returns 2. API says elapsed=90, extra=3 → expected=92.
-        # OCR fallback should try 90 + 2 = 92 → match!
-        clock_verified, extracted, bucket = validate_timestamp(["02:36 +8"], 90, 3)
+        # AI misreads "92:36" as "02:36" (drops leading 9)
+        # parse_clock_field returns 2. OCR fallback: 90 + 2 = 92 → match!
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("02:36", "+8")], 90, 3)
         assert clock_verified is True
         assert extracted == 92  # 90 + 2
-        assert bucket == "A"
+        assert status == "verified"
     
     def test_subclock_only_first_half(self):
-        # AI misreads "46:15 +3" as "01:15 +3" (drops leading 4 and 6)
+        # AI misreads "46:15" as "01:15"
         # Fallback: 45 + 1 = 46 → match!
-        clock_verified, extracted, bucket = validate_timestamp(["01:15 +3"], 45, 2)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("01:15", "+3")], 45, 2)
         assert clock_verified is True
         assert extracted == 46  # 45 + 1
-        assert bucket == "A"
+        assert status == "verified"
     
     def test_subclock_mixed_frames(self):
         # One frame read correctly (92:07), other misread (02:36)
-        # Correct read matches directly, misread would need fallback
-        clock_verified, extracted, bucket = validate_timestamp(["92:07 +8", "02:36 +8"], 90, 3)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("92:07", "+8"), self._frame("02:36", "+8")], 90, 3)
         assert clock_verified is True
         assert extracted == 92  # First match wins (92:07 → 92)
-        assert bucket == "A"
+        assert status == "verified"
     
     def test_subclock_no_fallback_without_extra(self):
         # OCR fallback should NOT trigger when api_extra is None
-        # (prevents actual minute-2 goals from getting 90 added)
-        clock_verified, extracted, bucket = validate_timestamp(["02:36"], 30, None)
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("02:36")], 30, None)
         assert clock_verified is False
         assert extracted == 2
-        assert bucket == "B"
+        assert status == "rejected"
     
     def test_subclock_fallback_too_large(self):
         # Parsed minute 20 with api 90+3: corrected=90+20=110, expected=92
-        # abs(110-92)=18 → no match. The ±1 comparison naturally rejects this.
-        clock_verified, extracted, bucket = validate_timestamp(["20:00"], 90, 3)
+        # abs(110-92)=18 → no match
+        clock_verified, extracted, status = validate_timestamp(
+            [self._frame("20:00")], 90, 3)
         assert clock_verified is False
         assert extracted == 20
-        assert bucket == "B"
+        assert status == "rejected"
+
+
+class TestParseClockField:
+    """Test cases for parse_clock_field() — structured CLOCK field parser."""
+    
+    def test_standard_time(self):
+        assert parse_clock_field("34:12") == 34
+    
+    def test_second_half(self):
+        assert parse_clock_field("84:28") == 84
+    
+    def test_none_input(self):
+        assert parse_clock_field(None) is None
+    
+    def test_ht(self):
+        assert parse_clock_field("HT") is None
+    
+    def test_ft(self):
+        assert parse_clock_field("FT") is None
+    
+    def test_2h_relative(self):
+        assert parse_clock_field("2H 5:00") == 50  # 45 + 5
+    
+    def test_2h_absolute(self):
+        assert parse_clock_field("2H 67:00") == 67
+    
+    def test_et_relative(self):
+        assert parse_clock_field("ET 04:04") == 94  # 90 + 4
+    
+    def test_et_absolute(self):
+        assert parse_clock_field("ET 102:53") == 102
+    
+    def test_compact_stoppage(self):
+        assert parse_clock_field("45+2") == 47
+    
+    def test_just_minutes(self):
+        assert parse_clock_field("90") == 90
+    
+    def test_frozen_clock(self):
+        # Common in stoppage: main clock shows "90:00"
+        assert parse_clock_field("90:00") == 90
+
+
+class TestParseAddedField:
+    """Test cases for parse_added_field()."""
+    
+    def test_plus_4(self):
+        assert parse_added_field("+4") == 4
+    
+    def test_plus_6(self):
+        assert parse_added_field("+6") == 6
+    
+    def test_none_input(self):
+        assert parse_added_field(None) is None
+    
+    def test_none_string(self):
+        assert parse_added_field("NONE") is None
+    
+    def test_with_space(self):
+        assert parse_added_field("+ 3") == 3
+
+
+class TestParseStoppageClockField:
+    """Test cases for parse_stoppage_clock_field()."""
+    
+    def test_standard(self):
+        assert parse_stoppage_clock_field("03:57") == 3
+    
+    def test_two_minutes(self):
+        assert parse_stoppage_clock_field("02:17") == 2
+    
+    def test_zero_minutes(self):
+        assert parse_stoppage_clock_field("00:43") == 0
+    
+    def test_none_input(self):
+        assert parse_stoppage_clock_field(None) is None
+    
+    def test_none_string(self):
+        assert parse_stoppage_clock_field("NONE") is None
+
+
+class TestComputeAbsoluteMinute:
+    """Test cases for compute_absolute_minute()."""
+    
+    def test_clock_only(self):
+        assert compute_absolute_minute(34, None) == 34
+    
+    def test_clock_plus_stoppage(self):
+        assert compute_absolute_minute(90, 2) == 92
+    
+    def test_clock_plus_zero_stoppage(self):
+        assert compute_absolute_minute(45, 0) == 45
+    
+    def test_none_clock(self):
+        assert compute_absolute_minute(None, 3) is None
+    
+    def test_both_none(self):
+        assert compute_absolute_minute(None, None) is None
 
 
 if __name__ == "__main__":
