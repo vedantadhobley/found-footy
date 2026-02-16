@@ -8,20 +8,24 @@
 
 | Phase | Status | Progress |
 |-------|--------|----------|
-| Phase 1: AI Clock Extraction | 🟡 In Progress | 6/10 tasks done |
-| Phase 2: Verified/Unverified Dedup | ⬜ Not Started | 0/6 tasks done |
+| Phase 1: AI Clock Extraction | ✅ Complete | 10/10 tasks — deployed at `4dcf3bc` |
+| Phase 2: Verification-Scoped Dedup | ⬜ Not Started | 0/6 tasks done |
 
-**Completed:**
-- ✅ Clock parsing functions (`parse_broadcast_clock`, `validate_timestamp`)
-- ✅ Vision prompt updated with CLOCK question
-- ✅ `parse_response()` extracts raw clock text
-- ✅ `validate_video_is_soccer()` returns `extracted_clocks`
-- ✅ Unit tests pass (58 test cases)
-- ✅ Structured extraction validated on 7 real videos (13+ frames) — see "Structured Extraction Approach" below
+**Phase 1 — Deployed (2026-02-16):**
+- ✅ Structured 5-field vision prompt (SOCCER / SCREEN / CLOCK / ADDED / STOPPAGE_CLOCK)
+- ✅ `parse_response()` returns dict with all 5 fields
+- ✅ Per-field parsers: `parse_clock_field()`, `parse_added_field()`, `parse_stoppage_clock_field()`, `compute_absolute_minute()`
+- ✅ `validate_timestamp()` accepts structured frame dicts, returns `(bool, int|None, str)`
+- ✅ `validate_video_is_soccer()` takes `event_minute`/`event_extra`, folds timestamp rejection into `is_valid`
+- ✅ `event_minute`/`event_extra` wired through entire chain: monitor → twitter → download → validate
+- ✅ Verification fields (`clock_verified`, `extracted_minute`, `timestamp_verified`) attached to `video_info` and passed to MongoDB
+- ✅ `VideoFields` expanded (6 → 17 constants), `S3Video` updated, `DownloadStats` has `timestamp_rejected`
+- ✅ 58 unit tests passing (updated for structured dicts + 4 new test classes)
+- ✅ Workers rebuilt and running (`docker compose up -d --build worker`)
 
-**Next up:**
-1. Update vision prompt + parser to use structured three-field extraction (CLOCK / ADDED / STOPPAGE_CLOCK)
-2. Wire `event_minute`/`event_extra` through workflow chain to enable timestamp validation
+**Phase 2 — Next:**
+1. Scope `deduplicate_videos()` by `timestamp_verified` — verified vs verified, unverified vs unverified
+2. Validate Phase 1 data quality from today's live games before implementing Phase 2
 
 ---
 
@@ -570,17 +574,17 @@ If neither frame has a parseable game clock, we **cannot verify** the timestamp.
 
 **We fail open** — many valid clips crop out the scoreboard (close-up celebrations, replays, fan recordings). We don't reject them, but we keep them separate from verified clips during deduplication. Unverified videos can only dedup against other unverified videos for the same event.
 
-### Data flow changes needed
+### Data flow changes (ALL COMPLETE — commit `4dcf3bc`)
 
-1. **`TwitterWorkflowInput`** — add `event_minute: int` and `event_extra: Optional[int]` fields
-2. **`DownloadWorkflowInput`** — add `event_minute: int` and `event_extra: Optional[int]` fields  
-3. **`validate_video_is_soccer()`** — add `event_minute: int` and `event_extra: Optional[int]` params
-4. **`monitor_workflow.py`** — already has `minute` and `extra` in `twitter_triggered`, just needs to pass them through
-5. **Vision prompt** — update to structured three-field prompt (CLOCK / ADDED / STOPPAGE_CLOCK)
-6. **Parse response** — return dict with named keys: `{is_soccer, is_screen, raw_clock, raw_added, raw_stoppage_clock}`
-7. **Parse clock fields** — call `parse_clock_field()` + `parse_stoppage_clock_field()` + `compute_absolute_minute()` per frame
-8. **Validate timestamp** — call `validate_timestamp()` with structured frame data + API time
-9. **Return value** — add `clock_verified: bool`, `extracted_minute: int|None`, `timestamp_status: str`. `is_valid` absorbs timestamp rejection.
+1. ✅ **`TwitterWorkflowInput`** — `event_minute: int = 0` and `event_extra: Optional[int] = None` added
+2. ✅ **`DownloadWorkflow.run()`** — `event_minute: int = 0` and `event_extra: int | None = None` added (positional with defaults)
+3. ✅ **`validate_video_is_soccer()`** — `event_minute: int = 0` and `event_extra: int = None` params added
+4. ✅ **`monitor_workflow.py`** — passes `event_minute=minute, event_extra=extra` to `TwitterWorkflowInput`
+5. ✅ **Vision prompt** — structured 5-field prompt (SOCCER / SCREEN / CLOCK / ADDED / STOPPAGE_CLOCK)
+6. ✅ **Parse response** — returns dict: `{is_soccer, is_screen, raw_clock, raw_added, raw_stoppage_clock}`
+7. ✅ **Parse clock fields** — `parse_clock_field()`, `parse_added_field()`, `parse_stoppage_clock_field()`, `compute_absolute_minute()` per frame
+8. ✅ **Validate timestamp** — `validate_timestamp()` with structured frame dicts + API time
+9. ✅ **Return value** — `clock_verified`, `extracted_minute`, `timestamp_status` in return dict. `is_valid` absorbs timestamp rejection.
 
 ---
 
@@ -1119,16 +1123,14 @@ Rejected videos (clock visible but wrong minute) are DISCARDED at this stage —
 }
 ```
 
-### Call Sites That Need Changes
+### Call Sites (ALL UPDATED — commit `4dcf3bc`)
 
-| Location | Current call | Change needed |
-|----------|-------------|---------------|
-| `monitor_workflow.py:201` | `TwitterWorkflowInput(fixture_id, event_id, team_id, team_name, player_name)` | Add `event_minute=minute, event_extra=extra` |
-| `twitter_workflow.py:485` | `args=[input.fixture_id, input.event_id, input.player_name, team_aliases[0], videos_to_download]` | Append `input.event_minute, input.event_extra` |
-| `download_workflow.py:300` | `args=[video_info["file_path"], event_id]` | Append `event_minute, event_extra` |
-| `download_workflow.py:309` | Checks `validation.get("is_valid")` only | Same check — `is_valid` now includes timestamp rejection. Count `timestamp_status=="rejected"` separately for stats. |
-| `download_workflow.py:315` | Appends to `validated_videos` | Attach `clock_verified`, `extracted_minute`, `timestamp_verified` to `video_info` |
-| `upload_workflow.py:438` | `args=[..., existing_s3_key]` | Append `timestamp_verified, extracted_minute` |
+| Location | Change Made |
+|----------|-------------|
+| `monitor_workflow.py` | `TwitterWorkflowInput(... event_minute=minute, event_extra=extra)` |
+| `twitter_workflow.py` | DownloadWorkflow args include `input.event_minute, input.event_extra` |
+| `download_workflow.py` | `validate_video_is_soccer` args include `event_minute, event_extra`; attaches `clock_verified`, `extracted_minute`, `timestamp_verified` to `video_info`; counts `timestamp_rejected` |
+| `upload_workflow.py` | `upload_single_video` args include `timestamp_verified, extracted_minute` |
 
 ### Backward Compatibility
 
@@ -1380,61 +1382,143 @@ The structured extraction prompt and parsing logic were validated on 10 real pro
 
 ## Implementation Order
 
-### Phase 1: AI Clock Extraction (IN PROGRESS)
+### Phase 1: AI Clock Extraction (COMPLETE — deployed 2026-02-16)
 
-| # | Task | Status | Notes |
-|---|------|--------|-------|
+| # | Task | Status | Commit / Notes |
+|---|------|--------|----------------|
 | 1 | Create branch `refactor/valid-deduplication` | ✅ Done | |
-| 2 | Add `event_minute` + `event_extra` to workflow inputs | ⬜ TODO | `TwitterWorkflowInput`, `DownloadWorkflow.run()` |
-| 3 | Update vision prompt to structured three-field extraction | 🟡 Redesigned | Current: single CLOCK. New: CLOCK + ADDED + STOPPAGE_CLOCK. Tested on 7 videos. |
-| 4 | Update `parse_response()` to return dict | 🟡 Redesigned | Current: 3-tuple. New: dict with `is_soccer`, `is_screen`, `raw_clock`, `raw_added`, `raw_stoppage_clock` |
-| 5 | Add structured parsing functions | 🟡 Redesigned | `parse_clock_field()`, `parse_added_field()`, `parse_stoppage_clock_field()`, `compute_absolute_minute()`. Current `parse_broadcast_clock()` kept as fallback. |
-| 6 | Add `validate_timestamp()` function | ✅ Done | Returns "verified"/"unverified"/"rejected". Update input to accept structured frame data. |
-| 7 | Wire `event_minute`/`event_extra` through call sites | ⬜ TODO | monitor → twitter → download → validate |
-| 8 | Add timestamp validation to `validate_video_is_soccer()` | ⬜ TODO | Call `validate_timestamp()`, add verification fields to return |
-| 9 | Attach verification fields to `video_info` in DownloadWorkflow | ⬜ TODO | Needs #7 + #8 first |
-| 10 | ~~Add rejected video discard in DownloadWorkflow~~ | ✅ Absorbed | Handled by `is_valid` inside `validate_video_is_soccer()` — no separate check needed |
+| 2 | Add `event_minute` + `event_extra` to workflow inputs | ✅ Done | `TwitterWorkflowInput` dataclass + `DownloadWorkflow.run()` positional args with defaults |
+| 3 | Update vision prompt to structured 5-field extraction | ✅ Done | SOCCER / SCREEN / CLOCK / ADDED / STOPPAGE_CLOCK |
+| 4 | Update `parse_response()` to return dict | ✅ Done | Returns `{is_soccer, is_screen, raw_clock, raw_added, raw_stoppage_clock}` |
+| 5 | Add structured parsing functions | ✅ Done | `parse_clock_field()`, `parse_added_field()`, `parse_stoppage_clock_field()`, `compute_absolute_minute()` |
+| 6 | Update `validate_timestamp()` for structured input | ✅ Done | Accepts `list[dict]` with raw field keys, returns `(bool, int\|None, str)` |
+| 7 | Wire `event_minute`/`event_extra` through call sites | ✅ Done | monitor → twitter → download → validate, all with defaults |
+| 8 | Add timestamp validation to `validate_video_is_soccer()` | ✅ Done | Calls `validate_timestamp()`, folds rejection into `is_valid` |
+| 9 | Attach verification fields to `video_info` in DownloadWorkflow | ✅ Done | `clock_verified`, `extracted_minute`, `timestamp_verified` on each video_info |
+| 10 | ~~Add rejected video discard in DownloadWorkflow~~ | ✅ Absorbed | Handled by `is_valid` inside `validate_video_is_soccer()` |
 
 ### Phase 2: Verification-Scoped Deduplication (NOT STARTED)
 
+Phase 2 modifies `deduplicate_videos()` to compare videos only within the same verification group. This prevents a verified goal clip from being replaced by an unverified clip of a different match moment.
+
+**Prerequisites:** Phase 1 must be live and producing reliable `timestamp_verified` values. Check today's game data first.
+
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 11 | Update `deduplicate_videos()` for verification-scoped dedup | ⬜ TODO | Batch + S3 phases |
-| 12 | Add `timestamp_verified` + `extracted_minute` to `upload_single_video()` | ⬜ TODO | Include in `video_object` |
-| 13 | Pass new fields through `upload_workflow.py` call site | ⬜ TODO | |
-| 14 | Add `timestamp_rejected` to `download_stats` | ⬜ TODO | Track rejected video count |
-| 15 | Test with live data | ⬜ TODO | |
-| 16 | Deploy and monitor | ⬜ TODO | Track verified/unverified distribution |
+| 11 | Scope batch dedup (Phase 1 inside `deduplicate_videos`) | ⬜ TODO | See implementation details below |
+| 12 | Scope S3 dedup (Phase 2 inside `deduplicate_videos`) | ⬜ TODO | See implementation details below |
+| 13 | Add integration tests for scoped dedup | ⬜ TODO | Test verified-vs-verified and unverified-vs-unverified clustering |
+| 14 | Test with live data | ⬜ TODO | Verify dedup decisions match expectations |
+| 15 | Deploy and monitor | ⬜ TODO | Track verified/unverified distribution |
+
+**Note:** Tasks 12-14 from the old plan (upload_single_video params, upload_workflow passthrough, download_stats tracking) were completed as part of Phase 1 since they were needed to get verification data flowing.
+
+#### Task 11: Scope batch dedup — implementation details
+
+**File:** `src/activities/upload.py`, inside `deduplicate_videos()`, Phase 1 section (lines ~479-560)
+
+**Current behavior:** All `successful` videos fed into a single cluster-building loop. One set of clusters, one set of winners.
+
+**New behavior:**
+```python
+# After filtering successful downloads:
+verified = [f for f in successful if f.get("timestamp_verified", False)]
+unverified = [f for f in successful if not f.get("timestamp_verified", False)]
+
+# Run clustering independently
+verified_clusters = _build_clusters(verified)    # extract to helper
+unverified_clusters = _build_clusters(unverified)
+
+# Pick winners from each group independently
+batch_winners = []
+for cluster in verified_clusters:
+    winner = _pick_best_video_from_cluster(cluster) if len(cluster) > 1 else cluster[0]
+    batch_winners.append(winner)
+for cluster in unverified_clusters:
+    winner = _pick_best_video_from_cluster(cluster) if len(cluster) > 1 else cluster[0]
+    batch_winners.append(winner)
+```
+
+**Helper to extract:** The cluster-building loop (lines ~487-520) should become a `_build_clusters(videos: list) -> list[list]` helper function since it's now called twice.
+
+**Logging:** Add `verified_count` and `unverified_count` to the `dedup_clustered` log line so we can see the split.
+
+#### Task 12: Scope S3 dedup — implementation details
+
+**File:** `src/activities/upload.py`, inside `deduplicate_videos()`, Phase 2 section (lines ~585-670)
+
+**Current behavior:** Each batch winner is compared against ALL `existing_videos_list` entries.
+
+**New behavior:** Each batch winner is only compared against S3 videos in the same verification group:
+```python
+# Pre-split existing S3 videos by verification status
+# Legacy videos (no timestamp_verified field) → treated as unverified
+existing_verified = [v for v in existing_videos_list if v.get("timestamp_verified", False)]
+existing_unverified = [v for v in existing_videos_list if not v.get("timestamp_verified", False)]
+
+for file_info in batch_winners:
+    is_verified = file_info.get("timestamp_verified", False)
+    comparison_pool = existing_verified if is_verified else existing_unverified
+    
+    # Only compare against same-group S3 videos
+    matched_existing = None
+    for existing in comparison_pool:
+        if _perceptual_hashes_match(file_info["perceptual_hash"], existing.get("perceptual_hash", "")):
+            matched_existing = existing
+            break
+    # ... rest of replace/skip/new logic unchanged
+```
+
+**Logging:** Add `verification_group="verified"/"unverified"` to the `s3_replace`, `s3_skip`, and `new_video` log lines.
+
+**Key edge case:** `fetch_event_data()` in upload.py already cherry-picks `timestamp_verified` and `extracted_minute` from MongoDB video objects (added in Phase 1). Legacy S3 videos without these fields default to `False`/`None`, which is correct — they're treated as unverified.
 
 ### Test Files Created
 
 | File | Purpose | Status |
 |------|---------|--------|
-| `tests/test_clock_parsing.py` | Unit tests for `parse_broadcast_clock()` and `validate_timestamp()` | ✅ 58 tests pass |
+| `tests/test_clock_parsing.py` | Unit tests for all parsing + validation functions | ✅ 58 tests pass |
+| `scripts/test_structured_extraction.py` | Batch test: structured prompt against 10 real production goals | ✅ 9/9 verified, 1/1 correctly unverified |
 | `scripts/test_clock_extraction.py` | Manual test script for end-to-end clock extraction with real videos | ✅ Created |
 
-**Unit test results (2026-02-16):** 58 test cases pass — verified in Docker container. Tests cover all 5 format categories (A-E), edge cases (None/HT/FT), case insensitivity, whitespace, and OCR correction scenarios.
+**Unit test coverage (58 tests, all passing as of `4dcf3bc`):**
+- `TestParseBroadcastClock` — 21 tests: all 5 format categories (A-E), edge cases (None/HT/FT), case insensitivity
+- `TestValidateTimestamp` — 10 tests: verified/unverified/rejected outcomes, structured frame dicts, OCR correction
+- `TestParseClockField` — 12 tests: Categories A/B/C, period indicators, non-parseable values
+- `TestParseAddedField` — 5 tests: standard, trailing apostrophe, space, NONE, None
+- `TestParseStoppageClockField` — 5 tests: standard MM:SS, single-digit, sub-minute, NONE, None
+- `TestComputeAbsoluteMinute` — 5 tests: regular time, running stoppage, frozen stoppage, all-None
 
-**Note:** When implementing the structured extraction, tests will need updating to cover the new per-field parsers (`parse_clock_field`, `parse_added_field`, `parse_stoppage_clock_field`, `compute_absolute_minute`) and the updated `validate_timestamp` signature accepting structured frame data.
+**Note:** Tests dir is NOT in the Docker image. Run via mounted volume or inline `docker exec` checks. Sanity-checked in deployed container at `4dcf3bc`.
 
 ---
 
-## Files to Modify
+## Files Modified
 
-| File | Status | Changes |
+### Phase 1 (Complete — commit `4dcf3bc`)
+
+| File | Status | What Changed |
 |------|--------|---------|
-| `src/activities/download.py` | 🟡 Partial | ✅ Prompt + `parse_response()` + `parse_broadcast_clock()` + `validate_timestamp()` + `extracted_clocks` return. 🟡 Redesign: Switch to structured three-field prompt, add `parse_clock_field()` + `parse_added_field()` + `parse_stoppage_clock_field()` + `compute_absolute_minute()`, update `parse_response()` → dict, keep `parse_broadcast_clock()` as fallback. ⬜ Still need: signature change for `event_minute`/`event_extra`, call `validate_timestamp()`, fold timestamp rejection into `is_valid`, return verification fields |
-| `src/data/models.py` | ⬜ TODO | Add `TIMESTAMP_VERIFIED` + `EXTRACTED_MINUTE` to `VideoFields`, add fields to `S3Video` TypedDict, add `timestamp_rejected` to `DownloadStats` |
-| `src/workflows/monitor_workflow.py` | ⬜ TODO | Pass `event_minute=minute, event_extra=extra` to `TwitterWorkflowInput` |
-| `src/workflows/twitter_workflow.py` | ⬜ TODO | Add `event_minute`, `event_extra` to `TwitterWorkflowInput` dataclass; pass to `DownloadWorkflow.run()` args |
-| `src/workflows/download_workflow.py` | ⬜ TODO | Accept `event_minute`/`event_extra` in `run()`; pass to `validate_video_is_soccer()`; attach verification fields to `video_info`; count `timestamp_rejected` in `download_stats` (rejection itself handled by existing `is_valid` check) |
-| `src/activities/upload.py` | ⬜ TODO | Verification-scoped dedup in `deduplicate_videos()` (both phases); add `timestamp_verified`/`extracted_minute` params to `upload_single_video()`; include in `video_object` |
-| `src/workflows/upload_workflow.py` | ⬜ TODO | Pass `timestamp_verified` + `extracted_minute` from `video_info` to `upload_single_video()` args |
+| `src/activities/download.py` | ✅ Done | Structured 5-field prompt, `parse_response()` → dict, 4 per-field parsers, `validate_timestamp()` accepts structured frames, `validate_video_is_soccer()` takes `event_minute`/`event_extra` + folds rejection into `is_valid` |
+| `src/data/models.py` | ✅ Done | `VideoFields` expanded (6 → 17 constants), `S3Video` has `timestamp_verified`/`extracted_minute`/`timestamp_status`, `DownloadStats` has `timestamp_rejected` |
+| `src/workflows/monitor_workflow.py` | ✅ Done | Passes `event_minute=minute, event_extra=extra` to `TwitterWorkflowInput` |
+| `src/workflows/twitter_workflow.py` | ✅ Done | `TwitterWorkflowInput` has `event_minute`/`event_extra` (defaults for replay safety); passed to `DownloadWorkflow.run()` args |
+| `src/workflows/download_workflow.py` | ✅ Done | `run()` accepts `event_minute`/`event_extra`; passes to validate; attaches `clock_verified`/`extracted_minute`/`timestamp_verified` to `video_info`; counts `timestamp_rejected` |
+| `src/activities/upload.py` | ✅ Done | `fetch_event_data()` cherry-picks `timestamp_verified`/`extracted_minute`/`timestamp_status`; `upload_single_video()` has 2 new params; included in `video_object` |
+| `src/workflows/upload_workflow.py` | ✅ Done | Passes `timestamp_verified`/`extracted_minute` from `video_info` to `upload_single_video()` args |
+| `tests/test_clock_parsing.py` | ✅ Done | Updated all tests for structured dicts + 4 new test classes (58 total) |
 
-### New Files Created
+### Phase 2 (Not Started)
+
+| File | Status | What Needs to Change |
+|------|--------|---------|
+| `src/activities/upload.py` | ⬜ TODO | Scope batch dedup + S3 dedup by `timestamp_verified` inside `deduplicate_videos()` — see Task 11 & 12 details above |
+
+### Files Created During This Refactor
 
 | File | Purpose |
 |------|---------|
-| `tests/test_clock_parsing.py` | Unit tests for clock parsing functions |
+| `tests/test_clock_parsing.py` | Unit tests for all clock parsing + validation functions (58 tests) |
+| `scripts/test_structured_extraction.py` | Batch test for structured prompt on 10 real production goals |
 | `scripts/test_clock_extraction.py` | Manual test script for real video testing |
 
