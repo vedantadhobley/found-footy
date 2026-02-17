@@ -359,15 +359,29 @@ class VideoFields:
     """
     Constants for video object fields in _s3_videos.
     
+    Use these instead of raw strings for MongoDB field lookups.
     Example:
         video[VideoFields.POPULARITY] += 1
     """
     URL = "url"
+    S3_KEY = "_s3_key"
     PERCEPTUAL_HASH = "perceptual_hash"
     RESOLUTION_SCORE = "resolution_score"
     FILE_SIZE = "file_size"
     POPULARITY = "popularity"
     RANK = "rank"
+    # Quality metadata
+    WIDTH = "width"
+    HEIGHT = "height"
+    ASPECT_RATIO = "aspect_ratio"
+    BITRATE = "bitrate"
+    DURATION = "duration"
+    SOURCE_URL = "source_url"
+    HASH_VERSION = "hash_version"
+    # Timestamp verification (Phase 1)
+    TIMESTAMP_VERIFIED = "timestamp_verified"
+    EXTRACTED_MINUTE = "extracted_minute"
+    TIMESTAMP_STATUS = "timestamp_status"
 
 
 # =============================================================================
@@ -414,6 +428,9 @@ class DownloadStats(TypedDict, total=False):
     s3_replaced: int             # Replaced lower quality S3 videos
     s3_popularity_bumped: int    # Existing S3 kept, popularity bumped
     
+    # Timestamp validation
+    timestamp_rejected: int      # Clock visible but wrong minute — video discarded
+    
     # Final output
     uploaded: int                # Successfully uploaded to S3
 
@@ -444,6 +461,10 @@ class S3Video(TypedDict, total=False):
     duration: float
     source_url: str       # Original tweet URL
     hash_version: str     # Version of hash algorithm used
+    # Timestamp verification (Phase 1)
+    timestamp_verified: bool  # True if clock matched API time, False otherwise
+    extracted_minute: int     # Best extracted clock minute (None if no clock)
+    timestamp_status: str     # "verified" / "unverified" / "rejected"
 
 
 class DiscoveredVideo(TypedDict, total=False):

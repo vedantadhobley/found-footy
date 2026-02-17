@@ -69,6 +69,8 @@ class TwitterWorkflowInput:
     team_id: int                    # API-Football team ID (for alias cache lookup)
     team_name: str                  # "Liverpool" (fallback if no aliases)
     player_name: Optional[str]      # Can be None for events without player info
+    event_minute: int = 0           # API elapsed minute (e.g., 45, 90) — default 0 for replay safety
+    event_extra: Optional[int] = None  # API extra/stoppage minutes (e.g., 3)
 
 
 @workflow.defn
@@ -466,7 +468,7 @@ class TwitterWorkflow:
                 from temporalio.workflow import ParentClosePolicy
                 await workflow.start_child_workflow(
                     DownloadWorkflow.run,
-                    args=[input.fixture_id, input.event_id, input.player_name, team_aliases[0] if team_aliases else "", videos_to_download],
+                    args=[input.fixture_id, input.event_id, input.player_name, team_aliases[0] if team_aliases else "", videos_to_download, input.event_minute, input.event_extra],
                     id=download_workflow_id,
                     parent_close_policy=ParentClosePolicy.ABANDON,  # Continue even if parent closes
                     # Increase task timeout from 10s to 60s - large histories need more

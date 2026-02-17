@@ -10,11 +10,13 @@ Or test manually with a video file:
 import sys
 import os
 import asyncio
+import pytest
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+@pytest.mark.asyncio
 async def test_frame_extraction():
     """Test that frame extraction works"""
     from src.activities.download import _extract_frame_for_vision
@@ -25,6 +27,7 @@ async def test_frame_extraction():
     print("✅ _extract_frame_for_vision is callable")
 
 
+@pytest.mark.asyncio
 async def test_vision_model_call():
     """Test that we can call the vision model"""
     from src.activities.download import _call_vision_model
@@ -45,6 +48,7 @@ async def test_vision_model_call():
         print("⚠️ Vision model not available (this is OK in local testing)")
 
 
+@pytest.mark.asyncio
 async def test_full_validation(video_path: str = None):
     """Test full validation pipeline with a video file"""
     if not video_path:
