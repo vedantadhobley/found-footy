@@ -122,21 +122,21 @@ flowchart TB
         MONITOR[MonitorWorkflow<br/>Every 30 seconds]
     end
 
-    TWITTER[TwitterWorkflow<br/>~10 min per event]
+    TWITTER[TwitterWorkflow<br/>~10 min per event<br/>Single OR-query search]
     DOWNLOAD[DownloadWorkflow<br/>Per search attempt]
     UPLOAD[UploadWorkflow<br/>upload-event_id<br/>Serialized per event]
 
     MONITOR -->|"fire-and-forget<br/>(ABANDON)"| TWITTER
-    TWITTER -->|"BLOCKING child<br/>(per attempt)"| DOWNLOAD
+    TWITTER -->|"fire-and-forget<br/>(ABANDON per attempt)"| DOWNLOAD
     DOWNLOAD -->|"signal-with-start<br/>(deterministic ID)"| UPLOAD
 ```
 
 **Key architecture points:**
 - **Monitor → Twitter**: Fire-and-forget with ABANDON parent close policy
-- **Twitter → Download**: BLOCKING child (waits for completion before next attempt)
+- **Twitter → Download**: Fire-and-forget with ABANDON (while-loop checks `_download_workflows` count)
 - **Download → Upload**: Signal-with-start with deterministic ID `upload-{event_id}`
+- **Single OR-query per search**: `"(Salah OR Mohamed) (Liverpool OR LFC OR Reds)"` — one search per attempt, not per-alias
 - **Multiple DownloadWorkflows → ONE UploadWorkflow** per event (FIFO queue via signals)
-- **Multiple events → PARALLEL UploadWorkflows** (different workflow IDs)
 
 ---
 
@@ -361,7 +361,7 @@ Polls staging fixtures (interval-based, 15-min intervals for staging), activates
 
 ### TwitterWorkflow (~10 min per event)
 
-Resolves team aliases (cache or RAG), searches Twitter 10 times with 1-min durable timers.
+Resolves team aliases (cache or RAG), builds a single OR-query per attempt, searches Twitter up to 10 times with ~1-min durable timers.
 
 | Activity | Timeout | Retries |
 |----------|---------|---------|
@@ -370,7 +370,7 @@ Resolves team aliases (cache or RAG), searches Twitter 10 times with 1-min durab
 | `save_team_aliases` | 10s | 2 |
 | `check_event_exists` | 30s | 3 |
 | `get_twitter_search_data` | 30s | 3 |
-| `execute_twitter_search` | 180s | 3 (heartbeat 15s) |
+| `execute_twitter_search` | 60s | 3 (1.5× from 10s) |
 | `save_discovered_videos` | 30s | 3 (2.0× from 2s) |
 
 ### DownloadWorkflow (per search attempt)
