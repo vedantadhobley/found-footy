@@ -1,318 +1,200 @@
-# Found Footy - Orchestration Model
+# Orchestration — Event Lifecycle & State Machine
 
-## 🎯 Core Principle: Decoupled Workflow Architecture
+How Found Footy discovers, debounces, and processes football events.
 
-The system uses a **decoupled architecture** where:
-- **MonitorWorkflow** handles debouncing and triggers TwitterWorkflow **ONCE** per event (fire-and-forget)
-- **TwitterWorkflow** resolves aliases (cache or RAG) then manages 10 search attempts with 1-minute durable timers
-- **DownloadWorkflow** downloads, validates, and hashes videos (BLOCKING child)
-- **UploadWorkflow** serializes S3 operations per event via deterministic workflow ID
+## Fixture Lifecycle
 
-This decoupling allows:
-- Twitter searches to run at 1-minute intervals (not tied to Monitor's 30s poll)
-- Alias resolution inside TwitterWorkflow (eliminates double fire-and-forget chain)
-- Serialized S3 uploads via UploadWorkflow (eliminates race conditions)
-- Fixture completion only after all downloads are done
+```mermaid
+stateDiagram-v2
+    [*] --> staging: Ingest (daily 00:05 UTC)
+    staging --> active: Kickoff ≤ now + 30min
+    active --> completed: Match finished +<br/>all events complete
+    completed --> [*]: 14-day retention
 
----
+    note right of staging
+        Status: TBD, NS
+        Polled every 15 minutes
+    end note
 
-## 📊 Event State Machine
+    note right of active
+        Status: 1H, HT, 2H, ET, BT, P,<br/>SUSP, INT, LIVE, PST
+        Polled every 30 seconds
+    end note
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         EVENT LIFECYCLE                                      │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                    PHASE 1: DEBOUNCE (Monitor)                        │   │
-│  │                                                                        │   │
-│  │   _monitor_complete = FALSE                                            │   │
-│  │                                                                        │   │
-│  │   Each 30s (Monitor poll):                                             │   │
-│  │     IF event seen: $addToSet workflow_id to _monitor_workflows         │   │
-│  │     IF len(_monitor_workflows) >= 3 AND _monitor_complete = FALSE:     │   │
-│  │       → start_child_workflow(TwitterWorkflow) [fire-and-forget]        │   │
-│  │       → TwitterWorkflow sets _monitor_complete = TRUE at its START     │   │
-│  │                                                                        │   │
-│  │   RECOVERY: If len >= 3 AND monitor_complete=FALSE (stuck goal):       │   │
-│  │       → retry Twitter start on next poll                               │   │
-│  │                                                                        │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│                              │                                               │
-│                              ▼ (TwitterWorkflow started)                     │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                    PHASE 2: TWITTER (Self-Managed)                    │   │
-│  │                                                                        │   │
-│  │   TwitterWorkflow (~10 min, fire-and-forget from Monitor):             │   │
-│  │     0. set_monitor_complete(true) ← FIRST THING                        │   │
-│  │     1. Resolve aliases: cache lookup OR RAG pipeline (~30-90s)         │   │
-│  │     2. WHILE len(_download_workflows) < 10:                            │   │
-│  │       → check_event_exists (VAR check - abort if removed)              │   │
-│  │       → Search all aliases: "Salah Liverpool", "Salah LFC", ...        │   │
-│  │       → Dedupe videos, save to _discovered_videos                      │   │
-│  │       → ALWAYS start DownloadWorkflow (BLOCKING child, even 0 videos)  │   │
-│  │           → DownloadWorkflow: register_download_workflow ← FIRST THING │   │
-│  │           → DownloadWorkflow: check_event_exists (abort if VAR'd)      │   │
-│  │           → DownloadWorkflow: download → validate → hash               │   │
-│  │           → DownloadWorkflow: signal UploadWorkflow (even empty batch) │   │
-│  │       → sleep(1 minute) ← DURABLE TIMER                                │   │
-│  │     UploadWorkflow calls check_and_mark_download_complete at idle:     │   │
-│  │       → IF len(_download_workflows) >= 10: _download_complete = TRUE   │   │
-│  │                                                                        │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│                              │                                               │
-│                              ▼ (_download_complete = TRUE)                    │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                         PHASE 3: COMPLETE                             │   │
-│  │                                                                        │   │
-│  │   When fixture status = FT/AET/PEN AND:                                │   │
-│  │     ALL events have _monitor_complete = TRUE                           │   │
-│  │     ALL events have _download_complete = TRUE                           │   │
-│  │                                                                        │   │
-│  │   → Fixture moves to fixtures_completed                                │   │
-│  │                                                                        │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+    note right of completed
+        Status: FT, AET, PEN, CANC,<br/>ABD, AWD, WO
+    end note
 ```
 
----
+**Key**: PST (Postponed) is treated as **active**, not completed. Short delays (15–30 min) are common and the match may still happen.
 
-## 🔢 Event Tracking Fields
+### Staging Polling Optimization
 
-| Field | Set By | When | Purpose |
-|-------|--------|------|---------|
-| `_monitor_workflows` | Monitor | Each poll when event seen | Array of workflow IDs (debounce via array length) |
-| `_monitor_complete` | TwitterWorkflow | At VERY START of workflow | Debounce finished, Twitter triggered |
-| `_twitter_aliases` | TwitterWorkflow | After alias resolution | Team search variations |
-| `_download_workflows` | DownloadWorkflow | At VERY START of each download | Array of workflow IDs (tracks attempts) |
-| `_download_complete` | UploadWorkflow | When len(_download_workflows) >= 10 | All attempts finished |
+Staging fixtures are polled on **15-minute intervals** (`:00`, `:15`, `:30`, `:45`). Each fixture stores a `_last_monitor` timestamp. If the current interval matches the fixture's last-polled interval, it's skipped → ~97% fewer staging API calls.
 
----
+### Completion Conditions
 
-## 🔄 Workflow Responsibilities
-
-### MonitorWorkflow (Scheduled Every 30 Seconds)
-- Polls active fixtures from API
-- Adds workflow ID to `_monitor_workflows` array for seen events (via $addToSet)
-- When array length reaches 3: **Triggers TwitterWorkflow** (fire-and-forget)
-- TwitterWorkflow sets `_monitor_complete = TRUE` at its start (not Monitor)
-- Includes **CASE 2 recovery**: if `workflows>=3 AND monitor_complete=FALSE` (stuck), retries Twitter start
-- Checks fixture completion eligibility
-- **Does NOT manage Twitter retries** (that's TwitterWorkflow's job)
-- **NO execution timeout** — uses SKIP overlap policy (if still running, next scheduled is skipped)
-
-### TwitterWorkflow (Triggered by Monitor, ~10 min)
-- **Sets `_monitor_complete = TRUE` at VERY START** (before any other work)
-- **Resolves aliases at start**: cache lookup OR full RAG pipeline
-- **WHILE `get_download_workflow_count() < 10`**: loop with durable timers (1-min spacing)
-- Builds search queries: `{player_last} {alias}` for each alias
-- Deduplicates videos across aliases and previous attempts
-- **ALWAYS starts DownloadWorkflow (BLOCKING child)** - even with 0 videos
-- `_download_complete` is set by UploadWorkflow when `len(_download_workflows) >= 10`
-
-### DownloadWorkflow (Triggered by TwitterWorkflow, BLOCKING)
-- **Registers workflow ID at VERY START** via `register_download_workflow`
-- **Checks event exists** (VAR check - aborts if removed)
-- Downloads videos from Twitter URLs (parallel)
-- Applies duration filter (>3s to 60s)
-- MD5 batch dedup (within downloaded batch only)
-- Validates soccer content via vision model (Qwen3-VL)
-- Computes perceptual hash for deduplication (dense 0.25s sampling)
-- **ALWAYS signals UploadWorkflow** (even with 0 videos - for completion tracking)
-
-### UploadWorkflow (Signal-with-Start Pattern)
-- **Workflow ID: `upload-{event_id}`** - namespace-scoped, ONE per event
-- **Receives videos via `add_videos` signal** - queued in FIFO deque
-- **Checks event exists before each batch** (VAR check - aborts workflow if removed)
-- Processes batches: fetch S3 state, MD5/perceptual dedup, upload
-- Updates MongoDB `_s3_videos` array
-- Recalculates video ranks
-- Cleans up temp files
-- **Idles for 5 minutes** waiting for more signals, then completes
-
-**Signal-with-Start Pattern:**
-- `queue_videos_for_upload` activity uses Temporal Client API (not child workflow)
-- `client.start_workflow(..., start_signal="add_videos", start_signal_args=[videos])`
-- If workflow not running: START it AND deliver signal atomically
-- If workflow already running: just SIGNAL it (videos added to queue)
-- **Key insight**: Client API workflow IDs are namespace-scoped (global)
-- Child workflow IDs are parent-scoped (would cause "already started" errors)
-- Multiple DownloadWorkflows for SAME event → ONE UploadWorkflow, FIFO queue
-- Multiple events → PARALLEL UploadWorkflows (different IDs)
+A fixture moves to `fixtures_completed` when **both**:
+1. API status is in completed set (FT, AET, PEN, CANC, ABD, AWD, WO)
+2. **Every** event has `_download_complete = true`
 
 ---
 
-## ⏱️ Timeline Example
+## Event State Machine
 
-```
-T+0:00  Goal scored! Event appears in API
-T+0:30  Monitor poll #1 → _monitor_workflows = ["monitor-T0:30"]
-T+1:00  Monitor poll #2 → _monitor_workflows = ["monitor-T0:30", "monitor-T1:00"]
-T+1:30  Monitor poll #3 → _monitor_workflows = [..., "monitor-T1:30"] (len=3)
-        → TwitterWorkflow triggered (fire-and-forget)
-        
-T+1:35  TwitterWorkflow starts:
-        → set_monitor_complete(true) ← FIRST THING
-        → get_cached_team_aliases(40) → HIT: ["LFC", "Reds", "Liverpool"]
-        → save to _twitter_aliases in event
-        
-T+1:40  TwitterWorkflow Attempt 1:
-        → get_download_workflow_count() returns 0
-        → Search "Salah LFC" → 3 videos
-        → Search "Salah Reds" → 2 videos (1 dup)
-        → Search "Salah Liverpool" → 2 videos (1 new)
-        → Dedupe → 5 unique videos
-        → Start DownloadWorkflow (BLOCKING)
-          → register_download_workflow() ← FIRST THING (len=1)
-          → Download 5 videos
-          → AI validation → 4 pass
-          → Generate hashes
-          → Signal UploadWorkflow (upload-{event_id})
-            → Fetch fresh S3 state (empty)
-            → Upload 4 videos to S3
-            → Save to MongoDB
-            → check_and_mark_download_complete() → len=1, not complete
-          
-T+2:40  Attempt 1 complete, sleep(1 min)
+```mermaid
+stateDiagram-v2
+    [*] --> detected: New event in API
+    detected --> debouncing: First poll (count=1)
+    debouncing --> debouncing: Subsequent polls (count++)
+    debouncing --> stable: count ≥ 3 + player known
+    stable --> twitter: Start TwitterWorkflow
+    twitter --> downloading: 10 search attempts
+    downloading --> complete: 10 download workflows registered
+    
+    detected --> removed: Event disappears (VAR)
+    debouncing --> removed: Event disappears (VAR)
 
-T+3:40  TwitterWorkflow Attempt 2:
-        → get_download_workflow_count() returns 1
-        → Search same aliases (exclude already-found URLs)
-        → 1 new video found
-        → Start DownloadWorkflow (BLOCKING)
-          → register_download_workflow() ← FIRST THING (len=2)
-          → Download → validate → hash
-          → Signal UploadWorkflow (upload-{event_id})
-            → Fetch fresh S3 state (4 videos)
-            → Perceptual dedup → 1 new unique
-            → Upload 1 video
-            → check_and_mark_download_complete() → len=2, not complete
-          
-T+4:40  Attempt 2 complete, sleep(1 min)
+    note right of debouncing
+        3 polls = ~90 seconds
+        Prevents false positives
+    end note
 
-... (attempts 3-9 similar) ...
-
-T+11:40 TwitterWorkflow Attempt 10:
-        → get_download_workflow_count() returns 9
-        → Search same aliases
-        → 0 new videos found
-        → Start DownloadWorkflow (BLOCKING, even with 0 videos!)
-          → register_download_workflow() ← FIRST THING (len=10)
-          → Signal UploadWorkflow (empty batch)
-            → check_and_mark_download_complete() → len=10!
-            → _download_complete = TRUE
-        
-T+12:00 Monitor poll:
-        → Fixture status = FT
-        → All events have _monitor_complete = TRUE
-        → All events have _download_complete = TRUE
-        → Fixture moves to fixtures_completed
+    note right of removed
+        MongoDB + S3 data deleted
+        Sequence ID freed
+    end note
 ```
 
----
+### Event ID Format
 
-## 🎯 Key Design Decisions
+```
+{fixture_id}_{team_id}_{player_id}_{event_type}_{sequence}
+```
 
-### Why Twitter directly from Monitor (no separate RAGWorkflow)?
-Previously: Monitor → RAGWorkflow → TwitterWorkflow (double fire-and-forget)
-Problem: Two fire-and-forget hops caused duplicate workflows due to Temporal ID reuse timing
-Solution: Twitter resolves aliases at start, single fire-and-forget from Monitor
+Example: `5000_40_234_Goal_1` — Fixture 5000, team 40 (Liverpool), player 234 (Szoboszlai), first Goal.
 
-### Why Signal-with-Start for UploadWorkflow?
-Problem: Multiple parallel DownloadWorkflows for SAME event need serialized uploads
-Failed approaches:
-- Child workflow with same ID → "Workflow execution already started" error
-- Child workflow IDs are parent-scoped, not namespace-scoped
-Solution: Activity uses Client API's signal-with-start pattern
-- Workflow ID `upload-{event_id}` is namespace-scoped (global)
-- Signal-with-start: start if not exists, signal if exists (atomic)
-- Videos queued in FIFO deque, processed in order
-Benefit: No errors, proper serialization, parallel uploads for DIFFERENT events
+**Sequence numbering**: Per player, per type. If player 234 scores twice, the second goal is `5000_40_234_Goal_2`.
 
-### Why 10 Twitter attempts with 1-min spacing?
-Goal videos appear over 5-15 minutes. More frequent searches = more videos captured.
-Blocking downloads with workflow-ID registration ensures reliable completion tracking.
-
-### Why Downloads are BLOCKING (not fire-and-forget)?
-- `_download_workflows` array must accurately track completed downloads
-- If fire-and-forget, workflow IDs would register before downloads finish
-- Fixture could complete before all videos are uploaded
-- BLOCKING ensures completion tracking is reliable
-
-### Why RAG resolution inside TwitterWorkflow?
-- Eliminates double fire-and-forget chain (was causing duplicate workflows)
-- Aliases are usually cached (pre-warmed during ingestion)
-- Cache miss is rare (~30-90s RAG pipeline)
-- Simpler architecture with fewer workflows to coordinate
-
-### Why Workflow-ID Arrays instead of Counters?
-- **Idempotent**: `$addToSet` is atomic - re-registering same ID is a no-op
-- **Auditable**: Array shows exactly which workflows ran
-- **Failure-resistant**: If workflow crashes and restarts, it re-registers same ID
-- **Debuggable**: "download8 never registered" vs "count stuck at 7"
+**VAR handling**: When an event disappears from the API, it's deleted from MongoDB and S3. The sequence number is freed. If the same player scores a new goal later, it reuses the freed sequence number without collision.
 
 ---
 
-## 🛡️ Race Condition Prevention
+## Event Tracking Fields
 
-### S3 Duplicate Prevention
-**Problem**: Two DownloadWorkflows find the same video, both upload it
-**Solution**: UploadWorkflow with deterministic ID serializes uploads per event
-**Guarantee**: Only ONE UploadWorkflow runs at a time per event
+These fields track an event's progress through the pipeline. All prefixed with `_` to indicate internal enrichment.
 
-### Fixture Completion Prevention  
-**Problem**: Fixture moves to completed while downloads still running
-**Solution**: `_download_complete` only set when `len(_download_workflows) >= 10`
-**Guarantee**: All 10 download workflows must register before fixture can complete
-**When**: UploadWorkflow calls `check_and_mark_download_complete` at idle timeout
+| Field | Type | Set By | When |
+|-------|------|--------|------|
+| `_event_id` | string | Monitor | Event first detected |
+| `_monitor_workflows` | string[] | Monitor | Each poll that sees the event (`$addToSet`) |
+| `_monitor_complete` | bool | TwitterWorkflow | At the **start** of TwitterWorkflow |
+| `_first_seen` | datetime | Monitor | First appearance |
+| `_twitter_aliases` | string[] | TwitterWorkflow | After alias resolution |
+| `_discovered_videos` | object[] | TwitterWorkflow | After each search attempt |
+| `_download_workflows` | string[] | DownloadWorkflow | Each completed download attempt |
+| `_download_complete` | bool | UploadWorkflow | When `len(_download_workflows) >= 10` |
+| `_removed` | bool | Monitor | Event disappeared from API (VAR) |
 
-### Alias Resolution Race
-**Problem**: Cache might be stale if team just played for first time
-**Solution**: TwitterWorkflow checks cache, falls back to full RAG pipeline
-**Guarantee**: Aliases are always resolved before search starts
+### Why `_monitor_complete` is set by TwitterWorkflow
 
-### VAR Reversal Handling
-**Problem**: Goal gets VAR'd while downstream workflows are running
-**Solution**: Multi-layer existence checks:
-1. **TwitterWorkflow**: `check_event_exists` at START of each attempt
-2. **DownloadWorkflow**: `check_event_exists` at START of workflow
-3. **UploadWorkflow**: `fetch_event_data` returns "event_not_found" → abort workflow
-4. **Monitor**: Tracks missing events in `_drop_workflows`, deletes when len >= 3
-**Guarantee**: Workflows abort gracefully, no orphaned S3 uploads
+If Monitor set the flag, a failed TwitterWorkflow spawn would leave the flag true — Monitor would never retry. By having TwitterWorkflow set it at its own start, retry semantics work naturally:
 
----
+- Monitor sees `count >= 3 AND _monitor_complete = false` → spawn Twitter
+- Twitter starts → sets `_monitor_complete = true`
+- If Twitter fails to start → flag stays false → next Monitor cycle retries
 
-## 👤 Unknown Player Handling
+### Why workflow-ID arrays instead of counters
 
-When a goal is first detected, the API may not yet have the scorer identified.
-
-**Detection**: `is_player_known()` checks if player name is None, empty, or "Unknown"
-
-**Behavior**:
-- Event is created with empty `_monitor_workflows` array
-- Event appears in frontend but shows as "Unknown Player"
-- **Debouncing is frozen** - no workflow IDs added, won't progress to 3
-- **No Twitter search triggered** - player name is required for search
-- API data (time, assist, comments) still synced on each poll
-
-**Resolution**:
-When API identifies the player, `player_id` changes → new `_event_id` generated.
-Old "Unknown" event is removed via normal VAR logic (`_drop_workflows` reaches 3).
-New event starts fresh debounce with known player.
-
-**Frontend Use**:
-- `len(_monitor_workflows) === 0` → Unknown player, waiting for identification
-- `len(_monitor_workflows) >= 1` → Player is known, debouncing in progress
+`_monitor_workflows` and `_download_workflows` use `$addToSet` (idempotent). Benefits:
+- **Idempotent**: Temporal retries don't double-count
+- **Auditable**: Can see exactly which workflows processed the event
+- **Failure-resistant**: No race between increment and read
 
 ---
 
-## 📊 API Data Synchronization
+## Debouncing Logic
 
-Event data from API can change after initial detection:
-- **time**: Minute may drift (e.g., 23' → 23+2')
-- **assist**: Assister may be added later
-- **comments**: Additional context may appear
+Events must appear in **3 consecutive monitor polls** (~90 seconds) before triggering:
 
-**Solution**: Monitor syncs these fields on EVERY poll via the live event comparison,
-not just during debounce. This ensures MongoDB stays current with API changes.
+```
+Poll 1: Goal detected → _monitor_workflows = ["monitor-T0:30"]     → count=1
+Poll 2: Goal still there → _monitor_workflows += ["monitor-T1:00"]  → count=2
+Poll 3: Goal still there → _monitor_workflows += ["monitor-T1:30"]  → count=3 → TRIGGER
+```
+
+Additional requirement: **player must be identified**. The API sometimes reports goals with `player.name = null` or `"Unknown"` before identifying the scorer. We wait for identification because Twitter searches require a player name.
+
+When the player becomes identified, the `player_id` changes → new `_event_id`. The old unknown-player event is removed via VAR logic (set comparison).
+
+---
+
+## Workflow Triggering Chain
+
+```
+MonitorWorkflow (every 30s)
+  │
+  ├─ Detects stable event (3 polls + player known)
+  │
+  └─ start_child_workflow(TwitterWorkflow, parent_close_policy=ABANDON)
+       │
+       ├─ Resolves team aliases (cache hit or RAG pipeline)
+       │
+       └─ 10× search attempts (1-min durable timers)
+            │
+            └─ start_child_workflow(DownloadWorkflow, BLOCKING)
+                 │
+                 ├─ Downloads + AI validates + hashes
+                 │
+                 └─ signal_with_start(UploadWorkflow, id="upload-{event_id}")
+                      │
+                      └─ Scoped dedup + S3 upload + rank
+```
+
+| Transition | Pattern | Why |
+|------------|---------|-----|
+| Monitor → Twitter | Fire-and-forget (ABANDON) | Monitor must not block on 10-min Twitter lifecycle |
+| Twitter → Download | BLOCKING child | Must track completion in `_download_workflows` |
+| Download → Upload | Signal-with-start | Many downloads → one serialized upload per event |
+
+---
+
+## Parallel Fixture Processing
+
+The MonitorWorkflow processes **all active fixtures in parallel** using `asyncio.gather()`. Each fixture is independent:
+
+```python
+fixture_tasks = [process_fixture(f) for f in fixtures]
+fixture_results = await asyncio.gather(*fixture_tasks)
+```
+
+Each `process_fixture()` call runs `store_and_compare` → `process_fixture_events` → optionally `complete_fixture_if_ready` for that single fixture. Results are aggregated after all complete.
+
+---
+
+## Timeline Example
+
+```
+00:05 UTC   IngestWorkflow fetches fixtures → staging collection
+14:30       Fixture 5000 (Liverpool vs Arsenal, 15:00 KO) pre-activated → active
+14:55       Monitor polls staging, activates remaining fixtures  
+15:00       Match kicks off — status changes 1H
+15:23:00    API shows goal (Szoboszlai, 23') — Poll 1
+15:23:30    Same goal still in API — Poll 2
+15:24:00    Same goal, 3rd poll → stable
+                Monitor starts TwitterWorkflow
+                Twitter sets _monitor_complete = true
+                Twitter resolves aliases: ["Liverpool", "LFC", "Reds"]
+15:24:30    Twitter search #1 → finds 2 videos
+                DownloadWorkflow: download → AI validate → hash
+                Signals UploadWorkflow (upload-5000_40_234_Goal_1)
+                Upload: scoped dedup → S3 → rank
+15:25:30    Twitter search #2 → finds 1 new video (HD this time)
+                Download → validate → hash → signal Upload
+                Upload: hash matches existing → larger file → REPLACE
+15:26:30    Twitter search #3–10 continue...
+15:34:30    All 10 attempts done → _download_complete = true
+16:50       Match ends (FT) + all events have _download_complete
+                Fixture moved to fixtures_completed
+                Temp directories cleaned up
+```

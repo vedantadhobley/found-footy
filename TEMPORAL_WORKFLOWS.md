@@ -1,885 +1,336 @@
-# Found Footy - Temporal Workflow Architecture
+# Temporal Workflows — Detailed Specifications
 
-## Overview
+Implementation details for each of the 6 Temporal workflows in Found Footy.
 
-This system uses Temporal.io to orchestrate the discovery, tracking, and archival of football goal videos from social media. The architecture consists of **6 workflows** that form a parent-child cascade, managing the full pipeline from fixture ingestion to video upload.
+## Worker Registration
 
-**Key Features:**
-- **Decoupled architecture** - TwitterWorkflow manages its own retries and alias resolution
-- **Serialized S3 uploads** - UploadWorkflow with deterministic ID prevents race conditions
-- **Durable timers** - 1-minute spacing between Twitter attempts survives restarts
-- **Per-activity retry with exponential backoff** - Granular failure recovery
-- **10 Twitter attempts per event** - Blocking downloads ensure reliable completion tracking
-- **Multi-alias search** - Search "Salah Liverpool", "Salah LFC", "Salah Reds"
-- **Cross-retry quality replacement** - Higher resolution videos replace lower ones
-- **Race condition prevention** - `_download_complete` set by downloads, not searches
+**6 workflows, 42 activities** registered per worker:
 
----
+| Module | Activities | Count |
+|--------|-----------|-------|
+| ingest | fetch_todays_fixtures, fetch_fixtures_by_ids, categorize_and_store_fixtures, cleanup_old_fixtures | 4 |
+| monitor | fetch_staging_fixtures, pre_activate_upcoming_fixtures, fetch_active_fixtures, store_and_compare, process_fixture_events, sync_fixture_metadata, check_twitter_workflow_running, complete_fixture_if_ready, notify_frontend_refresh, register_monitor_workflow | 10 |
+| rag | get_team_aliases, save_team_aliases, get_cached_team_aliases | 3 |
+| twitter | check_event_exists, get_twitter_search_data, execute_twitter_search, save_discovered_videos, set_monitor_complete, get_download_workflow_count | 6 |
+| download | download_single_video, validate_video_is_soccer, generate_video_hash, cleanup_download_temp, queue_videos_for_upload, register_download_workflow, check_and_mark_download_complete | 7 |
+| upload | fetch_event_data, deduplicate_by_md5, deduplicate_videos, upload_single_video, update_video_in_place, replace_s3_video, bump_video_popularity, save_video_objects, recalculate_video_ranks, cleanup_individual_files, cleanup_fixture_temp_dirs, cleanup_upload_temp | 12 |
 
-## Workflow Hierarchy
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      SCHEDULED WORKFLOWS                             │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│   IngestWorkflow                    MonitorWorkflow                  │
-│   (Daily 00:05 UTC)                 (Every 30 seconds)              │
-│        │                                  │                          │
-│   Fetch fixtures                     Poll API                        │
-│   Route by status                    Debounce events                 │
-│                                      Trigger Twitter when stable     │
-│                                      Cleanup temp dirs on complete   │
-│                                           │                          │
-└───────────────────────────────────────────┼─────────────────────────┘
-                                            │ (fire-and-forget)
-                                            ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        TwitterWorkflow                               │
-│   1. Resolve aliases: get_cached_team_aliases OR get_team_aliases   │
-│      └── Cache hit (pre-cached) OR RAG pipeline (Wikidata + LLM)    │
-│   2. WHILE get_download_workflow_count < 10:                        │
-│      - update_twitter_attempt(attempt)                               │
-│      - Search each alias with player name (1-min window)             │
-│      - Dedupe videos (by URL)                                        │
-│      - save_discovered_videos                                        │
-│      - ALWAYS: start DownloadWorkflow (BLOCKING child, even 0 vids) │
-│      - IF attempt < 10: workflow.sleep(1 min) ← DURABLE TIMER        │
-│                              │                                       │
-│   _download_complete set when len(_download_workflows) >= 10          │
-│                              │                                       │
-└──────────────────────────────┼──────────────────────────────────────┘
-                               ▼ (BLOCKING child workflow)
-┌─────────────────────────────────────────────────────────────────────┐
-│                      DownloadWorkflow                                │
-│   0. register_download_workflow (at VERY START - tracks attempt)     │
-│   1. Download videos via Twitter syndication API (PARALLEL)          │
-│   2. MD5 batch dedup (within downloaded batch only)                  │
-│   3. AI validation (reject non-football + phone-TV recordings)       │
-│      Uses 2/3 majority tiebreaker for both checks                    │
-│   4. Compute perceptual hash (PARALLEL, heartbeat every 5 frames)    │
-│   5. ALWAYS signal UploadWorkflow (even with empty video list)       │
-└──────────────────────────────┼──────────────────────────────────────┘
-                               ▼ (SIGNAL-WITH-START, SERIALIZED)
-┌─────────────────────────────────────────────────────────────────────┐
-│           UploadWorkflow (Workflow ID: upload-{event_id})            │
-│   ** Only ONE runs at a time per event - Temporal serializes **      │
-│   1. Fetch FRESH S3 state (inside serialized context)                │
-│   2. MD5 dedup against S3 (exact matches → bump popularity)          │
-│   3. Perceptual dedup against S3 (similar content)                   │
-│   4. Upload new videos / replace worse quality (PARALLEL)            │
-│   5. Save video objects to MongoDB                                   │
-│   6. Remove old MongoDB entries ONLY after successful upload         │
-│   7. Recalculate video ranks                                         │
-│   8. Cleanup individual files (not temp dir - that's per fixture)    │
-│   9. check_and_mark_download_complete (if _download_workflows >= 10)  │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-**Key Architecture Points:**
-- `start_child_workflow` with `parent_close_policy=ABANDON` for Monitor → Twitter
-- `execute_child_workflow` (BLOCKING) for Twitter → Download and Download → Upload
-- **Upload serialization**: Deterministic workflow ID `upload-{event_id}` ensures only ONE upload per event runs at a time
-- **Safe replacement**: MongoDB entries removed AFTER successful upload (prevents data loss)
-- **Twitter count**: Incremented by UploadWorkflow after each batch (ensures uploads finish before fixture completes)
-- **Temp cleanup**: Individual files deleted after upload; fixture temp dirs cleaned by MonitorWorkflow on completion
-- Durable timers (`workflow.sleep`) in TwitterWorkflow for 1-min spacing
+**Schedules** (set up by first worker, idempotent):
+- `ingest-daily` — IngestWorkflow at `5 0 * * *` (00:05 UTC)
+- `monitor-every-30s` — MonitorWorkflow every 30 seconds, overlap policy: SKIP
 
 ---
 
-## Workflow Naming Convention
-
-All workflows use human-readable IDs for easy debugging in Temporal UI:
-
-| Workflow | ID Format | Example |
-|----------|-----------|---------|
-| **IngestWorkflow** | `ingest-{DD_MM_YYYY}` | `ingest-05_12_2024` |
-| **MonitorWorkflow** | `monitor-{DD_MM_YYYY}-{HH:MM}` | `monitor-05_12_2024-15:23` |
-| **TwitterWorkflow** | `twitter-{Team}-{LastName}-{min}-{event_id}` | `twitter-Liverpool-Salah-45+3min-123456_40_306_Goal_1` |
-| **DownloadWorkflow** | `download{N}-{Team}-{LastName}-{count}vids-{event_id}` | `download1-Liverpool-Salah-3vids-123456_40_306_Goal_1` |
-| **UploadWorkflow** | `upload-{event_id}` | `upload-123456_40_306_Goal_1` |
-
----
-
-## Manual Operations from Temporal UI
-
-You can manually trigger workflows from the Temporal UI at `http://localhost:3200`.
-
-### Manual Fixture Ingest
-
-To manually ingest specific fixtures (bypasses team filter):
-
-1. Go to Temporal UI → **Start Workflow**
-2. Fill in:
-   - **Workflow Type**: `IngestWorkflow`
-   - **Workflow ID**: `manual-ingest-{timestamp}` (e.g., `manual-ingest-20251230`)
-   - **Task Queue**: `found-footy`
-   - **Input**:
-     ```json
-     {"fixture_ids": [1379142, 1347263, 1396377]}
-     ```
-
-### Input Options
-
-| Input | Description | Example |
-|-------|-------------|---------|
-| `{}` | Standard daily ingest (today + tomorrow + day after for tracked teams) | `{}` |
-| `{"target_date": "2025-12-26"}` | Ingest for a specific date only (tracked teams only) | `{"target_date": "2025-12-26"}` |
-| `{"fixture_ids": [1234, 5678]}` | Ingest specific fixtures by ID (any team/league) | `{"fixture_ids": [1379142]}` |
-
-> **Note**: When using `fixture_ids`, the team filter is bypassed - you can ingest fixtures from any team or league.
-
----
-
-## 1. IngestWorkflow
+## IngestWorkflow
 
 **Schedule**: Daily at 00:05 UTC  
-**Purpose**: Fetch fixtures for today + tomorrow + day after, route to correct collections, cleanup old data
+**ID**: `ingest-scheduled` (Temporal adds timestamp suffix)
 
+### What it does
+
+1. **Fetch fixtures** — 3-day window (today + tomorrow + day after) for timezone coverage
+2. **Lookahead** — If tomorrow has no fixtures (international break), looks ahead up to 30 days
+3. **Categorize** — Routes fixtures by status: TBD/NS → staging, live → active, FT → completed
+4. **Pre-cache aliases** — Runs RAG pipeline for both teams in each fixture
+5. **Cleanup** — Deletes fixtures older than 14 days from MongoDB + S3
+
+### Manual mode
+
+Can be triggered with specific fixture IDs:
+
+```python
+IngestWorkflowInput(fixture_ids=[1515514, 1515515])
 ```
-IngestWorkflow
-    │
-    ├── fetch_todays_fixtures (×3 days)
-    │   └── GET /fixtures?date={today,tomorrow,day_after} from API-Football
-    │   └── Deduplicate by fixture ID (skip already existing)
-    │
-    ├── PRE-CACHE RAG aliases for each team
-    │   └── Per-team calls with retry (failure doesn't block ingest)
-    │
-    ├── categorize_and_store_fixtures
-    │   ├── TBD, NS → fixtures_staging
-    │   ├── LIVE, 1H, HT, 2H → fixtures_active
-    │   └── FT, AET, PEN → fixtures_completed
-    │
-    └── cleanup_old_fixtures (14 day retention)
-        ├── Delete fixtures from fixtures_completed older than 14 days
-        ├── Delete all S3 videos for those fixtures
-        └── "Day 1" = yesterday (since ingest runs at 00:05 before today's matches)
-```
-
-### Retention Policy
-
-The application maintains **14 days of fixture history**. Since ingestion runs at 00:05 UTC:
-- Today's fixtures haven't happened yet, so they don't count
-- Day 1 = yesterday, Day 14 = 14 days before today
-- Example: If run on Jan 16:
-  - Keep: Jan 2 through Jan 15 (14 days)
-  - Delete: Jan 1 and earlier
-  - Cutoff = Jan 16 - 14 = Jan 2
-
-Both MongoDB documents and S3 videos are deleted during cleanup.
 
 ### Activities
 
-| Activity | Timeout | Retries | Backoff |
-|----------|---------|---------|---------|
-| `fetch_todays_fixtures` | 30s | 3 | 2.0x from 1s |
-| `fetch_fixtures_by_ids` | 30s | 3 | 2.0x from 1s |
-| `categorize_and_store_fixtures` | 30s | 3 | 2.0x from 1s |
-| `cleanup_old_fixtures` | 120s | 2 | - |
+| Activity | STC | Retries | Notes |
+|----------|-----|---------|-------|
+| `fetch_todays_fixtures` | 30s | 3 (2× from 1s) | API-Football batch call |
+| `fetch_fixtures_by_ids` | 30s | 3 (2× from 1s) | Manual ingest mode |
+| `categorize_and_store_fixtures` | 30s | 3 (2× from 1s) | Skips already-existing fixtures |
+| `cleanup_old_fixtures` | 120s | 2 | Deletes from MongoDB + S3 |
+
+Pre-caching uses RAG activities (`get_cached_team_aliases`, `get_team_aliases`, `save_team_aliases`).
 
 ---
 
-## 2. MonitorWorkflow
+## MonitorWorkflow
 
 **Schedule**: Every 30 seconds  
-**Purpose**: Poll active fixtures, debounce events, trigger RAG for stable events
+**ID**: `monitor-scheduled` (Temporal adds timestamp suffix)  
+**Overlap**: SKIP (if previous cycle still running, skip this one)
 
-```
-MonitorWorkflow (every 30s)
-    │
-    ├── fetch_staging_fixtures → process_staging_fixtures
-    │   └── Update staging fixtures with fresh API data
-    │
-    ├── activate_pending_fixtures
-    │   └── Move staging → active when start time reached
-    │
-    ├── fetch_active_fixtures
-    │   └── Batch GET from API-Football
-    │
-    ├── FOR each fixture:
-    │   ├── store_and_compare
-    │   │   └── Filter to Goals, store in fixtures_live
-    │   │
-    │   ├── process_fixture_events
-    │   │   ├── NEW events: Add with _monitor_workflows=[workflow_id]
-    │   │   ├── EXISTING events: Add workflow_id to _monitor_workflows
-    │   │   ├── REMOVED events: Mark _removed=true
-    │   │   └── IF len(_monitor_workflows) >= 3: Add to twitter_triggered
-    │   │
-    │   ├── FOR each twitter_triggered:
-    │   │   └── start_child_workflow(TwitterWorkflow) ← FIRE-AND-FORGET
-    │   │
-    │   └── IF fixture FT/AET/PEN:
-    │       └── complete_fixture_if_ready
-    │
-    └── notify_frontend_refresh
-```
+### What it does
+
+1. **Staging poll** — Check staging fixtures on 15-minute intervals (`:00/:15/:30/:45`)
+   - Pre-activate fixtures with kickoff ≤ now + 30 minutes
+   - `_last_monitor` tracks per-fixture polling → ~97% fewer API calls
+2. **Active poll** — Fetch all active fixtures from API
+3. **Process fixtures in parallel** — `asyncio.gather()` across all active fixtures:
+   - `store_and_compare` — Store raw data in `fixtures_live`
+   - `process_fixture_events` — Set comparison for new/changed/removed events
+   - Stable events (3 polls + player known) → spawn TwitterWorkflow
+4. **Complete finished fixtures** — Move to `fixtures_completed` when status is terminal + all events done
+5. **Cleanup** — Delete temp directories for completed fixtures
+6. **Notify frontend** — SSE broadcast
 
 ### Activities
 
-| Activity | Timeout | Retries | Backoff |
-|----------|---------|---------|---------|
-| `fetch_staging_fixtures` | 60s | 3 | - |
-| `process_staging_fixtures` | 30s | 3 | - |
-| `activate_pending_fixtures` | 30s | 2 | - |
-| `fetch_active_fixtures` | 60s | 3 | - |
-| `store_and_compare` | 10s | 3 | 2.0x from 1s |
-| `process_fixture_events` | 60s | 3 | - |
-| `complete_fixture_if_ready` | 10s | 3 | 2.0x from 1s |
-| `notify_frontend_refresh` | 5s | 1 | - |
+| Activity | STC | Retries | Notes |
+|----------|-----|---------|-------|
+| `pre_activate_upcoming_fixtures` | 30s | 2 | Interval-based staging poll |
+| `fetch_active_fixtures` | 15s | 2 | API has 10s internal timeout |
+| `store_and_compare` | 10s | 3 (2× from 1s) | Write to `fixtures_live` |
+| `process_fixture_events` | 60s | 3 | Event debouncing + trigger logic |
+| `check_twitter_workflow_running` | 10s | 2 | Prevents duplicate spawns |
+| `complete_fixture_if_ready` | 10s | 3 (2× from 1s) | Active → completed transition |
+| `notify_frontend_refresh` | 5–10s | 1 | Best-effort SSE |
 
-### Event Processing Logic
+### TwitterWorkflow spawn
 
 ```python
-# Pure set operations - no hash comparison needed!
-live_ids = {e["_event_id"] for e in live_events}
-active_ids = {e["_event_id"] for e in active_events}
-
-new_ids = live_ids - active_ids       # NEW events → add with count=1
-removed_ids = active_ids - live_ids   # VAR disallowed → mark _removed
-matching_ids = live_ids & active_ids  # Existing → check count
-
-for event_id in matching_ids:
-    if event._monitor_complete:
-        continue  # Already triggered, skip
-    
-    # Add this workflow ID to the array (idempotent via $addToSet)
-    add_monitor_workflow(event_id, workflow_id)
-    
-    if len(event._monitor_workflows) >= 3:
-        event._monitor_complete = True
-        twitter_triggered.append(event)  # Will trigger TwitterWorkflow
-```
-
----
-
-## 3. RAGWorkflow (Pre-Caching Only)
-
-**Trigger**: Called by IngestWorkflow during daily fixture ingestion  
-**Duration**: ~30-90 seconds  
-**Purpose**: Pre-cache team aliases for fixtures before they go live
-
-**Note**: RAGWorkflow is NO LONGER triggered by MonitorWorkflow. TwitterWorkflow now 
-resolves aliases directly at start (cache lookup or inline RAG call).
-
-```
-RAGWorkflow (~30-90s, pre-caching only)
-    │
-    ├── get_cached_team_aliases(team_id)
-    │   └── Fast O(1) lookup in team_aliases collection
-    │
-    ├── IF cache miss: get_team_aliases(team_id, team_name)
-    │   ├── Call API-Football /teams?id={id} → get team data + venue
-    │   │   └── team.national, team.country, venue.city
-    │   ├── Query Wikidata for team QID (uses country + city for disambiguation)
-    │   ├── Fetch Wikidata aliases
-    │   ├── Preprocess to single words (filter junk)
-    │   ├── llama.cpp LLM selects best words for Twitter
-    │   └── Cache with national, country, city, and timestamps
-    │
-    └── Return aliases (IngestWorkflow uses for pre-caching)
-```
-
-**Why Pre-Caching?**
-- Aliases are resolved during ingestion (00:05 UTC daily)
-- By match time, both teams' aliases are already cached
-- TwitterWorkflow just does fast cache lookup at start
-- Reduces latency for goal video discovery
-
-### Activities
-
-| Activity | Timeout | Retries | Purpose |
-|----------|---------|---------|---------|
-| `get_cached_team_aliases` | 10s | 2 | Fast MongoDB cache lookup |
-| `get_team_aliases` | 60s | 2 | Full RAG pipeline (Wikidata + LLM) |
-| `save_team_aliases` | 10s | 2 | Store to event in MongoDB |
-
-### Alias Examples (Real Output)
-
-```
-"Atletico de Madrid" → ["ATM", "Atletico", "Atleti", "Madrid"]
-"Manchester United"  → ["MUFC", "Utd", "Devils", "Manchester", "United"]
-"Liverpool"          → ["LFC", "Reds", "Anfield", "Liverpool"]
-"Belgium"            → ["Belgian", "Belgique", "Belgium"]  # National team
-"Mali"               → ["Malian", "Mali"]  # National team (ID 1500)
-```
-
-### Team Type Detection
-
-Team type (club vs national) is determined by API-Football, NOT by team ID:
-- API returns `team.national: true` for national teams
-- Stored in `team_aliases` collection as `national` boolean
-- National teams get nationality adjectives added ("Belgian", "French")
-
----
-
-## 4. TwitterWorkflow
-
-**Trigger**: Fire-and-forget from MonitorWorkflow when `_monitor_complete=true`  
-**Duration**: ~10 minutes (10 attempts × 1-min spacing)  
-**Purpose**: Resolve aliases, search Twitter, download and upload videos
-
-```
-TwitterWorkflow (~10 min, fire-and-forget from Monitor)
-    │
-    ├── RESOLVE ALIASES (at workflow start)
-    │   ├── get_cached_team_aliases(team_id)
-    │   │   └── Fast O(1) lookup in team_aliases collection
-    │   ├── IF cache miss: get_team_aliases(team_id, team_name)
-    │   │   └── Full RAG pipeline (Wikidata + LLM)
-    │   └── save_team_aliases to event in MongoDB
-    │
-    FOR attempt IN [1..10]:
-    │   │
-    │   ├── check_event_exists (graceful termination for VAR)
-    │   │
-    │   ├── update_twitter_attempt(attempt)
-    │   │   └── Set _twitter_attempt in MongoDB (for visibility)
-    │   │
-    │   ├── get_twitter_search_data
-    │   │   └── Get existing video URLs for dedup
-    │   │
-    │   ├── FOR each alias in team_aliases:
-    │   │   ├── execute_twitter_search("{player_last} {alias}", 1-min window)
-    │   │   │   └── POST to Firefox service with exclude_urls
-    │   │   └── Collect videos, dedupe by URL
-    │   │
-    │   ├── Select top 5 longest videos from all found
-    │   │
-    │   ├── save_discovered_videos (ONLY selected 5)
-    │   │   └── Append to _discovered_videos in MongoDB
-    │   │   └── Unselected videos remain discoverable in future attempts
-    │   │
-    │   ├── IF videos found:
-    │   │   └── execute_child_workflow(DownloadWorkflow) ← BLOCKING
-    │   │       └── Download → validate → hash → UploadWorkflow (serialized)
-    │   │       └── (workflow ID already registered at start)
-    │   │
-    │   ├── ELSE (no videos):
-    │   │   └── execute_child_workflow(DownloadWorkflow) ← BLOCKING (still!)
-    │   │       └── Registers workflow ID, signals empty batch to upload
-    │   │
-    │   └── IF attempt < 10:
-    │       └── workflow.sleep(1 minute - elapsed) ← DURABLE TIMER
-    │
-    └── _download_complete set when len(_download_workflows) >= 10
-```
-
-**Why BLOCKING Downloads?**
-- `_download_workflows` array must track all completed attempts
-- Each DownloadWorkflow registers its ID at the very start
-- UploadWorkflow checks array length and sets `_download_complete` when >= 10
-- BLOCKING ensures each attempt completes before the next starts
-
-**Why Alias Resolution Inside Twitter?**
-- Eliminates double fire-and-forget chain (Monitor → RAG → Twitter)
-- Aliases are usually cached (pre-warmed during ingestion)
-- Cache miss is rare (~30-90s RAG pipeline)
-- Simpler architecture with fewer workflows
-
-### Activities
-
-| Activity | Timeout | Retries | Notes |
-|----------|---------|---------|-------|
-| `check_event_exists` | 30s | 3 | Graceful termination check |
-| `update_twitter_attempt` | 30s | 3 | Update counter in MongoDB (visibility) |
-| `get_twitter_search_data` | 30s | 3 | Get existing URLs for dedup |
-| `execute_twitter_search` | 180s | 3 | **Heartbeat every 15s** during browser automation |
-| `save_discovered_videos` | 30s | 3 | 2.0x from 2s |
-
-### Twitter Search Heartbeat Pattern
-
-The `execute_twitter_search` activity sends heartbeats every 15 seconds during browser automation:
-
-```python
-# Background asyncio task sends heartbeats
-async def heartbeat_loop():
-    count = 0
-    while not search_complete:
-        await asyncio.sleep(15)
-        if not search_complete:
-            count += 1
-            activity.heartbeat(f"Searching... ({count * 15}s elapsed)")
-
-# Activity runs browser automation in parallel with heartbeat loop
-asyncio.create_task(heartbeat_loop())
-# ... browser operations ...
-search_complete = True  # Stops heartbeat loop
-```
-
-### 1-Minute Timer Logic (START-to-START)
-
-```python
-# Record attempt start time
-attempt_start = workflow.now()
-
-# ... execute search, fire-and-forget download ...
-
-# Wait remainder of 1 minute from START of this attempt
-if attempt < 10:
-    elapsed = (workflow.now() - attempt_start).total_seconds()
-    wait_seconds = max(60 - elapsed, 10)  # 1 min minus elapsed, min 10s
-    await workflow.sleep(timedelta(seconds=wait_seconds))
-```
-
-This ensures exactly 1 minute from the START of one attempt to the START of the next.
-Since downloads are fire-and-forget, searches complete quickly (~30s).
-
----
-
-## 5. DownloadWorkflow
-
-**Trigger**: Child workflow from TwitterWorkflow (per attempt with videos)  
-**Purpose**: Download, validate, filter, deduplicate, upload videos to S3
-
-```
-DownloadWorkflow (parallel processing, heartbeat-based timeouts)
-    │
-    ├── PARALLEL: download_single_video × N
-    │   ├── yt-dlp download to /tmp/{event_id}_{run_id}/
-    │   ├── ffprobe for duration/metadata
-    │   └── IF duration <= 3s OR > 60s: FILTER (skip)
-    │
-    ├── MD5 batch dedup (within downloaded batch only, in-workflow)
-    │   └── Remove identical files before expensive AI/hash steps
-    │
-    ├── SEQUENTIAL: validate_video_is_soccer × N (fail-closed)
-    │   └── IF not football content: REJECT (skip)
-    │
-    ├── PARALLEL: generate_video_hash × N (validated only)
-    │   └── Heartbeat every 5 frames
-    │   └── heartbeat_timeout=60s (kills only truly hung activities)
-    │
-    └── START UploadWorkflow (BLOCKING child, ID: upload-{event_id})
-        └── Serialized per event - only ONE runs at a time
-```
-
-**Key Design Points:**
-- **Parallel processing**: Downloads and hashes run concurrently
-- **Batch-only MD5 dedup**: DownloadWorkflow only dedupes within its batch (S3 dedup in UploadWorkflow)
-- **Heartbeat-based timeouts**: Hash generation uses `heartbeat_timeout=60s`
-- **Unique temp dirs**: Each workflow run gets `/tmp/found-footy/{event_id}_{run_id}/` to prevent conflicts
-- **AI before hash**: Validation runs BEFORE expensive hash generation
-- **Upload delegation**: S3 operations delegated to UploadWorkflow for serialization
-
-### Activities
-
-| Activity | Timeout | Retries | Notes |
-|----------|---------|---------|-------|
-| `download_single_video` | 90s | 3 | 2.0x backoff from 2s |
-| `validate_video_is_soccer` | 90s | 4 | **Heartbeat between each AI call** |
-| `generate_video_hash` | **heartbeat: 60s** | 2 | Heartbeat every 5 frames |
-| `cleanup_download_temp` | 30s | 2 | Only if no videos to upload |
-| `register_download_workflow` | 30s | 3 | Adds workflow ID to array (at START) |
-
----
-
-## 6. UploadWorkflow
-
-**Trigger**: Child workflow from DownloadWorkflow (BLOCKING)  
-**Purpose**: Serialized S3 deduplication and upload per event
-
-```
-UploadWorkflow (ID: upload-{event_id} - SERIALIZED per event)
-    │
-    │  ** Only ONE runs at a time per event - Temporal queues others **
-    │
-    ├── fetch_event_data
-    │   └── Get FRESH _s3_videos from MongoDB (inside serialized context!)
-    │
-    ├── deduplicate_by_md5
-    │   └── Fast exact duplicate removal against S3
-    │   └── Bump popularity for matches, queue replacements
-    │
-    ├── deduplicate_videos (perceptual)
-    │   └── Compare perceptual hashes against S3
-    │   └── Higher quality replaces lower quality
-    │
-    ├── PARALLEL: bump_video_popularity × N
-    │   └── For videos skipped due to lower quality
-    │
-    ├── PARALLEL: upload_single_video × N
-    │   └── Upload new/replacement videos to S3
-    │   └── Replacements reuse existing S3 key (URL stays stable)
-    │
-    ├── save_video_objects (NEW videos only)
-    │   └── Add to MongoDB _s3_videos array
-    │
-    ├── PARALLEL: update_video_in_place × N (for REPLACEMENTS)
-    │   └── Atomic in-place MongoDB update (no add+remove race condition)
-    │   └── Video never disappears during upgrade
-    │
-    ├── recalculate_video_ranks
-    │
-    ├── cleanup_individual_files
-    │   └── Delete individual files after successful upload (NOT temp dir)
-    │
-    └── check_and_mark_download_complete
-        └── If len(_download_workflows) >= 10: set _download_complete=true
-```
-
-**KEY DESIGN: Serialization via Workflow ID**
-
-The workflow ID `upload-{event_id}` is deterministic per event. When multiple 
-DownloadWorkflows try to start UploadWorkflow with the same ID:
-- First one runs immediately
-- Subsequent calls QUEUE (Temporal handles this automatically)
-- Each queued workflow runs AFTER the previous completes
-- S3 state is fetched INSIDE the workflow, so it's always fresh
-
-This eliminates the race condition where two parallel downloads both saw stale S3 
-state and uploaded the same video twice.
-
-### Activities
-
-| Activity | Timeout | Retries | Notes |
-|----------|---------|---------|-------|
-| `fetch_event_data` | 30s | 3 | MongoDB read (FRESH state) |
-| `deduplicate_by_md5` | 30s | 2 | Fast exact match check |
-| `deduplicate_videos` | 60s | 3 | Perceptual hash comparison |
-| `bump_video_popularity` | 15s | 2 | MongoDB update |
-| `upload_single_video` | 60s | 3 | S3 upload |
-| `save_video_objects` | 30s | 3 | MongoDB update (new videos only) |
-| `update_video_in_place` | 30s | 3 | Atomic in-place update for replacements |
-| `recalculate_video_ranks` | 30s | 2 | MongoDB update |
-| `cleanup_individual_files` | 30s | 2 | Delete individual files after upload |
-| `check_and_mark_download_complete` | 30s | 3 | Sets _download_complete when >= 10 workflows |
-
----
-
-## Heartbeat-Based Timeout Strategy
-
-For long-running activities, we use **heartbeat_timeout** instead of arbitrary **execution_timeout**.
-Heartbeats prove the activity is making progress - if no heartbeat for the specified time, the activity is truly hung.
-
-**Activities using heartbeats:**
-
-1. **`execute_twitter_search`**: Heartbeat every 15s during browser automation
-2. **`validate_video_is_soccer`**: Heartbeat between each AI vision call (25%, 75%, 50% tiebreaker). Validates both soccer content AND rejects phone-TV recordings using 2/3 majority vote
-3. **`generate_video_hash`**: Heartbeat every 5 frames
-
-### Hash Generation Heartbeat
-
-```python
-# Activity sends heartbeat every 5 frames
-hash_result = await workflow.execute_activity(
-    download_activities.generate_video_hash,
-    args=[file_path, duration],
-    heartbeat_timeout=timedelta(seconds=60),  # Kill if no progress for 60s
-    start_to_close_timeout=timedelta(seconds=300),  # Safety net
+await workflow.start_child_workflow(
+    TwitterWorkflow.run,
+    TwitterWorkflowInput(...),
+    id=f"twitter-{team}-{player}-{minute}-{event_id}",
+    parent_close_policy=ParentClosePolicy.ABANDON,
+    task_timeout=timedelta(seconds=60),
+    task_queue="found-footy",
 )
-
-# Inside the activity:
-def _generate_perceptual_hash(file_path, duration, heartbeat_fn=None):
-    frame_count = 0
-    while t < duration:
-        # ... process frame ...
-        frame_count += 1
-        if heartbeat_fn and frame_count % 5 == 0:
-            heartbeat_fn()  # Signal "I'm still alive"
 ```
 
-### AI Vision Heartbeat
+Human-readable IDs: `twitter-Liverpool-Szoboszlai-23min-5000_40_234_Goal_1`
+
+---
+
+## RAGWorkflow
+
+**Trigger**: On-demand from IngestWorkflow (pre-caching)  
+**Purpose**: Resolve team aliases via Wikidata SPARQL queries
+
+Pipeline: Team name → Wikidata search → SPARQL for aliases → filter & rank → cache in `team_aliases` collection.
+
+### Activities
+
+| Activity | STC | Retries | Notes |
+|----------|-----|---------|-------|
+| `get_cached_team_aliases` | 10s | 2 | Cache lookup in MongoDB |
+| `get_team_aliases` | 60s | 2 | Full Wikidata pipeline |
+| `save_team_aliases` | 10s | 2 | Save to cache |
+
+---
+
+## TwitterWorkflow
+
+**Trigger**: MonitorWorkflow (fire-and-forget, ABANDON)  
+**Duration**: ~10–15 minutes  
+**ID**: `twitter-{team}-{player}-{minute}-{event_id}`
+
+### What it does
+
+1. **Set `_monitor_complete`** — Proves we're running. If we crash before this, Monitor retries
+2. **Resolve aliases** — Cache lookup (`get_cached_team_aliases`) or full RAG pipeline
+3. **Search loop** — While `len(_download_workflows) < 10` (max 15 attempts):
+   a. Check download count
+   b. Check event still exists (VAR abort)
+   c. Build OR-query: `"(Florian OR Wirtz) (LFC OR Liverpool)"`
+   d. Execute Twitter search (max_age_minutes=3)
+   e. Take top 5 longest videos
+   f. Start DownloadWorkflow (fire-and-forget, ABANDON)
+   g. Wait ~60 seconds (from START of attempt, min 10s)
+
+### Activities
+
+| Activity | STC | Retries | Notes |
+|----------|-----|---------|-------|
+| `set_monitor_complete` | 30s | 5 (2× from 2s) | Critical — retry hard |
+| `get_cached_team_aliases` | 30s | 3 (2× from 2s) | Cache hit path |
+| `get_team_aliases` | 90s | 3 (2× from 5s) | RAG fallback |
+| `save_team_aliases` | 30s | 2 | Save to event for debugging |
+| `get_download_workflow_count` | 30s | 3 (2× from 2s) | While loop condition |
+| `check_event_exists` | 30s | 3 (2× from 2s) | VAR check |
+| `get_twitter_search_data` | 30s | 3 | Get existing URLs for dedup |
+| `execute_twitter_search` | 60s | 3 (1.5× from 10s) | Core search |
+| `save_discovered_videos` | 30s | 3 (2× from 2s) | Save URLs to event |
+
+### Player name handling
+
+`extract_player_search_names()` handles accents and hyphens:
+- "Florian Wirtz" → `["Florian", "Wirtz"]` → `"(Florian OR Wirtz)"`
+- "Mohamed Salah" → `["Salah"]` → `"Salah"`
+
+---
+
+## DownloadWorkflow
+
+**Trigger**: TwitterWorkflow (fire-and-forget, ABANDON)  
+**ID**: `download{N}-{team}-{player}-{event_id}`
+
+### Pipeline
+
+```
+register → download (parallel) → MD5 batch dedup → AI validate (sequential)
+→ timestamp validate → hash (parallel) → signal UploadWorkflow
+```
+
+### Step-by-step
+
+1. **Register** — `$addToSet` workflow ID into `_download_workflows`. Must be FIRST
+2. **Download** — Parallel per-video downloads (3 retries each, 2× from 2s)
+3. **Filter** — Duration 3–60s, aspect ratio ≥ 1.33
+4. **MD5 dedup** — Remove exact duplicates within batch (saves AI calls)
+5. **AI validation** — Sequential (LLM_SEMAPHORE=2 per worker):
+   - Smart 2–3 frame strategy (25%, 75%, tiebreaker at 50%)
+   - 5 questions: SOCCER, SCREEN, CLOCK, ADDED, STOPPAGE_CLOCK
+   - Reject non-soccer or phone-filming-TV
+   - Extract timestamp → `validate_timestamp()` (±3 tolerance)
+   - Result: `timestamp_verified`, `extracted_minute`, `timestamp_status`
+6. **Hash** — Parallel perceptual hash generation (heartbeat every 5 frames)
+7. **Signal Upload** — `queue_videos_for_upload` signals UploadWorkflow via signal-with-start
+
+### Activities
+
+| Activity | STC / Heartbeat | Retries | Notes |
+|----------|----------------|---------|-------|
+| `register_download_workflow` | 30s | 5 | `$addToSet` — idempotent |
+| `check_event_exists` | 30s | 1 | VAR check |
+| `download_single_video` | 90s | 3 (2× from 2s) | Per-video, parallel |
+| `validate_video_is_soccer` | 90s | 4 (2× from 3s) | AI vision, heartbeat between calls |
+| `generate_video_hash` | HB 60s | 2 | Heartbeat every 5 frames |
+| `cleanup_download_temp` | 30s | 2 | On failure |
+| `queue_videos_for_upload` | 60s | 3 | Signal-with-start |
+
+### ALWAYS signals Upload
+
+Even with 0 valid videos, DownloadWorkflow signals UploadWorkflow. This ensures:
+- `check_and_mark_download_complete` runs (checks if 10 downloads registered)
+- The download count increments correctly for the while-loop exit condition
+
+---
+
+## UploadWorkflow
+
+**Trigger**: Signal-with-start from `queue_videos_for_upload`  
+**ID**: `upload-{event_id}` (deterministic — ONE per event)  
+**Pattern**: Signal-based FIFO queue
+
+### How it works
+
+1. Workflow starts (or already running) via signal-with-start
+2. `add_videos` signal handler enqueues batch into `deque`
+3. Main loop: `wait_condition(pending > 0, timeout=5min)`
+4. Process one batch at a time
+5. Idle timeout (no signals for 5 min) → complete
+
+### Batch processing
+
+```
+fetch_event_data → MD5 dedup → scoped perceptual dedup →
+  upload new / replace inferior / bump popularity →
+  save objects → recalculate ranks → cleanup → check completion
+```
+
+### Scoped deduplication (via asyncio.gather)
 
 ```python
-# Heartbeat between each AI vision call
-activity.heartbeat("AI vision check 1/2 (25% frame)...")
-response_25 = await _call_vision_model(frame_25, prompt)
-
-activity.heartbeat("AI vision check 2/2 (75% frame)...")
-response_75 = await _call_vision_model(frame_75, prompt)
-
-# Tiebreaker (if needed)
-activity.heartbeat("AI vision tiebreaker (50% frame)...")
-response_50 = await _call_vision_model(frame_50, prompt)
+verified_result, unverified_result = await asyncio.gather(
+    deduplicate_pool(verified_videos, verified_s3_videos),
+    deduplicate_pool(unverified_videos, unverified_s3_videos),
+)
 ```
 
-**Benefits:**
-- Activities aren't killed while waiting in queue (`schedule_to_start_timeout` removed)
-- Long videos (~45s, ~180 frames) complete successfully
-- Truly hung activities are killed after 30s of no progress
+Each pool is an independent Temporal activity with `heartbeat_timeout=120s` and `start_to_close_timeout=1h`. Zero shared state → true parallelism.
 
-### Perceptual Hash (Dense Sampling)
+### Upload outcomes (per video)
+
+| Outcome | Action | Fields Updated |
+|---------|--------|---------------|
+| **New** | `upload_single_video` | s3_url, perceptual_hash, timestamp_verified, etc. |
+| **Replace** | `replace_s3_video` + `update_video_in_place` | All fields of replaced video |
+| **Duplicate** | `bump_video_popularity` | popularity += 1 |
+
+### Activities
+
+| Activity | STC / Heartbeat | Retries | Notes |
+|----------|----------------|---------|-------|
+| `fetch_event_data` | 30s | 3 | Returns existing S3 videos + timestamp fields |
+| `deduplicate_by_md5` | 30s | 2 | Fast exact dedup |
+| `deduplicate_videos` | HB 120s, STC 1h | 3 | Scoped perceptual dedup |
+| `upload_single_video` | 60s | 3 | S3 PUT + metadata |
+| `update_video_in_place` | 30s | 3 | Atomic replacement in MongoDB |
+| `replace_s3_video` | 30s | 3 | S3 DELETE + PUT |
+| `bump_video_popularity` | 15s | 2 | Increment counter |
+| `save_video_objects` | 30s | 3 | Persist to MongoDB |
+| `recalculate_video_ranks` | 30s | 2 | Sort: verified → popularity → file_size |
+| `cleanup_individual_files` | 30s | 2 | Delete processed temp files |
+| `cleanup_fixture_temp_dirs` | 60s | 2 | Full fixture cleanup on completion |
+| `cleanup_upload_temp` | 30s | 2 | Single batch temp cleanup |
+| `check_and_mark_download_complete` | 30s | 3 | Set `_download_complete` at count ≥ 10 |
+
+---
+
+## Perceptual Hash Algorithm
+
+### Generation
+
+1. Sample frames every **0.25 seconds** (dense sampling)
+2. Apply **histogram equalization** (normalize brightness)
+3. Compute **dHash** (difference hash) — 64-bit per frame
+4. Format: `dense:0.25:<ts>=<hash>,<ts>=<hash>,...`
+
+### Matching
+
+**Offset-tolerant comparison**: Tries all possible time alignments between two videos. For each offset:
+- Walk through frames at matching timestamps
+- Frame match = Hamming distance ≤ 10 bits (of 64)
+- Require **3 consecutive matching frames** at consistent offset
+
+### Quality comparison
+
+When two videos match by perceptual hash:
+- **Durations within 15%** → same clip → prefer **larger file** (higher resolution)
+- **Durations differ >15%** → different clips → prefer **longer duration** (more content)
+
+---
+
+## Retry & Timeout Strategy
+
+### Principles
+
+1. **Heartbeat > timeout** for long operations — proves progress, doesn't set arbitrary limits
+2. **STC (start-to-close)** for bounded operations — known maximum duration
+3. **Exponential backoff** for transient failures — API rate limits, network blips
+4. **Low retry count** for permanent failures — don't hammer a dead service
+
+### Heartbeat patterns
+
+| Activity | Heartbeat Interval | What it reports |
+|----------|--------------------|-----------------|
+| `generate_video_hash` | Every 5 frames | Frame count processed |
+| `deduplicate_videos` | 120s | Pool processing status |
+| `execute_twitter_search` | 15s | Search progress |
+
+### Timeout hierarchy
+
+```
+Workflow execution: No timeout (runs to completion)
+Task timeout: 60–180s (replay + new work)
+Activity STC: 10s–1h (depends on operation)
+Activity heartbeat: 15s–120s (proves liveness)
+```
+
+---
+
+## Structured Logging
+
+All workflows use `src.utils.footy_logging` for Grafana/Loki-compatible JSON output:
 
 ```python
-def compute_perceptual_hash(file_path, duration):
-    """
-    Dense sampling perceptual hash with histogram equalization.
-    Handles videos with different start times (offsets).
-    
-    Algorithm:
-    1. Sample frames every 0.25 seconds
-    2. Apply histogram equalization (normalize contrast)
-    3. Resize to 9x8 grayscale
-    4. Compute dHash (64-bit difference hash) per frame
-    
-    Format: "dense:0.25:<ts1>=<hash1>,<ts2>=<hash2>,..."
-    """
-    interval = 0.25
-    hashes = []
-    t = interval
-    while t < duration - 0.3:
-        frame = extract_frame(file_path, t)
-        img = ImageOps.equalize(frame.convert('L'))  # Histogram equalization
-        img = img.resize((9, 8), Image.Resampling.LANCZOS)
-        
-        # Compute dHash: compare adjacent pixels
-        pixels = list(img.getdata())
-        hash_bits = []
-        for row in range(8):
-            for col in range(8):
-                hash_bits.append('1' if pixels[row*9+col] < pixels[row*9+col+1] else '0')
-        hash_hex = format(int(''.join(hash_bits), 2), '016x')
-        hashes.append(f"{t:.2f}={hash_hex}")
-        t += interval
-    
-    return f"dense:{interval}:{','.join(hashes)}"
+log.info(workflow.logger, MODULE, "action_name", "Human message",
+         event_id=event_id, count=5)
 ```
 
-### Matching Algorithm (3 Consecutive Frames)
+Output: `{"level": "INFO", "module": "download_workflow", "action": "action_name", "msg": "Human message", "event_id": "...", "count": 5, "ts": "..."}`
 
-**Problem**: Single-frame matching causes false positives between similar content (e.g., two goals in same match).
-
-**Solution**: Require 3 consecutive frames to match at a consistent time offset.
-
-```python
-def hashes_match(hash_a, hash_b, max_hamming=10, min_consecutive=3):
-    """
-    Check if two dense hashes represent the same video.
-    
-    Algorithm:
-    1. Try all possible time offsets between videos
-    2. For each offset, count consecutive matching frames
-    3. Return True if any offset has >= 3 consecutive matches
-    
-    A frame matches if hamming distance <= 10 bits (of 64).
-    """
-```
-
-**Why 3 consecutive?** Random similarity might match 1-2 frames, but 3 consecutive frames at the same offset strongly indicates the same video content.
-
-### Popularity Scoring
-
-**Purpose**: Track how many times the same video content is discovered (higher = more trusted)
-
-**Two-Phase Deduplication** (batch-first for efficiency):
-
-Uses **percentage-based duration comparison** (15% threshold):
-- Durations within 15% → "same clip" → prefer **larger file** (higher resolution)
-- Durations differ >15% → "different clips" → prefer **longer duration**
-
-```
-PHASE 1: Batch Dedup
-├── Compare videos within current download batch (perceptual hash matching)
-├── Check duration similarity:
-│   ├── IF all within 15% of longest → prefer RESOLUTION (largest file_size)
-│   └── IF durations vary >15% → prefer LENGTH (longest duration)
-├── Sum popularities: winner.pop += loser.pop
-└── Delete lower quality local files
-
-PHASE 2: S3 Dedup
-├── Compare batch winners against existing S3 videos
-├── Check duration similarity (same 15% threshold):
-│   ├── IF within 15%: compare by file_size
-│   └── IF >15% different: compare by duration
-├── IF batch wins: REPLACE (upload batch, delete S3)
-│   └── New popularity = batch.pop + s3.pop
-├── IF S3 wins: SKIP (keep S3)
-│   └── Bump S3 popularity += batch.pop
-└── IF no S3 match: UPLOAD (new video)
-```
-
-**Why percentage-based?**
-- 10s vs 15s = 50% diff → different clips, keep longer (more complete)
-- 60s vs 65s = 8% diff → same clip trimmed differently, keep higher resolution
-
-**Why batch-first?** If 3 copies of same video come from different alias searches (Liverpool, LFC, Reds), we reduce to 1 winner BEFORE hitting S3. This means 1 S3 operation instead of 3.
-
----
-
-## Event Enhancement Fields
-
-| Field | Type | Set By | When |
-|-------|------|--------|------|
-| `_event_id` | string | Monitor | When first seen |
-| `_monitor_workflows` | array | Monitor | Each poll (workflow ID added) |
-| `_monitor_complete` | bool | TwitterWorkflow | At start of TwitterWorkflow |
-| `_twitter_aliases` | array | TwitterWorkflow | At start (alias resolution) |
-| `_download_workflows` | array | DownloadWorkflow | At start of each download |
-| `_download_complete` | bool | UploadWorkflow | When len(_download_workflows) >= 10 |
-| `_first_seen` | datetime | Monitor | When first detected |
-| `_removed` | bool | Monitor | When VAR disallows |
-| `_discovered_videos` | array | TwitterWorkflow | After each search |
-| `_s3_videos` | array | UploadWorkflow | After upload |
-
----
-
-## Timeline Example
-
-```
-T+0:00  Goal scored! Event appears in API
-
-T+0:30  Monitor poll #1
-        → NEW event detected
-        → _monitor_workflows = ["monitor-T0:30"]
-
-T+1:00  Monitor poll #2
-        → Event still present
-        → _monitor_workflows = ["monitor-T0:30", "monitor-T1:00"]
-
-T+1:30  Monitor poll #3
-        → _monitor_workflows = [..., "monitor-T1:30"] (len=3)
-        → TwitterWorkflow started (fire-and-forget)
-
-T+1:35  TwitterWorkflow starts
-        → set_monitor_complete(true) ← FIRST THING
-        → get_team_aliases("Liverpool") → ["Liverpool"]
-        → Search Attempt 1
-
-T+1:40  TwitterWorkflow Attempt 1
-        → get_download_workflow_count() returns 0
-        → Search "Salah Liverpool" → 4 videos
-        → DownloadWorkflow (BLOCKING)
-          → register_download_workflow() ← FIRST THING (len=1)
-          → 3 uploaded
-          → check_and_mark_download_complete() → len=1, not complete
-        → workflow.sleep(~3 min)
-
-T+6:00  TwitterWorkflow Attempt 2
-        → get_download_workflow_count() returns 1
-        → Search (with exclude_urls) → 1 new video
-        → DownloadWorkflow (BLOCKING)
-          → register_download_workflow() ← (len=2)
-          → 1 uploaded
-          → check_and_mark_download_complete() → len=2, not complete
-        → workflow.sleep(~3 min)
-
-...     (Attempts 3-9 continue with sleep between each)
-
-T+30:00 TwitterWorkflow Attempt 10
-        → get_download_workflow_count() returns 9
-        → Search → 0 new videos
-        → DownloadWorkflow (BLOCKING, even with 0 videos!)
-          → register_download_workflow() ← (len=10)
-          → check_and_mark_download_complete() → len=10!
-          → _download_complete = TRUE
-
-T+31:00 Monitor poll after Twitter complete
-        → Fixture status = FT
-        → All events: _monitor_complete = TRUE, _download_complete = TRUE
-        → complete_fixture_if_ready: _completion_count = 1
-
-T+31:30 Monitor poll #2
-        → complete_fixture_if_ready: _completion_count = 2
-
-T+32:00 Monitor poll #3
-        → complete_fixture_if_ready: _completion_count = 3
-        → Fixture moved to fixtures_completed
-```
-
-### Completion Counter Logic
-
-The completion counter **only starts** after ALL events are fully processed:
-
-```
-complete_fixture_if_ready flow:
-    │
-    ├── 1. Check ALL events have _monitor_complete = TRUE
-    │   └── If not: return False (don't increment counter)
-    │
-    ├── 2. Check ALL events have _download_complete = TRUE
-    │   └── If not: return False (don't increment counter)
-    │
-    ├── 3. ONLY NOW: increment _completion_count (1 → 2 → 3)
-    │   └── Logs "COMPLETION STARTED" on first increment
-    │
-    └── 4. When count >= 3 (or winner data exists):
-        └── Move fixture to fixtures_completed
-```
-
-This ensures the 3-minute completion debounce doesn't start ticking while
-Twitter workflows are still running. The counter only measures "stability
-after all processing is done".
-
----
-
-## Retry Strategy Summary
-
-| Activity Type | Max Attempts | Initial Interval | Backoff |
-|--------------|--------------|------------------|---------|
-| MongoDB reads | 2-3 | 1s | 2.0x |
-| MongoDB writes | 3 | 1s | 2.0x |
-| API-Football | 3 | 1s | 2.0x |
-| Twitter search | 3 | 10s | 1.5x |
-| Video download | 3 | 2s | 2.0x |
-| S3 upload | 3 | 2s | 1.5x |
-
----
-
-## Error Handling
-
-### TwitterWorkflow fails mid-attempt
-- Temporal retries the workflow from last checkpoint
-- `_download_workflows` array shows which attempts completed
-- Previously downloaded videos are preserved in S3
-
-### Worker crashes during sleep
-- Durable timer (`workflow.sleep`) survives restarts
-- Workflow resumes after timer expires
-- No lost state
-
-### LLM unavailable (future)
-- TwitterWorkflow alias resolution falls back to `[team_name]`
-- Search still works with single alias
-
-### Event removed (VAR)
-- Event marked `_removed = TRUE`
-- Ignored in completion checks
-- Running workflows continue but results are orphaned
-
----
-
-## Logging Conventions
-
-All activities use **structured logging** with consistent prefixes for easy filtering and debugging.
-
-### Activity Log Prefixes
-
-| Prefix | Activity | Example |
-|--------|----------|---------|
-| `[MONITOR]` | Monitor activities | `[MONITOR] Activated fixture \| id=123 \| match=Liverpool vs Arsenal` |
-| `[TWITTER]` | Twitter search activities | `[TWITTER] Search complete \| query='Salah Liverpool' \| found=4 videos` |
-| `[DOWNLOAD]` | Video download | `[DOWNLOAD] Starting download \| event=123_45_Goal_1 \| video_idx=0` |
-| `[VALIDATE]` | AI vision validation | `[VALIDATE] PASSED validation \| event=123_45_Goal_1 \| checks=2` |
-| `[HASH]` | Perceptual hash | `[HASH] Generated hash \| frames=120 \| interval=0.25s` |
-| `[DEDUP]` | Deduplication | `[DEDUP] Clustered videos \| clusters=3 \| from_downloads=5` |
-| `[UPLOAD]` | S3 upload | `[UPLOAD] Uploaded to S3 \| event=123_45_Goal_1 \| url=/video/footy/...` |
-| `[RAG]` | RAG workflow | `[RAG] Processing event \| team=Liverpool \| player=Salah` |
-
-### Log Levels
-
-| Emoji | Level | Meaning |
-|-------|-------|---------|
-| ✅ | INFO | Successful operation |
-| ⚠️ | WARNING | Non-critical issue, continuing |
-| ❌ | ERROR | Critical failure, may retry |
-| 📥 | INFO | Starting operation |
-| 🔍 | INFO | Search/lookup operation |
-| 💾 | INFO | Database write |
-| ☁️ | INFO | Cloud operation (S3) |
-| 🏁 | INFO | Completion marker |
-
-### Example Log Output
-
-```
-📥 [DOWNLOAD] fetch_event_data | fixture=123456 | event=123456_45_306_Goal_1
-✅ [DOWNLOAD] Found videos | event=123456_45_306_Goal_1 | count=3
-📥 [DOWNLOAD] Starting download | event=123456_45_306_Goal_1 | video_idx=0
-🔍 [VALIDATE] AI vision check 1/2 | SOCCER=YES | SCREEN=NO
-✅ [VALIDATE] PASSED validation | event=123456_45_306_Goal_1 | checks=2
-🔐 [HASH] Starting hash generation | file=video.mp4 | duration=15.2s
-✅ [HASH] Generated hash | frames=60 | interval=0.25s
-☁️ [UPLOAD] Starting S3 upload | event=123456_45_306_Goal_1 | quality=1920x1080
-✅ [UPLOAD] Uploaded to S3 | event=123456_45_306_Goal_1 | url=/video/footy-videos/...
-```
+Set `LOG_FORMAT=pretty` for development-friendly colored output.

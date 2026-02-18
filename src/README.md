@@ -12,12 +12,12 @@ src/
 │   ├── download_workflow.py    # Per event - download, validate, hash, MD5 dedup
 │   └── upload_workflow.py      # Per event - serialized S3 dedup and upload
 ├── activities/             # Temporal activities (actual work)
-│   ├── ingest.py          # Fetch and categorize fixtures (2 activities)
-│   ├── monitor.py         # Activate, fetch, compare, process_fixture_events (9 activities)
-│   ├── rag.py             # Team alias RAG (Wikidata + LLM) (4 activities)
-│   ├── twitter.py         # Check, get_data, search, save, update (5 activities)
-│   ├── download.py        # Download, validate, hash, cleanup, count (5 activities)
-│   └── upload.py          # S3 dedup, upload, save, cleanup (9 activities)
+│   ├── ingest.py          # Fetch and categorize fixtures (4 activities)
+│   ├── monitor.py         # Activate, fetch, compare, process events (10 activities)
+│   ├── rag.py             # Team alias RAG — Wikidata + LLM (3 activities)
+│   ├── twitter.py         # Search, save, monitor_complete, count (6 activities)
+│   ├── download.py        # Download, AI validate, hash, register (7 activities)
+│   └── upload.py          # Scoped dedup, S3 upload, rank, cleanup (12 activities)
 ├── data/                  # Data layer
 │   ├── mongo_store.py     # MongoDB operations (5-collection architecture)
 │   └── s3_store.py        # MinIO S3 operations
@@ -41,12 +41,14 @@ MonitorWorkflow (every 30 seconds)
         ├─> Resolves aliases at start (from cache)
         ├─> 10 search attempts with ~3min sleep between
         ↓ triggers for each batch of videos found
-      DownloadWorkflow (BLOCKING per batch)
-        ├─> Download, validate (AI), hash, MD5 dedup
-        ↓ delegates to
-      UploadWorkflow (BLOCKING, serialized per event)
+      DownloadWorkflow (fire-and-forget per attempt)
+        ├─> Register in _download_workflows ($addToSet)
+        ├─> Download, AI validate (clock extraction), hash, MD5 dedup
+        ↓ signals via signal-with-start
+      UploadWorkflow (serialized per event, signal-based FIFO)
         ├─> Deterministic ID: upload-{event_id}
-        └─> S3 dedup, upload, save to MongoDB
+        ├─> Scoped dedup (verified vs unverified pools, asyncio.gather)
+        └─> S3 upload, rank (verified → popularity → file_size)
 ```
 
 ## Key Features
@@ -54,7 +56,10 @@ MonitorWorkflow (every 30 seconds)
 - **Set-based debounce**: Event ID includes player_id, no hash comparison needed
 - **Inline processing**: MonitorWorkflow processes events directly (no separate EventWorkflow)
 - **Serialized S3 ops**: UploadWorkflow with deterministic ID prevents race conditions
+- **Scoped dedup**: Verified and unverified videos deduped in separate pools
+- **AI clock extraction**: Qwen3-VL-8B extracts broadcast clock, validates ±3 min vs API
 - **Per-video retry**: Download activities have individual retries
+- **Auto-scaling**: Scaler manages 2–8 worker/Twitter instances
 - **Firefox automation**: Twitter search via browser with saved profile
 
 ## Quick Start
