@@ -22,8 +22,8 @@ When the API re-attributes a goal — player name changes, goal becomes own goal
 
 Fixture `1520391` — Atletico Madrid 4-0 Barcelona. Garcia own goal at 6'.
 
-1. `T+0:00` — Goal detected as Garcia (Barcelona, team 529) goal. Event ID: `1520391_529_619_Goal_1`. Score becomes 0-1. Videos downloaded, uploaded to S3.
-2. `T+25:00` — API corrects: own goal. Old event disappears. New event appears: `1520391_530_619_Goal_1` — now `team.id=530` (Atletico, the benefiting team). Score is 1-0.
+1. `T+0:00` — Goal at 6'. API attributes to Griezmann (Atletico, team 530). Event ID: `1520391_530_194_Goal_1`. Score: 1-0. Videos downloaded, uploaded to S3.
+2. `T+25:00` — API corrects: Garcia own goal (player 619), not Griezmann. `team.id` stays 530 (Atletico benefited). Old event disappears, new event: `1520391_530_619_Goal_1`. `_score_after` unchanged (`"1-0"`).
 3. `T+25:00` — Old event enters drop pipeline. Videos scheduled for deletion.
 4. `T+27:30` — Old event deleted (3 drop cycles). S3 videos gone.
 5. `T+27:30` — New event starts fresh debounce.
@@ -57,8 +57,8 @@ When a goal is re-attributed (scorer correction, goal→own goal, assist change)
 | Re-Attribution Type | What Changes | `_score_after` | Matches? |
 |---------------------|-------------|----------------|----------|
 | Scorer correction (Garcia → Gonzalez) | `player_id`, event ID | Same | ✅ |
-| Goal → Own Goal | `team_id`, `player_id`, `detail`, event ID | Same | ✅ |
-| Own Goal → Goal | `team_id`, `player_id`, `detail`, event ID | Same | ✅ |
+| Goal → Own Goal | `player_id`, `detail`, event ID | Same | ✅ |
+| Own Goal → Goal | `player_id`, `detail`, event ID | Same | ✅ |
 | Assist added/changed | `assist` field only (event ID unchanged) | Same | N/A (no ID change) |
 | Minute drift (45→46) | `time.elapsed` | Same | ✅ |
 | VAR disallowed goal | Event removed entirely, no replacement | N/A | No match (correct) |
@@ -85,30 +85,7 @@ Verified against real API data from Atletico Madrid 4-0 Barcelona (fixture `1520
 
 **Key finding:** `team.id = 530` (Atletico Madrid) — the **benefiting team**, not Garcia's team (Barcelona, 529). This means `calculate_score_context()` is correct: it increments the score for `event.team.id`, which is always the team that gained the goal regardless of normal/own-goal attribution.
 
-Therefore `_score_after` computes identically for both:
-- Original: Garcia (team 529) Normal Goal → score increments for team 529 → `_score_after = "0-1"`
-- Corrected: Garcia (team 530) Own Goal → score increments for team 530 → `_score_after = "1-0"`
-
-Wait — these are different. The API **changes `team.id`** when re-attributing as own goal. So `_score_after` from the original event (`"0-1"` computed with the old `team.id=529`) would NOT match the new event's `_score_after` (`"1-0"` computed with `team.id=530`).
-
-**Resolution:** The physical goal is the same moment, but `_score_after` is perspective-dependent on `team.id`. For own goal re-attributions, we need a fallback: **same minute AND the score values are transposed** (home/away swapped). In practice, this means the matching algorithm should:
-
-1. Try exact `_score_after` match first (handles scorer corrections, minute drift)
-2. Fall back to minute match + transposed `_score_after` (handles goal↔own goal)
-
-Actually, let's reconsider. The `_score_after` on the **already-stored** old event was computed when it was first ingested. If it was originally detected as a Normal Goal by Garcia (team 529 = Barcelona = away team), then `_score_after` was computed as `"0-1"` (away team scored). When it re-appears as an Own Goal (team 530 = Atletico = home team), the new `_score_after` would be `"1-0"` (home team benefits).
-
-These are the same physical scoreline from different perspectives. The matching logic needs to handle this: **for goal↔own goal transitions, the score digits are swapped** (`"0-1"` ↔ `"1-0"`).
-
-### Revised Matching Criteria
-
-| Criterion | Why |
-|-----------|-----|
-| **Same monitor cycle** | Removed and added in the same `process_fixture_events` call |
-| **Same event `type`** | Both are "Goal" type events |
-| **Score match** | Either: (a) same `_score_after`, OR (b) transposed `_score_after` with same minute |
-
-The transposed check covers goal↔own goal where `team.id` flips between home/away.
+**Key implication for matching:** `team.id` does **not** change during re-attributions. The API always identifies the correct benefiting team — it's obvious which net the ball went in. What changes is the *player attribution* (who scored it) and possibly the *detail* (Normal Goal → Own Goal). Since `team.id` stays the same, `calculate_score_context()` produces the same `_score_after` for both the original and corrected events. **Exact `_score_after` matching works for all re-attribution types, including own goals.**
 
 ---
 
@@ -165,14 +142,6 @@ Inside `process_fixture_events()`, between computing `new_ids` / `removed_ids` a
 ### Matching Algorithm (Step 3)
 
 ```python
-def _transpose_score(score_after: str) -> str:
-    """Swap home/away in a score string: '1-0' → '0-1'."""
-    parts = score_after.split("-")
-    if len(parts) == 2:
-        return f"{parts[1]}-{parts[0]}"
-    return score_after
-
-
 def find_event_matches(
     new_ids: set[str],
     removed_ids: set[str],
@@ -183,7 +152,7 @@ def find_event_matches(
     """
     Find removed/new event pairs that represent the same goal moment.
     
-    Primary signal: _score_after match (exact or transposed for OG flips).
+    Primary signal: exact _score_after match.
     Fallback: same minute + same type (for events without _score_after).
     
     Returns list of (removed_event_id, new_event_id) tuples.
@@ -218,15 +187,6 @@ def find_event_matches(
             
             # Primary: exact _score_after match
             if removed_score and new_score and removed_score == new_score:
-                matches.append((removed_id, new_id))
-                used_new.add(new_id)
-                used_removed.add(removed_id)
-                break
-            
-            # Secondary: transposed _score_after (goal ↔ own goal, team flips)
-            if (removed_score and new_score 
-                    and _transpose_score(removed_score) == new_score
-                    and removed_minute == new_minute):
                 matches.append((removed_id, new_id))
                 used_new.add(new_id)
                 used_removed.add(removed_id)
@@ -315,14 +275,9 @@ Team A scores at minute 30 (`_score_after: "1-0"`). VAR removes it (event disapp
 
 Event disappears in cycle N, reappears in N+1, disappears in N+2 with a new player. Matching only runs within a single cycle, so this never triggers matching. The event follows the normal drop path. Correct — cross-cycle changes aren't simple re-attributions.
 
-### 4. Own goal: `_score_after` transposes
+### 4. Own goal re-attribution — `_score_after` is stable
 
-When goal→own goal, the API flips `team.id` from the scorer's team to the benefiting team. `_score_after` is computed from `team.id`'s perspective, so the values transpose:
-
-- Original: Garcia (team 529, Barcelona=away) Normal Goal → `_score_after = "0-1"`
-- Corrected: Garcia (team 530, Atletico=home) Own Goal → `_score_after = "1-0"`
-
-The transposed check handles this: `_transpose_score("0-1") == "1-0"` ✅. The additional minute guard prevents false matches from unrelated transposed scores at different minutes.
+When Normal Goal → Own Goal, the API changes `player_id` and `detail` but keeps `team.id` the same — the benefiting team was always correct (it's obvious which net the ball went in). Since `calculate_score_context()` uses `team.id` to determine which side of the score to increment, `_score_after` is identical for both attributions. Exact `_score_after` matching handles this with no special logic.
 
 ### 5. In-flight TwitterWorkflow
 
@@ -393,7 +348,7 @@ This creates an audit trail: `_matched_from: "1520391_529_619_Goal_1"` on the ne
 | # | Task | Notes |
 |---|------|-------|
 | 1 | Add `MATCHED_FROM` to `EventFields` | Trivial |
-| 2 | Write `find_event_matches()` helper | Pure function, easy to unit test. Includes `_transpose_score()` |
+| 2 | Write `find_event_matches()` helper | Pure function, easy to unit test |
 | 3 | Write `create_matched_event()` helper | Builds new event with carried state + conditional `_monitor_complete` |
 | 4 | Integrate into `process_fixture_events()` | Insert between new/removed computation |
 | 5 | Unit tests for matching logic | Test all edge cases above |
