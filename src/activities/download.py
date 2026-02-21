@@ -1151,18 +1151,21 @@ STOPPAGE_CLOCK: <exact sub-timer text> or NONE"""
         reason = "Rejected: phone recording of TV/screen detected"
         log.info(activity.logger, "download", "validate_rejected",
                  "Video rejected: phone-TV recording",
+                 rejection_type="screen_recording",
                  event_id=event_id, checks=checks_performed, is_screen=True,
                  clocks=extracted_clocks)
     elif not is_soccer:
         reason = soccer_reason
         log.info(activity.logger, "download", "validate_rejected",
                  "Video rejected: not soccer",
+                 rejection_type="not_soccer",
                  event_id=event_id, checks=checks_performed, reason=soccer_reason,
                  clocks=extracted_clocks)
     elif timestamp_status == "rejected":
         reason = f"Rejected: wrong game minute (expected ~{event_minute + (event_extra or 0) - 1}, got {extracted_minute})"
         log.info(activity.logger, "download", "validate_rejected",
                  "Video rejected: wrong timestamp",
+                 rejection_type="wrong_timestamp",
                  event_id=event_id, checks=checks_performed,
                  expected=event_minute + (event_extra or 0) - 1,
                  extracted=extracted_minute, clocks=extracted_clocks)

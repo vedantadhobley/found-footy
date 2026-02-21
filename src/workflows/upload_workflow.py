@@ -394,7 +394,14 @@ class UploadWorkflow:
         log.info(workflow.logger, MODULE, "perceptual_dedup_complete",
                  "Perceptual dedup complete",
                  new=len(videos_to_upload), replacements=len(videos_to_replace),
-                 skipped=len(skipped_urls), event_id=event_id)
+                 skipped=len(skipped_urls),
+                 verified_new=len(verified_result.get("videos_to_upload", [])),
+                 verified_replaced=len(verified_result.get("videos_to_replace", [])),
+                 verified_skipped=len(verified_result.get("skipped_urls", [])),
+                 unverified_new=len(unverified_result.get("videos_to_upload", [])),
+                 unverified_replaced=len(unverified_result.get("videos_to_replace", [])),
+                 unverified_skipped=len(unverified_result.get("skipped_urls", [])),
+                 event_id=event_id)
         
         # =========================================================================
         # Step 4: Bump popularity for existing videos
@@ -649,9 +656,17 @@ class UploadWorkflow:
         # =========================================================================
         await self._cleanup_uploaded_files(all_uploads, s3_urls, event_id)
         
+        # Count timestamp breakdown for uploaded videos
+        uploaded_verified = sum(1 for v in video_objects if v.get("timestamp_verified"))
+        uploaded_unverified = len(video_objects) - uploaded_verified
+        
         log.info(workflow.logger, MODULE, "batch_uploaded",
                  "Batch uploaded",
-                 uploaded=len(video_objects), event_id=event_id)
+                 uploaded=len(video_objects),
+                 replaced=len(successful_replacements),
+                 timestamp_verified=uploaded_verified,
+                 timestamp_unverified=uploaded_unverified,
+                 event_id=event_id)
         
         return {
             "fixture_id": fixture_id,

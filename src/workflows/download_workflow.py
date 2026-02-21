@@ -322,8 +322,18 @@ class DownloadWorkflow:
                     # Track timestamp rejections separately for stats
                     if validation.get("timestamp_status") == "rejected":
                         download_stats["timestamp_rejected"] += 1
+                    # Determine rejection_type for Grafana filtering
+                    if validation.get('is_screen_recording', False):
+                        rejection_type = "screen_recording"
+                    elif not validation.get('is_soccer', True):
+                        rejection_type = "not_soccer"
+                    elif validation.get('timestamp_status') == "rejected":
+                        rejection_type = "wrong_timestamp"
+                    else:
+                        rejection_type = "unknown"
                     log.info(workflow.logger, MODULE, "video_rejected",
                              "Video filtered by AI validation",
+                             rejection_type=rejection_type,
                              reason=validation.get('reason', 'unknown'),
                              is_soccer=validation.get('is_soccer', False),
                              is_screen_recording=validation.get('is_screen_recording', False),
@@ -352,9 +362,16 @@ class DownloadWorkflow:
         download_stats["ai_rejected"] = rejected_count
         download_stats["ai_validation_failed"] = validation_failed_count
         
+        # Count timestamp breakdown for validated (passed) videos
+        timestamp_verified_count = sum(1 for v in validated_videos if v.get("timestamp_verified"))
+        timestamp_unverified_count = sum(1 for v in validated_videos if v.get("timestamp_status") == "unverified")
+        
         log.info(workflow.logger, MODULE, "validation_complete",
                  "Validation complete", passed=len(validated_videos),
-                 not_soccer=rejected_count, validation_errors=validation_failed_count,
+                 rejected=rejected_count, validation_errors=validation_failed_count,
+                 timestamp_verified=timestamp_verified_count,
+                 timestamp_unverified=timestamp_unverified_count,
+                 timestamp_rejected=download_stats["timestamp_rejected"],
                  event_id=event_id)
         
         # =========================================================================
@@ -465,7 +482,8 @@ class DownloadWorkflow:
         
         log.info(workflow.logger, MODULE, "workflow_complete",
                  "DownloadWorkflow COMPLETE",
-                 uploaded=videos_uploaded, s3_urls=len(s3_urls), event_id=event_id)
+                 uploaded=videos_uploaded, s3_urls=len(s3_urls),
+                 event_id=event_id, **download_stats)
         
         return {
             "fixture_id": fixture_id,
