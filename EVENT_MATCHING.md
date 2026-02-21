@@ -18,17 +18,19 @@ When the API re-attributes a goal — player name changes, goal becomes own goal
 
 **By the time the new event finishes searching, 30+ minutes have passed since the actual goal.** Twitter's freshest video results are long gone. The videos we already had from the original event — which showed the same goal — are deleted.
 
-### Real Example: Garcia Own Goal (2026-02-17)
+### Real Example: Garcia Own Goal (Atletico Madrid vs Barcelona, 2026-02-12)
 
-1. `T+0:00` — Goal detected. Event ID: `123456_100_Garcia_Goal_1`. Videos downloaded, uploaded to S3.
-2. `T+25:00` — API corrects: it was an own goal. Event `123456_100_Garcia_Goal_1` disappears. New event `123456_200_OpponentPlayer_Goal_1` appears (own goals get attributed to the scoring team, different `team_id`).
+Fixture `1520391` — Atletico Madrid 4-0 Barcelona. Garcia own goal at 6'.
+
+1. `T+0:00` — Goal detected as Garcia (Barcelona, team 529) goal. Event ID: `1520391_529_619_Goal_1`. Score becomes 0-1. Videos downloaded, uploaded to S3.
+2. `T+25:00` — API corrects: own goal. Old event disappears. New event appears: `1520391_530_619_Goal_1` — now `team.id=530` (Atletico, the benefiting team). Score is 1-0.
 3. `T+25:00` — Old event enters drop pipeline. Videos scheduled for deletion.
 4. `T+27:30` — Old event deleted (3 drop cycles). S3 videos gone.
 5. `T+27:30` — New event starts fresh debounce.
 6. `T+29:00` — New event stable (3 polls). TwitterWorkflow starts.
-7. `T+39:00` — TwitterWorkflow finishes. But searching "Garcia own goal" 30 minutes late yields poor results.
+7. `T+39:00` — TwitterWorkflow finishes. But searching 30 minutes late yields poor results.
 
-**The videos we deleted at T+27:30 literally showed the same goal moment.** We just didn't know the attribution would change.
+**The videos we deleted at T+27:30 literally showed the same goal moment.**
 
 ---
 
@@ -36,33 +38,79 @@ When the API re-attributes a goal — player name changes, goal becomes own goal
 
 When an event is removed and a new event appears **in the same monitor cycle**, check if they represent the same goal moment. If they match, carry the old event's state (videos, workflows, tracking fields) over to the new event instead of starting fresh.
 
-### Matching Criteria
+### Matching Criteria: `_score_after` as Primary Signal
 
 Two events match if ALL of the following are true:
 
 | Criterion | Why |
 |-----------|-----|
 | **Same monitor cycle** | Removed and added in the same `process_fixture_events` call |
-| **Same minute** | `time.elapsed` matches (both events refer to the same match moment) |
-| **Same scoring team** | The team that scored the goal is the same (see below) |
+| **Same `_score_after`** | Identical score fingerprint = same physical goal moment |
+| **Same event `type`** | Both are "Goal" type events (guard against type changes) |
 
-### Why "Same Scoring Team" Works
+### Why `_score_after` Works
 
-This is the key insight. When a goal is re-attributed, the **scoring team** doesn't change — only the credited player does:
+`_score_after` is a string like `"1-0"` representing what the scoreboard shows after this goal. It's a **unique fingerprint per goal** within a fixture — no two goals produce the same score transition.
 
-| Scenario | Old Event | New Event | Scoring Team |
-|----------|-----------|-----------|--------------|
-| Player name correction | Garcia (Team A) Goal | Gonzalez (Team A) Goal | Team A ✓ |
-| Goal → Own Goal | Garcia (Team A) Goal | Opponent (Team B) Goal | Team A ✓ (see below) |
-| Assist change | Same player, different assist | Same player, different assist | Same team ✓ |
+When a goal is re-attributed (scorer correction, goal→own goal, assist change), the **score doesn't change** — the same ball went in the same net. `_score_after` is computed by `calculate_score_context()` in [event_enhancement.py](src/utils/event_enhancement.py) and is stable across all re-attribution types:
 
-**Own goal nuance:** When a goal becomes an own goal, the API changes the `team_id` on the event. Garcia (Team A) scored → becomes OwnGoal by Opponent (Team B). But **Team A still scored** — the ball went into Team B's net. We need to derive "which team scored" from the match context (the team that gained a goal), not from `event.team.id`.
+| Re-Attribution Type | What Changes | `_score_after` | Matches? |
+|---------------------|-------------|----------------|----------|
+| Scorer correction (Garcia → Gonzalez) | `player_id`, event ID | Same | ✅ |
+| Goal → Own Goal | `team_id`, `player_id`, `detail`, event ID | Same | ✅ |
+| Own Goal → Goal | `team_id`, `player_id`, `detail`, event ID | Same | ✅ |
+| Assist added/changed | `assist` field only (event ID unchanged) | Same | N/A (no ID change) |
+| Minute drift (45→46) | `time.elapsed` | Same | ✅ |
+| VAR disallowed goal | Event removed entirely, no replacement | N/A | No match (correct) |
 
-#### Deriving Scoring Team
+### Why `_score_after` Is Better Than Minute + Scoring Team
 
-We already compute this — `_scoring_team` is set by `calculate_score_context()` in [src/utils/event_enhancement.py](src/utils/event_enhancement.py). This field represents "which team gained a point from this event" and is stable across re-attributions.
+The original approach matched on `time.elapsed` + `_scoring_team`. This had a weakness: **two goals at the same minute by the same team could be mis-paired** (e.g., a 45' goal and a 45+2' goal both showing `elapsed=45`).
 
-However, for the matching logic we need to compare scoring teams between the **removed** active event and the **new** live event. The removed event already has `_scoring_team` stored. The new event needs it computed from the live fixture data.
+`_score_after` eliminates this entirely — the first goal produces `"1-0"`, the second produces `"2-0"`. They can never collide.
+
+### API Verification: Own Goal Attribution
+
+Verified against real API data from Atletico Madrid 4-0 Barcelona (fixture `1520391`, 2026-02-12):
+
+```json
+{
+  "time": {"elapsed": 6, "extra": null},
+  "team": {"id": 530, "name": "Atletico Madrid"},
+  "player": {"id": 619, "name": "E. Garcia"},
+  "type": "Goal",
+  "detail": "Own Goal"
+}
+```
+
+**Key finding:** `team.id = 530` (Atletico Madrid) — the **benefiting team**, not Garcia's team (Barcelona, 529). This means `calculate_score_context()` is correct: it increments the score for `event.team.id`, which is always the team that gained the goal regardless of normal/own-goal attribution.
+
+Therefore `_score_after` computes identically for both:
+- Original: Garcia (team 529) Normal Goal → score increments for team 529 → `_score_after = "0-1"`
+- Corrected: Garcia (team 530) Own Goal → score increments for team 530 → `_score_after = "1-0"`
+
+Wait — these are different. The API **changes `team.id`** when re-attributing as own goal. So `_score_after` from the original event (`"0-1"` computed with the old `team.id=529`) would NOT match the new event's `_score_after` (`"1-0"` computed with `team.id=530`).
+
+**Resolution:** The physical goal is the same moment, but `_score_after` is perspective-dependent on `team.id`. For own goal re-attributions, we need a fallback: **same minute AND the score values are transposed** (home/away swapped). In practice, this means the matching algorithm should:
+
+1. Try exact `_score_after` match first (handles scorer corrections, minute drift)
+2. Fall back to minute match + transposed `_score_after` (handles goal↔own goal)
+
+Actually, let's reconsider. The `_score_after` on the **already-stored** old event was computed when it was first ingested. If it was originally detected as a Normal Goal by Garcia (team 529 = Barcelona = away team), then `_score_after` was computed as `"0-1"` (away team scored). When it re-appears as an Own Goal (team 530 = Atletico = home team), the new `_score_after` would be `"1-0"` (home team benefits).
+
+These are the same physical scoreline from different perspectives. The matching logic needs to handle this: **for goal↔own goal transitions, the score digits are swapped** (`"0-1"` ↔ `"1-0"`).
+
+### Revised Matching Criteria
+
+| Criterion | Why |
+|-----------|-----|
+| **Same monitor cycle** | Removed and added in the same `process_fixture_events` call |
+| **Same event `type`** | Both are "Goal" type events |
+| **Score match** | Either: (a) same `_score_after`, OR (b) transposed `_score_after` with same minute |
+
+The transposed check covers goal↔own goal where `team.id` flips between home/away.
+
+---
 
 ### What Gets Carried Over
 
@@ -71,7 +119,7 @@ When a match is found, the new event **inherits** the old event's accumulated st
 | Field | Carry Over? | Notes |
 |-------|-------------|-------|
 | `_monitor_workflows` | ✅ Yes | Already debounced — don't re-debounce |
-| `_monitor_complete` | ✅ Yes | Twitter already started |
+| `_monitor_complete` | ⚠️ Conditional | Only if `_download_complete=true` (see edge case #5) |
 | `_download_workflows` | ✅ Yes | Downloads already registered |
 | `_download_complete` | ✅ Yes | May already be done |
 | `_first_seen` | ✅ Yes | Original detection time |
@@ -107,7 +155,7 @@ Inside `process_fixture_events()`, between computing `new_ids` / `removed_ids` a
 ```
 1. Compute new_ids = live_ids - active_ids
 2. Compute removed_ids = active_ids - live_ids
-3. NEW: Try to match removed events with new events
+3. NEW: Try to match removed events with new events using _score_after
 4. Process unmatched new events (normal flow)
 5. Process unmatched removed events (normal drop flow)
 6. Process matched pairs (carry over state)
@@ -117,15 +165,26 @@ Inside `process_fixture_events()`, between computing `new_ids` / `removed_ids` a
 ### Matching Algorithm (Step 3)
 
 ```python
+def _transpose_score(score_after: str) -> str:
+    """Swap home/away in a score string: '1-0' → '0-1'."""
+    parts = score_after.split("-")
+    if len(parts) == 2:
+        return f"{parts[1]}-{parts[0]}"
+    return score_after
+
+
 def find_event_matches(
     new_ids: set[str],
     removed_ids: set[str],
     live_events: list[dict],
     active_events: dict[str, dict],  # active_map
-    fixture_data: dict,              # for scoring team derivation
+    fixture_data: dict,              # for score_after computation on new events
 ) -> list[tuple[str, str]]:          # [(removed_id, new_id), ...]
     """
     Find removed/new event pairs that represent the same goal moment.
+    
+    Primary signal: _score_after match (exact or transposed for OG flips).
+    Fallback: same minute + same type (for events without _score_after).
     
     Returns list of (removed_event_id, new_event_id) tuples.
     Each event ID can appear in at most ONE match (1:1 matching).
@@ -138,11 +197,12 @@ def find_event_matches(
         if removed_id in used_removed:
             continue
         removed_event = active_events[removed_id]
+        removed_score = removed_event.get("_score_after")
         removed_minute = removed_event.get("time", {}).get("elapsed")
-        removed_scoring_team = removed_event.get("_scoring_team")
+        removed_type = removed_event.get("type")
         
-        if removed_minute is None:
-            continue
+        if removed_type != "Goal":
+            continue  # Only match goal events
         
         for new_id in new_ids:
             if new_id in used_new:
@@ -150,18 +210,35 @@ def find_event_matches(
             new_event = next(
                 (e for e in live_events if e.get("_event_id") == new_id), None
             )
-            if not new_event:
+            if not new_event or new_event.get("type") != "Goal":
                 continue
             
+            new_score = compute_score_after(new_event, fixture_data)
             new_minute = new_event.get("time", {}).get("elapsed")
-            new_scoring_team = derive_scoring_team(new_event, fixture_data)
             
-            if (new_minute == removed_minute 
-                    and new_scoring_team == removed_scoring_team):
+            # Primary: exact _score_after match
+            if removed_score and new_score and removed_score == new_score:
                 matches.append((removed_id, new_id))
                 used_new.add(new_id)
                 used_removed.add(removed_id)
-                break  # Move to next removed event
+                break
+            
+            # Secondary: transposed _score_after (goal ↔ own goal, team flips)
+            if (removed_score and new_score 
+                    and _transpose_score(removed_score) == new_score
+                    and removed_minute == new_minute):
+                matches.append((removed_id, new_id))
+                used_new.add(new_id)
+                used_removed.add(removed_id)
+                break
+            
+            # Fallback: same minute, no _score_after available
+            if (not removed_score and removed_minute is not None
+                    and removed_minute == new_minute):
+                matches.append((removed_id, new_id))
+                used_new.add(new_id)
+                used_removed.add(removed_id)
+                break
     
     return matches
 ```
@@ -176,7 +253,6 @@ for removed_id, new_id in matched_pairs:
     # Build new event with carried-over state
     carried_state = {
         EventFields.MONITOR_WORKFLOWS: removed_event.get(EventFields.MONITOR_WORKFLOWS, []),
-        EventFields.MONITOR_COMPLETE: removed_event.get(EventFields.MONITOR_COMPLETE, False),
         EventFields.DOWNLOAD_WORKFLOWS: removed_event.get(EventFields.DOWNLOAD_WORKFLOWS, []),
         EventFields.DOWNLOAD_COMPLETE: removed_event.get(EventFields.DOWNLOAD_COMPLETE, False),
         EventFields.FIRST_SEEN: removed_event.get(EventFields.FIRST_SEEN),
@@ -185,6 +261,15 @@ for removed_id, new_id in matched_pairs:
         EventFields.DOWNLOAD_STATS: removed_event.get(EventFields.DOWNLOAD_STATS, {}),
         "_matched_from": removed_id,  # Audit trail
     }
+    
+    # _monitor_complete: only carry if downloads are done (see edge case #5)
+    if removed_event.get(EventFields.DOWNLOAD_COMPLETE, False):
+        carried_state[EventFields.MONITOR_COMPLETE] = True
+    else:
+        # Downloads not done — don't carry _monitor_complete.
+        # The old TwitterWorkflow has stale player_name baked in.
+        # Let the new event trigger a fresh TwitterWorkflow with correct name.
+        carried_state[EventFields.MONITOR_COMPLETE] = False
     
     # Delete old event (NO S3 cleanup — videos are being transferred)
     store.fixtures_active.update_one(
@@ -214,47 +299,55 @@ for removed_id, new_id in matched_pairs:
 
 ## Edge Cases
 
-### 1. Multiple goals at the same minute by the same team
+### 1. Multiple goals at the same minute — impossible to mis-pair
 
-Two Team A goals at minute 45 both get removed and re-added. Since we match 1:1 and break after the first match per removed event, this could mis-pair. 
+Two Team A goals at minute 45 both get removed and re-added. With `_score_after`, these **cannot be mis-paired**: the first goal produces `"1-0"` and the second `"2-0"`. They match uniquely even though they share a minute.
 
-**Mitigation:** This is extremely rare — two goals at the exact same minute by the same team that both get re-attributed in the same cycle. If it happens, the worst case is swapping which set of videos goes to which event. Both events keep their videos (no data loss), just potentially swapped. Acceptable trade-off.
+This is the primary advantage of `_score_after` over minute-based matching.
 
-### 2. Genuine VAR removal + coincidental new goal at same minute
+### 2. VAR disallowed goal + coincidental new goal
 
-Team A scores at minute 30, VAR removes it. Meanwhile, Team A scores a legitimate new goal also at minute 30. These would incorrectly match.
+Team A scores at minute 30 (`_score_after: "1-0"`). VAR removes it (event disappears, no replacement). In the same cycle, Team B scores at minute 30 (`_score_after: "0-1"`). Different `_score_after` values — **no match occurs**. Correct behavior.
 
-**Mitigation:** Extremely unlikely — VAR reviews take seconds, not minutes, and two goals at the same minute by the same team is already rare. If it happens, the new goal inherits stale videos (which show the same general match moment). The pipeline will still search for fresh videos via any remaining Twitter attempts. Again, no data loss — just some stale videos in the mix temporarily.
+**Worst case:** Same team scores, same minute, same `_score_after` (VAR removes and team immediately re-scores). Requires both happening in the same ~30s monitor cycle. Effectively impossible in practice.
 
 ### 3. Event flickers across multiple cycles
 
-Event disappears in cycle N, reappears in cycle N+1, disappears in N+2 with a new player. Since matching only happens within a single cycle (same call to `process_fixture_events`), this won't trigger matching. The event reappearance in N+1 clears `_drop_workflows` (existing behavior), and the N+2 disappearance starts a fresh drop count.
+Event disappears in cycle N, reappears in N+1, disappears in N+2 with a new player. Matching only runs within a single cycle, so this never triggers matching. The event follows the normal drop path. Correct — cross-cycle changes aren't simple re-attributions.
 
-**Result:** No matching occurs. The event follows the normal remove → drop → delete path. This is correct — if the event reappeared in between, the API wasn't doing a simple re-attribution.
+### 4. Own goal: `_score_after` transposes
 
-### 4. Own goal: team_id changes
+When goal→own goal, the API flips `team.id` from the scorer's team to the benefiting team. `_score_after` is computed from `team.id`'s perspective, so the values transpose:
 
-Event ID includes `team_id`. A goal by Player X (Team A) becoming an own goal means the API now attributes it to Team B. So both `team_id` AND `player_id` change in the event ID.
+- Original: Garcia (team 529, Barcelona=away) Normal Goal → `_score_after = "0-1"`
+- Corrected: Garcia (team 530, Atletico=home) Own Goal → `_score_after = "1-0"`
 
-**Why matching still works:** We compare `_scoring_team` (from `calculate_score_context`), which is "which team gained a goal." Team A gained the goal in both cases. The `team_id` in the event ID is different, but the scoring team is the same.
+The transposed check handles this: `_transpose_score("0-1") == "1-0"` ✅. The additional minute guard prevents false matches from unrelated transposed scores at different minutes.
 
-### 5. In-flight TwitterWorkflow or DownloadWorkflow
+### 5. In-flight TwitterWorkflow
 
-If the old event had `_monitor_complete=true` and a TwitterWorkflow is currently running with the old event ID, it will continue running (fire-and-forget, ABANDON policy). It will try to search and start DownloadWorkflows for the old event ID, but those will fail to find the event in MongoDB (it's been deleted and replaced with the new ID).
+If the old event had `_monitor_complete=true` and a TwitterWorkflow is running, that workflow has stale `player_name` and `event_id` baked into its `TwitterWorkflowInput` (set once at start, never re-read from MongoDB). It continues searching with the old player name and starting DownloadWorkflows for the old event ID.
 
-**Mitigation:** The carried-over `_download_workflows` count may be less than what the old TwitterWorkflow registered. When the new event is eventually picked up by a fresh TwitterWorkflow (if `_monitor_complete=false`) or if `_download_complete` is already true, the state is consistent. The orphaned old TwitterWorkflow will error gracefully on `check_event_exists` and terminate.
+**V1 approach — conditional `_monitor_complete` carry:**
+- If `_download_complete=true`: carry `_monitor_complete=true`. All done, no in-flight issues.
+- If `_download_complete=false`: set `_monitor_complete=false`. The stale TwitterWorkflow fails gracefully when it can't find the old event ID in MongoDB. The new event triggers a fresh TwitterWorkflow with the correct player name. Some download slots are "wasted" on the orphaned workflow, but the new one searches with the right terms.
 
-**Better option (future):** If `_monitor_complete=true` but `_download_complete=false`, we could avoid re-triggering Twitter and instead just let the remaining downloads play out. But the old event ID is gone from MongoDB, so in-flight workflows for it will fail. We may need to handle this more carefully — perhaps by NOT carrying over `_monitor_complete` if downloads aren't done yet, so the new event goes through a fresh Twitter cycle with the correct player name. Worth considering during implementation.
+**Future (v2) — signal-based update:** Push updated `player_name` and `event_id` to the running TwitterWorkflow via Temporal signals. Avoids the gap but adds complexity.
 
-### 6. No match found (genuinely different events)
+### 6. No match found
 
-If a removed event has no matching new event (different minute, different scoring team, etc.), it follows the existing normal path: drop workflow tracking, deletion after 3 cycles.
+If a removed event has no matching new event (different `_score_after`, different type, etc.), it follows the existing normal path: drop workflow tracking, deletion after 3 cycles.
+
+### 7. Minute drift (45→46, timing correction)
+
+The API sometimes corrects event timing. `_score_after` is unchanged — same physical goal, same score transition. Primary `_score_after` matching handles this without needing minute comparison.
 
 ---
 
 ## What Doesn't Change
 
 - **Event ID format** — stays `{fixture_id}_{team_id}_{player_id}_{type}_{sequence}`
+- **S3 key format** — opaque keys, no event ID embedded. Safe to carry over.
 - **Normal debounce flow** — events without matching still go through 3-poll debounce
 - **Normal drop flow** — events without matching still go through 3-drop deletion
 - **S3 video structure** — videos carry over as-is, no re-upload needed
@@ -280,7 +373,7 @@ If a removed event has no matching new event (different minute, different scorin
 |-------|------|--------|------|
 | `_matched_from` | string | MonitorWorkflow | When event is matched from a removed event |
 
-This creates an audit trail: `_matched_from: "123456_100_Garcia_Goal_1"` on the new event shows it inherited state from the Garcia attribution.
+This creates an audit trail: `_matched_from: "1520391_529_619_Goal_1"` on the new event shows it inherited state from the original Garcia attribution.
 
 ---
 
@@ -290,7 +383,7 @@ This creates an audit trail: `_matched_from: "123456_100_Garcia_Goal_1"` on the 
 |------|--------|
 | `src/activities/monitor.py` | Add matching logic in `process_fixture_events()` between new/removed computation and processing |
 | `src/data/models.py` | Add `MATCHED_FROM = "_matched_from"` to `EventFields` |
-| `src/utils/event_enhancement.py` | May need to expose `derive_scoring_team()` for matching |
+| `src/utils/event_enhancement.py` | Expose `compute_score_after()` for matching (may already exist within `calculate_score_context`) |
 | `src/data/mongo_store.py` | Possibly add a `delete_event_without_s3()` helper (or reuse existing `$pull`) |
 
 ---
@@ -300,8 +393,8 @@ This creates an audit trail: `_matched_from: "123456_100_Garcia_Goal_1"` on the 
 | # | Task | Notes |
 |---|------|-------|
 | 1 | Add `MATCHED_FROM` to `EventFields` | Trivial |
-| 2 | Write `find_event_matches()` helper | Pure function, easy to unit test |
-| 3 | Write `create_matched_event()` helper | Builds new event with carried state |
+| 2 | Write `find_event_matches()` helper | Pure function, easy to unit test. Includes `_transpose_score()` |
+| 3 | Write `create_matched_event()` helper | Builds new event with carried state + conditional `_monitor_complete` |
 | 4 | Integrate into `process_fixture_events()` | Insert between new/removed computation |
 | 5 | Unit tests for matching logic | Test all edge cases above |
 | 6 | Integration test with mock fixture data | Simulate re-attribution scenario |
