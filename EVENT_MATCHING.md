@@ -23,7 +23,7 @@ When the API re-attributes a goal — player name changes, goal becomes own goal
 Fixture `1520391` — Atletico Madrid 4-0 Barcelona. Garcia own goal at 6'.
 
 1. `T+0:00` — Goal at 6'. API attributes to Griezmann (Atletico, team 530). Event ID: `1520391_530_194_Goal_1`. Score: 1-0. Videos downloaded, uploaded to S3.
-2. `T+25:00` — API corrects: Garcia own goal (player 619), not Griezmann. `team.id` stays 530 (Atletico benefited). Old event disappears, new event: `1520391_530_619_Goal_1`. `_score_after` unchanged (`"1-0"`).
+2. `T+25:00` — API corrects: Garcia own goal (player 619), not Griezmann. `team.id` stays 530 (Atletico benefited). Old event disappears, new event: `1520391_530_619_Goal_1`. `_score_after` unchanged.
 3. `T+25:00` — Old event enters drop pipeline. Videos scheduled for deletion.
 4. `T+27:30` — Old event deleted (3 drop cycles). S3 videos gone.
 5. `T+27:30` — New event starts fresh debounce.
@@ -34,23 +34,25 @@ Fixture `1520391` — Atletico Madrid 4-0 Barcelona. Garcia own goal at 6'.
 
 ---
 
-## Solution: Same-Cycle Event Matching
+## Solution: Drop-Window Video Transfer
 
-When an event is removed and a new event appears **in the same monitor cycle**, check if they represent the same goal moment. If they match, carry the old event's state (videos, workflows, tracking fields) over to the new event instead of starting fresh.
+When the API re-attributes a goal, we don't need pointers or event remapping. We just need to **transfer the already-downloaded videos** from the old event to the new one before S3 cleanup runs.
 
-### Matching Criteria: `_score_after` as Primary Signal
+The old event enters the drop pipeline when it disappears (3 unique monitor cycles to deletion). The new event enters normal debounce when it appears (3 cycles to ready). These windows can overlap, have a gap, or the new event can arrive first. **Two matching hooks** cover all timing scenarios — one fires when the new event appears, the other fires when the old event is about to be deleted.
 
-Two events match if ALL of the following are true:
+### Matching Criteria
+
+Two events represent the same goal if:
 
 | Criterion | Why |
 |-----------|-----|
-| **Same monitor cycle** | Removed and added in the same `process_fixture_events` call |
 | **Same `_score_after`** | Identical score fingerprint = same physical goal moment |
-| **Same event `type`** | Both are "Goal" type events (guard against type changes) |
+| **Same event `type`** | Both are "Goal" (safety guard) |
+| **Minute within ±2** | Additional verification with leeway for timing corrections and extra time |
 
 ### Why `_score_after` Works
 
-`_score_after` is a string like `"1-0"` representing what the scoreboard shows after this goal. It's a **unique fingerprint per goal** within a fixture — no two goals produce the same score transition.
+`_score_after` is a dict like `{"home": 1, "away": 0}` representing the score after this goal. It's a **unique fingerprint per goal** within a fixture — no two goals produce the same score transition.
 
 When a goal is re-attributed (scorer correction, goal→own goal, assist change), the **score doesn't change** — the same ball went in the same net. `_score_after` is computed by `calculate_score_context()` in [event_enhancement.py](src/utils/event_enhancement.py) and is stable across all re-attribution types:
 
@@ -67,7 +69,7 @@ When a goal is re-attributed (scorer correction, goal→own goal, assist change)
 
 The original approach matched on `time.elapsed` + `_scoring_team`. This had a weakness: **two goals at the same minute by the same team could be mis-paired** (e.g., a 45' goal and a 45+2' goal both showing `elapsed=45`).
 
-`_score_after` eliminates this entirely — the first goal produces `"1-0"`, the second produces `"2-0"`. They can never collide.
+`_score_after` eliminates this entirely — the first goal produces `{"home": 1, "away": 0}`, the second produces `{"home": 2, "away": 0}`. They can never collide.
 
 ### API Verification: Own Goal Attribution
 
@@ -89,170 +91,266 @@ Verified against real API data from Atletico Madrid 4-0 Barcelona (fixture `1520
 
 ---
 
-### What Gets Carried Over
+### What Gets Carried Over (Video State)
 
-When a match is found, the new event **inherits** the old event's accumulated state:
+When a match is found, we transfer the old event's video/download state to the new event:
 
-| Field | Carry Over? | Notes |
-|-------|-------------|-------|
-| `_monitor_workflows` | ✅ Yes | Already debounced — don't re-debounce |
-| `_monitor_complete` | ⚠️ Conditional | Only if `_download_complete=true` (see edge case #5) |
+| Field | Transfer? | Notes |
+|-------|-----------|-------|
+| `_s3_videos` | ✅ Yes | **Critical** — uploaded videos for this goal moment |
+| `_discovered_videos` | ✅ Yes | URLs already found |
+| `_download_stats` | ✅ Yes | Pipeline statistics |
 | `_download_workflows` | ✅ Yes | Downloads already registered |
 | `_download_complete` | ✅ Yes | May already be done |
 | `_first_seen` | ✅ Yes | Original detection time |
-| `_discovered_videos` | ✅ Yes | URLs already found |
-| `_s3_videos` | ✅ Yes | **Critical** — preserve uploaded videos |
-| `_download_stats` | ✅ Yes | Pipeline statistics |
-| `_twitter_aliases` | ❌ No | Recompute — player name changed |
-| `_twitter_search` | ❌ No | Recompute — player name changed |
+| `_monitor_workflows` | ⚠️ Conditional | Only if `_download_complete=true` |
+| `_monitor_complete` | ⚠️ Conditional | Only if `_download_complete=true` (see edge case #5) |
+| `_twitter_aliases` | ❌ No | Recompute — player name may have changed |
+| `_twitter_search` | ❌ No | Recompute — player name may have changed |
 | `_score_after` | ❌ No | Recompute from live data |
 | `_scoring_team` | ❌ No | Recompute from live data |
 | `_drop_workflows` | ❌ No | Reset (event is present now) |
 | `_monitor_count` | ❌ No | Deprecated field, reset |
 
+**If `_download_complete=true`:** Everything is done. Carry all state including `_monitor_complete=true`. New event is immediately fully complete — no wasted work.
+
+**If `_download_complete=false`:** Only carry video/discovery state. Set `_monitor_complete=false`, clear `_monitor_workflows`. The new event debounces normally and triggers a fresh TwitterWorkflow with the correct player name.
+
 ### What the New Event Gets
 
-The new event is stored with:
-- **New `_event_id`** — the new event ID (new player, new team for OG)
+- **New `_event_id`** — generated from the corrected player attribution
 - **New raw API fields** — `player`, `team`, `type`, `detail`, `time` from the live event
-- **Carried-over tracking state** — all the fields in the "✅ Yes" column above
+- **Transferred video state** — `_s3_videos`, `_discovered_videos`, etc.
 - **Recomputed context** — `_twitter_search`, `_twitter_aliases`, `_score_after`, `_scoring_team`
 - **New field: `_matched_from`** — the old event ID, for audit trail
 
 ### What Happens to the Old Event
 
-The old event is **deleted without S3 cleanup** — because we're transferring its videos to the new event, not discarding them.
+The old event is **deleted without S3 cleanup** — videos now belong to the new event.
+
+---
+
+## Timing Scenarios
+
+The API swap is not atomic. The old event may disappear cycles before the new one appears, or the new one may appear before the old disappears.
+
+### Scenario 1: New arrives while old is dropping (gap ≥ 0 cycles)
+
+| Cycle | Old Event | New Event |
+|-------|-----------|-----------|  
+| 0 | Disappears → drop 1 | Not visible |
+| 1 | drop 2 | **Appears → Hook A fires**: match found, videos transferred. Old deleted (no S3 cleanup). |
+| 2 | Gone | debounce 2 (videos already attached) |
+| 3 | — | debounce 3 → TwitterWorkflow with correct player name. **Videos safe.** |
+
+This covers both a multi-cycle gap and a same-cycle swap (gap = 0).
+
+### Scenario 2: New arrives before old disappears (overlap)
+
+| Cycle | Old Event | New Event |
+|-------|-----------|-----------|  
+| 0 | Still present | **Appears** as new event (debounce 1). No match — old isn't dropping. |
+| 1 | Still present | debounce 2 |
+| 2 | **Disappears** → drop 1 | debounce 3 → TwitterWorkflow triggers |
+| 3 | drop 2 | downloading... |
+| 4 | **drop 3 → deletion threshold → Hook B fires**: videos transferred to new event. Old deleted (no S3 cleanup). | receives videos |
+
+---
+
+## Two Hooks
+
+Both hooks call the same core function: `find_score_match()`.
+
+### Hook A — New Goal event appears
+
+In the NEW events section of `process_fixture_events()`, when adding a new Goal event:
+
+1. Compute its `_score_after` from live fixture data
+2. Scan `active_map` for any Goal event with:
+   - Same `_score_after` (dict equality)
+   - Non-empty `_drop_workflows` (it's in the drop pipeline)
+   - Minute within ±2
+3. If match found → transfer video state, delete old event (no S3 cleanup), add new event with carried state
+4. If no match → normal new event flow
+
+### Hook B — Old event reaches deletion threshold
+
+In the REMOVED events section, when `should_delete=true` and `monitor_complete=true` (S3 cleanup about to happen):
+
+1. Before calling `store.mark_event_removed()`, scan `active_map` for any Goal event with:
+   - Same `_score_after` (dict equality)
+   - Different `_event_id` (not itself)
+   - Minute within ±2
+2. If match found → transfer videos to the match, delete old event (no S3 cleanup)
+3. If no match → normal deletion with S3 cleanup (existing behavior)
 
 ---
 
 ## Algorithm
 
-Inside `process_fixture_events()`, between computing `new_ids` / `removed_ids` and processing them:
-
-```
-1. Compute new_ids = live_ids - active_ids
-2. Compute removed_ids = active_ids - live_ids
-3. NEW: Try to match removed events with new events using _score_after
-4. Process unmatched new events (normal flow)
-5. Process unmatched removed events (normal drop flow)
-6. Process matched pairs (carry over state)
-7. Process matching_ids (normal flow, unchanged)
-```
-
-### Matching Algorithm (Step 3)
+### Core: `find_score_match()`
 
 ```python
-def find_event_matches(
-    new_ids: set[str],
-    removed_ids: set[str],
-    live_events: list[dict],
-    active_events: dict[str, dict],  # active_map
-    fixture_data: dict,              # for score_after computation on new events
-) -> list[tuple[str, str]]:          # [(removed_id, new_id), ...]
+MINUTE_TOLERANCE = 2
+
+def find_score_match(
+    score_after: dict,              # {"home": int, "away": int}
+    minute: int,
+    exclude_event_id: str,          # Don't match against self
+    active_map: dict[str, dict],
+    require_dropping: bool = False, # Hook A sets True
+) -> str | None:
     """
-    Find removed/new event pairs that represent the same goal moment.
-    
-    Primary signal: exact _score_after match.
-    Fallback: same minute + same type (for events without _score_after).
-    
-    Returns list of (removed_event_id, new_event_id) tuples.
-    Each event ID can appear in at most ONE match (1:1 matching).
+    Find an active Goal event with the same _score_after.
+    Returns the matched event_id, or None.
     """
-    matches = []
-    used_new = set()
-    used_removed = set()
+    if not score_after:
+        return None
     
-    for removed_id in removed_ids:
-        if removed_id in used_removed:
+    for event_id, event in active_map.items():
+        if event_id == exclude_event_id:
             continue
-        removed_event = active_events[removed_id]
-        removed_score = removed_event.get("_score_after")
-        removed_minute = removed_event.get("time", {}).get("elapsed")
-        removed_type = removed_event.get("type")
+        if event.get("type") != "Goal":
+            continue
+        if require_dropping and not event.get(EventFields.DROP_WORKFLOWS):
+            continue
         
-        if removed_type != "Goal":
-            continue  # Only match goal events
+        event_score = event.get(EventFields.SCORE_AFTER)
+        event_minute = event.get("time", {}).get("elapsed")
         
-        for new_id in new_ids:
-            if new_id in used_new:
-                continue
-            new_event = next(
-                (e for e in live_events if e.get("_event_id") == new_id), None
-            )
-            if not new_event or new_event.get("type") != "Goal":
-                continue
-            
-            new_score = compute_score_after(new_event, fixture_data)
-            new_minute = new_event.get("time", {}).get("elapsed")
-            
-            # Primary: exact _score_after match
-            if removed_score and new_score and removed_score == new_score:
-                matches.append((removed_id, new_id))
-                used_new.add(new_id)
-                used_removed.add(removed_id)
-                break
-            
-            # Fallback: same minute, no _score_after available
-            if (not removed_score and removed_minute is not None
-                    and removed_minute == new_minute):
-                matches.append((removed_id, new_id))
-                used_new.add(new_id)
-                used_removed.add(removed_id)
-                break
+        if not event_score or event_score != score_after:
+            continue
+        
+        # Verify minute within tolerance
+        if (minute is not None and event_minute is not None
+                and abs(minute - event_minute) > MINUTE_TOLERANCE):
+            continue
+        
+        return event_id
     
-    return matches
+    return None
 ```
 
-### Processing Matched Pairs (Step 6)
+### Hook A integration (NEW events section)
 
 ```python
-for removed_id, new_id in matched_pairs:
-    removed_event = active_map[removed_id]
-    new_live_event = next(e for e in live_events if e.get("_event_id") == new_id)
+# Inside the new_ids loop, before adding the event:
+live_event = next(e for e in live_events if e.get(EventFields.EVENT_ID) == event_id)
+
+if live_event.get("type") == "Goal":
+    score_context = calculate_score_context(live_fixture, live_event)
+    new_score_after = score_context.get(EventFields.SCORE_AFTER)
+    new_minute = live_event.get("time", {}).get("elapsed")
     
-    # Build new event with carried-over state
-    carried_state = {
-        EventFields.MONITOR_WORKFLOWS: removed_event.get(EventFields.MONITOR_WORKFLOWS, []),
-        EventFields.DOWNLOAD_WORKFLOWS: removed_event.get(EventFields.DOWNLOAD_WORKFLOWS, []),
-        EventFields.DOWNLOAD_COMPLETE: removed_event.get(EventFields.DOWNLOAD_COMPLETE, False),
-        EventFields.FIRST_SEEN: removed_event.get(EventFields.FIRST_SEEN),
-        EventFields.DISCOVERED_VIDEOS: removed_event.get(EventFields.DISCOVERED_VIDEOS, []),
-        EventFields.S3_VIDEOS: removed_event.get(EventFields.S3_VIDEOS, []),
-        EventFields.DOWNLOAD_STATS: removed_event.get(EventFields.DOWNLOAD_STATS, {}),
-        "_matched_from": removed_id,  # Audit trail
+    matched_id = find_score_match(
+        score_after=new_score_after,
+        minute=new_minute,
+        exclude_event_id=event_id,
+        active_map=active_map,
+        require_dropping=True,  # Only match events in drop pipeline
+    )
+    
+    if matched_id:
+        transfer_video_state(store, fixture_id, active_map[matched_id], matched_id,
+                             live_event, event_id, live_fixture)
+        continue  # Skip normal new event flow
+```
+
+### Hook B integration (REMOVED events section)
+
+```python
+# Inside the removed_ids loop, when should_delete and monitor_complete:
+if should_delete and monitor_complete:
+    # Before S3 cleanup, check if a replacement event already exists
+    removed_score = active_event.get(EventFields.SCORE_AFTER)
+    removed_minute = active_event.get("time", {}).get("elapsed")
+    
+    matched_id = find_score_match(
+        score_after=removed_score,
+        minute=removed_minute,
+        exclude_event_id=event_id,
+        active_map=active_map,
+        require_dropping=False,  # Match ANY active event
+    )
+    
+    if matched_id:
+        transfer_video_state_to_existing(store, fixture_id, active_event, event_id, matched_id)
+    else:
+        store.mark_event_removed(fixture_id, event_id)  # Normal S3 cleanup
+```
+
+### `transfer_video_state()` (Hook A — new event being added)
+
+```python
+def transfer_video_state(store, fixture_id, old_event, old_id,
+                          new_live_event, new_id, fixture_data):
+    """Transfer videos from dropping event to new event being added."""
+    carried = {
+        EventFields.S3_VIDEOS: old_event.get(EventFields.S3_VIDEOS, []),
+        EventFields.DISCOVERED_VIDEOS: old_event.get(EventFields.DISCOVERED_VIDEOS, []),
+        EventFields.DOWNLOAD_STATS: old_event.get(EventFields.DOWNLOAD_STATS, {}),
+        EventFields.DOWNLOAD_WORKFLOWS: old_event.get(EventFields.DOWNLOAD_WORKFLOWS, []),
+        EventFields.DOWNLOAD_COMPLETE: old_event.get(EventFields.DOWNLOAD_COMPLETE, False),
+        EventFields.FIRST_SEEN: old_event.get(EventFields.FIRST_SEEN),
+        EventFields.MATCHED_FROM: old_id,
     }
     
-    # _monitor_complete: only carry if downloads are done (see edge case #5)
-    if removed_event.get(EventFields.DOWNLOAD_COMPLETE, False):
-        carried_state[EventFields.MONITOR_COMPLETE] = True
-    else:
-        # Downloads not done — don't carry _monitor_complete.
-        # The old TwitterWorkflow has stale player_name baked in.
-        # Let the new event trigger a fresh TwitterWorkflow with correct name.
-        carried_state[EventFields.MONITOR_COMPLETE] = False
+    # If downloads are complete, carry monitor state too (event is fully done)
+    if old_event.get(EventFields.DOWNLOAD_COMPLETE, False):
+        carried[EventFields.MONITOR_COMPLETE] = True
+        carried[EventFields.MONITOR_WORKFLOWS] = old_event.get(EventFields.MONITOR_WORKFLOWS, [])
     
-    # Delete old event (NO S3 cleanup — videos are being transferred)
+    # Delete old event WITHOUT S3 cleanup
     store.fixtures_active.update_one(
         {"_id": fixture_id},
-        {"$pull": {"events": {EventFields.EVENT_ID: removed_id}}}
+        {"$pull": {"events": {EventFields.EVENT_ID: old_id}}}
     )
     
-    # Add new event with carried state + fresh API data
-    enhanced = create_matched_event(
-        live_event=new_live_event,
-        event_id=new_id,
-        carried_state=carried_state,
-        fixture_data=fixture_data,
-    )
-    store.add_event_to_active(fixture_id, enhanced, carried_state[EventFields.FIRST_SEEN])
+    # Create new event with carried state + fresh API data
+    enhanced = create_matched_event(new_live_event, new_id, carried, fixture_data)
+    store.add_event_to_active(fixture_id, enhanced, carried[EventFields.FIRST_SEEN])
     
     log.warning(activity.logger, MODULE, "event_matched",
-                "Re-attributed event matched — state carried over",
-                old_event_id=removed_id, new_event_id=new_id,
-                minute=new_live_event.get("time", {}).get("elapsed"),
-                videos_carried=len(carried_state.get(EventFields.S3_VIDEOS, [])),
-                monitor_complete=carried_state[EventFields.MONITOR_COMPLETE],
-                download_complete=carried_state.get(EventFields.DOWNLOAD_COMPLETE, False))
+                "Re-attributed event matched — videos transferred",
+                old_event_id=old_id, new_event_id=new_id,
+                hook="new_event",
+                videos_transferred=len(carried.get(EventFields.S3_VIDEOS, [])),
+                download_complete=carried.get(EventFields.DOWNLOAD_COMPLETE, False))
+```
+
+### `transfer_video_state_to_existing()` (Hook B — existing event receives videos)
+
+```python
+def transfer_video_state_to_existing(store, fixture_id, old_event, old_id, target_id):
+    """Transfer videos from event about to be deleted to existing active event."""
+    videos = old_event.get(EventFields.S3_VIDEOS, [])
+    discovered = old_event.get(EventFields.DISCOVERED_VIDEOS, [])
+    
+    # Merge videos onto the target event
+    store.fixtures_active.update_one(
+        {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": target_id},
+        {
+            "$addToSet": {
+                f"events.$.{EventFields.S3_VIDEOS}": {"$each": videos},
+                f"events.$.{EventFields.DISCOVERED_VIDEOS}": {"$each": discovered},
+            },
+            "$set": {
+                f"events.$.{EventFields.MATCHED_FROM}": old_id,
+            },
+        }
+    )
+    
+    # Delete old event WITHOUT S3 cleanup
+    store.fixtures_active.update_one(
+        {"_id": fixture_id},
+        {"$pull": {"events": {EventFields.EVENT_ID: old_id}}}
+    )
+    
+    log.warning(activity.logger, MODULE, "event_matched",
+                "Re-attributed event matched — videos transferred to existing event",
+                old_event_id=old_id, target_event_id=target_id,
+                hook="deletion_threshold",
+                videos_transferred=len(videos))
 ```
 
 ---
@@ -261,54 +359,57 @@ for removed_id, new_id in matched_pairs:
 
 ### 1. Multiple goals at the same minute — impossible to mis-pair
 
-Two Team A goals at minute 45 both get removed and re-added. With `_score_after`, these **cannot be mis-paired**: the first goal produces `"1-0"` and the second `"2-0"`. They match uniquely even though they share a minute.
-
-This is the primary advantage of `_score_after` over minute-based matching.
+Two Team A goals at minute 45 both get re-attributed. With `_score_after`, these **cannot be mis-paired**: the first has `{"home": 1, "away": 0}` and the second `{"home": 2, "away": 0}`. They match uniquely despite sharing a minute.
 
 ### 2. VAR disallowed goal + coincidental new goal
 
-Team A scores at minute 30 (`_score_after: "1-0"`). VAR removes it (event disappears, no replacement). In the same cycle, Team B scores at minute 30 (`_score_after: "0-1"`). Different `_score_after` values — **no match occurs**. Correct behavior.
+Team A scores at minute 30 (`_score_after: {"home": 1, "away": 0}`). VAR removes it. In a later cycle, Team B scores at minute 30 (`_score_after: {"home": 0, "away": 1}`). Different `_score_after` — **no match**. Correct behavior.
 
-**Worst case:** Same team scores, same minute, same `_score_after` (VAR removes and team immediately re-scores). Requires both happening in the same ~30s monitor cycle. Effectively impossible in practice.
+### 3. Event flickers (disappears and reappears with same ID)
 
-### 3. Event flickers across multiple cycles
-
-Event disappears in cycle N, reappears in N+1, disappears in N+2 with a new player. Matching only runs within a single cycle, so this never triggers matching. The event follows the normal drop path. Correct — cross-cycle changes aren't simple re-attributions.
+Event disappears in cycle N, reappears with the same `_event_id` in N+1. Handled by existing `clear_drop_workflows` in the matching_ids section. No event matching needed.
 
 ### 4. Own goal re-attribution — `_score_after` is stable
 
-When Normal Goal → Own Goal, the API changes `player_id` and `detail` but keeps `team.id` the same — the benefiting team was always correct (it's obvious which net the ball went in). Since `calculate_score_context()` uses `team.id` to determine which side of the score to increment, `_score_after` is identical for both attributions. Exact `_score_after` matching handles this with no special logic.
+When Normal Goal → Own Goal, the API changes `player_id` and `detail` but keeps `team.id` the same — the benefiting team was always correct. `_score_after` is identical for both attributions. Exact matching handles this with no special logic.
 
-### 5. In-flight TwitterWorkflow
+### 5. In-flight TwitterWorkflow (conditional state carry)
 
-If the old event had `_monitor_complete=true` and a TwitterWorkflow is running, that workflow has stale `player_name` and `event_id` baked into its `TwitterWorkflowInput` (set once at start, never re-read from MongoDB). It continues searching with the old player name and starting DownloadWorkflows for the old event ID.
+**If `_download_complete=true`:** Carry all state including `_monitor_complete=true`. Event is fully done — no wasted work.
 
-**V1 approach — conditional `_monitor_complete` carry:**
-- If `_download_complete=true`: carry `_monitor_complete=true`. All done, no in-flight issues.
-- If `_download_complete=false`: set `_monitor_complete=false`. The stale TwitterWorkflow fails gracefully when it can't find the old event ID in MongoDB. The new event triggers a fresh TwitterWorkflow with the correct player name. Some download slots are "wasted" on the orphaned workflow, but the new one searches with the right terms.
-
-**Future (v2) — signal-based update:** Push updated `player_name` and `event_id` to the running TwitterWorkflow via Temporal signals. Avoids the gap but adds complexity.
+**If `_download_complete=false`:** A stale TwitterWorkflow may be running with the old player name. Set `_monitor_complete=false` on the new event. It debounces normally → triggers fresh TwitterWorkflow with correct player name. Stale workflow orphans gracefully when it can't find the old event ID in MongoDB.
 
 ### 6. No match found
 
-If a removed event has no matching new event (different `_score_after`, different type, etc.), it follows the existing normal path: drop workflow tracking, deletion after 3 cycles.
+Events follow existing behavior:
+- Removed events: normal drop pipeline → deletion after 3 cycles
+- New events: normal debounce → fresh Twitter search
 
 ### 7. Minute drift (45→46, timing correction)
 
-The API sometimes corrects event timing. `_score_after` is unchanged — same physical goal, same score transition. Primary `_score_after` matching handles this without needing minute comparison.
+`_score_after` doesn't depend on `time.elapsed` — same physical goal, same score transition. The ±2 minute tolerance accommodates any drift.
+
+### 8. Hook A and Hook B can't both fire for the same pair
+
+Hook A fires when the new event appears and finds a dropping match — old event is deleted immediately. By the time Hook B would fire (old reaches 3 drops), the old event is already gone.
+
+### 9. Extra time goals (45+3, 90+5)
+
+`time.elapsed` shows the base minute (45, 90), with extra time in `time.extra`. Two goals at 45+1 and 45+3 both have `elapsed=45` — but their `_score_after` values differ, so they can't be confused. The ±2 tolerance on elapsed applies cleanly.
 
 ---
 
 ## What Doesn't Change
 
 - **Event ID format** — stays `{fixture_id}_{team_id}_{player_id}_{type}_{sequence}`
-- **S3 key format** — opaque keys, no event ID embedded. Safe to carry over.
-- **Normal debounce flow** — events without matching still go through 3-poll debounce
-- **Normal drop flow** — events without matching still go through 3-drop deletion
-- **S3 video structure** — videos carry over as-is, no re-upload needed
+- **S3 key format** — opaque keys, no event ID embedded. Safe to transfer.
+- **Normal debounce flow** — new events still go through 3-poll debounce
+- **Normal drop flow** — events without matches still go through 3-drop deletion
+- **S3 video structure** — videos transfer as-is, no re-upload needed
 - **UploadWorkflow** — unchanged, uses event ID from MongoDB
 - **DownloadWorkflow** — unchanged
-- **TwitterWorkflow** — unchanged (but may get a fresh trigger with new player name)
+- **TwitterWorkflow** — unchanged (fresh trigger with correct player name when needed)
+- **Frontend** — no changes needed. New event has its own ID and correct data.
 
 ---
 
@@ -318,17 +419,17 @@ The API sometimes corrects event timing. `_score_after` is unchanged — same ph
 
 | Action | Level | When |
 |--------|-------|------|
-| `event_matched` | WARNING | Removed event matched to new event — state carried over |
-| `event_match_attempted` | INFO | Matching attempted (logs candidate counts) |
-| `event_match_none` | DEBUG | No matches found in this cycle |
+| `event_matched` | WARNING | Videos transferred between events (logged by both hooks) |
+
+Logged fields: `old_event_id`, `new_event_id` or `target_event_id`, `hook` (`new_event` or `deletion_threshold`), `videos_transferred`, `download_complete`.
 
 ### New Event Field
 
 | Field | Type | Set By | When |
 |-------|------|--------|------|
-| `_matched_from` | string | MonitorWorkflow | When event is matched from a removed event |
+| `_matched_from` | string | Hook A or Hook B | When event receives videos from a re-attributed event |
 
-This creates an audit trail: `_matched_from: "1520391_529_619_Goal_1"` on the new event shows it inherited state from the original Garcia attribution.
+Audit trail: `_matched_from: "1520391_530_194_Goal_1"` shows this event inherited videos from the original Griezmann attribution.
 
 ---
 
@@ -336,10 +437,8 @@ This creates an audit trail: `_matched_from: "1520391_529_619_Goal_1"` on the ne
 
 | File | Change |
 |------|--------|
-| `src/activities/monitor.py` | Add matching logic in `process_fixture_events()` between new/removed computation and processing |
+| `src/activities/monitor.py` | Add `find_score_match()`, Hook A in new events loop, Hook B in removed events loop, `transfer_video_state()`, `transfer_video_state_to_existing()` |
 | `src/data/models.py` | Add `MATCHED_FROM = "_matched_from"` to `EventFields` |
-| `src/utils/event_enhancement.py` | Expose `compute_score_after()` for matching (may already exist within `calculate_score_context`) |
-| `src/data/mongo_store.py` | Possibly add a `delete_event_without_s3()` helper (or reuse existing `$pull`) |
 
 ---
 
@@ -348,8 +447,10 @@ This creates an audit trail: `_matched_from: "1520391_529_619_Goal_1"` on the ne
 | # | Task | Notes |
 |---|------|-------|
 | 1 | Add `MATCHED_FROM` to `EventFields` | Trivial |
-| 2 | Write `find_event_matches()` helper | Pure function, easy to unit test |
-| 3 | Write `create_matched_event()` helper | Builds new event with carried state + conditional `_monitor_complete` |
-| 4 | Integrate into `process_fixture_events()` | Insert between new/removed computation |
-| 5 | Unit tests for matching logic | Test all edge cases above |
-| 6 | Integration test with mock fixture data | Simulate re-attribution scenario |
+| 2 | Write `find_score_match()` | Core matching function, used by both hooks |
+| 3 | Write `transfer_video_state()` | For Hook A (new event being added) |
+| 4 | Write `transfer_video_state_to_existing()` | For Hook B (existing event receives videos) |
+| 5 | Integrate Hook A into new events loop | Check for dropping match before normal add |
+| 6 | Integrate Hook B into removed events loop | Check for active match before S3 cleanup |
+| 7 | Unit tests for `find_score_match()` | Test all edge cases |
+| 8 | Integration test | Simulate re-attribution with both timing scenarios |
