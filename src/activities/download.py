@@ -1451,7 +1451,8 @@ async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[st
             }
         ],
         "max_tokens": 100,
-        "temperature": 0.1
+        "temperature": 0.1,
+        "chat_template_kwargs": {"enable_thinking": False}
     }
     
     for attempt in range(1, max_retries + 1):

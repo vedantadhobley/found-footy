@@ -469,13 +469,32 @@ async def save_discovered_videos(
                  event_id=event_id)
         return {"saved": True, "video_count": 0}
     
-    # Just append videos to _discovered_videos, don't touch _download_complete
+    # Append videos to _discovered_videos, skipping duplicates by tweet_id
     try:
+        # Get existing tweet IDs to avoid duplicates
+        fixture = store.fixtures_active.find_one(
+            {"_id": fixture_id, "events._event_id": event_id},
+            {"events.$": 1}
+        )
+        existing_ids = set()
+        if fixture and fixture.get("events"):
+            for v in fixture["events"][0].get("_discovered_videos", []):
+                tid = v.get("tweet_id")
+                if tid:
+                    existing_ids.add(tid)
+
+        new_videos = [v for v in videos if v.get("tweet_id") not in existing_ids]
+
+        if not new_videos:
+            log.info(activity.logger, MODULE, "all_videos_duplicate", "All videos already discovered",
+                     event_id=event_id, skipped=len(videos))
+            return {"saved": True, "video_count": 0}
+
         result = store.fixtures_active.update_one(
             {"_id": fixture_id, "events._event_id": event_id},
             {
                 "$push": {
-                    "events.$._discovered_videos": {"$each": videos}
+                    "events.$._discovered_videos": {"$each": new_videos}
                 }
             }
         )
