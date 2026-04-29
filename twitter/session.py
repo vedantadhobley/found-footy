@@ -510,8 +510,13 @@ Steps:
         if exclude_urls is None:
             exclude_urls = []
         
-        # Normalize exclude_urls for comparison
-        exclude_set = set(exclude_urls)
+        # Normalize exclude_urls to tweet IDs for comparison
+        # exclude_urls may contain video_page_url (/i/status/ID) or tweet_url (/user/status/ID)
+        exclude_ids = set()
+        for url in exclude_urls:
+            if "/status/" in url:
+                exclude_ids.add(url.split("/status/")[-1].split("?")[0])
+        exclude_set = exclude_ids
         
         # CRITICAL: Ensure we're authenticated before searching
         if not self.ensure_authenticated():
@@ -689,12 +694,12 @@ Steps:
                                 continue
                         
                         if has_video:
-                            # Skip URLs that were already discovered in previous searches
-                            if tweet_url in exclude_set:
-                                log.debug(MODULE, "skip_discovered", "Skipping already-discovered URL", url=tweet_url[:60])
+                            tweet_id = tweet_url.split("/status/")[-1].split("?")[0] if "/status/" in tweet_url else "unknown"
+
+                            # Skip tweets that were already discovered in previous searches
+                            if tweet_id in exclude_set:
+                                log.debug(MODULE, "skip_discovered", "Skipping already-discovered tweet", tweet_id=tweet_id)
                                 continue
-                            
-                            tweet_id = tweet_url.split("/status/")[-1] if "/status/" in tweet_url else f"unknown"
                             age_str = f"{tweet_age_minutes:.1f}min ago" if tweet_age_minutes else "unknown age"
                             
                             # Extract username from tweet URL: https://x.com/USERNAME/status/123

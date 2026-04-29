@@ -19,8 +19,8 @@ import os
 # Chat + Vision model
 LLAMA_CHAT_URL = os.getenv("LLAMA_URL", "http://localhost:8080")
 
-# Embedding model
-LLAMA_EMBED_URL = os.getenv("LLAMA_EMBED_URL", "http://localhost:8081")
+# Embedding model (not currently used by found-footy)
+# LLAMA_EMBED_URL = os.getenv("LLAMA_EMBED_URL", "http://localhost:8081")
 
 # =============================================================================
 # Database Configuration

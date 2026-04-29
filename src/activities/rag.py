@@ -148,7 +148,8 @@ Example for Germany: ["germany", "german", "deutschland"]
                 json={
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 100,
-                    "temperature": 0.1
+                    "temperature": 0.1,
+                    "chat_template_kwargs": {"enable_thinking": False}
                 }
             )
             response.raise_for_status()
@@ -633,7 +634,8 @@ Output JSON array only. /no_think"""
                                         {"role": "user", "content": prompt}
                                     ],
                                     "max_tokens": 150,
-                                    "temperature": 0.1
+                                    "temperature": 0.1,
+                                    "chat_template_kwargs": {"enable_thinking": False}
                                 }
                             )
                             response.raise_for_status()
