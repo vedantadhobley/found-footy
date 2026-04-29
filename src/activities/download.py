@@ -831,68 +831,21 @@ async def validate_video_is_soccer(
         }
     
     # Combined vision prompt for soccer detection, phone-TV rejection, AND structured clock extraction
+    # Uses JSON output format for reliable parsing across models
     prompt = """/no_think
-Analyze this image and answer FIVE questions:
+Analyze this image. Return ONLY a JSON object with these fields:
 
-1. SOCCER: Is this from a soccer/football match broadcast or highlight?
-   Answer YES if you see ANY of these:
-   - Players on a soccer pitch/field (wide shots)
-   - Match action, goals, tackles, or plays
-   - Close-up replays or slow-motion of match moments
-   - Player celebrations or reactions during a match
-   - Goal close-ups showing the ball in the net
-   - VAR review footage
-   - Match broadcast graphics/scoreboards with match footage
-   - Stadium/fan recording of live match action
-   
-   Answer NO if you see:
-   - People talking in a studio, podcast, or TV show (even with soccer graphics)
-   - News anchors or pundits at a desk discussing soccer
-   - Press conferences or interviews (not match footage)
-   - Just logos/graphics with NO match footage at all
-   - Advertisements or promotional content
-   - Other sports (basketball, tennis, etc.)
+{"soccer": true/false, "screen": true/false, "clock": "MM:SS or null", "added": "+N or null", "stoppage_clock": "MM:SS or null"}
 
-2. SCREEN: Is this someone filming a TV/monitor screen with their phone/camera?
-   This is ONLY for detecting amateur phone recordings of TV screens, NOT professional broadcasts.
-   
-   Answer YES ONLY if you see MULTIPLE of these PHYSICAL artifacts:
-   - Moiré patterns (rainbow/wavy interference lines on the display)
-   - Visible TV bezel/frame edges around the picture (thick black borders with TV hardware visible)
-   - Screen glare or reflections from room lighting
-   - Tilted/angled perspective showing someone filmed a screen from the side
-   - Visible room, furniture, walls, or surroundings around the TV
-   - Severe pixelation from screen refresh rate mismatch
-   
-   IMPORTANT - These are NOT screen recordings, answer NO:
-   - Professional broadcast overlays, scoreboards, or graphics
-   - VAR boxes, replay borders, or picture-in-picture
-   - Watermarks or channel logos
-   - Black letterbox bars (16:9 vs 4:3 aspect ratio difference)
-   - Clean professional broadcast footage with any overlays
-   
-   When in doubt, answer NO. Only reject obvious phone-filming-TV scenarios.
+soccer: true if this is from a live soccer/football match broadcast or highlight (players on pitch, match action, goals, replays, celebrations, VAR footage, stadium recordings). false if studio/podcast, press conference, ads, other sports, or just graphics with no match footage.
 
-3. CLOCK: What does the PRIMARY match timer show?
-   Report the main clock display (e.g., "34:12", "90:00", "2H 15:30"). Copy exactly.
-   If no clock visible, answer NONE.
+screen: true ONLY if someone is filming a TV with their phone (moiré patterns, visible TV bezel, screen glare, tilted angle, visible room/furniture). false for professional broadcasts, overlays, scoreboards, watermarks, letterbox bars. When in doubt, false.
 
-4. ADDED: Is there an ADDITIONAL TIME indicator (like "+3", "+5") shown near the clock?
-   If yes, report exactly what you see (e.g., "+4", "+6").
-   If none visible, answer NONE.
+clock: The primary match timer text exactly as shown (e.g. "34:12", "90:00"), or null if not visible.
 
-5. STOPPAGE_CLOCK: Is there a SEPARATE smaller clock counting time within added/stoppage time?
-   Some broadcasts freeze the main clock (e.g., at 90:00) and show a small running
-   sub-timer (e.g., "03:57") for the elapsed stoppage time.
-   If you see this separate sub-timer, report it (e.g., "03:57").
-   If there is no separate sub-timer, answer NONE.
+added: Additional time indicator near the clock (e.g. "+4", "+6"), or null if none.
 
-Answer format (exactly):
-SOCCER: YES or NO
-SCREEN: YES or NO
-CLOCK: <exact text from main timer> or NONE
-ADDED: <exact indicator like +4> or NONE
-STOPPAGE_CLOCK: <exact sub-timer text> or NONE"""
+stoppage_clock: A separate smaller sub-timer for stoppage time (e.g. "03:57"), or null if none."""
 
     log.info(activity.logger, "download", "validate_started",
              "Starting AI vision validation",
@@ -907,73 +860,78 @@ STOPPAGE_CLOCK: <exact sub-timer text> or NONE"""
     # =========================================================================
     
     def parse_response(resp) -> dict:
-        """Parse vision model response into structured dict.
-        
+        """Parse vision model JSON response into structured dict.
+
         Returns dict with: is_soccer, is_screen, raw_clock, raw_added, raw_stoppage_clock
         """
         result = {"is_soccer": False, "is_screen": False, "raw_clock": None, "raw_added": None, "raw_stoppage_clock": None}
-        
+
         if not resp:
             return result
-        
-        # Handle llama.cpp OpenAI format
+
+        content = ""
         if "choices" in resp:
             content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
-            content_upper = content.upper()
-            
-            # Check for skip indicator (vision not available)
-            if "SKIP" in content_upper:
-                result["is_soccer"] = True  # Fail open when vision is unavailable
-                return result
-            
-            # Parse SOCCER answer
-            is_soccer = "SOCCER:YES" in content_upper or "SOCCER: YES" in content_upper
-            if "SOCCER:" not in content_upper:
-                is_soccer = "YES" in content_upper and "SOCCER" in content_upper
-            result["is_soccer"] = is_soccer
-            
-            # Parse SCREEN answer
-            is_screen = "SCREEN:YES" in content_upper or "SCREEN: YES" in content_upper
-            if "SCREEN:" not in content_upper:
-                is_screen = "MOIRE" in content_upper or "BEZEL" in content_upper or "TV FRAME" in content_upper
-            result["is_screen"] = is_screen
-            
-            # Parse CLOCK field
-            clock_match = re.search(r'CLOCK:\s*(.+?)(?:\n|$)', content, re.IGNORECASE)
-            if clock_match:
-                clock_value = clock_match.group(1).strip()
-                if clock_value.upper() not in ("NONE", "N/A", "NOT VISIBLE", "NO CLOCK"):
-                    result["raw_clock"] = clock_value
-            
-            # Parse ADDED field
-            added_match = re.search(r'ADDED:\s*(.+?)(?:\n|$)', content, re.IGNORECASE)
-            if added_match:
-                added_value = added_match.group(1).strip()
-                if added_value.upper() not in ("NONE", "N/A", "NOT VISIBLE"):
-                    result["raw_added"] = added_value
-            
-            # Parse STOPPAGE_CLOCK field
-            stoppage_match = re.search(r'STOPPAGE_CLOCK:\s*(.+?)(?:\n|$)', content, re.IGNORECASE)
-            if stoppage_match:
-                stoppage_value = stoppage_match.group(1).strip()
-                if stoppage_value.upper() not in ("NONE", "N/A", "NOT VISIBLE"):
-                    result["raw_stoppage_clock"] = stoppage_value
-            
+        elif "response" in resp:
+            content = resp.get("response", "")
+
+        if not content:
             return result
-        
-        # Legacy Ollama format
-        text = resp.get("response", "").strip()
-        text_upper = text.upper()
-        result["is_soccer"] = "SOCCER:YES" in text_upper or ("YES" in text_upper and "SOCCER" in text_upper)
-        result["is_screen"] = "SCREEN:YES" in text_upper
-        
-        # Parse CLOCK from legacy format
-        clock_match = re.search(r'CLOCK:\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
+
+        # Strip markdown code fences if present (model sometimes wraps JSON in ```json ... ```)
+        stripped = content.strip()
+        if stripped.startswith("```"):
+            stripped = re.sub(r'^```(?:json)?\s*', '', stripped)
+            stripped = re.sub(r'```\s*$', '', stripped).strip()
+
+        # Try JSON parsing first (primary path)
+        try:
+            parsed = json.loads(stripped)
+            result["is_soccer"] = bool(parsed.get("soccer", False))
+            result["is_screen"] = bool(parsed.get("screen", False))
+            result["raw_clock"] = parsed.get("clock")
+            result["raw_added"] = parsed.get("added")
+            result["raw_stoppage_clock"] = parsed.get("stoppage_clock")
+            return result
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Fallback: text parsing for non-JSON responses
+        content = content.replace("*", "")
+        content_upper = content.upper()
+
+        if "SKIP" in content_upper:
+            result["is_soccer"] = True
+            return result
+
+        is_soccer = "SOCCER:YES" in content_upper or "SOCCER: YES" in content_upper
+        if "SOCCER:" not in content_upper:
+            is_soccer = "YES" in content_upper and "SOCCER" in content_upper
+        result["is_soccer"] = is_soccer
+
+        is_screen = "SCREEN:YES" in content_upper or "SCREEN: YES" in content_upper
+        if "SCREEN:" not in content_upper:
+            is_screen = "MOIRE" in content_upper or "BEZEL" in content_upper or "TV FRAME" in content_upper
+        result["is_screen"] = is_screen
+
+        clock_match = re.search(r'CLOCK:\s*(.+?)(?:\n|$)', content, re.IGNORECASE)
         if clock_match:
             clock_value = clock_match.group(1).strip()
             if clock_value.upper() not in ("NONE", "N/A", "NOT VISIBLE", "NO CLOCK"):
                 result["raw_clock"] = clock_value
-        
+
+        added_match = re.search(r'ADDED:\s*(.+?)(?:\n|$)', content, re.IGNORECASE)
+        if added_match:
+            added_value = added_match.group(1).strip()
+            if added_value.upper() not in ("NONE", "N/A", "NOT VISIBLE"):
+                result["raw_added"] = added_value
+
+        stoppage_match = re.search(r'STOPPAGE_CLOCK:\s*(.+?)(?:\n|$)', content, re.IGNORECASE)
+        if stoppage_match:
+            stoppage_value = stoppage_match.group(1).strip()
+            if stoppage_value.upper() not in ("NONE", "N/A", "NOT VISIBLE"):
+                result["raw_stoppage_clock"] = stoppage_value
+
         return result
     
     # Extract frames at 25% and 75%
@@ -1452,7 +1410,8 @@ async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[st
         ],
         "max_tokens": 100,
         "temperature": 0.1,
-        "chat_template_kwargs": {"enable_thinking": False}
+        "chat_template_kwargs": {"enable_thinking": False},
+        "response_format": {"type": "json_object"}
     }
     
     for attempt in range(1, max_retries + 1):
