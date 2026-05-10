@@ -1,15 +1,16 @@
 # Production Docker Compose - Temporal orchestration
 #
-# Port allocation: found-footy uses 3200-3219 (production)
-#   3200: Temporal UI
-#   3201: MongoDB Express (web GUI)
-#   3202: MinIO Console
-#   3203: Twitter VNC (manual service for cookie re-auth)
+# HTTP services are reachable via Caddy on the `proxy` network.
+# See ~/workspace/proxy/Caddyfile for hostname routes:
+#   found-footy-temporal.{$BASE_DOMAIN}    → temporal-ui:8080
+#   found-footy-mongo.{$BASE_DOMAIN}       → mongo-express:8081
+#   found-footy-minio.{$BASE_DOMAIN}       → minio:9001
+#   found-footy-twitter-vnc.{$BASE_DOMAIN} → twitter-vnc:6080 (vnc profile only)
 #
-# Internal ports (not exposed):
+# Internal ports (not exposed to host, reachable on luv-prod / found-footy-prod):
 #   - postgres:5432 (Temporal metadata)
-#   - mongo:27017 (Application data)
-#   - minio:9000 (S3 storage)
+#   - mongo:27017   (Application data)
+#   - minio:9000    (S3 storage)
 #   - temporal:7233 (gRPC)
 #   - twitter instances:8888 (API)
 #
@@ -33,7 +34,7 @@
 #
 #   Cookie re-auth (when cookies expire):
 #     docker compose up -d twitter-vnc
-#     # Open http://localhost:3203 and login
+#     # Open http://found-footy-twitter-vnc.<base-domain>/ and login
 #     docker compose stop twitter-vnc
 
 name: found-footy-prod
@@ -150,14 +151,15 @@ services:
   
   # Twitter VNC - Manual service for cookie re-auth when cookies expire
   # Usage: docker compose up -d twitter-vnc
-  #        Open http://localhost:3203 and login to Twitter
+  #        Open http://found-footy-twitter-vnc.<base-domain>/ and login to Twitter
   #        docker compose stop twitter-vnc
   twitter-vnc:
     <<: *twitter-vnc
     container_name: found-footy-prod-twitter-vnc
     profiles: ["vnc"]
-    ports:
-      - "3203:6080"
+    networks:
+      - found-footy-prod
+      - proxy
 
   # ===========================================================================
   # INFRASTRUCTURE SERVICES
@@ -213,8 +215,6 @@ services:
   mongo-express:
     image: mongo-express:latest
     container_name: found-footy-prod-mongo-express
-    ports:
-      - "3201:8081"
     environment:
       ME_CONFIG_MONGODB_SERVER: found-footy-prod-mongo
       ME_CONFIG_MONGODB_PORT: "27017"
@@ -230,14 +230,13 @@ services:
     restart: unless-stopped
     networks:
       - found-footy-prod
+      - proxy
 
   # MINIO - S3-compatible object storage
   minio:
     image: minio/minio:latest
     container_name: found-footy-prod-minio
     command: server /data --console-address ":9001"
-    ports:
-      - "3202:9001"
     environment:
       MINIO_ROOT_USER: ffuser
       MINIO_ROOT_PASSWORD: ffpass--
@@ -253,6 +252,7 @@ services:
     networks:
       - found-footy-prod
       - luv-prod
+      - proxy
 
   # TEMPORAL SERVER - Workflow orchestration
   # LOG_LEVEL=warn suppresses noisy physicalTaskQueueManager Started/Stopped churn
@@ -278,15 +278,14 @@ services:
   temporal-ui:
     image: temporalio/ui:latest
     container_name: found-footy-prod-temporal-ui
-    ports:
-      - "3200:8080"
     environment:
       - TEMPORAL_ADDRESS=found-footy-prod-temporal:7233
-      - TEMPORAL_CORS_ORIGINS=http://localhost:3200
+      - TEMPORAL_CORS_ORIGINS=http://found-footy-temporal.${BASE_DOMAIN:-lab}
     depends_on:
       - temporal
     networks:
       - found-footy-prod
+      - proxy
     restart: unless-stopped
 
   # ===========================================================================
@@ -352,6 +351,11 @@ networks:
   found-footy-prod:
     name: found-footy-prod
     driver: bridge
-  
+
   luv-prod:
+    external: true
+
+  # Caddy reverse proxy fronts HTTP services here.
+  # See ~/workspace/proxy/Caddyfile for hostname routes.
+  proxy:
     external: true

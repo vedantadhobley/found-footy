@@ -1,19 +1,22 @@
 # Development Docker Compose - Temporal orchestration
 #
-# Port allocation: found-footy uses 4200-4209 (dev)
-#   4200: Temporal UI
-#   4201: MongoDB Mongoku (web GUI)
-#   4202: MinIO Console
-#   4203: Twitter Firefox VNC (browser GUI)
-#   7233: Temporal gRPC
+# HTTP services are reachable via Caddy on the `proxy` network.
+# See ~/workspace/proxy/Caddyfile for hostname routes:
+#   found-footy-dev-temporal-ui.{$BASE_DOMAIN} → temporal-ui:8080
+#   found-footy-dev-mongoku.{$BASE_DOMAIN}     → mongoku:3100
+#   found-footy-dev-minio.{$BASE_DOMAIN}       → minio:9001
+#   found-footy-dev-twitter.{$BASE_DOMAIN}     → twitter:6080 (noVNC)
+#
+# Non-HTTP host port retained:
+#   7233: Temporal gRPC (for host-side dev clients connecting to dev temporal)
 #
 # External services (via Tailscale MagicDNS):
 #   - joi:3102 (LLM API - llama.cpp chat+vision)
 #
-# Internal ports:
-#   - found-footy-postgres:5432 (Temporal metadata)
-#   - found-footy-mongo:27017 (Application data)
-#   - found-footy-minio:9000 (S3 storage)
+# Internal ports (not exposed to host, reachable on luv-dev / found-footy-dev):
+#   - found-footy-dev-postgres:5432 (Temporal metadata)
+#   - found-footy-dev-mongo:27017  (Application data)
+#   - found-footy-dev-minio:9000   (S3 storage)
 
 name: found-footy-dev
 
@@ -24,8 +27,6 @@ services:
       context: .
       dockerfile: Dockerfile.dev
     container_name: found-footy-dev-twitter
-    ports:
-      - "4203:6080"  # noVNC Browser - view Firefox at http://localhost:4203
     env_file:
       - .env
     environment:
@@ -44,6 +45,7 @@ services:
       - ~/.config/found-footy:/config  # Cookie backup (outside repo)
     networks:
       - found-footy-dev
+      - proxy
     restart: unless-stopped
     command: bash /workspace/twitter/start_with_vnc.sh
 
@@ -96,11 +98,9 @@ services:
   mongoku:
     image: huggingface/mongoku:latest
     container_name: found-footy-dev-mongoku
-    ports:
-      - "4201:3100"  # Mongoku Web UI
     environment:
       MONGOKU_DEFAULT_HOST: mongodb://ffuser:ffpass@found-footy-dev-mongo:27017
-      MONGOKU_SERVER_ORIGIN: http://localhost:4201
+      MONGOKU_SERVER_ORIGIN: http://found-footy-dev-mongoku.${BASE_DOMAIN:-luv}
       MONGOKU_ALLOW_DELETE: "true"
     depends_on:
       mongo:
@@ -108,14 +108,13 @@ services:
     restart: unless-stopped
     networks:
       - found-footy-dev
+      - proxy
 
   # MINIO - S3-compatible object storage
   minio:
     image: minio/minio:latest
     container_name: found-footy-dev-minio
     command: server /data --console-address ":9001"
-    ports:
-      - "4202:9001"  # MinIO Console
     environment:
       MINIO_ROOT_USER: ffuser
       MINIO_ROOT_PASSWORD: ffpass--
@@ -131,6 +130,7 @@ services:
     networks:
       - found-footy-dev
       - luv-dev
+      - proxy
 
   # TEMPORAL SERVER - Workflow orchestration
   temporal:
@@ -156,15 +156,14 @@ services:
   temporal-ui:
     image: temporalio/ui:latest
     container_name: found-footy-dev-temporal-ui
-    ports:
-      - "4200:8080"  # Temporal UI
     environment:
       - TEMPORAL_ADDRESS=found-footy-dev-temporal:7233
-      - TEMPORAL_CORS_ORIGINS=http://localhost:4200
+      - TEMPORAL_CORS_ORIGINS=http://found-footy-dev-temporal-ui.${BASE_DOMAIN:-luv}
     depends_on:
       - temporal
     networks:
       - found-footy-dev
+      - proxy
     restart: unless-stopped
 
   # LLAMA.CPP SERVER - Accessed via Tailscale MagicDNS at joi:3102
@@ -225,4 +224,9 @@ networks:
   
   # Shared network - frontend and other projects join this to communicate
   luv-dev:
+    external: true
+
+  # Caddy reverse proxy fronts HTTP services here.
+  # See ~/workspace/proxy/Caddyfile for hostname routes.
+  proxy:
     external: true
