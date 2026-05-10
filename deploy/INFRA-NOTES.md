@@ -10,19 +10,25 @@ found-footy has **no public-facing component** (no Cloudflare tunnel
 ingress); the workers and twitter scraper run headless and write to the
 internal databases. Admin UIs are tailnet-only.
 
-## 1. Caddyfile additions (luv)
+## 1. Caddy routes (luv)
 
-Append to `~/workspace/proxy/Caddyfile`:
+The Caddy config on luv is split per-project. This project's routes live in:
+
+```
+~/workspace/proxy/caddy/caddy.d/found-footy.caddy
+```
+
+Reference content (current source of truth is the file above):
 
 ```caddy
-# ─── found-footy (prod) ────────────────────────────────────────────────────
+# ─── prod ──────────────────────────────────────────────────────────────────
 http://found-footy-prod-temporal-ui.{$BASE_DOMAIN}    { reverse_proxy found-footy-prod-temporal-ui:8080 }
 http://found-footy-prod-mongo-express.{$BASE_DOMAIN}  { reverse_proxy found-footy-prod-mongo-express:8081 }
 http://found-footy-prod-minio.{$BASE_DOMAIN}          { reverse_proxy found-footy-prod-minio:9001 }
 # noVNC inside the manually-started cookie-reauth container (vnc profile)
 http://found-footy-prod-twitter-vnc.{$BASE_DOMAIN}    { reverse_proxy found-footy-prod-twitter-vnc:6080 }
 
-# ─── found-footy (dev) ─────────────────────────────────────────────────────
+# ─── dev ───────────────────────────────────────────────────────────────────
 http://found-footy-dev-temporal-ui.{$BASE_DOMAIN}     { reverse_proxy found-footy-dev-temporal-ui:8080 }
 http://found-footy-dev-mongoku.{$BASE_DOMAIN}         { reverse_proxy found-footy-dev-mongoku:3100 }
 http://found-footy-dev-minio.{$BASE_DOMAIN}           { reverse_proxy found-footy-dev-minio:9001 }
@@ -30,7 +36,15 @@ http://found-footy-dev-minio.{$BASE_DOMAIN}           { reverse_proxy found-foot
 http://found-footy-dev-twitter.{$BASE_DOMAIN}         { reverse_proxy found-footy-dev-twitter:6080 }
 ```
 
-Then: `docker compose -f ~/workspace/proxy/docker-compose.yml restart caddy`.
+After editing the file, reload Caddy without restarting the container:
+
+```bash
+docker exec proxy-caddy caddy reload --config /etc/caddy/Caddyfile
+```
+
+(The proxy stack uses a directory bind mount, so atomic-write edits to
+files inside `caddy/` flow through and `caddy reload` picks them up.
+See `~/workspace/proxy/README.md` for the gotcha mechanics.)
 
 ## 2. Non-HTTP host ports kept
 
