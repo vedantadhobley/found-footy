@@ -387,20 +387,29 @@ commit so they're individually revertable.
 
 ---
 
-## Sprint 6+ — Feature / infrastructure work (deferred)
+## Sprint 6 — LLM Track 1: workspace LLM gateway
 
-Feature and infra work, with proposals already written. Note that the
-LLM stack redesign has tracks that are **unblocked today** — they could
-conceivably interleave with the cleanup sprints (e.g., do Track 1
-between Sprints 4 and 5) rather than waiting until after Sprint 5.
+**Goal**: stand up `~/workspace/llm-gateway/` as a standalone docker stack on the `proxy` + `luv-{dev,prod}` networks. Hostname: `llm.<base-domain>`. Routes all joi-bound LLM traffic with priority + global concurrency + backpressure metrics.
 
-1. **LLM stack redesign** — `docs/proposals/llm-stack-redesign.md`. Three independent tracks:
-   - Track 1 (LLM gateway): unblocked, ~1 day
-   - Track 2 (chat-call reduction + RAG to llama-large): unblocked, small
-   - Track 3 (image embeddings): blocked on llama.cpp support for Qwen3-VL-Embedding-8B on AMD/Vulkan
-2. **Re-attribution recovery** — `docs/proposals/event-matching.md`. Design exists from the recently-merged `feature/event-matching` branch.
-3. **Geo-restricted CDN bypass** — `docs/proposals/geo-restriction-bypass.md`. Not started.
-4. **Dedup unification** — `docs/proposals/dedup-unification.md`. Tied to Track 3 of the LLM redesign (gets folded in when embeddings land).
+Full design in `docs/proposals/llm-stack-redesign.md` Track 1. Effort ~1 day. After this sprint, the per-process `Semaphore(2)` in `download.py:25` and `rag.py:44` come out; activities tag requests with `X-Priority`.
+
+## Sprint 7 — LLM Track 2: per-video chat-call reduction
+
+**Goal**: cut per-video chat calls 2-3 → 1 by sending all frames in a single multi-image call to Qwen3-VL-8B; move `get_team_aliases` from `llama-small` to `llama-large`. No model changes on joi.
+
+Full design in `docs/proposals/llm-stack-redesign.md` Track 2. Effort: small. Verify on `scripts/test_structured_extraction.py` that the multi-image prompt still produces clean structured JSON before deploying.
+
+## Sprint 8 — LLM Track 3: Path B test, then image embeddings
+
+**Goal**: validate that Qwen3-VL-Embedding-8B can run on the existing llama.cpp stack via the community GGUF (`dam2452/Qwen3-VL-Embedding-8B-GGUF`). If it works, ship the embedding migration for dedup + SOCCER/SCREEN classification. If it doesn't, fall back to Path C (sentence-transformers service on joi) per the proposal.
+
+Full design in `docs/proposals/llm-stack-redesign.md` Track 3.
+
+## Sprint 9+ — Other feature work (deferred until LLM redesign ships)
+
+1. **Re-attribution recovery** — `docs/proposals/event-matching.md`. Design from the recently-merged `feature/event-matching` branch.
+2. **Geo-restricted CDN bypass** — `docs/proposals/geo-restriction-bypass.md`. Not started.
+3. **Dedup unification** — `docs/proposals/dedup-unification.md`. Folds into Sprint 8 when embeddings land.
 
 ---
 
