@@ -302,18 +302,12 @@ reduction the user cares about.
 
 ---
 
-## Open questions
+## Decisions (locked May 2026)
 
-1. **Where does the LLM gateway live in the workspace**: as a sibling
-   docker stack under `~/workspace/llm-gateway/`, or inside an existing
-   stack like `~/workspace/proxy/`? Suggest its own directory because
-   it's a standalone service.
-2. **Naming**: gateway hostname. Suggest `llm.<base-domain>` to keep it
-   memorable and free of project prefix (since it's shared).
-3. **Path B test plan**: who runs it (this session, next session, or
-   ad-hoc)? Spec the test: pull GGUF, start `llama-server`, run a
-   3-frame test through it, compare cosine similarities against the
-   reference Sentence-Transformers output. Pass if matches within ε=0.02.
+1. **Gateway location**: standalone stack at `~/workspace/llm-gateway/`. Joins `proxy` + `luv-{dev,prod}` networks. Cleanest separation; shareable with other projects later.
+2. **Gateway hostname**: `llm.<base-domain>` (no project prefix — it's shared infra).
+3. **Path B test timing**: deferred. Runs as the kickoff of Track 3 work, after the cleanup sprints (Sprints 1-3) and after LLM Tracks 1+2 ship. Avoids one-off experimentation while there's plenty of unblocked cleanup to do.
+4. **Sprint ordering relative to cleanup work**: cleanup first. Sequence in `docs/sprints.md`: Sprint 1 (Lazio Pisa + NameErrors) → Sprint 2 (Mongo atomicity) → Sprint 3 (dead code + deps) → LLM Track 1 (gateway) → LLM Track 2 (chat-call reduction) → Track 3 Path B test → Track 3 ship or fall back to Path C.
 
 ## References
 
