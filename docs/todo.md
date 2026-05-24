@@ -79,6 +79,33 @@ pool keyed on the broadcaster's confirmed region.
 
 ---
 
+## 📋 Joi-state corrections (logged 2026-05-24, lightweight)
+
+The LLM stack redesign proposal (`docs/proposals/llm-stack-redesign.md`) and
+the user-global `~/.claude/CLAUDE.md` both have outdated joi model info.
+Captured here so they get fixed when those docs next get touched (full
+rewrite deferred — not urgent if the VL embedding swap is in motion):
+
+- **Chat model at port 3101** is `Qwen3-VL-30B-A3B-Instruct Q8_0` (31 GB MoE
+  with vision via `mmproj-F16.gguf`), NOT `Qwen3.5-122B-A10B` as global
+  CLAUDE.md claims.
+- **Port 3103 currently runs SigLIP** (ViT-B/16-224, 768-dim image
+  embeddings, CPU PyTorch via `siglip-embed/`) — being retired during the
+  Qwen3-VL-Embedding-8B swap because it never produced useful output for
+  found-footy.
+- **No `llama-large/small/embed.joi` Caddy hostnames** are visible in the
+  synced `~/workspace/llamacpp/` directory. The synced README documents
+  direct port access via the Tailscale FQDN. The Caddy hostnames are used
+  in found-footy's `.env` (`LLAMA_URL=http://llama-small.joi`) and must
+  live in a joi-side directory not in the local sync. Worth confirming
+  with the joi operator and either adding to the sync or documenting
+  separately.
+- **For the upcoming Qwen3-VL-Embedding-8B swap**: the mmproj from
+  `Qwen/Qwen3-VL-8B-Instruct-GGUF` (`mmproj-Qwen3VL-8B-Instruct-F16.gguf`)
+  is the candidate pair for the dam2452 embedding GGUF — both built on
+  Qwen3-VL-8B-Instruct, same vision tower. Validate via the Path B test
+  script (`scripts/test_qwen_vl_embedding.py`) before relying on it.
+
 ## 🧹 Dead code purge (audit §3)
 
 ~900 lines of confirmed dead code with no production callers. See `docs/audit.md` §3 for the line-by-line list. Highlights:
