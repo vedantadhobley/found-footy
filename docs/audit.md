@@ -15,6 +15,33 @@ material that backlog items in `docs/todo.md` cite back to.
 
 ### 1a. Lazio v Pisa Twitter runaway — root cause confirmed
 
+> **Update — 2026-05-24 (live diagnosis)**: the original three-suspect
+> analysis below was partially wrong. The actual mechanism observed for
+> the Dele-Bashiru event was **none of (a)/(b)** — all workflows
+> Completed cleanly with stable IDs. The dominant cause was a specific
+> variant of (c): `UploadWorkflow` exits via the 5-min idle-timeout
+> branch (`upload_workflow.py:106`) BEFORE the late-registering
+> `DownloadWorkflow`s push `_download_workflows` past 10. By the time
+> count reaches 10 (DLWFs fire 1/min, so at ~10 min in), `UploadWorkflow`
+> is already `Completed` — and the remaining DLWFs that registered late
+> have no videos to signal it with, so it never restarts to run the
+> completion check. Event sits with `count=10, complete=false` forever.
+>
+> **The simpler primary fix** is to have `DownloadWorkflow` call
+> `check_and_mark_download_complete` (activity already registered at
+> `worker.py:227`) at its OWN exit, not just from `UploadWorkflow`. Then
+> every DLWF that completes triggers a check, including the late-arriving
+> "no-video" ones. The (a)/(b)/(c) fixes below remain valuable as
+> defense-in-depth — workflow-ID stabilization and the expanded "don't
+> restart" gate prevent OTHER failure modes — but they wouldn't have
+> fixed this specific symptom.
+>
+> Live evidence: `db.fixtures_active.find({_id: 1378237})` showed the
+> Dele-Bashiru event at `_download_workflows: 10`, `_s3_videos: 1`,
+> `_download_complete: false`. Both `TwitterWorkflow` and `UploadWorkflow`
+> showed `Status: Completed` in Temporal 23h prior. No workflows were
+> running. The event was manually unstuck via a one-shot Mongo update.
+
 The bug noted in `docs/todo.md` decomposes into three orthogonal failures.
 All three are real and code-visible.
 

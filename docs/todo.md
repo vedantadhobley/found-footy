@@ -17,12 +17,13 @@ as "extracting" in the vedanta-systems frontend hours after the game
 ended). Twitter is only supposed to search 10 times (~10 min after the
 3-poll debounce completes).
 
-**Full diagnosis with code references**: see `docs/audit.md` §1a.
+**Full diagnosis with code references**: see `docs/audit.md` §1a (including the **2026-05-24 live-evidence update** at the top).
 
-**Fix order** (from §1a):
-1. Stabilize Twitter workflow ID to `f"twitter-{event_id}"` (drop minute/extra/team/player) — `monitor_workflow.py:171-175`.
-2. Expand `check_twitter_workflow_running` to treat all terminal failure states as "don't restart"; return `"unknown"` on RPC error and skip-on-unknown — `monitor.py:728-762`, `monitor_workflow.py:186-194`.
-3. Set explicit `id_reuse_policy` on every `start_workflow` / `start_child_workflow` — `monitor_workflow.py:200-221`, `twitter_workflow.py:469-478`, `upload.py:73-85`.
+**Fix order** (revised after live diagnosis on the Dele-Bashiru event):
+1. **PRIMARY (new)**: Call `check_and_mark_download_complete` from `DownloadWorkflow`'s exit path, not just from `UploadWorkflow`. The activity is already registered (`worker.py:227`); `DownloadWorkflow` just doesn't currently invoke it. This addresses the actual observed mechanism: late-arriving DLWFs that register their workflow ID but have no videos to signal UploadWorkflow with — they never trigger a completion check, so events get stuck at `count=10, complete=false`. **The Lazio v Pisa stuck event was unstuck manually 2026-05-24.**
+2. Stabilize Twitter workflow ID to `f"twitter-{event_id}"` (drop minute/extra/team/player) — `monitor_workflow.py:171-175`. Defense-in-depth — prevents (a)-style mid-stoppage respawns.
+3. Expand `check_twitter_workflow_running` to treat all terminal failure states as "don't restart"; return `"unknown"` on RPC error and skip-on-unknown — `monitor.py:728-762`, `monitor_workflow.py:186-194`. Defense-in-depth — prevents (b)-style FAILED-state respawns.
+4. Set explicit `id_reuse_policy` on every `start_workflow` / `start_child_workflow` — `monitor_workflow.py:200-221`, `twitter_workflow.py:469-478`, `upload.py:73-85`. Defense-in-depth.
 
 ### 🔥 Critical correctness bugs (audit §1)
 
