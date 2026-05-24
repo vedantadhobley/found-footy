@@ -54,13 +54,12 @@ See `docs/audit.md` §2 for the full list. Highlights:
 
 ## Feature work
 
-### Replace perceptual hashes with Qwen image embeddings
+### LLM stack redesign (embedding-augmented vision + concurrency gateway)
 
-See @docs/proposals/qwen-embeddings.md. **Blocked** on confirming which
-Qwen model to deploy on joi — current joi inventory has text embeddings
-(`Qwen3-Embedding-8B` on `:3103`) but no image embedding model. Need
-either a multimodal Qwen embedding (does one exist?), a CLIP/SigLIP
-deployment, or a custom hook through the existing Qwen3-VL-8B.
+See @docs/proposals/llm-stack-redesign.md. Three independent tracks:
+- **Track 1** (unblocked): build a workspace LLM gateway in front of joi for global concurrency + priority + backpressure metrics.
+- **Track 2** (mostly unblocked): cut per-video chat calls 2-3 → 1 by sending all frames in one multi-image call; move RAG alias selection from `llama-small` to `llama-large`.
+- **Track 3** (blocked on serving stack): swap perceptual hashing AND soccer/phone-cam classification to Qwen3-VL-Embedding-8B image embeddings. llama.cpp doesn't yet support this model on AMD/Vulkan; three sub-paths (test community GGUF / sentence-transformers fallback / wait for upstream).
 
 ### Re-attribution recovery on scorer changes
 
