@@ -10,8 +10,9 @@
 # Non-HTTP host port retained:
 #   7233: Temporal gRPC (for host-side dev clients connecting to dev temporal)
 #
-# External services (via Tailscale MagicDNS):
-#   - joi:3102 (LLM API - llama.cpp chat+vision)
+# External services (via the luv-dev shared docker network → tailnet split-DNS):
+#   - http://llama-small.joi (LLM API - llama.cpp Qwen3-VL-8B chat+vision)
+#     Hostname is served by joi's own Caddy; no port needed. See LLAMA_URL in .env.
 #
 # Internal ports (not exposed to host, reachable on luv-dev / found-footy-dev):
 #   - found-footy-dev-postgres:5432 (Temporal metadata)
@@ -166,7 +167,7 @@ services:
       - proxy
     restart: unless-stopped
 
-  # LLAMA.CPP SERVER - Accessed via Tailscale MagicDNS at joi:3102
+  # LLAMA.CPP SERVER - Reached at http://llama-small.joi via the luv-dev shared network.
 
   # TEMPORAL WORKER - Executes workflows
   worker:

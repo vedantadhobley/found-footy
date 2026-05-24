@@ -20,9 +20,9 @@ The Twitter service uses **browser automation with VNC access** for authenticati
 │  └─────────────────┘                                │
 └─────────────────────────────────────────────────────┘
         │
-        │ Port 4203 (dev) / 3203 (prod)
+        │ Caddy: found-footy-{dev,prod}-twitter[-vnc].<base-domain> → :6080
         ▼
-    http://localhost:4203 → VNC browser GUI
+    Open via tailnet hostname; no host port published.
 ```
 
 ## How It Works
@@ -256,12 +256,16 @@ stateDiagram-v2
     Search --> NeedLogin: Session expired
 ```
 
-## Ports Summary
+## Routing
 
-| Environment | VNC Port | API Port |
-|-------------|----------|----------|
-| Development | 4203 | 8888 (internal) |
-| Production | 3203 | 8888 (internal) |
+VNC is fronted by the workspace Caddy on the shared `proxy` docker network —
+there are no host ports. Routes live in
+`~/workspace/proxy/caddy/caddy.d/found-footy.caddy` (see `deploy/INFRA-NOTES.md`).
+
+| Environment | VNC URL | API |
+|---|---|---|
+| Dev | `http://found-footy-dev-twitter.<base-domain>` → `:6080` | `:8888` (cluster-internal) |
+| Prod | `http://found-footy-prod-twitter-vnc.<base-domain>` → `:6080` (vnc profile only) | `:8888` (cluster-internal) |
 
 ## Integration with Temporal
 

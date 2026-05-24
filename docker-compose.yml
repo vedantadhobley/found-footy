@@ -14,8 +14,9 @@
 #   - temporal:7233 (gRPC)
 #   - twitter instances:8888 (API)
 #
-# External services (via Tailscale MagicDNS):
-#   - joi:3102 (LLM API - llama.cpp chat+vision)
+# External services (via the luv-prod shared docker network → tailnet split-DNS):
+#   - http://llama-small.joi (LLM API - llama.cpp Qwen3-VL-8B chat+vision)
+#     Hostname is served by joi's own Caddy; no port needed. See LLAMA_URL in .env.
 #
 # SCALING (using --scale):
 #   - Twitter browsers: headless, scalable from 2-8
