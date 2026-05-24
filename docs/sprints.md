@@ -387,14 +387,20 @@ commit so they're individually revertable.
 
 ---
 
-## Sprint 6+ — Feature work (deferred)
+## Sprint 6+ — Feature / infrastructure work (deferred)
 
-Feature work, in priority order, with the proposals already written:
+Feature and infra work, with proposals already written. Note that the
+LLM stack redesign has tracks that are **unblocked today** — they could
+conceivably interleave with the cleanup sprints (e.g., do Track 1
+between Sprints 4 and 5) rather than waiting until after Sprint 5.
 
-1. **Qwen image embeddings** — `docs/proposals/qwen-embeddings.md`. Blocked on confirming which Qwen image embedding model to deploy on joi.
+1. **LLM stack redesign** — `docs/proposals/llm-stack-redesign.md`. Three independent tracks:
+   - Track 1 (LLM gateway): unblocked, ~1 day
+   - Track 2 (chat-call reduction + RAG to llama-large): unblocked, small
+   - Track 3 (image embeddings): blocked on llama.cpp support for Qwen3-VL-Embedding-8B on AMD/Vulkan
 2. **Re-attribution recovery** — `docs/proposals/event-matching.md`. Design exists from the recently-merged `feature/event-matching` branch.
 3. **Geo-restricted CDN bypass** — `docs/proposals/geo-restriction-bypass.md`. Not started.
-4. **Dedup unification** — `docs/proposals/dedup-unification.md`. Tied to qwen-embeddings (will get folded in or done separately depending on timing).
+4. **Dedup unification** — `docs/proposals/dedup-unification.md`. Tied to Track 3 of the LLM redesign (gets folded in when embeddings land).
 
 ---
 
