@@ -48,7 +48,7 @@ See `deploy/INFRA-NOTES.md` for Caddy routes + cross-project network setup.
 - @docs/operations.md — runbook (bring-up, scaling, common issues, debugging)
 - @docs/decisions.md — append-only architectural decisions log
 - @docs/todo.md — active work + open bugs (paste-ready block at top)
-- @docs/proposals/ — design docs for future work: `dedup-unification`, `event-matching`, `geo-restriction-bypass`, `qwen-embeddings`
+- @docs/proposals/ — design docs for future work: `dedup-unification`, `event-matching`, `geo-restriction-bypass`, `llm-stack-redesign` (supersedes the old `qwen-embeddings` proposal — broader scope)
 - @deploy/INFRA-NOTES.md — Caddyfile entries + cross-project network setup outside this repo
 
 ## Frontend integration
@@ -77,7 +77,7 @@ backend, vedanta-systems hosts the UI.
 - **Touching the Twitter pipeline**: Twitter workflow IDs include the API's `minute` and `extra` fields — `f"twitter-{team}-{player}-{minute_str}-{event_id}"`. If the API updates a goal's reported minute (e.g. 45 → 45+2 as stoppage extends), the workflow ID changes and a fresh Twitter workflow gets started even though the same `event_id` already has one running. **Known suspect for the double-firing bug; see @docs/todo.md before adding new workflow-ID logic.**
 - **Touching `check_twitter_workflow_running`** (`src/activities/monitor.py:700-762`): the gate only treats `RUNNING` and `COMPLETED` as "don't restart". `FAILED` / `TIMED_OUT` / `TERMINATED` / `CANCELED` fall through, so every 30 s monitor cycle re-spawns Twitter if it died once. **Known bug — fix together with the workflow-ID issue above.**
 - **Touching dedup logic** (`src/activities/upload.py`): the S3-comparison loop at line ~614 currently `break`s at the first matching S3 video, so multiple S3 duplicates for the same event aren't collapsed. Design in @docs/proposals/dedup-unification.md.
-- **Touching the perceptual hash code** (`_generate_perceptual_hash` in `download.py`; `_perceptual_hashes_match`/`_dense_hashes_match`/`_hamming_distance` in `upload.py`): the plan is to replace hash-and-Hamming with Qwen image embeddings + cosine similarity (@docs/proposals/qwen-embeddings.md). Avoid investing in the current hash flow unless fixing a bug.
+- **Touching the perceptual hash code** (`_generate_perceptual_hash` in `download.py`; `_perceptual_hashes_match`/`_dense_hashes_match`/`_hamming_distance` in `upload.py`): the plan is to replace hash-and-Hamming with Qwen3-VL image embeddings + cosine similarity, as part of a broader vision pipeline redesign (@docs/proposals/llm-stack-redesign.md — also moves SOCCER/SCREEN classification to embeddings, leaves only clock OCR on the chat VL model). Avoid investing in the current hash flow unless fixing a bug.
 - **`UploadWorkflow` serialization**: one workflow per event with deterministic ID `upload-{event_id}`. Multiple `DownloadWorkflow`s feed it via `signal-with-start`; signals queue FIFO. Don't introduce parallel uploads per event — the scoped-dedup invariant depends on ordered processing.
 - **AI vision calls** (`validate_video_is_soccer` in `download.py`): the prompt expects a structured JSON response with `SOCCER` / `SCREEN` / `CLOCK` / `ADDED` / `STOPPAGE_CLOCK` fields. The current prompt was recovered from a running prod container (commit `7d5429d`) — don't rewrite without re-validating against `scripts/test_structured_extraction.py`.
 - **Adding a new event type** (Red Card etc.): flip `enabled: True` in `src/utils/event_config.py`, set `scrapeable_details` and `debounce_fields`. Confirm the search-query builder in `event_enhancement.py` handles the new type.
@@ -100,7 +100,7 @@ backend, vedanta-systems hosts the UI.
   - Twitter workflow stuck "extracting" for hours on the 33′ goal in the recent Lazio v Pisa fixture — suspects above.
   - S3 dedup `break`s at first match instead of collapsing all matching duplicates.
 - **Open feature work** (designs in @docs/proposals/):
-  - Replace perceptual hashes with Qwen image embeddings.
+  - LLM stack redesign — image embeddings for dedup + classification, plus a workspace-level LLM gateway for concurrency control. Supersedes the older "qwen-embeddings" scope.
   - Re-attribution recovery on goal-scorer changes (this branch, `feature/event-matching`).
   - Geo-restricted broadcaster CDN bypass.
 - **Current branch**: `feature/event-matching` — designing the re-attribution recovery flow. Not yet merged to `main`.
