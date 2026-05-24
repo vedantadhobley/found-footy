@@ -13,7 +13,8 @@ the rolling backlog state.
 
 **Goal**: stop the Lazio-Pisa-style runaway and the latent crashes the audit found. All edits are small; the leverage per line is enormous.
 
-### Files touched (4)
+### Files touched (7)
+- `src/workflows/download_workflow.py` (new — for the completion-check fix)
 - `src/workflows/monitor_workflow.py`
 - `src/activities/monitor.py`
 - `src/activities/download.py`
@@ -23,35 +24,41 @@ the rolling backlog state.
 
 ### Changes
 
-1. **Stabilize Twitter workflow ID** — `monitor_workflow.py:171-175`
+1. **PRIMARY (from 2026-05-24 live diagnosis): Call `check_and_mark_download_complete` from `DownloadWorkflow`'s exit** — `src/workflows/download_workflow.py`
+   - Currently the completion check only fires from `UploadWorkflow` (after a batch processes; on idle-timeout). If a DLWF registers its workflow ID but has no videos to signal UploadWorkflow with (validation fail, hash fail, all videos filtered), no completion check ever fires. UploadWorkflow exits at 5-min idle; the late DLWFs that register past then leave the event stuck at `count=10, complete=false`.
+   - Add a `try/finally` (or end-of-`run`) call to the existing `download.check_and_mark_download_complete` activity. The activity is already registered (`worker.py:227`); it just isn't called from `DownloadWorkflow` today.
+   - The activity is non-atomic today (Sprint 2 fixes this); the cross-workflow double-call from both `DownloadWorkflow` and `UploadWorkflow` is fine in practice (idempotent `$set`) but worth keeping in mind.
+   - **This addresses the live-observed Lazio v Pisa symptom directly.** The (a)/(b)/(c)-style fixes below are defense-in-depth and prevent OTHER failure modes.
+
+2. **Stabilize Twitter workflow ID** (defense-in-depth) — `monitor_workflow.py:171-175`
    - Replace `f"twitter-{team_clean}-{player_last}-{minute_str}-{event_id}"` with `f"twitter-{event_id}"`.
    - Delete the now-unused `minute_str` line, the `player_last = player_name.split()[-1] if player_name else "Unknown"`, and the `team_clean = ...replace(...).` chain.
    - Workflow visibility is preserved via the event_id, which already encodes fixture/team/player.
 
-2. **Expand `check_twitter_workflow_running` to all terminal states** — `monitor.py:728-762`
+3. **Expand `check_twitter_workflow_running` to all terminal states** — `monitor.py:728-762`
    - Add explicit handling: `is_terminal_success = (status == "COMPLETED")`, `is_terminal_failure = status in ("FAILED", "TIMED_OUT", "TERMINATED", "CANCELED", "CONTINUED_AS_NEW")`, `is_running = (status == "RUNNING")`.
    - Return shape: `{"exists": True, "running": is_running, "status": status_name, "is_terminal": is_terminal_success or is_terminal_failure}`.
    - On RPC error (line 749-754): return `{"exists": None, "running": False, "status": "UNKNOWN", "is_terminal": False}` — caller treats `None` as "skip restart this cycle, retry next cycle".
    - On generic exception (line 755-762): same `"UNKNOWN"` response.
 
-3. **Update the caller to use the expanded gate** — `monitor_workflow.py:186-198`
+4. **Update the caller to use the expanded gate** — `monitor_workflow.py:186-198`
    - Skip restart if `workflow_status["running"]` OR `workflow_status["is_terminal"]` OR `workflow_status["exists"] is None`.
 
-4. **Set explicit `id_reuse_policy` on all `start_child_workflow` / `start_workflow` calls**
+5. **Set explicit `id_reuse_policy` on all `start_child_workflow` / `start_workflow` calls**
    - `monitor_workflow.py:200-221` (Twitter): `id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE` (paired with the now-stable ID and the gating activity).
    - `twitter_workflow.py:469-478` (Download): `id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE` — each attempt has its own ID via `f"download{attempt}-..."`, and we don't want duplicates.
    - `upload.py:73-85` (Upload, via `start_workflow`): replace the whole pattern with `client.signal_with_start_workflow(...)` — see Sprint 2 item 5; or as an interim fix, add `id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE`.
 
-5. **Fix `MODULE` NameError** — `download.py:819`
+6. **Fix `MODULE` NameError** — `download.py:819`
    - Add `MODULE = "download"` near the top of the file (matches the convention `upload.py:14` uses) and reference it. Or: replace the single `MODULE` use at line 819 with the string literal `"download"`. The constant approach is cleaner; the file uses `"download"` strings inline everywhere else.
 
-6. **Fix `obj` NameError** — `ingest.py:342`
+7. **Fix `obj` NameError** — `ingest.py:342`
    - The except branch references `obj` which was a loop variable that doesn't exist at this scope. Either move the except inside the loop, or pass the failing key via closure. Simplest: wrap each `delete_object` call in its own try/except.
 
-7. **Add timeout to `get_team_info`** — `api_client.py:240`
+8. **Add timeout to `get_team_info`** — `api_client.py:240`
    - Add `timeout=10` to match every other call in the module.
 
-8. **Remove the no-op `'download_count' in dir()` guard** — `twitter_workflow.py:506`
+9. **Remove the no-op `'download_count' in dir()` guard** — `twitter_workflow.py:506`
    - Initialize `download_count = 0` before the while loop (line 247-ish). Drop the guard expression at line 506.
 
 ### Verification
@@ -65,7 +72,7 @@ the rolling backlog state.
 - If `event_id` collisions exist in the wild (they shouldn't — `{fixture}_{team}_{player}_{type}_{seq}` is unique), the workflow-ID dedup will incorrectly merge them. Run `mongo find` for duplicate `_event_id` values before deploy.
 
 ### Commit shape
-One commit per logical change. Suggested: `fix(twitter): stabilize workflow ID + expand restart gate (Lazio Pisa bug)`, `fix(download): NameError on MODULE constant`, `fix(ingest): NameError in cleanup exception handler`, `fix(api): add missing timeout to get_team_info`, `chore(twitter-workflow): remove no-op download_count guard`.
+One commit per logical change. Suggested: `fix(download): call check_and_mark_download_complete from DownloadWorkflow exit (Lazio Pisa root cause)`, `fix(twitter): stabilize workflow ID + expand restart gate (defense-in-depth)`, `fix(download): NameError on MODULE constant`, `fix(ingest): NameError in cleanup exception handler`, `fix(api): add missing timeout to get_team_info`, `chore(twitter-workflow): remove no-op download_count guard`.
 
 ---
 
