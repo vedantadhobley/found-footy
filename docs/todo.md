@@ -2,48 +2,53 @@
 
 Paste-ready start-of-session block. Newest items above older.
 
+> **Companion doc**: a full code audit was taken in May 2026 and lives in
+> `docs/audit.md`. It catalogs ~50 specific findings with file:line refs and a
+> suggested 6-sprint ordering. Items below cite back to it.
+
 ---
 
 ## Open bugs (priority order)
 
-### 🔥 Twitter workflow stuck "extracting" for hours
+### 🔥 Twitter workflow stuck "extracting" for hours — ROOT CAUSE CONFIRMED
 
 **Evidence**: 33′ goal in the recent Lazio v Pisa fixture (still visible
 as "extracting" in the vedanta-systems frontend hours after the game
 ended). Twitter is only supposed to search 10 times (~10 min after the
 3-poll debounce completes).
 
-**Suspect (a) — workflow-ID instability across API time updates**: in
-`src/workflows/monitor_workflow.py`, the Twitter workflow ID is
-`f"twitter-{team}-{player}-{minute_str}-{event_id}"` where
-`minute_str = f"{minute}+{extra}min" if extra else f"{minute}min"`. If
-the API mutates `minute` or `extra` between monitor cycles (e.g. 45 →
-45+2 as stoppage extends), the workflow ID changes and
-`check_twitter_workflow_running` looks up the new ID, finds nothing, and
-spawns a fresh Twitter workflow. The original keeps running. Visible in
-Temporal UI as multiple `twitter-*-{event_id}` workflows.
+**Full diagnosis with code references**: see `docs/audit.md` §1a.
 
-**Suspect (b) — `check_twitter_workflow_running` ignores failed/terminated
-states**: `src/activities/monitor.py:700-762` only treats `RUNNING` and
-`COMPLETED` as "don't restart". `FAILED` / `TIMED_OUT` / `TERMINATED` /
-`CANCELED` fall through, so every 30 s monitor cycle re-fires Twitter if
-it died once. Compounds the symptom.
+**Fix order** (from §1a):
+1. Stabilize Twitter workflow ID to `f"twitter-{event_id}"` (drop minute/extra/team/player) — `monitor_workflow.py:171-175`.
+2. Expand `check_twitter_workflow_running` to treat all terminal failure states as "don't restart"; return `"unknown"` on RPC error and skip-on-unknown — `monitor.py:728-762`, `monitor_workflow.py:186-194`.
+3. Set explicit `id_reuse_policy` on every `start_workflow` / `start_child_workflow` — `monitor_workflow.py:200-221`, `twitter_workflow.py:469-478`, `upload.py:73-85`.
 
-**Suspect (c) — `_download_workflows` array filled but downloads never
-completed**: ten `DownloadWorkflow`s register themselves at start via
-`$addToSet`, so the count can reach 10 even if all of them subsequently
-fail in AI-validation (joi unreachable, prompt response unparseable, etc).
-With `_download_workflows.length == 10` and `_download_complete == false`,
-no fresh attempts can fire — frontend shows "extracting" forever.
+### 🔥 Critical correctness bugs (audit §1)
 
-**Action**:
-1. Pull from Temporal UI the listing of `*-{Lazio Pisa 33′ event_id}*` workflows, group by status. Multiple RUNNING + dead ones → (a). Many FAILED → (b) or (c).
-2. Check the MongoDB event document — look at `_download_workflows`, `_monitor_complete`, `_download_complete`. If `_download_workflows` is at 10 but `_s3_videos` is empty/short → (c).
-3. Fix: stabilize workflow ID (drop `minute_str`, keep only `event_id`); expand the "don't restart" set in `check_twitter_workflow_running` to include all terminal-with-failure states; consider a re-queue mechanism when registered-but-failed downloads exceed N.
+All from `docs/audit.md` §1; same severity tier as the Lazio Pisa bug.
+
+- **NameError crash in vision-validation fallback** — `download.py:819` uses undefined `MODULE` constant. Crashes the activity on any ffprobe error during AI validation.
+- **NameError in cleanup_old_fixtures** — `ingest.py:342` references undefined `obj` in the except branch. Latent.
+- **`get_team_info` has no timeout** — `api_client.py:240`. Hangs forever if API stalls.
+- **MD5-dedup silent miss** — `upload.py:352` reads `s3_key` but field is `_s3_key`. Silent dedup bypass for URLs not matching exact prefix.
+- **Malformed `$pull` query** — `upload.py:945`. Positional `$` refers to wrong array; silent no-op or over-pull.
+- **Three non-atomic Mongo read-then-write patterns** — `mongo_store.py:660-703, 803-849, 248-253, 1411-1441`. Race conditions; fixture can land in zero or both collections.
+- **`signal_with_start` substitute drops batches silently** — `upload.py:73-85` uses `start_workflow + start_signal` instead of `signal_with_start_workflow`. After idle-timeout of the previous UploadWorkflow, the next signal raises `WorkflowAlreadyStartedError` and the batch is silently dropped.
+- **`asyncio.gather` without `return_exceptions=True`** — `monitor_workflow.py:254`. One fixture's failure poisons the entire monitor cycle.
+- **`_check_and_mark_download_complete` skipped on event-removed path** — `upload_workflow.py:712-742`. Edge case where VAR'd events with 10 registered downloads never get marked complete via this path.
 
 ### S3 dedup only matches the first existing video
 
 `src/activities/upload.py:614-618` — `for existing in existing_videos_list: ... break`. If an event already has 3 perceptually-equivalent S3 videos and a new one arrives, only the first match is replaced/popularity-bumped; the other two stay as zombies. Design in @docs/proposals/dedup-unification.md (drop the `break`, collapse all matches, introduce `_video_redirects` for URL stability).
+
+### ⚠️ Other bugs that haven't bitten yet
+
+See `docs/audit.md` §2 for the full list. Highlights:
+- LLM concurrency may exceed joi's hard cap of 2 — `Semaphore(2)` is per-process so 8 worker replicas × 2 activity types = up to 32 concurrent.
+- Scaler hardcoded `PROJECT_NAME="found-footy-prod"` — running scaler in dev would scale prod containers.
+- `_create_indexes` swallows all errors in one try/except — partial-failure leaves later indexes missing forever.
+- API client silently returns partial results on error; `mongo_store.py` has 47 `except Exception: log + return [] / False / None` patterns that make failures indistinguishable from "no data".
 
 ---
 
@@ -74,16 +79,32 @@ pool keyed on the broadcaster's confirmed region.
 
 ---
 
+## 🧹 Dead code purge (audit §3)
+
+~900 lines of confirmed dead code with no production callers. See `docs/audit.md` §3 for the line-by-line list. Highlights:
+- Whole files: `src/workflows/rag_workflow.py` (217 lines, would TypeError if called), `twitter/auth.py` (298 lines, dangerous automated-login path)
+- 4 registered-but-uncalled activities (replace_s3_video, fetch_staging_fixtures, sync_fixture_metadata, register_monitor_workflow)
+- Lots of dead enums, helpers, TypedDicts in `models.py`, `mongo_store.py`, `s3_store.py`, `scaler/`
+- `tests/test_rag_pipeline.py` is broken at import (missing functions + nonexistent Ollama container)
+
+## 📦 Dependency hygiene (audit §4)
+
+- requirements.txt has **no version pins** — container rebuilds can silently break.
+- 4 packages declared but never imported: `undetected-chromedriver`, `mutagen`, `psutil`, `pyOpenSSL`
+- `httpx` is imported but not declared (transitively pulled by fastapi/uvicorn)
+
 ## Doc cleanup (low priority)
 
-- `docs/rag.md` lines ~460-530 and ~840-870: pseudo-code stubs that reference non-existent `OLLAMA_URL` / `OLLAMA_MODEL` constants. The doc header already flags itself as design-stage; the stubs should be replaced with brief pointers to `src/activities/rag.py`.
-- `docs/architecture.md`: spot-check that activity counts and field tables match the current code after the recent refactors.
-- `docs/logging.md` is 1285 lines — comprehensive but could probably split into "schema reference" + "Loki query cookbook".
+- `docs/rag.md` lines ~460-530 and ~840-870: pseudo-code stubs referencing non-existent `OLLAMA_URL` / `OLLAMA_MODEL` constants. Doc header already flags as design-stage; replace stubs with pointers to `src/activities/rag.py`.
+- `docs/architecture.md` claims 5 collections; actual is 6 (`top_flight_cache` missing from the list).
+- `docs/logging.md` is 1285 lines — comprehensive but could split into "schema reference" + "Loki query cookbook".
+- Worker startup banner activity count is off by one (`src/worker.py:246`) — should auto-derive from `len(worker.activities)`.
+- Various stale comments / port references catalogued in `docs/audit.md` §6.
 
----
+## 🏗️ Refactor opportunities (audit §5)
 
-## Code hygiene (tackle when touching the file for another reason)
-
-- `src/activities/download.py` is 1672 lines (downloads + perceptual hashing + clock extraction + AI validation all mixed). Possible split: `download.py` (core download) + `hashing.py` (going away with embeddings) + `vision.py` (AI clock extraction).
-- `src/activities/upload.py` is 1467 lines — similar story.
-- `src/data/mongo_store.py` is 1608 lines — split by domain (fixtures vs events vs aliases) might help.
+Don't tackle until §1 + §3 are done. Suggested ordering in `docs/audit.md` §5.
+Sized S (hours), M (1-2 days), L (multi-session). Highlights:
+- **S**: Module-level singletons for FootyMongoStore + FootyS3Store (29 instantiations across activities → one connection pool each)
+- **M**: Atomic completion-tracking ops, centralize orchestration constants, retire `MONITOR_COUNT`/`TWITTER_COUNT` writes
+- **L**: Split `download.py` (1672), `upload.py` (1467), `mongo_store.py` (1608) by domain
