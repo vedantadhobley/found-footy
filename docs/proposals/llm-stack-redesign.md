@@ -1,10 +1,20 @@
 # Proposal: LLM stack redesign — embedding-augmented vision + concurrency gateway
 
-**Status**: Draft for review (May 2026). Supersedes the earlier
-"qwen-embeddings" proposal, which was scoped only to dedup. The new
-scope covers: per-video chat-call reduction, image embeddings for both
-dedup and frame classification, a workspace-level LLM gateway for
-concurrency control, and joi-side model re-allocation.
+**Status**: Draft (May 2026). Supersedes the earlier "qwen-embeddings"
+proposal, which was scoped only to dedup. The new scope covers:
+per-video chat-call reduction, image embeddings for both dedup and frame
+classification, a workspace-level LLM gateway for concurrency control,
+and joi-side model re-allocation.
+
+> **Update — 2026-05-25 (Path B run, see Track 3 below)**: We ran the
+> Path B test on joi with both llama.cpp **b8671** (production) and
+> **b9315** (latest). Result: image embeddings do NOT work end-to-end
+> via any current llama.cpp build. Root cause is **not** the
+> serving runtime — it's that the upstream Qwen3-VL-Embedding-8B model
+> is **missing the `1_Pooling` component**. Upstream PR [#18665](https://github.com/ggml-org/llama.cpp/pull/18665)
+> was closed 2026-04-22 because of this; issue [#19525](https://github.com/ggml-org/llama.cpp/issues/19525)
+> was closed as "not planned". The only working path (sentence-transformers,
+> which has its own pooling) is deferred — see "Decisions (locked)" below.
 
 ## TL;DR
 
@@ -27,13 +37,14 @@ Tracks 1 and 2 are worth doing today regardless of Track 3's outcome.
 
 llama.cpp on AMD Strix Halo (Framework Desktop, AMD Ryzen AI Max+ 395,
 gfx1151) via the **Vulkan backend** (chosen after the ROCm runtime
-memory-leak findings). Three Caddy-fronted slots on joi's own caddy.d/:
+memory-leak findings — specifically in llama.cpp's HIP interop, not
+PyTorch's separate ROCm stack). Three Caddy-fronted slots on joi's own caddy.d/. **Note: these correct earlier proposal claims; verified via direct joi inspection 2026-05-25.**
 
-| Slot | Model | Role today |
-|---|---|---|
-| `llama-large.joi` | Qwen3.5-122B-A10B | Text reasoning. Not actively used by found-footy. |
-| `llama-small.joi` | Qwen3-VL-8B-Instruct | Vision chat — 5 questions per frame (SOCCER, SCREEN, CLOCK, ADDED, STOPPAGE_CLOCK) plus RAG team-alias selection (text). |
-| `llama-embed.joi` | Qwen3-Embedding-8B | Text embedding. Not actively used by found-footy. |
+| Slot | Container | Direct port | Model | Quant | Role today |
+|---|---|---|---|---|---|
+| `llama-large.joi` | `llama-large` | 3101 | **Qwen3.5-122B-A10B** (MoE, 10B active) | Q4_K_M | Text reasoning + vision (has mmproj). Not actively used by found-footy. |
+| `llama-small.joi` | `llama-small` | 3102 | **Qwen3.5-9B** (dense, VL) | Q4_K_M | Vision chat — 5 questions per frame (SOCCER, SCREEN, CLOCK, ADDED, STOPPAGE_CLOCK) plus RAG team-alias selection (text). **This is the model `LLAMA_URL` resolves to.** |
+| `llama-embed.joi` | `llama-embed` | 3103 | **Qwen3-Embedding-8B** (text only) | Q4_K_M | Text embedding (4096-dim, last-token pooling). Not actively used by found-footy. **No SigLIP container exists** — earlier proposal drafts mistakenly claimed otherwise based on stale documentation. |
 
 joi's hard cap is **2 concurrent decode streams** (single GPU). The
 per-worker `asyncio.Semaphore(2)` in `src/activities/download.py:25` and
@@ -227,6 +238,16 @@ serving question.
 
 Sequence: **Path B (30 min) → Path C if B fails (~half day) → Path A as the long-term destination**.
 
+### 2026-05-25 — Path B run, result
+
+- Pulled `dam2452/Qwen3-VL-Embedding-8B-Q8_0.gguf` (8.05 GB) and `Qwen/Qwen3-VL-8B-Instruct-GGUF/mmproj-Qwen3VL-8B-Instruct-F16.gguf` (1.16 GB) to `~/.gguf/` on joi.
+- Swapped `llama-embed` to load both files with `--embedding --pooling last`. Container started cleanly, mmproj loaded successfully, `/embedding` accepted both `content+image_data` and `[img-N]`-marker payloads.
+- Tested on llama.cpp **b8671** (production) and built a parallel `llama-server:vulkan-b9315` image to also test against **b9315** (latest).
+- Both builds: same failure mode. Two visually-distinct test images produced **identical embeddings (cosine 1.0)** with empty `content`. With prompt markers (`[img-10]`, Qwen vision tokens), embeddings differed by ~0.0001 (cosine 0.999) — i.e. dominated by text-token positions, not image content.
+- **Verdict**: image data is not flowing through the vision tower into the pooled embedding output on either build. This is the failure pattern in [#19525](https://github.com/ggml-org/llama.cpp/issues/19525) (closed "not planned"). PR [#18665](https://github.com/ggml-org/llama.cpp/pull/18665) (which would have fixed this) was closed 2026-04-22 with the maintainer noting the upstream Qwen weights are **missing the `1_Pooling` component**, making the model "not actually ready to be used unless Qwen team fixed it".
+- Joi was reverted to `Qwen3-Embedding-8B-Q4_K_M` (text-only) the same day. All three endpoints (`llama-large.joi`, `llama-small.joi`, `llama-embed.joi`) confirmed functional.
+- The new GGUF + mmproj are kept on disk (~9 GB total) in case the upstream issue resolves later. `llama-server:vulkan-b9315` image kept in the docker registry, available for a future upgrade.
+
 ### Once embeddings work — what changes in found-footy
 
 #### Vision classification (replaces 2-3 chat calls)
@@ -306,8 +327,9 @@ reduction the user cares about.
 
 1. **Gateway location**: standalone stack at `~/workspace/llm-gateway/`. Joins `proxy` + `luv-{dev,prod}` networks. Cleanest separation; shareable with other projects later.
 2. **Gateway hostname**: `llm.<base-domain>` (no project prefix — it's shared infra).
-3. **Path B test timing**: deferred. Runs as the kickoff of Track 3 work, after the cleanup sprints (Sprints 1-3) and after LLM Tracks 1+2 ship. Avoids one-off experimentation while there's plenty of unblocked cleanup to do.
-4. **Sprint ordering relative to cleanup work**: cleanup first. Sequence in `docs/sprints.md`: Sprint 1 (Lazio Pisa + NameErrors) → Sprint 2 (Mongo atomicity) → Sprint 3 (dead code + deps) → LLM Track 1 (gateway) → LLM Track 2 (chat-call reduction) → Track 3 Path B test → Track 3 ship or fall back to Path C.
+3. **~~Path B test timing: deferred~~** — **RAN 2026-05-25**. Result documented in Track 3. Test confirmed the upstream model bug; no further llama.cpp investigation worth pursuing until Qwen republishes the model or a community fork ships a working alternative.
+4. **Sprint ordering relative to cleanup work**: cleanup first. Sequence in `docs/sprints.md`: Sprint 1 (Lazio Pisa + NameErrors) → Sprint 2 (Mongo atomicity) → Sprint 3 (dead code + deps) → LLM Track 1 (gateway) → LLM Track 2 (chat-call reduction) → Track 3 deferred indefinitely (Path A waiting on Qwen, Path C requires standing up sentence-transformers stack on joi which is non-trivial — revisit when image-embedding becomes a higher priority).
+5. **Path C deferred (2026-05-25)**: We started the sentence-transformers POC on joi (model downloads cached at `~/.cache/huggingface/.../Qwen3-VL-Embedding-8B/`, ~16 GB) but did not stand up a service. Backend choice (CPU vs PyTorch ROCm vs PyTorch Vulkan) is unresolved — PyTorch ROCm is the most promising option, was previously avoided based on a memory-leak finding that turned out to be specific to llama.cpp's HIP runtime (a different code path from PyTorch's). When/if image-embedding work resumes, start there.
 
 ## References
 
