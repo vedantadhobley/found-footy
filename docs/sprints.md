@@ -9,7 +9,11 @@ the rolling backlog state.
 
 ---
 
-## Sprint 1 — Correctness fixes that pay back today (~3h)
+## Sprint 1 — ✅ SHIPPED (commits c44e3bb → 7a48e0f, 2026-05-26)
+
+The plan below is what was executed. Net: 6 commits, +442/−413 lines,
+9 files touched, all 87 tests passing. See `docs/todo.md` for the
+post-ship summary.
 
 **Goal**: stop the Lazio-Pisa-style runaway and the latent crashes the audit found. All edits are small; the leverage per line is enormous.
 

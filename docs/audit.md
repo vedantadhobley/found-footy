@@ -9,6 +9,11 @@ structural refactors.
 See `docs/todo.md` for the rolling work backlog. This file is the source
 material that backlog items in `docs/todo.md` cite back to.
 
+> **Update — 2026-05-26**: Sprint 1 shipped (commits c44e3bb → 7a48e0f).
+> Everything in §1a/§1b/§1d below is fixed. The §1c "obj NameError at
+> ingest.py:342" is a false positive — verified during fix; left in audit
+> for the record but no code change needed.
+
 ---
 
 ## 1. 🔥 Critical correctness bugs (fix this week)
