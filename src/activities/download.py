@@ -1505,28 +1505,47 @@ async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[st
             async with _LLM_SEMAPHORE:
                 log.debug(activity.logger, "download", "vision_call",
                           "Calling vision model", url=llama_url, attempt=attempt)
-                
+
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     response = await client.post(
                         f"{llama_url}/v1/chat/completions",
                         json=payload,
                     )
-                    
+
                     if response.status_code == 200:
                         return response.json()
                     else:
-                        log.warning(activity.logger, "download", "vision_http_error",
-                                    "Vision model returned error",
-                                    status_code=response.status_code, attempt=attempt)
+                        # joi returns 503 when --parallel cap is hit; tag it
+                        # distinctly in the log even though the retry path
+                        # is identical to other 5xx codes.
+                        if response.status_code == 503:
+                            log.warning(activity.logger, "download", "vision_cap_exceeded",
+                                        "Vision model 503 (parallel cap)",
+                                        url=llama_url, attempt=attempt,
+                                        error_category="llm",
+                                        error_class="LLMCapExceededError")
+                        else:
+                            log.warning(activity.logger, "download", "vision_http_error",
+                                        "Vision model returned error",
+                                        status_code=response.status_code, attempt=attempt,
+                                        error_category="llm",
+                                        error_class="LLMValidationError")
                         if attempt < max_retries:
                             await asyncio.sleep(2 * attempt)
                             continue
+                        # Exhausted retries: return None so the caller (which
+                        # handles None as "vision unavailable, skip this video")
+                        # gets the same contract it had before. The Grafana
+                        # signal lives in the per-attempt log lines above.
                         return None
         except httpx.ConnectError as e:
+            err = LLMUnavailableError(
+                f"Cannot connect to LLM at {llama_url}: {e}",
+                context={"url": llama_url, "attempt": attempt, "error_detail": str(e)[:200]},
+            )
             log.error(activity.logger, "download", "vision_connect_failed",
-                      "Cannot connect to LLM",
-                      url=llama_url, error=str(e), error_type="ConnectError")
-            raise
+                      "Cannot connect to LLM", **err.log_fields())
+            raise err from e
         except (httpx.TimeoutException, httpx.ReadError) as e:
             error_type = type(e).__name__
             if attempt < max_retries:
@@ -1536,17 +1555,31 @@ async def _call_vision_model(image_base64: str, prompt: str) -> Optional[Dict[st
                             attempt=attempt, max_retries=max_retries, error_type=error_type)
                 await asyncio.sleep(wait)
                 continue
-            else:
-                log.warning(activity.logger, "download", "vision_timeout",
-                            f"Vision model {error_type} after {max_retries} attempts",
-                            error=str(e), error_type=error_type)
-                raise
+            err = LLMTimeoutError(
+                f"Vision model {error_type} after {max_retries} attempts",
+                context={
+                    "url": llama_url,
+                    "underlying_error_type": error_type,
+                    "error_detail": str(e)[:200],
+                },
+            )
+            log.warning(activity.logger, "download", "vision_timeout",
+                        f"Vision model {error_type} after {max_retries} attempts",
+                        **err.log_fields())
+            raise err from e
         except Exception as e:
+            err = LLMValidationError(
+                f"Vision model unexpected error: {str(e)[:120]}",
+                context={
+                    "url": llama_url,
+                    "underlying_error_type": type(e).__name__,
+                    "error_detail": str(e)[:200],
+                },
+            )
             log.error(activity.logger, "download", "vision_error",
-                      "Vision model error",
-                      error=str(e), error_type=type(e).__name__)
-            raise
-    
+                      "Vision model error", **err.log_fields())
+            raise err from e
+
     return None
 
 
