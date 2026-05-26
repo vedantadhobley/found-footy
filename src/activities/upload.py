@@ -4,6 +4,7 @@ from typing import Dict, List, Any, Optional
 import os
 
 from src.data.models import EventFields
+from src.utils.errors import S3UnavailableError, S3UploadError
 from src.utils.footy_logging import log
 from src.utils.config import (
     HASH_VERSION,
@@ -780,12 +781,35 @@ async def upload_single_video(
              popularity=popularity, s3_key=s3_key)
     
     s3_store = get_s3_store()
-    s3_url = s3_store.upload_video(file_path, s3_key, metadata=metadata)
-    
+    try:
+        s3_url = s3_store.upload_video(file_path, s3_key, metadata=metadata)
+    except Exception as e:
+        # Classify based on the underlying error shape. boto/botocore's ClientError
+        # surfaces NoSuchBucket / EndpointConnectionError / etc. as substrings.
+        err_str = str(e)
+        ctx = {
+            "event_id": event_id,
+            "video_idx": video_index,
+            "s3_key": s3_key,
+            "file_size": file_size,
+            "error_detail": err_str[:200],
+        }
+        if "EndpointConnectionError" in err_str or "Could not connect" in err_str:
+            err = S3UnavailableError("MinIO endpoint unreachable", context=ctx)
+        else:
+            err = S3UploadError(f"S3 upload failed: {err_str[:120]}", context=ctx)
+        log.error(activity.logger, MODULE, "s3_upload_failed",
+                  "S3 upload raised", **err.log_fields())
+        raise err from e
+
     if not s3_url:
+        err = S3UploadError(
+            f"S3 upload returned None for event={event_id} video_idx={video_index}",
+            context={"event_id": event_id, "video_idx": video_index, "s3_key": s3_key},
+        )
         log.error(activity.logger, MODULE, "s3_upload_failed", "S3 returned None",
-                  event_id=event_id, video_idx=video_index)
-        raise RuntimeError(f"S3 upload returned None for event={event_id} video_idx={video_index}")
+                  **err.log_fields())
+        raise err
     
     log.info(activity.logger, MODULE, "s3_upload_success", "Uploaded to S3",
              event_id=event_id, video_idx=video_index, s3_url=s3_url)

@@ -18,6 +18,12 @@ import requests
 import itertools
 
 from src.data.models import EventFields
+from src.utils.errors import (
+    TwitterAuthError,
+    TwitterRateLimitedError,
+    TwitterSearchTimeoutError,
+    TwitterServiceUnavailableError,
+)
 from src.utils.footy_logging import log
 
 MODULE = "twitter"
@@ -382,14 +388,22 @@ async def execute_twitter_search(
         
     except requests.exceptions.ConnectionError as e:
         search_complete = True
-        log.error(activity.logger, MODULE, "service_unreachable", "Twitter service unreachable",
-                  url=session_url, error=str(e))
-        raise ConnectionError(f"Twitter service at {session_url} unreachable: {e}")
-    except requests.exceptions.Timeout:
+        err = TwitterServiceUnavailableError(
+            f"Twitter service at {session_url} unreachable: {e}",
+            context={"url": session_url, "query": twitter_search, "error_detail": str(e)[:200]},
+        )
+        log.error(activity.logger, MODULE, "service_unreachable",
+                  "Twitter service unreachable", **err.log_fields())
+        raise err from e
+    except requests.exceptions.Timeout as e:
         search_complete = True
-        log.error(activity.logger, MODULE, "search_timeout", "Search timeout after 120s",
-                  query=twitter_search)
-        raise TimeoutError(f"Twitter search timed out for '{twitter_search}'")
+        err = TwitterSearchTimeoutError(
+            f"Twitter search timed out for '{twitter_search}'",
+            context={"query": twitter_search, "url": session_url},
+        )
+        log.error(activity.logger, MODULE, "search_timeout",
+                  "Search timeout after 120s", **err.log_fields())
+        raise err from e
     finally:
         search_complete = True
         if heartbeat_task:
@@ -398,26 +412,47 @@ async def execute_twitter_search(
                 await heartbeat_task
             except asyncio.CancelledError:
                 pass
-    
+
     # Check for 503 - this means authentication is required
     if response.status_code == 503:
         try:
             error_data = response.json()
             error_msg = error_data.get("detail", {}).get("message", "Authentication required")
-        except:
+        except Exception:
             error_msg = "Twitter authentication required - manual login needed"
-        
-        log.error(activity.logger, MODULE, "auth_failed", "Twitter authentication required",
-                  query=twitter_search, error=error_msg,
-                  help="Open VNC at http://localhost:4103 to login")
-        raise RuntimeError(f"Twitter authentication required: {error_msg}")
-    
+
+        err = TwitterAuthError(
+            f"Twitter authentication required: {error_msg}",
+            context={"query": twitter_search, "url": session_url, "remediation_hint": "VNC re-auth"},
+        )
+        log.error(activity.logger, MODULE, "auth_failed",
+                  "Twitter authentication required", **err.log_fields())
+        raise err
+
+    # Check for rate limit (429) — Twitter is throttling us
+    if response.status_code == 429:
+        err = TwitterRateLimitedError(
+            "Twitter rate-limited",
+            context={"query": twitter_search, "url": session_url},
+        )
+        log.warning(activity.logger, MODULE, "rate_limited",
+                    "Twitter returned 429", **err.log_fields())
+        raise err
+
     # Check other error responses
     if response.status_code != 200:
-        log.error(activity.logger, MODULE, "service_error", "Twitter service error",
-                  status_code=response.status_code, query=twitter_search,
-                  response=response.text[:200])
-        raise RuntimeError(f"Twitter service error {response.status_code}: {response.text}")
+        err = TwitterServiceUnavailableError(
+            f"Twitter service error {response.status_code}",
+            context={
+                "status_code": response.status_code,
+                "query": twitter_search,
+                "url": session_url,
+                "response_snippet": response.text[:200],
+            },
+        )
+        log.error(activity.logger, MODULE, "service_error",
+                  "Twitter service error", **err.log_fields())
+        raise err
     
     # Parse videos from response
     data = response.json()
