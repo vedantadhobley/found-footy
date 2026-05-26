@@ -696,6 +696,24 @@ Steps:
                         if has_video:
                             tweet_id = tweet_url.split("/status/")[-1].split("?")[0] if "/status/" in tweet_url else "unknown"
 
+                            # Snowflake-ID sanity check. Twitter snowflakes
+                            # have been ≥18 digits since ~early 2020.
+                            # Shorter IDs (seen in the 2026-05-25
+                            # Paderborn-Wolfsburg post-mortem at 13/14/17
+                            # digits) indicate upstream X-side DOM
+                            # rendering quirks for deleted / quoted /
+                            # otherwise edge-case tweets — they'll never
+                            # syndicate to a downloadable video. Skip
+                            # before passing to download to avoid wasting
+                            # a Temporal activity slot.
+                            if tweet_id != "unknown" and tweet_id.isdigit() and len(tweet_id) < 18:
+                                log.warning(MODULE, "skip_truncated_id",
+                                            "Skipping tweet with truncated snowflake ID",
+                                            tweet_id=tweet_id,
+                                            tweet_id_len=len(tweet_id),
+                                            tweet_url=tweet_url[:80])
+                                continue
+
                             # Skip tweets that were already discovered in previous searches
                             if tweet_id in exclude_set:
                                 log.debug(MODULE, "skip_discovered", "Skipping already-discovered tweet", tweet_id=tweet_id)
