@@ -38,7 +38,8 @@ from src.workflows import (
     DownloadWorkflow,
     UploadWorkflow,
 )
-from src.activities import ingest, monitor, rag, twitter, download, upload
+from src.workflows.canary_workflow import DOMCanaryWorkflow
+from src.activities import canary, ingest, monitor, rag, twitter, download, upload
 
 
 async def setup_schedules(client: Client):
@@ -137,6 +138,39 @@ async def setup_schedules(client: Client):
         await client.create_schedule(monitor_schedule_id, monitor_schedule)
         _log_info("schedule_created", f"Created '{monitor_schedule_id}' (ENABLED)", schedule_id=monitor_schedule_id)
 
+    # Schedule 3: DOMCanaryWorkflow - hourly at :05 (offset from ingest's daily :05)
+    # Phase 4 (P4b, 2026-05-26). Runs a synthetic Twitter search to verify
+    # X's tweet markup still matches our scraper's selectors. A failure here
+    # is hours of lead time before "where did the goals go?" mid-fixture.
+    canary_schedule_id = "dom-canary-hourly"
+    canary_schedule = Schedule(
+        action=ScheduleActionStartWorkflow(
+            DOMCanaryWorkflow.run,
+            id="dom-canary-scheduled",
+            task_queue="found-footy",
+            # Activity has its own 150s timeout; this is the wrapper-task
+            # budget for Temporal replay + activity dispatch.
+            task_timeout=timedelta(seconds=180),
+        ),
+        spec=ScheduleSpec(cron_expressions=["5 * * * *"]),  # every hour at :05
+        state=ScheduleState(
+            paused=False,
+            note="DOM-selector canary: hourly synthetic search to detect X redesigns",
+        ),
+        policy=SchedulePolicy(
+            overlap=ScheduleOverlapPolicy.SKIP,  # never overlap canary runs
+        ),
+    )
+
+    try:
+        canary_handle = client.get_schedule_handle(canary_schedule_id)
+        await canary_handle.describe()
+        await canary_handle.update(lambda _: ScheduleUpdate(schedule=canary_schedule))
+        _log_info("schedule_updated", f"Schedule '{canary_schedule_id}' updated (ENABLED)", schedule_id=canary_schedule_id)
+    except Exception:
+        await client.create_schedule(canary_schedule_id, canary_schedule)
+        _log_info("schedule_created", f"Created '{canary_schedule_id}' (ENABLED)", schedule_id=canary_schedule_id)
+
 
 async def main():
     # Connect to Temporal server (use env var for Docker, fallback to localhost)
@@ -175,6 +209,7 @@ async def main():
             TwitterWorkflow,
             DownloadWorkflow,
             UploadWorkflow,
+            DOMCanaryWorkflow,
         ]
         registered_activities = [
             # Ingest
@@ -220,6 +255,8 @@ async def main():
             upload.cleanup_individual_files,
             upload.cleanup_fixture_temp_dirs,
             upload.cleanup_upload_temp,
+            # Canary (Phase 4 P4b)
+            canary.run_dom_canary,
         ]
 
         worker = Worker(
@@ -269,7 +306,7 @@ async def main():
         _log_info("worker_started", "Worker started - listening on 'found-footy' task queue", task_queue="found-footy")
         _log_info("workflows_registered", f"Workflows: {workflow_names}", workflow_count=len(registered_workflows))
         _log_info("activities_registered", f"Activities: {len(registered_activities)} total ({breakdown})", activity_count=len(registered_activities))
-        _log_info("schedules_configured", "Schedules: IngestWorkflow (daily 00:05 UTC), MonitorWorkflow (every 30s)")
+        _log_info("schedules_configured", "Schedules: IngestWorkflow (daily 00:05 UTC), MonitorWorkflow (every 30s), DOMCanaryWorkflow (hourly :05)")
         await worker.run()
     except Exception as e:
         import traceback
