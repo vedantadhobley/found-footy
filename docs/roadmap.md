@@ -15,15 +15,15 @@ The three load-bearing ideas the original author got right:
 2. **Bidirectional 3-poll debounce** — survives API jitter both directions.
 3. **Per-event serialization for S3, parallel everywhere else** — correct invariant for dedup races.
 
-## Phase 0 — Finish what's in motion (~1 day)
+## Phase 0 — Finish what's in motion (~1 day) ✅ SHIPPED 2026-05-26
 
 Absorbs remaining Sprints 2-4 from `docs/sprints.md`. Closes audit §1 correctness items and §3 dead code.
 
-- **Sprint 2**: Mongo atomicity. Replace 4 non-atomic read-then-write patterns with `findOneAndUpdate`+`$expr` (`add_drop_workflow_and_check`, `check_and_mark_download_complete`, `activate_fixture_with_data`, `complete_fixture`). Replace `start_workflow + start_signal` with `signal_with_start_workflow`. Add `return_exceptions=True` to MonitorWorkflow's gather.
-- **Sprint 3**: Dead code purge (~900 lines deletable: `rag_workflow.py`, `twitter/auth.py`, `twitter/manual_login.py`, 4 unused activities, dead enums in models.py) + pin `requirements.txt` + drop 4 unused deps (`undetected-chromedriver`, `mutagen`, `psutil`, `pyOpenSSL`) + add `httpx` explicitly.
-- **Sprint 4 (partial)**: MongoStore singleton (29 callsites), S3Store singleton (4 callsites), create `src/utils/orchestration_config.py` for magic numbers, auto-derive activity count in worker banner.
+- ✅ **Sprint 2**: Mongo atomicity. Replaced 4 non-atomic read-then-write patterns with `findOneAndUpdate`+`$expr` (`add_drop_workflow_and_check`, `check_and_mark_download_complete`, `activate_fixture_with_data`, `complete_fixture`). Replaced `start_workflow + start_signal` with `signal_with_start_workflow`. Added `return_exceptions=True` to MonitorWorkflow's gather.
+- ✅ **Sprint 3**: Dead code purge (~900 lines deleted: `rag_workflow.py`, `twitter/auth.py`, `twitter/manual_login.py`, 4 unused activities, dead enums in models.py) + pinned `requirements.txt` + dropped 4 unused deps + added `httpx` explicitly.
+- ✅ **Sprint 4 (partial)**: MongoStore singleton (29 callsites), S3Store singleton (4 callsites), created `src/utils/orchestration_config.py` for magic numbers, auto-derived activity count in worker banner.
 
-**Exit criteria**: audit §1 closed, ~900 LOC deleted, no `Client.connect`/`MongoClient`/`FootyS3Store` instantiated per activity call, magic numbers live in one file.
+**Exit criteria met**: audit §1 closed, ~900 LOC deleted, no `Client.connect`/`MongoClient`/`FootyS3Store` instantiated per activity call, magic numbers live in `orchestration_config.py`. All 90 tests passing. Deployed to dev, soaking.
 
 ## Phase 1 — Error taxonomy + observability (~1 day)
 
@@ -82,12 +82,13 @@ Each module gets a real docstring + 2-3 unit tests for its public API (Phase 7).
 
 **Exit criteria**: largest module ≤ 600 LOC; "find the function that does X" is a one-step grep, not detective work.
 
-## Phase 4 — Discovery hardening (~1-2 days)
+## Phase 4 — Discovery hardening (~1 day)
 
 - **Adaptive Twitter loop**: ramp down attempts when no new videos in N consecutive tries; extend the window for high-importance fixtures (Champions League, top-flight derbies). Currently rigid 10×1min regardless of fixture importance or success rate.
 - **DOM-selector canary**: small hourly job that runs a known query against X and checks the result shape. Alerts when X redesigns break our scraper. Today we'd only notice when goals start disappearing.
-- **Geo-restriction handling**: implement the proxy pool from `docs/proposals/geo-restriction-bypass.md`. One docker container per region (us-east, eu-west, latam-south), routed by upstream broadcaster.
 - **Per-match coverage SLO**: alert if a tracked-league fixture finishes with < N% goal-video capture rate (N TBD; pick after Phase 1 data lands).
+
+> Geo-restriction proxy pool **deferred indefinitely** (locked 2026-05-26) — cost concern, and current prod's video capture is already "decent". See "Out of scope" below.
 
 ## Phase 5 — Embedding migration (~1-2 days, DECISION GATE after Phase 4)
 
@@ -100,10 +101,12 @@ Hardware/serving choice deferred until Phase 4 ships:
 
 ## Phase 6 — Schema cleanup + real frontend API boundary (~1-2 days)
 
-- **Retire deprecated fields** permanently: `_monitor_count`, `_twitter_count`, `_video_count`, `_download_stats`. Migration script + cleanup.
-- **New `src/api/` package**: FastAPI service serving `/api/v1/{fixtures,events,videos}` for vedanta-systems. Read-only. Authenticated by shared secret on the `luv-prod` network. Versioned URL prefix so schema changes don't break the UI.
-- **Migration**: vedanta-systems switches from MongoDB reads to API calls. Done one endpoint at a time. Old MongoDB-direct reads can stay during the transition.
-- **Documented contract** in `docs/api-contract.md`: the exact shapes vedanta-systems depends on, versioned.
+- **New top-level `api/` package** in this repo (peer to `src/`, `twitter/`, `scaler/`, not nested under `src/`): FastAPI service serving `/api/v1/{fixtures,events,videos}` plus SSE for live goal notifications. Replaces the Express router currently in `vedanta-systems/src/server/routes/found-footy.ts` (~837 lines). SSE keeps current semantics via `sse-starlette` (FastAPI equivalent of the Express implementation).
+- **Schema cleanup during port**: retire `_monitor_count`, `_twitter_count`, `_video_count`, `_download_stats` permanently. Drop legacy hash format. Clean payload shape at the API boundary so the frontend doesn't have to know about internal `_` enrichment fields.
+- **URL stability is non-negotiable**: shared event/video links already in the wild MUST continue to resolve. Document the URL ↔ payload mapping in `docs/api-contract.md`; the new contract is the authoritative source.
+- **Cutover**: vedanta-systems switches from direct MongoDB reads to API calls, one endpoint at a time. Old MongoDB-direct paths stay during the transition until every UI surface migrates.
+- **og-server** (vedanta-systems' OpenGraph meta-tag server for shared links): keeps generating OG cards; just calls the new found-footy API instead of reading MongoDB.
+- **Side-quest**: investigate the production video-playback bug ("clicking a video sometimes doesn't play it right away") — may be related to the current double-read race or SSE/cache layering. Worth confirming once the new contract is in place.
 
 ## Phase 7 — Real test coverage (~3-5 days, runs alongside other phases)
 
@@ -113,27 +116,28 @@ Hardware/serving choice deferred until Phase 4 ships:
 - **One integration test**: synthetic fixture lifecycle end-to-end against the dev stack
 - Target: from ~5% to ~50% coverage. Perfect coverage is out of scope.
 
-## Suggested ordering (next 2 weeks)
+## Suggested ordering (next 2 weeks, World Cup ~3 weeks out)
 
 ```
-Day 1     Phase 0 (Sprint 2: Mongo atomicity)
-Day 2     Phase 0 (Sprint 3: Dead code + dep pinning)
-Day 3     Phase 0 (Sprint 4: Mongo + S3 singletons, orchestration config)
-Day 4-5   Phase 1 (error taxonomy + telemetry + Grafana)
-Day 5     Phase 2 (status-ID truncation + e.__cause__ logging)
-                  ← VISIBLE WIN landed here
-Day 6-7   Phase 3 (module splits, 4 mega-files → 25+ focused modules)
-Day 8-9   Phase 4 (adaptive discovery + canary + geo proxy + SLO)
-Day 9     DECISION GATE on Phase 5
-Day 10-11 Phase 5 (embeddings, IF in scope)
-Day 11-12 Phase 6 (FastAPI + vedanta-systems migration)
-Day 12-15 Phase 7 (test coverage, ongoing in parallel)
+✅ Day 1-3  Phase 0 (Sprints 2-4)                                   SHIPPED 2026-05-26
+   Day 4-5  Phase 1 (error taxonomy + telemetry + Grafana)
+   Day 5    Phase 2 (status-ID truncation + e.__cause__ logging)
+                    ← VISIBLE WIN landed here
+   Day 6-7  Phase 3 (module splits, 4 mega-files → 25+ focused modules)
+   Day 8    Phase 4 (adaptive discovery + canary + SLO — no geo-proxy)
+   Day 8    DECISION GATE on Phase 5
+   Day 9-10 Phase 5 (embeddings, IF in scope)
+   Day 10-12 Phase 6 (FastAPI + vedanta-systems migration)
+   Day 12-15 Phase 7 (test coverage, ongoing in parallel)
 ```
 
 Phase 7 should run ALONGSIDE phases 3-6 — every split module gets tests as it's created. The standalone "Phase 7 days" are for backfilling tests on pre-existing code.
 
+**World Cup framing**: locked deadline ~2-3 weeks out (mid-June). Current prod ships "decent" video coverage today; this rewrite is polish + bulletproofing, not rescue. If we slip Phase 5/6/7 past WC kickoff that's acceptable — Phases 1-4 are the must-haves so we can debug WC traffic, not just observe it.
+
 ## Out of scope for this rewrite
 
+- **Geo-restriction proxy pool** (`docs/proposals/geo-restriction-bypass.md`) — deferred indefinitely 2026-05-26. Cost vs. marginal coverage gain doesn't pencil; current prod's video capture is already "decent" without it. Revisit if a specific high-value broadcaster (e.g. World Cup feed) is consistently blocking us.
 - Twitter API switch from browser scraping to the official Twitter API v2 (cost; rate limits; can revisit if scraping becomes unsustainable)
 - Replacing Temporal — it's the right tool, stays
 - Replacing MongoDB — also right tool, stays
@@ -142,7 +146,8 @@ Phase 7 should run ALONGSIDE phases 3-6 — every split module gets tests as it'
 ## Status
 
 - **Decided**: 2026-05-26
-- **Phase 0 entry**: in progress (Sprint 2 starting now)
-- **Loop check-in**: still active on dev to watch Sprint 1 in production behavior
+- **Phase 0**: ✅ shipped 2026-05-26 (4 commits to `main`, deployed to dev, 90 tests passing, soaking)
+- **Sprint 1 production validation**: pending — Saint Etienne v Nice 2026-05-26 ended 0-0 so no goals to exercise the fix; Crystal Palace v Rayo Vallecano 2026-05-27 is the next opportunity
+- **Phase 1 entry**: in progress (2026-05-26 evening)
 
 See `docs/sprints.md` for the operational sprint board (per-session task lists).
