@@ -20,35 +20,34 @@ def get_registered_activities() -> set[str]:
     # Parse the module.function references
     registered = set()
     
-    # Simple regex-based extraction (AST parsing is complex for this)
     import re
-    
-    # Find all module.function_name patterns in the activities list
-    # Match patterns like: monitor.check_twitter_workflow_running
+
+    # Worker builds activity list either inline (`activities=[ ... ]`) or via
+    # an extracted variable (`registered_activities = [ ... ]`). Support both.
     activity_pattern = re.compile(r'(\w+)\.(\w+)')
-    
-    # Find the activities=[ section
+    list_start_pattern = re.compile(r'(?:activities|registered_activities)\s*=\s*\[')
+
     in_activities = False
     bracket_count = 0
-    
+
     for line in content.split('\n'):
-        if 'activities=[' in line:
+        starting = bool(list_start_pattern.search(line)) and not in_activities
+        if starting:
             in_activities = True
-            bracket_count = line.count('[') - line.count(']')
-            continue
-        
+
         if in_activities:
             bracket_count += line.count('[') - line.count(']')
-            
-            # Extract activity references
-            matches = activity_pattern.findall(line)
-            for module, func in matches:
+
+            for module, func in activity_pattern.findall(line):
                 if module in ('ingest', 'monitor', 'rag', 'twitter', 'download', 'upload'):
                     registered.add(f"{module}.{func}")
-            
+
+            # Exit when brackets balance. On the opening line, only exit if
+            # `]` is also on the same line (genuine one-line list).
             if bracket_count <= 0:
-                break
-    
+                if not starting or ']' in line:
+                    break
+
     return registered
 
 

@@ -59,9 +59,9 @@ async def set_monitor_complete(fixture_id: int, event_id: str) -> Dict[str, Any]
     Returns:
         Dict with success
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     
-    store = FootyMongoStore()
+    store = get_store()
     
     try:
         success = store.mark_monitor_complete(fixture_id, event_id)
@@ -89,9 +89,9 @@ async def get_download_workflow_count(fixture_id: int, event_id: str) -> Dict[st
     Returns:
         Dict with count
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     
-    store = FootyMongoStore()
+    store = get_store()
     
     try:
         count = store.get_download_workflow_count(fixture_id, event_id)
@@ -129,9 +129,9 @@ async def check_event_exists(fixture_id: int, event_id: str) -> Dict[str, Any]:
         Dict with:
         - exists: True if event still in MongoDB
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     
-    store = FootyMongoStore()
+    store = get_store()
     
     log.info(activity.logger, MODULE, "check_event_exists", "Checking if event exists",
              fixture_id=fixture_id, event_id=event_id)
@@ -177,9 +177,9 @@ async def get_twitter_search_data(fixture_id: int, event_id: str) -> Dict[str, A
     Raises:
         ValueError: If fixture or event not found (unrecoverable)
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     
-    store = FootyMongoStore()
+    store = get_store()
     
     log.info(activity.logger, MODULE, "get_search_data", "Getting Twitter search data",
              fixture_id=fixture_id, event_id=event_id)
@@ -456,9 +456,9 @@ async def save_discovered_videos(
     Raises:
         RuntimeError: If MongoDB update fails
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     
-    store = FootyMongoStore()
+    store = get_store()
     
     log.info(activity.logger, MODULE, "save_videos_started", "Saving discovered videos",
              fixture_id=fixture_id, event_id=event_id, count=len(videos))

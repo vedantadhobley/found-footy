@@ -372,3 +372,21 @@ class FootyS3Store:
         except Exception as e:
             _log_error("delete_failed", f"Delete failed", error=str(e), s3_key=s3_key)
             return False
+
+
+# ============================================================================
+# Process-wide singleton
+# ============================================================================
+# Same pattern as mongo_store.get_store(). get_s3_store() construction does
+# a head_bucket network call to verify the bucket exists — wasteful when
+# repeated per activity invocation.
+
+_s3_store: "FootyS3Store | None" = None
+
+
+def get_s3_store() -> "FootyS3Store":
+    """Return the process-wide FootyS3Store, constructing it on first call."""
+    global _s3_store
+    if _s3_store is None:
+        _s3_store = get_s3_store()
+    return _s3_store

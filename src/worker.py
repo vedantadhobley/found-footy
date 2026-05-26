@@ -167,6 +167,61 @@ async def main():
         # - 4 workers × 10 workflow tasks = 40 concurrent workflow executions
         # - 4 workers × 30 activities = 120 concurrent activities
         #
+        # Build workflow + activity lists explicitly so we can introspect
+        # them for the startup banner (no more hand-maintained counts).
+        registered_workflows = [
+            IngestWorkflow,
+            MonitorWorkflow,
+            TwitterWorkflow,
+            DownloadWorkflow,
+            UploadWorkflow,
+        ]
+        registered_activities = [
+            # Ingest
+            ingest.fetch_todays_fixtures,
+            ingest.fetch_fixtures_by_ids,
+            ingest.categorize_and_store_fixtures,
+            ingest.cleanup_old_fixtures,            # 14-day retention sweep
+            # Monitor
+            monitor.pre_activate_upcoming_fixtures, # Time-based pre-activation
+            monitor.fetch_active_fixtures,
+            monitor.store_and_compare,
+            monitor.process_fixture_events,
+            monitor.complete_fixture_if_ready,
+            monitor.notify_frontend_refresh,
+            # RAG (team alias lookup)
+            rag.get_team_aliases,
+            rag.save_team_aliases,
+            rag.get_cached_team_aliases,
+            # Twitter (granular for retry control)
+            twitter.check_event_exists,
+            twitter.get_twitter_search_data,
+            twitter.execute_twitter_search,
+            twitter.save_discovered_videos,
+            twitter.set_monitor_complete,
+            twitter.get_download_workflow_count,
+            # Download (download / validate / hash / cleanup / queue)
+            download.download_single_video,
+            download.validate_video_is_soccer,
+            download.generate_video_hash,
+            download.cleanup_download_temp,
+            download.queue_videos_for_upload,
+            download.register_download_workflow,
+            download.check_and_mark_download_complete,
+            # Upload (S3 dedup/upload — serialized per event)
+            upload.fetch_event_data,
+            upload.deduplicate_by_md5,
+            upload.deduplicate_videos,
+            upload.upload_single_video,
+            upload.update_video_in_place,
+            upload.bump_video_popularity,
+            upload.save_video_objects,
+            upload.recalculate_video_ranks,
+            upload.cleanup_individual_files,
+            upload.cleanup_fixture_temp_dirs,
+            upload.cleanup_upload_temp,
+        ]
+
         worker = Worker(
             client,
             task_queue="found-footy",
@@ -179,63 +234,25 @@ async def main():
             # Default 10s is fine - with 4 workers and lower concurrency per worker,
             # there's less contention so sticky tasks get picked up quickly
             sticky_queue_schedule_to_start_timeout=timedelta(seconds=10),
-            workflows=[
-                IngestWorkflow,
-                MonitorWorkflow,
-                TwitterWorkflow,
-                DownloadWorkflow,
-                UploadWorkflow,
-            ],
-            activities=[
-                # Ingest activities
-                ingest.fetch_todays_fixtures,
-                ingest.fetch_fixtures_by_ids,
-                ingest.categorize_and_store_fixtures,
-                ingest.cleanup_old_fixtures,  # Delete fixtures older than 14 days
-                # Monitor activities (staging + active processing)
-                monitor.pre_activate_upcoming_fixtures,  # Time-based pre-activation
-                monitor.fetch_active_fixtures,
-                monitor.store_and_compare,
-                monitor.process_fixture_events,
-                monitor.complete_fixture_if_ready,
-                monitor.notify_frontend_refresh,
-                # RAG activities (team alias lookup)
-                rag.get_team_aliases,
-                rag.save_team_aliases,
-                rag.get_cached_team_aliases,
-                # Twitter activities (4 granular for retry control)
-                twitter.check_event_exists,
-                twitter.get_twitter_search_data,
-                twitter.execute_twitter_search,
-                twitter.save_discovered_videos,
-                twitter.set_monitor_complete,  # NEW: Called at start of TwitterWorkflow
-                twitter.get_download_workflow_count,  # NEW: For while loop condition
-                # Download activities (download, validate, hash, cleanup, queue)
-                download.download_single_video,
-                download.validate_video_is_soccer,  # AI vision validation
-                download.generate_video_hash,  # Perceptual hash with heartbeat
-                download.cleanup_download_temp,  # Cleanup on failure
-                download.queue_videos_for_upload,  # Signal-with-start to queue videos for upload
-                download.register_download_workflow,  # NEW: Called at start of DownloadWorkflow
-                download.check_and_mark_download_complete,  # NEW: Check count and mark complete
-                # Upload activities (S3 dedup/upload - serialized per event)
-                upload.fetch_event_data,  # Get existing S3 videos
-                upload.deduplicate_by_md5,  # Fast MD5 dedup against S3
-                upload.deduplicate_videos,  # Perceptual hash dedup against S3
-                upload.upload_single_video,
-                upload.update_video_in_place,  # Atomic in-place update for replacements
-                upload.bump_video_popularity,
-                upload.save_video_objects,
-                upload.recalculate_video_ranks,
-                upload.cleanup_individual_files,  # Cleanup individual files after successful upload
-                upload.cleanup_fixture_temp_dirs,  # Cleanup all temp dirs when fixture completes
-                upload.cleanup_upload_temp,  # Cleanup single temp dir
-            ],
+            workflows=registered_workflows,
+            activities=registered_activities,
         )
-        
+
+        # Auto-derive startup banner counts from what we actually registered.
+        # Replaces the hand-maintained "Workflows: ...RAG..." and "42 total
+        # (4 ingest, 10 monitor, 3 rag, ...)" strings, which drifted every
+        # time we changed the registration list. Audit's canonical example
+        # of the "static counts in docs" anti-pattern.
+        from collections import Counter
+        per_module = Counter(
+            fn.__module__.rsplit(".", 1)[-1] for fn in registered_activities
+        )
+        breakdown = ", ".join(f"{n} {m}" for m, n in per_module.most_common())
+        workflow_names = ", ".join(w.__name__.replace("Workflow", "") for w in registered_workflows)
+
         _log_info("worker_started", "Worker started - listening on 'found-footy' task queue", task_queue="found-footy")
-        _log_info("workflows_registered", "Workflows: Ingest, Monitor, RAG, Twitter, Download, Upload", workflow_count=6)
-        _log_info("activities_registered", "Activities: 42 total (4 ingest, 10 monitor, 3 rag, 6 twitter, 7 download, 12 upload)", activity_count=42)
+        _log_info("workflows_registered", f"Workflows: {workflow_names}", workflow_count=len(registered_workflows))
+        _log_info("activities_registered", f"Activities: {len(registered_activities)} total ({breakdown})", activity_count=len(registered_activities))
         _log_info("schedules_configured", "Schedules: IngestWorkflow (daily 00:05 UTC), MonitorWorkflow (every 30s)")
         await worker.run()
     except Exception as e:

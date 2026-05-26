@@ -76,11 +76,11 @@ async def pre_activate_upcoming_fixtures(lookahead_minutes: int = 30) -> Dict[st
         - activated: Number of fixtures pre-activated
         - skipped: True if all fixtures already in current interval
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     from src.api.api_client import fixtures_batch
     from datetime import datetime, timezone, timedelta
     
-    store = FootyMongoStore()
+    store = get_store()
     now = datetime.now(timezone.utc)
     current_interval = (now.hour * 4) + (now.minute // 15)
     
@@ -201,9 +201,9 @@ async def fetch_active_fixtures() -> List[Dict[str, Any]]:
     Returns raw API data with events.
     """
     from src.api.api_client import fixtures_batch
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     
-    store = FootyMongoStore()
+    store = get_store()
     
     # Get all active fixture IDs
     fixture_ids = store.get_active_fixture_ids()
@@ -238,9 +238,9 @@ async def store_and_compare(fixture_id: int, fixture_data: Dict) -> Dict[str, An
     - incomplete_events: Count of events with data changes
     - removed_events: Count of events removed from live
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     
-    store = FootyMongoStore()
+    store = get_store()
     
     try:
         # Store in fixtures_live (raw API data with all events)
@@ -279,9 +279,9 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
     This ensures the completion counter doesn't start ticking until
     all event processing (debounce + Twitter) is actually done.
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     
-    store = FootyMongoStore()
+    store = get_store()
     
     try:
         # =====================================================================
@@ -371,10 +371,10 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
     
     See src/data/models.py for event field documentation.
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     from src.utils.event_enhancement import build_twitter_search, calculate_score_context
     
-    store = FootyMongoStore()
+    store = get_store()
     
     live_fixture = store.get_live_fixture(fixture_id)
     active_fixture = store.get_fixture_from_active(fixture_id)

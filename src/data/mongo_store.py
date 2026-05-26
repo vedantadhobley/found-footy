@@ -906,7 +906,7 @@ class FootyMongoStore:
         2. Delete videos from S3
         3. Remove event from MongoDB events array
         """
-        from src.data.s3_store import FootyS3Store
+        from src.data.s3_store import FootyS3Store, get_s3_store
         
         try:
             # Step 1: Get event data to find S3 videos
@@ -926,7 +926,7 @@ class FootyMongoStore:
                 
                 # Step 2: Delete videos from S3
                 if s3_urls:
-                    s3_store = FootyS3Store()
+                    s3_store = get_s3_store()
                     deleted_count = 0
                     failed_count = 0
                     for s3_url in s3_urls:
@@ -1663,3 +1663,28 @@ class FootyMongoStore:
         except Exception as e:
             _log_error("clear_top_flight_cache_error", "Error clearing top-flight cache", error=str(e))
             return False
+
+
+# ============================================================================
+# Process-wide singleton
+# ============================================================================
+# Activities and utility code that need MongoDB used to instantiate
+# get_store() per call — that's 25+ instantiations across the
+# project, each one re-reading env vars and re-running _create_indexes
+# (cheap after the class-level _indexes_created flag flips, but still
+# wasted object churn). This singleton initializes once per worker
+# process and is reused for the lifetime of the process.
+#
+# Not thread-safe in the strict sense, but activities run inside a single
+# asyncio event loop per worker process, so there's no preemption window
+# during the if-None check.
+
+_store: "FootyMongoStore | None" = None
+
+
+def get_store() -> "FootyMongoStore":
+    """Return the process-wide FootyMongoStore, constructing it on first call."""
+    global _store
+    if _store is None:
+        _store = get_store()
+    return _store

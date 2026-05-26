@@ -55,8 +55,8 @@ class TwitterRegistry:
     def _get_store(self):
         """Lazy-load MongoDB store."""
         if self._mongo_store is None:
-            from src.data.mongo_store import FootyMongoStore
-            self._mongo_store = FootyMongoStore()
+            from src.data.mongo_store import FootyMongoStore, get_store
+            self._mongo_store = get_store()
         return self._mongo_store
     
     def register(self, instance_id: str, url: str) -> bool:
