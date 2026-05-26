@@ -1037,6 +1037,146 @@ sum(count_over_time({module="twitter", action="execute_search_started"} [$__inte
 avg_over_time({module="upload", action="batch_dedup_complete"} | json | unwrap removed [1h])
 ```
 
+### Phase 1 Telemetry (shipped 2026-05-26)
+
+Phase 1 added two observability artifacts:
+
+1. **Per-event `_telemetry` subdoc** in `fixtures_active.events.[].
+   _telemetry` — counters incremented atomically as the pipeline runs.
+   Read it directly via MongoDB or expose through Phase 6's API.
+2. **`match_completed_summary` log line** at fixture move active →
+   completed, aggregating the per-event telemetry into one structured
+   record. Read it directly via Loki.
+
+Plus: every typed error raised at an activity boundary now carries
+`error_category` and `error_class` fields in its log line (see
+`src/utils/errors.py` for the taxonomy).
+
+#### Per-match coverage rate
+
+```logql
+# Coverage rate per match (videos captured / goals in match)
+{module="monitor", action="match_completed_summary"} | json
+  | line_format "{{.league_name}} {{.home_team}} {{.score_home}}-{{.score_away}} {{.away_team}} | goals={{.goals_total}} videos={{.videos_captured_total}} coverage={{.coverage_rate}} top_failure={{.top_failure_class}}"
+
+# Average coverage rate per league per day (stat panel)
+avg by (league_name) (
+  avg_over_time(
+    {module="monitor", action="match_completed_summary"}
+    | json | unwrap coverage_rate
+    [1d]
+  )
+)
+
+# Goals that ended with zero videos (alert candidate)
+sum by (league_name) (
+  sum_over_time(
+    {module="monitor", action="match_completed_summary"}
+    | json | unwrap goals_with_zero_videos
+    [1d]
+  )
+)
+```
+
+#### Failure-class breakdown
+
+```logql
+# Activity-boundary failures grouped by typed-error class (1h window)
+sum by (error_class) (
+  count_over_time(
+    {container=~"found-footy-.*"}
+    | json | error_class!=""
+    [1h]
+  )
+)
+
+# Same, grouped by error_category (twitter / video_download / llm / mongo / s3)
+sum by (error_category) (
+  count_over_time(
+    {container=~"found-footy-.*"}
+    | json | error_category!=""
+    [1h]
+  )
+)
+
+# Video-download failure shape — how much of "X% capture loss" is which cause
+sum by (error_class) (
+  count_over_time(
+    {container=~"found-footy-.*", module="download"}
+    | json | error_category="video_download"
+    [1h]
+  )
+)
+```
+
+#### Time-from-goal-detected to first S3 upload
+
+```logql
+# p50 across all completed matches in the last day
+quantile_over_time(0.5,
+  {module="monitor", action="match_completed_summary"}
+  | json | time_to_first_s3_p50_s != ""
+  | unwrap time_to_first_s3_p50_s
+  [1d]
+)
+
+# p95
+quantile_over_time(0.95,
+  {module="monitor", action="match_completed_summary"}
+  | json | time_to_first_s3_p50_s != ""
+  | unwrap time_to_first_s3_p50_s
+  [1d]
+)
+```
+
+#### Underlying activity failure class from workflow log
+
+```logql
+# Phase 2a: workflow now logs the typed error class from the activity, not
+# the ActivityError wrapper. Use this when a goal didn't capture and you
+# need to know WHY at workflow scope.
+{module="download_workflow", action="video_failed"}
+  | json
+  | line_format "[{{.event_id}}] {{.underlying_error_class}}: {{.underlying_error_message}}"
+```
+
+#### LLM cap saturation (joi --parallel exceeded)
+
+```logql
+# joi returns 503 when we exceed its parallel cap of 2 per worker.
+# After Phase 1 every cap-exceeded retry logs as vision_cap_exceeded
+# with error_class=LLMCapExceededError — distinct from regular HTTP errors.
+sum(rate({module="download", action="vision_cap_exceeded"} [5m]))
+```
+
+#### Stuck events (live — not yet completed)
+
+```logql
+# Events where the Twitter loop fired its full 10+ search attempts but
+# the downstream pipeline produced 0 S3 videos. Visible at workflow
+# scope via the queue_skipped_empty action.
+{module="upload", action="queue_skipped_empty"}
+  | json
+  | line_format "[{{.event_id}}] {{.failures_recorded}} failures in this batch"
+
+# Same data, read directly from MongoDB (live):
+#   db.fixtures_active.aggregate([
+#     {$unwind: "$events"},
+#     {$match: {
+#       "events._telemetry.search_attempts": {$gte: 8},
+#       "events._telemetry.videos_uploaded_to_s3": 0
+#     }}
+#   ])
+```
+
+#### RAG fallback rate (LLM unavailable during alias selection)
+
+```logql
+# Track how often the RAG path falls back to the heuristic alias list
+# (LLM was unreachable / timed out / returned garbage).
+sum(rate({module="rag", error_category="llm"} [5m]))
+```
+
 ### Grafana Dashboard — Error Severity
 
 The Grafana dashboard splits errors into two categories because **not all errors are equal**:
@@ -1113,6 +1253,40 @@ count_over_time({container=~"found-footy-.*", level="ERROR", module=~"twitter|tw
 ## Context Fields by Module
 
 Each module logs specific context fields beyond the standard fields. Use these for filtering and aggregation:
+
+### Cross-module Phase 1 fields (any activity boundary)
+
+These are emitted by any activity that raises one of the typed errors
+from `src/utils/errors.py` (or by `download_workflow` via the
+`_extract_activity_failure` helper). Filter on them across all modules
+to get a consistent failure-class view.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `error_category` | string | `twitter` / `video_download` / `llm` / `mongo` / `s3` |
+| `error_class` | string | The typed-error class name (e.g. `VideoGeoRestrictedError`) |
+| `retry_eligible` | bool | Advisory: would another retry plausibly help? |
+| `underlying_error_class` | string | (workflow-side only) Activity's original exception class |
+| `underlying_error_message` | string | (workflow-side only) Activity's original message |
+| `wrapper_class` | string | (workflow-side only) Temporal's wrapper class (usually `ActivityError`) |
+
+The match-level summary at fixture completion uses
+`action=match_completed_summary` and ships these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `fixture_id` | int | API-Football fixture ID |
+| `league_id`, `league_name` | int, string | League identification |
+| `home_team`, `away_team` | string | Team names |
+| `score_home`, `score_away` | int | Final score |
+| `goals_total` | int | Goal events with a known player |
+| `videos_captured_total` | int | Sum of S3 videos across all goal events |
+| `coverage_rate` | float | videos_captured_total / goals_total (0.0 if 0 goals) |
+| `goals_with_zero_videos` | int | Goal events that ended with 0 S3 videos |
+| `top_failure_class` | string | Most common typed-error class across event telemetry |
+| `failure_classes_total` | dict | Summed `{class: count}` across all events |
+| `search_attempts_total` | int | Sum of TwitterWorkflow attempts across events |
+| `time_to_first_s3_p50_s` | float or null | Median seconds from goal-detected to first S3 upload |
 
 ### download
 | Field | Type | Description |
