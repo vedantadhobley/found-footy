@@ -33,6 +33,7 @@ from urllib.parse import quote
 
 from .config import TwitterConfig
 from .twitter_logging import log
+from . import scrape
 
 MODULE = "twitter_session"
 
@@ -585,128 +586,40 @@ Steps:
                 for tweet_element in tweet_elements:
                     try:
                         # Extract tweet URL first to check if already processed
-                        tweet_url = None
-                        try:
-                            status_links = tweet_element.find_elements(By.CSS_SELECTOR, "a[href*='/status/']")
-                            for link in status_links:
-                                link_href = link.get_attribute("href")
-                                if link_href and "/status/" in link_href:
-                                    tweet_url = link_href
-                                    break
-                        except:
-                            pass
-                        
+                        tweet_url = scrape.extract_status_link(tweet_element)
                         if not tweet_url:
                             continue
-                            
+
                         # Skip if already processed in this scroll session
                         if tweet_url in processed_tweet_urls:
                             continue
                         processed_tweet_urls.add(tweet_url)
-                        
+
                         # Extract tweet timestamp from <time datetime="..."> element
-                        tweet_age_minutes = None
-                        try:
-                            time_element = tweet_element.find_element(By.CSS_SELECTOR, "time[datetime]")
-                            datetime_str = time_element.get_attribute("datetime")
-                            if datetime_str:
-                                # Parse ISO format like "2026-01-10T13:05:00.000Z"
-                                tweet_dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
-                                now = datetime.now(timezone.utc)
-                                age = now - tweet_dt
-                                tweet_age_minutes = age.total_seconds() / 60
-                        except:
-                            pass
-                        
+                        tweet_age_minutes = scrape.extract_tweet_age_minutes(tweet_element)
+
                         # Check if tweet is too old - if so, stop scrolling
                         if tweet_age_minutes is not None and tweet_age_minutes > max_age_minutes:
-                            log.info(MODULE, "old_tweet_found", "Found old tweet, stopping scroll", age_minutes=round(tweet_age_minutes, 1), max_age=max_age_minutes)
+                            log.info(MODULE, "old_tweet_found", "Found old tweet, stopping scroll",
+                                     age_minutes=round(tweet_age_minutes, 1), max_age=max_age_minutes)
                             found_old_tweet = True
                             break
-                        
-                        # Skip promoted/ad tweets
-                        try:
-                            promoted_indicators = tweet_element.find_elements(By.XPATH, ".//*[contains(text(), 'Promoted') or contains(text(), 'Ad')]")
-                            if promoted_indicators:
-                                log.debug(MODULE, "skip_promoted", "Skipping promoted tweet")
-                                continue
-                        except:
-                            pass
-                        
-                        # Extract tweet text
-                        tweet_text = "Text not found"
-                        try:
-                            text_element = tweet_element.find_element(By.CSS_SELECTOR, "[data-testid='tweetText']")
-                            if text_element:
-                                tweet_text = text_element.text.strip()
-                        except:
-                            pass
-                        
-                        # Check for video and extract duration
-                        has_video = False
-                        video_duration_seconds = None
-                        
-                        for selector in ["video", "[data-testid='videoPlayer']", "[data-testid='videoComponent']"]:
-                            try:
-                                video_elements = tweet_element.find_elements(By.CSS_SELECTOR, selector)
-                                if video_elements:
-                                    has_video = True
-                                    
-                                    # Try to extract duration from video element's duration attribute
-                                    try:
-                                        video_elem = video_elements[0]
-                                        duration = video_elem.get_attribute("duration")
-                                        if duration:
-                                            video_duration_seconds = float(duration)
-                                    except:
-                                        pass
-                                    
-                                    # Try to find duration text in player overlay (e.g., "0:15")
-                                    if not video_duration_seconds:
-                                        try:
-                                            duration_selectors = [
-                                                "[aria-label*='Duration']",
-                                                "[data-testid='videoPlayerDuration']",
-                                                ".r-1e081e0",
-                                                "div[dir='ltr'][style*='color']",
-                                            ]
-                                            for dur_selector in duration_selectors:
-                                                duration_elements = tweet_element.find_elements(By.CSS_SELECTOR, dur_selector)
-                                                for dur_elem in duration_elements:
-                                                    dur_text = dur_elem.text.strip()
-                                                    if ":" in dur_text and len(dur_text) <= 6:
-                                                        parts = dur_text.split(":")
-                                                        if len(parts) == 2:
-                                                            try:
-                                                                minutes = int(parts[0])
-                                                                seconds = int(parts[1])
-                                                                video_duration_seconds = minutes * 60 + seconds
-                                                                break
-                                                            except:
-                                                                pass
-                                                if video_duration_seconds:
-                                                    break
-                                        except:
-                                            pass
-                                    
-                                    break
-                            except:
-                                continue
-                        
-                        if has_video:
-                            tweet_id = tweet_url.split("/status/")[-1].split("?")[0] if "/status/" in tweet_url else "unknown"
 
-                            # Snowflake-ID sanity check. Twitter snowflakes
-                            # have been ≥18 digits since ~early 2020.
-                            # Shorter IDs (seen in the 2026-05-25
-                            # Paderborn-Wolfsburg post-mortem at 13/14/17
-                            # digits) indicate upstream X-side DOM
-                            # rendering quirks for deleted / quoted /
-                            # otherwise edge-case tweets — they'll never
-                            # syndicate to a downloadable video. Skip
-                            # before passing to download to avoid wasting
-                            # a Temporal activity slot.
-                            if tweet_id != "unknown" and tweet_id.isdigit() and len(tweet_id) < 18:
+                        # Skip promoted/ad tweets
+                        if scrape.is_promoted_tweet(tweet_element):
+                            log.debug(MODULE, "skip_promoted", "Skipping promoted tweet")
+                            continue
+
+                        # Extract tweet text + video presence/duration
+                        tweet_text = scrape.extract_tweet_text(tweet_element)
+                        has_video, video_duration_seconds = scrape.extract_video_duration(tweet_element)
+
+                        if has_video:
+                            tweet_id = scrape.extract_tweet_id_from_url(tweet_url)
+
+                            # Snowflake-ID sanity check (P2b — see scrape.py docstring
+                            # for upstream-X rendering quirk rationale).
+                            if scrape.is_truncated_snowflake(tweet_id):
                                 log.warning(MODULE, "skip_truncated_id",
                                             "Skipping tweet with truncated snowflake ID",
                                             tweet_id=tweet_id,
@@ -719,16 +632,9 @@ Steps:
                                 log.debug(MODULE, "skip_discovered", "Skipping already-discovered tweet", tweet_id=tweet_id)
                                 continue
                             age_str = f"{tweet_age_minutes:.1f}min ago" if tweet_age_minutes else "unknown age"
-                            
-                            # Extract username from tweet URL: https://x.com/USERNAME/status/123
-                            username = "Unknown"
-                            try:
-                                # URL format: https://x.com/CBSSportsGolazo/status/2011864786460409910
-                                url_parts = tweet_url.replace("https://", "").replace("http://", "").split("/")
-                                if len(url_parts) >= 3 and url_parts[1] != "i":  # Skip /i/ URLs like x.com/i/status/...
-                                    username = url_parts[1]
-                            except:
-                                pass
+
+                            # Extract username from tweet URL
+                            username = scrape.extract_username_from_url(tweet_url)
                             
                             video_entry = {
                                 "search_term": search_query,
