@@ -27,13 +27,13 @@ MODULE = "monitor"
 def is_player_known(event: dict) -> bool:
     """
     Check if the player name is known (not Unknown or missing).
-    
+
     When a goal is first detected, the API may not yet have the scorer identified.
     In this case, player.name may be None, empty, or "Unknown".
-    
+
     We only debounce and trigger workflows when we have an actual player name,
     since Twitter searches require a player name to be useful.
-    
+
     When the player becomes identified, the player_id changes, creating a new
     event_id. The old "Unknown" event will be removed via VAR logic.
     """
@@ -44,6 +44,104 @@ def is_player_known(event: dict) -> bool:
     if player_name.lower() in ("unknown", "tbd", "n/a", ""):
         return False
     return True
+
+
+def _build_match_completion_summary(fixture: dict, valid_events: List[dict]) -> Dict[str, Any]:
+    """Aggregate per-event Phase 1 telemetry into a match-level summary.
+
+    Returns a dict of structured fields suitable for `log.info(..., **fields)`.
+    Designed for a single Loki query like
+    `{module="monitor", action="match_completed_summary"} | json` to drive
+    a Grafana dashboard panel without any aggregation tricks.
+
+    Shape:
+      - fixture_id, league_id, league_name, home_team, away_team, score
+      - goals_total              — count of Goal-type events with a known player
+      - videos_captured_total    — sum of S3 videos across all goal events
+      - coverage_rate            — videos_captured_total / goals_total (0.0 if 0)
+      - goals_with_zero_videos   — count of Goal events that ended with 0 S3 videos
+      - top_failure_class        — most common typed-error class across events
+      - failure_classes_total    — {class: count} summed across all events
+      - time_to_first_s3_p50_s   — median seconds from first_seen_at to
+                                    first_s3_upload_at (across events that uploaded)
+      - search_attempts_total    — sum across all goal events
+    """
+    league = fixture.get("league") or {}
+    teams = fixture.get("teams") or {}
+    goals = fixture.get("goals") or {}
+
+    goal_events = [
+        e for e in valid_events
+        if (e.get("type") or "").lower() == "goal" and is_player_known(e)
+    ]
+    goals_total = len(goal_events)
+
+    videos_captured_total = 0
+    goals_with_zero_videos = 0
+    failure_classes_total: Dict[str, int] = {}
+    search_attempts_total = 0
+    time_to_first_s3_samples: List[float] = []
+
+    for ev in goal_events:
+        s3 = ev.get(EventFields.S3_VIDEOS) or []
+        n_videos = len(s3)
+        videos_captured_total += n_videos
+        if n_videos == 0:
+            goals_with_zero_videos += 1
+
+        tele = ev.get(EventFields.TELEMETRY) or {}
+        search_attempts_total += int(tele.get("search_attempts") or 0)
+
+        for cls_name, n in (tele.get("download_failures_by_class") or {}).items():
+            failure_classes_total[cls_name] = failure_classes_total.get(cls_name, 0) + int(n)
+
+        first_seen = tele.get("first_seen_at")
+        first_s3 = tele.get("first_s3_upload_at")
+        if first_seen and first_s3:
+            try:
+                # Both may be datetimes or already-iso strings depending on
+                # whether they round-tripped through bson. Coerce.
+                if isinstance(first_seen, str):
+                    first_seen = datetime.fromisoformat(first_seen.replace("Z", "+00:00"))
+                if isinstance(first_s3, str):
+                    first_s3 = datetime.fromisoformat(first_s3.replace("Z", "+00:00"))
+                time_to_first_s3_samples.append((first_s3 - first_seen).total_seconds())
+            except Exception:
+                pass
+
+    top_failure_class = ""
+    if failure_classes_total:
+        top_failure_class = max(failure_classes_total.items(), key=lambda kv: kv[1])[0]
+
+    if time_to_first_s3_samples:
+        s = sorted(time_to_first_s3_samples)
+        mid = len(s) // 2
+        time_to_first_s3_p50_s = round(
+            s[mid] if len(s) % 2 == 1 else (s[mid - 1] + s[mid]) / 2,
+            1,
+        )
+    else:
+        time_to_first_s3_p50_s = None
+
+    coverage_rate = round(videos_captured_total / goals_total, 2) if goals_total else 0.0
+
+    return {
+        "fixture_id": fixture.get("_id"),
+        "league_id": league.get("id"),
+        "league_name": league.get("name"),
+        "home_team": (teams.get("home") or {}).get("name"),
+        "away_team": (teams.get("away") or {}).get("name"),
+        "score_home": goals.get("home"),
+        "score_away": goals.get("away"),
+        "goals_total": goals_total,
+        "videos_captured_total": videos_captured_total,
+        "coverage_rate": coverage_rate,
+        "goals_with_zero_videos": goals_with_zero_videos,
+        "top_failure_class": top_failure_class,
+        "failure_classes_total": failure_classes_total,
+        "search_attempts_total": search_attempts_total,
+        "time_to_first_s3_p50_s": time_to_first_s3_p50_s,
+    }
 
 
 
@@ -339,12 +437,18 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
         # =====================================================================
         # STEP 4: All ready - complete the fixture
         # =====================================================================
+        # Capture the Phase 1 per-match summary BEFORE moving the doc out
+        # of fixtures_active (so we still have access to event telemetry).
+        summary_fields = _build_match_completion_summary(fixture, valid_events)
+
         if store.complete_fixture(fixture_id):
             log.info(activity.logger, MODULE, "fixture_completed", "Fixture completed",
                      fixture_id=fixture_id)
+            log.info(activity.logger, MODULE, "match_completed_summary",
+                     "Match-level pipeline outcome", **summary_fields)
             # Note: Temp directory cleanup is done in MonitorWorkflow after this returns True
             return True
-        
+
         return False
     
     except Exception as e:

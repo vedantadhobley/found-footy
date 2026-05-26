@@ -23,16 +23,21 @@ async def queue_videos_for_upload(
     team_name: str,
     videos: List[dict],
     temp_dir: str,
+    failures_by_class: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Any]:
     """
     Queue videos for upload by signaling the UploadWorkflow.
-    
+
     Uses Temporal client's signal-with-start to either:
     - Start a new UploadWorkflow if none exists for this event
     - Signal the existing UploadWorkflow to add videos to its queue
-    
+
     Temporal guarantees signal ordering, so videos are processed FIFO.
-    
+
+    Also records Phase 1 telemetry: videos_validated += len(videos),
+    and adds to download_failures_by_class for each typed error class
+    the DLWF observed during this attempt.
+
     Args:
         fixture_id: Fixture ID
         event_id: Event ID
@@ -40,17 +45,52 @@ async def queue_videos_for_upload(
         team_name: Team name for metadata
         videos: List of video dicts ready for upload
         temp_dir: Temp directory containing video files
-    
+        failures_by_class: optional {error_class: count} from this DLWF batch.
+            Caller is DownloadWorkflow which accumulates classified failures
+            from its per-video exception handler.
+
     Returns:
         Dict with status and workflow info
     """
     from datetime import timedelta
     from temporalio.common import WorkflowIDReusePolicy
+    from src.data.mongo_store import get_store
     from src.utils.temporal_client import get_client
     from src.workflows.upload_workflow import UploadWorkflow, UploadWorkflowInput
 
     log.info(activity.logger, MODULE, "queue_started", "Queuing videos for upload",
-             event_id=event_id, video_count=len(videos))
+             event_id=event_id, video_count=len(videos),
+             failure_classes=list(failures_by_class.keys()) if failures_by_class else [])
+
+    # Telemetry: record validated count + per-class failures for this batch.
+    # Done before the actual signal-with-start so even if that errors, we
+    # still capture the DLWF's outcome shape.
+    store = get_store()
+    increments: Dict[str, int] = {}
+    if videos:
+        increments["videos_validated"] = len(videos)
+    if failures_by_class:
+        for cls_name, n in failures_by_class.items():
+            if n:
+                increments[f"download_failures_by_class.{cls_name}"] = n
+    if increments:
+        store.increment_event_telemetry(
+            fixture_id, event_id, increments=increments,
+        )
+
+    # If no videos to upload, telemetry is the only side effect — skip the
+    # signal-with-start (no point waking UploadWorkflow for an empty batch).
+    # DLWF's outer finally still runs the completion check directly.
+    if not videos:
+        log.info(activity.logger, MODULE, "queue_skipped_empty",
+                 "No videos in batch; telemetry recorded, signal skipped",
+                 event_id=event_id,
+                 failures_recorded=sum(failures_by_class.values()) if failures_by_class else 0)
+        return {
+            "status": "telemetry_only",
+            "workflow_id": None,
+            "videos_queued": 0,
+        }
 
     try:
         # Reuse the process-wide Temporal client instead of opening a fresh
@@ -810,7 +850,20 @@ async def upload_single_video(
         log.error(activity.logger, MODULE, "s3_upload_failed", "S3 returned None",
                   **err.log_fields())
         raise err
-    
+
+    # Telemetry: count this S3 upload + seed first_s3_upload_at on the
+    # first write per event. Replacements (reuse of existing_s3_key) still
+    # represent successful S3 PUTs so they also count here.
+    from datetime import datetime, timezone
+    from src.data.mongo_store import get_store
+    _store = get_store()
+    _now = datetime.now(timezone.utc)
+    _store.increment_event_telemetry(
+        fixture_id, event_id,
+        increments={"videos_uploaded_to_s3": 1},
+        min_fields={"first_s3_upload_at": _now},
+    )
+
     log.info(activity.logger, MODULE, "s3_upload_success", "Uploaded to S3",
              event_id=event_id, video_idx=video_index, s3_url=s3_url)
     

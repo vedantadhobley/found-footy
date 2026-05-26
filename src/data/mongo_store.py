@@ -10,7 +10,7 @@ See src/data/models.py for complete data model documentation.
 
 import os
 from datetime import datetime, timezone
-from typing import Dict, List, Any
+from typing import Any, Dict, List, Optional
 
 from pymongo import ASCENDING, MongoClient, ReturnDocument
 from pymongo.errors import DuplicateKeyError
@@ -785,6 +785,80 @@ class FootyMongoStore:
         except Exception as e:
             _log_error("set_monitor_complete_error", "Error setting monitor complete", event_id=event_id, error=str(e))
             return False
+
+    def increment_event_telemetry(
+        self,
+        fixture_id: int,
+        event_id: str,
+        increments: Optional[Dict[str, int]] = None,
+        set_fields: Optional[Dict[str, Any]] = None,
+        min_fields: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """
+        Atomically update the per-event `_telemetry` document.
+
+        All three update kinds compose into a single MongoDB write — atomic
+        per call but multiple callers can race safely; counter increments
+        always sum and timestamps always settle to the earliest via $min.
+
+        Args:
+            fixture_id, event_id: target event
+            increments: {field_path: int} — applied via $inc. Field paths
+                are relative to the telemetry subdoc, e.g.:
+                  {"search_attempts": 1}
+                  {"download_failures_by_class.VideoGeoRestrictedError": 1}
+            set_fields: {field_path: value} — unconditional $set. Last
+                writer wins; only use for values where that's the intent
+                (e.g. primary_failure_class derived after the fact).
+            min_fields: {field_path: value} — $min semantics, suitable
+                for first_seen_at / first_s3_upload_at where the first
+                writer's timestamp should win.
+
+        Returns:
+            True if a document was modified, False otherwise.
+        """
+        ops: Dict[str, Dict[str, Any]] = {}
+        if increments:
+            ops["$inc"] = {
+                f"events.$.{EventFields.TELEMETRY}.{k}": v for k, v in increments.items()
+            }
+        if set_fields:
+            ops["$set"] = {
+                f"events.$.{EventFields.TELEMETRY}.{k}": v for k, v in set_fields.items()
+            }
+        if min_fields:
+            ops["$min"] = {
+                f"events.$.{EventFields.TELEMETRY}.{k}": v for k, v in min_fields.items()
+            }
+        if not ops:
+            return False
+        try:
+            result = self.fixtures_active.update_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                ops,
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            _log_error("telemetry_update_failed",
+                       "Failed to update event telemetry",
+                       fixture_id=fixture_id, event_id=event_id, error=str(e))
+            return False
+
+    def get_event_telemetry(self, fixture_id: int, event_id: str) -> Optional[Dict[str, Any]]:
+        """Read the telemetry subdoc for one event (or None if event not found)."""
+        try:
+            doc = self.fixtures_active.find_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {f"events.$": 1},
+            )
+            if not doc or not doc.get("events"):
+                return None
+            return doc["events"][0].get(EventFields.TELEMETRY, {}) or {}
+        except Exception as e:
+            _log_error("get_telemetry_failed",
+                       "Failed to read event telemetry",
+                       fixture_id=fixture_id, event_id=event_id, error=str(e))
+            return None
 
     def mark_download_complete(self, fixture_id: int, event_id: str) -> bool:
         """
