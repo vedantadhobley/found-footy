@@ -8,6 +8,7 @@ import json
 import re
 
 from src.utils.footy_logging import log
+from src.utils.orchestration_config import LLM_CONCURRENCY_PER_WORKER
 from src.utils.config import (
     LLAMA_CHAT_URL,
     SHORT_EDGE_FILTER_ENABLED,
@@ -20,7 +21,7 @@ from src.utils.config import (
 
 # Semaphore to limit concurrent LLM requests per worker process.
 # joi llama-chat runs --parallel 4 with 2 workers, so allow 2 concurrent per worker.
-_LLM_SEMAPHORE = asyncio.Semaphore(2)
+_LLM_SEMAPHORE = asyncio.Semaphore(LLM_CONCURRENCY_PER_WORKER)
 
 # Twitter cookie cache (loaded once per worker)
 _twitter_cookies_cache: Optional[Dict[str, str]] = None
