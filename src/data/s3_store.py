@@ -388,5 +388,5 @@ def get_s3_store() -> "FootyS3Store":
     """Return the process-wide FootyS3Store, constructing it on first call."""
     global _s3_store
     if _s3_store is None:
-        _s3_store = get_s3_store()
+        _s3_store = FootyS3Store()
     return _s3_store
