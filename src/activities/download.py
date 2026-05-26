@@ -9,6 +9,17 @@ import re
 
 from src.utils.footy_logging import log
 from src.utils.orchestration_config import LLM_CONCURRENCY_PER_WORKER
+from src.utils.errors import (
+    LLMTimeoutError,
+    LLMUnavailableError,
+    LLMValidationError,
+    TwitterRateLimitedError,
+    VideoCDNTimeoutError,
+    VideoDownloadError,
+    VideoGeoRestrictedError,
+    VideoMalformedURLError,
+    VideoNotAvailableError,
+)
 from src.utils.config import (
     LLAMA_CHAT_URL,
     SHORT_EDGE_FILTER_ENABLED,
@@ -555,11 +566,15 @@ async def download_single_video(
     # Handles: https://x.com/user/status/123, https://x.com/i/status/123, https://twitter.com/...
     tweet_id_match = re.search(r'/status/(\d+)', video_url)
     if not tweet_id_match:
+        err = VideoMalformedURLError(
+            f"Could not extract tweet_id from URL: {video_url}",
+            context={"event_id": event_id, "video_idx": video_index, "url": video_url},
+        )
         log.error(activity.logger, "download", "tweet_id_extraction_failed",
                   "Could not extract tweet_id from URL",
-                  event_id=event_id, video_idx=video_index, url=video_url)
-        raise RuntimeError(f"Could not extract tweet_id from URL: {video_url}")
-    
+                  **err.log_fields())
+        raise err
+
     tweet_id = tweet_id_match.group(1)
     
     # Call syndication API to get video info
@@ -577,23 +592,64 @@ async def download_single_video(
         # Longer timeouts just delay the inevitable retry
         async with httpx.AsyncClient(timeout=5.0, headers=api_headers) as client:
             response = await client.get(syndication_url)
-            
+
             if response.status_code != 200:
+                err_ctx = {
+                    "event_id": event_id,
+                    "video_idx": video_index,
+                    "tweet_id": tweet_id,
+                    "status_code": response.status_code,
+                }
+                if response.status_code == 404:
+                    err = VideoNotAvailableError(
+                        f"Syndication 404 (tweet deleted or private): {tweet_id}",
+                        context=err_ctx,
+                    )
+                elif response.status_code == 403:
+                    err = VideoGeoRestrictedError(
+                        f"Syndication 403 (likely geo-blocked): {tweet_id}",
+                        context=err_ctx,
+                    )
+                elif response.status_code == 429:
+                    err = TwitterRateLimitedError(
+                        f"Syndication 429 (rate limited)",
+                        context=err_ctx,
+                    )
+                else:
+                    err = VideoDownloadError(
+                        f"Syndication API returned {response.status_code}",
+                        context=err_ctx,
+                    )
                 log.warning(activity.logger, "download", "syndication_api_error",
                             "Syndication API returned error",
-                            video_idx=video_index, status_code=response.status_code)
-                raise RuntimeError(f"Syndication API returned {response.status_code}")
-            
+                            **err.log_fields())
+                raise err
+
             tweet_data = response.json()
-    except httpx.TimeoutException:
+    except httpx.TimeoutException as e:
+        err = VideoCDNTimeoutError(
+            "Syndication API timeout",
+            context={"event_id": event_id, "video_idx": video_index, "tweet_id": tweet_id},
+        )
         log.warning(activity.logger, "download", "syndication_timeout",
-                    "Syndication API timeout", video_idx=video_index)
-        raise RuntimeError("Syndication API timeout")
+                    "Syndication API timeout", **err.log_fields())
+        raise err from e
+    except VideoDownloadError:
+        # Already classified above; let it propagate
+        raise
     except Exception as e:
+        err = VideoDownloadError(
+            f"Syndication API unexpected error: {str(e)[:100]}",
+            context={
+                "event_id": event_id,
+                "video_idx": video_index,
+                "tweet_id": tweet_id,
+                "error_detail": str(e)[:200],
+            },
+        )
         log.warning(activity.logger, "download", "syndication_error",
-                    "Syndication API error",
-                    video_idx=video_index, error=str(e)[:100])
-        raise RuntimeError(f"Syndication API error: {str(e)[:100]}")
+                    "Syndication API error", **err.log_fields())
+        raise err from e
     
     # Extract video variants from response
     # Prefer mediaDetails path as it includes bitrate info
@@ -699,30 +755,63 @@ async def download_single_video(
             request_cookies = twitter_cookies if twitter_cookies else None
             async with client.stream("GET", cdn_url, cookies=request_cookies) as response:
                 if response.status_code != 200:
-                    # Log more detail for auth failures
+                    err_ctx = {
+                        "event_id": event_id,
+                        "video_idx": video_index,
+                        "tweet_id": tweet_id,
+                        "status_code": response.status_code,
+                        "cdn_host": cdn_url.split("/")[2] if "//" in cdn_url else "?",
+                        "is_amplify": is_amplify,
+                    }
                     if response.status_code == 403:
-                        has_auth = "auth_token" in twitter_cookies
+                        err_ctx["has_auth"] = "auth_token" in twitter_cookies
+                        err = VideoGeoRestrictedError(
+                            f"CDN 403 (geo-blocked or auth required)",
+                            context=err_ctx,
+                        )
                         log.warning(activity.logger, "download", "cdn_auth_failed",
-                                    "CDN returned 403",
-                                    video_idx=video_index, is_amplify=is_amplify, has_auth=has_auth)
-                    else:
+                                    "CDN returned 403", **err.log_fields())
+                    elif response.status_code == 404:
+                        err = VideoNotAvailableError(
+                            f"CDN 404 (video removed)", context=err_ctx,
+                        )
                         log.warning(activity.logger, "download", "cdn_error",
-                                    "CDN returned error",
-                                    video_idx=video_index, status_code=response.status_code)
-                    raise RuntimeError(f"CDN returned {response.status_code}")
-                
+                                    "CDN returned 404", **err.log_fields())
+                    else:
+                        err = VideoDownloadError(
+                            f"CDN returned {response.status_code}", context=err_ctx,
+                        )
+                        log.warning(activity.logger, "download", "cdn_error",
+                                    "CDN returned error", **err.log_fields())
+                    raise err
+
                 with open(output_path, 'wb') as f:
                     async for chunk in response.aiter_bytes(chunk_size=8192):
                         f.write(chunk)
-    except httpx.TimeoutException:
+    except httpx.TimeoutException as e:
+        err = VideoCDNTimeoutError(
+            "CDN download timeout",
+            context={"event_id": event_id, "video_idx": video_index, "tweet_id": tweet_id},
+        )
         log.warning(activity.logger, "download", "cdn_timeout",
-                    "CDN download timeout", video_idx=video_index)
-        raise RuntimeError("CDN download timeout")
+                    "CDN download timeout", **err.log_fields())
+        raise err from e
+    except VideoDownloadError:
+        # Already classified above; let it propagate
+        raise
     except Exception as e:
+        err = VideoDownloadError(
+            f"CDN unexpected error: {str(e)[:100]}",
+            context={
+                "event_id": event_id,
+                "video_idx": video_index,
+                "tweet_id": tweet_id,
+                "error_detail": str(e)[:200],
+            },
+        )
         log.warning(activity.logger, "download", "cdn_download_error",
-                    "CDN download error",
-                    video_idx=video_index, error=str(e)[:100])
-        raise RuntimeError(f"CDN download error: {str(e)[:100]}")
+                    "CDN download error", **err.log_fields())
+        raise err from e
     
     # Verify file exists and has content
     if not os.path.exists(output_path):
