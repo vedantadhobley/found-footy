@@ -46,45 +46,6 @@ def is_player_known(event: dict) -> bool:
     return True
 
 
-# =============================================================================
-# ACTIVE: Staging fixture fetching (still used)
-# =============================================================================
-
-@activity.defn
-async def fetch_staging_fixtures() -> List[Dict[str, Any]]:
-    """
-    Batch fetch all staging fixtures from API-Football.
-    Returns raw API data for fixtures still in staging.
-    
-    This allows us to update staging fixtures with real-time data
-    (status changes, time updates, cancellations, etc.)
-    """
-    from src.api.api_client import fixtures_batch
-    from src.data.mongo_store import FootyMongoStore
-    
-    store = FootyMongoStore()
-    
-    # Get all staging fixture IDs
-    fixture_ids = store.get_staging_fixture_ids()
-    
-    if not fixture_ids:
-        log.info(activity.logger, MODULE, "staging_empty", "No staging fixtures to fetch")
-        return []
-    
-    log.info(activity.logger, MODULE, "staging_fetch_started", "Fetching staging fixtures",
-             count=len(fixture_ids))
-    
-    try:
-        fresh_data = fixtures_batch(fixture_ids)
-        log.info(activity.logger, MODULE, "staging_fetch_success", "Retrieved staging data",
-                 count=len(fresh_data))
-        return fresh_data
-    
-    except Exception as e:
-        log.error(activity.logger, MODULE, "staging_fetch_failed", "Staging fetch failed",
-                  error=str(e))
-        raise
-
 
 @activity.defn
 async def pre_activate_upcoming_fixtures(lookahead_minutes: int = 30) -> Dict[str, Any]:
@@ -672,31 +633,6 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
 
 
 @activity.defn
-async def sync_fixture_metadata(fixture_id: int) -> bool:
-    """
-    Sync fixture top-level data from fixtures_live to fixtures_active.
-    Called when no debounce is needed but we want to keep fixture metadata fresh.
-    
-    Updates: score, status, time, teams data, etc.
-    Preserves: Enhanced events array
-    """
-    from src.data.mongo_store import FootyMongoStore
-    
-    store = FootyMongoStore()
-    
-    try:
-        if store.sync_fixture_data(fixture_id):
-            log.debug(activity.logger, MODULE, "metadata_synced", "Synced metadata",
-                      fixture_id=fixture_id)
-            return True
-        return False
-    except Exception as e:
-        log.error(activity.logger, MODULE, "sync_error", "Sync error",
-                  fixture_id=fixture_id, error=str(e))
-        return False
-
-
-@activity.defn
 async def notify_frontend_refresh() -> bool:
     """
     Notify the frontend API to broadcast a refresh to all connected SSE clients.
@@ -727,66 +663,3 @@ async def notify_frontend_refresh() -> bool:
         log.warning(activity.logger, MODULE, "frontend_notify_error", "Frontend notify error",
                     error=str(e))
         return False
-
-
-# =============================================================================
-# WORKFLOW TRACKING (Workflow-ID-based)
-# =============================================================================
-
-@activity.defn
-async def register_monitor_workflow(
-    fixture_id: int,
-    event_id: str,
-    workflow_id: str
-) -> Dict[str, Any]:
-    """
-    Register a MonitorWorkflow as having processed this event.
-    Uses $addToSet for idempotency - adding the same ID twice is a no-op.
-    
-    Returns count AND current _monitor_complete status for spawn decision.
-    The caller uses: should_trigger = (count >= 3 AND not monitor_complete)
-    
-    Args:
-        fixture_id: Fixture ID
-        event_id: Event ID
-        workflow_id: The MonitorWorkflow ID (e.g., "monitor-27_01_2026-15:30")
-    
-    Returns:
-        Dict with success, count, monitor_complete, should_trigger_twitter
-    """
-    from src.data.mongo_store import FootyMongoStore
-    
-    store = FootyMongoStore()
-    
-    try:
-        # Add workflow ID to array (idempotent via $addToSet)
-        success = store.add_monitor_workflow(fixture_id, event_id, workflow_id)
-        
-        # Get current count and completion status
-        count = store.get_monitor_workflow_count(fixture_id, event_id)
-        monitor_complete = store.get_monitor_complete(fixture_id, event_id)
-        
-        # Determine if we should trigger Twitter
-        # Only trigger if count >= 3 AND monitor_complete is still False
-        # (If monitor_complete is True, Twitter already started)
-        should_trigger = count >= 3 and not monitor_complete
-        
-        log.info(activity.logger, MODULE, "register_monitor_workflow", "Monitor workflow registered",
-                 event_id=event_id, workflow_id=workflow_id, count=count,
-                 complete=monitor_complete, should_trigger=should_trigger)
-        
-        return {
-            "success": success,
-            "count": count,
-            "monitor_complete": monitor_complete,
-            "should_trigger_twitter": should_trigger
-        }
-    except Exception as e:
-        log.error(activity.logger, MODULE, "register_workflow_failed", "Register monitor workflow failed",
-                  event_id=event_id, error=str(e))
-        return {
-            "success": False,
-            "count": 0,
-            "monitor_complete": False,
-            "should_trigger_twitter": False
-        }

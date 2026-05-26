@@ -1,14 +1,14 @@
-"""Twitter Scraper Service - Independent microservice for scraping Twitter videos
+"""Twitter Scraper Service — independent microservice for scraping Twitter videos.
 
-This is a standalone service that provides an API for searching Twitter videos.
-It uses Selenium with Chrome for browser automation and maintains persistent 
-authentication via cookies.
+Standalone service exposing a small API for searching Twitter videos. Uses
+Selenium with Firefox for browser automation and persists authentication via
+cookies (re-auth happens manually through the VNC profile when cookies expire).
 
 Architecture:
-- session.py: TwitterSessionManager for browser control
-- auth.py: Authentication (automated login + cookie management)
+- session.py: TwitterSessionManager — browser control, cookie persistence, manual-login wait
 - app.py: FastAPI endpoints
 - config.py: Configuration management
+- firefox_manual_setup.py: One-shot helper for the initial manual login flow
 """
 
 __version__ = "1.0.0"
