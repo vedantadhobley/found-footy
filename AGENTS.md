@@ -48,6 +48,8 @@ See `deploy/INFRA-NOTES.md` for Caddy routes + cross-project network setup.
 - @docs/operations.md — runbook (bring-up, scaling, common issues, debugging)
 - @docs/decisions.md — append-only architectural decisions log
 - @docs/todo.md — active work + open bugs (paste-ready block at top)
+- @docs/roadmap.md — **the committed 12-15 day rewrite plan (2026-Q2)**. 7 phases. Start here for "what's the strategy."
+- @docs/sprints.md — operational sprint board (per-session task lists). Subordinate to roadmap.md.
 - @docs/proposals/ — design docs for future work: `dedup-unification`, `event-matching`, `geo-restriction-bypass`, `llm-stack-redesign` (supersedes the old `qwen-embeddings` proposal — broader scope)
 - @deploy/INFRA-NOTES.md — Caddyfile entries + cross-project network setup outside this repo
 
