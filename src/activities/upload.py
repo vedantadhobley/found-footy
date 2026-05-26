@@ -127,9 +127,9 @@ async def fetch_event_data(fixture_id: int, event_id: str) -> Dict[str, Any]:
     Returns:
         Dict with discovered_videos, player_name, team_name, event, existing_s3_videos
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     
-    store = FootyMongoStore()
+    store = get_store()
     
     log.info(activity.logger, MODULE, "fetch_event_data", "Fetching event data",
              fixture_id=fixture_id, event_id=event_id)
@@ -733,7 +733,7 @@ async def upload_single_video(
     Raises:
         Exception: If S3 upload fails (for Temporal retry)
     """
-    from src.data.s3_store import FootyS3Store
+    from src.data.s3_store import FootyS3Store, get_s3_store
     
     # For replacements, reuse the existing S3 key to keep URLs stable
     # This allows shared links to remain valid when video quality is upgraded
@@ -779,7 +779,7 @@ async def upload_single_video(
              event_id=event_id, video_idx=video_index, quality=quality_info,
              popularity=popularity, s3_key=s3_key)
     
-    s3_store = FootyS3Store()
+    s3_store = get_s3_store()
     s3_url = s3_store.upload_video(file_path, s3_key, metadata=metadata)
     
     if not s3_url:
@@ -848,9 +848,9 @@ async def update_video_in_place(
     Returns:
         True if successful
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     
-    store = FootyMongoStore()
+    store = get_store()
     
     log.info(activity.logger, MODULE, "replace_started", "Atomic in-place update",
              event_id=event_id, url=s3_url.split('/')[-1])
@@ -919,9 +919,9 @@ async def bump_video_popularity(
     Returns:
         True if successful
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     
-    store = FootyMongoStore()
+    store = get_store()
     
     log.info(activity.logger, MODULE, "popularity_bump_started", "Bumping video popularity",
              event_id=event_id, new_popularity=new_popularity)
@@ -956,9 +956,9 @@ async def save_video_objects(
     Returns:
         True if successful
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
 
-    store = FootyMongoStore()
+    store = get_store()
     
     log.info(activity.logger, MODULE, "save_videos_started", "Saving video objects",
              event_id=event_id, count=len(video_objects))
@@ -985,9 +985,9 @@ async def recalculate_video_ranks(fixture_id: int, event_id: str) -> bool:
     Returns:
         True if successful
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
 
-    store = FootyMongoStore()
+    store = get_store()
     
     log.info(activity.logger, MODULE, "recalc_ranks", "Recalculating video ranks",
              event_id=event_id)

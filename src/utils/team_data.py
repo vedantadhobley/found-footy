@@ -86,10 +86,10 @@ def get_top_flight_team_ids(force_refresh: bool = False) -> list[int]:
     Returns:
         List of team IDs from all top 5 leagues
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     from src.api.api_client import get_current_season, get_teams_for_league
     
-    store = FootyMongoStore()
+    store = get_store()
     
     # Check cache first
     if not force_refresh:
@@ -195,10 +195,10 @@ def is_national_team(team_id: int) -> bool | None:
     Returns:
         True if national team, False if club, None if lookup failed
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     from src.data.models import TeamAliasFields
     
-    store = FootyMongoStore()
+    store = get_store()
     
     # 1. Check cache first
     cached = store.get_team_alias(team_id)

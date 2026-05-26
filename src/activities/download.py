@@ -432,9 +432,9 @@ async def register_download_workflow(
     Returns:
         Dict with success, count (current count after registration)
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     
-    store = FootyMongoStore()
+    store = get_store()
     
     try:
         # Add workflow ID to array (idempotent via $addToSet)
@@ -481,9 +481,9 @@ async def check_and_mark_download_complete(
     Returns:
         Dict with count, was_already_complete, marked_complete
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     
-    store = FootyMongoStore()
+    store = get_store()
     
     try:
         result = store.check_and_mark_download_complete(fixture_id, event_id, required_count)

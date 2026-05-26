@@ -531,11 +531,11 @@ async def get_team_aliases(team_id: int, team_name: str, team_type: Optional[str
     Returns:
         List of normalized aliases for Twitter search (max 5)
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     from src.api.api_client import get_team_info
     from src.data.models import TeamAliasFields
     
-    store = FootyMongoStore()
+    store = get_store()
     
     # 1. Check cache first
     cached = _get_cached_aliases(store, team_id)
@@ -746,13 +746,13 @@ async def save_team_aliases(fixture_id: int, event_id: str, aliases: List[str]) 
     """
     Save resolved aliases to event in MongoDB for debugging/visibility.
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     from src.data.models import EventFields
     
     log.info(activity.logger, MODULE, "save_aliases_started", "Saving aliases",
              event_id=event_id, aliases=aliases)
     
-    store = FootyMongoStore()
+    store = get_store()
     
     try:
         result = store.fixtures_active.update_one(
@@ -782,10 +782,10 @@ async def get_cached_team_aliases(team_id: int) -> List[str]:
     
     Used by monitor to quickly lookup pre-cached aliases.
     """
-    from src.data.mongo_store import FootyMongoStore
+    from src.data.mongo_store import FootyMongoStore, get_store
     from src.data.models import TeamAliasFields
     
-    store = FootyMongoStore()
+    store = get_store()
     cached = _get_cached_aliases(store, team_id)
     
     if cached:

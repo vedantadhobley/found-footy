@@ -133,9 +133,9 @@ async def categorize_and_store_fixtures(fixtures: List[Dict]) -> Dict[str, int]:
             get_active_statuses,
             get_staging_statuses,
         )
-        from src.data.mongo_store import FootyMongoStore
+        from src.data.mongo_store import FootyMongoStore, get_store
         
-        store = FootyMongoStore()
+        store = get_store()
         
         # Get all existing fixture IDs across all collections
         existing_ids = set()
@@ -252,8 +252,8 @@ async def cleanup_old_fixtures(retention_days: int = 14) -> Dict[str, Any]:
     Returns:
         Dict with counts of deleted fixtures and videos
     """
-    from src.data.mongo_store import FootyMongoStore
-    from src.data.s3_store import FootyS3Store
+    from src.data.mongo_store import FootyMongoStore, get_store
+    from src.data.s3_store import FootyS3Store, get_s3_store
     
     # Calculate cutoff: today - retention_days
     # Example: Jan 16 - 14 = Jan 2
@@ -263,8 +263,8 @@ async def cleanup_old_fixtures(retention_days: int = 14) -> Dict[str, Any]:
     log.info(activity.logger, MODULE, "cleanup_started", "Starting old fixture cleanup",
              retention_days=retention_days, cutoff=cutoff_date.strftime('%Y-%m-%d'))
     
-    store = FootyMongoStore()
-    s3_store = FootyS3Store()
+    store = get_store()
+    s3_store = get_s3_store()
     
     deleted_fixtures = 0
     deleted_videos = 0
