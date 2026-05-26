@@ -1686,5 +1686,5 @@ def get_store() -> "FootyMongoStore":
     """Return the process-wide FootyMongoStore, constructing it on first call."""
     global _store
     if _store is None:
-        _store = get_store()
+        _store = FootyMongoStore()
     return _store
