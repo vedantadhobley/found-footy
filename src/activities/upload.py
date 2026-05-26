@@ -43,23 +43,34 @@ async def queue_videos_for_upload(
     Returns:
         Dict with status and workflow info
     """
-    from temporalio.client import Client
+    from datetime import timedelta
+    from temporalio.common import WorkflowIDReusePolicy
+    from src.utils.temporal_client import get_client
     from src.workflows.upload_workflow import UploadWorkflow, UploadWorkflowInput
-    
-    temporal_host = os.getenv("TEMPORAL_HOST", "localhost:7233")
-    
+
     log.info(activity.logger, MODULE, "queue_started", "Queuing videos for upload",
              event_id=event_id, video_count=len(videos))
-    
+
     try:
-        # Connect to Temporal
-        client = await Client.connect(temporal_host)
-        
+        # Reuse the process-wide Temporal client instead of opening a fresh
+        # gRPC connection on every activity invocation (~100+ extra connects
+        # per CL night otherwise).
+        client = await get_client()
+
         upload_workflow_id = f"upload-{event_id}"
-        
-        # Use signal-with-start: starts workflow if not exists, signals if exists
-        # The "add_videos" signal will be delivered to add videos to the queue
-        from datetime import timedelta
+
+        # signal-with-start (start_workflow + start_signal): starts the workflow
+        # if no instance with this ID is currently RUNNING; otherwise delivers
+        # the signal to the existing instance.
+        #
+        # id_reuse_policy=ALLOW_DUPLICATE means: if a previous UploadWorkflow
+        # with this ID already COMPLETED (e.g., idle-timed out after 5min and
+        # a late DLWF batch is now arriving), we're allowed to start a fresh
+        # instance. Without this, the start would silently fail and the signal
+        # would be dropped — the exact failure mode that caused the Lazio Pisa
+        # stuck-event symptom (audit §1i). With DLWF now owning completion
+        # marking, late-batch arrivals after a Completed UploadWorkflow are
+        # rare, but this keeps the fallback path correct.
         await client.start_workflow(
             UploadWorkflow.run,
             UploadWorkflowInput(
@@ -79,20 +90,21 @@ async def queue_videos_for_upload(
                 "videos": videos,
                 "temp_dir": temp_dir,
             }],
+            id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
             # Increase task timeout from 10s to 60s - large histories need more
             # time to replay, otherwise we get "Task not found" errors
             task_timeout=timedelta(seconds=60),
         )
-        
+
         log.info(activity.logger, MODULE, "queue_success", "Queued videos successfully",
                  event_id=event_id, workflow_id=upload_workflow_id)
-        
+
         return {
             "status": "queued",
             "workflow_id": upload_workflow_id,
             "videos_queued": len(videos),
         }
-        
+
     except Exception as e:
         log.error(activity.logger, MODULE, "queue_failed", "Failed to queue videos",
                   event_id=event_id, error=str(e))
