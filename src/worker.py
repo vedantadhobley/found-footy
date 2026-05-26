@@ -244,9 +244,25 @@ async def main():
         # time we changed the registration list. Audit's canonical example
         # of the "static counts in docs" anti-pattern.
         from collections import Counter
-        per_module = Counter(
-            fn.__module__.rsplit(".", 1)[-1] for fn in registered_activities
-        )
+
+        def _activity_package_label(fn) -> str:
+            """Group activities by their `src/activities/<PKG>` segment.
+
+            For a function defined at `src.activities.foo`, returns "foo".
+            For a function defined at `src.activities.upload.core` (package
+            with sub-modules, post-Phase-3), still returns "upload" — so
+            the banner aggregates the package as one unit instead of
+            splitting it across its sub-files.
+            """
+            parts = fn.__module__.split(".")
+            try:
+                # Find the "activities" segment, return the one after.
+                i = parts.index("activities")
+                return parts[i + 1] if i + 1 < len(parts) else parts[-1]
+            except ValueError:
+                return parts[-1]
+
+        per_module = Counter(_activity_package_label(fn) for fn in registered_activities)
         breakdown = ", ".join(f"{n} {m}" for m, n in per_module.most_common())
         workflow_names = ", ".join(w.__name__.replace("Workflow", "") for w in registered_workflows)
 
