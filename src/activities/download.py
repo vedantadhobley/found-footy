@@ -816,7 +816,7 @@ async def validate_video_is_soccer(
         if result.returncode == 0 and result.stdout.strip():
             duration = float(result.stdout.strip())
     except Exception as e:
-        log.warning(activity.logger, MODULE, "get_duration_failed",
+        log.warning(activity.logger, "download", "get_duration_failed",
                     "Failed to get duration", error=str(e))
         duration = 10.0  # Assume 10s if can't read
     

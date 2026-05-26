@@ -228,7 +228,11 @@ class TwitterWorkflow:
         # Track cumulative stats across all attempts
         total_videos_found = 0
         attempt = 0
-        
+        # Pre-bind so the post-loop reference is always defined (the old
+        # `'download_count' in dir() else 0` guard was dead — variable is
+        # bound on every iteration via either get_count success or the except).
+        download_count = 0
+
         # =========================================================================
         # MAIN LOOP: Continue until 10 DownloadWorkflows have registered
         # =========================================================================
@@ -506,7 +510,7 @@ class TwitterWorkflow:
         # TwitterWorkflow complete - either we reached 10 downloads or hit max attempts
         # _download_complete is set by UploadWorkflow when it sees 10 downloads
         # =================================================================
-        final_download_count = download_count if 'download_count' in dir() else 0
+        final_download_count = download_count
         exit_reason = "download_count_reached" if final_download_count >= REQUIRED_DOWNLOADS else "max_attempts_reached"
         
         log.info(workflow.logger, MODULE, "loop_complete",
