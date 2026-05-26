@@ -43,7 +43,6 @@ from src.activities import ingest, monitor, rag, twitter, download, upload
 
 async def setup_schedules(client: Client):
     """Set up workflow schedules (idempotent - safe to call on every startup)"""
-    from datetime import timedelta
     from temporalio.client import (
         Schedule,
         ScheduleActionStartWorkflow,

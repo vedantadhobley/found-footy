@@ -16,7 +16,6 @@ from typing import Dict, List, Any, Optional
 import os
 import requests
 import itertools
-import os
 
 from src.data.models import EventFields
 from src.utils.footy_logging import log
