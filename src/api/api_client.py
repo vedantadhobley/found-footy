@@ -237,7 +237,7 @@ def get_team_info(team_id: int) -> dict | None:
     headers = get_api_headers()
     
     try:
-        resp = requests.get(url, headers=headers, params={"id": team_id})
+        resp = requests.get(url, headers=headers, params={"id": team_id}, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         
