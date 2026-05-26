@@ -21,7 +21,8 @@ FIXTURE LIFECYCLE:
   - When fixture completes: Temp directories are cleaned up
 """
 from temporalio import workflow
-from temporalio.common import RetryPolicy
+from temporalio.common import RetryPolicy, WorkflowIDReusePolicy
+from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.workflow import ParentClosePolicy
 from datetime import timedelta
 from typing import List, Optional
@@ -167,61 +168,52 @@ class MonitorWorkflow:
                 minute = event_info["minute"]
                 extra = event_info.get("extra")
                 first_seen = event_info.get("first_seen")
-                
-                # Build human-readable workflow ID
-                player_last = player_name.split()[-1] if player_name else "Unknown"
-                team_clean = team_name.replace(" ", "_").replace(".", "_")
-                minute_str = f"{minute}+{extra}min" if extra else f"{minute}min"
-                twitter_workflow_id = f"twitter-{team_clean}-{player_last}-{minute_str}-{event_id}"
-                
-                # Check if Twitter workflow is already running or completed
-                # This prevents unnecessary restart attempts and log spam
-                workflow_status = await workflow.execute_activity(
-                    monitor_activities.check_twitter_workflow_running,
-                    twitter_workflow_id,
-                    start_to_close_timeout=timedelta(seconds=10),
-                    retry_policy=RetryPolicy(maximum_attempts=2),
-                )
-                
-                if workflow_status.get("running"):
-                    log.info(workflow.logger, MODULE, "twitter_already_running",
-                             "Twitter workflow already running", workflow_id=twitter_workflow_id)
-                    continue
-                
-                if workflow_status.get("status") == "COMPLETED":
-                    log.info(workflow.logger, MODULE, "twitter_already_completed",
-                             "Twitter workflow already completed", workflow_id=twitter_workflow_id)
-                    continue
-                
+
+                # Workflow ID derived from event_id only — event_id already encodes
+                # {fixture}_{team}_{player}_{type}_{seq} so it's stable across API
+                # mutations to time/extra/team-name. id_reuse_policy=REJECT_DUPLICATE
+                # below makes Temporal itself enforce that one event = one TwitterWorkflow.
+                twitter_workflow_id = f"twitter-{event_id}"
                 local_twitter_workflows.append(twitter_workflow_id)
-                
-                # Start TwitterWorkflow (fire-and-forget)
-                # TwitterWorkflow resolves aliases, then runs 10 search attempts
-                await workflow.start_child_workflow(
-                    TwitterWorkflow.run,
-                    TwitterWorkflowInput(
-                        fixture_id=fixture_id,
-                        event_id=event_id,
-                        team_id=team_id,
-                        team_name=team_name,
-                        player_name=player_name,
-                        event_minute=minute,
-                        event_extra=extra,
-                    ),
-                    id=twitter_workflow_id,
-                    # IMPORTANT: Explicitly set task_queue to prevent inheritance issues
-                    # during workflow replay that could route to wrong/non-existent queues
-                    task_queue="found-footy",
-                    # No execution_timeout - Twitter manages its own lifecycle
-                    # Twitter runs ~10-12 minutes (alias lookup + 10 search attempts)
-                    parent_close_policy=ParentClosePolicy.ABANDON,
-                    # Increase task timeout from 10s to 60s - large histories (300+ events)
-                    # need more time to replay, otherwise we get "Task not found" errors
-                    task_timeout=timedelta(seconds=60),
-                )
-                
-                log.info(workflow.logger, MODULE, "twitter_workflow_started",
-                         "Started TwitterWorkflow", workflow_id=twitter_workflow_id)
+
+                # Start TwitterWorkflow (fire-and-forget). Temporal rejects duplicates
+                # at the server with REJECT_DUPLICATE — no need to gate via a separate
+                # check activity. If a duplicate spawn happens (e.g., a monitor cycle
+                # re-fires on a glitch), start_child_workflow raises and we just log.
+                try:
+                    await workflow.start_child_workflow(
+                        TwitterWorkflow.run,
+                        TwitterWorkflowInput(
+                            fixture_id=fixture_id,
+                            event_id=event_id,
+                            team_id=team_id,
+                            team_name=team_name,
+                            player_name=player_name,
+                            event_minute=minute,
+                            event_extra=extra,
+                        ),
+                        id=twitter_workflow_id,
+                        # IMPORTANT: Explicitly set task_queue to prevent inheritance issues
+                        # during workflow replay that could route to wrong/non-existent queues
+                        task_queue="found-footy",
+                        # No execution_timeout - Twitter manages its own lifecycle
+                        # Twitter runs ~10-12 minutes (alias lookup + 10 search attempts)
+                        parent_close_policy=ParentClosePolicy.ABANDON,
+                        # Server-enforced dedup — paired with stable workflow ID above.
+                        # Replaces the old check_twitter_workflow_running gating activity.
+                        id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+                        # Increase task timeout from 10s to 60s - large histories (300+ events)
+                        # need more time to replay, otherwise we get "Task not found" errors
+                        task_timeout=timedelta(seconds=60),
+                    )
+                    log.info(workflow.logger, MODULE, "twitter_workflow_started",
+                             "Started TwitterWorkflow", workflow_id=twitter_workflow_id)
+                except WorkflowAlreadyStartedError:
+                    # Expected when the event_id already has a TwitterWorkflow (running
+                    # or in any terminal state). Server-enforced — exactly what we want.
+                    log.info(workflow.logger, MODULE, "twitter_already_exists",
+                             "TwitterWorkflow already exists for event (server-rejected duplicate)",
+                             workflow_id=twitter_workflow_id)
                 
                 # NOTE: _monitor_complete is now set by TwitterWorkflow at its START
                 # This ensures the flag is only set when Twitter actually starts running,

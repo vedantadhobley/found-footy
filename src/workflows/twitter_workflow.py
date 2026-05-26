@@ -44,7 +44,7 @@ Started by: MonitorWorkflow (fire-and-forget when monitor_workflows >= 3)
 Starts: DownloadWorkflow (fire-and-forget) → UploadWorkflow (signal-with-start)
 """
 from temporalio import workflow
-from temporalio.common import RetryPolicy
+from temporalio.common import RetryPolicy, WorkflowIDReusePolicy
 from datetime import timedelta
 from dataclasses import dataclass
 from typing import List, Optional
@@ -471,6 +471,9 @@ class TwitterWorkflow:
                     args=[input.fixture_id, input.event_id, input.player_name, team_aliases[0] if team_aliases else "", videos_to_download, input.event_minute, input.event_extra],
                     id=download_workflow_id,
                     parent_close_policy=ParentClosePolicy.ABANDON,  # Continue even if parent closes
+                    # Each attempt has a unique ID (download{attempt}-...); REJECT_DUPLICATE
+                    # ensures Temporal rejects accidental re-spawns of the same attempt-id.
+                    id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
                     # Increase task timeout from 10s to 60s - large histories need more
                     # time to replay, otherwise we get "Task not found" errors
                     task_timeout=timedelta(seconds=60),
