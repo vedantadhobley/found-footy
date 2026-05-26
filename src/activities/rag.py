@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 
 from src.utils.config import LLAMA_CHAT_URL
 from src.utils.footy_logging import log
+from src.utils.orchestration_config import LLM_CONCURRENCY_PER_WORKER
 
 MODULE = "rag"
 
@@ -41,7 +42,7 @@ LLAMA_URL = LLAMA_CHAT_URL
 
 # Semaphore to limit concurrent LLM requests per worker process.
 # joi llama-chat runs --parallel 4 with 2 workers, so allow 2 concurrent per worker.
-_LLM_SEMAPHORE = asyncio.Semaphore(2)
+_LLM_SEMAPHORE = asyncio.Semaphore(LLM_CONCURRENCY_PER_WORKER)
 LLAMA_MODEL = os.getenv("LLAMA_MODEL", "Qwen3-8B")
 
 # Wikidata API endpoints

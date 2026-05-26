@@ -46,6 +46,15 @@ Starts: DownloadWorkflow (fire-and-forget) → UploadWorkflow (signal-with-start
 from temporalio import workflow
 from temporalio.common import RetryPolicy, WorkflowIDReusePolicy
 from datetime import timedelta
+
+from src.utils.orchestration_config import (
+    TWITTER_MAX_ATTEMPTS,
+    TWITTER_REQUIRED_DOWNLOADS,
+    TWITTER_MAX_VIDEOS_PER_ATTEMPT,
+    TWITTER_SEARCH_MAX_AGE_MINUTES,
+    TWITTER_ATTEMPT_SPACING_SECONDS,
+    TWITTER_ATTEMPT_MIN_WAIT_SECONDS,
+)
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -112,8 +121,9 @@ class TwitterWorkflow:
         Returns:
             Dict with total_videos_found, attempts completed, download count
         """
-        MAX_ATTEMPTS = 15  # Safety limit - should only need 10, but handles start failures
-        REQUIRED_DOWNLOADS = 10
+        # Loop pacing pulled from src/utils/orchestration_config
+        MAX_ATTEMPTS = TWITTER_MAX_ATTEMPTS
+        REQUIRED_DOWNLOADS = TWITTER_REQUIRED_DOWNLOADS
         
         # Get player search names (handles accents, hyphens, returns multiple names for OR search)
         # e.g., "Florian Wirtz" -> ["Florian", "Wirtz"] for "(Florian OR Wirtz)" query
@@ -379,7 +389,7 @@ class TwitterWorkflow:
             try:
                 search_result = await workflow.execute_activity(
                     twitter_activities.execute_twitter_search,
-                    args=[search_query, list(existing_urls), 3],  # max_age_minutes=3
+                    args=[search_query, list(existing_urls), TWITTER_SEARCH_MAX_AGE_MINUTES],
                     start_to_close_timeout=timedelta(seconds=60),
                     retry_policy=RetryPolicy(
                         maximum_attempts=3,
@@ -410,7 +420,7 @@ class TwitterWorkflow:
             
             # Sort by duration (longest first) and take top 5 to reduce processing time
             # Videos without duration go to the end (treated as 0)
-            MAX_VIDEOS_TO_DOWNLOAD = 5
+            MAX_VIDEOS_TO_DOWNLOAD = TWITTER_MAX_VIDEOS_PER_ATTEMPT
             if all_videos:
                 sorted_videos = sorted(
                     all_videos, 
@@ -499,7 +509,7 @@ class TwitterWorkflow:
             # Wait for next attempt (1 minute from START of this attempt)
             # =================================================================
             elapsed = (workflow.now() - attempt_start).total_seconds()
-            wait_seconds = max(60 - elapsed, 10)  # 1 min minus elapsed, min 10s
+            wait_seconds = max(TWITTER_ATTEMPT_SPACING_SECONDS - elapsed, TWITTER_ATTEMPT_MIN_WAIT_SECONDS)
             log.info(workflow.logger, MODULE, "waiting_for_next_attempt",
                      "Waiting before next iteration",
                      attempt=attempt, elapsed_s=int(elapsed),

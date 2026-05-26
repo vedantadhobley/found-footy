@@ -23,6 +23,7 @@ from src.data.models import (
     create_activation_fields,
 )
 from src.utils.config import MONGODB_URI
+from src.utils.orchestration_config import MONITOR_DROP_THRESHOLD, TWITTER_REQUIRED_DOWNLOADS
 from src.utils.footy_logging import log, get_fallback_logger
 
 MODULE = "mongo_store"
@@ -683,7 +684,8 @@ class FootyMongoStore:
             - count: Number of workflows that have seen event missing
             - should_delete: True if count >= 3 (threshold reached)
         """
-        DROP_THRESHOLD = 3
+        # Pulled from orchestration_config (replaces the previous local constant)
+        DROP_THRESHOLD = MONITOR_DROP_THRESHOLD
 
         try:
             # Atomic $addToSet + read in one round-trip. find_one_and_update with
@@ -812,7 +814,7 @@ class FootyMongoStore:
             _log_error("set_download_complete_error", "Error setting download complete", event_id=event_id, error=str(e))
             return False
 
-    def check_and_mark_download_complete(self, fixture_id: int, event_id: str, required_count: int = 10) -> dict:
+    def check_and_mark_download_complete(self, fixture_id: int, event_id: str, required_count: int = TWITTER_REQUIRED_DOWNLOADS) -> dict:
         """
         Check if _download_workflows count >= required_count and mark _download_complete if so.
         

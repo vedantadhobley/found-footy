@@ -22,6 +22,8 @@ Started by: queue_videos_for_upload activity (signal-with-start)
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from datetime import timedelta
+
+from src.utils.orchestration_config import UPLOAD_WORKFLOW_IDLE_TIMEOUT_MINUTES
 import asyncio
 from dataclasses import dataclass
 from typing import List
@@ -87,7 +89,7 @@ class UploadWorkflow:
                  "UploadWorkflow STARTED", event_id=event_id)
         
         # Process batches until idle timeout
-        idle_timeout = timedelta(minutes=5)
+        idle_timeout = timedelta(minutes=UPLOAD_WORKFLOW_IDLE_TIMEOUT_MINUTES)
         
         while True:
             # Wait for a batch to process OR timeout
