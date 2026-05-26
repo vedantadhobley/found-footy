@@ -18,13 +18,9 @@ from src.utils.config import (
     MAX_VIDEO_DURATION,
 )
 
-# Global lock and timestamp to rate-limit downloads across all workers
-
 # Semaphore to limit concurrent LLM requests per worker process.
 # joi llama-chat runs --parallel 4 with 2 workers, so allow 2 concurrent per worker.
 _LLM_SEMAPHORE = asyncio.Semaphore(2)
-_download_lock = asyncio.Lock()
-_last_download_time = 0
 
 # Twitter cookie cache (loaded once per worker)
 _twitter_cookies_cache: Optional[Dict[str, str]] = None
