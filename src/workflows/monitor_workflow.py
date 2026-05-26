@@ -240,14 +240,27 @@ class MonitorWorkflow:
                 "completed_fixture_id": fixture_id if was_completed else None,
             }
         
-        # Execute all fixture processing in parallel
+        # Execute all fixture processing in parallel. return_exceptions=True
+        # so one fixture's exception (failed activity, transient Mongo error,
+        # etc.) doesn't poison the whole 30s monitor cycle for every other
+        # fixture. Audit §1j.
         if fixtures:
             fixture_tasks = [process_fixture(f) for f in fixtures]
-            fixture_results = await asyncio.gather(*fixture_tasks)
-            
-            # Aggregate results
+            fixture_results = await asyncio.gather(*fixture_tasks, return_exceptions=True)
+
+            # Aggregate results, logging exceptions per fixture so they don't
+            # vanish silently. Result indices align with the input `fixtures`
+            # list, so we can attribute each failure to its source fixture.
             completed_fixture_ids = []
-            for result in fixture_results:
+            for fixture_data, result in zip(fixtures, fixture_results):
+                if isinstance(result, BaseException):
+                    failed_fixture_id = fixture_data.get("fixture", {}).get("id")
+                    log.error(workflow.logger, MODULE, "fixture_processing_failed",
+                              "Fixture processing raised — other fixtures unaffected",
+                              fixture_id=failed_fixture_id,
+                              error_type=type(result).__name__,
+                              error=str(result))
+                    continue
                 twitter_workflows_started.extend(result["twitter_workflows"])
                 completed_count += result["completed"]
                 if result.get("completed_fixture_id"):
