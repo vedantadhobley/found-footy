@@ -32,6 +32,11 @@ import unicodedata
 from datetime import datetime, timezone
 
 from src.utils.config import LLAMA_CHAT_URL
+from src.utils.errors import (
+    LLMTimeoutError,
+    LLMUnavailableError,
+    LLMValidationError,
+)
 from src.utils.footy_logging import log
 from src.utils.orchestration_config import LLM_CONCURRENCY_PER_WORKER
 
@@ -650,10 +655,20 @@ Output JSON array only. /no_think"""
                                     attempt=attempt, error_type=type(retry_err).__name__)
                         await asyncio.sleep(wait)
                         continue
-                    raise
-            
+                    raise LLMTimeoutError(
+                        f"LLM {type(retry_err).__name__} after 3 attempts",
+                        context={
+                            "url": LLAMA_URL,
+                            "team_id": team_id,
+                            "underlying_error_type": type(retry_err).__name__,
+                        },
+                    ) from retry_err
+
             if not result:
-                raise httpx.TimeoutException("All LLM retries exhausted")
+                raise LLMTimeoutError(
+                    "All LLM retries exhausted (no response)",
+                    context={"url": LLAMA_URL, "team_id": team_id},
+                )
             
             text = result["choices"][0]["message"]["content"].strip()
             log.info(activity.logger, MODULE, "llm_response", "LLM response received",
@@ -711,12 +726,33 @@ Output JSON array only. /no_think"""
             log.warning(activity.logger, MODULE, "llm_invalid", "LLM returned invalid/empty",
                         response=text)
                 
-        except httpx.ConnectError:
-            log.warning(activity.logger, MODULE, "llm_unavailable", "LLM server not available, using fallback",
-                        llm_url=LLAMA_URL)
+        except httpx.ConnectError as e:
+            err = LLMUnavailableError(
+                f"LLM server unreachable at {LLAMA_URL}",
+                context={"url": LLAMA_URL, "team_id": team_id, "team_name": team_name,
+                         "fallback": "heuristic_aliases"},
+            )
+            log.warning(activity.logger, MODULE, "llm_unavailable",
+                        "LLM server not available, using fallback",
+                        **err.log_fields())
+            # Intentional swallow: fall back to cleaned_aliases + team name below.
+        except (LLMTimeoutError, LLMValidationError, LLMUnavailableError) as err:
+            # Already classified; log with full context and fall through to fallback.
+            log.warning(activity.logger, MODULE, "llm_error",
+                        f"LLM call failed: {err}", **err.log_fields())
         except Exception as e:
-            log.warning(activity.logger, MODULE, "llm_error", "LLM error",
-                        error=str(e))
+            err = LLMValidationError(
+                f"LLM unexpected error: {str(e)[:120]}",
+                context={
+                    "url": LLAMA_URL,
+                    "team_id": team_id,
+                    "underlying_error_type": type(e).__name__,
+                    "error_detail": str(e)[:200],
+                    "fallback": "heuristic_aliases",
+                },
+            )
+            log.warning(activity.logger, MODULE, "llm_error",
+                        "LLM error (using fallback)", **err.log_fields())
     
     # Fallback: Just use first few cleaned aliases + team name
     fallback = cleaned_aliases[:3] if cleaned_aliases else []
