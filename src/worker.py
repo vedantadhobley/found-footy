@@ -34,7 +34,6 @@ from datetime import timedelta
 from src.workflows import (
     IngestWorkflow,
     MonitorWorkflow,
-    RAGWorkflow,
     TwitterWorkflow,
     DownloadWorkflow,
     UploadWorkflow,
@@ -184,7 +183,6 @@ async def main():
             workflows=[
                 IngestWorkflow,
                 MonitorWorkflow,
-                RAGWorkflow,
                 TwitterWorkflow,
                 DownloadWorkflow,
                 UploadWorkflow,
@@ -196,15 +194,12 @@ async def main():
                 ingest.categorize_and_store_fixtures,
                 ingest.cleanup_old_fixtures,  # Delete fixtures older than 14 days
                 # Monitor activities (staging + active processing)
-                monitor.fetch_staging_fixtures,
                 monitor.pre_activate_upcoming_fixtures,  # Time-based pre-activation
                 monitor.fetch_active_fixtures,
                 monitor.store_and_compare,
                 monitor.process_fixture_events,
-                monitor.sync_fixture_metadata,
                 monitor.complete_fixture_if_ready,
                 monitor.notify_frontend_refresh,
-                monitor.register_monitor_workflow,  # Workflow-ID-based tracking
                 # RAG activities (team alias lookup)
                 rag.get_team_aliases,
                 rag.save_team_aliases,
@@ -230,7 +225,6 @@ async def main():
                 upload.deduplicate_videos,  # Perceptual hash dedup against S3
                 upload.upload_single_video,
                 upload.update_video_in_place,  # Atomic in-place update for replacements
-                upload.replace_s3_video,
                 upload.bump_video_popularity,
                 upload.save_video_objects,
                 upload.recalculate_video_ranks,
