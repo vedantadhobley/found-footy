@@ -12,7 +12,8 @@ import os
 from datetime import datetime, timezone
 from typing import Dict, List, Any
 
-from pymongo import ASCENDING, MongoClient
+from pymongo import ASCENDING, MongoClient, ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from src.data.models import (
     FixtureFields,
@@ -244,25 +245,32 @@ class FootyMongoStore:
         See src/data/models.py for complete field documentation.
         """
         try:
-            # Remove from staging first
-            staging_result = self.fixtures_staging.delete_one({"_id": fixture_id})
-            if staging_result.deleted_count == 0:
-                _log_warning("fixture_not_in_staging", "Fixture not found in staging", fixture_id=fixture_id)
-                # Continue anyway - might be a race condition
-            
             # Build active document from fresh API data
             doc = dict(api_data)
             doc["_id"] = fixture_id
             doc["events"] = []  # Start with empty events array
-            
+
             # Add fixture-level tracking fields from models.py
             doc.update(create_activation_fields())
-            
+
+            # Insert into active FIRST. If this fails, the fixture stays in
+            # staging and we can retry — no data loss. The previous order
+            # (delete staging → insert active) could lose the fixture entirely
+            # if the active insert failed for any reason.
             self.fixtures_active.replace_one(
                 {"_id": fixture_id},
                 doc,
                 upsert=True
             )
+
+            # Now remove from staging. If THIS fails, the fixture briefly
+            # exists in both collections — duplicate but recoverable. Next
+            # ingest cycle's "skip existing" logic handles it; if not,
+            # cleanup_old_fixtures sweeps eventually.
+            staging_result = self.fixtures_staging.delete_one({"_id": fixture_id})
+            if staging_result.deleted_count == 0:
+                _log_warning("fixture_not_in_staging", "Fixture not found in staging (may have been activated by a concurrent monitor cycle)", fixture_id=fixture_id)
+
             return True
         except Exception as e:
             _log_error("activate_fixture_error", "Error activating fixture with data", fixture_id=fixture_id, error=str(e))
@@ -676,27 +684,31 @@ class FootyMongoStore:
             - should_delete: True if count >= 3 (threshold reached)
         """
         DROP_THRESHOLD = 3
-        
+
         try:
-            # First, do the $addToSet update
-            update_result = self.fixtures_active.update_one(
+            # Atomic $addToSet + read in one round-trip. find_one_and_update with
+            # ReturnDocument.AFTER returns the document with our update applied,
+            # so the count we observe always includes our own workflow_id.
+            #
+            # Concurrent callers from different monitor cycles can both observe
+            # count >= DROP_THRESHOLD and each return should_delete=True — that's
+            # fine because the caller's actions (mark_event_removed, $pull event)
+            # are themselves idempotent. We just avoid the previous wasteful
+            # 2-round-trip pattern.
+            fixture = self.fixtures_active.find_one_and_update(
                 {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
-                {"$addToSet": {f"events.$.{EventFields.DROP_WORKFLOWS}": workflow_id}}
+                {"$addToSet": {f"events.$.{EventFields.DROP_WORKFLOWS}": workflow_id}},
+                projection={f"events.$": 1},
+                return_document=ReturnDocument.AFTER,
             )
-            
-            # Then fetch the updated count (can't use positional $ with return_document)
-            fixture = self.fixtures_active.find_one(
-                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
-                {f"events.$": 1}
-            )
-            
+
             if not fixture or not fixture.get("events"):
                 return (0, False)
-            
+
             drop_workflows = fixture["events"][0].get(EventFields.DROP_WORKFLOWS, [])
             count = len(drop_workflows)
             should_delete = count >= DROP_THRESHOLD
-            
+
             return (count, should_delete)
         except Exception as e:
             _log_error("add_drop_workflow_error", "Error adding drop workflow", workflow_id=workflow_id, event_id=event_id, error=str(e))
@@ -815,35 +827,68 @@ class FootyMongoStore:
             Dict with count, was_already_complete, marked_complete
         """
         try:
-            count = self.get_download_workflow_count(fixture_id, event_id)
-            
-            # Check if already complete
-            fixture = self.fixtures_active.find_one(
-                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
-                {f"events.$": 1}
+            # Atomic: single find_one_and_update that sets _download_complete=true
+            # ONLY if the count threshold is met AND it's not already complete.
+            # Uses $expr in the filter to compare $size of the array against
+            # required_count. This collapses three round-trips (get_count → find
+            # → mark) into one and makes the "was I the one who flipped it?"
+            # signal trustworthy.
+            #
+            # Returns the document AFTER the update (if matched) or None (if
+            # not matched — meaning the filter conditions weren't met).
+            field = f"events.$.{EventFields.DOWNLOAD_COMPLETE}"
+            updated = self.fixtures_active.find_one_and_update(
+                {
+                    "_id": fixture_id,
+                    "events": {
+                        "$elemMatch": {
+                            EventFields.EVENT_ID: event_id,
+                            EventFields.DOWNLOAD_COMPLETE: {"$ne": True},
+                            "$expr": {
+                                "$gte": [
+                                    {"$size": {"$ifNull": [f"${EventFields.DOWNLOAD_WORKFLOWS}", []]}},
+                                    required_count,
+                                ]
+                            },
+                        }
+                    },
+                },
+                {"$set": {field: True}},
+                projection={f"events.$": 1},
+                return_document=ReturnDocument.AFTER,
             )
-            was_already_complete = False
-            if fixture and fixture.get("events"):
-                was_already_complete = fixture["events"][0].get(EventFields.DOWNLOAD_COMPLETE, False)
-            
-            marked_complete = False
-            if count >= required_count and not was_already_complete:
-                self.mark_download_complete(fixture_id, event_id)
-                marked_complete = True
-                _log_info("download_workflows_complete", "Download workflows threshold reached - marking complete", 
-                         event_id=event_id, count=count, required=required_count)
-            elif count >= required_count:
-                _log_info("download_already_complete", "Download workflows threshold reached - already complete",
-                         event_id=event_id, count=count, required=required_count)
+
+            if updated and updated.get("events"):
+                # Filter matched and we flipped the flag. Get the count we
+                # observed (now includes the threshold-passing array).
+                count = len(updated["events"][0].get(EventFields.DOWNLOAD_WORKFLOWS, []))
+                _log_info("download_workflows_complete",
+                          "Download workflows threshold reached — marking complete",
+                          event_id=event_id, count=count, required=required_count)
+                return {"count": count, "was_already_complete": False, "marked_complete": True}
+
+            # Filter didn't match — either count < required_count OR already
+            # complete. Disambiguate with a single read for the log line.
+            current = self.fixtures_active.find_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {f"events.$": 1},
+            )
+            if not current or not current.get("events"):
+                return {"count": 0, "was_already_complete": False, "marked_complete": False}
+
+            ev = current["events"][0]
+            count = len(ev.get(EventFields.DOWNLOAD_WORKFLOWS, []))
+            was_complete = ev.get(EventFields.DOWNLOAD_COMPLETE, False)
+            if was_complete:
+                _log_info("download_already_complete",
+                          "Already complete — no-op",
+                          event_id=event_id, count=count, required=required_count)
             else:
-                _log_info("download_not_complete", "Download workflows not yet complete",
-                         event_id=event_id, count=count, required=required_count)
-            
-            return {
-                "count": count,
-                "was_already_complete": was_already_complete,
-                "marked_complete": marked_complete
-            }
+                _log_info("download_not_complete",
+                          "Download workflows not yet complete",
+                          event_id=event_id, count=count, required=required_count)
+            return {"count": count, "was_already_complete": was_complete, "marked_complete": False}
+
         except Exception as e:
             _log_error("check_download_complete_error", "Error checking/marking download complete", event_id=event_id, error=str(e))
             return {"count": 0, "was_already_complete": False, "marked_complete": False}
@@ -1424,17 +1469,29 @@ class FootyMongoStore:
             if not fixture_doc:
                 _log_warning("fixture_not_found_complete", f"Fixture {fixture_id} not found in active for completion", fixture_id=fixture_id)
                 return False
-            
+
             # Add completion timestamp
             fixture_doc[FixtureFields.COMPLETED_AT] = datetime.now(timezone.utc)
-            
-            # Insert to completed
-            self.fixtures_completed.insert_one(fixture_doc)
-            
-            # Remove from active and live
+
+            # Insert (or replace) into completed FIRST. The previous code used
+            # insert_one which would raise DuplicateKeyError if the fixture
+            # was already migrated by a prior call — leaving us in a state
+            # where active+completed both have it. replace_one(upsert=True)
+            # is idempotent on retry.
+            self.fixtures_completed.replace_one(
+                {"_id": fixture_id},
+                fixture_doc,
+                upsert=True,
+            )
+
+            # Now remove from active + live. If either delete fails, the
+            # fixture sits briefly in both collections — but the data is
+            # safely in completed, and the next monitor cycle's
+            # complete_fixture call is now an idempotent no-op via the
+            # upsert above.
             self.fixtures_active.delete_one({"_id": fixture_id})
             self.fixtures_live.delete_one({"_id": fixture_id})
-            
+
             return True
         except Exception as e:
             _log_error("complete_fixture_error", f"Error completing fixture {fixture_id}", error=str(e), fixture_id=fixture_id)
