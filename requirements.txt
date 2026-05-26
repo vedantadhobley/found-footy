@@ -1,39 +1,49 @@
-# Found Footy - Temporal Pipeline Dependencies
+# Found Footy — Temporal Pipeline Dependencies
+#
+# Pinned to versions verified working on the dev worker image
+# (Python 3.10 base). Update via:
+#   docker exec <worker> pip freeze | grep -i <pkg> | head -1
+# and bump the corresponding line below.
+#
+# Sprint 3 cleanup (2026-05-26):
+#   - Dropped: undetected-chromedriver (Chrome → Firefox/geckodriver),
+#     mutagen (never imported), psutil (never imported), pyOpenSSL
+#     (never imported). All zero-grep across src/, tests/, twitter/.
+#   - Added explicit: httpx (was transitive via fastapi/uvicorn, but
+#     directly imported by src/activities/{download,rag}.py).
 
-# Core
-pymongo
-requests
-python-dotenv
-boto3
+# ─── Core ───────────────────────────────────────────────────────────────
+pymongo==4.16.0
+requests==2.32.5
+python-dotenv==1.2.1
+boto3==1.42.35
 
-# Video Processing
-yt-dlp
-mutagen
-opencv-python
-numpy
-pillow
+# ─── Video processing ───────────────────────────────────────────────────
+yt-dlp==2025.12.8
+opencv-python==4.13.0.90
+numpy==2.2.6
+pillow==12.1.0
 
-# Browser Automation (Twitter service)
-selenium
-undetected-chromedriver>=3.5.0
+# ─── Browser automation (Twitter scraper service) ───────────────────────
+selenium==4.40.0
 
-# API
-fastapi
-uvicorn[standard]
+# ─── HTTP/API ───────────────────────────────────────────────────────────
+fastapi==0.128.0
+uvicorn[standard]==0.40.0
+httpx==0.28.1
 
-# Workflow Orchestration
-temporalio
-psutil
+# ─── Workflow orchestration ─────────────────────────────────────────────
+temporalio==1.21.1
 
-# Async
-anyio
-pyOpenSSL
-cryptography
+# ─── Scaler service (python-on-whales drives docker compose --scale) ────
+python-on-whales==0.80.0
 
-# Testing
-pytest
-pytest-cov
-pytest-mock
-pytest-asyncio
-httpx
-python-on-whales>=0.60.0
+# ─── Async / TLS (kept as transitive guards; remove if no breakage) ─────
+anyio==4.12.1
+cryptography==46.0.3
+
+# ─── Test framework ─────────────────────────────────────────────────────
+pytest==9.0.2
+pytest-asyncio==1.3.0
+pytest-cov==7.0.0
+pytest-mock==3.15.1
