@@ -41,6 +41,7 @@ Queues to: UploadWorkflow via signal-with-start (FIFO per event)
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError, ApplicationError
 from datetime import timedelta
 import asyncio
 
@@ -49,6 +50,33 @@ with workflow.unsafe.imports_passed_through():
     from src.utils.footy_logging import log
 
 MODULE = "download_workflow"
+
+
+def _extract_activity_failure(exc: BaseException) -> dict:
+    """Extract a structured failure summary from a Temporal ActivityError.
+
+    Workflow-side exceptions are usually `ActivityError` wrapping an
+    `ApplicationError` that carries the activity's original exception
+    name + message. Returns a dict suitable for **kwargs into log.warning.
+
+    Falls back to the wrapper's string repr if the cause chain isn't
+    what we expect.
+    """
+    cause = getattr(exc, "cause", None)
+    if isinstance(cause, ApplicationError):
+        # `type` is the original exception class name; `details` carries
+        # any structured data the activity attached (currently empty for
+        # our typed errors — context is in the string for now).
+        return {
+            "underlying_error_class": cause.type or "UnknownError",
+            "underlying_error_message": (cause.message or "")[:300],
+            "wrapper_class": type(exc).__name__,
+        }
+    return {
+        "underlying_error_class": type(cause).__name__ if cause else type(exc).__name__,
+        "underlying_error_message": str(cause or exc)[:300],
+        "wrapper_class": type(exc).__name__,
+    }
 
 
 @workflow.defn
@@ -209,15 +237,27 @@ class DownloadWorkflow:
                     )
                     return {"idx": idx, "result": result, "url": video_url}
                 except Exception as e:
+                    # Surface the underlying activity exception (typed error
+                    # class + message) instead of the Temporal ActivityError
+                    # wrapper string. Phase 2a fix — pairs with Phase 1's typed
+                    # error classification so Grafana shows real failure modes
+                    # (VideoGeoRestrictedError vs VideoNotAvailableError vs
+                    # VideoCDNTimeoutError) without log archaeology.
+                    failure = _extract_activity_failure(e)
                     log.warning(workflow.logger, MODULE, "video_failed",
                                 "Video FAILED after 3 retries",
-                                idx=idx, url=video_url[:50], error=str(e)[:100],
-                                event_id=event_id)
+                                idx=idx, url=video_url[:50], event_id=event_id,
+                                **failure)
                     return {
-                        "idx": idx, 
-                        "result": {"status": "failed", "error": str(e)[:200], "source_url": video_url}, 
-                        "url": video_url, 
-                        "failed": True
+                        "idx": idx,
+                        "result": {
+                            "status": "failed",
+                            "error": failure["underlying_error_message"],
+                            "error_class": failure["underlying_error_class"],
+                            "source_url": video_url,
+                        },
+                        "url": video_url,
+                        "failed": True,
                     }
             
             # Execute all downloads in parallel
@@ -360,11 +400,15 @@ class DownloadWorkflow:
                         except:
                             pass
                 except Exception as e:
-                    # FAIL-CLOSED: If validation fails after retries, REJECT the video
+                    # FAIL-CLOSED: If validation fails after retries, REJECT the video.
+                    # Surface the underlying LLM error class so Grafana can
+                    # distinguish "joi unreachable" from "joi returned garbage"
+                    # from "joi cap saturated" without log archaeology.
                     validation_failed_count += 1
+                    failure = _extract_activity_failure(e)
                     log.error(workflow.logger, MODULE, "validation_failed",
                               "Validation FAILED - rejecting video",
-                              error=str(e), event_id=event_id)
+                              event_id=event_id, **failure)
                     try:
                         import os
                         os.remove(video_info["file_path"])
