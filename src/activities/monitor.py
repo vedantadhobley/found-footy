@@ -446,6 +446,31 @@ async def complete_fixture_if_ready(fixture_id: int) -> bool:
                      fixture_id=fixture_id)
             log.info(activity.logger, MODULE, "match_completed_summary",
                      "Match-level pipeline outcome", **summary_fields)
+
+            # Phase 4 SLO: emit a distinct log line (alertable in Grafana
+            # without joining against league filters) when a tracked-
+            # league fixture finishes with coverage_rate below threshold.
+            # Skipped when goals_total=0 (no signal in a 0-0) or when
+            # the league isn't in the SLO set (friendly / second-division).
+            from src.utils.orchestration_config import (
+                MATCH_COVERAGE_SLO_THRESHOLD,
+                SLO_TRACKED_LEAGUE_IDS,
+            )
+            league_id = summary_fields.get("league_id")
+            goals_total = summary_fields.get("goals_total") or 0
+            coverage_rate = summary_fields.get("coverage_rate") or 0.0
+            if (
+                league_id in SLO_TRACKED_LEAGUE_IDS
+                and goals_total > 0
+                and coverage_rate < MATCH_COVERAGE_SLO_THRESHOLD
+            ):
+                log.warning(
+                    activity.logger, MODULE, "match_below_slo",
+                    "Tracked-league fixture finished below coverage SLO",
+                    slo_threshold=MATCH_COVERAGE_SLO_THRESHOLD,
+                    **summary_fields,
+                )
+
             # Note: Temp directory cleanup is done in MonitorWorkflow after this returns True
             return True
 
