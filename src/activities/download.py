@@ -562,13 +562,14 @@ async def download_single_video(
              "Starting video download",
              event_id=event_id, video_idx=video_index, url=video_url[:60])
     
-    # Extract tweet_id from URL
+    # Extract tweet_id from URL.
     # Handles: https://x.com/user/status/123, https://x.com/i/status/123, https://twitter.com/...
     tweet_id_match = re.search(r'/status/(\d+)', video_url)
     if not tweet_id_match:
         err = VideoMalformedURLError(
             f"Could not extract tweet_id from URL: {video_url}",
-            context={"event_id": event_id, "video_idx": video_index, "url": video_url},
+            context={"event_id": event_id, "video_idx": video_index, "url": video_url,
+                     "failure_mode": "no_status_match"},
         )
         log.error(activity.logger, "download", "tweet_id_extraction_failed",
                   "Could not extract tweet_id from URL",
@@ -576,6 +577,37 @@ async def download_single_video(
         raise err
 
     tweet_id = tweet_id_match.group(1)
+
+    # Snowflake ID length sanity check.
+    # Twitter snowflakes are time-based 64-bit IDs and have been ≥18 digits
+    # since ~early 2020. Shorter IDs almost always indicate an upstream
+    # truncation bug (we saw 13/14/17-digit IDs in the 2026-05-25
+    # Paderborn-Wolfsburg post-mortem). Reject early with a typed error
+    # so the failure shape is visible in Grafana via the
+    # `failure_mode=truncated_snowflake` field rather than failing later
+    # at the syndication API with a generic 404.
+    #
+    # Lower bound is conservative — a few legitimate ancient tweets may
+    # still have 16-17 digit IDs, but none would surface as live goal
+    # clips. Tighten/loosen here if a false-positive class emerges.
+    MIN_SNOWFLAKE_LEN = 18
+    if len(tweet_id) < MIN_SNOWFLAKE_LEN:
+        err = VideoMalformedURLError(
+            f"Tweet status ID too short ({len(tweet_id)} digits, expected ≥{MIN_SNOWFLAKE_LEN}): {tweet_id}",
+            context={
+                "event_id": event_id,
+                "video_idx": video_index,
+                "url": video_url,
+                "tweet_id": tweet_id,
+                "tweet_id_len": len(tweet_id),
+                "min_expected_len": MIN_SNOWFLAKE_LEN,
+                "failure_mode": "truncated_snowflake",
+            },
+        )
+        log.warning(activity.logger, "download", "tweet_id_too_short",
+                    "Rejecting URL with truncated snowflake ID",
+                    **err.log_fields())
+        raise err
     
     # Call syndication API to get video info
     syndication_url = f"https://cdn.syndication.twimg.com/tweet-result?id={tweet_id}&token=x"
