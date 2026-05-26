@@ -93,6 +93,52 @@ TWITTER_ATTEMPT_MIN_WAIT_SECONDS = 10
 UPLOAD_WORKFLOW_IDLE_TIMEOUT_MINUTES = 5
 
 
+# ─── Phase 4 — Discovery hardening ───────────────────────────────────────────
+#
+# Per-match coverage SLO: alert when a tracked-league fixture finishes
+# with fewer than MATCH_COVERAGE_SLO_THRESHOLD of its goals captured to
+# S3. The threshold is permissive (0.5 = half) so it only fires on real
+# pipeline regressions, not on the random goal we miss because X didn't
+# index a clip in time.
+#
+# Tracked-league IDs are the top-5 European leagues by default; extend
+# with UEFA continental + FIFA international IDs when those competitions
+# are in play (World Cup leagues land here ~3 weeks out from kickoff).
+
+MATCH_COVERAGE_SLO_THRESHOLD = 0.5
+
+SLO_TRACKED_LEAGUE_IDS = {
+    39,    # Premier League
+    140,   # La Liga
+    78,    # Bundesliga
+    135,   # Serie A
+    61,    # Ligue 1
+    2,     # UEFA Champions League
+    3,     # UEFA Europa League
+    848,   # UEFA Conference League
+    # FIFA World Cup (1) + UEFA Euro (4) etc. — add when those competitions are active.
+}
+
+# Adaptive Twitter discovery — exit the search loop early when a fixture's
+# Twitter coverage is clearly empty. Doesn't kick in until we've given the
+# loop a fair chance (EARLIEST_EXIT_ATTEMPT) and only short-circuits if
+# the most recent EMPTY_STREAK_THRESHOLD attempts all returned zero new
+# videos. Existing TWITTER_REQUIRED_DOWNLOADS exit still wins when 10
+# DLWFs have already registered.
+
+TWITTER_ADAPTIVE_EARLIEST_EXIT_ATTEMPT = 8
+TWITTER_ADAPTIVE_EMPTY_STREAK_THRESHOLD = 3
+
+# DOM-selector canary — small synthetic search that runs hourly and
+# verifies X's tweet markup still matches our scraper's selectors. Lets
+# us notice an X redesign within an hour instead of "where did the
+# goals go?" hours later. Search query is something football-evergreen
+# that always has fresh tweets but isn't tied to live fixtures.
+
+DOM_CANARY_QUERY = "football goal"
+DOM_CANARY_MIN_TWEETS = 3  # at least this many results to consider the canary green
+
+
 # ─── LLM concurrency ─────────────────────────────────────────────────────────
 #
 # joi's llama-small (Qwen3.5-9B VL) is configured with --parallel 2 — it
