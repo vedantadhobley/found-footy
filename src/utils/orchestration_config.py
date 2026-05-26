@@ -132,10 +132,15 @@ TWITTER_ADAPTIVE_EMPTY_STREAK_THRESHOLD = 3
 # DOM-selector canary — small synthetic search that runs hourly and
 # verifies X's tweet markup still matches our scraper's selectors. Lets
 # us notice an X redesign within an hour instead of "where did the
-# goals go?" hours later. Search query is something football-evergreen
-# that always has fresh tweets but isn't tied to live fixtures.
+# goals go?" hours later.
+#
+# Wide search window (24h) so the canary tests STRUCTURAL parsing not
+# live-freshness — outside live match hours the scraper's age-filter
+# would otherwise bail before we can validate the markup. The narrow
+# window for actual goal searches lives in TWITTER_SEARCH_MAX_AGE_MINUTES.
 
 DOM_CANARY_QUERY = "football goal"
+DOM_CANARY_MAX_AGE_MINUTES = 1440  # 24h — widen past the age-filter early-exit
 DOM_CANARY_MIN_TWEETS = 3  # at least this many results to consider the canary green
 
 

@@ -39,7 +39,7 @@ def get_registered_activities() -> set[str]:
             bracket_count += line.count('[') - line.count(']')
 
             for module, func in activity_pattern.findall(line):
-                if module in ('ingest', 'monitor', 'rag', 'twitter', 'download', 'upload'):
+                if module in ('ingest', 'monitor', 'rag', 'twitter', 'download', 'upload', 'canary'):
                     registered.add(f"{module}.{func}")
 
             # Exit when brackets balance. On the opening line, only exit if
