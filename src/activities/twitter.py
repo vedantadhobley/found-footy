@@ -476,33 +476,48 @@ async def save_discovered_videos(
 ) -> Dict[str, Any]:
     """
     Append newly discovered videos to _discovered_videos array.
-    
+
     Does NOT set _download_complete - that's handled by Download workflow
     after it knows final S3 count.
-    
+
+    Also increments per-event telemetry: search_attempts always += 1
+    (one attempt fired per call), videos_discovered += new-after-dedup
+    count, and seeds first_seen_at on the very first call.
+
     Args:
         fixture_id: The fixture ID
         event_id: The event ID
         videos: List of new video dicts from Twitter (already filtered for dupes)
-    
+
     Returns:
         Dict with save status
-    
+
     Raises:
         RuntimeError: If MongoDB update fails
     """
+    from datetime import datetime, timezone
     from src.data.mongo_store import FootyMongoStore, get_store
-    
+
     store = get_store()
-    
+    now = datetime.now(timezone.utc)
+
     log.info(activity.logger, MODULE, "save_videos_started", "Saving discovered videos",
              fixture_id=fixture_id, event_id=event_id, count=len(videos))
-    
+
+    # Telemetry: record this search attempt regardless of whether new
+    # videos were found. videos_discovered increments by the post-dedup
+    # count below.
+    store.increment_event_telemetry(
+        fixture_id, event_id,
+        increments={"search_attempts": 1},
+        min_fields={"first_seen_at": now},
+    )
+
     if not videos:
         log.info(activity.logger, MODULE, "no_videos_to_save", "No videos to save",
                  event_id=event_id)
         return {"saved": True, "video_count": 0}
-    
+
     # Append videos to _discovered_videos, skipping duplicates by tweet_id
     try:
         # Get existing tweet IDs to avoid duplicates
@@ -532,16 +547,22 @@ async def save_discovered_videos(
                 }
             }
         )
-        
+
         if result.modified_count == 0:
             log.error(activity.logger, MODULE, "save_videos_failed", "Failed to save discovered videos",
                       event_id=event_id)
             raise RuntimeError(f"Failed to save discovered videos for event {event_id}")
-        
+
+        # Telemetry: count the new (post-dedup) URLs.
+        store.increment_event_telemetry(
+            fixture_id, event_id,
+            increments={"videos_discovered": len(new_videos)},
+        )
+
         log.info(activity.logger, MODULE, "save_videos_success", "Saved discovered video URLs",
-                 event_id=event_id, count=len(videos))
+                 event_id=event_id, count=len(videos), new_count=len(new_videos))
         return {"saved": True, "video_count": len(videos)}
-        
+
     except Exception as e:
         log.error(activity.logger, MODULE, "save_videos_error", "Save discovered videos failed",
                   event_id=event_id, error=str(e))

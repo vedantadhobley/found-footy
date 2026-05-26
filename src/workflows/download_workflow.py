@@ -263,14 +263,19 @@ class DownloadWorkflow:
             # Execute all downloads in parallel
             download_tasks = [download_video(idx, video) for idx, video in enumerate(discovered_videos)]
             download_outcomes = await asyncio.gather(*download_tasks)
-            
+
+            # Collect Phase 1 failure-class counts for telemetry. Each
+            # outcome may carry an `error_class` field populated by the
+            # _extract_activity_failure helper.
+            failures_by_class: dict[str, int] = {}
+
             # Process results
             for outcome in download_outcomes:
                 if outcome is None:
                     continue
-                
+
                 result = outcome["result"]
-                
+
                 # Handle multi-video tweets - flatten the results
                 if result.get("status") == "multi_video":
                     videos = result.get("videos", [])
@@ -280,16 +285,18 @@ class DownloadWorkflow:
                     download_results.extend(videos)
                 else:
                     download_results.append(result)
-                
+
                 # Track filtered videos (too short/long/vertical)
                 if result.get("status") == "filtered":
                     source_url = result.get("source_url")
                     if source_url:
                         filtered_urls.append(source_url)
-                
-                # Track failed URLs
+
+                # Track failed URLs + classify
                 if outcome.get("failed"):
                     failed_urls.append(outcome["url"])
+                    cls = result.get("error_class") or "UnknownError"
+                    failures_by_class[cls] = failures_by_class.get(cls, 0) + 1
             
             successful_downloads = sum(1 for r in download_results if r.get("status") == "success")
             download_stats["downloaded"] = successful_downloads
@@ -499,30 +506,33 @@ class DownloadWorkflow:
             
             videos_to_upload = videos_with_hash
             download_stats["sent_to_upload"] = len(videos_to_upload)
-        
+
             # =========================================================================
-            # Step 5: Queue videos for upload via signal
-            # Uses queue_videos_for_upload activity which does signal-with-start.
-            # Temporal guarantees signals are delivered in order = FIFO processing.
-            # Only ONE UploadWorkflow runs per event, processing batches sequentially.
-            # We only signal when there are actual videos — empty batches no longer
-            # need to wake UploadWorkflow just to trigger a completion check
-            # (DLWF runs that check directly in the outer finally).
+            # Step 5: Queue videos for upload via signal AND record telemetry.
+            # Uses queue_videos_for_upload activity which:
+            #   - records Phase 1 telemetry (videos_validated + failures_by_class)
+            #     even for empty batches
+            #   - signals UploadWorkflow via signal-with-start ONLY if videos
+            #     is non-empty (avoid waking it for nothing)
+            # DLWF's outer finally still runs the completion check directly.
             # =========================================================================
-            if videos_to_upload:
-                log.info(workflow.logger, MODULE, "queuing_upload",
-                         "Queuing videos for upload",
-                         videos=len(videos_to_upload), event_id=event_id)
-                await self._signal_upload_workflow(fixture_id, event_id, videos_to_upload, temp_dir, player_name, team_name)
-                videos_uploaded = len(videos_to_upload)
-                s3_urls = []  # We don't wait for upload results - it happens async in UploadWorkflow
-            else:
+            log.info(workflow.logger, MODULE, "queuing_upload",
+                     "Queuing videos for upload (with telemetry)",
+                     videos=len(videos_to_upload),
+                     failure_classes=list(failures_by_class.keys()) if failures_by_class else [],
+                     event_id=event_id)
+            await self._signal_upload_workflow(
+                fixture_id, event_id, videos_to_upload, temp_dir,
+                player_name, team_name, failures_by_class,
+            )
+            videos_uploaded = len(videos_to_upload)
+            s3_urls = []  # We don't wait for upload results
+
+            # If no videos made it through, clean up the temp dir ourselves
+            # (UploadWorkflow won't, since it wasn't signaled).
+            if not videos_to_upload:
                 log.info(workflow.logger, MODULE, "no_videos_to_upload",
                          "No videos to upload (all filtered/failed)", event_id=event_id)
-                videos_uploaded = 0
-                s3_urls = []
-
-                # Clean up temp directory since no uploads to do
                 try:
                     await workflow.execute_activity(
                         download_activities.cleanup_download_temp,
@@ -568,15 +578,21 @@ class DownloadWorkflow:
                             event_id=event_id, error=str(e))
 
     async def _signal_upload_workflow(
-        self, 
-        fixture_id: int, 
-        event_id: str, 
-        videos: list, 
+        self,
+        fixture_id: int,
+        event_id: str,
+        videos: list,
         temp_dir: str,
         player_name: str = "",
-        team_name: str = ""
+        team_name: str = "",
+        failures_by_class: dict = None,
     ):
-        """Signal UploadWorkflow with videos (or empty list for completion check)."""
+        """Signal UploadWorkflow with videos (and record per-event telemetry).
+
+        For empty `videos`, the activity skips the signal and only records
+        telemetry. `failures_by_class` is a {error_class: count} map of the
+        Phase 1 typed-error classifications observed during this DLWF run.
+        """
         try:
             queue_result = await workflow.execute_activity(
                 download_activities.queue_videos_for_upload,
@@ -585,8 +601,9 @@ class DownloadWorkflow:
                     event_id,
                     player_name,
                     team_name,
-                    videos,  # May be empty - that's fine
+                    videos,  # may be empty
                     temp_dir,
+                    failures_by_class or {},
                 ],
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(
@@ -595,11 +612,16 @@ class DownloadWorkflow:
                     backoff_coefficient=2.0,
                 ),
             )
-            
-            if queue_result.get("status") == "queued":
+
+            status = queue_result.get("status")
+            if status == "queued":
                 log.info(workflow.logger, MODULE, "upload_signaled",
                          "Signaled UploadWorkflow",
                          videos=len(videos), event_id=event_id)
+            elif status == "telemetry_only":
+                log.info(workflow.logger, MODULE, "telemetry_recorded",
+                         "Empty batch — only telemetry recorded",
+                         event_id=event_id)
             else:
                 log.error(workflow.logger, MODULE, "upload_signal_failed",
                           "Failed to signal UploadWorkflow",

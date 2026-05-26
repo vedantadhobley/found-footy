@@ -320,7 +320,30 @@ class EventFields:
     
     # Download workflow stats (for debugging/visibility)
     DOWNLOAD_STATS = "_download_stats"  # {dropped_no_hash, dropped_ai_rejected, etc.}
-    
+
+    # Phase 1 per-event telemetry — first-class observability for "did this
+    # event actually get its videos, and if not, why?". Counters incremented
+    # by activities throughout the pipeline; the per-match completion-summary
+    # log line reads this field at fixture move active → completed.
+    #
+    # Shape:
+    # {
+    #   "search_attempts":          int,   # incremented per TwitterWorkflow attempt
+    #   "videos_discovered":        int,   # cumulative new URLs across attempts
+    #   "videos_downloaded":        int,   # cumulative successful downloads
+    #   "videos_validated":         int,   # passed AI validation
+    #   "videos_uploaded_to_s3":    int,   # cumulative S3 uploads
+    #   "download_failures_by_class": {    # counter per Phase 1 typed-error class
+    #       "VideoGeoRestrictedError": 2,
+    #       "VideoNotAvailableError": 1,
+    #       ...
+    #   },
+    #   "llm_failures":             int,   # validate_video_is_soccer raise count
+    #   "first_seen_at":            datetime,  # set once on event detection
+    #   "first_s3_upload_at":       datetime,  # set once on first S3 PUT
+    # }
+    TELEMETRY = "_telemetry"
+
     # Score context
     SCORE_AFTER = "_score_after"
     SCORING_TEAM = "_scoring_team"
