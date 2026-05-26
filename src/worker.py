@@ -202,7 +202,6 @@ async def main():
                 monitor.store_and_compare,
                 monitor.process_fixture_events,
                 monitor.sync_fixture_metadata,
-                monitor.check_twitter_workflow_running,
                 monitor.complete_fixture_if_ready,
                 monitor.notify_frontend_refresh,
                 monitor.register_monitor_workflow,  # Workflow-ID-based tracking
