@@ -119,16 +119,6 @@ SLO_TRACKED_LEAGUE_IDS = {
     # FIFA World Cup (1) + UEFA Euro (4) etc. — add when those competitions are active.
 }
 
-# Adaptive Twitter discovery — exit the search loop early when a fixture's
-# Twitter coverage is clearly empty. Doesn't kick in until we've given the
-# loop a fair chance (EARLIEST_EXIT_ATTEMPT) and only short-circuits if
-# the most recent EMPTY_STREAK_THRESHOLD attempts all returned zero new
-# videos. Existing TWITTER_REQUIRED_DOWNLOADS exit still wins when 10
-# DLWFs have already registered.
-
-TWITTER_ADAPTIVE_EARLIEST_EXIT_ATTEMPT = 8
-TWITTER_ADAPTIVE_EMPTY_STREAK_THRESHOLD = 3
-
 # DOM-selector canary — small synthetic search that runs hourly and
 # verifies X's tweet markup still matches our scraper's selectors. Lets
 # us notice an X redesign within an hour instead of "where did the
