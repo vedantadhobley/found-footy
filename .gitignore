@@ -88,3 +88,6 @@ twitter_cookies*.pkl
 *.pkl
 .open_vnc_signal
 mongodb-keyfile
+
+# Claude Code session state (loop / wakeup tracking)
+.claude/
