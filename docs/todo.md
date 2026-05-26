@@ -65,6 +65,16 @@ See `docs/audit.md` §2 for the full list. Highlights:
 - `_create_indexes` swallows all errors in one try/except — partial-failure leaves later indexes missing forever.
 - API client silently returns partial results on error; `mongo_store.py` has 47 `except Exception: log + return [] / False / None` patterns that make failures indistinguishable from "no data".
 
+### 🔍 Surfaced 2026-05-26 (Paderborn-Wolfsburg 2026-05-25 post-mortem)
+
+These are pre-existing failure modes that came out of investigating user concern that "goals were missing from yesterday". Sprint 1 was confirmed NOT responsible (it's dev-only; prod was on 5-day-old code).
+
+- **Status-ID truncation on a fraction of discovered tweet URLs** — observed 3 of 4 failed-download URLs for the Curda 100' goal had truncated Twitter snowflake IDs (13, 14, 17 digits instead of the expected 18-19). The URL extraction in `twitter/session.py:590-727` is pure string ops, no JS Number coercion visible. Source of truncation TBD — could be Twitter's own DOM rendering (deleted/quoted tweets?), could be yt-dlp normalization, could be a syndication-API redirect. **Real bug worth a dedicated investigation; intermittent video loss per match.**
+
+- **Generic `"Activity task failed"` error swallowing** — `src/workflows/download_workflow.py:212-221` catches any exception during `download_single_video` and logs the Temporal wrapper string, not the underlying cause. We can't tell 403 (geo-restricted) from 404 (deleted tweet) from yt-dlp parse error without re-running by hand. ~5-line fix: log `e.__cause__` or the activity error chain. **Should land before the next big debugging session.**
+
+- **Why some matches genuinely have 0 Twitter clips** — Paderborn's 3' Pejcinovic goal returned 0 videos across all 5+ attempts. This is real-world data: low-profile matches just don't generate clips on Twitter. Not a bug, but worth instrumenting so we can DISTINGUISH "Twitter had nothing" from "we failed to find what was there" in the future. Possible Sprint addition: track per-attempt `search_query` + `videos_returned` as event-level telemetry.
+
 ---
 
 ## Feature work
