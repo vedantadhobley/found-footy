@@ -9,7 +9,7 @@ Implementation details for each of the 6 Temporal workflows in Found Footy.
 | Module | Activities | Count |
 |--------|-----------|-------|
 | ingest | fetch_todays_fixtures, fetch_fixtures_by_ids, categorize_and_store_fixtures, cleanup_old_fixtures | 4 |
-| monitor | fetch_staging_fixtures, pre_activate_upcoming_fixtures, fetch_active_fixtures, store_and_compare, process_fixture_events, sync_fixture_metadata, check_twitter_workflow_running, complete_fixture_if_ready, notify_frontend_refresh, register_monitor_workflow | 10 |
+| monitor | fetch_staging_fixtures, pre_activate_upcoming_fixtures, fetch_active_fixtures, store_and_compare, process_fixture_events, sync_fixture_metadata, complete_fixture_if_ready, notify_frontend_refresh, register_monitor_workflow | 9 |
 | rag | get_team_aliases, save_team_aliases, get_cached_team_aliases | 3 |
 | twitter | check_event_exists, get_twitter_search_data, execute_twitter_search, save_discovered_videos, set_monitor_complete, get_download_workflow_count | 6 |
 | download | download_single_video, validate_video_is_soccer, generate_video_hash, cleanup_download_temp, queue_videos_for_upload, register_download_workflow, check_and_mark_download_complete | 7 |
@@ -83,7 +83,6 @@ Pre-caching uses RAG activities (`get_cached_team_aliases`, `get_team_aliases`, 
 | `fetch_active_fixtures` | 15s | 2 | API has 10s internal timeout |
 | `store_and_compare` | 10s | 3 (2× from 1s) | Write to `fixtures_live` |
 | `process_fixture_events` | 60s | 3 | Event debouncing + trigger logic |
-| `check_twitter_workflow_running` | 10s | 2 | Prevents duplicate spawns |
 | `complete_fixture_if_ready` | 10s | 3 (2× from 1s) | Active → completed transition |
 | `notify_frontend_refresh` | 5–10s | 1 | Best-effort SSE |
 

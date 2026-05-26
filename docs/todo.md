@@ -10,20 +10,34 @@ Paste-ready start-of-session block. Newest items above older.
 
 ## Open bugs (priority order)
 
-### 🔥 Twitter workflow stuck "extracting" for hours — ROOT CAUSE CONFIRMED
+### ✅ Sprint 1 SHIPPED — Lazio Pisa cluster + correctness sweep (2026-05-26)
 
-**Evidence**: 33′ goal in the recent Lazio v Pisa fixture (still visible
-as "extracting" in the vedanta-systems frontend hours after the game
-ended). Twitter is only supposed to search 10 times (~10 min after the
-3-poll debounce completes).
+**Status**: complete in commits c44e3bb → 7a48e0f. All 87 tests pass.
 
-**Full diagnosis with code references**: see `docs/audit.md` §1a (including the **2026-05-24 live-evidence update** at the top).
+Net change: 6 commits, +442/−413 lines, 9 files touched. Net new architecture
+properties:
+- Workflow IDs stable: `f"twitter-{event_id}"` only (no API-mutable fields).
+- Server-enforced dedup via `id_reuse_policy=REJECT_DUPLICATE` on Twitter +
+  Download spawns — `check_twitter_workflow_running` activity DELETED entirely
+  (~80 lines, replaced by Temporal's own dedup).
+- `_download_complete` owned by `DownloadWorkflow`'s try/finally — last DLWF
+  to finish flips the flag. "Always signal empty list" workaround removed.
+  UploadWorkflow's idle-timeout failsafe retained for the all-DLWFs-crashed case.
+- `id_reuse_policy=ALLOW_DUPLICATE` on UploadWorkflow start so late-batch
+  signals after Completed UploadWorkflow can spawn a fresh instance.
+- New `src/utils/temporal_client.py` — process-wide singleton replacing the
+  per-call `Client.connect` pattern. ~100+ extra gRPC connects per CL night
+  eliminated.
+- Latent bugs fixed: `MODULE` NameError at `download.py:819`, missing timeout
+  on `get_team_info`, dead `'download_count' in dir()` guard.
 
-**Fix order** (revised after live diagnosis on the Dele-Bashiru event):
-1. **PRIMARY (new)**: Call `check_and_mark_download_complete` from `DownloadWorkflow`'s exit path, not just from `UploadWorkflow`. The activity is already registered (`worker.py:227`); `DownloadWorkflow` just doesn't currently invoke it. This addresses the actual observed mechanism: late-arriving DLWFs that register their workflow ID but have no videos to signal UploadWorkflow with — they never trigger a completion check, so events get stuck at `count=10, complete=false`. **The Lazio v Pisa stuck event was unstuck manually 2026-05-24.**
-2. Stabilize Twitter workflow ID to `f"twitter-{event_id}"` (drop minute/extra/team/player) — `monitor_workflow.py:171-175`. Defense-in-depth — prevents (a)-style mid-stoppage respawns.
-3. Expand `check_twitter_workflow_running` to treat all terminal failure states as "don't restart"; return `"unknown"` on RPC error and skip-on-unknown — `monitor.py:728-762`, `monitor_workflow.py:186-194`. Defense-in-depth — prevents (b)-style FAILED-state respawns.
-4. Set explicit `id_reuse_policy` on every `start_workflow` / `start_child_workflow` — `monitor_workflow.py:200-221`, `twitter_workflow.py:469-478`, `upload.py:73-85`. Defense-in-depth.
+The Lazio v Pisa stuck event was manually unstuck on 2026-05-24. With Sprint 1
+deployed, the same failure mode shouldn't recur on future fixtures.
+
+**Audit false positive noted**: §1c claimed an `obj` NameError at
+`ingest.py:342` — verified false. Line 342 uses `prefix=prefix, error=str(e)`,
+not `obj`. The inner `obj` reference at line 338 is the for-loop variable from
+line 327 which is correctly defined. No change made.
 
 ### 🔥 Critical correctness bugs (audit §1)
 
