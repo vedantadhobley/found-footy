@@ -14,7 +14,7 @@ This module handles:
 See src/data/models.py for data model documentation.
 """
 from temporalio import activity
-from typing import Dict, List, Any
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 import os
 
@@ -762,33 +762,97 @@ async def process_fixture_events(fixture_id: int, workflow_id: str = None) -> Di
 
 
 @activity.defn
-async def notify_frontend_refresh() -> bool:
-    """
-    Notify the frontend API to broadcast a refresh to all connected SSE clients.
-    Called at the end of monitor cycles and after download completions.
+async def notify_frontend_refresh(
+    entity: str = "fixtures",
+    ids: Optional[List[str]] = None,
+    fields: Optional[List[str]] = None,
+) -> bool:
+    """Push an invalidation event to the frontend's SSE channel(s).
+
+    Phase 6 (P6-3): DUAL-PUBLISH to both endpoints in parallel:
+      - Legacy: vedanta-systems Express `POST /api/found-footy/refresh`
+        (no body — broadcasts the coarse `{type:'refresh'}` event the
+        current frontend already listens to)
+      - New:   found-footy FastAPI `POST /api/v1/internal/notify`
+        (typed envelope with entity + ids + fields — see api/envelope.py)
+
+    Both run unconditionally. Failure of either is logged but doesn't
+    fail the call — connection-refused on the new API just means the
+    api container is down/not deployed (rolling-upgrade safe). The
+    legacy path stays the primary signal until vedanta-systems' frontend
+    is migrated to read the typed envelopes.
+
+    Args:
+        entity: resource that changed (e.g. "fixtures", "events", "videos").
+            Defaults to "fixtures" for compat with existing callers.
+        ids: affected ids (stringified). Empty list = "something changed,
+            you should probably check".
+        fields: optional list of changed field paths for the new API's
+            granular invalidation hint.
     """
     import os
     import requests
-    
-    api_url = os.getenv("FRONTEND_API_URL", "http://vedanta-systems-dev-found-footy-api:3001")
-    
+
+    ids = ids or []
+
+    legacy_url = os.getenv(
+        "FRONTEND_API_URL",
+        "http://vedanta-systems-dev-found-footy-api:3001",
+    )
+    new_url = os.getenv("FOUND_FOOTY_API_URL", "")
+    internal_token = os.getenv("FOUND_FOOTY_API_INTERNAL_TOKEN", "")
+
+    # ─── Legacy publish (vedanta-systems Express) ─────────────────────
+    legacy_ok = False
     try:
-        response = requests.post(f"{api_url}/api/found-footy/refresh", timeout=5)
+        response = requests.post(f"{legacy_url}/api/found-footy/refresh", timeout=5)
         if response.ok:
             result = response.json()
-            log.info(activity.logger, MODULE, "frontend_notified", "Frontend notified",
-                     clients=result.get('clientsNotified', 0))
-            return True
+            legacy_ok = True
+            log.info(activity.logger, MODULE, "frontend_notified",
+                     "Legacy frontend notified",
+                     clients=result.get("clientsNotified", 0))
         else:
-            log.warning(activity.logger, MODULE, "frontend_notify_failed", "Frontend notify failed",
+            log.warning(activity.logger, MODULE, "frontend_notify_failed",
+                        "Legacy frontend notify failed",
                         status_code=response.status_code)
-            return False
     except requests.exceptions.ConnectionError:
-        # Frontend not running is not a fatal error
-        log.debug(activity.logger, MODULE, "frontend_unavailable", "Frontend API not available",
-                  reason="connection_refused")
-        return False
+        log.debug(activity.logger, MODULE, "frontend_unavailable",
+                  "Legacy frontend API not available", reason="connection_refused")
     except Exception as e:
-        log.warning(activity.logger, MODULE, "frontend_notify_error", "Frontend notify error",
-                    error=str(e))
-        return False
+        log.warning(activity.logger, MODULE, "frontend_notify_error",
+                    "Legacy frontend notify error", error=str(e))
+
+    # ─── New publish (found-footy FastAPI) — best-effort ─────────────
+    if new_url:
+        headers = {"X-Internal-Token": internal_token} if internal_token else {}
+        body = {"entity": entity, "ids": ids}
+        if fields:
+            body["fields"] = fields
+        try:
+            response = requests.post(
+                f"{new_url}/api/v1/internal/notify",
+                json=body,
+                headers=headers,
+                timeout=5,
+            )
+            if response.ok:
+                result = response.json()
+                log.info(activity.logger, MODULE, "api_notified",
+                         "New API notified", entity=entity,
+                         ids_count=len(ids),
+                         delivered_to=result.get("delivered_to", 0),
+                         event_id=result.get("event_id"))
+            else:
+                log.warning(activity.logger, MODULE, "api_notify_failed",
+                            "New API notify failed",
+                            status_code=response.status_code,
+                            body=response.text[:200])
+        except requests.exceptions.ConnectionError:
+            log.debug(activity.logger, MODULE, "api_unavailable",
+                      "New API not available", reason="connection_refused")
+        except Exception as e:
+            log.warning(activity.logger, MODULE, "api_notify_error",
+                        "New API notify error", error=str(e))
+
+    return legacy_ok
