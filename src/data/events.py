@@ -470,80 +470,84 @@ class EventsMixin:
 
     def check_and_mark_download_complete(self, fixture_id: int, event_id: str, required_count: int = TWITTER_REQUIRED_DOWNLOADS) -> dict:
         """
-        Check if _download_workflows count >= required_count and mark _download_complete if so.
-        
-        This is the new idempotent replacement for increment_twitter_count_and_check_complete.
-        
+        Check if _download_workflows count >= required_count and mark
+        _download_complete if so.
+
+        Two-stage (read + conditional update). The original Sprint-2
+        attempt used `$expr` inside `$elemMatch` for single-round-trip
+        atomicity, but MongoDB doesn't permit `$expr` inside element
+        matches (surfaced live during Crystal Palace v Rayo, 2026-05-27,
+        first goal: every DLWF's exit-check raised
+        "$expr can only be applied to the top-level document").
+
+        The two-stage shape preserves the correctness invariant:
+          1. Read the event's current count + complete flag.
+          2. If count >= required AND not yet complete, attempt a
+             $set guarded by `_download_complete: {$ne: true}` —
+             so a concurrent racer's write either: (a) succeeds first
+             and ours becomes a no-op (modified_count=0), or (b) loses
+             and ours wins. Exactly one caller observes `marked_complete:
+             True`, which is what UploadWorkflow and DownloadWorkflow's
+             finally both depend on for clean exit accounting.
+
         Args:
             fixture_id: Fixture ID
             event_id: Event ID
-            required_count: Number of download workflows required for completion (default 10)
-            
+            required_count: Number of download workflows required for completion
+
         Returns:
             Dict with count, was_already_complete, marked_complete
         """
         try:
-            # Atomic: single find_one_and_update that sets _download_complete=true
-            # ONLY if the count threshold is met AND it's not already complete.
-            # Uses $expr in the filter to compare $size of the array against
-            # required_count. This collapses three round-trips (get_count → find
-            # → mark) into one and makes the "was I the one who flipped it?"
-            # signal trustworthy.
-            #
-            # Returns the document AFTER the update (if matched) or None (if
-            # not matched — meaning the filter conditions weren't met).
-            field = f"events.$.{EventFields.DOWNLOAD_COMPLETE}"
-            updated = self.fixtures_active.find_one_and_update(
+            # Stage 1 — read current state for this event.
+            doc = self.fixtures_active.find_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {f"events.$": 1},
+            )
+            if not doc or not doc.get("events"):
+                return {"count": 0, "was_already_complete": False, "marked_complete": False}
+
+            ev = doc["events"][0]
+            count = len(ev.get(EventFields.DOWNLOAD_WORKFLOWS, []) or [])
+            was_complete = bool(ev.get(EventFields.DOWNLOAD_COMPLETE, False))
+
+            # Threshold not yet reached — log + return without writing.
+            if count < required_count:
+                _log_info("download_not_complete",
+                          "Download workflows not yet complete",
+                          event_id=event_id, count=count, required=required_count)
+                return {"count": count, "was_already_complete": was_complete, "marked_complete": False}
+
+            # Already complete — log + return without writing.
+            if was_complete:
+                _log_info("download_already_complete",
+                          "Already complete — no-op",
+                          event_id=event_id, count=count, required=required_count)
+                return {"count": count, "was_already_complete": True, "marked_complete": False}
+
+            # Stage 2 — conditional set. The $ne guard makes this idempotent
+            # under concurrent races (only one caller sees modified_count==1).
+            result = self.fixtures_active.update_one(
                 {
                     "_id": fixture_id,
                     "events": {
                         "$elemMatch": {
                             EventFields.EVENT_ID: event_id,
                             EventFields.DOWNLOAD_COMPLETE: {"$ne": True},
-                            "$expr": {
-                                "$gte": [
-                                    {"$size": {"$ifNull": [f"${EventFields.DOWNLOAD_WORKFLOWS}", []]}},
-                                    required_count,
-                                ]
-                            },
                         }
                     },
                 },
-                {"$set": {field: True}},
-                projection={f"events.$": 1},
-                return_document=ReturnDocument.AFTER,
+                {"$set": {f"events.$.{EventFields.DOWNLOAD_COMPLETE}": True}},
             )
 
-            if updated and updated.get("events"):
-                # Filter matched and we flipped the flag. Get the count we
-                # observed (now includes the threshold-passing array).
-                count = len(updated["events"][0].get(EventFields.DOWNLOAD_WORKFLOWS, []))
+            if result.modified_count > 0:
                 _log_info("download_workflows_complete",
                           "Download workflows threshold reached — marking complete",
                           event_id=event_id, count=count, required=required_count)
                 return {"count": count, "was_already_complete": False, "marked_complete": True}
 
-            # Filter didn't match — either count < required_count OR already
-            # complete. Disambiguate with a single read for the log line.
-            current = self.fixtures_active.find_one(
-                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
-                {f"events.$": 1},
-            )
-            if not current or not current.get("events"):
-                return {"count": 0, "was_already_complete": False, "marked_complete": False}
-
-            ev = current["events"][0]
-            count = len(ev.get(EventFields.DOWNLOAD_WORKFLOWS, []))
-            was_complete = ev.get(EventFields.DOWNLOAD_COMPLETE, False)
-            if was_complete:
-                _log_info("download_already_complete",
-                          "Already complete — no-op",
-                          event_id=event_id, count=count, required=required_count)
-            else:
-                _log_info("download_not_complete",
-                          "Download workflows not yet complete",
-                          event_id=event_id, count=count, required=required_count)
-            return {"count": count, "was_already_complete": was_complete, "marked_complete": False}
+            # We lost the race — another caller flipped it between stage 1 and 2.
+            return {"count": count, "was_already_complete": True, "marked_complete": False}
 
         except Exception as e:
             _log_error("check_download_complete_error", "Error checking/marking download complete", event_id=event_id, error=str(e), exc=e)

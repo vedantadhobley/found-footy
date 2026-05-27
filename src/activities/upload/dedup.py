@@ -32,6 +32,16 @@ from src.utils.dedup_match import (
 
 MODULE = "upload"
 
+# Within-cluster + S3-comparison "same clip" threshold (15%).
+# Two videos whose durations are within 15% of each other are treated as
+# the same clip (just trimmed differently) → prefer higher resolution.
+# >15% means they're different clips of the same goal → prefer longer.
+# This module-level constant was orphaned during the Phase 3 P3b split
+# (the AST partitioner only carried function definitions); restored
+# 2026-05-27 after the live Crystal Palace v Rayo dedup failures pointed
+# at a NameError raising silently in the dedup activity.
+DURATION_SIMILARITY_THRESHOLD = 0.15
+
 
 @activity.defn
 async def deduplicate_by_md5(
