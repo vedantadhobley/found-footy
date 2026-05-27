@@ -187,6 +187,10 @@ services:
       S3_BUCKET_NAME: footy-videos
       TWITTER_SESSION_URL: http://found-footy-dev-twitter:8888
       FRONTEND_API_URL: http://vedanta-systems-dev-api:3001
+      # Phase 6 (P6-3): dual-publish path — worker pushes invalidation
+      # events to the new FastAPI service alongside the legacy Express
+      # endpoint. Both run in parallel until cutover.
+      FOUND_FOOTY_API_URL: http://found-footy-dev-api:8080
       LLAMA_URL: ${LLAMA_URL}
     volumes:
       - .:/workspace
@@ -199,6 +203,43 @@ services:
       - mongo
     restart: unless-stopped
     command: python /workspace/src/worker.py
+
+  # Phase 6 (P6-4): new FastAPI service. Read API + SSE for
+  # vedanta-systems frontend. Stands up alongside the existing Express
+  # router in vedanta-systems; cutover endpoint-by-endpoint later.
+  # Caddy route: found-footy-dev-api.${BASE_DOMAIN} (see deploy/INFRA-NOTES.md).
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: found-footy-dev-api
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /workspace
+      MONGODB_URI: mongodb://ffuser:ffpass@found-footy-dev-mongo:27017/found_footy?authSource=admin
+      MONGODB_DB_NAME: found_footy
+      S3_ENDPOINT: http://found-footy-dev-minio:9000
+      S3_ACCESS_KEY: ffuser
+      S3_SECRET_KEY: ffpass--
+      S3_BUCKET: footy-videos
+      # Dev: empty token (relies on docker network isolation). Set in
+      # prod compose to a strong shared secret.
+      INTERNAL_TOKEN: ""
+      # Dev: allow any origin (frontend served from vedanta-systems-dev
+      # on the luv-dev network; tightening this is part of prod hardening).
+      CORS_ORIGINS: "*"
+      LOG_LEVEL: INFO
+    volumes:
+      - .:/workspace
+    networks:
+      - found-footy-dev
+      - luv-dev   # so vedanta-systems-dev-api can proxy to us (future cutover)
+      - proxy     # Caddy reverse proxy
+    depends_on:
+      - mongo
+    restart: unless-stopped
+    command: uvicorn api.app:app --host 0.0.0.0 --port 8080
 
 volumes:
   found-footy-dev-postgres-data:
