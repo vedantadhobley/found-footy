@@ -1301,63 +1301,279 @@ not as a separate "now we write tests" sprint that nobody will start.
 
 ---
 
-## 13. Code organization post-Phase 3
+## 13. Code organization — domain-driven structure post-Phase 3
 
-**Current state.** Phase 3 module splits landed:
-- `download.py` → `download/core.py` + `vision.py` + `hashing.py`
-- `upload.py` → `upload/core.py` + `upload/dedup.py` + `upload/replacement.py`
-- `mongo_store.py` → `data/store.py` + per-domain mixins (`fixtures.py`,
-  `events.py`, `videos.py`, `aliases.py`, `cache.py`)
-- `twitter/session.py` → `session.py` + `scrape.py`
+**The constraint.** Docker-compose stack is locked (worker container,
+twitter container, scaler container, infra). This section is about
+*Python code organization within those containers*, not about
+introducing new deployment units or microservices.
 
-**Still feels wrong.**
+**Current state — what Phase 3 already delivered.**
 
-1. **`data/events.py` is 660+ lines** and is the central nervous system.
-   The mixin pattern means it has everything from CRUD to lifecycle
-   marking to drop-workflow tracking to completion. Single file, single
-   class, ownership scattered within it.
-2. **`session.py` is still 1100+ lines** even after the scrape.py
-   extraction. The browser-automation logic and the search-orchestration
-   logic could split further.
-3. **Activity file sizes vary wildly.** `twitter/twitter.py` 280 lines
-   vs `monitor.py` 760+. The big ones are doing too much; the small
-   ones are well-shaped.
+| Old monolith              | After Phase 3                                                                       |
+| ------------------------- | ----------------------------------------------------------------------------------- |
+| `download.py` (1672 lines) | `download/core.py` + `vision.py` + `hashing.py`                                    |
+| `upload.py` (1467 lines)   | `upload/core.py` + `upload/dedup.py` + `upload/replacement.py`                      |
+| `mongo_store.py` (1608)    | `data/store.py` + per-domain mixins (`fixtures.py`, `events.py`, `videos.py`, `aliases.py`, `cache.py`) |
+| `twitter/session.py`       | `session.py` + `scrape.py`                                                          |
 
-**Missing primitive.** Clearer **ownership** — which file owns the
-"event state machine" vs "event Mongo CRUD" vs "event lifecycle
-decisions"? Currently all three live in `data/events.py` mixed together.
+The splits were valuable — they unlocked Phase 4+ work that wouldn't
+have fit in the monoliths. But they were *file-shape* splits, not
+*ownership* splits. The mixins all live on one class
+(`FootyMongoStore`) so there's no actual encapsulation boundary; the
+download / upload sub-packages still call directly into `mongo_store`
+and `s3_store`; the activity files still vary wildly in size and
+responsibility.
 
-**Proposed alternative.** A Domain-Driven structure where each domain
-has its own bundle:
+**Lived problems with the Phase-3 shape.**
+
+1. **`data/events.py` is 660+ lines and is the central nervous system.**
+   It carries event CRUD, workflow-array `$addToSet` tracking, lifecycle
+   state mutations (`mark_event_monitor_complete` etc.), VAR removal,
+   completion gating — all on one mixin class. Touching any of those
+   concerns ripples to all the others.
+2. **Activity files have no clear ceiling on responsibility.**
+   `src/activities/monitor.py` is 760+ lines and contains the staging
+   poll, the pre-activation failsafe, the active fetch, the event
+   processing, the completion check, the frontend-refresh notification
+   — six concerns in one file. Compare to `twitter/twitter.py` at 280
+   lines doing only Twitter search. The big files are big because
+   nothing told them not to be.
+3. **No "domain service" layer.** Activities import `mongo_store`
+   directly and orchestrate Mongo writes inline. There's nowhere to
+   say "the rules for whether an event is ready to trigger Twitter
+   live here, separate from the Mongo CRUD." So those rules live
+   scattered across `monitor.py`, `events.py`, and the workflow code.
+4. **Test surface is the activity boundary, not the unit boundary.**
+   Because activities are the only callers of business logic, the
+   only way to test event-lifecycle decisions is via Temporal
+   integration tests with a live Mongo. We have ~5% coverage and
+   it's not coincidental.
+5. **Cross-domain operations have no obvious home.** "VAR a goal"
+   touches event (mark removed) + video (delete S3) + share (mark
+   gone, per §4). It currently lives in `mongo_store.events.py` as
+   a 100-line method that reaches across collections; should be an
+   orchestration that calls the event service + video service +
+   share service. Today the boundary doesn't exist to put it
+   somewhere honest.
+6. **The video-rank-drift bug** (added to `todo.md` 2026-06-30 from
+   the Norway v Côte d'Ivoire match) is a category instance: ranks
+   are computed in `upload/core.py`, written via `mongo_store.videos`,
+   read by frontend code, and there's no single "owns video ranking"
+   service. The bug is a concurrency / partial-write issue that a
+   `VideoAssetService.recalculate_ranks(fixture_id)` with proper
+   transactional discipline would have made impossible.
+7. **`twitter/session.py` is 1100+ lines** even after the `scrape.py`
+   extraction. Browser-automation, cookie management, search
+   orchestration, health-check, lifecycle — all in one file. §8's
+   fleet methodology compounds the case for further splitting this.
+
+**The missing primitive.** Clear **domain boundaries** with services
+as the only `mongo_store` / `s3_store` callers. Activities orchestrate
+*services*, not Mongo. Workflows orchestrate *activities*, not
+business logic.
+
+**Proposed methodology — domain bundles with explicit composition.**
+
+### Bundle shape (one per domain)
 
 ```
-src/domains/
-  fixture/
-    model.py            # Pydantic types
-    store.py            # Mongo CRUD
-    service.py          # business logic
-    lifecycle.py        # state machine
-  event/
-    model.py
-    store.py
-    service.py
-    lifecycle.py
-  video/
-    model.py
-    store.py
-    service.py          # (dedup math lives here)
-  alias/                # team_aliases
-  broadcast/            # cross-cuts; LLM-driven extraction etc.
+src/domains/<name>/
+  __init__.py             # public API: from .service import <Name>Service
+  models.py               # Pydantic types from §3
+  store.py                # Mongo CRUD, accepts/returns models from §3
+  service.py              # business logic, calls store, NEVER touches mongo directly
+  lifecycle.py            # state machine, if applicable
+  events.py               # domain-event types emitted for cross-domain wiring (optional)
+  tests/
+    test_service.py       # unit tests, mock store
+    test_lifecycle.py     # state-machine tests
+    test_store.py         # integration tests against dev Mongo
 ```
 
-Activities and workflows compose against these domain services rather
-than calling `mongo_store` directly. Better testability, cleaner
-ownership.
+### Concrete domain enumeration
 
-**Scope sketch.** L. A real organizational pass. Probably the natural
-home for backfilling the docstring policy (touching every file anyway).
-Should run after data-model work in §3 (UUID event IDs, Pydantic types)
-because the domain models depend on those.
+| Domain        | Owns                                                                | Today's source                              | Size after move |
+| ------------- | ------------------------------------------------------------------- | ------------------------------------------- | --------------- |
+| `fixture`     | fixtures_{staging,live,active,completed} CRUD + lifecycle (NS→active→completed) | `data/fixtures.py` + parts of `monitor.py`  | M               |
+| `event`       | events array CRUD + 3-poll debounce state machine + VAR transitions + telemetry | `data/events.py` (660 lines) + most of `monitor.py:process_fixture_events` | L |
+| `video_asset` | canonical S3 byte-store (the §4 `video_assets` collection) + ranking | `data/videos.py` + `upload/core.py` + `upload/dedup.py` | M  |
+| `video_share` | public share IDs (the §4 `video_shares` collection) + redirection logic | NEW (lands with §4)                       | S               |
+| `team_alias`  | team_aliases collection + RAG pipeline + Wikidata + top_flight cache | `data/aliases.py` + `activities/rag.py` + `utils/team_data.py` | M     |
+| `twitter_session` | Firefox fleet management from §8 (cookies, /health, drain) + the `twitter_sessions` collection | `twitter/` (whole package after §8 lands) | M           |
+| `vision`      | AI clock extraction + soccer/screen classification + embedding (when Track 3 lands) | `activities/vision.py` + `activities/hashing.py` | M       |
+| `discovery`   | Twitter search orchestration + URL extraction + source filtering    | `twitter/scrape.py` + parts of `activities/twitter.py` | M    |
+| `llm_gateway` | Track 1 client; concurrency-aware joi caller                       | NEW (lands with §6)                        | S               |
+
+Nine domains. Five exist in some form; four are new (§4 video_asset
+re-shaping, §4 video_share, §8 twitter_session fleet collection, §6
+llm_gateway client).
+
+### What activities and workflows look like after
+
+Activities become thin orchestrators that compose domain services.
+The Mongo / S3 dependencies vanish from activity code.
+
+```python
+# src/activities/monitor.py — process_fixture_events, after re-org
+from src.domains.event import EventService, EventLifecycle
+from src.domains.fixture import FixtureService
+
+@activity.defn
+async def process_fixture_events(fixture_id: int, workflow_id: str) -> dict:
+    """Process events for a single fixture in this monitor cycle.
+
+    Returns the list of events newly stable enough to trigger Twitter.
+    """
+    fixtures = FixtureService()
+    events = EventService()
+    lifecycle = EventLifecycle()
+
+    fixture = await fixtures.get_active(fixture_id)
+    if fixture is None:
+        return {"twitter_triggered": []}
+
+    changes = await events.detect_changes(fixture)
+    await events.register_monitor_workflow(fixture_id, workflow_id, changes)
+
+    triggered = []
+    for event in changes.new_or_advanced:
+        if lifecycle.is_stable_and_player_known(event):
+            await events.mark_monitor_complete(event)
+            triggered.append(event.as_twitter_input())
+
+    return {"twitter_triggered": triggered}
+```
+
+Compare to today's `process_fixture_events` (~150 lines, mixed
+Mongo updates and lifecycle decisions). The new shape is short
+because *the lifecycle decisions live in `EventLifecycle`*, not here.
+
+Workflows continue to orchestrate activities — they don't import
+domain services directly (Temporal replay constraints make this
+awkward). The activity boundary is the right contract between the
+deterministic workflow layer and the side-effectful service layer.
+
+### Cross-domain operations get an explicit home
+
+"VAR a goal" today is a single 100-line method on `mongo_store.events`.
+After re-org it's a *use case* in `src/usecases/`:
+
+```python
+# src/usecases/var_remove_event.py
+async def var_remove_event(fixture_id: int, event_id: str) -> VarOutcome:
+    """When the API surfaces an event as removed (VAR), tear down the
+    enhancement chain. Touches event, video_asset, video_share."""
+    events = EventService()
+    assets = VideoAssetService()
+    shares = VideoShareService()
+
+    event = await events.get(fixture_id, event_id)
+    if event is None or event.removed:
+        return VarOutcome.no_op()
+
+    # Mark the event removed (atomic).
+    await events.mark_removed(event, reason="var")
+
+    # Decrement refcounts on each share; assets with no live shares
+    # become eligible for GC (separate periodic task).
+    for share_id in event.s3_videos:
+        await shares.mark_removed(share_id, reason="var")
+        await assets.decrement_refcount_via_share(share_id)
+
+    return VarOutcome.success(event_id=event_id, shares_marked=len(event.s3_videos))
+```
+
+Use cases are the home for cross-domain workflows that don't fit
+cleanly in one domain. They're called from activities; activities are
+called from Temporal workflows.
+
+### Subsystem packages (not domains)
+
+Some packages aren't domains — they're infrastructure or external
+adapters:
+
+- `src/orchestration/` — Temporal workflow definitions live here
+  (currently `src/workflows/`; rename for clarity post-re-org).
+- `src/api/` — FastAPI (Phase 6 / [§11](#11)). Calls into use cases
+  + services.
+- `src/scaler/` — already separate package, unchanged.
+- `twitter/` — already its own container; after [§8](#8) ships, the
+  contents reorganize internally but the package stays.
+- `src/utils/` — Pydantic models from [§3](#3), config, logging.
+  Resists growth — anything that's domain logic moves to a domain.
+
+### Migration ordering
+
+Domain-by-domain extraction, dependency-ordered:
+
+1. **`fixture`** — smallest, lowest risk, no inbound dependencies.
+   Establishes the bundle pattern, validates the Pydantic-based
+   `store.py` shape from [§3](#3). (M)
+2. **`event`** — the big one (660 lines today plus most of
+   `monitor.py`). Depends on `fixture`. Lifecycle decisions extracted
+   into `EventLifecycle`. This is the load-bearing extraction. (L)
+3. **`team_alias`** — relatively self-contained, but the RAG pipeline
+   refactor is real work. Can run in parallel with `event` if a
+   second pair of hands. (M)
+4. **`video_asset` + `video_share`** — lands with [§4](#4) dedup
+   re-arch. Re-org of `upload/` package + the new collections.
+   Eliminates the rank-drift bug from `todo.md`. (L)
+5. **`discovery`** — extract from `twitter/scrape.py` +
+   `activities/twitter.py`. Depends on §8 fleet methodology landing. (M)
+6. **`twitter_session`** — lands with [§8](#8). (M)
+7. **`vision`** — extract from `activities/vision.py` +
+   `activities/hashing.py`. (M)
+8. **`llm_gateway`** — lands with [§6](#6) Track 1. (S)
+
+### Activities and workflows migrate alongside
+
+Each domain extraction includes the rewrite of the activities that
+previously held that domain's logic inline. So:
+
+- Extracting `event` → rewrite `monitor.process_fixture_events`,
+  `monitor.complete_fixture_if_ready`, `download.register_download_workflow`,
+  etc. to use `EventService` + `EventLifecycle`.
+- Extracting `video_asset` → rewrite `upload.*` activities.
+
+This is the "natural home for the docstring backfill" mentioned in
+the original §13: every file gets touched, so every file gets the
+new module header + per-function docstrings landed in the same diff.
+
+### Backward compatibility during migration
+
+`mongo_store` survives as a **thin delegation layer** during the
+extraction phases. `mongo_store.events.add_event_to_active(...)`
+delegates to `EventService().add_to_active(...)` under the hood.
+Old call sites keep working; new call sites use the service. Once
+every call site is migrated, the delegation layer disappears.
+
+### Sub-piece scope
+
+| Sub-piece                                  | Size | Depends on                          |
+| ------------------------------------------ | ---- | ----------------------------------- |
+| Bundle scaffold + first domain (`fixture`) | M    | [§3](#3) Pydantic models            |
+| `event` extraction + lifecycle pulled out  | L    | `fixture` landed                    |
+| `team_alias` extraction + RAG re-org       | M    | `fixture` landed                    |
+| `video_asset` + `video_share` (with §4)    | L    | [§3](#3), [§4](#4)                  |
+| `discovery` extraction                     | M    | [§8](#8) fleet                      |
+| `twitter_session` (with §8)                | M    | [§3](#3), [§8](#8)                  |
+| `vision` extraction                        | M    | [§3](#3)                            |
+| `llm_gateway` (with §6 Track 1)            | S    | [§6](#6)                            |
+| `mongo_store` delegation-layer demolition  | S    | All extractions complete            |
+| Docstring backfill (per-file, in the same commits) | rolling | each extraction                |
+
+Total **L** as a sequenced phase; full re-org takes the longest of
+any audit section but pays back the cleanest. Run after [§3](#3) and
+in coordination with [§4](#4), [§6](#6), [§8](#8) — the new collections
+and methodologies land naturally as domain extractions instead of as
+separate bolt-ons.
+
+The end state: every activity file ≤ 200 lines; every domain bundle
+≤ ~1000 lines split across `models.py` / `store.py` / `service.py` /
+`lifecycle.py`; cross-domain operations live in `src/usecases/` with
+explicit names; `mongo_store` and `s3_store` are vestigial and
+ready to delete.
 
 ---
 
