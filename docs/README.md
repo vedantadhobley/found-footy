@@ -99,6 +99,14 @@ restated here so the docs and the rules about them live together.
 convert relative dates ("yesterday", "tomorrow") to absolute before
 writing.
 
+**Cross-doc linking**: use markdown `[text](./relative-path.md)`
+whenever one doc references another. Link liberally — most cross-doc
+references should be one click away, not a re-grep. No `[[wiki-link]]`
+style (Obsidian-only, renders as literal broken brackets on GitHub).
+Full convention in `~/workspace/vedanta-dhobley/AGENTS.md` § Cross-doc
+linking — cross-repo path so not linkable from here, but local
+filesystem navigation works.
+
 ---
 
 ## After-session checklist

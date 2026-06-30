@@ -94,6 +94,8 @@ goes better when prior decisions are visible.
    collaboration tone*. Project facts do NOT go here; they go in `docs/`
    (per the global rule in `~/.claude/CLAUDE.md`).
 
+**Cross-doc linking**: per global AGENTS.md § Cross-doc linking — use markdown `[text](./path.md)` syntax when one doc references another. Link liberally; readers should reach related material in ≤1 hop. No `[[wiki-link]]` style (Obsidian-only, breaks on GitHub).
+
 ### Docstring policy
 
 - **Module header** (top of every `.py` file): one short paragraph
