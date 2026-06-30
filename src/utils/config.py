@@ -57,11 +57,16 @@ API_FOOTBALL_BASE_URL = os.getenv("API_FOOTBALL_BASE_URL", "https://v3.football.
 SHORT_EDGE_FILTER_ENABLED = True
 MIN_SHORT_EDGE = 600  # Pixels - allows letterboxed 720p content
 
-# Aspect ratio filter: reject portrait/square videos (< 4:3)
-# Filters videos taller than 4:3 (portrait orientation)
-# Phone-TV recordings are additionally filtered by AI vision
+# Aspect ratio filter: standard broadcast 16:9 only (target = 1.7778).
+# Bounds picked from prod S3 distribution as of 2026-06-30: 81% of accepted
+# videos sit in the 1.78-1.79 bucket; the 1.77-1.80 band covers ~84% on its
+# own; widening to 1.75-1.82 absorbs encoder-side padding/cropping artifacts
+# (e.g. 1280x722 = 1.7729, 1280x705 = 1.8156) without admitting letterboxed
+# 16:10 broadcasts (~1.60-1.72) or cinema-cropped clips (>=1.85).
+# Phone-TV recordings are additionally filtered by AI vision downstream.
 ASPECT_RATIO_FILTER_ENABLED = True
-MIN_ASPECT_RATIO = 1.32  # 4:3 = 1.333..., use 1.32 with tolerance
+MIN_ASPECT_RATIO = 1.75
+MAX_ASPECT_RATIO = 1.82
 
 # Duration filters
 MIN_VIDEO_DURATION = 3.0  # Seconds (must be > 3s)

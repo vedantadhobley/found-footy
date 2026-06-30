@@ -26,6 +26,7 @@ from src.utils.config import (
     MIN_SHORT_EDGE,
     ASPECT_RATIO_FILTER_ENABLED,
     MIN_ASPECT_RATIO,
+    MAX_ASPECT_RATIO,
     MIN_VIDEO_DURATION,
     MAX_VIDEO_DURATION,
 )
@@ -376,14 +377,16 @@ async def download_single_video(
                          min_edge=MIN_SHORT_EDGE, width=video_width, height=video_height)
                 return {"status": "filtered", "reason": "pre_filter_resolution", "source_url": source_tweet_url}
         
-        # Aspect ratio filter (reject portrait/square videos)
+        # Aspect ratio filter: standard 16:9 only (with encoder slop tolerance)
         if ASPECT_RATIO_FILTER_ENABLED and video_height > 0:
             aspect_ratio = video_width / video_height
-            if aspect_ratio < MIN_ASPECT_RATIO:
+            if aspect_ratio < MIN_ASPECT_RATIO or aspect_ratio > MAX_ASPECT_RATIO:
+                reason = "too_narrow" if aspect_ratio < MIN_ASPECT_RATIO else "too_wide"
                 log.info(activity.logger, "download", "filtered_aspect",
-                         "Pre-filtered: portrait/square",
-                         video_idx=video_index, aspect_ratio=round(aspect_ratio, 2),
-                         min_ratio=MIN_ASPECT_RATIO, width=video_width, height=video_height)
+                         "Pre-filtered: aspect ratio outside 16:9 band",
+                         video_idx=video_index, aspect_ratio=round(aspect_ratio, 3),
+                         min_ratio=MIN_ASPECT_RATIO, max_ratio=MAX_ASPECT_RATIO,
+                         reason=reason, width=video_width, height=video_height)
                 return {"status": "filtered", "reason": "pre_filter_aspect_ratio", "source_url": source_tweet_url}
     
     # Path 2 (fallback): video.variants - often missing bitrates
@@ -607,16 +610,17 @@ def _process_downloaded_video(
             os.remove(output_path)
             return None
     
-    # Aspect ratio filter: reject portrait/square videos (< 4:3)
-    # Disabled by default to allow stadium phone recordings
-    # Phone-TV recordings are filtered by AI vision instead
+    # Aspect ratio filter: standard 16:9 only (post-download check, in case
+    # the syndication-API metadata disagreed with the actual file).
     if ASPECT_RATIO_FILTER_ENABLED and width and height and height > 0:
         aspect_ratio = width / height
-        if aspect_ratio < MIN_ASPECT_RATIO:
+        if aspect_ratio < MIN_ASPECT_RATIO or aspect_ratio > MAX_ASPECT_RATIO:
+            reason = "too_narrow" if aspect_ratio < MIN_ASPECT_RATIO else "too_wide"
             log.info(activity.logger, "download", "filtered_aspect",
-                     "Filtered: aspect ratio",
-                     video_idx=display_idx, aspect_ratio=round(aspect_ratio, 2),
-                     min_ratio=MIN_ASPECT_RATIO)
+                     "Filtered: aspect ratio outside 16:9 band",
+                     video_idx=display_idx, aspect_ratio=round(aspect_ratio, 3),
+                     min_ratio=MIN_ASPECT_RATIO, max_ratio=MAX_ASPECT_RATIO,
+                     reason=reason)
             os.remove(output_path)
             return None
     
