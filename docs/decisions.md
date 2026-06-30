@@ -6,6 +6,43 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-06-30 — Cross-doc linking via markdown, no `[[wiki-links]]`
+
+Docs reference each other via markdown `[text](./path.md)` syntax;
+no Obsidian-style `[[]]` wiki-links anywhere in the project.
+
+**Why**: markdown links work in every rendering context (GitHub,
+terminal, IDE, Obsidian's graph view). `[[]]` is Obsidian-only —
+GitHub renders it as literal non-clickable brackets, IDEs treat it as
+plain text, and it's ambiguous when filenames collide across project
+vaults. The "knowledge graph" effect comes from richly interconnecting
+docs, not the syntax — markdown achieves the same graph in Obsidian.
+
+Codified in global AGENTS.md § Cross-doc linking; project-side
+reminders in [AGENTS.md](../AGENTS.md) § Documentation and docstrings
+and [docs/README.md](./README.md) intake rules.
+
+---
+
+## 2026-06-30 — Brain-stack (Khoj + basic-memory MCP + Obsidian vault) deprecated
+
+The `~/workspace/obsidian/` self-hosted second-brain stack was deleted
+on 2026-06-30. Never had containers running in practice, the vault was
+empty of notes, the only configured project symlink was legal-tender's
+`docs/`.
+
+**Why deprecated**: the conceptual goal (cross-project knowledge
+access via interlinked markdown) is now achieved by
+`~/workspace/vedanta-dhobley/` as the user-global hub plus each
+project's `docs/` with rich markdown cross-linking — no separate
+aggregation layer or MCP-write-to-vault tooling required.
+
+Global AGENTS.md was cleaned of the stale Khoj / basic-memory MCP /
+vault references the same day; legal-tender's six file references
+queued for cleanup in `~/workspace/vedanta-dhobley/docs/todo.md`.
+
+---
+
 ## 2026-05 — Caddy fronts all HTTP; host ports dropped
 
 HTTP services (Temporal UI, Mongo UI, MinIO console, Twitter VNC) moved
