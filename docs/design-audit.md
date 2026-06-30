@@ -1550,42 +1550,343 @@ API routes).
 
 ## 12. Testing strategy
 
-**Current state.** ~5% coverage. `test_clock_parsing.py` and
-`test_activity_registration.py` are real.
-`tests/test_rag_pipeline.py` is broken at import (per May audit).
+**The constraint.** External dependencies dominate the runtime
+behavior: API-Football, Twitter, joi LLM, MinIO, Mongo, Temporal. A
+test harness has to mock or canned-response the external ones (API,
+Twitter, joi) and target real local instances of the local ones
+(Mongo, MinIO, Temporal — already running in dev compose). Anything
+that requires a live x.com or a live joi to pass isn't a real test.
 
-**Lived problems.**
+**Current state.** ~5% coverage. `tests/test_clock_parsing.py` and
+`tests/test_activity_registration.py` are the only real tests.
+`tests/test_rag_pipeline.py` is broken at import (per May
+[`audit.md`](./audit.md)). No fixtures, no factories, no synthetic
+end-to-end harness. The dev stack is the de-facto test environment;
+"does it work?" is answered by ingesting a fixture and watching a
+real match.
 
-1. Every refactor is risky because no safety net. The Phase 3 module
-   splits shipped without per-module tests; we trusted the human
-   review and prod observation.
-2. NL-Mar diagnostic relied on production data because no synthetic
-   harness exists. We can't reproduce a goal-detection-to-S3-upload
-   path locally without watching a live match.
-3. Regressions can ship undetected — the `events.py` drop-workflow fix
-   was authored 2026-05-31 and presumably never exercised in test (the
-   bug it fixes was a Mongo-API limitation that only surfaces against a
-   live Mongo).
+**Lived problems — what no-tests has actually cost.**
 
-**Missing primitives.**
+1. **Every refactor is risky because no safety net.** Phase 3 module
+   splits shipped without per-module tests; correctness was bet on
+   human review and prod observation. Sprint 1 (May 2026) had to
+   manually unstick a Lazio-v-Pisa workflow before the fix could
+   ship, because there was no way to reproduce the failure mode
+   locally.
+2. **NL-Morocco diagnostic relied on prod data** because no
+   synthetic harness exists. To investigate "zero videos despite 10
+   download workflows," we walked Loki histories and shelled into
+   Mongo — 45 minutes of forensic archaeology. A synthetic
+   `test_match_with_thin_video_pool` would have surfaced the
+   aspect-ratio + timeout combination in seconds.
+3. **Authored-but-unverified bug fixes can sit dirty for a month.**
+   The `events.py` drop-workflow fix (committed 2026-06-30, in the
+   working tree since 2026-05-31) addresses a Mongo-API limitation
+   that only manifests against a real Mongo. There was no test to
+   write that would have exercised it; the fix sat uncommitted
+   because there was no signal it worked.
+4. **The 2026-06-30 video-rank-drift bug** (added to
+   [`todo.md`](./todo.md)) is exactly the kind of partial-write /
+   race condition a unit test of `recalculate_video_ranks` against a
+   range of synthetic inputs would have caught. None exists.
+5. **No regression catch on the 2026-06-30 deploy gap.** When
+   `_extract_activity_failure` failed to deploy for 7 weeks, no
+   smoke test ran `docker exec ... grep <new-symbol>` against the
+   running container. A trivial "does prod actually have the code"
+   test would have caught it.
+6. **The full pipeline isn't expressible in code at all.** "What
+   happens when a goal gets detected" exists in the heads of
+   readers + the Loki query cookbook; no executable spec of the
+   lifecycle exists. New contributors learn from incidents, not
+   from tests.
 
-- A **synthetic fixture lifecycle harness**: `tests/synthetic/` with a
-  `test_match_lifecycle.py` that runs the full pipeline against dev
-  infra using a recorded fixture's API response + a recorded set of
-  Twitter clips. Replays the whole flow.
-- **Per-module unit tests** for the Phase 3 split modules
-  (download/vision/hashing, upload/core/dedup/replacement, data/* mixins).
-- **Integration tests** for download → upload signal flow, dedup
-  scoping, completion marking.
+**The missing primitives.** Three layers, none of which exists today:
+(a) **unit tests for domain logic** (now expressible because
+[§13](#13) extracts that logic from activities); (b) **integration
+tests for cross-domain flows** against the dev Mongo + MinIO +
+Temporal; (c) a **synthetic match-lifecycle harness** that drives the
+whole pipeline using recorded fixtures + Twitter + joi responses,
+with sub-minute wall-clock to run.
 
-**Proposed alternative.** Target 50% coverage by end of deep-pass (from
-5%). Start with the synthetic harness — one well-tested end-to-end
-scenario uncovers more bugs than 50 unit tests against trivial
-functions.
+**Proposed methodology — three-tier test pyramid with concrete shapes.**
 
-**Scope sketch.** L. But pay-back is enormous — every subsequent change
-is faster and safer. Best run *alongside* the other audit-driven phases,
-not as a separate "now we write tests" sprint that nobody will start.
+### Tier 1: unit tests via Pydantic factories
+
+`src/data/models/` Pydantic types from [§3](#3) give us free
+factories — `Event.model_construct(...)` skips validation for
+fixtures we want to write by hand. For factories with realistic
+defaults, a small `tests/factories.py` builds on top:
+
+```python
+# tests/factories.py
+import uuid
+from datetime import datetime, UTC
+from src.data.models.event import Event, Player, Team, EventTime
+
+def event_factory(
+    *,
+    fixture_id: int = 999_999,
+    type: str = "Goal",
+    player_name: str | None = "Test Player",
+    minute: int = 23,
+    **overrides,
+) -> Event:
+    return Event(
+        event_id=f"e_{uuid.uuid4().hex[:12]}",
+        event_natural_key=f"{fixture_id}_1_2_{type}_1",
+        type=type,
+        detail="Normal Goal",
+        player=Player(id=2, name=player_name) if player_name else None,
+        team=Team(id=1, name="Test FC"),
+        time=EventTime(elapsed=minute, extra=None),
+        first_seen=datetime.now(UTC),
+        **overrides,
+    )
+```
+
+Unit tests use these factories against domain services with mocked
+stores. Test pure logic without touching Mongo:
+
+```python
+# src/domains/event/tests/test_lifecycle.py
+from src.domains.event.lifecycle import EventLifecycle
+from tests.factories import event_factory
+
+def test_event_not_stable_until_three_polls():
+    lifecycle = EventLifecycle()
+    event = event_factory(monitor_workflows=["m1", "m2"])
+    assert not lifecycle.is_stable(event)
+
+def test_event_stable_at_three_polls_with_known_player():
+    lifecycle = EventLifecycle()
+    event = event_factory(monitor_workflows=["m1", "m2", "m3"], player_name="Real Player")
+    assert lifecycle.is_stable(event)
+
+def test_event_with_unknown_player_never_stable():
+    lifecycle = EventLifecycle()
+    event = event_factory(monitor_workflows=["m1", "m2", "m3"], player_name=None)
+    assert not lifecycle.is_stable(event)
+```
+
+Target: ~70% of `src/domains/*/service.py` and `lifecycle.py` covered
+at this tier. Fast (sub-second per file).
+
+### Tier 2: integration tests against dev Mongo / MinIO / Temporal
+
+Stores (`src/domains/*/store.py`) need real Mongo to exercise
+`$addToSet`, `findOneAndUpdate`, schema validators. The dev stack
+already runs these. Tests target a **dedicated test database** —
+not `found_footy` (the dev app's DB), but `found_footy_test`. Each
+test starts by dropping the test DB and seeding from factories.
+
+```python
+# src/domains/event/tests/test_store.py
+import pytest
+from src.domains.event import EventStore
+from tests.factories import event_factory, fixture_factory
+
+@pytest.fixture
+async def store(test_db):
+    """test_db fixture drops `found_footy_test`, recreates indexes."""
+    return EventStore(db=test_db)
+
+async def test_add_event_to_active_idempotent(store):
+    fixture = fixture_factory(_id=999_999)
+    await store.insert_active_fixture(fixture)
+    event = event_factory(fixture_id=999_999)
+
+    await store.add_event_to_active(fixture_id=999_999, event=event)
+    await store.add_event_to_active(fixture_id=999_999, event=event)  # retry
+
+    stored = await store.get_active(999_999)
+    assert len(stored.events) == 1
+```
+
+Plus a small set of cross-domain integration tests — the
+`src/usecases/` tests from [§13](#13):
+
+```python
+# src/usecases/tests/test_var_remove_event.py
+async def test_var_remove_marks_shares_and_decrements_assets(test_db, test_s3):
+    # Setup: an event with 2 S3 video shares pointing to 1 asset
+    ...
+    await var_remove_event(fixture_id, event_id)
+    # Assert: event marked removed, both shares state=removed, asset refcount=0
+    ...
+```
+
+Target: ~50% coverage of `src/domains/*/store.py` + ~80% of
+`src/usecases/`. Run in CI against a docker-compose-up'd dev stack.
+Slower (~1-2 min for the whole tier).
+
+### Tier 3: synthetic match-lifecycle harness
+
+The "what happens when a match is in progress" test. One canonical
+scenario file per shape of lifecycle we care about:
+
+```
+tests/synthetic/
+  scenarios/
+    happy_path_one_goal.yaml          # 1 fixture, 1 goal, 5 Twitter clips, 3 valid
+    var_disallowed_goal.yaml          # goal detected, then VAR-removed before videos land
+    twitter_returns_zero.yaml         # the Paderborn-Wolfsburg shape from May
+    mostly_portrait_phone_cams.yaml   # the Netherlands-Morocco shape from 2026-06-30
+    scorer_reattribution.yaml         # API flips scorer mid-match (feature/event-matching)
+    suspension_and_resume.yaml        # SUSP → 2H later
+    truncated_snowflake_urls.yaml     # the bug from May 2026 still active
+  fixtures/
+    api_football_responses/           # canned /fixtures, /events JSON
+    twitter_search_responses/         # canned search results per query
+    joi_vision_responses/             # canned vision API JSON per (frame, prompt) hash
+    sample_videos/                    # small real .mp4 files for download path
+  drivers/
+    api_football_mock.py              # serves canned responses on dev API mock port
+    twitter_service_mock.py           # replaces twitter/ container for tests
+    joi_mock.py                       # replaces joi for tests
+  test_match_lifecycle.py             # the runner that walks scenarios
+```
+
+Each scenario YAML declares: which fixture+events to inject into the
+mock API, what Twitter searches should return what URLs, what vision
+calls should return what JSON, and what the expected end state is in
+Mongo + MinIO. The runner ingests the scenario, walks the Temporal
+schedule manually (advances the monitor cycle clock), and asserts the
+end state.
+
+```yaml
+# tests/synthetic/scenarios/happy_path_one_goal.yaml
+name: happy_path_one_goal
+description: |
+  One fixture, one goal in the 23rd minute. Twitter search returns 5
+  clips; 3 pass the aspect-ratio + duration filter; AI vision validates
+  2 as soccer with matching clocks; both upload to S3. Final state: 1
+  event with 2 _s3_videos, ranked 1 and 2.
+
+api_responses:
+  - on: "GET /fixtures?date=2026-06-30"
+    body: { ...one fixture... }
+  - on: "GET /fixtures?live=all"
+    body: { ...same fixture with one Goal event... }
+
+twitter_responses:
+  - on: 'POST /search query="Player (Team OR Alias)"'
+    body:
+      videos:
+        - { tweet_url: "...", duration_seconds: 15.0 }   # passes
+        - { tweet_url: "...", duration_seconds: 0.5 }    # filtered out (too short)
+        - { tweet_url: "...", duration_seconds: 12.3 }   # passes
+        ...
+
+joi_responses:
+  - on: "POST /v1/chat/completions" with image=<hash A>
+    body: { SOCCER: yes, SCREEN: no, CLOCK: "23:34", ... }
+  ...
+
+expected_end_state:
+  fixtures_completed:
+    1234567:
+      events:
+        - _event_id: "e_*"
+          _s3_videos:
+            length: 2
+            ranks: [1, 2]
+            both_verified: true
+  metrics:
+    coverage_rate: 1.0
+    goals_with_zero_videos: 0
+```
+
+The runner:
+
+1. Starts the dev compose stack pointed at a clean test Mongo + MinIO.
+2. Swaps the API-Football URL, Twitter service URL, and joi URL to
+   the mock drivers in `tests/synthetic/drivers/`.
+3. Injects the API canned responses into the mock driver.
+4. Triggers `IngestWorkflow` with the test fixture IDs.
+5. Drives the Temporal scheduler manually (advances time
+   deterministically — Temporal's
+   `WorkflowEnvironment.start_time_skipping` supports this).
+6. After lifecycle completes, asserts the Mongo + MinIO end state
+   matches `expected_end_state`.
+
+Wall-clock per scenario: ~30-60s (most time is Mongo / S3 round-trips
+that we don't mock). One full pass of 7 scenarios: ~5 min. Runs in
+CI.
+
+This is the harness that would have:
+- Reproduced NL-Morocco's failure mode in seconds
+- Caught the snowflake-truncation bug at scenario authoring
+- Surfaced the rank-drift bug as a `expected_end_state.ranks: [1, 2]`
+  assertion failure
+- Made the events.py drop-workflow fix verifiable
+
+### Test data — recorded, not generated
+
+Each scenario uses **real** captured responses, not synthesized. The
+process for adding a scenario:
+
+1. Watch a live match that has the failure mode you want to reproduce.
+2. Capture API-Football, Twitter service, and joi responses via Loki
+   queries + Mongo dumps + a small `scripts/capture_scenario.py` that
+   records all HTTP traffic to/from those services during a window.
+3. Anonymize as needed (no personal credentials), commit the JSON.
+4. Author the YAML scenario referencing the captured response IDs.
+
+This means scenarios stay valid against real-world response shapes,
+not "what the test author imagined Twitter returns."
+
+### Migration path
+
+1. **Land Tier 1 alongside [§13](#13) domain extractions.** Every
+   domain ships with its unit tests in the same PR. The Phase 3
+   target was "tests follow," which didn't happen; this time tests
+   *are* the deliverable.
+2. **Add the test database fixture** (`pytest --create-db-fresh`
+   or similar) for Tier 2 store tests. Land one store test per
+   domain as the domain extracts.
+3. **Author the first synthetic scenario** (`happy_path_one_goal`)
+   once Tier 2 works. Run it manually until stable, then wire to
+   CI.
+4. **Capture the NL-Morocco scenario** as `mostly_portrait_phone_cams`
+   from Loki + Mongo. First "regression catch" demo.
+5. **Add scenarios for each subsequent prod incident.** Every
+   "weird thing happened" becomes a scenario before the fix ships.
+   The library grows naturally.
+6. **Coverage targets enforced in CI** once Tier 1 + 2 reach
+   reasonable size. Target 50% line coverage by end of deep-pass
+   (from ~5% today).
+
+### Sub-piece scope
+
+| Sub-piece                                                  | Size |
+| ---------------------------------------------------------- | ---- |
+| `tests/factories.py` + Pydantic-backed factory pattern     | S    |
+| Tier 1 unit tests per domain (lands with §13 extraction)   | rolling, M-L total |
+| `test_db` fixture + `found_footy_test` isolation           | S    |
+| Tier 2 store + usecase tests (lands with §13)              | rolling, M-L total |
+| Synthetic harness drivers (api / twitter / joi mocks)      | M    |
+| Synthetic harness runner with manual scheduler driving     | M    |
+| `scripts/capture_scenario.py` + first scenario file        | M    |
+| First 3-4 scenarios authored from real incidents           | M    |
+| CI integration + coverage targets                          | S    |
+
+Total **L**, but doesn't run as its own phase. **Tier 1 + 2 land
+inside each [§13](#13) domain extraction PR; the synthetic harness is
+the separable phase.** "We'll add tests later" never happens; "this
+domain's PR is incomplete without its tests" does.
+
+### What this section does not promise
+
+- **No pre-rewrite test backfill.** Adding unit tests to today's
+  `mongo_store.py` god-class is wasted effort because §13 dissolves
+  it. Tests land alongside the extraction, not before it.
+- **No mocked Mongo unit tests for `*Store` classes.** Mongo's
+  semantics (`$addToSet` idempotency, validator behavior, atomic
+  `findOneAndUpdate`) are exactly the thing we're testing; mocking
+  them defeats the test. `*Store` tests are Tier 2 (real Mongo) only.
+- **No "test in prod" framework.** Synthetic harness is the
+  pre-prod gate. Phase 1 telemetry is the in-prod signal. Don't
+  conflate.
 
 ---
 
