@@ -266,29 +266,37 @@ class EventsMixin:
         DROP_THRESHOLD = MONITOR_DROP_THRESHOLD
 
         try:
-            # Atomic $addToSet + read in one round-trip. find_one_and_update with
-            # ReturnDocument.AFTER returns the document with our update applied,
-            # so the count we observe always includes our own workflow_id.
+            # MongoDB disallows positional-projection (`events.$`) combined
+            # with ReturnDocument.AFTER on find_one_and_update — surfaced
+            # live during Germany v Finland 2026-05-31, every monitor cycle
+            # logging "cannot use a positional projection and return the
+            # new document" with the Karl VAR'd goal stuck at
+            # drop_workflows=0. (Same Sprint-2 hazard as Bug 1 — different
+            # operator, same lesson: positional + AFTER don't combine.)
             #
-            # Concurrent callers from different monitor cycles can both observe
-            # count >= DROP_THRESHOLD and each return should_delete=True — that's
-            # fine because the caller's actions (mark_event_removed, $pull event)
-            # are themselves idempotent. We just avoid the previous wasteful
-            # 2-round-trip pattern.
-            fixture = self.fixtures_active.find_one_and_update(
+            # Two-stage: $addToSet update first, then projected read to
+            # count the array. $addToSet is idempotent so re-running it is
+            # safe; the count we observe always reflects our own write
+            # because it's a strict-read-after-write on the same client.
+            update_result = self.fixtures_active.update_one(
                 {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
                 {"$addToSet": {f"events.$.{EventFields.DROP_WORKFLOWS}": workflow_id}},
-                projection={f"events.$": 1},
-                return_document=ReturnDocument.AFTER,
             )
+            if update_result.matched_count == 0:
+                # Event isn't in fixtures_active anymore (already removed
+                # by a concurrent caller, or fixture was completed mid-cycle).
+                return (0, False)
 
+            fixture = self.fixtures_active.find_one(
+                {"_id": fixture_id, f"events.{EventFields.EVENT_ID}": event_id},
+                {f"events.$": 1},
+            )
             if not fixture or not fixture.get("events"):
                 return (0, False)
 
-            drop_workflows = fixture["events"][0].get(EventFields.DROP_WORKFLOWS, [])
+            drop_workflows = fixture["events"][0].get(EventFields.DROP_WORKFLOWS, []) or []
             count = len(drop_workflows)
             should_delete = count >= DROP_THRESHOLD
-
             return (count, should_delete)
         except Exception as e:
             _log_error("add_drop_workflow_error", "Error adding drop workflow", workflow_id=workflow_id, event_id=event_id, error=str(e), exc=e)
