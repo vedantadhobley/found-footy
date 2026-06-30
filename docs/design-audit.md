@@ -250,79 +250,227 @@ keys it). Typed-Mongo-errors is S layered on Phase 1.
 pools), parallelized via `asyncio.gather`. MD5 batch dedup for exact
 matches. Perceptual hash with 16-bit Hamming threshold, 3-consecutive-
 frame requirement at offset-tolerant comparison. UploadWorkflow
-serialized per-event via `signal-with-start`.
+serialized per-event via `signal-with-start`. S3-match loop in
+`upload.py:614` `break`s at the first matching S3 video instead of
+collapsing all matches.
 
-**Lived problems.**
+**The constraint that drove the current design — load-bearing, not a
+bug.** Video URLs leak. Every `_s3_videos[i].s3_url` we write to Mongo
+can be:
 
-1. **`break` at first match in `upload.py:614`.** Documented in
-   `todo.md`. If an event has 3 perceptually-equivalent S3 videos and a
-   new one arrives, only the first match is replaced/popularity-bumped;
-   the other two stay zombies. Design in
-   `docs/proposals/dedup-unification.md`.
-2. **No cross-event dedup.** Two goals scored ≤2 min apart by the same
-   team can have Twitter clips that share the celebration / replay
-   footage. We treat them as totally separate dedup namespaces, so the
-   same clip can get uploaded twice — once per event. Rare in practice
-   but real.
-3. **Cross-instance dedup not expressible.** Per-event UploadWorkflow
-   serialization handles within-event races, but two UploadWorkflows
-   running concurrently for two events can both upload byte-identical
-   clips. MD5 doesn't catch this because each is in its own scope.
+- Surfaced to vedanta.systems via the API
+- Embedded in OpenGraph cards by og-server
+- Shared externally by users (tweet / Slack / DM)
+- Bookmarked, indexed, linked from third-party sites
+- Cached by CDNs and OG-card servers
 
-**The missing primitive.** A **fixture-wide perceptual-hash index**
-queryable from any UploadWorkflow, decoupled from per-event arrays.
+Once a URL is out there, deleting the underlying S3 object breaks it.
+The `break`-at-first-match in `upload.py:614` is a defense against
+exactly this: when a duplicate arrives, we keep both S3 objects alive
+so neither URL goes 404. The current proposal in
+`docs/proposals/dedup-unification.md` introduces a `_video_redirects`
+field as a band-aid, which acknowledges the constraint but doesn't
+restructure around it.
 
-**Proposed alternative.**
+So the real question isn't "how do we collapse duplicates" (easy) — it's
+"how do we get URL stability *and* clean dedup at the same time." Those
+are in tension only because S3 URLs are doubling as share identifiers.
+Decouple them and the tension dissolves.
+
+**Lived problems — what the current hack actually costs.**
+
+1. **Storage bloat.** Same content lives at N S3 keys; new uploads pile
+   up forever. Mongo `_s3_videos` array grows with redundant entries.
+2. **Popularity-vote dilution.** "How many times has this clip been
+   discovered?" is a counter on whichever S3 object happened to be in
+   the array first. If a viewer is looking at the second upload, the
+   popularity vote on the canonical first one is invisible to them. The
+   rankings users see don't reflect the actual aggregate signal.
+3. **Ranking inconsistency.** `recalculate_video_ranks` sorts each
+   event's `_s3_videos` independently. Two events showing the same
+   physical clip can end up with different ranks based on different
+   discovery orders. There's no canonical "this is the rank of this
+   clip" because there's no canonical "this clip" — only the per-event
+   copies.
+4. **No cross-event dedup.** Goals scored ≤2 min apart by the same
+   team often share celebration / replay footage. We treat them as
+   isolated dedup namespaces; the same byte-identical clip gets
+   uploaded twice (once per event).
+5. **Cross-instance dedup not expressible.** Per-event UploadWorkflow
+   serialization handles within-event races; two UploadWorkflows on
+   different events running concurrently both upload byte-identical
+   clips with no awareness of each other.
+6. **VAR removal is destructive to shared URLs.** When an event gets
+   VAR'd we delete the S3 videos and the URLs go 404. The same problem
+   as dedup-driven deletion. Not just a dedup constraint — anywhere we
+   ever want to make an S3 object go away, we hit it.
+
+**The missing primitive.** Decouple "what's stored in S3" from "what
+URL we serve to consumers." Today the API exposes raw S3 URLs; that's
+the layer violation. Add an indirection layer and (a) dedup gets
+trivial, (b) VAR no longer kills shared URLs, (c) we can re-upload to
+higher quality without breaking anything, (d) the API contract gets
+cleaner.
+
+**Proposed alternative — two-collection refactor with URL indirection.**
+
+Add `video_assets` (the canonical byte-store) + `video_shares` (the
+public share-ID layer):
 
 ```python
-# New collection: video_hashes
+# video_assets — one row per byte-distinct S3 object
 {
   _id: ObjectId(...),
   fixture_id: 1562345,
+  s3_key: "1562345/canonical/abc123.mp4",
+  s3_url_canonical: "http://minio:9000/footy/1562345/canonical/abc123.mp4",
   perceptual_hash: "dense:0.25:0=ab12...",
-  perceptual_hash_prefix: "ab12",       # for sharded similarity lookup
-  canonical_s3_url: "http://minio:9000/footy/...",
-  event_ids: ["1562345_40_234_Goal_1", "1562345_40_234_Goal_2"],  # multi-event when same clip
-  popularity: 7,
+  perceptual_hash_prefix: "ab12",     # LSH bucket for similarity lookup
+  md5: "...",
+  width: 1920, height: 1080, duration: 45.2,
+  file_size: 14_823_911,
+  popularity: 7,                       # cross-event vote count
   first_seen: <datetime>,
-  ...
+  events: ["1562345_40_234_Goal_1", ...],  # back-refs, for reporting
+  superseded_by: null | ObjectId(...), # set when this asset is dedup-merged
+}
+
+# video_shares — one row per share-stable ID exposed to the world
+{
+  _id: "v_abc123def456",               # the public share id, never changes
+  asset_id: ObjectId(video_assets._id), # current canonical asset (mutable)
+  event_id: "1562345_40_234_Goal_1",   # event this share is "for"
+  timestamp_verified: true,
+  extracted_minute: 23,
+  created_at: <datetime>,
+  state: "active" | "removed",
+  removed_reason: null | "var" | "policy" | "asset_gone",
 }
 ```
 
-UploadWorkflow on intake:
+The event document's `_s3_videos` array becomes a list of `share_id`
+references, not embedded S3 metadata. The API surfaces share IDs
+(`GET /api/v1/videos/{share_id}` → 302 to the asset's current canonical
+S3 URL, with `Cache-Control: no-store` so the redirect can be re-pointed
+later). Public URLs become **forever-stable** even when:
 
-1. Compute incoming clip's perceptual hash
-2. Query `video_hashes` by `(fixture_id, perceptual_hash_prefix)` —
-   small candidate set
-3. Hamming-compare against candidates
-4. If match: append `event_id` to existing record, bump popularity, link
-   the event's `_s3_videos` array entry to the canonical record
-5. If no match: insert new record, write to S3, link the event
+- Two duplicates get merged (both shares' `asset_id` re-points to the
+  same surviving asset)
+- An asset gets superseded by a higher-quality version (the asset row
+  gets `superseded_by` set; the share's `asset_id` re-points; old URL
+  keeps working but serves the better clip)
+- VAR removes the event (shares get `state=removed,
+  removed_reason="var"`; the URL returns a friendly 410 Gone with a
+  JSON body explaining "this goal was removed by VAR", not a raw S3 404)
+- We re-upload, re-encode, migrate storage backends — all opaque to
+  consumers
 
-The per-event `_s3_videos` array becomes a list of references to
-`video_hashes._id`, not embedded copies. Cross-event dedup falls out for
-free.
+**Dedup behavior under the new shape.**
 
-**Cross-instance dedup.** The query at step 2 catches concurrent
-uploads if the first one commits first — but two simultaneous uploads
-both at "incoming, hash matches nothing" can still race. Fix: use Mongo
-unique index on `(fixture_id, perceptual_hash)` and treat
-`DuplicateKeyError` on insert as "someone beat us, retry the lookup +
-append path." Atomic.
+UploadWorkflow on incoming clip:
 
-**Tied to embedding migration.** Track 3 of the LLM stack redesign
-proposal swaps perceptual hashing for image embeddings. If that ships,
-this collection becomes a vector index (`fixture_id` + embedding
-nearest-neighbor) instead of a hash index. Same *primitive*, different
-math. Build the collection now with hashes; swap the matching math
-later without restructuring.
+1. Compute perceptual hash + MD5.
+2. Query `video_assets` by `(fixture_id, perceptual_hash_prefix)` —
+   small candidate set (the prefix shards into LSH buckets so this is
+   O(few)).
+3. Hamming-compare against candidates.
+4. If match found:
+   - Bump existing asset's `popularity` (atomic `$inc`).
+   - Add this event_id to the asset's `events` array (`$addToSet`).
+   - Reuse the asset's S3 object — **don't re-upload**.
+   - Mint a new `video_shares` row pointing to the existing asset, for
+     this event. New share-id, same asset.
+5. If no match:
+   - Upload to S3, insert `video_assets`, mint `video_shares`.
+6. Append the share-id to the event's `_s3_videos` (which is now just
+   `list[str]`).
 
-**Scope sketch.** M alone, M+ combined with embedding migration. Worth
-doing as a focused phase — it touches `UploadWorkflow`, every
-`_s3_videos` access pattern in the data layer, the frontend
-[Phase 6 plan](./roadmap.md) (URL stability under the indirection), and
-the migration of existing `fixtures_completed` data into the new
-collection.
+Cross-event dedup is automatic (the query at step 2 is fixture-wide).
+Cross-instance dedup needs a unique index on
+`video_assets.(fixture_id, perceptual_hash)` — `DuplicateKeyError` on
+insert means "concurrent uploader beat us, retry the lookup + reuse
+path." Atomic.
+
+**The og-server consumes share IDs.** Currently og-server reads Mongo
+for fixture+event metadata + S3 URLs and serves OpenGraph cards. After
+this refactor, og-server reads share IDs and serves the redirect (or a
+small landing page with the share embedded). OG cards remain stable
+across asset re-pointing — Twitter/Slack/Discord caches keep working.
+
+**VAR handling becomes a state transition, not a delete.** Currently
+VAR removal deletes the S3 objects, hard-removes the event from Mongo.
+After this refactor, VAR sets `video_shares.state="removed"` and the
+asset's reference count drops; a periodic GC can clean up assets with
+0 active shares (with a grace period for re-shares). Public URLs return
+410 Gone instead of breaking the share consumer's day.
+
+**Migration path (the part that's actually hard).**
+
+1. **Land the schemas.** Create `video_assets` + `video_shares` empty.
+   No code change yet.
+2. **Dual-write phase.** New uploads write to both the new collections
+   AND the legacy `_s3_videos` embedded array. The API still serves
+   legacy URLs. No behavior change observable yet.
+3. **Backfill.** Walk `fixtures_completed._s3_videos`, mint
+   `video_assets` (one per distinct S3 object) + `video_shares` (one
+   per existing array entry). Existing URLs continue to work because
+   the S3 objects haven't moved.
+4. **Land the share-id API endpoint** (`GET /api/v1/videos/{share_id}`).
+   At this point both URL shapes work: legacy raw S3 URLs (for
+   already-shared links) and new share-id URLs (for new shares).
+5. **Cut new event documents to share-id-only `_s3_videos`.** Frontend
+   starts requesting share-id URLs for newly-discovered videos.
+   Stop dual-writing the embedded array on new uploads.
+6. **Read-side compat indefinitely.** Old `fixtures_completed`
+   documents keep their embedded arrays. The data-access layer reads
+   both shapes. No backfill mutation of historical docs needed (read-
+   shape compatibility is cheaper than write-shape migration).
+7. **Background dedup pass (optional, do anytime after step 6).** Walk
+   `video_assets`, perceptual-hash-cluster the ones that should be
+   merged, pick a survivor per cluster, re-point all shares to the
+   survivor, mark losers `superseded_by`. Don't delete the S3 objects
+   immediately — keep them for a grace period so any in-flight CDN
+   caches resolve cleanly.
+
+**Tied to embedding migration.** Track 3 of LLM redesign swaps
+perceptual hashing for image embeddings. With this schema, the swap
+is local: `perceptual_hash` and `perceptual_hash_prefix` become
+`embedding` (vector) and `embedding_lsh_bucket` (or a Mongo Atlas vector
+index if we ever migrate Mongo). API surface unchanged. `video_assets`
+remains the canonical layer.
+
+**Why this is structural, not "a new collection."** The current dedup
+limitation isn't a logic bug — it's a missing layer of indirection
+between storage identity and share identity. Add the layer; dedup gets
+clean, VAR stops breaking shared URLs, supersession becomes safe,
+re-encoding becomes safe, the API contract gets cleaner, the og-server
+contract gets cleaner. The "hacky shortcut" of `break`-at-first-match
+becomes unnecessary.
+
+**Scope sketch.** **L. Multi-week.** Concrete sub-pieces:
+
+| Sub-piece                                              | Size |
+| ------------------------------------------------------ | ---- |
+| Two collections + schema validators + indexes          | S    |
+| Dual-write in UploadWorkflow (legacy + new)            | M    |
+| Backfill script + cutover gate                         | M    |
+| `GET /api/v1/videos/{share_id}` redirect endpoint      | S    |
+| Frontend cutover from raw S3 URLs to share IDs         | M (lives in vedanta-systems) |
+| og-server cutover                                      | S    |
+| VAR-as-state-transition in `remove_event_from_active`  | S    |
+| Read-side compat for legacy `_s3_videos` shape         | S    |
+| Background dedup-merge pass (optional, deferable)      | M    |
+
+Dependencies: [§3](#3) UUID event IDs simplify the share-id ↔ event
+join. [§11](#11) Phase 6 API cutover is the natural home for the new
+endpoint; ship them together. Run F-1 first to land the data
+discipline; F-3 is this work; F-5 (Phase 6) consumes the share-id
+endpoint as a first-class consumer.
+
+This is the highest-leverage section in the audit — every other dedup
+concern, the VAR concern, the asset-supersession concern, and a chunk
+of the Phase 6 API contract all flow from this single primitive being
+correct.
 
 ---
 
@@ -459,63 +607,250 @@ collecting failure-class distribution now via Loki dashboards.
 
 ---
 
-## 8. Twitter scraping strategy
+## 8. Twitter fleet management
 
-**Current state.** Persistent Firefox + Selenium per twitter container,
-cookie reuse, idle CPU patched (2026-06-30). Auto-scaled 2-8 instances.
-Search returns ALL videos within `max_age_minutes` window.
+**The constraint.** The Twitter API v2 switch is a deferred business
+decision (see end of section). For the foreseeable future, the
+discovery layer is Firefox + Selenium against x.com — the choice is
+committed, the question is how to *operate* it well. The current
+methodology has structural seams that bite during peak loads and
+re-auth cycles; that's what this section is about.
 
-**Lived problems.**
+**Current design — one Firefox per container, scaler scales container
+replicas.** Each `twitter` container owns:
 
-1. **Status-ID snowflake truncation bug.** 13-digit IDs in scraped URLs,
-   source unknown after 5 weeks. NL-Mar confirmed still active.
-2. **Cookie expiry every few weeks.** Manual VNC re-auth via
-   `found-footy-prod-twitter-vnc.<base-domain>`. No prediction — we
-   find out when search returns 0.
-3. **Phone-cam clips dominate discoveries** (NL-Mar: 7 of 7 discovered
-   were portrait). Tightened aspect ratio on 2026-06-30 helps post-hoc;
-   would be better to filter at search-time.
-4. **DOM-selector fragility.** Canary workflow (P4b) catches breaks
-   but only after-the-fact.
+- A Firefox process (kept warm between searches, idle CPU bleed patched
+  2026-06-30).
+- A profile directory at `/data/firefox_profile_{instance_id}` where
+  `instance_id = md5(HOSTNAME)[:8]`. Profile dirs are container-local
+  (volume-mounted but per-container path), so cookie state is *not*
+  shared across replicas.
+- A small FastAPI service on `:8888` with `/health` and `/search`.
 
-**The missing primitives.**
+The scaler reads MongoDB's "active goals in progress" count and scales
+the `twitter` compose service between 2 and 8 replicas. The cookie
+backup file at `~/.config/found-footy/twitter_cookies.json` (host
+volume) is written when a container successfully authenticates and read
+when a new container boots — **one-way sync, on boot only**.
 
-- **URL validation at extraction time** beyond length (P2b). Try a HEAD
-  request? Parse the syndication response shape? Currently we hand off
-  garbage URLs to download and burn an attempt.
-- **Cookie health prediction.** Track auth-required signals from the
-  search service; emit a "cookie quality degrading" log line before
-  total failure.
-- **Source filtering.** Verified accounts, known broadcaster accounts,
-  high-engagement tweets — currently weighted equally with random
-  rando tweets.
+**Lived problems — what this model actually costs.**
 
-**Bigger question.** Switch to the official Twitter API v2? Basic tier
-is $100/mo, 10K tweets/mo. Current volume (~178 goals × ~5 search rounds
-× ~10 videos/round ≈ 9K interactions/mo) is just under basic tier. The
-math:
+1. **Cookie state is fragmented across replicas.** Re-authenticating in
+   one container (VNC into `twitter-prod-2`) writes that container's
+   profile *and* the backup file. But the other live containers
+   already have their own copies of the *old* cookies and don't re-read
+   the backup until they restart. Result: half the replicas may serve
+   stale-auth searches for hours. This is a real bug today — when the
+   user has re-authed in prod, search results have been inconsistent
+   across instances for the rest of that match window.
+2. **Cold-start cost per replica.** When scaler bursts to 8 replicas
+   for a CL/WC night, the 6 new containers each pay ~30-60s of
+   Firefox + Selenium + profile-load startup. Peak demand arrives
+   slightly faster than peak capacity comes online.
+3. **One search at a time per container.** Each Firefox instance
+   serializes searches because there's a single `driver` reference.
+   With N containers we have N concurrent searches max — not N×K. Could
+   be a single container running K Firefox processes in a pool.
+4. **No graceful drain on scale-down.** Scaler stops a container via
+   SIGTERM; whatever search is mid-flight dies, the worker activity
+   gets a 503-like failure. No "finish active searches, refuse new"
+   handshake.
+5. **Health-check is binary.** `GET /health` returns
+   `{healthy, authenticated, session_timeout}`. Doesn't communicate
+   cookie age, recent search latency, consecutive-failure count,
+   memory pressure, DOM-canary status. Scaler and worker can't route
+   around degraded instances.
+6. **No automated re-auth signal.** Cookies expire every few weeks. We
+   notice when search starts returning 0 results during a match. There
+   should be a Prometheus alert (or ntfy push) when consecutive auth
+   failures spike across the fleet — *before* a match goes dark.
+7. **Scaler is metric-impoverished.** Scaling uses "active goals count"
+   alone. Doesn't know about per-instance backlog, fleet-wide cookie
+   staleness, or search-latency degradation. Can't make decisions like
+   "this instance is sick, spawn a replacement and drain it."
+8. **DOM-selector fragility couples the entire fleet.** When Twitter
+   ships a DOM change, every Firefox in the fleet breaks simultaneously.
+   The hourly canary workflow (P4b) catches breaks after the fact, but
+   recovery requires a code change + redeploy — no graceful degradation,
+   no canary-driven feature gates.
 
-| Path                     | Cost/mo | Reliability | Maintenance burden |
-| ------------------------ | ------- | ----------- | ------------------ |
-| Selenium scraping (now)  | $0 + CPU + manual re-auth | medium (DOM breaks) | high |
-| Twitter API v2 basic     | $100    | high        | low                |
-| Mixed (API + scrape fallback) | $100 | high        | medium             |
+**The missing primitive.** A Twitter fleet *manager* methodology that
+owns session lifecycle and cookie coordination as first-class concerns,
+separate from container replica count. Today "container = instance =
+cookie owner" — three things welded into one; structurally separate
+them.
 
-Hidden cost of scraping today: the Firefox CPU bleed we just patched,
-the canary monitoring infrastructure, the cookie-VNC dance, the DOM
-selector audit-trail. Easily a couple hours/month of operator overhead.
-At $100/mo that's a clean trade.
+**Proposed methodology — decouple instance from container, centralize
+cookie state, enrich the health protocol.**
 
-**Proposed alternative.**
+Three structural changes within the committed Firefox+Selenium+cookies
+constraint:
 
-- **Tier 1 (now):** Ship the URL validation + source filtering. Cheap
-  per-search wins.
-- **Tier 2 (deep-pass):** Cookie health prediction.
-- **Tier 3 (separate decision):** Twitter API v2 switch as its own
-  proposal. Won't be cheap to implement but the operator-overhead
-  payback is real.
+### (a) Cookies move from per-container disk to a Mongo canonical row
 
-**Scope sketch.** S for Tier 1, M for Tier 2, XL for Tier 3.
+New collection `twitter_sessions`:
+
+```python
+{
+  _id: "canonical",                  # single-row pattern
+  cookies: <bson.Binary>,            # serialized cookie blob (JSON or pickled list)
+  cookies_version: 47,               # monotonic counter; bumped on each re-auth
+  authenticated: true,
+  last_refresh: <datetime>,          # last successful re-auth or verification
+  last_search_succeeded_at: <datetime>,
+  consecutive_auth_failures: 0,
+  estimated_expiry: <datetime>,      # rolling estimate from observed lifetime
+  reauth_notes: "VNC re-auth by Vedanta 2026-06-15",
+}
+```
+
+Container behavior changes:
+
+- **On boot:** read `_id="canonical"`, import cookies into Firefox via
+  Selenium's `add_cookie` API. The backup file at
+  `~/.config/found-footy/twitter_cookies.json` becomes a safety net for
+  cold-starts when Mongo is unreachable (rare), not the authoritative
+  source.
+- **Before each search:** re-read `cookies_version` from Mongo. If
+  it's newer than the local copy, hot-swap cookies in the running
+  Firefox session — no browser restart needed. Re-auth in one container
+  propagates to all others within seconds, not on next restart.
+- **On successful re-auth:** write the new blob to Mongo, bump
+  `cookies_version`, also update the backup file as safety net.
+
+This single change eliminates the "stale-auth replicas serving wrong
+results" failure mode (problem 1 above) without touching the scaling
+model.
+
+### (b) Rich health protocol
+
+`/health` returns a structured payload:
+
+```json
+{
+  "healthy": true,
+  "authenticated": true,
+  "cookies_version_local": 47,
+  "cookies_version_canonical": 47,
+  "cookies_age_seconds": 432,
+  "last_search_latency_ms": 1830,
+  "last_search_succeeded_at": "2026-06-30T18:14:22Z",
+  "consecutive_search_failures": 0,
+  "consecutive_auth_failures": 0,
+  "browser_pid": 3208889,
+  "memory_rss_mb": 1640,
+  "in_flight_searches": 1,
+  "draining": false,
+  "dom_canary_last_status": "pass",
+  "dom_canary_last_check": "2026-06-30T18:00:00Z"
+}
+```
+
+Consumers:
+
+- **Scaler** reads aggregate fleet health from all instances and
+  decides not just *how many* replicas, but *whether to drain one* —
+  e.g. "this instance's `last_search_latency_ms` is 5× the fleet
+  median over the last 5 minutes → spawn a replacement, drain this
+  one." Currently scaler is blind to per-instance degradation.
+- **Worker routing** (the instance-discovery code in
+  `src/activities/twitter.py`) picks the healthiest instance per
+  request, not just round-robin. Routes around an instance that's
+  authenticated-stale or showing high latency.
+- **Loki/Prometheus** scrape `/health` and emit metrics. Prometheus
+  alert when fleet-wide median `consecutive_auth_failures > 2` over
+  5 min — *before* matches go dark.
+
+### (c) Graceful drain on SIGTERM
+
+Container intercepts SIGTERM:
+
+1. Set `draining=true` in local health payload.
+2. Refuse new `/search` requests with `503` and `X-Drain: true`
+   response header.
+3. Wait for `in_flight_searches` to reach 0 (with a 30s ceiling).
+4. Exit cleanly.
+
+Worker activity sees `503 X-Drain: true` and retries against a
+different instance via the registry. Scaler's `down` command respects
+the drain window (waits a max-grace period before forcing).
+
+### What this does NOT address
+
+- **Firefox-tab-pool pattern.** One container running K Firefox
+  processes is a follow-up — compounds with this work but isn't
+  required for the structural problems above. Fleet-wide concurrency
+  is today bottlenecked by joi LLM cap (see §6), not by Firefox
+  concurrency. Hold until that's true.
+- **DOM-selector graceful degradation.** Beyond the canary catching
+  breaks, no per-search fallback. Track 3 path (use the X syndication
+  API for video metadata where possible, fall back to DOM only for
+  tweet listings) is worth its own design proposal, separate from
+  fleet management.
+- **Source-quality scoring.** Verified accounts vs random users —
+  separate change in [§10](#10-filter-pushdown-and-pipeline-ordering).
+- **Snowflake-ID truncation root cause.** Still a dedicated
+  investigation; not a fleet issue per se.
+
+**Migration path.**
+
+1. **Land `twitter_sessions` collection schema + indexes** (single row,
+   `_id="canonical"`).
+2. **Bootstrap.** A migration script reads the current cookie backup
+   file, writes it to Mongo with `cookies_version=1`.
+3. **Add the in-Mongo cookie boot path** to twitter session code. On
+   boot, read canonical row, import into Firefox. Backup file
+   becomes secondary.
+4. **Add the per-search version check + hot-swap.** Worker doesn't
+   notice; behavior is "cookies are always fresh."
+5. **Move re-auth write path to Mongo.** VNC re-auth flow writes to
+   Mongo first, then backup file.
+6. **Roll the new behavior across the fleet** by recreating containers
+   one at a time (scaler-safe — recreates are equivalent to the
+   already-supported scale-up + scale-down lifecycle).
+7. **Land the rich `/health` payload.** Workers + scaler + Loki start
+   consuming the new fields.
+8. **Land the SIGTERM drain handler.** Scaler's `down` command
+   respects drain.
+9. **Add the cookie-staleness Prometheus alert** (§9 ties in).
+
+Each step is independently shippable; rollback is "ignore the new
+fields, fall back to old paths." Low blast radius.
+
+**The API-switch question stays deferred.** Twitter API v2 basic tier
+(~$100/mo, ~10K tweets/mo) remains a real decision to evaluate annually.
+Current scrape volume is ~9K interactions/mo, just under basic tier;
+reliability and operator overhead are the real drivers. **After this
+fleet methodology lands, the operational cost of scraping drops
+markedly** (less re-auth pain, less search inconsistency, fewer
+silent-fail windows), which weakens the API-switch case in the near
+term. Revisit when (a) volume grows past basic tier, (b) Twitter ships
+a DOM change that takes > 24h to recover from, or (c) we want to
+extend discovery to non-Twitter sources (in which case the abstraction
+layer for "discovery provider" gets built and Twitter becomes one of N).
+
+**Scope sketch.** M overall. Sub-pieces:
+
+| Sub-piece                                              | Size |
+| ------------------------------------------------------ | ---- |
+| `twitter_sessions` schema + boot read                  | S    |
+| Cookie hot-swap on `cookies_version` change            | S    |
+| Auth-success → Mongo write path (replaces file-only)   | S    |
+| Rich `/health` payload + Loki/Prometheus integration   | S    |
+| Worker routing around degraded instances               | S    |
+| SIGTERM drain handler + scaler grace-period            | S    |
+| Cookie-staleness Prometheus alert                      | S    |
+| Bootstrap migration script                             | S    |
+
+Total ~1 week of focused work. No external dependencies — Mongo +
+Selenium + the existing scaler registry are all the moving parts.
+Should run after F-1 (data discipline) so the `twitter_sessions` and
+health payload have Pydantic types from day one.
+
+This is the second-highest-leverage section in the audit after [§4](#4) —
+fleet flakiness during peak loads is one of the user-visible quality
+issues, and the structural seams above are the root cause of basically
+every Twitter-related incident in the operational history.
 
 ---
 
@@ -635,6 +970,12 @@ SSE endpoint server-side.
   realtime stream, add webhook for durable delivery.
 - **Versioning policy in `docs/api-contract.md`.** Already exists as a
   file; populate it with the contract rules.
+- **Share-id video endpoint** (`GET /api/v1/videos/{share_id}` → 302
+  to the canonical S3 URL). This is the consumer side of [§4](#4)'s
+  indirection layer; without it, the rest of §4 doesn't pay off
+  publicly. Ship the two together — `video_shares` and the endpoint —
+  as one cohesive unit. og-server consumes the same endpoint instead
+  of reading Mongo directly.
 
 **Scope sketch.** Phase 6 is currently budgeted L. These additions move
 it to L+ but they're the right additions.
