@@ -129,7 +129,17 @@ class TwitterSessionManager:
             os.makedirs(self.profile_dir, exist_ok=True)
             options.add_argument("-profile")
             options.add_argument(self.profile_dir)
-            
+
+            # Idle-CPU containment: the Twitter session stays warm between
+            # searches so we keep cookies hot, but the loaded x.com tab kept
+            # bleeding ~20% CPU per container via the RDD media decoder
+            # (autoplay videos in the timeline, GIF loops, backgrounded
+            # video elements). These prefs neuter that without affecting
+            # tweet URL extraction from the DOM.
+            options.set_preference("media.autoplay.default", 5)
+            options.set_preference("image.animation_mode", "none")
+            options.set_preference("media.suspend-bkgnd-video.enabled", True)
+
             log.debug(MODULE, "browser_profile", "Using Firefox profile", profile_dir=self.profile_dir)
             
             service = FirefoxService(executable_path="/usr/local/bin/geckodriver")
