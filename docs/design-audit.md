@@ -1209,54 +1209,342 @@ account-quality scoring (needs taxonomy + tuning).
 
 ## 11. Cross-project boundary — vedanta-systems API
 
-**Current state.** vedanta-systems direct-reads Mongo over the
-`luv-prod` docker network via a Node Express service that knows the
-found-footy schema. Worker calls `notify_frontend_refresh` for SSE
-push. Phase 6 of the roadmap is the FastAPI cutover.
+**The constraint.** vedanta-systems is the only frontend consumer
+(plus og-server for OpenGraph card generation). Phase 6 commits to a
+FastAPI service in front of Mongo; that's settled. This section is
+about the *shape* of the contract — what gets exposed, how it's typed,
+authenticated, versioned, and how events flow — within that committed
+architecture. Express direct-reads in vedanta-systems stay live until
+cutover completes.
 
-**What Phase 6 has right.** Replacing direct Mongo reads with a typed
-HTTP contract. URL stability under future schema changes. Owning the
-SSE endpoint server-side.
+**Current state.** vedanta-systems' Node API reaches into the
+`luv-prod` docker network, opens a Mongo connection, runs `find()` /
+`aggregate()` directly against `fixtures_active` and
+`fixtures_completed`. Knowledge of the schema is replicated across
+both repos in untyped JS / TS. Frontend receives goal-video updates
+via SSE: the worker activity `monitor.notify_frontend_refresh` opens
+a connection back into vedanta-systems' Express endpoint, which then
+broadcasts an "events updated" signal to connected browser tabs.
+og-server independently reads Mongo to assemble OpenGraph cards for
+shared video links.
 
-**What Phase 6 is missing.**
+**Lived problems with the direct-Mongo coupling.**
 
-1. **No typed contract.** Plan is "FastAPI exposes endpoints" — but is
-   there an OpenAPI spec? If yes, do we generate TS types from it for
-   vedanta-systems? Currently the API and the frontend share knowledge
-   via documentation, not code.
-2. **No auth.** vedanta-systems is currently trust-the-network on
-   `luv-prod`. Once Phase 6 lands and the API is hostnamed via Caddy
-   (`found-footy.<base-domain>/api/v1/...`), should we add Authorization
-   headers? Probably yes given the multi-project portal context.
-3. **No event push.** SSE is pull-shaped — the client opens a stream,
-   server pushes updates. Goal-video-ready could also be webhook-pushed
-   (vedanta-systems exposes a webhook endpoint, found-footy posts when
-   a video ships). Lower-latency than SSE on cold connections.
-4. **No contract versioning.** Phase 6 plans `/api/v1/...` but no plan
-   for what happens when the contract changes. Sunset window? Deprecate
-   headers?
+1. **Schema knowledge replicated, never enforced.** vedanta-systems'
+   query code "knows" field names (`_s3_videos`, `_telemetry`,
+   `events[]._event_id`). When a field gets renamed or added in
+   found-footy, vedanta-systems silently breaks unless someone
+   remembers to update both. The Phase 1 `_telemetry` field that
+   landed 2026-06-30 isn't surfaced anywhere in the UI because no
+   one updated the TS types — there's nothing to update; they don't
+   exist.
+2. **og-server is a second direct-reader.** Independent of
+   vedanta-systems' API code. Same schema knowledge, second copy. Any
+   schema change is a three-place update: found-footy writes, then
+   vedanta-systems and og-server both need to learn the new field.
+3. **`notify_frontend_refresh` is a backward dependency.** Worker
+   reaches *out* to vedanta-systems' API to push an SSE signal. That
+   means found-footy needs to know vedanta-systems' URL, auth, and
+   keep that connection healthy. Inverting it (frontend pulls from
+   found-footy SSE) is cleaner but Phase 6 hasn't specified the SSE
+   payload shape.
+4. **No auth.** Currently trust-the-network on `luv-prod`. Fine for a
+   single-user single-host deployment, but the Caddy hostnaming
+   migration already exposed the same services via tailnet → other
+   hosts could reach them. Auth is "we should" rather than "we
+   have."
+5. **No contract versioning.** `/api/v1/` URL prefix is in the Phase
+   6 plan but with no policy: what does v2 look like? When does v1
+   sunset? Do clients learn deprecation via header? This is the
+   "future me will regret it" kind of missing.
+6. **SSE-only delivery has cold-start latency.** When vedanta-systems
+   restarts (deploy, container recycle), its SSE listener
+   reconnects. Anything found-footy emitted during the disconnect
+   window is lost — frontend tabs that were watching for "goal video
+   ready" don't get backfilled. Webhook delivery with retries would
+   make those events durable; SSE is good for live "what's happening
+   *right now*" but not for "tell me when X happens."
+7. **The og-server playback bug** ("clicking a video sometimes
+   doesn't play it right away" — see `docs/todo.md` and
+   `docs/roadmap.md` Phase 6 side-quest). Suspected cause: og-server
+   reads `s3_url` directly from Mongo, hands it to the browser; some
+   races between worker's S3 write and Mongo's url-field update can
+   surface a URL before the bytes are available. The share-id
+   indirection from [§4](#4) resolves this (share-id resolves only
+   after the underlying asset is fully ingested), but only if
+   og-server consumes share IDs, not raw S3 URLs.
 
-**Proposed alternative.** Take the Phase 6 budget and add:
+**The missing primitive.** A **typed, versioned, auth'd contract**
+between found-footy and its consumers (vedanta-systems + og-server +
+future), with both pull (HTTP) and push (webhook + SSE) delivery
+shapes that fit different consumer needs.
 
-- **OpenAPI spec with TS type generation.** Single command in the
-  vedanta-systems CI pipeline regenerates types from the spec. Schema
-  drift becomes a TS error.
-- **Auth via Caddy.** Caddy already fronts everything; add a header
-  check (`X-Internal-Token` from the vedanta-systems API) at the
-  Caddyfile, not in FastAPI.
-- **Webhook delivery for "video ready" events.** Keep SSE for the
-  realtime stream, add webhook for durable delivery.
-- **Versioning policy in `docs/api-contract.md`.** Already exists as a
-  file; populate it with the contract rules.
-- **Share-id video endpoint** (`GET /api/v1/videos/{share_id}` → 302
-  to the canonical S3 URL). This is the consumer side of [§4](#4)'s
-  indirection layer; without it, the rest of §4 doesn't pay off
-  publicly. Ship the two together — `video_shares` and the endpoint —
-  as one cohesive unit. og-server consumes the same endpoint instead
-  of reading Mongo directly.
+**Proposed methodology — five pillars.**
 
-**Scope sketch.** Phase 6 is currently budgeted L. These additions move
-it to L+ but they're the right additions.
+### Pillar A: Pydantic-typed FastAPI with auto-generated OpenAPI + TS
+
+FastAPI emits an OpenAPI spec from its endpoint definitions. The
+response models are the same Pydantic types from [§3](#3) (where
+appropriate — sometimes the API exposes a *projection* of the storage
+model). vedanta-systems' CI regenerates TS types from the spec on
+every found-footy push to main.
+
+```python
+# src/api/v1/routes/events.py
+from fastapi import APIRouter, HTTPException
+from src.domains.event import EventService
+from src.api.v1.models import EventResponse, VideoLink
+
+router = APIRouter(prefix="/api/v1/events")
+
+@router.get("/{event_id}", response_model=EventResponse)
+async def get_event(event_id: str) -> EventResponse:
+    event = await EventService().get_by_id(event_id)
+    if event is None:
+        raise HTTPException(404, "event not found")
+    return EventResponse.from_domain(event)
+```
+
+```python
+# src/api/v1/models.py — API-side projections of domain models
+class VideoLink(BaseModel):
+    """What a consumer sees for one video on an event."""
+    share_id: str                       # public share id, never changes
+    url: str                            # /api/v1/videos/{share_id} (relative)
+    rank: int                           # 1-indexed; lower is better
+    timestamp_verified: bool
+    extracted_minute: int | None
+    duration_seconds: float
+    width: int
+    height: int
+
+class EventResponse(BaseModel):
+    event_id: str
+    event_natural_key: str | None       # human-readable identity
+    fixture_id: int
+    type: Literal["Goal", "Card", "subst", "Var"]
+    detail: str
+    player_name: str | None
+    team_name: str
+    minute: int
+    extra: int | None
+    first_seen: datetime
+    state: Literal["pending", "tracking", "completed", "removed"]
+    videos: list[VideoLink]
+    telemetry: TelemetrySummary | None  # subset of internal _telemetry
+```
+
+The `from_domain` classmethod is the projection — internal storage
+fields stay private, public fields are deliberately chosen, the rank
+re-emerges 1-indexed (independent of whatever the internal mess is
+doing — see [§13](#13) and the rank-drift bug in `todo.md`).
+
+vedanta-systems' Vite/Next build runs `npx openapi-typescript
+http://found-footy.<base-domain>/api/v1/openapi.json -o
+src/types/found-footy.ts` on every found-footy deploy. Type drift
+becomes a frontend build error, not a silent runtime bug.
+
+### Pillar B: Auth at the Caddy edge, single shared secret
+
+Auth lives at Caddy, not in FastAPI. found-footy's FastAPI is
+*internal* in the sense that Caddy is its only authenticated frontend.
+
+```caddy
+# ~/workspace/proxy/caddy/caddy.d/found-footy.caddy
+http://found-footy.{$BASE_DOMAIN} {
+    @api path /api/*
+
+    @authed header Authorization "Bearer {$FOUND_FOOTY_API_TOKEN}"
+    handle @api {
+        respond @!authed 401 {
+            body `{"error": "missing or invalid Authorization"}`
+            close
+        }
+        reverse_proxy found-footy-prod-api:8000
+    }
+
+    # Non-API routes (e.g. /v1/openapi.json public for type generation) skip auth
+    handle {
+        reverse_proxy found-footy-prod-api:8000
+    }
+}
+```
+
+`FOUND_FOOTY_API_TOKEN` lives in `.env` alongside the other secrets.
+vedanta-systems' backend reads the same secret and includes it on
+every outbound request. og-server gets the same treatment. Token
+rotation is "regenerate, update both `.env` files, restart Caddy and
+the consumers." Caddy `header_up Authorization` on the reverse_proxy
+strips the token before forwarding so FastAPI never sees it —
+simplifies the FastAPI side, which assumes "if you reached me you're
+authorized."
+
+The `/api/v1/openapi.json` and `/api/v1/healthz` endpoints are
+deliberately outside the auth wall — they're how consumers discover
+the contract and how monitor stack health-checks the API.
+
+### Pillar C: Endpoint catalog
+
+| Endpoint                                       | Method | Auth | Purpose |
+| ---------------------------------------------- | ------ | ---- | ------- |
+| `/api/v1/fixtures`                             | GET    | yes  | List with filters: `date`, `status`, `league`, `team_id` |
+| `/api/v1/fixtures/{id}`                        | GET    | yes  | Single fixture detail + embedded event summaries |
+| `/api/v1/fixtures/{id}/events`                 | GET    | yes  | Events of a fixture |
+| `/api/v1/events/{event_id}`                    | GET    | yes  | Single event with video links |
+| `/api/v1/events/{event_id}/videos`             | GET    | yes  | Just the video list (lighter) |
+| `/api/v1/videos/{share_id}`                    | GET    | **no**   | **§4**: 302 redirect to canonical S3 URL. **Unauthenticated** — public share links. Cache-Control: no-store so re-pointing works. |
+| `/api/v1/feed`                                 | GET    | yes  | Recent goal events across all fixtures, paginated |
+| `/api/v1/sse/events`                           | GET    | yes  | SSE stream — live event lifecycle updates |
+| `/api/v1/webhooks/subscriptions`               | POST   | yes  | Register a webhook URL + event-type filter |
+| `/api/v1/webhooks/subscriptions/{id}`          | DELETE | yes  | Unsubscribe |
+| `/api/v1/openapi.json`                         | GET    | no   | Spec for TS generation |
+| `/api/v1/healthz`                              | GET    | no   | For monitor stack |
+
+Webhook subscriptions are managed via the API so vedanta-systems can
+register on startup (idempotent) and forget — same pattern as
+GitHub-style webhooks.
+
+### Pillar D: SSE + webhook split
+
+**SSE for live observation**: "what's happening right now." vedanta-
+systems' frontend opens an SSE stream and renders real-time updates
+to the UI. Lost messages on reconnect are OK because the
+ground-truth is queryable via `GET /api/v1/feed` — SSE is the
+push-optimization, not the source of truth.
+
+```
+event: event.advanced
+data: {"event_id": "e_a1b2c3d4e5f6", "state": "tracking", "minute": 23}
+
+event: event.video_ready
+data: {"event_id": "e_a1b2c3d4e5f6", "share_id": "s_xyz789", "rank": 1}
+
+event: fixture.completed
+data: {"fixture_id": 1562345, "video_count": 7}
+```
+
+**Webhooks for durable delivery**: "tell me when a goal video lands,
+even if I was offline." vedanta-systems' API subscribes a webhook
+URL on its startup. found-footy POSTs to that URL on each matching
+event with retry semantics (3 attempts, exponential backoff). The
+subscription includes an event-type filter so subscribers don't get
+spammed with everything.
+
+```json
+POST <subscriber>/webhook
+Headers:
+  X-FF-Event: event.video_ready
+  X-FF-Delivery-Id: dlv_<uuid>
+  X-FF-Signature: hmac-sha256=<sig>     # of body, with shared secret
+Body:
+  {
+    "event_type": "event.video_ready",
+    "occurred_at": "2026-06-30T18:14:22Z",
+    "data": {
+      "event_id": "e_a1b2c3d4e5f6",
+      "share_id": "s_xyz789",
+      "rank": 1,
+      "fixture_id": 1562345,
+      "player_name": "C. Gakpo",
+      "minute": 72
+    }
+  }
+```
+
+Subscriber idempotency via `X-FF-Delivery-Id` — if found-footy
+retries, the subscriber re-sees the same ID and can deduplicate.
+
+The split lives because they're optimized for different consumers.
+vedanta-systems' frontend uses SSE (live UI updates). og-server
+could use webhooks if it ever needs to pre-warm OG cards proactively.
+A future "send me to ntfy" consumer is webhook-shaped.
+
+### Pillar E: Versioning policy
+
+URL-path versioning: `/api/v1/...`. When v2 lands:
+
+- v2 endpoints live at `/api/v2/...`
+- v1 endpoints emit a `Deprecation: <date>` and `Sunset: <date>`
+  response header (per RFC 8594) starting from the v2 release.
+- v1 sunset window is **6 months minimum**. Consumers see the
+  Sunset header in their CI builds (if they parse it) or in browser
+  devtools.
+- The OpenAPI spec at `/api/v1/openapi.json` keeps documenting the
+  v1 shape until sunset; `/api/v2/openapi.json` documents v2.
+
+Versioning policy lives in [`docs/api-contract.md`](./api-contract.md)
+(empty file today; populated by this work).
+
+### Migration path
+
+vedanta-systems can't cut over to the new API atomically — it's a
+live frontend. The migration goes:
+
+1. **Stand up FastAPI in parallel** with current Express direct-reads.
+   Both serve correct answers; nothing cuts over yet.
+2. **Caddy routes `/api/v1/...` to FastAPI**, leaves all other paths
+   on vedanta-systems' Express. Both work.
+3. **Land the share-id endpoint with [§4](#4) dual-write phase.**
+   og-server cuts over to share-id URLs as its first migration
+   (smallest blast radius — only affects OG cards).
+4. **Run the new SSE endpoint alongside the current inbound
+   `notify_frontend_refresh` push.** vedanta-systems' frontend
+   opens both; one is the new world, the other is the old.
+5. **Frontend migrates queries endpoint-by-endpoint** to FastAPI.
+   Each migration is a vedanta-systems frontend PR consuming the
+   generated TS types.
+6. **vedanta-systems backend migrates writes.** Its Express layer
+   stops doing direct Mongo reads as each frontend query moves over.
+7. **Webhook subscription registered** when vedanta-systems backend
+   boots; durable goal-video events start flowing.
+8. **Remove `notify_frontend_refresh`** from worker activities —
+   replaced by webhook delivery + SSE. Worker no longer needs to
+   know vedanta-systems' URL.
+9. **Remove vedanta-systems' direct Mongo connection** when zero
+   query paths use it. End state: vedanta-systems talks only to
+   `found-footy.<base-domain>` via Caddy, not to Mongo at all.
+
+Each step is independently shippable; rollback is "Caddy routes
+`/api/v1/...` back to Express."
+
+### Sub-piece scope
+
+| Sub-piece                                                   | Size |
+| ----------------------------------------------------------- | ---- |
+| FastAPI app scaffold + `/healthz` + OpenAPI                 | S    |
+| Pydantic API response models + `from_domain` projections    | M    |
+| Endpoint catalog (read-only HTTP endpoints, ~10)            | M    |
+| Caddy auth + Bearer-token middleware                        | S    |
+| Share-id redirect endpoint (with §4)                        | S    |
+| SSE stream + reconnect-safe event format                    | M    |
+| Webhook subscription model + delivery worker + retries      | M    |
+| HMAC signature on webhook payloads                          | S    |
+| TS type generation pipeline (vedanta-systems CI integration) | S    |
+| Versioning policy + `docs/api-contract.md` populated        | S    |
+| Frontend cutover (10 query paths in vedanta-systems)        | M (lives in vedanta-systems) |
+| og-server cutover to share-id endpoint                      | S    |
+| `notify_frontend_refresh` removal                           | S    |
+| Direct-Mongo-connection removal in vedanta-systems          | S    |
+
+Total **L+** (the Phase 6 budget on the existing roadmap was already
+L; these additions push it slightly past, but it's the right shape).
+Dependencies: [§3](#3) Pydantic models (the response types reuse
+them), [§4](#4) share-id endpoint (most useful when this section
+ships the consumer), [§13](#13) domain services (the data source for
+API routes).
+
+### What this section explicitly doesn't do
+
+- **No GraphQL.** Considered, rejected — over-engineered for the
+  read-only-ish surface here, and TS type generation from REST
+  OpenAPI is mature.
+- **No real-time bidirectional websocket.** SSE is one-way which is
+  fine for our use case (no client → server events besides queries,
+  and queries fit HTTP).
+- **No external public API.** Auth posture assumes single-consumer
+  trust. If we ever expose found-footy data publicly (which we
+  shouldn't — Twitter video rights), this pillar set would need
+  rate-limiting + per-consumer tokens.
 
 ---
 
