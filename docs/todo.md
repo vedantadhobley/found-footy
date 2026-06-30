@@ -8,6 +8,51 @@ Paste-ready start-of-session block. Newest items above older.
 
 ---
 
+## 🚨 Video ranks are visibly broken — surfaced 2026-06-30 (Norway vs Côte d'Ivoire)
+
+User report: on the last goal of the Norway v Côte d'Ivoire WC R16 match
+(fixture `1564789`), the per-event `_s3_videos[].rank` values came back as
+`0`, `2`, `3` — `0` shouldn't exist (ranks are 1-indexed per the docs),
+and `1` is missing entirely. So `recalculate_video_ranks` is doing
+something wrong on at least this fixture.
+
+Suspects to investigate, none verified yet:
+
+- **Off-by-one in `recalculate_video_ranks`** — if the sort step is
+  enumerated starting at `0` instead of `1`, the rank field gets
+  written as `0..N-1` instead of `1..N`. Cheap mistake, easy fix.
+- **Race between concurrent rank recalcs.** Two UploadWorkflow batches
+  for the same event firing `recalculate_video_ranks` simultaneously
+  could each write a partial rank set, leaving gaps. The UploadWorkflow
+  serialization invariant is supposed to prevent this — but if the
+  serialization broke at any point this match, gaps are how it would
+  show.
+- **Partial-write under failure.** If `recalculate_video_ranks` writes
+  rank `1`, then crashes before writing `2`/`3`, retry could pick up
+  with `2`/`3` and skip `1`. Or could be `replace_s3_video` /
+  `update_video_in_place` writing a rank=0 default into a newly-replaced
+  video and the recalc not running afterwards.
+- **Sort key tie-break collapse.** Sort is verified → popularity →
+  file_size. If two videos are identical in all three (verified,
+  popularity=0, same byte size), the sort is unstable and could assign
+  the same rank twice (then re-sort fixes the obvious case but not
+  always). Worth checking what the actual values look like for the
+  affected event.
+
+Connects to [`docs/design-audit.md`](./design-audit.md) **§4** (the
+dedup re-arch puts the rank on the `video_assets` canonical row, not
+per-event copies — eliminates the "rank drift across copies" failure
+mode). But the *bug as it shows today* is a today-bug worth fixing in
+the current shape before §4 lands.
+
+**Reproduction**: query `fixtures_completed` (or `fixtures_active` if
+still live) for `_id: 1564789`, walk the events, dump `_s3_videos`
+with `rank`, `timestamp_verified`, `popularity`, `file_size`. Compare
+against what `recalculate_video_ranks` would compute given that
+sorted set.
+
+---
+
 ## 🚨 Operations — surfaced 2026-06-30 (Netherlands-Morocco post-mortem)
 
 ### ✅ Prod was running 7-week-old images (DEPLOYED 2026-06-30 05:30 UTC)
