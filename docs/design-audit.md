@@ -167,80 +167,358 @@ workflow-lifecycle concerns.
 
 ---
 
-## 3. Data model — Mongo vs Postgres, plus schema discipline
+## 3. Data model — Mongo discipline, typing, identity
 
-You said you've been preferring Postgres lately. Honest read on whether
-that fits this project:
+**The constraint settled before this audit started.** You committed to
+Mongo + the 5/6-collection split + embedded events / videos arrays
+because the hot path runs `$addToSet` + nested-document updates every
+30 s, and Mongo handles those natively in ways Postgres's JSONB
+columns wouldn't match without losing the document-model ergonomics.
+That decision stays — the question isn't "what store" but "how do we
+get *discipline* out of Mongo so we stop paying for its permissiveness
+at write time."
 
-**Current access patterns.**
+**Current access patterns — Mongo is fitted for these.**
 
-| Pattern                                         | Frequency | Mongo today | Postgres alternative |
-| ----------------------------------------------- | --------- | ----------- | -------------------- |
-| Find fixture by ID                              | constant  | trivial     | trivial |
-| Find events of a fixture                        | constant  | trivial (embedded) | one-join |
-| Find videos of an event                         | constant  | trivial (embedded) | two-join or JSONB |
-| Append workflow ID to event's tracking array    | constant  | `$addToSet` atomic | array column + `array_append` (atomic but verbose) |
-| Cross-fixture: "find recent goals by player X"  | rare      | aggregate pipeline | clean SQL |
-| Cross-fixture: "stats over fixtures by league"  | rare      | aggregate pipeline | clean SQL |
+| Pattern                                         | Frequency | Mongo today                          |
+| ----------------------------------------------- | --------- | ------------------------------------ |
+| Find fixture by ID                              | constant  | trivial                              |
+| Find events of a fixture                        | constant  | trivial (embedded)                   |
+| Find videos of an event                         | constant  | trivial (embedded)                   |
+| Append workflow ID to event's tracking array    | constant  | `$addToSet` atomic                   |
+| Cross-fixture: "recent goals by player X"       | rare      | aggregate pipeline                   |
+| Cross-fixture: "stats over fixtures by league"  | rare      | aggregate pipeline                   |
 
-**Where Mongo earns its keep.** Embedded events + embedded `_s3_videos`
-arrays + `$addToSet` idempotency. These are exactly the operations the
-hot path runs every 30 seconds, and Mongo handles them natively. Doing
-the equivalent in Postgres means JSONB columns (which is just Mongo
-storage with less idiomatic access) or normalized tables (which makes
-the hot-path queries multi-join).
+The hot path is fully native; cold reporting is awkward but not a
+bottleneck. Verdict on Mongo-vs-Postgres: **keep Mongo**, not as a
+compromise but because the embedded model genuinely fits this workload.
 
-**Where Mongo is biting.**
+**Lived problems — Mongo's permissiveness as ambient cost.**
 
-1. **No FK constraints.** `event._twitter_aliases` is a denormalized
-   snapshot of `team_aliases.{team_id}.twitter_aliases` at the moment
-   the TwitterWorkflow ran. If aliases get updated, the event's snapshot
-   is stale. This isn't a bug — it's by-design — but the lack of *any*
-   constraint means we can't tell whether a discrepancy is "expected
-   denormalization" or "data corruption."
-2. **No schema validation.** Mongo accepts whatever shape we write. The
-   audit catalogued patterns where field names diverged
-   (`_s3_videos` vs `s3_videos` — the MD5-dedup silent miss in
-   `upload.py:352`). Mongo would have happily stored either.
-3. **Event-ID uniqueness via string concatenation.**
-   `f"{fixture}_{team}_{player}_{type}_{seq}"` is the primary key, but
-   uniqueness is enforced only by sequence-number bookkeeping in code.
-   If two MonitorWorkflows race on a new event detection, both could
-   compute the same sequence and overwrite. Mongo doesn't help.
-4. **47 `except Exception: return [] / False / None` patterns** in
-   `mongo_store.py` history (per the May audit). Mongo's error surface
-   is wide and we've been swallowing it everywhere.
+1. **No schema validation, no field-name guard.** Mongo accepts
+   whatever shape we write. The MD5-dedup silent miss in
+   `upload.py:352` (`s3_key` vs `_s3_key`) would have been a startup
+   error with a JSON Schema validator; instead it cost weeks of
+   undetected dedup drift.
+2. **Event-ID uniqueness via string concatenation, race-prone.**
+   `_event_id = f"{fixture}_{team}_{player}_{type}_{seq}"` — the
+   sequence number is bookkept in app code. Two MonitorWorkflows can
+   both detect "Goal by player 234, no prior" within the same poll
+   cycle, both compute `seq=1`, both write `_event_id = "5000_40_234_Goal_1"`.
+   First wins; second silently overwrites. Rare but real, and there's
+   no constraint to catch it.
+3. **Event-ID is also workflow-ID, also Mongo key, also log key, also
+   `_telemetry` partition key.** One string serves five purposes. When
+   the API re-attributes the scorer mid-match (the `feature/event-matching`
+   branch's whole problem), the event_id either drifts (breaking
+   everything that referenced the old one) or stays stale (breaking
+   the new-attribution case).
+4. **`event._twitter_aliases` denormalized snapshot.** It's a
+   point-in-time copy of `team_aliases.{team_id}.twitter_aliases` taken
+   when the TwitterWorkflow spawned. Intentional (don't re-resolve mid-
+   search), but with no constraint or "snapshot_at" timestamp, you can't
+   tell whether the stale snapshot is *by design* or *corruption*.
+5. **47 `except Exception: return [] / False / None` patterns** in
+   `mongo_store.py` history (per May `audit.md`). Phase 1 typed errors
+   landed at the activity boundary; haven't pushed into the data
+   layer. Swallowed Mongo errors are still indistinguishable from
+   "no data" to callers.
+6. **Six collections, zero declared invariants.** What fields are
+   required on a fixture document? Which are nullable mid-lifecycle?
+   What's the valid set of `fixture.status.short` values? The answer
+   to all of these lives in scattered code paths and reader memory.
+7. **No write-time typing.** Activities pass `dict`s into
+   `mongo_store` methods. Pydantic v1 was used early in some places
+   then abandoned. Renaming a field is a global grep, not a type
+   error.
 
-**Verdict.** Keep Mongo. Migrating to Postgres would change every
-access pattern in the codebase for benefits that don't materialize on
-the hot path (where Mongo's embedded model is genuinely better) — only
-on the cold reporting queries (where one-off SQL would be cleaner but
-isn't the bottleneck).
+**The missing primitive.** Three pillars, none of which exists today:
+(a) a write-time **typed Python model layer** so dicts at the
+mongo-store boundary become type errors at import; (b) **MongoDB-side
+schema validators** so anything that slips past (a) is rejected at the
+storage layer; (c) **identity discipline** so `_event_id` stops being a
+string-concat that races and starts being a stable handle.
 
-**Invest in instead:**
+**Proposed methodology — three pillars + identity migration.**
 
-- **JSON Schema validation on writes.** Mongo 7 supports
-  [JSON Schema validators](https://www.mongodb.com/docs/manual/core/schema-validation/);
-  declare them per-collection. Eliminates field-name drift bugs by
-  rejecting bad writes at the database layer.
-- **A typed Python layer (Pydantic) around document writes.** `mongo_store`
-  methods take Pydantic models, not dicts. Pydantic emits the document
-  in the validator-compatible shape. Field renames become type errors
-  at the import boundary.
-- **UUID-based `_event_id`.** Stop concatenating strings. Mint a
-  `uuid.uuid4()` at first detection, store the
-  `{fixture, team, player, type, seq}` tuple in a side-field for
-  display. Eliminates the sequence-race risk and the
-  "rebuild_event_id_if_player_changes" gymnastics.
-- **Typed errors at the data layer**, not `except Exception`. Phase 1
-  introduced typed errors at activity boundaries; push the same
-  discipline down into `mongo_store` so swallowed Mongo errors become
-  visible.
+### Pillar A: Pydantic models as the write-time contract
 
-**Scope sketch.** M. JSON Schema validators are S per collection (×6).
-Pydantic wrap is M (touches every write site). UUID event IDs are M
-(touches `_event_id` everywhere — workflow IDs reference it, telemetry
-keys it). Typed-Mongo-errors is S layered on Phase 1.
+A new `src/data/models/` package owns the canonical types. Activities
+construct models, pass them to `mongo_store` methods that accept
+typed inputs only. Field renames become type errors at the `import`
+boundary.
+
+```python
+# src/data/models/event.py
+from datetime import datetime
+from typing import Literal
+from pydantic import BaseModel, ConfigDict, Field
+
+EventType = Literal["Goal", "Card", "subst", "Var"]
+
+class Player(BaseModel):
+    id: int | None
+    name: str | None  # null until API identifies scorer
+
+class Team(BaseModel):
+    id: int
+    name: str
+
+class EventTime(BaseModel):
+    elapsed: int          # match minute reported by API
+    extra: int | None     # +N stoppage time
+
+class Telemetry(BaseModel):
+    """Phase 1 per-event telemetry, see §7."""
+    search_attempts: int = 0
+    videos_discovered: int = 0
+    videos_downloaded: int = 0
+    download_failure_classes: dict[str, int] = Field(default_factory=dict)
+    validation_pass_rate: float | None = None
+    primary_failure_class: str | None = None
+    time_to_first_s3_seconds: float | None = None
+
+class Event(BaseModel):
+    """An API-reported event with our enhancement fields layered on."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    # Identity — see Pillar C below
+    event_id: str = Field(alias="_event_id")
+    event_natural_key: str | None = Field(default=None, alias="_event_natural_key")
+
+    # API fields (mutable; refreshed each poll)
+    type: EventType
+    detail: str
+    player: Player | None
+    team: Team
+    time: EventTime
+
+    # Our enhancement fields (prefixed _ in Mongo)
+    first_seen: datetime = Field(alias="_first_seen")
+    monitor_workflows: list[str] = Field(default_factory=list, alias="_monitor_workflows")
+    monitor_complete: bool = Field(default=False, alias="_monitor_complete")
+    twitter_aliases: list[str] = Field(default_factory=list, alias="_twitter_aliases")
+    twitter_aliases_snapshot_at: datetime | None = Field(default=None, alias="_twitter_aliases_snapshot_at")
+    discovered_videos: list[DiscoveredVideo] = Field(default_factory=list, alias="_discovered_videos")
+    download_workflows: list[str] = Field(default_factory=list, alias="_download_workflows")
+    download_complete: bool = Field(default=False, alias="_download_complete")
+    s3_videos: list[str] = Field(default_factory=list, alias="_s3_videos")  # share IDs (see §4)
+    telemetry: Telemetry | None = Field(default=None, alias="_telemetry")
+    removed: bool = Field(default=False, alias="_removed")
+```
+
+Note that the snapshot-at addition on `twitter_aliases` (problem 4) is
+purely a documentation aid surfaced *by the type* — present means
+"intentional snapshot," absent means "not yet resolved." Discrepancy
+between snapshot and current team_aliases is then visibly intentional.
+
+### Pillar B: MongoDB-side JSON Schema validators
+
+For every collection, declare a JSON Schema validator at creation time
+(or via `collMod` on existing collections). Mongo enforces shape at
+write — anything that slips past Pydantic still gets rejected at the
+storage boundary.
+
+```javascript
+db.runCommand({
+  collMod: "fixtures_active",
+  validator: {
+    $jsonSchema: {
+      bsonType: "object",
+      required: ["_id", "fixture", "teams", "league", "_activated_at", "events"],
+      properties: {
+        _id: { bsonType: "int" },
+        fixture: {
+          bsonType: "object",
+          required: ["id", "date", "status"],
+          properties: {
+            status: {
+              bsonType: "object",
+              required: ["short"],
+              properties: {
+                short: { enum: ["NS","TBD","1H","HT","2H","ET","BT","P","LIVE","SUSP","INT","PST"] },
+                elapsed: { bsonType: ["int","null"] },
+                extra: { bsonType: ["int","null"] }
+              }
+            }
+          }
+        },
+        _activated_at: { bsonType: "date" },
+        events: {
+          bsonType: "array",
+          items: {
+            bsonType: "object",
+            required: ["_event_id", "type", "_first_seen"],
+            properties: {
+              _event_id: { bsonType: "string", pattern: "^(e_[a-f0-9]{12}|\\d+_\\d+_\\d+_[A-Za-z]+_\\d+)$" },
+              type: { enum: ["Goal","Card","subst","Var"] },
+              _monitor_workflows: { bsonType: "array", items: { bsonType: "string" } },
+              _telemetry: { bsonType: ["object","null"] }
+            }
+          }
+        }
+      }
+    }
+  },
+  validationLevel: "strict",
+  validationAction: "warn"   // ← "warn" during migration, then "error" once stable
+})
+```
+
+The `_event_id` pattern accepts BOTH the legacy `5000_40_234_Goal_1`
+shape and the new `e_<12-hex>` UUID shape during migration —
+backward-compatible read, forward-compatible write.
+`validationAction: "warn"` logs violations but accepts the write
+through; flip to `"error"` once the warning rate is zero (i.e., all
+write paths are emitting valid shapes). The `validator` itself stays
+declarative; it's data, not code.
+
+### Pillar C: UUID-based `_event_id` with a natural-key sidecar
+
+Stop concatenating strings. Mint a short-prefix UUID at first
+detection, store the original natural key as a sidecar for display
+and substring queries.
+
+```python
+import uuid
+
+def mint_event_id() -> str:
+    """e_<12-hex> — collision-proof, fixed-length, sortable enough."""
+    return f"e_{uuid.uuid4().hex[:12]}"
+
+# When MonitorWorkflow detects a new event:
+new_event = Event(
+    event_id=mint_event_id(),
+    event_natural_key=f"{fixture_id}_{team_id}_{player_id}_{event_type}_{seq}",
+    type=event_type,
+    player=player,
+    team=team,
+    time=time,
+    first_seen=datetime.now(tz=UTC),
+)
+```
+
+The sequence-race risk (problem 2) goes away: two MonitorWorkflows
+detecting "Goal by player 234" concurrently mint two different UUIDs,
+both insert, both visible. Mongo deduplicates via a unique-index on
+`(_id, events._event_natural_key)` if you want strict one-event-per-
+natural-key semantics, or you accept both and let the 3-poll debounce
+collapse them at the natural-key level. (Recommend the latter — the
+race window is small enough that the debounce naturally handles it.)
+
+**Workflow ID conventions update.** From [§2](#2-workflow-id-conventions-and-identity):
+- `twitter-{event_id}` → `twitter-e_a1b2c3d4e5f6`
+- `download-{NN}-{event_id}` → `download-03-e_a1b2c3d4e5f6`
+- `upload-{event_id}` → `upload-e_a1b2c3d4e5f6`
+
+Lose the human-readable substring in workflow IDs, gain stability.
+Temporal UI search can still find by natural-key via the
+`event_natural_key` sidecar exposed in the workflow's input arguments
+(searchable as `Attribute.eventNaturalKey="5000_40_234_Goal_1"`).
+
+**`_event_id` migration mechanics.** This is the part that's
+non-trivial — every existing reference must stay readable:
+
+| Reference site                                 | Handling                                       |
+| ---------------------------------------------- | ---------------------------------------------- |
+| Mongo `events[].event_id` (string)             | Accept both formats via pattern in validator   |
+| Workflow IDs in flight at deploy time          | Stay valid (Temporal doesn't reject by format) |
+| `_monitor_workflows[]` / `_download_workflows[]` arrays containing string-format event IDs | Stay readable (`$addToSet` doesn't care) |
+| Loki / Grafana queries that filter by event_id substring | Add `event_natural_key` as a parallel filter; keep both working |
+| `mongo_store` query methods using event_id     | Methods accept either format (Pydantic-side coercion or transparent) |
+| `fixtures_completed` historical documents       | Never rewritten — stay in legacy format forever |
+
+The `event_natural_key` sidecar is the "the human still wants this" handle.
+Logs continue to show "Goal by Szoboszlai at 23′" via the natural key;
+the workflow lineage tracks via UUID.
+
+### Pillar D: Typed errors at the data layer
+
+Push the Phase 1 typed-error discipline down into `mongo_store`. Today's
+`except Exception: return None` patterns get replaced with typed-error
+raises:
+
+```python
+# src/utils/errors.py — extend the Phase 1 taxonomy
+class MongoConflictError(FootyError):     # DuplicateKeyError, etc.
+    pass
+
+class MongoTransientError(FootyError):    # NotPrimaryError, network, etc. — retry-eligible
+    retry_eligible = True
+
+class MongoPermanentError(FootyError):    # validator rejection, malformed query
+    retry_eligible = False
+```
+
+Callers can now reason about the error: transient → retry; permanent →
+log + raise; conflict → handle (e.g. fall back to read-after-write).
+
+### Migration path
+
+1. **Land `src/data/models/` package.** Pydantic types for all
+   existing collection shapes. No enforcement; activities can keep
+   passing dicts. (S)
+2. **Add JSON Schema validators to all six collections via
+   `collMod`, in `validationAction: "warn"` mode.** Log violations,
+   accept writes. Watch Loki for warnings. (S × 6 = M)
+3. **Gradually convert `mongo_store` methods to accept Pydantic
+   models, then *only* Pydantic models.** The acceptance-of-dicts
+   removal is the brittle moment — gate on "Loki shows zero validator
+   warnings for 1 week" before flipping each collection's method set
+   to typed-only. (M)
+4. **Land UUID minting for new events, sidecar natural key.**
+   `_event_id` writes the UUID; reads accept both formats. Workflow ID
+   construction switches to UUID format. (M)
+5. **Update Loki dashboards / saved queries to handle both event_id
+   formats.** (S)
+6. **Flip validators from `warn` to `error`** once the warning rate
+   has been zero for 1 week. (S)
+7. **Push typed errors into `mongo_store`.** Replace each
+   `except Exception` with classified raises. (M)
+8. **Historical `fixtures_completed` documents stay in legacy
+   format.** Read-side code accepts both indefinitely. No backfill
+   mutation needed. (S, ongoing read-compat)
+
+Each step is independently shippable and reversible.
+
+### What this unlocks downstream
+
+- **[§4](#4) `video_assets` / `video_shares` schemas** get typed from
+  day one — every field is declared in `src/data/models/`, validated
+  at write.
+- **[§7](#7) error recovery** gets richer error classes to act on
+  (`MongoConflictError` → retry-with-lookup, etc.).
+- **[§11](#11) FastAPI response models** can reuse the same Pydantic
+  types — no duplication between API DTOs and storage models.
+- **[§12](#12) testing** gets free generators (Pydantic models →
+  factories → synthetic fixture lifecycle harness).
+- **[§13](#13) code organization** gets the typed domain models the
+  per-domain bundles are organized around.
+
+### Sub-piece scope table
+
+| Sub-piece                                                 | Size |
+| --------------------------------------------------------- | ---- |
+| `src/data/models/` package (all collection types)         | S    |
+| JSON Schema validators × 6 collections (`warn` mode)      | M    |
+| Pydantic-only acceptance at `mongo_store` write boundary  | M    |
+| UUID `_event_id` minting + sidecar                        | M    |
+| Workflow ID convention update (§2 lands here too)         | S    |
+| Loki / Grafana update for dual event_id formats           | S    |
+| Validator flip from `warn` to `error`                     | S    |
+| Typed-Mongo-errors layered on Phase 1                     | S    |
+
+Total **L** when sequenced as one phase; **M** if you do the
+discipline pillars (A + B + D) in one pass and defer Pillar C (UUID)
+to a follow-up. Recommend doing all four together — Pillar C makes
+the workflow ID work in [§2](#2) clean instead of layered, and the
+typed models are far more useful when they enforce identity discipline
+than when they're just structural.
+
+This is the highest-leverage *foundational* deepening because every
+other rewrite phase reuses its outputs. Run it after [§1](#1) (deploy
+gate so we're confident "main is prod") and before [§4](#4) (dedup
+re-arch) and [§13](#13) (code re-org).
 
 ---
 
