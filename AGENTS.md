@@ -38,6 +38,7 @@ See `deploy/INFRA-NOTES.md` for Caddy routes + cross-project network setup.
 
 ## Where to look first
 
+- @docs/README.md — **docs/ routing index + intake rules + after-session checklist.** Start here when you need to find or add permanent project knowledge.
 - @README.md — public-facing project description
 - @docs/architecture.md — 5-collection MongoDB design, workflow hierarchy, video pipeline, scoped dedup, schemas, activity reference
 - @docs/orchestration.md — event lifecycle state machine, debouncing, VAR handling
@@ -72,6 +73,52 @@ backend, vedanta-systems hosts the UI.
 - **Tailnet identifier**: do NOT commit the FQDN to any tracked file. `.env` is gitignored; `.env.example` uses placeholders. `<base-domain>` is interpolated from `BASE_DOMAIN` at compose time.
 - **Logging**: structured JSON via `src.utils.footy_logging`. Use `from src.utils.footy_logging import log` then `log.info(activity.logger, MODULE, action, msg, **fields)`. Never `print()` outside `worker.py`'s startup banner. The full module/action vocabulary lives in @docs/logging.md.
 - **Code organization**: workflows in `src/workflows/`, activities in `src/activities/` (one file per domain), data adapters in `src/data/` (`mongo_store.py`, `s3_store.py`), shared utilities in `src/utils/`. The browser-automation service lives in `twitter/` as its own Python process inside its own container.
+
+## Documentation and docstrings
+
+This project leans on **three layers of persistence**, each for a different
+kind of knowledge. Default to writing things down — the deep-pass rewrite
+goes better when prior decisions are visible.
+
+1. **`docs/`** — frozen, project-wide knowledge. Architecture, decisions,
+   roadmap, operational runbook, audit findings, design proposals. See
+   @docs/README.md for the routing index, intake rules, and the
+   after-session checklist (decisions/todo/discovered-facts/ops/stale-entries/docstrings).
+2. **Code-level docstrings** — *every* Python file gets a module-level
+   docstring; every function, method, and class gets a docstring. Policy
+   below. This is an intentional project-level override of the global
+   "default to no comments" preference — found-footy is doc-heavy by
+   design.
+3. **Per-agent auto-memory** — `~/.claude/projects/<project>/memory/` and
+   analogous paths for other agents. Reserved for *user preferences and
+   collaboration tone*. Project facts do NOT go here; they go in `docs/`
+   (per the global rule in `~/.claude/CLAUDE.md`).
+
+### Docstring policy
+
+- **Module header** (top of every `.py` file): one short paragraph
+  describing what this file is responsible for. If the file is part of a
+  larger pipeline, mention where it sits.
+- **Functions and methods**: docstring explaining purpose. Include
+  `Args:` / `Returns:` / `Raises:` blocks when they're non-obvious.
+  Single-line is fine for trivial helpers (`"""Return the team's display
+  name."""`); multi-line when invariants, caller contracts, or edge cases
+  matter.
+- **Classes**: docstring explaining the role of the class and any
+  invariants its callers should rely on.
+- **Workflows and activities** (Temporal): docstring should call out the
+  workflow ID convention, the retry semantics, and any signal /
+  start-signal contracts the activity participates in.
+- **Don't paraphrase the function name.** `def get_team_name(): """Get
+  the team name."""` is noise. Docstrings should add what the signature
+  can't.
+- **Do explain WHY when it's non-obvious.** Hidden invariants, prior
+  bugs, broadcaster-CDN quirks, replay-safety constraints — write these
+  down in the docstring, not just in a commit message.
+
+When you add or change a substantive function, update the docstring in the
+same commit. The after-session checklist in @docs/README.md includes this
+as step 6.
 
 ## Things to check before doing X
 
