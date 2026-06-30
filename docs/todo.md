@@ -8,6 +8,97 @@ Paste-ready start-of-session block. Newest items above older.
 
 ---
 
+## 🚨 Operations — surfaced 2026-06-30 (Netherlands-Morocco post-mortem)
+
+### ✅ Prod was running 7-week-old images (DEPLOYED 2026-06-30 05:30 UTC)
+
+Prod worker + twitter containers were rebuilt from images dated 7 weeks
+prior to 2026-06-30. As a result, the following committed-but-unshipped
+work had been silently missing from prod:
+- `ef16d2f feat(telemetry): per-event _telemetry + per-match completion summary (P1e)` — entire Phase 1 telemetry
+- `65164f1 fix(download): surface underlying activity error class in workflow log (P2a)` — `e.__cause__` logging
+- `cdb0d0e fix(download): DownloadWorkflow owns _download_complete via try/finally` — Phase 0 cleanup
+
+Diagnosis path: events on a recent failed match (`fixtures_completed._id: 1562345`,
+Netherlands vs Morocco, 2026-06-30) had no `_telemetry` field. Loki logs for the
+match showed `"error": "Activity task timed out"` (Temporal wrapper string)
+instead of the structured `underlying_error_class` the P2a fix was supposed to
+produce. `docker exec ... grep _extract_activity_failure /app/...` returned 0
+matches — running container did not have the function despite git having it.
+
+**Action taken**: `docker compose build worker twitter` + `up -d --no-deps`
+recreated all 4 prod (2 worker + 2 twitter) + 2 dev containers from current main.
+Cookie restore was clean, all twitter health endpoints reported `authenticated: true`.
+
+**Implication going forward**: do NOT trust that a committed bug fix is running
+in prod. Always verify with `docker exec <container> grep <new-symbol> /app/...`
+or check the image's build date against the relevant commit date. Better: add a
+build/deploy step to the workflow so this can't happen.
+
+### ✅ Firefox idle-CPU bleed in twitter containers (FIXED 2026-06-30)
+
+Each twitter container's persistent Firefox session was using ~20% CPU continuously,
+even with no active search — driven by autoplay video decoding (RDD process) and
+GIF animation loops on the loaded x.com timeline. Scaled to 8 replicas during peak
+this was ~160% of one core sustained for hours, contributing to the user's observed
+~100°C CPU temperatures during the WC R16 cluster.
+
+Fix in `twitter/session.py:_setup_browser`: added three Firefox prefs via
+`options.set_preference`:
+- `media.autoplay.default = 5` — block autoplay (kills RDD media decoder)
+- `image.animation_mode = "none"` — stop GIF loops
+- `media.suspend-bkgnd-video.enabled = true` — pause backgrounded video elements
+
+Measured: prod twitter-1 22.35% → 0.66%, twitter-2 20.77% → 0.65%, dev-twitter
+22.60% → 0.92% post-restart. ~30× reduction in idle CPU. No impact on tweet URL
+extraction (URLs live in DOM regardless of whether videos auto-decode).
+
+### Netherlands-Morocco 2026-06-30: 2 goals, 0 videos uploaded
+
+`fixtures_completed._id: 1562345`. Both goals had 10 DownloadWorkflows fire, but
+zero reached S3. Loki forensics (using `monitor-loki:3100` — see Loki memory):
+- Most discovered Twitter clips were portrait phone-cam recordings, rejected at
+  the aspect/duration filter BEFORE download. The `workflow_complete` lines show
+  `discovered:1, filtered_aspect_duration:1, downloaded:0` for each attempt.
+- Of the few that got past the filter, several `video_failed` with the generic
+  Temporal wrapper "Activity task timed out" (no underlying error class because
+  the running code was pre-P2a — see above).
+- At least one discovered URL had a **truncated Twitter snowflake ID** (13-digit
+  status instead of 18-19): `https://x.com/CarrellanJesus/status/20717932156660`.
+  This is the same bug surfaced in the 2026-05-26 Paderborn-Wolfsburg post-mortem.
+
+This is **NOT** a systemic pipeline break — every other match in the same 2-day
+window (Brazil-Japan 14 videos, Algeria-Austria 15, Congo-Uzbekistan 13, etc.)
+shipped clips normally. It was a low-quality-discovered-clips + download-timeout
+combination compounded by the missing P2a logging.
+
+With Phase 1 telemetry now actually running, the next failure of this shape will
+populate `_telemetry.download_failure_reasons` with structured counts that
+distinguish "phones-not-broadcasts" from "tweet deleted" from "geo restricted"
+from "snowflake truncated."
+
+## ⚠️ Carry-overs from the audit, still open
+
+### Workflow ID naming inconsistency (DownloadWorkflow not unified)
+
+Sprint 1 stabilized `TwitterWorkflow` to `twitter-{event_id}` and confirmed
+`UploadWorkflow` is `upload-{event_id}`. `DownloadWorkflow` still uses
+`download{N}-{team_clean}-{player_search}-{event_id}` (`twitter_workflow.py:473`).
+If the API reassigns the scorer mid-match, attempts 8+ get a different team/player
+slug from attempts 1-7 — visually inconsistent in Temporal UI and a latent risk
+against the REJECT_DUPLICATE policy. Trivial 1-line change to drop the team/player
+components; queue for the deep-pass session.
+
+### Status-ID truncation bug still biting
+
+3+ digit-shortage status IDs continue to appear in scraped tweet URLs at low
+rate. NL-Morocco confirms this is still happening 5 weeks after first surfaced.
+Source still TBD — string-ops in `twitter/session.py:590-727` look clean, so
+suspect Twitter's own DOM rendering of deleted/quoted tweets or yt-dlp
+normalization. Worth a dedicated investigation in the next pass.
+
+---
+
 ## Open bugs (priority order)
 
 ### ✅ Sprint 1 SHIPPED — Lazio Pisa cluster + correctness sweep (2026-05-26)
