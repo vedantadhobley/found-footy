@@ -5012,6 +5012,722 @@ classified a source.
 
 ---
 
-*(Remaining §7, §8, §10..§16 to follow. §6 established the discovery
-flow that §7 video pipeline consumes: DiscoveryWorkflow spawns
-DownloadWorkflow, DownloadWorkflow's activities live in §7's spec.)*
+## 7. Video pipeline
+
+The download-to-upload flow. Composes DownloadWorkflow + UploadWorkflow
+(§5) with `domain/vision` + `domain/video` + `domain/event` (§4) and
+`infra/syndication` + `infra/ffmpeg` + `infra/llm` + `infra/s3` (§9).
+
+Boundary: starts where DiscoveryWorkflow hands URLs off to
+DownloadWorkflow (§6). Ends when the event's SSE notification fires
+and `download_complete` flag flips on the event row.
+
+### Pipeline flow
+
+```
+[DiscoveryWorkflow spawns DownloadWorkflow with N video URLs]
+              │
+              ▼
+   ┌──────────────────────────────────────┐
+   │ DownloadWorkflow                     │
+   │                                      │
+   │  1. Register self (idempotency)      │  event.RegisterDownloadWorkflow
+   │  2. Parallel download                │  infra/syndication.DownloadVideo
+   │  3. Filter (aspect / duration / res) │  discovery.Service filters
+   │  4. MD5 batch dedup                  │  video.Service.DedupBatchByMD5
+   │  5. Sequential AI validation         │  vision.Service.ValidateFrames
+   │     (respects LLM cap)               │  (smart 2-3 frame strategy)
+   │  6. Timestamp verification           │  vision.Service.VerifyTimestamp
+   │     (±3 min, stoppage OCR fix)       │
+   │  7. Parallel dHash generation        │  vision.Service.ComputeDHashDense
+   │  8. Signal UploadWorkflow            │  workflow.SignalWithStartWorkflow
+   │  9. Update event telemetry           │  event.UpdateTelemetry
+   └──────────────┬───────────────────────┘
+                  │  UploadBatchSignal
+                  ▼
+   ┌──────────────────────────────────────┐
+   │ UploadWorkflow (per-event serialized)│
+   │  id = "upload-<event_uuid>"          │
+   │                                      │
+   │  Loop until idle-timeout (5min):     │
+   │    Wait signal channel               │
+   │    For each batch received:          │
+   │      a. Atomic hash dedup            │  video.Service.UpsertWithHashDedup
+   │      b. New? upload to S3            │  infra/s3.Upload
+   │         Reused? delete local temp    │  os.Remove
+   │      c. Mint share (rank=0 temp)     │  video.Service.MintVideoShare
+   │      d. RecalculateShareRanks        │  video.Service.RecalculateRanks
+   │         (REPEATABLE READ, retry)     │  (partial UNIQUE INDEX enforces)
+   │      e. NotifyEventLog               │  activity.NotifyEventLog
+   │         "event.video_ready"          │  (INSERT + NOTIFY, SSE fan-out)
+   │  After all batches:                  │
+   │    Try flag download_complete        │  event.TryMarkDownloadComplete
+   │    If flipped: notify event log      │
+   └──────────────────────────────────────┘
+```
+
+### DownloadWorkflow step-by-step
+
+**Step 1: Register self (idempotency invariant).**
+
+FIRST call in the workflow. Retry hard (5 attempts, 2× backoff from 2s)
+because if this fails, we lose the ability to count this workflow
+toward the 10-download completion threshold.
+
+```go
+workflowID := workflow.GetInfo().WorkflowExecution.ID
+count, err := workflow.ExecuteActivity(
+    ctx,
+    activity.RegisterEventDownloadWorkflow,
+    input.EventID,
+    workflowID,
+    (*string)(nil),  // outcome pending; will UPDATE in step 9
+).Get(ctx, &count)
+```
+
+`event_download_workflows` primary key is `(event_id, workflow_id)`.
+Duplicate registration is a no-op; idempotent by construction.
+
+**Step 2: VAR liveness check.**
+
+```go
+alive, err := workflow.ExecuteActivity(
+    ctx, activity.CheckEventStillLive, input.EventID,
+).Get(ctx, &alive)
+if !alive {
+    // VAR aborted; skip to signal-empty-upload step for completion tracking
+    return signalEmptyUpload(ctx, input.EventID)
+}
+```
+
+**Step 3: Parallel downloads via `workflow.Go`.**
+
+Each video in `input.Videos` (up to 5 per attempt from §6's scoring)
+downloads independently. Failures don't cascade — one 403 doesn't
+abort the others.
+
+```go
+type downloadOutcome struct {
+    idx       int
+    result    *syndication.DownloadResult
+    videoMeta discovery.DiscoveredVideo
+    err       error
+}
+
+var downloadFutures []workflow.Future
+for i, video := range input.Videos {
+    i, video := i, video  // capture per goroutine
+    fut := workflow.ExecuteActivity(
+        ctx,
+        activity.DownloadVideo,
+        video.TweetURL, i, input.EventID,
+    )
+    downloadFutures = append(downloadFutures, fut)
+}
+
+var outcomes []downloadOutcome
+for i, fut := range downloadFutures {
+    var res *syndication.DownloadResult
+    err := fut.Get(ctx, &res)
+    outcomes = append(outcomes, downloadOutcome{
+        idx: i, result: res, videoMeta: input.Videos[i], err: err,
+    })
+}
+```
+
+The activity's retry policy handles transient errors. Non-retryable
+classes (`ErrURLMalformed`, `VideoGeoRestrictedError`,
+`VideoNotAvailableError`, `VideoDeletedError`) fail fast and get
+recorded in `failure_classes` counter for telemetry.
+
+**Step 4: MD5 batch dedup.**
+
+Multiple discovered videos may be byte-identical (people re-tweet or
+same broadcaster clip appears from multiple accounts). Drop exact
+duplicates within this batch before spending LLM budget.
+
+```go
+survivors, batchDupes := deduplicateByMD5(outcomes)
+```
+
+Pure Go, no activity — it's ~20 lines of map iteration on downloaded
+files' MD5s. Lives in `internal/domain/video.DedupBatchByMD5(files)`.
+
+**Step 5: Sequential AI validation.**
+
+This is where the LLM cap enforcement lives. Sequential — not parallel —
+because `internal/infra/llm` maintains a per-worker-process semaphore of
+2. Running validation in parallel would just queue at the semaphore, not
+gain concurrency.
+
+```go
+type validated struct {
+    outcome           downloadOutcome
+    validationResult  *vision.ValidationResult
+    keepBecause       string  // for telemetry
+}
+
+var validated []validated
+for _, outcome := range survivors {
+    // Skip if the download failed
+    if outcome.err != nil {
+        recordFailureClass(outcome.err)
+        continue
+    }
+
+    // Frame extraction: 25%, 75% first pass
+    frames, err := workflow.ExecuteActivity(
+        ctx,
+        activity.ExtractFramesForValidation,
+        outcome.result.FilePath,
+        outcome.result.Duration,
+        []float64{0.25, 0.75},
+    ).Get(ctx, &frames)
+    if err != nil {
+        recordFailureClass(err)
+        continue
+    }
+
+    // Vision validation with smart 2-3 strategy
+    vr, err := workflow.ExecuteActivity(
+        ctx,
+        activity.ValidateVideoIsSoccer,
+        frames, input.APIElapsed, input.APIExtra,
+    ).Get(ctx, &vr)
+    if err != nil {
+        recordFailureClass(err)
+        continue
+    }
+
+    // Verdict handling
+    switch vr.Verdict {
+    case vision.VerdictAccepted:
+        validated = append(validated, validated{outcome, vr, "accepted"})
+    case vision.VerdictRejectedClockMismatch:
+        // Store the video anyway but mark as unverified — audit §4 scoped dedup
+        validated = append(validated, validated{outcome, vr, "unverified"})
+    default:
+        // Non-soccer, phone-screen, inconclusive → drop
+        recordRejectionClass(vr.Verdict)
+    }
+}
+```
+
+**Smart 2-3 frame strategy inside `ValidateVideoIsSoccer` activity:**
+
+The vision domain owns this. The activity is a thin wrapper. What
+happens inside:
+
+```go
+// vision.Service.ValidateFrames — from §4
+func (s *Service) ValidateFrames(ctx context.Context, frames []Frame) (*ValidationResult, error) {
+    if len(frames) < 2 {
+        return nil, ErrInsufficientFrames
+    }
+
+    // First LLM call: two frames
+    resp1, err := s.llm.ChatCompletionMultiImage(ctx, llm.MultiImageRequest{
+        Model:      s.chatModel,
+        ImagesJPEG: [][]byte{frames[0].JPEGBytes, frames[1].JPEGBytes},
+        Prompt:     s.validationPrompt,
+        MaxTokens:  200,
+        ResponseFormat: &llm.ResponseFormat{Type: "json_object"},
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    per1, per2, err := parseValidationResponse(resp1.Content, 2)
+    if err != nil {
+        return nil, err
+    }
+
+    // Do the two frames agree on SOCCER/SCREEN?
+    if per1.IsSoccer == per2.IsSoccer && per1.IsPhoneScreen == per2.IsPhoneScreen {
+        // Agreement — 2-frame verdict is final
+        return buildVerdict(per1, per2, nil), nil
+    }
+
+    // Disagreement — pull tiebreaker frame at 50% and reask on ONE image
+    tieFrame, err := s.ffmpeg.ExtractFrame(ctx, frames[0].videoPath, 0.5*frames[0].videoDurationSecs, 90)
+    if err != nil {
+        // Can't get tiebreaker; return inconclusive
+        return buildVerdict(per1, per2, nil), nil
+    }
+
+    resp2, err := s.llm.ChatCompletionMultiImage(ctx, llm.MultiImageRequest{
+        Model:      s.chatModel,
+        ImagesJPEG: [][]byte{tieFrame},
+        Prompt:     s.validationPrompt,
+        // ...
+    })
+    per3, _ := parseValidationResponse(resp2.Content, 1)
+    return buildVerdict(per1, per2, per3), nil
+}
+```
+
+Empirically saves ~33% of LLM calls on straightforward matches. When
+25% and 75% both clearly show soccer+broadcast, we skip the tiebreaker.
+
+**Structured JSON response format:**
+
+The LLM prompt requests:
+
+```json
+{
+  "frame_1": {
+    "SOCCER": "yes",
+    "SCREEN": "no",
+    "CLOCK": "45:23",
+    "ADDED": "+2",
+    "STOPPAGE_CLOCK": ""
+  },
+  "frame_2": {
+    "SOCCER": "yes",
+    "SCREEN": "no",
+    "CLOCK": "45:34",
+    "ADDED": "+2",
+    "STOPPAGE_CLOCK": ""
+  }
+}
+```
+
+Parsed into `[]ClockExtraction` per §4 vision domain. The `CLOCK` field
+is the main broadcast timer (running clock), `ADDED` is "+N" indicator,
+`STOPPAGE_CLOCK` is a separate sub-timer that appears during stoppage
+(shows on-screen as e.g. "45+ 2:36" where 2:36 is `STOPPAGE_CLOCK`).
+
+**Step 6: Timestamp verification.**
+
+```go
+tsv := s.vision.VerifyTimestamp(input.APIElapsed, input.APIExtra, vr.ClockExtractions)
+if tsv.Verified {
+    // Attach to validated result
+    validated[i].timestampVerified = true
+    validated[i].extractedMinute = *tsv.ExtractedMinute
+} else {
+    // Kept but marked unverified — audit §4 scoped dedup pool
+    validated[i].timestampVerified = false
+}
+```
+
+**Smart stoppage OCR correction** lives in `VerifyTimestamp`. When the
+vision model reads "02:36" (thinking it's the stoppage sub-clock, so
+it's the minute:second part after the 45+) but the actual absolute
+minute should be 92 (45+47 with stoppage), the naive parse gets 2.
+Retry with `api_elapsed + parsed` = 90+2 = 92 → within ±3 of API's
+90+2 = 92 → verified. Documented in `vision.Service.VerifyTimestamp`
+comments.
+
+**Step 7: Parallel dHash generation.**
+
+Runs per-video via `workflow.Go`. Each activity dense-samples at 0.25s
+intervals + heartbeats every 5 frames.
+
+```go
+var hashFutures []workflow.Future
+for i, v := range validated {
+    fut := workflow.ExecuteActivity(
+        ctx,
+        activity.GenerateVideoHash,
+        v.outcome.result.FilePath,
+        v.outcome.result.Duration,
+    )
+    hashFutures = append(hashFutures, fut)
+}
+
+for i, fut := range hashFutures {
+    var h vision.DenseHashSamples
+    if err := fut.Get(ctx, &h); err != nil {
+        recordFailureClass(err)
+        continue
+    }
+    validated[i].hashSamples = h
+}
+```
+
+The hash activity has `heartbeat_timeout: 60s`, `start_to_close: 300s`
+(some very long clips can take a couple of minutes). Heartbeats
+every 5 frames prove liveness.
+
+**Step 8: Signal UploadWorkflow.**
+
+Always — even for empty batches. Audit §7 lived problem: empty-batch
+suppression was how events got stuck at `download_complete=false`
+forever.
+
+```go
+batch := UploadBatchSignal{
+    BatchID: uuid.New(),
+    Files:   materializeUploadFiles(validated),
+}
+
+uploadWorkflowID := fmt.Sprintf("upload-%s", input.EventID.String())
+_, err := workflow.SignalExternalWorkflow(
+    ctx,
+    uploadWorkflowID, "",  // empty runID = current run
+    "add_videos",
+    batch,
+).Get(ctx, nil)
+```
+
+Wait — that's WRONG. The FIRST DownloadWorkflow for an event has no
+UploadWorkflow to signal-to yet. Need `SignalWithStartWorkflow`:
+
+```go
+// Actual pattern
+c := temporal.MustClientFromWorkflowCtx(ctx)
+_, err := c.SignalWithStartWorkflow(
+    ctx,
+    uploadWorkflowID,       // deterministic per event
+    "add_videos", batch,    // signal name + payload
+    client.StartWorkflowOptions{
+        TaskQueue: cfg.TaskQueue,
+        WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
+    },
+    workflow.UploadWorkflow,
+    workflow.UploadWorkflowInput{EventID: input.EventID, FixtureID: input.FixtureID},
+)
+```
+
+Signals FIFO on delivery. Multiple DownloadWorkflows racing to signal
+just queue their batches; UploadWorkflow processes them in order.
+
+**Step 9: Update event telemetry + registration outcome.**
+
+```go
+// Update the registration row's outcome_class with what we observed
+outcomeClass := classifyBatchOutcome(validated, len(input.Videos))
+_, _ = workflow.ExecuteActivity(
+    ctx,
+    activity.RegisterEventDownloadWorkflow,
+    input.EventID, workflowID, &outcomeClass,  // updates existing row
+).Get(ctx, nil)
+
+// Merge failure-class counters into event telemetry
+_, _ = workflow.ExecuteActivity(
+    ctx,
+    activity.UpdateEventTelemetry,
+    input.EventID,
+    event.TelemetryPatch{
+        SearchAttemptsInc:              0,
+        VideosDiscoveredInc:            0,
+        VideosDownloadedInc:            len(validated),
+        DownloadFailureClassesInc:      failureCounters,
+        ValidationPassRateSample:       &passRate,
+    },
+).Get(ctx, nil)
+```
+
+`outcomeClass` values: `"success"`, `"empty_after_filter"`,
+`"empty_after_validation"`, `"all_geo_restricted"`,
+`"all_downloads_failed"`, `"llm_unavailable"`, etc.
+
+### UploadWorkflow per-batch processing
+
+Details of what happens inside the `for` loop from §5's UploadWorkflow
+spec.
+
+**Step a: Atomic hash dedup.**
+
+For each file in the batch:
+
+```go
+asset, wasCreated, err := workflow.ExecuteActivity(
+    ctx,
+    activity.UpsertVideoAssetWithHashDedup,
+    input.FixtureID,
+    file.PerceptualHash, file.PerceptualHashPrefix, file.MD5,
+    file.Width, file.Height, file.DurationMs, file.FileSizeBytes,
+).Get(ctx, &asset)
+```
+
+Under the hood: single Postgres round-trip.
+
+```sql
+INSERT INTO video_assets (
+    id, fixture_id, s3_bucket, s3_key,
+    perceptual_hash, perceptual_hash_prefix, md5,
+    width, height, duration_ms, file_size_bytes,
+    popularity, first_seen_at
+) VALUES ($1, $2, $3, computed_key, $4, $5, $6, $7, $8, $9, $10, 1, NOW())
+ON CONFLICT (fixture_id, perceptual_hash) DO UPDATE
+    SET popularity = video_assets.popularity + 1
+RETURNING id, popularity, xmax = 0 AS was_created;
+```
+
+`xmax = 0` is a Postgres idiom for "was this row newly inserted (0) or
+just updated (nonzero)." Returned to the caller as `wasCreated`.
+
+Atomic. Two concurrent DownloadWorkflows uploading byte-identical clips
+both call this; one wins the INSERT, the other's ON CONFLICT bumps
+popularity. Both get back the winner's UUID.
+
+**Step b: S3 upload OR local delete.**
+
+```go
+if wasCreated {
+    // Upload the local temp file to S3
+    _, err := workflow.ExecuteActivity(
+        ctx,
+        activity.UploadFileToS3,
+        asset.ID, file.LocalPath,
+    ).Get(ctx, nil)
+} else {
+    // Asset already in S3; delete local temp file
+    _, err := workflow.ExecuteActivity(
+        ctx,
+        activity.DeleteLocalTempFile, file.LocalPath,
+    ).Get(ctx, nil)
+}
+```
+
+**Step c: Mint share.**
+
+```go
+shareID, err := workflow.ExecuteActivity(
+    ctx,
+    activity.MintVideoShare,
+    asset.ID, input.EventID,
+    file.TimestampVerified, file.ExtractedMinute,
+    0,  // temporary rank; step d recomputes
+).Get(ctx, &shareID)
+```
+
+Share ID format: `s_<12-hex>` — public, forever-stable, decoupled from
+S3 key (audit §4 URL-stability invariant).
+
+**Step d: Recalculate ranks.**
+
+Runs after every share creation because ranks depend on cross-event
+popularity that shifts with each new asset attach.
+
+```go
+_, err := workflow.ExecuteActivity(
+    ctx,
+    activity.RecalculateShareRanksForEvent,
+    input.EventID,
+).Get(ctx, nil)
+```
+
+Inside the activity: `video.ShareService.RecalculateRanksForEvent`
+runs a REPEATABLE READ transaction with retry-on-serialization-failure
+(from `infra/pg.WithRetryableTx`). Sorts active shares of the event by
+`(timestamp_verified DESC, popularity DESC, file_size_bytes DESC)` and
+UPDATEs each `rank = index+1`.
+
+The partial UNIQUE INDEX from §3
+(`CREATE UNIQUE INDEX ... ON video_shares (event_id, rank) WHERE state = 'active'`)
+enforces atomicity. If two concurrent recalculations race, the second
+one's COMMIT fails with `SerializationFailure`, `WithRetryableTx`
+re-executes the whole function, and it either succeeds (post-retry
+sees the other's updated state) or gives up after 3 attempts. The
+2026-06-30 0-0-2-3 rank bug is physically unrepresentable.
+
+**Step e: NotifyEventLog.**
+
+```go
+_, _ = workflow.ExecuteActivity(
+    ctx,
+    activity.NotifyEventLog,
+    "event.video_ready",
+    eventlog.Payload{
+        EventID:      input.EventID.String(),
+        ShareID:      shareID,
+        FixtureID:    input.FixtureID,
+        Rank:         computedRank,
+        PlayerName:   playerName,  // from event lookup
+        Minute:       eventMinute,
+    },
+).Get(ctx, nil)
+```
+
+Inside: `INSERT INTO event_log ...; NOTIFY found_footy_events '<payload>'`.
+SSE handlers in `internal/api` `LISTEN` on the channel and forward to
+connected clients. Webhook delivery worker polls `event_log` for
+undelivered `event.video_ready` and POSTs to subscribers.
+
+**After all files in batch:**
+
+```go
+// Try flag download_complete atomically (respects the 10-count threshold)
+flipped, err := workflow.ExecuteActivity(
+    ctx,
+    activity.TryFlagDownloadComplete,
+    input.EventID, 10,
+).Get(ctx, &flipped)
+
+if flipped {
+    _, _ = workflow.ExecuteActivity(
+        ctx,
+        activity.NotifyEventLog,
+        "event.download_complete",
+        eventlog.Payload{EventID: input.EventID.String(), FixtureID: input.FixtureID},
+    ).Get(ctx, nil)
+}
+```
+
+### Deduplication semantics summary
+
+Three dedup layers, all with different scopes:
+
+| Layer | Scope | Implementation | Where |
+|---|---|---|---|
+| MD5 batch dedup | Within one DownloadWorkflow batch | Map by MD5 in Go | `DownloadWorkflow` step 4 |
+| Fixture-wide perceptual dedup | Cross-batch, cross-event, cross-instance | `UNIQUE (fixture_id, perceptual_hash)` + INSERT...ON CONFLICT | `UpsertVideoAssetWithHashDedup` activity |
+| Per-event rank ordering | Within a single event's shares | Partial UNIQUE INDEX + serializable transaction | `RecalculateShareRanksForEvent` activity |
+
+The fixture-wide layer is what audit §4 introduced. Prevents the
+storage bloat + popularity-vote dilution + cross-event miss + cross-
+instance race problems from the current Mongo design.
+
+### Concurrency + timing
+
+**LLM cap enforcement.** `internal/infra/llm` maintains a per-worker-process
+`sync.Semaphore(2)` around `ChatCompletion` and `ChatCompletionMultiImage`.
+With N worker replicas, that's up to 2N concurrent LLM calls fleet-wide.
+Not ideal — joi's actual cap is 2 fleet-wide. Audit §6 Track 1 workspace
+LLM gateway would fix this. Deferred pending nexus timing.
+
+Until then, worker registration uses
+`MaxConcurrentActivityExecutions: 2` specifically on the
+`ValidateVideoIsSoccer` activity (and `GetOrResolveTeamAliases` in
+alias domain, which also calls LLM). Semaphore + registration option
+together enforce the cap per-process.
+
+**ffmpeg subprocess cap.** `infra/ffmpeg.MaxProcesses` (default 4)
+prevents CPU fork-bomb. Frame extraction blocks at the semaphore when
+saturated. Applies within one worker process.
+
+**Postgres pool.** `pgxpool` size 25 per worker. Activities are short;
+contention should be minimal even under peak load.
+
+**S3 throughput.** `aws-sdk-go-v2` default transport pool. Not observed
+as a bottleneck against Garage on the same docker network — sub-ms
+round-trips.
+
+### Failure classification per activity
+
+Every download-pipeline activity that can fail records a typed
+`error_class` string into `event.telemetry.download_failure_classes`
+via `UpdateEventTelemetry` at step 9. The taxonomy from §5 applies:
+
+| Activity | Common classes | Retry-eligibility |
+|---|---|---|
+| `DownloadVideo` | `syndication.geo_restricted`, `syndication.not_found`, `syndication.deleted`, `syndication.timeout`, `syndication.url_malformed` | timeout retries; others don't |
+| `ExtractFramesForValidation` | `ffmpeg.timeout`, `ffmpeg.input_corrupted`, `ffmpeg.probe_failed` | timeout retries; others don't |
+| `ValidateVideoIsSoccer` | `llm.unavailable`, `llm.timeout`, `llm.cap_exceeded`, `llm.bad_response` | first three retry; bad_response doesn't |
+| `GenerateVideoHash` | `ffmpeg.timeout`, `hash.compute_failed` | timeout retries |
+| `UpsertVideoAssetWithHashDedup` | `pg.transient_infra`, `pg.duplicate_key` (== hash dedup hit — not really an error, but classified for observability) | transient retries |
+| `UploadFileToS3` | `s3.timeout`, `s3.unreachable`, `s3.access_denied` | timeout + unreachable retry; access_denied is a config bug |
+
+Distribution of these across an event's 10 download workflows is the
+post-fixture "why did we miss coverage" answer, direct from
+`event.telemetry` without Loki archaeology.
+
+### Testing shape
+
+**Workflow tests:**
+
+```go
+// internal/workflow/download_test.go
+func TestDownloadWorkflow_HappyPath_ThreeVideos_TwoValidated(t *testing.T) {
+    ts := &testsuite.WorkflowTestSuite{}
+    env := ts.NewTestWorkflowEnvironment()
+
+    env.OnActivity(activity.RegisterEventDownloadWorkflow, mock.Anything, ...).Return(1, nil).Times(2)
+    env.OnActivity(activity.CheckEventStillLive, mock.Anything, ...).Return(true, nil)
+    env.OnActivity(activity.DownloadVideo, mock.Anything, "url1").Return(sampleDownload("mp4-a"), nil)
+    env.OnActivity(activity.DownloadVideo, mock.Anything, "url2").Return(nil, syndication.ErrGeoRestricted)
+    env.OnActivity(activity.DownloadVideo, mock.Anything, "url3").Return(sampleDownload("mp4-b"), nil)
+
+    env.OnActivity(activity.ExtractFramesForValidation, mock.Anything, ...).Return(sampleFrames(), nil).Times(2)
+    env.OnActivity(activity.ValidateVideoIsSoccer, mock.Anything, ...).Return(acceptedVerdict(), nil).Times(2)
+    env.OnActivity(activity.GenerateVideoHash, mock.Anything, ...).Return(sampleHash(), nil).Times(2)
+    env.OnActivity(activity.SignalUploadBatch, mock.Anything, ...).Return(nil)
+    env.OnActivity(activity.UpdateEventTelemetry, mock.Anything, ...).Return(nil)
+
+    env.ExecuteWorkflow(workflow.DownloadWorkflow, sampleInput(3))
+    require.True(t, env.IsWorkflowCompleted())
+
+    var out workflow.DownloadWorkflowOutput
+    require.NoError(t, env.GetWorkflowResult(&out))
+    require.Equal(t, 2, out.VideosDownloaded)
+    require.Equal(t, 2, out.ValidatedSoccer)
+    require.Equal(t, 1, out.FailureClasses["syndication.geo_restricted"])
+}
+```
+
+**Vision domain unit tests** (colocated with domain):
+
+```go
+func TestValidateFrames_TwoFramesAgreeSoccer_NoTiebreaker(t *testing.T)
+func TestValidateFrames_TwoFramesDisagree_CallsTiebreaker(t *testing.T)
+func TestValidateFrames_LLMCapExceeded_ReturnsRetryableErr(t *testing.T)
+func TestVerifyTimestamp_WithinTolerance_Verified(t *testing.T)
+func TestVerifyTimestamp_StoppageOCRCorrection_Verifies(t *testing.T)
+func TestVerifyTimestamp_OutsideAllTolerances_NotVerified(t *testing.T)
+```
+
+**Integration tests with sample video files:**
+
+`test/integration/download_pipeline_test.go` runs actual ffmpeg
+against `testdata/samples/goal_short.mp4` +
+`testdata/samples/phone_recording.mp4` +
+`testdata/samples/wrong_minute.mp4` to exercise the full
+extract → hash → validate → verify path against a fake LLM (which
+returns pre-registered responses per image hash).
+
+### Extensibility
+
+**Embedding-based dedup (audit §4 Track 3):**
+
+Replace `perceptual_hash` + `perceptual_hash_prefix` columns with an
+`embedding vector(768)` column. `UpsertVideoAssetWithHashDedup`
+becomes `UpsertVideoAssetWithEmbeddingDedup`, using
+`ORDER BY embedding <=> $1 LIMIT 1` to find the nearest neighbor and
+merging if similarity is > threshold.
+
+No workflow rewrites — the activity signature changes but the workflow
+call is the same. Existing rows keep `perceptual_hash` for backward
+compat; new rows populate `embedding`. Migration is a background
+backfill task.
+
+**Additional validation prompt (e.g., celebration vs replay classification):**
+
+Extend `vision.Service.ValidateFrames` prompt to include additional
+structured fields:
+
+```json
+{
+  "frame_1": {
+    "SOCCER": "yes",
+    "SCREEN": "no",
+    "CLOCK": "45:23",
+    "ADDED": "+2",
+    "STOPPAGE_CLOCK": "",
+    "SCENE_TYPE": "goal_moment|celebration|replay"
+  }
+}
+```
+
+`ValidationResult` grows a `SceneType` field. Rank recalculation can
+factor in "prefer goal_moment scenes." Additional field is optional
+in the struct; parsing is backward-compatible with older responses
+that don't include it.
+
+**Additional video source (e.g., broadcaster CDN direct):**
+
+The `syndication.Client.DownloadVideo` interface can be reused for any
+CDN. Add `infra/broadcastercdn/` adapter implementing the same
+signature; DownloadWorkflow's step 3 tries multiple adapters in order:
+syndication first, broadcasterCDN fallback if syndication returns
+`ErrGeoRestricted`. This connects to audit's geo-restriction-bypass
+proposal.
+
+---
+
+*(Remaining §8, §10..§16 to follow. §7 established the video flow
+that §8 API + SSE consumes: the SSE stream forwards
+`event.video_ready` payloads from §7's NotifyEventLog into the
+frontend.)*
