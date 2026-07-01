@@ -5727,7 +5727,689 @@ proposal.
 
 ---
 
-*(Remaining §8, §10..§16 to follow. §7 established the video flow
-that §8 API + SSE consumes: the SSE stream forwards
-`event.video_ready` payloads from §7's NotifyEventLog into the
-frontend.)*
+## 11. Observability
+
+Full observability discipline: what to emit, how to structure it, how
+to query it, how to view it, when to alert. The current Python stack
+has decent Loki + Grafana coverage but the taxonomy is inconsistent
+and the viewing surfaces are noisy — the rebuild uses this section to
+lock in structural discipline from day one.
+
+### The four pillars
+
+Every observable behavior falls into one of four categories:
+
+| Pillar | What it captures | Backend | Consumers |
+|---|---|---|---|
+| **Logs** | Discrete events with structured context | Loki (via Promtail from container stdout) | Engineers debugging incidents |
+| **Metrics** | Numerical time-series counters and gauges | Prometheus (scrapes `/metrics` endpoints) | Alerts, capacity planning, SLO dashboards |
+| **Traces** | Causal chains of activity spans across services | Not implemented day one — see extensibility | Deep-dive perf work (audit §5 concurrency debugging) |
+| **Semantic event stream** | Business events (event.detected, event.video_ready) | Postgres `event_log` table (§3) | SSE fan-out, webhook delivery, audit trail |
+
+Pillars 1-3 are engineering-facing. Pillar 4 (the semantic event stream)
+serves both observability AND product delivery (SSE + webhooks) — that
+dual role means the same INSERT into `event_log` powers both the
+frontend real-time updates AND the "what happened to this event"
+audit query.
+
+### Design principles
+
+**1. Taxonomy is a compile-time contract, not a convention.** The
+current Python code emits log lines with free-form `module`, `action`,
+`level` strings — typos, inconsistent casing, one-off values sneak in.
+In Go, every log emission uses `logging.Emit(level, module, action,
+msg, fields...)` where `module` and `action` are typed enums from
+package `logging/vocabulary`. Compile-time-checked. New modules and
+actions are one-line additions to the vocabulary file; forgetting to
+add one is a compile error, not a runtime "huh why isn't this indexed
+in Loki."
+
+**2. Every log line, every metric, every event has a canonical
+schema.** Log lines have exactly one shape (defined below). Metrics
+follow Prometheus naming conventions strictly. Event stream payloads
+are Pydantic-equivalent Go structs, serialized consistently. No
+ad-hoc key/value pairs anywhere.
+
+**3. The log catalog is discoverable.** A generated markdown file
+`docs/log-catalog.md` (regenerated on every build via `go generate`)
+lists every possible (module, action) pair with its expected field
+set and log-level guidance. This is the "clear view of what types of
+logs exist" that's been missing.
+
+**4. Metrics come from the SAME emissions as logs.** Every
+`logging.Emit(...)` optionally also increments a Prometheus counter
+labeled by (module, action, level). No parallel instrumentation
+paths — one call site, both signals emerge.
+
+**5. Multiple viewing surfaces for different consumers.** Not
+everyone wants LogQL. Grafana dashboards for engineers, an
+operational summary panel exposed via vedanta-systems for
+at-a-glance, a CLI tool (`ff logs`) for local debugging. All read
+the same underlying data.
+
+**6. Alerts fire on SLO violations, not raw errors.** A single
+ERROR-level log line doesn't page anyone. Alerts trigger on rate
+thresholds (coverage rate < X% for 1h, error class Y exceeds baseline
+by Z stddev, prod commit drift > 24h from main). Rules are code +
+version-controlled + reviewed like everything else.
+
+**7. Observability code is a first-class package, not scattered
+imports.** All emission goes through `internal/logging`. Adapters
+(§9) emit via the same package. Domain services emit via the same
+package. Activities emit via the same package. One import path;
+one set of test doubles.
+
+### Log-line canonical schema
+
+Every log line is a structured JSON object with a fixed field set:
+
+```json
+{
+  "ts": "2026-07-02T14:23:45.123456Z",
+  "level": "INFO",
+  "module": "download",
+  "action": "video_downloaded",
+  "msg": "video downloaded and staged",
+  "trace_id": "01hxyz...",
+  "workflow_id": "download-03-e_a1b2c3d4e5f6",
+  "activity_id": "act_9x8y7z",
+  "event_id": "e_a1b2c3d4e5f6",
+  "fixture_id": 1562345,
+  "duration_ms": 3140,
+  "extras": {
+    "video_url": "https://x.com/user/status/...",
+    "file_size_bytes": 15083919,
+    "resolution": "1280x720",
+    "bitrate_kbps": 2400
+  }
+}
+```
+
+**Base fields (present on EVERY log line):**
+
+- `ts` — RFC3339Nano UTC timestamp
+- `level` — one of `DEBUG`, `INFO`, `WARN`, `ERROR`. Enum-typed in code.
+- `module` — the emitting module (see vocabulary below). Enum-typed.
+- `action` — what happened within the module. Enum-typed per-module.
+- `msg` — human-readable one-liner
+- `trace_id` — request/workflow correlation ID (see §11 tracing subsection)
+- `container` — auto-injected by Promtail from Kubernetes/Docker metadata
+
+**Context fields (present when applicable, standardized names):**
+
+- `workflow_id` — Temporal workflow execution ID
+- `activity_id` — Temporal activity execution ID (also auto-attached to spans)
+- `event_id` — UUID from §3, when the log line relates to a specific event
+- `fixture_id` — bigint from §3, when related to a fixture
+- `video_asset_id`, `video_share_id` — UUIDs from §3
+- `duration_ms` — for operations with measurable duration
+- `error_class` — typed error class name (from §5 taxonomy), when logging an error
+- `error_message` — the error's `Error()` string; not searched, just for humans
+
+**Free-form context: `extras` object.** Anything domain-specific goes
+under a nested `extras` object. Everything at the top level is
+standardized; nothing at the top level is free-form. This is what
+makes queries reliable — you know `event_id` is always spelled
+`event_id`, not `eventId` or `event.id` or `evtId`.
+
+### The vocabulary package
+
+`internal/logging/vocabulary/vocabulary.go` — the source of truth for
+what modules and actions exist:
+
+```go
+package vocabulary
+
+type Module string
+type Action string
+
+const (
+    // Workflows
+    ModuleIngestWorkflow    Module = "ingest_workflow"
+    ModuleMonitorWorkflow   Module = "monitor_workflow"
+    ModuleDiscoveryWorkflow Module = "discovery_workflow"
+    ModuleDownloadWorkflow  Module = "download_workflow"
+    ModuleUploadWorkflow    Module = "upload_workflow"
+
+    // Domain services (matching §4)
+    ModuleFixture      Module = "fixture"
+    ModuleEvent        Module = "event"
+    ModuleVideo        Module = "video"
+    ModuleAlias        Module = "alias"
+    ModuleDiscovery    Module = "discovery"
+    ModuleVision       Module = "vision"
+    ModuleSession      Module = "session"
+    ModuleTextAnalysis Module = "text_analysis"
+
+    // Infrastructure adapters (matching §9)
+    ModuleInfraPG           Module = "infra_pg"
+    ModuleInfraS3           Module = "infra_s3"
+    ModuleInfraLLM          Module = "infra_llm"
+    ModuleInfraTemporal     Module = "infra_temporal"
+    ModuleInfraAPIFootball  Module = "infra_apifootball"
+    ModuleInfraTwitter      Module = "infra_twitter"
+    ModuleInfraSyndication  Module = "infra_syndication"
+    ModuleInfraFFmpeg       Module = "infra_ffmpeg"
+    ModuleInfraWikidata     Module = "infra_wikidata"
+
+    // Cross-cutting
+    ModuleAPI        Module = "api"
+    ModuleAPI_SSE    Module = "api_sse"
+    ModuleWebhookDelivery Module = "webhook_delivery"
+    ModuleScaler     Module = "scaler"
+    ModuleWorker     Module = "worker"       // bootstrap
+    ModuleMigration  Module = "migration"    // startup
+    ModuleHealthz    Module = "healthz"
+    ModuleDeploy     Module = "deploy"       // deploy-marker log lines
+)
+
+// ValidModules is used at startup for self-verification.
+var ValidModules = []Module{
+    ModuleIngestWorkflow, ModuleMonitorWorkflow, /* ... */
+}
+```
+
+Actions live per-module (or per-family) in separate files for
+manageability:
+
+```go
+// vocabulary/actions_video.go
+const (
+    ActionVideoUploadStarted   Action = "upload_started"
+    ActionVideoUploadCompleted Action = "upload_completed"
+    ActionVideoUploadFailed    Action = "upload_failed"
+    ActionVideoHashComputed    Action = "hash_computed"
+    ActionVideoDedupHit        Action = "dedup_hit"
+    ActionVideoDedupMiss       Action = "dedup_miss"
+    ActionVideoRankRecalculated Action = "rank_recalculated"
+    /* ... */
+)
+```
+
+**Type safety.** `logging.Emit` accepts only `Module` and `Action`
+types — passing a raw string is a compile error:
+
+```go
+// This compiles:
+logging.Emit(logging.INFO, vocabulary.ModuleVideo, vocabulary.ActionVideoDedupHit, "hash matched existing asset", ...)
+
+// This doesn't:
+logging.Emit(logging.INFO, "video", "dedup_hit", "...", ...)
+//                          ^^^^^^^ untyped literal → compile error
+```
+
+**Adding a new module or action** is a one-line addition to
+`vocabulary/*.go` + regenerate the log catalog. Compile-checked
+everywhere.
+
+### The log catalog
+
+`docs/log-catalog.md` — regenerated on every build via `go generate`
+from the vocabulary package + reflection over call sites:
+
+```markdown
+# Log Catalog (auto-generated 2026-07-02 15:23 UTC)
+
+## Module: `video`
+
+### Action: `upload_started` (INFO)
+Fields:
+  - event_id (uuid) — required
+  - video_asset_id (uuid) — required
+  - file_size_bytes (int) — required
+Call sites:
+  - internal/domain/video/service.go:214
+
+### Action: `dedup_hit` (INFO)
+Fields:
+  - fixture_id (int64) — required
+  - perceptual_hash_prefix (int32) — required
+  - existing_asset_id (uuid) — required
+  - new_popularity (int) — required
+Call sites:
+  - internal/domain/video/service.go:167
+...
+```
+
+This is the "clear view of what types of logs there are" — every
+possible log line, its field contract, and where in the code it comes
+from. Reviewable in PRs when call sites change.
+
+### Level guidance
+
+Encoded as vocabulary metadata (`ActionMeta.MinLevel`) and enforced at
+emission time.
+
+**DEBUG** — Fine-grained internal state useful for local development.
+Off in prod by default (Promtail drops based on the `level` label).
+Example: per-frame dHash computation progress, per-token LLM streaming.
+
+**INFO** — Normal operation milestones. Every activity boundary
+(started/completed/failed) is INFO. State transitions are INFO. High-
+level "here's what the system is doing" without noise.
+
+**WARN** — Recoverable degradation. Fallback taken, retry incoming,
+best-effort operation skipped. Alerts DO NOT fire on individual WARN
+lines; they fire on rate thresholds.
+
+**ERROR** — Operation could not complete, no recovery possible in this
+attempt. Not the same as "the system is broken" — a video failed to
+download is an ERROR for that video but the pipeline is fine.
+
+**FATAL** (not used). Panicking + exiting cleanly is what SIGTERM +
+recover chain does. No FATAL logging level.
+
+Vocabulary metadata enforces min-level per action:
+
+```go
+var actionLevelPolicy = map[Action]Level{
+    ActionVideoDedupHit:     INFO,   // always visible
+    ActionVideoDedupMiss:    INFO,
+    ActionVideoUploadFailed: ERROR,  // always ERROR
+    ActionLLMCallStreaming:  DEBUG,  // hidden in prod
+}
+```
+
+Passing a wrong level triggers a warning at emit time (during test,
+this fails the test).
+
+### Metrics — Prometheus naming and semantics
+
+Every metric follows the naming convention:
+
+```
+found_footy_<module>_<measure>{<labels>}
+```
+
+Standard measures:
+
+| Measure suffix | Type | Meaning |
+|---|---|---|
+| `_total` | Counter | Cumulative count (never resets except on restart) |
+| `_active` | Gauge | Current count (e.g. active workflows) |
+| `_duration_seconds` | Histogram | Duration in seconds, standard buckets |
+| `_bytes` | Histogram | Size in bytes |
+| `_ratio` | Gauge | 0.0-1.0 value (SLO ratios) |
+
+Standard labels (never varies in name):
+- `module` — from the vocabulary
+- `action` — from the vocabulary
+- `outcome` — one of `success`, `failure`, `retry`
+- `error_class` — the typed error class if failure, else empty
+- `level` — for log-derived counters
+
+**Baseline metrics every binary exposes** (via `/metrics`):
+
+- `found_footy_calls_total{module, action, outcome, error_class}` — counter derived from log emissions
+- `found_footy_log_lines_total{module, level}` — counter derived from log emissions
+- Go runtime metrics (goroutines, GC, memory) — from `prometheus/client_golang`
+- Process metrics (CPU, RSS, open FDs) — from `prometheus/client_golang`
+- HTTP handler metrics for the `api` binary (request duration histogram, in-flight gauge, per-endpoint counter)
+
+**Business SLO metrics:**
+
+- `found_footy_events_detected_total{league, event_type}` — counter
+- `found_footy_events_video_captured_total{league}` — counter
+- `found_footy_coverage_ratio{league}` — gauge, `captured / detected` per hour
+- `found_footy_time_to_first_s3_seconds{league}` — histogram, event.first_seen → first_s3_upload
+- `found_footy_ingest_freshness_seconds` — gauge, "seconds since main was last built into prod image"
+
+**Infrastructure health metrics:**
+
+- `found_footy_pg_pool_active` — gauge
+- `found_footy_pg_query_duration_seconds{action}` — histogram
+- `found_footy_s3_upload_duration_seconds{bucket}` — histogram
+- `found_footy_llm_call_duration_seconds{model, endpoint}` — histogram
+- `found_footy_llm_concurrent_calls` — gauge (peers at joi's cap of 2)
+- `found_footy_llm_cap_exceeded_total{endpoint}` — counter
+- `found_footy_twitter_search_duration_seconds{instance}` — histogram
+- `found_footy_twitter_fleet_healthy_instances` — gauge
+- `found_footy_twitter_cookies_age_seconds` — gauge, from `twitter_sessions.updated_at`
+- `found_footy_twitter_consecutive_auth_failures{instance}` — gauge
+
+**Deploy tracking metrics** (audit §1):
+
+- `found_footy_deploy_git_sha_info{binary, git_sha, image_tag, built_at}` — info gauge (value always 1); label carries deploy identity
+- `found_footy_deploy_age_seconds` — gauge, `now - built_at`
+- `found_footy_deploy_drift_commits` — gauge, main HEAD's commit count ahead of what prod is running (calculated by a small `scripts/deploy-tracker.sh` that runs on a cron and pushes to Pushgateway)
+
+### Grafana dashboard organization
+
+Committed as JSON in `deploy/grafana/dashboards/` and provisioned via
+Grafana's file-based dashboard provisioning.
+
+**Dashboards:**
+
+**`found-footy-overview`** — the "at-a-glance is the system healthy"
+dashboard. Owner: engineers checking in.
+- Coverage ratio (last hour) per league — 6 stat panels
+- Active workflows by type — timeline
+- Error rate by class — timeline
+- Deploy freshness — stat panel with alert-eligible threshold (red if > 24h)
+- Twitter fleet health — instance count healthy/draining/unhealthy
+- LLM cap-exceeded rate — timeline with joi's cap as annotation
+- Top 10 events with zero videos (last 24h) — table
+
+**`found-footy-fixture-drilldown`** — click a fixture ID, see everything
+about it. Owner: engineers debugging a specific match.
+- Fixture header (teams, kickoff, current status, activated_at, completed_at)
+- Events table with per-event: detection time, monitor workflows count, download workflows count, download_complete flag, current s3 videos count, telemetry snippet
+- Timeline of all workflow spawns for this fixture
+- All log lines matching `fixture_id` — Loki panel
+- All metrics filtered to this `fixture_id` where applicable
+
+**`found-footy-fleet-health`** — the twitter + LLM fleet view.
+Owner: engineers investigating discovery/validation issues.
+- Twitter instance grid: per instance health, last search latency, in-flight count, cookies_version, drain flag
+- Session state: current cookies_version, consecutive auth failures fleet-median, estimated expiry
+- LLM endpoint: concurrent calls gauge (annotated with joi's cap), latency histogram per model, cap-exceeded counter
+- FFmpeg subprocess: active count, queue depth
+
+**`found-footy-slo`** — the "are we hitting our targets" dashboard.
+Owner: product/planning.
+- Weekly coverage rate per league
+- P50/P95 time-from-goal-to-first-S3
+- Trend over rolling 30d
+- Per-error-class breakdown as stacked area
+- Alert firing history
+
+**`found-footy-deploy`** — deploy tracking + drift visibility (audit §1).
+Owner: operators.
+- Prod image git_sha vs main HEAD — commit distance
+- Deploy history (last N restarts) — annotations timeline
+- Prod deploy age (`built_at` seconds ago)
+- Alert on drift > 7 days
+
+### Canonical Loki queries
+
+The pain-point today: "I need to write LogQL from scratch every time I
+investigate an incident." Solved by canonical queries baked into the
+Grafana dashboards AND documented in `docs/logging.md` (or its rebuild
+equivalent).
+
+**Common investigation shapes:**
+
+```logql
+# "What happened to this event?"
+{container=~"found-footy-.*"} | json | event_id = "e_a1b2c3d4e5f6"
+
+# "Why is this fixture stuck?"
+{container=~"found-footy-.*"} | json | fixture_id = "1562345"
+  | level =~ "WARN|ERROR"
+
+# "Which matches missed coverage this week?"
+{container=~"found-footy-.*", module="monitor_workflow", action="match_completed_summary"}
+  | json | coverage_rate < 0.5 | line_format "{{.league_name}} {{.home_team}} v {{.away_team}} — {{.coverage_rate}}"
+
+# "Deploy freshness — when did prod last restart?"
+{container=~"found-footy-prod-.*", module="deploy", action="startup"} | json
+  | line_format "{{.container}} @ {{.git_sha}} built {{.built_at}}"
+
+# "Twitter auth failures fleet-wide"
+{container=~"found-footy-.*", module="infra_twitter", action="auth_failed"} | json
+  | rate[5m]
+```
+
+These are `.json` files at `deploy/grafana/loki-queries/*.json`
+importable into Grafana's saved queries.
+
+### Prometheus alerting rules
+
+Rules live at `deploy/prometheus/rules/found-footy.yaml`. Alerts have
+a `severity` label (`info`/`warn`/`critical`) and go to different
+routes in Alertmanager.
+
+**Rule examples (concrete):**
+
+```yaml
+groups:
+- name: found-footy-slo
+  interval: 1m
+  rules:
+  - alert: FoundFootyCoverageDrop
+    expr: |
+      sum by (league) (rate(found_footy_events_video_captured_total[1h]))
+      /
+      sum by (league) (rate(found_footy_events_detected_total[1h]))
+      < 0.5
+    for: 30m
+    labels:
+      severity: warn
+    annotations:
+      summary: "Coverage rate for {{ $labels.league }} below 50% for 30min"
+
+  - alert: FoundFootyDeployDrift
+    expr: found_footy_deploy_drift_commits > 5
+    for: 24h
+    labels:
+      severity: warn
+    annotations:
+      summary: "Prod is {{ $value }} commits behind main HEAD for 24h+"
+
+  - alert: FoundFootyLLMEndpointDown
+    expr: found_footy_llm_calls_total{outcome="failure", error_class="llm.unavailable"} > 5
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "LLM endpoint unavailable for 5min+"
+
+  - alert: FoundFootyTwitterAuthFailing
+    expr: sum(found_footy_twitter_consecutive_auth_failures) > 6
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Twitter fleet auth failures across the board — cookies stale"
+
+  - alert: FoundFootyPGPoolExhausted
+    expr: found_footy_pg_pool_active / found_footy_pg_pool_size > 0.9
+    for: 2m
+    labels:
+      severity: warn
+```
+
+Alerts route to ntfy topics (per user's self-hosted preference —
+Pushover/Slack/etc. are options, but ntfy fits the local-first stack).
+
+### Deploy tracking (audit §1)
+
+The load-bearing observability piece. Everyone underestimates it until
+they've been bitten by the 7-week-stale-image scenario. The rebuild
+bakes it in.
+
+**Every binary emits a deploy-marker log line at startup:**
+
+```json
+{
+  "ts": "2026-07-02T15:00:12Z",
+  "level": "INFO",
+  "module": "deploy",
+  "action": "startup",
+  "msg": "binary starting",
+  "container": "found-footy-prod-worker-1",
+  "binary": "worker",
+  "git_sha": "4a68493abc123...",
+  "image_tag": "2026-07-02T14:55:00Z",
+  "built_at": "2026-07-02T14:55:00Z",
+  "go_version": "go1.23.4",
+  "compile_flags": {...}
+}
+```
+
+`git_sha` and `built_at` are baked into the binary at build time via
+`-ldflags "-X main.gitSHA=... -X main.builtAt=..."`. No env vars, no
+runtime lookups.
+
+**Corresponding metric:** `found_footy_deploy_git_sha_info{binary, git_sha, image_tag, built_at}` — gauge with value 1 whose labels carry the identity. Standard Prometheus pattern.
+
+**Drift calculation:** a small `scripts/deploy-tracker.sh` cron job on
+luv (every 15 min) does:
+
+```bash
+LOCAL_HEAD=$(git -C ~/workspace/dev/found-footy rev-parse main)
+PROD_SHA=$(curl -s http://found-footy-prod-worker-1:8080/healthz | jq -r '.git_sha')
+DRIFT=$(git -C ~/workspace/dev/found-footy rev-list --count $PROD_SHA..$LOCAL_HEAD)
+push_pushgateway "found_footy_deploy_drift_commits" $DRIFT
+```
+
+Grafana + alert rules pick up the metric.
+
+### Viewing surfaces beyond Grafana
+
+Grafana isn't the only or even the primary interface. Three additional
+surfaces:
+
+**1. `ff` CLI tool** — `cmd/ff/main.go` — for local dev + operator use.
+
+```bash
+ff logs --event e_a1b2c3d4e5f6 --tail        # streams live Loki logs
+ff logs --fixture 1562345 --last 1h          # historical
+ff coverage --league 39 --last 24h            # SLO check
+ff deploy status                              # prod vs main comparison
+ff fleet health twitter                       # twitter fleet state
+ff activity list --running                    # currently-running workflows
+```
+
+Wraps LogQL queries + Prometheus queries + Postgres queries behind an
+opinionated interface. No LogQL knowledge required.
+
+**2. vedanta-systems admin dashboard** — a React view exposed at
+`/admin/found-footy` inside vedanta-systems, protected by
+vedanta-systems' own auth layer.
+- Real-time SLO stat panel (last hour coverage)
+- List of currently-active fixtures with per-fixture progress bars
+- Recent alerts + acknowledge button
+- Deploy freshness indicator (green/yellow/red)
+- Link to Grafana for deep-dive
+
+**3. Loki UI (raw)** — for when you need to write ad-hoc LogQL that
+isn't captured by the canonical queries. This is the escape hatch.
+
+### The observability code contract
+
+Every emission goes through `internal/logging`:
+
+```go
+package logging
+
+import (
+    "context"
+    "log/slog"
+    "found-footy/internal/logging/vocabulary"
+)
+
+type Emitter interface {
+    // Emit logs a structured line and increments the corresponding metric.
+    Emit(ctx context.Context, level Level, module vocabulary.Module, action vocabulary.Action, msg string, fields ...Field)
+
+    // TimedEmit logs with a duration_ms field. Returns a defer-able function
+    // that emits on scope exit. Convenient for activity boundary timing.
+    TimedEmit(ctx context.Context, level Level, module vocabulary.Module, action vocabulary.Action, msg string, fields ...Field) func(...Field)
+}
+
+type Field struct { Key string; Value any }
+
+// Standard field helpers for the canonical context fields
+func EventID(id uuid.UUID) Field           { return Field{"event_id", id.String()} }
+func FixtureID(id int64) Field             { return Field{"fixture_id", id} }
+func WorkflowID(id string) Field           { return Field{"workflow_id", id} }
+func ErrorClass(cls string) Field          { return Field{"error_class", cls} }
+func ErrorObj(err error) Field             { return Field{"error_message", err.Error()} }
+func Duration(d time.Duration) Field       { return Field{"duration_ms", d.Milliseconds()} }
+func VideoAssetID(id uuid.UUID) Field      { return Field{"video_asset_id", id.String()} }
+func VideoShareID(id string) Field         { return Field{"video_share_id", id} }
+// ... etc.
+```
+
+Usage everywhere:
+
+```go
+import "found-footy/internal/logging"
+import "found-footy/internal/logging/vocabulary"
+
+emitter := logging.FromContext(ctx)
+emitter.Emit(ctx, logging.INFO,
+    vocabulary.ModuleVideo,
+    vocabulary.ActionVideoDedupHit,
+    "hash matched existing asset",
+    logging.EventID(eventID),
+    logging.FixtureID(fixtureID),
+    logging.Field{"existing_asset_id", assetID.String()},
+    logging.Field{"new_popularity", 5},
+)
+```
+
+Field key names for domain-specific fields are conventional (not
+enum-typed) but the log-catalog generator validates them against the
+declared field-set for that action. Mismatches fire warnings during
+CI, so the catalog stays truthful.
+
+### Structural discipline in tests
+
+- Every emitted log line in a test can be asserted via
+  `logging.WithTestEmitter(t)` which captures emissions.
+- Test cases that assert "an ERROR was logged with error_class=X" are
+  explicit and grep-able.
+- The vocabulary package has a `TestVocabularyCompletenessAndConsistency`
+  test that scans all `.go` files in the module for `logging.Emit(...)`
+  call sites, ensures every `(module, action)` reference resolves, and
+  every action's field-set matches the log catalog. Runs in CI.
+
+### Extensibility hooks
+
+**Adding a new module:**
+1. Add `Module<Name> Module = "<snake_name>"` to `vocabulary/vocabulary.go`.
+2. Add `vocabulary/actions_<name>.go` for its actions.
+3. Regenerate log catalog via `go generate ./...`.
+4. Update relevant Grafana dashboards.
+5. Update Loki canonical queries if applicable.
+
+Zero-touch to unrelated modules.
+
+**Adding tracing (OpenTelemetry):**
+
+Deferred from day one because two of three viewing surfaces (Grafana +
+CLI) don't need it and it adds config surface. When we add it:
+1. Add `internal/tracing` package with OTLP exporter config.
+2. Wire spans at activity boundaries (Temporal already emits activity
+   attempts as its own events; OpenTelemetry adds cross-service
+   causality).
+3. `trace_id` field is already in the log schema, so joining logs to
+   traces is free.
+4. Deploy Tempo/Jaeger to the monitor stack; add "traces" data source
+   to Grafana.
+
+Structural design already accommodates it — the field exists in log
+lines even when spans aren't collected.
+
+**Adding new business metrics:**
+
+1. Declare in `internal/observability/metrics/metrics.go`.
+2. Increment at the appropriate emission call site.
+3. Add to dashboards as needed.
+
+**Rate-based alerting on a new error class:**
+
+1. New error class lands in `internal/errors` typed error registry.
+2. Alert rule added to `deploy/prometheus/rules/found-footy.yaml`
+   with the new error_class label match.
+3. Alert history visible in Grafana.
+
+### Migration from the current Python stack
+
+- Existing Loki data (Python-emitted logs) stays queryable. Same
+  container label pattern. Just fewer of the canonical fields
+  populated (Python code didn't enforce the schema).
+- Existing Grafana dashboards can stay during the migration period
+  and be gradually replaced with the rebuild's versions.
+- Prometheus historical data stays; new metric names live alongside
+  old ones.
+
+Fresh discipline for new emissions; no forced retconning of history.
+
+---
+
+*(Remaining §8, §10, §12..§16 to follow. §11 established the observability
+contract; §8 API + SSE composes against LISTEN/NOTIFY plumbing and the
+event_log semantic stream from §7.)*
