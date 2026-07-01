@@ -4499,7 +4499,519 @@ package, isolated.
 
 ---
 
-*(Remaining §6, §7, §8, §10..§16 to follow. §9 established the
-infrastructure interfaces every workflow and activity from §5 depends
-on. §6 discovery pipeline is next — it composes twitter, syndication,
-and vision adapters into the DiscoveryWorkflow flow.)*
+## 6. Discovery pipeline
+
+End-to-end spec for how DiscoveryWorkflow (§5) actually finds video
+candidates for a stable goal event. Composes `domain/discovery`,
+`domain/alias`, `domain/session`, `infra/twitter`, and the child spawn
+into DownloadWorkflow. Boundary: this section ends when URLs are
+validated + source-scored + handed to DownloadWorkflow. Actual
+downloads live in §7.
+
+### Pipeline flow
+
+```
+[Event debounced stable in MonitorWorkflow]
+              │
+              ▼
+   spawn DiscoveryWorkflow  ────► id = "discovery-<event_uuid>"
+              │                      REJECT_DUPLICATE (audit §2)
+              ▼
+   ┌─────────────────────────┐
+   │ 1. Resolve team aliases │  activity.GetOrResolveTeamAliases(TeamID)
+   │    (cache hit or RAG)   │  from alias domain
+   └────────────┬────────────┘
+                ▼
+   ┌─────────────────────────┐
+   │ 2. Save aliases to event│  activity.SaveEventTwitterAliases(...)
+   │    (audit trail + FE)   │  from event domain
+   └────────────┬────────────┘
+                ▼
+   ┌──────────────────────────────────────────────┐
+   │ 3. Attempt loop: attempt = 1..MaxAttempts    │
+   │                                              │
+   │   a. CheckEventStillLive → VAR abort?        │
+   │   b. CountDownloadWorkflows → target met?    │
+   │   c. Adaptive early-exit check?              │
+   │   d. Build query from player + aliases       │
+   │   e. Pick healthy Twitter instance           │
+   │   f. SearchTwitter → SearchResponse          │
+   │   g. Filter by URL validation + duration     │
+   │   h. Update workflow-local exclude set       │
+   │   i. Score sources, pick top-5 candidates    │
+   │   j. Register discovered videos in event     │
+   │   k. Spawn DownloadWorkflow (ABANDON)        │
+   │   l. Sleep until next attempt (adaptive)     │
+   │                                              │
+   └────────────┬─────────────────────────────────┘
+                ▼
+   ┌─────────────────────────┐
+   │ 4. Return workflow      │
+   │    outcome + telemetry  │
+   └─────────────────────────┘
+```
+
+### Step 1: Team alias resolution
+
+**Activity call:** `GetOrResolveTeamAliases(teamID int) ([]string, error)`
+from `internal/activity/alias.go`, which wraps `alias.Service.GetOrResolve`.
+
+**Timing:** cache hit is ~10ms; RAG miss is 2-15 seconds (Wikidata search
++ LLM narrowing).
+
+**Behavior:**
+
+```go
+aliases, err := workflow.ExecuteActivity(
+    ctx,
+    activity.GetOrResolveTeamAliases,
+    input.TeamID,
+).Get(ctx, &aliasResult)
+```
+
+If the RAG pipeline fails and returns fallback aliases (per §4 alias
+domain's `ErrRAGFailedFallback` behavior), we still proceed —
+degraded aliases are better than no discovery. The fallback derives
+aliases from the team name (first word, initials, first + last).
+
+**Failure handling:**
+- `alias.ErrNotFound` (team_id not resolvable to a team) → workflow
+  aborts with typed error. Discovery can't work without aliases.
+- `alias.ErrWikidataUnreachable` / `alias.ErrLLMUnavailable` → RAG
+  path fails, fallback returned. Workflow continues with degraded
+  aliases.
+- `alias.ErrRAGFailedFallback` → not treated as an error; log at
+  WARN level, continue.
+
+### Step 2: Save aliases to the event
+
+Once we have aliases, persist them to `events.telemetry` for audit
+trail and frontend display:
+
+**Activity call:** `SaveEventTwitterAliases(eventID, aliases []string) error`
+from `internal/activity/event.go`, wraps
+`event.Service.UpdateTelemetry` with a `TelemetryPatch` setting the
+`twitter_aliases_snapshot_at` + `twitter_aliases` fields.
+
+**Why persist:** if aliases change mid-discovery (e.g., we re-resolve
+because the current set is empty), the snapshot lets us diagnose "why
+did discovery pick these queries." Frontend shows them under the event
+as debug info.
+
+### Step 3: The attempt loop
+
+The core of the workflow. Runs up to `MaxAttempts` (default 10) with
+between-attempt spacing.
+
+**Attempt-loop pseudocode (workflow-scope Go):**
+
+```go
+excludeSet := make(map[string]bool)  // tweet URLs seen this event lifetime
+consecutiveEmpty := 0
+downloadsSpawned := 0
+
+for attempt := 1; attempt <= input.MaxAttempts; attempt++ {
+    attemptStart := workflow.Now(ctx)
+
+    // 3a. Event still live?
+    stillLive, err := checkEventStillLive(ctx, input.EventID)
+    if err != nil || !stillLive {
+        return earlyExit(ctx, "event_removed", attempt-1, downloadsSpawned)
+    }
+
+    // 3b. Download target already met (10 workflows registered)?
+    downloadCount, err := countDownloadWorkflowsForEvent(ctx, input.EventID)
+    if err == nil && downloadCount >= downloadTargetThreshold {
+        return earlyExit(ctx, "downloads_target_met", attempt-1, downloadsSpawned)
+    }
+
+    // 3c. Adaptive early-exit — 2 consecutive empty results = give up
+    // (audit §8 hardening addition)
+    if consecutiveEmpty >= adaptiveExitThreshold {
+        return earlyExit(ctx, "consecutive_empty", attempt-1, downloadsSpawned)
+    }
+
+    // 3d. Build query
+    query := buildQuery(input.PlayerName, aliases)
+
+    // 3e-f. Search
+    resp, err := searchTwitter(ctx, discovery.SearchRequest{
+        Query:         query,
+        ExcludeURLs:   keysOf(excludeSet),
+        MaxAgeMinutes: input.MaxSearchAgeMinutes,  // 3 by default
+    })
+    if err != nil {
+        // Log + classify; don't abort the loop unless auth-required
+        if errors.Is(err, discovery.ErrTwitterAuthRequired) {
+            return earlyExit(ctx, "twitter_auth_required", attempt, downloadsSpawned)
+        }
+        // Otherwise sleep + retry loop
+        sleepUntilNextAttempt(ctx, attemptStart, input.AttemptSpacingSecs)
+        continue
+    }
+
+    // 3g. Filter: URL validation happens inside SearchTwitter's caller
+    // (discovery domain's Search method). Duration filter also there.
+    // What's returned here is already validated + filtered.
+    freshVideos := filterExcluded(resp.Videos, excludeSet)
+
+    if len(freshVideos) == 0 {
+        consecutiveEmpty++
+        sleepUntilNextAttempt(ctx, attemptStart, input.AttemptSpacingSecs)
+        continue
+    }
+    consecutiveEmpty = 0
+
+    // 3h. Update exclude set with EVERYTHING returned (fresh + already-seen)
+    for _, v := range resp.Videos {
+        excludeSet[v.TweetURL] = true
+    }
+
+    // 3i. Score sources, pick top-5 candidates by (source_score DESC, duration DESC)
+    scored := scoreAndRank(freshVideos, discoveryService, downloadTargetVideosPerAttempt)
+
+    // 3j. Register discovered videos in the event (for telemetry + frontend)
+    for _, sv := range scored {
+        _ = registerEventDiscoveredVideo(ctx, input.EventID, sv.Video)
+    }
+
+    // 3k. Spawn DownloadWorkflow — fire-and-forget with ABANDON
+    downloadWorkflowID := fmt.Sprintf("download-%02d-%s", attempt, input.EventID.String())
+    childOpts := workflow.ChildWorkflowOptions{
+        WorkflowID: downloadWorkflowID,
+        ParentClosePolicy: enums.PARENT_CLOSE_POLICY_ABANDON,
+        WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+        TaskQueue: cfg.TaskQueue,
+    }
+    workflow.ExecuteChildWorkflow(
+        workflow.WithChildOptions(ctx, childOpts),
+        workflow.DownloadWorkflow,
+        workflow.DownloadWorkflowInput{
+            EventID:    input.EventID,
+            FixtureID:  input.FixtureID,
+            Attempt:    attempt,
+            Videos:     videosFromScored(scored),
+            APIElapsed: input.Minute,
+            APIExtra:   input.Extra,
+        },
+    )
+    downloadsSpawned++
+
+    // 3l. Sleep until next attempt (min 10s guard, spacing from start)
+    sleepUntilNextAttempt(ctx, attemptStart, input.AttemptSpacingSecs)
+}
+```
+
+### Query construction
+
+Concrete algorithm for `buildQuery(playerName, aliases)` → Twitter search string.
+
+**Player name normalization:**
+
+```go
+func extractPlayerSearchNames(fullName string) []string {
+    // Trim, split by space, drop accents, drop empty
+    // "Florian Wirtz" → ["Florian", "Wirtz"]
+    // "Mohamed Salah" → ["Mohamed", "Salah"]
+    // "C. Ronaldo" → ["C.", "Ronaldo"] — filter tokens < 3 chars → ["Ronaldo"]
+    // "Kylian Mbappé" → ["Kylian", "Mbappe"] — accent stripped
+    // Hyphens: "N'Golo Kanté" → ["Kante"]
+    // ...
+}
+```
+
+Rules:
+1. Strip accents via NFKD normalization (`golang.org/x/text/unicode/norm`).
+2. Split on whitespace and apostrophes.
+3. Filter tokens < 3 chars (drops initials).
+4. If more than 2 tokens remain, keep first and last only.
+
+**Team alias handling:**
+
+Aliases are already normalized (audit §4 alias domain: diacritics
+stripped, filtered for hallucinations, LLM-selected). Direct use.
+
+**Query template:**
+
+```
+"(<PlayerToken1> OR <PlayerToken2>) (<Alias1> OR <Alias2> OR ...)"
+```
+
+If only one player token: `"<PlayerToken> (<Alias1> OR ...)"`
+
+Concrete examples:
+
+| Input | Query |
+|---|---|
+| player="Florian Wirtz", aliases=["LFC","Liverpool"] | `"(Florian OR Wirtz) (LFC OR Liverpool)"` |
+| player="C. Ronaldo", aliases=["Portugal","Selecão","Seleção"] | `"Ronaldo (Portugal OR Selecao OR Selecao)"` (dedup after normalize) |
+| player="Salah", aliases=["Liverpool"] | `"Salah (Liverpool)"` |
+
+**Escape:** Twitter's search query language doesn't have special
+characters we generate here — no LIKE-style wildcards, no colons
+outside operators. If a player name contains `"`, `(`, `)`, `-`, or
+`OR`, the whole token is quoted: `"O'Brien"` → `"\"O'Brien\""`.
+
+### Attempt timing and spacing
+
+**Base spacing:** 60 seconds between attempts, measured from the START
+of an attempt (not the end). This means:
+
+- If attempt N takes 3 seconds → sleep 57 seconds until attempt N+1
+- If attempt N takes 45 seconds → sleep 15 seconds until attempt N+1
+- If attempt N takes 61 seconds → immediately start attempt N+1
+
+**Minimum sleep guard:** 10 seconds. Never fire two attempts back-to-back
+even if one took longer than the spacing target. Prevents runaway loops
+if Twitter is returning quickly with garbage.
+
+**Max attempts:** 10 (`input.MaxAttempts`, tunable per event via
+DiscoveryWorkflowInput).
+
+**Total budget:** ~10 minutes (10 attempts × 60s spacing).
+
+**Adaptive early-exit spacing (extension for §11 SLO consumers):** for
+high-importance fixtures (Champions League, WC), we may want to try more
+frequently. Not implemented day one; the shape is:
+
+```go
+if fixture.IsHighImportance() {
+    input.AttemptSpacingSecs = 30  // 2x tighter
+    input.MaxAttempts = 15         // extended budget
+}
+```
+
+Added via `IngestWorkflow`'s per-fixture setup when categorizing.
+
+### URL exclusion tracking
+
+Twitter search takes `exclude_urls: []string` in the request body
+(§9 `infra/twitter.SearchRequest`). Discovery uses this to avoid
+re-processing the same URLs across attempts.
+
+**Exclude set lifetime:** the workflow-local `excludeSet` map. Not
+persisted; if DiscoveryWorkflow restarts (worker crash → replay), the
+set is rebuilt from `event.discovered_videos` in the events table
+(populated by `RegisterEventDiscoveredVideo` in step 3j).
+
+**Replay safety:** on workflow replay, the same activity calls happen
+in the same order, so the exclude set repopulates deterministically.
+Temporal replay is fine.
+
+**What goes in the set:**
+- Every URL returned by Twitter search, even ones we didn't pick as
+  top-5. Prevents re-scoring the same tweets on later attempts.
+- URLs that failed validation. If Twitter returns a truncated
+  snowflake ID, we don't want it back on attempt N+1.
+
+### Source-quality scoring
+
+Discovery scores each returned video before picking the top-5 for
+DownloadWorkflow. Day-one behavior is rule-based; when the
+`textanalysis` domain ships, its LLM-classified scores merge in.
+
+**Day-one rule table (`discovery.Service.ScoreSource`):**
+
+| Signal | Score contribution |
+|---|---|
+| `author_verified = true` AND handle matches known broadcaster pattern (`BBCSport`, `ESPNFC`, `SkySportsPL`, etc. — pattern list in config) | +0.5 |
+| `author_verified = true` AND handle matches known media outlet pattern | +0.3 |
+| `author_verified = true` (any) | +0.2 |
+| `author_followers > 100000` | +0.1 |
+| `duration > 8 seconds` (proxy for "not just the ball hitting net") | +0.05 |
+| `duration > 20 seconds` (highlight package, not raw clip) | +0.1 |
+| default | 0.0 |
+
+Signals sum. Max ~1.0. Ties broken by `duration_seconds DESC`.
+
+**Broadcaster pattern list** lives in
+`internal/config.DiscoveryConfig.BroadcasterHandles` — a `map[string][]string`
+of `{country: [handles]}` for readable maintenance. Loaded from a YAML
+file bundled in the binary; hot-reload not needed (broadcaster accounts
+don't change often).
+
+**When textanalysis ships:**
+
+The scoring changes to `Score = ruleScore * 0.4 + intentScore * 0.6`
+where `intentScore` comes from `textanalysis.Service.ClassifySource(handle, verified)`.
+Rule-based signal stays as the fallback for cases where textanalysis
+hasn't classified the source yet.
+
+### Concurrency and rate-limiting
+
+**Per-workflow concurrency:** 1 search at a time per DiscoveryWorkflow.
+The attempt loop is sequential. No parallelism within a single event's
+discovery.
+
+**Cross-workflow concurrency:** if 4 events across 2 fixtures all spawn
+DiscoveryWorkflow at once (e.g., a chaotic Champions League night),
+that's 4 concurrent SearchTwitter activities. The `infra/twitter`
+adapter picks a healthy instance per call; up to `MaxConcurrentActivityExecutions`
+(default 30) can run in parallel per worker container.
+
+**Twitter fleet capacity:** each instance handles 1 search at a time
+serially (Firefox is single-threaded per browser). With 4 instances,
+4 concurrent searches max. With 8 (peak scale), 8 concurrent. If
+demand exceeds capacity, requests queue at the twitter container layer
+and may exceed the 60s request timeout — activity retries with backoff.
+
+**Between attempts within one event:** 60s spacing (min 10s) prevents
+runaway single-event pressure.
+
+### Fleet health integration
+
+Before every SearchTwitter call, the `infra/twitter.Client` internally
+consults its cached view of instance health and picks the least-loaded
+healthy instance. The activity doesn't need explicit fleet-health
+checks — the adapter handles it.
+
+However, DiscoveryWorkflow does surface an operational signal: if a
+search returns `ErrTwitterAuthRequired`, the workflow aborts with a
+telemetry entry `"twitter_auth_required"` on that attempt, and the
+activity's own logging fires the audit §8 cookie-staleness alert
+(consecutive auth failures across the fleet).
+
+If ALL instances are draining (`ErrTwitterFleetDrained`), the workflow
+sleeps its normal spacing and retries — draining is temporary. If
+draining persists past `MaxAttempts × AttemptSpacing`, the workflow
+completes with 0 downloads spawned and telemetry captures the failure
+class.
+
+### Failure modes and telemetry
+
+The `DiscoveryWorkflowOutput.EarlyExitReason` field is what tells
+observability whether a workflow ended naturally or bailed. Values:
+
+| Value | Meaning |
+|---|---|
+| `""` (empty) | Ran all `MaxAttempts` normally (didn't early-exit) |
+| `"downloads_target_met"` | Hit the 10-DownloadWorkflow target before running out of attempts |
+| `"consecutive_empty"` | Adaptive exit — 2 consecutive attempts returned zero fresh videos |
+| `"event_removed"` | Event marked removed (VAR) mid-loop |
+| `"twitter_auth_required"` | Cookies expired; alerting operator |
+| `"alias_resolution_failed"` | Couldn't resolve team aliases even with fallback |
+
+Every value gets a corresponding entry in the event's
+`_telemetry.discovery_summary` field for post-fixture SLO reporting.
+
+**Per-attempt telemetry:**
+
+`event.Telemetry.SearchAttempts += 1` after each attempt (via
+`UpdateEventTelemetry` activity). Fine-grained per-attempt latency +
+result-count metrics live in Loki via structured logs, not Postgres.
+
+### Testing shape
+
+**Workflow test:**
+
+```go
+// internal/workflow/discovery_test.go
+func TestDiscoveryWorkflow_HappyPath_SpawnsDownloadsUpToTarget(t *testing.T) {
+    ts := &testsuite.WorkflowTestSuite{}
+    env := ts.NewTestWorkflowEnvironment()
+
+    // Mock alias resolution
+    env.OnActivity(activity.GetOrResolveTeamAliases, mock.Anything, 40).Return([]string{"Liverpool", "LFC"}, nil)
+    env.OnActivity(activity.SaveEventTwitterAliases, ...).Return(nil)
+
+    // Mock 3 successful searches, each returning 5 fresh videos
+    for i := 0; i < 3; i++ {
+        env.OnActivity(activity.SearchTwitter, mock.Anything, mock.Anything).Return(
+            &discovery.SearchResponse{Videos: sampleVideos(5)},
+            nil,
+        ).Times(1)
+    }
+
+    // Downloads spawn — mock the child workflow
+    env.OnWorkflow(workflow.DownloadWorkflow, mock.Anything, mock.Anything).Return(
+        &workflow.DownloadWorkflowOutput{}, nil,
+    )
+
+    env.ExecuteWorkflow(workflow.DiscoveryWorkflow, workflow.DiscoveryWorkflowInput{
+        EventID:     testUUID,
+        MaxAttempts: 10,
+    })
+
+    require.True(t, env.IsWorkflowCompleted())
+    var out workflow.DiscoveryWorkflowOutput
+    require.NoError(t, env.GetWorkflowResult(&out))
+    require.Equal(t, 3, out.DownloadsSpawned)
+    require.Equal(t, 15, out.VideosDiscovered)  // 3 attempts * 5 videos
+}
+```
+
+**Query-builder tests** live in `internal/domain/discovery/query_test.go`
+(pure function, no Temporal):
+
+```go
+func TestBuildQuery_TwoTokenPlayer(t *testing.T)
+func TestBuildQuery_SingleTokenPlayerAfterFiltering(t *testing.T)
+func TestBuildQuery_AccentedNameNormalized(t *testing.T)
+func TestBuildQuery_ApostropheInName(t *testing.T)
+func TestBuildQuery_ManyAliases_JoinedWithOR(t *testing.T)
+func TestBuildQuery_EmptyAliases_ReturnsError(t *testing.T)
+```
+
+**Adaptive-exit tests:**
+
+```go
+func TestDiscoveryWorkflow_TwoConsecutiveEmpty_EarlyExits(t *testing.T)
+func TestDiscoveryWorkflow_OneEmptyThenResults_ResetsCounter(t *testing.T)
+func TestDiscoveryWorkflow_DownloadTargetMet_EarlyExits(t *testing.T)
+func TestDiscoveryWorkflow_EventVARdMidLoop_EarlyExits(t *testing.T)
+func TestDiscoveryWorkflow_AuthRequired_EarlyExitsWithAlert(t *testing.T)
+```
+
+**Query construction unit tests** for the query builder are the fastest
+tests in the whole test suite. Run in microseconds.
+
+**Fleet health integration tests** live at the `infra/twitter` layer,
+not here — DiscoveryWorkflow trusts the adapter to route to healthy
+instances.
+
+### Extensibility hooks
+
+**Adding a new discovery source (e.g., YouTube):**
+
+1. Add `internal/infra/youtube/` adapter following the §9 pattern.
+2. Extend `domain/discovery` with:
+   - `SearchYouTube(ctx, req YouTubeSearchRequest) ([]DiscoveredVideo, error)`
+   - Same `DiscoveredVideo` shape — YouTube's video URL is the "tweet_url"
+     equivalent, `channel_handle` becomes `author_handle`, etc.
+3. In DiscoveryWorkflow, add a second attempt-source path:
+   ```go
+   // Alternate between Twitter and YouTube per attempt for parallelism
+   if attempt % 2 == 0 {
+       resp = searchYouTube(...)
+   } else {
+       resp = searchTwitter(...)
+   }
+   ```
+4. Update source-scoring to include a per-source-platform weight.
+
+Zero changes to fixture, event, video, session domains.
+
+**Adding importance-aware spacing:**
+
+The `DiscoveryWorkflowInput.AttemptSpacingSecs` and `MaxAttempts` fields
+are already input-level. Have IngestWorkflow set them per-fixture based
+on `fixture.LeagueID` and known-importance mapping.
+
+**Adding a query-language reinvention:**
+
+The `buildQuery` function is pure — swap the implementation without
+touching workflow shape. E.g., using Twitter's advanced search operators
+(`filter:videos`, `since:` / `until:`) becomes an internal change.
+
+**Adding textanalysis-based scoring:**
+
+Wire `textanalysis.Service.ClassifySource(handle, verified)` into
+`discovery.Service.ScoreSource`. Merge weights per rule above. Existing
+rule-based fallback stays as the default when textanalysis hasn't
+classified a source.
+
+---
+
+*(Remaining §7, §8, §10..§16 to follow. §6 established the discovery
+flow that §7 video pipeline consumes: DiscoveryWorkflow spawns
+DownloadWorkflow, DownloadWorkflow's activities live in §7's spec.)*
