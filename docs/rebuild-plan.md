@@ -1737,96 +1737,492 @@ manual concurrency reasoning by callers.
 
 ### Alias domain
 
-Team aliases + RAG pipeline. Wraps Wikidata + LLM calls behind a service.
+Team aliases for Twitter search queries. Owns the RAG pipeline (Wikidata + LLM) and the cache of team → normalized-aliases mappings.
+
+**What it owns:**
+- `team_aliases` table + its `pg_trgm` GIN index
+- The RAG pipeline: team_name → Wikidata QID → aliases fetch → LLM narrowing → cache write
+- Cache staleness policy (30 days)
+- Fuzzy team-name search for disambiguation
+- Fallback alias derivation when the RAG pipeline fails (deterministic, name-derived)
+
+**`internal/domain/alias/model.go`:**
+
+```go
+package alias
+
+import "time"
+
+type TeamAlias struct {
+    TeamID          int       `db:"team_id"`
+    TeamName        string    `db:"team_name"`
+    IsNational      bool      `db:"is_national"`
+    Country         *string   `db:"country"`
+    City            *string   `db:"city"`
+    WikidataQID     *string   `db:"wikidata_qid"`
+    WikidataAliases []string  `db:"wikidata_aliases"`
+    TwitterAliases  []string  `db:"twitter_aliases"`
+    LLMModel        *string   `db:"llm_model"`
+    CreatedAt       time.Time `db:"created_at"`
+    UpdatedAt       time.Time `db:"updated_at"`
+}
+
+// IsStale reports whether this cache entry is old enough to warrant re-resolution.
+func (t *TeamAlias) IsStale(now time.Time, ttl time.Duration) bool {
+    return now.Sub(t.UpdatedAt) > ttl
+}
+```
+
+**Store interface:**
 
 ```go
 type Store interface {
     Get(ctx context.Context, teamID int) (*TeamAlias, error)
+    GetMany(ctx context.Context, teamIDs []int) ([]TeamAlias, error)
     Upsert(ctx context.Context, a *TeamAlias) error
-    SearchByName(ctx context.Context, query string, limit int) ([]TeamAlias, error)  // pg_trgm
-}
 
+    // SearchByName uses pg_trgm GIN index for fuzzy matching. Returns
+    // matches ordered by similarity DESC, capped at limit. Typical
+    // similarity threshold: 0.6 (Postgres default).
+    SearchByName(ctx context.Context, query string, limit int) ([]TeamAlias, error)
+
+    // ListStale returns cached entries whose updated_at is older than the
+    // cutoff, capped at limit. Used by the ingest workflow's background
+    // refresh pass.
+    ListStale(ctx context.Context, olderThan time.Time, limit int) ([]TeamAlias, error)
+}
+```
+
+**Service:**
+
+```go
 type Service struct {
     store    Store
-    wikidata WikidataClient  // internal/infra/wikidata
-    llm      llm.Client      // internal/infra/llm — the config-swappable client
+    wikidata infra.WikidataClient
+    llm      infra.LLMClient          // config-swappable joi/nexus
+    now      func() time.Time
+    cacheTTL time.Duration            // 30 * 24 * time.Hour
     logger   *slog.Logger
 }
 
-// GetOrResolve returns cached aliases if present, else runs the full RAG
-// pipeline: Wikidata search → aliases fetch → LLM narrowing → cache write.
-func (s *Service) GetOrResolve(ctx context.Context, teamID int, teamName string) ([]string, error) { ... }
+// GetOrResolve returns the cached twitter_aliases for a team, running the
+// full RAG pipeline if not cached or if the cache is stale.
+//
+// Fallback behavior: if the RAG pipeline fails (Wikidata unreachable, LLM
+// unavailable, or LLM returns garbage), returns a deterministic
+// name-derived alias set AND ErrRAGFailedFallback so callers can log at
+// warning level. The fallback is never cached, so the next call will
+// re-attempt the full pipeline.
+//
+// Retry classification for typed errors this returns:
+//   ErrWikidataUnreachable → retry-eligible with backoff
+//   ErrLLMUnavailable      → retry-eligible
+//   ErrRAGFailedFallback   → not an error; log warning, continue
+//   ErrNotFound            → not retry-eligible
+func (s *Service) GetOrResolve(ctx context.Context, teamID int) ([]string, error)
+
+// ForceResolve runs the RAG pipeline unconditionally, replacing any cached
+// entry. Used by the ingest workflow's pre-caching pass and by manual
+// invalidation flows.
+func (s *Service) ForceResolve(ctx context.Context, teamID int, teamName string, isNational bool) (*TeamAlias, error)
+
+// InvalidateCache marks a team's cached entry as stale (via UPDATE
+// updated_at = epoch), forcing the next GetOrResolve to re-run RAG.
+// Used when we detect a team rename in API-Football or want to test
+// the RAG pipeline against a specific team.
+func (s *Service) InvalidateCache(ctx context.Context, teamID int) error
+
+// SearchByName does fuzzy team-name lookup for disambiguation. Returns
+// results ordered by trigram similarity DESC, capped at limit.
+// Empty result on no matches (not an error).
+func (s *Service) SearchByName(ctx context.Context, query string, limit int) ([]TeamAlias, error)
 ```
 
-The `llm.Client` reference is where the config-swap invariant materializes:
-`Service` doesn't know whether it's talking to joi or nexus, and doesn't care.
+**Typed errors:**
+
+```go
+var (
+    ErrNotFound            = errors.New("alias: team not found in cache")
+    ErrWikidataUnreachable = errors.New("alias: wikidata service unreachable")
+    ErrLLMUnavailable      = errors.New("alias: llm service unavailable")
+    ErrRAGFailedFallback   = errors.New("alias: rag pipeline failed; using fallback aliases")
+)
+```
+
+**Lifecycle:** none — there's no state machine. Cache entries are either fresh, stale, or missing. Fresh entries get returned as-is; stale/missing trigger RAG.
+
+**Tests** (`service_test.go`, `store_test.go`):
+
+```go
+// service_test.go — mocked store + mocked wikidata + mocked llm
+func TestGetOrResolve_CacheHit_ReturnsCached(t *testing.T)
+func TestGetOrResolve_CacheMiss_RunsRAGAndCaches(t *testing.T)
+func TestGetOrResolve_StaleCache_RunsRAGAndUpdatesCache(t *testing.T)
+func TestGetOrResolve_WikidataUnreachable_ReturnsErr(t *testing.T)
+func TestGetOrResolve_LLMUnavailable_ReturnsFallbackAndErr(t *testing.T)
+func TestGetOrResolve_RAGReturnsGarbage_ReturnsFallbackAndErr(t *testing.T)
+func TestForceResolve_Always_ReplacesCache(t *testing.T)
+func TestInvalidateCache_MarksStale(t *testing.T)
+func TestSearchByName_Match_ReturnsOrderedBySimilarity(t *testing.T)
+func TestSearchByName_NoMatch_ReturnsEmpty(t *testing.T)
+
+// store_test.go — real Postgres via testcontainers-go
+func TestStore_Upsert_InsertNew(t *testing.T)
+func TestStore_Upsert_UpdatesExisting(t *testing.T)
+func TestStore_SearchByName_UsesTrgmIndex(t *testing.T)
+func TestStore_ListStale_RespectsCutoff(t *testing.T)
+```
 
 ### Discovery domain
 
-Twitter search orchestration. Consumes the twitter container's HTTP API.
+Twitter search orchestration. Owns query construction, response parsing, source-quality scoring, and URL validation. Consumes the twitter container's HTTP API (see §9 for `TwitterServiceClient` interface details).
+
+**What it owns:**
+- Twitter search query construction (from player names + team aliases)
+- Response DTO shapes for videos discovered from tweets
+- Source-quality scoring (broadcaster vs media vs verified fan vs random)
+- URL validation at extraction time (snowflake-ID length checks per audit §8)
+- Duration pre-filtering (drops < 3s or > 90s at discovery boundary, before download)
+- Deduplication of already-discovered URLs across search attempts
+
+**`internal/domain/discovery/model.go`:**
 
 ```go
+package discovery
+
+import "time"
+
 type SearchRequest struct {
     Query         string   `json:"query"`
     ExcludeURLs   []string `json:"exclude_urls"`
-    MaxAgeMinutes int      `json:"max_age_minutes"`
+    MaxAgeMinutes int      `json:"max_age_minutes"`  // stop scrolling when tweet is older
+}
+
+type SearchResponse struct {
+    Videos    []DiscoveredVideo `json:"videos"`
+    Metadata  SearchMetadata    `json:"metadata"`
+}
+
+type SearchMetadata struct {
+    InstanceID       string    `json:"instance_id"`         // which twitter container served this
+    ExecutedAt       time.Time `json:"executed_at"`
+    LatencyMs        int       `json:"latency_ms"`
+    CookiesVersion   int64     `json:"cookies_version"`     // for staleness diagnosis
+    TotalTweetsSeen  int       `json:"total_tweets_seen"`   // for observability
 }
 
 type DiscoveredVideo struct {
-    TweetURL        string  `json:"tweet_url"`
-    TweetText       string  `json:"tweet_text"`      // NEW — semantic-intent input
-    AuthorHandle    string  `json:"author_handle"`
-    AuthorVerified  bool    `json:"author_verified"`  // NEW — source scoring input
-    VideoPageURL    string  `json:"video_page_url"`
-    DurationSeconds float64 `json:"duration_seconds"`
+    TweetURL        string    `json:"tweet_url"`
+    TweetText       string    `json:"tweet_text"`         // extensibility hook input
+    AuthorHandle    string    `json:"author_handle"`
+    AuthorVerified  bool      `json:"author_verified"`    // source-scoring input
+    AuthorFollowers *int      `json:"author_followers,omitempty"`  // populated when available
+    VideoPageURL    string    `json:"video_page_url"`
+    DurationSeconds float64   `json:"duration_seconds"`
+    PostedAt        time.Time `json:"posted_at"`
 }
 
-type Service struct {
-    twitter TwitterServiceClient  // HTTP client to twitter container
-    logger  *slog.Logger
+type SourceScore struct {
+    Type            SourceType `json:"type"`
+    Score           float64    `json:"score"`         // 0.0-1.0
+    ReasoningTag    string     `json:"reasoning_tag"` // "verified_broadcaster" | "media_outlet" | ...
 }
 
-func (s *Service) Search(ctx context.Context, req SearchRequest) ([]DiscoveredVideo, error) { ... }
+type SourceType string
+const (
+    SourceTypeBroadcaster SourceType = "broadcaster"
+    SourceTypeMediaOutlet SourceType = "media_outlet"
+    SourceTypeVerifiedFan SourceType = "verified_fan"
+    SourceTypeUnverified  SourceType = "unverified"
+)
 ```
 
-Two forward-looking additions vs today's Python: `TweetText` and
-`AuthorHandle` + `AuthorVerified`. These aren't used by any current
-activity — they land in the response DTOs from day one so the
-`textanalysis` domain can consume them when it ships (§1 extensibility
-hook).
+**Store interface:** None. Discovery is pure orchestration — no state persists in a discovery-owned table. Source scoring uses in-memory rules and (later) the `textanalysis` domain's classifier when it ships.
 
-### Vision domain
-
-Frame extraction (ffmpeg CLI) + dHash (native Go) + LLM vision validation.
+**Service:**
 
 ```go
 type Service struct {
-    ffmpeg   FFmpegClient  // shells out to ffmpeg CLI
-    llm      llm.Client
-    logger   *slog.Logger
+    twitter    infra.TwitterServiceClient  // HTTP client to twitter container
+    minDurationSec float64                 // pre-filter floor, e.g. 3.0
+    maxDurationSec float64                 // pre-filter ceiling, e.g. 90.0
+    logger     *slog.Logger
 }
 
-// ExtractFrames pulls frames at the given normalized time positions
-// (0.0 to 1.0 of video duration) using ffmpeg.
-func (s *Service) ExtractFrames(ctx context.Context, videoPath string, positions []float64) ([][]byte, error) { ... }
+// Search runs one Twitter search attempt via the twitter container.
+// Applies URL validation + duration pre-filtering before returning.
+// Returns typed errors for retry-classification:
+//   ErrTwitterUnreachable    → retry-eligible with backoff
+//   ErrTwitterAuthRequired   → not retry-eligible; needs VNC re-auth (alert)
+//   ErrTwitterSearchTimeout  → retry-eligible once
+//   ErrTwitterFleetDrained   → retry-eligible on different instance
+func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error)
+
+// BuildQuery constructs a Twitter search string from event details.
+// Format: "(FirstName OR LastName) (TeamAlias1 OR TeamAlias2 OR ...)"
+// Handles player-name normalization (accent stripping, hyphen splitting).
+func (s *Service) BuildQuery(playerName string, teamAliases []string) string
+
+// ValidateURL enforces snowflake-ID length invariants at discovery time
+// (audit §8 lived problem 1). Returns ErrURLMalformed for tweets whose
+// status IDs are truncated (< 18 or > 19 digits).
+func (s *Service) ValidateURL(tweetURL string) error
+
+// ScoreSource assigns a preliminary source-quality score based on
+// available Twitter response fields (verified flag, follower count,
+// handle pattern matching known broadcaster accounts).
+//
+// This is the "day one" version; when textanalysis domain ships,
+// it will call textanalysis.Analyze() for a richer LLM-based
+// classification and merge results.
+func (s *Service) ScoreSource(video DiscoveredVideo) SourceScore
+```
+
+**Typed errors:**
+
+```go
+var (
+    ErrTwitterUnreachable   = errors.New("discovery: twitter service unreachable")
+    ErrTwitterAuthRequired  = errors.New("discovery: twitter auth expired; needs VNC re-auth")
+    ErrTwitterSearchTimeout = errors.New("discovery: search exceeded max duration")
+    ErrTwitterFleetDrained  = errors.New("discovery: no healthy twitter instance available")
+    ErrURLMalformed         = errors.New("discovery: tweet URL failed snowflake-ID validation")
+    ErrInvalidQuery         = errors.New("discovery: query construction failed (missing player name or team aliases)")
+)
+```
+
+**Lifecycle:** none. Each search is independent; there's no state machine.
+
+**Tests** (`service_test.go`, no store to test):
+
+```go
+// service_test.go — mocked twitter client
+func TestSearch_HappyPath_ReturnsFilteredResults(t *testing.T)
+func TestSearch_DropsShortDurationsAtBoundary(t *testing.T)
+func TestSearch_DropsLongDurationsAtBoundary(t *testing.T)
+func TestSearch_DropsMalformedURLsAtBoundary(t *testing.T)
+func TestSearch_TwitterUnreachable_ReturnsErr(t *testing.T)
+func TestSearch_AuthRequired_ReturnsErrNotRetryable(t *testing.T)
+func TestSearch_Timeout_ReturnsErr(t *testing.T)
+func TestBuildQuery_SinglePlayerNameSingleAlias(t *testing.T)
+func TestBuildQuery_MultiPartPlayerName_FirstLastOnly(t *testing.T)
+func TestBuildQuery_AccentedName_NormalizesForSearch(t *testing.T)
+func TestValidateURL_ValidSnowflake_Passes(t *testing.T)
+func TestValidateURL_TruncatedSnowflake_ReturnsErrURLMalformed(t *testing.T)
+func TestValidateURL_NonTwitterHost_ReturnsErrURLMalformed(t *testing.T)
+func TestScoreSource_VerifiedBroadcasterHandle_HighScore(t *testing.T)
+func TestScoreSource_UnverifiedRandom_LowScore(t *testing.T)
+```
+
+### Vision domain
+
+Frame extraction, perceptual hashing, AI vision classification, and clock-timestamp verification. Owns the entire "is this actually a soccer goal clip and does its broadcast clock match the reported match minute?" pipeline.
+
+**What it owns:**
+- Frame extraction from video files via `ffmpeg` CLI at specified time positions
+- 64-bit dHash computation in native Go
+- LLM vision classification (soccer/phone-screen/broadcast-clock extraction)
+- Broadcast-clock parsing (main clock, added time, stoppage sub-clock)
+- Timestamp validation against API's reported match minute (±3 tolerance)
+- Smart 2-3 frame strategy (frames at 25%, 75%, tiebreaker at 50%)
+
+**`internal/domain/vision/model.go`:**
+
+```go
+package vision
+
+import "time"
+
+type Frame struct {
+    JPEGBytes    []byte
+    PositionSecs float64  // seconds into video
+    PositionFrac float64  // 0.0-1.0 of video duration
+}
+
+type DHash struct {
+    Bytes [8]byte  // 64-bit perceptual hash
+}
+
+// HammingDistance returns the number of differing bits between two hashes.
+func (h DHash) HammingDistance(other DHash) int { ... }
+
+type ValidationResult struct {
+    IsSoccer          bool                `json:"is_soccer"`
+    IsPhoneScreen     bool                `json:"is_phone_screen"`
+    SoccerConfidence  float64             `json:"soccer_confidence"`
+    ClockExtractions  []ClockExtraction   `json:"clock_extractions"`  // one per frame checked
+    FramesChecked     int                 `json:"frames_checked"`     // 2 or 3
+    Verdict           ValidationVerdict   `json:"verdict"`
+}
+
+type ValidationVerdict string
+const (
+    VerdictAccepted        ValidationVerdict = "accepted"
+    VerdictRejectedNotSoccer ValidationVerdict = "rejected_not_soccer"
+    VerdictRejectedPhoneScreen ValidationVerdict = "rejected_phone_screen"
+    VerdictRejectedClockMismatch ValidationVerdict = "rejected_clock_mismatch"
+    VerdictInconclusive    ValidationVerdict = "inconclusive"
+)
+
+type ClockExtraction struct {
+    FrameIndex        int      `json:"frame_index"`
+    RawClock          string   `json:"raw_clock"`          // e.g. "45:23"
+    RawAdded          string   `json:"raw_added"`          // e.g. "+2"
+    RawStoppageClock  string   `json:"raw_stoppage_clock"` // e.g. "02:36"
+    ParsedMinute      *int     `json:"parsed_minute"`      // combined absolute minute
+    ParseError        *string  `json:"parse_error,omitempty"`
+}
+
+type TimestampVerification struct {
+    APIElapsed        int      // reported by API-Football
+    APIExtra          *int
+    ExtractedMinute   *int     // computed from vision extractions
+    Delta             *int     // extracted - (api_elapsed + api_extra)
+    Verified          bool     // |delta| <= 3
+    TolerancesTried   []string // for diagnostics: "direct", "stoppage_correction", etc.
+}
+```
+
+**Store interface:** None. Vision is stateless — the persistence of hashes and validation results lives in the `video` domain's `video_assets` and `video_shares` tables.
+
+**Service:**
+
+```go
+type Service struct {
+    ffmpeg          infra.FFmpegClient   // shells out to ffmpeg CLI
+    llm             infra.LLMClient      // config-swappable joi/nexus
+    validationPrompt string              // the multi-image classification prompt
+    tolerance       int                  // clock-vs-api tolerance in minutes; default 3
+    logger          *slog.Logger
+}
+
+// ExtractFrames pulls JPEG frames at normalized positions (0.0-1.0) of
+// the video's duration. Uses ffmpeg via os/exec. Positions map to
+// -ss seek offsets; each extraction is a separate ffmpeg invocation
+// (deterministic seek beats keyframe-relative reads for accuracy).
+//
+// Returns typed errors:
+//   ErrFFmpegNotFound         → environment problem; not retry-eligible
+//   ErrFFmpegExtractionFailed → transient; retry-eligible
+//   ErrVideoDurationUnknown   → probe failure; not retry-eligible
+func (s *Service) ExtractFrames(ctx context.Context, videoPath string, positions []float64) ([]Frame, error)
 
 // ComputeDHash produces a 64-bit perceptual hash for a JPEG frame.
-// Native Go, ~30 lines: decode → resize 9x8 → grayscale → row-adjacent
-// differences → 64-bit output.
-func (s *Service) ComputeDHash(ctx context.Context, frameJPEG []byte) ([8]byte, error) { ... }
+// Native Go: decode → resize to 9x8 → grayscale → row-adjacent
+// pixel differences → 64-bit output. Deterministic, ~30 LOC.
+func (s *Service) ComputeDHash(ctx context.Context, frame Frame) (DHash, error)
 
-// ValidateFrames sends multi-image LLM request expecting structured JSON:
-//   { SOCCER: "yes"/"no", SCREEN: "yes"/"no", CLOCK: "MM:SS", ADDED: "+N", STOPPAGE_CLOCK: "MM:SS" }
-// Returns typed classification per frame + typed error on LLM failure
-// (LLMUnavailableError, LLMTimeoutError, etc.).
-func (s *Service) ValidateFrames(ctx context.Context, frames [][]byte) (*ValidationResult, error) { ... }
+// ComputeDHashDense samples every-N-seconds and returns a slice of
+// (positionSecs, hash) pairs. Used for the dense-sampling perceptual
+// dedup approach from audit §4.
+func (s *Service) ComputeDHashDense(ctx context.Context, videoPath string, intervalSecs float64) ([]DenseHashSample, error)
+
+// ValidateFrames sends a multi-image LLM request expecting structured JSON:
+//   { SOCCER: "yes"/"no", SCREEN: "yes"/"no",
+//     CLOCK: "MM:SS", ADDED: "+N", STOPPAGE_CLOCK: "MM:SS" }
+// per frame.
+//
+// Smart 2-3 strategy: if 25% and 75% frames agree on SOCCER/SCREEN,
+// only two calls are made. If they disagree, 50% frame breaks the tie
+// (three calls total). Reduces LLM cap pressure by ~33%.
+//
+// Returns typed errors:
+//   ErrLLMUnavailable → retry-eligible
+//   ErrLLMTimeout     → retry-eligible once
+//   ErrLLMCapExceeded → retry-eligible with longer backoff
+//   ErrLLMBadResponse → not retry-eligible; log for prompt-engineering
+func (s *Service) ValidateFrames(ctx context.Context, frames []Frame) (*ValidationResult, error)
+
+// VerifyTimestamp compares the vision-extracted absolute minute against
+// the API-reported minute. Applies tolerance (default ±3).
+//
+// Includes smart OCR correction for stoppage-time: vision may read
+// "02:36" (stoppage sub-clock) instead of "92:36" (absolute). Tries
+// api_elapsed + parsed as an alternative interpretation before
+// declaring mismatch.
+func (s *Service) VerifyTimestamp(apiElapsed int, apiExtra *int, extractions []ClockExtraction) TimestampVerification
+
+// PickBestExtraction chooses the most reliable clock extraction from
+// multiple frames, weighting by parse success + confidence.
+func (s *Service) PickBestExtraction(extractions []ClockExtraction) *ClockExtraction
+```
+
+**Helpers (`internal/domain/vision/clockparse.go`):**
+
+```go
+// Named helpers, exported for direct testing of the parsers.
+func ParseClockField(raw string) (minute int, isRunning bool, err error)
+func ParseAddedField(raw string) (extra int, err error)
+func ParseStoppageClockField(raw string) (subMinute int, subSecond int, err error)
+func ComputeAbsoluteMinute(clockMinute int, isStoppage bool, subMinute int) int
+```
+
+**Typed errors:**
+
+```go
+var (
+    ErrFFmpegNotFound         = errors.New("vision: ffmpeg binary not found")
+    ErrFFmpegExtractionFailed = errors.New("vision: frame extraction failed")
+    ErrVideoDurationUnknown   = errors.New("vision: could not probe video duration")
+    ErrDHashComputeFailed     = errors.New("vision: dhash computation failed")
+    ErrLLMUnavailable         = errors.New("vision: llm unavailable")
+    ErrLLMTimeout             = errors.New("vision: llm timeout")
+    ErrLLMCapExceeded         = errors.New("vision: llm concurrent-cap exceeded")
+    ErrLLMBadResponse         = errors.New("vision: llm returned invalid structured json")
+    ErrInsufficientFrames     = errors.New("vision: fewer than 2 frames provided to validation")
+)
+```
+
+**Lifecycle:** none — stateless.
+
+**Tests** (`service_test.go`, `clockparse_test.go`):
+
+```go
+// service_test.go — mocked ffmpeg + mocked LLM
+func TestExtractFrames_HappyPath(t *testing.T)
+func TestExtractFrames_FFmpegMissing_ReturnsErrFFmpegNotFound(t *testing.T)
+func TestComputeDHash_DeterministicForSameFrame(t *testing.T)
+func TestComputeDHash_HammingDistance_IdenticalFrames_Zero(t *testing.T)
+func TestValidateFrames_TwoFramesAgree_ReturnsAccepted(t *testing.T)
+func TestValidateFrames_TwoFramesDisagree_CallsThird(t *testing.T)
+func TestValidateFrames_LLMUnavailable_ReturnsErr(t *testing.T)
+func TestValidateFrames_LLMCapExceeded_ReturnsRetryableErr(t *testing.T)
+func TestVerifyTimestamp_WithinTolerance_Verified(t *testing.T)
+func TestVerifyTimestamp_OutsideTolerance_NotVerified(t *testing.T)
+func TestVerifyTimestamp_StoppageOCRCorrection_Verifies(t *testing.T)
+func TestPickBestExtraction_MultipleValid_PicksHighestConfidence(t *testing.T)
+
+// clockparse_test.go — pure functions, table-driven
+func TestParseClockField_Running(t *testing.T)         // "45:23"
+func TestParseClockField_Halftime(t *testing.T)         // "HT" / "45:00"
+func TestParseClockField_FullTime(t *testing.T)         // "FT" / "90:00"
+func TestParseClockField_Malformed_Errors(t *testing.T)
+func TestParseAddedField_ValidExtra(t *testing.T)       // "+4"
+func TestParseAddedField_Empty(t *testing.T)
+func TestParseStoppageClock_MinuteSecond(t *testing.T)  // "02:36"
+func TestComputeAbsoluteMinute_RegularTime(t *testing.T)
+func TestComputeAbsoluteMinute_StoppageTime(t *testing.T)
 ```
 
 ### Session domain (Twitter fleet management)
 
-Audit §8 realized. Cookie coordination via the `twitter_sessions` table.
+Audit §8 realized. Owns cookie coordination across Twitter fleet replicas, staleness detection, health-check aggregation, and re-auth orchestration.
+
+**What it owns:**
+- `twitter_sessions` table (single-row canonical pattern)
+- `cookies_version` monotonic counter for hot-swap coordination
+- Consecutive-auth-failure tracking for staleness alerting
+- Estimated cookie expiry based on observed lifetimes
+- Re-auth notes for operational forensics
+- Health-status aggregation for the scaler's fleet-quality decisions
+
+**`internal/domain/session/model.go`:**
 
 ```go
+package session
+
+import "time"
+
 type Session struct {
     ID                      string     `db:"id"`  // always 'canonical'
     Cookies                 []byte     `db:"cookies"`
@@ -1840,32 +2236,188 @@ type Session struct {
     UpdatedAt               time.Time  `db:"updated_at"`
 }
 
-type Service struct { store Store; logger *slog.Logger }
+// IsStale reports whether this session is considered stale enough to
+// warrant an alert.
+func (s *Session) IsStale(now time.Time, failureThreshold int) bool {
+    return s.ConsecutiveAuthFailures >= failureThreshold ||
+        (s.EstimatedExpiryAt != nil && now.After(*s.EstimatedExpiryAt))
+}
 
-// GetCanonical returns the canonical session row. Twitter containers call this
-// every N seconds; if CookiesVersion differs from their local copy, they
-// hot-swap cookies in the running Firefox without restarting.
-func (s *Service) GetCanonical(ctx context.Context) (*Session, error) { ... }
+// HealthReport is what a twitter container reports to callers via its
+// /health endpoint. Audit §8 rich-health protocol.
+type HealthReport struct {
+    Healthy                  bool      `json:"healthy"`
+    Authenticated            bool      `json:"authenticated"`
+    CookiesVersionLocal      int64     `json:"cookies_version_local"`
+    CookiesVersionCanonical  int64     `json:"cookies_version_canonical"`
+    CookiesAgeSecs           int       `json:"cookies_age_seconds"`
+    LastSearchLatencyMs      *int      `json:"last_search_latency_ms,omitempty"`
+    LastSearchSucceededAt    *time.Time `json:"last_search_succeeded_at,omitempty"`
+    ConsecutiveSearchFailures int      `json:"consecutive_search_failures"`
+    ConsecutiveAuthFailures   int      `json:"consecutive_auth_failures"`
+    BrowserPID               int       `json:"browser_pid"`
+    MemoryRSSMB              int       `json:"memory_rss_mb"`
+    InFlightSearches         int       `json:"in_flight_searches"`
+    Draining                 bool      `json:"draining"`
+    DOMCanaryLastStatus      string    `json:"dom_canary_last_status"`
+    DOMCanaryLastCheckAt     *time.Time `json:"dom_canary_last_check,omitempty"`
+}
 
-// RecordAuthFailure atomically increments consecutive_auth_failures.
-// Used by twitter containers when a search hits an auth-required response.
-func (s *Service) RecordAuthFailure(ctx context.Context) error { ... }
-
-// PromoteFreshCookies is called after a successful VNC re-auth. It bumps
-// cookies_version, sets authenticated=true, resets consecutive_auth_failures.
-// All twitter containers see the new cookies on their next GetCanonical call.
-func (s *Service) PromoteFreshCookies(ctx context.Context, cookies []byte, notes string) error { ... }
+// FleetHealth is the scaler-side aggregate view across all twitter instances.
+type FleetHealth struct {
+    TotalInstances       int
+    HealthyInstances     int
+    AuthenticatedInstances int
+    DrainingInstances    int
+    MedianConsecutiveAuthFailures int
+    MedianSearchLatencyMs int
+    OldestCookiesAgeSecs  int
+}
 ```
 
-Fleet propagation: seconds, not restart-cycles. The stale-auth-across-
-replicas bug from audit §8 (silently costing search quality after every
-manual VNC re-auth) becomes impossible.
+**Store interface:**
+
+```go
+type Store interface {
+    // GetCanonical returns the single canonical row. Creates it with empty
+    // cookies and cookies_version=0 if it doesn't exist yet.
+    GetCanonical(ctx context.Context) (*Session, error)
+
+    // UpdateCookies atomically writes a new cookie blob AND increments
+    // cookies_version in one round-trip. Used by re-auth flow.
+    UpdateCookies(ctx context.Context, cookies []byte, notes string) (*Session, error)
+
+    // IncrementAuthFailures atomically bumps consecutive_auth_failures.
+    IncrementAuthFailures(ctx context.Context) (newCount int, err error)
+
+    // RecordSearchSuccess atomically resets consecutive_auth_failures
+    // and updates last_search_succeeded_at to now.
+    RecordSearchSuccess(ctx context.Context) error
+
+    // SetEstimatedExpiry updates the projection based on observed lifetimes.
+    SetEstimatedExpiry(ctx context.Context, at time.Time) error
+}
+```
+
+**Service:**
+
+```go
+type Service struct {
+    store             Store
+    failureThreshold  int              // e.g. 2 — alert threshold
+    now               func() time.Time
+    logger            *slog.Logger
+}
+
+// GetCanonical returns the session for hot-swap comparison.
+// Twitter containers call this every N seconds (e.g. 30s) and compare
+// cookies_version against their in-memory copy; if newer, they hot-swap.
+func (s *Service) GetCanonical(ctx context.Context) (*Session, error)
+
+// HotSwapIfNewer returns (cookies, true) if the canonical cookies_version
+// is greater than localVersion, else (nil, false). Simplifies twitter
+// container's polling loop.
+func (s *Service) HotSwapIfNewer(ctx context.Context, localVersion int64) ([]byte, int64, bool, error)
+
+// RecordAuthFailure increments the failure counter. If it crosses the
+// alert threshold, logs at WARN level with structured fields so the
+// alert rule fires on the next Prometheus scrape.
+func (s *Service) RecordAuthFailure(ctx context.Context) error
+
+// RecordSearchSuccess resets the failure counter atomically. Called by
+// twitter containers after any search that returned results without
+// auth-required signals.
+func (s *Service) RecordSearchSuccess(ctx context.Context) error
+
+// PromoteFreshCookies is called after a successful VNC re-auth. Writes
+// the new cookie blob, bumps cookies_version, resets failure counter,
+// updates estimated_expiry_at based on observed prior lifetimes.
+// Returns the updated Session so callers can log the new version.
+func (s *Service) PromoteFreshCookies(ctx context.Context, cookies []byte, notes string) (*Session, error)
+
+// ShouldWarnStale reports whether the canonical session is stale enough
+// to fire an operational alert. Composes multiple signals (failure count,
+// estimated expiry, time since last success).
+func (s *Service) ShouldWarnStale(ctx context.Context) (bool, string, error)
+```
+
+**Fleet-wide helpers (aggregating across twitter container `/health` responses):**
+
+```go
+// AggregateFleetHealth polls every registered twitter instance's /health
+// endpoint and returns the FleetHealth summary. Used by the scaler to
+// make quality-aware scaling decisions (audit §8: don't just count
+// active goals, factor in fleet health).
+func (s *Service) AggregateFleetHealth(ctx context.Context, instanceURLs []string) (*FleetHealth, error)
+```
+
+**Typed errors:**
+
+```go
+var (
+    ErrNoCanonicalSession   = errors.New("session: canonical row missing")
+    ErrConcurrentPromotion  = errors.New("session: cookies_version race; retry")
+    ErrEmptyCookies         = errors.New("session: cannot promote empty cookies")
+)
+```
+
+**Lifecycle:** none — the session row exists always (created lazily on first `GetCanonical`). Cookies mutate; the row identity is stable.
+
+**Tests** (`service_test.go`, `store_test.go`):
+
+```go
+// service_test.go — mocked store
+func TestGetCanonical_HappyPath(t *testing.T)
+func TestHotSwapIfNewer_NewerVersion_ReturnsCookies(t *testing.T)
+func TestHotSwapIfNewer_SameVersion_ReturnsFalse(t *testing.T)
+func TestHotSwapIfNewer_OlderVersion_ReturnsFalse(t *testing.T)
+func TestRecordAuthFailure_IncrementsCounter(t *testing.T)
+func TestRecordAuthFailure_CrossesThreshold_LogsWarn(t *testing.T)
+func TestRecordSearchSuccess_ResetsCounter(t *testing.T)
+func TestPromoteFreshCookies_BumpsVersion(t *testing.T)
+func TestPromoteFreshCookies_EmptyCookies_ReturnsErr(t *testing.T)
+func TestShouldWarnStale_FailuresBelowThreshold_False(t *testing.T)
+func TestShouldWarnStale_FailuresAboveThreshold_True(t *testing.T)
+func TestShouldWarnStale_ExpiryPassed_True(t *testing.T)
+func TestAggregateFleetHealth_AllHealthy_ReturnsCorrectAggregate(t *testing.T)
+func TestAggregateFleetHealth_SomeUnhealthy_ReportsMedians(t *testing.T)
+
+// store_test.go — real Postgres via testcontainers-go
+func TestStore_GetCanonical_CreatesRowIfMissing(t *testing.T)
+func TestStore_UpdateCookies_IncrementsVersionAtomically(t *testing.T)
+func TestStore_UpdateCookies_ConcurrentCallsSerialize(t *testing.T)
+func TestStore_IncrementAuthFailures_Atomic(t *testing.T)
+func TestStore_RecordSearchSuccess_ResetsCounterAtomically(t *testing.T)
+```
+
+Fleet propagation: seconds, not restart-cycles. The stale-auth-across-replicas bug from audit §8 (silently costing search quality after every manual VNC re-auth) becomes impossible.
 
 ### Text analysis domain (extensibility, stubbed day one)
 
-Populated when semantic intent ships. Schema lives in migration `0001`; domain package is scaffolded with typed shapes and `ErrNotImplemented` bodies.
+Populated when semantic intent ships. Full domain package scaffolded from day one: typed shapes, interfaces, and `ErrNotImplemented` service bodies. Schema lives in migration `0001` (per §3) so the FK from `video_assets` exists forever without a retroactive migration.
+
+**What it will own (when implemented):**
+- LLM-based tweet-text classification (source type, event type mentioned, confidence, urgency)
+- Semantic embedding via `pgvector` for similarity clustering
+- Source-quality boost signal fed back to the discovery domain
+- Cross-tweet clustering ("other tweets talking about this moment")
+
+**What it owns from day one (stubs):**
+- All types, interfaces, struct definitions
+- `Service` methods returning `ErrNotImplemented`
+- Store implementation (real, functional — the schema exists)
+
+**`internal/domain/textanalysis/model.go`:**
 
 ```go
+package textanalysis
+
+import (
+    "time"
+    "github.com/google/uuid"
+    "yourorg/found-footy/internal/domain/event"
+)
+
 type SourceType string
 const (
     SourceBroadcaster SourceType = "broadcaster"
@@ -1875,39 +2427,158 @@ const (
 )
 
 type Intent struct {
-    ID                 uuid.UUID  `db:"id"`
-    VideoAssetID       uuid.UUID  `db:"video_asset_id"`
-    TweetURL           string     `db:"tweet_url"`
-    AuthorHandle       string     `db:"author_handle"`
-    AuthorVerified     bool       `db:"author_verified"`
-    SourceType         SourceType `db:"source_type"`
+    ID                 uuid.UUID   `db:"id"`
+    VideoAssetID       uuid.UUID   `db:"video_asset_id"`
+    TweetURL           string      `db:"tweet_url"`
+    AuthorHandle       string      `db:"author_handle"`
+    AuthorVerified     bool        `db:"author_verified"`
+    SourceType         SourceType  `db:"source_type"`
     EventTypeMentioned *event.Type `db:"event_type_mentioned"`
-    Confidence         float32    `db:"confidence"`
-    Urgency            *float32   `db:"urgency"`
-    Embedding          []float32  `db:"embedding"`  // pgvector
-    TweetText          string     `db:"tweet_text"`
-    LLMModel           string     `db:"llm_model"`
-    AnalyzedAt         time.Time  `db:"analyzed_at"`
+    Confidence         float32     `db:"confidence"`
+    Urgency            *float32    `db:"urgency"`
+    Embedding          []float32   `db:"embedding"`  // pgvector 768-dim (Qwen3-Embedding-8B)
+    TweetText          string      `db:"tweet_text"`
+    LLMModel           string      `db:"llm_model"`
+    AnalyzedAt         time.Time   `db:"analyzed_at"`
 }
 
-type Service struct { store Store; llm llm.Client; ... }
+type AnalyzeRequest struct {
+    VideoAssetID   uuid.UUID
+    TweetURL       string
+    AuthorHandle   string
+    AuthorVerified bool
+    TweetText      string
+    LLMModelHint   string // optional pin to a specific model version
+}
 
-var ErrNotImplemented = errors.New("textanalysis: not yet implemented")
+type SimilarityQuery struct {
+    Embedding    []float32
+    Threshold    float32  // cosine similarity threshold, e.g. 0.85
+    Limit        int
+    FixtureID    *int64   // scope to a fixture if set
+    SourceTypeIn []SourceType  // filter by source types if non-empty
+}
 
-// Analyze classifies a tweet's text alongside a discovered video and stores
-// the result. Called by AnalyzeTweetIntent activity when it eventually ships.
+type SimilarityResult struct {
+    Intent    Intent
+    Similarity float32  // 0.0-1.0
+}
+```
+
+**Store interface** (fully implemented from day one — the schema exists):
+
+```go
+type Store interface {
+    Get(ctx context.Context, id uuid.UUID) (*Intent, error)
+    GetForVideoAsset(ctx context.Context, videoAssetID uuid.UUID) (*Intent, error)
+    Upsert(ctx context.Context, i *Intent) error
+    ListByFixture(ctx context.Context, fixtureID int64) ([]Intent, error)
+    ListBySourceType(ctx context.Context, sourceType SourceType, limit int) ([]Intent, error)
+
+    // FindByEmbedding uses the HNSW vector_cosine_ops index from §3.
+    // Returns results ordered by cosine similarity DESC.
+    FindByEmbedding(ctx context.Context, q SimilarityQuery) ([]SimilarityResult, error)
+
+    // DeleteByVideoAsset removes an intent row when its parent asset
+    // is superseded or deleted. Called by video domain's teardown.
+    DeleteByVideoAsset(ctx context.Context, videoAssetID uuid.UUID) error
+}
+```
+
+**Service** (stubbed with `ErrNotImplemented` until it ships):
+
+```go
+type Service struct {
+    store           Store
+    llm             infra.LLMClient
+    classifyPrompt  string  // structured-json classification prompt
+    embeddingModel  string  // model ID for embedding call, e.g. "qwen3-embedding-8b"
+    logger          *slog.Logger
+}
+
+// Analyze runs LLM classification + embedding for a tweet + video pair,
+// upserting the resulting Intent row. Idempotent by video_asset_id
+// (schema unique constraint enforces one intent per asset; re-analysis
+// replaces).
+//
+// STUBBED: returns ErrNotImplemented.
+//
+// When implemented, typed errors:
+//   ErrLLMUnavailable      → retry-eligible
+//   ErrLLMBadResponse      → not retry-eligible; log for prompt work
+//   ErrEmbeddingMismatch   → embedding dimensionality != 768; config error
+//   ErrVideoAssetNotFound  → not retry-eligible
 func (s *Service) Analyze(ctx context.Context, req AnalyzeRequest) (*Intent, error) {
     return nil, ErrNotImplemented
 }
 
-// FindSimilar returns intent rows whose embedding is within threshold of query.
-// Used by future "other tweets talking about this moment" clustering features.
-func (s *Service) FindSimilar(ctx context.Context, embedding []float32, threshold float32, limit int) ([]Intent, error) {
+// ReAnalyze forces re-classification of an existing intent row (e.g.
+// after we've upgraded the classifier prompt or LLM model).
+//
+// STUBBED: returns ErrNotImplemented.
+func (s *Service) ReAnalyze(ctx context.Context, videoAssetID uuid.UUID) (*Intent, error) {
     return nil, ErrNotImplemented
 }
+
+// FindSimilar returns intents whose embedding is within threshold of
+// the query. Used for cross-tweet clustering ("other tweets talking
+// about this moment") and for dedup boost signals.
+//
+// STUBBED: returns ErrNotImplemented.
+func (s *Service) FindSimilar(ctx context.Context, q SimilarityQuery) ([]SimilarityResult, error) {
+    return nil, ErrNotImplemented
+}
+
+// ClassifySource is a helper for the discovery domain to get a source
+// boost signal for a discovered video BEFORE downloading. Cached lookups
+// against already-analyzed sources; falls back to rule-based scoring
+// when no cached data exists.
+//
+// STUBBED: returns rule-based fallback only until fully implemented.
+func (s *Service) ClassifySource(ctx context.Context, authorHandle string, authorVerified bool) (discovery.SourceScore, error)
 ```
 
-The Store, Service interface, model, and error types all exist. `Analyze` and `FindSimilar` return `ErrNotImplemented`. When someone wants to ship semantic intent, they fill in the bodies + wire the activity to call it. Zero cost to leaving the stubs in place.
+**Typed errors:**
+
+```go
+var (
+    ErrNotImplemented     = errors.New("textanalysis: not yet implemented")
+    ErrLLMUnavailable     = errors.New("textanalysis: llm unavailable")
+    ErrLLMBadResponse     = errors.New("textanalysis: llm returned invalid classification")
+    ErrEmbeddingMismatch  = errors.New("textanalysis: embedding dimensionality mismatch")
+    ErrVideoAssetNotFound = errors.New("textanalysis: video asset not found for intent")
+)
+```
+
+**Lifecycle:** none — stateless service, embedding+classification is one-shot per video asset.
+
+**Tests** (`service_test.go`, `store_test.go`):
+
+```go
+// service_test.go — stubbed for ErrNotImplemented from day one
+func TestAnalyze_Stubbed_ReturnsErrNotImplemented(t *testing.T)
+func TestReAnalyze_Stubbed_ReturnsErrNotImplemented(t *testing.T)
+func TestFindSimilar_Stubbed_ReturnsErrNotImplemented(t *testing.T)
+func TestClassifySource_ReturnsRuleBasedFallback(t *testing.T)
+
+// store_test.go — real from day one (schema exists in migration 0001)
+func TestStore_Upsert_InsertNew(t *testing.T)
+func TestStore_Upsert_ReplaceExisting(t *testing.T)
+func TestStore_GetForVideoAsset_Missing_ReturnsNil(t *testing.T)
+func TestStore_FindByEmbedding_UsesHNSWIndex(t *testing.T)
+func TestStore_FindByEmbedding_RespectsThreshold(t *testing.T)
+func TestStore_ListBySourceType_Filters(t *testing.T)
+func TestStore_DeleteByVideoAsset_Cascades(t *testing.T)
+```
+
+When someone wants to ship semantic intent, they:
+1. Replace the `ErrNotImplemented` returns with real LLM calls
+2. Add the corresponding `service_test.go` cases for the real logic
+3. Register an `AnalyzeTweetIntent` activity in `internal/activity/text_analysis.go`
+4. Wire the activity into whichever workflow needs it (probably `UploadWorkflow` after asset commit)
+5. Add API surface (optional field on video/event response types)
+
+Zero changes to unrelated domains.
 
 ### Cross-domain operations — `internal/usecases/`
 
