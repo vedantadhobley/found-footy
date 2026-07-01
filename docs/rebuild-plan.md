@@ -2675,5 +2675,779 @@ layering does the isolating.
 
 ---
 
-*(Remaining §5..§16 to follow. §4 established the domain-code shape
-that §5 orchestration and §6 discovery build against.)*
+## 5. Orchestration layer — Temporal workflows and activities
+
+Five workflows, ~25 activities. Full spec below: signatures, retry policies,
+timeout configs, signal patterns, workflow ID conventions per audit
+[§2](./design-audit.md#2-workflow-id-conventions-and-identity),
+error handling classification. Activities are grouped by domain
+(matching §4's package layout).
+
+### Design principles
+
+**Workflows are deterministic. Activities do side effects.** Every I/O
+call (Postgres, S3, HTTP, ffmpeg) happens inside an activity. Workflows
+compose activities and encode retry/timeout/heartbeat policies. This is
+the standard Temporal split and non-negotiable — workflow determinism
+enables replay.
+
+**Workflow IDs are UUID-anchored, not concat-anchored** (audit §2). Every
+workflow ID is derived from the UUID `_event_id` from §3, never from
+API-mutable strings like team names or player names. Human-readable
+identity travels through the workflow's input args, not through the ID.
+
+```
+IngestWorkflow    → id = "ingest-scheduled" (schedule owns it)
+MonitorWorkflow   → id = "monitor-scheduled"
+DiscoveryWorkflow → id = "discovery-<event_uuid>"
+DownloadWorkflow  → id = "download-<NN>-<event_uuid>"  // NN = attempt zero-padded
+UploadWorkflow    → id = "upload-<event_uuid>"          // deterministic, serialized
+```
+
+**Fire-and-forget child workflows use `ABANDON` parent close policy**
+(audit §0 invariant). Monitor is a 30s cycle; discovery is a ~10-minute
+loop — child MUST outlive parent.
+
+**Per-event upload serialization via `SignalWithStartWorkflow`.** One
+UploadWorkflow per event, deterministic ID `upload-<event_uuid>`.
+Multiple DownloadWorkflows feed it via signals. FIFO queue inside
+UploadWorkflow processes batches. This preserves the audit §0
+"per-event dedup serialization" invariant.
+
+**Idempotent counters via Postgres `INSERT ... ON CONFLICT DO NOTHING`.**
+Every workflow that participates in a threshold count (monitor debounce,
+download completion, VAR drop) registers itself via one of the
+`event_*_workflows` tables from §3. Count is `SELECT count(*)` — no
+`$addToSet` array manipulation, no counter increments.
+
+**Error classification drives retry policy.** Every activity returns
+either a domain typed error (from §4) or a temporal error. Retry policies
+are configured per activity based on which error classes are retry-
+eligible. Non-retry-eligible errors (`ErrNotFound`, `ErrURLMalformed`,
+`ErrLLMBadResponse`) get zero retries; retry-eligible errors
+(`ErrLLMUnavailable`, `ErrTwitterUnreachable`) get exponential backoff.
+
+**No workflow calls a service or store directly.** Workflows only call
+activities. Activities call services. This preserves testability
+(mock-friendly at the activity boundary) and replay safety (services can
+be non-deterministic; workflows can't).
+
+### Workflow inventory
+
+| Workflow | Schedule / Trigger | Purpose | Duration |
+|---|---|---|---|
+| `IngestWorkflow` | Daily 00:05 UTC (schedule) | Fetch 3 days of fixtures, categorize, pre-cache aliases, prune retention | Minutes |
+| `MonitorWorkflow` | Every 30s (schedule, SKIP overlap) | Poll active fixtures, detect events, trigger discovery, complete finished fixtures | Seconds |
+| `DiscoveryWorkflow` | Fire-and-forget from Monitor (ABANDON) | Twitter search loop per event: up to 10 attempts, spawn DownloadWorkflow per attempt | ~10 min |
+| `DownloadWorkflow` | Fire-and-forget from Discovery (ABANDON) | Download videos from one search attempt, validate, hash, signal UploadWorkflow | 1-3 min |
+| `UploadWorkflow` | SignalWithStart from Download | Serialized per-event upload queue: dedup, S3 upload, rank recalc | Idle-timeout 5 min |
+
+Down from Python's 6 (RAGWorkflow absorbed into an activity called by
+IngestWorkflow — no need for a workflow when it's a bounded synchronous
+operation).
+
+### Workflow 1: `IngestWorkflow`
+
+**Purpose:** Daily fixture ingest. Fetches upcoming and in-progress
+fixtures from API-Football across a 3-day window, categorizes by
+status, upserts into Postgres, pre-caches team aliases via RAG,
+prunes fixtures beyond retention.
+
+**Schedule:** `5 0 * * *` (daily 00:05 UTC) — Temporal schedule owns
+the workflow ID.
+
+**Signature:**
+
+```go
+package workflow
+
+type IngestWorkflowInput struct {
+    ManualDate      *time.Time  // nil for scheduled; set for manual re-run
+    ManualFixtureIDs []int64    // nil for full-window fetch; set for manual re-ingest
+    RetentionDays   int         // default 14
+}
+
+type IngestWorkflowOutput struct {
+    FixturesUpserted int
+    AliasesCached    int
+    FixturesPruned   int
+    Errors           []string  // non-fatal errors surfaced for observability
+}
+
+func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (*IngestWorkflowOutput, error)
+```
+
+**Activity call sequence:**
+
+```
+1. activity.FetchFixturesForWindow(from, to)      → []APIFixture
+2. activity.CategorizeAndUpsertFixtures(fixtures) → { staging, active, completed, skipped counts }
+3. activity.ListUniqueTeamsFromFixtures(fixtures) → []TeamRef
+4. activity.PreCacheAliasesBatch(teams)           → { success, failed counts }
+5. activity.PruneOldFixtures(retentionCutoff)     → count
+```
+
+**Retry policy (workflow-level):** none — the workflow itself is idempotent
+(re-running the same date reprocesses the same fixtures with UPSERT semantics).
+Failure results in a Temporal-level workflow failure that operator can restart.
+
+**Timeout config:**
+- Workflow execution timeout: none (runs to completion)
+- Task timeout: 60s
+- Per-activity: see activity inventory below
+
+### Workflow 2: `MonitorWorkflow`
+
+**Purpose:** Every 30s, poll active fixtures for API updates, detect new/
+changed/removed events, trigger DiscoveryWorkflow for newly-stable events,
+complete finished fixtures.
+
+**Schedule:** `*/30 * * * * *` (every 30s) — schedule with SKIP overlap
+policy (if prior instance still running, skip this cycle).
+
+**Signature:**
+
+```go
+type MonitorWorkflowInput struct{}  // no inputs — schedule-driven
+
+type MonitorWorkflowOutput struct {
+    FixturesPolled        int
+    EventsDetectedNew     int
+    EventsMarkedStable    int
+    DiscoveriesTriggered  int
+    FixturesCompleted     int
+    Errors                []string
+}
+
+func MonitorWorkflow(ctx workflow.Context, in MonitorWorkflowInput) (*MonitorWorkflowOutput, error)
+```
+
+**Activity call sequence:**
+
+```
+1. activity.PreActivateUpcoming(30min)              → { activated_count }
+2. activity.ListActiveFixtureIDs()                  → []int64
+3. activity.FetchFixturesByIDs(ids)                 → []APIFixture (batch)
+
+For each fixture, in parallel via workflow.Go:
+  4. activity.RecordFixturePoll(fixture)            → error
+  5. activity.DetectEventChanges(fixtureID, apiEvents) → DetectionResult
+  6. activity.RegisterEventMonitorWorkflow(eventID, workflow.GetInfo().WorkflowExecution.ID) → count
+
+For each newly-stable event (count >= 3 AND player known):
+  7. activity.FlagMonitorComplete(eventID)          → flipped bool
+  IF flipped:
+    workflow.ExecuteChildWorkflow(DiscoveryWorkflow, ...) with ABANDON
+
+For each removed event (VAR candidate):
+  8. activity.RegisterEventDropWorkflow(eventID, workflow.GetInfo().WorkflowExecution.ID) → count
+  IF count >= 3:
+    activity.MarkEventRemoved(eventID, "var")
+
+For each fixture:
+  9. activity.EventsFullyComplete(fixtureID)        → bool (all events download_complete OR removed)
+  IF bool AND fixture.APITerminal:
+    activity.CompleteFixture(fixtureID)             → success/no-op
+
+10. activity.PublishFrontendRefresh()               → error (best-effort SSE trigger)
+```
+
+**Retry policy (workflow-level):** none — SKIP overlap policy handles
+"prior instance still running" gracefully. A failed instance just means
+we'll try again in 30 seconds.
+
+**Timeout config:**
+- Workflow execution timeout: 25s (leave headroom before next scheduled cycle)
+- Task timeout: 10s (fast fail; next cycle retries)
+
+**Child workflow spawn pattern (DiscoveryWorkflow):**
+
+```go
+discoveryOpts := workflow.ChildWorkflowOptions{
+    WorkflowID: fmt.Sprintf("discovery-%s", event.ID.String()),
+    ParentClosePolicy: enums.PARENT_CLOSE_POLICY_ABANDON,
+    WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+    TaskQueue: "found-footy",
+}
+workflow.ExecuteChildWorkflow(
+    workflow.WithChildOptions(ctx, discoveryOpts),
+    DiscoveryWorkflow,
+    DiscoveryInput{EventID: event.ID, /*...*/},
+)
+// NOTE: we don't await the future — fire-and-forget.
+```
+
+`REJECT_DUPLICATE` is what makes the stable workflow ID from audit §2
+load-bearing: Temporal itself rejects a second discovery spawn for the
+same event.
+
+### Workflow 3: `DiscoveryWorkflow`
+
+**Purpose:** Per event. Twitter search loop with up to 10 attempts,
+1-minute spacing (audit §8 discovery-hardening addition: adaptive,
+can early-exit if N consecutive attempts yield no new videos).
+
+**Trigger:** Child workflow of MonitorWorkflow with ABANDON.
+
+**Signature:**
+
+```go
+type DiscoveryWorkflowInput struct {
+    EventID       uuid.UUID
+    FixtureID     int64
+    PlayerName    string     // for logs + query construction
+    TeamName      string     // for logs + query construction
+    TeamID        int        // for alias resolution
+    Minute        int
+    Extra         *int
+    FirstSeenAt   time.Time  // for spacing computation
+    MaxAttempts   int        // default 10
+}
+
+type DiscoveryWorkflowOutput struct {
+    AttemptsExecuted    int
+    VideosDiscovered    int
+    DownloadsSpawned    int
+    EarlyExitReason     string  // "downloads_target_met" | "consecutive_empty" | "event_removed" | ""
+}
+
+func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (*DiscoveryWorkflowOutput, error)
+```
+
+**Activity call sequence:**
+
+```
+1. activity.GetOrResolveTeamAliases(TeamID)       → []string
+2. activity.SaveEventTwitterAliases(eventID, aliases) → error (for post-hoc audit)
+
+For attempt = 1..MaxAttempts:
+  3. activity.CheckEventStillLive(eventID)        → bool (false = VAR'd or removed)
+     IF false: return early ("event_removed")
+
+  4. activity.CountDownloadWorkflowsForEvent(eventID) → int
+     IF >= 10: return early ("downloads_target_met")
+
+  5. activity.SearchTwitter(discovery.SearchRequest{
+       Query: BuildQuery(PlayerName, aliases),
+       ExcludeURLs: workflow-local-set,
+       MaxAgeMinutes: 3,
+     }) → discovery.SearchResponse
+
+  Update workflow-local excludeURLs with each returned tweet_url.
+
+  IF response.Videos empty AND consecutive_empty_count >= 2:
+    early-exit ("consecutive_empty") — the adaptive addition from audit §8
+
+  6. For each returned video (top 5 by duration):
+     activity.RegisterEventDiscoveredVideo(eventID, video) → error
+
+  7. workflow.ExecuteChildWorkflow(
+       DownloadWorkflow,
+       DownloadInput{EventID, Attempt: N, Videos: top5},
+     ) with ABANDON
+     // fire-and-forget; DownloadWorkflow registers itself into
+     // event_download_workflows on start (idempotency invariant).
+
+  8. workflow.Sleep(spacing) — 60s from start of attempt, min 10s guard
+```
+
+**Retry policy (workflow-level):** none — the workflow's own retry loop
+is the retry mechanism. Individual activity failures within an attempt
+are handled by activity-level retry policies (below).
+
+**Timeout config:**
+- Workflow execution timeout: 20 min (10 attempts × 1 min + buffer)
+- Task timeout: 60s
+
+### Workflow 4: `DownloadWorkflow`
+
+**Purpose:** One search attempt's worth of downloads. Register itself in
+tracking table AT START (idempotency invariant). Download in parallel,
+MD5 batch-dedup, AI validate (sequential to respect LLM cap), hash,
+signal UploadWorkflow with the surviving batch.
+
+**Trigger:** Child of DiscoveryWorkflow with ABANDON.
+
+**Signature:**
+
+```go
+type DownloadWorkflowInput struct {
+    EventID     uuid.UUID
+    FixtureID   int64
+    Attempt     int              // 1..10
+    Videos      []discovery.DiscoveredVideo
+    APIElapsed  int              // for VerifyTimestamp
+    APIExtra    *int
+}
+
+type DownloadWorkflowOutput struct {
+    VideosDownloaded  int
+    ValidatedSoccer   int
+    HashesGenerated   int
+    SignaledUpload    bool
+    FailureClasses    map[string]int  // typed error class name → count
+}
+
+func DownloadWorkflow(ctx workflow.Context, in DownloadWorkflowInput) (*DownloadWorkflowOutput, error)
+```
+
+**Activity call sequence:**
+
+```
+// STEP 0: Register self FIRST (audit §0 invariant). Retry hard because
+// idempotency requires this to succeed.
+1. activity.RegisterDownloadWorkflow(
+     eventID, workflow.GetInfo().WorkflowExecution.ID, initialOutcome=nil,
+   ) → count
+
+2. activity.CheckEventStillLive(eventID) → bool (VAR abort)
+   IF false: skip to signal-upload-empty step
+
+// STEP 1: Parallel downloads via workflow.Go
+For each video in Input.Videos (up to 5 per attempt):
+  3. activity.DownloadVideo(video.TweetURL) → downloadedFile OR typed error
+     Retry policy: 3 attempts, 2x backoff from 2s. Non-retryable classes:
+       ErrURLMalformed, VideoGeoRestrictedError, VideoNotAvailableError,
+       VideoDeletedError
+
+// STEP 2: MD5 batch dedup
+4. activity.DedupBatchByMD5(downloadedFiles) → survivorFiles
+
+// STEP 3: Sequential AI validation (respects LLM cap)
+For each surviving file:
+  5. activity.ValidateVideoIsSoccer(file, APIElapsed, APIExtra)
+     → ValidationResult
+
+     Retry policy: 4 attempts, 2x backoff from 3s. Retry-eligible:
+       ErrLLMUnavailable, ErrLLMTimeout, ErrLLMCapExceeded.
+     Non-retryable: ErrLLMBadResponse (log for prompt work).
+
+  IF Verdict != Accepted: mark file as filtered, continue
+
+// STEP 4: Parallel hash generation
+For each accepted file, workflow.Go:
+  6. activity.GenerateVideoHash(file) → dHashDenseSamples
+     Heartbeat every 5 frames.
+     Retry: 2 attempts.
+
+// STEP 5: Signal UploadWorkflow (always, even if empty — see reason below)
+7. activity.SignalUploadBatch(
+     eventID,
+     batch of (file, validationResult, hash, source_url),
+   ) → error
+
+// STEP 6: Mark self complete in registration row
+8. activity.RegisterDownloadWorkflow(
+     eventID, workflowID,
+     initialOutcome=classifyOverallOutcome(),  // "success", "empty", "all_geo_restricted", etc.
+   ) → count  // updates existing row with outcome_class
+```
+
+**Why signal upload even when empty:** audit §7 lived problem. The
+UploadWorkflow's `check_and_mark_download_complete` needs to run
+even for empty batches — otherwise events where all 10 attempts
+fail get stuck at `download_complete=false` forever.
+
+**Retry policy (workflow-level):** none — a failed DownloadWorkflow just
+becomes one of the 10 attempts that didn't produce videos. Discovery's
+loop keeps going.
+
+**Timeout config:**
+- Workflow execution timeout: 5 min
+- Task timeout: 30s
+
+**Workflow ID convention:** `download-<NN>-<event_uuid>` where NN is
+attempt zero-padded. `WorkflowIDReusePolicy: REJECT_DUPLICATE`. This
+means the same attempt can't be re-spawned; if discovery loop
+re-fires attempt 3, Temporal rejects.
+
+### Workflow 5: `UploadWorkflow`
+
+**Purpose:** Serialized per-event upload queue. Receives batches from
+DownloadWorkflows via signals. Runs dedup, S3 upload, share creation,
+rank recalculation. Idle-times out after 5 min of no signals; auto-restarts
+on next signal via SignalWithStart.
+
+**Trigger:** `SignalWithStartWorkflow` from `DownloadWorkflow` step 7.
+Deterministic ID: `upload-<event_uuid>`.
+
+**Signature:**
+
+```go
+type UploadWorkflowInput struct {
+    EventID    uuid.UUID
+    FixtureID  int64
+    // Initial batch arrives in the start-signal, not the input struct
+}
+
+type UploadBatchSignal struct {
+    BatchID       uuid.UUID
+    Files         []DownloadedFile  // full metadata + hash
+}
+
+type UploadWorkflowOutput struct {
+    BatchesProcessed  int
+    AssetsCreated     int
+    AssetsReused      int
+    SharesCreated     int
+    RanksRecalculated int
+    IdleTimeout       bool
+}
+
+func UploadWorkflow(ctx workflow.Context, in UploadWorkflowInput) (*UploadWorkflowOutput, error) {
+    signalCh := workflow.GetSignalChannel(ctx, "add_videos")
+    var pending []UploadBatchSignal
+
+    for {
+        // Wait for signal OR idle timeout OR fixture completion
+        selector := workflow.NewSelector(ctx)
+        selector.AddReceive(signalCh, func(c workflow.ReceiveChannel, more bool) {
+            var batch UploadBatchSignal
+            c.Receive(ctx, &batch)
+            pending = append(pending, batch)
+        })
+        selector.AddFuture(workflow.NewTimer(ctx, 5*time.Minute), func(f workflow.Future) {
+            // Idle timeout — exit
+        })
+        selector.Select(ctx)
+
+        if len(pending) == 0 {
+            // Idle timeout hit; check completion state and exit
+            break
+        }
+
+        // Process oldest batch
+        batch := pending[0]
+        pending = pending[1:]
+        processBatch(ctx, in.EventID, batch)
+    }
+
+    return &UploadWorkflowOutput{...}, nil
+}
+```
+
+**Per-batch activity sequence (`processBatch`):**
+
+```
+1. activity.CheckEventStillLive(eventID) → bool
+   IF false: skip batch (VAR aborted mid-flight)
+
+For each file in batch, in parallel via workflow.Go:
+  2. activity.UpsertVideoAssetWithHashDedup(fixtureID, file, hash)
+     → (assetID, wasCreated bool)
+     // Atomic INSERT ... ON CONFLICT (fixture_id, perceptual_hash)
+     // DO UPDATE SET popularity = popularity + 1 RETURNING id, popularity
+
+  IF wasCreated:
+    3. activity.UploadFileToS3(assetID, file) → error
+    // Move the temp file to canonical S3 key derived from (fixtureID, assetID)
+  ELSE:
+    // Delete the local temp file — asset already exists in S3
+    3. activity.DeleteLocalTempFile(file) → error
+
+  4. activity.MintVideoShare(assetID, eventID, timestampVerified, extractedMinute, initialRank=0)
+     → shareID
+     // rank=0 is a temporary placeholder; step 5 recomputes
+
+  5. activity.RecalculateShareRanksForEvent(eventID) → error
+     // BEGIN; UPDATE ranks in one txn using partial UNIQUE INDEX;
+     // COMMIT with serialization-retry.
+
+  6. activity.NotifyEventLog("event.video_ready", payload) → error
+     // INSERT INTO event_log + NOTIFY channel — SSE fan-out
+
+// After all files processed:
+7. activity.TryFlagDownloadComplete(eventID, requiredCount=10) → flipped bool
+   // Even if this batch was empty; this is the "always signal" path
+
+IF flipped:
+  8. activity.NotifyEventLog("event.download_complete", payload) → error
+```
+
+**Why the RecalculateShareRanksForEvent step runs after every batch:**
+because ranks depend on cross-event popularity that can shift with each
+new asset attach. Running per-batch keeps ranks consistent; the partial
+UNIQUE INDEX from §3 makes this correct-by-construction regardless of
+concurrent runs.
+
+**Retry policy (workflow-level):** none — SignalWithStart handles
+"workflow already exists" cleanly. Idle-timeout is expected behavior.
+
+**Timeout config:**
+- Workflow execution timeout: 1 hour (well above idle-timeout)
+- Task timeout: 60s
+
+**Signal semantics:**
+
+- Signal name: `"add_videos"`
+- Signal payload: `UploadBatchSignal`
+- Ordering: FIFO within workflow (Temporal guarantee)
+- Backpressure: workflow processes one batch at a time; multiple
+  downloads signaling concurrently just queue up
+
+### Activity inventory (by domain package)
+
+Retry policy defaults for all:
+```go
+DefaultRetryPolicy = &temporal.RetryPolicy{
+    InitialInterval:    2 * time.Second,
+    BackoffCoefficient: 2.0,
+    MaximumInterval:    30 * time.Second,
+    MaximumAttempts:    3,
+    NonRetryableErrorTypes: []string{
+        "ErrNotFound",
+        "ErrInvalidTransition",
+        "ErrURLMalformed",
+        "ErrLLMBadResponse",
+        "VideoGeoRestrictedError",
+        "VideoNotAvailableError",
+        "VideoDeletedError",
+    },
+}
+```
+
+Per-activity overrides shown below.
+
+**`internal/activity/fixture.go`** (calls `domain/fixture`):
+
+| Activity | Input | Output | Timeout | Retry override |
+|---|---|---|---|---|
+| `FetchFixturesForWindow` | (from, to time.Time) | []APIFixture | 30s | 3 attempts, 2x from 1s |
+| `FetchFixturesByIDs` | []int64 | []APIFixture | 30s | 3 attempts |
+| `CategorizeAndUpsertFixtures` | []APIFixture | CategorizeOutput | 30s | 3 attempts |
+| `PreActivateUpcoming` | lookahead time.Duration | ActivateOutput | 30s | 2 attempts |
+| `ActivateFixture` | fixtureID int64 | error | 10s | 2 attempts |
+| `TryCompleteFixture` | fixtureID int64 | flipped bool | 10s | 3 attempts, 2x from 1s |
+| `CompleteFixture` | fixtureID int64 | error | 10s | 2 attempts |
+| `RecordFixturePoll` | *fixture.Fixture | error | 5s | 3 attempts |
+| `PruneOldFixtures` | cutoff time.Time | count int | 120s | 2 attempts |
+
+**`internal/activity/event.go`** (calls `domain/event`):
+
+| Activity | Input | Output | Timeout | Retry override |
+|---|---|---|---|---|
+| `DetectEventChanges` | (fixtureID, []APIEvent) | DetectionResult | 30s | 3 attempts |
+| `UpsertEvent` | *Event | (*Event, wasCreated, error) | 10s | 3 attempts, 2x from 1s |
+| `RegisterEventMonitorWorkflow` | (eventID, workflowID) | count int | 10s | 5 attempts, 2x from 2s (retry hard) |
+| `RegisterEventDownloadWorkflow` | (eventID, workflowID, outcome *string) | count int | 10s | 5 attempts, 2x from 2s |
+| `RegisterEventDropWorkflow` | (eventID, workflowID) | count int | 10s | 5 attempts |
+| `FlagMonitorComplete` | eventID | flipped bool | 10s | 3 attempts |
+| `TryFlagDownloadComplete` | (eventID, required int) | flipped bool | 10s | 3 attempts |
+| `MarkEventRemoved` | (eventID, reason string) | error | 10s | 3 attempts |
+| `UpdateEventTelemetry` | (eventID, TelemetryPatch) | error | 10s | 2 attempts |
+| `CheckEventStillLive` | eventID | bool | 10s | 3 attempts |
+| `CountDownloadWorkflowsForEvent` | eventID | int | 10s | 3 attempts |
+| `EventsFullyComplete` | fixtureID | bool | 10s | 3 attempts |
+| `SaveEventTwitterAliases` | (eventID, aliases []string) | error | 10s | 2 attempts |
+| `RegisterEventDiscoveredVideo` | (eventID, DiscoveredVideo) | error | 10s | 3 attempts |
+
+**`internal/activity/discovery.go`** (calls `domain/discovery`):
+
+| Activity | Input | Output | Timeout | Retry override |
+|---|---|---|---|---|
+| `SearchTwitter` | SearchRequest | SearchResponse | 60s | 3 attempts, 1.5x from 10s. Non-retryable: ErrTwitterAuthRequired |
+
+**`internal/activity/download.go`** (composes `domain/vision` + `infra/twitter-syndication`):
+
+| Activity | Input | Output | Timeout | Retry override |
+|---|---|---|---|---|
+| `DownloadVideo` | video URL | DownloadedFile | 90s | 3 attempts, 2x from 2s. Non-retryable: geo/deleted/notavailable |
+| `DedupBatchByMD5` | []DownloadedFile | []DownloadedFile | 30s | 2 attempts |
+| `ValidateVideoIsSoccer` | (file, apiElapsed, apiExtra) | ValidationResult | 90s | 4 attempts, 2x from 3s. Non-retryable: ErrLLMBadResponse |
+| `GenerateVideoHash` | file | dHashSamples | 60s heartbeat | 2 attempts, heartbeat every 5 frames |
+| `SignalUploadBatch` | (eventID, batch) | error | 60s | 3 attempts |
+| `DeleteLocalTempFile` | file | error | 30s | 2 attempts |
+
+**`internal/activity/upload.go`** (calls `domain/video`):
+
+| Activity | Input | Output | Timeout | Retry override |
+|---|---|---|---|---|
+| `UpsertVideoAssetWithHashDedup` | (fixtureID, file, hash) | (assetID, wasCreated) | 30s | 3 attempts |
+| `UploadFileToS3` | (assetID, file) | error | 60s | 3 attempts, 2x from 2s |
+| `MintVideoShare` | (assetID, eventID, verified, minute, initialRank) | shareID | 10s | 3 attempts |
+| `RecalculateShareRanksForEvent` | eventID | error | 30s | 3 attempts (serialization retry inside txn) |
+| `MarkShareRemoved` | (shareID, reason) | error | 10s | 3 attempts |
+
+**`internal/activity/alias.go`** (calls `domain/alias`):
+
+| Activity | Input | Output | Timeout | Retry override |
+|---|---|---|---|---|
+| `GetOrResolveTeamAliases` | teamID | []string | 60s | 3 attempts, 2x from 2s |
+| `PreCacheAliasesBatch` | []TeamRef | (success, failed int) | 5 min | 2 attempts (each team is independent) |
+| `ListUniqueTeamsFromFixtures` | []APIFixture | []TeamRef | 10s | 2 attempts |
+
+**`internal/activity/session.go`** (calls `domain/session`):
+
+Twitter containers own most session state via HTTP endpoints; the worker
+only needs a few activities for observability + operational alerts.
+
+| Activity | Input | Output | Timeout | Retry override |
+|---|---|---|---|---|
+| `AggregateFleetHealth` | []instanceURL | FleetHealth | 30s | 2 attempts (best-effort) |
+| `AlertIfSessionStale` | (via ShouldWarnStale) | error | 10s | 2 attempts |
+
+**`internal/activity/textanalysis.go`** (stubbed until domain ships):
+
+| Activity | Input | Output | Timeout | Retry override |
+|---|---|---|---|---|
+| `AnalyzeTweetIntent` | (assetID, tweetURL, text, author) | *Intent | 60s | 3 attempts, 2x from 2s. STUBBED. |
+
+**`internal/activity/eventlog.go`** (SSE fan-out + webhook trigger):
+
+| Activity | Input | Output | Timeout | Retry override |
+|---|---|---|---|---|
+| `NotifyEventLog` | (eventType, payload) | error | 5s | 2 attempts. Best-effort — SSE is not durable. |
+| `PublishFrontendRefresh` | (nil) | error | 5s | 1 attempt. Best-effort. |
+
+Total: ~30 activities across 8 files. Down from Python's 42.
+
+### Error taxonomy for retry classification
+
+Errors surface at three layers:
+
+1. **Domain errors** (from §4) — service-layer typed errors. Retry
+   eligibility is documented on each `Err*` variable.
+2. **Infrastructure errors** (§9) — client-layer wrapped errors
+   (`ErrLLMUnavailable`, `ErrPGConnectionLost`, `ErrS3AccessDenied`, etc.).
+   Retry eligibility inherited from the underlying transport class.
+3. **Temporal errors** — wrapping of the above at activity boundaries.
+   Workflow's error handler classifies via `underlying_error_class` field
+   (audit §7 telemetry contract).
+
+Every activity that wraps a service call classifies its returned error
+into one of these `error_class` values for telemetry:
+
+| Class | Retry-eligible? | Examples |
+|---|---|---|
+| `not_found` | no | event/fixture/asset not in DB |
+| `invalid_input` | no | ErrURLMalformed, ErrInvalidTransition |
+| `invalid_state` | no | event already removed |
+| `transient_infra` | yes | ErrPGConnectionLost, ErrS3Timeout |
+| `llm_unavailable` | yes | ErrLLMUnavailable, ErrLLMTimeout |
+| `llm_cap_exceeded` | yes (longer backoff) | ErrLLMCapExceeded |
+| `llm_bad_response` | no | ErrLLMBadResponse |
+| `twitter_unreachable` | yes | ErrTwitterUnreachable |
+| `twitter_auth` | no | ErrTwitterAuthRequired (alert!) |
+| `twitter_search_timeout` | yes | ErrTwitterSearchTimeout |
+| `video_download_failed` | conditional | see subclasses below |
+| `video_geo_restricted` | no (retry-eligible-per-proxy when §11 lands) | VideoGeoRestrictedError |
+| `video_not_available` | no | VideoNotAvailableError |
+| `video_deleted` | no | VideoDeletedError |
+| `unknown` | yes (default; investigate) | uncategorized exception |
+
+The activity records `error_class` in the event's `Telemetry`
+(`event.download_failure_classes` map) via `UpdateEventTelemetry`. This
+is how post-fixture summaries answer "why did this event fail to
+capture" without Loki archaeology.
+
+### Concurrency guardrails
+
+**LLM cap enforcement:** `ValidateVideoIsSoccer` and `GetOrResolveTeamAliases`
+both call the LLM endpoint. Global concurrency is limited by:
+- Activity-level: `MaxConcurrentActivityExecutions: 2` on the worker
+  registration for LLM-bearing activities (see §9 registration section).
+- Endpoint-level: joi's hard cap (currently 2). When nexus lands, its
+  own limit will replace this.
+
+**Per-instance twitter search cap:** `SearchTwitter` activity's HTTP
+call has a 60s timeout. The twitter container itself handles the per-
+Firefox-instance serialization (one search at a time per instance).
+
+**Postgres connection pool:** Configured in `infra/pg` (§9). Default
+pool size: 25 per worker container. Activities are short; contention
+should be minimal.
+
+**S3 client:** `aws-sdk-go-v2` default transport pool.
+
+### Testing shape
+
+**Workflow tests** use `temporaltest.NewTestSuiteInstance()` (from
+`go.temporal.io/sdk/testsuite`). Mock all activity calls; assert the
+right activities were called in the right order with the right args.
+
+```go
+func TestMonitorWorkflow_NewEvent_TriggersDiscovery(t *testing.T) {
+    ts := &testsuite.WorkflowTestSuite{}
+    env := ts.NewTestWorkflowEnvironment()
+
+    env.OnActivity(activity.ListActiveFixtureIDs, mock.Anything).Return([]int64{5000}, nil)
+    env.OnActivity(activity.FetchFixturesByIDs, mock.Anything, []int64{5000}).Return(...)
+    env.OnActivity(activity.DetectEventChanges, mock.Anything, ...).Return(DetectionResult{
+        NewEvents: []Event{newGoalEvent},
+    }, nil)
+    env.OnActivity(activity.RegisterEventMonitorWorkflow, mock.Anything, ...).Return(3, nil)
+    env.OnActivity(activity.FlagMonitorComplete, mock.Anything, newGoalEvent.ID).Return(true, nil)
+
+    // Assert DiscoveryWorkflow spawned
+    env.OnWorkflow(DiscoveryWorkflow, mock.Anything, mock.Anything).Return(&DiscoveryOutput{}, nil)
+
+    env.ExecuteWorkflow(MonitorWorkflow, MonitorWorkflowInput{})
+
+    require.True(t, env.IsWorkflowCompleted())
+    require.NoError(t, env.GetWorkflowError())
+
+    var out MonitorWorkflowOutput
+    require.NoError(t, env.GetWorkflowResult(&out))
+    require.Equal(t, 1, out.DiscoveriesTriggered)
+}
+```
+
+Test naming convention: `Test<WorkflowName>_<Scenario>_<Assertion>`.
+
+**Activity tests** are unit tests of the service composition — mocked
+service, real activity function. Fast.
+
+**Integration tests** live at `test/synthetic/` (audit §12 Tier 3
+harness). Runs whole match scenarios end-to-end against a real
+Postgres/Garage/Temporal in docker-compose.
+
+### Workflow ID collision handling
+
+Every workflow ID uses `WorkflowIDReusePolicy: REJECT_DUPLICATE`. This
+means if code tries to spawn a workflow with an ID that already exists
+(running or completed), Temporal returns `WorkflowExecutionAlreadyStarted`.
+
+For `discovery-<event_uuid>` and `download-<NN>-<event_uuid>`: the
+rejection is *load-bearing*. It's how we prevent duplicate spawns from
+buggy monitor cycles. Handle by logging + continuing.
+
+For `upload-<event_uuid>`: we use `SignalWithStartWorkflow` which
+implicitly allows "workflow already exists" (starts if not; signals if
+so). This is the exception to the REJECT_DUPLICATE rule and it's why
+UploadWorkflow uses `WorkflowIDReusePolicy: ALLOW_DUPLICATE` — a
+completed UploadWorkflow that has idle-timed-out CAN be restarted by
+a fresh signal from a late-arriving DownloadWorkflow.
+
+### Extensibility hook
+
+Adding a new workflow follows this pattern:
+
+1. Define input/output structs in `internal/workflow/<name>.go`.
+2. Define workflow function with `func (ctx workflow.Context, in Input) (*Output, error)`.
+3. Compose activity calls; encode retry/timeout policies inline.
+4. Register in `cmd/worker/main.go` (one `w.RegisterWorkflow(NewFooWorkflow)` line).
+5. Add workflow-level tests using `testsuite.WorkflowTestSuite`.
+6. If it's schedule-driven, register the schedule alongside workflow.
+7. If it spawns children, use ABANDON policy for fire-and-forget.
+
+Adding a new activity follows this pattern:
+
+1. Define input/output structs colocated with the activity function.
+2. Function signature: `func FooActivity(ctx context.Context, in FooInput) (*FooOutput, error)`.
+3. Body composes 1 or more domain service calls + returns typed error.
+4. Register in `cmd/worker/main.go` (one `w.RegisterActivity(FooActivity)` line).
+5. Add activity-level tests: unit tests with mocked services.
+6. Add to the retry-classification table above if it introduces a new
+   error class.
+
+The concrete example the textanalysis domain hook was aiming at:
+
+`activity.AnalyzeTweetIntent(assetID, tweetURL, text, author) → *Intent`.
+Wire it into `UploadWorkflow` step 4 (after `MintVideoShare`). Zero
+workflow rewrites. Zero cross-cutting refactor. The layering handles it.
+
+---
+
+*(Remaining §6..§16 to follow. §5 established the workflow + activity
+inventory that §9 Infrastructure adapters and §10 Deploy compose
+against.)*
