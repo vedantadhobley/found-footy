@@ -7996,7 +7996,866 @@ plan):
 
 ---
 
-*(Remaining §12..§16 to follow. §10 established the deployment
-topology; §12 testing next, defining the three-tier pyramid concretely
-against the Go stack: testcontainers-go setup, synthetic harness
-driver code, coverage targets per package layer.)*
+## 12. Testing
+
+Concrete realization of audit §12's three-tier pyramid against the Go
+stack. Every test is a deliverable of the code it exercises — the
+Phase 3 pattern from the Python audit ("we'll add tests later") does
+not repeat. Tests land in the same PR as their subject code, and CI
+enforces coverage floors.
+
+### Testing philosophy
+
+**One principle over everything: services are the unit-test boundary;
+stores are the integration-test boundary; workflows are the temporal-
+test-suite boundary; end-to-end flow is the synthetic-harness
+boundary.** The layering from §4 makes each tier trivially placed —
+you already know what to mock because the interface tells you.
+
+**Test speed is a feature.** Fast tests get run constantly; slow
+tests get skipped. Targets:
+- Tier 1 (unit): sub-second per file, total wall-clock < 30s
+- Tier 2 (integration): ~2 min total wall-clock via parallelization
+- Tier 3 (synthetic): ~5 min for the full scenario suite
+
+**Every test asserts one thing.** No mega-tests that check ten
+outcomes. If the test name has "and" in it, split it.
+
+**Recorded over generated for realistic shapes.** Domain values are
+generated via factories with sensible defaults. External-service
+responses (API-Football JSON, Twitter search results, joi validation
+outputs) are RECORDED from real incidents and replayed via fakes.
+This keeps scenarios valid against real-world response shapes.
+
+**Tests are documentation.** A well-named `TestValidateFrames_TwoFramesDisagree_CallsTiebreaker`
+tells the reader what the behavior is, more reliably than a comment
+that might rot.
+
+### The three tiers
+
+| Tier | What | Runs against | Speed | Coverage responsibility |
+|---|---|---|---|---|
+| **Tier 1** — Unit | Domain services + pure helpers | Mocked stores + fakes for adapters | Milliseconds | ≥ 70% for `service.go`, ≥ 80% for `lifecycle.go` per §4 |
+| **Tier 2** — Integration | Stores + use-cases + adapters | Real Postgres + Garage via testcontainers-go; fakes for LLM + Twitter | 100ms-1s per test | ≥ 50% for `store.go`, ≥ 80% for `internal/usecases/` |
+| **Tier 3** — Synthetic | Full pipeline against dev-mode stack | Real Postgres + Garage + Temporal; drivers mock external services | 30-60s per scenario | 7+ named scenarios covering real incidents |
+| **Workflow tests** (Tier 1.5) | Temporal workflow logic | `testsuite.WorkflowTestSuite` with mocked activities | Milliseconds | 100% of workflow branches |
+
+### Tier 1: unit tests
+
+**Factories** live in `internal/testutil/factories/`. Functional-options
+pattern gives Pydantic-equivalent ergonomics in Go — sensible defaults
+that individual tests can override for their specific case.
+
+**Example — `internal/testutil/factories/event.go`:**
+
+```go
+package factories
+
+import (
+    "time"
+    "github.com/google/uuid"
+    "found-footy/internal/domain/event"
+)
+
+type EventOption func(*event.Event)
+
+func WithFixtureID(id int64) EventOption      { return func(e *event.Event) { e.FixtureID = id } }
+func WithNaturalKey(k string) EventOption      { return func(e *event.Event) { e.NaturalKey = k } }
+func WithType(t event.Type) EventOption        { return func(e *event.Event) { e.Type = t } }
+func WithPlayer(id int, name string) EventOption {
+    return func(e *event.Event) { e.PlayerID = &id; pn := name; e.PlayerName = &pn }
+}
+func WithMinute(m int) EventOption             { return func(e *event.Event) { e.Minute = m } }
+func WithMonitorWorkflowsCount(n int) EventOption {
+    // Note: doesn't actually populate the tracking table; that's a store concern.
+    // For pure-unit tests where the service is asking "how many monitor workflows",
+    // pair with WithMockedStore(...) that returns this count.
+    return func(e *event.Event) { /* used with mocks */ }
+}
+func Removed(reason string) EventOption {
+    return func(e *event.Event) { e.Removed = true; e.RemovedReason = &reason }
+}
+func NoPlayer() EventOption { return func(e *event.Event) { e.PlayerID = nil; e.PlayerName = nil } }
+
+// NewTestEvent constructs a realistic Event with defaults; opts override.
+func NewTestEvent(opts ...EventOption) *event.Event {
+    id, _ := uuid.NewRandom()
+    e := &event.Event{
+        ID:            id,
+        FixtureID:     999_999,
+        NaturalKey:    "1_2_Goal_1",
+        Type:          event.TypeGoal,
+        Detail:        "Normal Goal",
+        TeamID:        1,
+        TeamName:      "Test FC",
+        PlayerID:      intPtr(2),
+        PlayerName:    strPtr("Test Player"),
+        Minute:        23,
+        FirstSeenAt:   time.Now().UTC(),
+        MonitorComplete: false,
+        DownloadComplete: false,
+        Removed:       false,
+    }
+    for _, opt := range opts {
+        opt(e)
+    }
+    return e
+}
+```
+
+**Mocked stores** — one hand-rolled minimal implementation per store
+interface. Not `mockery`-generated (too much magic) — plain Go structs
+implementing the interface with fields for "what was called" and
+"what to return."
+
+**Example — `internal/testutil/mocks/event_store.go`:**
+
+```go
+package mocks
+
+import (
+    "context"
+    "github.com/google/uuid"
+    "found-footy/internal/domain/event"
+)
+
+type EventStore struct {
+    // What was called
+    GetByIDCalls  []uuid.UUID
+    UpsertCalls   []*event.Event
+    RegisterMonitorCalls []struct{ EventID uuid.UUID; WorkflowID string }
+
+    // What to return
+    GetByIDReturns map[uuid.UUID]*event.Event   // keyed by ID → returned Event
+    UpsertReturns  func(*event.Event) (*event.Event, bool, error)  // functor for flexible per-call
+    RegisterMonitorReturns func(uuid.UUID, string) (int, error)
+    // etc.
+}
+
+func (s *EventStore) GetByID(ctx context.Context, id uuid.UUID) (*event.Event, error) {
+    s.GetByIDCalls = append(s.GetByIDCalls, id)
+    if e, ok := s.GetByIDReturns[id]; ok {
+        return e, nil
+    }
+    return nil, event.ErrNotFound
+}
+
+func (s *EventStore) Upsert(ctx context.Context, e *event.Event) (*event.Event, bool, error) {
+    s.UpsertCalls = append(s.UpsertCalls, e)
+    if s.UpsertReturns != nil {
+        return s.UpsertReturns(e)
+    }
+    return e, true, nil  // default: created
+}
+
+// ... etc for the rest of the interface
+```
+
+**Example unit test — `internal/domain/event/service_test.go`:**
+
+```go
+package event_test
+
+import (
+    "context"
+    "testing"
+    "github.com/stretchr/testify/require"
+    "found-footy/internal/domain/event"
+    "found-footy/internal/testutil/factories"
+    "found-footy/internal/testutil/mocks"
+)
+
+func TestRegisterMonitorAndCheckStable_ThreeWorkflowsPlayerKnown_ReturnsStable(t *testing.T) {
+    t.Parallel()
+
+    store := &mocks.EventStore{
+        GetByIDReturns: map[uuid.UUID]*event.Event{
+            testEventID: factories.NewTestEvent(factories.WithPlayer(2, "Real Player")),
+        },
+        RegisterMonitorReturns: func(_ uuid.UUID, _ string) (int, error) { return 3, nil },
+    }
+    svc := event.NewService(store, event.Config{MonitorThreshold: 3})
+
+    stable, err := svc.RegisterMonitorAndCheckStable(context.Background(), testEventID, "wf-A")
+
+    require.NoError(t, err)
+    require.True(t, stable)
+    require.Len(t, store.RegisterMonitorCalls, 1)
+}
+
+func TestRegisterMonitorAndCheckStable_ThreeWorkflowsPlayerUnknown_ReturnsNotStable(t *testing.T) {
+    t.Parallel()
+
+    store := &mocks.EventStore{
+        GetByIDReturns: map[uuid.UUID]*event.Event{
+            testEventID: factories.NewTestEvent(factories.NoPlayer()),
+        },
+        RegisterMonitorReturns: func(_ uuid.UUID, _ string) (int, error) { return 3, nil },
+    }
+    svc := event.NewService(store, event.Config{MonitorThreshold: 3})
+
+    stable, err := svc.RegisterMonitorAndCheckStable(context.Background(), testEventID, "wf-A")
+
+    require.NoError(t, err)
+    require.False(t, stable)
+}
+
+func TestRegisterMonitorAndCheckStable_TwoWorkflowsPlayerKnown_ReturnsNotStable(t *testing.T) { /* … */ }
+func TestRegisterMonitorAndCheckStable_MonitorAlreadyComplete_ReturnsNotStable(t *testing.T) { /* … */ }
+func TestRegisterMonitorAndCheckStable_StoreError_PropagatesErr(t *testing.T) { /* … */ }
+```
+
+**`t.Parallel()` on every unit test.** Fast unit tests should
+parallelize. Nothing shared; failures are isolated.
+
+**Coverage target: ≥ 70% on `service.go`, ≥ 80% on `lifecycle.go`.**
+Enforced in CI (see below).
+
+### Tier 2: integration tests
+
+Real Postgres + Garage via `testcontainers-go`. Slow enough to not
+run on every save, fast enough to run on every PR.
+
+**Test container setup — `internal/testutil/tc/postgres.go`:**
+
+```go
+package tc
+
+import (
+    "context"
+    "testing"
+    "github.com/testcontainers/testcontainers-go"
+    "github.com/testcontainers/testcontainers-go/modules/postgres"
+    "github.com/testcontainers/testcontainers-go/wait"
+    "found-footy/internal/infra/pg"
+)
+
+func NewPostgres(t *testing.T) (pg.Pool, func()) {
+    t.Helper()
+    ctx := context.Background()
+
+    container, err := postgres.RunContainer(ctx,
+        testcontainers.WithImage("postgres:16-alpine"),
+        postgres.WithDatabase("found_footy_test"),
+        postgres.WithUsername("test"),
+        postgres.WithPassword("test"),
+        testcontainers.WithWaitStrategy(
+            wait.ForLog("database system is ready to accept connections").
+                WithOccurrence(2).
+                WithStartupTimeout(30*time.Second),
+        ),
+    )
+    if err != nil { t.Fatal(err) }
+
+    dsn, _ := container.ConnectionString(ctx, "sslmode=disable")
+
+    // Run migrations
+    if err := pg.RunMigrationsFromDSN(ctx, dsn, migrations.FS); err != nil {
+        t.Fatal(err)
+    }
+
+    pool, err := pg.New(ctx, pg.Config{DSN: dsn}, slog.Default())
+    if err != nil { t.Fatal(err) }
+
+    cleanup := func() {
+        pool.Close()
+        _ = container.Terminate(ctx)
+    }
+    return pool, cleanup
+}
+```
+
+Test-container reuse — `testcontainers.WithReuse(true)` keeps a
+Postgres container alive across `go test` invocations. Startup cost
+paid once per developer session, not per test run. In CI, containers
+are fresh per job.
+
+**Example integration test — `internal/domain/event/store_test.go`:**
+
+```go
+//go:build integration
+// +build integration
+
+package event_test
+
+import (
+    "context"
+    "testing"
+    "github.com/stretchr/testify/require"
+    "found-footy/internal/domain/event"
+    "found-footy/internal/testutil/tc"
+    "found-footy/internal/testutil/factories"
+)
+
+func TestStore_Upsert_ConcurrentNaturalKeyRace_OneWinsOtherReturnsExisting(t *testing.T) {
+    pool, cleanup := tc.NewPostgres(t)
+    defer cleanup()
+
+    store := event.NewPGStore(pool)
+    ctx := context.Background()
+
+    // Two concurrent goroutines try to upsert the SAME natural_key
+    // Simulates the race MonitorWorkflow could hit if two Temporal instances
+    // both detected "Goal by player 234, first seen"
+    ev1 := factories.NewTestEvent(factories.WithFixtureID(999), factories.WithNaturalKey("1_2_Goal_1"))
+    ev2 := factories.NewTestEvent(factories.WithFixtureID(999), factories.WithNaturalKey("1_2_Goal_1"))
+    // ev1 and ev2 have DIFFERENT ID (UUIDs) but SAME (fixture_id, natural_key)
+
+    var results [2]struct{ Event *event.Event; Created bool; Err error }
+    var wg sync.WaitGroup
+    wg.Add(2)
+    go func() {
+        defer wg.Done()
+        results[0].Event, results[0].Created, results[0].Err = store.Upsert(ctx, ev1)
+    }()
+    go func() {
+        defer wg.Done()
+        results[1].Event, results[1].Created, results[1].Err = store.Upsert(ctx, ev2)
+    }()
+    wg.Wait()
+
+    // Exactly one won the race — Created=true; the other got Created=false with the winner's Event returned
+    var createdCount int
+    for _, r := range results {
+        require.NoError(t, r.Err)
+        if r.Created { createdCount++ }
+    }
+    require.Equal(t, 1, createdCount, "exactly one Upsert should have created")
+
+    // Both got back the SAME ID — the winning row's UUID
+    require.Equal(t, results[0].Event.ID, results[1].Event.ID)
+}
+
+func TestStore_RegisterMonitorWorkflow_DuplicateWorkflowID_Idempotent(t *testing.T) {
+    pool, cleanup := tc.NewPostgres(t)
+    defer cleanup()
+
+    store := event.NewPGStore(pool)
+    seed := factories.NewTestEvent()
+    _, _, _ = store.Upsert(ctx, seed)
+
+    count1, _ := store.RegisterMonitorWorkflow(ctx, seed.ID, "wf-A")
+    count2, _ := store.RegisterMonitorWorkflow(ctx, seed.ID, "wf-A")  // same workflow, retry
+
+    require.Equal(t, 1, count1)
+    require.Equal(t, 1, count2, "duplicate registration must be idempotent")
+}
+
+func TestStore_TryMarkDownloadComplete_TenWorkflowsRegistered_Flips(t *testing.T)
+func TestStore_TryMarkDownloadComplete_NineWorkflowsRegistered_NoFlip(t *testing.T)
+```
+
+**`//go:build integration`** tag: integration tests only run when
+`go test -tags=integration` is invoked. `make test` runs unit tests
+only (fast); `make test-integration` runs both.
+
+**Garage integration** uses a similar `tc.NewGarage(t)` helper that
+spins up `dxflrs/garage:latest` in a container.
+
+**Fake LLM + Fake Twitter** live in `internal/testutil/fakes/`:
+
+```go
+package fakes
+
+// FakeLLM implements llm.Client with programmable responses.
+type FakeLLM struct {
+    ChatResponses      map[string]*llm.ChatResponse  // key: hash of request
+    MultiImageResponses map[string]*llm.ChatResponse
+    EmbeddingResponses  map[string]*llm.EmbeddingResponse
+
+    // If set, called before returning to give tests fine control
+    OnChatCall      func(llm.ChatRequest) (*llm.ChatResponse, error)
+    OnMultiImageCall func(llm.MultiImageRequest) (*llm.ChatResponse, error)
+
+    Calls []interface{}  // record everything for assertion
+}
+
+func (f *FakeLLM) ChatCompletion(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+    f.Calls = append(f.Calls, req)
+    if f.OnChatCall != nil {
+        return f.OnChatCall(req)
+    }
+    if resp, ok := f.ChatResponses[hashRequest(req)]; ok {
+        return resp, nil
+    }
+    return nil, llm.ErrUnavailable
+}
+// ... etc.
+```
+
+Tests either register canned responses OR provide an `OnCall` functor
+for maximum flexibility. Both patterns supported.
+
+### Tier 3: synthetic harness
+
+The end-to-end scenario replays that make regression testing tractable.
+Lives at `test/synthetic/`.
+
+**Directory structure:**
+
+```
+test/synthetic/
+├── scenarios/                      # YAML scenarios
+│   ├── happy_path_one_goal.yaml
+│   ├── var_disallowed_goal.yaml
+│   ├── twitter_returns_zero.yaml
+│   ├── mostly_portrait_phone_cams.yaml    # NL-Morocco replay
+│   ├── scorer_reattribution.yaml
+│   ├── suspension_and_resume.yaml
+│   ├── truncated_snowflake_urls.yaml
+│   └── ...
+├── fixtures/
+│   ├── api_football/               # canned API-Football responses (JSON)
+│   ├── twitter_searches/           # canned twitter service /search responses
+│   ├── joi_vision/                 # canned vision LLM responses per (image_hash, prompt_hash)
+│   └── sample_videos/              # small real .mp4 files for download path
+├── drivers/
+│   ├── api_football_driver.go      # in-process HTTP server serving canned responses
+│   ├── twitter_service_driver.go   # ditto for twitter container's HTTP surface
+│   └── joi_driver.go               # ditto for the LLM endpoint
+├── runner/
+│   ├── runner.go                   # orchestrates: bring up compose, load scenario, execute, assert
+│   └── assertions.go               # helpers for asserting on Postgres/Garage end state
+└── main_test.go                    # go test entrypoint that walks scenarios
+```
+
+**Scenario YAML shape:**
+
+```yaml
+# test/synthetic/scenarios/happy_path_one_goal.yaml
+name: happy_path_one_goal
+description: |
+  One fixture, one goal at minute 23. Twitter returns 5 clips; 3 pass
+  aspect/duration filter; 2 are validated as soccer with matching clocks;
+  both upload to S3. End state: 1 event with 2 video_shares ranked 1 and 2.
+
+setup:
+  fixtures:
+    - id: 1234567
+      state: active
+      # ... (full APIFootball response shape)
+
+  drivers:
+    api_football:
+      - request: "GET /fixtures?id=1234567"
+        response_file: fixtures/api_football/happy_path/one_goal_active.json
+      - request: "GET /fixtures?id=1234567"
+        response_file: fixtures/api_football/happy_path/one_goal_with_goal.json
+        after_seconds: 60  # after the debounce cycle triggers
+    twitter:
+      - request: "POST /search with query matching Salah|Liverpool"
+        response_file: fixtures/twitter_searches/happy_path/5_videos.json
+    joi:
+      - request: "POST /v1/chat/completions with image hash sha256:abc..."
+        response_file: fixtures/joi_vision/happy_path/soccer_yes_clock_23.json
+
+execute:
+  workflow: IngestWorkflow
+  input:
+    manual_fixture_ids: [1234567]
+
+wait_for:
+  condition: "fixture_1234567.state == 'completed'"
+  timeout_seconds: 120
+
+expected_end_state:
+  postgres:
+    fixtures:
+      - id: 1234567
+        state: completed
+        events_count: 1
+    events:
+      - fixture_id: 1234567
+        event_natural_key: "1_2_Goal_1"
+        download_complete: true
+        removed: false
+        shares_count: 2
+        shares_ranks: [1, 2]
+        shares_all_verified: true
+    video_assets:
+      count: 2  # both new; no dedup collisions
+    video_shares:
+      count: 2
+      all_active: true
+
+  garage:
+    bucket: found-footy-test
+    key_prefix: "1234567/"
+    objects_count: 2  # one per canonical asset
+
+  telemetry:
+    coverage_rate: 1.0
+    goals_with_zero_videos: 0
+```
+
+**Runner** — `test/synthetic/runner/runner.go`:
+
+```go
+package runner
+
+import (
+    "context"
+    "testing"
+    "gopkg.in/yaml.v3"
+)
+
+type Scenario struct {
+    Name        string          `yaml:"name"`
+    Description string          `yaml:"description"`
+    Setup       SetupSpec       `yaml:"setup"`
+    Execute     ExecuteSpec     `yaml:"execute"`
+    WaitFor     WaitSpec        `yaml:"wait_for"`
+    ExpectedEndState EndState   `yaml:"expected_end_state"`
+}
+
+// Run executes a scenario against a running test stack.
+// Assumes: dev docker-compose is up, test databases are drop-recreated per scenario.
+func Run(t *testing.T, ctx context.Context, scenarioPath string) {
+    scenario := loadScenario(t, scenarioPath)
+
+    // 1. Drop + recreate test schemas
+    dropAndRecreateTestSchemas(t)
+
+    // 2. Register canned responses with the drivers
+    apiFootballDriver.LoadScenario(scenario.Setup.Drivers.APIFootball)
+    twitterDriver.LoadScenario(scenario.Setup.Drivers.Twitter)
+    joiDriver.LoadScenario(scenario.Setup.Drivers.Joi)
+
+    // 3. Seed initial fixtures
+    seedFixtures(t, scenario.Setup.Fixtures)
+
+    // 4. Trigger the workflow via Temporal client
+    triggerWorkflow(t, ctx, scenario.Execute)
+
+    // 5. Wait for the condition
+    waitForCondition(t, ctx, scenario.WaitFor)
+
+    // 6. Assert end state
+    assertPostgresState(t, ctx, scenario.ExpectedEndState.Postgres)
+    assertGarageState(t, ctx, scenario.ExpectedEndState.Garage)
+    assertTelemetry(t, ctx, scenario.ExpectedEndState.Telemetry)
+}
+```
+
+**`main_test.go`** walks the `scenarios/` directory and runs each as a
+sub-test:
+
+```go
+func TestSynthetic(t *testing.T) {
+    ctx := context.Background()
+
+    scenariosDir := filepath.Join("scenarios")
+    files, err := os.ReadDir(scenariosDir)
+    require.NoError(t, err)
+
+    for _, f := range files {
+        if !strings.HasSuffix(f.Name(), ".yaml") { continue }
+        t.Run(f.Name(), func(t *testing.T) {
+            runner.Run(t, ctx, filepath.Join(scenariosDir, f.Name()))
+        })
+    }
+}
+```
+
+Runs against a docker-compose stack pointed at test-only Postgres +
+Garage instances (test data plane is separate from dev). Wall-clock:
+~30-60s per scenario, ~5 minutes for the seven-scenario baseline
+suite. Runs on every PR via CI.
+
+**Adding a scenario from a real prod incident:**
+
+`scripts/capture_scenario.sh` records real HTTP traffic during an
+incident and produces a scenario YAML template. Workflow:
+
+1. Notice an incident in prod
+2. `scripts/capture_scenario.sh --fixture <id> --window '30min'` — grabs API-Football responses, Twitter search results, joi calls from Loki + Postgres over the window
+3. Fills in a scenario YAML with the captured request/response pairs
+4. Edit the `expected_end_state` block to describe what SHOULD have happened
+5. Run it: `go test -tags=synthetic ./test/synthetic/... -run <scenario_name>`
+6. If it fails (as it should — the prod code failed), you have a
+   regression test for the fix
+7. Land the fix, the test passes, commit both
+
+The NL-Morocco `mostly_portrait_phone_cams` scenario is exactly this
+workflow. It would have caught the aspect-ratio filter regression
+before it shipped.
+
+### Workflow tests
+
+Temporal's `testsuite.WorkflowTestSuite` runs workflows in-process
+with mocked activities. Runs in milliseconds.
+
+**Example — `internal/workflow/discovery_test.go`:**
+
+```go
+package workflow_test
+
+import (
+    "testing"
+    "github.com/stretchr/testify/require"
+    "github.com/stretchr/testify/mock"
+    "go.temporal.io/sdk/testsuite"
+    "found-footy/internal/activity"
+    "found-footy/internal/workflow"
+    "found-footy/internal/domain/discovery"
+)
+
+func TestDiscoveryWorkflow_HappyPath_SpawnsTenDownloads(t *testing.T) {
+    ts := &testsuite.WorkflowTestSuite{}
+    env := ts.NewTestWorkflowEnvironment()
+
+    // Mock activities in call order
+    env.OnActivity(activity.GetOrResolveTeamAliases, mock.Anything, 40).
+        Return([]string{"Liverpool", "LFC"}, nil).Once()
+    env.OnActivity(activity.SaveEventTwitterAliases, mock.Anything, ...).
+        Return(nil).Once()
+
+    // 10 iterations of the attempt loop — each returns some videos
+    for i := 0; i < 10; i++ {
+        env.OnActivity(activity.CheckEventStillLive, mock.Anything, mock.Anything).
+            Return(true, nil).Once()
+        env.OnActivity(activity.CountDownloadWorkflowsForEvent, mock.Anything, mock.Anything).
+            Return(i, nil).Once()  // 0..9 workflows registered so far
+        env.OnActivity(activity.SearchTwitter, mock.Anything, mock.Anything).
+            Return(&discovery.SearchResponse{Videos: sampleVideos(5)}, nil).Once()
+        env.OnActivity(activity.RegisterEventDiscoveredVideo, mock.Anything, mock.Anything, mock.Anything).
+            Return(nil).Times(5)
+    }
+
+    // Downloads spawn as child workflows — mock them
+    env.OnWorkflow(workflow.DownloadWorkflow, mock.Anything, mock.Anything).
+        Return(&workflow.DownloadWorkflowOutput{}, nil)
+
+    env.ExecuteWorkflow(workflow.DiscoveryWorkflow, workflow.DiscoveryWorkflowInput{
+        EventID:     testUUID,
+        MaxAttempts: 10,
+        // ...
+    })
+
+    require.True(t, env.IsWorkflowCompleted())
+    require.NoError(t, env.GetWorkflowError())
+
+    var out workflow.DiscoveryWorkflowOutput
+    require.NoError(t, env.GetWorkflowResult(&out))
+    require.Equal(t, 10, out.DownloadsSpawned)
+    require.Equal(t, "", out.EarlyExitReason)  // completed normally
+}
+
+func TestDiscoveryWorkflow_TwoConsecutiveEmpty_EarlyExits(t *testing.T) {
+    // ... asserts EarlyExitReason == "consecutive_empty"
+}
+
+func TestDiscoveryWorkflow_EventVARdMidLoop_EarlyExitsRemoved(t *testing.T) {
+    // ... asserts EarlyExitReason == "event_removed"
+}
+```
+
+Workflow tests should cover:
+- Happy path (all activities succeed, workflow returns expected output)
+- Every early-exit branch
+- Every retry policy (activity fails once, then succeeds)
+- Every signal handler (for signal-driven workflows like UploadWorkflow)
+- Every child-workflow spawn path
+
+100% workflow branch coverage is the target. Cheap because these run
+in milliseconds.
+
+### Assertion helpers
+
+**Logging assertions** — `internal/logging.WithTestEmitter(t)`:
+
+```go
+func TestSomeService_OnFailure_LogsCorrectly(t *testing.T) {
+    emitter := logging.NewTestEmitter(t)
+    ctx := logging.IntoContext(context.Background(), emitter)
+
+    svc := someService{...}
+    svc.DoThing(ctx)
+
+    // Assert a specific line was emitted
+    emitter.AssertEmitted(t,
+        logging.WARN,
+        vocabulary.ModuleSome,
+        vocabulary.ActionSomethingFailed,
+    )
+
+    // Assert field values
+    line := emitter.MustFind(vocabulary.ActionSomethingFailed)
+    require.Equal(t, "reason_x", line.Fields["reason"])
+}
+```
+
+**Metrics assertions** — `internal/metrics.WithTestRegistry(t)`
+returns a Prometheus registry that captures metric emissions:
+
+```go
+reg := metrics.WithTestRegistry(t)
+svc.DoWork(...)
+require.Equal(t, 1, reg.Counter("found_footy_video_dedup_hit_total").Get())
+```
+
+**Time control** — `internal/testutil/clock.Fake` for deterministic
+tests of time-based logic:
+
+```go
+clock := clock.NewFake(time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC))
+svc := fixture.NewService(store, fixture.Config{Now: clock.Now})
+// clock.Advance(5 * time.Minute) etc.
+```
+
+### Coverage enforcement
+
+`.github/workflows/ci.yml` runs tests + enforces per-package coverage
+floors:
+
+```yaml
+- name: Unit tests
+  run: go test -race -short -coverprofile=coverage.unit.out ./...
+
+- name: Integration tests
+  run: go test -race -tags=integration -coverprofile=coverage.integration.out ./...
+
+- name: Enforce coverage floors
+  run: |
+    ./scripts/check-coverage.sh coverage.unit.out
+    # Checks:
+    #   internal/domain/*/service.go       ≥ 70%
+    #   internal/domain/*/lifecycle.go     ≥ 80%
+    #   internal/domain/*/store.go         ≥ 50% (unit coverage; store tests exercise more via integration)
+    #   internal/usecases/*                ≥ 70%
+    #   internal/workflow/*                ≥ 90%
+    #   internal/api/handlers/*            ≥ 60%
+```
+
+`scripts/check-coverage.sh` parses the profile, groups by directory,
+compares each against a target from a config file
+(`.coverage-targets.yaml`). Failure blocks the PR merge.
+
+**Coverage targets rationale:**
+- Services need high coverage — business logic
+- Lifecycle needs highest — state machine correctness
+- Stores need less unit coverage because integration tests
+  cover the SQL paths
+- Workflows need highest — every branch must be exercised because
+  workflow bugs are hard to notice in prod
+
+### Running tests
+
+**Local:**
+
+```bash
+# Fast — unit tests only
+make test
+
+# All — unit + integration
+make test-integration
+
+# Specific package
+go test -race ./internal/domain/event/...
+
+# With coverage
+go test -race -cover ./internal/domain/event/...
+
+# Synthetic scenarios (requires dev stack running)
+make test-synthetic
+# or: go test -tags=synthetic ./test/synthetic/...
+
+# Watch mode (via reflex or similar)
+reflex -r '\.go$' -- go test -race -short ./...
+```
+
+**CI:**
+
+```yaml
+# .github/workflows/ci.yml (indicative)
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+
+      - name: Unit tests
+        run: make test
+
+      - name: Lint
+        run: golangci-lint run
+
+      - name: Integration tests (spins up testcontainers)
+        run: make test-integration
+
+      - name: Coverage check
+        run: ./scripts/check-coverage.sh coverage.unit.out coverage.integration.out
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4  # or self-hosted alt
+        with:
+          files: coverage.unit.out,coverage.integration.out
+```
+
+Synthetic tests run in a separate workflow because they need Postgres +
+Garage + Temporal — heavier setup. Triggered on PRs but on a slower
+cadence.
+
+### Test data lifecycle
+
+**When to use which:**
+
+- **Factory** — happy path, non-error case, "here's what a typical
+  Event looks like." Fast, tunable via functional options.
+- **Recorded fixture** — when the shape of an external response
+  matters (API-Football's specific JSON structure, Twitter's specific
+  tweet URL format, joi's specific model output). Captured from real
+  data.
+- **Scenario** — end-to-end regression test for a real prod
+  incident. Long-lived; documents "this failure mode is prevented."
+
+**Fixture rot handling.** External APIs change shapes. When
+API-Football changes their fixture endpoint response, our recorded
+fixtures go stale. Two safeguards:
+
+1. `scripts/refresh-fixtures.sh` re-records against the live API for
+   a known set of fixture IDs; commit the diff.
+2. `scripts/check-fixture-schemas.sh` runs a schema validator against
+   the recorded fixtures on every CI run and warns if the schema they
+   were captured against is drifting.
+
+### Extensibility hooks
+
+**Adding a new domain's tests** — the pattern from §4 says every
+domain ships `service_test.go` + `store_test.go` + `lifecycle_test.go`
+in the same PR. Coverage floors kick in automatically once the code
+lands.
+
+**Adding a new tier-3 scenario** — YAML file in `scenarios/`,
+recorded fixtures under `fixtures/`. Runner picks it up
+automatically via directory walk.
+
+**Adding a new assertion helper** — extend
+`internal/testutil/assertions/` with `AssertEventInState(t, pool,
+eventID, expectedState)` style helpers as patterns emerge across
+tests. Shared across all test tiers.
+
+**Property-based tests** — deferred but not blocked. `pgregory.net/rapid`
+integrates fine with the factory pattern. Good candidates: query
+normalization in `discovery.BuildQuery`, hash Hamming distance
+symmetry in `vision.ComputeDHash`.
+
+**Fuzz tests** — Go 1.18+ built-in fuzzing. Good candidates: URL
+validation in `discovery.ValidateURL`, JSON parsing in
+`vision.parseValidationResponse`, snowflake extraction in
+`syndication.ValidateStatusURL`.
+
+---
+
+*(Remaining §13..§16 to follow. §12 established the testing
+discipline; §13 migration next — how legacy Mongo/MinIO data coexists
+with the fresh Postgres/Garage stack during the parallel-deploy
+period.)*
