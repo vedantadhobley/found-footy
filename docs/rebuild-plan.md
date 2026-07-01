@@ -9139,6 +9139,388 @@ Not day-one — a full cutover is preferable for simplicity. But the hooks exist
 
 ---
 
-*(Remaining §14..§16 to follow. §13 established the prod data
-transition; §14 cutover covers the frontend endpoint-by-endpoint
-migration + when the legacy stack actually gets turned off.)*
+## 14. Cutover
+
+§13 covered data continuity — how the *bytes* survive the transition.
+§14 covers **traffic** — how consumers (vedanta-systems, og-server) migrate
+from consuming the legacy Python stack's interface to the new Go stack's API,
+and when the legacy stack finally gets turned off.
+
+Two distinct migrations live inside "cutover":
+
+1. **Stack cutover** — the moment the new Go stack becomes the writer of new
+   data. Covered in §13's Day 0 timeline.
+2. **Consumer cutover** — vedanta-systems + og-server migrating from
+   direct-Mongo reads to the new API. This is what §14 is about.
+
+The two are independent. Stack cutover happens once, atomically, on Day 0.
+Consumer cutover happens **endpoint-by-endpoint**, over the Day 0 → Day +30
+window, with individual rollback per endpoint.
+
+### Current consumer topology (what needs to change)
+
+Today's arrangement (Python stack + vedanta-systems as they run in prod):
+
+```
+Browser
+   │  (via cloudflared tunnel + Caddy)
+   ▼
+vedanta-systems-prod (React + Express BFF)
+   │
+   ├── Express reads MongoDB directly       ──► found-footy-prod-mongo
+   │   (found-footy-prod docker network + luv-prod cross-project net)
+   │
+   └── Express SSE endpoint                  ◄── found-footy-prod-worker
+       (worker calls notify_frontend_refresh)      (backwards direction!)
+
+og-server (separate small service in vedanta-systems)
+   │
+   └── Reads MongoDB directly for OG cards  ──► found-footy-prod-mongo
+```
+
+Three coupling paths, all direct-to-storage:
+- **BFF → Mongo (queries)** — powers the fixtures/events/videos UI
+- **Worker → vedanta-systems API (SSE trigger)** — the inverted-dependency SSE
+- **og-server → Mongo (queries)** — powers OG card generation for shared links
+
+Target topology (post-cutover):
+
+```
+Browser
+   ▼
+vedanta-systems-prod (React + Express BFF)
+   │
+   ├── Express calls found-footy API        ──► found-footy-prod-api
+   │   (HTTP over luv-prod, Bearer auth)         (§8 endpoints)
+   │
+   └── Express SSE forwards               ◄── found-footy-prod-api
+       (LISTEN/NOTIFY-backed stream)              (§8 SSE)
+
+og-server
+   │
+   └── Calls share-id endpoint (unauthed)  ──► found-footy-prod-api
+                                               (§4/§8 /api/v1/videos/{share_id})
+```
+
+Three replacements needed. Each is its own migration.
+
+### Migration path A: BFF → Mongo replaced by BFF → API
+
+**Current implementation in vedanta-systems** (per `AGENTS.md` in vedanta-systems: React + shadcn frontend + Express BFF that surfaces UIs for other projects):
+
+The BFF has some subset of endpoints like `/api/found-footy/fixtures`,
+`/api/found-footy/events/:id`, `/api/found-footy/videos`. Each reads Mongo
+via `mongodb` npm package + hardcoded schema knowledge.
+
+**Migration approach: endpoint-by-endpoint via feature flag.**
+
+For each BFF endpoint:
+
+1. Add a feature flag: `FOUND_FOOTY_API_ENABLED_FIXTURES`, `_EVENTS`,
+   `_VIDEOS` etc. in vedanta-systems' env config.
+2. Rewrite the BFF endpoint handler to check the flag:
+   ```javascript
+   // vedanta-systems/src/server/routes/found-footy.ts (indicative)
+   app.get('/api/found-footy/fixtures', async (req, res) => {
+     if (process.env.FOUND_FOOTY_API_ENABLED_FIXTURES === 'true') {
+       // New: proxy to found-footy API
+       const resp = await fetch(
+         'http://found-footy-prod-api:8080/api/v1/fixtures?' + qs.stringify(req.query),
+         { headers: { 'Authorization': `Bearer ${process.env.FOUND_FOOTY_API_TOKEN}` } }
+       );
+       return res.status(resp.status).send(await resp.text());
+     }
+     // Old: direct Mongo query
+     const rows = await mongoColl.find(mapQueryToMongo(req.query)).toArray();
+     return res.json({ fixtures: rows.map(mapMongoToResponseShape) });
+   });
+   ```
+3. Deploy vedanta-systems with the new code + flag defaulted OFF (= old path).
+4. Enable the flag in prod's `.env` — traffic flips to the new API path.
+5. Monitor for anomalies (see success/rollback criteria below).
+6. If clean for 48h: remove the feature flag + the old Mongo code
+   entirely in a follow-up PR.
+7. If problems: flip the flag off — instant rollback to old Mongo path.
+
+**Migration order** (from lowest-blast-radius to highest):
+
+| Order | Endpoint | Why this order |
+|---|---|---|
+| 1 | `GET /api/found-footy/videos/{share_id}` | Simplest — a 302 redirect. Failure mode: broken video links, but no data corruption. |
+| 2 | `GET /api/found-footy/fixtures` | Read-heavy but static-shaped. Easiest to canary. |
+| 3 | `GET /api/found-footy/events/{id}` | Adds complexity: joined videos array. Response projection has to match old shape. |
+| 4 | `GET /api/found-footy/feed` | Highest-traffic; save for last when confidence is high. |
+| 5 | (any admin endpoints) | If they exist in the BFF; probably don't. |
+
+Each endpoint migration is a separate PR. Estimated: one PR per week
+during the Day 0 → Day +30 window.
+
+**Response-shape compatibility.** vedanta-systems' frontend expects specific
+JSON shapes. The new API's response shapes from §8 (EventResponse, VideoLink,
+etc.) may not match exactly. Two approaches:
+
+- **A.1: BFF adapts.** The BFF fetches from the new API and reshapes the
+  response to what the frontend expects. Old and new API can differ; BFF
+  hides it. Simpler for now; a future PR can refactor the frontend to
+  consume the new shape directly.
+- **A.2: Frontend migrates too.** Frontend gets updated to consume the new
+  shape. Requires coordinating a frontend PR with the BFF PR. More work,
+  but cleaner end state.
+
+**Recommendation: A.1 for the cutover window** — reshape at the BFF —
+because it lets us cut over without frontend PRs holding things up. A.2
+happens later at leisure, once the flag is confirmed good.
+
+### Migration path B: SSE — invert the dependency direction
+
+Current: worker calls `notify_frontend_refresh` on vedanta-systems' Express.
+That's an inverted dependency: the writer (worker) has to know the reader's
+(vedanta-systems') URL, keep an HTTP client, handle vedanta-systems being
+down.
+
+Target: vedanta-systems opens an SSE stream to the found-footy API. Data
+flows normally: consumer → producer HTTP call, producer sends events on
+the stream. Worker no longer needs to know vedanta-systems exists.
+
+**Migration:**
+
+1. Deploy new found-footy API with SSE endpoint live (§8). Not connected to
+   vedanta-systems yet.
+2. Add a new SSE-consumer path in vedanta-systems' Express — opens a
+   connection to `found-footy-prod-api:/api/v1/sse/events` on startup,
+   forwards messages to its own downstream SSE consumers (the browsers).
+3. Feature flag: `FOUND_FOOTY_SSE_ENABLED`. When ON, both paths run in
+   parallel:
+   - New: vedanta-systems consumes the found-footy SSE stream
+   - Old: worker still calls `notify_frontend_refresh`
+4. Verify duplicate delivery is idempotent from the frontend's POV
+   (browser components handle "same event twice" cleanly — check).
+5. Once new path is stable for 48h: **worker stops calling
+   `notify_frontend_refresh`**. In new found-footy code, this activity
+   just doesn't exist. In the old Python code, the flag on
+   vedanta-systems side ignores the call.
+6. Remove the `notify_frontend_refresh` endpoint from vedanta-systems'
+   BFF entirely in a follow-up PR.
+
+**Rollback if the new path breaks:** flip `FOUND_FOOTY_SSE_ENABLED` off.
+The old `notify_frontend_refresh` path takes over. If we've already
+removed the endpoint (step 6), rollback requires re-adding it — hence
+step 6 waits until we're highly confident.
+
+**Backfill on reconnect** — audit §11 already noted that pre-cutover
+`Last-Event-Id` values don't backfill because ID space differs.
+Post-cutover reconnects backfill cleanly from `event_log.id` (bigserial
+that started at 1 on the new stack).
+
+### Migration path C: og-server → share-id endpoint
+
+og-server is a small service in vedanta-systems. Its job: given a shared
+video link, generate an OpenGraph card (`<meta name="og:image" ...>`,
+`<meta name="og:video" ...>` etc.) that social platforms use for previews.
+
+Current: reads Mongo directly, extracts the video URL + fixture metadata,
+generates OG card with the raw MinIO URL embedded.
+
+Target: hits the found-footy share-id endpoint to get the current
+canonical URL, generates OG card with that URL. If the share is removed
+(410 Gone), renders a "reversed by VAR" OG card.
+
+**Migration:**
+
+1. Update og-server to hit `GET /api/v1/videos/{share_id}` (unauthed).
+2. Handle three response paths:
+   - **302**: use `Location` header as the video URL in the OG card
+   - **410**: use the response body's `reason` field to render an
+     appropriate "removed" OG card
+   - **404**: render a "content not available" card
+3. Ship as a single PR (og-server is small; feature flag would be
+   overkill).
+4. Ship after the BFF share-id migration (Migration A, step 1) is
+   stable, since og-server benefits from the same infrastructure.
+
+**Compatibility with legacy share URLs**: og-server may receive share
+URLs from tweets embedded BEFORE the rebuild. Those URLs won't have
+share_ids per the new format — they'll be raw MinIO URLs like
+`http://found-footy-prod-minio.<base>/footy/<fixture>/<event>/<hash>.mp4`.
+Two approaches:
+
+- og-server keeps a "legacy URL" code path that reads legacy Mongo
+  directly for those URLs. Turns off Day +14 when retention purges.
+- og-server relies on the new API's LegacyCompat layer from §13 —
+  hitting `/api/v1/videos/legacy?url=<url>` returns the current
+  canonical + metadata.
+
+**Recommendation:** the new API exposes a small `/api/v1/videos/legacy`
+helper endpoint (post-cutover) that lets og-server go through one unified
+lookup path. Keeps og-server simple: hit one endpoint for both new and
+legacy shares.
+
+### Monitoring during cutover
+
+Two Grafana dashboards get promoted during cutover (per §11):
+
+**`found-footy-cutover`** — a temporary dashboard live from Day -1
+through Day +30. Panels:
+
+- **Traffic split per endpoint**: `%` of requests going to the new API
+  vs the old Mongo path, per endpoint. Derived from BFF's feature flag
+  logs. Manual toggle inspection possible from Grafana.
+- **Response-time comparison**: p50/p95 for old-path vs new-path per
+  endpoint. Alert if new-path degrades by > 2× old-path baseline.
+- **Error rate per endpoint**: 4xx/5xx counts split by path. Alert on
+  >1% error rate on new path for any endpoint.
+- **Legacy compat hits**: count of share-id lookups falling through to
+  the legacy compat layer per hour. Expected to trend down as legacy
+  content ages out over Day 0 → Day +14. If it stays flat or increases,
+  something's wrong (maybe pre-cutover URLs are being re-shared).
+- **`notify_frontend_refresh` inbound rate**: expected to trend to zero
+  as SSE migration completes. If it stays non-zero after step 5, worker
+  is still calling — investigate.
+- **Deploy drift**: still important (§11) — makes sure both stacks are
+  running expected code.
+
+**`found-footy-slo-comparison`** — new-stack coverage vs pre-cutover
+baseline. Panel per league: coverage rate this week vs same week
+pre-cutover. Alert if any league's coverage drops by > 10 percentage
+points post-cutover — signals a regression that's not caught by other
+metrics.
+
+### Success criteria per migration step
+
+Each of the endpoint migrations (A.1 through A.5, plus B and C) has
+per-step success criteria. Doesn't advance to the next step until met.
+
+**Stability window**: 48 hours between "flag flipped" and "advance to
+next step." Long enough to catch overnight batch effects, short enough
+to keep the cutover moving.
+
+**Metrics thresholds** (green = advance, yellow = investigate, red =
+rollback):
+
+| Metric | Green | Yellow | Red |
+|---|---|---|---|
+| New-path error rate | < 0.1% | 0.1 – 1% | > 1% |
+| New-path p95 vs old baseline | < 1.5× | 1.5 – 3× | > 3× |
+| Coverage rate delta | > baseline − 5pp | baseline − 5pp to − 10pp | < baseline − 10pp |
+| Log ERROR rate on new API | < 10/hr | 10 – 50/hr | > 50/hr |
+
+Yellow = investigate but don't rollback yet. Red = rollback the flag
+immediately + retrospective.
+
+### Rollback triggers (post-cutover, whole-stack)
+
+Beyond individual-endpoint rollbacks via feature flag, there are two
+scenarios where the whole cutover gets reverted:
+
+1. **Data loss.** If new stack loses or corrupts any user-visible data
+   in the first 24 hours post-cutover, rollback (§13 rollback plan).
+2. **Coverage regression > 30 percentage points** for any tracked
+   league within 48h. Signals a functional bug in the new pipeline
+   that isn't caught by tests. Rollback + root-cause + re-attempt.
+
+Beyond 24h, rollback becomes irreversible (§13). After Day +1, we're
+committed to the new stack; failures require forward-fix instead of
+revert.
+
+### Legacy stack turnoff — Day +30 decision
+
+The final cutover step. Legacy stack has been serving read-only compat
+for share URLs during Day 0 → Day +30. When does it actually turn off?
+
+**Preconditions for turnoff** (all must be true):
+
+1. **Legacy compat hit rate < 10/day for 7 consecutive days.** If old share
+   URLs are still being resolved daily, keep the legacy stack up. This is
+   the safeguard from §13's extensibility hooks.
+2. **All BFF endpoints have migrated** (Migration A complete).
+3. **SSE migration complete** (Migration B complete; `notify_frontend_refresh`
+   endpoint deleted).
+4. **og-server migration complete** (Migration C complete).
+5. **No pending prod incident** blocked on legacy access.
+
+**Turnoff sequence:**
+
+```bash
+# ~/workspace/dev/found-footy/scripts/turnoff-legacy.sh
+# Run at Day +30 (approximate) once preconditions are met.
+
+set -euo pipefail
+
+echo ">> verifying preconditions"
+LEGACY_HITS=$(curl -s http://monitor-prometheus:9090/api/v1/query?query='sum(rate(found_footy_legacy_compat_hits_total[7d]))' | jq -r '.data.result[0].value[1]')
+if (( $(echo "$LEGACY_HITS > 0.0012" | bc -l) )); then  # ~10/day = 0.0012/sec
+    echo "!! legacy compat still hit >10/day; not turning off"
+    exit 1
+fi
+
+echo ">> stopping legacy containers"
+docker compose -f docker-compose.legacy.yml down
+
+echo ">> removing legacy caddy entries"
+rm ~/workspace/proxy/caddy/caddy.d/found-footy-legacy.caddy
+docker exec proxy-caddy caddy reload --config /etc/caddy/Caddyfile
+
+echo ">> archiving legacy volumes (rsync to cold-storage location)"
+rsync -a ~/workspace/data/found-footy-legacy/ ~/workspace/data/_archive/found-footy-legacy-$(date +%Y%m%d)/
+
+echo ">> removing legacy volumes"
+rm -rf ~/workspace/data/found-footy-legacy/
+
+echo ">> removing legacy compat client from new API"
+# Emit a maintenance PR — no runtime action needed here, just a followup task
+echo "  → open a PR that removes internal/infra/legacycompat + its lookup in getShareVideo"
+
+echo ">> legacy turnoff complete"
+```
+
+**Post-turnoff followup PR** — removes the `LegacyCompat` client from
+`internal/infra/legacycompat/` and the lookup path from
+`internal/api/handlers/videos.go`. Clean code, no dead paths.
+
+### Post-cutover retrospective
+
+Day +45 (two weeks after legacy turnoff), do a retrospective:
+
+- What broke that we didn't expect?
+- What worked that we did expect (and can build on)?
+- Where did the timeline underrun / overrun? Update future planning.
+- Anything in the audit or rebuild plan that turned out to be wrong?
+  Update the docs.
+- Anything the new stack is failing at that legacy did better? Address
+  as follow-up work.
+
+Retrospective results land in `docs/decisions.md` as a dated entry —
+"2026-XX-YY — found-footy rebuild cutover retrospective" — so future
+projects can learn from it.
+
+### Extensibility hooks
+
+**Adding a new consumer** (e.g., a mobile app, a Discord bot, an
+external partner):
+
+1. Register a webhook subscription via `POST /api/v1/webhooks/subscriptions`
+   OR open an SSE stream — whichever fits their delivery semantics.
+2. Get an API token (add to `FOUND_FOOTY_API_TOKEN` rotation).
+3. Consume via the existing typed contract. No new server-side work.
+
+**Multi-stage cutover for future high-risk migrations** — the pattern
+above (feature-flag per endpoint, 48h stability window per step, four-
+color metrics thresholds) is reusable. Document as a runbook if we do
+another rebuild.
+
+**Cutover automation** — the current design is manual (`bin/deploy`,
+manual flag toggles in `.env`, human-monitored dashboards). A more
+automated version would:
+
+- Automated flag flipping on schedule with automatic rollback on threshold breach
+- Prometheus AlertManager routing rollbacks to a runbook automation
+- Blue-green deployment via a self-hosted registry (post-migration to Gitea/Forgejo)
+
+Deferred; not day-one. Documented here for completeness.
+
+---
+
+*(Remaining §15..§16 to follow. §14 established the traffic transition
+and legacy-turnoff decision; §15 covers how these documents get
+maintained as implementation happens, and §16 sequences everything into
+a concrete "what ships when" plan.)*
