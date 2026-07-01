@@ -6,6 +6,92 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-01 — Fresh rebuild in parallel, not incremental refactor
+
+The rebuild happens as a **from-scratch build alongside the running
+prod stack**, not as an in-place refactor of the existing code. Legacy
+prod keeps serving traffic; new code stands up in parallel; cutover is
+endpoint-by-endpoint until legacy has zero callers.
+
+**Why**: [`design-audit.md`](./design-audit.md) surfaced structural
+gaps (data-layer god-class, embedded-arrays-vs-shared-primitive, no
+tests, no deploy gate, `_event_id` overloaded five ways) that are
+easier to fix by building fresh than by refactoring in place. The user
+built the current system while learning documentation-driven agentic
+development; the rebuild is the moment to apply everything learned
+since. See also [`design-audit.md`](./design-audit.md) §16
+implementation order — the F-0..F-6 phases were incremental; this
+rebuild subsumes them.
+
+Codified in [`rebuild-plan.md`](./rebuild-plan.md).
+
+---
+
+## 2026-07-01 — Postgres over Mongo (rebuild-context reversal)
+
+The rebuild uses Postgres for structured data. This **reverses**
+[`design-audit.md`](./design-audit.md) §3's verdict ("keep Mongo"),
+because the audit assumed *incremental refactor* of prod Mongo data.
+
+**Why the framing change flipped it**: in a fresh-build context, the
+backward-compat costs that made Mongo the pragmatic pick evaporate.
+Postgres's native schema is stronger than Mongo's JSON Schema
+validators (can't be disabled, can't run in "warn"), foreign keys
+actually enforce relationships, transactions across rows are
+first-class, and the extension ecosystem (`pgvector`, `pg_trgm`,
+`TimescaleDB`, `pg_partman`) bolts on new capabilities without new
+services. `$addToSet` idempotency becomes `INSERT ... ON CONFLICT DO
+NOTHING`; embedded arrays become normalized tables with joins. In a
+fresh build these are the correct shapes.
+
+**When the audit still applies**: for the *legacy read-side compat*
+layer (queries against pre-cutover `fixtures_completed` documents),
+Mongo stays online read-only. New writes go to Postgres exclusively.
+
+---
+
+## 2026-07-01 — Garage over MinIO for blob storage
+
+The rebuild uses Garage (Rust, ~50 MB, S3-compatible, filesystem-backed)
+instead of MinIO for blob storage.
+
+**Why**: MinIO Inc.'s "Aistor" rebrand has visibly de-featured the
+community AGPL release (web console removed, replication features
+behind commercial license, commit cadence slowed). Betting on
+community MinIO long-term is a real risk. Garage is actively
+maintained, low resource footprint, and its on-disk format is just
+content-hashed files in a directory tree — no proprietary format,
+`ls`-able, `rsync`-backupable. Per-project isolation (each project's
+docker-compose runs its own Garage instance) preserves the workspace
+pattern established by Temporal / Postgres / etc.
+
+**Application impact**: S3-compatible API means `boto3` / `aioboto3`
+client code is unchanged. Only `S3_ENDPOINT` in `.env` differs.
+
+---
+
+## 2026-07-01 — LLM endpoint abstracted; nexus swap is config-only
+
+The application never knows which LLM inference server it's talking to.
+All calls go through a client that reads `LLM_ENDPOINT_URL` from
+environment. Model IDs are discovered from `/v1/models` at startup.
+Request/response shapes conform to OpenAI's chat-completions API,
+which llama.cpp (joi today) and nexus (est. end of 2026) both speak.
+
+**Why**: nexus is under active development at `~/workspace/nexus/`
+and will replace joi as found-footy's LLM endpoint when ready. The
+switch must be a `.env` edit + container restart, not a code change.
+This decision codifies the abstraction as a load-bearing invariant.
+
+**Consequence for [`design-audit.md`](./design-audit.md) §6**: the
+Track-1 workspace LLM gateway proposal is deferred pending nexus's
+eventual API surface. If nexus provides concurrency/priority/routing
+built-in, the gateway is redundant. If nexus doesn't, a thin
+found-footy-side traffic shaper (not a workspace-wide gateway) may
+be needed. Decide after nexus lands.
+
+---
+
 ## 2026-06-30 — Cross-doc linking via markdown, no `[[wiki-links]]`
 
 Docs reference each other via markdown `[text](./path.md)` syntax;
