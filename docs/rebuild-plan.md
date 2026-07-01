@@ -3448,6 +3448,1058 @@ workflow rewrites. Zero cross-cutting refactor. The layering handles it.
 
 ---
 
-*(Remaining §6..§16 to follow. §5 established the workflow + activity
-inventory that §9 Infrastructure adapters and §10 Deploy compose
-against.)*
+## 9. Infrastructure adapters
+
+Nine adapters in `internal/infra/`. Each wraps an external system
+(database, cache, HTTP service, subprocess, external API) behind a Go
+interface that the domain services from §4 and activities from §5
+depend on. This is the "we talk to the outside world" boundary; every
+crossing is typed, timeout-bounded, and error-classified.
+
+### Design principles
+
+**Every adapter defines an interface, ships a real implementation, and
+ships a fake for testing.** Domain services and activities depend on the
+interface, not the concrete type. `internal/testutil/fakes/` provides
+in-memory fakes for unit tests; integration tests use testcontainers-go
+where a real backend is required (Postgres, Garage).
+
+**Every method has an explicit timeout.** Contexts are respected; if a
+caller cancels, the adapter surfaces `context.Canceled` and cleans up
+in-flight resources (subprocesses, connections). Default timeouts are
+documented per adapter; callers can override via `ctx` deadlines.
+
+**Every error is typed.** Wrapped underlying errors carry through via
+`errors.Is` / `errors.As` semantics. Retry classification lives in the
+adapter (which knows whether "connection refused" means "try again in
+2s" or "give up"), not in the caller. This is what makes §5's activity
+retry-policy overrides possible — the activity trusts the adapter's
+error class.
+
+**Every adapter has an observability hook.** Structured JSON log lines
+(module + action + fields) on every call boundary. Prometheus counters
+for calls, errors, and latency histograms. Loki-queryable per audit §9.
+
+**Config-driven, not code-driven.** Every adapter reads its config from
+`internal/config` (Pydantic-equivalent: `envconfig` package parses env
+vars into typed structs). No hard-coded URLs, credentials, or timeouts.
+
+**Idempotent where possible.** POST-heavy adapters (e.g., `NotifyEventLog`
+signals) include idempotency keys where the receiver supports them. GET
+paths are inherently idempotent. State-mutating operations that aren't
+naturally idempotent (Garage PUT with content-addressed keys IS
+idempotent; Twitter service `/search` isn't) get retry classifications
+that reflect that.
+
+### Adapter inventory
+
+| Package | Purpose | Complexity |
+|---|---|---|
+| `internal/infra/pg` | Postgres connection pool + LISTEN/NOTIFY + transaction helpers | High |
+| `internal/infra/s3` | Garage/S3 client + presigned URLs + streaming upload | Medium |
+| `internal/infra/llm` | LLM endpoint client (config-swappable joi/nexus) | High |
+| `internal/infra/temporal` | Temporal client construction + shared config | Low |
+| `internal/infra/apifootball` | API-Football REST client + rate limiting | Medium |
+| `internal/infra/twitter` | HTTP client to the twitter container (search service) | Medium |
+| `internal/infra/syndication` | Twitter syndication API client (video downloads) | Medium |
+| `internal/infra/ffmpeg` | ffmpeg CLI subprocess wrapper + probe | Medium |
+| `internal/infra/wikidata` | Wikidata SPARQL client (RAG for team aliases) | Low |
+
+Total: nine adapters. Each gets a full spec below.
+
+### `internal/infra/pg`
+
+Postgres connection pool + LISTEN/NOTIFY plumbing + transaction helpers.
+The most-called adapter — every domain store depends on it.
+
+**Client interface:**
+
+```go
+package pg
+
+import (
+    "context"
+    "time"
+    "github.com/jackc/pgx/v5"
+    "github.com/jackc/pgx/v5/pgxpool"
+)
+
+type Pool interface {
+    // Basic operations — pass through to pgx with observability wrapping
+    Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+    QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+    Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+
+    // Transaction helpers
+    WithTx(ctx context.Context, fn func(pgx.Tx) error) error
+    WithRetryableTx(ctx context.Context, fn func(pgx.Tx) error) error
+
+    // LISTEN/NOTIFY for SSE fan-out
+    Listen(ctx context.Context, channel string) (<-chan *pgconn.Notification, error)
+    Notify(ctx context.Context, channel string, payload string) error
+
+    // Lifecycle
+    Ping(ctx context.Context) error
+    Close()
+}
+```
+
+**Real implementation** wraps `*pgxpool.Pool`. Constructor reads pool
+config from env vars via `internal/config`:
+
+```go
+type Config struct {
+    DSN                string        `env:"PG_DSN,required"`
+    MaxConns           int32         `env:"PG_MAX_CONNS" envDefault:"25"`
+    MinConns           int32         `env:"PG_MIN_CONNS" envDefault:"5"`
+    MaxConnLifetime    time.Duration `env:"PG_MAX_CONN_LIFETIME" envDefault:"1h"`
+    MaxConnIdleTime    time.Duration `env:"PG_MAX_CONN_IDLE" envDefault:"15m"`
+    HealthCheckPeriod  time.Duration `env:"PG_HEALTH_CHECK_PERIOD" envDefault:"1m"`
+    ConnectTimeout     time.Duration `env:"PG_CONNECT_TIMEOUT" envDefault:"5s"`
+}
+
+func New(ctx context.Context, cfg Config, logger *slog.Logger) (Pool, error)
+```
+
+**Transaction helpers:**
+
+```go
+// WithTx executes fn inside a BEGIN/COMMIT boundary. If fn returns an
+// error, the transaction is rolled back. If fn panics, the transaction
+// is rolled back and the panic is re-raised.
+//
+// Isolation level: pgx.ReadCommitted (Postgres default).
+func (p *pgxPool) WithTx(ctx context.Context, fn func(pgx.Tx) error) error
+
+// WithRetryableTx executes fn inside a REPEATABLE READ transaction with
+// automatic retry on serialization-failure (SQLSTATE 40001) up to 3
+// attempts with exponential backoff. Used by any transactional operation
+// that might race with concurrent writers — notably
+// video.RecalculateShareRanksForEvent (§4).
+//
+// Returns ErrSerializationFailedAfterRetries if all 3 attempts fail;
+// caller should escalate to human observation.
+func (p *pgxPool) WithRetryableTx(ctx context.Context, fn func(pgx.Tx) error) error
+```
+
+**LISTEN/NOTIFY for SSE fan-out (audit §11 + §5):**
+
+```go
+// Listen acquires a dedicated connection from the pool for LISTEN commands.
+// Returns a receive-only channel of notifications until ctx is canceled.
+// Reconnects transparently on connection loss.
+//
+// Used by internal/api SSE handlers to receive event_log updates.
+func (p *pgxPool) Listen(ctx context.Context, channel string) (<-chan *pgconn.Notification, error)
+
+// Notify emits a NOTIFY on the given channel with the payload. Called by
+// activities.NotifyEventLog after INSERT INTO event_log succeeds.
+// Payload is arbitrary text (JSON blob typically); Postgres NOTIFY has
+// a per-payload size limit of 8KB.
+func (p *pgxPool) Notify(ctx context.Context, channel string, payload string) error
+```
+
+**Typed errors:**
+
+```go
+var (
+    ErrConnectionLost              = errors.New("pg: connection lost")
+    ErrConnectionTimeout           = errors.New("pg: connection timeout")
+    ErrSerializationFailure        = errors.New("pg: serialization failure")
+    ErrSerializationFailedAfterRetries = errors.New("pg: serialization failure after retries")
+    ErrDuplicateKey                = errors.New("pg: duplicate key violation")
+    ErrForeignKeyViolation         = errors.New("pg: foreign key violation")
+    ErrCheckConstraintViolation    = errors.New("pg: check constraint violation")
+    ErrNotifyChannelClosed         = errors.New("pg: notify channel closed")
+    ErrPoolExhausted               = errors.New("pg: pool exhausted")
+)
+
+// ClassifyError takes any error returned from pgx and returns the typed
+// wrapper. Handles pgx.PgError SQLSTATE codes; falls through to
+// underlying error type otherwise.
+func ClassifyError(err error) error
+```
+
+**Retry classification:**
+- `ErrConnectionLost`, `ErrConnectionTimeout` → retry-eligible (transient)
+- `ErrPoolExhausted` → retry-eligible with backoff
+- `ErrSerializationFailure` → retry-eligible (WithRetryableTx handles this internally)
+- `ErrDuplicateKey` → NOT retry-eligible (caller decides — often means "someone beat us, look up existing")
+- `ErrForeignKeyViolation`, `ErrCheckConstraintViolation` → NOT retry-eligible (bug in the caller)
+
+**Lifecycle:**
+
+- Construction: `pg.New(ctx, cfg, logger)` builds the pool and pings.
+- Health: `pool.Ping(ctx)` used by `/healthz` handlers in each binary.
+- Shutdown: `pool.Close()` on SIGTERM. Drains in-flight queries with a
+  configurable grace period (default 30s).
+
+**Migration handling:**
+
+Migrations aren't part of the runtime interface. `cmd/worker/main.go`
+and `cmd/api/main.go` call `pg.RunMigrations(ctx, cfg, migrationsFS)`
+at startup, before constructing the pool. This is idempotent — safe to
+re-run. Uses `golang-migrate/migrate` under the hood.
+
+```go
+// RunMigrations applies all pending migrations from the embedded migrations/
+// directory. Safe to call at every startup. Blocks until complete.
+func RunMigrations(ctx context.Context, cfg Config, migrationsFS embed.FS) error
+```
+
+**Observability:** every `Query`/`Exec`/`WithTx` call emits a structured
+log line + a Prometheus histogram observation. Slow queries (> 500ms)
+get flagged at WARN level with the SQL + args.
+
+**Testing:**
+
+- Unit tests use `internal/testutil/fakes/pg.FakePool` — an in-memory
+  implementation of the `Pool` interface backed by hash maps. Fast, no
+  Docker, no migrations. Good for testing store logic in isolation.
+- Integration tests use testcontainers-go to spin up a real Postgres
+  container with migrations applied. Runs in CI.
+
+### `internal/infra/s3`
+
+Garage / S3-compatible client. Uploads video files, generates presigned
+URLs for the share-id redirect endpoint (audit §11).
+
+**Client interface:**
+
+```go
+package s3
+
+type Client interface {
+    // Upload streams a local file to a bucket/key. content_type is
+    // auto-detected from file extension if empty.
+    Upload(ctx context.Context, bucket, key string, filePath, contentType string) error
+
+    // UploadReader streams from an io.Reader with known size. Used by
+    // video-download flow where we're streaming from HTTP → S3 without
+    // touching local disk.
+    UploadReader(ctx context.Context, bucket, key string, r io.Reader, size int64, contentType string) error
+
+    // Delete removes an object. Idempotent (no-op if missing).
+    Delete(ctx context.Context, bucket, key string) error
+
+    // Head returns metadata for an object without downloading its body.
+    Head(ctx context.Context, bucket, key string) (*ObjectMetadata, error)
+
+    // PresignedGetURL returns a time-limited public URL for the object.
+    // Used by the share-id redirect endpoint (§4). Default expiry: 1 hour.
+    PresignedGetURL(ctx context.Context, bucket, key string, expiry time.Duration) (string, error)
+
+    // ListPrefix returns keys under a prefix, paginated.
+    ListPrefix(ctx context.Context, bucket, prefix string, limit int) ([]string, error)
+
+    // Ping confirms bucket accessibility (used by /healthz).
+    Ping(ctx context.Context, bucket string) error
+}
+
+type ObjectMetadata struct {
+    ContentType   string
+    ContentLength int64
+    ETag          string
+    LastModified  time.Time
+}
+```
+
+**Configuration:**
+
+```go
+type Config struct {
+    Endpoint        string `env:"S3_ENDPOINT,required"`     // e.g. "http://garage:3900"
+    Region          string `env:"S3_REGION" envDefault:"us-east-1"`
+    AccessKeyID     string `env:"S3_ACCESS_KEY_ID,required"`
+    SecretAccessKey string `env:"S3_SECRET_ACCESS_KEY,required"`
+    UsePathStyle    bool   `env:"S3_USE_PATH_STYLE" envDefault:"true"`  // required for Garage
+    Bucket          string `env:"S3_BUCKET,required"`
+}
+```
+
+**Real implementation** wraps `aws-sdk-go-v2/service/s3`. `UsePathStyle: true`
+is critical for Garage (and MinIO); Garage doesn't support virtual-hosted-
+style URLs.
+
+**Typed errors:**
+
+```go
+var (
+    ErrObjectNotFound      = errors.New("s3: object not found")
+    ErrBucketNotFound      = errors.New("s3: bucket not found")
+    ErrAccessDenied        = errors.New("s3: access denied")
+    ErrTimeout             = errors.New("s3: request timeout")
+    ErrUnreachable         = errors.New("s3: endpoint unreachable")
+    ErrInvalidCredentials  = errors.New("s3: invalid credentials")
+    ErrChecksumMismatch    = errors.New("s3: uploaded content checksum mismatch")
+)
+```
+
+**Retry classification:**
+- `ErrTimeout`, `ErrUnreachable` → retry-eligible (transient network)
+- `ErrObjectNotFound`, `ErrAccessDenied`, `ErrInvalidCredentials` → NOT retry-eligible (config problem or genuine miss)
+
+**Testing:**
+
+- Fake at `internal/testutil/fakes/s3.FakeClient` — backed by
+  `map[string][]byte`. Supports all Client methods; presigned URLs
+  return `fake://` scheme so tests can assert against them.
+- Integration tests use testcontainers-go with a Garage container.
+
+### `internal/infra/llm`
+
+The **config-swappable LLM endpoint client**. The one adapter that
+codifies the joi-today-nexus-tomorrow invariant from
+[`decisions.md`](./decisions.md) 2026-07-01. All LLM calls go through
+this client; endpoint URL is one env var.
+
+**Client interface:**
+
+```go
+package llm
+
+type Client interface {
+    // ChatCompletion sends a chat-completion request. Returns the assistant's
+    // response text + typed token usage. Configuration lives in the request:
+    // model, temperature, max_tokens, response_format.
+    ChatCompletion(ctx context.Context, req ChatRequest) (*ChatResponse, error)
+
+    // ChatCompletionMultiImage is a specialization for vision calls that
+    // sends multiple images in one request. Returns the assistant's
+    // response text (typically structured JSON that callers parse).
+    // The 2-image / 3-image strategy from vision domain calls this with
+    // len(images) == 2 or 3.
+    ChatCompletionMultiImage(ctx context.Context, req MultiImageRequest) (*ChatResponse, error)
+
+    // Embedding returns a vector representation of the input text.
+    // Used by textanalysis domain's semantic similarity + storage in
+    // pgvector columns from §3.
+    Embedding(ctx context.Context, req EmbeddingRequest) (*EmbeddingResponse, error)
+
+    // ListModels queries /v1/models on the endpoint. Called once at
+    // startup + on demand to discover live model IDs (audit §6 nexus
+    // swap invariant: model IDs come from the endpoint, not hard-coded).
+    ListModels(ctx context.Context) ([]ModelInfo, error)
+
+    // Ping confirms endpoint reachability (used by /healthz).
+    Ping(ctx context.Context) error
+}
+
+type ChatRequest struct {
+    Model          string          `json:"model"`
+    Messages       []ChatMessage   `json:"messages"`
+    Temperature    float32         `json:"temperature"`
+    MaxTokens      int             `json:"max_tokens"`
+    ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+}
+
+type ResponseFormat struct {
+    Type string `json:"type"`  // "text" | "json_object"
+}
+
+type MultiImageRequest struct {
+    Model       string          `json:"model"`
+    ImagesJPEG  [][]byte        // raw bytes; adapter base64-encodes for JSON transport
+    Prompt      string
+    Temperature float32
+    MaxTokens   int
+    ResponseFormat *ResponseFormat
+}
+
+type ChatResponse struct {
+    Content       string
+    Usage         Usage
+    ModelUsed     string
+    LatencyMs     int
+}
+
+type EmbeddingRequest struct {
+    Model string   `json:"model"`
+    Input []string `json:"input"`  // one or more strings
+}
+
+type EmbeddingResponse struct {
+    Embeddings [][]float32
+    Usage      Usage
+    ModelUsed  string
+}
+
+type Usage struct {
+    PromptTokens     int
+    CompletionTokens int
+    TotalTokens      int
+}
+
+type ModelInfo struct {
+    ID          string
+    OwnedBy     string
+    ContextSize int
+}
+```
+
+**Configuration:**
+
+```go
+type Config struct {
+    EndpointURL    string        `env:"LLM_ENDPOINT_URL,required"`  // "http://llama-small.joi" today; nexus URL later
+    APIKey         string        `env:"LLM_API_KEY" envDefault:"not-required"`  // llama.cpp ignores; kept for OpenAI-compat
+    DefaultTimeout time.Duration `env:"LLM_DEFAULT_TIMEOUT" envDefault:"60s"`
+    ChatModel      string        `env:"LLM_CHAT_MODEL" envDefault:""`   // empty = discover from /v1/models
+    EmbeddingModel string        `env:"LLM_EMBEDDING_MODEL" envDefault:""`
+    MaxRetries     int           `env:"LLM_MAX_RETRIES" envDefault:"3"`
+}
+```
+
+**The swap invariant.** When nexus lands, `LLM_ENDPOINT_URL` changes.
+Application code, service methods, activities — all unchanged. The
+adapter transparently talks to whichever endpoint the env var points at.
+
+**Real implementation** uses `github.com/openai/openai-go` (Anthropic's
+official Go OpenAI SDK compatible with any OpenAI-shaped API — which
+llama.cpp is, and nexus will be).
+
+**Typed errors:**
+
+```go
+var (
+    ErrUnavailable       = errors.New("llm: endpoint unavailable")
+    ErrTimeout           = errors.New("llm: request timeout")
+    ErrCapExceeded       = errors.New("llm: concurrent-cap exceeded (server 503)")
+    ErrBadResponse       = errors.New("llm: response not parseable")
+    ErrModelNotFound     = errors.New("llm: requested model not available")
+    ErrContextTooLong    = errors.New("llm: input exceeds model context")
+    ErrRateLimited       = errors.New("llm: rate limit hit (server 429)")
+    ErrInvalidJSON       = errors.New("llm: response_format=json_object but content not valid JSON")
+)
+```
+
+**Retry classification:**
+- `ErrUnavailable`, `ErrTimeout` → retry-eligible with exponential backoff
+- `ErrCapExceeded`, `ErrRateLimited` → retry-eligible with LONGER backoff (respect Retry-After header if present)
+- `ErrBadResponse`, `ErrInvalidJSON` → NOT retry-eligible (log for prompt-engineering work)
+- `ErrModelNotFound`, `ErrContextTooLong` → NOT retry-eligible (config/input problem)
+
+**Observability:** every call records model, prompt length, response
+length, latency. Structured logs at INFO for success, WARN for
+retry-eligible errors, ERROR for non-retry-eligible.
+
+**Testing:**
+
+- `internal/testutil/fakes/llm.FakeClient` allows registering canned
+  responses per request-hash. Vision-domain tests register a
+  `SOCCER: yes` response for a specific image hash and assert the
+  service returns Verdict=Accepted.
+- No real-integration tests against joi in CI (joi isn't in CI); the
+  fake covers behavior. Real joi calls happen in dev via
+  `scripts/manual_llm_probe.sh` when we want to sanity-check the
+  contract against actual model outputs.
+
+### `internal/infra/temporal`
+
+Temporal client construction + shared config. Small; almost pure config.
+
+**Client interface:**
+
+```go
+package temporal
+
+type Config struct {
+    HostPort      string        `env:"TEMPORAL_HOSTPORT,required"`  // e.g. "temporal:7233"
+    Namespace     string        `env:"TEMPORAL_NAMESPACE" envDefault:"default"`
+    TaskQueue     string        `env:"TEMPORAL_TASK_QUEUE" envDefault:"found-footy"`
+    ConnectTimeout time.Duration `env:"TEMPORAL_CONNECT_TIMEOUT" envDefault:"30s"`
+}
+
+// NewClient constructs a Temporal client. Retries connection up to 5
+// times with exponential backoff before giving up.
+func NewClient(ctx context.Context, cfg Config, logger *slog.Logger) (client.Client, error)
+
+// NewWorker constructs a worker for the given task queue with sensible
+// defaults for found-footy: MaxConcurrentActivityExecutions:30,
+// MaxConcurrentWorkflowTasks:10. Activities that need lower concurrency
+// (LLM-bearing) are overridden via activity registration options.
+func NewWorker(c client.Client, cfg Config, logger *slog.Logger) worker.Worker
+
+// DefaultRetryPolicy returns the retry policy shared by most activities.
+// Individual activities override in their ActivityOptions.
+func DefaultRetryPolicy() *temporal.RetryPolicy
+```
+
+**Typed errors:** Temporal SDK errors are surfaced as-is. This adapter
+doesn't wrap them because the Temporal SDK's error types are already
+usable via `errors.As`.
+
+**Testing:** Temporal test framework (`testsuite.WorkflowTestSuite`)
+handles this at the workflow-test layer. This adapter has no
+non-trivial logic to unit-test.
+
+### `internal/infra/apifootball`
+
+API-Football REST client. Rate-limited (10 req/sec free tier, 300
+req/min Pro). Timeout-bounded. Response-shape typed.
+
+**Client interface:**
+
+```go
+package apifootball
+
+type Client interface {
+    // FetchFixturesForDate returns fixtures on the given UTC date for
+    // any of the tracked leagues (top-5 European + FIFA nationals). Set
+    // by IngestWorkflow for the 3-day window fetch.
+    FetchFixturesForDate(ctx context.Context, date time.Time) ([]Fixture, error)
+
+    // FetchFixturesByIDs is a batch fetch — up to 20 IDs per call.
+    // Used by MonitorWorkflow for active-fixture polling.
+    FetchFixturesByIDs(ctx context.Context, ids []int64) ([]Fixture, error)
+
+    // FetchTeamInfo returns team metadata (name, national flag, country,
+    // city, venue). Used by alias domain during RAG.
+    FetchTeamInfo(ctx context.Context, teamID int) (*TeamInfo, error)
+
+    // FetchTeamsInLeague returns all teams for a given league+season.
+    // Used at ingest-time to build the tracked-team set.
+    FetchTeamsInLeague(ctx context.Context, leagueID, season int) ([]Team, error)
+
+    // CurrentSeasonForLeague queries the /leagues endpoint to discover
+    // the current season for a league. Fallback: use latest available.
+    CurrentSeasonForLeague(ctx context.Context, leagueID int) (int, error)
+
+    // QuotaStatus returns remaining daily quota (parsed from response
+    // headers). Used for observability + circuit-breaking near limits.
+    QuotaStatus(ctx context.Context) (*Quota, error)
+
+    // Ping confirms endpoint reachability + valid API key.
+    Ping(ctx context.Context) error
+}
+
+// Response types match the API-Football schema (documented at
+// https://www.api-football.com/documentation-v3). Full field
+// definitions in models.go — this list shows the top-level shapes.
+type Fixture struct {
+    ID       int64
+    Date     time.Time
+    Status   FixtureStatus
+    Teams    Teams
+    League   League
+    Score    Score
+    Events   []APIEvent
+}
+
+type FixtureStatus struct {
+    Short   string  // "NS", "1H", "FT", etc.
+    Long    string
+    Elapsed *int
+    Extra   *int
+}
+
+type APIEvent struct {
+    Time    EventTime
+    Team    Team
+    Player  Player   // may have nil ID+Name early in match
+    Type    string   // "Goal", "Card", "Subst", "Var"
+    Detail  string
+}
+
+// (rest of response shapes omitted here — fully defined in models.go)
+```
+
+**Configuration:**
+
+```go
+type Config struct {
+    APIKey           string        `env:"API_FOOTBALL_KEY,required"`
+    BaseURL          string        `env:"API_FOOTBALL_BASE_URL" envDefault:"https://v3.football.api-sports.io"`
+    RateLimit        int           `env:"API_FOOTBALL_RATE_LIMIT" envDefault:"300"`  // per minute
+    RequestTimeout   time.Duration `env:"API_FOOTBALL_TIMEOUT" envDefault:"30s"`
+    TrackedLeagues   []int         `env:"API_FOOTBALL_TRACKED_LEAGUES" envDefault:"39,140,78,135,61,1"`
+}
+```
+
+**Typed errors:**
+
+```go
+var (
+    ErrUnauthorized     = errors.New("apifootball: invalid API key")
+    ErrRateLimited      = errors.New("apifootball: rate limit hit")
+    ErrQuotaExhausted   = errors.New("apifootball: daily quota exhausted")
+    ErrTimeout          = errors.New("apifootball: request timeout")
+    ErrUnreachable      = errors.New("apifootball: endpoint unreachable")
+    ErrInvalidResponse  = errors.New("apifootball: response schema mismatch")
+    ErrFixtureNotFound  = errors.New("apifootball: fixture not found")
+)
+```
+
+**Retry classification:**
+- `ErrTimeout`, `ErrUnreachable`, `ErrRateLimited` → retry-eligible with backoff
+- `ErrQuotaExhausted` → retry-eligible but with LONG delay (until tomorrow's quota reset); typically escalates to human
+- `ErrUnauthorized`, `ErrInvalidResponse` → NOT retry-eligible
+
+**Testing:**
+
+- Fake at `internal/testutil/fakes/apifootball.FakeClient` — allows
+  registering canned fixture / event responses per (date, leagueID) or
+  fixtureID. Used extensively by fixture-domain and event-domain tests.
+- No CI integration test against the real API-Football (paid quota;
+  keep it out of CI). Sanity-check via `scripts/manual_api_probe.sh`.
+
+### `internal/infra/twitter`
+
+HTTP client to the twitter container's search service. Handles instance
+discovery (multiple twitter replicas — pick a healthy one) + retry on
+instance-drain.
+
+**Client interface:**
+
+```go
+package twitter
+
+type Client interface {
+    // Search issues a POST /search to a healthy twitter instance.
+    // Returns the raw SearchResponse from discovery domain.
+    Search(ctx context.Context, req discovery.SearchRequest) (*discovery.SearchResponse, error)
+
+    // GetHealth polls /health on a specific instance.
+    GetHealth(ctx context.Context, instanceURL string) (*session.HealthReport, error)
+
+    // ListHealthyInstances returns URLs of currently-healthy twitter
+    // instances. Uses the scaler's registry endpoint if configured,
+    // else the fallback list from env config.
+    ListHealthyInstances(ctx context.Context) ([]string, error)
+
+    // Ping confirms at least one twitter instance is reachable.
+    Ping(ctx context.Context) error
+}
+```
+
+**Configuration:**
+
+```go
+type Config struct {
+    InstanceURLs        []string      `env:"TWITTER_INSTANCE_URLS"`   // fallback list
+    RegistryURL         string        `env:"TWITTER_REGISTRY_URL"`    // if using scaler registry
+    RequestTimeout      time.Duration `env:"TWITTER_REQUEST_TIMEOUT" envDefault:"120s"`
+    HealthCheckInterval time.Duration `env:"TWITTER_HEALTH_CHECK_INTERVAL" envDefault:"30s"`
+}
+```
+
+**Instance-selection logic:**
+
+1. `ListHealthyInstances` — refresh every `HealthCheckInterval` (cached).
+2. For a search call, pick the instance with lowest recent search latency
+   among the healthy set (from `HealthReport.LastSearchLatencyMs`).
+3. If the chosen instance returns 503 with `X-Drain: true`, retry against
+   a different healthy instance (once).
+4. If ALL instances are unhealthy or draining, return `ErrFleetDrained`
+   — activity's retry policy will back off.
+
+**Typed errors:**
+
+```go
+var (
+    ErrUnreachable       = errors.New("twitter: no instance reachable")
+    ErrAuthRequired      = errors.New("twitter: 401 — cookies expired, VNC re-auth needed")
+    ErrSearchTimeout     = errors.New("twitter: search exceeded max duration")
+    ErrFleetDrained      = errors.New("twitter: no healthy instance available")
+    ErrInstanceUnhealthy = errors.New("twitter: chosen instance is unhealthy")
+    ErrMalformedResponse = errors.New("twitter: response body not valid JSON")
+)
+```
+
+**Retry classification:**
+- `ErrUnreachable`, `ErrSearchTimeout`, `ErrFleetDrained` → retry-eligible (may resolve with backoff)
+- `ErrAuthRequired` → NOT retry-eligible (alert to operator; needs VNC re-auth)
+- `ErrMalformedResponse` → NOT retry-eligible (bug in twitter container)
+
+**Testing:**
+
+- `internal/testutil/fakes/twitter.FakeClient` allows registering canned
+  responses per query. Discovery-domain tests use this.
+- No CI integration against a real twitter container (needs Firefox +
+  cookies + Playwright); manual verification in dev.
+
+### `internal/infra/syndication`
+
+Twitter syndication API client. Used to fetch the actual video URLs
+from tweet status URLs (distinct from the twitter container's search
+service).
+
+**Client interface:**
+
+```go
+package syndication
+
+type Client interface {
+    // FetchVideoVariants extracts video download URLs from a tweet.
+    // Returns all available quality variants (mp4 URLs at different
+    // bitrates); caller picks the best.
+    FetchVideoVariants(ctx context.Context, tweetURL string) ([]VideoVariant, error)
+
+    // DownloadVideo streams a video file from the CDN URL to a local path.
+    // Returns typed errors classifying the failure mode (geo, deleted,
+    // rate-limited, etc.).
+    DownloadVideo(ctx context.Context, cdnURL, destPath string) (*DownloadResult, error)
+}
+
+type VideoVariant struct {
+    URL      string
+    Bitrate  int   // bits/second; higher = better quality
+    Width    int
+    Height   int
+    Duration float64
+}
+
+type DownloadResult struct {
+    FilePath    string
+    FileSize    int64
+    Duration    float64
+    Width       int
+    Height      int
+    Bitrate     int
+    MD5         []byte
+}
+```
+
+**Configuration:**
+
+```go
+type Config struct {
+    SyndicationBaseURL string        `env:"TWITTER_SYNDICATION_URL" envDefault:"https://cdn.syndication.twimg.com"`
+    UserAgent          string        `env:"TWITTER_SYNDICATION_UA"  envDefault:"Mozilla/5.0 (compatible; found-footy/1.0)"`
+    RequestTimeout     time.Duration `env:"TWITTER_SYNDICATION_TIMEOUT" envDefault:"90s"`
+    MinSnowflakeLen    int           `env:"TWITTER_SYNDICATION_MIN_SNOWFLAKE_LEN" envDefault:"18"`
+}
+```
+
+**URL validation** (audit §8 snowflake-truncation defense — this is where the fix from Sprint P2b lives):
+
+```go
+// ValidateStatusURL enforces the snowflake-ID length invariant on tweet
+// URLs before attempting a syndication API call. Extracted status IDs
+// must be >= MinSnowflakeLen digits and <= 19 (real snowflakes are 18-19).
+// Returns ErrURLMalformed for truncated or padded IDs.
+//
+// This is where the audit §8 lived problem gets defended against at
+// the earliest possible point in the pipeline.
+func ValidateStatusURL(tweetURL string, minLen int) error
+```
+
+**Typed errors:**
+
+```go
+var (
+    ErrURLMalformed        = errors.New("syndication: URL failed snowflake-ID validation")
+    ErrTweetNotFound       = errors.New("syndication: tweet returned 404")
+    ErrTweetDeleted        = errors.New("syndication: tweet deleted")
+    ErrGeoRestricted       = errors.New("syndication: video geo-restricted (403)")
+    ErrRateLimited         = errors.New("syndication: rate limit hit (429)")
+    ErrTimeout             = errors.New("syndication: request timeout")
+    ErrCDNUnreachable      = errors.New("syndication: CDN unreachable")
+    ErrNoVariants          = errors.New("syndication: no video variants in response")
+    ErrDownloadTruncated   = errors.New("syndication: download body shorter than expected")
+    ErrDownloadChecksumFail = errors.New("syndication: download checksum mismatch")
+)
+```
+
+**Retry classification:**
+- `ErrTimeout`, `ErrRateLimited`, `ErrCDNUnreachable` → retry-eligible
+- `ErrURLMalformed`, `ErrTweetNotFound`, `ErrTweetDeleted`, `ErrGeoRestricted` → NOT retry-eligible (log with class for telemetry)
+- `ErrNoVariants` → NOT retry-eligible (nothing to download)
+
+**Testing:**
+
+- Fake with registered canned responses (tweet URL → variants or error).
+- Real integration is done manually via `scripts/manual_syndication_probe.sh`
+  when investigating specific bugs like the snowflake-truncation issue.
+
+### `internal/infra/ffmpeg`
+
+Subprocess wrapper for the `ffmpeg` CLI. Handles frame extraction,
+duration/metadata probes, and any future video-manipulation needs.
+Always uses `os/exec` with an explicit `ctx` (SIGKILL on context cancel).
+
+**Client interface:**
+
+```go
+package ffmpeg
+
+type Client interface {
+    // ExtractFrame extracts a single frame at the given position (seconds)
+    // into a JPEG. Returns the JPEG bytes.
+    ExtractFrame(ctx context.Context, videoPath string, positionSecs float64, quality int) ([]byte, error)
+
+    // ExtractFramesAtFractions is a convenience: given normalized positions
+    // 0.0-1.0 and the video's known duration, extracts JPEGs at each.
+    // Each extraction is a separate ffmpeg invocation (deterministic seek).
+    ExtractFramesAtFractions(ctx context.Context, videoPath string, durationSecs float64, fractions []float64, quality int) ([]FrameJPEG, error)
+
+    // ProbeMetadata returns duration + resolution + bitrate via ffprobe.
+    ProbeMetadata(ctx context.Context, videoPath string) (*VideoMetadata, error)
+
+    // ExtractDenseFrames extracts frames at fixed intervals (e.g. every 0.25s)
+    // for perceptual-hash dense sampling.
+    ExtractDenseFrames(ctx context.Context, videoPath string, intervalSecs float64, quality int) ([]FrameJPEG, error)
+
+    // Ping checks that ffmpeg + ffprobe binaries are present + runnable.
+    Ping(ctx context.Context) error
+}
+
+type FrameJPEG struct {
+    PositionSecs float64
+    JPEGBytes    []byte
+}
+
+type VideoMetadata struct {
+    DurationSecs float64
+    Width        int
+    Height       int
+    Bitrate      int
+    Codec        string
+    ContainerFmt string
+    FrameRate    float64
+}
+```
+
+**Configuration:**
+
+```go
+type Config struct {
+    FFmpegPath  string        `env:"FFMPEG_PATH" envDefault:"ffmpeg"`
+    FFprobePath string        `env:"FFPROBE_PATH" envDefault:"ffprobe"`
+    DefaultTimeout time.Duration `env:"FFMPEG_DEFAULT_TIMEOUT" envDefault:"30s"`
+    MaxProcesses int           `env:"FFMPEG_MAX_CONCURRENT" envDefault:"4"`  // semaphore
+}
+```
+
+**Concurrency limit.** ffmpeg extractions are CPU-heavy. The adapter
+holds an internal semaphore of `MaxProcesses`; extraction calls block
+until a slot is available. Prevents accidental fork-bomb from a
+DownloadWorkflow with many parallel activities each spawning ffmpeg.
+
+**Subprocess lifecycle.** Every invocation:
+1. `exec.CommandContext(ctx, ...)` — SIGKILL on context cancel.
+2. Capture stdout + stderr to bounded buffers (avoid OOM on runaway
+   output).
+3. On non-zero exit: parse stderr for known error patterns → typed
+   error.
+4. On timeout: SIGKILL, return `ErrExtractionTimeout`.
+
+**Typed errors:**
+
+```go
+var (
+    ErrBinaryNotFound      = errors.New("ffmpeg: binary not found in PATH")
+    ErrProbeFailed         = errors.New("ffmpeg: probe failed")
+    ErrExtractionFailed    = errors.New("ffmpeg: extraction failed")
+    ErrExtractionTimeout   = errors.New("ffmpeg: extraction timeout")
+    ErrInputNotFound       = errors.New("ffmpeg: input file not found")
+    ErrInputCorrupted      = errors.New("ffmpeg: input file corrupted/unreadable")
+    ErrOutputWriteFailed   = errors.New("ffmpeg: output write failed (disk full?)")
+    ErrConcurrencyExhausted = errors.New("ffmpeg: max concurrent extractions in flight")
+)
+```
+
+**Retry classification:**
+- `ErrExtractionTimeout`, `ErrOutputWriteFailed`, `ErrConcurrencyExhausted` → retry-eligible
+- `ErrBinaryNotFound`, `ErrInputNotFound`, `ErrInputCorrupted` → NOT retry-eligible
+
+**Testing:**
+
+- Fake at `internal/testutil/fakes/ffmpeg.FakeClient` — returns
+  pre-registered JPEGs per (video path, position). Vision-domain tests
+  use this heavily.
+- Integration tests use a small `testdata/sample.mp4` fixture; runs
+  real ffmpeg in CI (ffmpeg is available on GitHub Actions runners).
+
+### `internal/infra/wikidata`
+
+Wikidata SPARQL client. Used by alias domain's RAG pipeline.
+
+**Client interface:**
+
+```go
+package wikidata
+
+type Client interface {
+    // SearchEntities does a full-text search returning candidate QIDs.
+    // Ordered by Wikidata's relevance ranking.
+    SearchEntities(ctx context.Context, query string, limit int) ([]Entity, error)
+
+    // FetchEntityAliases returns all known aliases for a QID in the
+    // specified language (default "en").
+    FetchEntityAliases(ctx context.Context, qid, lang string) ([]string, error)
+
+    // FetchEntity returns full entity metadata (labels, descriptions,
+    // claims). Used sparingly — most calls are the two above.
+    FetchEntity(ctx context.Context, qid string) (*Entity, error)
+}
+
+type Entity struct {
+    QID         string
+    Label       string
+    Description string
+}
+```
+
+**Configuration:**
+
+```go
+type Config struct {
+    SPARQLEndpoint string        `env:"WIKIDATA_SPARQL_URL" envDefault:"https://query.wikidata.org/sparql"`
+    APIBaseURL     string        `env:"WIKIDATA_API_URL"    envDefault:"https://www.wikidata.org/wiki/Special:EntityData"`
+    UserAgent      string        `env:"WIKIDATA_USER_AGENT" envDefault:"found-footy/1.0 (self-hosted; https://example)"`
+    RequestTimeout time.Duration `env:"WIKIDATA_TIMEOUT"    envDefault:"10s"`
+}
+```
+
+**Rate limiting:** Wikidata's public endpoints have generous limits but
+strict user-agent requirements. The `UserAgent` env var MUST identify
+the caller per Wikimedia's UA policy. Default is a placeholder;
+production sets it to a proper URL.
+
+**Typed errors:**
+
+```go
+var (
+    ErrUnreachable    = errors.New("wikidata: endpoint unreachable")
+    ErrTimeout        = errors.New("wikidata: request timeout")
+    ErrRateLimited    = errors.New("wikidata: rate limit hit")
+    ErrEntityNotFound = errors.New("wikidata: entity not found")
+    ErrSPARQLError    = errors.New("wikidata: SPARQL query error")
+)
+```
+
+**Retry classification:**
+- `ErrUnreachable`, `ErrTimeout`, `ErrRateLimited` → retry-eligible
+- `ErrEntityNotFound`, `ErrSPARQLError` → NOT retry-eligible
+
+**Testing:**
+
+- Fake with registered canned entity/alias responses.
+- No CI integration (external service; not worth the flake risk).
+
+### Adapter registration in `cmd/*/main.go`
+
+Every binary that needs adapters constructs them at startup and injects
+into services. Example from `cmd/worker/main.go`:
+
+```go
+func main() {
+    ctx := context.Background()
+    logger := logging.New()
+    cfg := config.MustLoad()
+
+    // Migrations first (idempotent)
+    if err := pg.RunMigrations(ctx, cfg.PG, migrations.FS); err != nil {
+        logger.Error("migrate failed", "err", err); os.Exit(1)
+    }
+
+    // Adapters
+    pgPool, err := pg.New(ctx, cfg.PG, logger); mustNoErr(err)
+    defer pgPool.Close()
+
+    s3Client, err := s3.New(cfg.S3, logger); mustNoErr(err)
+    llmClient, err := llm.New(cfg.LLM, logger); mustNoErr(err)
+    apiClient, err := apifootball.New(cfg.APIFootball, logger); mustNoErr(err)
+    twitterClient, err := twitter.New(cfg.Twitter, logger); mustNoErr(err)
+    syndClient, err := syndication.New(cfg.Syndication, logger); mustNoErr(err)
+    ffmpegClient, err := ffmpeg.New(cfg.FFmpeg, logger); mustNoErr(err)
+    wikiClient, err := wikidata.New(cfg.Wikidata, logger); mustNoErr(err)
+
+    // Domain services
+    fixtureService := fixture.NewService(fixture.NewPGStore(pgPool), logger)
+    eventService := event.NewService(event.NewPGStore(pgPool), logger)
+    aliasService := alias.NewService(alias.NewPGStore(pgPool), wikiClient, llmClient, logger)
+    // ... etc.
+
+    // Temporal wiring
+    tclient, err := temporal.NewClient(ctx, cfg.Temporal, logger); mustNoErr(err)
+    w := temporal.NewWorker(tclient, cfg.Temporal, logger)
+
+    // Register workflows
+    w.RegisterWorkflow(workflow.IngestWorkflow)
+    w.RegisterWorkflow(workflow.MonitorWorkflow)
+    w.RegisterWorkflow(workflow.DiscoveryWorkflow)
+    w.RegisterWorkflow(workflow.DownloadWorkflow)
+    w.RegisterWorkflow(workflow.UploadWorkflow)
+
+    // Register activities — each imports the services it needs
+    activity.RegisterFixtureActivities(w, fixtureService)
+    activity.RegisterEventActivities(w, eventService)
+    activity.RegisterDiscoveryActivities(w, discoveryService)
+    activity.RegisterDownloadActivities(w, ...)
+    // ... etc.
+
+    logger.Info("worker started", "task_queue", cfg.Temporal.TaskQueue)
+    if err := w.Run(worker.InterruptCh()); err != nil {
+        logger.Error("worker failed", "err", err); os.Exit(1)
+    }
+}
+```
+
+Similar shape for `cmd/api/main.go` (no Temporal worker, but the same
+adapter set + `internal/api` handlers registered on Chi router).
+
+### Health check aggregation
+
+Every binary's `/healthz` endpoint aggregates health across all adapters:
+
+```go
+func healthzHandler(deps HealthDeps) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        checks := map[string]error{
+            "postgres":     deps.PG.Ping(r.Context()),
+            "s3":           deps.S3.Ping(r.Context(), deps.Cfg.S3.Bucket),
+            "llm":          deps.LLM.Ping(r.Context()),
+            "apifootball":  deps.API.Ping(r.Context()),
+            "twitter":      deps.Twitter.Ping(r.Context()),
+            "ffmpeg":       deps.FFmpeg.Ping(r.Context()),
+            "wikidata":     deps.Wikidata.Ping(r.Context()),
+        }
+        // Return 200 if all pass; 503 if any fail; body enumerates statuses
+    }
+}
+```
+
+Missing from the health check: `syndication` (external CDN, brittle) and
+`temporal` (Temporal client has its own health protocol via its SDK).
+
+### Observability contract
+
+Every adapter emits structured JSON logs at each call boundary with these
+fields at minimum:
+- `adapter` — the package name (e.g., `"pg"`, `"llm"`)
+- `action` — the method invoked (e.g., `"query"`, `"chat_completion"`)
+- `duration_ms` — call duration
+- `error_class` — the typed error class if failed, else absent
+- Domain-specific fields (e.g., `sql_prefix` for pg, `model` for llm)
+
+Prometheus metrics per adapter:
+- `<adapter>_calls_total{action, error_class}` — counter
+- `<adapter>_duration_ms{action}` — histogram
+
+Exposed on the `/metrics` endpoint via `prometheus/client_golang`.
+
+### Extensibility hook
+
+Adding a new adapter follows this pattern:
+
+1. Create `internal/infra/<name>/` with `client.go` (interface),
+   `client_real.go` (implementation), `config.go` (env-var struct),
+   `errors.go` (typed errors), and `*_test.go`.
+2. Add fake at `internal/testutil/fakes/<name>/`.
+3. Add integration test if a backend can be containerized.
+4. Wire into `cmd/*/main.go` startup (adapter construction + injection
+   into services that need it).
+5. Add `Ping` method + wire into `/healthz`.
+6. Add adapter's Prometheus metrics + Loki module label.
+
+Zero changes to unrelated adapters or domains. New adapter = new
+package, isolated.
+
+---
+
+*(Remaining §6, §7, §8, §10..§16 to follow. §9 established the
+infrastructure interfaces every workflow and activity from §5 depends
+on. §6 discovery pipeline is next — it composes twitter, syndication,
+and vision adapters into the DiscoveryWorkflow flow.)*
