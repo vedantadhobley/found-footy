@@ -6410,6 +6410,694 @@ Fresh discipline for new emissions; no forced retconning of history.
 
 ---
 
-*(Remaining §8, §10, §12..§16 to follow. §11 established the observability
-contract; §8 API + SSE composes against LISTEN/NOTIFY plumbing and the
-event_log semantic stream from §7.)*
+## 8. Public API + SSE + webhooks
+
+The `cmd/api` binary. Chi + Huma serving typed HTTP endpoints,
+Postgres LISTEN/NOTIFY-backed SSE stream, webhook delivery worker,
+share-id redirect endpoint. Composes against `internal/domain/*`
+services from §4, `internal/infra/pg` + `s3` adapters from §9, and the
+semantic event stream from §11.
+
+Boundary: this section covers the consumer-facing surface (what
+vedanta-systems + og-server + future consumers see). Internal cross-
+service RPC isn't the subject — there is none; everything internal
+goes through Temporal workflows.
+
+### Design principles
+
+**1. Chi + Huma from day one.** Chi provides the HTTP router (stdlib
+`net/http`-compatible); Huma provides OpenAPI generation + request/
+response validation from Go struct tags. Combined they match FastAPI's
+"define types, get spec + validation for free" ergonomics without
+Python's runtime overhead. Rejected: Fiber (uses `fasthttp`, trades
+stdlib ecosystem compat), stdlib alone (routing verbose, no spec gen).
+
+**2. Auth lives at Caddy, not in FastAPI-equivalent.** Bearer token
+check in the Caddyfile ahead of the reverse-proxy step. Simplifies
+`internal/api` — it assumes "if you reached me you're authorized."
+The share-id redirect endpoint is the deliberate exception
+(unauthenticated public share URLs).
+
+**3. OpenAPI is the contract.** Huma emits `/api/v1/openapi.json`
+from handler signatures + struct tags. vedanta-systems CI regenerates
+TS types on every found-footy build (`openapi-typescript` in the
+CI pipeline). Schema drift becomes a TS build error.
+
+**4. SSE is the live push channel; webhooks are the durable
+delivery channel.** Both consume the same `event_log` table via
+different patterns: SSE handlers `LISTEN` on the Postgres channel;
+webhook worker polls the table for unsent rows. Consumers subscribe
+to whichever fits their delivery semantics.
+
+**5. Public URLs never break** (audit §4 URL-stability invariant).
+The share-id redirect endpoint is what makes this concrete —
+`/api/v1/videos/s_xyz789` resolves to the *current* canonical S3
+URL, regenerated on every request via presigned URLs. Assets can be
+re-uploaded, migrated, superseded — the share URL doesn't change.
+
+**6. Versioning via URL path** (`/api/v1/…`). Breaking changes go to
+`v2`. Deprecation + Sunset headers per RFC 8594 on v1 endpoints during
+migration windows. 6-month minimum sunset.
+
+**7. Everything logged and metriced through §11.** Chi middleware
+wires `internal/logging` into every request. Duration histogram +
+error rate + in-flight gauge per endpoint. Structured log line per
+request with `trace_id` for correlation with worker logs.
+
+### Router + middleware setup
+
+```go
+// cmd/api/main.go
+r := chi.NewRouter()
+
+// Middleware stack (order matters)
+r.Use(middleware.RequestID)              // sets X-Request-Id, propagates as trace_id
+r.Use(middleware.RealIP)                 // trusts X-Forwarded-For from Caddy
+r.Use(logging.HTTPMiddleware(emitter))   // structured log line per request
+r.Use(middleware.Recoverer)              // panic → 500 with logged stack
+r.Use(middleware.Timeout(60 * time.Second))
+r.Use(metricsMiddleware(metrics))        // Prometheus counters + histograms
+r.Use(middleware.Compress(5))            // gzip on Accept-Encoding
+
+// Huma API instance
+config := huma.DefaultConfig("Found Footy API", "v1")
+config.OpenAPI.Servers = []*huma.Server{{URL: fmt.Sprintf("https://%s", cfg.PublicHostname)}}
+api := humachi.New(r, config)
+
+// Register handlers
+registerFixtureHandlers(api, deps)
+registerEventHandlers(api, deps)
+registerVideoHandlers(api, deps)     // includes share-id redirect
+registerFeedHandlers(api, deps)
+registerSSEHandlers(api, deps)
+registerWebhookHandlers(api, deps)
+registerHealthHandlers(api, deps)
+
+// Serve OpenAPI spec + /healthz OUTSIDE the auth wall (Caddy config knows)
+// Everything else is inside (Caddy adds Bearer check before reverse_proxy)
+```
+
+### Endpoint catalog
+
+Full inventory. Every endpoint is a Huma-generated handler with typed
+input + output structs; OpenAPI spec derives from these.
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/api/v1/openapi.json` | no | OpenAPI spec for TS type gen |
+| GET | `/api/v1/healthz` | no | Liveness + adapter health |
+| GET | `/api/v1/readyz` | no | Ready for traffic (migrations applied, adapters up) |
+| GET | `/api/v1/fixtures` | yes | List with filters `date`, `state`, `league_id`, `team_id` |
+| GET | `/api/v1/fixtures/{id}` | yes | Single fixture detail + embedded event summaries |
+| GET | `/api/v1/fixtures/{id}/events` | yes | Events of a fixture |
+| GET | `/api/v1/events/{event_id}` | yes | Single event with video-share links |
+| GET | `/api/v1/events/{event_id}/videos` | yes | Just the video-share list (lighter) |
+| GET | `/api/v1/videos/{share_id}` | **no** | 302 redirect to canonical S3 URL (audit §4) |
+| GET | `/api/v1/feed` | yes | Recent goal events across all fixtures, paginated |
+| GET | `/api/v1/sse/events` | yes | SSE stream — live event lifecycle updates |
+| POST | `/api/v1/webhooks/subscriptions` | yes | Register webhook URL + event-type filter |
+| GET | `/api/v1/webhooks/subscriptions` | yes | List active subscriptions |
+| DELETE | `/api/v1/webhooks/subscriptions/{id}` | yes | Unsubscribe |
+| GET | `/api/v1/webhooks/subscriptions/{id}/deliveries` | yes | Delivery history for observability |
+
+**Total: 14 endpoints, mostly reads.** The write endpoints
+(webhook subscriptions) are administrative.
+
+### Auth at Caddy edge — concrete Caddyfile fragment
+
+Concrete hostname patterns TBD at implementation time per the
+[[naming-and-caddy-particular]] preference. Shape:
+
+```caddy
+# ~/workspace/proxy/caddy/caddy.d/found-footy.caddy — indicative
+http://found-footy-prod-api.{$BASE_DOMAIN} {
+    # Public unauthed paths — skip auth
+    @public path /api/v1/openapi.json /api/v1/healthz /api/v1/readyz /api/v1/videos/*
+    handle @public {
+        reverse_proxy found-footy-prod-api:8080
+    }
+
+    # Auth-protected paths — Bearer check
+    @authed header Authorization "Bearer {$FOUND_FOOTY_API_TOKEN}"
+    handle {
+        respond @!authed 401 {
+            body `{"error":"missing or invalid Authorization"}`
+            close
+        }
+        # Strip Authorization before forwarding — Go side assumes trust
+        reverse_proxy found-footy-prod-api:8080 {
+            header_up -Authorization
+        }
+    }
+}
+```
+
+`FOUND_FOOTY_API_TOKEN` lives in `.env` on luv; vedanta-systems'
+backend `.env` has the same value. Rotation: change both files,
+restart Caddy + consumers. The share-id endpoint (`/api/v1/videos/*`)
+is in `@public` — public URLs need to work without auth headers.
+
+### Share-id redirect endpoint — the URL stability enforcer
+
+Public consumers hit `GET /api/v1/videos/s_xyz789` and get a 302
+redirect to a presigned S3 URL. The presigned URL is regenerated per
+request from the *current* canonical asset — supersession, re-encode,
+storage migration all invisible to the consumer.
+
+**Handler shape:**
+
+```go
+type GetShareVideoInput struct {
+    ShareID string `path:"share_id" doc:"Share ID like s_a1b2c3d4e5f6"`
+}
+
+type GetShareVideoOutput struct {
+    Status   int    `header:"-"`  // 302 or 410
+    Location string `header:"Location"`
+    CacheControl string `header:"Cache-Control"`
+    Body     struct {  // only present on 410
+        Error string  `json:"error"`
+        Reason string `json:"reason"`
+    }
+}
+
+func getShareVideo(ctx context.Context, in *GetShareVideoInput) (*GetShareVideoOutput, error) {
+    share, err := deps.VideoShares.GetByID(ctx, in.ShareID)
+    if err != nil {
+        return nil, huma.Error404NotFound("share not found")
+    }
+
+    if share.State == video.ShareStateRemoved {
+        // 410 Gone with reason
+        return &GetShareVideoOutput{
+            Status: http.StatusGone,
+            Body: struct{...}{
+                Error:  "share removed",
+                Reason: *share.RemovedReason,  // "var" | "policy" | "asset_gone"
+            },
+        }, nil
+    }
+
+    asset, err := deps.VideoAssets.Get(ctx, share.AssetID)
+    if err != nil { return nil, err }
+
+    // Follow supersession chain (in case this asset was merged during dedup pass)
+    for asset.SupersededBy != nil {
+        asset, err = deps.VideoAssets.Get(ctx, *asset.SupersededBy)
+        if err != nil { return nil, err }
+    }
+
+    presignedURL, err := deps.S3.PresignedGetURL(ctx, asset.S3Bucket, asset.S3Key, 1*time.Hour)
+    if err != nil { return nil, err }
+
+    return &GetShareVideoOutput{
+        Status:       http.StatusFound,  // 302
+        Location:     presignedURL,
+        CacheControl: "no-store",  // must not cache the redirect itself
+    }, nil
+}
+```
+
+**`Cache-Control: no-store`** on the redirect response prevents
+consumers from caching the presigned URL. The underlying S3 URL is
+time-limited (1 hour default); if a consumer cached it, they'd get
+403s after expiry. Better: re-resolve per request.
+
+**Fallback: 410 Gone with reason** — when a share is removed (VAR,
+policy, asset garbage-collected), the endpoint returns a friendly
+410 with the removal reason in the body. Consumers (og-server, cached
+tweet embeds) can display "this goal was reversed by VAR" instead of
+a raw 404.
+
+**og-server integration**: og-server's OpenGraph card generation loop
+becomes:
+
+1. Receive request for a share URL.
+2. HEAD to `/api/v1/videos/{share_id}` (no auth needed).
+3. If 302: use the `Location` value as the video URL in the OG card.
+4. If 410: render a "removed" OG card with the reason.
+5. If 404: 404 the OG endpoint too.
+
+### Query endpoints — the read surface
+
+Every query endpoint follows the pattern:
+
+```go
+type ListFixturesInput struct {
+    Date     *string `query:"date" doc:"ISO date filter (YYYY-MM-DD)"`
+    State    *string `query:"state" enum:"staging,active,completed" doc:"lifecycle state"`
+    LeagueID *int    `query:"league_id"`
+    TeamID   *int    `query:"team_id"`
+    Limit    int     `query:"limit" default:"50" maximum:"200"`
+    Cursor   *string `query:"cursor" doc:"opaque pagination cursor"`
+}
+
+type ListFixturesOutput struct {
+    Body struct {
+        Fixtures    []FixtureResponse `json:"fixtures"`
+        NextCursor  *string           `json:"next_cursor,omitempty"`
+    }
+}
+
+func listFixtures(ctx context.Context, in *ListFixturesInput) (*ListFixturesOutput, error) {
+    // Compose filter → call fixture.Service.List → project to FixtureResponse
+}
+```
+
+**Response projection.** Every domain type from §4 has a corresponding
+`Response` type in `internal/api/models` that's a deliberate public
+projection. Storage schema (`_prefixed` enhancement fields, JSONB
+telemetry innards) doesn't leak. Consumers see clean public shapes:
+
+```go
+// internal/api/models/event.go
+type EventResponse struct {
+    ID                 string          `json:"event_id"`
+    NaturalKey         string          `json:"event_natural_key"`
+    FixtureID          int64           `json:"fixture_id"`
+    Type               string          `json:"type"`
+    Detail             string          `json:"detail"`
+    PlayerName         *string         `json:"player_name"`
+    TeamName           string          `json:"team_name"`
+    Minute             int             `json:"minute"`
+    Extra              *int            `json:"extra,omitempty"`
+    FirstSeenAt        time.Time       `json:"first_seen_at"`
+    State              string          `json:"state"`  // "pending" | "tracking" | "complete" | "removed"
+    Videos             []VideoLink     `json:"videos"`
+    TelemetrySummary   *TelemetryPublic `json:"telemetry,omitempty"`  // subset — not the raw JSONB
+}
+
+type VideoLink struct {
+    ShareID           string  `json:"share_id"`
+    URL               string  `json:"url"`  // "/api/v1/videos/{share_id}" (relative)
+    Rank              int     `json:"rank"`
+    TimestampVerified bool    `json:"timestamp_verified"`
+    ExtractedMinute   *int    `json:"extracted_minute,omitempty"`
+}
+
+type TelemetryPublic struct {
+    SearchAttempts       int     `json:"search_attempts"`
+    VideosCapturedTotal  int     `json:"videos_captured_total"`
+    CoverageRate         *float64 `json:"coverage_rate,omitempty"`
+}
+```
+
+**`FromDomain`** classmethod on each Response type maps domain →
+public. Internal telemetry (failure_class counters, time_to_first_s3_p50)
+is DELIBERATELY not exposed publicly — it's engineering
+observability, not consumer content. The public `TelemetryPublic` is
+the deliberate summary consumers get.
+
+### SSE stream endpoint
+
+Long-lived HTTP response holding a connection to the client with
+`Content-Type: text/event-stream`. Uses stdlib `http.Flusher` — no
+library needed.
+
+**Handler shape:**
+
+```go
+// GET /api/v1/sse/events?since=<optional_cursor>&event_type_filter=...
+func sseHandler(w http.ResponseWriter, r *http.Request) {
+    flusher, ok := w.(http.Flusher)
+    if !ok { http.Error(w, "streaming not supported", 500); return }
+
+    w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-store")
+    w.Header().Set("Connection", "keep-alive")
+    w.WriteHeader(200)
+    flusher.Flush()
+
+    ctx := r.Context()
+
+    // Optional backfill: replay unseen events since a cursor
+    if since := r.URL.Query().Get("since"); since != "" {
+        events, _ := deps.EventLog.ListSince(ctx, since, 100)
+        for _, e := range events {
+            writeSSE(w, flusher, e)
+        }
+    }
+
+    // Live tail via Postgres LISTEN/NOTIFY
+    notifyCh, err := deps.PG.Listen(ctx, "found_footy_events")
+    if err != nil { return }
+
+    for {
+        select {
+        case <-ctx.Done():
+            return  // client disconnected
+        case n := <-notifyCh:
+            writeSSE(w, flusher, decodeSSE(n.Payload))
+        case <-time.After(15 * time.Second):
+            // Heartbeat comment to keep proxy timeouts happy
+            fmt.Fprintf(w, ": keepalive\n\n")
+            flusher.Flush()
+        }
+    }
+}
+
+func writeSSE(w http.ResponseWriter, flusher http.Flusher, e SSEEvent) {
+    fmt.Fprintf(w, "id: %d\n", e.ID)
+    fmt.Fprintf(w, "event: %s\n", e.EventType)
+    fmt.Fprintf(w, "data: %s\n\n", e.PayloadJSON)
+    flusher.Flush()
+}
+```
+
+**Message format:**
+
+```
+id: 12345
+event: event.video_ready
+data: {"event_id":"e_a1b2c3d4e5f6","share_id":"s_xyz789","rank":1,"fixture_id":1562345,"player_name":"C. Gakpo","minute":72}
+
+id: 12346
+event: event.detected
+data: {"event_id":"e_...","state":"tracking","fixture_id":1562345,"minute":18}
+
+: keepalive
+
+id: 12347
+event: fixture.completed
+data: {"fixture_id":1562345,"video_count":7}
+```
+
+**Event types emitted on SSE (matching §7 NotifyEventLog calls):**
+
+- `event.detected` — new event first appears
+- `event.stable` — event passed 3-poll debounce
+- `event.video_ready` — a new share_id is available (rank included)
+- `event.rank_recalculated` — ranks changed (rare; usually paired with video_ready)
+- `event.removed` — VAR removed
+- `event.download_complete` — 10 download workflows fired for this event
+- `fixture.activated` — fixture moved to active
+- `fixture.completed` — fixture terminated, all telemetry finalized
+
+**Reconnect semantics.** SSE clients get the `id:` field which is the
+`event_log.id` bigserial. On reconnect, the client sends
+`Last-Event-Id: <id>` header (browsers do this automatically), and the
+handler backfills from that cursor via the `since` query param path.
+
+**Filtering.** `event_type_filter` query param accepts a
+comma-separated list. Server-side filtering; only matching events get
+written to the stream.
+
+### Webhook subscription + delivery
+
+Webhooks solve the "SSE loses messages on consumer restart" problem
+from audit §11. Subscription lives in Postgres (§3 `webhook_subscriptions`).
+Delivery is out-of-band from HTTP request handling — a separate worker
+loop in the `api` binary polls `webhook_deliveries` for pending rows
+and POSTs to subscribers.
+
+**Subscription endpoints:**
+
+```go
+// POST /api/v1/webhooks/subscriptions
+type CreateSubscriptionInput struct {
+    Body struct {
+        ConsumerName string   `json:"consumer_name" required:"true"`
+        URL          string   `json:"url" required:"true" format:"uri"`
+        EventTypes   []string `json:"event_types,omitempty"`  // empty = all
+    }
+}
+
+type CreateSubscriptionOutput struct {
+    Body struct {
+        ID          string   `json:"id"`
+        HMACSecret  string   `json:"hmac_secret"`  // returned once at creation; caller stores it
+    }
+}
+```
+
+`HMACSecret` is returned once at creation (never again). The
+subscriber stores it and validates the `X-FF-Signature` header on
+incoming deliveries.
+
+**Delivery worker loop (separate from HTTP handling):**
+
+```go
+// runs in cmd/api/main.go as a goroutine
+func webhookDeliveryLoop(ctx context.Context, deps Deps) {
+    ticker := time.NewTicker(5 * time.Second)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-ctx.Done(): return
+        case <-ticker.C:
+            batch, err := deps.WebhookDeliveries.ClaimPending(ctx, 50)
+            if err != nil { continue }
+
+            for _, delivery := range batch {
+                deliverOne(ctx, deps, delivery)
+            }
+        }
+    }
+}
+
+func deliverOne(ctx context.Context, deps Deps, d webhookdelivery.Pending) {
+    subscription := d.Subscription
+    payload, _ := json.Marshal(d.Event)
+    sig := hmacSign(payload, subscription.HMACSecret)
+
+    req, _ := http.NewRequestWithContext(ctx, "POST", subscription.URL, bytes.NewReader(payload))
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("X-FF-Event", d.Event.EventType)
+    req.Header.Set("X-FF-Delivery-Id", d.ID.String())
+    req.Header.Set("X-FF-Signature", "hmac-sha256="+sig)
+    req.Header.Set("X-FF-Timestamp", strconv.FormatInt(time.Now().Unix(), 10))
+
+    resp, err := deps.HTTPClient.Do(req)
+    if err != nil {
+        deps.WebhookDeliveries.RecordFailure(ctx, d.ID, 0, err.Error())
+        return
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+        deps.WebhookDeliveries.RecordSuccess(ctx, d.ID)
+    } else {
+        body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+        deps.WebhookDeliveries.RecordFailure(ctx, d.ID, resp.StatusCode, string(body))
+    }
+}
+```
+
+**Retry semantics** — encoded in the schema from §3:
+- Pending = `succeeded_at IS NULL AND give_up_at IS NULL`
+- `RecordFailure` bumps `attempt_count`, updates `last_attempt_at`, and:
+  - If `attempt_count < 5`: schedule next attempt via exponential backoff
+    (2^n minutes: 1min, 2min, 4min, 8min, 16min)
+  - If `attempt_count >= 5`: set `give_up_at = NOW()`, alert operator
+- Delivery worker's `ClaimPending` query filters:
+
+```sql
+SELECT * FROM webhook_deliveries
+WHERE succeeded_at IS NULL
+  AND give_up_at IS NULL
+  AND (last_attempt_at IS NULL OR
+       last_attempt_at + INTERVAL '1 minute' * pow(2, attempt_count) < NOW())
+ORDER BY last_attempt_at NULLS FIRST
+LIMIT 50
+FOR UPDATE SKIP LOCKED
+```
+
+`FOR UPDATE SKIP LOCKED` handles multi-worker delivery safely — if we
+ever scale to N API replicas, they don't step on each other.
+
+**Consumer idempotency** — the `X-FF-Delivery-Id` UUID is unique per
+delivery attempt. Consumers dedupe by this ID.
+
+**Subscription lifecycle:**
+
+- vedanta-systems' backend on startup: `POST /api/v1/webhooks/subscriptions`
+  with `consumer_name="vedanta-systems", event_types=["event.video_ready", "event.download_complete"]`.
+- On response, store the returned `hmac_secret` in its own local
+  storage (env var / Postgres row).
+- Idempotency of subscription creation: schema enforces
+  `UNIQUE (consumer_name, url)`. Re-creating with same tuple returns
+  the existing subscription's ID + a fresh HMAC secret (rotates on
+  re-registration).
+
+### OpenAPI spec + TS generation
+
+Huma generates the spec from handler signatures at binary startup.
+Served at `/api/v1/openapi.json` unauthenticated.
+
+**vedanta-systems CI integration** (indicative — actual pipeline details are vedanta-systems' concern):
+
+```yaml
+# vedanta-systems/.github/workflows/regen-types.yml
+- run: |
+    curl -sf https://found-footy-prod-api.<base>/api/v1/openapi.json \
+      -o openapi.json
+    npx openapi-typescript openapi.json \
+      -o src/types/found-footy.ts
+    # If diff, commit + PR
+    git diff --exit-code src/types/found-footy.ts || {
+        git add src/types/found-footy.ts
+        git commit -m "chore: regen found-footy types"
+        gh pr create ...
+    }
+```
+
+Alternative: run on every found-footy deploy (post-restart, hit the
+new spec URL, regenerate). Either way, the human loop is "review the
+TS diff PR" — schema drift can't ship silently.
+
+### Versioning policy
+
+Concrete rules for when to break vs when to extend:
+
+**Non-breaking (adds to `v1`):**
+- Adding new endpoints
+- Adding new optional fields to response bodies
+- Adding new optional query parameters
+- Adding new event types to SSE
+- Adding new webhook event types (subscribers filter)
+
+**Breaking (requires `v2`):**
+- Removing endpoints
+- Removing or renaming response fields
+- Changing response field types (e.g., int → string)
+- Changing default values that consumers might rely on
+
+**When `v2` ships:**
+1. `/api/v2/…` endpoints live alongside `/api/v1/…`.
+2. All `v1` responses include:
+   - `Deprecation: <date>` header (announce date)
+   - `Sunset: <date>` header (removal date; 6 months out minimum)
+3. Grafana panel shows `v1` request count over time — the "are consumers migrating" tracker.
+4. When `v1` sunset date arrives:
+   - `v1` endpoints return `410 Gone` with `Link: <v2-endpoint>; rel="successor-version"`.
+   - Log at ERROR level with `consumer=<caller-ip>` for post-sunset stragglers.
+
+Policy lives in `docs/api-contract.md` (per audit §11 recommendation).
+
+### Cross-cutting: logging + metrics per request
+
+Every HTTP request emits a single INFO log line via
+`internal/logging` — `module=api`, `action=http_request_handled`,
+with fields:
+
+```json
+{
+  "module": "api",
+  "action": "http_request_handled",
+  "method": "GET",
+  "path": "/api/v1/events/e_a1b2c3d4e5f6",
+  "status": 200,
+  "duration_ms": 42,
+  "request_id": "req_9x8y7z",
+  "trace_id": "req_9x8y7z",  // same as request_id for HTTP
+  "consumer_ip": "10.0.5.12"
+}
+```
+
+Prometheus metrics per §11's naming convention:
+
+- `found_footy_api_calls_total{path_template, status_class, method}` — counter
+- `found_footy_api_duration_seconds{path_template, method}` — histogram
+- `found_footy_api_in_flight{path_template}` — gauge
+- `found_footy_api_sse_active_streams` — gauge
+- `found_footy_api_webhook_deliveries_total{outcome}` — counter
+  (outcome: `success` | `failure` | `gave_up`)
+
+### Testing shape
+
+**Handler tests** — Huma provides a test harness that hits handlers
+with typed input and asserts typed output:
+
+```go
+func TestGetEvent_Found_Returns200WithVideos(t *testing.T) {
+    api, deps := newTestAPI(t)
+    // seed fixture + event + share in the test Postgres
+    eventID := seedEvent(t, deps.PG)
+    seedShare(t, deps.PG, eventID, /*rank=*/1)
+
+    resp := api.Get(t, "/api/v1/events/" + eventID.String())
+    require.Equal(t, 200, resp.Code)
+
+    var body EventResponse
+    require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+    require.Equal(t, eventID.String(), body.ID)
+    require.Len(t, body.Videos, 1)
+    require.Equal(t, 1, body.Videos[0].Rank)
+}
+
+func TestGetShareVideo_ActiveShare_Returns302(t *testing.T)
+func TestGetShareVideo_RemovedShare_Returns410WithReason(t *testing.T)
+func TestGetShareVideo_MissingShare_Returns404(t *testing.T)
+func TestGetShareVideo_SupersededAsset_FollowsChain(t *testing.T)
+```
+
+**SSE tests:**
+
+```go
+func TestSSEStream_ReceivesLiveEvent(t *testing.T) {
+    api, deps := newTestAPI(t)
+
+    // Start SSE in goroutine
+    ch := make(chan string, 10)
+    go func() {
+        // ... consume /api/v1/sse/events, push to ch
+    }()
+
+    // Insert into event_log — should trigger NOTIFY
+    deps.PG.Exec(ctx, "INSERT INTO event_log (event_type, payload) VALUES ($1, $2)",
+        "event.video_ready", `{"event_id":"e_test"}`)
+    deps.PG.Notify(ctx, "found_footy_events", `{"event_type":"event.video_ready","event_id":"e_test"}`)
+
+    // Assert we received it within 1s
+    select {
+    case msg := <-ch:
+        require.Contains(t, msg, "e_test")
+    case <-time.After(1 * time.Second):
+        t.Fatal("no SSE event received")
+    }
+}
+```
+
+**Webhook delivery tests** with an in-process HTTP test server acting
+as the subscriber:
+
+```go
+func TestWebhookDelivery_HappyPath_MarksSucceeded(t *testing.T)
+func TestWebhookDelivery_500Response_RetryWithBackoff(t *testing.T)
+func TestWebhookDelivery_5Failures_GivesUp(t *testing.T)
+func TestWebhookDelivery_HMACSignature_ValidatesAgainstSecret(t *testing.T)
+```
+
+**Integration tests** at `test/integration/api_test.go` spin up the
+full stack (Postgres + Garage + api binary) and hit real HTTP
+endpoints.
+
+### Extensibility hooks
+
+**New endpoint** — declare input/output structs, register with Huma,
+Chi routing free. OpenAPI regenerates automatically. Zero touch to
+other endpoints.
+
+**New SSE event type** — add to §7 `NotifyEventLog` call sites in
+whatever workflow emits it; SSE handler forwards anything on the
+Postgres channel. Consumers subscribe to the new type via their
+`event_type_filter` param.
+
+**New webhook event type** — same as SSE; the delivery worker forwards
+any `event_log` row whose `event_type` matches a subscription's
+`event_types` array (empty = all).
+
+**Rate limiting** — Caddy can enforce per-IP rate limits at the edge
+via the `rate_limit` handler. Not day-one (single trusted consumer),
+but the hook is there.
+
+**Endpoint deprecation without breaking** — add `Deprecation: <date>`
+header to responses; keep the endpoint working; consumers see the
+header in devtools + CI type-gen picks it up as `@deprecated` in TS.
+
+---
+
+*(Remaining §10, §12..§16 to follow. §8 established the API surface;
+§10 deployment covers how the `cmd/api` binary + Caddy config +
+webhook worker lifecycle actually get run in prod and dev docker-compose.)*
