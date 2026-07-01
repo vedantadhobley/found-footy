@@ -1211,5 +1211,798 @@ Beyond the pre-wired `tweet_intent`:
 
 ---
 
-*(Remaining §4..§16 to follow. §3 is the schema every subsequent
-section builds against.)*
+## 4. Domain model
+
+Each domain from [§2](#2-repository-structure) has a `model.go` +
+`store.go` + `service.go` (+ `lifecycle.go` where applicable) +
+colocated tests. This section names the Go types, the store
+interfaces, the service methods, and the state machines — the code
+counterpart of the [§3](#3-postgres-schema) schema.
+
+### The design principle everything else falls out of
+
+**Activities never touch Postgres. They call services. Services call
+stores. Stores call Postgres via pgx.**
+
+```
+Workflow  ─►  Activity  ─►  Service  ─►  Store  ─►  Postgres/S3
+```
+
+Consequences:
+- **Services are unit-testable with mocked stores** (Tier 1 from audit
+  [§12](./design-audit.md#12-testing-strategy)). Business logic gets
+  tested without spinning up a database.
+- **Stores are integration-testable against real Postgres** via
+  testcontainers-go (Tier 2). Schema constraints and SQL behavior get
+  exercised exactly as prod will see them.
+- **Activities stay small** — 10-40 lines each, wrapping a service call
+  in Temporal's `activity.Context` + typed error handling for retry
+  decisions.
+- **Domain packages don't import Temporal.** They're usable from
+  migration scripts, dev CLIs, or one-shot scripts without the SDK
+  along for the ride.
+- **Cross-domain operations live in `internal/usecases/`**, not shoved
+  into an arbitrary domain. `VARRemoveEvent` touches `event`,
+  `video_asset`, `video_share` domains — it lives in usecases, calls
+  each service, no domain "owns" the multi-touch orchestration.
+
+### Fixture domain — worked example in full
+
+Simplest domain, best to establish the pattern.
+
+**What it owns:**
+- `fixtures` table + its indexes and constraints
+- Lifecycle transitions (`staging → active → completed`)
+- Pre-activation logic (kickoff proximity, emergency activation on API status flip)
+- Completion determination (terminal API status + all events download-complete)
+
+**`internal/domain/fixture/model.go`:**
+
+```go
+package fixture
+
+import "time"
+
+type State string
+
+const (
+    StateStaging   State = "staging"
+    StateActive    State = "active"
+    StateCompleted State = "completed"
+)
+
+// Fixture mirrors the fixtures table from §3. Field order matches the
+// schema for review-friendliness; pgx tags do the mapping.
+type Fixture struct {
+    ID    int64 `db:"id"`
+    State State `db:"state"`
+
+    // API-reported (mutable — refreshed each poll for state='active')
+    APIStatusShort string     `db:"api_status_short"`
+    APIStatusLong  string     `db:"api_status_long"`
+    APIElapsed     *int       `db:"api_elapsed"`
+    APIExtra       *int       `db:"api_extra"`
+    Kickoff        time.Time  `db:"kickoff"`
+    HomeTeamID     int        `db:"home_team_id"`
+    HomeTeamName   string     `db:"home_team_name"`
+    AwayTeamID     int        `db:"away_team_id"`
+    AwayTeamName   string     `db:"away_team_name"`
+    LeagueID       int        `db:"league_id"`
+    LeagueName     string     `db:"league_name"`
+    LeagueSeason   int        `db:"league_season"`
+    HomeScore      *int       `db:"home_score"`
+    AwayScore      *int       `db:"away_score"`
+
+    // Enhancement fields (our concerns)
+    ActivatedAt    *time.Time `db:"activated_at"`
+    CompletedAt    *time.Time `db:"completed_at"`
+    LastActivityAt *time.Time `db:"last_activity_at"`
+    LastPolledAt   *time.Time `db:"last_polled_at"`
+
+    CreatedAt time.Time `db:"created_at"`
+    UpdatedAt time.Time `db:"updated_at"`
+}
+
+// IsAPITerminal reports whether the API status short-code indicates
+// the match has ended (any way — including cancellation and forfeit).
+func (f *Fixture) IsAPITerminal() bool {
+    switch f.APIStatusShort {
+    case "FT", "AET", "PEN", "CANC", "ABD", "AWD", "WO":
+        return true
+    }
+    return false
+}
+```
+
+**`internal/domain/fixture/store.go` (interface only shown):**
+
+```go
+type Store interface {
+    GetByID(ctx context.Context, id int64) (*Fixture, error)
+    GetByIDs(ctx context.Context, ids []int64) ([]Fixture, error)
+    ListByState(ctx context.Context, state State) ([]Fixture, error)
+    ListActiveIDs(ctx context.Context) ([]int64, error)
+
+    // Upsert inserts or updates by primary key. Used by ingest.
+    Upsert(ctx context.Context, f *Fixture) error
+
+    // UpdateAPIFields writes only the API-mutable columns + last_polled_at.
+    // Never touches state, activated_at, completed_at, last_activity_at.
+    UpdateAPIFields(ctx context.Context, f *Fixture) error
+
+    // TransitionState atomically updates state + the associated timestamp.
+    // Rejects transitions that violate the §3 CHECK constraint.
+    TransitionState(ctx context.Context, id int64, to State, ts StateTimestamps) error
+
+    // PruneCompleted removes completed fixtures older than the cutoff.
+    PruneCompleted(ctx context.Context, olderThan time.Time) (int, error)
+}
+
+type StateTimestamps struct {
+    ActivatedAt    *time.Time
+    CompletedAt    *time.Time
+    LastActivityAt *time.Time
+}
+```
+
+The pgx implementation lives in `store_pgx.go`; the interface is what
+services depend on and tests mock.
+
+**`internal/domain/fixture/service.go`:**
+
+```go
+type Service struct {
+    store  Store
+    now    func() time.Time  // injected for deterministic testing
+    logger *slog.Logger
+}
+
+// Activate transitions staging → active. Called by pre-activation
+// (kickoff within lookahead) OR by emergency activation (API already
+// shows a live status while we still have it as staging).
+func (s *Service) Activate(ctx context.Context, id int64) error {
+    f, err := s.store.GetByID(ctx, id)
+    if err != nil {
+        return fmt.Errorf("fetch: %w", err)
+    }
+    if f.State != StateStaging {
+        return fmt.Errorf("activate %d: %w", id, ErrInvalidTransition)
+    }
+    now := s.now()
+    return s.store.TransitionState(ctx, id, StateActive, StateTimestamps{
+        ActivatedAt: &now,
+    })
+}
+
+// TryComplete moves active → completed IFF the API status is terminal
+// AND all events are download-complete. Returns whether the transition
+// happened.
+func (s *Service) TryComplete(ctx context.Context, id int64, eventsComplete bool) (bool, error) {
+    f, err := s.store.GetByID(ctx, id)
+    if err != nil { return false, err }
+    if f.State != StateActive || !f.IsAPITerminal() || !eventsComplete {
+        return false, nil
+    }
+    now := s.now()
+    err = s.store.TransitionState(ctx, id, StateCompleted, StateTimestamps{
+        CompletedAt: &now,
+    })
+    return err == nil, err
+}
+
+// RecordPoll updates API-reported fields + last_polled_at. Called by
+// monitor after each successful API-Football fetch.
+func (s *Service) RecordPoll(ctx context.Context, f *Fixture) error {
+    now := s.now()
+    f.LastPolledAt = &now
+    return s.store.UpdateAPIFields(ctx, f)
+}
+```
+
+**`internal/domain/fixture/errors.go`:**
+
+```go
+var (
+    ErrNotFound          = errors.New("fixture not found")
+    ErrInvalidTransition = errors.New("invalid state transition")
+)
+```
+
+**Lifecycle** (this domain's is trivial — one edge, both directions of "backward" impossible):
+
+```
+staging ─── Activate ───► active ─── TryComplete ───► completed
+```
+
+Emergency activation still routes through `Activate` — the caller decides whether the trigger is "kickoff proximity" or "API status flipped," but the transition primitive is the same. No backdoor transitions.
+
+**Tests** (colocated in `service_test.go`, `store_test.go`, `lifecycle_test.go`):
+
+```go
+func TestActivate_FromStaging_Succeeds(t *testing.T) { ... }
+func TestActivate_FromActive_ReturnsErrInvalidTransition(t *testing.T) { ... }
+func TestActivate_FromCompleted_ReturnsErrInvalidTransition(t *testing.T) { ... }
+func TestTryComplete_APINotTerminal_ReturnsFalse(t *testing.T) { ... }
+func TestTryComplete_EventsIncomplete_ReturnsFalse(t *testing.T) { ... }
+func TestTryComplete_AllReady_Transitions(t *testing.T) { ... }
+```
+
+`store_test.go` exercises the pgx implementation against a real Postgres via testcontainers-go — CRUD, CHECK constraint enforcement, PruneCompleted correctness.
+
+### Event domain — the big one
+
+Most consequential domain. Owns the debounce state machine, the tracking arrays, VAR detection, telemetry, and completion marking.
+
+**`internal/domain/event/model.go`:**
+
+```go
+type Type string
+
+const (
+    TypeGoal  Type = "Goal"
+    TypeCard  Type = "Card"
+    TypeSubst Type = "Subst"
+    TypeVar   Type = "Var"
+)
+
+type Event struct {
+    ID         uuid.UUID `db:"id"`
+    FixtureID  int64     `db:"fixture_id"`
+    NaturalKey string    `db:"natural_key"`     // "{team_id}_{player_id}_{type}_{seq}"
+
+    // API-reported
+    Type       Type       `db:"event_type"`
+    Detail     string     `db:"detail"`
+    TeamID     int        `db:"team_id"`
+    TeamName   string     `db:"team_name"`
+    PlayerID   *int       `db:"player_id"`
+    PlayerName *string    `db:"player_name"`
+    Minute     int        `db:"minute"`
+    Extra      *int       `db:"extra"`
+
+    // Enhancement
+    FirstSeenAt      time.Time  `db:"first_seen_at"`
+    MonitorComplete  bool       `db:"monitor_complete"`
+    DownloadComplete bool       `db:"download_complete"`
+    Removed          bool       `db:"removed"`
+    RemovedReason    *string    `db:"removed_reason"`
+    RemovedAt        *time.Time `db:"removed_at"`
+
+    Telemetry *Telemetry `db:"telemetry"`  // JSONB
+
+    CreatedAt time.Time `db:"created_at"`
+    UpdatedAt time.Time `db:"updated_at"`
+}
+
+// Telemetry corresponds to the JSONB column. Marshaled/unmarshaled by pgx via
+// json.Marshaler; field additions don't require migrations.
+type Telemetry struct {
+    SearchAttempts           int            `json:"search_attempts"`
+    VideosDiscovered         int            `json:"videos_discovered"`
+    VideosDownloaded         int            `json:"videos_downloaded"`
+    DownloadFailureClasses   map[string]int `json:"download_failure_classes"`
+    ValidationPassRate       *float64       `json:"validation_pass_rate,omitempty"`
+    PrimaryFailureClass      *string        `json:"primary_failure_class,omitempty"`
+    TimeToFirstS3Seconds     *float64       `json:"time_to_first_s3_seconds,omitempty"`
+}
+
+// PlayerKnown reports whether the API has identified the scorer.
+// The 3-poll debounce is gated on this — no player name → no Twitter search.
+func (e *Event) PlayerKnown() bool {
+    return e.PlayerID != nil && e.PlayerName != nil && *e.PlayerName != ""
+}
+```
+
+**Store** (highlights — the interface is broader):
+
+```go
+type Store interface {
+    GetByID(ctx context.Context, id uuid.UUID) (*Event, error)
+    GetByFixtureID(ctx context.Context, fixtureID int64) ([]Event, error)
+    GetByNaturalKey(ctx context.Context, fixtureID int64, naturalKey string) (*Event, error)
+
+    // Upsert inserts if new, returns existing if the (fixture_id, natural_key)
+    // unique constraint fires. The returned bool indicates whether we created it.
+    // This is how the sequence-race from audit §3 gets absorbed atomically.
+    Upsert(ctx context.Context, e *Event) (result *Event, created bool, err error)
+
+    UpdateAPIFields(ctx context.Context, e *Event) error
+
+    // Tracking-table operations — all idempotent via ON CONFLICT DO NOTHING.
+    // Each returns the resulting count.
+    RegisterMonitorWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string) (count int, err error)
+    RegisterDownloadWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string, outcome *string) (count int, err error)
+    RegisterDropWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string) (count int, err error)
+
+    // Atomic completion marking. §3 §6 pattern:
+    //   UPDATE events SET download_complete = TRUE
+    //     WHERE id = ? AND NOT download_complete
+    //       AND (SELECT count(*) FROM event_download_workflows WHERE event_id = events.id) >= ?
+    // Returns whether the flip happened.
+    TryMarkMonitorComplete(ctx context.Context, eventID uuid.UUID) (flipped bool, err error)
+    TryMarkDownloadComplete(ctx context.Context, eventID uuid.UUID, required int) (flipped bool, err error)
+
+    MarkRemoved(ctx context.Context, eventID uuid.UUID, reason string) error
+
+    // Telemetry patches merge into the JSONB column atomically via jsonb_set.
+    UpdateTelemetry(ctx context.Context, eventID uuid.UUID, patch TelemetryPatch) error
+}
+```
+
+**Service** (highlights):
+
+```go
+type Service struct {
+    store             Store
+    monitorThreshold  int  // 3 for debounce
+    downloadThreshold int  // 10 for completion
+    dropThreshold     int  // 3 for VAR
+    now               func() time.Time
+    logger            *slog.Logger
+}
+
+// DetectChanges compares API-reported events for a fixture against the
+// stored set and returns which need action. Called by
+// monitor.process_fixture_events activity.
+type DetectionResult struct {
+    NewEvents      []Event       // never seen before — upsert them
+    UpdatedEvents  []Event       // API fields changed — refresh
+    RemovedIDs     []uuid.UUID   // vanished from API — VAR drop candidates
+}
+
+func (s *Service) DetectChanges(ctx context.Context, fixtureID int64, apiEvents []APIEventInput) (*DetectionResult, error) {
+    stored, err := s.store.GetByFixtureID(ctx, fixtureID)
+    if err != nil { return nil, err }
+    return diff(stored, apiEvents), nil
+}
+
+// RegisterMonitorAndCheckStable registers a monitor workflow's touch and reports
+// whether the event has now passed the 3-poll debounce AND has a known player.
+func (s *Service) RegisterMonitorAndCheckStable(ctx context.Context, eventID uuid.UUID, workflowID string) (stable bool, err error) {
+    e, err := s.store.GetByID(ctx, eventID)
+    if err != nil { return false, err }
+    count, err := s.store.RegisterMonitorWorkflow(ctx, eventID, workflowID)
+    if err != nil { return false, err }
+    return count >= s.monitorThreshold && e.PlayerKnown() && !e.MonitorComplete, nil
+}
+
+// FlagMonitorComplete atomically flips monitor_complete. Returns whether
+// the flip actually happened (false = already true).
+func (s *Service) FlagMonitorComplete(ctx context.Context, eventID uuid.UUID) (bool, error) {
+    return s.store.TryMarkMonitorComplete(ctx, eventID)
+}
+
+// RegisterDownloadAndTryComplete records a completed download workflow with its
+// typed outcome class and atomically flips download_complete if the threshold
+// is met. Returns (currentCount, flippedComplete, err).
+func (s *Service) RegisterDownloadAndTryComplete(ctx context.Context, eventID uuid.UUID, workflowID string, outcome *string) (int, bool, error) {
+    count, err := s.store.RegisterDownloadWorkflow(ctx, eventID, workflowID, outcome)
+    if err != nil { return 0, false, err }
+    if count < s.downloadThreshold {
+        return count, false, nil
+    }
+    flipped, err := s.store.TryMarkDownloadComplete(ctx, eventID, s.downloadThreshold)
+    return count, flipped, err
+}
+
+// RegisterVARDropAndCheckThreshold records a drop-workflow observation and
+// returns whether the 3-drop threshold has been met (caller then marks removed).
+func (s *Service) RegisterVARDropAndCheckThreshold(ctx context.Context, eventID uuid.UUID, workflowID string) (bool, error) {
+    count, err := s.store.RegisterDropWorkflow(ctx, eventID, workflowID)
+    if err != nil { return false, err }
+    return count >= s.dropThreshold, nil
+}
+```
+
+**Lifecycle** (state machine, formalized in `lifecycle.go` as an
+explicit type):
+
+```
+                                    ┌──── (3 drop workflows) ─────► removed_var (early)
+                                    │
+detected ─── (3 monitor workflows   │
+             AND player_known) ────►│ stable ── (spawns TwitterWorkflow) ─── monitor_complete flipped
+                                    │                                       │
+                                    │                                       ▼
+                                    │                        (10 download workflows registered)
+                                    │                                       │
+                                    │                                       ▼
+                                    │                              download_complete flipped
+                                    │                                       │
+                                    │                                       ▼
+                                    │                                  terminal (per event)
+                                    │
+                                    └─── (3 drop workflows while in progress) ─► removed_var (mid-flight)
+```
+
+Every state transition has:
+- A precondition (checked by the service before calling the store)
+- An atomic store operation (schema constraints enforce the postcondition)
+- A typed outcome the caller can act on
+
+**Typed errors:**
+
+```go
+var (
+    ErrNotFound          = errors.New("event not found")
+    ErrAlreadyRemoved    = errors.New("event already removed")
+    ErrInvalidTransition = errors.New("invalid state transition")
+)
+```
+
+**Tests** — same three-file pattern. `lifecycle_test.go` is
+particularly thorough because the state machine is the load-bearing
+correctness surface:
+
+```go
+func TestDebounce_TwoWorkflows_NotStable(t *testing.T) { ... }
+func TestDebounce_ThreeWorkflows_PlayerKnown_Stable(t *testing.T) { ... }
+func TestDebounce_ThreeWorkflows_PlayerUnknown_NotStable(t *testing.T) { ... }
+func TestDownloadCompletion_NineWorkflows_NoFlip(t *testing.T) { ... }
+func TestDownloadCompletion_TenWorkflows_Flip(t *testing.T) { ... }
+func TestDownloadCompletion_ElevenWorkflows_Idempotent(t *testing.T) { ... }
+func TestVARDrop_TwoDrops_NotRemoved(t *testing.T) { ... }
+func TestVARDrop_ThreeDrops_Removed(t *testing.T) { ... }
+```
+
+### Video domain
+
+Audit §4 realized: `video_assets` (canonical byte-store) + `video_shares` (public IDs).
+
+**Model highlights:**
+
+```go
+type Asset struct {
+    ID                   uuid.UUID  `db:"id"`
+    FixtureID            int64      `db:"fixture_id"`
+    S3Bucket             string     `db:"s3_bucket"`
+    S3Key                string     `db:"s3_key"`
+    PerceptualHash       []byte     `db:"perceptual_hash"`
+    PerceptualHashPrefix int32      `db:"perceptual_hash_prefix"`
+    MD5                  []byte     `db:"md5"`
+    Width, Height        int        `db:"width" db:"height"`
+    DurationMs           int        `db:"duration_ms"`
+    FileSizeBytes        int64      `db:"file_size_bytes"`
+    Bitrate              *int       `db:"bitrate"`
+    AspectRatio          float32    `db:"aspect_ratio"`  // generated column
+    Popularity           int        `db:"popularity"`
+    SupersededBy         *uuid.UUID `db:"superseded_by"`
+    FirstSeenAt          time.Time  `db:"first_seen_at"`
+}
+
+type ShareState string
+const (
+    ShareStateActive  ShareState = "active"
+    ShareStateRemoved ShareState = "removed"
+)
+
+type Share struct {
+    ID                string     `db:"id"`  // "s_<12-hex>"
+    AssetID           uuid.UUID  `db:"asset_id"`
+    EventID           uuid.UUID  `db:"event_id"`
+    TimestampVerified bool       `db:"timestamp_verified"`
+    ExtractedMinute   *int       `db:"extracted_minute"`
+    State             ShareState `db:"state"`
+    RemovedReason     *string    `db:"removed_reason"`
+    RemovedAt         *time.Time `db:"removed_at"`
+    Rank              int        `db:"rank"`
+    CreatedAt         time.Time  `db:"created_at"`
+}
+```
+
+**Service — the atomic dedup path:**
+
+```go
+type AssetService struct { store AssetStore; s3 s3.Client; ... }
+
+// UpsertWithHashDedup attempts to insert a new asset. If a row with the same
+// (fixture_id, perceptual_hash) already exists (concurrent UploadWorkflow
+// beat us), returns the existing asset and (false, nil).
+//
+// Under the hood: INSERT ... ON CONFLICT (fixture_id, perceptual_hash)
+// DO UPDATE SET popularity = video_assets.popularity + 1 RETURNING id, popularity, ...
+//
+// The RETURNING clause + ON CONFLICT DO UPDATE make this a single round-trip
+// AND bump popularity on the winning row. No two-step "try insert, then look
+// up existing" pattern.
+func (s *AssetService) UpsertWithHashDedup(ctx context.Context, incoming *Asset) (*Asset, bool, error) { ... }
+```
+
+**Service — the ranking path (the load-bearing fix for the 2026-06-30 bug):**
+
+```go
+type ShareService struct { store ShareStore; ... }
+
+// RecalculateRanksForEvent recomputes ranks for all active shares of an event
+// in a single serializable transaction. The partial UNIQUE INDEX from §3
+// makes duplicate ranks physically impossible; if the transaction can't
+// achieve a valid ordering (extremely rare — only concurrent share creation
+// between SELECT and UPDATE), pgx retries the whole transaction.
+//
+// Ordering: (timestamp_verified DESC, popularity DESC, file_size DESC).
+func (s *ShareService) RecalculateRanksForEvent(ctx context.Context, eventID uuid.UUID) error {
+    // Executed inside a REPEATABLE READ transaction with retry-on-serialization-failure.
+    // SELECT active shares of eventID JOIN assets for the sort key columns
+    // ORDER BY (verified DESC, popularity DESC, file_size DESC)
+    // Loop through, i from 1: UPDATE video_shares SET rank = i WHERE id = <share_id>
+    // COMMIT
+    return s.store.WithRetryableTx(ctx, func(tx pgx.Tx) error { ... })
+}
+```
+
+The 0-0-2-3 bug from Norway-CIV can't happen here: the partial unique
+index rejects duplicate ranks at write time, the transaction ensures
+all ranks land together, and pgx retries on serialization failure. No
+manual concurrency reasoning by callers.
+
+### Alias domain
+
+Team aliases + RAG pipeline. Wraps Wikidata + LLM calls behind a service.
+
+```go
+type Store interface {
+    Get(ctx context.Context, teamID int) (*TeamAlias, error)
+    Upsert(ctx context.Context, a *TeamAlias) error
+    SearchByName(ctx context.Context, query string, limit int) ([]TeamAlias, error)  // pg_trgm
+}
+
+type Service struct {
+    store    Store
+    wikidata WikidataClient  // internal/infra/wikidata
+    llm      llm.Client      // internal/infra/llm — the config-swappable client
+    logger   *slog.Logger
+}
+
+// GetOrResolve returns cached aliases if present, else runs the full RAG
+// pipeline: Wikidata search → aliases fetch → LLM narrowing → cache write.
+func (s *Service) GetOrResolve(ctx context.Context, teamID int, teamName string) ([]string, error) { ... }
+```
+
+The `llm.Client` reference is where the config-swap invariant materializes:
+`Service` doesn't know whether it's talking to joi or nexus, and doesn't care.
+
+### Discovery domain
+
+Twitter search orchestration. Consumes the twitter container's HTTP API.
+
+```go
+type SearchRequest struct {
+    Query         string   `json:"query"`
+    ExcludeURLs   []string `json:"exclude_urls"`
+    MaxAgeMinutes int      `json:"max_age_minutes"`
+}
+
+type DiscoveredVideo struct {
+    TweetURL        string  `json:"tweet_url"`
+    TweetText       string  `json:"tweet_text"`      // NEW — semantic-intent input
+    AuthorHandle    string  `json:"author_handle"`
+    AuthorVerified  bool    `json:"author_verified"`  // NEW — source scoring input
+    VideoPageURL    string  `json:"video_page_url"`
+    DurationSeconds float64 `json:"duration_seconds"`
+}
+
+type Service struct {
+    twitter TwitterServiceClient  // HTTP client to twitter container
+    logger  *slog.Logger
+}
+
+func (s *Service) Search(ctx context.Context, req SearchRequest) ([]DiscoveredVideo, error) { ... }
+```
+
+Two forward-looking additions vs today's Python: `TweetText` and
+`AuthorHandle` + `AuthorVerified`. These aren't used by any current
+activity — they land in the response DTOs from day one so the
+`textanalysis` domain can consume them when it ships (§1 extensibility
+hook).
+
+### Vision domain
+
+Frame extraction (ffmpeg CLI) + dHash (native Go) + LLM vision validation.
+
+```go
+type Service struct {
+    ffmpeg   FFmpegClient  // shells out to ffmpeg CLI
+    llm      llm.Client
+    logger   *slog.Logger
+}
+
+// ExtractFrames pulls frames at the given normalized time positions
+// (0.0 to 1.0 of video duration) using ffmpeg.
+func (s *Service) ExtractFrames(ctx context.Context, videoPath string, positions []float64) ([][]byte, error) { ... }
+
+// ComputeDHash produces a 64-bit perceptual hash for a JPEG frame.
+// Native Go, ~30 lines: decode → resize 9x8 → grayscale → row-adjacent
+// differences → 64-bit output.
+func (s *Service) ComputeDHash(ctx context.Context, frameJPEG []byte) ([8]byte, error) { ... }
+
+// ValidateFrames sends multi-image LLM request expecting structured JSON:
+//   { SOCCER: "yes"/"no", SCREEN: "yes"/"no", CLOCK: "MM:SS", ADDED: "+N", STOPPAGE_CLOCK: "MM:SS" }
+// Returns typed classification per frame + typed error on LLM failure
+// (LLMUnavailableError, LLMTimeoutError, etc.).
+func (s *Service) ValidateFrames(ctx context.Context, frames [][]byte) (*ValidationResult, error) { ... }
+```
+
+### Session domain (Twitter fleet management)
+
+Audit §8 realized. Cookie coordination via the `twitter_sessions` table.
+
+```go
+type Session struct {
+    ID                      string     `db:"id"`  // always 'canonical'
+    Cookies                 []byte     `db:"cookies"`
+    CookiesVersion          int64      `db:"cookies_version"`
+    Authenticated           bool       `db:"authenticated"`
+    LastRefreshAt           *time.Time `db:"last_refresh_at"`
+    LastSearchSucceededAt   *time.Time `db:"last_search_succeeded_at"`
+    ConsecutiveAuthFailures int        `db:"consecutive_auth_failures"`
+    EstimatedExpiryAt       *time.Time `db:"estimated_expiry_at"`
+    ReauthNotes             *string    `db:"reauth_notes"`
+    UpdatedAt               time.Time  `db:"updated_at"`
+}
+
+type Service struct { store Store; logger *slog.Logger }
+
+// GetCanonical returns the canonical session row. Twitter containers call this
+// every N seconds; if CookiesVersion differs from their local copy, they
+// hot-swap cookies in the running Firefox without restarting.
+func (s *Service) GetCanonical(ctx context.Context) (*Session, error) { ... }
+
+// RecordAuthFailure atomically increments consecutive_auth_failures.
+// Used by twitter containers when a search hits an auth-required response.
+func (s *Service) RecordAuthFailure(ctx context.Context) error { ... }
+
+// PromoteFreshCookies is called after a successful VNC re-auth. It bumps
+// cookies_version, sets authenticated=true, resets consecutive_auth_failures.
+// All twitter containers see the new cookies on their next GetCanonical call.
+func (s *Service) PromoteFreshCookies(ctx context.Context, cookies []byte, notes string) error { ... }
+```
+
+Fleet propagation: seconds, not restart-cycles. The stale-auth-across-
+replicas bug from audit §8 (silently costing search quality after every
+manual VNC re-auth) becomes impossible.
+
+### Text analysis domain (extensibility, stubbed day one)
+
+Populated when semantic intent ships. Schema lives in migration `0001`; domain package is scaffolded with typed shapes and `ErrNotImplemented` bodies.
+
+```go
+type SourceType string
+const (
+    SourceBroadcaster SourceType = "broadcaster"
+    SourceMediaOutlet SourceType = "media_outlet"
+    SourceVerifiedFan SourceType = "verified_fan"
+    SourceUnverified  SourceType = "unverified"
+)
+
+type Intent struct {
+    ID                 uuid.UUID  `db:"id"`
+    VideoAssetID       uuid.UUID  `db:"video_asset_id"`
+    TweetURL           string     `db:"tweet_url"`
+    AuthorHandle       string     `db:"author_handle"`
+    AuthorVerified     bool       `db:"author_verified"`
+    SourceType         SourceType `db:"source_type"`
+    EventTypeMentioned *event.Type `db:"event_type_mentioned"`
+    Confidence         float32    `db:"confidence"`
+    Urgency            *float32   `db:"urgency"`
+    Embedding          []float32  `db:"embedding"`  // pgvector
+    TweetText          string     `db:"tweet_text"`
+    LLMModel           string     `db:"llm_model"`
+    AnalyzedAt         time.Time  `db:"analyzed_at"`
+}
+
+type Service struct { store Store; llm llm.Client; ... }
+
+var ErrNotImplemented = errors.New("textanalysis: not yet implemented")
+
+// Analyze classifies a tweet's text alongside a discovered video and stores
+// the result. Called by AnalyzeTweetIntent activity when it eventually ships.
+func (s *Service) Analyze(ctx context.Context, req AnalyzeRequest) (*Intent, error) {
+    return nil, ErrNotImplemented
+}
+
+// FindSimilar returns intent rows whose embedding is within threshold of query.
+// Used by future "other tweets talking about this moment" clustering features.
+func (s *Service) FindSimilar(ctx context.Context, embedding []float32, threshold float32, limit int) ([]Intent, error) {
+    return nil, ErrNotImplemented
+}
+```
+
+The Store, Service interface, model, and error types all exist. `Analyze` and `FindSimilar` return `ErrNotImplemented`. When someone wants to ship semantic intent, they fill in the bodies + wire the activity to call it. Zero cost to leaving the stubs in place.
+
+### Cross-domain operations — `internal/usecases/`
+
+Operations that touch more than one domain live in `usecases`. They compose domain services + own the cross-domain orchestration + do their own transactionality.
+
+```go
+// internal/usecases/var_remove_event.go
+package usecases
+
+type VARDeps struct {
+    Events        event.Service
+    VideoAssets   video.AssetService
+    VideoShares   video.ShareService
+}
+
+type VAROutcome struct {
+    EventID        uuid.UUID
+    SharesRemoved  int
+    NoOp           bool
+}
+
+// VARRemoveEvent handles the multi-domain teardown when the API surfaces
+// an event as removed (VAR). Touches event + video_asset + video_share domains.
+func VARRemoveEvent(ctx context.Context, deps VARDeps, fixtureID int64, eventID uuid.UUID) (*VAROutcome, error) {
+    e, err := deps.Events.GetByID(ctx, eventID)
+    if err != nil { return nil, err }
+    if e.Removed {
+        return &VAROutcome{EventID: eventID, NoOp: true}, nil
+    }
+    if err := deps.Events.MarkRemoved(ctx, eventID, "var"); err != nil { return nil, err }
+
+    shares, err := deps.VideoShares.GetActiveForEvent(ctx, eventID)
+    if err != nil { return nil, err }
+    for _, sh := range shares {
+        if err := deps.VideoShares.MarkRemoved(ctx, sh.ID, "var"); err != nil { return nil, err }
+    }
+
+    return &VAROutcome{EventID: eventID, SharesRemoved: len(shares)}, nil
+}
+```
+
+Activities call use cases:
+
+```go
+// internal/activity/var_remove.go
+func VARRemoveActivity(ctx context.Context, input VARInput) (VAROutput, error) {
+    outcome, err := usecases.VARRemoveEvent(ctx, deps, input.FixtureID, input.EventID)
+    if err != nil {
+        // Classify + wrap as typed error for retry policy
+        return VAROutput{}, classifyError(err)
+    }
+    return VAROutput{SharesRemoved: outcome.SharesRemoved, NoOp: outcome.NoOp}, nil
+}
+```
+
+Workflows call activities. The layering stays clean.
+
+### Testing shape per domain
+
+Every domain ships with three test files:
+
+- **`service_test.go`** — unit tests with mocked store. State machine
+  transitions, business rules, error paths. Runs in milliseconds. Uses
+  `internal/testutil/factories` to construct realistic models. Uses
+  `internal/testutil/mocks` (auto-generated from Store interfaces via
+  `mockery` or hand-rolled) for the store.
+- **`store_test.go`** — integration tests against a real Postgres via
+  testcontainers-go. Constraint enforcement, unique-index race
+  scenarios, jsonb_set correctness, transaction retry logic.
+- **`lifecycle_test.go`** — pure state machine tests (fixture, event
+  domains). No I/O.
+
+Coverage target: ≥ 70% on `service.go`, ≥ 80% on `lifecycle.go`, ≥ 50%
+on `store.go` (queries + constraint tests, not every SQL branch).
+
+### Extensibility — adding a new domain
+
+Same pattern every time:
+
+1. Create `internal/domain/<name>/` with `doc.go`, `model.go`,
+   `store.go`, `service.go` (+ `lifecycle.go` if the domain has one),
+   `errors.go`, and `*_test.go`.
+2. Add migration(s) creating the required tables with FKs to existing
+   domains.
+3. If activities need to call it, add `internal/activity/<name>.go`
+   that wraps service calls in Temporal's activity semantics.
+4. If it participates in workflows, register the activity in
+   `cmd/worker/main.go` (one line each).
+5. If it exposes API surface, add response models in `internal/api/models`
+   and route handlers in `internal/api/handlers`.
+
+Zero changes to unrelated domains. Zero cross-cutting refactor. The
+layering does the isolating.
+
+---
+
+*(Remaining §5..§16 to follow. §4 established the domain-code shape
+that §5 orchestration and §6 discovery build against.)*
