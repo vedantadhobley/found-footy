@@ -7098,6 +7098,905 @@ header in devtools + CI type-gen picks it up as `@deprecated` in TS.
 
 ---
 
-*(Remaining §10, §12..§16 to follow. §8 established the API surface;
-§10 deployment covers how the `cmd/api` binary + Caddy config +
-webhook worker lifecycle actually get run in prod and dev docker-compose.)*
+## 10. Deployment
+
+Per-project docker-compose owns its full data plane. Shared workspace
+infra (Caddy proxy, monitor stack, Tailscale) sits outside. Everything
+follows [`~/workspace/proxy/CONVENTIONS.md`](../../proxy/CONVENTIONS.md)
+as the canonical naming + networking authority — this section applies
+those conventions to found-footy and only surfaces choices where the
+convention leaves room.
+
+### The workspace convention (quick recap)
+
+Cited from `~/workspace/proxy/CONVENTIONS.md`. Five rules that this
+section defers to:
+
+1. **Container name == URL.** `<project>-<env>-<role>.<BASE_DOMAIN>`
+   reverse-proxies to `<project>-<env>-<role>:<internal-port>` over
+   the `proxy` docker network.
+2. **Roles come from a constrained vocabulary.** No `webserver`,
+   `backend`, `ui`, `app`, `service` — always tool-prefixed or
+   functional-role-named.
+3. **Each project ships an `api`; only vedanta-systems ships a
+   `frontend`.** found-footy has an API for vedanta-systems to
+   consume.
+4. **No host HTTP ports.** Everything attaches to the shared `proxy`
+   docker network and is fronted by Caddy.
+5. **Three shared networks:** `proxy` (HTTP ingress), `luv-prod` and
+   `luv-dev` (cross-project data plane by env).
+
+The rebuild inherits this. Where I show container names below, they
+follow the pattern without alternatives — that's already decided at
+the workspace level. Where naming is genuinely underdetermined (a
+tool that doesn't map cleanly to the role vocabulary), I surface
+options for you to pick.
+
+### Container inventory
+
+**Prod compose** (`docker-compose.yml`):
+
+| Container | Role | Image | Ports (internal) | Purpose |
+|---|---|---|---|---|
+| `found-footy-prod-postgres` | app data | `postgres:16-alpine` | 5432 | Fixtures, events, videos, aliases, telemetry, event_log |
+| `found-footy-prod-garage` | blob store | `dxflrs/garage:latest` | 3900 (S3 API), 3902 (admin) | Video files, S3-compatible |
+| `found-footy-prod-temporal` | workflow engine | `temporalio/auto-setup:1.24` | 7233 | Temporal server (gRPC) |
+| `found-footy-prod-temporal-postgres` | temporal metadata | `postgres:16-alpine` | 5432 | Temporal's own metadata store (separate from app postgres) |
+| `found-footy-prod-temporal-ui` | Temporal UI | `temporalio/ui:latest` | 8080 | Workflow observability |
+| `found-footy-prod-worker` | Temporal worker | (built from `deploy/Dockerfile.worker`) | — | Runs `cmd/worker` binary; scaled 2-8 |
+| `found-footy-prod-api` | HTTP API | (built from `deploy/Dockerfile.api`) | 8080 | Runs `cmd/api` binary; single replica |
+| `found-footy-prod-scaler` | auto-scale | (built from `deploy/Dockerfile.scaler`) | — | Runs `cmd/scaler` binary; single replica |
+| `found-footy-prod-twitter` | Playwright fleet | (built from `deploy/Dockerfile.twitter`) | 8888 (search HTTP), 6080 (noVNC, `vnc` profile only) | Runs `cmd/twitter` binary; scaled 2-8 |
+
+**Dev compose** (`docker-compose.dev.yml`) mirrors the same set with
+`-dev-` in container names. Dev additions:
+
+- `found-footy-dev-twitter` runs noVNC always (not gated behind `vnc`
+  profile); makes cookie re-auth painless during dev work.
+
+**Total: 9 unique container roles**, down from Python's 11 (removed:
+`mongo`, `mongo-express`/`mongoku`, `minio` — replaced by
+`postgres` and `garage`).
+
+### Container naming — decisions to surface
+
+Most names are decided by workspace convention. Three genuinely open
+questions:
+
+**Decision 1: Garage admin UI hostname.** Garage exposes a web admin on
+port 3902 (metrics dashboard, bucket status). Options:
+
+| Option | Rationale |
+|---|---|
+| `found-footy-prod-garage-web` | Follows the `<tool>-<purpose>` pattern from CONVENTIONS.md role vocabulary. Concise. |
+| `found-footy-prod-garage-admin` | Slightly more explicit about what's on 3902. |
+| Don't expose it (internal only) | Garage's on-disk format is `ls`-able; do we actually need the admin UI? |
+
+Recommendation: `found-footy-prod-garage-web` per the `<tool>-<purpose>`
+convention. If we never actually visit the admin, we can drop the
+Caddy entry later — the container stays either way.
+
+**Decision 2: Postgres admin UI at all.** For MinIO we had a web
+console (accessible via `found-footy-prod-minio.<base>`). For Postgres,
+options:
+
+| Option | Rationale |
+|---|---|
+| Add `found-footy-prod-adminer` (image: `adminer:latest`) | Tool-specific naming per convention. Handy for ad-hoc queries. |
+| Add `found-footy-prod-pgadmin` (image: `dpage/pgadmin4`) | Heavier but more featureful. |
+| Don't add one; use `psql` via `docker exec` | Simplest. Matches the "if you need it, you know how to `docker exec`" philosophy. |
+
+Recommendation: **don't add one day one**. `docker exec` into
+`found-footy-prod-postgres` and run `psql` is the simple answer. Add
+adminer later if it turns out we're doing enough ad-hoc queries to
+justify the extra container.
+
+**Decision 3: Twitter VNC gating.** Current found-footy prod gates
+noVNC behind a docker compose `profiles: [vnc]` — only started when
+cookie re-auth is needed. Dev runs it always. Options:
+
+| Option | Rationale |
+|---|---|
+| Keep prod behind `vnc` profile (current pattern) | Prod avoids running an idle VNC server all the time. |
+| Always run in prod too | Simpler ops; one less thing to remember. Cost: ~50 MB idle memory. |
+
+Recommendation: **keep the profile gate**. Current pattern works,
+one-time `docker compose up -d twitter-vnc` when re-auth is needed
+isn't burdensome.
+
+### Compose file structure
+
+Two compose files per convention:
+
+- `docker-compose.yml` — prod stack (containers named `found-footy-prod-*`, on the `found-footy-prod` internal bridge network + attached to `proxy` for HTTP ingress + attached to `luv-prod` for cross-project data plane)
+- `docker-compose.dev.yml` — dev stack (mirrors prod but with `-dev-` names and dev-friendly overrides like verbose logging, no restart-unless-stopped, twitter VNC always running)
+
+**Shape of `docker-compose.yml`:**
+
+```yaml
+name: found-footy-prod
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: found-footy-prod-postgres
+    environment:
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: found_footy
+    volumes:
+      - ${DATA_DIR:-~/workspace/data/found-footy}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d found_footy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - found-footy-prod
+    restart: unless-stopped
+
+  garage:
+    image: dxflrs/garage:latest
+    container_name: found-footy-prod-garage
+    volumes:
+      - ${DATA_DIR:-~/workspace/data/found-footy}/garage/data:/var/lib/garage/data
+      - ${DATA_DIR:-~/workspace/data/found-footy}/garage/meta:/var/lib/garage/meta
+      - ./deploy/garage.toml:/etc/garage.toml:ro
+    networks:
+      - found-footy-prod
+      - proxy
+    restart: unless-stopped
+
+  garage-web:
+    # Optional admin UI — see Decision 1. Remove this service block if
+    # we ultimately decide not to expose the admin.
+    image: dxflrs/garage:latest
+    container_name: found-footy-prod-garage-web
+    command: ["garage", "admin", "web"]  # illustrative — real command TBD
+    networks:
+      - found-footy-prod
+      - proxy
+    restart: unless-stopped
+    depends_on:
+      - garage
+
+  temporal:
+    image: temporalio/auto-setup:1.24
+    container_name: found-footy-prod-temporal
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: ${TEMPORAL_PG_USER}
+      POSTGRES_PWD: ${TEMPORAL_PG_PASSWORD}
+      POSTGRES_SEEDS: temporal-postgres
+    networks:
+      - found-footy-prod
+    depends_on:
+      temporal-postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  temporal-postgres:
+    image: postgres:16-alpine
+    container_name: found-footy-prod-temporal-postgres
+    environment:
+      POSTGRES_USER: ${TEMPORAL_PG_USER}
+      POSTGRES_PASSWORD: ${TEMPORAL_PG_PASSWORD}
+      POSTGRES_DB: temporal
+    volumes:
+      - ${DATA_DIR:-~/workspace/data/found-footy}/temporal-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TEMPORAL_PG_USER} -d temporal"]
+    networks:
+      - found-footy-prod
+    restart: unless-stopped
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    container_name: found-footy-prod-temporal-ui
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: "*"
+    networks:
+      - found-footy-prod
+      - proxy
+    depends_on:
+      - temporal
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.worker
+    image: found-footy-worker:latest  # tagged locally; no registry today
+    container_name: found-footy-prod-worker
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+      garage:
+        condition: service_started
+    networks:
+      - found-footy-prod
+      - luv-prod
+    deploy:
+      replicas: 2  # scaler manages between 2 and 8
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.api
+    image: found-footy-api:latest
+    container_name: found-footy-prod-api
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - found-footy-prod
+      - proxy
+      - luv-prod  # for vedanta-systems to reach
+    restart: unless-stopped
+
+  scaler:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.scaler
+    image: found-footy-scaler:latest
+    container_name: found-footy-prod-scaler
+    env_file: .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # to scale worker + twitter
+    networks:
+      - found-footy-prod
+    restart: unless-stopped
+
+  twitter:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.twitter
+    image: found-footy-twitter:latest
+    container_name: found-footy-prod-twitter
+    env_file: .env
+    volumes:
+      - ${DATA_DIR:-~/workspace/data/found-footy}/twitter/profiles:/data/firefox_profiles
+      - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
+    networks:
+      - found-footy-prod
+    deploy:
+      replicas: 2  # scaler manages between 2 and 8
+    restart: unless-stopped
+
+  twitter-vnc:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.twitter
+      args:
+        WITH_VNC: "true"
+    image: found-footy-twitter-vnc:latest
+    container_name: found-footy-prod-twitter-vnc
+    profiles: [vnc]  # only started when cookie re-auth is needed
+    env_file: .env
+    volumes:
+      - ${DATA_DIR:-~/workspace/data/found-footy}/twitter/profiles:/data/firefox_profiles
+      - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
+    networks:
+      - found-footy-prod
+      - proxy
+    restart: "no"
+
+networks:
+  found-footy-prod:
+    driver: bridge
+  proxy:
+    external: true
+  luv-prod:
+    external: true
+```
+
+Dev compose is structurally identical with `-dev-` names, `dev` env
+vars, no `vnc` profile gate on `twitter-vnc`, and volume mounts under
+`~/workspace/data/found-footy-dev/`.
+
+### Dockerfiles
+
+One per binary. All follow the same pattern: multi-stage build,
+static Go binary, minimal runtime layer.
+
+**`deploy/Dockerfile.worker`** (representative — api, scaler are near-identical):
+
+```dockerfile
+# ────── build stage ──────
+FROM golang:1.23-alpine AS build
+
+WORKDIR /src
+
+# Cache dependencies
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source and build
+COPY . .
+
+# Build args for baking git_sha + built_at into the binary per §11 deploy tracking
+ARG GIT_SHA=unknown
+ARG BUILT_AT=unknown
+
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w -X main.gitSHA=${GIT_SHA} -X main.builtAt=${BUILT_AT}" \
+    -o /out/worker \
+    ./cmd/worker
+
+# ────── runtime stage ──────
+FROM alpine:3.20
+
+# ffmpeg for the video pipeline (§7)
+RUN apk add --no-cache ffmpeg tzdata ca-certificates
+
+# Non-root user
+RUN adduser -D -H -u 1000 app
+USER app
+
+COPY --from=build /out/worker /usr/local/bin/worker
+
+ENTRYPOINT ["/usr/local/bin/worker"]
+```
+
+**`deploy/Dockerfile.twitter`** is the exception — needs Firefox +
+`geckodriver` for Playwright-Go:
+
+```dockerfile
+FROM golang:1.23-bookworm AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG GIT_SHA=unknown
+ARG BUILT_AT=unknown
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w -X main.gitSHA=${GIT_SHA} -X main.builtAt=${BUILT_AT}" \
+    -o /out/twitter \
+    ./cmd/twitter
+
+FROM debian:bookworm-slim
+
+# Firefox + geckodriver + Xvfb (for headless) + noVNC (behind ARG)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        firefox-esr xvfb ca-certificates tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG WITH_VNC=false
+RUN if [ "$WITH_VNC" = "true" ]; then \
+        apt-get update && apt-get install -y \
+            x11vnc novnc websockify && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# Playwright will download browsers via `playwright install` at first run;
+# alternative is to bake them into the image via the build stage.
+
+RUN adduser --disabled-password --gecos "" --uid 1000 app
+USER app
+
+COPY --from=build /out/twitter /usr/local/bin/twitter
+
+EXPOSE 8888 6080
+ENTRYPOINT ["/usr/local/bin/twitter"]
+```
+
+Base image size targets (approximate):
+- `Dockerfile.worker` / `.api` / `.scaler`: ~15-25 MB (alpine + Go static binary + ffmpeg where needed)
+- `Dockerfile.twitter`: ~800 MB (Debian + Firefox is unavoidable)
+
+### Volumes and bind mounts
+
+Data on the host lives at `~/workspace/data/found-footy/` (or
+`-dev/`) per the CLAUDE.md `data/<project>/` convention:
+
+```
+~/workspace/data/found-footy/
+├── postgres/                    # app Postgres data dir
+├── temporal-postgres/           # Temporal's metadata Postgres
+├── garage/
+│   ├── data/                    # content-addressed blob storage
+│   └── meta/                    # bucket metadata
+└── twitter/
+    └── profiles/                # Firefox profile dirs, keyed by instance ID
+```
+
+Backup story: `rsync ~/workspace/data/found-footy/` — no proprietary
+formats, everything is filesystem-native.
+
+Bind mount rationale over named volumes:
+- Explicit host location; easy to `ls` and `du -sh` for capacity checks
+- Backup with regular filesystem tools
+- Survive `docker compose down` unambiguously (named volumes do too,
+  but bind mounts remove the "wait where is that data" question)
+
+The Twitter cookie backup file at
+`~/.config/found-footy/twitter_cookies.json` is bind-mounted read/write
+into `twitter` and `twitter-vnc` containers. This is the safety-net
+copy of `twitter_sessions.canonical.cookies` from §4 — even if
+Postgres has issues, VNC re-auth still writes here and containers can
+bootstrap from it.
+
+### Networks
+
+Three networks per the workspace convention:
+
+- **`found-footy-prod`** (internal bridge; declared in this
+  docker-compose): all found-footy containers talk to each other on
+  this network. Postgres, Garage, Temporal are only reachable here.
+- **`proxy`** (external; created once at workspace setup): Caddy
+  fronts all HTTP-exposed services. Only containers that need HTTP
+  ingress attach: `api`, `temporal-ui`, `garage-web` (if enabled),
+  `twitter-vnc` (when profile active).
+- **`luv-prod`** (external; created once at workspace setup):
+  cross-project data plane. `api` attaches so vedanta-systems can
+  reach it. `worker` attaches if it needs to call out to vedanta-systems'
+  API (for now: no). Postgres/Garage do NOT attach — data plane
+  isolation.
+
+Dev mirrors with `luv-dev`.
+
+### Environment variables
+
+Structure: `.env` (gitignored) + `.env.example` (git-tracked template).
+
+**Categories** (one `.env` per environment; prod and dev have separate
+files):
+
+```bash
+# .env.example — canonical template
+
+# ─── App storage ───────────────────────────────
+PG_USER=ffuser
+PG_PASSWORD=CHANGE_ME
+PG_DSN=postgres://ffuser:CHANGE_ME@postgres:5432/found_footy?sslmode=disable
+
+# ─── Blob storage ──────────────────────────────
+S3_ENDPOINT=http://garage:3900
+S3_BUCKET=found-footy
+S3_ACCESS_KEY_ID=CHANGE_ME
+S3_SECRET_ACCESS_KEY=CHANGE_ME
+S3_USE_PATH_STYLE=true
+
+# ─── Temporal ──────────────────────────────────
+TEMPORAL_HOSTPORT=temporal:7233
+TEMPORAL_NAMESPACE=default
+TEMPORAL_TASK_QUEUE=found-footy
+TEMPORAL_PG_USER=temporal
+TEMPORAL_PG_PASSWORD=CHANGE_ME
+
+# ─── LLM (per decisions.md 2026-07-01 abstraction) ────
+LLM_ENDPOINT_URL=http://llama-small.joi
+LLM_API_KEY=not-required
+LLM_CHAT_MODEL=       # empty = discover from /v1/models
+LLM_EMBEDDING_MODEL=
+
+# ─── External APIs ─────────────────────────────
+API_FOOTBALL_KEY=CHANGE_ME
+API_FOOTBALL_TRACKED_LEAGUES=39,140,78,135,61,1
+
+# ─── Twitter fleet ────────────────────────────
+TWITTER_INSTANCE_URLS=http://found-footy-prod-twitter:8888
+
+# ─── Auth ─────────────────────────────────────
+FOUND_FOOTY_API_TOKEN=CHANGE_ME    # Caddy-side Bearer check
+
+# ─── Observability ────────────────────────────
+LOG_LEVEL=INFO
+LOKI_ENABLED=true
+
+# ─── Deploy tracking (baked in by ldflags at build; runtime override is unusual)
+DEPLOY_ENV=prod
+
+# ─── Host paths ───────────────────────────────
+DATA_DIR=~/workspace/data/found-footy
+BASE_DOMAIN=luv
+```
+
+**Env var URL format:** internal service URLs use compose service
+names (`postgres`, `garage`, `temporal`), not container names
+(`found-footy-prod-postgres`). Both would resolve within the compose
+network, but service names are:
+- Shorter and readable
+- Same value works for both prod and dev without templating (each
+  compose project is its own network)
+- Matches existing found-footy convention (Python code uses
+  `mongodb://mongo:27017`, not `mongodb://found-footy-prod-mongo:27017`)
+
+The exceptions where full container names matter:
+- Cross-project references (vedanta-systems reaching found-footy's
+  api → uses `found-footy-prod-api`, because it's addressing
+  across compose projects on the shared `luv-prod` network)
+- Caddy hostnames (always the full container name pattern per
+  workspace convention)
+
+### Caddy integration
+
+The per-project Caddyfile at
+`~/workspace/proxy/caddy/caddy.d/found-footy.caddy` gets updated to
+match the rebuild's inventory. Auth-gated paths on the `api`
+hostname; unauthenticated public paths for openapi.json, healthz,
+readyz, and the share-id endpoint (§8).
+
+**Proposed Caddyfile after rebuild** (naming decisions from above
+applied; alternatives noted):
+
+```caddy
+# found-footy — Twitter scraper + Temporal + API stack (Go rebuild)
+# Tailnet-only; no public Cloudflare hostname.
+
+# ─── prod ───────────────────────────────────────────────────────────────────
+
+# Public API — split auth (public paths for spec/health/share redirect,
+# authed for everything else).
+http://found-footy-prod-api.{$BASE_DOMAIN} {
+    @public path /api/v1/openapi.json /api/v1/healthz /api/v1/readyz /api/v1/videos/*
+    handle @public {
+        reverse_proxy found-footy-prod-api:8080
+    }
+
+    @authed header Authorization "Bearer {$FOUND_FOOTY_API_TOKEN}"
+    handle {
+        respond @!authed 401 {
+            body `{"error":"missing or invalid Authorization"}`
+            close
+        }
+        reverse_proxy found-footy-prod-api:8080 {
+            header_up -Authorization
+        }
+    }
+}
+
+# Temporal UI — workflow observability, tailnet-only, no auth needed
+# (assumption: tailnet is the auth boundary).
+http://found-footy-prod-temporal-ui.{$BASE_DOMAIN} {
+    reverse_proxy found-footy-prod-temporal-ui:8080
+}
+
+# Garage admin — Decision 1 above. Delete this block if we decide
+# not to expose the admin.
+http://found-footy-prod-garage-web.{$BASE_DOMAIN} {
+    reverse_proxy found-footy-prod-garage:3902
+}
+
+# Twitter VNC — only reachable when started with the `vnc` profile.
+# noVNC is websocket; Caddy handles upgrades natively.
+http://found-footy-prod-twitter-vnc.{$BASE_DOMAIN} {
+    reverse_proxy found-footy-prod-twitter-vnc:6080
+}
+
+# ─── dev ────────────────────────────────────────────────────────────────────
+
+http://found-footy-dev-api.{$BASE_DOMAIN} {
+    # Same auth pattern as prod. Dev token is different value.
+    @public path /api/v1/openapi.json /api/v1/healthz /api/v1/readyz /api/v1/videos/*
+    handle @public {
+        reverse_proxy found-footy-dev-api:8080
+    }
+
+    @authed header Authorization "Bearer {$FOUND_FOOTY_DEV_API_TOKEN}"
+    handle {
+        respond @!authed 401
+        reverse_proxy found-footy-dev-api:8080 {
+            header_up -Authorization
+        }
+    }
+}
+
+http://found-footy-dev-temporal-ui.{$BASE_DOMAIN} {
+    reverse_proxy found-footy-dev-temporal-ui:8080
+}
+
+http://found-footy-dev-garage-web.{$BASE_DOMAIN} {
+    reverse_proxy found-footy-dev-garage:3902
+}
+
+http://found-footy-dev-twitter-vnc.{$BASE_DOMAIN} {
+    reverse_proxy found-footy-dev-twitter-vnc:6080
+}
+```
+
+**What's dropped vs current Python found-footy Caddyfile:**
+- `found-footy-*-mongo-express` / `mongoku` — no Mongo anymore
+- `found-footy-*-minio` — no MinIO anymore
+
+**What's added:**
+- `found-footy-*-api` — the new Go API surface (with split-auth pattern)
+- `found-footy-*-garage-web` — pending Decision 1
+
+**Auth for Temporal UI, Garage admin, Twitter VNC — surfaced choice.**
+Current Python found-footy exposes these unauthenticated on the
+tailnet (implicit assumption: tailnet is the auth boundary). Options
+for the rebuild:
+
+| Option | Rationale |
+|---|---|
+| Keep unauthenticated on tailnet (current pattern) | Simpler; assumes tailnet = trusted network. Consistent with monitor stack's Grafana/Portainer exposure. |
+| Add Bearer auth on Temporal UI + Garage admin too | Extra defense-in-depth; costs an env var + Caddy block. Twitter VNC is inherently a "when in use" thing so auth matters less. |
+| Add Caddy Basic Auth (user/password) instead of Bearer | HTTPBasic is browser-friendly for admin UIs; Bearer better for programmatic access. |
+
+Recommendation: **stay unauthenticated on tailnet for the admin UIs**;
+tailnet auth is the workspace convention already. Bearer stays on the
+public `api` endpoint since that IS the programmatic surface. Revisit
+if we ever add non-tailnet access.
+
+### Health checks
+
+Every long-lived container ships a `HEALTHCHECK` directive. Docker's
+health status feeds into `docker compose up -d --wait` and the
+`depends_on: { service_healthy }` condition.
+
+- **`postgres` / `temporal-postgres`**: `pg_isready -U ... -d ...`
+  every 10s
+- **`garage`**: HTTP GET on `/v0/status` internal endpoint every 10s
+- **`temporal`**: `tctl --address temporal:7233 workflow list --namespace default --workflow_id doesnotexist` (any command that hits the server) every 30s
+- **`worker`**: `wget -qO- http://localhost:8080/healthz` — worker's
+  built-in `/healthz` calls `pg.Ping` + `s3.Ping` + `llm.Ping` +
+  `apifootball.Ping` + `twitter.Ping` (§9 aggregation)
+- **`api`**: same pattern, wget on `/api/v1/healthz`
+- **`scaler`**: `docker` CLI probe — `docker version` to confirm the
+  socket is reachable
+- **`twitter`**: `wget -qO- http://localhost:8888/health` — twitter
+  service's own health check (audit §8 rich protocol)
+
+### Graceful shutdown
+
+Every Go binary registers a SIGTERM handler that:
+
+1. Sets a "draining" flag (twitter container exposes it in `/health`
+   payload for the scaler)
+2. Stops accepting new work (workers stop polling Temporal task queues;
+   API returns 503 on new SSE connections; twitter service refuses new
+   `/search` calls)
+3. Waits for in-flight work to complete with a bounded grace period
+   (30s default)
+4. Cleanly closes pg pool, s3 client, temporal client
+5. Exits
+
+Docker Compose sends SIGTERM by default; if the process doesn't exit
+within `stop_grace_period` (default 10s), it escalates to SIGKILL.
+Override to 60s in the compose file for services with in-flight
+long-running work (`worker`, `twitter`).
+
+### Scaling — the scaler binary
+
+Runs continuously. Every 30 seconds:
+
+1. Query Postgres for active-goal count and workflow queue backlog:
+   ```sql
+   SELECT count(*) FROM events e
+   JOIN fixtures f ON f.id = e.fixture_id
+   WHERE f.state = 'active'
+     AND NOT e.download_complete AND NOT e.removed;
+   ```
+2. Query Temporal for pending task count on `found-footy` queue.
+3. Compute desired replica count for `worker` and `twitter` services
+   using thresholds:
+   - worker: base 2, +1 per 5 pending tasks, max 8
+   - twitter: base 2, +1 per 2 active goals, max 8
+4. Cross-check against the scaler cooldown window (60s minimum
+   between scaling actions per service).
+5. Invoke `docker compose --project-name found-footy-prod up -d --scale worker=N --scale twitter=M` via the Docker socket.
+
+`PROJECT_NAME` config option: `found-footy-prod` in prod's `.env`,
+`found-footy-dev` in dev. Prevents scaler-in-dev from touching prod
+(audit's May 2026 "Scaler hardcoded PROJECT_NAME" carry-over from
+`docs/audit.md` §2).
+
+### Build automation — Makefile
+
+```makefile
+# Makefile at repo root
+
+GIT_SHA := $(shell git rev-parse --short=12 HEAD)
+BUILT_AT := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+.PHONY: build test test-integration lint fmt \
+        docker-build deploy-dev deploy-prod migrate
+
+build:
+	go build -ldflags="-X main.gitSHA=${GIT_SHA} -X main.builtAt=${BUILT_AT}" ./cmd/...
+
+test:
+	go test -short ./...
+
+test-integration:
+	go test -tags=integration ./...
+
+lint:
+	golangci-lint run
+
+fmt:
+	gofmt -w .
+	goimports -w .
+
+docker-build:
+	@for bin in worker api scaler twitter; do \
+		docker compose -f docker-compose.yml build \
+			--build-arg GIT_SHA=${GIT_SHA} \
+			--build-arg BUILT_AT=${BUILT_AT} \
+			$$bin; \
+	done
+
+migrate:
+	docker compose -f docker-compose.yml exec worker migrate up
+
+deploy-dev:
+	@bin/deploy dev
+
+deploy-prod:
+	@bin/deploy prod
+```
+
+### Deploy automation — `bin/deploy`
+
+The load-bearing piece from audit §1. The 7-week-stale-image
+disaster becomes a non-event because deploy is automated + tracked.
+
+**`bin/deploy`** — the script both `make deploy-*` and the future
+CI webhook invoke:
+
+```bash
+#!/usr/bin/env bash
+# bin/deploy — rebuild found-footy images and restart containers.
+# Usage: bin/deploy [prod|dev]
+set -euo pipefail
+
+ENV="${1:?usage: bin/deploy [prod|dev]}"
+case "$ENV" in
+    prod) COMPOSE_FILE="docker-compose.yml"; PROJECT="found-footy-prod" ;;
+    dev)  COMPOSE_FILE="docker-compose.dev.yml"; PROJECT="found-footy-dev" ;;
+    *)    echo "usage: bin/deploy [prod|dev]" >&2; exit 2 ;;
+esac
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+echo ">> pulling latest from main"
+git fetch origin main
+git checkout main
+git pull --ff-only
+
+GIT_SHA=$(git rev-parse --short=12 HEAD)
+BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+echo ">> building images (GIT_SHA=${GIT_SHA})"
+docker compose -f "$COMPOSE_FILE" build \
+    --build-arg GIT_SHA="${GIT_SHA}" \
+    --build-arg BUILT_AT="${BUILT_AT}" \
+    worker api scaler twitter
+
+echo ">> recreating containers"
+docker compose -f "$COMPOSE_FILE" up -d --no-deps --no-build \
+    worker api scaler twitter
+
+echo ">> waiting for health"
+for svc in api; do
+    docker compose -f "$COMPOSE_FILE" exec -T "$svc" \
+        wget -qO- http://localhost:8080/healthz || {
+            echo "!! $svc failed health check"; exit 1;
+        }
+done
+
+echo ">> verifying deploy tracking metric"
+sleep 5
+GIT_SHA_IN_METRIC=$(
+    docker compose -f "$COMPOSE_FILE" exec -T api \
+        wget -qO- http://localhost:8080/metrics \
+        | grep '^found_footy_deploy_git_sha_info' \
+        | grep -oP 'git_sha="\K[^"]+' | head -1
+)
+
+if [[ "$GIT_SHA_IN_METRIC" != "$GIT_SHA" ]]; then
+    echo "!! deploy tracker metric shows ${GIT_SHA_IN_METRIC} but expected ${GIT_SHA}"
+    exit 1
+fi
+
+echo ">> deploy complete: ${PROJECT} @ ${GIT_SHA}"
+```
+
+**What this fixes vs 2026-06-30:** rebuild + restart happens in one
+command. Deploy tracking metric verified against actual git SHA
+before returning success. If commit → prod gap grows, the Grafana
+`found_footy_deploy_drift_commits` alert (audit §11) fires within
+15 minutes.
+
+### Deploy pipeline — CI trigger
+
+**Deferred but shape:** GitHub Actions on push to `main`:
+
+1. Build images in the Actions runner (or a self-hosted runner on luv).
+2. POST to a webhook on luv that runs `bin/deploy prod`.
+3. Report deploy outcome back to the Actions run.
+
+Webhook target: a small `deploy-hook` HTTP endpoint that:
+- Verifies the HMAC signature from GitHub Actions
+- Enqueues the deploy (serializes to avoid concurrent deploys)
+- Runs `bin/deploy prod` in a subshell
+- Returns 200 on success or 500 on failure
+
+Alternative if we go self-hosted Forgejo/Gitea later per the global
+CLAUDE.md migration plan: same shape, different runner platform.
+
+Both are deferred — day-one is manual `bin/deploy prod` invocation
+after merging to main. CI automation is the follow-up.
+
+### Development workflow
+
+**`docker-compose.dev.yml`** overrides for hot-reload-friendly dev:
+
+- Mount `./` into `worker`/`api` containers, and use `air` or
+  `reflex` for auto-restart on file save (via `command:` override in
+  the compose file, not baked into the Dockerfile).
+- Postgres logs at `log_min_duration_statement = 0` for query-level
+  visibility.
+- Twitter runs with noVNC always accessible.
+- `LOG_LEVEL=DEBUG` by default.
+
+**Local iteration loop:**
+
+```bash
+# One-time setup
+cp .env.example .env
+# edit .env with local credentials
+
+# Bring up the stack
+make deploy-dev
+
+# Watch worker logs
+docker compose -f docker-compose.dev.yml logs -f worker
+
+# Run tests inside the worker container
+docker compose -f docker-compose.dev.yml exec worker make test
+
+# Run a specific integration test
+docker compose -f docker-compose.dev.yml exec worker \
+    go test -tags=integration ./internal/domain/event/...
+```
+
+### Extensibility hooks
+
+**Adding a new binary** (e.g., a batch-analytics service):
+
+1. `cmd/analytics/main.go` — new binary main.
+2. `deploy/Dockerfile.analytics` — new Dockerfile.
+3. Add `analytics` service block to `docker-compose.yml` +
+   `docker-compose.dev.yml`.
+4. Container name: `found-footy-prod-analytics` per convention.
+5. If HTTP-fronted: add Caddyfile entry
+   `found-footy-prod-analytics.{$BASE_DOMAIN}`.
+6. Update Makefile `docker-build` loop to include the new binary.
+7. Update `bin/deploy` to rebuild + recreate the new service.
+
+**Adding a new sidecar tool** (e.g., a dedicated observability
+exporter):
+
+- If it has an admin UI worth exposing: name it
+  `found-footy-prod-<tool>-web` or
+  `found-footy-prod-<tool>-ui` per the `<tool>-<purpose>` role
+  vocabulary. Add Caddyfile entry.
+- If internal-only: skip the Caddyfile entry, just declare the
+  service in docker-compose.
+
+**Moving to a self-hosted registry** (per global CLAUDE.md long-term
+plan):
+
+- Currently: `image: found-footy-worker:latest` (local tag, no push).
+- Later: `image: gitea.luv/found-footy/worker:${GIT_SHA}` (or
+  Forgejo equivalent). Pushed in `bin/deploy` after build, pulled on
+  `docker compose up`.
+- Enables blue-green deploys and rollback via previous image tag.
+- Deferred; not blocking day-one deploy.
+
+---
+
+*(Remaining §12..§16 to follow. §10 established the deployment
+topology; §12 testing next, defining the three-tier pyramid concretely
+against the Go stack: testcontainers-go setup, synthetic harness
+driver code, coverage targets per package layer.)*
