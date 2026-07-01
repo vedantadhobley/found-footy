@@ -398,5 +398,268 @@ feature now; it is to build a shape that doesn't fight adding them.
 
 ---
 
-*(Remaining sections §2..§16 to follow in subsequent commits. Scaffold
-+ Go-informed §1 established.)*
+## 2. Repository structure
+
+Go module layout follows the community `golang-standards/project-layout`
+convention with intentional deviations where they serve clarity. The
+top-level layout:
+
+```
+found-footy/
+├── cmd/                       # one binary per service
+│   ├── api/main.go
+│   ├── scaler/main.go
+│   ├── twitter/main.go
+│   └── worker/main.go
+├── internal/                  # private application code (not importable externally)
+│   ├── domain/                # per-domain bundles — see audit §13
+│   │   ├── fixture/
+│   │   ├── event/
+│   │   ├── video/             # video_asset + video_share, see audit §4
+│   │   ├── alias/             # team_aliases + RAG + top-flight cache
+│   │   ├── discovery/         # Twitter search + URL extraction + source scoring
+│   │   ├── vision/            # frame extraction + dHash + AI vision
+│   │   ├── session/           # Twitter fleet management, see audit §8
+│   │   └── textanalysis/      # semantic intent extraction (extensibility hook)
+│   ├── workflow/              # Temporal workflow definitions
+│   ├── activity/              # Temporal activities — thin orchestrators calling domain services
+│   ├── api/                   # HTTP handlers, middleware, SSE, webhook delivery
+│   ├── scaler/                # Docker API + auto-scale logic
+│   ├── infra/                 # infrastructure adapters
+│   │   ├── pg/                # Postgres pool + migrations + LISTEN/NOTIFY plumbing
+│   │   ├── s3/                # Garage / aws-sdk-go-v2 client wrapper
+│   │   ├── llm/               # LLM endpoint client (config-swappable joi → nexus)
+│   │   └── temporal/          # Temporal client setup + shared config
+│   ├── config/                # settings loading via envconfig
+│   ├── logging/               # structured JSON logging (module/action/level)
+│   ├── errors/                # typed error taxonomy
+│   └── testutil/              # factories, fakes, harness helpers
+├── migrations/                # SQL migrations (golang-migrate format)
+│   ├── 0001_initial.up.sql
+│   ├── 0001_initial.down.sql
+│   └── ...
+├── deploy/
+│   ├── docker-compose.yml     # prod stack
+│   ├── docker-compose.dev.yml # dev stack
+│   ├── Dockerfile.worker
+│   ├── Dockerfile.api
+│   ├── Dockerfile.scaler
+│   ├── Dockerfile.twitter     # includes Firefox + geckodriver install
+│   └── caddy/found-footy.caddy
+├── scripts/                   # bin/deploy, capture_scenario, dev helpers
+├── docs/                      # existing docs/ structure — routing index + audit + rebuild-plan + decisions + operations + …
+├── .claude/                   # skills, memories (skills author'd only when useful)
+├── go.mod
+├── go.sum
+├── AGENTS.md
+├── CLAUDE.md → AGENTS.md      # symlink
+├── README.md
+├── Makefile                   # common tasks (build, test, migrate, deploy)
+└── .env.example
+```
+
+### Why `cmd/` with one binary per service
+
+Standard Go convention: `cmd/<name>/main.go` produces a binary named
+`<name>`. Four binaries = four `main.go` files under `cmd/`, each
+importing whatever it needs from `internal/`.
+
+Alternatives considered and rejected:
+- **Single binary with subcommands** (`found-footy worker`,
+  `found-footy api`). Simpler build, more complex service-boundary
+  reasoning. Each Docker container ends up running the same fat
+  binary with a different arg. Rejected because service boundaries
+  in Go are cleanest at the binary level — dependencies are visible
+  from `go list -m all` per binary.
+- **One repo per binary.** Overkill for a project this size; the
+  binaries share a lot of infrastructure code
+  (`internal/infra/pg`, `internal/logging`, `internal/errors`).
+
+### Why `internal/` (not `pkg/`)
+
+`internal/` is Go's built-in mechanism for "not importable from outside
+this module." Everything in `internal/` is private to found-footy.
+`pkg/` is for public library code intended for import by other Go
+projects; found-footy doesn't publish libraries, so `pkg/` would be
+noise.
+
+If we ever spin off a Go library shared across projects (e.g., a
+common `logging` or `errors` package for the vedanta ecosystem), that
+becomes its own module with its own repo, and we import it as a
+dependency — not `pkg/` in this repo.
+
+### Domain packages own model + store + service + lifecycle
+
+Each `internal/domain/<name>/` is a bundle:
+
+```
+internal/domain/event/
+├── doc.go            # package documentation (module-level docstring per policy)
+├── model.go          # Go structs — the domain types
+├── store.go          # Postgres CRUD via pgx — takes/returns models
+├── service.go        # business logic — takes/returns models, calls store
+├── lifecycle.go      # state machine (event: detected → tracking → stable → complete/removed)
+├── errors.go         # domain-specific typed errors
+├── service_test.go   # unit tests with mocked store
+├── store_test.go     # integration tests against test Postgres
+└── lifecycle_test.go # state machine tests
+```
+
+The **service** is what activities call. The **store** is what the
+service calls for persistence. The **model** is what everyone
+exchanges. The **lifecycle** owns the state machine if the domain
+has one (event does; alias probably doesn't).
+
+Activities in `internal/activity/` never call `store.go` directly.
+They call `service.go`. This preserves the audit §13 layering:
+
+```
+Workflow  →  Activity  →  Service  →  Store  →  Postgres/S3
+```
+
+The service layer is the unit test boundary. Store tests are
+integration tests. Everything else is workflow/activity tests.
+
+### Why activities and workflows are separate from domain
+
+Temporal-typed code (activities, workflows) has SDK dependencies that
+domain code shouldn't inherit. If a domain package imports Temporal,
+you can't use the same package from a non-Temporal context (e.g., a
+one-shot migration script, a `scripts/` helper). Keeping activities
+in `internal/activity/` means domain packages are Temporal-agnostic
+and reusable from anywhere.
+
+Activities are small — often 10-40 lines each — because they just
+wrap a service call in Temporal's activity semantics (heartbeats,
+typed input/output structs, error classification for retry
+policies).
+
+### Why `internal/infra/` groups adapters
+
+`pg`, `s3`, `llm`, `temporal` are all "we talk to an external system
+via a client we own." Grouping them signals "this is the boundary
+between our code and the outside." Each has its own package with:
+- Client construction from config
+- Connection pooling / retry logic where relevant
+- Test doubles (fakes for unit tests, testcontainers-based real
+  clients for integration tests)
+
+The `infra/llm` package is where the [`decisions.md`](./decisions.md)
+2026-07-01 "LLM endpoint abstracted" invariant lives: one client
+struct, reads `LLM_ENDPOINT_URL` from `internal/config`, exposes
+methods like `AnalyzeFrames(ctx, images, prompt) → (Response, error)`.
+Callers never know it's joi or nexus underneath.
+
+### Migrations at the root
+
+Migrations get their own top-level directory because:
+- They're SQL, not Go — they don't belong under `internal/`.
+- Multiple tools (worker on boot, dev CLI, CI pipeline) need to
+  run them.
+- The number grows monotonically over the project lifetime; keeping
+  them one level deep makes the file listing readable.
+
+Tool: [`golang-migrate/migrate`](https://github.com/golang-migrate/migrate).
+Well-maintained, integrates with Postgres cleanly, supports
+up/down pairs, versioned schemas via numbered filenames. Alternative
+considered: `pressly/goose`. Either works; `golang-migrate` wins on
+Postgres-specific features and CI integration.
+
+Startup pattern: `cmd/worker/main.go` and `cmd/api/main.go` both
+call `migrate.Up` on boot before starting their main loops. Idempotent
+— re-running is a no-op. Prevents "we deployed the code but forgot
+to migrate" incidents.
+
+### Deploy artifacts under `deploy/`
+
+Docker Compose files and Dockerfiles live in `deploy/`. Not at the
+root, because there are multiple Dockerfiles (one per binary — a
+minimal `alpine:latest` image + the Go static binary) and grouping
+them keeps the root clean.
+
+`deploy/caddy/found-footy.caddy` is the per-project Caddy fragment,
+symlinked into `~/workspace/proxy/caddy/caddy.d/` per the existing
+convention.
+
+### `scripts/` for one-shot tooling
+
+- `bin/deploy` — the deploy hook from audit
+  [§1](./design-audit.md#1-the-builddeploy-gap-prod--main); Bash
+  script wrapping `git pull` + `docker compose build` +
+  `docker compose up -d --no-deps --no-build`.
+- `capture_scenario.sh` — records real HTTP traffic for the
+  synthetic test harness from audit
+  [§12](./design-audit.md#12-testing-strategy).
+- `pg_migrate.sh` — wraps `migrate` CLI for manual migration ops.
+
+### `.claude/` for skills and memory
+
+Empty at the start of the rebuild. Skills get added when we find
+ourselves pasting the same procedure repeatedly (per the
+`SKILL.md` docs). No pre-authoring — skills earn their keep by
+usage frequency, and I'll suggest one when a procedure has been
+repeated three or more times.
+
+### Makefile for common tasks
+
+Not Go-idiomatic (Go's own build tools are strong), but Makefile
+targets are universally understood and integrate with editor
+tooling. Targets:
+
+```makefile
+build:              # go build all binaries into bin/
+test:               # go test ./...
+test-integration:   # go test with testcontainers-go
+migrate:            # run migrations against dev
+migrate-create:     # scaffold new up/down migration pair
+lint:               # golangci-lint run
+fmt:                # gofmt + goimports
+docker-build:       # build all four container images
+deploy-dev:         # bin/deploy dev
+deploy-prod:        # bin/deploy prod
+```
+
+### Testing colocation
+
+Go's convention is `*_test.go` next to the file under test. Each
+domain package has its own tests co-located. `internal/testutil/`
+provides:
+- **Factories** — `event.NewTestEvent(opts…)` that constructs
+  realistic models for unit tests
+- **Test containers** — helpers to spin up Postgres and Garage in
+  Docker for integration tests via `testcontainers-go`
+- **Fake LLM** — an in-process HTTP handler that serves canned
+  responses for vision tests without hitting joi
+- **Fake Twitter service** — same shape for discovery tests
+
+This matches audit §12's three-tier pyramid: factories drive Tier 1
+(unit), test containers drive Tier 2 (integration), and Tier 3
+(synthetic harness) has its own `test/synthetic/` directory outside
+`internal/` because it's not co-located with production code.
+
+### Extensibility hook this structure enables
+
+The **semantic intent extension** from §1 lands as
+`internal/domain/textanalysis/` — a new bundle with its own model,
+store, service, lifecycle-if-any, and tests. Wiring it in:
+
+1. Add `internal/domain/textanalysis/` bundle (~500 lines total,
+   fully tested from day one).
+2. Add one migration under `migrations/` creating the `tweet_intent`
+   table + FK to `videos`.
+3. Add one activity in `internal/activity/text_analysis.go` that
+   wraps `textanalysis.Service.Analyze(...)`.
+4. Register the activity in `cmd/worker/main.go` (one line).
+5. Add optional field to `internal/api/models` response types
+   (Huma regenerates OpenAPI on next build; TS types regenerate on
+   next vedanta-systems CI run).
+
+Zero changes to `fixture`, `event`, `video`, `alias`, `discovery`,
+`vision`, `session` packages. Zero changes to existing workflows.
+The layout does the isolating.
+
+---
+
+*(Remaining sections §3..§16 to follow. §2 established the module
+layout that §3 Postgres schema, §4 domain model, §5 orchestration
+build against.)*
