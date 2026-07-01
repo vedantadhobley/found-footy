@@ -660,6 +660,556 @@ The layout does the isolating.
 
 ---
 
-*(Remaining sections §3..§16 to follow. §2 established the module
-layout that §3 Postgres schema, §4 domain model, §5 orchestration
-build against.)*
+## 3. Postgres schema
+
+Concrete DDL for every table found-footy needs. This section is
+prescriptive — every column, every constraint, every index named,
+with reasoning where the choice is non-obvious.
+
+### Design principles
+
+**1. Single table per entity type; lifecycle state is a column, not a
+table.** The current Mongo design has separate `fixtures_staging`,
+`fixtures_active`, `fixtures_completed` collections. The *semantic*
+lifecycle separation is genuinely useful — a fixture in staging is a
+different concern than an active one. But the *physical* separation
+creates the "which collection has this fixture" ambiguity that
+required defensive code to check multiple places (and even then got
+it wrong sometimes). One `fixtures` table with a `state` column
+enum preserves the semantic separation (state is always visible in
+one column, transitions are atomic UPDATE) without the ambiguity.
+Partial indexes give the same performance as separate tables for
+state-scoped queries; views (`CREATE VIEW fixtures_active AS SELECT
+* FROM fixtures WHERE state = 'active'`) preserve the query
+ergonomics if code reads more naturally that way.
+
+**2. UUIDs for internal IDs, natural keys as sidecars for humans.**
+Per audit [§3](./design-audit.md#3-data-model-mongo-discipline-typing-identity):
+`_event_id` in the current Python system is a string-concat
+(`"{fixture}_{team}_{player}_{type}_{seq}"`) that's simultaneously a
+Mongo key, a workflow ID, a log key, a telemetry partition key, and
+a display string. That's five jobs. The rebuild splits them: `UUID`
+for internal identity, a `natural_key` text column for the
+human-readable form. Workflow IDs reference the UUID; logs and
+Temporal UI can show the natural key via the workflow's input args.
+
+**3. No derived / concatenated fields.** Anything that can be
+computed from other columns is *not stored*. `_s3_key` in current
+Mongo is `"{fixture_id}/{event_id}/{hash}.mp4"` — a concat. In the
+rebuild, the storage key is computed in the S3 client wrapper from
+input parameters; the database stores only the source parts. Same
+for any "display title" fields, formatted strings, or convenience
+copies. Read-time composition is fine; write-time redundancy is not.
+
+**4. No overwrite buffers.** `fixtures_live` in current Mongo exists
+because updating an active fixture in-place would overwrite our
+enhancement fields (embedded events with `_monitor_workflows`
+arrays, etc.). It's a workaround for Mongo's embedded-document
+merge semantics. In normalized Postgres, API-reported fields
+(`api_status_short`, `api_elapsed`) live on the `fixtures` row and
+get UPDATE'd each poll; enhancement fields live on `events` /
+`event_monitor_workflows` / etc. and never conflict with the fixture
+UPDATE. No buffer table needed.
+
+**5. Foreign keys enforce every relationship.** Every reference
+column has a `REFERENCES` clause. No dangling references at rest.
+`ON DELETE CASCADE` for parent-owned children (events → event
+tracking arrays), `ON DELETE RESTRICT` for content-referenced
+entities (video_assets → video_shares — deleting an asset with live
+shares would break URLs).
+
+**6. Constraints encode invariants.** The rank-drift bug from
+2026-06-30 (ranks 0, 0, 2, 3 on Norway-CIV) is a category of bug
+Postgres can prevent at write time via a partial unique index on
+`(event_id, rank)`. If code tries to write duplicate rank, the
+constraint rejects. The database becomes the enforcement layer for
+invariants that today live implicitly in code.
+
+**7. Enums for constrained string values.** `event_type`,
+`fixture_state`, `share_state`, `source_type` are all enums, not
+free-form TEXT. Postgres enums prevent typos at write time and
+document valid values in the schema itself.
+
+**8. `pgvector` for embeddings, `pg_trgm` for fuzzy match, `pgcrypto`
+for UUIDs.** All three enabled in the initial migration.
+
+### Enums
+
+```sql
+-- Fixture lifecycle phase (our concept, derived from API status + our decisions)
+CREATE TYPE fixture_state AS ENUM ('staging', 'active', 'completed');
+
+-- Event type (API-Football's classification)
+CREATE TYPE event_type AS ENUM ('Goal', 'Card', 'Subst', 'Var');
+
+-- Video share state
+CREATE TYPE share_state AS ENUM ('active', 'removed');
+
+-- Tweet source classification (from semantic intent — extensibility hook §1)
+CREATE TYPE source_type AS ENUM (
+    'broadcaster',      -- official broadcaster account (BBC Sport, ESPN, etc.)
+    'media_outlet',     -- media / journalist account
+    'verified_fan',     -- verified account, fan-oriented
+    'unverified'        -- random user
+);
+
+-- Removal reason for shares / events (why did we mark this removed)
+CREATE TYPE removal_reason AS ENUM (
+    'var',              -- VAR reversed the goal
+    'policy',           -- manual policy decision
+    'asset_gone'        -- underlying asset deleted (should be rare)
+);
+```
+
+### Core tables
+
+**`fixtures`** — one row per match, lifecycle state in a column:
+
+```sql
+CREATE TABLE fixtures (
+    id BIGINT PRIMARY KEY,                                -- API-Football fixture ID
+    state fixture_state NOT NULL DEFAULT 'staging',
+
+    -- API-reported (refreshed on each monitor poll for state='active')
+    api_status_short TEXT NOT NULL,                       -- 'NS', '1H', 'FT', etc.
+    api_status_long TEXT NOT NULL,
+    api_elapsed INT,                                      -- match minute (nullable pre-kickoff)
+    api_extra INT,                                        -- stoppage time
+    kickoff TIMESTAMPTZ NOT NULL,
+    home_team_id INT NOT NULL,
+    home_team_name TEXT NOT NULL,
+    away_team_id INT NOT NULL,
+    away_team_name TEXT NOT NULL,
+    league_id INT NOT NULL,
+    league_name TEXT NOT NULL,
+    league_season INT NOT NULL,
+    home_score INT,
+    away_score INT,
+
+    -- Our enhancement fields
+    activated_at TIMESTAMPTZ,                             -- when we moved to 'active'
+    completed_at TIMESTAMPTZ,                             -- when we moved to 'completed'
+    last_activity_at TIMESTAMPTZ,                         -- for frontend sort ordering
+    last_polled_at TIMESTAMPTZ,                           -- most recent monitor cycle
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CHECK (
+        (state = 'staging' AND activated_at IS NULL AND completed_at IS NULL) OR
+        (state = 'active' AND activated_at IS NOT NULL AND completed_at IS NULL) OR
+        (state = 'completed' AND activated_at IS NOT NULL AND completed_at IS NOT NULL)
+    )
+);
+
+-- Partial indexes per state: hot-path queries stay cheap regardless of table size
+CREATE INDEX fixtures_staging_by_kickoff ON fixtures (kickoff) WHERE state = 'staging';
+CREATE INDEX fixtures_active_by_polled ON fixtures (last_polled_at) WHERE state = 'active';
+CREATE INDEX fixtures_completed_recent ON fixtures (completed_at DESC) WHERE state = 'completed';
+
+-- Retention: rows with state='completed' AND completed_at < now() - interval '14 days' get pruned
+```
+
+The CHECK constraint enforces the state ↔ timestamp invariant. You
+can't have `state='completed'` without `completed_at` set, and you
+can't have `state='staging'` with `activated_at` already set. Whoever
+transitions state must write the timestamp in the same UPDATE.
+
+**`events`** — one row per API-reported event, per-fixture unique on
+natural key:
+
+```sql
+CREATE TABLE events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    fixture_id BIGINT NOT NULL REFERENCES fixtures(id) ON DELETE CASCADE,
+
+    -- Natural key: unique per fixture, human-readable
+    natural_key TEXT NOT NULL,                            -- '{team_id}_{player_id}_{type}_{seq}'
+
+    -- API-reported
+    event_type event_type NOT NULL,
+    detail TEXT NOT NULL,                                 -- 'Normal Goal', 'Yellow Card', etc.
+    team_id INT NOT NULL,
+    team_name TEXT NOT NULL,
+    player_id INT,                                        -- nullable: API sometimes reports goals with unknown player
+    player_name TEXT,
+    minute INT NOT NULL,
+    extra INT,
+
+    -- Our enhancement fields
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    monitor_complete BOOLEAN NOT NULL DEFAULT FALSE,      -- 3-poll debounce passed
+    download_complete BOOLEAN NOT NULL DEFAULT FALSE,     -- 10 download attempts fired
+    removed BOOLEAN NOT NULL DEFAULT FALSE,
+    removed_reason removal_reason,
+    removed_at TIMESTAMPTZ,
+
+    -- Telemetry (Phase 1 from audit) — flexible JSONB for evolving structure
+    telemetry JSONB,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE (fixture_id, natural_key),                     -- prevents duplicate detection races
+    CHECK ((removed = FALSE AND removed_reason IS NULL) OR (removed = TRUE AND removed_reason IS NOT NULL))
+);
+
+CREATE INDEX events_fixture ON events (fixture_id);
+CREATE INDEX events_pending_work ON events (fixture_id)
+    WHERE NOT removed AND (NOT monitor_complete OR NOT download_complete);
+CREATE INDEX events_by_first_seen ON events (first_seen_at DESC);
+```
+
+The `UNIQUE (fixture_id, natural_key)` is what makes the
+sequence-race from audit §3 impossible: two concurrent MonitorWorkflows
+racing to detect the same "Goal by player 234 seq 1" both try to
+INSERT with the same `(fixture_id, natural_key)` — one wins, the
+other gets a `DuplicateKeyError` and knows to look up the winner's
+UUID.
+
+**`event_monitor_workflows`** — replaces the Mongo `_monitor_workflows`
+array. Idempotent by primary key:
+
+```sql
+CREATE TABLE event_monitor_workflows (
+    event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    workflow_id TEXT NOT NULL,
+    registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (event_id, workflow_id)
+);
+```
+
+Registration: `INSERT INTO event_monitor_workflows (event_id, workflow_id) VALUES (...) ON CONFLICT DO NOTHING`. Idempotent. Count for the 3-poll debounce: `SELECT count(*) FROM event_monitor_workflows WHERE event_id = ?`.
+
+**`event_download_workflows`** — same pattern for the 10-download completion tracking:
+
+```sql
+CREATE TABLE event_download_workflows (
+    event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    workflow_id TEXT NOT NULL,
+    registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    outcome_class TEXT,                                   -- typed error class if failed, NULL if succeeded (Phase 1 taxonomy)
+    completed_at TIMESTAMPTZ,
+    PRIMARY KEY (event_id, workflow_id)
+);
+```
+
+Extension over Mongo: `outcome_class` lets telemetry aggregate failure classes per event without walking Loki. Completion marking (Sprint 2's atomic operation from audit §3) becomes an atomic `UPDATE events SET download_complete = TRUE WHERE id = ? AND (SELECT count(*) FROM event_download_workflows WHERE event_id = events.id) >= 10`.
+
+**`event_drop_workflows`** — same pattern for the 3-drop VAR detection:
+
+```sql
+CREATE TABLE event_drop_workflows (
+    event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    workflow_id TEXT NOT NULL,
+    registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (event_id, workflow_id)
+);
+```
+
+**`video_assets`** — canonical byte-store per audit
+[§4](./design-audit.md#4-dedup-strategy-end-to-end):
+
+```sql
+CREATE TABLE video_assets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    fixture_id BIGINT NOT NULL REFERENCES fixtures(id) ON DELETE RESTRICT,
+
+    -- Storage
+    s3_bucket TEXT NOT NULL,
+    s3_key TEXT NOT NULL,                                 -- computed from (fixture_id, id), not concatenated at write
+
+    -- Content identity
+    perceptual_hash BYTEA NOT NULL,                       -- dHash as raw 8 bytes for fast Hamming
+    perceptual_hash_prefix INT NOT NULL,                  -- first 16 bits, indexable for LSH-style bucket lookup
+    md5 BYTEA NOT NULL,
+
+    -- Metadata
+    width INT NOT NULL,
+    height INT NOT NULL,
+    duration_ms INT NOT NULL,
+    file_size_bytes BIGINT NOT NULL,
+    bitrate INT,
+    aspect_ratio REAL GENERATED ALWAYS AS (width::REAL / height::REAL) STORED,
+
+    -- Popularity (cross-event vote count)
+    popularity INT NOT NULL DEFAULT 1,
+
+    -- Supersession (for future dedup-merge / re-encode / higher-quality replacement)
+    superseded_by UUID REFERENCES video_assets(id) ON DELETE SET NULL,
+
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE (fixture_id, md5),                             -- exact-byte dedup within a fixture
+    UNIQUE (fixture_id, perceptual_hash)                  -- perceptual dedup — makes the audit §4 atomic INSERT work
+);
+
+CREATE INDEX video_assets_hash_prefix ON video_assets (fixture_id, perceptual_hash_prefix)
+    WHERE superseded_by IS NULL;
+CREATE INDEX video_assets_fixture_popularity ON video_assets (fixture_id, popularity DESC)
+    WHERE superseded_by IS NULL;
+```
+
+The `aspect_ratio` is a generated column — computed at read time from
+width/height, no double storage. `UNIQUE (fixture_id, perceptual_hash)`
+makes the audit §4 concurrent-dedup pattern atomic: two workers
+computing the same hash both try to INSERT, one wins, the other
+catches `DuplicateKeyError` and looks up the winner to reuse.
+
+**`video_shares`** — public share IDs per audit §4:
+
+```sql
+CREATE TABLE video_shares (
+    id TEXT PRIMARY KEY,                                  -- 's_<12-hex>', public
+    asset_id UUID NOT NULL REFERENCES video_assets(id) ON DELETE RESTRICT,
+    event_id UUID NOT NULL REFERENCES events(id) ON DELETE RESTRICT,
+
+    -- Validation snapshot at share creation time
+    timestamp_verified BOOLEAN NOT NULL,
+    extracted_minute INT,
+
+    -- State
+    state share_state NOT NULL DEFAULT 'active',
+    removed_reason removal_reason,
+    removed_at TIMESTAMPTZ,
+
+    -- Ranking — 1-indexed, unique per event within active state
+    rank INT NOT NULL CHECK (rank >= 1),
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CHECK ((state = 'active' AND removed_reason IS NULL) OR (state = 'removed' AND removed_reason IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX video_shares_event_rank_active
+    ON video_shares (event_id, rank)
+    WHERE state = 'active';
+
+CREATE INDEX video_shares_event ON video_shares (event_id);
+CREATE INDEX video_shares_asset ON video_shares (asset_id);
+```
+
+The `UNIQUE INDEX ... WHERE state = 'active'` on `(event_id, rank)`
+is the fix for the 2026-06-30 rank-drift bug (ranks `0, 0, 2, 3` on
+Norway-CIV). Postgres will reject any attempt to write duplicate
+active ranks per event. Rebuild code MUST rank in one transaction:
+```
+UPDATE video_shares SET rank = new_rank WHERE id = ? AND state = 'active';
+```
+inside a `BEGIN`/`COMMIT` per event, or the constraint rejects. Impossible to accidentally write 0, 0, 2, 3.
+
+**`team_aliases`** — RAG cache:
+
+```sql
+CREATE TABLE team_aliases (
+    team_id INT PRIMARY KEY,                              -- API-Football team ID
+    team_name TEXT NOT NULL,                              -- original name, for display
+    is_national BOOLEAN NOT NULL,
+    country TEXT,
+    city TEXT,
+    wikidata_qid TEXT,
+    wikidata_aliases TEXT[] NOT NULL DEFAULT '{}',        -- raw Wikidata pipeline output (audit trail)
+    twitter_aliases TEXT[] NOT NULL DEFAULT '{}',         -- LLM-selected, normalized (diacritics stripped)
+    llm_model TEXT,                                       -- which model generated twitter_aliases
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX team_aliases_name_trgm ON team_aliases USING gin (team_name gin_trgm_ops);
+```
+
+The GIN + `pg_trgm` index enables fuzzy team-name matching for the
+RAG pipeline's Wikidata search stage. The `wikidata_aliases` array
+stays for audit — we can always re-derive `twitter_aliases` from it
+if the LLM model changes.
+
+**`twitter_sessions`** — cookie coordination per audit §8:
+
+```sql
+CREATE TABLE twitter_sessions (
+    id TEXT PRIMARY KEY,                                  -- 'canonical' — single-row pattern
+    cookies BYTEA NOT NULL,                               -- serialized cookie blob
+    cookies_version BIGINT NOT NULL DEFAULT 1,            -- monotonic; bumped on each re-auth
+    authenticated BOOLEAN NOT NULL DEFAULT FALSE,
+    last_refresh_at TIMESTAMPTZ,
+    last_search_succeeded_at TIMESTAMPTZ,
+    consecutive_auth_failures INT NOT NULL DEFAULT 0,
+    estimated_expiry_at TIMESTAMPTZ,
+    reauth_notes TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+Twitter containers read `cookies_version` before every search; if
+newer than their in-memory copy, they hot-swap. Re-auth writes a new
+version. Fleet propagation is seconds, not restart-cycles.
+
+**`event_log`** — the SSE fan-out backing table (Postgres LISTEN/NOTIFY):
+
+```sql
+CREATE TABLE event_log (
+    id BIGSERIAL PRIMARY KEY,
+    event_type TEXT NOT NULL,                             -- 'event.detected', 'event.video_ready', 'fixture.completed', ...
+    fixture_id BIGINT,
+    event_id UUID,
+    video_share_id TEXT,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX event_log_created ON event_log (created_at DESC);
+CREATE INDEX event_log_event ON event_log (event_id) WHERE event_id IS NOT NULL;
+
+-- Retention: partition by day (pg_partman), drop old partitions after 30 days
+```
+
+Workers insert here + `NOTIFY found_footy_events, '<payload>'`. API's SSE handlers `LISTEN` on the channel and forward to connected clients. Webhook delivery worker polls `event_log` for undelivered `event.video_ready` and posts to registered subscribers. No Redis, no message broker.
+
+**`webhook_subscriptions`** — for audit §11 webhook delivery:
+
+```sql
+CREATE TABLE webhook_subscriptions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    consumer_name TEXT NOT NULL,                          -- 'vedanta-systems', 'og-server', etc.
+    url TEXT NOT NULL,
+    event_types TEXT[] NOT NULL DEFAULT '{}',             -- empty = all
+    hmac_secret TEXT NOT NULL,                            -- for X-FF-Signature
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (consumer_name, url)
+);
+
+CREATE TABLE webhook_deliveries (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subscription_id UUID NOT NULL REFERENCES webhook_subscriptions(id) ON DELETE CASCADE,
+    event_log_id BIGINT NOT NULL REFERENCES event_log(id) ON DELETE CASCADE,
+    attempt_count INT NOT NULL DEFAULT 0,
+    last_attempt_at TIMESTAMPTZ,
+    last_response_code INT,
+    last_response_body TEXT,
+    succeeded_at TIMESTAMPTZ,
+    give_up_at TIMESTAMPTZ,                               -- set when max_attempts reached
+    UNIQUE (subscription_id, event_log_id)                -- one delivery record per (subscription, event)
+);
+
+CREATE INDEX webhook_deliveries_pending ON webhook_deliveries (last_attempt_at)
+    WHERE succeeded_at IS NULL AND give_up_at IS NULL;
+```
+
+Retry semantics live in the schema: pending deliveries are `succeeded_at IS NULL AND give_up_at IS NULL`; retry worker orders by `last_attempt_at` for exponential backoff. Consumer idempotency via `X-FF-Delivery-Id` = `deliveries.id`.
+
+### Extensibility tables
+
+**`tweet_intent`** — semantic intent extraction (§1 extensibility hook, wired in from day one):
+
+```sql
+CREATE TABLE tweet_intent (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    video_asset_id UUID NOT NULL REFERENCES video_assets(id) ON DELETE CASCADE,
+
+    -- Source metadata (extracted from Twitter response, not LLM-classified)
+    tweet_url TEXT NOT NULL,
+    author_handle TEXT NOT NULL,
+    author_verified BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- LLM classification
+    source_type source_type NOT NULL,
+    event_type_mentioned event_type,
+    confidence REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1),
+    urgency REAL CHECK (urgency BETWEEN 0 AND 1),
+
+    -- Embedding for similarity clustering
+    embedding vector(768),                                -- Qwen3-Embedding-8B dim
+
+    -- Raw text for auditing
+    tweet_text TEXT NOT NULL,
+
+    llm_model TEXT NOT NULL,                              -- which model classified
+    analyzed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE (video_asset_id)                               -- one intent per asset; re-analysis updates
+);
+
+CREATE INDEX tweet_intent_source ON tweet_intent (source_type);
+CREATE INDEX tweet_intent_embedding ON tweet_intent
+    USING hnsw (embedding vector_cosine_ops);
+```
+
+The schema is here from migration `0001`; the *domain and activity*
+that populate it may not ship until later (audit §16 has this as a
+post-MVP capability). Empty table until the domain lands. Zero cost
+to leaving it in the schema; costs a lot to add it later if we didn't
+plan for the FK from `video_assets`.
+
+### Initial migration file
+
+`migrations/0001_initial.up.sql`:
+
+```sql
+-- Extensions
+CREATE EXTENSION IF NOT EXISTS pgcrypto;                  -- gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS pg_trgm;                   -- fuzzy team name matching
+CREATE EXTENSION IF NOT EXISTS vector;                    -- pgvector for embeddings
+
+-- Enums (as shown above)
+-- Tables (in dependency order):
+--   1. fixtures
+--   2. events (FK: fixtures)
+--   3. event_monitor_workflows, event_download_workflows, event_drop_workflows (FK: events)
+--   4. video_assets (FK: fixtures)
+--   5. video_shares (FK: video_assets, events)
+--   6. tweet_intent (FK: video_assets)
+--   7. team_aliases
+--   8. twitter_sessions
+--   9. event_log
+--   10. webhook_subscriptions, webhook_deliveries (FK: event_log)
+```
+
+`0001_initial.down.sql` drops everything in reverse dependency order.
+
+### What deliberately isn't stored
+
+Fields present in the current Mongo docs that don't earn a place in
+the schema:
+
+- **`_event_id` as string concat.** Replaced by `events.id UUID` + `events.natural_key TEXT`.
+- **`_s3_url` and `_s3_key`.** Computed by the S3 client from `(fixture_id, asset_id)`; the domain layer never stores the full URL/key as a redundant copy. If we ever migrate storage backends, no schema migration is needed.
+- **`_display_title` and other formatted strings.** Composed at read time in the API projection layer.
+- **`_last_monitor` on staging fixtures.** Not needed — staging polls are managed by the monitor workflow's schedule, not by per-row timestamps. If the frontend wants "last activity" ordering, that's `last_activity_at` and it's already there.
+- **`_completion_first_seen` counter.** Not needed — completion is a state transition and the check is `all events download_complete = TRUE AND api_status_short IN (terminal_statuses)`. No per-fixture completion counter.
+- **`fixtures_live` collection entirely.** As noted in principle #4 above.
+
+### Relationship to audit's schemas
+
+- Audit [§3](./design-audit.md#3-data-model-mongo-discipline-typing-identity) proposed
+  JSON Schema validators on Mongo collections + UUID `_event_id` + Pydantic write layer. The rebuild
+  achieves all three via native Postgres schema + Go struct tags for pgx (equivalent role to Pydantic).
+- Audit [§4](./design-audit.md#4-dedup-strategy-end-to-end) proposed the `video_assets` + `video_shares`
+  two-collection Mongo design with share-id indirection. This §3 delivers the Postgres equivalent with
+  atomic dedup via `UNIQUE (fixture_id, perceptual_hash)`.
+- Audit [§8](./design-audit.md#8-twitter-fleet-management) proposed the `twitter_sessions` Mongo collection
+  for cookie coordination. This §3 delivers it as a Postgres table with the same single-row-canonical
+  pattern.
+- Audit [§9](./design-audit.md#9-observability-alerting-deploy-visibility) proposed structured event logging
+  for SSE fan-out. This §3 delivers it as `event_log` + LISTEN/NOTIFY instead of pushing SSE messages from
+  workers directly.
+
+### Extensibility hook this schema enables
+
+Beyond the pre-wired `tweet_intent`:
+
+- **Adding a new event type (e.g., red-card highlighting)** = add `'RedCard'` to the `event_type` enum via
+  `ALTER TYPE`. Existing tables reference the enum; no schema churn.
+- **Adding a new discovery source (e.g., YouTube)** = tweet_intent grows an optional `source_platform` column
+  or forks into `source_intent` (rename). Video assets are source-agnostic already.
+- **Adding embedding-based dedup** (audit §4 Track 3) = add `embedding vector(768)` column to `video_assets`
+  + swap the dedup lookup path from `perceptual_hash_prefix` to embedding similarity. Old rows keep
+  `perceptual_hash`; migration is a background embedding backfill.
+- **Adding per-league SLO tracking** = new `league_sla_targets` table with FK to `leagues`
+  (if we ever normalize leagues). No changes to `fixtures` / `events`.
+
+---
+
+*(Remaining §4..§16 to follow. §3 is the schema every subsequent
+section builds against.)*
