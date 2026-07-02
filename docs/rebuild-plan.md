@@ -1656,7 +1656,7 @@ type Store interface {
     TryMarkMonitorComplete(ctx context.Context, eventID uuid.UUID) (flipped bool, err error)
     TryMarkDownloadComplete(ctx context.Context, eventID uuid.UUID, required int) (flipped bool, err error)
 
-    MarkRemoved(ctx context.Context, eventID uuid.UUID, reason string) error
+    MarkRemoved(ctx context.Context, eventID uuid.UUID, reason RemovalReason) error
 
     // Telemetry patches merge into the JSONB column atomically via jsonb_set.
     UpdateTelemetry(ctx context.Context, eventID uuid.UUID, patch TelemetryPatch) error
@@ -1979,7 +1979,9 @@ type ShareStore interface {
     // rank invariant. See ShareService.MintShareAndRecalculate above.
     MintShareAndRecalculate(ctx context.Context, in MintInput) (MintResult, error)
     MarkRemoved(ctx context.Context, shareID string, reason RemovalReason) error
-    RecordSupersession(ctx context.Context, oldID, newShareID string) error
+    // NB: supersession is not a share-removal path. The successor asset
+    // is recorded in video_assets.superseded_by (§3); the share URL
+    // continues to resolve via §8's redirect chain.
 
     WithRetryableTx(ctx context.Context, fn func(tx pgx.Tx) (MintResult, error)) (MintResult, error)
 }
@@ -1991,12 +1993,18 @@ type MintInput struct {
     ExtractedMinute    *int
 }
 
+// RemovalReason mirrors the Postgres removal_reason enum defined in §3.
+// Values MUST match the SQL enum verbatim — writing anything else fails
+// the CHECK at INSERT time. Supersession is intentionally NOT a value here:
+// supersession is asset-level (via video_assets.superseded_by) and the share
+// URL keeps resolving (§8 handler emits 302 to the successor), so a share is
+// never "removed" for that reason.
 type RemovalReason string
 
 const (
-    RemovalReasonVARCancelled  RemovalReason = "var_cancelled"
-    RemovalReasonSuperseded    RemovalReason = "superseded"
-    RemovalReasonAdminRemoved  RemovalReason = "admin_removed"
+    RemovalReasonVAR       RemovalReason = "var"          // VAR reversed the goal
+    RemovalReasonPolicy    RemovalReason = "policy"       // manual policy decision
+    RemovalReasonAssetGone RemovalReason = "asset_gone"   // underlying asset deleted (rare)
 )
 ```
 
@@ -2908,12 +2916,12 @@ func VARRemoveEvent(ctx context.Context, deps VARDeps, fixtureID int64, eventID 
     if e.Removed {
         return &VAROutcome{EventID: eventID, NoOp: true}, nil
     }
-    if err := deps.Events.MarkRemoved(ctx, eventID, "var"); err != nil { return nil, err }
+    if err := deps.Events.MarkRemoved(ctx, eventID, video.RemovalReasonVAR); err != nil { return nil, err }
 
     shares, err := deps.VideoShares.GetActiveForEvent(ctx, eventID)
     if err != nil { return nil, err }
     for _, sh := range shares {
-        if err := deps.VideoShares.MarkRemoved(ctx, sh.ID, "var"); err != nil { return nil, err }
+        if err := deps.VideoShares.MarkRemoved(ctx, sh.ID, video.RemovalReasonVAR); err != nil { return nil, err }
     }
 
     return &VAROutcome{EventID: eventID, SharesRemoved: len(shares)}, nil
