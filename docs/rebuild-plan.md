@@ -1018,6 +1018,15 @@ CREATE TABLE video_assets (
 
 CREATE INDEX video_assets_hash_prefix ON video_assets (fixture_id, perceptual_hash_prefix)
     WHERE superseded_by IS NULL;
+
+-- Two dedup paths use these together:
+-- 1. Exact-match UPSERT (§7 UpsertVideoAssetWithHashDedup) uses the
+--    UNIQUE (fixture_id, perceptual_hash) constraint — on collision, bump
+--    popularity; this is the hot path (>90% of dedup hits).
+-- 2. Near-match backfill (audit §4 Track 3, deferred behind §16.6 embedding
+--    decision gate) uses the prefix INDEX to find LSH candidates within
+--    Hamming distance ≤ 5, then merges via video_assets.superseded_by.
+--    Runs as a background compactor, not on the upload hot path.
 CREATE INDEX video_assets_fixture_popularity ON video_assets (fixture_id, popularity DESC)
     WHERE superseded_by IS NULL;
 ```
@@ -1787,6 +1796,17 @@ func (s *Service) RegisterVARDropAndCheckThreshold(ctx context.Context, eventID 
     if err != nil { return false, err }
     return count >= s.dropThreshold, nil
 }
+
+// The Service's read + terminal-write surface forwards its store's methods 1:1:
+func (s *Service) GetByID(ctx context.Context, eventID uuid.UUID) (*Event, error) {
+    return s.store.GetByID(ctx, eventID)
+}
+func (s *Service) GetByFixtureID(ctx context.Context, fixtureID int64) ([]*Event, error) {
+    return s.store.GetByFixtureID(ctx, fixtureID)
+}
+func (s *Service) MarkRemoved(ctx context.Context, eventID uuid.UUID, reason video.RemovalReason) error {
+    return s.store.MarkRemoved(ctx, eventID, reason)
+}
 ```
 
 **Lifecycle** (state machine, formalized in `lifecycle.go` as an
@@ -1936,6 +1956,12 @@ type AssetService struct { store AssetStore; s3 s3.Client; ... }
 // AND bump popularity on the winning row. No two-step "try insert, then look
 // up existing" pattern.
 func (s *AssetService) UpsertWithHashDedup(ctx context.Context, incoming *Asset) (*Asset, bool, error) { ... }
+
+// The AssetService's read surface forwards its store's read methods 1:1
+// (thin passthrough — no domain logic needed for these). Callers use
+// service.Get(assetID) rather than reaching into store directly.
+func (s *AssetService) Get(ctx context.Context, assetID uuid.UUID) (*Asset, error) { return s.store.Get(ctx, assetID) }
+func (s *AssetService) MarkSuperseded(ctx context.Context, oldID, newID uuid.UUID) error { return s.store.MarkSuperseded(ctx, oldID, newID) }
 ```
 
 **Service — the atomic mint+rank path (the load-bearing fix for the 2026-06-30 bug):**
@@ -1944,8 +1970,25 @@ func (s *AssetService) UpsertWithHashDedup(ctx context.Context, incoming *Asset)
 type ShareService struct { store ShareStore; ... }
 
 type MintResult struct {
-    ShareID       string    // s_<12-hex>
-    ComputedRank  int       // >= 1
+    ShareID        string        // s_<12-hex>
+    ComputedRank   int           // >= 1
+    DisplacedRanks []RankChange  // shares whose ranks shifted; empty if new share sorted to bottom.
+                                 // Drives event.rank_recalculated NATS emission in §5 UploadWorkflow.
+}
+
+// RemovalResult is what ShareStore.MarkRemoved returns — analogous to
+// MintResult but for the compaction pass after a share is removed.
+type RemovalResult struct {
+    DisplacedRanks []RankChange  // ranks that shifted up to fill the gap; empty if the
+                                 // removed share was rank N (bottom).
+}
+
+// RankChange records a single share's before/after rank in one recalculation
+// pass. Emitted only for shares whose rank actually changed.
+type RankChange struct {
+    ShareID string  // s_<12-hex>
+    OldRank int     // rank before the mint/remove operation
+    NewRank int     // rank after the mint/remove operation
 }
 
 // MintShareAndRecalculate inserts a new video_shares row at its correct
@@ -1990,6 +2033,23 @@ mint operation land inside one transaction, `CHECK (rank >= 1)` blocks
 placeholder-rank INSERTs at the schema level, and pgx retries on
 serialization failure. No manual concurrency reasoning by callers.
 
+The ShareService's read + removal surface forwards its store's methods 1:1:
+
+```go
+func (s *ShareService) GetByID(ctx context.Context, shareID string) (*Share, error) {
+    return s.store.GetByID(ctx, shareID)
+}
+func (s *ShareService) GetActiveForEvent(ctx context.Context, eventID uuid.UUID) ([]*Share, error) {
+    return s.store.GetActiveForEvent(ctx, eventID)
+}
+func (s *ShareService) MarkRemoved(ctx context.Context, shareID string, reason RemovalReason) (RemovalResult, error) {
+    return s.store.MarkRemoved(ctx, shareID, reason)
+}
+```
+
+§8's redirect handler and §5's VARRemoveEvent usecase reach through the
+service, not the store — the service is the injection point tests can mock.
+
 **Store interfaces:**
 
 ```go
@@ -2018,12 +2078,16 @@ type ShareStore interface {
     // share. It runs inside the store's WithRetryableTx to enforce the
     // rank invariant. See ShareService.MintShareAndRecalculate above.
     MintShareAndRecalculate(ctx context.Context, in MintInput) (MintResult, error)
-    MarkRemoved(ctx context.Context, shareID string, reason RemovalReason) error
+    MarkRemoved(ctx context.Context, shareID string, reason RemovalReason) (RemovalResult, error)
     // NB: supersession is not a share-removal path. The successor asset
     // is recorded in video_assets.superseded_by (§3); the share URL
     // continues to resolve via §8's redirect chain.
 
-    WithRetryableTx(ctx context.Context, fn func(tx pgx.Tx) (MintResult, error)) (MintResult, error)
+    // WithRetryableTx wraps the rank-mutating operations in a REPEATABLE
+    // READ transaction with automatic serialization-failure retry. Generic
+    // over the concrete return type so both Mint and MarkRemoved can share
+    // the same retry harness.
+    WithRetryableTx(ctx context.Context, fn func(tx pgx.Tx) (any, error)) (any, error)
 }
 
 type MintInput struct {
@@ -2419,23 +2483,42 @@ type DenseHashSample struct {
 // DownloadedFile is the video-pipeline's cross-section carrier struct — the
 // output of download.DownloadVideo, input to validation/hashing/upload.
 // Referenced across §5 (activity signatures), §7 (per-batch flow), and
-// §8 (SSE test example). Owns the full metadata surface needed by every
-// downstream step.
+// §8 (SSE test example). Field names align with the §3 `video_assets`
+// schema (duration_ms, file_size_bytes, perceptual_hash_prefix) so §7's
+// UpsertVideoAssetWithHashDedup can consume the fields directly without
+// per-field renaming.
 type DownloadedFile struct {
-    LocalPath         string          // on-disk temp path (worker-local)
-    SourceURL         string          // tweet URL of origin
-    TweetID           string          // Twitter status ID (used for de-dup keys)
-    MD5               [16]byte        // sha1sum of bytes for MD5 batch dedup
-    SizeBytes         int64
-    DurationSecs      float64
-    Width, Height     int
-    Bitrate           int
-    ContentHash       string          // sha256 hex — video_assets PK
-    PerceptualHash    []DenseHashSample // dense-sample output; empty until hashed
-    Validation        *ValidationResult // nil until ValidateVideoIsSoccer runs
-    TimestampVerified bool             // set from Validation after timestamp check
-    ExtractedMinute   *int             // set from Validation
-    DownloadedAt      time.Time
+    LocalPath              string          // on-disk temp path (worker-local)
+    SourceURL              string          // tweet URL of origin
+    TweetID                string          // Twitter status ID (used for de-dup keys)
+    MD5                    [16]byte        // md5 of bytes for MD5 batch dedup
+    FileSizeBytes          int64           // matches video_assets.file_size_bytes
+    DurationMs             int             // matches video_assets.duration_ms (int, not float)
+    Width, Height          int
+    Bitrate                int
+    ContentHash            string          // sha256 hex — one candidate for video_assets PK
+    PerceptualHashSamples  []DenseHashSample // dense-sample output; empty until GenerateVideoHash runs
+    PerceptualHash         []byte          // reduced 8-byte dHash for schema insert; set by ReducePerceptualHash
+    PerceptualHashPrefix   int32           // first 16 bits of PerceptualHash; matches video_assets.perceptual_hash_prefix
+    Validation             *ValidationResult // nil until ValidateVideoIsSoccer runs
+    TimestampVerified      bool             // set from Validation after timestamp check
+    ExtractedMinute        *int             // set from Validation
+    DownloadedAt           time.Time
+}
+
+// ReducePerceptualHash reduces the dense-sample list to the schema-shaped
+// (hash, prefix) pair that video_assets stores. GenerateVideoHash activity
+// calls this after populating PerceptualHashSamples; the result is what
+// UpsertVideoAssetWithHashDedup writes.
+//
+// Reduction: median-position dHash byte-XOR-then-majority-vote over the
+// dense samples (empirically stable enough to survive re-uploads with
+// minor re-encodes; the same operation produced ~85% dedup hit rate on
+// the pre-rebuild Python system's audit-time snapshot).
+func (f *DownloadedFile) ReducePerceptualHash() {
+    // Sets f.PerceptualHash + f.PerceptualHashPrefix.
+    // No-op if f.PerceptualHashSamples is empty.
+    ...
 }
 
 type ValidationResult struct {
@@ -3002,6 +3085,7 @@ type VARDeps struct {
 type VAROutcome struct {
     EventID        uuid.UUID
     SharesRemoved  int
+    DisplacedRanks []video.RankChange  // aggregated across all shares removed; drives event.rank_recalculated emission
     NoOp           bool
 }
 
@@ -3017,11 +3101,18 @@ func VARRemoveEvent(ctx context.Context, deps VARDeps, fixtureID int64, eventID 
 
     shares, err := deps.VideoShares.GetActiveForEvent(ctx, eventID)
     if err != nil { return nil, err }
+    var allDisplaced []video.RankChange
     for _, sh := range shares {
-        if err := deps.VideoShares.MarkRemoved(ctx, sh.ID, video.RemovalReasonVAR); err != nil { return nil, err }
+        rr, err := deps.VideoShares.MarkRemoved(ctx, sh.ID, video.RemovalReasonVAR)
+        if err != nil { return nil, err }
+        allDisplaced = append(allDisplaced, rr.DisplacedRanks...)
     }
 
-    return &VAROutcome{EventID: eventID, SharesRemoved: len(shares)}, nil
+    return &VAROutcome{
+        EventID:         eventID,
+        SharesRemoved:   len(shares),
+        DisplacedRanks:  allDisplaced,  // caller emits event.rank_recalculated
+    }, nil
 }
 ```
 
@@ -3382,15 +3473,17 @@ above for the subscriber code + dedup guarantees).
 
 ```go
 type DiscoveryWorkflowInput struct {
-    EventID       uuid.UUID
-    FixtureID     int64
-    PlayerName    string     // for logs + query construction
-    TeamName      string     // for logs + query construction
-    TeamID        int        // for alias resolution
-    Minute        int
-    Extra         *int
-    FirstSeenAt   time.Time  // for spacing computation
-    MaxAttempts   int        // default 10
+    EventID              uuid.UUID
+    FixtureID            int64
+    PlayerName           string     // for logs + query construction
+    TeamName             string     // for logs + query construction
+    TeamID               int        // for alias resolution
+    Minute               int
+    Extra                *int
+    FirstSeenAt          time.Time  // for spacing computation
+    MaxAttempts          int        // default 10; tracked-league high-priority events override to 15
+    MaxSearchAgeMinutes  int        // Twitter search max age; default 3
+    AttemptSpacingSecs   int        // sleep between attempts; default 60, high-priority events use 30
 }
 
 type DiscoveryWorkflowOutput struct {
