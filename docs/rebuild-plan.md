@@ -854,7 +854,11 @@ CREATE INDEX fixtures_staging_by_kickoff ON fixtures (kickoff) WHERE state = 'st
 CREATE INDEX fixtures_active_by_polled ON fixtures (last_polled_at) WHERE state = 'active';
 CREATE INDEX fixtures_completed_recent ON fixtures (completed_at DESC) WHERE state = 'completed';
 
--- Retention: rows with state='completed' AND completed_at < now() - interval '14 days' get pruned
+-- Retention: rows with state='completed' AND completed_at < now() - interval '14 days'
+-- AND no video_shares referencing them get pruned. Fixtures with surviving
+-- video_shares (and by extension, their video_assets) stay indefinitely to
+-- honor the URL-stability invariant — see "URL stability vs retention"
+-- below the video schema.
 ```
 
 The CHECK constraint enforces the state ↔ timestamp invariant. You
@@ -1044,6 +1048,42 @@ active ranks per event. Rebuild code MUST rank in one transaction:
 UPDATE video_shares SET rank = new_rank WHERE id = ? AND state = 'active';
 ```
 inside a `BEGIN`/`COMMIT` per event, or the constraint rejects. Impossible to accidentally write 0, 0, 2, 3.
+
+**URL stability vs retention.** The chain
+`video_shares.event_id → events.fixture_id → fixtures.id` uses `ON DELETE
+RESTRICT` end-to-end (see §0 URL-stability invariant). A completed
+fixture with surviving `video_shares` therefore cannot be pruned — the
+RESTRICT blocks it. The retention rule is deliberately *conditional*:
+prune completed fixtures older than 14 days ONLY when they have zero
+associated `video_shares`. Concretely:
+
+```sql
+DELETE FROM fixtures f
+WHERE f.state = 'completed'
+  AND f.completed_at < NOW() - INTERVAL '14 days'
+  AND NOT EXISTS (
+      SELECT 1 FROM events e
+      JOIN video_shares s ON s.event_id = e.id
+      WHERE e.fixture_id = f.id
+  );
+```
+
+Fixtures with videos live forever. Their events, `video_assets`, and S3
+objects live forever too (via the same RESTRICT chain and Garage bucket
+lifecycle policy — S3 objects are keyed by `(fixture_id, asset_id)` and
+are never lifecycle-expired). This is the price of the URL-stability
+invariant: storage grows monotonically for anything anyone has ever
+shared publicly, but no share URL ever 404s.
+
+Consequences for downstream sections:
+- §4's `PruneCompleted` implements the conditional DELETE above.
+- §13 migration: legacy MinIO objects that map to migrated `video_shares`
+  are copied to new Garage, not expired.
+- §8 share-id redirect: `/api/v1/videos/{share_id}` returns 302 for
+  `active` shares, 302 to a successor for shares superseded via
+  `superseded_by`, 410 for shares explicitly marked `state='removed'`
+  (VAR cancellation), and 404 only for share IDs that never existed.
+  There is no "expired" 410 path.
 
 **`team_aliases`** — RAG cache:
 
@@ -1406,7 +1446,10 @@ type Store interface {
     // Rejects transitions that violate the §3 CHECK constraint.
     TransitionState(ctx context.Context, id int64, to State, ts StateTimestamps) error
 
-    // PruneCompleted removes completed fixtures older than the cutoff.
+    // PruneCompleted removes completed fixtures older than the cutoff
+    // ONLY if they have zero video_shares. Fixtures with surviving shares
+    // stay indefinitely to honor the URL-stability invariant (§3 has the
+    // conditional DELETE SQL). Returns the number of pruned rows.
     PruneCompleted(ctx context.Context, olderThan time.Time) (int, error)
 }
 
@@ -9404,17 +9447,28 @@ Under the hood: `db.fixtures_completed.find({"events._s3_videos.share_id": share
 
 **Pros of A.1:**
 - Zero data-migration work up front — cut over immediately, backfill never (or later, at leisure)
-- Legacy data can be pruned via the current 14-day retention (all pre-cutover documents will naturally expire within 14 days of cutover, at which point the legacy stack can be turned off entirely)
 - No risk of migration errors corrupting either stack
+- Legacy Mongo + legacy MinIO stay online serving reads during the parallel-run window
 
 **Cons of A.1:**
 - Two Mongo instances running side-by-side (small; legacy read-only has minimal footprint)
-- Legacy stack lives 14 days minimum post-cutover before it can be dropped
 - Compat layer adds one lookup step to share-id resolution for legacy content (negligible latency; hits Mongo once, then cached)
+- **Legacy stack must stay online indefinitely as long as ANY pre-cutover share URL exists in the wild.** Turning it off breaks URL-stability for pre-cutover content — the exact violation we're preventing.
 
-**A.2: Full data migration** (deferred until "we want to keep some pre-cutover content beyond 14 days").
+**Note on legacy retention.** Python's 14-day rolling retention was
+convenient but conflicts with URL stability once URLs are shared
+externally. Under the URL-stability decision (§3), the legacy stack
+cannot be turned off unilaterally 14 days after cutover — pre-cutover
+share URLs are commitments that must resolve forever, and the compat
+layer's Mongo lookup is what makes that concrete. A.2 (full data
+migration) is the only path that lets legacy be shut down.
 
-Only worth doing if we decide certain legacy content should persist indefinitely (e.g., "highlight reel of great WC goals from 2026" that we don't want disappearing after 14 days).
+**A.2: Full data migration** — the escape hatch that lets legacy be
+turned off entirely.
+
+Only run if we decide the operational cost of keeping legacy Mongo +
+MinIO online exceeds the migration effort. Not day-one; can be scheduled
+as a background project.
 
 Migration script `scripts/migrate-legacy-data.go` (one-off):
 
@@ -9537,9 +9591,22 @@ Fine to accept the discontinuity. Historical forensics on Python-era incidents u
 
 **Day 0, T+24h:** First full day complete. Coverage rate compared to legacy baseline; new stack should match or exceed.
 
-**Day +14:** Legacy `fixtures_completed` documents naturally expire (14-day retention). Legacy MinIO objects also expire on the same schedule. Legacy stack can be shut down.
+**Day +14 through indefinite:** Legacy stack stays online, read-only.
+The compat-layer (Migration Path A.1) resolves pre-cutover share IDs
+against legacy Mongo + MinIO. Turning it off requires either (a) full
+data migration per Migration Path A.2, or (b) accepting URL-stability
+breakage for legacy content — which contradicts §0 and §4, so option
+(b) is not acceptable without an explicit decisions.md entry.
 
-**Day +30:** Legacy stack containers deleted. Legacy Caddyfile entry removed. Post-mortem review of cutover.
+The Python-era 14-day rolling retention is a legacy behavior — pruning
+completed fixtures after 14 days worked only because pre-URL-stability
+found-footy treated share links as ephemeral. Under the URL-stability
+invariant, legacy documents referenced by shares can't be pruned; the
+legacy MinIO bucket's lifecycle expiration must also be disabled at
+cutover (a manual configuration change on the legacy MinIO).
+
+**Day +30 through indefinite:** Post-mortem review of cutover. Legacy
+stack decommission depends on whether Path A.2 runs — see above.
 
 ### Rollback plan
 
@@ -9823,7 +9890,8 @@ share_ids per the new format — they'll be raw MinIO URLs like
 Two approaches:
 
 - og-server keeps a "legacy URL" code path that reads legacy Mongo
-  directly for those URLs. Turns off Day +14 when retention purges.
+  directly for those URLs. Stays on until Migration Path A.2 completes
+  (see §13).
 - og-server relies on the new API's LegacyCompat layer from §13 —
   hitting `/api/v1/videos/legacy?url=<url>` returns the current
   canonical + metadata.
@@ -9849,7 +9917,8 @@ through Day +30. Panels:
   >1% error rate on new path for any endpoint.
 - **Legacy compat hits**: count of share-id lookups falling through to
   the legacy compat layer per hour. Expected to trend down as legacy
-  content ages out over Day 0 → Day +14. If it stays flat or increases,
+  content ages out over Day 0 → Day +30 as new URLs replace old ones
+  organically. If it stays flat or increases,
   something's wrong (maybe pre-cutover URLs are being re-shared).
 - **`notify_frontend_refresh` inbound rate**: expected to trend to zero
   as SSE migration completes. If it stays non-zero after step 5, worker
