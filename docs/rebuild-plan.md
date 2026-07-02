@@ -22,6 +22,42 @@ audit for the reasoning behind each choice.
 | Tests | Backfill alongside domain extractions | Three-tier pyramid from day one; no legacy code without tests to backfill |
 | Documentation | Rich audit + roadmap already exist | Rebuild is the moment to apply everything learned about doc-driven dev |
 
+## Post-drafting revision: workspace NATS as event bus
+
+**Revised 2026-07-01, per [`decisions.md`](./decisions.md) 2026-07-01 "Workspace
+NATS as event bus" entry:** early revisions of this document spec'd Postgres
+LISTEN/NOTIFY as the semantic event stream fan-out mechanism. After further
+discussion, the decision landed to use **workspace-shared NATS at
+`~/workspace/nats/`** instead, sitting alongside Caddy + monitor stack + Tailscale
+as ecosystem infrastructure.
+
+Concretely for the sections below:
+
+- **§3 schema**: `event_log` table stays — still the durable audit trail +
+  reconnect backfill source.
+- **§8**: SSE handler subscribes to NATS `event.>` / `fixture.>` subjects
+  instead of `LISTEN`ing on a Postgres channel. Webhook delivery worker
+  consumes a JetStream durable consumer instead of polling
+  `webhook_deliveries` with `FOR UPDATE SKIP LOCKED`.
+- **§9**: new `internal/infra/nats/` adapter (specified below).
+- **§10**: docker-compose does NOT run a per-project NATS — NATS is a
+  workspace-shared dependency listed in `~/workspace/nats/`.
+- **§11**: the "semantic event stream" pillar is NATS, not LISTEN/NOTIFY.
+- **§14**: cutover includes vedanta-systems' NATS subscription setup.
+
+Where earlier sections still reference LISTEN/NOTIFY (§1's initial "Why
+Postgres" prose, §3's `event_log` comment), those references are historical
+and should read as "the durable audit table that ALSO feeds NATS
+publications." The wiring landing pattern is: worker/api both INSERTs into
+`event_log` (durability) AND calls `nats.Publish` (realtime fan-out); the
+two paths are always paired.
+
+Rationale + ecosystem-level context in
+[`~/workspace/vedanta-dhobley/docs/decisions.md`](../../vedanta-dhobley/docs/decisions.md)
+2026-07-01 entry.
+
+---
+
 ## How this relates to the roadmap and audit
 
 - [`roadmap.md`](./roadmap.md) F-0..F-6 phases described *incremental*
@@ -3495,7 +3531,8 @@ that reflect that.
 
 | Package | Purpose | Complexity |
 |---|---|---|
-| `internal/infra/pg` | Postgres connection pool + LISTEN/NOTIFY + transaction helpers | High |
+| `internal/infra/pg` | Postgres connection pool + transaction helpers | High |
+| `internal/infra/nats` | Workspace NATS client (publish + subscribe + JetStream) | Medium |
 | `internal/infra/s3` | Garage/S3 client + presigned URLs + streaming upload | Medium |
 | `internal/infra/llm` | LLM endpoint client (config-swappable joi/nexus) | High |
 | `internal/infra/temporal` | Temporal client construction + shared config | Low |
@@ -3505,7 +3542,14 @@ that reflect that.
 | `internal/infra/ffmpeg` | ffmpeg CLI subprocess wrapper + probe | Medium |
 | `internal/infra/wikidata` | Wikidata SPARQL client (RAG for team aliases) | Low |
 
-Total: nine adapters. Each gets a full spec below.
+Total: **ten** adapters. Each gets a full spec below.
+
+**Note on `internal/infra/pg`:** the earlier draft had this adapter carrying
+LISTEN/NOTIFY methods (`Listen`, `Notify`) as the event fan-out mechanism.
+Per the top-of-doc revision (workspace NATS decision), those responsibilities
+move to `internal/infra/nats`. The pg adapter retains only pool + transaction
+helpers. The `Listen` / `Notify` methods shown in the §pg spec below are
+historical; they do NOT ship in the real adapter.
 
 ### `internal/infra/pg`
 
@@ -3658,6 +3702,155 @@ get flagged at WARN level with the SQL + args.
   Docker, no migrations. Good for testing store logic in isolation.
 - Integration tests use testcontainers-go to spin up a real Postgres
   container with migrations applied. Runs in CI.
+
+### `internal/infra/nats`
+
+Workspace NATS client — the async event bus. Publishes semantic events
+(§11) and consumes them for SSE fan-out and webhook delivery (§8).
+Replaces the Postgres LISTEN/NOTIFY mechanism from the earlier draft.
+
+**Client interface:**
+
+```go
+package nats
+
+import (
+    "context"
+    "time"
+
+    "github.com/nats-io/nats.go"
+    "github.com/nats-io/nats.go/jetstream"
+)
+
+type Client interface {
+    // Core NATS — transient at-most-once delivery.
+    // Used by SSE fan-out where the browser reconnects and backfills from
+    // event_log if it missed anything.
+    Publish(ctx context.Context, subject string, payload []byte) error
+    Subscribe(ctx context.Context, subject string) (<-chan Msg, error)
+
+    // JetStream — durable at-least-once delivery with replay.
+    // Used by webhook delivery: each subscriber has a durable consumer;
+    // NATS holds the message until the consumer acks.
+    PublishStream(ctx context.Context, subject string, payload []byte) (*jetstream.PubAck, error)
+    Consume(ctx context.Context, streamName, consumerName string) (<-chan JetStreamMsg, error)
+
+    // Lifecycle
+    Ping(ctx context.Context) error
+    Close()
+}
+
+type Msg struct {
+    Subject string
+    Data    []byte
+    Header  nats.Header
+}
+
+type JetStreamMsg struct {
+    Msg
+    Ack   func() error
+    Nak   func() error
+    Term  func() error  // Poison-message: don't retry
+}
+```
+
+**Real implementation** wraps `nats.Conn` + `jetstream.JetStream`.
+Constructor reads config from env vars via `internal/config`:
+
+```go
+type Config struct {
+    URL         string        `env:"NATS_URL,required"`         // nats://nats:4222
+    Account     string        `env:"NATS_ACCOUNT" envDefault:"found-footy"`
+    CredsFile   string        `env:"NATS_CREDS_FILE"`           // Path to .creds file (JWT + nkey)
+    Name        string        `env:"NATS_CLIENT_NAME" envDefault:"found-footy-worker"`
+
+    // Connection resilience
+    ReconnectWait     time.Duration `env:"NATS_RECONNECT_WAIT" envDefault:"2s"`
+    MaxReconnects     int           `env:"NATS_MAX_RECONNECTS" envDefault:"-1"` // Retry forever
+    PingInterval      time.Duration `env:"NATS_PING_INTERVAL" envDefault:"20s"`
+
+    // JetStream domain (typically empty; overridden if using leaf nodes)
+    JetStreamDomain   string        `env:"NATS_JS_DOMAIN"`
+}
+
+func New(ctx context.Context, cfg Config, logger *slog.Logger) (Client, error)
+```
+
+**Subject scheme (found-footy account):**
+
+Within the found-footy NATS account, subjects use dot-separated hierarchy:
+
+```
+event.detected              // event enters pipeline
+event.stable                // debounce threshold reached
+event.video_ready           // first S3 upload complete
+event.rank_recalculated     // ranks changed
+event.removed               // VAR'd off
+event.download_complete     // 10-attempt loop terminated
+fixture.activated           // moved staging → active
+fixture.completed           // match final + all events done
+```
+
+Cross-account subscribers (e.g., vedanta-systems) reference these as
+`found-footy.event.>` — the account prefix is applied at the broker level.
+
+**Publish semantics:**
+
+- `Publish` = core NATS. Fire-and-forget; broker drops if no subscriber.
+  Used for SSE fan-out because browsers reconnect + backfill from
+  `event_log` audit table on drop.
+- `PublishStream` = JetStream. Broker persists to disk until every
+  durable consumer has acked. Used for webhook delivery where at-least-
+  once with automatic retry is required.
+
+**Consumer semantics:**
+
+- `Subscribe` returns a channel of transient messages. Caller iterates and
+  processes; drops on ctx cancel or subscription tear-down.
+- `Consume` returns a channel of durable messages with explicit ack. Each
+  consumer name is a shared durable consumer; multiple worker replicas
+  competing on the same consumer name split load automatically (JetStream
+  push consumers).
+
+**Durability + persistence:**
+
+Every semantic event is BOTH INSERTed into `event_log` AND published to
+NATS in the same activity boundary. The pattern is:
+
+```go
+func PublishEvent(ctx context.Context, ev SemanticEvent) error {
+    if err := store.InsertEventLog(ctx, ev); err != nil {
+        return err  // Durable write must succeed first.
+    }
+    subject := "event." + ev.Kind  // e.g., "event.video_ready"
+    return nats.Publish(ctx, subject, ev.MarshalJSON())
+    // NATS publish failure logs a warning but does NOT roll back the
+    // event_log insert. SSE clients that reconnect will see the event via
+    // backfill from event_log. Webhook clients (JetStream) get catch-up
+    // via a background worker that scans event_log for events not yet
+    // in JetStream.
+}
+```
+
+**Error classification:**
+
+- `ErrConnectionLost` — NATS connection dropped. Client is auto-reconnecting;
+  publishes fail until reconnect. Callers should log + continue (audit
+  trail is preserved in `event_log`).
+- `ErrPublishTimeout` — synchronous JetStream publish exceeded 5s.
+  Callers may retry; message may or may not have landed.
+- `ErrSubjectInvalid` — configuration error, not runtime.
+- `ErrJetStreamNotEnabled` — misconfiguration; account lacks JetStream
+  permissions.
+
+**Testing:**
+
+- Unit tests use `internal/testutil/fakes/nats.FakeClient` — in-memory
+  pub/sub with configurable delivery guarantees (drop / duplicate /
+  reorder) for exercising consumer edge cases.
+- Integration tests use testcontainers-go with `nats:2.10-alpine`
+  + JetStream enabled. The workspace NATS at `~/workspace/nats/` is NOT
+  reused for tests — each test suite gets a fresh container.
 
 ### `internal/infra/s3`
 
@@ -9520,7 +9713,1458 @@ Deferred; not day-one. Documented here for completeness.
 
 ---
 
-*(Remaining §15..§16 to follow. §14 established the traffic transition
-and legacy-turnoff decision; §15 covers how these documents get
-maintained as implementation happens, and §16 sequences everything into
-a concrete "what ships when" plan.)*
+## 15. Documentation and process
+
+The rebuild adopts a **documentation-driven agentic development** style —
+the docs are load-bearing, not aspirational. Every design decision, every
+subsystem contract, every operational procedure lives in a specific file
+at a specific path, and every code change that touches those contracts
+updates the corresponding doc in the same commit.
+
+### 15.0 What "documentation" means here
+
+Documentation in this project is **three layered persistence mechanisms**,
+each with a different scope, lifespan, and audience:
+
+| Layer | Path | Scope | Audience | Lifespan |
+|---|---|---|---|---|
+| **Repo `docs/`** | `docs/*.md` | Cross-file architecture, design decisions, operational runbook | Any contributor (human or agent) at any point in the future | Permanent (append-only for decisions) |
+| **Code docstrings** | Godoc comments on packages/types/functions | Behavior and invariants of a specific unit of code | Anyone touching that specific file | Same lifespan as the code itself |
+| **Per-agent auto-memory** | `~/.claude/projects/<project>/memory/` (agent-specific paths) | User preferences and collaboration tone | The agent, on future sessions with the same user | Refreshed as the user's habits change |
+
+The **repo `docs/`** is the canonical layer. If a fact belongs anywhere,
+it belongs there — the other two layers are supplements. Everything a
+new contributor needs to onboard should be reachable from `docs/README.md`
+in ≤ 3 hops.
+
+**Docstrings** carry behavior-of-this-specific-file knowledge that's
+inseparable from the code. They answer "how does this function behave"
+in a way that survives file renames but not architectural rewrites.
+
+**Per-agent auto-memory** is deliberately narrow — user preferences
+("this user wants terse responses", "this user is anal about naming")
+and nothing else. Project facts do NOT go there because they drift
+across agents and are invisible to humans reading the repo.
+
+The old system's `docs/` grew organically to ~15 files across
+`architecture.md` / `orchestration.md` / `temporal.md` / `logging.md` /
+etc. This shape mostly worked — the rebuild keeps the general
+structure and tightens the intake rules.
+
+### 15.1 The docs/ hierarchy after rebuild
+
+After cutover, `docs/` looks like this:
+
+```
+docs/
+├── README.md                      # Routing index + intake rules + after-session checklist
+│
+├── architecture.md                # Domain model, module dependencies, workflow shape
+├── orchestration.md               # Event lifecycle state machine, debouncing, VAR handling
+├── temporal.md                    # Per-workflow / per-activity retry & timeout policies
+├── observability.md               # Log/metric/trace catalog + Grafana query cookbook
+├── api-contract.md                # HTTP + SSE + webhook contract (source of truth for FE)
+├── logging.md                     # Structured JSON emission convention + query cookbook
+├── operations.md                  # Runbook: bring-up, scaling, common issues, debugging
+├── deployment.md                  # docker-compose reference + Caddy routes + host layout
+├── testing.md                     # Three-tier pyramid, factory conventions, CI shape
+│
+├── decisions.md                   # APPEND-ONLY architectural decisions log (newest at top)
+├── todo.md                        # Active work + open bugs (newest above older)
+├── audit.md                       # (Historical) May 2026 code audit of the old system
+├── design-audit.md                # (Historical) The audit that led to the rebuild
+├── rebuild-plan.md                # (Historical) This document
+├── roadmap.md                     # Post-rebuild strategic direction (if any)
+├── sprints.md                     # (Historical) Sprint board for the pre-rebuild cleanup
+│
+└── proposals/                     # Design docs for pre-implementation feature work
+    ├── README.md                  # Proposal template + status conventions
+    └── <topic>.md                 # One proposal per topic
+```
+
+**Every file has a specific reader-writer contract:**
+
+- **`README.md`** — the front door. Directs readers to the right file for
+  any task. Contains the intake table ("if you learned X, put it in Y").
+  Contains the after-session checklist. Never contains substantive
+  content — only routing.
+
+- **`architecture.md`** — how the system is shaped. Domain model,
+  package layout, module dependency graph, workflow hierarchy.
+  Updated when structure changes. NOT a place for chronological
+  history (that's `decisions.md`).
+
+- **`orchestration.md`** — how events flow. State machines for the
+  fixture and event lifecycles. Debouncing rules. VAR / re-attribution
+  handling. Updated when the state machine changes.
+
+- **`temporal.md`** — how workflows are wired. Per-activity timeout /
+  retry / heartbeat policies. Workflow ID naming conventions. Signal
+  contracts. Updated when workflow shape changes.
+
+- **`observability.md`** — the full log + metric + trace vocabulary.
+  Auto-derived where possible (see §15.3); the hand-maintained
+  content is dashboard descriptions and query cookbook entries.
+
+- **`api-contract.md`** — the OpenAPI spec + SSE schema + webhook
+  event contract. This is what vedanta-systems reads. Auto-derived
+  from Huma struct tags (see §15.3) with hand-maintained prose for
+  intent + versioning policy.
+
+- **`logging.md`** — how to emit a log line, what the vocabulary is,
+  how to query it in Loki. The vocabulary catalog is auto-derived;
+  the query cookbook is hand-maintained.
+
+- **`operations.md`** — runbook. Bring-up steps. Common failure modes
+  and their diagnostic paths. Scaler tuning guide. Twitter cookie
+  reauth flow. Updated when procedures change.
+
+- **`deployment.md`** — deployment concerns. `docker-compose.yml`
+  reference (what each service does, dependencies). Caddy route
+  ownership. Cross-project network setup. Volume layout.
+
+- **`testing.md`** — the three-tier pyramid (§12), test factory
+  conventions, CI job shape, coverage floor policy.
+
+- **`decisions.md`** — APPEND-ONLY architectural decisions log. Every
+  entry is dated + rationale-carrying. Newest at top. When a decision
+  is superseded, the new entry links back to the old ("see 2026-XX-YY
+  decision on X"). NEVER edit an old entry — even if it's now wrong,
+  add a new entry that says "this replaces the 2026-XX-YY entry."
+
+- **`todo.md`** — active work + open bugs + deferred items. Newest
+  above older. Paste-ready start-of-session block at the top for
+  agents to bootstrap on. Items get moved OUT of `todo.md` (to
+  `decisions.md` if resolved, deleted if abandoned) — this file
+  does not grow forever.
+
+- **`proposals/`** — design docs for in-flight feature work.
+  Header note flags status (draft / accepted / rejected / superseded).
+  When a proposal ships, the doc moves to a "shipped" section OR
+  gets summarized into a decisions.md entry + deleted.
+
+- **`audit.md`, `design-audit.md`, `rebuild-plan.md`, `sprints.md`** —
+  historical artifacts (see §15.7). They stay in the repo because
+  they show *why* the current architecture is what it is, but they
+  don't get maintained. New readers should know they describe past
+  state.
+
+**What does NOT live in docs/:**
+
+- Static counts ("33 activities", "5M donors") — these drift the moment
+  code changes. Either derive at query time or omit.
+- Project structure walks that duplicate what `ls` / `tree` shows.
+- Line-by-line explanations of what code does. That's what docstrings
+  are for.
+- Copy-pasted code snippets from the repo. Reference the file with
+  a markdown link; the snippet drifts.
+
+### 15.2 Docstring policy — Go's conventions applied
+
+The old Python codebase had a project-level docstring policy ("every
+`.py` file gets a module-level docstring; every function, method, and
+class gets a docstring"). The rebuild keeps the same *spirit* (docs are
+load-bearing) with Go-idiomatic execution.
+
+**Go's convention:** godoc extracts documentation from comments that
+immediately precede exported declarations. `go doc <package>` renders
+them. This makes docstring-driven documentation a first-class output.
+
+**Coverage policy:**
+
+- **Every package** gets a package comment (`Package foo does X.`) at the
+  top of one file, conventionally `doc.go` for larger packages.
+- **Every exported type** gets a doc comment explaining what it
+  represents and any invariants callers must honor.
+- **Every exported function or method** gets a doc comment explaining
+  behavior. Include the parameter meaning + return semantics + error
+  cases when they're non-obvious. Single-line for trivial helpers.
+- **Every exported constant or variable** gets a doc comment if the
+  name doesn't fully explain the value.
+- **Unexported symbols** get comments only when the *why* is non-obvious.
+  Don't paraphrase the function name; add what the signature can't.
+
+**Style:**
+
+- Doc comments start with the symbol name and read as a complete
+  sentence: `// Emit publishes a semantic event...`
+- Never wrap at arbitrary column widths; godoc rewraps for its output.
+- Use `Args:` / `Returns:` / `Raises:` (or the Go idiom "returns X and Y")
+  when parameter roles or return semantics are non-obvious.
+- For hidden invariants, prior bugs, or replay-safety constraints,
+  document them in the comment. This is where the *why* lives.
+
+**Example:**
+
+```go
+// Package event publishes semantic events to the durable event_log
+// (via Postgres) and to NATS (for realtime fan-out to SSE and webhook
+// consumers).
+//
+// The dual-write invariant is load-bearing: every semantic event MUST
+// be inserted into event_log before NATS publish. On NATS publish
+// failure the event_log insert stays committed and the fan-out backfill
+// path (§8) covers the drop. Callers should never publish to NATS
+// without an accompanying event_log write.
+package event
+
+// Emit publishes a semantic event.
+//
+// Insert into event_log happens first; on success, the event is
+// published to the NATS subject "event.<Kind>". NATS publish failure
+// is logged but does not roll back the event_log insert (see package
+// doc for the fan-out backfill contract).
+//
+// Returns ErrEventLogWriteFailed if the durable insert fails. NATS
+// publish errors are surfaced via structured logs but not returned.
+func Emit(ctx context.Context, ev SemanticEvent) error { ... }
+```
+
+**Anti-patterns:**
+
+- `// GetTeamName returns the team name.` — noise. The signature
+  already says this. Either add what the signature can't or delete.
+- Multi-paragraph docstrings on trivial helpers. If the function is
+  three lines and named clearly, one sentence is fine.
+- Doc comments that reference the current PR / issue / task
+  ("added for the Y flow", "handles issue #123"). That belongs in
+  the commit message or decisions.md; it rots as the code moves.
+
+**When you change a function, update the doc comment in the same
+commit.** The after-session checklist in `docs/README.md` includes this
+as a step, but linter-enforce where possible (see §15.6).
+
+### 15.3 Auto-derived documentation (never hand-maintain)
+
+The old Python system hand-maintained the log catalog in `docs/logging.md`
+(1285 lines). Every new `log.info(..., "some_action", ...)` call
+needed a matching entry there, and the entries drifted from reality
+constantly.
+
+**The rebuild's rule:** if documentation can be derived from code, it
+IS derived from code. Hand-maintenance is reserved for prose that
+explains *intent* — not tables that mirror code.
+
+**What gets auto-derived:**
+
+| Document | Derived from | Mechanism |
+|---|---|---|
+| `docs/logging.md` — action catalog | `internal/observability/vocabulary/actions.go` enum | `go generate ./...` runs a small tool that emits `docs/generated/actions.md`; `logging.md` links to it |
+| `docs/observability.md` — metrics catalog | `internal/observability/metrics/metrics.go` (Prometheus registry) | Same pattern; `metrics.md` includes `docs/generated/metrics.md` |
+| `docs/api-contract.md` — HTTP endpoints | Huma struct tags on request/response types | `huma reflect` emits OpenAPI JSON to `docs/generated/openapi.yaml`; `api-contract.md` documents intent, links to the spec |
+| `docs/api-contract.md` — SSE events | `internal/api/sse/events.go` type definitions | Same generator emits `docs/generated/sse-events.md` |
+| `docs/temporal.md` — workflow/activity list | `internal/worker/registration.go` registration calls | `go generate` walks the registration list; emits `docs/generated/workflows.md` |
+| `docs/deployment.md` — env var reference | `internal/config/*.go` `envconfig` struct tags | Same generator emits `docs/generated/env-vars.md` |
+| Migration list | `db/migrations/*.sql` files (goose) | Generator lists filenames + top-of-file summary comment |
+
+**`docs/generated/`** is committed to the repo (not gitignored). The
+generator runs as a git pre-commit hook AND in CI, and CI fails if the
+generated files are out of sync with source. This is the "single source
+of truth is the Go code" invariant, enforced.
+
+**What CAN'T be auto-derived and stays hand-maintained:**
+
+- The *why* of a decision (that's `decisions.md`).
+- The *how to use this* prose that surrounds a table.
+- Grafana query cookbook entries (LogQL / PromQL snippets).
+- Runbook procedures.
+- Test conventions and factory patterns.
+- Cross-doc navigation ("if X, see Y").
+
+Hand-maintained docs LINK TO the auto-derived docs; they never inline
+copies of what the generator emits.
+
+**Vocabulary drift is a first-class CI failure.** If a code change adds
+a new `vocabulary.Action` constant but doesn't regenerate the catalog,
+CI blocks the merge. Same for a new metric, a new API endpoint, or a
+new env var. The generator is idempotent — running it twice on unchanged
+input produces zero-diff output — so this is a safe check.
+
+### 15.4 Cross-doc linking
+
+The convention is **markdown links, no wiki-links.** This was decided
+2026-06-30 (see `decisions.md`); rationale: `[[wiki-link]]` renders as
+literal broken brackets on GitHub, and it's ambiguous when filenames
+collide across projects.
+
+**Syntax:**
+
+- Within a project: `[descriptive text](./relative-path.md)` from the
+  linking file. `decisions.md` linking architecture is
+  `[architecture](./architecture.md)`; `proposals/foo.md` linking up is
+  `[architecture](../architecture.md)`.
+- Across projects: prefer routing through `vedanta-dhobley/docs/` as
+  the cross-project knowledge hub. Direct project-to-project links
+  are allowed but rare; they should mention the target project so a
+  reader can navigate manually if the file has moved.
+- Deep links: `[testing conventions](./testing.md#three-tier-pyramid)`
+  when a section anchor exists.
+
+**Link text:**
+
+- Descriptive. "See [the dedup design doc](./proposals/dedup-unification.md)"
+  beats "See [this doc](...)" or bare `./proposals/dedup-unification.md`.
+- Read out of context: if a reader clicks the link and the surrounding
+  sentence is invisible, the link text should still tell them where they're
+  going.
+
+**Density:**
+
+- Link liberally — most cross-doc references should be one click away,
+  not a re-grep.
+- But don't double-link the same target in the same paragraph. First
+  mention links; later mentions are plain text.
+
+**Broken links:**
+
+- CI runs a link checker (`lychee` or `markdown-link-check`) on every
+  `docs/**/*.md` file. Broken links block the merge.
+- When you move or rename a doc, grep for inbound references
+  (`grep -rn "old-name.md" docs/`) and update them.
+- The after-session checklist includes "did we move a doc? Update
+  inbound references."
+
+### 15.5 The `decisions.md` append-only log
+
+**The load-bearing rule:** `decisions.md` is append-only. Old entries
+never get edited in place, even when they're wrong.
+
+**Why append-only:** the file is a chronological record of what was
+decided *when* and *why*. If a 2025 decision turned out to be wrong and
+we changed direction in 2026, both entries are informative — the 2025
+one explains the *original* reasoning; the 2026 one explains why we
+changed our minds. Editing the 2025 entry destroys the historical record
+and makes the change invisible.
+
+**Format:**
+
+```markdown
+## YYYY-MM-DD — Short imperative title of the decision
+
+**Decision:** one paragraph stating what was decided.
+
+**Why:** one paragraph explaining the reasoning. Cite constraints,
+lived problems, alternatives considered.
+
+**Consequences:** what changes in the code / process / operational
+posture. What other decisions this enables or blocks.
+
+**Supersedes (optional):** link back to the entry this replaces,
+if any. `See 2025-XX-YY entry on X.`
+```
+
+**What qualifies for a decisions.md entry:**
+
+- A choice between competing approaches (Postgres vs. Mongo, NATS vs.
+  Postgres LISTEN/NOTIFY, worktree isolation vs. shared workspace).
+- A load-bearing invariant nobody would guess from reading the code
+  ("URL stability is non-negotiable", "per-event serialization is the
+  correctness anchor").
+- A commitment we've made to external systems (URL formats, API
+  contracts, webhook payloads).
+- A policy change (docstring coverage floor, CI failure conditions).
+
+**What does NOT qualify:**
+
+- Code-level design details (goes in docstrings or `architecture.md`).
+- Task-level decisions ("we'll build feature X after feature Y") —
+  goes in `todo.md` or `roadmap.md`.
+- Ephemeral choices that will be re-evaluated soon.
+
+**Cross-linking:**
+
+- New entries can reference old ones: "See 2026-06-30 entry on X."
+- Old entries can be linked from other docs: `docs/architecture.md`
+  linking a rationale is `see [decisions.md 2026-07-01](./decisions.md#2026-07-01--fresh-rebuild-in-parallel-not-incremental-refactor)`.
+
+**Superseding an old decision:**
+
+```markdown
+## 2027-XX-YY — Reverting to Postgres LISTEN/NOTIFY (supersedes 2026-07-01)
+
+**Decision:** roll back the workspace NATS bus. Semantic events flow
+through Postgres LISTEN/NOTIFY.
+
+**Why:** ...
+
+**Consequences:** ...
+
+**Supersedes:** [2026-07-01 — Workspace NATS as event bus](#2026-07-01--workspace-nats-as-event-bus-replaces-postgres-listen-notify).
+The 2026-07-01 entry stays in place.
+```
+
+The 2026-07-01 entry does NOT get edited to say "superseded" — the 2027
+entry links back, and forward-in-time readers reach the 2027 entry
+first (newest at top) so they see the current state.
+
+### 15.6 Documentation in CI
+
+CI runs a **documentation validation suite** on every PR. The suite is
+fast (< 30s) and produces actionable output.
+
+**Checks:**
+
+1. **Link checker** — every markdown link resolves. Broken links block
+   merge.
+2. **Auto-derived freshness** — running `go generate ./...` produces
+   zero diff against `docs/generated/`. If a PR adds a new
+   `vocabulary.Action` without regenerating the catalog, this fails.
+3. **Docstring coverage** — every exported symbol in `internal/domain/`
+   has a doc comment. Enforced by `golint` (or a custom linter that
+   understands exceptions like `String()`). Missing docstrings block
+   merge.
+4. **OpenAPI schema validation** — the generated `docs/generated/openapi.yaml`
+   is a valid OpenAPI 3.1 document.
+5. **Markdown lint** — `markdownlint` catches common issues (missing
+   heading levels, trailing whitespace, inconsistent list markers).
+   Non-blocking warnings; blocking errors for structural issues.
+6. **Decisions.md format check** — every top-level `## YYYY-MM-DD` entry
+   has valid ISO date + a rationale section. Enforced by a small script
+   that parses the file.
+7. **Docs referenced from code are still valid** — comments like
+   `// See docs/architecture.md#foo` are checked; the target section
+   must exist. Prevents dead references in comments.
+8. **No wiki-links** — any `[[...]]` in a `.md` file fails the check.
+   Legacy documentation from other tooling doesn't leak in.
+
+**What CI does NOT check:**
+
+- Whether docs are *correct* — that's the writer's judgment.
+- Whether every code change updates a related doc. Too broad to be
+  reliable; the after-session checklist covers this instead.
+- Prose style, tone, or clarity.
+
+**CI produces a doc coverage report** on every merge to `main`: how many
+docstrings, how many linked docs, what's missing. The report is a
+`.github/artifacts/` file, not a merge blocker; it feeds the "docs
+health" section of the internal monitoring dashboard.
+
+### 15.7 The rebuild plan and design audit as historical artifacts
+
+The `docs/rebuild-plan.md` (this document) and `docs/design-audit.md`
+are **historical artifacts**. They stay in the repo because they
+explain *why* the current architecture is what it is, but they don't
+get maintained after cutover.
+
+**When rebuild-plan.md becomes historical:** at cutover completion.
+The plan describes what we WILL build; once the build is done, the plan
+is a snapshot of the design intent. Subsequent changes to the
+architecture go in `decisions.md` (for the choice) and
+`architecture.md` (for the resulting structure), NOT as edits to this
+plan.
+
+**Marker at the top:**
+
+```markdown
+> **Historical.** This document describes the design intent for the
+> found-footy Go rebuild, drafted 2026-06 through 2026-07 and shipped
+> 2026-QX. It is preserved as a snapshot of the architectural reasoning
+> at that time. For current architecture, see [architecture.md](./architecture.md).
+> For post-rebuild decisions, see [decisions.md](./decisions.md).
+```
+
+**What happens if a §-section turns out to be wrong:**
+
+- Do NOT edit the section in place.
+- Add a `decisions.md` entry that supersedes it.
+- Add a note at the top of the section: "This section is historical;
+  see [decisions.md YYYY-MM-DD entry](./decisions.md#...)."
+
+**Same for `design-audit.md`:** it was a snapshot of the pre-rebuild
+audit. Preserved for the reasoning about what was wrong; not updated
+as the codebase evolves.
+
+**`audit.md`** (the May 2026 audit of the pre-rebuild Python code) is
+frozen the moment the Python code is deleted from the repo. Preserved as
+context for why certain design choices were made in the rebuild.
+
+**`sprints.md`** (the pre-rebuild sprint board) is frozen at the same
+point. Deleted after the retrospective (§14) — no reason to keep it.
+
+**`todo.md`** — active list — gets a "pre-rebuild historical" section
+appended when the rebuild lands, capturing what remained open under
+the old system. The Go rebuild starts with a fresh top.
+
+### 15.8 Commit messages and PR descriptions
+
+**Commit message format** (per user-global CLAUDE.md, project-specific
+overrides):
+
+```
+<type>(<scope>): <short imperative summary under 70 chars>
+
+<Optional body: paragraphs explaining the WHY, not the WHAT. Wrap at
+72 columns.>
+
+<Optional footer: refs to issues, PRs, or decisions.md entries.>
+```
+
+**Types:**
+
+- `feat` — new user-visible feature or new capability
+- `fix` — bug fix
+- `perf` — performance improvement without behavior change
+- `refactor` — internal restructuring, no behavior change
+- `chore` — dependency updates, tooling changes, non-code hygiene
+- `docs` — documentation-only changes
+- `test` — test-only changes
+- `build` — build system / CI / docker changes
+
+**Scopes** for this project: `discovery`, `download`, `upload`, `vision`,
+`api`, `sse`, `webhook`, `nats`, `pg`, `s3`, `temporal`, `worker`,
+`scaler`, `twitter`, `deploy`, `docs`.
+
+**The WHY, not the WHAT:**
+
+- Bad: `fix(upload): change s3_key to _s3_key in MD5 dedup lookup`
+- Good: `fix(upload): MD5 dedup was silently missing existing S3 videos`
+  (body explains: the lookup key was `s3_key` but the field is stored
+  as `_s3_key`, so the batch dedup pass never matched anything, causing
+  duplicate uploads until the perceptual pass caught them.)
+
+**No `Co-Authored-By:` trailer.** Per project + user-global CLAUDE.md,
+agent attribution via git committer name is sufficient; the
+`Co-Authored-By: <Agent Name>` trailer is not used.
+
+**Never `--amend` a published commit.** Always create a new commit.
+`--amend` on a pushed commit forces a force-push, which is destructive
+to anyone who's fetched the previous SHA.
+
+**Never `--no-verify` or skip hooks** unless explicitly requested.
+Pre-commit hooks (link check, docstring coverage, generated-docs
+freshness) exist for reasons. If a hook fails, investigate and fix the
+underlying issue.
+
+**PR descriptions** follow a fixed template:
+
+```markdown
+## Summary
+
+<1-3 bullets: what changed, why>
+
+## Context
+
+<What led to this change — link to decisions.md, issue, or prior PR
+if applicable. What was the alternative approach considered.>
+
+## Testing
+
+<How this was verified. Unit test names touched, integration test
+scenarios covered, manual verification steps.>
+
+## Docs impact
+
+<Which docs/*.md files were updated. If none, why not.>
+
+## Rollout notes
+
+<Any deployment-specific concerns: env var additions, migration
+requirements, rollback procedure.>
+```
+
+**When a PR embodies a decision worth preserving,** add a `decisions.md`
+entry in the same PR. The PR description links to the entry; the entry
+links back to the PR (via commit SHA). This creates the audit trail
+without duplicating the reasoning.
+
+### 15.9 Per-agent auto-memory boundary
+
+Per-agent auto-memory paths (Claude Code:
+`~/.claude/projects/<project>/memory/`; other agents have analogous
+paths) are **reserved for user preferences and collaboration tone.**
+
+**What lives there:**
+
+- "This user prefers terse responses; skip end-of-turn summaries."
+- "This user is anal about naming and Caddy exposure decisions —
+  surface options rather than picking silently."
+- "This user reads Loki for past-match forensics because scaled-down
+  workers are gone from `docker logs`."
+- "This user is precise about live-vs-designed distinctions."
+
+**What does NOT live there:**
+
+- Project facts (goes in `docs/`).
+- Architecture / schema / port assignments (goes in `docs/`).
+- Bug diagnoses or fix recipes (the fix is in the code + commit).
+- Task state (goes in `todo.md` or the session task list).
+- Anything that would be useful to another agent or human — that's
+  a signal it belongs in `docs/`, not in per-agent memory.
+
+**Why the boundary matters:** auto-memory is invisible to other agents
+and to humans reading the repo. If a project fact lives there, it
+becomes an unwritten rule that changes based on which agent is being
+used, which is exactly the failure mode we're avoiding.
+
+**The load-bearing invariant:** any project fact worth remembering
+should be discoverable by reading `docs/README.md` and following its
+routing. If a fact is only in auto-memory, it doesn't exist for
+onboarding purposes.
+
+The rebuild's project CLAUDE.md restates this rule at the bottom
+("Auto-memory note — per `~/.claude/CLAUDE.md`, project facts belong
+here or in `docs/`, not in per-agent memory. Keep that auto-memory
+directory essentially empty.").
+
+### 15.10 Handling the current docs/ during cutover
+
+The current `docs/` describes the Python system. When the Go rebuild
+lands, most of it needs to change. The transition happens in a specific
+order — not "delete everything and rewrite" — so that during cutover
+(§14), both systems can be documented.
+
+**Cutover phases for docs/:**
+
+**Phase A: parallel-truth (during rebuild).**
+
+- Current `docs/*.md` files stay as-is; they describe the Python
+  system that's still in prod.
+- New Go-side documentation lives in `docs/rebuild/` — a sibling
+  directory that gets `docs/rebuild/architecture.md`,
+  `docs/rebuild/operations.md`, etc. Same file names, different
+  parent.
+- `docs/README.md` gets a header: "Two directories: `docs/*.md`
+  describes the current Python system; `docs/rebuild/*.md` describes
+  the incoming Go system. During cutover, both are current."
+
+**Phase B: rebuild is prod (post-cutover).**
+
+- `docs/rebuild/` becomes the canonical location.
+- Old `docs/*.md` files get an "Archived — this describes the pre-2026-Q3
+  Python system" header at the top.
+- Old files are MOVED (`git mv`) to `docs/legacy/` — clearly separated.
+- `docs/README.md` gets updated to route to the new docs.
+
+**Phase C: legacy turnoff (per §14).**
+
+- `docs/legacy/*.md` stays in the repo forever for historical context,
+  but gets a bulk header: "The Python system these files describe was
+  turned off YYYY-MM-DD. See legacy-turnoff runbook in §14."
+
+**Alternative considered — hard cutover.** Delete old docs, write new
+docs, one big commit. Rejected because during cutover (§14), operators
+need to be able to read *both* runbooks. The parallel-truth phase costs
+a few weeks of `docs/rebuild/` prefix noise but preserves operational
+usability.
+
+**Anti-pattern:** editing `docs/architecture.md` in place mid-rebuild
+to describe half the old system and half the new. The doc becomes
+useless for BOTH audiences.
+
+### 15.11 The "docs stay honest" invariants
+
+Documentation drift is the failure mode this whole system is trying to
+prevent. The specific invariants that keep it honest:
+
+1. **Auto-derive where possible.** If a table can come from code, it
+   does. Hand-maintenance is for intent, not for facts.
+2. **CI validates generated content freshness.** Adding a code fact
+   without updating the derived doc fails the merge.
+3. **The after-session checklist** in `docs/README.md` prompts writers
+   to consider six categories (decisions / open work / discovered
+   facts / operational changes / stale entries / docstrings) at
+   session end. Not every session touches all six, but every session
+   *considers* all six.
+4. **Broken cross-doc links fail CI.** Renames don't silently orphan
+   references.
+5. **Historical docs are marked.** Readers know when they're reading
+   a snapshot vs. current state.
+6. **`decisions.md` is append-only.** History is preserved.
+7. **Per-agent memory is bounded.** Project facts don't hide in
+   agent-specific paths.
+8. **Every code change PR states its docs impact.** Zero-doc-impact is
+   a valid answer; unstated is not.
+
+**When drift is discovered anyway** (a reader finds a stale claim in
+`architecture.md` that no longer matches the code): fix in the same
+commit as the code change that revealed it, if possible. If discovered
+separately, open a `docs:` scoped fix commit. Log the incident briefly
+in `decisions.md` if it reveals a process gap.
+
+---
+
+## 16. Implementation sequencing
+
+Everything above describes *what* gets built. This section is about
+*when* and *in what order*. The rebuild is a substantial piece of work
+happening in parallel with a live prod system, so ordering matters:
+we need working code at every merge point, no long-lived branches, and
+the ability to stop between milestones without leaving the repo in a
+half-built state.
+
+### 16.0 Framing
+
+**The unit of planning is a milestone, not a sprint.**
+
+- A milestone is a coherent deliverable that could ship independently.
+- Each milestone lands as a series of small PRs to `main` (or a
+  long-lived rebuild branch — see below).
+- Milestones have explicit prerequisites (what must ship first) and
+  explicit exit criteria (how we know it's done).
+- Between milestones is a checkpoint: "are we still on track,
+  should we adjust scope, is the next milestone still the right one?"
+
+**Calendar vs milestone.** This plan lists milestones in dependency
+order and gives rough size estimates ("large / medium / small"). It
+does NOT commit to specific calendar dates because:
+
+- The user is doing this alongside a day job; effective velocity varies.
+- Discovery during implementation surfaces work that wasn't in the
+  plan; better to adjust milestones than to slip a calendar.
+- The World Cup timeline (~mid-June 2026, per the 2026-Q2 roadmap) is
+  the hard constraint on when the CUTOVER can happen — the
+  intermediate milestones can slide.
+
+**Sizes:**
+
+- **Small** — a focused session or two. One-to-a-few PRs.
+- **Medium** — several sessions across a week or two. Multiple PRs
+  landing as a coherent slice.
+- **Large** — extended work with intermediate checkpoints. Would
+  span multiple weeks of focused work; likely gets broken into
+  sub-milestones during execution.
+
+**Branch strategy.**
+
+The rebuild happens on a long-lived `rebuild/go` branch, NOT directly on
+`main`. Rationale:
+
+- `main` continues to host the running Python system. Bugs found in
+  prod during rebuild get fixed on `main` and cherry-picked to
+  `rebuild/go` if the fix applies conceptually.
+- `rebuild/go` accumulates all the new code without disrupting prod
+  releases.
+- Individual PRs merge from `feature/rebuild-<milestone>` branches
+  → `rebuild/go`, keeping the rebuild PR history clean.
+- At cutover, `rebuild/go` merges to `main` in one large but
+  well-reviewed PR (per §14 cutover plan).
+
+**Alternative considered — trunk-based on `main` with feature flags
+everywhere.** Rejected because the Python → Go boundary is too broad;
+gating every new file behind a flag adds noise without value. The
+long-lived branch cost is real (rebases from `main` are needed) but
+manageable.
+
+### 16.1 Phases overview
+
+Reading left-to-right, milestones roughly stack; reading top-to-bottom,
+they're the parallel tracks within a phase.
+
+```
+Phase Foundation          → Phase Substrate         → Phase Domain          → Phase Orchestration
+   ↓ enables                  ↓ enables                 ↓ enables               ↓ enables
+Phase API                 ← Phase Video pipeline    ← Phase Testing        ← Phase Cutover
+   ↓ enables
+Phase Cutover
+```
+
+Nine phases total. Foundation and Substrate are strictly sequential.
+Domain and Testing overlap heavily. Orchestration depends on Domain.
+API and Video Pipeline can proceed in parallel once Substrate is done.
+Cutover comes last.
+
+| Phase | Size | Prerequisite | Delivers |
+|---|---|---|---|
+| **F. Foundation** | Small | None | Repo scaffolding, CI, docs skeleton |
+| **S. Substrate** | Medium | F | 10 infra adapters, docker-compose stack |
+| **D. Domain** | Large | S (partial) | 8 domain packages with stores + services |
+| **O. Orchestration** | Large | D | 5 workflows + ~30 activities in Temporal |
+| **V. Video pipeline** | Medium | S (partial) | Download + AI validation + hashing |
+| **A. API surface** | Medium | S + D | Chi+Huma HTTP + SSE + webhook |
+| **T. Testing hardening** | Medium | Throughout | Unit + integration + synthetic e2e |
+| **M. Migration** | Small | D | Legacy → new data migration scripts |
+| **C. Cutover** | Medium | Everything above | Feature-flag flip, frontend migration, legacy turnoff |
+
+### 16.2 Phase F — Foundation
+
+**Prerequisites:** none.
+
+**What ships:**
+
+- `rebuild/go` branch cut from current `main`.
+- Repository layout per §2: `cmd/`, `internal/`, `deploy/`,
+  `docs/rebuild/`, etc.
+- `go.mod` with pinned toolchain (Go 1.23+), initial dependencies.
+- Development tooling: `.golangci.yml`, `.editorconfig`,
+  `Makefile` with `make test`, `make build`, `make lint`, `make docs`.
+- CI skeleton: GitHub Actions workflows for build, lint, test,
+  docs-freshness (per §15.6). All passing on empty code.
+- Docs infrastructure: `docs/rebuild/README.md`, empty stub files for
+  each subsystem doc, `docs/generated/` placeholder committed with a
+  README explaining it's auto-generated.
+- Pre-commit hooks: link check, `gofmt`, `go generate` freshness.
+- `deploy/docker-compose.dev.yml` skeleton: services stubbed but not
+  functional. Container naming per `~/workspace/proxy/CONVENTIONS.md`
+  (`found-footy-dev-*`).
+- `deploy/caddy.d/found-footy.caddy` skeleton: hostname reservations
+  for the new services (no live routing yet).
+
+**Exit criteria:**
+
+- CI is green on an empty commit.
+- A junior dev could clone the repo, run `make build`, and see
+  every target succeed on empty code.
+- `docs/rebuild/README.md` renders and its links resolve.
+
+**Explicit non-goals:**
+
+- No domain logic. No infra adapters. No workflows.
+- No functional docker-compose services (containers won't start
+  meaningfully because there's no code yet).
+
+**Estimated size:** 1-2 sessions.
+
+### 16.3 Phase S — Substrate
+
+**Prerequisites:** F complete.
+
+**What ships:** the 10 infra adapters from §9 plus the runnable
+docker-compose dev stack. Each adapter ships with:
+
+- Interface definition (`internal/infra/<name>/client.go`).
+- Real implementation with config-driven construction.
+- In-memory fake for unit testing (`internal/testutil/fakes/`).
+- Integration tests via testcontainers-go where a real backend is
+  required (`pg`, `nats`, `s3`).
+- Docstring coverage for every exported symbol.
+- Log emission via the vocabulary package (which lands here too).
+
+**Sub-milestone order:**
+
+1. **S1: Observability + config plumbing** (Small).
+   - `internal/observability/vocabulary/` — the enum package with
+     `Module` and `Action` types.
+   - `internal/observability/logging/` — the `Emit(...)` function that
+     produces structured JSON.
+   - `internal/observability/metrics/` — Prometheus registry + naming
+     conventions.
+   - `internal/observability/tracing/` — OpenTelemetry SDK config.
+   - `internal/config/` — envconfig-based struct parsing for all
+     adapters.
+   - Reason for going first: every subsequent adapter depends on
+     these packages. Deferring them means retrofitting log calls into
+     already-written adapters.
+
+2. **S2: `pg` adapter** (Medium).
+   - Connection pool, transaction helpers, structured error mapping.
+   - `db/migrations/` skeleton with the initial schema from §3.
+   - `goose` (or `migrate`) integration in `cmd/migrate`.
+   - Testcontainers integration test.
+
+3. **S3: `nats` adapter** (Medium).
+   - Client from §9 spec.
+   - Docker-compose entry pointing at workspace NATS (once
+     `~/workspace/nats/` is stood up — this milestone unblocks that).
+   - Testcontainers integration test.
+
+4. **S4: `s3` adapter** (Small).
+   - Garage client.
+   - Bucket provisioning + presigned URL generation.
+   - Testcontainers with Garage or `minio` for the fake (they speak
+     the same protocol).
+
+5. **S5: `temporal` adapter + worker skeleton** (Small).
+   - Temporal Go SDK client construction.
+   - `cmd/worker/main.go` with empty workflow/activity registration.
+   - Runs against workspace Temporal.
+
+6. **S6: `llm` adapter** (Medium).
+   - OpenAI-compatible chat completions client.
+   - Endpoint discovery via `/v1/models`.
+   - Concurrency semaphore (see §6 discovery for details on why 2).
+   - Testcontainer or mock server for tests.
+
+7. **S7: External API adapters** (Medium, mostly parallel-safe).
+   - `apifootball` — REST client + rate limiter.
+   - `wikidata` — SPARQL client.
+   - `syndication` — Twitter syndication API for video downloads.
+   - `twitter` — HTTP client to the (still-Python) Twitter service.
+   - `ffmpeg` — subprocess wrapper + probe.
+   - Each is small individually; grouped because they're independent
+     and someone can grind through them.
+
+**Exit criteria:**
+
+- `docker compose -f deploy/docker-compose.dev.yml up -d` brings up the
+  full stack: Postgres, NATS, Garage, Temporal, empty worker.
+- Every adapter has a passing integration test in CI.
+- Every adapter emits its expected log events (verified by a grep in
+  a test).
+- Vocabulary catalog is populated with the actions the substrate
+  emits; `docs/generated/actions.md` is committed.
+- The dev stack is reachable via Caddy routes.
+
+**Explicit non-goals:**
+
+- No domain services. No stores yet. The `pg` adapter has migrations
+  but no query methods for domain tables (those come in Phase D).
+- No workflows. `cmd/worker/main.go` compiles and connects to Temporal
+  but registers zero workflows.
+- The API service (`cmd/api`) is not even a stub yet.
+
+**Estimated size:** 2-3 weeks of focused work.
+
+**Checkpoint before continuing:** every adapter has a passing test AND
+emits observable output. If we can't tell whether the substrate is
+working by looking at the dev-stack Grafana, we're not done yet.
+
+### 16.4 Phase D — Domain
+
+**Prerequisites:** S1 (observability), S2 (`pg` with migrations), S3
+(`nats`). Other adapters can lag.
+
+**What ships:** the 8 domain packages from §4, each with:
+
+- Types (`internal/domain/<name>/model.go`).
+- Store interface + Postgres implementation.
+- Service interface + orchestration-facing implementation.
+- Fake store for unit testing.
+- Unit tests for the service logic (mocking the store).
+- Integration tests for the store against Postgres.
+
+**Sub-milestone order:**
+
+1. **D1: `fixture` domain** (Medium).
+   - Lifecycle: staging / active / completed with league_id, kickoff_at,
+     status.
+   - Store: fetch by ID, list-by-status, transition-lifecycle methods.
+   - Service: activate, complete, cleanup-old.
+   - Unit + integration tests.
+
+2. **D2: `event` domain** (Medium).
+   - Event model with the `natural_key` uniqueness invariant.
+   - Store: insert, fetch, update workflow-tracking fields.
+   - Service: register-workflow, mark-monitor-complete, mark-download-complete.
+   - Atomic ops via `INSERT ... ON CONFLICT DO NOTHING`, `UPDATE ...
+     WHERE ... RETURNING`.
+   - Unit + integration tests.
+
+3. **D3: `video` domain** (Large — this is the hairy one).
+   - Two-table split: `video_assets` (canonical byte-store, content-hash
+     PK) + `video_shares` (public share IDs, s_<12hex> format).
+   - Store: insert-asset-if-not-exists, insert-share, list-shares-by-event,
+     recalculate-ranks.
+   - The rank invariant: `CREATE UNIQUE INDEX video_shares_event_rank_active`
+     enforces uniqueness; `recalculate` runs inside `WithRetryableTx`.
+   - Service: register-video (asset + share creation with dedup), replace,
+     bump-popularity, recalculate-ranks-for-event.
+   - This is where the URL stability contract gets encoded — worth a
+     dedicated code review checkpoint.
+   - Unit + integration tests with generated fixtures that stress the
+     rank invariant.
+
+4. **D4: `alias` domain** (Small).
+   - Team alias cache with Wikidata QID + normalized alias list.
+   - Store: upsert-alias, fetch-by-team-id.
+   - Service: get-or-fetch (with RAG fallback via `llm` + `wikidata`
+     adapters).
+   - Unit + integration tests.
+
+5. **D5: Discovery / Vision / Session / TextAnalysis domains** (Medium).
+   - The 4 supporting domains from §4.
+   - Discovery holds discovered Twitter URLs pre-download.
+   - Vision holds AI validation results per video (extracted minute,
+     confidence, etc.).
+   - Session holds Twitter cookie state (moved from filesystem to
+     Postgres for durability).
+   - TextAnalysis holds RAG intermediates (Wikidata alias lists, LLM
+     filtered outputs) for auditability.
+
+**Exit criteria:**
+
+- Every domain has its store + service + tests.
+- Integration tests exercise the atomic-op invariants (e.g., a test
+  that spawns two goroutines both trying to register the same event
+  and asserts exactly one succeeds).
+- The rank uniqueness invariant is exercised under contention.
+- All auto-generated docs (SQL migration list, log actions) are
+  refreshed and committed.
+
+**Explicit non-goals:**
+
+- No workflows. Services expose methods that workflows will call, but
+  the workflow layer doesn't exist yet.
+- No API. The domain services are internally callable but not
+  externally accessible.
+
+**Estimated size:** 3-4 weeks. The `video` domain alone can eat a week
+because the invariants around URL stability + rank uniqueness are
+where most historical bugs came from.
+
+**Checkpoint:** before moving to Phase O, all domain integration tests
+pass AND the video domain's rank invariant is proven under a
+stress-test scenario (100 concurrent goroutines racing on
+recalculate-ranks; every final state has exactly one video per rank).
+
+### 16.5 Phase O — Orchestration
+
+**Prerequisites:** D complete. S5 (`temporal` adapter) complete.
+
+**What ships:** the 5 workflows and ~30 activities from §5, registered
+in `cmd/worker`, running against workspace Temporal.
+
+**Sub-milestone order:**
+
+1. **O1: Ingest workflow** (Small).
+   - Daily fixture fetch, categorization, cleanup.
+   - Depends on: `fixture` domain, `apifootball` adapter,
+     `alias` domain (for pre-caching).
+   - Activities: `fetch_todays_fixtures`, `fetch_fixtures_by_ids`,
+     `categorize_and_store_fixtures`, `cleanup_old_fixtures`,
+     `precache_team_aliases`.
+   - Runs standalone (no fan-out) so it's a good smoke test that the
+     worker + Temporal + Postgres integration works end-to-end.
+
+2. **O2: Monitor workflow** (Medium).
+   - The 30s polling loop.
+   - Depends on: `fixture` + `event` domains, `apifootball` adapter,
+     `nats` adapter for stable-event publishes.
+   - Activities: `fetch_active_fixtures`, `process_fixture_events`,
+     `complete_fixture_if_ready`, `notify_frontend_refresh` (now via
+     NATS instead of HTTP).
+   - Emits stable-event notifications that trigger Discovery.
+   - Ships without Discovery hooked up first — Monitor sends events
+     to a NATS subject that has no consumer yet, verifiable by NATS CLI.
+
+3. **O3: Discovery (Twitter) workflow** (Medium).
+   - Fires per stable event, drives the 10-attempt search loop.
+   - Depends on: `event` + `alias` + `discovery` domains, `twitter`
+     adapter.
+   - Activities: `check_event_exists`, `resolve_team_aliases`,
+     `execute_twitter_search`, `save_discovered_videos`, and the
+     signal-with-start plumbing for Download.
+   - Wired to Monitor's NATS subject as a subscriber that starts a new
+     Discovery workflow per stable event.
+
+4. **O4: Download workflow** (Medium).
+   - Per-video download + AI validation + hashing.
+   - Depends on: `syndication`, `ffmpeg`, `s3`, `llm` adapters;
+     `vision` domain.
+   - Activities: `register_download_workflow`, `download_single_video`,
+     `validate_video_is_soccer`, `generate_video_hash` (or embedding —
+     depends on §5 embedding decision), `queue_videos_for_upload`.
+   - This is the video pipeline (Phase V) landing inside a workflow.
+
+5. **O5: Upload workflow** (Medium).
+   - Serialized per event via `SignalWithStartWorkflow` with
+     deterministic ID `upload-{event_id}`.
+   - Depends on: `video` domain, `s3` adapter.
+   - Activities: `fetch_event_data`, `deduplicate_by_md5`,
+     `deduplicate_videos`, `upload_single_video`, `replace_s3_video`,
+     `update_video_in_place`, `bump_video_popularity`,
+     `recalculate_video_ranks`, `check_and_mark_download_complete`,
+     cleanup activities.
+   - The URL-stability + rank-invariant checkpoint from Phase D pays
+     off here — Upload workflow gets to be short and clear because the
+     domain layer already enforces the hard rules.
+
+**Exit criteria:**
+
+- All 5 workflows registered and running in the dev worker.
+- A dev-mode "seed a fake event" script creates a Postgres event and
+  triggers the workflow chain end-to-end, producing an S3 video +
+  event NATS message.
+- Every workflow has retry policy documented in `docs/rebuild/temporal.md`,
+  auto-generated from source.
+- Integration tests exercise the workflow chain against the dev stack.
+
+**Explicit non-goals:**
+
+- No public API. The workflows write to Postgres; nothing reads it
+  externally yet.
+- No production traffic. Dev worker only.
+- No frontend integration. That's Phase A + C.
+
+**Estimated size:** 2-3 weeks. Each workflow is ~ 3 days of focused work
+including tests.
+
+### 16.6 Phase V — Video pipeline
+
+**Prerequisites:** S1, S3 (nats), S4 (s3), S6 (llm), S7 (syndication +
+ffmpeg). D3 (video domain).
+
+**Runs in parallel with Phase O.** The video pipeline landed as
+activities within Download and Upload workflows in Phase O, but the
+lower-level video-processing code (frame extraction, hash / embedding
+generation, MD5 dedup, validation prompt engineering) can be built and
+tested in isolation.
+
+**What ships:**
+
+- `internal/video/` — pure video-processing code: frame extraction via
+  ffmpeg, hash or embedding generation, MD5 batch dedup, aspect/duration
+  filters.
+- `internal/vision/` — the AI validation logic that wraps `llm` adapter
+  calls for SOCCER/SCREEN classification and clock extraction. Prompt
+  templates live here as versioned Go strings.
+- Unit tests with golden-file inputs (frames from known videos, expected
+  hash/embedding outputs).
+- Integration tests that run a full validate + hash pass against the
+  dev `llm` adapter.
+
+**Explicit non-goals:**
+
+- Not a service. `internal/video/` and `internal/vision/` are libraries
+  called by workflow activities.
+
+**Estimated size:** 1-2 weeks. Overlaps with O4 heavily.
+
+**Decision gate — embeddings vs hashing.** Per the current roadmap's
+Phase 5 decision gate: after O5 ships and the hash-based pipeline is
+proven working, decide whether to swap perceptual hashing for
+sentence-transformers embeddings. Two paths:
+
+- **Path A**: ship the rebuild with the hash-based pipeline. Land
+  embeddings as a follow-up after cutover.
+- **Path B**: block cutover on embeddings landing. Risk: more work
+  before World Cup deadline.
+
+Recommendation: Path A. Cutover is high-risk enough; changing the video
+processing algorithm at the same time compounds the risk. Embeddings
+land as a post-cutover roadmap item.
+
+### 16.7 Phase A — API surface
+
+**Prerequisites:** S1, S2, S3 (nats). D1 (fixture), D2 (event), D3
+(video).
+
+**Runs in parallel with Phase O.** The API only needs read paths at
+first; write paths come from workflows independently.
+
+**What ships:**
+
+- `cmd/api/main.go` — Chi + Huma server.
+- `internal/api/handlers/` — request handlers per resource (fixtures,
+  events, videos).
+- `internal/api/sse/` — SSE stream subscribing to NATS `event.>` +
+  `fixture.>` subjects, forwarding to browser clients. Backfill on
+  reconnect via `event_log`.
+- `internal/api/webhooks/` — subscription CRUD + JetStream durable
+  consumer for delivery.
+- `docs/generated/openapi.yaml` — auto-generated from Huma tags.
+- `docs/rebuild/api-contract.md` — hand-maintained intent + versioning
+  policy, linking to the generated spec.
+
+**Sub-milestone order:**
+
+1. **A1: Read endpoints** (Medium).
+   - `GET /api/v1/fixtures`, `GET /api/v1/fixtures/{id}`,
+     `GET /api/v1/events/{id}`, `GET /api/v1/videos/shares/{share_id}`.
+   - Auth via `FOUND_FOOTY_API_TOKEN`.
+   - OpenAPI generation working.
+
+2. **A2: SSE stream** (Small).
+   - `GET /api/v1/events/stream` (SSE endpoint).
+   - Subscribes to NATS event subjects.
+   - Backfill on `Last-Event-ID` header via `event_log` query.
+
+3. **A3: Webhook infrastructure** (Medium).
+   - Subscription CRUD.
+   - JetStream durable consumer with delivery worker in `cmd/webhookd`.
+   - HMAC signing of payloads.
+   - Delivery retry with exponential backoff.
+
+**Exit criteria:**
+
+- Frontend can hit `/api/v1/fixtures` from a dev vedanta-systems and
+  see fixtures from the rebuild's Postgres.
+- SSE stream delivers events in realtime when a workflow publishes.
+- Webhook consumer receives events even across worker restarts.
+
+**Estimated size:** 1-2 weeks. Overlaps with O.
+
+### 16.8 Phase T — Testing hardening
+
+**Prerequisites:** runs throughout. Backfill milestone at the end.
+
+**What ships:** the three-tier pyramid from §12.
+
+- **Unit tests** — land with every domain / adapter / workflow.
+  This is expected, not a separate milestone.
+- **Integration tests** — land alongside code that needs them. Also
+  expected.
+- **Synthetic e2e tests** — a separate deliverable that lands late.
+
+**Synthetic e2e milestone:**
+
+- `test/synthetic/` — recorded scenarios that drive the full pipeline:
+  a real API-Football response for a live match, a set of Twitter
+  search results (recorded), video files, expected end-state Postgres
+  rows + S3 objects.
+- Runs in CI on every PR to `rebuild/go`.
+- The scenarios themselves are versioned artifacts stored in
+  `test/fixtures/scenarios/`.
+
+**Exit criteria:**
+
+- Coverage floor per §12 met (unit 60%+, integration 40%+ on
+  boundary-critical code).
+- At least 3 synthetic e2e scenarios cover: happy-path goal capture,
+  VAR-cancelled goal, re-attribution recovery.
+- CI runs the full test pyramid on every PR in < 10 minutes.
+
+**Estimated size for the backfill:** 1-2 weeks. Ongoing testing during
+Phases D + O + V + A is not counted here — that's just "how we work."
+
+### 16.9 Phase M — Migration
+
+**Prerequisites:** D complete.
+
+**What ships:**
+
+- `cmd/migrate-legacy/main.go` — one-shot script that reads
+  `fixtures_active` + `fixtures_completed` from the legacy MongoDB,
+  translates the embedded event / video arrays to the Postgres
+  schema, and writes rows.
+- Idempotent: safe to run multiple times.
+- Chunked: processes 1000 fixtures at a time with progress logging.
+- Verification mode: compare each written fixture back against the
+  MongoDB source and log discrepancies.
+
+**Sub-milestones:**
+
+1. **M1: schema mapping** — a written mapping between MongoDB documents
+   and Postgres rows, including the embedded-array-to-normalized-table
+   translations for events + videos. Lives in `docs/rebuild/migration.md`.
+2. **M2: migration script** — the Go implementation of the mapping.
+3. **M3: dry-run** — run against a snapshot of prod Mongo in a dev
+   Postgres. Compare row counts, check invariant preservation,
+   spot-check individual records.
+
+**Exit criteria:**
+
+- Dry-run migrates the full prod snapshot in < 30 minutes.
+- All post-migration invariant tests pass (rank uniqueness,
+  URL stability, event `natural_key` uniqueness, no orphaned
+  video_shares).
+- Verification mode reports zero discrepancies on a small subset of
+  fixtures manually re-checked.
+
+**Estimated size:** 1 week.
+
+**Explicit non-goals:**
+
+- Not a live-migration script. This is a one-shot dump-and-load with
+  a downtime window (per §14 cutover plan).
+
+### 16.10 Phase C — Cutover
+
+**Prerequisites:** everything above.
+
+Per §14: endpoint-by-endpoint frontend migration with feature flags,
+48-hour stability window per step, four-color metrics thresholds,
+legacy turnoff after 30 days of parallel run.
+
+**Milestone order internal to Phase C:**
+
+1. **C1: Deploy new stack to prod alongside legacy** (Medium).
+   - `docker compose -f docker-compose.yml up -d` runs the new stack
+     with production env vars.
+   - Legacy Python worker + twitter service continue running.
+   - The new API is reachable at
+     `found-footy-prod-api.<base-domain>` via Caddy; the old system's
+     UIs stay at their existing hostnames.
+   - vedanta-systems' `FOUND_FOOTY_API_URL` is set but no feature flags
+     are enabled.
+
+2. **C2: Data migration** (Small).
+   - Run the migration script from Phase M against prod Mongo → prod
+     Postgres.
+   - Verify invariants.
+   - Set the new stack's workflows to catch up from the migration
+     cutoff point.
+
+3. **C3: Frontend flag flips** (Medium, sequential).
+   - Per §14: one endpoint at a time, 48h stability window each.
+     Order: fixtures → events → videos → SSE → webhooks.
+   - After each flip: dashboard watches for the four-color thresholds.
+     Rollback if any hit red.
+
+4. **C4: Parallel-run stabilization** (Medium).
+   - Both stacks running, all traffic on new stack, legacy stack
+     continues consuming API-Football and writing to MongoDB for
+     rollback safety.
+   - 30 days of soak.
+   - Any bug found in new stack: fix on `main` (which is now the
+     rebuild) + observe.
+
+5. **C5: Legacy turnoff** (Small).
+   - Per §14: stop legacy containers, `docker volume rm` of legacy
+     volumes, delete the compat client from the new API.
+   - `docs/architecture.md` updated to describe the new-only state.
+   - Old `docs/` files moved to `docs/legacy/` per §15.10.
+
+**Estimated size:** 4-8 weeks including the 30-day parallel-run soak.
+
+### 16.11 Cross-phase concerns
+
+Some work spans multiple phases and doesn't belong in any single
+milestone.
+
+**Observability catches up as we build:**
+
+- Every phase adds vocabulary entries; the auto-generated catalog
+  grows continuously.
+- Every phase adds Prometheus metrics; the metrics registry grows.
+- Grafana dashboards get built lazily as needed for debugging during
+  Phase O + V.
+- By the end of Phase O, we should have all the dashboards from the
+  current Python system rebuilt for the Go stack — same queries,
+  different vocabulary.
+
+**`nexus` LLM endpoint swap:**
+
+- Per decisions.md 2026-07-01: the LLM adapter is config-swappable.
+- The rebuild ships pointing at `llama-small.joi` (current prod LLM
+  endpoint).
+- When nexus is ready, it's a `LLM_ENDPOINT_URL` change in `.env`
+  and a container restart — no code change.
+- No milestone owns this; it's a config change.
+
+**Workspace NATS provisioning:**
+
+- Milestone S3 depends on workspace NATS running at `~/workspace/nats/`.
+- Standing up the workspace stack (docker-compose, Caddy routes, monitor
+  scrape config) is done outside this project's repo but referenced
+  in `deploy/INFRA-NOTES.md`.
+- If workspace NATS isn't ready when S3 starts, S3 blocks; unblock by
+  finishing workspace-side setup first.
+
+**Docs generation runs from every merge:**
+
+- Every PR triggers `go generate ./...`.
+- CI fails if the diff is non-empty.
+- This means every code change updates the derived catalogs
+  automatically; no dedicated "docs maintenance" task.
+
+### 16.12 Dependencies and merge points
+
+**Strict prerequisites (must ship before dependents can start):**
+
+```
+F  →  S1
+S1 →  S2, S3, S4, S5, S6, S7 (parallel)
+S2 →  D1, D2, D3, D4, D5 (parallel among themselves once S2 done)
+S3 →  O2 (Monitor needs NATS for stable-event fan-out)
+S5 →  O1 (Ingest needs Temporal client)
+S6 →  D4 (alias domain uses llm for RAG)
+S7 →  D5 (discovery/vision/session/textanalysis use external APIs)
+D1 →  O1 (Ingest activities read/write fixtures)
+D1 + D2 →  O2 (Monitor)
+D2 + D4 →  O3 (Discovery)
+D5 + S6 + S7 →  O4 (Download)
+D3 →  O5 (Upload) + A1 (video read endpoints)
+D3 →  M (migration writes to video domain)
+S1 + S2 + S3 →  A (API needs pg + nats + observability)
+D + O + V + A →  T (synthetic e2e needs everything)
+Everything →  M →  C (cutover needs migration, cutover needs everything)
+```
+
+**Parallelism opportunities:**
+
+- Once S1 lands, adapters S2-S7 can be built in any order (or in parallel
+  by different focus sessions).
+- Once S2 lands, domains D1-D5 can be built in parallel.
+- V (video pipeline lib) and O4 (download workflow) overlap by ~ 80%.
+- V and A can proceed independently once their prerequisites clear.
+- Testing (T) runs throughout; the "backfill" milestone at the end
+  fills gaps.
+
+**Merge points requiring coordination:**
+
+- End of Phase S: dev stack must be fully functional before D starts.
+  A subtle S2 bug blocks all D-phase integration tests.
+- End of Phase D: video domain must have the URL-stability + rank
+  invariants proven before O5 can be built without pain.
+- End of Phase O: workflow-chain e2e must work before A2 (SSE) can be
+  end-to-end tested.
+- Beginning of Phase C: everything else complete. Cutover is the
+  no-turning-back merge point.
+
+### 16.13 Contingency and slip handling
+
+**What can slip:**
+
+- Phase V (video pipeline improvements) — the hash-based pipeline
+  works today; embeddings are optional per §16.6 decision gate.
+- Phase A3 (webhooks) — the vedanta-systems frontend currently uses
+  SSE, not webhooks. External webhook consumers can be added
+  post-cutover.
+- Phase T backfill milestone — coverage floor is a target, not a
+  release gate. If unit coverage hits 50% instead of 60%, ship anyway
+  and fill the gap post-cutover.
+
+**What CANNOT slip:**
+
+- Phase F, S, D, O core — no cutover without a working workflow chain.
+- Phase A1 + A2 (read + SSE) — frontend needs these to work.
+- Phase M (migration) — no cutover without data.
+- Phase C (cutover) itself, obviously — that's the deliverable.
+
+**Slip decision framework:**
+
+- If we're > 2 weeks behind the mental schedule for the current
+  milestone: reassess scope. Can we ship a smaller version of this
+  milestone that unblocks the next one?
+- If a milestone reveals unforeseen work (e.g., an adapter integration
+  is harder than expected): update the plan explicitly; don't just
+  extend silently.
+- If the cutover deadline (World Cup) is at risk: cut Phase V improvements,
+  cut A3 (webhooks), ship the minimum viable rebuild.
+
+**Rollback within the rebuild:**
+
+- Every milestone leaves the rebuild branch in a "compiles + tests
+  pass + docs current" state.
+- If a milestone lands and then a fundamental design flaw is found:
+  revert the milestone's PRs, re-plan, re-land. The long-lived branch
+  strategy makes this cheap.
+
+**Rollback of the cutover itself:**
+
+- Per §14: feature flags are the primary rollback mechanism during
+  endpoint-by-endpoint migration.
+- If catastrophic issues emerge during the 30-day parallel run: flip
+  the frontend flag back to legacy for that endpoint. Legacy stack is
+  still running; recovery is one config change.
+- After legacy turnoff (C5): no more rollback. That's why C5 waits
+  for the 30-day soak.
+
+### 16.14 Post-cutover roadmap
+
+Not part of this plan, but worth naming so we know what's deferred:
+
+- **Embedding-based video dedup** — the Path A deferral from §16.6.
+- **Multi-region proxy for geo-restricted broadcasters** — deferred
+  from the Python-side roadmap; still deferred here.
+- **Self-hosted git migration** — moving this repo from github.com to
+  a Gitea/Forgejo instance per user-global preferences.
+- **Additional consumers via webhooks** — mobile app, Discord bot,
+  external partners once the webhook infrastructure is proven.
+- **Cutover automation** — the current cutover is manual; automated
+  flag flipping + threshold-triggered rollback is a follow-up.
+
+These live in `docs/rebuild/roadmap.md` (fresh file, not the current
+`docs/roadmap.md` which is Python-era).
+
+### 16.15 Retrospective and this document's future
+
+Per §15.7, this document becomes historical at cutover. Its future:
+
+- **At cutover completion (C5)**: add the "Historical" marker at the top.
+- **Post-cutover retrospective (Day +45 per §14)**: capture what
+  actually happened vs what this plan predicted. Land in
+  `decisions.md` as a dated retrospective entry.
+- **Ongoing**: this file stays in `docs/` as the source of truth for
+  why the architecture is what it is. Future readers use it to
+  understand the reasoning; current architecture always lives in
+  `architecture.md` + `decisions.md`.
+
+The success criterion for this plan isn't "everything went to
+schedule" — it's "when we're done, we have a system that (a) works,
+(b) is comprehensible from the docs, and (c) future contributors can
+extend without carrying this document in their heads."
+
+---
+
+*End of rebuild-plan.md v1.0, drafted 2026-06-30 through 2026-07-01.*

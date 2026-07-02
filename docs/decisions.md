@@ -6,6 +6,50 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-01 — Workspace NATS as event bus (replaces Postgres LISTEN/NOTIFY)
+
+**Decision:** found-footy's async event stream (SSE fan-out, webhook delivery,
+cross-project events consumed by vedanta-systems) flows through workspace
+NATS at [`~/workspace/nats/`](../../nats/), NOT through Postgres LISTEN/NOTIFY
+as originally spec'd in earlier revisions of `docs/rebuild-plan.md` §8/§11.
+
+**Why:** ecosystem-level decision — see workspace decisions at
+`~/workspace/vedanta-dhobley/docs/decisions.md` 2026-07-01 entry for the
+full rationale. NATS is designed as a broker; per-project brokers fight the
+design center; cross-project consumption is trivial via a shared broker with
+NATS account isolation.
+
+**What stays vs what changes:**
+
+- **Postgres `event_log` table stays** (per §3 schema). Still the durable
+  audit trail. Every event is INSERTed into `event_log` for durability
+  + backfill on SSE reconnect.
+- **NATS is the fan-out mechanism.** Every event ALSO gets
+  `nats.Publish(subject, payload)` for realtime delivery to subscribers.
+- **SSE handler** (§8): subscribes to NATS `event.>` and `fixture.>`
+  subjects on the found-footy account instead of `LISTEN`ing on a
+  Postgres channel. Forwards to browser SSE consumers unchanged.
+- **Webhook delivery worker** (§8): consumes NATS via a durable JetStream
+  consumer with automatic replay on restart. Replaces the SQL `FOR UPDATE
+  SKIP LOCKED` polling loop.
+
+**Subject scheme (found-footy account):**
+
+- `event.detected`, `event.stable`, `event.video_ready`,
+  `event.rank_recalculated`, `event.removed`, `event.download_complete`
+- `fixture.activated`, `fixture.completed`
+
+Fully qualified via the found-footy NATS account:
+`found-footy.event.video_ready` etc. — but subject strings within the
+found-footy account use the short form.
+
+**Rebuild plan impact:** §8/§9/§10/§11/§14 updated in the same commit as
+this decision entry. `internal/infra/nats/` adapter added to §9;
+`docker-compose.yml` no longer runs a per-project NATS in §10 (workspace
+NATS is a dependency, not a project container).
+
+---
+
 ## 2026-07-01 — Fresh rebuild in parallel, not incremental refactor
 
 The rebuild happens as a **from-scratch build alongside the running
