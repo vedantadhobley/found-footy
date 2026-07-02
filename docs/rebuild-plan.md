@@ -5300,6 +5300,10 @@ type Client interface {
     // FetchEntity returns full entity metadata (labels, descriptions,
     // claims). Used sparingly — most calls are the two above.
     FetchEntity(ctx context.Context, qid string) (*Entity, error)
+
+    // Ping confirms the SPARQL endpoint is reachable. Wired into
+    // /healthz per §5's aggregator.
+    Ping(ctx context.Context) error
 }
 
 type Entity struct {
@@ -8021,10 +8025,45 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, e SSEEvent) {
 }
 ```
 
-The `EventLog.ListSince(ctx, since, limit)` reader lives in
-`internal/api/eventlog.go` — reads from Postgres `event_log` ordered by
-`id ASC` with an upper bound. The `NATS.Subscribe` variadic call returns
-a merged channel across the subject patterns (`event.>` + `fixture.>`).
+The `EventLog.ListSince` reader lives in `internal/api/eventlog.go`.
+Concrete interface:
+
+```go
+// EventLog is the read-side interface over the Postgres event_log
+// table (§3). Used by the SSE handler for reconnect backfill and by
+// the outbox catch-up worker for JetStream self-heal. Read-only —
+// event.Emit (§9) is the only writer.
+type EventLog interface {
+    // ListSince returns event_log rows with id > sinceID, ordered by
+    // id ASC, up to `limit` rows. Empty result means the client is
+    // caught up. Returns ErrBackfillTruncated if sinceID predates the
+    // oldest retained partition (retention is 30 days per §3), which
+    // the SSE handler surfaces as the X-Backfill-Truncated response
+    // header.
+    ListSince(ctx context.Context, sinceID int64, limit int) ([]Row, error)
+
+    // LatestID returns the current max event_log.id. Used by the outbox
+    // worker to bound its catch-up scan.
+    LatestID(ctx context.Context) (int64, error)
+}
+
+type Row struct {
+    ID           int64
+    EventType    string
+    FixtureID    *int64
+    EventID      *string
+    VideoShareID *string
+    Payload      json.RawMessage
+    CreatedAt    time.Time
+}
+```
+
+The concrete implementation is a thin pgx query wrapper — no service
+layer between the handler and the store, since event_log is append-only
+and has no domain semantics beyond "give me rows since this cursor."
+
+The `NATS.Subscribe` variadic call returns a merged channel across the
+subject patterns (`event.>` + `fixture.>`).
 
 **Message format:**
 
