@@ -3201,8 +3201,15 @@ UploadWorkflow    → id = "upload-{event_id}"          // deterministic, serial
 ```
 
 **Fire-and-forget child workflows use `ABANDON` parent close policy**
-(audit §0 invariant). Monitor is a 30s cycle; discovery is a ~10-minute
-loop — child MUST outlive parent.
+(audit §0 invariant). Applies to Discovery→Download spawns (per-attempt
+fan-out where NATS decoupling adds no value): Discovery is ~10 minutes,
+each Download is 1-3 minutes, and Download MUST outlive Discovery.
+
+Monitor→Discovery is NOT a parent-child spawn — Discovery is triggered
+by the `event.stable` NATS subject (see "Discovery trigger" below).
+Monitor is a 30s cycle; if it were the parent, Discovery would need
+ABANDON to outlive it, but decoupling via NATS is cleaner and gives
+`event.stable` a real emission site.
 
 **Per-event upload serialization via `SignalWithStartWorkflow`.** One
 UploadWorkflow per event, deterministic ID `upload-{event_id}`.
@@ -3233,8 +3240,8 @@ be non-deterministic; workflows can't).
 | Workflow | Schedule / Trigger | Purpose | Duration |
 |---|---|---|---|
 | `IngestWorkflow` | Daily 00:05 UTC (schedule) | Fetch 3 days of fixtures, categorize, pre-cache aliases, prune retention | Minutes |
-| `MonitorWorkflow` | Every 30s (schedule, SKIP overlap) | Poll active fixtures, detect events, trigger discovery, complete finished fixtures | Seconds |
-| `DiscoveryWorkflow` | Fire-and-forget from Monitor (ABANDON) | Twitter search loop per event: up to 10 attempts, spawn DownloadWorkflow per attempt | ~10 min |
+| `MonitorWorkflow` | Every 30s (schedule, SKIP overlap) | Poll active fixtures, detect events, emit semantic events, complete finished fixtures | Seconds |
+| `DiscoveryWorkflow` | Started per `event.stable` NATS message by cmd/worker's Discovery-trigger goroutine (see "Discovery trigger" below) | Twitter search loop per event: up to 10 attempts, spawn DownloadWorkflow per attempt | ~10 min |
 | `DownloadWorkflow` | Fire-and-forget from Discovery (ABANDON) | Download videos from one search attempt, validate, hash, signal UploadWorkflow | 1-3 min |
 | `UploadWorkflow` | SignalWithStart from Download | Serialized per-event upload queue: dedup, S3 upload, rank recalc | Idle-timeout 5 min |
 
@@ -3295,8 +3302,10 @@ Failure results in a Temporal-level workflow failure that operator can restart.
 ### Workflow 2: `MonitorWorkflow`
 
 **Purpose:** Every 30s, poll active fixtures for API updates, detect new/
-changed/removed events, trigger DiscoveryWorkflow for newly-stable events,
-complete finished fixtures.
+changed/removed events, emit `event.stable` / `event.removed` / etc. as
+semantic-event NATS messages, complete finished fixtures. Does NOT spawn
+DiscoveryWorkflow directly — that's decoupled via `event.stable` per the
+top-of-doc NATS decision.
 
 **Schedule:** `*/30 * * * * *` (every 30s) — schedule with SKIP overlap
 policy (if prior instance still running, skip this cycle).
@@ -3982,7 +3991,7 @@ should be minimal.
 right activities were called in the right order with the right args.
 
 ```go
-func TestMonitorWorkflow_NewEvent_TriggersDiscovery(t *testing.T) {
+func TestMonitorWorkflow_NewStableEvent_EmitsEventStable(t *testing.T) {
     ts := &testsuite.WorkflowTestSuite{}
     env := ts.NewTestWorkflowEnvironment()
 
@@ -3994,8 +4003,13 @@ func TestMonitorWorkflow_NewEvent_TriggersDiscovery(t *testing.T) {
     env.OnActivity(activity.RegisterEventMonitorWorkflow, mock.Anything, ...).Return(3, nil)
     env.OnActivity(activity.FlagMonitorComplete, mock.Anything, newGoalEvent.ID).Return(true, nil)
 
-    // Assert DiscoveryWorkflow spawned
-    env.OnWorkflow(DiscoveryWorkflow, mock.Anything, mock.Anything).Return(&DiscoveryOutput{}, nil)
+    // Assert event.stable NATS emission (Discovery is triggered by the
+    // Discovery-trigger goroutine consuming that subject, NOT by Monitor).
+    env.OnActivity(activity.EmitSemanticEvent,
+        mock.Anything, "event.stable", mock.MatchedBy(func(payload map[string]any) bool {
+            return payload["event_id"] == newGoalEvent.ID.String()
+        }),
+    ).Return(nil).Once()
 
     env.ExecuteWorkflow(MonitorWorkflow, MonitorWorkflowInput{})
 
@@ -4004,9 +4018,16 @@ func TestMonitorWorkflow_NewEvent_TriggersDiscovery(t *testing.T) {
 
     var out MonitorWorkflowOutput
     require.NoError(t, env.GetWorkflowResult(&out))
-    require.Equal(t, 1, out.DiscoveriesTriggered)
+    require.Equal(t, 1, out.EventsMarkedStable)
+    require.Equal(t, 1, out.SemanticEventsEmitted)
 }
 ```
+
+A separate `TestDiscoveryTrigger_EventStableMessage_StartsDiscoveryWorkflow`
+in `cmd/worker/main_test.go` covers the NATS-subscriber trampoline
+(publish `event.stable` to a testcontainer NATS; assert
+`Temporal.ExecuteWorkflow(DiscoveryWorkflow, ...)` is called with the
+right ID).
 
 Test naming convention: `Test<WorkflowName>_<Scenario>_<Assertion>`.
 
@@ -5441,8 +5462,20 @@ downloads live in §7.
 [Event debounced stable in MonitorWorkflow]
               │
               ▼
-   spawn DiscoveryWorkflow  ────► id = "discovery-{event_id}"
-              │                      REJECT_DUPLICATE (audit §2)
+   activity.EmitSemanticEvent("event.stable", {event_id, ...})
+              │       │
+              │       └──► event_log INSERT (durable audit)
+              │       └──► nats.Publish("event.stable", payload)
+              │
+              ▼
+   [cmd/worker/main.go: runDiscoveryTrigger goroutine]
+     Consumes JetStream durable consumer "discovery_trigger"
+              │
+              ▼
+   deps.Temporal.ExecuteWorkflow(DiscoveryWorkflow, ...)
+              │       id = "discovery-{event_id}"
+              │       REJECT_DUPLICATE (Temporal-layer dedup;
+              │       JetStream redelivery just acks second time)
               ▼
    ┌─────────────────────────┐
    │ 1. Resolve team aliases │  activity.GetOrResolveTeamAliases(TeamID)
@@ -6480,7 +6513,9 @@ them into one transaction eliminates both failure modes.
 **Step d: Emit semantic event.**
 
 ```go
-_, _ = workflow.ExecuteActivity(
+// The event_log INSERT is durable; if EmitSemanticEvent returns an
+// error the workflow retries the activity — do NOT swallow with `_, _`.
+if err := workflow.ExecuteActivity(
     ctx,
     activity.EmitSemanticEvent,
     "event.video_ready",
@@ -6492,7 +6527,9 @@ _, _ = workflow.ExecuteActivity(
         PlayerName:   playerName,  // from event lookup
         Minute:       eventMinute,
     },
-).Get(ctx, nil)
+).Get(ctx, nil); err != nil {
+    return err  // upstream retry retries the whole batch
+}
 ```
 
 Inside the activity — the dual-write pattern from §9's `event` package:
@@ -6510,6 +6547,13 @@ POSTs to subscribers. NATS publish failure does NOT roll back the
 event_log commit — SSE reconnect backfills from `event_log`, and the
 `dual_write_skew_total{event_type}` counter fires to make the drop visible.
 
+**Dual-write MUST semantics — do NOT swallow Emit errors.** The
+`event_log` INSERT is what makes the invariant durable. If Emit returns
+an error, the durable write did not land, and the workflow must retry.
+The `_, _ = workflow.ExecuteActivity(...)` pattern (used in earlier
+drafts) silently weakens the MUST — every workflow that emits an event
+error-returns on failure so Temporal retries the activity.
+
 **After all files in batch:**
 
 ```go
@@ -6521,12 +6565,14 @@ flipped, err := workflow.ExecuteActivity(
 ).Get(ctx, &flipped)
 
 if flipped {
-    _, _ = workflow.ExecuteActivity(
+    if err := workflow.ExecuteActivity(
         ctx,
         activity.EmitSemanticEvent,
         "event.download_complete",
         eventlog.Payload{EventID: input.EventID.String(), FixtureID: input.FixtureID},
-    ).Get(ctx, nil)
+    ).Get(ctx, nil); err != nil {
+        return err  // do not swallow; see dual-write MUST above
+    }
 }
 ```
 
