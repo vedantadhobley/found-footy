@@ -6942,7 +6942,9 @@ const (
     ModuleInfraSyndication  Module = "infra_syndication"
     ModuleInfraFFmpeg       Module = "infra_ffmpeg"
     ModuleInfraWikidata     Module = "infra_wikidata"
-    ModuleLegacyCompat      Module = "infra_legacycompat"  // pre-cutover-share resolution
+    // Legacy compat has no adapter module — pre-cutover raw MinIO URLs route
+    // through the workspace Caddy directly to the frozen legacy MinIO. No
+    // Go code participates in that resolution path.
 
     // Cross-cutting
     ModuleAPI        Module = "api"
@@ -7149,14 +7151,13 @@ Standard labels (never varies in name):
   - `404_missing` — share ID never existed. **Alert on any rate > 0** —
     this is the exact URL-stability violation the invariant prevents
     (a share_id that used to work but doesn't now).
-  - `404_legacy_missing` — legacy compat lookup failed. Alert if
-    `rate > 0` sustained; legacy compat should resolve every
-    pre-cutover share that was ever public.
-- `found_footy_legacy_compat_hits_total{outcome}` — counter, every
-  legacy compat lookup (`outcome` = `hit` | `miss`). Load-bearing for
-  §13/§14 legacy turnoff safeguard — turnoff requires this metric to
-  read zero hits for a sustained window before decommissioning legacy
-  is safe.
+
+Legacy content (pre-cutover raw MinIO URLs) does not resolve through
+the new API — those URLs route through the workspace Caddy directly to
+the frozen legacy MinIO. See §13/§14 for the "legacy MinIO stays online
+serving its own URLs" story; there is no compat lookup and no
+`404_legacy_missing` outcome. Legacy MinIO's own Caddy healthz probe
+covers its uptime.
 
 **Rank uniqueness invariant metrics (§3 partial UNIQUE INDEX + §4
 MintShareAndRecalculate):**
@@ -7356,14 +7357,15 @@ groups:
     annotations:
       summary: "A share_id returning 404 that used to resolve — URL stability violation. Investigate whether shares/assets were pruned or the redirect logic regressed."
 
-  # Load-bearing: legacy compat health during parallel-run
-  - alert: FoundFootyLegacyCompatUnreachable
-    expr: sum(rate(found_footy_share_resolve_total{outcome="404_legacy_missing"}[10m])) > 0
-    for: 10m
+  # Load-bearing: legacy MinIO uptime (URLs served directly through
+  # workspace Caddy, not through the new API)
+  - alert: FoundFootyLegacyMinioDown
+    expr: probe_success{instance="http://found-footy-legacy-minio:9000/minio/health/live"} == 0
+    for: 5m
     labels:
       severity: critical
     annotations:
-      summary: "Legacy compat resolving a pre-cutover share ID as missing — legacy Mongo or MinIO may be down/misconfigured."
+      summary: "Legacy MinIO health probe failing — pre-cutover raw MinIO URLs will 404 until it recovers. URL-stability violation."
 
   # NATS transport health
   - alert: FoundFootyNATSDisconnected
@@ -10327,40 +10329,40 @@ Compatibility layer in the new API — `internal/api/handlers/videos.go` share-i
 
 ```go
 func getShareVideo(ctx context.Context, in *GetShareVideoInput) (*GetShareVideoOutput, error) {
-    // Try new Postgres first
+    // Only new-format s_<12-hex> share IDs resolve here.
     share, err := deps.VideoShares.GetByID(ctx, in.ShareID)
     if err == nil {
         return handleNewShare(ctx, deps, share)
     }
-    if !errors.Is(err, video.ErrShareNotFound) {
-        return nil, err
+    if errors.Is(err, video.ErrShareNotFound) {
+        return nil, huma.Error404NotFound("share not found")
     }
-
-    // Fallback: legacy compat lookup
-    legacyURL, err := deps.LegacyCompat.LookupLegacyShare(ctx, in.ShareID)
-    if err == nil {
-        // Redirect to the legacy MinIO URL (unchanged since old prod)
-        return &GetShareVideoOutput{
-            Status:       http.StatusFound,
-            Location:     legacyURL,
-            CacheControl: "no-store",
-        }, nil
-    }
-
-    return nil, huma.Error404NotFound("share not found")
+    return nil, err
 }
 ```
 
-`LegacyCompat` is a small read-only client to the frozen Mongo:
+**No cross-lookup compat layer.** Confirmed by inspecting the live
+Python prod's `fixtures_completed.events._s3_videos` schema: legacy
+videos are keyed by `_s3_key` and `url` (a full
+`http://minio:9000/footy/...` URL) — there is no `share_id` field
+on legacy documents to look up.
 
-```go
-// internal/infra/legacycompat/client.go
-type Client interface {
-    LookupLegacyShare(ctx context.Context, shareID string) (legacyURL string, err error)
-}
-```
+That means the two URL namespaces are disjoint and there's no
+cross-lookup needed:
 
-Under the hood: `db.fixtures_completed.find({"events._s3_videos.share_id": shareID})` returning the old S3 URL. Note that current Python found-footy might not have `share_id` on legacy documents — it uses raw `_s3_key` and `s3_url`. Migration path needs to handle this — see A.2 below OR extend the compat layer to accept both share_id lookups AND raw legacy URLs (og-server may embed raw URLs from before share IDs existed).
+- **New share URLs** (`http://api.<domain>/api/v1/videos/s_<12-hex>`)
+  mint after cutover; resolve via the new Postgres.
+- **Legacy raw MinIO URLs**
+  (`http://found-footy-legacy-minio.<domain>/footy/<fixture_id>/<event_id>/<hash>.mp4`)
+  are what og-server and pre-cutover shared bookmarks embed; they
+  continue resolving directly against the read-only legacy MinIO
+  through the workspace Caddy (see legacy Caddyfile block below).
+  They never route through the new API.
+
+Nothing enters the new share-id endpoint that used to be a legacy
+URL — legacy URLs weren't share-id-shaped in the first place. The
+`Client` interface, `LookupLegacyShare` method, and the
+`404_legacy_missing` outcome disappear from the design.
 
 **Pros of A.1:**
 - Zero data-migration work up front — cut over immediately, backfill never (or later, at leisure)
@@ -10562,7 +10564,7 @@ un-deliver them; downstream idempotency (subscribers key on
 mitigation. This is a normal at-least-once trade-off; documented so
 the runbook doesn't treat rollback as "as if it never happened."
 
-Webhook subscribers: existing subscriptions live in legacy Mongo (Python didn't have webhooks per audit §11); vedanta-systems' backend re-registers via `POST /api/v1/webhooks/subscriptions` on its next startup post-cutover. Idempotent on `(consumer_name, url)`.
+Webhook subscribers: Python found-footy had no webhook infrastructure (per audit §11), so there are no existing subscriptions to migrate. vedanta-systems' backend registers fresh via `POST /api/v1/webhooks/subscriptions` on its next startup post-cutover. Idempotent on `(consumer_name, url)`.
 
 ### Migration testing
 
@@ -10841,19 +10843,24 @@ canonical URL, generates OG card with that URL. If the share is removed
 URLs from tweets embedded BEFORE the rebuild. Those URLs won't have
 share_ids per the new format — they'll be raw MinIO URLs like
 `http://found-footy-prod-minio.<base>/footy/<fixture>/<event>/<hash>.mp4`.
-Two approaches:
+These URLs continue to resolve directly against the read-only legacy
+MinIO through the workspace Caddy — no lookup through the new API.
 
-- og-server keeps a "legacy URL" code path that reads legacy Mongo
-  directly for those URLs. Stays on until Migration Path A.2 completes
-  (see §13).
-- og-server relies on the new API's LegacyCompat layer from §13 —
-  hitting `/api/v1/videos/legacy?url=<url>` returns the current
-  canonical + metadata.
+og-server's code path:
 
-**Recommendation:** the new API exposes a small `/api/v1/videos/legacy`
-helper endpoint (post-cutover) that lets og-server go through one unified
-lookup path. Keeps og-server simple: hit one endpoint for both new and
-legacy shares.
+- **For new share URLs** (`.../videos/s_<12-hex>`) — call the new API's
+  metadata endpoint to fetch fixture / event / player context for the
+  OG card.
+- **For legacy raw MinIO URLs** — read from legacy Mongo directly. This
+  code path stays until Migration Path A.2 completes (see §13); after
+  A.2 lands, every legacy asset has been re-uploaded to new Garage with
+  a corresponding new share ID, at which point og-server's legacy
+  reader can also be retired.
+
+No `/api/v1/videos/legacy` endpoint exists — the design earlier proposed
+one but it was contradictory with §13's confirmed premise that legacy
+uses raw MinIO URLs (no share IDs to look up). Legacy URLs are their
+own namespace; the new API doesn't participate in resolving them.
 
 ### Monitoring during cutover
 
@@ -10942,9 +10949,19 @@ for share URLs during Day 0 → Day +30. When does it actually turn off?
 
 **Turnoff sequence** (plan-level; runbook detail lands with Phase C):
 
-1. Verify preconditions via `found_footy_legacy_compat_hits_total` — 7-day
-   rate must be near zero. Concrete threshold + safety margin decided at
-   runbook time.
+**Precondition 0 (load-bearing):** Migration Path A.2 has completed —
+every legacy `_s3_key` has been re-uploaded to new Garage AND
+og-server + any external consumers have been notified to use the new
+URLs. Without A.2, turning off legacy MinIO breaks pre-cutover shared
+URLs, which violates the URL-stability invariant (§0/§4). If A.2 has
+NOT run, do not proceed with turnoff — file a decisions.md entry
+explicitly accepting URL-stability breakage first, or defer turnoff.
+
+1. Verify A.2 completion: query the legacy Mongo for
+   `count(fixtures_completed.events._s3_videos)` and compare against the
+   new Postgres migration log's `imported_video_assets` count. Numbers
+   must match to within the delta of any videos removed via VAR since
+   A.2 ran.
 2. Stop legacy containers (`docker compose -f docker-compose.legacy.yml down`).
 3. Remove legacy Caddy entries + reload the workspace proxy.
 4. Archive legacy volumes (rsync to `~/workspace/data/_archive/`) before
@@ -10953,14 +10970,12 @@ for share URLs during Day 0 → Day +30. When does it actually turn off?
 6. Workspace NATS: **nothing to do.** NATS is workspace-shared
    infrastructure (per CONVENTIONS Pattern C), not part of the legacy
    found-footy stack. The `found-footy` NATS account persists across
-   the turnoff. No account revocation, no subject-tree cleanup.
-7. Follow-up PR removes the `internal/infra/legacycompat/` package and
-   its lookup in `internal/api/handlers/videos.go`. Clean code; no
-   dead paths.
+   the turnoff.
 
-**Post-turnoff followup PR** — removes the `LegacyCompat` client from
-`internal/infra/legacycompat/` and the lookup path from
-`internal/api/handlers/videos.go`. Clean code, no dead paths.
+No follow-up PR to "remove LegacyCompat" is needed — that adapter never
+existed in the doc's current design (removed with this reconciliation).
+Legacy MinIO URLs were served directly through the workspace Caddy the
+whole time, not through the new API.
 
 ### Post-cutover retrospective
 
@@ -12301,8 +12316,11 @@ legacy turnoff after 30 days of parallel run.
      cutoff point.
 
 3. **C3: Frontend flag flips** (Medium, sequential).
-   - Per §14: one endpoint at a time, 48h stability window each.
-     Order: fixtures → events → videos → SSE → webhooks.
+   - Per §14 "Migration order": one endpoint at a time, 48h stability
+     window each. Order: videos (share-id redirect, safest — see §14)
+     → fixtures → events → feed → SSE/webhooks. This matches §14's
+     lowest-blast-radius-first ordering; the earlier "fixtures →
+     events → videos → SSE → webhooks" wording here was inverted.
    - After each flip: dashboard watches for the four-color thresholds.
      Rollback if any hit red.
 
