@@ -2395,12 +2395,16 @@ type DownloadedFile struct {
 }
 
 type ValidationResult struct {
-    IsSoccer          bool                `json:"is_soccer"`
-    IsPhoneScreen     bool                `json:"is_phone_screen"`
-    SoccerConfidence  float64             `json:"soccer_confidence"`
-    ClockExtractions  []ClockExtraction   `json:"clock_extractions"`  // one per frame checked
-    FramesChecked     int                 `json:"frames_checked"`     // 2 or 3
-    Verdict           ValidationVerdict   `json:"verdict"`
+    IsSoccer               bool                    `json:"is_soccer"`
+    IsPhoneScreen          bool                    `json:"is_phone_screen"`
+    SoccerConfidence       float64                 `json:"soccer_confidence"`
+    ClockExtractions       []ClockExtraction       `json:"clock_extractions"`  // one per frame checked
+    FramesChecked          int                     `json:"frames_checked"`     // 2 or 3
+    // TimestampVerification is populated by the VerifyTimestamp step
+    // inside the ValidateVideoIsSoccer activity (§5, §7). Nil when the
+    // classifier alone was enough to decide (non-soccer / phone-screen).
+    TimestampVerification  *TimestampVerification  `json:"timestamp_verification,omitempty"`
+    Verdict                ValidationVerdict       `json:"verdict"`
 }
 
 type ValidationVerdict string
@@ -2439,10 +2443,19 @@ type TimestampVerification struct {
 type Service struct {
     ffmpeg          infra.FFmpegClient   // shells out to ffmpeg CLI
     llm             infra.LLMClient      // config-swappable joi/nexus
-    validationPrompt string              // the multi-image classification prompt
+    validationPrompt string              // the multi-image classification prompt — see below
     tolerance       int                  // clock-vs-api tolerance in minutes; default 3
     logger          *slog.Logger
 }
+
+// The `validationPrompt` string is load-bearing IP: it was recovered from
+// a running prod container (commit 7d5429d in the pre-rebuild Python code
+// per project CLAUDE.md), and its wording is what elicits the exact
+// SOCCER/SCREEN/CLOCK/ADDED/STOPPAGE_CLOCK response format §7 depends on.
+// The prompt lives verbatim at `internal/domain/vision/prompts/validation_v1.txt`,
+// embedded via `//go:embed`, and is versioned as a Go string constant per
+// §16.6. Rewrites must re-validate against
+// `scripts/test_structured_extraction.go` before landing.
 
 // ExtractFrames pulls JPEG frames at normalized positions (0.0-1.0) of
 // the video's duration. Uses ffmpeg via os/exec. Positions map to
@@ -3442,14 +3455,18 @@ For each video in Input.Videos (up to 5 per attempt):
 
 // STEP 3: Sequential AI validation (respects LLM cap)
 For each surviving file:
-  5. activity.ValidateVideoIsSoccer(file, APIElapsed, APIExtra)
-     → ValidationResult
+  5. activity.ValidateVideoIsSoccer(file.LocalPath, file.DurationSecs,
+                                    APIElapsed, APIExtra) → ValidationResult
+     // Activity composes vision.ExtractFrames + ValidateFrames +
+     // VerifyTimestamp (§4). Verdict encodes classification AND timestamp.
 
      Retry policy: 4 attempts, 2x backoff from 3s. Retry-eligible:
        ErrLLMUnavailable, ErrLLMTimeout, ErrLLMCapExceeded.
      Non-retryable: ErrLLMBadResponse (log for prompt work).
 
-  IF Verdict != Accepted: mark file as filtered, continue
+  IF Verdict == VerdictAccepted OR Verdict == VerdictRejectedClockMismatch:
+    keep with `timestamp_verified = (Verdict == VerdictAccepted)`
+  ELSE: filter, continue
 
 // STEP 4: Parallel hash generation
 For each accepted file, workflow.Go:
@@ -3702,7 +3719,7 @@ Per-activity overrides shown below.
 |---|---|---|---|---|
 | `DownloadVideo` | video URL | DownloadedFile | 90s | 3 attempts, 2x from 2s. Non-retryable: geo/deleted/notavailable |
 | `DedupBatchByMD5` | []DownloadedFile | []DownloadedFile | 30s | 2 attempts |
-| `ValidateVideoIsSoccer` | (file, apiElapsed, apiExtra) | ValidationResult | 90s | 4 attempts, 2x from 3s. Non-retryable: ErrLLMBadResponse |
+| `ValidateVideoIsSoccer` | (filePath, durationSecs, apiElapsed, apiExtra) | ValidationResult | 90s | 4 attempts, 2x from 3s. Non-retryable: ErrLLMBadResponse. Composes vision.ExtractFrames + ValidateFrames + VerifyTimestamp (§4). Verdict encodes both classification AND timestamp check. |
 | `GenerateVideoHash` | file | dHashSamples | 60s heartbeat | 2 attempts, heartbeat every 5 frames |
 | `SignalUploadBatch` | (eventID, batch) | error | 60s | 3 attempts |
 | `DeleteLocalTempFile` | file | error | 30s | 2 attempts |
@@ -5942,31 +5959,24 @@ for _, outcome := range survivors {
         continue
     }
 
-    // Frame extraction: 25%, 75% first pass
-    frames, err := workflow.ExecuteActivity(
-        ctx,
-        activity.ExtractFramesForValidation,
-        outcome.result.FilePath,
-        outcome.result.Duration,
-        []float64{0.25, 0.75},
-    ).Get(ctx, &frames)
-    if err != nil {
-        recordFailureClass(err)
-        continue
-    }
-
-    // Vision validation with smart 2-3 strategy
+    // One activity: extract frames + LLM validate + timestamp verify.
+    // Signature matches §5's activity table.
     vr, err := workflow.ExecuteActivity(
         ctx,
         activity.ValidateVideoIsSoccer,
-        frames, input.APIElapsed, input.APIExtra,
+        outcome.result.FilePath,
+        outcome.result.DurationSecs,
+        input.APIElapsed,
+        input.APIExtra,
     ).Get(ctx, &vr)
     if err != nil {
         recordFailureClass(err)
         continue
     }
 
-    // Verdict handling
+    // Verdict handling. Verdict encodes both classification (soccer /
+    // phone-screen / non-soccer) AND timestamp result (matches API minute /
+    // clock mismatch). See §4 vision.ValidationVerdict enum.
     switch vr.Verdict {
     case vision.VerdictAccepted:
         validated = append(validated, validated{outcome, vr, "accepted"})
@@ -5980,10 +5990,54 @@ for _, outcome := range survivors {
 }
 ```
 
-**Smart 2-3 frame strategy inside `ValidateVideoIsSoccer` activity:**
+**Inside the `ValidateVideoIsSoccer` activity (composes three §4 vision
+methods):**
 
-The vision domain owns this. The activity is a thin wrapper. What
-happens inside:
+The activity boundary is where the compose happens; the domain service
+exposes narrow methods. The activity is not "thin" — it stitches
+`ExtractFrames` + `ValidateFrames` (LLM classification) + `VerifyTimestamp`
+(clock-vs-API check) into one atomic unit that produces the final
+`ValidationResult` with the composite `Verdict`.
+
+Concretely:
+
+```go
+func ValidateVideoIsSoccer(ctx context.Context,
+    filePath string, durationSecs float64, apiElapsed int, apiExtra *int,
+) (*vision.ValidationResult, error) {
+
+    // Step A: extract 25%/75% frames.
+    frames, err := deps.Vision.ExtractFrames(ctx, filePath, []float64{0.25, 0.75})
+    if err != nil { return nil, err }
+
+    // Step B: classify (smart 2-3 strategy per §4). Returns SOCCER/SCREEN
+    // verdict + per-frame ClockExtractions (raw clock text).
+    vr, err := deps.Vision.ValidateFrames(ctx, frames)
+    if err != nil { return nil, err }
+
+    // Step C: if classified as soccer + not phone-screen, verify the
+    // broadcast clock matches API minute. Otherwise skip timestamp check.
+    if vr.Verdict == vision.VerdictAccepted {
+        tsv := deps.Vision.VerifyTimestamp(apiElapsed, apiExtra, vr.ClockExtractions)
+        if !tsv.Verified {
+            // Downgrade the verdict — video is soccer but wrong game moment.
+            vr.Verdict = vision.VerdictRejectedClockMismatch
+            vr.TimestampVerification = &tsv
+        } else {
+            vr.TimestampVerification = &tsv
+        }
+    }
+    return vr, nil
+}
+```
+
+The vision domain's `ValidateFrames` stays a pure classifier (§4 line
+2482); `VerifyTimestamp` stays a pure comparator (§4 line 2491). The
+composition is the activity's job — and that's what §5's activity table
+signature reflects (`(file, duration, apiElapsed, apiExtra) →
+ValidationResult`).
+
+Smart 2-3 frame strategy inside `ValidateFrames`:
 
 ```go
 // vision.Service.ValidateFrames — from §4
