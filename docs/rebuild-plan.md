@@ -1642,6 +1642,27 @@ type Store interface {
     // Telemetry patches merge into the JSONB column atomically via jsonb_set.
     UpdateTelemetry(ctx context.Context, eventID uuid.UUID, patch TelemetryPatch) error
 }
+
+// TelemetryPatch is a set of counters/facts to fold into events.telemetry.
+// Fields left zero are not written. Merge semantics: increment counters,
+// set-once facts (last_failure_class), append to arrays (search_attempts).
+// Emitted by activities as the pipeline progresses; consumed by §11
+// dashboards + §14 cutover-monitoring queries.
+type TelemetryPatch struct {
+    IncrementSearchAttempts    int      // +N to telemetry.search_attempts
+    IncrementVideosDiscovered  int
+    IncrementVideosDownloaded  int
+    IncrementValidationRejects int
+    IncrementFinalS3Count      int
+    AppendDownloadFailure      *DownloadFailureReason  // one entry per failed attempt
+    SetLastFailureClass        *string
+    SetFirstS3At               *time.Time              // first successful S3 write
+}
+
+type DownloadFailureReason struct {
+    ErrorClass string    // "http_403" | "http_404" | "yt_dlp_parse" | ...
+    At         time.Time
+}
 ```
 
 **Service** (highlights):
@@ -1874,6 +1895,62 @@ INDEX rejects duplicate active ranks at write time, all rank writes for a
 mint operation land inside one transaction, `CHECK (rank >= 1)` blocks
 placeholder-rank INSERTs at the schema level, and pgx retries on
 serialization failure. No manual concurrency reasoning by callers.
+
+**Store interfaces:**
+
+```go
+// AssetStore is the video_assets persistence surface used by AssetService.
+// A Postgres impl (video/pgstore) and a fake (testutil/fakes) both satisfy it.
+type AssetStore interface {
+    Get(ctx context.Context, assetID uuid.UUID) (*Asset, error)
+    UpsertWithHashDedup(ctx context.Context, incoming *Asset) (*Asset, wasCreated bool, err error)
+    MarkSuperseded(ctx context.Context, oldID, newID uuid.UUID) error
+    // Retention: only shares/assets that no video_shares reference get
+    // returned by candidates queries; PruneOrphanAssets is the maintenance
+    // callback (fixture retention drives this, not asset TTL).
+    ListOrphanAssets(ctx context.Context, olderThan time.Time, limit int) ([]uuid.UUID, error)
+    DeleteAsset(ctx context.Context, assetID uuid.UUID) error
+}
+
+// ShareStore is the video_shares persistence surface used by ShareService.
+// It is the ONLY store that touches the (event_id, rank) partial UNIQUE INDEX.
+type ShareStore interface {
+    // Read paths (used by §8 API redirect handler + rank queries).
+    GetByID(ctx context.Context, shareID string) (*Share, error)
+    GetActiveForEvent(ctx context.Context, eventID uuid.UUID) ([]*Share, error)
+
+    // Write paths.
+    // MintShareAndRecalculate is the ONLY correct way to insert an active
+    // share. It runs inside the store's WithRetryableTx to enforce the
+    // rank invariant. See ShareService.MintShareAndRecalculate above.
+    MintShareAndRecalculate(ctx context.Context, in MintInput) (MintResult, error)
+    MarkRemoved(ctx context.Context, shareID string, reason RemovalReason) error
+    RecordSupersession(ctx context.Context, oldID, newShareID string) error
+
+    WithRetryableTx(ctx context.Context, fn func(tx pgx.Tx) (MintResult, error)) (MintResult, error)
+}
+
+type MintInput struct {
+    AssetID            uuid.UUID
+    EventID            uuid.UUID
+    TimestampVerified  bool
+    ExtractedMinute    *int
+}
+
+type RemovalReason string
+
+const (
+    RemovalReasonVARCancelled  RemovalReason = "var_cancelled"
+    RemovalReasonSuperseded    RemovalReason = "superseded"
+    RemovalReasonAdminRemoved  RemovalReason = "admin_removed"
+)
+```
+
+**Load-bearing invariant reinforcement:** every method on these
+interfaces has a caller responsibility around URL stability + rank
+uniqueness. Callers do NOT get to bypass `MintShareAndRecalculate` and
+INSERT directly — the store interface has no `Insert` method for
+active shares.
 
 ### Alias domain
 
@@ -2185,6 +2262,35 @@ type DHash struct {
 
 // HammingDistance returns the number of differing bits between two hashes.
 func (h DHash) HammingDistance(other DHash) int { ... }
+
+// DenseHashSample is one (position, hash) pair from dense-interval sampling.
+// Returned by ComputeDHashDense; consumed by the video-pipeline pass in §7.
+type DenseHashSample struct {
+    PositionSecs float64
+    Hash         DHash
+}
+
+// DownloadedFile is the video-pipeline's cross-section carrier struct — the
+// output of download.DownloadVideo, input to validation/hashing/upload.
+// Referenced across §5 (activity signatures), §7 (per-batch flow), and
+// §8 (SSE test example). Owns the full metadata surface needed by every
+// downstream step.
+type DownloadedFile struct {
+    LocalPath         string          // on-disk temp path (worker-local)
+    SourceURL         string          // tweet URL of origin
+    TweetID           string          // Twitter status ID (used for de-dup keys)
+    MD5               [16]byte        // sha1sum of bytes for MD5 batch dedup
+    SizeBytes         int64
+    DurationSecs      float64
+    Width, Height     int
+    Bitrate           int
+    ContentHash       string          // sha256 hex — video_assets PK
+    PerceptualHash    []DenseHashSample // dense-sample output; empty until hashed
+    Validation        *ValidationResult // nil until ValidateVideoIsSoccer runs
+    TimestampVerified bool             // set from Validation after timestamp check
+    ExtractedMinute   *int             // set from Validation
+    DownloadedAt      time.Time
+}
 
 type ValidationResult struct {
     IsSoccer          bool                `json:"is_soccer"`
@@ -3147,8 +3253,8 @@ func DownloadWorkflow(ctx workflow.Context, in DownloadWorkflowInput) (*Download
 For each video in Input.Videos (up to 5 per attempt):
   3. activity.DownloadVideo(video.TweetURL) → downloadedFile OR typed error
      Retry policy: 3 attempts, 2x backoff from 2s. Non-retryable classes:
-       ErrURLMalformed, VideoGeoRestrictedError, VideoNotAvailableError,
-       VideoDeletedError
+       ErrURLMalformed, syndication.ErrGeoRestricted, syndication.ErrTweetNotFound,
+       syndication.ErrTweetDeleted
 
 // STEP 2: MD5 batch dedup
 4. activity.DedupBatchByMD5(downloadedFiles) → survivorFiles
@@ -3356,9 +3462,9 @@ DefaultRetryPolicy = &temporal.RetryPolicy{
         "ErrInvalidTransition",
         "ErrURLMalformed",
         "ErrLLMBadResponse",
-        "VideoGeoRestrictedError",
-        "VideoNotAvailableError",
-        "VideoDeletedError",
+        "syndication.ErrGeoRestricted",
+        "syndication.ErrTweetNotFound",
+        "syndication.ErrTweetDeleted",
     },
 }
 ```
@@ -3473,7 +3579,7 @@ Errors surface at three layers:
 1. **Domain errors** (from §4) — service-layer typed errors. Retry
    eligibility is documented on each `Err*` variable.
 2. **Infrastructure errors** (§9) — client-layer wrapped errors
-   (`ErrLLMUnavailable`, `ErrPGConnectionLost`, `ErrS3AccessDenied`, etc.).
+   (`ErrLLMUnavailable`, `pg.ErrConnectionLost`, `ErrS3AccessDenied`, etc.).
    Retry eligibility inherited from the underlying transport class.
 3. **Temporal errors** — wrapping of the above at activity boundaries.
    Workflow's error handler classifies via `underlying_error_class` field
@@ -3487,7 +3593,7 @@ into one of these `error_class` values for telemetry:
 | `not_found` | no | event/fixture/asset not in DB |
 | `invalid_input` | no | ErrURLMalformed, ErrInvalidTransition |
 | `invalid_state` | no | event already removed |
-| `transient_infra` | yes | ErrPGConnectionLost, ErrS3Timeout |
+| `transient_infra` | yes | pg.ErrConnectionLost, ErrS3Timeout |
 | `llm_unavailable` | yes | ErrLLMUnavailable, ErrLLMTimeout |
 | `llm_cap_exceeded` | yes (longer backoff) | ErrLLMCapExceeded |
 | `llm_bad_response` | no | ErrLLMBadResponse |
@@ -3495,9 +3601,9 @@ into one of these `error_class` values for telemetry:
 | `twitter_auth` | no | ErrTwitterAuthRequired (alert!) |
 | `twitter_search_timeout` | yes | ErrTwitterSearchTimeout |
 | `video_download_failed` | conditional | see subclasses below |
-| `video_geo_restricted` | no (retry-eligible-per-proxy when §11 lands) | VideoGeoRestrictedError |
-| `video_not_available` | no | VideoNotAvailableError |
-| `video_deleted` | no | VideoDeletedError |
+| `video_geo_restricted` | no (retry-eligible-per-proxy when §11 lands) | syndication.ErrGeoRestricted |
+| `video_not_available` | no | syndication.ErrTweetNotFound |
+| `video_deleted` | no | syndication.ErrTweetDeleted |
 | `unknown` | yes (default; investigate) | uncategorized exception |
 
 The activity records `error_class` in the event's `Telemetry`
@@ -4142,6 +4248,12 @@ var (
   return `fake://` scheme so tests can assert against them.
 - Integration tests use testcontainers-go with a Garage container.
 
+**Retry-taxonomy note for §5:** the activity retry policy at §5 cites
+`ErrS3AccessDenied` and `ErrS3Timeout` in its non-retryable list.
+Those names map to `s3.ErrAccessDenied` and `s3.ErrTimeout` above —
+adjust the §5 taxonomy string to match the adapter's actual names when
+the code lands.
+
 ### `internal/infra/llm`
 
 The **config-swappable LLM endpoint client**. The one adapter that
@@ -4395,6 +4507,36 @@ type APIEvent struct {
     Player  Player   // may have nil ID+Name early in match
     Type    string   // "Goal", "Card", "Subst", "Var"
     Detail  string
+}
+
+// Type aliases used across §5 activity signatures and §4 domain calls:
+type APIFixture = Fixture       // §5 activities use this alias for clarity
+type APIEventInput = APIEvent   // §4 event.DetectChanges takes []APIEventInput
+
+// TeamRef is the minimal team identifier passed between activities that
+// don't need the full TeamInfo response.
+type TeamRef struct {
+    ID       int
+    Name     string
+    IsHome   bool  // true when this team is the home side of the parent fixture
+}
+
+// CategorizeOutput is what CategorizeAndUpsertFixtures returns to
+// IngestWorkflow. Counts describe the per-state placement outcome for
+// this batch of fixtures.
+type CategorizeOutput struct {
+    Staging   int  // fixtures placed into state='staging'
+    Active    int  // fixtures placed into state='active'
+    Completed int  // fixtures placed into state='completed'
+    Skipped   int  // fixtures already stored (no-op upsert)
+}
+
+// ActivateOutput is what PreActivateUpcoming returns to MonitorWorkflow.
+type ActivateOutput struct {
+    Polled       int      // staging fixtures inspected this cycle
+    PreActivated int      // fixtures whose state was flipped staging → active
+    Errors       []error  // non-fatal per-fixture errors (activate failure of one
+                          // doesn't abort the batch)
 }
 
 // (rest of response shapes omitted here — fully defined in models.go)
@@ -5531,8 +5673,8 @@ for i, fut := range downloadFutures {
 ```
 
 The activity's retry policy handles transient errors. Non-retryable
-classes (`ErrURLMalformed`, `VideoGeoRestrictedError`,
-`VideoNotAvailableError`, `VideoDeletedError`) fail fast and get
+classes (`ErrURLMalformed`, `syndication.ErrGeoRestricted`,
+`syndication.ErrTweetNotFound`, `syndication.ErrTweetDeleted`) fail fast and get
 recorded in `failure_classes` counter for telemetry.
 
 **Step 4: MD5 batch dedup.**
