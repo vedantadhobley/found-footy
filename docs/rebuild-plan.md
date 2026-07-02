@@ -43,7 +43,14 @@ Concretely for the sections below:
 - **§10**: docker-compose does NOT run a per-project NATS — NATS is a
   workspace-shared dependency listed in `~/workspace/nats/`.
 - **§11**: the "semantic event stream" pillar is NATS, not LISTEN/NOTIFY.
-- **§14**: cutover includes vedanta-systems' NATS subscription setup.
+- **§14**: cutover leaves vedanta-systems on the API + SSE path — it
+  does NOT subscribe to NATS directly. Its Express BFF SSE-forwards
+  from `/api/v1/sse/events`, which is the found-footy `api`
+  binary's NATS subscriber. No cross-project NATS account setup is
+  required for the initial cutover. If a future consumer wants a
+  direct NATS account, it'd be a follow-up (subject filter, JetStream
+  consumer wire-up, creds file) — captured in `docs/todo.md`, not
+  here.
 
 Where earlier sections still reference LISTEN/NOTIFY (§1's initial "Why
 Postgres" prose, §3's `event_log` comment), those references are historical
@@ -178,7 +185,7 @@ domain requires; it is not a spec to preserve line-for-line.
 
 | Container | Role | Language | Replaces |
 |---|---|---|---|
-| `postgres` | Structured data (fixtures, events, videos, aliases, telemetry, event_log for LISTEN/NOTIFY SSE fan-out) | — | Mongo |
+| `postgres` | Structured data (fixtures, events, videos, aliases, telemetry, event_log as durable audit + SSE-reconnect backfill for the NATS event bus) | — | Mongo |
 | `garage` | S3-compatible blob storage for video files | — | MinIO |
 | `temporal` + `temporal-postgres` | Workflow orchestration + its metadata store | — | *(kept)* |
 | `temporal-ui` | Workflow observability | — | *(kept)* |
@@ -190,6 +197,8 @@ domain requires; it is not a spec to preserve line-for-line.
 Shared workspace-level infrastructure (not in found-footy's compose):
 - `~/workspace/proxy/` — Caddy fronts all HTTP hostnames
 - `~/workspace/monitor/` — Prometheus + Grafana + Loki + Promtail
+- `~/workspace/nats/` — NATS broker for async pub/sub (semantic event bus)
+- `~/workspace/tailscale/` — Tailscale for cross-node reachability
 
 External endpoints:
 - **LLM inference**: `LLM_ENDPOINT_URL` in `.env`. Today
@@ -246,10 +255,10 @@ around it:
 
 Rationale in [`decisions.md`](./decisions.md) 2026-07-01 entry
 ("Postgres over Mongo"). Go client: **[pgx](https://github.com/jackc/pgx)**.
-Native driver, connection pooling, LISTEN/NOTIFY for SSE fan-out
-(see §8), type-safe query results via `sqlc` code generation or raw
-`Scan`. `database/sql` + `lib/pq` remains a lower-dependency
-alternative if we ever want to shrink further; `pgx` wins on
+Native driver, connection pooling, type-safe query results via `sqlc`
+code generation or raw `Scan`. `database/sql` + `lib/pq` remains a
+lower-dependency alternative if we ever want to shrink further; `pgx`
+wins on
 features and ecosystem momentum.
 
 Extensions to enable at day one:
@@ -462,7 +471,9 @@ found-footy/
 │   ├── api/                   # HTTP handlers, middleware, SSE, webhook delivery
 │   ├── scaler/                # Docker API + auto-scale logic
 │   ├── infra/                 # infrastructure adapters
-│   │   ├── pg/                # Postgres pool + migrations + LISTEN/NOTIFY plumbing
+│   │   ├── pg/                # Postgres pool + migrations + transaction helpers
+│   │   ├── nats/              # Workspace NATS client (pub/sub + JetStream)
+│   │   ├── event/             # Semantic-event dual-write helper (event_log + NATS)
 │   │   ├── s3/                # Garage / aws-sdk-go-v2 client wrapper
 │   │   ├── llm/               # LLM endpoint client (config-swappable joi → nexus)
 │   │   └── temporal/          # Temporal client setup + shared config
@@ -1080,7 +1091,7 @@ Twitter containers read `cookies_version` before every search; if
 newer than their in-memory copy, they hot-swap. Re-auth writes a new
 version. Fleet propagation is seconds, not restart-cycles.
 
-**`event_log`** — the SSE fan-out backing table (Postgres LISTEN/NOTIFY):
+**`event_log`** — durable audit trail + SSE-reconnect backfill source for the NATS event bus:
 
 ```sql
 CREATE TABLE event_log (
@@ -1096,10 +1107,28 @@ CREATE TABLE event_log (
 CREATE INDEX event_log_created ON event_log (created_at DESC);
 CREATE INDEX event_log_event ON event_log (event_id) WHERE event_id IS NOT NULL;
 
--- Retention: partition by day (pg_partman), drop old partitions after 30 days
+-- Retention: partition by day (pg_partman when it lands; manual DELETE on
+-- cron until then), drop partitions after 30 days.
+-- 30-day window is a hard cap on SSE-reconnect backfill; consumers offline
+-- longer must re-hydrate via /api/v1/fixtures + /api/v1/events (see §8).
 ```
 
-Workers insert here + `NOTIFY found_footy_events, '<payload>'`. API's SSE handlers `LISTEN` on the channel and forward to connected clients. Webhook delivery worker polls `event_log` for undelivered `event.video_ready` and posts to registered subscribers. No Redis, no message broker.
+Every semantic event is written twice via the `internal/infra/event`
+adapter's `Emit` helper:
+
+1. `INSERT INTO event_log ...` — durable audit + SSE-reconnect backfill.
+2. `nats.Publish(subject, payload)` — realtime fan-out via workspace NATS
+   at `~/workspace/nats/` on the `event.<kind>` / `fixture.<kind>`
+   subjects within the `found-footy` account.
+
+The durable INSERT must succeed first; a NATS publish failure does NOT
+roll back the INSERT (SSE reconnect covers the drop via `event_log`
+lookup, and `dual_write_skew_total{event_type}` fires per §11). This is
+the workspace NATS pattern per [`decisions.md`](./decisions.md) 2026-07-01.
+
+`api`'s SSE handlers subscribe to NATS `event.>` / `fixture.>` and
+forward to connected clients. The webhook delivery worker consumes a
+JetStream durable consumer per subscription (not a SQL polling loop).
 
 **`webhook_subscriptions`** — for audit §11 webhook delivery:
 
@@ -1129,11 +1158,16 @@ CREATE TABLE webhook_deliveries (
     UNIQUE (subscription_id, event_log_id)                -- one delivery record per (subscription, event)
 );
 
-CREATE INDEX webhook_deliveries_pending ON webhook_deliveries (last_attempt_at)
-    WHERE succeeded_at IS NULL AND give_up_at IS NULL;
+CREATE INDEX webhook_deliveries_created ON webhook_deliveries (created_at DESC);
 ```
 
-Retry semantics live in the schema: pending deliveries are `succeeded_at IS NULL AND give_up_at IS NULL`; retry worker orders by `last_attempt_at` for exponential backoff. Consumer idempotency via `X-FF-Delivery-Id` = `deliveries.id`.
+`webhook_deliveries` is a **delivery-history sink**, not a work queue —
+retry semantics live in the JetStream consumer's `AckWait` / `MaxDeliver`
+config (see §8 + §9). This table records `last_attempt_at`,
+`last_response_code`, `last_response_body`, `succeeded_at`, `give_up_at`
+after each delivery attempt so `/api/v1/webhooks/subscriptions/{id}/deliveries`
+can surface history. Consumer idempotency via `X-FF-Delivery-Id` =
+`deliveries.id`.
 
 ### Extensibility tables
 
@@ -1228,8 +1262,10 @@ the schema:
   for cookie coordination. This §3 delivers it as a Postgres table with the same single-row-canonical
   pattern.
 - Audit [§9](./design-audit.md#9-observability-alerting-deploy-visibility) proposed structured event logging
-  for SSE fan-out. This §3 delivers it as `event_log` + LISTEN/NOTIFY instead of pushing SSE messages from
-  workers directly.
+  for SSE fan-out. This §3 delivers it as `event_log` (durable audit +
+  reconnect-backfill source) paired with workspace NATS publishes for
+  realtime fan-out (dual-write pattern per §9's `internal/infra/event`).
+  Rationale: [`decisions.md`](./decisions.md) 2026-07-01.
 
 ### Extensibility hook this schema enables
 
@@ -3369,12 +3405,15 @@ only needs a few activities for observability + operational alerts.
 |---|---|---|---|---|
 | `AnalyzeTweetIntent` | (assetID, tweetURL, text, author) | *Intent | 60s | 3 attempts, 2x from 2s. STUBBED. |
 
-**`internal/activity/eventlog.go`** (SSE fan-out + webhook trigger):
+**`internal/activity/event_bus.go`** (SSE fan-out + webhook trigger):
 
 | Activity | Input | Output | Timeout | Retry override |
 |---|---|---|---|---|
-| `NotifyEventLog` | (eventType, payload) | error | 5s | 2 attempts. Best-effort — SSE is not durable. |
-| `PublishFrontendRefresh` | (nil) | error | 5s | 1 attempt. Best-effort. |
+| `EmitSemanticEvent` | (eventType, payload) | error | 5s | 2 attempts. Dual-write: `event_log` INSERT is durable + retried; the paired `nats.Publish` is best-effort (SSE reconnect covers drops via `event_log` backfill). |
+
+Delegates to `internal/infra/event.Emit` (§9). The activity boundary lives
+here so retry policy + observability wrapping happens at the workflow layer
+rather than inside the adapter.
 
 Total: ~30 activities across 8 files. Down from Python's 42.
 
@@ -3561,8 +3600,8 @@ for calls, errors, and latency histograms. Loki-queryable per audit §9.
 `internal/config` (Pydantic-equivalent: `envconfig` package parses env
 vars into typed structs). No hard-coded URLs, credentials, or timeouts.
 
-**Idempotent where possible.** POST-heavy adapters (e.g., `NotifyEventLog`
-signals) include idempotency keys where the receiver supports them. GET
+**Idempotent where possible.** POST-heavy adapters (e.g., webhook delivery
+POSTs) include idempotency keys where the receiver supports them. GET
 paths are inherently idempotent. State-mutating operations that aren't
 naturally idempotent (Garage PUT with content-addressed keys IS
 idempotent; Twitter service `/search` isn't) get retry classifications
@@ -3583,19 +3622,15 @@ that reflect that.
 | `internal/infra/ffmpeg` | ffmpeg CLI subprocess wrapper + probe | Medium |
 | `internal/infra/wikidata` | Wikidata SPARQL client (RAG for team aliases) | Low |
 
-Total: **ten** adapters. Each gets a full spec below.
-
-**Note on `internal/infra/pg`:** the earlier draft had this adapter carrying
-LISTEN/NOTIFY methods (`Listen`, `Notify`) as the event fan-out mechanism.
-Per the top-of-doc revision (workspace NATS decision), those responsibilities
-move to `internal/infra/nats`. The pg adapter retains only pool + transaction
-helpers. The `Listen` / `Notify` methods shown in the §pg spec below are
-historical; they do NOT ship in the real adapter.
+Plus one thin composing adapter — `internal/infra/event` — that layers
+`event_log` INSERTs (via `pg`) and NATS publishes (via `nats`) behind a
+single `Emit` call. Total: **eleven** packages under `internal/infra/`
+(ten real adapters + `event` composer). Each gets a full spec below.
 
 ### `internal/infra/pg`
 
-Postgres connection pool + LISTEN/NOTIFY plumbing + transaction helpers.
-The most-called adapter — every domain store depends on it.
+Postgres connection pool + transaction helpers. The most-called adapter —
+every domain store depends on it.
 
 **Client interface:**
 
@@ -3619,15 +3654,16 @@ type Pool interface {
     WithTx(ctx context.Context, fn func(pgx.Tx) error) error
     WithRetryableTx(ctx context.Context, fn func(pgx.Tx) error) error
 
-    // LISTEN/NOTIFY for SSE fan-out
-    Listen(ctx context.Context, channel string) (<-chan *pgconn.Notification, error)
-    Notify(ctx context.Context, channel string, payload string) error
-
     // Lifecycle
     Ping(ctx context.Context) error
     Close()
 }
 ```
+
+Event fan-out (`LISTEN` / `NOTIFY`) is deliberately NOT on this interface —
+that's the workspace NATS decision (per top-of-doc revision +
+[`decisions.md`](./decisions.md) 2026-07-01). See `internal/infra/nats`
+below.
 
 **Real implementation** wraps `*pgxpool.Pool`. Constructor reads pool
 config from env vars via `internal/config`:
@@ -3667,23 +3703,6 @@ func (p *pgxPool) WithTx(ctx context.Context, fn func(pgx.Tx) error) error
 func (p *pgxPool) WithRetryableTx(ctx context.Context, fn func(pgx.Tx) error) error
 ```
 
-**LISTEN/NOTIFY for SSE fan-out (audit §11 + §5):**
-
-```go
-// Listen acquires a dedicated connection from the pool for LISTEN commands.
-// Returns a receive-only channel of notifications until ctx is canceled.
-// Reconnects transparently on connection loss.
-//
-// Used by internal/api SSE handlers to receive event_log updates.
-func (p *pgxPool) Listen(ctx context.Context, channel string) (<-chan *pgconn.Notification, error)
-
-// Notify emits a NOTIFY on the given channel with the payload. Called by
-// activities.NotifyEventLog after INSERT INTO event_log succeeds.
-// Payload is arbitrary text (JSON blob typically); Postgres NOTIFY has
-// a per-payload size limit of 8KB.
-func (p *pgxPool) Notify(ctx context.Context, channel string, payload string) error
-```
-
 **Typed errors:**
 
 ```go
@@ -3695,7 +3714,6 @@ var (
     ErrDuplicateKey                = errors.New("pg: duplicate key violation")
     ErrForeignKeyViolation         = errors.New("pg: foreign key violation")
     ErrCheckConstraintViolation    = errors.New("pg: check constraint violation")
-    ErrNotifyChannelClosed         = errors.New("pg: notify channel closed")
     ErrPoolExhausted               = errors.New("pg: pool exhausted")
 )
 
@@ -3853,26 +3871,6 @@ Cross-account subscribers (e.g., vedanta-systems) reference these as
   competing on the same consumer name split load automatically (JetStream
   push consumers).
 
-**Durability + persistence:**
-
-Every semantic event is BOTH INSERTed into `event_log` AND published to
-NATS in the same activity boundary. The pattern is:
-
-```go
-func PublishEvent(ctx context.Context, ev SemanticEvent) error {
-    if err := store.InsertEventLog(ctx, ev); err != nil {
-        return err  // Durable write must succeed first.
-    }
-    subject := "event." + ev.Kind  // e.g., "event.video_ready"
-    return nats.Publish(ctx, subject, ev.MarshalJSON())
-    // NATS publish failure logs a warning but does NOT roll back the
-    // event_log insert. SSE clients that reconnect will see the event via
-    // backfill from event_log. Webhook clients (JetStream) get catch-up
-    // via a background worker that scans event_log for events not yet
-    // in JetStream.
-}
-```
-
 **Error classification:**
 
 - `ErrConnectionLost` — NATS connection dropped. Client is auto-reconnecting;
@@ -3892,6 +3890,121 @@ func PublishEvent(ctx context.Context, ev SemanticEvent) error {
 - Integration tests use testcontainers-go with `nats:2.10-alpine`
   + JetStream enabled. The workspace NATS at `~/workspace/nats/` is NOT
   reused for tests — each test suite gets a fresh container.
+
+### `internal/infra/event`
+
+The dual-write composer. Layers `event_log` INSERT (via `pg`) and NATS
+publish (via `nats`) behind a single `Emit` call. This package is what
+`internal/activity/event_bus.go` calls; the domain layer never touches
+`pg` and `nats` directly for semantic events.
+
+**Client interface:**
+
+```go
+package event
+
+import (
+    "context"
+    "encoding/json"
+
+    "github.com/vedanta-systems/found-footy/internal/infra/nats"
+    "github.com/vedanta-systems/found-footy/internal/infra/pg"
+)
+
+type SemanticEvent struct {
+    Kind          string          // "event.video_ready" | "event.download_complete" | "fixture.completed" | ...
+    FixtureID     *int64          // optional
+    EventID       *string         // uuid-as-string, optional
+    VideoShareID  *string         // s_<12hex>, optional
+    Payload       json.RawMessage // arbitrary event-specific body
+}
+
+type Emitter interface {
+    // Emit dual-writes: durable INSERT INTO event_log first (returns error
+    // on failure — caller retries), then best-effort nats.Publish (logs
+    // + increments dual_write_skew_total on failure but returns nil).
+    //
+    // SSE consumers see dropped NATS messages via reconnect backfill from
+    // event_log. Webhook consumers (JetStream durable) are backfilled by
+    // the outbox catch-up worker (see NATS-outbox subsection below).
+    Emit(ctx context.Context, ev SemanticEvent) error
+}
+```
+
+**Real implementation:**
+
+```go
+type Impl struct {
+    pool    pg.Pool
+    nc      nats.Client
+    metrics *observability.Metrics
+    logger  *slog.Logger
+}
+
+func (i *Impl) Emit(ctx context.Context, ev SemanticEvent) error {
+    // 1. Durable write. Must succeed.
+    if _, err := i.pool.Exec(ctx,
+        `INSERT INTO event_log (event_type, fixture_id, event_id, video_share_id, payload)
+         VALUES ($1, $2, $3, $4, $5)`,
+        ev.Kind, ev.FixtureID, ev.EventID, ev.VideoShareID, ev.Payload,
+    ); err != nil {
+        i.metrics.EventLogInsertTotal.WithLabelValues(ev.Kind, "failure").Inc()
+        return fmt.Errorf("event.Emit: event_log insert: %w", err)
+    }
+    i.metrics.EventLogInsertTotal.WithLabelValues(ev.Kind, "success").Inc()
+
+    // 2. Realtime fan-out. Best-effort.
+    payload, err := json.Marshal(ev)
+    if err != nil {
+        // Marshal failure of a struct we control shouldn't happen; log loudly.
+        i.logger.Error("event.Emit: marshal failed", "err", err, "kind", ev.Kind)
+        i.metrics.DualWriteSkewTotal.WithLabelValues(ev.Kind).Inc()
+        return nil  // event_log commit stands; SSE backfill covers it.
+    }
+    if err := i.nc.Publish(ctx, ev.Kind, payload); err != nil {
+        i.logger.Warn("event.Emit: NATS publish failed", "err", err, "kind", ev.Kind)
+        i.metrics.DualWriteSkewTotal.WithLabelValues(ev.Kind).Inc()
+        return nil  // See above.
+    }
+    return nil
+}
+```
+
+**Why this belongs in its own package (not `pg`, not `nats`):**
+
+- Composing two adapters is a use-case concern, not an adapter concern.
+- Callers get a single interface to mock (`Emitter`) instead of two.
+- Retry policy at the activity boundary (§5's `EmitSemanticEvent`) is
+  simpler: retry the whole `Emit` on error; NATS-only failures are
+  invisible because they're swallowed here.
+- Metrics wiring (`dual_write_skew_total`, `event_log_insert_total`) is
+  centralized.
+
+**NATS-outbox catch-up worker:**
+
+For JetStream (webhook) consumers, a NATS drop between INSERT and Publish
+is more consequential than for SSE (which reconnect-backfills from
+`event_log`). A background goroutine in `cmd/webhookd` polls
+`event_log` for entries not yet in JetStream's `event_log_stream` and
+republishes:
+
+```go
+// Runs every 30s. Reads event_log rows where NOT EXISTS in
+// jetstream_seen_ids (a small tracking table). Publishes each to NATS.
+// Records the JetStream sequence in jetstream_seen_ids.
+func (w *OutboxWorker) CatchUp(ctx context.Context) error { ... }
+```
+
+This is the mechanism §3 references — `event_log` is authoritative;
+JetStream is a materialized realtime view that self-heals on drops.
+
+**Testing:**
+
+- Unit tests use `FakeEmitter` — records emitted events for assertions.
+- Integration tests exercise the three failure modes: `event_log` write
+  fails (returns error, NATS never called); NATS publish fails (event_log
+  committed, skew metric incremented, returns nil); both succeed (both
+  writes land).
 
 ### `internal/infra/s3`
 
@@ -5808,7 +5921,7 @@ flipped, err := workflow.ExecuteActivity(
 if flipped {
     _, _ = workflow.ExecuteActivity(
         ctx,
-        activity.NotifyEventLog,
+        activity.EmitSemanticEvent,
         "event.download_complete",
         eventlog.Payload{EventID: input.EventID.String(), FixtureID: input.FixtureID},
     ).Get(ctx, nil)
@@ -6661,10 +6774,11 @@ Fresh discipline for new emissions; no forced retconning of history.
 ## 8. Public API + SSE + webhooks
 
 The `cmd/api` binary. Chi + Huma serving typed HTTP endpoints,
-Postgres LISTEN/NOTIFY-backed SSE stream, webhook delivery worker,
-share-id redirect endpoint. Composes against `internal/domain/*`
-services from §4, `internal/infra/pg` + `s3` adapters from §9, and the
-semantic event stream from §11.
+NATS-backed SSE stream (with `event_log` reconnect-backfill), JetStream-
+backed webhook delivery, share-id redirect endpoint. Composes against
+`internal/domain/*` services from §4, `internal/infra/pg` + `s3` +
+`nats` + `event` adapters from §9, and the semantic event stream
+from §11.
 
 Boundary: this section covers the consumer-facing surface (what
 vedanta-systems + og-server + future consumers see). Internal cross-
@@ -6692,10 +6806,15 @@ TS types on every found-footy build (`openapi-typescript` in the
 CI pipeline). Schema drift becomes a TS build error.
 
 **4. SSE is the live push channel; webhooks are the durable
-delivery channel.** Both consume the same `event_log` table via
-different patterns: SSE handlers `LISTEN` on the Postgres channel;
-webhook worker polls the table for unsent rows. Consumers subscribe
-to whichever fits their delivery semantics.
+delivery channel.** Both are backed by workspace NATS
+(`~/workspace/nats/`) with `event_log` (Postgres) as the durable audit
+trail. SSE handlers `Subscribe` to core NATS `event.>` / `fixture.>`
+subjects — transient, at-most-once, browsers reconnect and backfill from
+`event_log` on disconnect. Webhook workers `Consume` a JetStream
+durable consumer per subscription — at-least-once, broker holds the
+message until Ack. Consumers subscribe to whichever fits their delivery
+semantics. Both patterns are transparent to publishers: `event.Emit`
+(§9) writes to `event_log` + publishes to NATS in one call.
 
 **5. Public URLs never break** (audit §4 URL-stability invariant).
 The share-id redirect endpoint is what makes this concrete —
@@ -6978,30 +7097,50 @@ func sseHandler(w http.ResponseWriter, r *http.Request) {
 
     ctx := r.Context()
 
-    // Optional backfill: replay unseen events since a cursor
-    if since := r.URL.Query().Get("since"); since != "" {
+    // Optional backfill: replay unseen events since a cursor.
+    // Cursor is the event_log.id bigserial from the client's Last-Event-Id
+    // header (browsers send this automatically on reconnect).
+    if since := lastEventIDOrQuery(r); since != "" {
         events, _ := deps.EventLog.ListSince(ctx, since, 100)
         for _, e := range events {
             writeSSE(w, flusher, e)
         }
     }
 
-    // Live tail via Postgres LISTEN/NOTIFY
-    notifyCh, err := deps.PG.Listen(ctx, "found_footy_events")
+    // Live tail via workspace NATS. Subscribe to the found-footy account's
+    // event.> and fixture.> subject hierarchies. Core NATS (not JetStream):
+    // transient at-most-once delivery — browsers reconnect + backfill via
+    // Last-Event-Id if a message is dropped.
+    msgs, err := deps.NATS.Subscribe(ctx, "event.>", "fixture.>")
     if err != nil { return }
 
     for {
         select {
         case <-ctx.Done():
             return  // client disconnected
-        case n := <-notifyCh:
-            writeSSE(w, flusher, decodeSSE(n.Payload))
+        case m := <-msgs:
+            ev, err := decodeSSE(m.Subject, m.Data)
+            if err != nil {
+                deps.Logger.Warn("sse: decode failed", "subject", m.Subject, "err", err)
+                continue
+            }
+            if !passesFilter(ev, r.URL.Query().Get("event_type_filter")) {
+                continue
+            }
+            writeSSE(w, flusher, ev)
         case <-time.After(15 * time.Second):
             // Heartbeat comment to keep proxy timeouts happy
             fmt.Fprintf(w, ": keepalive\n\n")
             flusher.Flush()
         }
     }
+}
+
+// SSEEvent is what writeSSE serializes.
+type SSEEvent struct {
+    ID          int64  // event_log.id bigserial — the Last-Event-Id reconnect cursor
+    EventType   string // NATS subject: "event.video_ready" etc.
+    PayloadJSON []byte
 }
 
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, e SSEEvent) {
@@ -7011,6 +7150,11 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, e SSEEvent) {
     flusher.Flush()
 }
 ```
+
+The `EventLog.ListSince(ctx, since, limit)` reader lives in
+`internal/api/eventlog.go` — reads from Postgres `event_log` ordered by
+`id ASC` with an upper bound. The `NATS.Subscribe` returns a merged
+channel across multiple subject patterns.
 
 **Message format:**
 
@@ -7030,7 +7174,7 @@ event: fixture.completed
 data: {"fixture_id":1562345,"video_count":7}
 ```
 
-**Event types emitted on SSE (matching §7 NotifyEventLog calls):**
+**Event types emitted on SSE (matching §7 `EmitSemanticEvent` calls):**
 
 - `event.detected` — new event first appears
 - `event.stable` — event passed 3-poll debounce
@@ -7044,7 +7188,16 @@ data: {"fixture_id":1562345,"video_count":7}
 **Reconnect semantics.** SSE clients get the `id:` field which is the
 `event_log.id` bigserial. On reconnect, the client sends
 `Last-Event-Id: <id>` header (browsers do this automatically), and the
-handler backfills from that cursor via the `since` query param path.
+handler backfills from that cursor via `EventLog.ListSince` before
+resuming the NATS subscription.
+
+**Bounded backfill window.** `event_log` retention is 30 days (§3).
+Consumers offline longer than that will see a partial backfill — any
+event older than the retention window is unrecoverable via SSE. Such
+consumers must re-hydrate current state via `GET /api/v1/fixtures` +
+`GET /api/v1/events` before opening a fresh SSE connection. The API
+returns `X-Backfill-Truncated: true` when the client's `Last-Event-Id`
+predates the oldest retained partition.
 
 **Filtering.** `event_type_filter` query param accepts a
 comma-separated list. Server-side filtering; only matching events get
@@ -7054,9 +7207,12 @@ written to the stream.
 
 Webhooks solve the "SSE loses messages on consumer restart" problem
 from audit §11. Subscription lives in Postgres (§3 `webhook_subscriptions`).
-Delivery is out-of-band from HTTP request handling — a separate worker
-loop in the `api` binary polls `webhook_deliveries` for pending rows
-and POSTs to subscribers.
+Delivery is out-of-band from HTTP request handling — a background
+goroutine in the `api` binary (`webhookDeliveryLoop`) consumes a NATS
+JetStream durable consumer, POSTs to subscribers, and records the
+outcome in `webhook_deliveries` for observability + history queries.
+Retry semantics live in JetStream's `AckWait` / `MaxDeliver` config —
+NOT in the schema.
 
 **Subscription endpoints:**
 
@@ -7084,78 +7240,124 @@ incoming deliveries.
 
 **Delivery worker loop (separate from HTTP handling):**
 
+Runs as a goroutine in `cmd/api/main.go` (single-instance scale-out
+handled by JetStream's competing-consumer semantics — multiple api
+replicas all bind the same durable consumer name and JetStream splits
+messages across them). Consumes the JetStream stream containing
+`event.>` + `fixture.>` messages; JetStream persists messages until
+Ack, redelivers on Nak or AckWait timeout, and terminates on Term.
+
 ```go
 // runs in cmd/api/main.go as a goroutine
 func webhookDeliveryLoop(ctx context.Context, deps Deps) {
-    ticker := time.NewTicker(5 * time.Second)
-    defer ticker.Stop()
+    // Durable consumer name is per-subscription-batch. All api replicas
+    // share the same consumer name; JetStream distributes messages.
+    msgs, err := deps.NATS.Consume(ctx, "found_footy_events", "webhook_delivery")
+    if err != nil { deps.Logger.Error("webhook: consume failed", "err", err); return }
 
     for {
         select {
         case <-ctx.Done(): return
-        case <-ticker.C:
-            batch, err := deps.WebhookDeliveries.ClaimPending(ctx, 50)
-            if err != nil { continue }
-
-            for _, delivery := range batch {
-                deliverOne(ctx, deps, delivery)
-            }
+        case m := <-msgs:
+            deliverToAllSubscribers(ctx, deps, m)
         }
     }
 }
 
-func deliverOne(ctx context.Context, deps Deps, d webhookdelivery.Pending) {
-    subscription := d.Subscription
-    payload, _ := json.Marshal(d.Event)
-    sig := hmacSign(payload, subscription.HMACSecret)
+func deliverToAllSubscribers(ctx context.Context, deps Deps, m nats.JetStreamMsg) {
+    var ev event.SemanticEvent
+    if err := json.Unmarshal(m.Data, &ev); err != nil {
+        deps.Logger.Warn("webhook: malformed message; terminating", "err", err)
+        _ = m.Term()  // Poison-message: don't retry.
+        return
+    }
 
-    req, _ := http.NewRequestWithContext(ctx, "POST", subscription.URL, bytes.NewReader(payload))
+    subs, err := deps.WebhookSubscriptions.MatchingEvent(ctx, ev.Kind)
+    if err != nil {
+        _ = m.Nak()  // Transient; JetStream redelivers after AckWait.
+        return
+    }
+
+    // Fan out to every subscriber. Any failure Naks the whole message so
+    // JetStream redelivers; per-subscriber history recorded in
+    // webhook_deliveries.
+    allOK := true
+    for _, sub := range subs {
+        if !deliverOne(ctx, deps, sub, ev, m) {
+            allOK = false
+        }
+    }
+    if allOK {
+        _ = m.Ack()
+    } else {
+        _ = m.Nak()
+    }
+}
+
+// deliverOne POSTs to a single subscriber, records outcome in
+// webhook_deliveries, and returns true iff the HTTP response was 2xx.
+func deliverOne(ctx context.Context, deps Deps, sub webhook.Subscription,
+                ev event.SemanticEvent, m nats.JetStreamMsg) bool {
+    payload := m.Data
+    sig := hmacSign(payload, sub.HMACSecret)
+    deliveryID := uuid.New()
+
+    req, _ := http.NewRequestWithContext(ctx, "POST", sub.URL, bytes.NewReader(payload))
     req.Header.Set("Content-Type", "application/json")
-    req.Header.Set("X-FF-Event", d.Event.EventType)
-    req.Header.Set("X-FF-Delivery-Id", d.ID.String())
+    req.Header.Set("X-FF-Event", ev.Kind)
+    req.Header.Set("X-FF-Delivery-Id", deliveryID.String())
     req.Header.Set("X-FF-Signature", "hmac-sha256="+sig)
     req.Header.Set("X-FF-Timestamp", strconv.FormatInt(time.Now().Unix(), 10))
 
+    start := time.Now()
     resp, err := deps.HTTPClient.Do(req)
+    duration := time.Since(start)
+
     if err != nil {
-        deps.WebhookDeliveries.RecordFailure(ctx, d.ID, 0, err.Error())
-        return
+        deps.WebhookDeliveries.Record(ctx, deliveryID, sub.ID, ev, 0, err.Error(), duration)
+        return false
     }
     defer resp.Body.Close()
 
-    if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-        deps.WebhookDeliveries.RecordSuccess(ctx, d.ID)
-    } else {
-        body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-        deps.WebhookDeliveries.RecordFailure(ctx, d.ID, resp.StatusCode, string(body))
-    }
+    body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+    deps.WebhookDeliveries.Record(ctx, deliveryID, sub.ID, ev, resp.StatusCode, string(body), duration)
+    return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 ```
 
-**Retry semantics** — encoded in the schema from §3:
-- Pending = `succeeded_at IS NULL AND give_up_at IS NULL`
-- `RecordFailure` bumps `attempt_count`, updates `last_attempt_at`, and:
-  - If `attempt_count < 5`: schedule next attempt via exponential backoff
-    (2^n minutes: 1min, 2min, 4min, 8min, 16min)
-  - If `attempt_count >= 5`: set `give_up_at = NOW()`, alert operator
-- Delivery worker's `ClaimPending` query filters:
+**Retry semantics** — encoded in the JetStream consumer config:
 
-```sql
-SELECT * FROM webhook_deliveries
-WHERE succeeded_at IS NULL
-  AND give_up_at IS NULL
-  AND (last_attempt_at IS NULL OR
-       last_attempt_at + INTERVAL '1 minute' * pow(2, attempt_count) < NOW())
-ORDER BY last_attempt_at NULLS FIRST
-LIMIT 50
-FOR UPDATE SKIP LOCKED
+```go
+// Stream config (declared once at startup):
+StreamConfig{
+    Name:       "found_footy_events",
+    Subjects:   []string{"event.>", "fixture.>"},
+    Retention:  nats.WorkQueuePolicy,  // Message removed once acked by all consumers
+    MaxAge:     30 * 24 * time.Hour,   // Match event_log retention
+    Storage:    nats.FileStorage,
+}
+
+// Consumer config (per subscription):
+ConsumerConfig{
+    Durable:       "webhook_delivery",
+    AckPolicy:     nats.AckExplicitPolicy,
+    AckWait:       30 * time.Second,   // Redeliver if unacked in 30s
+    MaxDeliver:    5,                  // 5 attempts total
+    BackOff:       []time.Duration{
+        1 * time.Minute, 2 * time.Minute,
+        4 * time.Minute, 8 * time.Minute,  // Between retries
+    },
+    // After MaxDeliver, JetStream stops redelivering. The webhook worker
+    // catches this via a monitoring loop that alerts on stream
+    // consumer_pending or ack_pending > threshold.
+}
 ```
 
-`FOR UPDATE SKIP LOCKED` handles multi-worker delivery safely — if we
-ever scale to N API replicas, they don't step on each other.
-
 **Consumer idempotency** — the `X-FF-Delivery-Id` UUID is unique per
-delivery attempt. Consumers dedupe by this ID.
+delivery attempt (fresh each redelivery). Subscribers should also dedupe
+by `X-FF-Event` + payload hash for stronger guarantees. The `event_log.id`
+in the payload provides an application-level dedup key that's stable
+across JetStream redeliveries.
 
 **Subscription lifecycle:**
 
@@ -7292,12 +7494,15 @@ func TestSSEStream_ReceivesLiveEvent(t *testing.T) {
         // ... consume /api/v1/sse/events, push to ch
     }()
 
-    // Insert into event_log — should trigger NOTIFY
-    deps.PG.Exec(ctx, "INSERT INTO event_log (event_type, payload) VALUES ($1, $2)",
-        "event.video_ready", `{"event_id":"e_test"}`)
-    deps.PG.Notify(ctx, "found_footy_events", `{"event_type":"event.video_ready","event_id":"e_test"}`)
+    // Emit via the composer — dual-writes event_log + NATS.
+    err := deps.Event.Emit(ctx, event.SemanticEvent{
+        Kind:    "event.video_ready",
+        EventID: ptr("e_test"),
+        Payload: json.RawMessage(`{"event_id":"e_test"}`),
+    })
+    require.NoError(t, err)
 
-    // Assert we received it within 1s
+    // Assert we received it within 1s (via NATS subscribe path)
     select {
     case msg := <-ch:
         require.Contains(t, msg, "e_test")
@@ -7327,14 +7532,15 @@ endpoints.
 Chi routing free. OpenAPI regenerates automatically. Zero touch to
 other endpoints.
 
-**New SSE event type** — add to §7 `NotifyEventLog` call sites in
-whatever workflow emits it; SSE handler forwards anything on the
-Postgres channel. Consumers subscribe to the new type via their
-`event_type_filter` param.
+**New SSE event type** — add to `EmitSemanticEvent` call sites in
+whatever workflow emits it (§5); SSE handler forwards anything on the
+NATS `event.>` / `fixture.>` subject hierarchies. Consumers subscribe
+to the new type via their `event_type_filter` param.
 
-**New webhook event type** — same as SSE; the delivery worker forwards
-any `event_log` row whose `event_type` matches a subscription's
-`event_types` array (empty = all).
+**New webhook event type** — same as SSE. The delivery worker's
+JetStream consumer receives everything on the subject hierarchy;
+subscription filtering (per-subscription `event_types` array) happens
+in the delivery worker before the POST.
 
 **Rate limiting** — Caddy can enforce per-IP rate limits at the edge
 via the `rate_limit` handler. Not day-one (single trusted consumer),
@@ -9347,7 +9553,24 @@ The window when rollback becomes IRREVERSIBLE:
 
 vedanta-systems doesn't need to know the cutover happened. Its API base URL is `found-footy-prod-api.<base-domain>` — Caddy simply reroutes the hostname to the new container.
 
-SSE stream: `LISTEN`s on `found_footy_events` at the new Postgres. When vedanta-systems' SSE consumer reconnects post-cutover (Chrome auto-reconnects on disconnect), it hits the new stack. Any messages missed during the reconnect window are backfilled from `event_log` if the client sends `Last-Event-Id` — for pre-cutover events, the ID space is different, so `Last-Event-Id` won't backfill. Frontend sees a small blip; not user-visible unless they had the tab open during cutover.
+SSE stream: subscribes to workspace NATS `event.>` / `fixture.>`
+subjects at the new api container. When vedanta-systems' SSE consumer
+reconnects post-cutover (Chrome auto-reconnects on disconnect), it
+hits the new stack. Any messages missed during the reconnect window
+are backfilled from `event_log` (Postgres) via `Last-Event-Id` — for
+pre-cutover events the ID space is different (legacy was Mongo-based;
+new is Postgres `bigserial`), so pre-cutover cursors won't backfill.
+Frontend sees a small blip; not user-visible unless they had the tab
+open during cutover.
+
+**NATS irreversibility during cutover rollback.** Any semantic events
+published to workspace NATS during the new stack's serving window
+have already been delivered to whichever subscribers were connected
+at that moment. Rolling back the endpoint flag to legacy doesn't
+un-deliver them; downstream idempotency (subscribers key on
+`event.id` from the payload, which matches `event_log.id`) is the
+mitigation. This is a normal at-least-once trade-off; documented so
+the runbook doesn't treat rollback as "as if it never happened."
 
 Webhook subscribers: existing subscriptions live in legacy Mongo (Python didn't have webhooks per audit §11); vedanta-systems' backend re-registers via `POST /api/v1/webhooks/subscriptions` on its next startup post-cutover. Idempotent on `(consumer_name, url)`.
 
@@ -9442,7 +9665,8 @@ vedanta-systems-prod (React + Express BFF)
    │   (HTTP over luv-prod, Bearer auth)         (§8 endpoints)
    │
    └── Express SSE forwards               ◄── found-footy-prod-api
-       (LISTEN/NOTIFY-backed stream)              (§8 SSE)
+       (NATS-backed stream + event_log            (§8 SSE)
+        reconnect backfill)
 
 og-server
    │
