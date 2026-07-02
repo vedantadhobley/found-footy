@@ -5212,6 +5212,7 @@ func healthzHandler(deps HealthDeps) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         checks := map[string]error{
             "postgres":     deps.PG.Ping(r.Context()),
+            "nats":         deps.NATS.Ping(r.Context()),
             "s3":           deps.S3.Ping(r.Context(), deps.Cfg.S3.Bucket),
             "llm":          deps.LLM.Ping(r.Context()),
             "apifootball":  deps.API.Ping(r.Context()),
@@ -5219,13 +5220,17 @@ func healthzHandler(deps HealthDeps) http.HandlerFunc {
             "ffmpeg":       deps.FFmpeg.Ping(r.Context()),
             "wikidata":     deps.Wikidata.Ping(r.Context()),
         }
-        // Return 200 if all pass; 503 if any fail; body enumerates statuses
+        // Return 200 if all pass; 503 if any fail; body enumerates statuses.
+        // NATS failure is a hard-fail — no NATS means no semantic-event
+        // fan-out, which the dual-write invariant depends on.
     }
 }
 ```
 
 Missing from the health check: `syndication` (external CDN, brittle) and
 `temporal` (Temporal client has its own health protocol via its SDK).
+The `event` composer doesn't need its own probe — `postgres` + `nats`
+Pings together prove Emit's failure modes.
 
 ### Observability contract
 
@@ -8330,9 +8335,12 @@ services:
         condition: service_started
       garage:
         condition: service_started
+    volumes:
+      # NATS account creds — required for event.Emit publishes
+      - ~/workspace/nats/creds/found-footy-prod.creds:/etc/nats/found-footy.creds:ro
     networks:
       - found-footy-prod
-      - luv-prod
+      - luv-prod  # workspace NATS + cross-project HTTP; see Networks below
     deploy:
       replicas: 2  # scaler manages between 2 and 8
     restart: unless-stopped
@@ -8347,10 +8355,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    environment:
+      NATS_CLIENT_NAME: found-footy-api  # override worker default
+    volumes:
+      # Same NATS creds file — api subscribes for SSE + JetStream consumer
+      - ~/workspace/nats/creds/found-footy-prod.creds:/etc/nats/found-footy.creds:ro
     networks:
       - found-footy-prod
       - proxy
-      - luv-prod  # for vedanta-systems to reach
+      - luv-prod  # workspace NATS + vedanta-systems callers; see Networks below
     restart: unless-stopped
 
   scaler:
@@ -8535,6 +8548,19 @@ copy of `twitter_sessions.canonical.cookies` from §4 — even if
 Postgres has issues, VNC re-auth still writes here and containers can
 bootstrap from it.
 
+**Workspace NATS credentials** are bind-mounted read-only into the
+containers that talk to NATS. Per-project accounts live at
+`~/workspace/nats/creds/` (managed by the `nsc` tool per the workspace
+NATS README):
+
+- `~/workspace/nats/creds/found-footy-prod.creds` →
+  `worker`, `api` containers at `/etc/nats/found-footy.creds:ro`
+- `~/workspace/nats/creds/found-footy-dev.creds` → same path in dev.
+
+Without this mount, `worker` cannot publish semantic events and `api`
+cannot subscribe or run the JetStream consumer — the dual-write invariant
+silently fails at connection time. This mount is load-bearing.
+
 ### Networks
 
 Three networks per the workspace convention:
@@ -8547,10 +8573,17 @@ Three networks per the workspace convention:
   ingress attach: `api`, `temporal-ui`, `garage-web` (if enabled),
   `twitter-vnc` (when profile active).
 - **`luv-prod`** (external; created once at workspace setup):
-  cross-project data plane. `api` attaches so vedanta-systems can
-  reach it. `worker` attaches if it needs to call out to vedanta-systems'
-  API (for now: no). Postgres/Garage do NOT attach — data plane
-  isolation.
+  cross-project data plane. Load-bearing for two reasons:
+  - **NATS access** — the workspace NATS container at `~/workspace/nats/`
+    sits on this network. `worker` MUST attach so `event.Emit` can
+    publish (dual-write invariant); `api` MUST attach so the SSE
+    handler can subscribe and the webhook JetStream consumer can
+    receive. Without `luv-prod` attachment, both binaries fail to
+    reach NATS and the whole event bus silently breaks.
+  - **Cross-project HTTP** — `api` also serves vedanta-systems, which
+    reaches in over `luv-prod`. `worker` doesn't currently call any
+    cross-project HTTP; if it ever does, it uses the same network.
+  Postgres/Garage do NOT attach — data plane isolation stays intact.
 
 Dev mirrors with `luv-dev`.
 
@@ -8582,6 +8615,18 @@ TEMPORAL_NAMESPACE=default
 TEMPORAL_TASK_QUEUE=found-footy
 TEMPORAL_PG_USER=temporal
 TEMPORAL_PG_PASSWORD=CHANGE_ME
+
+# ─── NATS event bus (workspace-shared, per decisions.md 2026-07-01) ─
+# NATS runs at ~/workspace/nats/; found-footy attaches via luv-prod / luv-dev
+# and authenticates with its per-project account creds file.
+NATS_URL=nats://nats:4222
+NATS_ACCOUNT=found-footy
+NATS_CREDS_FILE=/etc/nats/found-footy.creds
+NATS_CLIENT_NAME=found-footy-worker      # api overrides to "found-footy-api"
+NATS_RECONNECT_WAIT=2s
+NATS_MAX_RECONNECTS=-1                    # retry forever
+NATS_PING_INTERVAL=20s
+NATS_JS_DOMAIN=                           # empty unless using leaf nodes
 
 # ─── LLM (per decisions.md 2026-07-01 abstraction) ────
 LLM_ENDPOINT_URL=http://llama-small.joi
@@ -8749,8 +8794,9 @@ health status feeds into `docker compose up -d --wait` and the
 - **`garage`**: HTTP GET on `/v0/status` internal endpoint every 10s
 - **`temporal`**: `tctl --address temporal:7233 workflow list --namespace default --workflow_id doesnotexist` (any command that hits the server) every 30s
 - **`worker`**: `wget -qO- http://localhost:8080/healthz` — worker's
-  built-in `/healthz` calls `pg.Ping` + `s3.Ping` + `llm.Ping` +
-  `apifootball.Ping` + `twitter.Ping` (§9 aggregation)
+  built-in `/healthz` calls `pg.Ping` + `nats.Ping` + `s3.Ping` +
+  `llm.Ping` + `apifootball.Ping` + `twitter.Ping` + `ffmpeg.Ping` +
+  `wikidata.Ping` (§9 aggregation)
 - **`api`**: same pattern, wget on `/api/v1/healthz`
 - **`scaler`**: `docker` CLI probe — `docker version` to confirm the
   socket is reachable
