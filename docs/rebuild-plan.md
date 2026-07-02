@@ -107,7 +107,8 @@ Rationale + ecosystem-level context in
   anyone (or any agent) starting fresh consults first.
 - **Isolation**: per-project docker-compose owns its full data plane
   (Postgres, Garage, Temporal, workers). Shared workspace-level
-  infrastructure is only Caddy proxy + monitor stack + Tailscale.
+  infrastructure is only Caddy proxy + monitor stack + NATS event bus
+  + Tailscale.
 - **Config-driven external endpoints**: the LLM endpoint is one
   `.env` variable. Switch from joi to nexus is a config change, not
   a code change.
@@ -466,19 +467,29 @@ found-footy/
 │   │   ├── vision/            # frame extraction + dHash + AI vision
 │   │   ├── session/           # Twitter fleet management, see audit §8
 │   │   └── textanalysis/      # semantic intent extraction (extensibility hook)
+│   ├── usecases/              # cross-domain orchestration (VARRemoveEvent, etc.)
 │   ├── workflow/              # Temporal workflow definitions
 │   ├── activity/              # Temporal activities — thin orchestrators calling domain services
 │   ├── api/                   # HTTP handlers, middleware, SSE, webhook delivery
 │   ├── scaler/                # Docker API + auto-scale logic
-│   ├── infra/                 # infrastructure adapters
+│   ├── infra/                 # infrastructure adapters — 10 adapters + 1 composer
 │   │   ├── pg/                # Postgres pool + migrations + transaction helpers
 │   │   ├── nats/              # Workspace NATS client (pub/sub + JetStream)
-│   │   ├── event/             # Semantic-event dual-write helper (event_log + NATS)
+│   │   ├── event/             # Semantic-event dual-write composer (pg + nats)
 │   │   ├── s3/                # Garage / aws-sdk-go-v2 client wrapper
 │   │   ├── llm/               # LLM endpoint client (config-swappable joi → nexus)
-│   │   └── temporal/          # Temporal client setup + shared config
+│   │   ├── temporal/          # Temporal client setup + shared config
+│   │   ├── apifootball/       # API-Football REST client + rate limit
+│   │   ├── twitter/           # HTTP client to twitter container search service
+│   │   ├── syndication/       # Twitter syndication API for video downloads
+│   │   ├── ffmpeg/            # ffmpeg subprocess wrapper + probe
+│   │   └── wikidata/          # Wikidata SPARQL client (RAG for team aliases)
+│   ├── observability/         # emission + collection primitives
+│   │   ├── vocabulary/        # typed Module + Action enums (compile-time contract)
+│   │   ├── logging/           # Emit() + structured JSON handler
+│   │   ├── metrics/           # Prometheus registry + collectors
+│   │   └── tracing/           # OpenTelemetry SDK config (Phase 5+)
 │   ├── config/                # settings loading via envconfig
-│   ├── logging/               # structured JSON logging (module/action/level)
 │   ├── errors/                # typed error taxonomy
 │   └── testutil/              # factories, fakes, harness helpers
 ├── migrations/                # SQL migrations (golang-migrate format)
@@ -583,9 +594,12 @@ policies).
 
 ### Why `internal/infra/` groups adapters
 
-`pg`, `s3`, `llm`, `temporal` are all "we talk to an external system
-via a client we own." Grouping them signals "this is the boundary
-between our code and the outside." Each has its own package with:
+Ten adapters (`pg`, `nats`, `s3`, `llm`, `temporal`, `apifootball`,
+`twitter`, `syndication`, `ffmpeg`, `wikidata`) plus one composer
+(`event`) — all "we talk to an external system via a client we own,"
+except `event` which stitches `pg` + `nats` behind the dual-write
+invariant. Grouping them signals "this is the boundary between our
+code and the outside." Each has its own package with:
 - Client construction from config
 - Connection pooling / retry logic where relevant
 - Test doubles (fakes for unit tests, testcontainers-based real
@@ -594,8 +608,13 @@ between our code and the outside." Each has its own package with:
 The `infra/llm` package is where the [`decisions.md`](./decisions.md)
 2026-07-01 "LLM endpoint abstracted" invariant lives: one client
 struct, reads `LLM_ENDPOINT_URL` from `internal/config`, exposes
-methods like `AnalyzeFrames(ctx, images, prompt) → (Response, error)`.
+methods like `ChatCompletionMultiImage(ctx, req) → (Response, error)`.
 Callers never know it's joi or nexus underneath.
+
+The `infra/event` composer is deliberately layered on top of `pg` and
+`nats` rather than merged into either: composing adapters is a use-case
+concern, not an adapter concern. Callers mock one interface (`Emitter`)
+instead of two, and dual-write metrics wiring stays centralized.
 
 ### Migrations at the root
 
@@ -10783,7 +10802,7 @@ explains *intent* — not tables that mirror code.
 | `docs/observability.md` — metrics catalog | `internal/observability/metrics/metrics.go` (Prometheus registry) | Same pattern; `metrics.md` includes `docs/generated/metrics-catalog.md` |
 | `docs/api-contract.md` — HTTP endpoints | Huma struct tags on request/response types | `huma reflect` emits OpenAPI JSON to `docs/generated/openapi.yaml`; `api-contract.md` documents intent, links to the spec |
 | `docs/api-contract.md` — SSE events | `internal/api/sse/events.go` type definitions | Same generator emits `docs/generated/sse-events.md` |
-| `docs/temporal.md` — workflow/activity list | `internal/worker/registration.go` registration calls | `go generate` walks the registration list; emits `docs/generated/workflows.md` |
+| `docs/temporal.md` — workflow/activity list | `cmd/worker/main.go` registration calls + `internal/workflow/*.go` / `internal/activity/*.go` | `go generate` walks the registration list + AST of workflow/activity packages; emits `docs/generated/workflows.md` |
 | `docs/deployment.md` — env var reference | `internal/config/*.go` `envconfig` struct tags | Same generator emits `docs/generated/env-vars.md` |
 | Migration list | `migrations/*.sql` files (golang-migrate) | Generator lists filenames + top-of-file summary comment |
 
@@ -11226,9 +11245,10 @@ in `decisions.md` if it reveals a process gap.
 Everything above describes *what* gets built. This section is about
 *when* and *in what order*. The rebuild is a substantial piece of work
 happening in parallel with a live prod system, so ordering matters:
-we need working code at every merge point, no long-lived branches, and
-the ability to stop between milestones without leaving the repo in a
-half-built state.
+we need working code at every merge point and the ability to stop
+between milestones without leaving the repo in a half-built state.
+(One deliberate deviation from trunk-based: a long-lived `rebuild/go`
+branch. Rationale in "Branch strategy" below.)
 
 ### 16.0 Framing
 
@@ -11304,7 +11324,7 @@ Cutover comes last.
 | Phase | Size | Prerequisite | Delivers |
 |---|---|---|---|
 | **F. Foundation** | Small | None | Repo scaffolding, CI, docs skeleton |
-| **S. Substrate** | Medium | F | 10 infra adapters, docker-compose stack |
+| **S. Substrate** | Medium | F | 10 infra adapters + event composer, docker-compose stack |
 | **D. Domain** | Large | S (partial) | 8 domain packages with stores + services |
 | **O. Orchestration** | Large | D | 5 workflows + ~40 activities in Temporal |
 | **V. Video pipeline** | Medium | S (partial) | Download + AI validation + hashing |
@@ -11356,7 +11376,7 @@ Cutover comes last.
 
 **Prerequisites:** F complete.
 
-**What ships:** the 10 infra adapters from §9 plus the runnable
+**What ships:** the 10 infra adapters + `event` composer from §9 plus the runnable
 docker-compose dev stack. Each adapter ships with:
 
 - Interface definition (`internal/infra/<name>/client.go`).
