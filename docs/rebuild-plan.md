@@ -1192,6 +1192,7 @@ CREATE TABLE webhook_deliveries (
     subscription_id UUID NOT NULL REFERENCES webhook_subscriptions(id) ON DELETE CASCADE,
     event_log_id BIGINT NOT NULL REFERENCES event_log(id) ON DELETE CASCADE,
     attempt_count INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),        -- when the delivery attempt was first recorded
     last_attempt_at TIMESTAMPTZ,
     last_response_code INT,
     last_response_body TEXT,
@@ -1202,6 +1203,25 @@ CREATE TABLE webhook_deliveries (
 
 CREATE INDEX webhook_deliveries_created ON webhook_deliveries (created_at DESC);
 ```
+
+**`outbox_cursor`** — self-heal cursor for the §9 NATS outbox catch-up
+worker. Singleton row (CHECK ensures it) tracking the highest
+`event_log.id` that has been republished to the `found_footy_events`
+JetStream stream by the outbox worker on drop-recovery:
+
+```sql
+CREATE TABLE outbox_cursor (
+    id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    last_published_event_log_id BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO outbox_cursor DEFAULT VALUES ON CONFLICT DO NOTHING;
+```
+
+The outbox worker reads `event_log` rows where `id > last_published_event_log_id`,
+publishes each to NATS, and advances the cursor. At-least-once delivery
+during catch-up is expected — webhook subscribers dedupe via
+`X-FF-Delivery-Id` + `event_id` per §8.
 
 `webhook_deliveries` is a **delivery-history sink**, not a work queue —
 retry semantics live in the JetStream consumer's `AckWait` / `MaxDeliver`
@@ -1276,6 +1296,7 @@ CREATE EXTENSION IF NOT EXISTS vector;                    -- pgvector for embedd
 --   8. twitter_sessions
 --   9. event_log
 --   10. webhook_subscriptions, webhook_deliveries (FK: event_log)
+--   11. outbox_cursor (self-heal cursor for §9 NATS outbox worker)
 
 -- Auto-updating updated_at trigger, shared by every table that carries
 -- an updated_at column. Without this, updated_at DEFAULTs to NOW() at
@@ -3133,7 +3154,10 @@ func MonitorWorkflow(ctx workflow.Context, in MonitorWorkflowInput) (*MonitorWor
 **Activity call sequence:**
 
 ```
-1. activity.PreActivateUpcoming(30min)              → { activated_count }
+1. activity.PreActivateUpcoming(30min)              → ActivateOutput
+   For each fixture in ActivateOutput.PreActivated:
+     activity.EmitSemanticEvent("fixture.activated", {fixture_id})
+
 2. activity.ListActiveFixtureIDs()                  → []int64
 3. activity.FetchFixturesByIDs(ids)                 → []APIFixture (batch)
 
@@ -3141,24 +3165,37 @@ For each fixture, in parallel via workflow.Go:
   4. activity.RecordFixturePoll(fixture)            → error
   5. activity.DetectEventChanges(fixtureID, apiEvents) → DetectionResult
   6. activity.RegisterEventMonitorWorkflow(eventID, workflow.GetInfo().WorkflowExecution.ID) → count
+     IF count == 1 (first-touch — event just entered pipeline):
+       activity.EmitSemanticEvent("event.detected", {event_id, fixture_id, minute, player_name})
 
 For each newly-stable event (count >= 3 AND player known):
   7. activity.FlagMonitorComplete(eventID)          → flipped bool
   IF flipped:
-    workflow.ExecuteChildWorkflow(DiscoveryWorkflow, ...) with ABANDON
+     activity.EmitSemanticEvent("event.stable", {event_id, fixture_id, minute, player_name})
+     // DiscoveryWorkflow is triggered by the "event.stable" NATS subject —
+     // see "Discovery trigger" subsection below. MonitorWorkflow does NOT
+     // spawn Discovery directly; the decoupling is what makes event.stable
+     // a natural emission site.
 
 For each removed event (VAR candidate):
   8. activity.RegisterEventDropWorkflow(eventID, workflow.GetInfo().WorkflowExecution.ID) → count
   IF count >= 3:
-    activity.MarkEventRemoved(eventID, "var")
+     activity.MarkEventRemoved(eventID, video.RemovalReasonVAR)
+     activity.EmitSemanticEvent("event.removed", {event_id, fixture_id, reason:"var"})
+     // If the event had active video_shares, MarkEventRemoved cascades to
+     // ShareStore.MarkRemoved — those emissions carry event.rank_recalculated
+     // for any shares whose ranks shift as a side effect.
 
 For each fixture:
-  9. activity.EventsFullyComplete(fixtureID)        → bool (all events download_complete OR removed)
+  9. activity.EventsFullyComplete(fixtureID)        → bool
   IF bool AND fixture.APITerminal:
-    activity.CompleteFixture(fixtureID)             → success/no-op
-
-10. activity.PublishFrontendRefresh()               → error (best-effort SSE trigger)
+     activity.CompleteFixture(fixtureID)            → success/no-op
+     IF success:
+       activity.EmitSemanticEvent("fixture.completed", {fixture_id, score_home, score_away})
 ```
+
+No `PublishFrontendRefresh` — SSE fan-out is driven entirely by the
+NATS publications above, per §8's handler + §9's `event` composer.
 
 **Retry policy (workflow-level):** none — SKIP overlap policy handles
 "prior instance still running" gracefully. A failed instance just means
@@ -3168,26 +3205,87 @@ we'll try again in 30 seconds.
 - Workflow execution timeout: 25s (leave headroom before next scheduled cycle)
 - Task timeout: 10s (fast fail; next cycle retries)
 
-**Child workflow spawn pattern (DiscoveryWorkflow):**
+**Discovery trigger — NATS `event.stable` subscriber**
+
+MonitorWorkflow does NOT spawn DiscoveryWorkflow directly. Instead,
+`cmd/worker/main.go` runs a background goroutine (alongside the Temporal
+worker) that subscribes to the NATS `event.stable` subject on the
+`found-footy` account and starts one `DiscoveryWorkflow` per message:
 
 ```go
-discoveryOpts := workflow.ChildWorkflowOptions{
-    WorkflowID: fmt.Sprintf("discovery-%s", event.ID.String()),
-    ParentClosePolicy: enums.PARENT_CLOSE_POLICY_ABANDON,
-    WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
-    TaskQueue: "found-footy",
+// cmd/worker/main.go — one goroutine, competing-consumer via JetStream
+// durable name so multiple worker replicas cooperatively split the load.
+func runDiscoveryTrigger(ctx context.Context, deps Deps) {
+    msgs, err := deps.NATS.Consume(ctx, "found_footy_events", "discovery_trigger")
+    if err != nil { deps.Logger.Error("discovery trigger: consume failed"); return }
+
+    for {
+        select {
+        case <-ctx.Done(): return
+        case m := <-msgs:
+            var ev event.SemanticEvent
+            if err := json.Unmarshal(m.Data, &ev); err != nil {
+                m.Term()  // Poison-message; don't retry.
+                continue
+            }
+            if ev.Kind != "event.stable" {
+                m.Ack()   // Not our subject; ack + drop.
+                continue
+            }
+            var stable EventStablePayload
+            _ = json.Unmarshal(ev.Payload, &stable)
+
+            wfID := fmt.Sprintf("discovery-%s", stable.EventID)
+            _, err := deps.Temporal.ExecuteWorkflow(ctx,
+                client.StartWorkflowOptions{
+                    ID:                    wfID,
+                    TaskQueue:             "found-footy",
+                    WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+                },
+                DiscoveryWorkflow,
+                DiscoveryWorkflowInput{
+                    EventID:     stable.EventID,
+                    FixtureID:   stable.FixtureID,
+                    PlayerName:  stable.PlayerName,
+                    TeamName:    stable.TeamName,
+                    TeamID:      stable.TeamID,
+                    Minute:      stable.Minute,
+                    FirstSeenAt: stable.FirstSeenAt,
+                    MaxAttempts: 10,
+                })
+            if errors.Is(err, serviceerror.WorkflowExecutionAlreadyStarted{}) {
+                m.Ack()   // Discovery already running for this event — expected on redelivery.
+                continue
+            }
+            if err != nil { m.Nak(); continue }
+            m.Ack()
+        }
+    }
 }
-workflow.ExecuteChildWorkflow(
-    workflow.WithChildOptions(ctx, discoveryOpts),
-    DiscoveryWorkflow,
-    DiscoveryInput{EventID: event.ID, /*...*/},
-)
-// NOTE: we don't await the future — fire-and-forget.
 ```
 
-`REJECT_DUPLICATE` is what makes the stable workflow ID from audit §2
-load-bearing: Temporal itself rejects a second discovery spawn for the
-same event.
+**Dedup mechanism.** Two layers of protection against duplicate Discovery spawns:
+
+1. **JetStream idempotency**: on redelivery of an `event.stable` message
+   (worker crash mid-processing), the second attempt hits Temporal's
+   `WorkflowExecutionAlreadyStarted` and acks — safe by construction.
+2. **REJECT_DUPLICATE on the Temporal WorkflowID** (`discovery-{event_id}`):
+   a second event.stable emission for the same event would be rejected
+   at the Temporal layer even if the JetStream idempotency failed.
+
+**Why NATS-subscriber over child-spawn.** Making `event.stable` a
+first-class NATS subject with a subscriber trampoline gives the
+subject a real emission site (audited by §11 metrics + §12 tests),
+matches the pattern used for webhook delivery, and lets future
+consumers (analytics, external agents) tail the same subject without
+coupling to Temporal internals. The trade-off — losing the pure
+parent/child Temporal relationship — is worth the coherence.
+
+**Child workflow spawns still used elsewhere.** Only DiscoveryWorkflow
+switched from child-spawn to NATS-subscriber (§16.5 O3 is aligned with
+this). DownloadWorkflow remains a child of DiscoveryWorkflow with
+ABANDON (a per-attempt fan-out where NATS decoupling adds no value).
+UploadWorkflow is signal-with-start from DownloadWorkflow (unchanged).
 
 ### Workflow 3: `DiscoveryWorkflow`
 
@@ -3195,7 +3293,9 @@ same event.
 1-minute spacing (audit §8 discovery-hardening addition: adaptive,
 can early-exit if N consecutive attempts yield no new videos).
 
-**Trigger:** Child workflow of MonitorWorkflow with ABANDON.
+**Trigger:** Started per `event.stable` NATS message by the
+Discovery-trigger goroutine in `cmd/worker/main.go` (see MonitorWorkflow
+above for the subscriber code + dedup guarantees).
 
 **Signature:**
 
@@ -3466,18 +3566,23 @@ For each file in batch, in parallel via workflow.Go:
      //       ON (event_id, rank) WHERE state = 'active'
      //   COMMIT. Serialization-failure retries the whole function.
 
-  5. activity.EmitSemanticEvent("event.video_ready", payload) → error
+  5. activity.EmitSemanticEvent("event.video_ready", {event_id, share_id, rank, fixture_id, player_name, minute}) → error
      // Dual-write: INSERT INTO event_log (durable audit + SSE backfill source)
      // then nats.Publish(subject, payload) for realtime fan-out. NATS publish
      // failure does NOT roll back the event_log commit — SSE reconnect covers
      // the drop; the dual_write_skew_total counter fires.
 
+  IF MintResult.DisplacedRanks not empty:
+    6. activity.EmitSemanticEvent("event.rank_recalculated", {event_id, changes: DisplacedRanks}) → error
+       // Emitted only when the mint shifts other shares' ranks. Consumers
+       // (frontend, og-server) update their cached rank annotations.
+
 // After all files processed:
-6. activity.TryFlagDownloadComplete(eventID, requiredCount=10) → flipped bool
+7. activity.TryFlagDownloadComplete(eventID, requiredCount=10) → flipped bool
    // Even if this batch was empty; this is the "always signal" path
 
 IF flipped:
-  7. activity.EmitSemanticEvent("event.download_complete", payload) → error
+  8. activity.EmitSemanticEvent("event.download_complete", payload) → error
 ```
 
 **Why `MintShareAndRecalculateRanks` is a single atomic activity:** the
@@ -3589,8 +3694,8 @@ Per-activity overrides shown below.
 |---|---|---|---|---|
 | `UpsertVideoAssetWithHashDedup` | (fixtureID, file, hash) | (assetID, wasCreated) | 30s | 3 attempts |
 | `UploadFileToS3` | (assetID, file) | error | 60s | 3 attempts, 2x from 2s |
-| `MintShareAndRecalculateRanks` | (assetID, eventID, verified, minute) | (shareID, computedRank) | 30s | 3 attempts (serialization retry inside txn) |
-| `MarkShareRemoved` | (shareID, reason) | error | 10s | 3 attempts |
+| `MintShareAndRecalculateRanks` | (assetID, eventID, verified, minute) | (MintResult{ShareID, ComputedRank, DisplacedRanks[]}) | 30s | 3 attempts (serialization retry inside txn). Also returns any displaced-share rank changes so the workflow can emit `event.rank_recalculated`. |
+| `MarkShareRemoved` | (shareID, reason RemovalReason) | (RemovalResult{DisplacedRanks[]}) | 10s | 3 attempts. Removing an active share compacts remaining ranks for the event; DisplacedRanks lists the shifted (share_id, new_rank) pairs so the workflow can emit `event.rank_recalculated`. |
 
 **`internal/activity/alias.go`** (calls `domain/alias`):
 
@@ -4012,7 +4117,10 @@ type Client interface {
     // Used by SSE fan-out where the browser reconnects and backfills from
     // event_log if it missed anything.
     Publish(ctx context.Context, subject string, payload []byte) error
-    Subscribe(ctx context.Context, subject string) (<-chan Msg, error)
+    // Subscribe returns a merged channel across one or more subject patterns.
+    // The underlying implementation creates one subscription per pattern and
+    // fans-in via a goroutine.
+    Subscribe(ctx context.Context, subjects ...string) (<-chan Msg, error)
 
     // JetStream — durable at-least-once delivery with replay.
     // Used by webhook delivery: each subscriber has a durable consumer;
@@ -4138,6 +4246,13 @@ import (
 )
 
 type SemanticEvent struct {
+    // EventLogID is populated by Emit AFTER the durable INSERT succeeds
+    // (from the RETURNING id clause). Callers do not set it; Emit
+    // overwrites any pre-set value. This is what §8's SSE handler puts
+    // in the `id:` field so browsers get a valid Last-Event-Id reconnect
+    // cursor from live-tail messages, not only backfilled ones.
+    EventLogID    int64           // event_log.id bigserial
+
     Kind          string          // "event.video_ready" | "event.download_complete" | "fixture.completed" | ...
     FixtureID     *int64          // optional
     EventID       *string         // uuid-as-string, optional
@@ -4147,13 +4262,15 @@ type SemanticEvent struct {
 
 type Emitter interface {
     // Emit dual-writes: durable INSERT INTO event_log first (returns error
-    // on failure — caller retries), then best-effort nats.Publish (logs
-    // + increments dual_write_skew_total on failure but returns nil).
+    // on failure — caller retries), captures the returned event_log.id into
+    // the SemanticEvent, then best-effort nats.Publish (logs + increments
+    // dual_write_skew_total on failure but returns nil).
     //
     // SSE consumers see dropped NATS messages via reconnect backfill from
-    // event_log. Webhook consumers (JetStream durable) are backfilled by
-    // the outbox catch-up worker (see NATS-outbox subsection below).
-    Emit(ctx context.Context, ev SemanticEvent) error
+    // event_log using the captured id. Webhook consumers (JetStream durable)
+    // are backfilled by the outbox catch-up worker (see NATS-outbox
+    // subsection below).
+    Emit(ctx context.Context, ev *SemanticEvent) error
 }
 ```
 
@@ -4167,19 +4284,22 @@ type Impl struct {
     logger  *slog.Logger
 }
 
-func (i *Impl) Emit(ctx context.Context, ev SemanticEvent) error {
-    // 1. Durable write. Must succeed.
-    if _, err := i.pool.Exec(ctx,
+func (i *Impl) Emit(ctx context.Context, ev *SemanticEvent) error {
+    // 1. Durable write. Must succeed. RETURNING id populates ev.EventLogID
+    // so the NATS payload downstream carries a valid Last-Event-Id cursor.
+    if err := i.pool.QueryRow(ctx,
         `INSERT INTO event_log (event_type, fixture_id, event_id, video_share_id, payload)
-         VALUES ($1, $2, $3, $4, $5)`,
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id`,
         ev.Kind, ev.FixtureID, ev.EventID, ev.VideoShareID, ev.Payload,
-    ); err != nil {
+    ).Scan(&ev.EventLogID); err != nil {
         i.metrics.EventLogInsertTotal.WithLabelValues(ev.Kind, "failure").Inc()
         return fmt.Errorf("event.Emit: event_log insert: %w", err)
     }
     i.metrics.EventLogInsertTotal.WithLabelValues(ev.Kind, "success").Inc()
 
-    // 2. Realtime fan-out. Best-effort.
+    // 2. Realtime fan-out. Best-effort. Marshal the enriched event so the
+    // NATS subscriber (SSE handler) has ev.EventLogID for the `id:` field.
     payload, err := json.Marshal(ev)
     if err != nil {
         // Marshal failure of a struct we control shouldn't happen; log loudly.
@@ -4210,19 +4330,34 @@ func (i *Impl) Emit(ctx context.Context, ev SemanticEvent) error {
 
 For JetStream (webhook) consumers, a NATS drop between INSERT and Publish
 is more consequential than for SSE (which reconnect-backfills from
-`event_log`). A background goroutine in `cmd/webhookd` polls
-`event_log` for entries not yet in JetStream's `event_log_stream` and
-republishes:
+`event_log`). A background goroutine in `cmd/api` (co-located with the
+webhook delivery worker) polls `event_log` for entries the JetStream
+stream `found_footy_events` has not yet ingested and republishes:
 
 ```go
-// Runs every 30s. Reads event_log rows where NOT EXISTS in
-// jetstream_seen_ids (a small tracking table). Publishes each to NATS.
-// Records the JetStream sequence in jetstream_seen_ids.
+// Runs every 30s. Reads event_log rows where id > last_published_id.
+// Publishes each to NATS on the appropriate event.<kind> subject.
+// Advances last_published_id in the outbox_cursor table on success.
 func (w *OutboxWorker) CatchUp(ctx context.Context) error { ... }
+```
+
+Cursor is a single-row `outbox_cursor` table (defined in §3):
+
+```sql
+CREATE TABLE outbox_cursor (
+    id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),  -- singleton row
+    last_published_event_log_id BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO outbox_cursor DEFAULT VALUES ON CONFLICT DO NOTHING;
 ```
 
 This is the mechanism §3 references — `event_log` is authoritative;
 JetStream is a materialized realtime view that self-heals on drops.
+Timestamp-monotonic replay avoids the per-message tracking table
+overhead a `jetstream_seen_ids` design would require, at the cost of
+producing at-least-once deliveries during catch-up (subscribers already
+handle this via `X-FF-Delivery-Id` + `event_id` idempotency per §8).
 
 **Testing:**
 
@@ -7508,6 +7643,23 @@ type SSEEvent struct {
     PayloadJSON []byte
 }
 
+// decodeSSE unmarshals a NATS message body (a marshaled event.SemanticEvent
+// per §9) into an SSEEvent. The EventLogID captured by event.Emit's
+// RETURNING id clause is what makes live-tail messages compatible with
+// Last-Event-Id reconnect — without it, browsers reconnecting on a
+// live-tail cursor would find no matching row in event_log during backfill.
+func decodeSSE(subject string, data []byte) (SSEEvent, error) {
+    var sev event.SemanticEvent
+    if err := json.Unmarshal(data, &sev); err != nil {
+        return SSEEvent{}, err
+    }
+    return SSEEvent{
+        ID:          sev.EventLogID,
+        EventType:   subject,       // == sev.Kind
+        PayloadJSON: sev.Payload,
+    }, nil
+}
+
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, e SSEEvent) {
     fmt.Fprintf(w, "id: %d\n", e.ID)
     fmt.Fprintf(w, "event: %s\n", e.EventType)
@@ -7518,8 +7670,8 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, e SSEEvent) {
 
 The `EventLog.ListSince(ctx, since, limit)` reader lives in
 `internal/api/eventlog.go` — reads from Postgres `event_log` ordered by
-`id ASC` with an upper bound. The `NATS.Subscribe` returns a merged
-channel across multiple subject patterns.
+`id ASC` with an upper bound. The `NATS.Subscribe` variadic call returns
+a merged channel across the subject patterns (`event.>` + `fixture.>`).
 
 **Message format:**
 
@@ -11569,7 +11721,9 @@ first; write paths come from workflows independently.
 
 3. **A3: Webhook infrastructure** (Medium).
    - Subscription CRUD.
-   - JetStream durable consumer with delivery worker in `cmd/webhookd`.
+   - JetStream durable consumer with delivery worker as a goroutine in
+     `cmd/api` (JetStream's competing-consumer semantics handle
+     multi-replica scale-out). Outbox catch-up worker co-located.
    - HMAC signing of payloads.
    - Delivery retry with exponential backoff.
 
