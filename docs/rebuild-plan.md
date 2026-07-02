@@ -406,7 +406,7 @@ rebuild:
 
 - Twitter search response includes `tweet_text` alongside video
   URL and duration.
-- New activity `AnalyzeTweetIntent` (in `domains/text_analysis`)
+- New activity `AnalyzeTweetIntent` (in `domains/textanalysis`)
   calls the LLM endpoint with the tweet text plus a structured
   prompt: classify source type (broadcaster, media outlet, verified
   fan, random user), event type mentioned (goal / red-card /
@@ -431,7 +431,7 @@ rebuild:
 
 Adding this domain touches:
 - One new Postgres table (`tweet_intent`) with FK to `videos`
-- One new Go package (`domains/text_analysis`)
+- One new Go package (`domains/textanalysis`)
 - One new activity registered on the worker
 - One optional field on the API response schema
 - Zero workflow rewrites, zero cross-cutting refactor
@@ -520,7 +520,7 @@ Alternatives considered and rejected:
   from `go list -m all` per binary.
 - **One repo per binary.** Overkill for a project this size; the
   binaries share a lot of infrastructure code
-  (`internal/infra/pg`, `internal/logging`, `internal/errors`).
+  (`internal/infra/pg`, `internal/observability/logging`, `internal/errors`).
 
 ### Why `internal/` (not `pkg/`)
 
@@ -694,7 +694,7 @@ store, service, lifecycle-if-any, and tests. Wiring it in:
    fully tested from day one).
 2. Add one migration under `migrations/` creating the `tweet_intent`
    table + FK to `videos`.
-3. Add one activity in `internal/activity/text_analysis.go` that
+3. Add one activity in `internal/activity/textanalysis.go` that
    wraps `textanalysis.Service.Analyze(...)`.
 4. Register the activity in `cmd/worker/main.go` (one line).
 5. Add optional field to `internal/api/models` response types
@@ -2820,7 +2820,7 @@ func TestStore_DeleteByVideoAsset_Cascades(t *testing.T)
 When someone wants to ship semantic intent, they:
 1. Replace the `ErrNotImplemented` returns with real LLM calls
 2. Add the corresponding `service_test.go` cases for the real logic
-3. Register an `AnalyzeTweetIntent` activity in `internal/activity/text_analysis.go`
+3. Register an `AnalyzeTweetIntent` activity in `internal/activity/textanalysis.go`
 4. Wire the activity into whichever workflow needs it (probably `UploadWorkflow` after asset commit)
 5. Add API surface (optional field on video/event response types)
 
@@ -6326,7 +6326,7 @@ are Pydantic-equivalent Go structs, serialized consistently. No
 ad-hoc key/value pairs anywhere.
 
 **3. The log catalog is discoverable.** A generated markdown file
-`docs/log-catalog.md` (regenerated on every build via `go generate`)
+`docs/generated/log-catalog.md` (regenerated on every build via `go generate`)
 lists every possible (module, action) pair with its expected field
 set and log-level guidance. This is the "clear view of what types of
 logs exist" that's been missing.
@@ -6349,7 +6349,7 @@ by Z stddev, prod commit drift > 24h from main). Rules are code +
 version-controlled + reviewed like everything else.
 
 **7. Observability code is a first-class package, not scattered
-imports.** All emission goes through `internal/logging`. Adapters
+imports.** All emission goes through `internal/observability/logging`. Adapters
 (§9) emit via the same package. Domain services emit via the same
 package. Activities emit via the same package. One import path;
 one set of test doubles.
@@ -6409,7 +6409,7 @@ makes queries reliable — you know `event_id` is always spelled
 
 ### The vocabulary package
 
-`internal/logging/vocabulary/vocabulary.go` — the source of truth for
+`internal/observability/vocabulary/vocabulary.go` — the source of truth for
 what modules and actions exist:
 
 ```go
@@ -6434,7 +6434,7 @@ const (
     ModuleDiscovery    Module = "discovery"
     ModuleVision       Module = "vision"
     ModuleSession      Module = "session"
-    ModuleTextAnalysis Module = "text_analysis"
+    ModuleTextAnalysis Module = "textanalysis"
 
     // Infrastructure adapters (matching §9)
     ModuleInfraPG           Module = "infra_pg"
@@ -6502,7 +6502,7 @@ everywhere.
 
 ### The log catalog
 
-`docs/log-catalog.md` — regenerated on every build via `go generate`
+`docs/generated/log-catalog.md` — regenerated on every build via `go generate`
 from the vocabulary package + reflection over call sites:
 
 ```markdown
@@ -6944,7 +6944,7 @@ isn't captured by the canonical queries. This is the escape hatch.
 
 ### The observability code contract
 
-Every emission goes through `internal/logging`:
+Every emission goes through `internal/observability/logging`:
 
 ```go
 package logging
@@ -6952,7 +6952,7 @@ package logging
 import (
     "context"
     "log/slog"
-    "found-footy/internal/logging/vocabulary"
+    "found-footy/internal/observability/vocabulary"
 )
 
 type Emitter interface {
@@ -6981,8 +6981,8 @@ func VideoShareID(id string) Field         { return Field{"video_share_id", id} 
 Usage everywhere:
 
 ```go
-import "found-footy/internal/logging"
-import "found-footy/internal/logging/vocabulary"
+import "found-footy/internal/observability/logging"
+import "found-footy/internal/observability/vocabulary"
 
 emitter := logging.FromContext(ctx)
 emitter.Emit(ctx, logging.INFO,
@@ -7122,7 +7122,7 @@ re-uploaded, migrated, superseded — the share URL doesn't change.
 migration windows. 6-month minimum sunset.
 
 **7. Everything logged and metriced through §11.** Chi middleware
-wires `internal/logging` into every request. Duration histogram +
+wires `internal/observability/logging` into every request. Duration histogram +
 error rate + in-flight gauge per endpoint. Structured log line per
 request with `trace_id` for correlation with worker logs.
 
@@ -7723,7 +7723,7 @@ Policy lives in `docs/api-contract.md` (per audit §11 recommendation).
 ### Cross-cutting: logging + metrics per request
 
 Every HTTP request emits a single INFO log line via
-`internal/logging` — `module=api`, `action=http_request_handled`,
+`internal/observability/logging` — `module=api`, `action=http_request_handled`,
 with fields:
 
 ```json
@@ -9411,7 +9411,7 @@ in milliseconds.
 
 ### Assertion helpers
 
-**Logging assertions** — `internal/logging.WithTestEmitter(t)`:
+**Logging assertions** — `internal/observability/logging.WithTestEmitter(t)`:
 
 ```go
 func TestSomeService_OnFailure_LogsCorrectly(t *testing.T) {
@@ -10375,7 +10375,7 @@ docs/
 ├── design-audit.md                # (Historical) The audit that led to the rebuild
 ├── rebuild-plan.md                # (Historical) This document
 ├── roadmap.md                     # Post-rebuild strategic direction (if any)
-├── sprints.md                     # (Historical) Sprint board for the pre-rebuild cleanup
+├── sprints.md                     # (Historical, deleted after retrospective) Sprint board for the pre-rebuild cleanup
 │
 └── proposals/                     # Design docs for pre-implementation feature work
     ├── README.md                  # Proposal template + status conventions
@@ -10549,13 +10549,13 @@ explains *intent* — not tables that mirror code.
 
 | Document | Derived from | Mechanism |
 |---|---|---|
-| `docs/logging.md` — action catalog | `internal/observability/vocabulary/actions.go` enum | `go generate ./...` runs a small tool that emits `docs/generated/actions.md`; `logging.md` links to it |
-| `docs/observability.md` — metrics catalog | `internal/observability/metrics/metrics.go` (Prometheus registry) | Same pattern; `metrics.md` includes `docs/generated/metrics.md` |
+| `docs/logging.md` — action catalog | `internal/observability/vocabulary/actions.go` enum | `go generate ./...` runs a small tool that emits `docs/generated/log-catalog.md`; `logging.md` links to it |
+| `docs/observability.md` — metrics catalog | `internal/observability/metrics/metrics.go` (Prometheus registry) | Same pattern; `metrics.md` includes `docs/generated/metrics-catalog.md` |
 | `docs/api-contract.md` — HTTP endpoints | Huma struct tags on request/response types | `huma reflect` emits OpenAPI JSON to `docs/generated/openapi.yaml`; `api-contract.md` documents intent, links to the spec |
 | `docs/api-contract.md` — SSE events | `internal/api/sse/events.go` type definitions | Same generator emits `docs/generated/sse-events.md` |
 | `docs/temporal.md` — workflow/activity list | `internal/worker/registration.go` registration calls | `go generate` walks the registration list; emits `docs/generated/workflows.md` |
 | `docs/deployment.md` — env var reference | `internal/config/*.go` `envconfig` struct tags | Same generator emits `docs/generated/env-vars.md` |
-| Migration list | `db/migrations/*.sql` files (goose) | Generator lists filenames + top-of-file summary comment |
+| Migration list | `migrations/*.sql` files (golang-migrate) | Generator lists filenames + top-of-file summary comment |
 
 **`docs/generated/`** is committed to the repo (not gitignored). The
 generator runs as a git pre-commit hook AND in CI, and CI fails if the
@@ -10779,7 +10779,9 @@ frozen the moment the Python code is deleted from the repo. Preserved as
 context for why certain design choices were made in the rebuild.
 
 **`sprints.md`** (the pre-rebuild sprint board) is frozen at the same
-point. Deleted after the retrospective (§14) — no reason to keep it.
+point and deleted after the retrospective (§14) — no reason to keep it.
+The §15.1 layout table lists it in the historical group with a
+`(Historical, deleted after retrospective)` note to reflect this.
 
 **`todo.md`** — active list — gets a "pre-rebuild historical" section
 appended when the rebuild lands, capturing what remained open under
@@ -10927,13 +10929,19 @@ order — not "delete everything and rewrite" — so that during cutover
   describes the current Python system; `docs/rebuild/*.md` describes
   the incoming Go system. During cutover, both are current."
 
-**Phase B: rebuild is prod (post-cutover).**
+**Phase B: rebuild is prod (post-cutover).** Two `git mv` operations
+land in the cutover PR:
 
-- `docs/rebuild/` becomes the canonical location.
-- Old `docs/*.md` files get an "Archived — this describes the pre-2026-Q3
-  Python system" header at the top.
-- Old files are MOVED (`git mv`) to `docs/legacy/` — clearly separated.
-- `docs/README.md` gets updated to route to the new docs.
+1. `git mv docs/*.md docs/legacy/` (all Python-era docs move — clearly
+   separated + each gets an "Archived — this describes the pre-2026-Q3
+   Python system" header).
+2. `git mv docs/rebuild/*.md docs/` (Go-era docs flatten to the canonical
+   locations shown in §15.1 layout — `docs/architecture.md`,
+   `docs/operations.md`, etc.).
+
+After these moves, the tree matches §15.1 exactly: flat `docs/*.md`
+for current docs + `docs/legacy/` for archived Python-era docs.
+`docs/README.md` gets updated to route to the new docs.
 
 **Phase C: legacy turnoff (per §14).**
 
@@ -11147,15 +11155,19 @@ docker-compose dev stack. Each adapter ships with:
 
 2. **S2: `pg` adapter** (Medium).
    - Connection pool, transaction helpers, structured error mapping.
-   - `db/migrations/` skeleton with the initial schema from §3.
-   - `goose` (or `migrate`) integration in `cmd/migrate`.
+   - `migrations/` skeleton with the initial schema from §3.
+   - `golang-migrate/migrate` integration in `cmd/migrate`.
    - Testcontainers integration test.
 
-3. **S3: `nats` adapter** (Medium).
-   - Client from §9 spec.
-   - Docker-compose entry pointing at workspace NATS (once
-     `~/workspace/nats/` is stood up — this milestone unblocks that).
-   - Testcontainers integration test.
+3. **S3: `nats` adapter + `event` composer** (Medium).
+   - Client from §9 spec plus the `internal/infra/event.Emit`
+     dual-write helper.
+   - Docker-compose entry pointing at workspace NATS (requires
+     `~/workspace/nats/` to be stood up first — that's a workspace-side
+     prerequisite, not part of this milestone).
+   - Testcontainers integration test covering both raw NATS operations
+     and the dual-write helper's failure modes (event_log fails; NATS
+     fails; both succeed).
 
 4. **S4: `s3` adapter** (Small).
    - Garage client.
@@ -11467,12 +11479,13 @@ first; write paths come from workflows independently.
 
 1. **A1: Read endpoints** (Medium).
    - `GET /api/v1/fixtures`, `GET /api/v1/fixtures/{id}`,
-     `GET /api/v1/events/{id}`, `GET /api/v1/videos/shares/{share_id}`.
+     `GET /api/v1/events/{id}`, `GET /api/v1/videos/{share_id}`
+     (matches §8 URL layout).
    - Auth via `FOUND_FOOTY_API_TOKEN`.
    - OpenAPI generation working.
 
 2. **A2: SSE stream** (Small).
-   - `GET /api/v1/events/stream` (SSE endpoint).
+   - `GET /api/v1/sse/events` (matches §8 endpoint catalog).
    - Subscribes to NATS event subjects.
    - Backfill on `Last-Event-ID` header via `event_log` query.
 
@@ -11662,8 +11675,8 @@ milestone.
 ```
 F  →  S1
 S1 →  S2, S3, S4, S5, S6, S7 (parallel)
-S2 →  D1, D2, D3, D4, D5 (parallel among themselves once S2 done)
-S3 →  O2 (Monitor needs NATS for stable-event fan-out)
+S1 + S2 →  D1, D2, D3, D4, D5 (all domain packages need pg + observability)
+S3 →  O2 (Monitor emits stable-event via event.Emit → NATS)
 S5 →  O1 (Ingest needs Temporal client)
 S6 →  D4 (alias domain uses llm for RAG)
 S7 →  D5 (discovery/vision/session/textanalysis use external APIs)
@@ -11674,6 +11687,8 @@ D5 + S6 + S7 →  O4 (Download)
 D3 →  O5 (Upload) + A1 (video read endpoints)
 D3 →  M (migration writes to video domain)
 S1 + S2 + S3 →  A (API needs pg + nats + observability)
+D1 + D2 →  A1 (fixture + event read endpoints)
+D2 →  A2 (SSE stream needs event metadata for backfill from event_log)
 D + O + V + A →  T (synthetic e2e needs everything)
 Everything →  M →  C (cutover needs migration, cutover needs everything)
 ```
