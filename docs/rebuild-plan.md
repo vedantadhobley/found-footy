@@ -2054,6 +2054,50 @@ uniqueness. Callers do NOT get to bypass `MintShareAndRecalculate` and
 INSERT directly — the store interface has no `Insert` method for
 active shares.
 
+**Tests** (`asset_service_test.go`, `share_service_test.go`,
+`asset_store_test.go`, `share_store_test.go`, `lifecycle_test.go`):
+
+- **`asset_service_test.go`** — `UpsertWithHashDedup` returns existing
+  asset + bumps popularity on hash collision; supersession chain
+  traversal via `superseded_by`; retention only considers assets with
+  zero referring shares.
+- **`share_service_test.go`** — `MintShareAndRecalculate` under
+  serialization-failure retry: `WithRetryableTx` re-executes;
+  `DisplacedRanks[]` is populated when incoming asset outranks existing;
+  `MarkRemoved` with each RemovalReason produces expected
+  `DisplacedRanks[]`; `RemovalReasonSuperseded` is NOT accepted (the
+  enum lacks it — supersession is asset-level).
+- **`share_store_test.go`** (Tier 2 with testcontainers Postgres) —
+  the load-bearing rank-uniqueness stress test:
+
+  ```go
+  // TestShareStore_ConcurrentMint_NoRankCollisions spawns 100 goroutines
+  // that each MintShareAndRecalculate a distinct asset against the same
+  // event. Post-run: every active share has a unique rank in [1..N] with
+  // no gaps; the partial UNIQUE INDEX made duplicate active ranks
+  // physically impossible; SerializationFailure retries fired but every
+  // Mint eventually succeeded.
+  func TestShareStore_ConcurrentMint_NoRankCollisions(t *testing.T)
+  ```
+
+  Additional named tests:
+  - `TestShareStore_CheckConstraintRejectsRankZero` — proves the
+    `CHECK (rank >= 1)` is not deferrable (any attempt to insert
+    rank=0 fails immediately, forcing the atomic mint pattern).
+  - `TestShareStore_MarkRemovedShiftsRemainingRanks` — removing a
+    rank-2 share of 5 leaves the remaining shares at ranks [1, 2, 3, 4].
+  - `TestShareStore_RemovalReasonEnumMatchesSQL` — INSERTing each
+    `RemovalReason` constant succeeds; INSERTing a bare string not
+    in the enum fails with the CHECK.
+- **`lifecycle_test.go`** — supersession chain traversal + URL
+  stability: an asset that has been superseded twice still resolves
+  its share to the current tip.
+
+The video domain's rank-uniqueness invariant thus gets the same
+test-coverage parity as the URL-stability invariant (which is exercised
+in `asset_service_test.go` retention tests + §12 Tier 3 synthetic
+scenarios' `expected_end_state.share_url_stability` assertion block).
+
 ### Alias domain
 
 Team aliases for Twitter search queries. Owns the RAG pipeline (Wikidata + LLM) and the cache of team → normalized-aliases mappings.
@@ -6945,6 +6989,30 @@ Standard labels (never varies in name):
   read zero hits for a sustained window before decommissioning legacy
   is safe.
 
+**Rank uniqueness invariant metrics (§3 partial UNIQUE INDEX + §4
+MintShareAndRecalculate):**
+
+- `found_footy_rank_recalc_total{outcome}` — counter with outcomes
+  `succeeded` / `retried_serialization` / `retries_exhausted`. Every
+  MintShareAndRecalculate + MarkShareRemoved call increments this.
+  `retries_exhausted` firing means the WithRetryableTx gave up after
+  3 attempts under contention — should be effectively zero in practice.
+- `found_footy_rank_recalc_duration_seconds{outcome}` — histogram; the
+  atomic transaction should typically finish in < 50ms even under
+  contention because it operates on ≤ 10 active shares per event.
+- `found_footy_rank_collision_attempts_total` — counter incremented
+  when a serialization retry actually fires (the observable proof
+  that the partial UNIQUE INDEX is doing its job under concurrency).
+  **Alert on rate > 0 sustained for > 10min** — steady collisions
+  suggest workflow-serialization is broken and multiple upload
+  workflows for the same event are running (should be impossible per
+  the SignalWithStart invariant).
+
+Together with `share_resolve_total` above, the rank uniqueness and URL
+stability invariants have observability parity — both are enforced at
+the schema layer AND observable at prod runtime, with alerts on the
+canary conditions.
+
 **Frontend / SSE observability:**
 
 - `found_footy_sse_active_streams` — gauge, connected SSE clients right now
@@ -7144,6 +7212,23 @@ groups:
       severity: warn
     annotations:
       summary: "JetStream durable consumer {{ $labels.consumer }} pending > 1000 messages for 10min"
+
+  # Load-bearing: rank uniqueness invariant under contention
+  - alert: FoundFootyRankRetriesExhausted
+    expr: sum(rate(found_footy_rank_recalc_total{outcome="retries_exhausted"}[10m])) > 0
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "MintShareAndRecalculate ran out of retries — the partial UNIQUE INDEX may be blocking commits under contention. Suspect broken per-event workflow serialization."
+
+  - alert: FoundFootyRankCollisionsPersistent
+    expr: sum(rate(found_footy_rank_collision_attempts_total[10m])) > 0
+    for: 10m
+    labels:
+      severity: warn
+    annotations:
+      summary: "Sustained rank-collision retries — either two workflows are racing on the same event (SignalWithStart invariant broken) or normal transient contention. Investigate if pattern persists >30min."
 ```
 
 Alerts route to ntfy topics (per user's self-hosted preference —
