@@ -1744,32 +1744,57 @@ type AssetService struct { store AssetStore; s3 s3.Client; ... }
 func (s *AssetService) UpsertWithHashDedup(ctx context.Context, incoming *Asset) (*Asset, bool, error) { ... }
 ```
 
-**Service — the ranking path (the load-bearing fix for the 2026-06-30 bug):**
+**Service — the atomic mint+rank path (the load-bearing fix for the 2026-06-30 bug):**
 
 ```go
 type ShareService struct { store ShareStore; ... }
 
-// RecalculateRanksForEvent recomputes ranks for all active shares of an event
-// in a single serializable transaction. The partial UNIQUE INDEX from §3
-// makes duplicate ranks physically impossible; if the transaction can't
-// achieve a valid ordering (extremely rare — only concurrent share creation
-// between SELECT and UPDATE), pgx retries the whole transaction.
+type MintResult struct {
+    ShareID       string    // s_<12-hex>
+    ComputedRank  int       // >= 1
+}
+
+// MintShareAndRecalculate inserts a new video_shares row at its correct
+// rank AND rewrites any displaced ranks in the same transaction.
 //
-// Ordering: (timestamp_verified DESC, popularity DESC, file_size DESC).
-func (s *ShareService) RecalculateRanksForEvent(ctx context.Context, eventID uuid.UUID) error {
-    // Executed inside a REPEATABLE READ transaction with retry-on-serialization-failure.
-    // SELECT active shares of eventID JOIN assets for the sort key columns
-    // ORDER BY (verified DESC, popularity DESC, file_size DESC)
-    // Loop through, i from 1: UPDATE video_shares SET rank = i WHERE id = <share_id>
-    // COMMIT
-    return s.store.WithRetryableTx(ctx, func(tx pgx.Tx) error { ... })
+// This is one atomic operation because the schema's CHECK (rank >= 1) is
+// not deferrable — a two-step "mint at rank=0, recompute later" flow would
+// fail at INSERT time. Computing the rank up front against the event's
+// current locked active set + writing the INSERT with the real value
+// eliminates the placeholder-rank failure mode.
+//
+// Sort ordering: (timestamp_verified DESC, popularity DESC, file_size DESC).
+// The partial UNIQUE INDEX from §3 makes duplicate active ranks physically
+// impossible; if the transaction can't achieve a valid ordering (concurrent
+// mint on the same event between SELECT and UPDATE), pgx retries the whole
+// function.
+func (s *ShareService) MintShareAndRecalculate(
+    ctx context.Context,
+    assetID, eventID uuid.UUID,
+    timestampVerified bool,
+    extractedMinute *int,
+) (MintResult, error) {
+    // Executed inside a REPEATABLE READ transaction with retry-on-serialization-failure:
+    //
+    //   1. SELECT id, asset_id FROM video_shares WHERE event_id = ?
+    //        AND state = 'active' FOR UPDATE
+    //      JOIN video_assets ON ...
+    //      ORDER BY (timestamp_verified DESC, popularity DESC, file_size DESC)
+    //   2. Determine where the incoming share sorts against that set.
+    //   3. INSERT INTO video_shares (..., rank) VALUES (..., computedRank).
+    //   4. UPDATE displaced shares' rank column so no active rank collides.
+    //      The partial UNIQUE INDEX prevents any intermediate collision from
+    //      committing.
+    //   5. COMMIT. Serialization failure retries from step 1.
+    return s.store.WithRetryableTx(ctx, func(tx pgx.Tx) (MintResult, error) { ... })
 }
 ```
 
-The 0-0-2-3 bug from Norway-CIV can't happen here: the partial unique
-index rejects duplicate ranks at write time, the transaction ensures
-all ranks land together, and pgx retries on serialization failure. No
-manual concurrency reasoning by callers.
+The 0-0-2-3 bug from Norway-CIV can't happen here: the partial UNIQUE
+INDEX rejects duplicate active ranks at write time, all rank writes for a
+mint operation land inside one transaction, `CHECK (rank >= 1)` blocks
+placeholder-rank INSERTs at the schema level, and pgx retries on
+serialization failure. No manual concurrency reasoning by callers.
 
 ### Alias domain
 
@@ -3181,30 +3206,47 @@ For each file in batch, in parallel via workflow.Go:
     // Delete the local temp file — asset already exists in S3
     3. activity.DeleteLocalTempFile(file) → error
 
-  4. activity.MintVideoShare(assetID, eventID, timestampVerified, extractedMinute, initialRank=0)
-     → shareID
-     // rank=0 is a temporary placeholder; step 5 recomputes
+  4. activity.MintShareAndRecalculateRanks(assetID, eventID, timestampVerified, extractedMinute)
+     → (shareID, computedRank)
+     // Single atomic activity. Inside one WithRetryableTx:
+     //   (a) locks event's active shares FOR UPDATE
+     //   (b) computes the new share's rank from the sort predicate
+     //       (timestamp_verified DESC, popularity DESC, file_size_bytes DESC)
+     //   (c) INSERTs video_shares row with the real rank (never rank=0 — the
+     //       CHECK (rank >= 1) constraint would reject it and there's no
+     //       "recompute later" escape hatch, so we compute up front)
+     //   (d) UPDATEs any displaced ranks under the partial UNIQUE INDEX
+     //       ON (event_id, rank) WHERE state = 'active'
+     //   COMMIT. Serialization-failure retries the whole function.
 
-  5. activity.RecalculateShareRanksForEvent(eventID) → error
-     // BEGIN; UPDATE ranks in one txn using partial UNIQUE INDEX;
-     // COMMIT with serialization-retry.
-
-  6. activity.NotifyEventLog("event.video_ready", payload) → error
-     // INSERT INTO event_log + NOTIFY channel — SSE fan-out
+  5. activity.EmitSemanticEvent("event.video_ready", payload) → error
+     // Dual-write: INSERT INTO event_log (durable audit + SSE backfill source)
+     // then nats.Publish(subject, payload) for realtime fan-out. NATS publish
+     // failure does NOT roll back the event_log commit — SSE reconnect covers
+     // the drop; the dual_write_skew_total counter fires.
 
 // After all files processed:
-7. activity.TryFlagDownloadComplete(eventID, requiredCount=10) → flipped bool
+6. activity.TryFlagDownloadComplete(eventID, requiredCount=10) → flipped bool
    // Even if this batch was empty; this is the "always signal" path
 
 IF flipped:
-  8. activity.NotifyEventLog("event.download_complete", payload) → error
+  7. activity.EmitSemanticEvent("event.download_complete", payload) → error
 ```
 
-**Why the RecalculateShareRanksForEvent step runs after every batch:**
-because ranks depend on cross-event popularity that can shift with each
-new asset attach. Running per-batch keeps ranks consistent; the partial
-UNIQUE INDEX from §3 makes this correct-by-construction regardless of
-concurrent runs.
+**Why `MintShareAndRecalculateRanks` is a single atomic activity:** the
+schema's `CHECK (rank >= 1)` constraint on `video_shares.rank` is not
+deferrable — a two-step "mint at rank=0, recompute after" flow would fail
+at INSERT time and step 5 would never run. Merging the two operations into
+one transaction lets us compute the correct rank up front against the
+event's current set of active shares (all locked FOR UPDATE), then INSERT
+with the real rank. The partial UNIQUE INDEX from §3
+(`ON (event_id, rank) WHERE state = 'active'`) enforces the invariant
+regardless of concurrent runs — the second COMMIT of a racing pair fails
+with `SerializationFailure` and `WithRetryableTx` re-executes.
+
+Ranks depend on cross-event popularity that can shift with each new asset
+attach, so re-running the sort inside the same transaction keeps the
+event's `active` share set consistent per batch.
 
 **Retry policy (workflow-level):** none — SignalWithStart handles
 "workflow already exists" cleanly. Idle-timeout is expected behavior.
@@ -3300,8 +3342,7 @@ Per-activity overrides shown below.
 |---|---|---|---|---|
 | `UpsertVideoAssetWithHashDedup` | (fixtureID, file, hash) | (assetID, wasCreated) | 30s | 3 attempts |
 | `UploadFileToS3` | (assetID, file) | error | 60s | 3 attempts, 2x from 2s |
-| `MintVideoShare` | (assetID, eventID, verified, minute, initialRank) | shareID | 10s | 3 attempts |
-| `RecalculateShareRanksForEvent` | eventID | error | 30s | 3 attempts (serialization retry inside txn) |
+| `MintShareAndRecalculateRanks` | (assetID, eventID, verified, minute) | (shareID, computedRank) | 30s | 3 attempts (serialization retry inside txn) |
 | `MarkShareRemoved` | (shareID, reason) | error | 10s | 3 attempts |
 
 **`internal/activity/alias.go`** (calls `domain/alias`):
@@ -3479,8 +3520,8 @@ Adding a new activity follows this pattern:
 The concrete example the textanalysis domain hook was aiming at:
 
 `activity.AnalyzeTweetIntent(assetID, tweetURL, text, author) → *Intent`.
-Wire it into `UploadWorkflow` step 4 (after `MintVideoShare`). Zero
-workflow rewrites. Zero cross-cutting refactor. The layering handles it.
+Wire it into `UploadWorkflow` step 4 (after `MintShareAndRecalculateRanks`).
+Zero workflow rewrites. Zero cross-cutting refactor. The layering handles it.
 
 ---
 
@@ -3619,7 +3660,7 @@ func (p *pgxPool) WithTx(ctx context.Context, fn func(pgx.Tx) error) error
 // automatic retry on serialization-failure (SQLSTATE 40001) up to 3
 // attempts with exponential backoff. Used by any transactional operation
 // that might race with concurrent writers — notably
-// video.RecalculateShareRanksForEvent (§4).
+// video.MintShareAndRecalculate (§4).
 //
 // Returns ErrSerializationFailedAfterRetries if all 3 attempts fail;
 // caller should escalate to human observation.
@@ -5248,11 +5289,10 @@ and `download_complete` flag flips on the event row.
    │      a. Atomic hash dedup            │  video.Service.UpsertWithHashDedup
    │      b. New? upload to S3            │  infra/s3.Upload
    │         Reused? delete local temp    │  os.Remove
-   │      c. Mint share (rank=0 temp)     │  video.Service.MintVideoShare
-   │      d. RecalculateShareRanks        │  video.Service.RecalculateRanks
-   │         (REPEATABLE READ, retry)     │  (partial UNIQUE INDEX enforces)
-   │      e. NotifyEventLog               │  activity.NotifyEventLog
-   │         "event.video_ready"          │  (INSERT + NOTIFY, SSE fan-out)
+   │      c. Mint share + recalc ranks    │  video.Service.MintShareAndRecalculate
+   │         atomically (REPEATABLE READ) │  (partial UNIQUE INDEX enforces)
+   │      d. EmitSemanticEvent            │  activity.EmitSemanticEvent
+   │         "event.video_ready"          │  (event_log INSERT + nats.Publish)
    │  After all batches:                  │
    │    Try flag download_complete        │  event.TryMarkDownloadComplete
    │    If flipped: notify event log      │
@@ -5675,70 +5715,85 @@ if wasCreated {
 }
 ```
 
-**Step c: Mint share.**
+**Step c: Mint share + recalculate ranks atomically.**
 
 ```go
-shareID, err := workflow.ExecuteActivity(
+var result video.MintResult
+_, err := workflow.ExecuteActivity(
     ctx,
-    activity.MintVideoShare,
+    activity.MintShareAndRecalculateRanks,
     asset.ID, input.EventID,
     file.TimestampVerified, file.ExtractedMinute,
-    0,  // temporary rank; step d recomputes
-).Get(ctx, &shareID)
+).Get(ctx, &result)
+// result.ShareID, result.ComputedRank
 ```
 
 Share ID format: `s_<12-hex>` — public, forever-stable, decoupled from
 S3 key (audit §4 URL-stability invariant).
 
-**Step d: Recalculate ranks.**
+Inside the activity: `video.ShareService.MintShareAndRecalculate` runs a
+REPEATABLE READ transaction with retry-on-serialization-failure (from
+`infra/pg.WithRetryableTx`):
 
-Runs after every share creation because ranks depend on cross-event
-popularity that shifts with each new asset attach.
+1. `SELECT ... FROM video_shares WHERE event_id = ? AND state = 'active'
+   ORDER BY (timestamp_verified DESC, popularity DESC, file_size_bytes DESC)
+   FOR UPDATE` — locks the event's current active set.
+2. Compute where the new share sorts against that set (via a live JOIN
+   against `video_assets` to resolve popularity + file_size_bytes for the
+   incoming asset).
+3. INSERT the new `video_shares` row at its computed rank (always `>= 1`,
+   so the `CHECK` constraint always passes on first try).
+4. UPDATE displaced ranks in place. The partial UNIQUE INDEX
+   (`ON (event_id, rank) WHERE state = 'active'`) makes the write set
+   consistent by construction — any temporary rank collision during the
+   UPDATE round would violate the index and roll back.
+5. COMMIT. If a concurrent transaction on the same event racedd this one,
+   the second COMMIT fails with `SerializationFailure`, `WithRetryableTx`
+   re-executes from step 1 against the now-updated state, and either
+   succeeds or gives up after 3 attempts.
 
-```go
-_, err := workflow.ExecuteActivity(
-    ctx,
-    activity.RecalculateShareRanksForEvent,
-    input.EventID,
-).Get(ctx, nil)
-```
+The 2026-06-30 0-0-2-3 rank bug is physically unrepresentable — no path
+INSERTs a rank<1 row, and no two active shares can share a rank per event.
 
-Inside the activity: `video.ShareService.RecalculateRanksForEvent`
-runs a REPEATABLE READ transaction with retry-on-serialization-failure
-(from `infra/pg.WithRetryableTx`). Sorts active shares of the event by
-`(timestamp_verified DESC, popularity DESC, file_size_bytes DESC)` and
-UPDATEs each `rank = index+1`.
+**Why atomic Mint+Recalculate instead of two separate activities:** the
+schema's `CHECK (rank >= 1)` is not deferrable, so a "mint at 0, recompute
+later" flow would fail at INSERT time. Even if the check were deferrable,
+splitting them means an activity failure between the two would leave a
+share at a placeholder rank until the next mint on that event. Folding
+them into one transaction eliminates both failure modes.
 
-The partial UNIQUE INDEX from §3
-(`CREATE UNIQUE INDEX ... ON video_shares (event_id, rank) WHERE state = 'active'`)
-enforces atomicity. If two concurrent recalculations race, the second
-one's COMMIT fails with `SerializationFailure`, `WithRetryableTx`
-re-executes the whole function, and it either succeeds (post-retry
-sees the other's updated state) or gives up after 3 attempts. The
-2026-06-30 0-0-2-3 rank bug is physically unrepresentable.
-
-**Step e: NotifyEventLog.**
+**Step d: Emit semantic event.**
 
 ```go
 _, _ = workflow.ExecuteActivity(
     ctx,
-    activity.NotifyEventLog,
+    activity.EmitSemanticEvent,
     "event.video_ready",
     eventlog.Payload{
         EventID:      input.EventID.String(),
-        ShareID:      shareID,
+        ShareID:      result.ShareID,
         FixtureID:    input.FixtureID,
-        Rank:         computedRank,
+        Rank:         result.ComputedRank,
         PlayerName:   playerName,  // from event lookup
         Minute:       eventMinute,
     },
 ).Get(ctx, nil)
 ```
 
-Inside: `INSERT INTO event_log ...; NOTIFY found_footy_events '<payload>'`.
-SSE handlers in `internal/api` `LISTEN` on the channel and forward to
-connected clients. Webhook delivery worker polls `event_log` for
-undelivered `event.video_ready` and POSTs to subscribers.
+Inside the activity — the dual-write pattern from §9's `event` package:
+
+```
+INSERT INTO event_log (event_type, payload, ...) VALUES (...);
+nats.Publish("event.video_ready", payload);
+```
+
+The `event_log` INSERT is the durable audit + SSE-reconnect backfill source.
+The `nats.Publish` is the realtime fan-out — SSE handlers in `internal/api`
+Subscribe to the NATS `event.>` subjects and forward to connected clients;
+the webhook delivery worker (a JetStream durable consumer) receives and
+POSTs to subscribers. NATS publish failure does NOT roll back the
+event_log commit — SSE reconnect backfills from `event_log`, and the
+`dual_write_skew_total{event_type}` counter fires to make the drop visible.
 
 **After all files in batch:**
 
@@ -5768,7 +5823,7 @@ Three dedup layers, all with different scopes:
 |---|---|---|---|
 | MD5 batch dedup | Within one DownloadWorkflow batch | Map by MD5 in Go | `DownloadWorkflow` step 4 |
 | Fixture-wide perceptual dedup | Cross-batch, cross-event, cross-instance | `UNIQUE (fixture_id, perceptual_hash)` + INSERT...ON CONFLICT | `UpsertVideoAssetWithHashDedup` activity |
-| Per-event rank ordering | Within a single event's shares | Partial UNIQUE INDEX + serializable transaction | `RecalculateShareRanksForEvent` activity |
+| Per-event rank ordering | Within a single event's shares | Partial UNIQUE INDEX + serializable transaction | `MintShareAndRecalculateRanks` activity |
 
 The fixture-wide layer is what audit §4 introduced. Prevents the
 storage bloat + popularity-vote dilution + cross-event miss + cross-
