@@ -10296,7 +10296,29 @@ For each BFF endpoint:
 5. Monitor for anomalies (see success/rollback criteria below).
 6. If clean for 48h: remove the feature flag + the old Mongo code
    entirely in a follow-up PR.
-7. If problems: flip the flag off — instant rollback to old Mongo path.
+7. If problems: flip the flag off — rollback to legacy Mongo path.
+
+**Rollback staleness caveat.** Under §13 A.1 the legacy Python stack is
+frozen read-only at Day 0 — no worker, no ingest, no writes. Rolling
+back an endpoint via the flag means BFF reads the legacy Mongo, which
+carries only pre-Day-0 state. Flipping back at Day +5 shows 5-day-stale
+fixtures/events/feed. Practical implication for each endpoint below:
+
+- **`/videos/{share_id}`** (order 1): safe to roll back. Share URLs are
+  stable regardless of freshness; a rolled-back share still resolves via
+  legacy MinIO's presigned URL.
+- **`/fixtures`**, **`/events/{id}`**, **`/feed`** (orders 2-4): rolling
+  back yields stale content, not corrupted content. Operator judgment
+  call — better a stale response than a broken one, but the freshness
+  gap widens the longer you wait. If a rollback is needed >48h into
+  a flip, prefer fixing the new-stack bug forward rather than staying
+  on legacy indefinitely.
+
+If we ever needed a rollback with fresh data, the escape hatch is
+running §13 A.2 (full data migration) which materializes new state
+into legacy Mongo — but A.2 is a multi-hour operation, not a
+minute-scale rollback. Design the flip criteria (four-color
+thresholds below) so rollback within the first hour is the target.
 
 **Migration order** (from lowest-blast-radius to highest):
 
@@ -10338,30 +10360,45 @@ Target: vedanta-systems opens an SSE stream to the found-footy API. Data
 flows normally: consumer → producer HTTP call, producer sends events on
 the stream. Worker no longer needs to know vedanta-systems exists.
 
-**Migration:**
+**Migration — happens pre-cutover, before §13's Day 0.** Path B's
+flag-based parallel-run only works while the legacy Python worker is
+still running and calling `notify_frontend_refresh`. Once §13 A.1's
+read-only-legacy state locks in at Day 0, the legacy worker is stopped
+and there is no fallback SSE path — the new stack must be the only
+path. This migration therefore lands well before cutover:
 
-1. Deploy new found-footy API with SSE endpoint live (§8). Not connected to
-   vedanta-systems yet.
-2. Add a new SSE-consumer path in vedanta-systems' Express — opens a
-   connection to `found-footy-prod-api:/api/v1/sse/events` on startup,
-   forwards messages to its own downstream SSE consumers (the browsers).
-3. Feature flag: `FOUND_FOOTY_SSE_ENABLED`. When ON, both paths run in
-   parallel:
-   - New: vedanta-systems consumes the found-footy SSE stream
-   - Old: worker still calls `notify_frontend_refresh`
+1. **Pre-cutover, days ~-14 to ~-7:** Deploy new found-footy API to a
+   dev-target instance with SSE endpoint live (§8). Not connected to
+   vedanta-systems prod yet.
+2. **Pre-cutover, days ~-7 to ~-3:** Add a new SSE-consumer path in
+   vedanta-systems' Express — opens a connection to the new
+   found-footy dev API, forwards messages to its own downstream SSE
+   consumers (browsers). Gated behind `FOUND_FOOTY_SSE_ENABLED` flag,
+   defaulted OFF.
+3. **Day -3 to Day 0:** Flip `FOUND_FOOTY_SSE_ENABLED` ON in the dev-target
+   deployment. Both paths run in parallel:
+   - New: vedanta-systems consumes the found-footy dev SSE stream
+   - Old: prod Python worker still calls `notify_frontend_refresh` in
+     the prod vedanta-systems Express (independent stack)
 4. Verify duplicate delivery is idempotent from the frontend's POV
-   (browser components handle "same event twice" cleanly — check).
-5. Once new path is stable for 48h: **worker stops calling
-   `notify_frontend_refresh`**. In new found-footy code, this activity
-   just doesn't exist. In the old Python code, the flag on
-   vedanta-systems side ignores the call.
-6. Remove the `notify_frontend_refresh` endpoint from vedanta-systems'
-   BFF entirely in a follow-up PR.
+   (browser components handle "same event twice" cleanly).
+5. **At Day 0 cutover:** flip vedanta-systems' `FOUND_FOOTY_API_URL`
+   to point at the new prod API. SSE stream now sources from the new
+   stack in prod. The `notify_frontend_refresh` endpoint on
+   vedanta-systems' side is still there but is no longer called by
+   anyone — the legacy Python worker was stopped as part of §13 A.1.
+6. **Post-cutover follow-up PR (Day +1 to +7):** delete the
+   `notify_frontend_refresh` endpoint from vedanta-systems' BFF entirely.
+   Zero callers.
 
-**Rollback if the new path breaks:** flip `FOUND_FOOTY_SSE_ENABLED` off.
-The old `notify_frontend_refresh` path takes over. If we've already
-removed the endpoint (step 6), rollback requires re-adding it — hence
-step 6 waits until we're highly confident.
+**Rollback if the new SSE path breaks at Day 0:** vedanta-systems'
+`FOUND_FOOTY_API_URL` gets flipped back. The `notify_frontend_refresh`
+endpoint on vedanta-systems is still there (only step 6 removes it),
+but the legacy worker that called it is stopped per §13. Real recovery
+means either accepting SSE downtime while the new stack is fixed, or
+temporarily starting the legacy worker back up (drift risk grows every
+hour it runs). The pre-cutover soak (steps 3-4) is what makes this
+low-risk in practice.
 
 **Backfill on reconnect** — audit §11 already noted that pre-cutover
 `Last-Event-Id` values don't backfill because ID space differs.
@@ -11864,10 +11901,18 @@ legacy turnoff after 30 days of parallel run.
      Rollback if any hit red.
 
 4. **C4: Parallel-run stabilization** (Medium).
-   - Both stacks running, all traffic on new stack, legacy stack
-     continues consuming API-Football and writing to MongoDB for
-     rollback safety.
-   - 30 days of soak.
+   - New stack takes all traffic. Legacy Mongo + MinIO stay online
+     **read-only** (per §13 A.1); legacy worker/twitter/scaler are
+     stopped at Day 0 and stay stopped. Legacy no longer consumes
+     API-Football or writes anything — it only serves compat lookups
+     for pre-cutover share IDs.
+   - 30 days of soak on the new stack.
+   - Rollback semantics: per-endpoint flag flip via §14 Path A
+     reverts vedanta-systems' BFF to reading legacy Mongo, BUT
+     legacy is frozen at Day 0 state — content-freshness endpoints
+     (fixtures, events, feed) return stale data on rollback. Only
+     the share-id redirect is fully safe to roll back (per-share
+     URLs are stable regardless of freshness).
    - Any bug found in new stack: fix on `main` (which is now the
      rebuild) + observe.
 
