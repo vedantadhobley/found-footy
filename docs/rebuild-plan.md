@@ -1583,7 +1583,7 @@ type Store interface {
     // Tracking-table operations — all idempotent via ON CONFLICT DO NOTHING.
     // Each returns the resulting count.
     RegisterMonitorWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string) (count int, err error)
-    RegisterDownloadWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string, outcome *string) (count int, err error)
+    RegisterEventDownloadWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string, outcome *string) (count int, err error)
     RegisterDropWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string) (count int, err error)
 
     // Atomic completion marking. §3 §6 pattern:
@@ -1648,7 +1648,7 @@ func (s *Service) FlagMonitorComplete(ctx context.Context, eventID uuid.UUID) (b
 // typed outcome class and atomically flips download_complete if the threshold
 // is met. Returns (currentCount, flippedComplete, err).
 func (s *Service) RegisterDownloadAndTryComplete(ctx context.Context, eventID uuid.UUID, workflowID string, outcome *string) (int, bool, error) {
-    count, err := s.store.RegisterDownloadWorkflow(ctx, eventID, workflowID, outcome)
+    count, err := s.store.RegisterEventDownloadWorkflow(ctx, eventID, workflowID, outcome)
     if err != nil { return 0, false, err }
     if count < s.downloadThreshold {
         return count, false, nil
@@ -2774,7 +2774,7 @@ layering does the isolating.
 
 ## 5. Orchestration layer — Temporal workflows and activities
 
-Five workflows, ~25 activities. Full spec below: signatures, retry policies,
+Five workflows, ~40 activities. Full spec below: signatures, retry policies,
 timeout configs, signal patterns, workflow ID conventions per audit
 [§2](./design-audit.md#2-workflow-id-conventions-and-identity),
 error handling classification. Activities are grouped by domain
@@ -3093,7 +3093,7 @@ func DownloadWorkflow(ctx workflow.Context, in DownloadWorkflowInput) (*Download
 ```
 // STEP 0: Register self FIRST (audit §0 invariant). Retry hard because
 // idempotency requires this to succeed.
-1. activity.RegisterDownloadWorkflow(
+1. activity.RegisterEventDownloadWorkflow(
      eventID, workflow.GetInfo().WorkflowExecution.ID, initialOutcome=nil,
    ) → count
 
@@ -3134,16 +3134,16 @@ For each accepted file, workflow.Go:
    ) → error
 
 // STEP 6: Mark self complete in registration row
-8. activity.RegisterDownloadWorkflow(
+8. activity.RegisterEventDownloadWorkflow(
      eventID, workflowID,
      initialOutcome=classifyOverallOutcome(),  // "success", "empty", "all_geo_restricted", etc.
    ) → count  // updates existing row with outcome_class
 ```
 
 **Why signal upload even when empty:** audit §7 lived problem. The
-UploadWorkflow's `check_and_mark_download_complete` needs to run
-even for empty batches — otherwise events where all 10 attempts
-fail get stuck at `download_complete=false` forever.
+UploadWorkflow's `TryFlagDownloadComplete` needs to run even for empty
+batches — otherwise events where all 10 attempts fail get stuck at
+`download_complete=false` forever.
 
 **Retry policy (workflow-level):** none — a failed DownloadWorkflow just
 becomes one of the 10 attempts that didn't produce videos. Discovery's
@@ -3415,7 +3415,13 @@ Delegates to `internal/infra/event.Emit` (§9). The activity boundary lives
 here so retry policy + observability wrapping happens at the workflow layer
 rather than inside the adapter.
 
-Total: ~30 activities across 8 files. Down from Python's 42.
+Total: ~40 activities across 8 files. Roughly on par with Python's 42, but
+the Go layer's atomic domain operations (e.g., `MintShareAndRecalculateRanks`
+replacing 4 separate Python activities) mean fewer distinct-mutation
+activities in exchange for more workflow-tracking primitives
+(`RegisterEvent*`, `TryFlag*`, `EventsFullyComplete`) that Python folded
+into implicit MongoDB update semantics. Not a regression — the surface area
+is more explicit but no larger.
 
 ### Error taxonomy for retry classification
 
@@ -5378,7 +5384,7 @@ and `download_complete` flag flips on the event row.
    ┌──────────────────────────────────────┐
    │ DownloadWorkflow                     │
    │                                      │
-   │  1. Register self (idempotency)      │  event.RegisterDownloadWorkflow
+   │  1. Register self (idempotency)      │  event.RegisterEventDownloadWorkflow
    │  2. Parallel download                │  infra/syndication.DownloadVideo
    │  3. Filter (aspect / duration / res) │  discovery.Service filters
    │  4. MD5 batch dedup                  │  video.Service.DedupBatchByMD5
@@ -10747,7 +10753,7 @@ Cutover comes last.
 | **F. Foundation** | Small | None | Repo scaffolding, CI, docs skeleton |
 | **S. Substrate** | Medium | F | 10 infra adapters, docker-compose stack |
 | **D. Domain** | Large | S (partial) | 8 domain packages with stores + services |
-| **O. Orchestration** | Large | D | 5 workflows + ~30 activities in Temporal |
+| **O. Orchestration** | Large | D | 5 workflows + ~40 activities in Temporal |
 | **V. Video pipeline** | Medium | S (partial) | Download + AI validation + hashing |
 | **A. API surface** | Medium | S + D | Chi+Huma HTTP + SSE + webhook |
 | **T. Testing hardening** | Medium | Throughout | Unit + integration + synthetic e2e |
@@ -10979,63 +10985,81 @@ recalculate-ranks; every final state has exactly one video per rank).
 
 **Prerequisites:** D complete. S5 (`temporal` adapter) complete.
 
-**What ships:** the 5 workflows and ~30 activities from §5, registered
-in `cmd/worker`, running against workspace Temporal.
+**What ships:** the 5 workflows and ~40 activities from §5, registered
+in `cmd/worker`, running against workspace Temporal. Activity names
+below use §5's Go PascalCase (source of truth); a rough 12→5
+consolidation happens because the Go domain layer collapses the Python
+per-mutation quartet (`replace_*`, `update_*`, `bump_*`, `recalculate_*`)
+into single atomic operations like `MintShareAndRecalculateRanks`.
 
 **Sub-milestone order:**
 
-1. **O1: Ingest workflow** (Small).
+1. **O1: IngestWorkflow** (Small).
    - Daily fixture fetch, categorization, cleanup.
    - Depends on: `fixture` domain, `apifootball` adapter,
      `alias` domain (for pre-caching).
-   - Activities: `fetch_todays_fixtures`, `fetch_fixtures_by_ids`,
-     `categorize_and_store_fixtures`, `cleanup_old_fixtures`,
-     `precache_team_aliases`.
+   - Activities: `FetchFixturesForWindow`, `FetchFixturesByIDs`,
+     `CategorizeAndUpsertFixtures`, `PruneOldFixtures`,
+     `PreCacheAliasesBatch`, `ListUniqueTeamsFromFixtures`.
    - Runs standalone (no fan-out) so it's a good smoke test that the
      worker + Temporal + Postgres integration works end-to-end.
 
-2. **O2: Monitor workflow** (Medium).
+2. **O2: MonitorWorkflow** (Medium).
    - The 30s polling loop.
    - Depends on: `fixture` + `event` domains, `apifootball` adapter,
-     `nats` adapter for stable-event publishes.
-   - Activities: `fetch_active_fixtures`, `process_fixture_events`,
-     `complete_fixture_if_ready`, `notify_frontend_refresh` (now via
-     NATS instead of HTTP).
-   - Emits stable-event notifications that trigger Discovery.
-   - Ships without Discovery hooked up first — Monitor sends events
-     to a NATS subject that has no consumer yet, verifiable by NATS CLI.
+     `event` composer for stable-event publishes.
+   - Activities: `ListActiveFixtureIDs`, `PreActivateUpcoming`,
+     `RecordFixturePoll`, `DetectEventChanges`, `UpsertEvent`,
+     `RegisterEventMonitorWorkflow`, `RegisterEventDropWorkflow`,
+     `FlagMonitorComplete`, `MarkEventRemoved`, `UpdateEventTelemetry`,
+     `EventsFullyComplete`, `TryCompleteFixture`, `CompleteFixture`,
+     `EmitSemanticEvent`.
+   - Emits stable-event notifications (via `EmitSemanticEvent` →
+     `event.stable` NATS subject) that trigger Discovery.
+   - Ships without Discovery hooked up first — Monitor publishes to
+     `event.stable` with no consumer yet, verifiable via `nats sub`.
 
-3. **O3: Discovery (Twitter) workflow** (Medium).
+3. **O3: DiscoveryWorkflow (Twitter)** (Medium).
    - Fires per stable event, drives the 10-attempt search loop.
    - Depends on: `event` + `alias` + `discovery` domains, `twitter`
      adapter.
-   - Activities: `check_event_exists`, `resolve_team_aliases`,
-     `execute_twitter_search`, `save_discovered_videos`, and the
-     signal-with-start plumbing for Download.
-   - Wired to Monitor's NATS subject as a subscriber that starts a new
-     Discovery workflow per stable event.
+   - Activities: `CheckEventStillLive`, `GetOrResolveTeamAliases`,
+     `SaveEventTwitterAliases`, `SearchTwitter`,
+     `RegisterEventDiscoveredVideo`, `CountDownloadWorkflowsForEvent`,
+     `RegisterEventDownloadWorkflow`.
+   - Started per stable event by a NATS subscriber running in
+     `cmd/worker` that reads `event.stable` and invokes
+     `StartDiscoveryWorkflow` per message.
 
-4. **O4: Download workflow** (Medium).
+4. **O4: DownloadWorkflow** (Medium).
    - Per-video download + AI validation + hashing.
    - Depends on: `syndication`, `ffmpeg`, `s3`, `llm` adapters;
      `vision` domain.
-   - Activities: `register_download_workflow`, `download_single_video`,
-     `validate_video_is_soccer`, `generate_video_hash` (or embedding —
-     depends on §5 embedding decision), `queue_videos_for_upload`.
+   - Activities: `DownloadVideo`, `DedupBatchByMD5`,
+     `ValidateVideoIsSoccer`, `GenerateVideoHash` (or embedding —
+     depends on §16.6 embedding decision gate), `SignalUploadBatch`,
+     `DeleteLocalTempFile`, `TryFlagDownloadComplete`.
    - This is the video pipeline (Phase V) landing inside a workflow.
 
-5. **O5: Upload workflow** (Medium).
+5. **O5: UploadWorkflow** (Medium).
    - Serialized per event via `SignalWithStartWorkflow` with
-     deterministic ID `upload-{event_id}`.
-   - Depends on: `video` domain, `s3` adapter.
-   - Activities: `fetch_event_data`, `deduplicate_by_md5`,
-     `deduplicate_videos`, `upload_single_video`, `replace_s3_video`,
-     `update_video_in_place`, `bump_video_popularity`,
-     `recalculate_video_ranks`, `check_and_mark_download_complete`,
-     cleanup activities.
-   - The URL-stability + rank-invariant checkpoint from Phase D pays
-     off here — Upload workflow gets to be short and clear because the
-     domain layer already enforces the hard rules.
+     deterministic ID `upload-{event_id}` — the correctness anchor
+     that eliminates the multi-download dedup race.
+   - Depends on: `video` domain, `s3` adapter, `event` composer.
+   - Activities: `UpsertVideoAssetWithHashDedup`, `UploadFileToS3`,
+     `MintShareAndRecalculateRanks`, `MarkShareRemoved`,
+     `EmitSemanticEvent`.
+   - Note the consolidation from Python's 12 upload activities to 5
+     Go activities: `replace_s3_video`, `update_video_in_place`,
+     `bump_video_popularity`, `recalculate_video_ranks`,
+     `check_and_mark_download_complete`, `deduplicate_by_md5`,
+     `deduplicate_videos`, `fetch_event_data`, plus the various
+     cleanup activities — all either move into the domain layer's
+     atomic operations or become internal store methods, not
+     externally-visible activities. The URL-stability +
+     rank-invariant checkpoint from Phase D pays off here — Upload
+     workflow gets to be short and clear because the domain layer
+     already enforces the hard rules.
 
 **Exit criteria:**
 
