@@ -2271,8 +2271,9 @@ func (s *Service) SearchByName(ctx context.Context, query string, limit int) ([]
 var (
     ErrNotFound            = errors.New("alias: team not found in cache")
     ErrWikidataUnreachable = errors.New("alias: wikidata service unreachable")
-    llm.ErrUnavailable      = errors.New("alias: llm service unavailable")
     ErrRAGFailedFallback   = errors.New("alias: rag pipeline failed; using fallback aliases")
+    // LLM-unavailability surfaces as llm.ErrUnavailable from internal/infra/llm;
+    // this domain doesn't re-declare it. Callers dispatch with errors.Is.
 )
 ```
 
@@ -2653,10 +2654,10 @@ var (
     ErrFFmpegExtractionFailed = errors.New("vision: frame extraction failed")
     ErrVideoDurationUnknown   = errors.New("vision: could not probe video duration")
     ErrDHashComputeFailed     = errors.New("vision: dhash computation failed")
-    llm.ErrUnavailable         = errors.New("vision: llm unavailable")
     ErrLLMTimeout             = errors.New("vision: llm timeout")
     ErrLLMCapExceeded         = errors.New("vision: llm concurrent-cap exceeded")
     ErrLLMBadResponse         = errors.New("vision: llm returned invalid structured json")
+    // llm.ErrUnavailable surfaces from internal/infra/llm; not re-declared here.
     ErrInsufficientFrames     = errors.New("vision: fewer than 2 frames provided to validation")
 )
 ```
@@ -3031,10 +3032,10 @@ func (s *Service) ClassifySource(ctx context.Context, authorHandle string, autho
 ```go
 var (
     ErrNotImplemented     = errors.New("textanalysis: not yet implemented")
-    llm.ErrUnavailable     = errors.New("textanalysis: llm unavailable")
     ErrLLMBadResponse     = errors.New("textanalysis: llm returned invalid classification")
     ErrEmbeddingMismatch  = errors.New("textanalysis: embedding dimensionality mismatch")
     ErrVideoAssetNotFound = errors.New("textanalysis: video asset not found for intent")
+    // llm.ErrUnavailable surfaces from internal/infra/llm; not re-declared here.
 )
 ```
 
@@ -4795,6 +4796,30 @@ var (
 **Observability:** every call records model, prompt length, response
 length, latency. Structured logs at INFO for success, WARN for
 retry-eligible errors, ERROR for non-retry-eligible.
+
+**Per-worker concurrency semaphore.** The adapter maintains a
+`sync.Semaphore(2)` gate around `ChatCompletion` and
+`ChatCompletionMultiImage` (matching joi's per-model parallel cap).
+Config-driven so the value can shift when nexus lands:
+
+```go
+type Config struct {
+    ... existing fields ...
+    ChatConcurrencyCap int `env:"LLM_CHAT_CONCURRENCY_CAP" envDefault:"2"`
+}
+
+func New(cfg Config) *Impl {
+    return &Impl{
+        chatSem: make(chan struct{}, cfg.ChatConcurrencyCap),
+        ...
+    }
+}
+```
+
+This is per-worker-process, NOT fleet-wide — with N worker replicas up
+to 2N concurrent chats hit joi simultaneously; excess returns 503 which
+maps to `ErrCapExceeded` and the retry policy handles backpressure. Full
+rationale in §7 "LLM cap enforcement" paragraph.
 
 **Testing:**
 
