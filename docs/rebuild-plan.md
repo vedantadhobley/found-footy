@@ -2179,7 +2179,7 @@ type Service struct {
 //
 // Retry classification for typed errors this returns:
 //   ErrWikidataUnreachable → retry-eligible with backoff
-//   ErrLLMUnavailable      → retry-eligible
+//   llm.ErrUnavailable      → retry-eligible
 //   ErrRAGFailedFallback   → not an error; log warning, continue
 //   ErrNotFound            → not retry-eligible
 func (s *Service) GetOrResolve(ctx context.Context, teamID int) ([]string, error)
@@ -2207,7 +2207,7 @@ func (s *Service) SearchByName(ctx context.Context, query string, limit int) ([]
 var (
     ErrNotFound            = errors.New("alias: team not found in cache")
     ErrWikidataUnreachable = errors.New("alias: wikidata service unreachable")
-    ErrLLMUnavailable      = errors.New("alias: llm service unavailable")
+    llm.ErrUnavailable      = errors.New("alias: llm service unavailable")
     ErrRAGFailedFallback   = errors.New("alias: rag pipeline failed; using fallback aliases")
 )
 ```
@@ -2532,7 +2532,7 @@ func (s *Service) ComputeDHashDense(ctx context.Context, videoPath string, inter
 // (three calls total). Reduces LLM cap pressure by ~33%.
 //
 // Returns typed errors:
-//   ErrLLMUnavailable → retry-eligible
+//   llm.ErrUnavailable → retry-eligible
 //   ErrLLMTimeout     → retry-eligible once
 //   ErrLLMCapExceeded → retry-eligible with longer backoff
 //   ErrLLMBadResponse → not retry-eligible; log for prompt-engineering
@@ -2570,7 +2570,7 @@ var (
     ErrFFmpegExtractionFailed = errors.New("vision: frame extraction failed")
     ErrVideoDurationUnknown   = errors.New("vision: could not probe video duration")
     ErrDHashComputeFailed     = errors.New("vision: dhash computation failed")
-    ErrLLMUnavailable         = errors.New("vision: llm unavailable")
+    llm.ErrUnavailable         = errors.New("vision: llm unavailable")
     ErrLLMTimeout             = errors.New("vision: llm timeout")
     ErrLLMCapExceeded         = errors.New("vision: llm concurrent-cap exceeded")
     ErrLLMBadResponse         = errors.New("vision: llm returned invalid structured json")
@@ -2909,7 +2909,7 @@ type Service struct {
 // STUBBED: returns ErrNotImplemented.
 //
 // When implemented, typed errors:
-//   ErrLLMUnavailable      → retry-eligible
+//   llm.ErrUnavailable      → retry-eligible
 //   ErrLLMBadResponse      → not retry-eligible; log for prompt work
 //   ErrEmbeddingMismatch   → embedding dimensionality != 768; config error
 //   ErrVideoAssetNotFound  → not retry-eligible
@@ -2948,7 +2948,7 @@ func (s *Service) ClassifySource(ctx context.Context, authorHandle string, autho
 ```go
 var (
     ErrNotImplemented     = errors.New("textanalysis: not yet implemented")
-    ErrLLMUnavailable     = errors.New("textanalysis: llm unavailable")
+    llm.ErrUnavailable     = errors.New("textanalysis: llm unavailable")
     ErrLLMBadResponse     = errors.New("textanalysis: llm returned invalid classification")
     ErrEmbeddingMismatch  = errors.New("textanalysis: embedding dimensionality mismatch")
     ErrVideoAssetNotFound = errors.New("textanalysis: video asset not found for intent")
@@ -3104,9 +3104,9 @@ identity travels through the workflow's input args, not through the ID.
 ```
 IngestWorkflow    → id = "ingest-scheduled" (schedule owns it)
 MonitorWorkflow   → id = "monitor-scheduled"
-DiscoveryWorkflow → id = "discovery-<event_uuid>"
-DownloadWorkflow  → id = "download-<NN>-<event_uuid>"  // NN = attempt zero-padded
-UploadWorkflow    → id = "upload-<event_uuid>"          // deterministic, serialized
+DiscoveryWorkflow → id = "discovery-{event_id}"
+DownloadWorkflow  → id = "download-<NN>-{event_id}"  // NN = attempt zero-padded
+UploadWorkflow    → id = "upload-{event_id}"          // deterministic, serialized
 ```
 
 **Fire-and-forget child workflows use `ABANDON` parent close policy**
@@ -3114,7 +3114,7 @@ UploadWorkflow    → id = "upload-<event_uuid>"          // deterministic, seri
 loop — child MUST outlive parent.
 
 **Per-event upload serialization via `SignalWithStartWorkflow`.** One
-UploadWorkflow per event, deterministic ID `upload-<event_uuid>`.
+UploadWorkflow per event, deterministic ID `upload-{event_id}`.
 Multiple DownloadWorkflows feed it via signals. FIFO queue inside
 UploadWorkflow processes batches. This preserves the audit §0
 "per-event dedup serialization" invariant.
@@ -3130,7 +3130,7 @@ either a domain typed error (from §4) or a temporal error. Retry policies
 are configured per activity based on which error classes are retry-
 eligible. Non-retry-eligible errors (`ErrNotFound`, `ErrURLMalformed`,
 `ErrLLMBadResponse`) get zero retries; retry-eligible errors
-(`ErrLLMUnavailable`, `ErrTwitterUnreachable`) get exponential backoff.
+(`llm.ErrUnavailable`, `ErrTwitterUnreachable`) get exponential backoff.
 
 **No workflow calls a service or store directly.** Workflows only call
 activities. Activities call services. This preserves testability
@@ -3216,13 +3216,18 @@ policy (if prior instance still running, skip this cycle).
 type MonitorWorkflowInput struct{}  // no inputs — schedule-driven
 
 type MonitorWorkflowOutput struct {
-    FixturesPolled        int
-    EventsDetectedNew     int
-    EventsMarkedStable    int
-    DiscoveriesTriggered  int
-    FixturesCompleted     int
-    Errors                []string
+    FixturesPolled           int
+    FixturesActivated        int  // fixture.activated emissions
+    FixturesCompleted        int  // fixture.completed emissions
+    EventsDetectedNew        int  // event.detected emissions
+    EventsMarkedStable       int  // event.stable emissions (Discovery triggers downstream)
+    EventsMarkedRemoved      int  // event.removed emissions
+    SemanticEventsEmitted    int  // sum of the emission fields above; sanity check
+    Errors                   []string
 }
+// NB: no DiscoveriesTriggered field — Discovery is spawned by the
+// event.stable NATS subscriber goroutine (§5 Discovery trigger), not by
+// MonitorWorkflow directly, so this workflow can't count them.
 
 func MonitorWorkflow(ctx workflow.Context, in MonitorWorkflowInput) (*MonitorWorkflowOutput, error)
 ```
@@ -3505,7 +3510,7 @@ For each surviving file:
      // VerifyTimestamp (§4). Verdict encodes classification AND timestamp.
 
      Retry policy: 4 attempts, 2x backoff from 3s. Retry-eligible:
-       ErrLLMUnavailable, ErrLLMTimeout, ErrLLMCapExceeded.
+       llm.ErrUnavailable, ErrLLMTimeout, ErrLLMCapExceeded.
      Non-retryable: ErrLLMBadResponse (log for prompt work).
 
   IF Verdict == VerdictAccepted OR Verdict == VerdictRejectedClockMismatch:
@@ -3544,7 +3549,7 @@ loop keeps going.
 - Workflow execution timeout: 5 min
 - Task timeout: 30s
 
-**Workflow ID convention:** `download-<NN>-<event_uuid>` where NN is
+**Workflow ID convention:** `download-<NN>-{event_id}` where NN is
 attempt zero-padded. `WorkflowIDReusePolicy: REJECT_DUPLICATE`. This
 means the same attempt can't be re-spawned; if discovery loop
 re-fires attempt 3, Temporal rejects.
@@ -3557,7 +3562,7 @@ rank recalculation. Idle-times out after 5 min of no signals; auto-restarts
 on next signal via SignalWithStart.
 
 **Trigger:** `SignalWithStartWorkflow` from `DownloadWorkflow` step 7.
-Deterministic ID: `upload-<event_uuid>`.
+Deterministic ID: `upload-{event_id}`.
 
 **Signature:**
 
@@ -3826,7 +3831,7 @@ Errors surface at three layers:
 1. **Domain errors** (from §4) — service-layer typed errors. Retry
    eligibility is documented on each `Err*` variable.
 2. **Infrastructure errors** (§9) — client-layer wrapped errors
-   (`ErrLLMUnavailable`, `pg.ErrConnectionLost`, `ErrS3AccessDenied`, etc.).
+   (`llm.ErrUnavailable`, `pg.ErrConnectionLost`, `s3.ErrAccessDenied`, etc.).
    Retry eligibility inherited from the underlying transport class.
 3. **Temporal errors** — wrapping of the above at activity boundaries.
    Workflow's error handler classifies via `underlying_error_class` field
@@ -3840,8 +3845,8 @@ into one of these `error_class` values for telemetry:
 | `not_found` | no | event/fixture/asset not in DB |
 | `invalid_input` | no | ErrURLMalformed, ErrInvalidTransition |
 | `invalid_state` | no | event already removed |
-| `transient_infra` | yes | pg.ErrConnectionLost, ErrS3Timeout |
-| `llm_unavailable` | yes | ErrLLMUnavailable, ErrLLMTimeout |
+| `transient_infra` | yes | pg.ErrConnectionLost, s3.ErrTimeout |
+| `llm_unavailable` | yes | llm.ErrUnavailable, ErrLLMTimeout |
 | `llm_cap_exceeded` | yes (longer backoff) | ErrLLMCapExceeded |
 | `llm_bad_response` | no | ErrLLMBadResponse |
 | `twitter_unreachable` | yes | ErrTwitterUnreachable |
@@ -3933,11 +3938,11 @@ With `REJECT_DUPLICATE`, if code tries to spawn a workflow with an ID
 that already exists (running or completed), Temporal returns
 `WorkflowExecutionAlreadyStarted`.
 
-For `discovery-<event_uuid>` and `download-<NN>-<event_uuid>`: the
+For `discovery-{event_id}` and `download-<NN>-{event_id}`: the
 rejection is *load-bearing*. It's how we prevent duplicate spawns from
 buggy monitor cycles. Handle by logging + continuing.
 
-For `upload-<event_uuid>`: we use `SignalWithStartWorkflow` which
+For `upload-{event_id}`: we use `SignalWithStartWorkflow` which
 implicitly allows "workflow already exists" (starts if not; signals if
 so). This is the exception to the REJECT_DUPLICATE rule and it's why
 UploadWorkflow uses `WorkflowIDReusePolicy: ALLOW_DUPLICATE` — a
@@ -4336,7 +4341,7 @@ type SemanticEvent struct {
     Kind          string          // "event.video_ready" | "event.download_complete" | "fixture.completed" | ...
     FixtureID     *int64          // optional
     EventID       *string         // uuid-as-string, optional
-    VideoShareID  *string         // s_<12hex>, optional
+    VideoShareID  *string         // s_<12-hex>, optional
     Payload       json.RawMessage // arbitrary event-specific body
 }
 
@@ -4535,7 +4540,7 @@ var (
 - Integration tests use testcontainers-go with a Garage container.
 
 **Retry-taxonomy note for §5:** the activity retry policy at §5 cites
-`ErrS3AccessDenied` and `ErrS3Timeout` in its non-retryable list.
+`s3.ErrAccessDenied` and `s3.ErrTimeout` in its non-retryable list.
 Those names map to `s3.ErrAccessDenied` and `s3.ErrTimeout` above —
 adjust the §5 taxonomy string to match the adapter's actual names when
 the code lands.
@@ -5343,7 +5348,7 @@ downloads live in §7.
 [Event debounced stable in MonitorWorkflow]
               │
               ▼
-   spawn DiscoveryWorkflow  ────► id = "discovery-<event_uuid>"
+   spawn DiscoveryWorkflow  ────► id = "discovery-{event_id}"
               │                      REJECT_DUPLICATE (audit §2)
               ▼
    ┌─────────────────────────┐
@@ -5406,7 +5411,7 @@ aliases from the team name (first word, initials, first + last).
 **Failure handling:**
 - `alias.ErrNotFound` (team_id not resolvable to a team) → workflow
   aborts with typed error. Discovery can't work without aliases.
-- `alias.ErrWikidataUnreachable` / `alias.ErrLLMUnavailable` → RAG
+- `alias.ErrWikidataUnreachable` / `alias.llm.ErrUnavailable` → RAG
   path fails, fallback returned. Workflow continues with degraded
   aliases.
 - `alias.ErrRAGFailedFallback` → not treated as an error; log at
@@ -5876,7 +5881,7 @@ and `download_complete` flag flips on the event row.
                   ▼
    ┌──────────────────────────────────────┐
    │ UploadWorkflow (per-event serialized)│
-   │  id = "upload-<event_uuid>"          │
+   │  id = "upload-{event_id}"          │
    │                                      │
    │  Loop until idle-timeout (5min):     │
    │    Wait signal channel               │
@@ -5889,7 +5894,7 @@ and `download_complete` flag flips on the event row.
    │      d. EmitSemanticEvent            │  activity.EmitSemanticEvent
    │         "event.video_ready"          │  (event_log INSERT + nats.Publish)
    │  After all batches:                  │
-   │    Try flag download_complete        │  event.TryMarkDownloadComplete
+   │    Try flag download_complete        │  activity.TryFlagDownloadComplete
    │    If flipped: notify event log      │
    └──────────────────────────────────────┘
 ```
@@ -7479,7 +7484,7 @@ semantics. Both patterns are transparent to publishers: `event.Emit`
 
 **5. Public URLs never break** (audit §4 URL-stability invariant).
 The share-id redirect endpoint is what makes this concrete —
-`/api/v1/videos/s_xyz789` resolves to the *current* canonical S3
+`/api/v1/videos/s_a1b2c3d4e5f6` resolves to the *current* canonical S3
 URL, regenerated on every request via presigned URLs. Assets can be
 re-uploaded, migrated, superseded — the share URL doesn't change.
 
@@ -7589,7 +7594,7 @@ is in `@public` — public URLs need to work without auth headers.
 
 ### Share-id redirect endpoint — the URL stability enforcer
 
-Public consumers hit `GET /api/v1/videos/s_xyz789` and get a 302
+Public consumers hit `GET /api/v1/videos/s_a1b2c3d4e5f6` and get a 302
 redirect to a presigned S3 URL. The presigned URL is regenerated per
 request from the *current* canonical asset — supersession, re-encode,
 storage migration all invisible to the consumer.
@@ -7841,7 +7846,7 @@ a merged channel across the subject patterns (`event.>` + `fixture.>`).
 ```
 id: 12345
 event: event.video_ready
-data: {"event_id":"e_a1b2c3d4e5f6","share_id":"s_xyz789","rank":1,"fixture_id":1562345,"player_name":"C. Gakpo","minute":72}
+data: {"event_id":"e_a1b2c3d4e5f6","share_id":"s_a1b2c3d4e5f6","rank":1,"fixture_id":1562345,"player_name":"C. Gakpo","minute":72}
 
 id: 12346
 event: event.detected
@@ -11725,7 +11730,7 @@ working by looking at the dev-stack Grafana, we're not done yet.
 
 3. **D3: `video` domain** (Large — this is the hairy one).
    - Two-table split: `video_assets` (canonical byte-store, content-hash
-     PK) + `video_shares` (public share IDs, s_<12hex> format).
+     PK) + `video_shares` (public share IDs, s_<12-hex> format).
    - Store: insert-asset-if-not-exists, insert-share, list-shares-by-event,
      recalculate-ranks.
    - The rank invariant: `CREATE UNIQUE INDEX video_shares_event_rank_active`
