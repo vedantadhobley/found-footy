@@ -96,7 +96,7 @@ Rationale + ecosystem-level context in
 - Same tracked-league + FIFA national-team scope as today.
 
 **Structural (new bar):**
-- **Enterprise-grade quality**: typed end-to-end (no `dict[str, Any]`
+- **Enterprise-grade quality**: typed end-to-end (no `map[string]any`
   crossing service boundaries), schema-enforced at the database, tests
   as a required deliverable of every domain service, deploy automation
   that makes "prod runs main" a mechanical guarantee.
@@ -163,7 +163,7 @@ Cutover is complete when:
 6. Deploy gate is live: main pushes trigger rebuild + restart; a
    Grafana panel shows "prod running commit X, main HEAD is
    commit Y" and alerts if drift > 24h.
-7. All 15 audit §16 phases either landed or are explicitly deferred
+7. All audit §16 phases either landed or are explicitly deferred
    with a `decisions.md` entry.
 
 ---
@@ -319,7 +319,7 @@ The FastAPI-equivalent stack in Go:
 Handler shape:
 ```go
 type GetEventInput struct {
-    ID string `path:"id" doc:"Event share-id"`
+    ID string `path:"id" doc:"Event ID (UUID)"`
 }
 type GetEventOutput struct {
     Body struct {
@@ -788,6 +788,8 @@ CREATE TYPE fixture_state AS ENUM ('staging', 'active', 'completed');
 
 -- Event type (API-Football's classification)
 CREATE TYPE event_type AS ENUM ('Goal', 'Card', 'Subst', 'Var');
+-- The API-Football responses use lowercase 'subst'; ingest-side normalization
+-- title-cases to match this enum before INSERT.
 
 -- Video share state
 CREATE TYPE share_state AS ENUM ('active', 'removed');
@@ -1230,7 +1232,7 @@ CREATE TABLE tweet_intent (
     urgency REAL CHECK (urgency BETWEEN 0 AND 1),
 
     -- Embedding for similarity clustering
-    embedding vector(768),                                -- Qwen3-Embedding-8B dim
+    embedding vector(768),                                -- dim discovered from llm.ListModels at startup; 768 assumes current Qwen3-Embedding-8B on joi. Migration + backfill needed if the deployed embedding model changes.
 
     -- Raw text for auditing
     tweet_text TEXT NOT NULL,
@@ -1274,6 +1276,23 @@ CREATE EXTENSION IF NOT EXISTS vector;                    -- pgvector for embedd
 --   8. twitter_sessions
 --   9. event_log
 --   10. webhook_subscriptions, webhook_deliveries (FK: event_log)
+
+-- Auto-updating updated_at trigger, shared by every table that carries
+-- an updated_at column. Without this, updated_at DEFAULTs to NOW() at
+-- INSERT time but never advances on UPDATE (Postgres does not update
+-- a DEFAULT'd column on UPDATE the way MySQL's ON UPDATE clause would).
+CREATE FUNCTION set_updated_at() RETURNS trigger AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+-- Applied per-table:
+CREATE TRIGGER trg_fixtures_updated_at             BEFORE UPDATE ON fixtures            FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER trg_events_updated_at               BEFORE UPDATE ON events              FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER trg_team_aliases_updated_at         BEFORE UPDATE ON team_aliases        FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER trg_webhook_subs_updated_at         BEFORE UPDATE ON webhook_subscriptions FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER trg_twitter_sessions_updated_at     BEFORE UPDATE ON twitter_sessions    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 ```
 
 `0001_initial.down.sql` drops everything in reverse dependency order.
@@ -1784,6 +1803,41 @@ func TestVARDrop_ThreeDrops_Removed(t *testing.T) { ... }
 ### Video domain
 
 Audit §4 realized: `video_assets` (canonical byte-store) + `video_shares` (public IDs).
+
+**Load-bearing invariant: URL stability.** Public share URLs
+(`/api/v1/videos/{share_id}` per §8) must resolve forever once shared.
+Once a `s_<12-hex>` share ID is minted and returned to any consumer, the
+API guarantees:
+
+- `state = 'active'` shares → 302 to the current canonical presigned S3
+  URL for the underlying asset.
+- Superseded shares (`video_assets.superseded_by IS NOT NULL`) → 302 to
+  the successor asset. Consumer never sees a 404 for a share they already
+  hold.
+- `state = 'removed'` shares (VAR-cancelled, admin-removed) → 410 Gone
+  with a stable JSON explanation body. This is the ONLY way a share URL
+  stops resolving as `2xx`/`3xx`.
+- Share ID lookup miss → 404. Reserved for IDs that were NEVER minted;
+  MUST NOT fire for a share ID this system has ever returned.
+
+Consequences that shape the domain contract below:
+
+- The `ShareStore` interface has no `Insert` method for active shares —
+  `MintShareAndRecalculate` is the only entry point. This prevents any
+  path from minting a share outside the rank invariant.
+- The `AssetStore` retention path deletes assets ONLY when they have
+  zero referencing shares (§3's conditional prune). Anything else
+  violates URL stability.
+- Supersession is expressed via `video_assets.superseded_by` at the
+  asset level; individual shares never rename their `id` or point at a
+  different asset. The `id` is immortal post-mint.
+
+The `s_<12-hex>` format is chosen so the ID space is much larger than any
+plausible content lifetime (~2^48 IDs) and collision-resistant enough
+that `MintShare` can generate with `crypto/rand` and retry on the
+extraordinarily rare collision. See `share_id_generation.go` in the
+package for the concrete generator; `docs/architecture.md` §URL
+stability documents the guarantee for consumers.
 
 **Model highlights:**
 
@@ -2889,8 +2943,8 @@ Every domain ships with three test files:
 - **`service_test.go`** — unit tests with mocked store. State machine
   transitions, business rules, error paths. Runs in milliseconds. Uses
   `internal/testutil/factories` to construct realistic models. Uses
-  `internal/testutil/mocks` (auto-generated from Store interfaces via
-  `mockery` or hand-rolled) for the store.
+  `internal/testutil/mocks` — hand-rolled from Store interfaces (per
+  §12's mockery-free policy) for the store.
 - **`store_test.go`** — integration tests against a real Postgres via
   testcontainers-go. Constraint enforcement, unique-index race
   scenarios, jsonb_set correctness, transaction retry logic.
@@ -3477,13 +3531,13 @@ Per-activity overrides shown below.
 |---|---|---|---|---|
 | `FetchFixturesForWindow` | (from, to time.Time) | []APIFixture | 30s | 3 attempts, 2x from 1s |
 | `FetchFixturesByIDs` | []int64 | []APIFixture | 30s | 3 attempts |
+| `ListActiveFixtureIDs` | (nil) | []int64 | 10s | 3 attempts. Called by MonitorWorkflow to fan out per-fixture polling. |
 | `CategorizeAndUpsertFixtures` | []APIFixture | CategorizeOutput | 30s | 3 attempts |
 | `PreActivateUpcoming` | lookahead time.Duration | ActivateOutput | 30s | 2 attempts |
-| `ActivateFixture` | fixtureID int64 | error | 10s | 2 attempts |
 | `TryCompleteFixture` | fixtureID int64 | flipped bool | 10s | 3 attempts, 2x from 1s |
 | `CompleteFixture` | fixtureID int64 | error | 10s | 2 attempts |
 | `RecordFixturePoll` | *fixture.Fixture | error | 5s | 3 attempts |
-| `PruneOldFixtures` | cutoff time.Time | count int | 120s | 2 attempts |
+| `PruneOldFixtures` | cutoff time.Time | count int | 120s | 2 attempts. Only prunes fixtures with zero video_shares (per §3 conditional). |
 
 **`internal/activity/event.go`** (calls `domain/event`):
 
@@ -3674,9 +3728,17 @@ Postgres/Garage/Temporal in docker-compose.
 
 ### Workflow ID collision handling
 
-Every workflow ID uses `WorkflowIDReusePolicy: REJECT_DUPLICATE`. This
-means if code tries to spawn a workflow with an ID that already exists
-(running or completed), Temporal returns `WorkflowExecutionAlreadyStarted`.
+Non-signal-with-start spawns (Discovery, Download, and the schedules'
+plain `Start` calls before Temporal takes over ID management) use
+`WorkflowIDReusePolicy: REJECT_DUPLICATE`. `UploadWorkflow` is the
+exception — it uses `ALLOW_DUPLICATE` because `SignalWithStartWorkflow`
+must be able to restart an idle-timed-out instance when a fresh signal
+arrives. Schedule-owned workflows (`ingest-scheduled`,
+`monitor-scheduled`) delegate ID reuse to the schedule.
+
+With `REJECT_DUPLICATE`, if code tries to spawn a workflow with an ID
+that already exists (running or completed), Temporal returns
+`WorkflowExecutionAlreadyStarted`.
 
 For `discovery-<event_uuid>` and `download-<NN>-<event_uuid>`: the
 rejection is *load-bearing*. It's how we prevent duplicate spawns from
@@ -3721,10 +3783,11 @@ Zero workflow rewrites. Zero cross-cutting refactor. The layering handles it.
 
 ## 9. Infrastructure adapters
 
-Nine adapters in `internal/infra/`. Each wraps an external system
-(database, cache, HTTP service, subprocess, external API) behind a Go
-interface that the domain services from §4 and activities from §5
-depend on. This is the "we talk to the outside world" boundary; every
+Ten adapters + one composer in `internal/infra/`. Each wraps an
+external system (database, cache, HTTP service, subprocess, external
+API) behind a Go interface that the domain services from §4 and
+activities from §5 depend on. This is the "we talk to the outside
+world" boundary; every
 crossing is typed, timeout-bounded, and error-classified.
 
 ### Design principles
@@ -4362,9 +4425,9 @@ type Config struct {
 Application code, service methods, activities — all unchanged. The
 adapter transparently talks to whichever endpoint the env var points at.
 
-**Real implementation** uses `github.com/openai/openai-go` (Anthropic's
-official Go OpenAI SDK compatible with any OpenAI-shaped API — which
-llama.cpp is, and nexus will be).
+**Real implementation** uses `github.com/openai/openai-go` (OpenAI's
+official Go SDK — compatible with any OpenAI-shaped API, which
+llama.cpp is and nexus will be).
 
 **Typed errors:**
 
@@ -5900,35 +5963,20 @@ batch := UploadBatchSignal{
 }
 
 uploadWorkflowID := fmt.Sprintf("upload-%s", input.EventID.String())
-_, err := workflow.SignalExternalWorkflow(
+_, err := workflow.ExecuteActivity(
     ctx,
-    uploadWorkflowID, "",  // empty runID = current run
-    "add_videos",
-    batch,
+    activity.SignalUploadBatch,
+    input.EventID, batch,
 ).Get(ctx, nil)
 ```
 
-Wait — that's WRONG. The FIRST DownloadWorkflow for an event has no
-UploadWorkflow to signal-to yet. Need `SignalWithStartWorkflow`:
-
-```go
-// Actual pattern
-c := temporal.MustClientFromWorkflowCtx(ctx)
-_, err := c.SignalWithStartWorkflow(
-    ctx,
-    uploadWorkflowID,       // deterministic per event
-    "add_videos", batch,    // signal name + payload
-    client.StartWorkflowOptions{
-        TaskQueue: cfg.TaskQueue,
-        WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
-    },
-    workflow.UploadWorkflow,
-    workflow.UploadWorkflowInput{EventID: input.EventID, FixtureID: input.FixtureID},
-)
-```
-
-Signals FIFO on delivery. Multiple DownloadWorkflows racing to signal
-just queue their batches; UploadWorkflow processes them in order.
+`SignalWithStartWorkflow` is a client-side call, not a workflow API —
+issuing it from a workflow directly would be a determinism violation.
+The `SignalUploadBatch` activity is the boundary: it constructs
+`uploadWorkflowID = "upload-{event_id}"`, calls `client.SignalWithStartWorkflow`
+with `WorkflowIDReusePolicy: ALLOW_DUPLICATE` (per §5 workflow-ID collision
+handling), and returns. Multiple DownloadWorkflows racing to signal just
+queue their batches; UploadWorkflow processes them in FIFO order.
 
 **Step 9: Update event telemetry + registration outcome.**
 
@@ -6135,17 +6183,25 @@ instance race problems from the current Mongo design.
 
 ### Concurrency + timing
 
-**LLM cap enforcement.** `internal/infra/llm` maintains a per-worker-process
-`sync.Semaphore(2)` around `ChatCompletion` and `ChatCompletionMultiImage`.
-With N worker replicas, that's up to 2N concurrent LLM calls fleet-wide.
-Not ideal — joi's actual cap is 2 fleet-wide. Audit §6 Track 1 workspace
-LLM gateway would fix this. Deferred pending nexus timing.
+**LLM cap enforcement — bounded per worker process, NOT fleet-wide.**
+`internal/infra/llm` maintains a per-worker-process `sync.Semaphore(2)`
+around `ChatCompletion` and `ChatCompletionMultiImage`, and worker
+registration uses `MaxConcurrentActivityExecutions: 2` on
+`ValidateVideoIsSoccer` and `GetOrResolveTeamAliases`. Both mechanisms
+enforce **per-process** capacity — they do NOT enforce joi's actual
+fleet-wide cap of 2 concurrent calls.
 
-Until then, worker registration uses
-`MaxConcurrentActivityExecutions: 2` specifically on the
-`ValidateVideoIsSoccer` activity (and `GetOrResolveTeamAliases` in
-alias domain, which also calls LLM). Semaphore + registration option
-together enforce the cap per-process.
+With N worker replicas, up to 2N concurrent LLM calls hit joi
+simultaneously. Excess requests get a 503 response, which the adapter
+surfaces as `LLMCapExceededError` — retry-eligible with backoff. The
+adapter's retry policy is the fleet-wide backpressure signal, not a
+distributed lock.
+
+Audit §6 Track 1 (workspace LLM gateway) would provide true fleet-wide
+enforcement. Deferred pending nexus timing — if nexus provides
+built-in concurrency + priority + routing, the gateway is redundant.
+Until then: 2N provisional cap, 503-retry backpressure, `llm_cap_exceeded_total`
+metric surfaces the pressure.
 
 **ffmpeg subprocess cap.** `infra/ffmpeg.MaxProcesses` (default 4)
 prevents CPU fork-bomb. Frame extraction blocks at the semaphore when
@@ -6233,6 +6289,10 @@ returns pre-registered responses per image hash).
 ### Extensibility
 
 **Embedding-based dedup (audit §4 Track 3):**
+
+This is the Path A deferral per §16.6 embedding decision gate — the
+rebuild ships with the hash-based pipeline and the embedding swap is
+a post-cutover roadmap item, NOT day-one work.
 
 Replace `perceptual_hash` + `perceptual_hash_prefix` columns with an
 `embedding vector(768)` column. `UpsertVideoAssetWithHashDedup`
@@ -7187,8 +7247,10 @@ input + output structs; OpenAPI spec derives from these.
 
 ### Auth at Caddy edge — concrete Caddyfile fragment
 
-Concrete hostname patterns TBD at implementation time per the
-[[naming-and-caddy-particular]] preference. Shape:
+Concrete hostname patterns TBD at implementation time per the "surface
+naming + Caddy exposure decisions" preference (per-agent memory —
+implementations that touch container names, env-var URLs, or Caddy
+hostnames should present options rather than pick silently). Shape:
 
 ```caddy
 # ~/workspace/proxy/caddy/caddy.d/found-footy.caddy — indicative
@@ -7364,7 +7426,7 @@ type TelemetryPublic struct {
 }
 ```
 
-**`FromDomain`** classmethod on each Response type maps domain →
+**`FromDomain`** constructor on each Response type maps domain →
 public. Internal telemetry (failure_class counters, time_to_first_s3_p50)
 is DELIBERATELY not exposed publicly — it's engineering
 observability, not consumer content. The public `TelemetryPublic` is
@@ -7838,8 +7900,13 @@ subscription filtering (per-subscription `event_types` array) happens
 in the delivery worker before the POST.
 
 **Rate limiting** — Caddy can enforce per-IP rate limits at the edge
-via the `rate_limit` handler. Not day-one (single trusted consumer),
-but the hook is there.
+via the `rate_limit` handler. Not day-one for the authenticated
+endpoints (single trusted consumer). Day-one **is** required for the
+public unauthenticated share-id redirect endpoint
+(`/api/v1/videos/{share_id}`) — a naive-scraping abuser could exhaust
+S3 presign generation quota. Recommended default: 60 req/min per IP on
+`/api/v1/videos/*`, enforced at Caddy. Escalate to Cloudflare-side
+rate-limiting if the tailnet-facing origin proves insufficient.
 
 **Endpoint deprecation without breaking** — add `Deprecation: <date>`
 header to responses; keep the endpoint working; consumers see the
@@ -7906,6 +7973,23 @@ options for you to pick.
 **Total: 9 unique container roles**, down from Python's 11 (removed:
 `mongo`, `mongo-express`/`mongoku`, `minio` — replaced by
 `postgres` and `garage`).
+
+**External dependencies** (not in this compose; must be running elsewhere
+on luv):
+
+- **Workspace NATS** at `~/workspace/nats/` — the semantic event bus.
+  Attaches to `luv-prod` / `luv-dev` shared networks. This project
+  publishes to `event.*` / `fixture.*` subjects on the `found-footy`
+  account. Health = `nats://nats:4222` reachable from `worker` + `api`.
+- **Workspace Caddy** at `~/workspace/proxy/` — fronts every HTTP
+  hostname. Attaches to `proxy` external network.
+- **Workspace monitor stack** at `~/workspace/monitor/` — Prometheus
+  scrapes `/metrics`; Promtail forwards container stdout to Loki.
+- **LLM endpoint** (joi today, nexus later). Reached at
+  `LLM_ENDPOINT_URL`. Not on any local network — Tailscale FQDN.
+
+None of the above are optional. Bring-up requires all four to be
+running before `docker compose up -d` here.
 
 ### Container naming — decisions to surface
 
@@ -8626,9 +8710,11 @@ docker compose -f "$COMPOSE_FILE" up -d --no-deps --no-build \
     worker api scaler twitter
 
 echo ">> waiting for health"
+# API exposes /api/v1/healthz externally (behind auth wall exception)
+# and /healthz internally for docker-compose healthcheck + this script.
 for svc in api; do
     docker compose -f "$COMPOSE_FILE" exec -T "$svc" \
-        wget -qO- http://localhost:8080/healthz || {
+        wget -qO- http://localhost:8080/api/v1/healthz || {
             echo "!! $svc failed health check"; exit 1;
         }
 done
@@ -8653,7 +8739,7 @@ echo ">> deploy complete: ${PROJECT} @ ${GIT_SHA}"
 **What this fixes vs 2026-06-30:** rebuild + restart happens in one
 command. Deploy tracking metric verified against actual git SHA
 before returning success. If commit → prod gap grows, the Grafana
-`found_footy_deploy_drift_commits` alert (audit §11) fires within
+`found_footy_deploy_drift_commits` alert (§11) fires within
 15 minutes.
 
 ### Deploy pipeline — CI trigger
@@ -9156,12 +9242,12 @@ test/synthetic/
 ├── fixtures/
 │   ├── api_football/               # canned API-Football responses (JSON)
 │   ├── twitter_searches/           # canned twitter service /search responses
-│   ├── joi_vision/                 # canned vision LLM responses per (image_hash, prompt_hash)
+│   ├── llm_vision/                 # canned vision LLM responses per (image_hash, prompt_hash)
 │   └── sample_videos/              # small real .mp4 files for download path
 ├── drivers/
 │   ├── api_football_driver.go      # in-process HTTP server serving canned responses
 │   ├── twitter_service_driver.go   # ditto for twitter container's HTTP surface
-│   └── joi_driver.go               # ditto for the LLM endpoint
+│   └── llm_driver.go               # ditto for the LLM endpoint
 ├── runner/
 │   ├── runner.go                   # orchestrates: bring up compose, load scenario, execute, assert
 │   └── assertions.go               # helpers for asserting on Postgres/Garage end state
@@ -9194,9 +9280,9 @@ setup:
     twitter:
       - request: "POST /search with query matching Salah|Liverpool"
         response_file: fixtures/twitter_searches/happy_path/5_videos.json
-    joi:
+    llm:
       - request: "POST /v1/chat/completions with image hash sha256:abc..."
-        response_file: fixtures/joi_vision/happy_path/soccer_yes_clock_23.json
+        response_file: fixtures/llm_vision/happy_path/soccer_yes_clock_23.json
 
 execute:
   workflow: IngestWorkflow
@@ -10149,7 +10235,8 @@ legacy shares.
 
 ### Monitoring during cutover
 
-Two Grafana dashboards get promoted during cutover (per §11):
+Two Grafana dashboards get promoted during cutover (built on §11's
+observability substrate):
 
 **`found-footy-cutover`** — a temporary dashboard live from Day -1
 through Day +30. Panels:
@@ -10231,40 +10318,23 @@ for share URLs during Day 0 → Day +30. When does it actually turn off?
 4. **og-server migration complete** (Migration C complete).
 5. **No pending prod incident** blocked on legacy access.
 
-**Turnoff sequence:**
+**Turnoff sequence** (plan-level; runbook detail lands with Phase C):
 
-```bash
-# ~/workspace/dev/found-footy/scripts/turnoff-legacy.sh
-# Run at Day +30 (approximate) once preconditions are met.
-
-set -euo pipefail
-
-echo ">> verifying preconditions"
-LEGACY_HITS=$(curl -s http://monitor-prometheus:9090/api/v1/query?query='sum(rate(found_footy_legacy_compat_hits_total[7d]))' | jq -r '.data.result[0].value[1]')
-if (( $(echo "$LEGACY_HITS > 0.0012" | bc -l) )); then  # ~10/day = 0.0012/sec
-    echo "!! legacy compat still hit >10/day; not turning off"
-    exit 1
-fi
-
-echo ">> stopping legacy containers"
-docker compose -f docker-compose.legacy.yml down
-
-echo ">> removing legacy caddy entries"
-rm ~/workspace/proxy/caddy/caddy.d/found-footy-legacy.caddy
-docker exec proxy-caddy caddy reload --config /etc/caddy/Caddyfile
-
-echo ">> archiving legacy volumes (rsync to cold-storage location)"
-rsync -a ~/workspace/data/found-footy-legacy/ ~/workspace/data/_archive/found-footy-legacy-$(date +%Y%m%d)/
-
-echo ">> removing legacy volumes"
-rm -rf ~/workspace/data/found-footy-legacy/
-
-echo ">> removing legacy compat client from new API"
-# Emit a maintenance PR — no runtime action needed here, just a followup task
-echo "  → open a PR that removes internal/infra/legacycompat + its lookup in getShareVideo"
-
-echo ">> legacy turnoff complete"
-```
+1. Verify preconditions via `found_footy_legacy_compat_hits_total` — 7-day
+   rate must be near zero. Concrete threshold + safety margin decided at
+   runbook time.
+2. Stop legacy containers (`docker compose -f docker-compose.legacy.yml down`).
+3. Remove legacy Caddy entries + reload the workspace proxy.
+4. Archive legacy volumes (rsync to `~/workspace/data/_archive/`) before
+   deleting.
+5. Remove legacy volumes.
+6. Workspace NATS: **nothing to do.** NATS is workspace-shared
+   infrastructure (per CONVENTIONS Pattern C), not part of the legacy
+   found-footy stack. The `found-footy` NATS account persists across
+   the turnoff. No account revocation, no subject-tree cleanup.
+7. Follow-up PR removes the `internal/infra/legacycompat/` package and
+   its lookup in `internal/api/handlers/videos.go`. Clean code; no
+   dead paths.
 
 **Post-turnoff followup PR** — removes the `LegacyCompat` client from
 `internal/infra/legacycompat/` and the lookup path from
@@ -11081,7 +11151,7 @@ Cutover comes last.
 | **A. API surface** | Medium | S + D | Chi+Huma HTTP + SSE + webhook |
 | **T. Testing hardening** | Medium | Throughout | Unit + integration + synthetic e2e |
 | **M. Migration** | Small | D | Legacy → new data migration scripts |
-| **C. Cutover** | Medium | Everything above | Feature-flag flip, frontend migration, legacy turnoff |
+| **C. Cutover** | Large | Everything above | Feature-flag flip, frontend migration, 30-day soak, legacy turnoff |
 
 ### 16.2 Phase F — Foundation
 
