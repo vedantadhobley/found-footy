@@ -6860,9 +6860,9 @@ Every log line is a structured JSON object with a fixed field set:
   "action": "video_downloaded",
   "msg": "video downloaded and staged",
   "trace_id": "01hxyz...",
-  "workflow_id": "download-03-e_a1b2c3d4e5f6",
+  "workflow_id": "download-03-550e8400-e29b-41d4-a716-446655440000",
   "activity_id": "act_9x8y7z",
-  "event_id": "e_a1b2c3d4e5f6",
+  "event_id": "550e8400-e29b-41d4-a716-446655440000",
   "fixture_id": 1562345,
   "duration_ms": 3140,
   "extras": {
@@ -7255,7 +7255,7 @@ equivalent).
 
 ```logql
 # "What happened to this event?"
-{container=~"found-footy-.*"} | json | event_id = "e_a1b2c3d4e5f6"
+{container=~"found-footy-.*"} | json | event_id = "550e8400-e29b-41d4-a716-446655440000"
 
 # "Why is this fixture stuck?"
 {container=~"found-footy-.*"} | json | fixture_id = "1562345"
@@ -7454,7 +7454,7 @@ surfaces:
 **1. `ff` CLI tool** — `cmd/ff/main.go` — for local dev + operator use.
 
 ```bash
-ff logs --event e_a1b2c3d4e5f6 --tail        # streams live Loki logs
+ff logs --event 550e8400-e29b-41d4-a716-446655440000 --tail        # streams live Loki logs
 ff logs --fixture 1562345 --last 1h          # historical
 ff coverage --league 39 --last 24h            # SLO check
 ff deploy status                              # prod vs main comparison
@@ -7667,32 +7667,51 @@ request with `trace_id` for correlation with worker logs.
 // cmd/api/main.go
 r := chi.NewRouter()
 
-// Middleware stack (order matters)
+// Base middleware — applies to every request.
 r.Use(middleware.RequestID)              // sets X-Request-Id, propagates as trace_id
 r.Use(middleware.RealIP)                 // trusts X-Forwarded-For from Caddy
 r.Use(logging.HTTPMiddleware(emitter))   // structured log line per request
 r.Use(middleware.Recoverer)              // panic → 500 with logged stack
-r.Use(middleware.Timeout(60 * time.Second))
 r.Use(metricsMiddleware(metrics))        // Prometheus counters + histograms
-r.Use(middleware.Compress(5))            // gzip on Accept-Encoding
 
-// Huma API instance
-config := huma.DefaultConfig("Found Footy API", "v1")
-config.OpenAPI.Servers = []*huma.Server{{URL: fmt.Sprintf("https://%s", cfg.PublicHostname)}}
-api := humachi.New(r, config)
+// A request-timeout middleware wraps normal REST endpoints. Applied via
+// a subrouter so long-lived endpoints (SSE) can opt out — a global
+// r.Use(middleware.Timeout(...)) would kill SSE connections at the
+// deadline via ctx.Done(), turning every client into a rolling
+// reconnect + event_log backfill loop.
+r.Group(func(r chi.Router) {
+    r.Use(middleware.Timeout(60 * time.Second))
+    r.Use(middleware.Compress(5))        // gzip on Accept-Encoding
 
-// Register handlers
-registerFixtureHandlers(api, deps)
-registerEventHandlers(api, deps)
-registerVideoHandlers(api, deps)     // includes share-id redirect
-registerFeedHandlers(api, deps)
-registerSSEHandlers(api, deps)
-registerWebhookHandlers(api, deps)
-registerHealthHandlers(api, deps)
+    api := humachi.New(r, huma.DefaultConfig("Found Footy API", "v1"))
+    registerFixtureHandlers(api, deps)
+    registerEventHandlers(api, deps)
+    registerVideoHandlers(api, deps)     // includes share-id redirect
+    registerFeedHandlers(api, deps)
+    registerWebhookHandlers(api, deps)
+    registerHealthHandlers(api, deps)
+})
+
+// SSE is exempt from middleware.Timeout AND middleware.Compress
+// (compression breaks the flush-per-message contract). Long-lived
+// connection with internal keepalive per §8 SSE handler.
+r.Group(func(r chi.Router) {
+    // No timeout, no compression — SSE-specific handler-level ctx.
+    registerSSEHandlers(r, deps)
+})
 
 // Serve OpenAPI spec + /healthz OUTSIDE the auth wall (Caddy config knows)
 // Everything else is inside (Caddy adds Bearer check before reverse_proxy)
 ```
+
+**Design principle: SSE is exempt from request-timeout middleware.**
+Long-lived event streams (which browsers hold open for minutes to hours)
+cannot share a request-context deadline with normal REST endpoints.
+Chi's `middleware.Timeout` sets `ctx.Deadline()`, which the SSE handler
+respects by returning — a 60s global timeout would disconnect every
+client every minute, drive `sse_reconnect_backfill_bytes` through the
+roof, and make `dual_write_skew_total` metrics look catastrophic. SSE
+lives in its own subrouter without timeout or compression middleware.
 
 ### Endpoint catalog
 
@@ -8010,7 +8029,7 @@ a merged channel across the subject patterns (`event.>` + `fixture.>`).
 ```
 id: 12345
 event: event.video_ready
-data: {"event_id":"e_a1b2c3d4e5f6","share_id":"s_a1b2c3d4e5f6","rank":1,"fixture_id":1562345,"player_name":"C. Gakpo","minute":72}
+data: {"event_id":"550e8400-e29b-41d4-a716-446655440000","share_id":"s_a1b2c3d4e5f6","rank":1,"fixture_id":1562345,"player_name":"C. Gakpo","minute":72}
 
 id: 12346
 event: event.detected
@@ -8143,18 +8162,32 @@ func deliverToAllSubscribers(ctx context.Context, deps Deps, m nats.JetStreamMsg
     }
 }
 
-// deliverOne POSTs to a single subscriber, records outcome in
-// webhook_deliveries, and returns true iff the HTTP response was 2xx.
+// deliverOne POSTs to a single subscriber, upserts the row in
+// webhook_deliveries keyed on (subscription_id, event_log_id) per §3
+// UNIQUE constraint, and returns true iff the HTTP response was 2xx.
+//
+// The delivery-row identity is stable across retries: on redelivery
+// JetStream feeds us the same message with the same event_log_id;
+// upsert bumps attempt_count and rewrites last_response_*, but the
+// row's id stays the same. X-FF-Delivery-Id = deliveries.id is
+// therefore also stable across retries, giving subscribers a single
+// idempotency key per (subscription, event) pair.
 func deliverOne(ctx context.Context, deps Deps, sub webhook.Subscription,
                 ev event.SemanticEvent, m nats.JetStreamMsg) bool {
     payload := m.Data
     sig := hmacSign(payload, sub.HMACSecret)
-    deliveryID := uuid.New()
+
+    // Upsert delivery row; returns the row's stable UUID id.
+    deliveryID, attemptNum, err := deps.WebhookDeliveries.BeginAttempt(ctx,
+        sub.ID, ev.EventLogID,
+    )
+    if err != nil { return false }
 
     req, _ := http.NewRequestWithContext(ctx, "POST", sub.URL, bytes.NewReader(payload))
     req.Header.Set("Content-Type", "application/json")
     req.Header.Set("X-FF-Event", ev.Kind)
-    req.Header.Set("X-FF-Delivery-Id", deliveryID.String())
+    req.Header.Set("X-FF-Delivery-Id", deliveryID.String())    // stable across retries
+    req.Header.Set("X-FF-Attempt", strconv.Itoa(attemptNum))   // increments on retry
     req.Header.Set("X-FF-Signature", "hmac-sha256="+sig)
     req.Header.Set("X-FF-Timestamp", strconv.FormatInt(time.Now().Unix(), 10))
 
@@ -8163,14 +8196,18 @@ func deliverOne(ctx context.Context, deps Deps, sub webhook.Subscription,
     duration := time.Since(start)
 
     if err != nil {
-        deps.WebhookDeliveries.Record(ctx, deliveryID, sub.ID, ev, 0, err.Error(), duration)
+        deps.WebhookDeliveries.RecordFailure(ctx, deliveryID, 0, err.Error(), duration)
         return false
     }
     defer resp.Body.Close()
 
     body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-    deps.WebhookDeliveries.Record(ctx, deliveryID, sub.ID, ev, resp.StatusCode, string(body), duration)
-    return resp.StatusCode >= 200 && resp.StatusCode < 300
+    if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+        deps.WebhookDeliveries.RecordSuccess(ctx, deliveryID, resp.StatusCode, string(body), duration)
+        return true
+    }
+    deps.WebhookDeliveries.RecordFailure(ctx, deliveryID, resp.StatusCode, string(body), duration)
+    return false
 }
 ```
 
@@ -8202,8 +8239,11 @@ ConsumerConfig{
 }
 ```
 
-**Consumer idempotency** — the `X-FF-Delivery-Id` UUID is unique per
-delivery attempt (fresh each redelivery). Subscribers should also dedupe
+**Consumer idempotency** — the `X-FF-Delivery-Id` UUID is **stable
+across retries** for a given (subscription, event) pair. The
+`X-FF-Attempt` header increments per redelivery so subscribers can
+distinguish first attempts from retries when it matters. Subscribers
+should dedupe
 by `X-FF-Event` + payload hash for stronger guarantees. The `event_log.id`
 in the payload provides an application-level dedup key that's stable
 across JetStream redeliveries.
@@ -8285,7 +8325,7 @@ with fields:
   "module": "api",
   "action": "http_request_handled",
   "method": "GET",
-  "path": "/api/v1/events/e_a1b2c3d4e5f6",
+  "path": "/api/v1/events/550e8400-e29b-41d4-a716-446655440000",
   "status": 200,
   "duration_ms": 42,
   "request_id": "req_9x8y7z",
@@ -8634,7 +8674,10 @@ services:
       context: .
       dockerfile: deploy/Dockerfile.worker
     image: found-footy-worker:latest  # tagged locally; no registry today
-    container_name: found-footy-prod-worker
+    # container_name deliberately omitted — compose auto-names replicated
+    # services as <project>-<service>-<N>, and container_name is rejected
+    # when combined with deploy.replicas. Actual containers: found-footy-prod-worker-1,
+    # found-footy-prod-worker-2, etc. Scaler queries by service name, not container name.
     env_file: .env
     depends_on:
       postgres:
@@ -8692,7 +8735,8 @@ services:
       context: .
       dockerfile: deploy/Dockerfile.twitter
     image: found-footy-twitter:latest
-    container_name: found-footy-prod-twitter
+    # container_name deliberately omitted — see worker note above.
+    # Actual containers: found-footy-prod-twitter-1, found-footy-prod-twitter-2, etc.
     env_file: .env
     volumes:
       - ${DATA_DIR:-~/workspace/data/found-footy}/twitter/profiles:/data/firefox_profiles
@@ -9026,8 +9070,16 @@ http://found-footy-prod-temporal-ui.{$BASE_DOMAIN} {
 
 # Garage admin — Decision 1 above. Delete this block if we decide
 # not to expose the admin.
+# NOTE: workspace CONVENTIONS.md requires hostname prefix ==
+# reverse_proxy target container name (byte-identical). Two options:
+# (a) keep the admin UI on the same container as the S3 API and use a
+#     path-based sub-route on the primary hostname (found-footy-prod-garage);
+# (b) run garage-admin as a separate small container so the hostname
+#     found-footy-prod-garage-web matches its own container name.
+# Deferred until Phase C implementation — either is fine, both preserve
+# the byte-identity convention.
 http://found-footy-prod-garage-web.{$BASE_DOMAIN} {
-    reverse_proxy found-footy-prod-garage:3902
+    reverse_proxy found-footy-prod-garage-web:3902
 }
 
 # Twitter VNC — only reachable when started with the `vnc` profile.
@@ -9059,7 +9111,7 @@ http://found-footy-dev-temporal-ui.{$BASE_DOMAIN} {
 }
 
 http://found-footy-dev-garage-web.{$BASE_DOMAIN} {
-    reverse_proxy found-footy-dev-garage:3902
+    reverse_proxy found-footy-dev-garage-web:3902  # same byte-identity note as prod
 }
 
 http://found-footy-dev-twitter-vnc.{$BASE_DOMAIN} {
