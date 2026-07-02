@@ -6296,13 +6296,16 @@ Every observable behavior falls into one of four categories:
 | **Logs** | Discrete events with structured context | Loki (via Promtail from container stdout) | Engineers debugging incidents |
 | **Metrics** | Numerical time-series counters and gauges | Prometheus (scrapes `/metrics` endpoints) | Alerts, capacity planning, SLO dashboards |
 | **Traces** | Causal chains of activity spans across services | Not implemented day one — see extensibility | Deep-dive perf work (audit §5 concurrency debugging) |
-| **Semantic event stream** | Business events (event.detected, event.video_ready) | Postgres `event_log` table (§3) | SSE fan-out, webhook delivery, audit trail |
+| **Semantic event stream** | Business events (event.detected, event.video_ready) | Workspace NATS (realtime) + Postgres `event_log` (durable audit + SSE-reconnect backfill) | SSE fan-out, webhook delivery, audit trail |
 
 Pillars 1-3 are engineering-facing. Pillar 4 (the semantic event stream)
 serves both observability AND product delivery (SSE + webhooks) — that
-dual role means the same INSERT into `event_log` powers both the
-frontend real-time updates AND the "what happened to this event"
-audit query.
+dual role means the same `event.Emit` call powers both the frontend
+real-time updates (via NATS publish) AND the "what happened to this
+event" audit query (via `event_log` INSERT). The two writes are paired
+per §9's `internal/infra/event` composer; skew between them is a
+first-class observable (see `dual_write_skew_total` in the metrics
+inventory below).
 
 ### Design principles
 
@@ -6435,6 +6438,8 @@ const (
 
     // Infrastructure adapters (matching §9)
     ModuleInfraPG           Module = "infra_pg"
+    ModuleInfraNATS         Module = "infra_nats"
+    ModuleInfraEvent        Module = "infra_event"    // dual-write composer (event_log + NATS)
     ModuleInfraS3           Module = "infra_s3"
     ModuleInfraLLM          Module = "infra_llm"
     ModuleInfraTemporal     Module = "infra_temporal"
@@ -6443,6 +6448,7 @@ const (
     ModuleInfraSyndication  Module = "infra_syndication"
     ModuleInfraFFmpeg       Module = "infra_ffmpeg"
     ModuleInfraWikidata     Module = "infra_wikidata"
+    ModuleLegacyCompat      Module = "infra_legacycompat"  // pre-cutover-share resolution
 
     // Cross-cutting
     ModuleAPI        Module = "api"
@@ -6608,7 +6614,10 @@ Standard labels (never varies in name):
 
 **Infrastructure health metrics:**
 
-- `found_footy_pg_pool_active` — gauge
+- `found_footy_pg_pool_active` — gauge, currently checked-out connections
+- `found_footy_pg_pool_size` — gauge, configured pool max (declared for
+  saturation-ratio queries; `pg_pool_active / pg_pool_size > 0.9`
+  triggers `FoundFootyPGPoolExhausted`)
 - `found_footy_pg_query_duration_seconds{action}` — histogram
 - `found_footy_s3_upload_duration_seconds{bucket}` — histogram
 - `found_footy_llm_call_duration_seconds{model, endpoint}` — histogram
@@ -6618,6 +6627,51 @@ Standard labels (never varies in name):
 - `found_footy_twitter_fleet_healthy_instances` — gauge
 - `found_footy_twitter_cookies_age_seconds` — gauge, from `twitter_sessions.updated_at`
 - `found_footy_twitter_consecutive_auth_failures{instance}` — gauge
+
+**Event bus + dual-write invariant metrics (NATS pillar):**
+
+- `found_footy_event_log_insert_total{event_type, outcome}` — counter,
+  every `event.Emit` call increments (`outcome` = `success` | `failure`)
+- `found_footy_nats_publish_total{subject, outcome}` — counter, every
+  NATS publish attempt (whether from `event.Emit`, JetStream stream
+  publish, or standalone)
+- `found_footy_nats_publish_duration_seconds{subject}` — histogram
+- `found_footy_dual_write_skew_total{event_type}` — counter, incremented
+  when `event_log` INSERT succeeded but NATS publish failed. **This is
+  the canary metric for the workspace-NATS invariant.** Alert on
+  `rate > 0` sustained (see rules below).
+- `found_footy_nats_consumer_lag_messages{consumer}` — gauge,
+  JetStream `num_pending` per durable consumer
+- `found_footy_nats_connection_state{binary}` — gauge,
+  `0`=disconnected, `1`=connecting, `2`=connected. `<2` is the
+  canonical "we're not talking to NATS" signal.
+
+**URL stability + share-resolution metrics (§4 URL-stability invariant):**
+
+- `found_footy_share_resolve_total{outcome}` — counter with outcomes:
+  - `302_active` — active share, redirect to canonical presigned URL
+  - `302_superseded` — share superseded, redirect to successor
+  - `410_removed` — VAR-cancelled or admin-removed, gone forever
+  - `404_missing` — share ID never existed. **Alert on any rate > 0** —
+    this is the exact URL-stability violation the invariant prevents
+    (a share_id that used to work but doesn't now).
+  - `404_legacy_missing` — legacy compat lookup failed. Alert if
+    `rate > 0` sustained; legacy compat should resolve every
+    pre-cutover share that was ever public.
+- `found_footy_legacy_compat_hits_total{outcome}` — counter, every
+  legacy compat lookup (`outcome` = `hit` | `miss`). Load-bearing for
+  §13/§14 legacy turnoff safeguard — turnoff requires this metric to
+  read zero hits for a sustained window before decommissioning legacy
+  is safe.
+
+**Frontend / SSE observability:**
+
+- `found_footy_sse_active_streams` — gauge, connected SSE clients right now
+- `found_footy_sse_reconnect_backfill_bytes` — histogram, bytes served
+  via `event_log` backfill on reconnect
+- `found_footy_sse_backfill_truncated_total` — counter, times
+  `X-Backfill-Truncated: true` was returned (reconnect requested a
+  cursor older than the 30-day `event_log` retention)
 
 **Deploy tracking metrics** (audit §1):
 
@@ -6739,12 +6793,13 @@ groups:
       summary: "Prod is {{ $value }} commits behind main HEAD for 24h+"
 
   - alert: FoundFootyLLMEndpointDown
-    expr: found_footy_llm_calls_total{outcome="failure", error_class="llm.unavailable"} > 5
+    expr: |
+      sum(rate(found_footy_calls_total{module="infra_llm", outcome="failure", error_class="llm_unavailable"}[5m])) > 0
     for: 5m
     labels:
       severity: critical
     annotations:
-      summary: "LLM endpoint unavailable for 5min+"
+      summary: "LLM endpoint unavailable — llm_unavailable errors sustained 5min+"
 
   - alert: FoundFootyTwitterAuthFailing
     expr: sum(found_footy_twitter_consecutive_auth_failures) > 6
@@ -6759,6 +6814,55 @@ groups:
     for: 2m
     labels:
       severity: warn
+    annotations:
+      summary: "PG pool > 90% saturated for 2min — investigate long queries"
+
+- name: found-footy-invariants
+  interval: 1m
+  rules:
+  # Load-bearing: NATS + event_log dual-write drift
+  - alert: FoundFootyDualWriteSkew
+    expr: sum(rate(found_footy_dual_write_skew_total[5m])) > 0
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "event_log INSERT succeeded but NATS publish failed — SSE + webhook consumers may be silently missing events. Check NATS connection state."
+
+  # Load-bearing: URL stability invariant violation
+  - alert: FoundFootyShareResolveMissing
+    expr: sum(rate(found_footy_share_resolve_total{outcome="404_missing"}[10m])) > 0
+    for: 10m
+    labels:
+      severity: critical
+    annotations:
+      summary: "A share_id returning 404 that used to resolve — URL stability violation. Investigate whether shares/assets were pruned or the redirect logic regressed."
+
+  # Load-bearing: legacy compat health during parallel-run
+  - alert: FoundFootyLegacyCompatUnreachable
+    expr: sum(rate(found_footy_share_resolve_total{outcome="404_legacy_missing"}[10m])) > 0
+    for: 10m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Legacy compat resolving a pre-cutover share ID as missing — legacy Mongo or MinIO may be down/misconfigured."
+
+  # NATS transport health
+  - alert: FoundFootyNATSDisconnected
+    expr: max(found_footy_nats_connection_state) < 2
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: "One or more binaries disconnected from workspace NATS for 2min+"
+
+  - alert: FoundFootyJetStreamConsumerLagging
+    expr: max by (consumer) (found_footy_nats_consumer_lag_messages) > 1000
+    for: 10m
+    labels:
+      severity: warn
+    annotations:
+      summary: "JetStream durable consumer {{ $labels.consumer }} pending > 1000 messages for 10min"
 ```
 
 Alerts route to ntfy topics (per user's self-hosted preference —
