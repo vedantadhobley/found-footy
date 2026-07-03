@@ -6,6 +6,90 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-02 — NATS is metadata-plane only; video bytes go over HTTP
+
+**Decision:** NATS/JetStream carries semantic events, SSE fan-out, and
+webhook delivery — all small structured messages. Video bytes are NEVER
+routed through NATS. Browsers fetch videos via HTTP/HTTPS directly from
+Garage (S3-compatible) through the workspace Caddy, using presigned URLs
+returned by the `/api/v1/videos/{share_id}` 302 redirect.
+
+**Why NATS is wrong for video byte transport:**
+
+- **Broker memory + storage blowup**: even at 20 MB per clip and hundreds
+  of clips per match day, pushing videos through NATS turns the
+  workspace-shared broker into a media store. Wrong tool for the shape.
+- **No range-request support**: browsers need `Range: bytes=x-y` to seek
+  within a video. HTTP/S3 does this natively; NATS doesn't.
+- **Poor latency**: NATS adds a hop the CDN model avoids. Playback
+  needs the shortest possible path from bytes-on-disk to browser
+  decoder.
+- **Wrong caching model**: Caddy + Garage can add edge caching, ETags,
+  and Cache-Control; NATS as a message broker doesn't have these
+  primitives.
+
+The common misconception is that "large streaming services use Kafka
+for video." They don't. Netflix / YouTube / Twitch use Kafka (or
+equivalent) for the **metadata plane** — view counts, recommendation
+events, ad tracking, telemetry. Bytes always go over HTTP-based
+segment protocols (HLS, MPEG-DASH) backed by S3-alike storage + CDN.
+Kafka is not in the byte path.
+
+**Why the play-latency problem ("video sometimes needs close+reload
+before playing") has a different root cause:**
+
+Almost certainly one or more of:
+
+1. **Video not encoded with `-movflags +faststart`**: MP4's index (moov
+   atom) defaults to the END of the file. Browsers can't start playing
+   until they've downloaded the whole file. `-movflags +faststart`
+   moves the moov atom to the front and the browser starts playing
+   after ~500 KB. Biggest single win.
+2. **Slow presigned URL generation**: Python's boto3 signing is not
+   fast; Go's `aws-sdk-go-v2` signing is significantly faster. Free
+   win from the rebuild.
+3. **First-byte latency from cold MinIO**: Garage has better cache
+   locality by default.
+4. **Redirect chain adds RTT**: `Cache-Control` on the 302 lets the
+   browser cache the target URL and skip the API round-trip on repeat.
+
+**What ships in the new stack to fix play latency:**
+
+- **`-movflags +faststart` on every downloaded video.** The
+  `DownloadVideo` activity (§7) invokes ffmpeg with this flag as part
+  of its download/normalize pass. No exceptions.
+- **Cache-Control on the 302 redirect** (`Cache-Control: public,
+  max-age=300`) so the browser caches the S3 URL for 5 minutes and
+  doesn't re-hit `/api/v1/videos/{share_id}` for repeated plays of
+  the same clip.
+- **Browser preload via SSE `event.video_ready`.** The
+  vedanta-systems React component subscribes to the found-footy
+  SSE stream and, on `event.video_ready`, sets the `<video src=...>`
+  attribute IMMEDIATELY on a hidden video element (browser starts
+  buffering). By the time the user clicks, the first frame is ready.
+  Zero new backend infrastructure — reuses the NATS event we already
+  publish.
+- **Optional (Phase C follow-up)**: server-side pre-warm. When
+  `event.video_ready` fires, `api` issues a small server-side GET
+  against the presigned URL to warm Garage's cache before the user's
+  browser asks. Deferred until we have real telemetry showing the
+  browser preload isn't enough.
+
+**Consequences:**
+
+- Rebuild plan §7 (video pipeline) documents `-movflags +faststart` as
+  a hard requirement of the `DownloadVideo` activity.
+- Rebuild plan §8 SSE event catalog notes that `event.video_ready` is
+  the load-bearing signal for frontend preload.
+- vedanta-systems frontend gets a small change during Phase C cutover:
+  the video-tile component subscribes to `event.video_ready` and
+  preloads the `<video src>` when it fires.
+- The play-latency bug is treated as a **known issue in Python prod
+  that the Go rebuild resolves structurally**, not something to
+  monkey-patch in Python. If it becomes an urgent user complaint
+  before the rebuild lands, we can backport `-movflags +faststart`
+  to Python `download_single_video` as a small standalone fix.
+
 ## 2026-07-01 — Workspace NATS as event bus (replaces Postgres LISTEN/NOTIFY)
 
 **Decision:** found-footy's async event stream (SSE fan-out, webhook delivery,

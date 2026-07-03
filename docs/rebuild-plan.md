@@ -3867,7 +3867,7 @@ Per-activity overrides shown below.
 
 | Activity | Input | Output | Timeout | Retry override |
 |---|---|---|---|---|
-| `DownloadVideo` | video URL | DownloadedFile | 90s | 3 attempts, 2x from 2s. Non-retryable: geo/deleted/notavailable |
+| `DownloadVideo` | video URL | DownloadedFile | 90s | 3 attempts, 2x from 2s. Non-retryable: geo/deleted/notavailable. **MUST** run the downloaded MP4 through `ffmpeg -i in.mp4 -c copy -movflags +faststart out.mp4` before returning — per decisions.md 2026-07-02, this moves the moov atom to the front of the file so browsers can start playing after ~500 KB instead of buffering the full clip. Load-bearing for play-latency. |
 | `DedupBatchByMD5` | []DownloadedFile | []DownloadedFile | 30s | 2 attempts |
 | `ValidateVideoIsSoccer` | (filePath, durationSecs, apiElapsed, apiExtra) | ValidationResult | 90s | 4 attempts, 2x from 3s. Non-retryable: ErrLLMBadResponse. Composes vision.ExtractFrames + ValidateFrames + VerifyTimestamp (§4). Verdict encodes both classification AND timestamp check. |
 | `GenerateVideoHash` | file | dHashSamples | 60s heartbeat | 2 attempts, heartbeat every 5 frames |
@@ -7835,15 +7835,25 @@ func getShareVideo(ctx context.Context, in *GetShareVideoInput) (*GetShareVideoO
     return &GetShareVideoOutput{
         Status:       http.StatusFound,  // 302
         Location:     presignedURL,
-        CacheControl: "no-store",  // must not cache the redirect itself
+        // Cache the redirect for half the presigned URL's lifetime so
+        // browsers skip the round-trip on repeat plays of the same clip
+        // (reloads, going back to a share page). See decisions.md
+        // 2026-07-02 for the play-latency rationale.
+        CacheControl: "public, max-age=1800",  // 30 min; presigned URL is valid for 1h
     }, nil
 }
 ```
 
-**`Cache-Control: no-store`** on the redirect response prevents
-consumers from caching the presigned URL. The underlying S3 URL is
-time-limited (1 hour default); if a consumer cached it, they'd get
-403s after expiry. Better: re-resolve per request.
+**`Cache-Control: public, max-age=1800`** (30 minutes) on the redirect
+response lets browsers cache the presigned URL for half its lifetime.
+The underlying S3 URL is valid for 1 hour (Presign default); 30 min
+cache gives a 30 min safety buffer. Repeat plays of the same clip
+(reload, revisit) skip the API round-trip entirely — the browser
+follows its cached 302 straight to Garage.
+
+For 410 responses (removed shares), Cache-Control is `no-store` — we
+don't want browsers caching a "gone" verdict that might become
+resurfaceable via administrative decision.
 
 **Fallback: 410 Gone with reason** — when a share is removed (VAR,
 policy, asset garbage-collected), the endpoint returns a friendly
@@ -8085,7 +8095,11 @@ data: {"fixture_id":1562345,"video_count":7}
 
 - `event.detected` — new event first appears
 - `event.stable` — event passed 3-poll debounce
-- `event.video_ready` — a new share_id is available (rank included)
+- `event.video_ready` — a new share_id is available (rank included).
+  **Load-bearing for frontend play-latency**: vedanta-systems' video-tile
+  component sets `<video src=...>` on a hidden preload element as soon
+  as this event fires, so browser buffering starts before the user
+  clicks. See decisions.md 2026-07-02 for the full rationale.
 - `event.rank_recalculated` — ranks changed (rare; usually paired with video_ready)
 - `event.removed` — VAR removed
 - `event.download_complete` — 10 download workflows fired for this event
