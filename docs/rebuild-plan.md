@@ -496,14 +496,12 @@ found-footy/
 │   ├── 0001_initial.up.sql
 │   ├── 0001_initial.down.sql
 │   └── ...
-├── deploy/
-│   ├── docker-compose.yml     # prod stack
-│   ├── docker-compose.dev.yml # dev stack
-│   ├── Dockerfile.worker
-│   ├── Dockerfile.api
-│   ├── Dockerfile.scaler
-│   ├── Dockerfile.twitter     # includes Firefox + geckodriver install
-│   └── caddy/found-footy.caddy
+├── docker-compose.yml        # prod stack (at repo root, per workspace convention)
+├── docker-compose.dev.yml    # dev stack (at repo root, hot-reload via air)
+├── Dockerfile                # prod image; multi-stage; parameterized on BINARY arg
+├── Dockerfile.dev            # dev image; single stage with air for hot-reload
+├── caddy/
+│   └── found-footy.caddy     # Caddy routes copied into ~/workspace/proxy/caddy.d/
 ├── scripts/                   # bin/deploy, capture_scenario, dev helpers
 ├── docs/                      # existing docs/ structure — routing index + audit + rebuild-plan + decisions + operations + …
 ├── .claude/                   # skills, memories (skills author'd only when useful)
@@ -643,7 +641,7 @@ root, because there are multiple Dockerfiles (one per binary — a
 minimal `alpine:latest` image + the Go static binary) and grouping
 them keeps the root clean.
 
-`deploy/caddy/found-footy.caddy` is the per-project Caddy fragment,
+`caddy/found-footy.caddy` is the per-project Caddy fragment,
 symlinked into `~/workspace/proxy/caddy/caddy.d/` per the existing
 convention.
 
@@ -8532,10 +8530,10 @@ options for you to pick.
 | `found-footy-prod-temporal` | workflow engine | `temporalio/auto-setup:1.24` | 7233 | Temporal server (gRPC) |
 | `found-footy-prod-temporal-postgres` | temporal metadata | `postgres:16-alpine` | 5432 | Temporal's own metadata store (separate from app postgres) |
 | `found-footy-prod-temporal-ui` | Temporal UI | `temporalio/ui:latest` | 8080 | Workflow observability |
-| `found-footy-prod-worker` | Temporal worker | (built from `deploy/Dockerfile.worker`) | — | Runs `cmd/worker` binary; scaled 2-8 |
-| `found-footy-prod-api` | HTTP API | (built from `deploy/Dockerfile.api`) | 8080 | Runs `cmd/api` binary; single replica |
-| `found-footy-prod-scaler` | auto-scale | (built from `deploy/Dockerfile.scaler`) | — | Runs `cmd/scaler` binary; single replica |
-| `found-footy-prod-twitter` | Playwright fleet | (built from `deploy/Dockerfile.twitter`) | 8888 (search HTTP), 6080 (noVNC, `vnc` profile only) | Runs `cmd/twitter` binary; scaled 2-8 |
+| `found-footy-prod-worker` | Temporal worker | `Dockerfile` (BINARY=worker) | — | Runs `cmd/worker` binary; scaled 2-8 |
+| `found-footy-prod-api` | HTTP API | `Dockerfile` (BINARY=api) | 8080 | Runs `cmd/api` binary; single replica |
+| `found-footy-prod-scaler` | auto-scale | `Dockerfile` (BINARY=scaler) | — | Runs `cmd/scaler` binary; single replica |
+| `found-footy-prod-twitter` | Playwright fleet | `Dockerfile` (BINARY=twitter; includes Firefox/Playwright layer) | 8888 (search HTTP), 6080 (noVNC, `vnc` profile only) | Runs `cmd/twitter` binary; scaled 2-8 |
 
 **Dev compose** (`docker-compose.dev.yml`) mirrors the same set with
 `-dev-` in container names. Dev additions:
@@ -8713,7 +8711,9 @@ services:
   worker:
     build:
       context: .
-      dockerfile: deploy/Dockerfile.worker
+      dockerfile: Dockerfile
+      args:
+        BINARY: worker
     image: found-footy-worker:latest  # tagged locally; no registry today
     # container_name deliberately omitted — compose auto-names replicated
     # services as <project>-<service>-<N>, and container_name is rejected
@@ -8740,7 +8740,9 @@ services:
   api:
     build:
       context: .
-      dockerfile: deploy/Dockerfile.api
+      dockerfile: Dockerfile
+      args:
+        BINARY: api
     image: found-footy-api:latest
     container_name: found-footy-prod-api
     env_file: .env
@@ -8761,7 +8763,9 @@ services:
   scaler:
     build:
       context: .
-      dockerfile: deploy/Dockerfile.scaler
+      dockerfile: Dockerfile
+      args:
+        BINARY: scaler
     image: found-footy-scaler:latest
     container_name: found-footy-prod-scaler
     env_file: .env
@@ -8774,7 +8778,9 @@ services:
   twitter:
     build:
       context: .
-      dockerfile: deploy/Dockerfile.twitter
+      dockerfile: Dockerfile
+      args:
+        BINARY: twitter
     image: found-footy-twitter:latest
     # container_name deliberately omitted — see worker note above.
     # Actual containers: found-footy-prod-twitter-1, found-footy-prod-twitter-2, etc.
@@ -8791,8 +8797,9 @@ services:
   twitter-vnc:
     build:
       context: .
-      dockerfile: deploy/Dockerfile.twitter
+      dockerfile: Dockerfile
       args:
+        BINARY: twitter
         WITH_VNC: "true"
     image: found-footy-twitter-vnc:latest
     container_name: found-footy-prod-twitter-vnc
@@ -8821,93 +8828,108 @@ vars, no `vnc` profile gate on `twitter-vnc`, and volume mounts under
 
 ### Dockerfiles
 
-One per binary. All follow the same pattern: multi-stage build,
-static Go binary, minimal runtime layer.
+Two Dockerfiles at repo root — matching the workspace convention
+(see `~/workspace/dev/legal-tender/`, `~/workspace/dev/spin-cycle/`,
+etc.). `Dockerfile` is prod; `Dockerfile.dev` is dev with hot-reload.
 
-**`deploy/Dockerfile.worker`** (representative — api, scaler are near-identical):
+**`Dockerfile`** — one file for all four Go binaries, parameterized on
+the `BINARY` build arg. `docker compose` passes
+`build.args.BINARY: worker|api|scaler|twitter` per service block:
 
 ```dockerfile
 # ────── build stage ──────
-FROM golang:1.23-alpine AS build
+# Uses bookworm rather than alpine because the twitter binary target
+# needs glibc for Playwright's Firefox launcher. The alpine-happy
+# binaries (worker/api/scaler) still build cleanly here — one image
+# base is cheaper than juggling two.
+FROM golang:1.23-bookworm AS build
+
+ARG BINARY
+RUN test -n "$BINARY" || (echo "BINARY build arg is required (worker|api|scaler|twitter)" && exit 1)
 
 WORKDIR /src
-
-# Cache dependencies
 COPY go.mod go.sum ./
 RUN go mod download
-
-# Copy source and build
 COPY . .
 
-# Build args for baking git_sha + built_at into the binary per §11 deploy tracking
+# Deploy tracking (§11) — baked in at build time via ldflags
 ARG GIT_SHA=unknown
 ARG BUILT_AT=unknown
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w -X main.gitSHA=${GIT_SHA} -X main.builtAt=${BUILT_AT}" \
-    -o /out/worker \
-    ./cmd/worker
+    -ldflags="-s -w -X main.gitSHA=${GIT_SHA} -X main.builtAt=${BUILT_AT} -X main.binary=${BINARY}" \
+    -o /out/app \
+    ./cmd/${BINARY}
 
 # ────── runtime stage ──────
-FROM alpine:3.20
-
-# ffmpeg for the video pipeline (§7)
-RUN apk add --no-cache ffmpeg tzdata ca-certificates
-
-# Non-root user
-RUN adduser -D -H -u 1000 app
-USER app
-
-COPY --from=build /out/worker /usr/local/bin/worker
-
-ENTRYPOINT ["/usr/local/bin/worker"]
-```
-
-**`deploy/Dockerfile.twitter`** is the exception — needs Firefox +
-`geckodriver` for Playwright-Go:
-
-```dockerfile
-FROM golang:1.23-bookworm AS build
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-ARG GIT_SHA=unknown
-ARG BUILT_AT=unknown
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w -X main.gitSHA=${GIT_SHA} -X main.builtAt=${BUILT_AT}" \
-    -o /out/twitter \
-    ./cmd/twitter
-
+# Slim final image. Twitter target adds Firefox + Playwright on top;
+# other targets skip that layer via BINARY comparison.
 FROM debian:bookworm-slim
 
-# Firefox + geckodriver + Xvfb (for headless) + noVNC (behind ARG)
+ARG BINARY
+ENV BINARY=${BINARY}
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        firefox-esr xvfb ca-certificates tzdata \
+        ca-certificates tzdata ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
+# Twitter target: Firefox + Playwright launcher stack. Skipped for other binaries.
+RUN if [ "$BINARY" = "twitter" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends \
+            firefox-esr xvfb && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# noVNC layer for twitter cookie-reauth container (docker-compose "vnc" profile).
 ARG WITH_VNC=false
 RUN if [ "$WITH_VNC" = "true" ]; then \
-        apt-get update && apt-get install -y \
+        apt-get update && apt-get install -y --no-install-recommends \
             x11vnc novnc websockify && \
         rm -rf /var/lib/apt/lists/*; \
     fi
 
-# Playwright will download browsers via `playwright install` at first run;
-# alternative is to bake them into the image via the build stage.
-
 RUN adduser --disabled-password --gecos "" --uid 1000 app
 USER app
 
-COPY --from=build /out/twitter /usr/local/bin/twitter
+COPY --from=build /out/app /usr/local/bin/app
 
-EXPOSE 8888 6080
-ENTRYPOINT ["/usr/local/bin/twitter"]
+ENTRYPOINT ["/usr/local/bin/app"]
+```
+
+**`Dockerfile.dev`** — hot-reload via [`air`](https://github.com/air-verse/air).
+Source directory bind-mounted from the host; `air` watches for `.go`
+changes and rebuilds + restarts on save.
+
+```dockerfile
+FROM golang:1.23-bookworm
+
+ARG BINARY
+ENV BINARY=${BINARY}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates tzdata ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Twitter dev target: same Firefox stack as prod.
+RUN if [ "$BINARY" = "twitter" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends \
+            firefox-esr xvfb x11vnc novnc websockify && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# air installed at image build; config lives at repo root as .air.<binary>.toml.
+RUN go install github.com/air-verse/air@latest
+
+WORKDIR /src
+# Source is bind-mounted in docker-compose.dev.yml; no COPY here.
+
+ENTRYPOINT ["sh", "-c", "air -c .air.${BINARY}.toml"]
 ```
 
 Base image size targets (approximate):
-- `Dockerfile.worker` / `.api` / `.scaler`: ~15-25 MB (alpine + Go static binary + ffmpeg where needed)
-- `Dockerfile.twitter`: ~800 MB (Debian + Firefox is unavoidable)
+- Prod worker / api / scaler: ~80 MB (bookworm-slim + Go static binary + ffmpeg + ca-certs)
+- Prod twitter: ~800 MB (Firefox is unavoidable)
+- Dev images: ~1.2 GB (golang toolchain + air + Firefox where relevant)
 
 ### Volumes and bind mounts
 
@@ -9426,7 +9448,7 @@ docker compose -f docker-compose.dev.yml exec worker \
 **Adding a new binary** (e.g., a batch-analytics service):
 
 1. `cmd/analytics/main.go` — new binary main.
-2. `deploy/Dockerfile.analytics` — new Dockerfile.
+2. `cmd/analytics/main.go` — new binary; the parameterized `Dockerfile` picks it up automatically via `BINARY=analytics`.
 3. Add `analytics` service block to `docker-compose.yml` +
    `docker-compose.dev.yml`.
 4. Container name: `found-footy-prod-analytics` per convention.
@@ -11848,10 +11870,10 @@ Cutover comes last.
   each subsystem doc, `docs/generated/` placeholder committed with a
   README explaining it's auto-generated.
 - Pre-commit hooks: link check, `gofmt`, `go generate` freshness.
-- `deploy/docker-compose.dev.yml` skeleton: services stubbed but not
+- `docker-compose.dev.yml` skeleton: services stubbed but not
   functional. Container naming per `~/workspace/proxy/CONVENTIONS.md`
   (`found-footy-dev-*`).
-- `deploy/caddy.d/found-footy.caddy` skeleton: hostname reservations
+- `caddy/found-footy.caddy` skeleton: hostname reservations
   for the new services (no live routing yet).
 
 **Exit criteria:**
@@ -11944,7 +11966,7 @@ docker-compose dev stack. Each adapter ships with:
 
 **Exit criteria:**
 
-- `docker compose -f deploy/docker-compose.dev.yml up -d` brings up the
+- `docker compose -f docker-compose.dev.yml up -d` brings up the
   full stack: Postgres, NATS, Garage, Temporal, empty worker.
 - Every adapter has a passing integration test in CI.
 - Every adapter emits its expected log events (verified by a grep in
