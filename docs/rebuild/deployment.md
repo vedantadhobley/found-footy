@@ -4,8 +4,11 @@
 
 Target content:
 
-- docker-compose.yml (prod) + docker-compose.dev.yml (dev) reference:
-  service inventory, dependencies, network attachments, volume mounts
+- docker-compose.prod.yml (prod) + docker-compose.dev.yml (dev) reference:
+  service inventory, dependencies, network attachments, volume mounts.
+  Both files are explicitly named — bare `docker compose` from this
+  directory has no default file and errors out, preventing a typo from
+  targeting prod. Every command must pass `-f docker-compose.{prod,dev}.yml`
 - Caddy fragment at `caddy/found-footy.caddy` — hostname → target
   reverse-proxy map. Currently central at
   `~/workspace/proxy/caddy/caddy.d/found-footy.caddy`; migration to

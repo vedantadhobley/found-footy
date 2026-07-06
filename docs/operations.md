@@ -24,7 +24,7 @@ $EDITOR .env                                                   # API_FOOTBALL_KE
 
 docker compose -f docker-compose.dev.yml up -d --build         # dev
 # or
-docker compose -f docker-compose.yml up -d --build             # prod
+docker compose -f docker-compose.prod.yml up -d --build        # prod
 ```
 
 In prod, the scaler service starts immediately and brings up the minimum 2
@@ -165,7 +165,7 @@ when changing the prompt or the clock-extraction parsers.
 
 ```bash
 docker compose -f docker-compose.dev.yml down                  # dev
-docker compose -f docker-compose.yml down                      # prod (keeps volumes)
+docker compose -f docker-compose.prod.yml down                 # prod (keeps volumes)
 ```
 
 Volumes (`found-footy-{dev,prod}-mongo-data`, `-postgres-data`, `-minio-data`,
