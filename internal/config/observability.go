@@ -20,4 +20,12 @@ type ObservabilityConfig struct {
 	// Defaults true because prod always has Loki; dev can override to
 	// false for standalone runs.
 	LokiEnabled bool `env:"LOKI_ENABLED" envDefault:"true"`
+
+	// MetricsAddr is the listen address for the Prometheus /metrics
+	// endpoint that every binary exposes. Defaults to :8080 — each
+	// docker-compose service can override via env if the port collides
+	// with the binary's application HTTP surface (e.g. the api binary
+	// serves the public API on the same port later; the split gets
+	// resolved in Phase A).
+	MetricsAddr string `env:"METRICS_ADDR" envDefault:":8080"`
 }
