@@ -1,0 +1,75 @@
+# found-footy Caddy fragment (Go rebuild).
+#
+# ────── STATUS ─────────────────────────────────────────────────────────────
+#
+# This file is NOT read by the workspace Caddy yet. The workspace proxy
+# currently uses "Option 1" from ~/workspace/proxy/CONVENTIONS.md:
+# per-project fragments live centrally at
+# ~/workspace/proxy/caddy/caddy.d/<project>.caddy. See
+# ~/workspace/vedanta-dhobley/docs/todo.md § "Deferred — migrate per-
+# project Caddy config to Option 2" for the eventual migration.
+#
+# Until that migration lands, this file is documentation of the routing
+# the Go rebuild will need. Every block is commented out so it can't
+# accidentally take effect if someone runs Option 2 prematurely.
+#
+# Real prod routing (Python found-footy) lives untouched at
+# ~/workspace/proxy/caddy/caddy.d/found-footy.caddy. This file does NOT
+# supersede that until cutover; do not copy blocks from here to the
+# prod fragment until the corresponding Go service is running.
+#
+# Uncomment each block during Phase S when its underlying service
+# actually exists + is running (§16.5 O phases).
+
+# ────── prod (post-cutover) ───────────────────────────────────────────────
+
+## Go API — SSE + typed HTTP surface, share-id redirect. Uncomment in
+## Phase C cutover (§16.10) once the api container is verified in prod.
+# http://found-footy-prod-api.{$BASE_DOMAIN} {
+#     reverse_proxy found-footy-prod-api:8080
+# }
+
+## Temporal UI — swaps in for the existing Python-era fragment at
+## cutover. The Python fragment is deleted at the same PR.
+# http://found-footy-prod-temporal-ui.{$BASE_DOMAIN} {
+#     reverse_proxy found-footy-prod-temporal-ui:8080
+# }
+
+## Garage admin UI — hostname vs reverse_proxy target must be
+## byte-identical per CONVENTIONS. Decision deferred to Phase C per
+## §10 (either sub-route on the primary garage hostname, or a dedicated
+## garage-web container).
+# http://found-footy-prod-garage-web.{$BASE_DOMAIN} {
+#     reverse_proxy found-footy-prod-garage-web:3902
+# }
+
+## Twitter noVNC — gated behind the `vnc` compose profile in prod
+## (manual cookie re-auth). Only reachable when that profile is active.
+# http://found-footy-prod-twitter-vnc.{$BASE_DOMAIN} {
+#     reverse_proxy found-footy-prod-twitter-vnc:6080
+# }
+
+# ────── dev (used during Phase S onward) ──────────────────────────────────
+
+## Go API dev — target for vedanta-systems dev to point at during the
+## rebuild. Uncomment when the api adapter lands (Phase S / A1).
+# http://found-footy-dev-api.{$BASE_DOMAIN} {
+#     reverse_proxy found-footy-dev-api:8080
+# }
+
+## Temporal UI dev — uncomment as soon as the dev stack goes up
+## routinely (early Phase S).
+# http://found-footy-dev-temporal-ui.{$BASE_DOMAIN} {
+#     reverse_proxy found-footy-dev-temporal-ui:8080
+# }
+
+## Garage admin dev.
+# http://found-footy-dev-garage-web.{$BASE_DOMAIN} {
+#     reverse_proxy found-footy-dev-garage-web:3902
+# }
+
+## Twitter noVNC dev — always on (no `vnc` profile in dev per §10);
+## uncomment when the twitter binary actually starts a browser.
+# http://found-footy-dev-twitter.{$BASE_DOMAIN} {
+#     reverse_proxy found-footy-dev-twitter:6080
+# }
