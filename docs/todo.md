@@ -8,6 +8,53 @@ Paste-ready start-of-session block. Newest items above older.
 
 ---
 
+## Improved PST / postponed handling — deferred to Go rebuild Phase D/O
+
+**Surfaced 2026-07-05** (Mexico vs England fixture 1570714 postponed).
+Current Python prod handles this correctly-but-wastefully; the fix
+belongs in the Go rebuild, not a Python backport.
+
+**Current behavior verified in prod 2026-07-05:**
+- Fixture in `fixtures_active` with `status: PST`, kickoff stale at
+  original date. Never gets rewritten from live API polls.
+- `src/utils/fixture_status.py:33` deliberately classifies PST as
+  `active` (comment: "may resume same day") — polls every 30s
+  indefinitely.
+- When the game actually plays, events are detected correctly
+  (`compare_live_vs_active` diffs on event IDs, not fixture metadata).
+
+**Downsides**: (a) wasteful 30s polling for potentially days,
+(b) stale kickoff date visible to any frontend read, (c) no graceful
+back-to-staging when API-Football publishes a new far-future kickoff.
+
+**Proposed fix in the Go rebuild** (~40 lines total; land during
+Phase D fixture domain or Phase O MonitorWorkflow):
+
+1. **`fixture.Service.HandleRescheduling(ctx, stored, apiFixture)`**:
+   - Update stored `kickoff_at` when API returns a new value.
+   - If new kickoff > 24h in future AND status is TBD/NS → transition
+     state back to `staging` (frees the fixture from the 30s active
+     poll loop; staging polls every 15 min per §16.5 O2).
+   - Otherwise persist the new kickoff + status in place.
+
+2. **Adaptive `MonitorWorkflow` polling interval** — per-fixture
+   `next_poll_at` derived from status class:
+   - Live (`1H`/`HT`/`2H`/`ET`/`BT`/`P`) → 30s (current default)
+   - Interrupted-but-still-active (`PST`/`SUSP`/`INT`) → 5 min
+     (nothing changes minute-to-minute; catch resumption on the
+     coarser interval)
+
+3. **New NATS event `fixture.rescheduled`** — publish when kickoff
+   changes so vedanta-systems' frontend can update displayed kickoff
+   without a page refresh. Small addition to §8 SSE catalog + §9
+   subject scheme when this lands.
+
+Not blocking; current Python handling is annoying-but-correct.
+Land it in the rebuild during whichever phase touches fixture
+domain / Monitor workflow first.
+
+---
+
 ## 🚨 Video ranks are visibly broken — surfaced 2026-06-30 (Norway vs Côte d'Ivoire)
 
 User report: on the last goal of the Norway v Côte d'Ivoire WC R16 match
