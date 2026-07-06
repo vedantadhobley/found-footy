@@ -1,0 +1,39 @@
+# Keep the build context small. Docker copies everything not listed
+# here into the build stage; skipping cruft speeds up builds and
+# prevents accidentally shipping .env or .git into an image.
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+
+# Python archive — not part of Go builds
+archive/
+
+# Build outputs + caches
+tmp/
+bin/
+coverage.out
+coverage.html
+
+# Environment + secrets
+.env
+.env.*
+!.env.example
+
+# Docs (not needed at build time)
+docs/
+
+# Local editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Claude Code state
+.claude/
+
+# Node artifacts (in case anyone runs a frontend build here later)
+node_modules/
