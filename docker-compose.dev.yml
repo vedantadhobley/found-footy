@@ -1,0 +1,205 @@
+# Dev stack — Go rebuild.
+#
+# Every Go binary (worker, api, scaler, twitter) uses Dockerfile.dev with
+# air for hot-reload. Source is bind-mounted at /src so edit-save-reload
+# happens in ~2 seconds. All infra containers (postgres, temporal,
+# garage) share the same dev network and speak service-name DNS.
+#
+# HTTP services fronted by workspace Caddy at:
+#   found-footy-dev-api.luv          → api:8080
+#   found-footy-dev-temporal-ui.luv  → temporal-ui:8080
+#   found-footy-dev-garage-web.luv   → garage-web:3902 (if enabled)
+#   found-footy-dev-twitter.luv      → twitter:6080  (noVNC, always on in dev)
+#
+# Only host port published: temporal gRPC 7233 for host-side dev clients.
+
+name: found-footy-dev
+
+# ────── shared named volumes for Go module + build cache ──────
+# air rebuilds inside the container; without a persistent GOCACHE +
+# GOMODCACHE, every restart would re-download modules. These live in
+# named docker volumes shared across worker/api/scaler/twitter dev
+# containers. `make clean` (or `docker volume rm found-footy-dev_...`)
+# clears them.
+volumes:
+  go-cache:
+  go-mod-cache:
+  postgres-data:
+  temporal-postgres-data:
+  garage-data:
+  garage-meta:
+  twitter-profiles:
+
+networks:
+  found-footy-dev:
+    driver: bridge
+  proxy:
+    external: true
+  luv-dev:
+    external: true
+
+services:
+  # ────── App Postgres (fixtures, events, videos, event_log, etc.) ──────
+  postgres:
+    image: postgres:16-alpine
+    container_name: found-footy-dev-postgres
+    environment:
+      POSTGRES_USER: ${PG_USER:-ffuser}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-ffpass}
+      POSTGRES_DB: found_footy
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - found-footy-dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-ffuser} -d found_footy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # ────── Temporal metadata Postgres (separate from app pg per §10) ──────
+  temporal-postgres:
+    image: postgres:16-alpine
+    container_name: found-footy-dev-temporal-postgres
+    environment:
+      POSTGRES_USER: ${TEMPORAL_PG_USER:-temporal}
+      POSTGRES_PASSWORD: ${TEMPORAL_PG_PASSWORD:-temporal}
+      POSTGRES_DB: temporal
+    volumes:
+      - temporal-postgres-data:/var/lib/postgresql/data
+    networks:
+      - found-footy-dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TEMPORAL_PG_USER:-temporal} -d temporal"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # ────── Temporal server (workflow orchestration) ──────
+  temporal:
+    image: temporalio/auto-setup:1.24
+    container_name: found-footy-dev-temporal
+    depends_on:
+      temporal-postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: ${TEMPORAL_PG_USER:-temporal}
+      POSTGRES_PWD: ${TEMPORAL_PG_PASSWORD:-temporal}
+      POSTGRES_SEEDS: temporal-postgres
+    ports:
+      - "7233:7233"  # gRPC — published for host-side dev clients (§10 exception)
+    networks:
+      - found-footy-dev
+    restart: unless-stopped
+
+  # ────── Temporal Web UI ──────
+  temporal-ui:
+    image: temporalio/ui:2.30.3
+    container_name: found-footy-dev-temporal-ui
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: "http://localhost:3000"
+    networks:
+      - found-footy-dev
+      - proxy
+    restart: unless-stopped
+
+  # ────── Garage — S3-compatible blob storage ──────
+  garage:
+    image: dxflrs/garage:v1.0.1
+    container_name: found-footy-dev-garage
+    volumes:
+      - garage-data:/var/lib/garage/data
+      - garage-meta:/var/lib/garage/meta
+      - ./garage.dev.toml:/etc/garage.toml:ro
+    networks:
+      - found-footy-dev
+    restart: unless-stopped
+    # NB: garage.dev.toml doesn't exist yet — will be created in Phase S
+    # when the s3 adapter needs a real Garage cluster. For Phase F this
+    # service is declared but won't start cleanly until that config lands.
+
+  # ────── Go: worker (Temporal worker) ──────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        BINARY: worker
+    image: found-footy-dev-worker:latest
+    container_name: found-footy-dev-worker
+    env_file: .env
+    environment:
+      NATS_CLIENT_NAME: found-footy-dev-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    volumes:
+      - .:/src                                     # bind mount for air hot-reload
+      - go-cache:/gocache
+      - go-mod-cache:/gomodcache
+      - ~/workspace/nats/creds/found-footy-dev.creds:/etc/nats/found-footy.creds:ro
+    networks:
+      - found-footy-dev
+      - luv-dev  # workspace NATS + cross-project HTTP
+    restart: unless-stopped
+
+  # ────── Go: api (HTTP + SSE + webhook delivery) ──────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        BINARY: api
+    image: found-footy-dev-api:latest
+    container_name: found-footy-dev-api
+    env_file: .env
+    environment:
+      NATS_CLIENT_NAME: found-footy-dev-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/src
+      - go-cache:/gocache
+      - go-mod-cache:/gomodcache
+      - ~/workspace/nats/creds/found-footy-dev.creds:/etc/nats/found-footy.creds:ro
+    networks:
+      - found-footy-dev
+      - proxy       # Caddy-fronted
+      - luv-dev     # workspace NATS + vedanta-systems dev
+    restart: unless-stopped
+
+  # ────── Go: twitter (Playwright browser automation) ──────
+  # Dev twitter always has noVNC on (cookie re-auth needs it). Prod
+  # gates VNC behind a compose profile.
+  twitter:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        BINARY: twitter
+    image: found-footy-dev-twitter:latest
+    container_name: found-footy-dev-twitter
+    env_file: .env
+    volumes:
+      - .:/src
+      - go-cache:/gocache
+      - go-mod-cache:/gomodcache
+      - twitter-profiles:/data/firefox_profiles
+      - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
+    networks:
+      - found-footy-dev
+      - proxy       # noVNC HTTP fronted by Caddy
+    restart: unless-stopped
+
+  # Scaler is NOT included in dev. Auto-scaling only makes sense
+  # when you have replicas to scale; dev runs one of each service.

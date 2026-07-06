@@ -1,0 +1,212 @@
+# Prod stack — Go rebuild.
+#
+# NOT actually deployed during Phase F. This file exists so the compose
+# spec is versioned alongside the dev spec and so `docker compose config`
+# validates cleanly. Actual prod bring-up waits for Phase C cutover.
+#
+# Phase F caveat: the Go binaries currently just print "hello from
+# <binary>" and exit. `restart: "no"` is set on all four Go services
+# below so that starting this stack during Phase F doesn't crashloop.
+# Flip to `restart: unless-stopped` in Phase S once real code runs a
+# blocking event loop.
+
+name: found-footy-prod
+
+volumes:
+  postgres-data:
+  temporal-postgres-data:
+  garage-data:
+  garage-meta:
+  twitter-profiles:
+
+networks:
+  found-footy-prod:
+    driver: bridge
+  proxy:
+    external: true
+  luv-prod:
+    external: true
+
+services:
+  # ────── Infrastructure ──────
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: found-footy-prod-postgres
+    environment:
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: found_footy
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - found-footy-prod
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d found_footy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  temporal-postgres:
+    image: postgres:16-alpine
+    container_name: found-footy-prod-temporal-postgres
+    environment:
+      POSTGRES_USER: ${TEMPORAL_PG_USER}
+      POSTGRES_PASSWORD: ${TEMPORAL_PG_PASSWORD}
+      POSTGRES_DB: temporal
+    volumes:
+      - temporal-postgres-data:/var/lib/postgresql/data
+    networks:
+      - found-footy-prod
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TEMPORAL_PG_USER} -d temporal"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  temporal:
+    image: temporalio/auto-setup:1.24
+    container_name: found-footy-prod-temporal
+    depends_on:
+      temporal-postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: ${TEMPORAL_PG_USER}
+      POSTGRES_PWD: ${TEMPORAL_PG_PASSWORD}
+      POSTGRES_SEEDS: temporal-postgres
+    networks:
+      - found-footy-prod
+    restart: unless-stopped
+
+  temporal-ui:
+    image: temporalio/ui:2.30.3
+    container_name: found-footy-prod-temporal-ui
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    networks:
+      - found-footy-prod
+      - proxy
+    restart: unless-stopped
+
+  garage:
+    image: dxflrs/garage:v1.0.1
+    container_name: found-footy-prod-garage
+    volumes:
+      - garage-data:/var/lib/garage/data
+      - garage-meta:/var/lib/garage/meta
+      - ./garage.prod.toml:/etc/garage.toml:ro
+    networks:
+      - found-footy-prod
+    restart: unless-stopped
+
+  # ────── Go binaries ──────
+  # container_name deliberately omitted on scaled services (worker,
+  # twitter) — compose rejects container_name + deploy.replicas.
+  # Auto-naming: found-footy-prod-worker-1, -worker-2, etc.
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BINARY: worker
+    image: found-footy-worker:latest
+    env_file: .env
+    environment:
+      NATS_CLIENT_NAME: found-footy-prod-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+      garage:
+        condition: service_started
+    volumes:
+      - ~/workspace/nats/creds/found-footy-prod.creds:/etc/nats/found-footy.creds:ro
+    networks:
+      - found-footy-prod
+      - luv-prod
+    deploy:
+      replicas: 2  # scaler adjusts between 2 and 8 at runtime
+    restart: "no"  # Phase F only — flip to unless-stopped in Phase S
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BINARY: api
+    image: found-footy-api:latest
+    container_name: found-footy-prod-api
+    env_file: .env
+    environment:
+      NATS_CLIENT_NAME: found-footy-prod-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ~/workspace/nats/creds/found-footy-prod.creds:/etc/nats/found-footy.creds:ro
+    networks:
+      - found-footy-prod
+      - proxy
+      - luv-prod
+    restart: "no"  # Phase F only — flip to unless-stopped in Phase S
+
+  scaler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BINARY: scaler
+    image: found-footy-scaler:latest
+    container_name: found-footy-prod-scaler
+    env_file: .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - found-footy-prod
+    restart: "no"  # Phase F only — flip to unless-stopped in Phase S
+
+  twitter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BINARY: twitter
+    image: found-footy-twitter:latest
+    env_file: .env
+    volumes:
+      - twitter-profiles:/data/firefox_profiles
+      - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
+    networks:
+      - found-footy-prod
+    deploy:
+      replicas: 2  # scaler adjusts between 2 and 8 at runtime
+    restart: "no"  # Phase F only — flip to unless-stopped in Phase S
+
+  # Twitter cookie-reauth container — only started when the `vnc` profile
+  # is active: `docker compose --profile vnc up twitter-vnc`
+  twitter-vnc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BINARY: twitter
+        WITH_VNC: "true"
+    image: found-footy-twitter-vnc:latest
+    container_name: found-footy-prod-twitter-vnc
+    profiles: [vnc]
+    env_file: .env
+    volumes:
+      - twitter-profiles:/data/firefox_profiles
+      - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
+    networks:
+      - found-footy-prod
+      - proxy
+    restart: "no"

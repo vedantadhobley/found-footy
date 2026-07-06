@@ -5,7 +5,7 @@
 # One image for all four binaries; docker-compose.dev.yml sets
 # BINARY per service and picks the matching .air.<binary>.toml.
 
-FROM golang:1.23-bookworm
+FROM golang:1.25-bookworm
 
 ARG BINARY
 ENV BINARY=${BINARY}
