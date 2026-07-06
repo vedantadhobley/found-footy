@@ -15,7 +15,7 @@ This file is your front door. Read it first; follow the imports below.
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d         # dev
-docker compose -f docker-compose.yml up -d             # prod (auto-scaler manages workers + twitter)
+docker compose -f docker-compose.prod.yml up -d        # prod (auto-scaler manages workers + twitter)
 ```
 
 URLs (replace `<base-domain>` with the value of `$BASE_DOMAIN`):

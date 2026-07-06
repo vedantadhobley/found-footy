@@ -45,7 +45,7 @@ $EDITOR .env                                                   # set API_FOOTBAL
 
 docker compose -f docker-compose.dev.yml up -d --build         # dev
 # or
-docker compose -f docker-compose.yml up -d --build             # prod (auto-scaler manages worker + twitter replicas)
+docker compose -f docker-compose.prod.yml up -d --build        # prod (auto-scaler manages worker + twitter replicas)
 ```
 
 UIs (replace `<base-domain>` with the value of `$BASE_DOMAIN`):

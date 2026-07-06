@@ -6,7 +6,7 @@
 #   docker build --build-arg BINARY=scaler -t found-footy-scaler .
 #   docker build --build-arg BINARY=twitter -t found-footy-twitter .
 #
-# docker-compose.yml passes BINARY per service. See §10.
+# docker-compose.prod.yml passes BINARY per service. See §10.
 
 # ────── build stage ──────
 # bookworm (not alpine) because the twitter binary target needs glibc
