@@ -1,0 +1,23 @@
+root = true
+
+# Defaults — 2-space soft tabs, UTF-8, LF endings, trim trailing whitespace.
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Go — tabs, size 4 for visualization only (Go tooling handles indent).
+[*.go]
+indent_style = tab
+indent_size = 4
+
+# Makefiles require literal tabs for recipe lines.
+[Makefile]
+indent_style = tab
+
+# Markdown line breaks are load-bearing — preserve trailing whitespace.
+[*.md]
+trim_trailing_whitespace = false
