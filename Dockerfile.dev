@@ -37,5 +37,8 @@ WORKDIR /src
 # Source directory bind-mounted at /src from docker-compose.dev.yml —
 # no COPY here. GOCACHE + GOMODCACHE come from named docker volumes
 # (see compose) so restarts don't re-download modules.
+#
+# Single .air.toml at repo root uses ${BINARY} env-var substitution to
+# pick which cmd/ package to build, so no per-binary config needed.
 
-ENTRYPOINT ["sh", "-c", "air -c .air.${BINARY}.toml"]
+ENTRYPOINT ["air"]
