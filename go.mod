@@ -1,3 +1,3 @@
 module github.com/vedantadhobley/found-footy
 
-go 1.23
+go 1.25

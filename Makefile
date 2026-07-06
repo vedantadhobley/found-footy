@@ -8,7 +8,7 @@
 # Dev-stack targets (dev-up, dev-down, dev-logs, dev-restart) land in
 # commit 5 when docker-compose.dev.yml exists.
 
-GO_IMAGE       := golang:1.23-bookworm
+GO_IMAGE       := golang:1.25-bookworm
 GOLANGCI_IMAGE := golangci/golangci-lint:latest-alpine
 
 CACHE_DIR   := $(HOME)/.cache/found-footy
@@ -19,7 +19,8 @@ DOCKER_RUN  := docker run --rm $(DOCKER_ENV) $(DOCKER_VOLS) -w /src
 GO_RUN       := $(DOCKER_RUN) $(GO_IMAGE)
 GOLANGCI_RUN := $(DOCKER_RUN) $(GOLANGCI_IMAGE)
 
-.PHONY: help build test test-race lint fmt vet tidy clean cache-init
+.PHONY: help build test test-race lint fmt vet tidy clean cache-init \
+        dev-up dev-down dev-logs dev-restart dev-shell dev-ps
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -58,6 +59,29 @@ vet: cache-init ## Run go vet
 
 tidy: cache-init ## Run go mod tidy
 	$(GO_RUN) go mod tidy
+
+# ────── Dev stack ──────
+
+DEV_COMPOSE := docker-compose.dev.yml
+
+dev-up: ## Bring up the dev stack (postgres, temporal, garage, all four Go services with air)
+	docker compose -f $(DEV_COMPOSE) up -d --build
+
+dev-down: ## Stop and remove the dev stack containers
+	docker compose -f $(DEV_COMPOSE) down
+
+dev-logs: ## Tail logs from every dev service
+	docker compose -f $(DEV_COMPOSE) logs -f --tail 50
+
+dev-restart: ## Restart the dev stack (down + up)
+	docker compose -f $(DEV_COMPOSE) down
+	docker compose -f $(DEV_COMPOSE) up -d --build
+
+dev-shell: ## Open a shell inside the worker dev container
+	docker compose -f $(DEV_COMPOSE) exec worker bash
+
+dev-ps: ## List running dev containers
+	docker compose -f $(DEV_COMPOSE) ps
 
 # ────── Housekeeping ──────
 

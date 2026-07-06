@@ -12,7 +12,7 @@
 # bookworm (not alpine) because the twitter binary target needs glibc
 # for Playwright's Firefox launcher. Same base for all four binaries;
 # cheaper than juggling two build images.
-FROM golang:1.23-bookworm AS build
+FROM golang:1.25-bookworm AS build
 
 ARG BINARY
 RUN test -n "$BINARY" || (echo "ERROR: BINARY build arg is required (worker|api|scaler|twitter)" && exit 1)
