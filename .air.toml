@@ -1,0 +1,30 @@
+# air hot-reload config, one file for all four binaries.
+#
+# The BINARY environment variable is set by Dockerfile.dev at build time
+# (from the BINARY build arg). Air expands ${BINARY} in cmd / bin at load
+# time (via Go's os.ExpandEnv), so this single config produces:
+#
+#   BINARY=worker  → go build -o ./tmp/worker  ./cmd/worker
+#   BINARY=api     → go build -o ./tmp/api     ./cmd/api
+#   BINARY=scaler  → go build -o ./tmp/scaler  ./cmd/scaler
+#   BINARY=twitter → go build -o ./tmp/twitter ./cmd/twitter
+#
+# NB: assumes BINARY is set. Only used inside our dev containers where
+# that's guaranteed; not intended for direct host invocation of air.
+
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -buildvcs=false -o ./tmp/${BINARY} ./cmd/${BINARY}"
+  bin = "./tmp/${BINARY}"
+  include_ext = ["go"]
+  exclude_dir = ["archive", "tmp", "migrations", ".git", ".claude", "docs", "caddy"]
+  delay = 500          # ms after last change before rebuild triggers
+  stop_on_error = true
+
+[log]
+  time = true
+
+[misc]
+  clean_on_exit = true
