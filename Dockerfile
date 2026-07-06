@@ -33,7 +33,7 @@ ARG BUILT_AT=unknown
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -buildvcs=false \
-    -ldflags="-s -w -X main.gitSHA=${GIT_SHA} -X main.builtAt=${BUILT_AT} -X main.binary=${BINARY}" \
+    -ldflags="-s -w -X main.gitSHA=${GIT_SHA} -X main.builtAt=${BUILT_AT}" \
     -o /out/app \
     ./cmd/${BINARY}
 
