@@ -41,7 +41,10 @@ networks:
 services:
   # ────── App Postgres (fixtures, events, videos, event_log, etc.) ──────
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector:pg16 = official Postgres 16 with the `vector`
+    # extension preinstalled. pg_trgm + pgcrypto are bundled with every
+    # Postgres image; only pgvector needs the alternate base.
+    image: pgvector/pgvector:pg16
     container_name: found-footy-dev-postgres
     environment:
       POSTGRES_USER: ${PG_USER:-ffuser}
@@ -49,6 +52,10 @@ services:
       POSTGRES_DB: found_footy
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      # Schema bootstrap: Postgres runs /docker-entrypoint-initdb.d/*.sql
+      # once on first startup with an empty data dir. Wipe the volume
+      # (`docker volume rm found-footy-dev_postgres-data`) to re-provision.
+      - ./internal/infra/pg/schema.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
     networks:
       - found-footy-dev
     healthcheck:
