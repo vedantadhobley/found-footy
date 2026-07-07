@@ -6,6 +6,90 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-07 — Working rule: living docs update in the same commit as code
+
+Retrospective response to a stretch of ~15 commits (S1–O1d) where code
+shipped without corresponding updates to `docs/rebuild/*.md`.
+
+**Rule.** Every implementation commit that adds/changes a package,
+adapter shape, workflow, or activity MUST update the relevant living
+doc (usually `docs/rebuild/architecture.md` or
+`docs/rebuild/orchestration.md`) in the SAME commit. If it diverges
+from `docs/rebuild-plan.md`, `docs/decisions.md` gets an entry.
+
+**Why.** The plan is intent — 12k lines, written before implementation,
+not per-commit. The per-topic docs in `docs/rebuild/` were meant to be
+the ledger of what actually shipped and are currently empty stubs.
+Silent code-only commits meant the plan drifted from reality without
+either doc surfacing that fact. This retro compensates. Going forward,
+the rule prevents recurrence.
+
+**Enforcement.** An implementation commit without a corresponding doc
+update is treated as incomplete — same status as one missing tests.
+
+---
+
+## 2026-07-07 — Rebuild architecture divergences from plan §2
+
+Documented here as part of the retrospective (see rule above). Most of
+these emerged silently during S1–S7 and D and only got captured after
+the fact.
+
+**Divergences from `rebuild-plan.md` §2 tree:**
+
+1. **`migrations/` is empty; schema lives in
+   `internal/infra/pg/schema.sql`.** Plan wanted golang-migrate style
+   SQL files at repo root. Instead, we ship a single `schema.sql` that
+   docker-entrypoint-initdb.d mounts into dev postgres (fresh volume
+   only) and testcontainers loads via `WithInitScripts`. Rationale:
+   pg pool + schema landed in S2; no migrations tooling was needed
+   because dev + test rebuild the DB from scratch. Prod migration
+   tooling is a Phase M concern (not yet designed).
+   **Decision:** keep `internal/infra/pg/schema.sql` as the
+   authoritative source through Phase M. Introduce golang-migrate (or
+   equivalent) alongside the Phase M cutover plan.
+
+2. **`internal/bootstrap/` package added — not in the plan tree.**
+   Contains `bootstrap.Run(...)` (shared binary startup: config load,
+   signal wiring, metrics server, LIFO Closer registry) + `Deps`
+   struct passed to each cmd's main. Introduced in S1 to eliminate
+   ~50 lines of boilerplate per binary and centralize graceful-shutdown
+   ordering. **Decision:** keep — the LIFO Closer registry pattern is
+   load-bearing for temporal worker draining (worker Stop must run
+   before pg pool Close).
+
+3. **`internal/infra/event/` composer stubbed** (only `doc.go`).
+   Plan wants the semantic-event dual-write composer (pg + nats) here.
+   Deferred to Phase O2 when MonitorWorkflow starts emitting
+   `event.detected` / `event.stable` / `event.removed`.
+
+4. **`internal/infra/ffmpeg/` stubbed** (only `doc.go`). Deferred to
+   Phase A (video pipeline).
+
+5. **`internal/usecases/` stubbed** (only `doc.go`). Deferred to when
+   the first cross-domain operation surfaces (probably VAR removal
+   during O2/O3).
+
+6. **`internal/testutil/` empty.** Build factories/fakes when second
+   activity or workflow package needs sharing. Currently the ingest
+   activity's fakes are inlined in its test file — cost of premature
+   extraction > cost of duplication at N=1.
+
+7. **Domain packages `discovery`, `vision`, `session`, `textanalysis`
+   stubbed** (only `doc.go` each). Explicit conversation-approved
+   deferral: build each when the corresponding workflow needs it.
+   Rationale — building all 8 domain packages up front risks
+   speculative modeling; building on demand keeps the shapes tight to
+   real callers.
+
+**No divergence** from plan §2 tree for: `cmd/`, `internal/domain/`
+(the shipped 4), `internal/workflow/`, `internal/activity/`,
+`internal/api/`, `internal/config/`, `internal/errors/`,
+`internal/observability/`, `internal/scaler/`, adapter tree (except
+the two composer stubs above), `caddy/`, Dockerfiles, Makefile.
+
+---
+
 ## 2026-07-07 — Fixture activation triggers + staging-poll design
 
 **Fixture activation** (staging → active) fires from three triggers,
