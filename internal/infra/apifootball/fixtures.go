@@ -1,0 +1,234 @@
+// fixtures.go — the /fixtures endpoint. The IngestWorkflow calls
+// ListFixtures every day at 00:05 UTC for a 3-day rolling window; the
+// MonitorWorkflow uses the batch-by-ID variant to refresh live match
+// state every 30s.
+//
+// Response types are DOMAIN-agnostic — they mirror what api-sports.io
+// actually returns and get translated to internal/domain/fixture types
+// at the activity layer (not here). Keeps this file swappable if we
+// ever mock the endpoint or migrate off api-sports.io.
+package apifootball
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"strconv"
+	"time"
+)
+
+// APIFixture is one item in the /fixtures response array. Only the
+// fields we consume are named; unknown fields get dropped by
+// json.Decode (the SDK uses reflection + tags). If api-sports.io adds
+// fields we need later, add them here — nothing else changes.
+type APIFixture struct {
+	Fixture  APIFixtureFixture  `json:"fixture"`
+	League   APIFixtureLeague   `json:"league"`
+	Teams    APIFixtureTeams    `json:"teams"`
+	Goals    APIFixtureGoals    `json:"goals"`
+	Score    APIFixtureScore    `json:"score"`
+	Events   []APIFixtureEvent  `json:"events,omitempty"` // present only on GetFixture, not List
+}
+
+// APIFixtureFixture is the "fixture" sub-object — identity + status +
+// timing.
+type APIFixtureFixture struct {
+	ID        int64            `json:"id"`
+	Referee   *string          `json:"referee"`
+	Timezone  string           `json:"timezone"`
+	Date      time.Time        `json:"date"` // kickoff — the API returns RFC3339
+	Timestamp int64            `json:"timestamp"`
+	Venue     APIFixtureVenue  `json:"venue"`
+	Status    APIFixtureStatus `json:"status"`
+}
+
+type APIFixtureVenue struct {
+	ID   *int   `json:"id"`
+	Name string `json:"name"`
+	City string `json:"city"`
+}
+
+// APIFixtureStatus mirrors the short + long status codes we care about.
+// Short is the enum-like code (NS, 1H, HT, FT, PST, CANC, etc.);
+// Elapsed is the current match minute (nullable pre-kickoff); Extra is
+// stoppage-time minutes (nullable outside stoppage).
+type APIFixtureStatus struct {
+	Long    string `json:"long"`
+	Short   string `json:"short"`
+	Elapsed *int   `json:"elapsed"`
+	Extra   *int   `json:"extra"`
+}
+
+type APIFixtureLeague struct {
+	ID     int    `json:"id"`
+	Name   string `json:"name"`
+	Country string `json:"country"`
+	Logo   string `json:"logo"`
+	Flag   string `json:"flag"`
+	Season int    `json:"season"`
+	Round  string `json:"round"`
+}
+
+type APIFixtureTeams struct {
+	Home APIFixtureTeam `json:"home"`
+	Away APIFixtureTeam `json:"away"`
+}
+
+type APIFixtureTeam struct {
+	ID     int     `json:"id"`
+	Name   string  `json:"name"`
+	Logo   string  `json:"logo"`
+	Winner *bool   `json:"winner"` // null pre-match / on draw
+}
+
+type APIFixtureGoals struct {
+	Home *int `json:"home"`
+	Away *int `json:"away"`
+}
+
+// APIFixtureScore includes multiple breakdowns (halftime / fulltime /
+// extratime / penalty). Domain code only reads FullTime for now.
+type APIFixtureScore struct {
+	Halftime  APIFixtureScoreLine `json:"halftime"`
+	Fulltime  APIFixtureScoreLine `json:"fulltime"`
+	Extratime APIFixtureScoreLine `json:"extratime"`
+	Penalty   APIFixtureScoreLine `json:"penalty"`
+}
+
+type APIFixtureScoreLine struct {
+	Home *int `json:"home"`
+	Away *int `json:"away"`
+}
+
+// APIFixtureEvent — only populated when the fixture was fetched via
+// GetFixture (not on the list-by-date path). Represented for
+// completeness; the Monitor path uses a separate /fixtures/events
+// endpoint that returns just the event list.
+type APIFixtureEvent struct {
+	Time     APIFixtureEventTime   `json:"time"`
+	Team     APIFixtureTeam        `json:"team"`
+	Player   APIFixturePlayerRef   `json:"player"`
+	Assist   APIFixturePlayerRef   `json:"assist"`
+	Type     string                `json:"type"`   // "Goal" / "Card" / "subst" / "Var"
+	Detail   string                `json:"detail"` // "Normal Goal" / "Yellow Card" / ...
+	Comments *string               `json:"comments"`
+}
+
+type APIFixtureEventTime struct {
+	Elapsed int  `json:"elapsed"`
+	Extra   *int `json:"extra"`
+}
+
+type APIFixturePlayerRef struct {
+	ID   *int    `json:"id"`
+	Name *string `json:"name"`
+}
+
+// FixtureListParams narrows the /fixtures query. All fields optional;
+// the API interprets an empty request as "no filter" which is
+// legitimate but rarely useful (returns everything). At least one of
+// From+To, Date, Ids, or League should be set.
+type FixtureListParams struct {
+	// From + To bracket the kickoff window (inclusive). Both must be set
+	// or neither — mixed produces a 400 from the API.
+	From time.Time
+	To   time.Time
+
+	// Date narrows to a single YYYY-MM-DD (mutually exclusive with From/To
+	// on the API side; we send whichever set of fields is non-zero).
+	Date time.Time
+
+	// League optionally scopes to one league ID. Combined with Season it
+	// pins a specific season.
+	League int
+	Season int
+
+	// Timezone forces the API to interpret Date / From / To in a specific
+	// zone. Default (empty) = UTC.
+	Timezone string
+}
+
+// ListFixtures calls GET /fixtures with the given filters. Returns the
+// full response envelope — activity code translates each APIFixture
+// into a domain fixture.Fixture.
+//
+// The bounded-cardinality endpoint label on metrics is "fixtures"
+// regardless of query — we don't want a per-date label explosion.
+func (c *Client) ListFixtures(ctx context.Context, params FixtureListParams) ([]APIFixture, error) {
+	query, err := buildFixtureListQuery(params)
+	if err != nil {
+		return nil, err
+	}
+	var envelope struct {
+		Response []APIFixture `json:"response"`
+		Errors   any          `json:"errors"`
+	}
+	if err := c.getJSON(ctx, "fixtures", "/fixtures", query, &envelope); err != nil {
+		return nil, err
+	}
+	return envelope.Response, nil
+}
+
+// buildFixtureListQuery composes the URL query params from
+// FixtureListParams. Enforces the mutually-exclusive Date vs
+// From/To constraint at the client layer so callers get a clean Go
+// error instead of a 400 from the API.
+func buildFixtureListQuery(p FixtureListParams) (url.Values, error) {
+	q := url.Values{}
+	hasWindow := !p.From.IsZero() && !p.To.IsZero()
+	hasDate := !p.Date.IsZero()
+	if hasWindow && hasDate {
+		return nil, fmt.Errorf("apifootball.ListFixtures: Date and From/To are mutually exclusive")
+	}
+	if !p.From.IsZero() != !p.To.IsZero() {
+		return nil, fmt.Errorf("apifootball.ListFixtures: From and To must both be set or neither")
+	}
+	if hasWindow {
+		q.Set("from", p.From.UTC().Format("2006-01-02"))
+		q.Set("to", p.To.UTC().Format("2006-01-02"))
+	}
+	if hasDate {
+		q.Set("date", p.Date.UTC().Format("2006-01-02"))
+	}
+	if p.League > 0 {
+		q.Set("league", strconv.Itoa(p.League))
+	}
+	if p.Season > 0 {
+		q.Set("season", strconv.Itoa(p.Season))
+	}
+	if p.Timezone != "" {
+		q.Set("timezone", p.Timezone)
+	}
+	return q, nil
+}
+
+// ListFixturesByIDs fetches multiple fixtures in one call via the
+// ids= query param. api-sports.io accepts up to 20 IDs per request;
+// callers batching more should chunk. Returns the response array with
+// one entry per successfully-resolved ID (missing IDs simply absent).
+func (c *Client) ListFixturesByIDs(ctx context.Context, ids []int64) ([]APIFixture, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if len(ids) > 20 {
+		return nil, fmt.Errorf("apifootball.ListFixturesByIDs: max 20 ids per call, got %d", len(ids))
+	}
+	// api-sports.io wants ids as "1234-5678-9012" (dash-separated).
+	var b []byte
+	for i, id := range ids {
+		if i > 0 {
+			b = append(b, '-')
+		}
+		b = strconv.AppendInt(b, id, 10)
+	}
+	q := url.Values{"ids": {string(b)}}
+
+	var envelope struct {
+		Response []APIFixture `json:"response"`
+		Errors   any          `json:"errors"`
+	}
+	if err := c.getJSON(ctx, "fixtures", "/fixtures", q, &envelope); err != nil {
+		return nil, err
+	}
+	return envelope.Response, nil
+}
