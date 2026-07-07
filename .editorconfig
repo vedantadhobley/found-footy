@@ -1,3 +1,5 @@
+# editorconfig for found-footy — indentation, charset, EOL conventions
+# applied by every editor that respects the .editorconfig standard.
 root = true
 
 # Defaults — 2-space soft tabs, UTF-8, LF endings, trim trailing whitespace.
