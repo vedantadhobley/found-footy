@@ -32,10 +32,40 @@ import (
 // Adapter constructors take this bundle rather than reaching into
 // package-level globals — matches the ports-and-adapters pattern from
 // rebuild-plan.md §2.
+//
+// Adapters that need shutdown cleanup call RegisterCloser at
+// construction time; bootstrap iterates registered closers in
+// reverse-registration order (LIFO — mirrors defer semantics) after
+// Work returns, so the last adapter constructed is the first to drain.
 type Deps struct {
 	Cfg     *config.Config
 	Log     logging.Emitter
 	Metrics *metrics.Registry
+
+	closers []adapterCloser
+}
+
+// adapterCloser is one registered shutdown hook: an adapter's name
+// (used in the shutdown log line) + the function bootstrap invokes to
+// close it under a bounded context.
+type adapterCloser struct {
+	name  string
+	close func(context.Context) error
+}
+
+// RegisterCloser hooks name+closeFn into the reverse-order shutdown
+// sequence. Adapters call this at construction time (after their
+// New succeeded). The closer is invoked with a per-adapter bounded
+// context (10s default); its return error is logged with the adapter
+// name but does not stop remaining closers from running.
+//
+// Ordering guarantee: closers run in reverse registration order, so
+// stacking construction (pg → nats → temporal) drains as
+// (temporal → nats → pg). This is the property Temporal worker drain
+// needs — worker must finish activities before its downstream deps
+// (pg, nats) close underneath it.
+func (d *Deps) RegisterCloser(name string, closeFn func(context.Context) error) {
+	d.closers = append(d.closers, adapterCloser{name: name, close: closeFn})
 }
 
 // Work is the per-binary body that runs after startup scaffolding is
@@ -109,7 +139,25 @@ func Run(binary, gitSHA, builtAt string, work Work) {
 	deps := &Deps{Cfg: cfg, Log: log, Metrics: m}
 	workErr := work(ctx, deps)
 
-	// Graceful metrics-server shutdown.
+	// Drain adapters in reverse-registration order. Runs whether Work
+	// returned an error or not — a partial-startup failure still needs
+	// to close whatever adapters DID come up. Each closer gets a
+	// bounded ctx so a stuck adapter can't hold the binary open.
+	for i := len(deps.closers) - 1; i >= 0; i-- {
+		c := deps.closers[i]
+		closerCtx, closerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := c.close(closerCtx); err != nil {
+			log.Emit(ctx, logging.LevelWarn, vocabulary.ModuleDeploy, vocabulary.ActionShutdownForced,
+				"adapter close returned error",
+				logging.String("adapter", c.name),
+				logging.Err(err),
+			)
+		}
+		closerCancel()
+	}
+
+	// Graceful metrics-server shutdown (last — adapter close emissions
+	// still flow through the logger and into the counters).
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {

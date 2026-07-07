@@ -1,6 +1,8 @@
 package bootstrap
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +11,46 @@ import (
 
 	"github.com/vedantadhobley/found-footy/internal/observability/metrics"
 )
+
+// TestRegisterCloser_ReverseOrderAndErrorTolerance verifies that
+// registered closers run in reverse-registration order (LIFO) and that
+// an error from one closer doesn't stop remaining closers from running.
+// The reverse-order property is what enables "Temporal drains before
+// its underlying deps close" when adapters are constructed in
+// natural order (pg → nats → temporal).
+func TestRegisterCloser_ReverseOrderAndErrorTolerance(t *testing.T) {
+	deps := &Deps{}
+
+	var invocations []string
+	deps.RegisterCloser("first", func(_ context.Context) error {
+		invocations = append(invocations, "first")
+		return nil
+	})
+	deps.RegisterCloser("second", func(_ context.Context) error {
+		invocations = append(invocations, "second")
+		return errors.New("simulated failure")
+	})
+	deps.RegisterCloser("third", func(_ context.Context) error {
+		invocations = append(invocations, "third")
+		return nil
+	})
+
+	// Manually run closers as bootstrap.Run does.
+	for i := len(deps.closers) - 1; i >= 0; i-- {
+		c := deps.closers[i]
+		_ = c.close(context.Background())
+	}
+
+	want := []string{"third", "second", "first"}
+	if len(invocations) != len(want) {
+		t.Fatalf("invocations = %v, want %v", invocations, want)
+	}
+	for i, got := range invocations {
+		if got != want[i] {
+			t.Errorf("invocation[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+}
 
 func TestNewMetricsMux_MetricsAndHealth(t *testing.T) {
 	m := metrics.New()
