@@ -12,68 +12,93 @@ import (
 // ErrNotFound is returned by Get when the event ID doesn't exist.
 var ErrNotFound = errors.New("event: not found")
 
-// Repo is the storage port. Domain code composes state transitions on
-// *Event and then Upserts; the workflow-registration methods return
-// the new count so callers can decide whether to mark monitor/download
-// complete.
+// Repo is the storage port. The debounce methods (RegisterEventPresence,
+// RegisterEventAbsence) implement the symmetric-counter model designed
+// in the O2 planning session — see docs/decisions.md 2026-07-07 debounce
+// entry. The counter increments on presence (cap 3), decrements on
+// absence (floor 0), triggers downstream once when it first hits 3,
+// and soft-deletes the event when it hits 0.
 type Repo interface {
 	// Get returns the event by UUID or ErrNotFound.
 	Get(ctx context.Context, id uuid.UUID) (*Event, error)
 
-	// GetByNaturalKey returns the event by (fixture_id, natural_key) or
-	// ErrNotFound. Used at monitor-poll time to look up whether an
-	// event we just saw is already tracked.
+	// GetByNaturalKey returns the event for (fixture_id, natural_key) or
+	// ErrNotFound. Called by MonitorWorkflow when it sees an API event
+	// and wants to know if we already track it. Returns removed events
+	// too — callers filter based on their needs.
 	GetByNaturalKey(ctx context.Context, fixtureID int64, naturalKey string) (*Event, error)
 
-	// Insert creates a new event row. Fails with a wrapped
-	// pgconn.PgError (23505 unique_violation) if (fixture_id, natural_key)
-	// collides — that's the concurrent-detection-race case where two
-	// MonitorWorkflows for the same fixture both try to insert the same
-	// goal. The loser catches the error, calls GetByNaturalKey to fetch
-	// the winner's UUID, and proceeds.
-	Insert(ctx context.Context, e *Event) error
+	// Insert creates a new event row and atomically records workflowID's
+	// initial presence vote. The event lands with debounce_count=1
+	// (seeded) and one row in event_monitor_workflows.
+	//
+	// Fails with a wrapped pgconn.PgError (23505 unique_violation) if
+	// (fixture_id, natural_key) collides — the concurrent-detection-race
+	// case where two monitor workflows both saw the event first. The
+	// caller catches, GetByNaturalKey, then calls RegisterEventPresence
+	// (which will be a no-op idempotent skip for the same workflowID
+	// because Insert's vote is already recorded).
+	Insert(ctx context.Context, e *Event, workflowID string) error
 
-	// Upsert saves state changes (MarkMonitorComplete, Remove, etc.)
-	// back to storage. Not for initial creation — use Insert for that.
+	// Upsert updates mutable state fields (monitor_complete,
+	// download_complete, removed*, telemetry) on an existing row.
+	// Does NOT touch debounce_count or downstream_triggered — those
+	// are managed exclusively by RegisterEventPresence/Absence.
 	Upsert(ctx context.Context, e *Event) error
 
 	// ListPending returns events in the fixture that need more work
-	// (NOT monitor_complete OR NOT download_complete, AND NOT removed).
+	// (NOT removed AND (NOT monitor_complete OR NOT download_complete)).
 	// The MonitorWorkflow uses this to find events still in the
 	// discovery/download pipeline.
 	ListPending(ctx context.Context, fixtureID int64) ([]*Event, error)
 
-	// ────── Workflow-ID array tables ──────
-	//
-	// These correspond to the event_monitor_workflows /
-	// event_download_workflows / event_drop_workflows tables. Each
-	// method inserts a (event_id, workflow_id) row with ON CONFLICT DO
-	// NOTHING (idempotent per (event_id, workflow_id) primary key) and
-	// returns the resulting count of rows for that event_id.
-	//
-	// The count return is what enables the "3-poll debounce" and
-	// "10-download complete" thresholds — orchestration code checks the
-	// returned count and calls MarkMonitorComplete / MarkDownloadComplete
-	// when the threshold is reached.
+	// ────── Symmetric debounce ──────
 
-	// RegisterMonitorWorkflow records that workflowID observed this event
-	// during a monitor poll. Returns the new count of distinct monitor
-	// workflows registered.
-	RegisterMonitorWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string) (count int, err error)
+	// RegisterEventPresence records a presence vote by workflowID for
+	// this event. Idempotent per (event_id, workflow_id): a retrying
+	// activity from the same workflow_id is a no-op.
+	//
+	// Returns:
+	//   newCount: post-vote debounce_count (0..3). Capped at 3.
+	//   justTriggeredDownstream: true iff THIS call was the one that
+	//     flipped downstream_triggered from FALSE→TRUE. Exactly one
+	//     RegisterEventPresence call across the event's lifetime ever
+	//     sees this true. The caller spawns downstream workflows when
+	//     this is true.
+	//   err: transport / DB error.
+	RegisterEventPresence(ctx context.Context, eventID uuid.UUID, workflowID string) (
+		newCount int, justTriggeredDownstream bool, err error,
+	)
+
+	// RegisterEventAbsence records an absence vote by workflowID for
+	// this event. Idempotent per (event_id, workflow_id).
+	//
+	// Atomic soft-delete on hit-zero: when the decrement brings
+	// debounce_count to 0, the same transaction also sets
+	// removed=TRUE, removed_reason='var', removed_at=NOW(). The event
+	// is FROZEN — subsequent presence votes from later cycles are
+	// rejected via the collision handler in the caller (the removed
+	// row still holds the natural_key, so no fresh Insert either).
+	//
+	// Returns:
+	//   newCount: post-vote debounce_count (0..3). Floored at 0.
+	//   hitZero: true iff THIS call brought the count to 0 AND
+	//     soft-deleted the row. The caller runs the destroy pipeline
+	//     (cancel in-flight Temporal workflows, soft-delete
+	//     video_shares) — that's a separate activity, not a repo
+	//     method.
+	//   err: transport / DB error.
+	RegisterEventAbsence(ctx context.Context, eventID uuid.UUID, workflowID string) (
+		newCount int, hitZero bool, err error,
+	)
 
 	// RegisterVideoValidationWorkflow records that a VideoValidationWorkflow
 	// attempted to download + AI-validate + hash a candidate video for
 	// this event. outcomeClass captures the typed error class if the
-	// workflow failed (empty string on success). Returns the new count.
+	// workflow failed (empty string on success). Returns the new
+	// monotonic count of registered attempts (max ~10 per event).
 	//
-	// Name reflects the workflow rename per decisions.md 2026-07-07 —
-	// the old Python "DownloadWorkflow" undersold what the workflow
-	// actually does (download + validate + hash), so both the workflow
-	// and this registration method were renamed.
+	// This one is UNCHANGED by the O2 debounce redesign — it tracks
+	// download attempts, not presence/absence stability.
 	RegisterVideoValidationWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string, outcomeClass string) (count int, err error)
-
-	// RegisterDropWorkflow records that workflowID observed this event
-	// dropping out of the API poll — VAR-detection debounce. Returns the
-	// new count.
-	RegisterDropWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string) (count int, err error)
 }

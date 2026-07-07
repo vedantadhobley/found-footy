@@ -41,6 +41,7 @@ const eventColumns = `
 	player_id, player_name,
 	minute, extra,
 	first_seen_at,
+	debounce_count, downstream_triggered,
 	monitor_complete, download_complete,
 	removed, removed_reason, removed_at,
 	telemetry,
@@ -66,6 +67,7 @@ func scanEvent(row rowScanner) (*event.Event, error) {
 		&e.Player.ID, &e.Player.Name,
 		&e.Minute, &e.Extra,
 		&e.FirstSeenAt,
+		&e.DebounceCount, &e.DownstreamTriggered,
 		&e.MonitorComplete, &e.DownloadComplete,
 		&e.Removed, &removedReason, &e.RemovedAt,
 		&telemetryBytes,
@@ -113,19 +115,29 @@ func (r *EventRepo) GetByNaturalKey(ctx context.Context, fixtureID int64, natura
 //
 // telemetry (JSONB) uses json.Marshal for consistency with scanEvent's
 // unmarshal. Nil map serializes as `null` — schema allows JSONB NULL.
-func (r *EventRepo) Insert(ctx context.Context, e *event.Event) error {
+func (r *EventRepo) Insert(ctx context.Context, e *event.Event, workflowID string) error {
 	telemetryBytes, err := marshalTelemetry(e.Telemetry)
 	if err != nil {
 		return fmt.Errorf("pg.EventRepo.Insert: telemetry: %w", err)
 	}
-
 	var removedReason *string
 	if e.RemovedReason != nil {
 		s := string(*e.RemovedReason)
 		removedReason = &s
 	}
 
-	const query = `
+	// Atomic: INSERT the event with debounce_count=1 AND INSERT the
+	// first presence vote. If the caller retries after a mid-transaction
+	// crash, the outer INSERT hits the natural_key UNIQUE and the caller
+	// falls through to RegisterEventPresence — which will find the
+	// workflow_id already recorded here and no-op cleanly.
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("pg.EventRepo.Insert: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const insertEvent = `
 		INSERT INTO events (
 			id, fixture_id, natural_key,
 			event_type, detail,
@@ -133,6 +145,7 @@ func (r *EventRepo) Insert(ctx context.Context, e *event.Event) error {
 			player_id, player_name,
 			minute, extra,
 			first_seen_at,
+			debounce_count, downstream_triggered,
 			monitor_complete, download_complete,
 			removed, removed_reason, removed_at,
 			telemetry
@@ -143,12 +156,13 @@ func (r *EventRepo) Insert(ctx context.Context, e *event.Event) error {
 			$8, $9,
 			$10, $11,
 			$12,
+			1, FALSE,
 			$13, $14,
 			$15, $16, $17,
 			$18
 		)
 	`
-	if _, err := r.pool.Exec(ctx, query,
+	if _, err := tx.Exec(ctx, insertEvent,
 		e.ID, e.FixtureID, e.NaturalKey,
 		string(e.Type), e.Detail,
 		e.Team.ID, e.Team.Name,
@@ -159,8 +173,24 @@ func (r *EventRepo) Insert(ctx context.Context, e *event.Event) error {
 		e.Removed, removedReason, e.RemovedAt,
 		telemetryBytes,
 	); err != nil {
-		return fmt.Errorf("pg.EventRepo.Insert: %w", err)
+		return fmt.Errorf("pg.EventRepo.Insert: event: %w", err)
 	}
+
+	const insertVote = `
+		INSERT INTO event_monitor_workflows (event_id, workflow_id)
+		VALUES ($1, $2)
+	`
+	if _, err := tx.Exec(ctx, insertVote, e.ID, workflowID); err != nil {
+		return fmt.Errorf("pg.EventRepo.Insert: seed vote: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("pg.EventRepo.Insert: commit: %w", err)
+	}
+	// Reflect the seeded value on the caller's local struct so they
+	// don't need to re-read to know what state we ended in.
+	e.DebounceCount = 1
+	e.DownstreamTriggered = false
 	return nil
 }
 
@@ -204,6 +234,182 @@ func (r *EventRepo) Upsert(ctx context.Context, e *event.Event) error {
 		return fmt.Errorf("pg.EventRepo.Upsert: %w", err)
 	}
 	return nil
+}
+
+// RegisterEventPresence records a presence vote by workflowID. Atomic:
+// idempotent vote insert + counter increment (capped at 3) + first-time
+// threshold flip. Returns the post-vote count and whether THIS call was
+// the one that flipped downstream_triggered.
+//
+// Idempotency guarantee: the workflow_id is the primary key part in
+// event_monitor_workflows, so ON CONFLICT DO NOTHING catches retries.
+// If the vote was already recorded, we skip the counter increment
+// entirely — no double-count on activity retries.
+func (r *EventRepo) RegisterEventPresence(ctx context.Context, eventID uuid.UUID, workflowID string) (int, bool, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, false, fmt.Errorf("pg.EventRepo.RegisterEventPresence: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Attempt to record the vote. RETURNING true fires only if a row
+	// was actually inserted; ON CONFLICT is silent.
+	var voteInserted bool
+	err = tx.QueryRow(ctx, `
+		INSERT INTO event_monitor_workflows (event_id, workflow_id)
+		VALUES ($1, $2)
+		ON CONFLICT (event_id, workflow_id) DO NOTHING
+		RETURNING true
+	`, eventID, workflowID).Scan(&voteInserted)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, fmt.Errorf("pg.EventRepo.RegisterEventPresence: vote: %w", err)
+	}
+	voteWasNew := err == nil // pgx.ErrNoRows means the ON CONFLICT skipped
+
+	var newCount int
+	var wasTriggered bool
+	if voteWasNew {
+		// Increment (capped at 3). Read current downstream_triggered
+		// so we know whether the increment is what flipped it.
+		err = tx.QueryRow(ctx, `
+			UPDATE events
+			SET debounce_count = LEAST(debounce_count + 1, 3)
+			WHERE id = $1
+			RETURNING debounce_count, downstream_triggered
+		`, eventID).Scan(&newCount, &wasTriggered)
+	} else {
+		// No increment; just report current state.
+		err = tx.QueryRow(ctx, `
+			SELECT debounce_count, downstream_triggered
+			FROM events
+			WHERE id = $1
+		`, eventID).Scan(&newCount, &wasTriggered)
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("pg.EventRepo.RegisterEventPresence: count: %w", err)
+	}
+
+	// If we're now at 3 AND downstream isn't triggered yet, flip it.
+	// The UPDATE ... WHERE NOT downstream_triggered ensures only ONE
+	// concurrent presence call ever gets justTriggered=true.
+	justTriggered := false
+	if newCount == 3 && !wasTriggered {
+		var flipped bool
+		err = tx.QueryRow(ctx, `
+			UPDATE events
+			SET downstream_triggered = TRUE
+			WHERE id = $1 AND NOT downstream_triggered
+			RETURNING true
+		`, eventID).Scan(&flipped)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, fmt.Errorf("pg.EventRepo.RegisterEventPresence: flip: %w", err)
+		}
+		justTriggered = flipped && err == nil
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, false, fmt.Errorf("pg.EventRepo.RegisterEventPresence: commit: %w", err)
+	}
+	return newCount, justTriggered, nil
+}
+
+// RegisterEventAbsence records an absence vote by workflowID. Atomic:
+// idempotent vote insert + counter decrement (floor 0) + soft-delete if
+// count hits 0.
+//
+// Soft-delete details when hitZero: sets removed=TRUE,
+// removed_reason='var', removed_at=NOW(). The row is preserved for
+// audit; downstream cleanup (Temporal cancel + video_shares soft-delete)
+// is the caller's responsibility on hitZero=true.
+func (r *EventRepo) RegisterEventAbsence(ctx context.Context, eventID uuid.UUID, workflowID string) (int, bool, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, false, fmt.Errorf("pg.EventRepo.RegisterEventAbsence: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Record the vote (idempotent).
+	var voteInserted bool
+	err = tx.QueryRow(ctx, `
+		INSERT INTO event_drop_workflows (event_id, workflow_id)
+		VALUES ($1, $2)
+		ON CONFLICT (event_id, workflow_id) DO NOTHING
+		RETURNING true
+	`, eventID, workflowID).Scan(&voteInserted)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, fmt.Errorf("pg.EventRepo.RegisterEventAbsence: vote: %w", err)
+	}
+	voteWasNew := err == nil
+
+	var newCount int
+	var alreadyRemoved bool
+	if voteWasNew {
+		err = tx.QueryRow(ctx, `
+			UPDATE events
+			SET debounce_count = GREATEST(debounce_count - 1, 0)
+			WHERE id = $1
+			RETURNING debounce_count, removed
+		`, eventID).Scan(&newCount, &alreadyRemoved)
+	} else {
+		err = tx.QueryRow(ctx, `
+			SELECT debounce_count, removed FROM events WHERE id = $1
+		`, eventID).Scan(&newCount, &alreadyRemoved)
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("pg.EventRepo.RegisterEventAbsence: count: %w", err)
+	}
+
+	hitZero := false
+	if newCount == 0 && !alreadyRemoved {
+		var flipped bool
+		err = tx.QueryRow(ctx, `
+			UPDATE events
+			SET removed = TRUE,
+			    removed_reason = 'var',
+			    removed_at = NOW()
+			WHERE id = $1 AND NOT removed
+			RETURNING true
+		`, eventID).Scan(&flipped)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, fmt.Errorf("pg.EventRepo.RegisterEventAbsence: soft-delete: %w", err)
+		}
+		hitZero = flipped && err == nil
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, false, fmt.Errorf("pg.EventRepo.RegisterEventAbsence: commit: %w", err)
+	}
+	return newCount, hitZero, nil
+}
+
+// RegisterVideoValidationWorkflow records a download attempt. Unchanged
+// by the O2 debounce redesign — tracks download attempts, not
+// presence/absence stability.
+func (r *EventRepo) RegisterVideoValidationWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string, outcomeClass string) (int, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("pg.EventRepo.RegisterVideoValidationWorkflow: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO event_download_workflows (event_id, workflow_id, outcome_class)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (event_id, workflow_id) DO NOTHING
+	`, eventID, workflowID, outcomeClass); err != nil {
+		return 0, fmt.Errorf("pg.EventRepo.RegisterVideoValidationWorkflow: insert: %w", err)
+	}
+
+	var count int
+	if err := tx.QueryRow(ctx, `
+		SELECT COUNT(*) FROM event_download_workflows WHERE event_id = $1
+	`, eventID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("pg.EventRepo.RegisterVideoValidationWorkflow: count: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("pg.EventRepo.RegisterVideoValidationWorkflow: commit: %w", err)
+	}
+	return count, nil
 }
 
 // ListPending returns events in the fixture that need more work

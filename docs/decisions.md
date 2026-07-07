@@ -6,6 +6,106 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-07 — Symmetric-counter debounce (Go rebuild's improvement over Python)
+
+Designed during O2 planning, implemented in fix 3b. Replaces Python's
+asymmetric two-array model (`_monitor_workflows` monotonic + reset-on-
+presence `_drop_workflows`) with a single counter that oscillates
+0..3, incrementing on presence votes and decrementing on absence
+votes.
+
+**Model (single counter per event):**
+- `debounce_count` INT in `events` table, CHECK `BETWEEN 0 AND 3`
+- Seeded at 1 by `Insert(event, workflowID)` — the first-see IS the
+  first vote
+- Presence vote (from a new workflow_id) increments (LEAST +1, cap 3)
+- Absence vote (from a new workflow_id) decrements (GREATEST -1,
+  floor 0)
+- Vote idempotency enforced by PRIMARY KEY on
+  (event_id, workflow_id) in `event_monitor_workflows` and
+  `event_drop_workflows` — retrying activities can't double-count
+- On first crossing to 3: `downstream_triggered` flag flips
+  FALSE→TRUE atomically (one-way). Caller spawns downstream
+  workflows exactly once.
+- On hitting 0: same transaction atomically soft-deletes with
+  `removed=TRUE, removed_reason='var', removed_at=NOW()`. Caller
+  runs the destroy pipeline (Temporal cancel + video_shares
+  soft-delete) — that's a separate activity, not a repo method.
+
+**Differences from Python** (see also `archive/src/data/events.py`
+`add_monitor_workflow`, `clear_drop_workflows`,
+`add_drop_workflow_and_check`):
+
+1. **Symmetric vs asymmetric.** Python: monitor votes monotonic,
+   drop votes fully reset on any presence. Ours: single counter
+   steps up on presence, down on absence, cap and floor both
+   enforced.
+2. **Flicker penalty.** Python: 3 CONSECUTIVE absences required
+   for delete (any presence resets the drop tally). Ours: 3 NET
+   absences from wherever counter sits. Flicker accumulates.
+3. **Hard vs soft delete.** Python deletes the event row. Ours
+   sets `removed=TRUE` — preserves audit trail + prevents
+   natural_key collision on reappearance (soft-removed row still
+   holds the natural_key; monitor's collision handler recognizes
+   the removed state and skips re-voting).
+4. **`downstream_triggered` semantics.** Python's `_monitor_complete`
+   flag stays TRUE forever. Ours: same one-way flip semantic. No
+   change here — this part matches.
+
+**Trade-offs of ours vs Python's:**
+- Ours penalizes flicker. Two absences with a presence in between
+  chips away at durability. Python: the presence would erase both.
+  User's call: they prefer explicit accounting over the reset.
+- Ours easier to reason about — one counter, symmetric transitions.
+- Ours worse under sustained API flakiness (2 absences early cost
+  budget that persists). Fine if API is generally reliable.
+
+**Post-removal behavior — event never returns.** Terminal state.
+Even if the API brings the same natural_key back, the collision
+handler (to be written in monitor activity code) recognizes the
+removed row and skips. If a DIFFERENT event with a similar
+signature (same player scoring again, say) happens later, it gets
+a new seq via natural_key sequencing — no collision.
+
+**Schema additions to `internal/infra/pg/schema.sql`:**
+```sql
+events.debounce_count INT NOT NULL DEFAULT 1
+  CHECK (debounce_count BETWEEN 0 AND 3)
+events.downstream_triggered BOOLEAN NOT NULL DEFAULT FALSE
+```
+
+**Interface changes** (`internal/domain/event/repo.go`):
+- `Insert(ctx, e)` → `Insert(ctx, e, workflowID)` — atomic
+  event+vote seed
+- ADDED `RegisterEventPresence(ctx, eventID, workflowID) →
+  (newCount, justTriggeredDownstream, err)`
+- ADDED `RegisterEventAbsence(ctx, eventID, workflowID) →
+  (newCount, hitZero, err)` — soft-deletes atomically at zero
+- REMOVED (were unimplemented): `RegisterMonitorWorkflow`,
+  `RegisterDropWorkflow` — subsumed by presence/absence
+- KEPT UNCHANGED: `RegisterVideoValidationWorkflow` — separate
+  concern (tracks download attempts, not stability)
+
+**Test coverage** (all pass against testcontainer Postgres):
+- Presence climb 1→2→3, only third call justTriggered
+- Presence idempotency (same workflow_id retries)
+- Presence no-retrigger (cap at 3 post-flip)
+- Absence hits zero → soft-delete atomic
+- Absence 3→2→1→0 sequence, only last hitZero
+- Flicker (present-absent-present) does not hard-reset
+- Absence idempotency
+- Post-removal absence is no-op (no double soft-delete)
+
+Total: 8 new debounce tests + updated 6 existing CRUD tests for the
+Insert signature change.
+
+Devs need to wipe pg volume for schema change:
+`docker volume rm found-footy-dev_postgres-data && docker compose
+-f docker-compose.dev.yml up -d postgres`. Done in dev; prod
+unaffected (still runs Python).
+
+---
+
 ## 2026-07-07 — APIStatus bucketing preserves Python's SUSP/INT/PST=active
 
 Preserves Python's status classification (`archive/src/utils/fixture_status.py`)
