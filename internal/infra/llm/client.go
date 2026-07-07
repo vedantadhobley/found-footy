@@ -179,7 +179,7 @@ func (c *Client) Chat(ctx context.Context, req openai.ChatCompletionRequest) (op
 func (c *Client) Close() {
 	c.ins.connectionState.Set(0)
 	c.ins.emitEvent(context.Background(), logging.LevelInfo,
-		vocabulary.ActionLLMConnected, // no dedicated "closed" action; the state gauge tells the story
+		vocabulary.ActionLLMClosed,
 		"llm client closed",
 	)
 }
