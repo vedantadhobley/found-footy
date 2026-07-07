@@ -112,8 +112,8 @@ func (c *Client) TaskQueue() string { return c.taskQueue }
 // no new required arguments.
 //
 // workflowType is the string name the workflow was registered under —
-// used as a bounded metric label (we have a fixed set: Ingest, Monitor,
-// Twitter, Download, Upload, RAG).
+// used as a bounded metric label (fixed set: Ingest, Monitor, Discovery,
+// VideoValidation, AssetPersistence — per decisions.md 2026-07-07).
 func (c *Client) StartWorkflow(
 	ctx context.Context,
 	options client.StartWorkflowOptions,

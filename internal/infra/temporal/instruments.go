@@ -35,7 +35,8 @@ type Instruments struct {
 //     — every StartWorkflow counted by the workflow's type name +
 //     outcome (success/failure). workflow_type is a bounded label
 //     because we have a fixed set of workflow types (Ingest, Monitor,
-//     Twitter, Download, Upload, RAG).
+//     Discovery, VideoValidation, AssetPersistence — per decisions.md
+//     2026-07-07 workflow-rename entry).
 //   - found_footy_temporal_workflow_start_duration_seconds{workflow_type}
 //     — how long the StartWorkflow RPC took (not how long the workflow
 //     ran; that's Temporal's own metric).

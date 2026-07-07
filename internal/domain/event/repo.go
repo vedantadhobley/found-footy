@@ -61,11 +61,16 @@ type Repo interface {
 	// workflows registered.
 	RegisterMonitorWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string) (count int, err error)
 
-	// RegisterDownloadWorkflow records that workflowID attempted a
-	// download for this event. outcomeClass captures the typed error
-	// class if the workflow failed (empty string on success). Returns
-	// the new count.
-	RegisterDownloadWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string, outcomeClass string) (count int, err error)
+	// RegisterVideoValidationWorkflow records that a VideoValidationWorkflow
+	// attempted to download + AI-validate + hash a candidate video for
+	// this event. outcomeClass captures the typed error class if the
+	// workflow failed (empty string on success). Returns the new count.
+	//
+	// Name reflects the workflow rename per decisions.md 2026-07-07 —
+	// the old Python "DownloadWorkflow" undersold what the workflow
+	// actually does (download + validate + hash), so both the workflow
+	// and this registration method were renamed.
+	RegisterVideoValidationWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string, outcomeClass string) (count int, err error)
 
 	// RegisterDropWorkflow records that workflowID observed this event
 	// dropping out of the API poll — VAR-detection debounce. Returns the
