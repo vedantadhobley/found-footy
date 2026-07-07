@@ -13,6 +13,7 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
 	"github.com/vedantadhobley/found-footy/internal/infra/nats"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
+	"github.com/vedantadhobley/found-footy/internal/infra/s3"
 )
 
 // gitSHA, builtAt are baked in at build time via -ldflags per §11
@@ -43,6 +44,14 @@ func main() {
 			nc.Close()
 			return nil
 		})
+
+		s3Ins := s3.RegisterMetrics(deps.Metrics, deps.Log)
+		s3c, err := s3.New(ctx, deps.Cfg.S3, s3Ins)
+		if err != nil {
+			return err
+		}
+		_ = s3c // consumed by the /videos/{share_id} presign path in Phase A
+		// s3 client has no explicit Close (no persistent connection).
 
 		// Public API surface lands here in Phase A. For now: hold the
 		// adapters open until the signal-handled context cancels.
