@@ -29,6 +29,32 @@ update is treated as incomplete — same status as one missing tests.
 
 ---
 
+## 2026-07-07 — Log-catalog generator (§11.3) not shipped
+
+Plan §11.3 specifies a generated `docs/generated/log-catalog.md`
+regenerated on every build via `go generate`, listing every
+(vocabulary.Module, vocabulary.Action) pair with expected field set
+and log-level guidance.
+
+**Status:** not implemented in S1 or since.
+
+**Rationale for the deferral:** with ~50 declared actions across
+11 adapter modules + 5 workflow modules today, `grep -r "vocabulary\.Action"`
+is still ergonomic. Generator adds a build-time dependency (needs a
+tool + a generate marker + a CI step to keep the checked-in catalog
+current) that's cheap to build later when the surface grows and hard
+to justify now.
+
+**Trigger to build:** when the vocabulary passes ~200 declared
+actions OR when someone asks "what actions does X module emit?" and
+grep isn't fast enough OR when we introduce webhook consumers that
+need a discoverable catalog to subscribe to.
+
+**Not a design change.** The plan's shape (per-(module, action)
+markdown table) still stands; only the timing shifts.
+
+---
+
 ## 2026-07-07 — IngestWorkflow divergences from plan §5 W1
 
 Six divergences between the shipped IngestWorkflow (O1a-O1d) and the
