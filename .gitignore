@@ -107,6 +107,12 @@ mongodb-keyfile
 coverage.out
 coverage.html
 vendor/
+# Stray root-level binaries produced by `go build ./cmd/<x>` — each
+# cmd/<x> package produces an executable at repo root by default.
+/worker
+/api
+/scaler
+/twitter
 
 # air hot-reload
 tmp/
