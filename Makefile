@@ -19,7 +19,14 @@ DOCKER_RUN  := docker run --rm $(DOCKER_ENV) $(DOCKER_VOLS) -w /src
 GO_RUN       := $(DOCKER_RUN) $(GO_IMAGE)
 GOLANGCI_RUN := $(DOCKER_RUN) $(GOLANGCI_IMAGE)
 
-.PHONY: help build test test-race lint fmt vet tidy clean cache-init \
+# testcontainers-go spawns sibling containers via the host Docker socket.
+# --network=host lets the test container reach those siblings on
+# localhost:<host-mapped-port>, matching what testcontainers.ConnectionString
+# returns by default. Without this, tests get the port but can't dial it.
+TEST_DOCKER_ARGS := -v /var/run/docker.sock:/var/run/docker.sock --network=host
+GO_TEST_RUN      := docker run --rm $(DOCKER_ENV) $(DOCKER_VOLS) $(TEST_DOCKER_ARGS) -w /src $(GO_IMAGE)
+
+.PHONY: help build test test-short test-race lint fmt vet tidy clean cache-init \
         dev-up dev-down dev-logs dev-restart dev-shell dev-ps
 
 help: ## Show this help
@@ -38,11 +45,14 @@ build: cache-init ## Compile every binary + package
 
 # ────── Test ──────
 
-test: cache-init ## Run all tests
-	$(GO_RUN) go test -buildvcs=false ./...
+test: cache-init ## Run all tests (integration tests spawn containers via docker socket)
+	$(GO_TEST_RUN) go test -buildvcs=false ./...
+
+test-short: cache-init ## Run unit tests only (skips integration tests that require Docker)
+	$(GO_RUN) go test -buildvcs=false -short ./...
 
 test-race: cache-init ## Run tests with the race detector
-	$(GO_RUN) go test -buildvcs=false -race ./...
+	$(GO_TEST_RUN) go test -buildvcs=false -race ./...
 
 # ────── Lint + format ──────
 
