@@ -23,11 +23,14 @@ type Module string
 // compile-time enum (e.g. Module("typo") built at a call site).
 const (
 	// ── Workflows (Temporal orchestration layer) ──
-	ModuleIngestWorkflow    Module = "ingest_workflow"
-	ModuleMonitorWorkflow   Module = "monitor_workflow"
-	ModuleDiscoveryWorkflow Module = "discovery_workflow"
-	ModuleDownloadWorkflow  Module = "download_workflow"
-	ModuleUploadWorkflow    Module = "upload_workflow"
+	// Names per docs/decisions.md 2026-07-07 workflow-rename entry.
+	// RAGWorkflow was folded into IngestWorkflow as a sub-activity;
+	// no separate module for it.
+	ModuleIngestWorkflow            Module = "ingest_workflow"
+	ModuleMonitorWorkflow           Module = "monitor_workflow"
+	ModuleDiscoveryWorkflow         Module = "discovery_workflow"
+	ModuleVideoValidationWorkflow   Module = "video_validation_workflow"
+	ModuleAssetPersistenceWorkflow  Module = "asset_persistence_workflow"
 
 	// ── Domain packages (internal/domain/...) ──
 	ModuleFixture      Module = "fixture"
@@ -70,7 +73,7 @@ const (
 // vocabulary catalog generator per §15.3.
 var ValidModules = []Module{
 	ModuleIngestWorkflow, ModuleMonitorWorkflow, ModuleDiscoveryWorkflow,
-	ModuleDownloadWorkflow, ModuleUploadWorkflow,
+	ModuleVideoValidationWorkflow, ModuleAssetPersistenceWorkflow,
 
 	ModuleFixture, ModuleEvent, ModuleVideo, ModuleAlias,
 	ModuleDiscovery, ModuleVision, ModuleSession, ModuleTextAnalysis,
