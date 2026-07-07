@@ -122,14 +122,14 @@ func TestEmit_RespectsLevel(t *testing.T) {
 }
 
 func TestErrHelper_NilAndReal(t *testing.T) {
-	nilAttr := Err(nil)
-	if nilAttr.Key != "error" || nilAttr.Value.String() != "" {
-		t.Errorf("Err(nil) = %+v, want {key: error, value: \"\"}", nilAttr)
+	nilField := Err(nil)
+	if nilField.Key != "error" || nilField.Value != "" {
+		t.Errorf("Err(nil) = %+v, want {Key: error, Value: \"\"}", nilField)
 	}
 
-	realAttr := Err(context.Canceled)
-	if realAttr.Key != "error" || realAttr.Value.String() != "context canceled" {
-		t.Errorf("Err(context.Canceled) = %+v, want error='context canceled'", realAttr)
+	realField := Err(context.Canceled)
+	if realField.Key != "error" || realField.Value != "context canceled" {
+		t.Errorf("Err(context.Canceled) = %+v, want Value='context canceled'", realField)
 	}
 }
 

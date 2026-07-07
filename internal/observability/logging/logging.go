@@ -4,6 +4,10 @@
 // Module + Action are compile-time enums from the vocabulary package —
 // arbitrary strings are rejected at build time.
 //
+// Fields use logging.Field (a Key/Value pair), not slog.Attr — that
+// keeps callers from importing log/slog and lets us evolve field
+// handling (e.g. adding value validation, redaction) in one place.
+//
 // Handler: log/slog with a JSON handler. Level and format are configured
 // via the ObservabilityConfig from internal/config.
 //
@@ -22,14 +26,26 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 )
 
+// Field is one Key/Value pair emitted alongside a log entry. Callers
+// build fields via the helper constructors below (String, Int, Err, ...)
+// so the log/slog dependency stays contained inside this package.
+//
+// Value is `any` so specialized helpers (a future FixtureID, HashBytes,
+// etc.) can attach whatever type is most natural; the slog handler
+// serializes via reflection.
+type Field struct {
+	Key   string
+	Value any
+}
+
 // Emitter is the interface every package emits through. Concrete
 // implementations: the real slog-backed emitter returned by New(),
 // and the TestEmitter helper used by unit tests.
 type Emitter interface {
-	// Emit writes one structured log entry. Fields is a slice of slog
-	// attributes; callers use the helper constructors below
-	// (EventID(...), FixtureID(...), etc.) rather than raw slog.Any.
-	Emit(ctx context.Context, level Level, module vocabulary.Module, action vocabulary.Action, msg string, fields ...slog.Attr)
+	// Emit writes one structured log entry. Fields is a slice of Field
+	// values built via the helper constructors (String, Int, Err, ...);
+	// no need to import log/slog in caller packages.
+	Emit(ctx context.Context, level Level, module vocabulary.Module, action vocabulary.Action, msg string, fields ...Field)
 }
 
 // Level is the log severity. Wraps slog.Level with type-safe conversion
@@ -100,25 +116,24 @@ func newWithWriter(cfg config.ObservabilityConfig, w io.Writer) Emitter {
 // Emit writes one log entry via the underlying slog.Logger.
 //
 // Attributes emitted on every line: module, action. The message and any
-// caller-supplied fields follow. slog handles the ts, level, and JSON
-// serialization.
+// caller-supplied Field values follow. slog handles the ts, level, and
+// JSON serialization.
 func (e *slogEmitter) Emit(
 	ctx context.Context,
 	level Level,
 	module vocabulary.Module,
 	action vocabulary.Action,
 	msg string,
-	fields ...slog.Attr,
+	fields ...Field,
 ) {
-	// Build attribute slice: standard fields first, caller fields after.
-	// slog's LogAttrs takes []slog.Attr not variadic; consolidate.
 	attrs := make([]slog.Attr, 0, 2+len(fields))
 	attrs = append(attrs,
 		slog.String("module", string(module)),
 		slog.String("action", string(action)),
 	)
-	attrs = append(attrs, fields...)
-
+	for _, f := range fields {
+		attrs = append(attrs, slog.Any(f.Key, f.Value))
+	}
 	e.logger.LogAttrs(ctx, slog.Level(level), msg, attrs...)
 }
 
@@ -128,34 +143,35 @@ func (e *slogEmitter) Emit(
 //
 //   log.Emit(ctx, LevelInfo, ModuleDeploy, ActionStartup, "worker starting",
 //     logging.String("git_sha", "..."),
-//     logging.String("built_at", "..."),
+//     logging.Int("port", 8080),
 //   )
 //
-// The helpers are thin wrappers around slog.* but exist so callers
-// don't need to import log/slog directly. They also give us a place to
-// add value validation (e.g. FixtureID() could reject negative values)
-// as invariants get formalized in later phases.
+// The helpers exist so callers don't need to import log/slog directly.
+// They also give us a place to add value validation (e.g. FixtureID()
+// could reject negative values) as invariants get formalized in later
+// phases.
 
-// String returns a string-valued attribute.
-func String(key, value string) slog.Attr { return slog.String(key, value) }
+// String returns a string-valued Field.
+func String(key, value string) Field { return Field{Key: key, Value: value} }
 
-// Int returns an int-valued attribute.
-func Int(key string, value int) slog.Attr { return slog.Int(key, value) }
+// Int returns an int-valued Field.
+func Int(key string, value int) Field { return Field{Key: key, Value: value} }
 
-// Int64 returns an int64-valued attribute.
-func Int64(key string, value int64) slog.Attr { return slog.Int64(key, value) }
+// Int64 returns an int64-valued Field.
+func Int64(key string, value int64) Field { return Field{Key: key, Value: value} }
 
-// Float64 returns a float64-valued attribute.
-func Float64(key string, value float64) slog.Attr { return slog.Float64(key, value) }
+// Float64 returns a float64-valued Field.
+func Float64(key string, value float64) Field { return Field{Key: key, Value: value} }
 
-// Bool returns a bool-valued attribute.
-func Bool(key string, value bool) slog.Attr { return slog.Bool(key, value) }
+// Bool returns a bool-valued Field.
+func Bool(key string, value bool) Field { return Field{Key: key, Value: value} }
 
-// Err returns an attribute carrying an error's message. Convention: key
-// is always "error". Nil errors produce an empty-string value.
-func Err(err error) slog.Attr {
+// Err returns a Field carrying an error's message. Convention: key is
+// always "error". Nil errors produce an empty-string value so callers
+// don't need to branch on nil at the call site.
+func Err(err error) Field {
 	if err == nil {
-		return slog.String("error", "")
+		return Field{Key: "error", Value: ""}
 	}
-	return slog.String("error", err.Error())
+	return Field{Key: "error", Value: err.Error()}
 }
