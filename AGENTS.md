@@ -5,156 +5,141 @@ every 30 s for live matches across the top-5 European leagues + ~15 FIFA
 national teams, debounces detected goals over 3 polls, then fires off a
 10-attempt Twitter video search for each one. Downloads candidate clips,
 AI-validates the broadcast clock against the API's reported match minute
-(Qwen3-VL-8B on `joi`), perceptually deduplicates against the existing S3
-corpus, and surfaces the surviving clips through the `vedanta-systems`
+(Qwen3-VL-8B on `joi`), perceptually deduplicates against the existing
+S3 corpus, and surfaces the surviving clips through the `vedanta-systems`
 portal via SSE.
 
-This file is your front door. Read it first; follow the imports below.
+This file is your front door. Which section applies depends on why you
+landed here:
 
-## Run
+- **Working on the Go rebuild** (current active development on
+  `rebuild/go` branch) → read [§ Go rebuild](#go-rebuild-current-active-work) first,
+  then [`docs/rebuild-plan.md`](./docs/rebuild-plan.md) is the design bible.
+- **Working on legacy Python prod** (still live at vedanta.systems,
+  every match day) → skip to [§ Python legacy stack](#python-legacy-stack-still-running-in-prod).
 
-```bash
-docker compose -f docker-compose.dev.yml up -d         # dev
-docker compose -f docker-compose.prod.yml up -d        # prod (auto-scaler manages workers + twitter)
-```
+**Current branch context**: `rebuild/go` is the active work branch. `main`
+still runs the Python codebase; prod containers are built from that.
+The two coexist — no cutover has happened yet.
 
-URLs (replace `<base-domain>` with the value of `$BASE_DOMAIN`):
-- Temporal UI: `http://found-footy-{dev,prod}-temporal-ui.<base-domain>`
-- MongoDB UI: dev `http://found-footy-dev-mongoku.<base-domain>` · prod `http://found-footy-prod-mongo-express.<base-domain>`
-- MinIO console: `http://found-footy-{dev,prod}-minio.<base-domain>`
-- Twitter VNC: `http://found-footy-{dev,prod}-twitter[-vnc].<base-domain>` (prod needs the `vnc` profile started)
+## Go rebuild (current active work)
 
-See `deploy/INFRA-NOTES.md` for Caddy routes + cross-project network setup.
+Full ground-up rewrite from Python to Go 1.25, tracked in
+[`docs/rebuild-plan.md`](./docs/rebuild-plan.md) as the design bible.
+Phased delivery — see §16 for the phase map. Where we are (2026-07-07):
 
-## Stack
+| Phase | Status | What it covers |
+|---|---|---|
+| F | ✅ shipped | Scaffold: `cmd/`, `internal/`, docker-compose, air, Caddy stubs, Makefile |
+| S1 | ✅ shipped | Observability substrate: `config`, `logging` (slog + typed Field), `vocabulary` (typed Module/Action enums), `metrics` (Prometheus), `bootstrap` (shared binary startup with Closer registry) |
+| S2 | ✅ shipped | Postgres adapter: `pool.go` (pgxpool wrapper), `instruments.go` (query tracer + pool-stats collector), full §3 schema in `schema.sql`, wired into `cmd/worker` + `cmd/api` |
+| S3 | ⏳ next | NATS adapter (workspace NATS bus for events + SSE fan-out + JetStream webhook delivery) |
+| S4-S7 | 📅 planned | Garage/S3, Temporal, LLM, external HTTP adapters |
+| D | 📅 planned | Domain layer (fixture, event, video, alias, discovery, vision, session, textanalysis) |
+| O, V, A, T, M, C | 📅 planned | Orchestration, video pipeline, API surface, testing, migration, cutover |
 
-- **Workers**: Python 3.10 (image is `python:3.10-slim`), Temporal Python SDK, asyncio. Single task queue `found-footy`; 6 workflows, 42 activities. Per-worker concurrency: 10 workflow tasks + 30 activities.
-- **Workflow orchestration**: Temporal (its own Postgres for metadata, separate from MongoDB). Two scheduled workflows — `IngestWorkflow` daily 00:05 UTC, `MonitorWorkflow` every 30 s with `SKIP` overlap policy.
-- **Application database**: MongoDB 7, 5-collection design — `fixtures_staging` / `fixtures_live` / `fixtures_active` / `fixtures_completed` / `team_aliases`. `fixtures_live` is an overwrite buffer so we can diff fresh API data against enhanced events in `fixtures_active` without destroying our enhancement fields.
-- **Object storage**: MinIO (S3-compatible) at `minio:9000` cluster-internal.
-- **Twitter scraping**: Firefox + Selenium in a dedicated `twitter/` container — browser automation, not the official Twitter API. Cookies persisted to a docker volume + `~/.config/found-footy/twitter_cookies.json` backup.
-- **External LLM**: Qwen3-VL-8B (vision) via llama.cpp on `joi`, reached at `http://llama-small.joi` (Caddy split-DNS, no port). Used for video validation (is this soccer? phone-filming-a-TV? extract broadcast clock) and RAG team-alias selection.
-- **Auto-scaler**: a sidecar Python service that watches Temporal queue depth + the MongoDB active-goal count and scales the `worker` and `twitter` Compose services between 2 and 8 replicas (30 s check interval, 60 s cooldown).
+**Where to look for Go rebuild work:**
 
-## Where to look first
+- [`docs/rebuild-plan.md`](./docs/rebuild-plan.md) — **the design bible**. §1-§16 covers architecture, schema, adapters, workflows, deployment, migration. Read the section relevant to what you're touching before starting.
+- [`docs/rebuild/README.md`](./docs/rebuild/README.md) — routing index for per-topic rebuild docs (mostly stubs until each phase fills them in).
+- [`docs/rebuild/architecture.md`](./docs/rebuild/architecture.md) — pending
+- [`docs/rebuild/orchestration.md`](./docs/rebuild/orchestration.md) — pending
+- [`docs/rebuild/observability.md`](./docs/rebuild/observability.md) — pending
+- [`docs/rebuild/deployment.md`](./docs/rebuild/deployment.md) — pending
+- [`docs/rebuild/testing.md`](./docs/rebuild/testing.md) — pending
+- [`internal/observability/vocabulary/vocabulary.go`](./internal/observability/vocabulary/vocabulary.go) — typed enum registry (Module, Action). Every log emission uses these. Adding a new Module or Action = one const declaration.
+- [`internal/infra/pg/`](./internal/infra/pg/) — the **template** all future adapters follow: `Instruments` bundle + `RegisterMetrics` constructor + framework-native tracer + prometheus.Collector for scrape-time stats.
 
-- @docs/README.md — **docs/ routing index + intake rules + after-session checklist.** Start here when you need to find or add permanent project knowledge.
-- @README.md — public-facing project description
-- @docs/architecture.md — 5-collection MongoDB design, workflow hierarchy, video pipeline, scoped dedup, schemas, activity reference
-- @docs/orchestration.md — event lifecycle state machine, debouncing, VAR handling
-- @docs/temporal.md — per-activity timeouts / retries / heartbeats
-- @docs/logging.md — structured-JSON logging reference for Grafana/Loki (modules, actions, fields, queries)
-- @docs/rag.md — Wikidata + LLM team-alias pipeline (header note flags design-stage sections)
-- @docs/twitter-auth.md — browser automation, cookie lifecycle, VNC re-auth flow
-- @docs/operations.md — runbook (bring-up, scaling, common issues, debugging)
-- @docs/decisions.md — append-only architectural decisions log
-- @docs/todo.md — active work + open bugs (paste-ready block at top)
-- @docs/roadmap.md — **the committed 12-15 day rewrite plan (2026-Q2)**. 7 phases. Start here for "what's the strategy."
-- @docs/sprints.md — operational sprint board (per-session task lists). Subordinate to roadmap.md.
-- @docs/proposals/ — design docs for future work: `dedup-unification`, `event-matching`, `geo-restriction-bypass`, `llm-stack-redesign` (supersedes the old `qwen-embeddings` proposal — broader scope)
-- @deploy/INFRA-NOTES.md — Caddyfile entries + cross-project network setup outside this repo
+**Go rebuild conventions:**
 
-## Frontend integration
+- Go 1.25 (bumped from 1.23 for air compatibility). Toolchain via container — nothing installed on host.
+- Everything runs in Docker. `make build`, `make test`, `make test-short` all spin `golang:1.25-bookworm` throwaway containers with the source bind-mounted.
+- Dev stack: `docker compose -f docker-compose.dev.yml up -d` — air hot-reload on all four Go binaries.
+- Prod stack: `docker compose -f docker-compose.prod.yml` — **still runs the Python codebase**. Files intentionally renamed from bare `docker-compose.yml` so a stray `docker compose <cmd>` from this directory refuses to resolve.
+- Commits: no `Co-Authored-By` trailer. Lowercase prefix + optional scope. Multi-paragraph via HEREDOC.
+- Tests: unit + integration in the same package; integration tests spin real Postgres via testcontainers-go (`/var/run/docker.sock` mounted + `--network=host` in the `test` make target). Skip with `-short`.
 
-Found Footy does **not** have a frontend in this repo. The unified portal at
-`vedanta.systems` (sources in `~/workspace/dev/vedanta-systems/`, React +
-TypeScript + shadcn/ui) hosts the UI and proxies `/api/found-footy/*` to a
-Node API that reads MongoDB directly over the `luv-prod` shared docker
-network. Goal videos appear live via Server-Sent Events; the worker
-notifies the frontend through `monitor_activities.notify_frontend_refresh`.
+**Things to check before doing X (Go rebuild):**
 
-Same shape as `long-exposure` and `spin-cycle`: per-project repos ship a
-backend, vedanta-systems hosts the UI.
+- **Replicating the pg adapter pattern for a new adapter (S3-S7)**: `internal/infra/pg/` is the template. `Instruments` struct + `RegisterMetrics(reg, log)` constructor + framework-native tracer (not method wrapping) + `prometheus.Collector` for scrape-time gauges + testcontainers-go integration test. Match the shape.
+- **Adding a new Module or Action**: declare the const in [`vocabulary.go`](./internal/observability/vocabulary/vocabulary.go) (module) or the appropriate `actions_<family>.go` (action). Register via `registerActions(...)`. Runtime check in `slogEmitter.Emit` catches strays that slip through the compile-time enum.
+- **Adding a new adapter with cleanup**: use `deps.RegisterCloser("name", closeFn)` at construction, not `defer`. Bootstrap drains closers in reverse-registration order (LIFO), which is what Temporal needs (worker drains before its downstream deps close).
+- **Adding a new config surface**: put it on its own `config.<Adapter>Config` struct in `internal/config/<adapter>.go`, then reference it from the top-level `Config` in `config.go`. Envconfig via `caarlos0/env/v11`.
+- **Touching the pg schema**: authoritative source is [`internal/infra/pg/schema.sql`](./internal/infra/pg/schema.sql). Mounted into dev postgres via `/docker-entrypoint-initdb.d/` (fresh volume only) AND applied in testcontainers via `WithInitScripts`. If you edit it, wipe the dev postgres volume (`docker volume rm found-footy-dev_postgres-data`) to re-provision, and re-run `make test` to catch tests that hit the change.
+- **Ports**: metrics/healthz on `:8080` per binary. Public API surface (api) will move to a different port in Phase A. Twitter's :6080 VNC + :8888 API surfaces are Python-era; the Go rewrite lands in Phase S7.
 
-## Conventions
+## Python legacy stack (still running in prod)
 
-- **Commits**: no `Co-Authored-By` trailer. Lowercase prefix style: `feat:`, `fix:`, `chore:`, `docs:`, `perf:`, `refactor:`, `test:`. Scope in parens when useful: `fix(twitter):`, `perf(dedup):`.
-- **No host ports for HTTP services.** Everything routes through the workspace `proxy` Caddy on hostname (`found-footy-{dev,prod}-*.<base-domain>`). Internal data services (mongo, postgres, minio s3-api, temporal gRPC, twitter service API on `:8888`) live on the `found-footy-{dev,prod}` bridge network only. The one exception is dev temporal gRPC published on host `7233` for host-side dev clients.
-- **Tailnet identifier**: do NOT commit the FQDN to any tracked file. `.env` is gitignored; `.env.example` uses placeholders. `<base-domain>` is interpolated from `BASE_DOMAIN` at compose time.
-- **Logging**: structured JSON via `src.utils.footy_logging`. Use `from src.utils.footy_logging import log` then `log.info(activity.logger, MODULE, action, msg, **fields)`. Never `print()` outside `worker.py`'s startup banner. The full module/action vocabulary lives in @docs/logging.md.
-- **Code organization**: workflows in `src/workflows/`, activities in `src/activities/` (one file per domain), data adapters in `src/data/` (`mongo_store.py`, `s3_store.py`), shared utilities in `src/utils/`. The browser-automation service lives in `twitter/` as its own Python process inside its own container.
+**Prod at vedanta.systems runs the Python codebase, unchanged.** Every
+match day, the Python worker + twitter pools + scaler are what actually
+process live matches. The Go rebuild will replace this incrementally
+per §13-§14 migration plan; until then, the Python code is the
+system-of-record and its docs describe the running system.
 
-## Documentation and docstrings
+Do NOT delete or refactor the Python code from this branch. The
+`rebuild/go` branch adds new Go code alongside; it doesn't remove
+Python.
 
-This project leans on **three layers of persistence**, each for a different
-kind of knowledge. Default to writing things down — the deep-pass rewrite
-goes better when prior decisions are visible.
+**Python stack summary:**
 
-1. **`docs/`** — frozen, project-wide knowledge. Architecture, decisions,
-   roadmap, operational runbook, audit findings, design proposals. See
-   @docs/README.md for the routing index, intake rules, and the
-   after-session checklist (decisions/todo/discovered-facts/ops/stale-entries/docstrings).
-2. **Code-level docstrings** — *every* Python file gets a module-level
-   docstring; every function, method, and class gets a docstring. Policy
-   below. This is an intentional project-level override of the global
-   "default to no comments" preference — found-footy is doc-heavy by
-   design.
-3. **Per-agent auto-memory** — `~/.claude/projects/<project>/memory/` and
-   analogous paths for other agents. Reserved for *user preferences and
-   collaboration tone*. Project facts do NOT go here; they go in `docs/`
-   (per the global rule in `~/.claude/CLAUDE.md`).
+- **Workers**: Python 3.10 (`python:3.10-slim`), Temporal Python SDK, asyncio. 6 workflows, 42 activities. `docker-compose.prod.yml`.
+- **Application database**: MongoDB 7, 5-collection design — `fixtures_staging` / `fixtures_live` / `fixtures_active` / `fixtures_completed` / `team_aliases`. The Go rebuild moves to Postgres per [`docs/rebuild-plan.md`](./docs/rebuild-plan.md) §3.
+- **Object storage**: MinIO. The Go rebuild moves to Garage per rebuild-plan.md decisions.md 2026-07-01.
+- **Twitter scraping**: Firefox + Selenium in `twitter/`. Cookies persisted; shared between dev + prod (same account).
+- **External LLM**: Qwen3-VL-8B via llama.cpp on `joi` at `http://llama-small.joi`.
+- **Auto-scaler**: Python sidecar watching Temporal queue depth + MongoDB active-goal count.
 
-**Cross-doc linking**: per global AGENTS.md § Cross-doc linking — use markdown `[text](./path.md)` syntax when one doc references another. Link liberally; readers should reach related material in ≤1 hop. No `[[wiki-link]]` style (Obsidian-only, breaks on GitHub).
+**Where to look for Python legacy context:**
 
-### Docstring policy
+- [`README.md`](./README.md) — public-facing project description (Python-oriented)
+- [`docs/architecture.md`](./docs/architecture.md) — 5-collection MongoDB design + workflow hierarchy
+- [`docs/orchestration.md`](./docs/orchestration.md) — event lifecycle state machine, debouncing
+- [`docs/temporal.md`](./docs/temporal.md) — per-activity timeouts, retries, heartbeats
+- [`docs/logging.md`](./docs/logging.md) — Python `footy_logging` reference (Grafana/Loki queries still apply)
+- [`docs/rag.md`](./docs/rag.md) — Wikidata + LLM team-alias pipeline
+- [`docs/twitter-auth.md`](./docs/twitter-auth.md) — browser automation, cookie lifecycle, VNC re-auth
+- [`docs/operations.md`](./docs/operations.md) — Python-era runbook
+- [`docs/decisions.md`](./docs/decisions.md) — append-only architectural decisions log (both eras)
+- [`docs/todo.md`](./docs/todo.md) — Python-era active work + open bugs (largely superseded by rebuild but bugs still real in prod)
+- [`docs/roadmap.md`](./docs/roadmap.md), [`docs/sprints.md`](./docs/sprints.md) — Python-era rewrite plan (partially superseded — Phases 1-4 shipped and are in prod)
+- [`docs/proposals/`](./docs/proposals/) — Python-era feature designs
+- [`deploy/INFRA-NOTES.md`](./deploy/INFRA-NOTES.md) — Caddyfile entries + cross-project network setup
 
-- **Module header** (top of every `.py` file): one short paragraph
-  describing what this file is responsible for. If the file is part of a
-  larger pipeline, mention where it sits.
-- **Functions and methods**: docstring explaining purpose. Include
-  `Args:` / `Returns:` / `Raises:` blocks when they're non-obvious.
-  Single-line is fine for trivial helpers (`"""Return the team's display
-  name."""`); multi-line when invariants, caller contracts, or edge cases
-  matter.
-- **Classes**: docstring explaining the role of the class and any
-  invariants its callers should rely on.
-- **Workflows and activities** (Temporal): docstring should call out the
-  workflow ID convention, the retry semantics, and any signal /
-  start-signal contracts the activity participates in.
-- **Don't paraphrase the function name.** `def get_team_name(): """Get
-  the team name."""` is noise. Docstrings should add what the signature
-  can't.
-- **Do explain WHY when it's non-obvious.** Hidden invariants, prior
-  bugs, broadcaster-CDN quirks, replay-safety constraints — write these
-  down in the docstring, not just in a commit message.
+## Documentation and docstrings (both eras)
 
-When you add or change a substantive function, update the docstring in the
-same commit. The after-session checklist in @docs/README.md includes this
-as step 6.
+Three layers of persistence, each for a different knowledge type:
 
-## Things to check before doing X
+1. **`docs/`** — frozen, project-wide knowledge (architecture, decisions,
+   roadmap, operational runbook, design proposals). See
+   [`docs/README.md`](./docs/README.md) for the Python-era routing
+   index. Go-rebuild-specific per-topic docs live under
+   [`docs/rebuild/`](./docs/rebuild/).
+2. **Code-level docstrings** — every file gets a module-level docstring;
+   every function/method/class gets a docstring. Doc-heavy by design.
+   Applies to both Python and Go. Explain WHY, not WHAT.
+3. **Per-agent auto-memory** — `~/.claude/projects/<project>/memory/`
+   and analogous paths for other agents. Reserved for user preferences
+   and collaboration tone. Project facts do NOT go here — they go in
+   `docs/` (per global rule in `~/.claude/CLAUDE.md`).
 
-- **Adding a new service, hostname, or network**: read @deploy/INFRA-NOTES.md first. Caddyfile entries live in `~/workspace/proxy/caddy/caddy.d/found-footy.caddy`, NOT here. Cross-project dependency is on `vedanta-systems-{dev,prod}-api:3001` reached over `luv-{dev,prod}` — that network must exist.
-- **Touching the Twitter pipeline**: Twitter workflow IDs include the API's `minute` and `extra` fields — `f"twitter-{team}-{player}-{minute_str}-{event_id}"`. If the API updates a goal's reported minute (e.g. 45 → 45+2 as stoppage extends), the workflow ID changes and a fresh Twitter workflow gets started even though the same `event_id` already has one running. **Known suspect for the double-firing bug; see @docs/todo.md before adding new workflow-ID logic.**
-- **Touching `check_twitter_workflow_running`** (`src/activities/monitor.py:700-762`): the gate only treats `RUNNING` and `COMPLETED` as "don't restart". `FAILED` / `TIMED_OUT` / `TERMINATED` / `CANCELED` fall through, so every 30 s monitor cycle re-spawns Twitter if it died once. **Known bug — fix together with the workflow-ID issue above.**
-- **Touching dedup logic** (`src/activities/upload.py`): the S3-comparison loop at line ~614 currently `break`s at the first matching S3 video, so multiple S3 duplicates for the same event aren't collapsed. Design in @docs/proposals/dedup-unification.md.
-- **Touching the perceptual hash code** (`_generate_perceptual_hash` in `download.py`; `_perceptual_hashes_match`/`_dense_hashes_match`/`_hamming_distance` in `upload.py`): the plan is to replace hash-and-Hamming with Qwen3-VL image embeddings + cosine similarity, as part of a broader vision pipeline redesign (@docs/proposals/llm-stack-redesign.md — also moves SOCCER/SCREEN classification to embeddings, leaves only clock OCR on the chat VL model). Avoid investing in the current hash flow unless fixing a bug.
-- **`UploadWorkflow` serialization**: one workflow per event with deterministic ID `upload-{event_id}`. Multiple `DownloadWorkflow`s feed it via `signal-with-start`; signals queue FIFO. Don't introduce parallel uploads per event — the scoped-dedup invariant depends on ordered processing.
-- **AI vision calls** (`validate_video_is_soccer` in `download.py`): the prompt expects a structured JSON response with `SOCCER` / `SCREEN` / `CLOCK` / `ADDED` / `STOPPAGE_CLOCK` fields. The current prompt was recovered from a running prod container (commit `7d5429d`) — don't rewrite without re-validating against `scripts/test_structured_extraction.py`.
-- **Adding a new event type** (Red Card etc.): flip `enabled: True` in `src/utils/event_config.py`, set `scrapeable_details` and `debounce_fields`. Confirm the search-query builder in `event_enhancement.py` handles the new type.
-- **LLM calls**: only inside the Temporal activity that needs them — currently `download.validate_video_is_soccer` (vision) and `rag.get_team_aliases` (text). Endpoint is `LLAMA_URL=http://llama-small.joi`. Verify reachability: `curl $LLAMA_URL/v1/models` before adding new code. Per the host budget in `~/.claude/CLAUDE.md`, the joi LLM has a hard cap of **2 concurrent calls** — throughput drops sharply past that.
-- **Operational rule (load-bearing)**: do NOT `ssh vedanta@joi` from this repo's tooling. joi is a separate node — HTTP queries over the tailnet are fine, shell commands need explicit user approval.
+**Cross-doc linking**: markdown `[text](./path.md)` syntax. No
+`[[wiki-link]]` style.
 
 ## Reference material
 
 - llama.cpp on joi: live model IDs via `curl http://llama-small.joi/v1/models`
 - API-Football: <https://www.api-football.com/documentation-v3> (key in `.env`)
 - Temporal Python SDK: <https://docs.temporal.io/develop/python>
-- Wikidata SPARQL: <https://query.wikidata.org/> (used by the RAG pipeline)
+- Temporal Go SDK: <https://docs.temporal.io/develop/go>
+- Wikidata SPARQL: <https://query.wikidata.org/>
+- pgx v5 docs: <https://pkg.go.dev/github.com/jackc/pgx/v5>
+- testcontainers-go: <https://golang.testcontainers.org/>
 
-## Active state
+## Load-bearing operational rules
 
-- **Pipeline**: working end-to-end in prod. Daily ingest (00:05 UTC) → 30 s monitor → 3-poll goal debounce → Twitter discovery (10 attempts × ~1 min) → download → AI clock validation → scoped dedup → S3 upload → SSE refresh to vedanta-systems.
-- **Auto-scaling**: scaler service runs continuously; both worker and twitter pools sit at 2 replicas when idle and scale up to 8 on Champions League nights.
-- **Caddy migration (recent)**: HTTP services moved off host ports onto Caddy hostnames on the workspace `proxy` network. Per-project Caddyfile at `~/workspace/proxy/caddy/caddy.d/found-footy.caddy`. See `deploy/INFRA-NOTES.md`.
-- **Known bugs** (full list + investigation hooks in @docs/todo.md):
-  - Twitter workflow stuck "extracting" for hours on the 33′ goal in the recent Lazio v Pisa fixture — suspects above.
-  - S3 dedup `break`s at first match instead of collapsing all matching duplicates.
-- **Open feature work** (designs in @docs/proposals/):
-  - LLM stack redesign — image embeddings for dedup + classification, plus a workspace-level LLM gateway for concurrency control. Supersedes the older "qwen-embeddings" scope.
-  - Re-attribution recovery on goal-scorer changes (this branch, `feature/event-matching`).
-  - Geo-restricted broadcaster CDN bypass.
-- **Current branch**: `feature/event-matching` — designing the re-attribution recovery flow. Not yet merged to `main`.
+- **Do NOT `ssh vedanta@joi` from this repo's tooling.** joi is a separate node. HTTP queries over the tailnet are fine; shell commands need explicit user approval.
+- **Do NOT touch prod containers** (`found-footy-prod-*`) without explicit user approval. Prod runs live at vedanta.systems; wrong actions have real user impact.
+- **LLM concurrency cap**: joi enforces 2 concurrent calls; throughput drops sharply past that. Any code that fans out LLM calls needs a semaphore or gateway.
 
 ---
 
