@@ -138,6 +138,40 @@ var (
 	ErrStateTimestampMismatch = errors.New("fixture: state and timestamp fields inconsistent")
 )
 
+// ShouldActivateNow reports whether a staging fixture should be
+// promoted to active because its kickoff is within window (inclusive
+// on the boundary — kickoff exactly at now+window returns true).
+//
+// Two callers share this helper:
+//
+//  1. Ingest activity — at fresh-fixture upsert time. Prevents the
+//     Python-era "manual ingest at 14:55 for 15:00 kickoff sits in
+//     staging until the next 15-min monitor cycle, missing the opening
+//     minutes" bug. If ShouldActivateNow is true, the ingest activity
+//     calls Activate before the first Upsert, so the fixture never
+//     lands in the staging bucket in the DB.
+//
+//  2. Monitor workflow's PreActivateUpcoming step — every cycle, scan
+//     staging fixtures and promote any whose kickoff has crossed into
+//     the window since the last check.
+//
+// Fixtures NOT in staging (already active or completed) return false —
+// only staging is eligible for this transition. The window arg comes
+// from workflow-level config; both callers should pass the same value
+// (typically 30 min).
+//
+// A fixture whose kickoff is in the past also returns true: a delayed
+// manual ingest still needs to be caught up. If the API meanwhile
+// reports the match as already live, the monitor's separate
+// "emergency activation" trigger (APIStatus.Live() on a staging row)
+// catches that case.
+func (f *Fixture) ShouldActivateNow(now time.Time, window time.Duration) bool {
+	if f.State != StateStaging {
+		return false
+	}
+	return !f.Kickoff.After(now.Add(window))
+}
+
 // ValidateInvariants checks the state ↔ timestamp rules that mirror the
 // SQL CHECK constraint on the fixtures table. Returns nil when the
 // fixture is consistent.

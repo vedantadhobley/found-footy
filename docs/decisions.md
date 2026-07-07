@@ -6,6 +6,52 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-07 — Fixture activation triggers + staging-poll design
+
+**Fixture activation** (staging → active) fires from three triggers,
+all routed through the same `Fixture.Activate(at)` primitive:
+
+1. **Ingest-time pre-activation.** At upsert time, if
+   `f.ShouldActivateNow(now, 30min)` is true, the ingest activity
+   calls Activate BEFORE the first `repo.Upsert`. The fixture never
+   lands in staging in the DB. Fixes the 2026-05 Python-era bug
+   where manual ingest at 14:55 for a 15:00 kickoff sat in staging
+   until the next 15-min monitor cycle.
+2. **Monitor pre-activation.** `MonitorWorkflow`'s
+   `PreActivateUpcoming(30min)` activity scans staging fixtures every
+   30 seconds and promotes any that ShouldActivateNow returns true
+   for. Uses the same helper as (1) so the rule stays one place.
+3. **Emergency activation.** If the monitor's API response for a
+   staging fixture shows `APIStatus.Live()`, promote immediately
+   (already-live match wasn't caught by pre-activation because
+   ingest had the wrong kickoff or the API published a corrected
+   one). Same `Activate(now)` transition.
+
+**Staging-poll design.** The plan §5.2 as-drafted skipped the
+Python-era 15-minute staging API poll, meaning postponements +
+kickoff changes on staging fixtures would go undetected until the
+fixture activated (which may never happen if the new kickoff is far
+out). This was already noted in [`docs/todo.md`](./todo.md) as a
+deferred Go-rebuild item after the 2026-07-05 Mexico vs England
+postponement surfaced the gap.
+
+Decision for Phase O's MonitorWorkflow: **mirror Python's approach.**
+Every 30-second cycle:
+
+- Always: `PreActivateUpcoming(30min)` (DB-only check, no API call)
+- Always: fetch API status for active fixtures
+- **On 15-min aligned boundaries** (`:00 / :15 / :30 / :45`): also
+  fetch API status for staging fixtures whose `LastPolledAt` doesn't
+  match the current 15-min interval. Detects postponements,
+  kickoff changes, status-flipped-to-live. Per-fixture skip keeps
+  the total API burn near-zero when nothing's changing.
+
+The alignment logic is a monitor-workflow concern (schedule decision,
+not domain), so it doesn't touch the fixture domain package. What
+domain does provide: `ShouldActivateNow`, `APIStatus.Live()`,
+`Activate`. Those three primitives compose to cover all three
+triggers.
+
 ## 2026-07-07 — Workflow renames for Phase O
 
 The Go rebuild renames three of the six Python-era Temporal workflows.

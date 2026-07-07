@@ -260,6 +260,70 @@ func TestUpdateFromPoll_NilScore_LeavesExistingScore(t *testing.T) {
 	}
 }
 
+// ShouldActivateNow ------------------------------------------------
+
+func TestShouldActivateNow_KickoffFarAway_False(t *testing.T) {
+	f := makeStaging() // kickoff is 2026-07-08 15:00 UTC
+	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC) // 5h before kickoff
+	if f.ShouldActivateNow(now, 30*time.Minute) {
+		t.Error("kickoff 5h out with 30min window should not activate")
+	}
+}
+
+func TestShouldActivateNow_KickoffWithinWindow_True(t *testing.T) {
+	f := makeStaging()                                     // kickoff at 15:00
+	now := time.Date(2026, 7, 8, 14, 45, 0, 0, time.UTC)   // 15 min before
+	if !f.ShouldActivateNow(now, 30*time.Minute) {
+		t.Error("kickoff 15min out with 30min window should activate")
+	}
+}
+
+func TestShouldActivateNow_KickoffAtBoundary_True(t *testing.T) {
+	f := makeStaging()                                     // kickoff at 15:00
+	now := time.Date(2026, 7, 8, 14, 30, 0, 0, time.UTC)   // exactly 30min before
+	if !f.ShouldActivateNow(now, 30*time.Minute) {
+		t.Error("kickoff at exact window boundary should activate (inclusive)")
+	}
+}
+
+func TestShouldActivateNow_KickoffJustOutsideBoundary_False(t *testing.T) {
+	f := makeStaging()                                                    // kickoff at 15:00
+	now := time.Date(2026, 7, 8, 14, 29, 59, 999_999_999, time.UTC)       // 30min + 1ns out
+	if f.ShouldActivateNow(now, 30*time.Minute) {
+		t.Error("kickoff 1ns outside boundary should not activate")
+	}
+}
+
+func TestShouldActivateNow_KickoffInPast_True(t *testing.T) {
+	f := makeStaging()                                     // kickoff at 15:00
+	now := time.Date(2026, 7, 8, 15, 5, 0, 0, time.UTC)    // 5min AFTER kickoff (delayed ingest)
+	if !f.ShouldActivateNow(now, 30*time.Minute) {
+		t.Error("kickoff already past should activate (delayed manual ingest catches up)")
+	}
+}
+
+func TestShouldActivateNow_AlreadyActive_False(t *testing.T) {
+	f := makeStaging()
+	at := time.Date(2026, 7, 8, 14, 45, 0, 0, time.UTC)
+	mustActivate(t, f, at)
+	// Even with kickoff imminent, an already-active fixture is ineligible.
+	if f.ShouldActivateNow(at, 30*time.Minute) {
+		t.Error("active fixture should never re-activate via ShouldActivateNow")
+	}
+}
+
+func TestShouldActivateNow_Completed_False(t *testing.T) {
+	f := makeStaging()
+	at := time.Date(2026, 7, 8, 14, 45, 0, 0, time.UTC)
+	mustActivate(t, f, at)
+	if err := f.Complete(at.Add(2 * time.Hour)); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if f.ShouldActivateNow(at, 30*time.Minute) {
+		t.Error("completed fixture should never re-activate")
+	}
+}
+
 // Invariant validator ---------------------------------------------
 
 func TestValidateInvariants_CatchesInconsistentTimestamps(t *testing.T) {
