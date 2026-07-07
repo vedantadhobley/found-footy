@@ -104,7 +104,6 @@ func Run(binary, gitSHA, builtAt string, work Work) {
 		logging.String("binary", binary),
 		logging.String("log_level", cfg.Observability.LogLevel),
 		logging.String("log_format", cfg.Observability.LogFormat),
-		logging.Bool("loki_enabled", cfg.Observability.LokiEnabled),
 	)
 
 	// Metrics HTTP listener. Runs on a goroutine so signal handling
@@ -167,16 +166,15 @@ func Run(binary, gitSHA, builtAt string, work Work) {
 		)
 	}
 
-	// Drain any listener error the goroutine posted.
-	select {
-	case err := <-metricsErrCh:
-		if err != nil {
-			log.Emit(ctx, logging.LevelError, vocabulary.ModuleDeploy, vocabulary.ActionShutdown,
-				"metrics listener error",
-				logging.Err(err),
-			)
-		}
-	default:
+	// Drain the listener error the goroutine posts. Shutdown blocks
+	// until the listener returns per net/http contract, so the channel
+	// read completes promptly — no default branch needed (which would
+	// have orphaned a real error on the fast path).
+	if err := <-metricsErrCh; err != nil {
+		log.Emit(ctx, logging.LevelError, vocabulary.ModuleDeploy, vocabulary.ActionShutdown,
+			"metrics listener error",
+			logging.Err(err),
+		)
 	}
 
 	if workErr != nil {

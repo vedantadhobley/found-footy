@@ -6950,7 +6950,7 @@ const (
 
     // Cross-cutting
     ModuleAPI        Module = "api"
-    ModuleAPI_SSE    Module = "api_sse"
+    ModuleAPISSE     Module = "api_sse"
     ModuleWebhookDelivery Module = "webhook_delivery"
     ModuleScaler     Module = "scaler"
     ModuleWorker     Module = "worker"       // bootstrap
