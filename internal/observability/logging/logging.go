@@ -136,6 +136,20 @@ func (e *slogEmitter) Emit(
 	msg string,
 	fields ...Field,
 ) {
+	// Runtime vocabulary check — the compile-time enum blocks most
+	// typos, but code that builds a Module or Action from a string
+	// variable can still leak. A stray value would show up in Loki as
+	// an un-indexed module label; catch it here and surface it
+	// directly to stderr instead. We never DROP the emission — the
+	// logger keeps writing so operators still see the payload, they
+	// just also learn about the vocabulary miss.
+	if !vocabulary.IsKnownModule(module) {
+		_, _ = os.Stderr.WriteString("logging: unknown module " + string(module) + " emitted with action " + string(action) + "\n")
+	}
+	if !vocabulary.IsKnownAction(action) {
+		_, _ = os.Stderr.WriteString("logging: unknown action " + string(action) + " emitted from module " + string(module) + "\n")
+	}
+
 	attrs := make([]slog.Attr, 0, 2+len(fields))
 	attrs = append(attrs,
 		slog.String("module", string(module)),

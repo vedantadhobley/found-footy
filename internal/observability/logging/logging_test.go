@@ -189,6 +189,27 @@ func TestEmit_NilRegistryNoPanic(t *testing.T) {
 	}
 }
 
+// TestEmit_UnknownModuleWarns exists mainly to guard against the check
+// being deleted — an unknown Module is a caller mistake that should
+// surface (via stderr, not the JSON log stream) rather than silently
+// pollute a Loki label. We can't easily assert on the stderr write from
+// inside the test, so we assert the emission itself still lands
+// (behavior: never DROP an emission just because vocab was wrong).
+func TestEmit_UnknownModuleAndActionStillEmit(t *testing.T) {
+	var buf bytes.Buffer
+	e := newWithWriter(config.ObservabilityConfig{LogLevel: "INFO", LogFormat: "json"}, &buf, nil)
+
+	// Simulate a caller casting a stray string into a Module + Action.
+	e.Emit(context.Background(), LevelInfo, vocabulary.Module("mystery"), vocabulary.Action("bogus_action"), "still logs")
+
+	if !strings.Contains(buf.String(), "still logs") {
+		t.Errorf("emission should still land even with unknown vocab; got: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"module":"mystery"`) {
+		t.Errorf("emission should carry the unknown module label; got: %q", buf.String())
+	}
+}
+
 func TestTestEmitter_HasAction(t *testing.T) {
 	te := &TestEmitter{}
 	te.Emit(context.Background(), LevelInfo, vocabulary.ModuleDeploy, vocabulary.ActionStartup, "hi")
