@@ -29,6 +29,63 @@ update is treated as incomplete — same status as one missing tests.
 
 ---
 
+## 2026-07-07 — Doc retro closure
+
+Sixth and final commit in the retrospective doc-fill sweep that began
+after realizing S1–O1d shipped without living-doc updates.
+
+**What got done (6 commits over ~2 hours):**
+
+1. `docs/rebuild/architecture.md` — filled with as-shipped tree,
+   per-package status, adapter template.
+2. `docs/rebuild/orchestration.md` — filled with workflow inventory
+   + IngestWorkflow ledger.
+3. `docs/rebuild/observability.md` + `logging.md` — filled with
+   four-pillars status + vocabulary + Emit reference. (Note: first
+   attempt at this had a broken commit — Write failed silently,
+   commit message lied; caught + fixed in follow-up.)
+4. `docs/rebuild/temporal.md` — filled with Client/Worker shape +
+   registration flow.
+5. `docs/rebuild/testing.md` + touched-up `deployment.md` — filled
+   test tier ledger.
+6. `CLAUDE.md` phase table + `docs/rebuild/README.md` status +
+   this closure entry.
+
+**Divergences logged in this sweep (5 groups):**
+
+- Working rule (this rule)
+- Architecture divergences from plan §2 (7 items: migrations empty,
+  bootstrap added, 4 internal/ packages stubbed, 4 domain packages
+  stubbed)
+- IngestWorkflow divergences from plan §5 W1 (6 items — 3 sanctioned,
+  3 silent, 3 slated for realignment in O1e)
+- Log-catalog generator §11.3 deferred (rationale: grep is still
+  ergonomic at ~50 actions)
+- Temporal adapter divergences from plan §9 (5 items — 4 kept as
+  improvements, 1 sensible addition)
+
+**Stubs NOT filled** (deferred with rationale, not omissions):
+- `docs/rebuild/api-contract.md` — Phase A hasn't shipped; nothing
+  to ledger yet.
+- `docs/rebuild/operations.md` — Phase M/C bring-up procedures
+  aren't real yet.
+
+**What resumes:** Phase O2 planning (MonitorWorkflow) — but only
+after O1e realignment commits fix the input/output-shape divergences
+from plan §5 W1 that this retro surfaced. Order:
+
+1. **O1e/a**: Realign IngestWorkflow input to plan shape
+   (ManualDate + ManualFixtureIDs + RetentionDays) — with tests +
+   scripts/trigger_ingest update + doc update.
+2. **O1e/b**: Realign IngestWorkflow output to include Errors []string.
+3. **O1e/c**: Register daily Temporal Schedule for IngestWorkflow.
+4. **Only then**: O2 begins.
+
+Retro complete. Living-doc-with-code discipline stands as the working
+rule going forward.
+
+---
+
 ## 2026-07-07 — Temporal adapter divergences from plan §9
 
 Three divergences between `internal/infra/temporal/` (shipped in S5)
