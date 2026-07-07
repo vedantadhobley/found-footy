@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/vedantadhobley/found-footy/internal/config"
+	"github.com/vedantadhobley/found-footy/internal/observability/metrics"
 	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 )
 
@@ -83,20 +84,29 @@ func ParseLevel(s string) Level {
 
 // slogEmitter is the real Emitter. Wraps *slog.Logger to enforce
 // vocabulary types + inject standard attributes on every emission.
+//
+// Optionally holds a reference to the metrics.Registry so every Emit
+// increments the baseline log_lines_total + calls_total counters —
+// the "metrics come from the same emissions as logs" principle from
+// rebuild-plan.md §11. A nil registry (for standalone tests) skips
+// the metric increments; log output is unaffected.
 type slogEmitter struct {
-	logger *slog.Logger
+	logger  *slog.Logger
+	metrics *metrics.Registry
 }
 
-// New returns an Emitter configured per cfg. Writes to os.Stdout
-// (which Promtail scrapes when LOKI_ENABLED is true; humans read
-// during dev).
-func New(cfg config.ObservabilityConfig) Emitter {
-	return newWithWriter(cfg, os.Stdout)
+// New returns an Emitter configured per cfg. Writes to os.Stdout (which
+// Promtail scrapes when LOKI_ENABLED is true; humans read during dev).
+// If m is non-nil, every Emit also increments the baseline calls_total
+// and log_lines_total counters registered on it.
+func New(cfg config.ObservabilityConfig, m *metrics.Registry) Emitter {
+	return newWithWriter(cfg, os.Stdout, m)
 }
 
 // newWithWriter is the injectable form used by tests. Writes go to w
-// instead of os.Stdout.
-func newWithWriter(cfg config.ObservabilityConfig, w io.Writer) Emitter {
+// instead of os.Stdout. m may be nil for tests that don't care about
+// counter side-effects.
+func newWithWriter(cfg config.ObservabilityConfig, w io.Writer, m *metrics.Registry) Emitter {
 	level := ParseLevel(cfg.LogLevel)
 	handlerOpts := &slog.HandlerOptions{
 		Level: slog.Level(level),
@@ -110,7 +120,7 @@ func newWithWriter(cfg config.ObservabilityConfig, w io.Writer) Emitter {
 		handler = slog.NewJSONHandler(w, handlerOpts)
 	}
 
-	return &slogEmitter{logger: slog.New(handler)}
+	return &slogEmitter{logger: slog.New(handler), metrics: m}
 }
 
 // Emit writes one log entry via the underlying slog.Logger.
@@ -135,6 +145,62 @@ func (e *slogEmitter) Emit(
 		attrs = append(attrs, slog.Any(f.Key, f.Value))
 	}
 	e.logger.LogAttrs(ctx, slog.Level(level), msg, attrs...)
+
+	// Baseline metric emission — §11 four-pillars principle: metrics
+	// come from the same emissions as logs. Both counters share the
+	// module label with the log line; log_lines_total keeps cardinality
+	// tiny (module × level), calls_total adds action + outcome + a
+	// caller-supplied error_class for failure-mode aggregation.
+	if e.metrics != nil {
+		e.metrics.LogLinesTotal.WithLabelValues(string(module), levelName(level)).Inc()
+		outcome := outcomeFromLevel(level)
+		errorClass := extractErrorClass(fields)
+		e.metrics.CallsTotal.WithLabelValues(string(module), string(action), outcome, errorClass).Inc()
+	}
+}
+
+// levelName returns the canonical string form of a Level for the
+// log_lines_total{level} label. Matches slog's stringification.
+func levelName(l Level) string {
+	switch l {
+	case LevelDebug:
+		return "DEBUG"
+	case LevelInfo:
+		return "INFO"
+	case LevelWarn:
+		return "WARN"
+	case LevelError:
+		return "ERROR"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// outcomeFromLevel maps the log severity to the calls_total{outcome}
+// label. WARN + ERROR count as failure; everything else counts as
+// success. This matches the "structured errors = ERROR-level emission"
+// convention adapters follow.
+func outcomeFromLevel(l Level) string {
+	if l >= LevelWarn {
+		return "failure"
+	}
+	return "success"
+}
+
+// extractErrorClass returns the value of a field with key "error_class"
+// as a string, or "" if none is present. Adapters attach this field on
+// failure emissions to name the typed error class ("pg.pool_lost",
+// "nats.timeout", etc.) so dashboards can slice by failure mode
+// without per-error metric families.
+func extractErrorClass(fields []Field) string {
+	for _, f := range fields {
+		if f.Key == "error_class" {
+			if s, ok := f.Value.(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // ── Field constructors ──────────────────────────────────────────

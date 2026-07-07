@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/vedantadhobley/found-footy/internal/config"
+	"github.com/vedantadhobley/found-footy/internal/observability/metrics"
 	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 )
 
@@ -38,7 +42,7 @@ func TestEmit_JSON_ContainsStandardFields(t *testing.T) {
 	e := newWithWriter(config.ObservabilityConfig{
 		LogLevel:  "INFO",
 		LogFormat: "json",
-	}, &buf)
+	}, &buf, nil)
 
 	e.Emit(context.Background(), LevelInfo, vocabulary.ModuleDeploy, vocabulary.ActionStartup,
 		"binary starting",
@@ -85,7 +89,7 @@ func TestEmit_TextFormat(t *testing.T) {
 	e := newWithWriter(config.ObservabilityConfig{
 		LogLevel:  "INFO",
 		LogFormat: "text",
-	}, &buf)
+	}, &buf, nil)
 
 	e.Emit(context.Background(), LevelInfo, vocabulary.ModuleDeploy, vocabulary.ActionStartup, "hi")
 
@@ -103,7 +107,7 @@ func TestEmit_RespectsLevel(t *testing.T) {
 	e := newWithWriter(config.ObservabilityConfig{
 		LogLevel:  "WARN", // debug + info suppressed
 		LogFormat: "json",
-	}, &buf)
+	}, &buf, nil)
 
 	e.Emit(context.Background(), LevelDebug, vocabulary.ModuleDeploy, vocabulary.ActionStartup, "debug msg")
 	e.Emit(context.Background(), LevelInfo, vocabulary.ModuleDeploy, vocabulary.ActionStartup, "info msg")
@@ -130,6 +134,58 @@ func TestErrHelper_NilAndReal(t *testing.T) {
 	realField := Err(context.Canceled)
 	if realField.Key != "error" || realField.Value != "context canceled" {
 		t.Errorf("Err(context.Canceled) = %+v, want Value='context canceled'", realField)
+	}
+}
+
+// TestEmit_BaselineMetricsIncrement verifies the §11 four-pillars
+// promise: every Emit that reaches slogEmitter also increments
+// log_lines_total{module,level} + calls_total{module,action,outcome,
+// error_class}. Success outcome derived from DEBUG/INFO level; failure
+// from WARN/ERROR. error_class extracted from a Field with key
+// "error_class".
+func TestEmit_BaselineMetricsIncrement(t *testing.T) {
+	var buf bytes.Buffer
+	reg := metrics.New()
+	e := newWithWriter(config.ObservabilityConfig{
+		LogLevel:  "DEBUG",
+		LogFormat: "json",
+	}, &buf, reg)
+
+	e.Emit(context.Background(), LevelInfo, vocabulary.ModuleDeploy, vocabulary.ActionStartup, "hi")
+	e.Emit(context.Background(), LevelInfo, vocabulary.ModuleDeploy, vocabulary.ActionStartup, "hi again")
+	e.Emit(context.Background(), LevelError, vocabulary.ModuleInfraPG, vocabulary.ActionQueryFailed,
+		"query blew up", String("error_class", "pg.timeout"))
+
+	// Scrape the registry to inspect resulting series.
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	reg.Handler().ServeHTTP(w, req)
+	body, _ := io.ReadAll(w.Result().Body)
+	scrape := string(body)
+
+	wantContains := []string{
+		`found_footy_log_lines_total{level="INFO",module="deploy"} 2`,
+		`found_footy_log_lines_total{level="ERROR",module="infra_pg"} 1`,
+		`found_footy_calls_total{action="startup",error_class="",module="deploy",outcome="success"} 2`,
+		`found_footy_calls_total{action="query_failed",error_class="pg.timeout",module="infra_pg",outcome="failure"} 1`,
+	}
+	for _, want := range wantContains {
+		if !strings.Contains(scrape, want) {
+			t.Errorf("scrape missing %q; got:\n%s", want, scrape)
+		}
+	}
+}
+
+// TestEmit_NilRegistryNoPanic ensures the metric-side-effect is
+// optional — a logger constructed without a registry still writes
+// logs, just skips the counter increment.
+func TestEmit_NilRegistryNoPanic(t *testing.T) {
+	var buf bytes.Buffer
+	e := newWithWriter(config.ObservabilityConfig{LogLevel: "INFO", LogFormat: "json"}, &buf, nil)
+
+	e.Emit(context.Background(), LevelInfo, vocabulary.ModuleDeploy, vocabulary.ActionStartup, "hi")
+	if buf.Len() == 0 {
+		t.Error("nil-registry emitter still needs to write logs")
 	}
 }
 
