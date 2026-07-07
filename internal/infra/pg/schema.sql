@@ -134,7 +134,16 @@ CREATE TABLE events (
 
     -- Our enhancement fields
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    monitor_complete BOOLEAN NOT NULL DEFAULT FALSE,        -- 3-poll debounce passed
+    -- Symmetric debounce counter (0..3). Insert seeds it to 1.
+    -- Presence votes increment (cap 3). Absence votes decrement (floor 0).
+    -- On first crossing of 3: downstream_triggered flips TRUE (one-way).
+    -- On hitting 0: event auto-removed (soft-delete) — see removed below.
+    debounce_count INT NOT NULL DEFAULT 1
+        CHECK (debounce_count BETWEEN 0 AND 3),
+    downstream_triggered BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Legacy monitor_complete kept for backward compat during transition;
+    -- downstream_triggered is the authoritative signal going forward.
+    monitor_complete BOOLEAN NOT NULL DEFAULT FALSE,
     download_complete BOOLEAN NOT NULL DEFAULT FALSE,       -- 10 download attempts fired
     removed BOOLEAN NOT NULL DEFAULT FALSE,
     removed_reason removal_reason,

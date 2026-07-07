@@ -98,8 +98,22 @@ type Event struct {
 	Minute int
 	Extra  *int
 
-	FirstSeenAt      time.Time
-	MonitorComplete  bool // 3-poll debounce passed
+	FirstSeenAt time.Time
+
+	// Symmetric debounce counter, 0..3. Seeded to 1 on Insert.
+	// RegisterEventPresence increments (cap 3). RegisterEventAbsence
+	// decrements (floor 0). On hitting 0 the repo atomically soft-
+	// deletes (sets Removed + RemovedReason + RemovedAt).
+	DebounceCount int
+	// DownstreamTriggered flips FALSE→TRUE exactly once, the moment
+	// DebounceCount first reaches 3. Never flipped back — the workflows
+	// it spawns run to their own completion regardless of subsequent
+	// debounce oscillation.
+	DownstreamTriggered bool
+
+	// Legacy monitor_complete — kept during the O2 transition. New
+	// callers use DownstreamTriggered.
+	MonitorComplete  bool
 	DownloadComplete bool // 10 download workflows registered
 	Removed          bool
 	RemovedReason    *RemovalReason

@@ -130,12 +130,16 @@ Core type `event.Event` with `State` (detected/stable/removed) and
 per-event debounce counters. Model captures the 3-poll invariant
 Python enforced via monitor-cycle registration counts.
 
-Repo methods shipped in `internal/infra/pg/event_repo.go` (O2 fix 3a):
-`Get`, `GetByNaturalKey`, `Insert`, `Upsert` (state updates),
-`ListPending`. Debounce methods (`RegisterMonitorWorkflow`,
-`RegisterDropWorkflow`, `RegisterVideoValidationWorkflow`) land in
-fix 3b. Delete-drops-on-presence + soft-delete helper additions land
-in fix 3c.
+Repo methods shipped in `internal/infra/pg/event_repo.go`:
+`Get`, `GetByNaturalKey`, `Insert(ctx, e, workflowID)` — atomic seed
+with debounce_count=1 + first presence vote,
+`Upsert` (state updates), `ListPending`,
+`RegisterEventPresence` (symmetric-counter increment, cap 3, flips
+downstream_triggered on first hit), `RegisterEventAbsence`
+(decrement, floor 0, atomic soft-delete on hitZero with reason='var'),
+`RegisterVideoValidationWorkflow` (monotonic download attempt
+counter — unchanged by the debounce redesign). Debounce model per
+decisions.md 2026-07-07 symmetric-counter entry.
 
 ### video domain (D3)
 
