@@ -35,8 +35,20 @@ type Worker struct {
 //
 // options carries per-worker tunables (MaxConcurrentActivities,
 // MaxConcurrentWorkflowTasks, etc.). Zero-value options is safe; the
-// SDK picks reasonable defaults.
+// SDK picks reasonable defaults for most fields.
+//
+// One exception: if options.WorkerStopTimeout is 0, NewWorker seeds it
+// from the Client's WorkerShutdownTimeout (populated from
+// TemporalConfig at NewClient time — env TEMPORAL_WORKER_SHUTDOWN_TIMEOUT,
+// default 60s). The bootstrap Closer registry hardcodes a 10s bounded
+// context for every closer, but the SDK's Worker.Stop() ignores that
+// context and honors its own WorkerStopTimeout instead — so the
+// grace-drain deadline has to live here or long-running video-validation
+// activities get force-killed after 10s regardless of config.
 func NewWorker(c *Client, ins *Instruments, options worker.Options) *Worker {
+	if options.WorkerStopTimeout == 0 && c.WorkerShutdownTimeout() > 0 {
+		options.WorkerStopTimeout = c.WorkerShutdownTimeout()
+	}
 	w := worker.New(c.Client, c.TaskQueue(), options)
 	return &Worker{
 		Worker:  w,
@@ -71,14 +83,12 @@ func (w *Worker) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop drains in-flight activities and shuts the worker down. Bounded
-// by the caller's context — bootstrap.RegisterCloser passes a context
-// timed out at cfg.WorkerShutdownTimeout so long-running activities
-// don't hold the binary open forever.
-//
-// The SDK's Stop blocks until drain completes; if the caller's context
-// cancels first, the SDK's InterruptCh path kicks in and force-stops
-// remaining activities.
+// Stop drains in-flight activities and shuts the worker down. The
+// grace-drain deadline is honored by the SDK internally via the
+// WorkerStopTimeout option NewWorker set from the Client's
+// WorkerShutdownTimeout. Bootstrap's Closer registry ctx doesn't
+// participate — the SDK's Stop() blocks until drain completes or its
+// own timeout fires.
 func (w *Worker) Stop() {
 	w.Worker.Stop()
 	w.ins.emitEvent(context.Background(), logging.LevelInfo,

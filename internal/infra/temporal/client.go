@@ -29,9 +29,10 @@ import (
 // the embedded interface.
 type Client struct {
 	client.Client
-	ins       *Instruments
-	namespace string
-	taskQueue string
+	ins                   *Instruments
+	namespace             string
+	taskQueue             string
+	workerShutdownTimeout time.Duration
 }
 
 // NewClient dials the Temporal frontend, verifies connectivity via a
@@ -90,10 +91,11 @@ func NewClient(ctx context.Context, cfg config.TemporalConfig, ins *Instruments)
 	)
 
 	return &Client{
-		Client:    c,
-		ins:       ins,
-		namespace: cfg.Namespace,
-		taskQueue: cfg.TaskQueue,
+		Client:                c,
+		ins:                   ins,
+		namespace:             cfg.Namespace,
+		taskQueue:             cfg.TaskQueue,
+		workerShutdownTimeout: cfg.WorkerShutdownTimeout,
 	}, nil
 }
 
@@ -106,6 +108,14 @@ func (c *Client) Namespace() string { return c.namespace }
 // this when constructing StartWorkflowOptions where the queue isn't
 // otherwise passed in.
 func (c *Client) TaskQueue() string { return c.taskQueue }
+
+// WorkerShutdownTimeout returns the graceful-drain deadline the SDK
+// Worker will honor on Stop(). NewWorker reads this to seed
+// Options.WorkerStopTimeout when the caller didn't set one — matters
+// because the bootstrap Closer registry passes a shorter (10s)
+// bounded context that the SDK's Stop() ignores, so the drain
+// deadline has to live on the Worker itself.
+func (c *Client) WorkerShutdownTimeout() time.Duration { return c.workerShutdownTimeout }
 
 // StartWorkflow wraps client.ExecuteWorkflow with metric + log
 // instrumentation. Same signature as the SDK method; the wrapper adds
