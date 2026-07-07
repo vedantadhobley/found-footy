@@ -157,6 +157,15 @@ func (c *Client) StartWorkflow(
 	return run, nil
 }
 
+// ScheduleClient returns the SDK's ScheduleClient handle so callers
+// can create / describe / update Temporal Schedules. Not wrapped with
+// per-op instrumentation — schedule ops are rare (typically one-shot
+// at worker startup); if that changes we can add a Schedule wrapper
+// with metric hooks. Callers are responsible for handling
+// temporal.ErrScheduleAlreadyRunning as an expected outcome, not an
+// error, on re-startup after the schedule was already created.
+func (c *Client) ScheduleClient() client.ScheduleClient { return c.Client.ScheduleClient() }
+
 // SignalWorkflow wraps client.SignalWorkflow with metric + log
 // instrumentation.
 func (c *Client) SignalWorkflow(

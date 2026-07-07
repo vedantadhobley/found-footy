@@ -175,17 +175,48 @@ Workflow-level: `testsuite.WorkflowTestSuite` via testify mock —
 see [orchestration.md § Testing shape](./orchestration.md#testing-shape)
 for the ingest pattern.
 
-## Schedule registration — NOT YET WIRED
+## Schedule registration
 
-Plan §5 W1 says IngestWorkflow runs on schedule `5 0 * * *` (daily
-00:05 UTC). MonitorWorkflow says `*/30 * * * * *` (every 30s).
-**Neither schedule is registered in `cmd/worker/main.go` today.**
-Workflows only fire from manual triggers (`scripts/trigger_ingest`).
+**IngestWorkflow** — daily 00:05 UTC. Wired in `cmd/worker/main.go`
+via `ensureIngestSchedule` (O1e/b). Pattern:
 
-Landing schedule registration is an O1e task before MonitorWorkflow
-work begins in O2 (needs the same scheduler wiring). Follows the
-`client.CreateSchedule` pattern from the Python-era
-`archive/src/worker.py` — same shape, Go SDK equivalent.
+```go
+_, err := tempClient.ScheduleClient().Create(ctx, client.ScheduleOptions{
+    ID: "ingest-scheduled-daily",
+    Spec: client.ScheduleSpec{
+        CronExpressions: []string{"5 0 * * *"},
+    },
+    Action: &client.ScheduleWorkflowAction{
+        Workflow:  ffwf.IngestWorkflow,
+        TaskQueue: tempClient.TaskQueue(),
+        Args:      []any{ffwf.IngestWorkflowInput{RetentionDays: 14}},
+    },
+    Overlap: enums.SCHEDULE_OVERLAP_POLICY_SKIP,
+})
+if errors.Is(err, sdktemporal.ErrScheduleAlreadyRunning) {
+    // Expected on re-startup; treat as success.
+}
+```
+
+Load-bearing details:
+- **Idempotent by design.** ErrScheduleAlreadyRunning is caught +
+  logged as `temporal_schedule_already_exists` (not an error). Every
+  worker restart hits this after the first successful create.
+- **Doesn't overwrite manual updates.** If an operator runs
+  `temporal schedule update ingest-scheduled-daily ...` to tune the
+  cron or args, the startup code sees ErrScheduleAlreadyRunning and
+  leaves it alone.
+- **Overlap = SKIP.** If a prior IngestWorkflow run is still
+  executing (unusual — ingest is fast, but a Postgres stall could
+  cause it), skip the next scheduled run rather than double-firing.
+
+**Adapter surface added for this:**
+`Client.ScheduleClient() client.ScheduleClient` — passthrough to the
+SDK's ScheduleClient. Not per-op instrumented; schedule ops are rare.
+If Monitor/Discovery add many schedules, wrap.
+
+**MonitorWorkflow, DiscoveryWorkflow, etc.** — future schedules
+follow the same pattern.
 
 ## Cross-refs
 

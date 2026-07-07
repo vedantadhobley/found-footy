@@ -6,6 +6,75 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-07 — O1e complete — schedule registered + all §5 W1 divergences realigned
+
+Closes the O1e sequence started after the retro. All six IngestWorkflow
+divergences from plan §5 W1 (see
+[original entry](#2026-07-07--ingestworkflow-divergences-from-plan-5-w1))
+are now either fixed or explicitly kept-with-rationale.
+
+**O1e/b — daily Temporal Schedule wired.** `cmd/worker/main.go`
+`ensureIngestSchedule` runs on worker startup and registers the
+schedule if it doesn't exist. Schedule ID
+`ingest-scheduled-daily`; cron `5 0 * * *` (00:05 UTC); overlap
+policy SKIP; args `IngestWorkflowInput{RetentionDays: 14}` (plan
+§5 W1 default).
+
+Idempotent: `ErrScheduleAlreadyRunning` on subsequent restarts is
+caught + logged as an "already exists" outcome (new vocabulary
+action `temporal_schedule_already_exists`) rather than an error.
+Manual updates via `temporal schedule update` are safe.
+
+Verified live in dev:
+  ✓ Schedule created on first startup after deletion
+    (log: temporal_schedule_created)
+  ✓ Schedule "already registered" on restart
+    (log: temporal_schedule_already_exists)
+  ✓ `temporal schedule list` shows next run 8h from now with the
+    expected cron
+
+**Adapter changes:**
+- `internal/infra/temporal/client.go`:
+  `Client.ScheduleClient() client.ScheduleClient` — passthrough
+  accessor to the SDK's ScheduleClient. Not per-op instrumented
+  (schedule ops are rare).
+- `internal/observability/vocabulary/actions_infra_temporal.go`:
+  three new actions — `temporal_schedule_created`,
+  `temporal_schedule_already_exists`, `temporal_schedule_failed`.
+
+**Final status of the original 6 divergences from
+[2026-07-07 IngestWorkflow entry](#2026-07-07--ingestworkflow-divergences-from-plan-5-w1):**
+
+| # | Divergence | Resolution |
+|---|---|---|
+| 1 | Input shape | Realigned in O1e/a (fixed) |
+| 2 | Output shape (Errors []string) | Realigned in pre-O1e cleanup batch (fixed) |
+| 3 | ListUniqueTeamsFromFixtures inlined | Kept — defensible improvement |
+| 4 | RAG deferral (PreCacheAliasesBatch → placeholder) | Kept — user-approved deferral |
+| 5 | ManualFixtureIDs missing | Fixed as part of O1e/a |
+| 6 | ActivationWindow added | Kept — user-approved addition |
+
+**Doc updates in same commit** per working rule:
+- `docs/rebuild/deployment.md` — replaces "Workflow scheduling — NOT
+  WIRED" section with the wired-and-verified pattern
+- `docs/rebuild/temporal.md` — replaces "Schedule registration —
+  NOT YET WIRED" with the actual pattern + load-bearing invariants
+  (idempotency, no-overwrite, overlap SKIP)
+
+**Files:**
+- `cmd/worker/main.go` — `ensureIngestSchedule` + imports
+- `internal/infra/temporal/client.go` — ScheduleClient accessor
+- `internal/observability/vocabulary/actions_infra_temporal.go` — 3
+  new actions
+- `docs/rebuild/deployment.md` — schedule section
+- `docs/rebuild/temporal.md` — schedule section
+
+Phase O1 is now genuinely complete — including doc discipline,
+input/output realignment, and schedule wiring. Ready for O2
+(MonitorWorkflow) after any planning discussion.
+
+---
+
 ## 2026-07-07 — O1e/a — IngestWorkflow input reshape complete
 
 Realigns three of the six IngestWorkflow divergences from plan §5 W1
