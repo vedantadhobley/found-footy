@@ -21,12 +21,13 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
-// fixtureFetcher is the narrow interface the fetch activity needs.
+// fixtureFetcher is the narrow interface the fetch activities need.
 // Defined in the consumer package (per Go idiom); prod passes a
 // *apifootball.Client, tests pass an in-memory fake. Isolates the
 // activity from the full apifootball surface.
 type fixtureFetcher interface {
 	ListFixtures(ctx context.Context, params apifootball.FixtureListParams) ([]apifootball.APIFixture, error)
+	ListFixturesByIDs(ctx context.Context, ids []int64) ([]apifootball.APIFixture, error)
 }
 
 // Activities bundles the dependencies each ingest activity method
@@ -75,6 +76,25 @@ func (a *Activities) FetchFixturesForWindow(ctx context.Context, in FetchFixture
 	})
 	if err != nil {
 		return FetchFixturesOutput{}, fmt.Errorf("ingest.FetchFixturesForWindow: %w", err)
+	}
+	return FetchFixturesOutput{Fixtures: fixtures, Count: len(fixtures)}, nil
+}
+
+// FetchFixturesByIDsInput carries the ManualFixtureIDs list from the
+// workflow's ad-hoc-reingest path.
+type FetchFixturesByIDsInput struct {
+	IDs []int64
+}
+
+// FetchFixturesByIDs calls api-sports.io /fixtures with an ids= query.
+// api-sports.io accepts up to 20 IDs per call; the adapter enforces
+// that cap client-side (returns an error for >20). Reuses the same
+// FetchFixturesOutput shape so downstream activities don't care which
+// fetch path fed them.
+func (a *Activities) FetchFixturesByIDs(ctx context.Context, in FetchFixturesByIDsInput) (FetchFixturesOutput, error) {
+	fixtures, err := a.APIFootball.ListFixturesByIDs(ctx, in.IDs)
+	if err != nil {
+		return FetchFixturesOutput{}, fmt.Errorf("ingest.FetchFixturesByIDs: %w", err)
 	}
 	return FetchFixturesOutput{Fixtures: fixtures, Count: len(fixtures)}, nil
 }

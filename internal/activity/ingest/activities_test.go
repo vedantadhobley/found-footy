@@ -19,16 +19,28 @@ import (
 // ── fakes ──────────────────────────────────────────────────────
 
 // fakeFetcher records the params it was called with + returns
-// canned data.
+// canned data. Supports both fetch shapes; tests set whichever
+// response field applies.
 type fakeFetcher struct {
-	response []apifootball.APIFixture
-	err      error
-	lastCall apifootball.FixtureListParams
+	// ListFixtures behavior
+	response   []apifootball.APIFixture
+	err        error
+	lastCall   apifootball.FixtureListParams
+
+	// ListFixturesByIDs behavior
+	byIDsResponse []apifootball.APIFixture
+	byIDsErr      error
+	byIDsLastCall []int64
 }
 
 func (f *fakeFetcher) ListFixtures(_ context.Context, params apifootball.FixtureListParams) ([]apifootball.APIFixture, error) {
 	f.lastCall = params
 	return f.response, f.err
+}
+
+func (f *fakeFetcher) ListFixturesByIDs(_ context.Context, ids []int64) ([]apifootball.APIFixture, error) {
+	f.byIDsLastCall = ids
+	return f.byIDsResponse, f.byIDsErr
 }
 
 // fakeFixtureRepo — in-memory Repo satisfying fixture.Repo.
@@ -189,6 +201,39 @@ func TestFetchFixturesForWindow_PropagatesError(t *testing.T) {
 	_, err := a.FetchFixturesForWindow(context.Background(), FetchFixturesInput{
 		From: time.Now(), To: time.Now().Add(24 * time.Hour),
 	})
+	if err == nil {
+		t.Fatal("expected error from fetcher, got nil")
+	}
+}
+
+// ── FetchFixturesByIDs ─────────────────────────────────────────
+
+func TestFetchFixturesByIDs_HappyPath(t *testing.T) {
+	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	fetcher := &fakeFetcher{byIDsResponse: []apifootball.APIFixture{
+		mkAPIFixture(1_515_514, "NS", kickoff, 40, 42),
+		mkAPIFixture(1_515_515, "NS", kickoff, 33, 50),
+	}}
+	a := newActivities(fetcher, newFakeFixtureRepo(), newFakeAliasRepo(), kickoff.Add(-3*time.Hour))
+
+	out, err := a.FetchFixturesByIDs(context.Background(), FetchFixturesByIDsInput{
+		IDs: []int64{1_515_514, 1_515_515},
+	})
+	if err != nil {
+		t.Fatalf("FetchFixturesByIDs: %v", err)
+	}
+	if out.Count != 2 || len(out.Fixtures) != 2 {
+		t.Errorf("out = %+v, want 2 fixtures", out)
+	}
+	if len(fetcher.byIDsLastCall) != 2 || fetcher.byIDsLastCall[0] != 1_515_514 {
+		t.Errorf("byIDsLastCall = %v, want [1515514, 1515515]", fetcher.byIDsLastCall)
+	}
+}
+
+func TestFetchFixturesByIDs_PropagatesError(t *testing.T) {
+	fetcher := &fakeFetcher{byIDsErr: errors.New("simulated api-sports failure")}
+	a := newActivities(fetcher, newFakeFixtureRepo(), newFakeAliasRepo(), time.Now().UTC())
+	_, err := a.FetchFixturesByIDs(context.Background(), FetchFixturesByIDsInput{IDs: []int64{1}})
 	if err == nil {
 		t.Fatal("expected error from fetcher, got nil")
 	}

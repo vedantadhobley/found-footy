@@ -1,6 +1,7 @@
 // ingest.go — the daily IngestWorkflow. Runs at 00:05 UTC via a
 // Temporal Schedule (registered separately at worker startup) and
-// orchestrates the four activities in internal/activity/ingest.
+// orchestrates the four (five with by-IDs) activities in
+// internal/activity/ingest.
 //
 // Determinism rules for workflows (do not violate):
 //   • Never call time.Now() — use workflow.Now(ctx)
@@ -21,25 +22,45 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/activity/ingest"
 )
 
-// IngestWorkflowInput narrows what the caller (Scheduler or a manual
-// trigger) passes. Zero values on the optional fields mean "skip
-// that step" — e.g. an ad-hoc re-ingest can leave RetentionThreshold
-// zero to avoid pruning.
+// Defaults injected by the workflow when the caller passes zero.
+// The schedule spec typically leaves everything zero and lets these
+// take effect; manual triggers override individual fields.
+const (
+	defaultActivationWindow = 30 * time.Minute
+	defaultRetentionDays    = 14
+	fetchWindowPastDays     = 1  // fetch fixtures back this many days from anchor
+	fetchWindowFutureDays   = 3  // ...and forward this many days
+)
+
+// IngestWorkflowInput matches plan §5 W1 shape + the ActivationWindow
+// addition (user-approved during Phase D per decisions.md 2026-07-07).
+//
+// All fields optional. The workflow computes its own window from
+// workflow.Now(ctx) when nothing is overridden — which is what the
+// daily schedule invocation passes.
 type IngestWorkflowInput struct {
-	// FetchWindowFrom + FetchWindowTo bracket the kickoff window
-	// api-sports.io returns fixtures for. Both must be set.
-	// Typical daily schedule: [today-1d, today+3d].
-	FetchWindowFrom time.Time
-	FetchWindowTo   time.Time
+	// ManualDate overrides the anchor date the workflow uses to
+	// compute the fetch window + retention cutoff. nil = use
+	// workflow.Now(ctx) (the scheduled path). Set to a specific
+	// day to re-ingest that day (e.g. after a data-source fix).
+	ManualDate *time.Time
+
+	// ManualFixtureIDs, when non-empty, switches the fetch path from
+	// FetchFixturesForWindow to FetchFixturesByIDs. Bypasses the
+	// 3-day window entirely. Cap: 20 IDs per call (api-sports.io
+	// limit — the workflow does NOT chunk).
+	ManualFixtureIDs []int64
 
 	// ActivationWindow: staging fixtures with kickoff within this
-	// duration of now get auto-activated during categorization.
-	// Typical: 30 * time.Minute.
+	// duration get auto-activated during categorization. Zero →
+	// defaults to 30 * time.Minute.
 	ActivationWindow time.Duration
 
-	// RetentionThreshold: completed fixtures older than this get
-	// pruned. Zero value = skip pruning. Typical: now - 14 days.
-	RetentionThreshold time.Time
+	// RetentionDays: completed fixtures older than
+	// (anchor - RetentionDays * 24h) get pruned. Zero → skip
+	// pruning (used by ad-hoc re-ingests). The daily schedule spec
+	// sends 14 explicitly.
+	RetentionDays int
 }
 
 // IngestWorkflowOutput surfaces counts from each activity so the
@@ -61,19 +82,33 @@ type IngestWorkflowOutput struct {
 }
 
 // IngestWorkflow — the workflow function. Registered at worker
-// startup. Called once daily by a Temporal Schedule.
+// startup. Called once daily by a Temporal Schedule (empty input)
+// OR by manual trigger (populated input).
 //
 // Execution order is sequential (each step depends on the prior's
 // output). No parallel branches — daily ingest is not throughput-
 // bounded, and sequencing keeps failure attribution simple.
 func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflowOutput, error) {
 	logger := workflow.GetLogger(ctx)
-	logger.Info("IngestWorkflow started",
-		"from", in.FetchWindowFrom.Format(time.RFC3339),
-		"to", in.FetchWindowTo.Format(time.RFC3339),
-	)
-
 	out := IngestWorkflowOutput{}
+
+	// Resolve anchor + defaults. All Now() reads go through
+	// workflow.Now — deterministic across replays.
+	anchor := workflow.Now(ctx)
+	if in.ManualDate != nil {
+		anchor = *in.ManualDate
+	}
+	activationWindow := in.ActivationWindow
+	if activationWindow == 0 {
+		activationWindow = defaultActivationWindow
+	}
+
+	logger.Info("IngestWorkflow started",
+		"anchor", anchor.Format(time.RFC3339),
+		"manual_date_override", in.ManualDate != nil,
+		"manual_ids_count", len(in.ManualFixtureIDs),
+		"retention_days", in.RetentionDays,
+	)
 
 	// Default activity options. Individual steps can override via
 	// workflow.WithActivityOptions when their profile differs.
@@ -88,13 +123,25 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 	}
 	ctx = workflow.WithActivityOptions(ctx, ao)
 
-	// ── Step 1: fetch fixtures for window ──
+	// ── Step 1: fetch fixtures ──
+	// Two paths — by-window (normal) or by-IDs (manual re-ingest).
 	var fetchOut ingest.FetchFixturesOutput
-	if err := workflow.ExecuteActivity(ctx,
-		"FetchFixturesForWindow",
-		ingest.FetchFixturesInput{From: in.FetchWindowFrom, To: in.FetchWindowTo},
-	).Get(ctx, &fetchOut); err != nil {
-		return out, err
+	if len(in.ManualFixtureIDs) > 0 {
+		if err := workflow.ExecuteActivity(ctx,
+			"FetchFixturesByIDs",
+			ingest.FetchFixturesByIDsInput{IDs: in.ManualFixtureIDs},
+		).Get(ctx, &fetchOut); err != nil {
+			return out, err
+		}
+	} else {
+		from := anchor.AddDate(0, 0, -fetchWindowPastDays)
+		to := anchor.AddDate(0, 0, fetchWindowFutureDays)
+		if err := workflow.ExecuteActivity(ctx,
+			"FetchFixturesForWindow",
+			ingest.FetchFixturesInput{From: from, To: to},
+		).Get(ctx, &fetchOut); err != nil {
+			return out, err
+		}
 	}
 	out.Fetched = fetchOut.Count
 	logger.Info("fetched fixtures", "count", out.Fetched)
@@ -110,7 +157,7 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		"CategorizeAndUpsertFixtures",
 		ingest.CategorizeInput{
 			Fixtures:         fetchOut.Fixtures,
-			ActivationWindow: in.ActivationWindow,
+			ActivationWindow: activationWindow,
 		},
 	).Get(ctx, &catOut); err != nil {
 		return out, err
@@ -147,18 +194,21 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 	}
 
 	// ── Step 4: prune old completed fixtures ──
-	// Zero value threshold = skip. Used by ad-hoc re-ingests that
-	// shouldn't touch retention.
-	if !in.RetentionThreshold.IsZero() {
+	// RetentionDays == 0 → skip. Threshold computed from the anchor
+	// so manual-date-override runs prune relative to the anchor,
+	// not workflow.Now — matters for re-ingest scenarios where you
+	// want the retention math consistent with the fetch math.
+	if in.RetentionDays > 0 {
+		threshold := anchor.AddDate(0, 0, -in.RetentionDays)
 		var pruneOut ingest.PruneOldFixturesOutput
 		if err := workflow.ExecuteActivity(ctx,
 			"PruneOldFixtures",
-			ingest.PruneOldFixturesInput{Threshold: in.RetentionThreshold},
+			ingest.PruneOldFixturesInput{Threshold: threshold},
 		).Get(ctx, &pruneOut); err != nil {
 			return out, err
 		}
 		out.PrunedFixtures = pruneOut.Deleted
-		logger.Info("pruned", "count", out.PrunedFixtures)
+		logger.Info("pruned", "count", out.PrunedFixtures, "threshold_days", in.RetentionDays)
 	}
 
 	logger.Info("IngestWorkflow complete", "output", out)

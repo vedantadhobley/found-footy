@@ -34,14 +34,15 @@ func newEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvironment {
 	return env
 }
 
-// stdInput — reasonable defaults; individual tests override fields
-// they care about.
+// stdInput — reasonable defaults matching the new plan §5 W1 shape;
+// individual tests override fields they care about. Anchor date is
+// supplied via ManualDate for determinism (the TestWorkflowEnvironment's
+// clock is otherwise nondeterministic across CI runs).
 func stdInput(now time.Time) workflow.IngestWorkflowInput {
 	return workflow.IngestWorkflowInput{
-		FetchWindowFrom:    now.Add(-24 * time.Hour),
-		FetchWindowTo:      now.Add(72 * time.Hour),
-		ActivationWindow:   30 * time.Minute,
-		RetentionThreshold: now.Add(-14 * 24 * time.Hour),
+		ManualDate:       &now,
+		ActivationWindow: 30 * time.Minute,
+		RetentionDays:    14,
 	}
 }
 
@@ -145,7 +146,7 @@ func TestIngestWorkflow_ZeroRetention_SkipsPrune(t *testing.T) {
 	// PruneOldFixtures NOT registered — should not be called.
 
 	in := stdInput(time.Date(2026, 7, 8, 0, 5, 0, 0, time.UTC))
-	in.RetentionThreshold = time.Time{} // zero → skip prune
+	in.RetentionDays = 0 // zero → skip prune
 
 	env.ExecuteWorkflow(workflow.IngestWorkflow, in)
 
@@ -202,6 +203,68 @@ func TestIngestWorkflow_CategorizeFails_PropagatesError(t *testing.T) {
 
 	if env.GetWorkflowError() == nil {
 		t.Fatal("expected error from categorize failure")
+	}
+	env.AssertExpectations(t)
+}
+
+// TestIngestWorkflow_ManualFixtureIDs_UsesByIDsPath — populating
+// ManualFixtureIDs must switch the fetch step from
+// FetchFixturesForWindow → FetchFixturesByIDs. Verified by only
+// registering the byIDs mock; if the workflow dispatched to the
+// window activity instead, the test would panic (unregistered).
+func TestIngestWorkflow_ManualFixtureIDs_UsesByIDsPath(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newEnv(&s)
+
+	env.OnActivity("FetchFixturesByIDs", mock.Anything, mock.Anything).
+		Return(ingest.FetchFixturesOutput{
+			Fixtures: make([]apifootball.APIFixture, 2),
+			Count:    2,
+		}, nil).Once()
+	// FetchFixturesForWindow NOT registered — should not be called.
+
+	env.OnActivity("CategorizeAndUpsertFixtures", mock.Anything, mock.Anything).
+		Return(ingest.CategorizeOutput{Staging: 2, TeamRefs: []ingest.TeamRef{{TeamID: 40}}}, nil).Once()
+	env.OnActivity("EnsureAliasPlaceholders", mock.Anything, mock.Anything).
+		Return(ingest.EnsureAliasPlaceholdersOutput{Inserted: 1}, nil).Once()
+	// PruneOldFixtures NOT registered — RetentionDays=0 skips prune.
+
+	in := stdInput(time.Date(2026, 7, 8, 0, 5, 0, 0, time.UTC))
+	in.ManualFixtureIDs = []int64{1_515_514, 1_515_515}
+	in.RetentionDays = 0
+
+	env.ExecuteWorkflow(workflow.IngestWorkflow, in)
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	env.AssertExpectations(t)
+}
+
+// TestIngestWorkflow_EmptyInput_UsesDefaults — scheduled invocation
+// passes empty input; workflow must self-configure with anchor =
+// workflow.Now, activation window = 30min default, RetentionDays=0
+// (schedule spec sends 14 explicitly; empty means skip).
+func TestIngestWorkflow_EmptyInput_UsesDefaults(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newEnv(&s)
+
+	env.OnActivity("FetchFixturesForWindow", mock.Anything, mock.Anything).
+		Return(ingest.FetchFixturesOutput{Count: 0}, nil).Once()
+	env.OnActivity("CategorizeAndUpsertFixtures", mock.Anything, mock.Anything).
+		Return(ingest.CategorizeOutput{TeamRefs: nil}, nil).Once()
+	// Alias skipped (nil TeamRefs). Prune skipped (RetentionDays=0).
+
+	env.ExecuteWorkflow(workflow.IngestWorkflow, workflow.IngestWorkflowInput{})
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
 	}
 	env.AssertExpectations(t)
 }
