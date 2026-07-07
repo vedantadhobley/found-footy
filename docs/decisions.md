@@ -29,6 +29,99 @@ update is treated as incomplete — same status as one missing tests.
 
 ---
 
+## 2026-07-07 — IngestWorkflow divergences from plan §5 W1
+
+Six divergences between the shipped IngestWorkflow (O1a-O1d) and the
+plan's §5 W1 spec. Retrospectively logged as part of the
+2026-07-07 doc retro. Three are user-approved conversationally,
+three were silent implementation choices — decisions on whether to
+keep or realign made below.
+
+**1. Input shape.** Plan wanted:
+```go
+type IngestWorkflowInput struct {
+    ManualDate       *time.Time   // nil for scheduled; set for manual re-run
+    ManualFixtureIDs []int64      // nil for full-window; set for ad-hoc re-ingest
+    RetentionDays    int          // default 14
+}
+```
+Shipped:
+```go
+type IngestWorkflowInput struct {
+    FetchWindowFrom    time.Time
+    FetchWindowTo      time.Time
+    ActivationWindow   time.Duration
+    RetentionThreshold time.Time
+}
+```
+**Silent.** My choice, not discussed. Consequences: no ad-hoc
+per-ID re-ingest (already bit me — `scripts/trigger_ingest`
+hardcodes a window because `ManualFixtureIDs` doesn't exist).
+Explicit window params are more general but every caller (schedule +
+manual trigger) has to compute them; plan's `ManualDate` +
+schedule-default was simpler for the common case.
+**Decision:** realign to plan shape in **O1e follow-up commit**.
+Add back `ManualFixtureIDs` for ad-hoc re-ingest. Keep
+`ActivationWindow` as an addition (see #6). Convert
+`RetentionThreshold time.Time` back to `RetentionDays int`
+(schedule computes cutoff from days).
+
+**2. Output shape.** Plan wanted:
+```go
+type IngestWorkflowOutput struct {
+    FixturesUpserted int
+    AliasesCached    int
+    FixturesPruned   int
+    Errors           []string  // non-fatal errors surfaced for observability
+}
+```
+Shipped: 9 int counters (staging, active, completed, existing,
+inserted, aliasErrors, categorizeErrors, prunedFixtures, fetched).
+No `Errors []string`.
+**Silent.** More granular but loses the observability signal for
+non-fatal per-fixture errors that don't fail the workflow.
+**Decision:** realign in O1e. Keep the granular counts as fields
+alongside `Errors []string`. Both are useful.
+
+**3. `ListUniqueTeamsFromFixtures` inlined into
+`CategorizeAndUpsertFixtures`.** Plan had it as a separate activity
+step. Shipped: collected via a `map[int]TeamRef` inside the
+categorize loop, returned as part of `CategorizeOutput.TeamRefs`.
+**Silent.** Rationale for the choice: dedup-by-team-id happens in
+memory; extracting it to a separate activity means re-marshaling
+the full `[]APIFixture` across the Temporal activity boundary for
+what's effectively a pure map-reduce.
+**Decision:** keep. Defensible improvement over the plan.
+Documented in `docs/rebuild/orchestration.md`.
+
+**4. `PreCacheAliasesBatch` → `EnsureAliasPlaceholders`.** Plan
+had `PreCacheAliasesBatch` doing full RAG resolution (Wikidata
+lookup + LLM twitter-alias inference) inline during ingest.
+Shipped: `EnsureAliasPlaceholders` inserts blank-resolution
+placeholder rows; a separate resolution job (design TBD) fills
+them later.
+**User-approved conversationally.** Rationale: (a) RAG on hot
+ingest couples the daily job to joi + Wikidata availability; (b)
+the RAG design itself needs revisiting (team-alias + player-name
+search-string building could be improved over Python's approach);
+(c) user explicitly said "don't just port Python's logic here."
+**Decision:** keep. Retroactively documented.
+
+**5. No `ManualFixtureIDs` support.** Direct consequence of #1.
+Plan had it as first-class input for ad-hoc re-ingest of specific
+fixtures.
+**Decision:** realign as part of #1 fix.
+
+**6. `ActivationWindow` parameter added — not in plan.**
+Introduced to fix the Python-era "manual ingest at 14:55 for 15:00
+kickoff sits in staging until next monitor cycle" bug (see
+[2026-07-07 Fixture activation triggers](#2026-07-07--fixture-activation-triggers--staging-poll-design)).
+**User-approved conversationally.** Designed together during
+Phase D.
+**Decision:** keep. Retroactively documented.
+
+---
+
 ## 2026-07-07 — Rebuild architecture divergences from plan §2
 
 Documented here as part of the retrospective (see rule above). Most of
