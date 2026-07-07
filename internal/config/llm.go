@@ -18,8 +18,15 @@ type LLMConfig struct {
 	// Endpoint is the OpenAI-compatible base URL. Example:
 	//   http://llama-small.joi
 	// Caddy split-DNS resolves this to joi's llama.cpp server; no port
-	// needed. The endpoint MUST expose /v1/models + /v1/chat/completions.
+	// needed. The full model + chat URLs are composed as
+	// Endpoint + APIVersionPath + "/models" or "/chat/completions".
 	Endpoint string `env:"LLM_ENDPOINT_URL"`
+
+	// APIVersionPath is the URL segment between Endpoint and the OpenAI
+	// route names. llama.cpp + OpenAI both use "/v1"; nexus may use
+	// "/v1", "/inference/v1", or something else. Empty defaults to
+	// "/v1" for backwards compatibility with the current joi setup.
+	APIVersionPath string `env:"LLM_API_VERSION_PATH" envDefault:"/v1"`
 
 	// APIKey is passed as Authorization: Bearer <key>. llama.cpp accepts
 	// any non-empty value; leave "not-required" for the current joi
