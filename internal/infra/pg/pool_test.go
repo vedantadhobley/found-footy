@@ -33,7 +33,7 @@ type testFixture struct {
 	ins *pg.Instruments
 }
 
-func newTestFixture(_ *testing.T) *testFixture {
+func newTestFixture() *testFixture {
 	reg := metrics.New()
 	log := &logging.TestEmitter{}
 	ins := pg.RegisterMetrics(reg, log)
@@ -43,7 +43,7 @@ func newTestFixture(_ *testing.T) *testFixture {
 // runTestPostgres starts an ephemeral Postgres container with the app
 // schema loaded from internal/infra/pg/schema.sql. Returns the
 // connection string. Registers a cleanup that terminates the container.
-func runTestPostgres(t *testing.T, ctx context.Context) string {
+func runTestPostgres(ctx context.Context, t *testing.T) string {
 	t.Helper()
 
 	pgc, err := tcpostgres.Run(ctx,
@@ -100,8 +100,8 @@ func TestPool_LifecycleAgainstRealPostgres(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	connStr := runTestPostgres(t, ctx)
-	fx := newTestFixture(t)
+	connStr := runTestPostgres(ctx, t)
+	fx := newTestFixture()
 
 	pool, err := pg.New(ctx, config.PGConfig{
 		DSN:            connStr,
@@ -148,8 +148,8 @@ func TestSchemaLoaded_CoreTables(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	connStr := runTestPostgres(t, ctx)
-	fx := newTestFixture(t)
+	connStr := runTestPostgres(ctx, t)
+	fx := newTestFixture()
 
 	pool, err := pg.New(ctx, config.PGConfig{
 		DSN:            connStr,
@@ -228,8 +228,8 @@ func TestQueryTracer_EmitsMetricsAndLogs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	connStr := runTestPostgres(t, ctx)
-	fx := newTestFixture(t)
+	connStr := runTestPostgres(ctx, t)
+	fx := newTestFixture()
 
 	pool, err := pg.New(ctx, config.PGConfig{
 		DSN:            connStr,
@@ -291,8 +291,8 @@ func TestPoolStats_ReportedOnScrape(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	connStr := runTestPostgres(t, ctx)
-	fx := newTestFixture(t)
+	connStr := runTestPostgres(ctx, t)
+	fx := newTestFixture()
 
 	pool, err := pg.New(ctx, config.PGConfig{
 		DSN:            connStr,
@@ -342,7 +342,7 @@ func TestNew_NilObs_Errors(t *testing.T) {
 // without PG_DSN and pg.New refuses to build a broken pool. No
 // container needed.
 func TestNew_EmptyURL_Errors(t *testing.T) {
-	fx := newTestFixture(t)
+	fx := newTestFixture()
 	_, err := pg.New(context.Background(), config.PGConfig{
 		DSN:      "",
 		MaxConns: 5,
@@ -360,7 +360,7 @@ func TestNew_UnreachableHost_ErrorsQuickly(t *testing.T) {
 		t.Skip("integration-ish test skipped in -short mode")
 	}
 
-	fx := newTestFixture(t)
+	fx := newTestFixture()
 	start := time.Now()
 	_, err := pg.New(context.Background(), config.PGConfig{
 		// Reserved discard address per RFC 6890 — should refuse-connect fast.

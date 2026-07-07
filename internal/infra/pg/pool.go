@@ -22,13 +22,10 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 )
 
-// Pool is the Postgres connection pool the domain layer depends on.
-// Embeds *pgxpool.Pool so callers get every pgx method for free (Query,
-// QueryRow, Exec, Acquire, BeginTx, ...) without a pass-through layer.
-// The wrapper exists to (a) emit lifecycle log lines, (b) hold the
-// Instruments instance for pool-stats deregistration on Close, and
-// (c) override Ping with an explicit ActionPing / ActionPingFailed
-// emission for /healthz callers that want a clean signal.
+// Pool wraps *pgxpool.Pool (embedded, so every pgx method is directly
+// callable) with lifecycle log emissions and pool-stats deregistration
+// on Close. Ping is overridden for /healthz callers that want a single
+// ActionPing/ActionPingFailed signal separate from per-query traffic.
 type Pool struct {
 	*pgxpool.Pool
 	ins            *Instruments
@@ -106,7 +103,9 @@ func New(ctx context.Context, cfg config.PGConfig, ins *Instruments) (*Pool, err
 }
 
 // Close shuts down the pool, deregisters the pool-stats collector, and
-// emits a lifecycle log line. Safe to call once.
+// emits a lifecycle log line. Idempotent — the statsCollector guard
+// makes second calls a no-op on the deregistration side, and
+// pgxpool.Close is itself idempotent under a single caller.
 func (p *Pool) Close() {
 	if p.statsCollector != nil {
 		p.ins.reg.PrometheusRegistry().Unregister(p.statsCollector)
@@ -120,13 +119,9 @@ func (p *Pool) Close() {
 }
 
 // Ping runs a health-probe round trip and emits ActionPing /
-// ActionPingFailed. Callers use this in /healthz handlers and pre-query
-// gates for a clean single-outcome signal, distinct from the
-// per-query traffic ActionQuery reports.
-//
-// Note: pgxpool's internal Ping issues a "SELECT 1" that also flows
-// through the query tracer — expect one ActionPing/ActionPingFailed
-// plus one ActionQuery per Ping call.
+// ActionPingFailed for /healthz callers. Note: pgxpool.Ping issues a
+// SELECT 1 that also flows through the query tracer, so each Ping
+// produces one ActionPing plus one ActionQuery.
 func (p *Pool) Ping(ctx context.Context) error {
 	start := time.Now()
 	if err := p.Pool.Ping(ctx); err != nil {

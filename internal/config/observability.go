@@ -15,12 +15,6 @@ type ObservabilityConfig struct {
 	// Default json — matches what Promtail expects.
 	LogFormat string `env:"LOG_FORMAT" envDefault:"json"`
 
-	// LokiEnabled is a hint the logging layer can use to skip building
-	// certain expensive fields when nothing downstream will consume them.
-	// Defaults true because prod always has Loki; dev can override to
-	// false for standalone runs.
-	LokiEnabled bool `env:"LOKI_ENABLED" envDefault:"true"`
-
 	// MetricsAddr is the listen address for the Prometheus /metrics
 	// endpoint that every binary exposes. Defaults to :8080 — each
 	// docker-compose service can override via env if the port collides
