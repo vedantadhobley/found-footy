@@ -39,25 +39,25 @@ const (
 	ModuleTextAnalysis Module = "textanalysis"
 
 	// ── Infrastructure adapters (internal/infra/...) ──
-	ModuleInfraPG           Module = "infra_pg"
-	ModuleInfraNATS         Module = "infra_nats"
-	ModuleInfraEvent        Module = "infra_event"
-	ModuleInfraS3           Module = "infra_s3"
-	ModuleInfraLLM          Module = "infra_llm"
-	ModuleInfraTemporal     Module = "infra_temporal"
-	ModuleInfraAPIFootball  Module = "infra_apifootball"
-	ModuleInfraTwitter      Module = "infra_twitter"
-	ModuleInfraSyndication  Module = "infra_syndication"
-	ModuleInfraFFmpeg       Module = "infra_ffmpeg"
-	ModuleInfraWikidata     Module = "infra_wikidata"
+	ModuleInfraPG          Module = "infra_pg"
+	ModuleInfraNATS        Module = "infra_nats"
+	ModuleInfraEvent       Module = "infra_event"
+	ModuleInfraS3          Module = "infra_s3"
+	ModuleInfraLLM         Module = "infra_llm"
+	ModuleInfraTemporal    Module = "infra_temporal"
+	ModuleInfraAPIFootball Module = "infra_apifootball"
+	ModuleInfraTwitter     Module = "infra_twitter"
+	ModuleInfraSyndication Module = "infra_syndication"
+	ModuleInfraFFmpeg      Module = "infra_ffmpeg"
+	ModuleInfraWikidata    Module = "infra_wikidata"
 
 	// ── Cross-cutting subsystems ──
 	ModuleAPI             Module = "api"
 	ModuleAPISSE          Module = "api_sse"
 	ModuleWebhookDelivery Module = "webhook_delivery"
 	ModuleScaler          Module = "scaler"
-	ModuleWorker          Module = "worker"    // binary lifecycle
-	ModuleAPIServer       Module = "api_server" // binary lifecycle
+	ModuleWorker          Module = "worker"          // binary lifecycle
+	ModuleAPIServer       Module = "api_server"      // binary lifecycle
 	ModuleTwitterService  Module = "twitter_service" // binary lifecycle
 	ModuleMigration       Module = "migration"
 	ModuleHealthz         Module = "healthz"
