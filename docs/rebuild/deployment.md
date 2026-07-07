@@ -1,8 +1,15 @@
-# deployment.md — Go rebuild
+# deployment.md — Go rebuild ledger
 
-Compose file reference + Caddy routing catalog + first-time bootstrap
-steps for adapters that require operational provisioning (NATS accounts,
-Garage cluster layout, etc.).
+**Purpose.** Compose file reference + Caddy routing catalog + first-time
+bootstrap steps for adapters that require operational provisioning
+(NATS accounts, Garage cluster layout, etc.).
+
+Cross-refs [`../rebuild-plan.md`](../rebuild-plan.md) §10 for the full
+deployment design. Divergences live in [`../decisions.md`](../decisions.md).
+
+**Update rule.** Any change to compose services, Caddy routes, first-time
+bootstrap steps, or workflow scheduling updates this doc in the same
+commit.
 
 ## Compose files
 
@@ -95,5 +102,24 @@ Restart worker + api (`docker compose up -d --force-recreate worker api`)
 - Every binary bakes `gitSHA` + `builtAt` via `-ldflags "-X main.gitSHA=... -X main.builtAt=..."` at container build time.
 - Values surface in the `found_footy_deploy_git_sha_info{binary,git_sha,image_tag,built_at}` gauge + the `startup` log line.
 
-Current design source of truth: [`../rebuild-plan.md`](../rebuild-plan.md)
-§10 (deployment).
+## Workflow scheduling — NOT WIRED
+
+Plan §5 W1 says IngestWorkflow runs on `5 0 * * *` (daily 00:05 UTC)
+via a Temporal Schedule registered at worker startup. **No schedules
+are registered in `cmd/worker/main.go` today.** The workflow is
+registered on the worker (per O1d) but only fires from a manual
+trigger:
+
+```bash
+docker exec found-footy-dev-worker sh -c 'cd /src && go run ./scripts/trigger_ingest'
+```
+
+Schedule registration is an O1e task before MonitorWorkflow starts.
+The Python-era `archive/src/worker.py` shows the reference pattern
+(client.create_schedule with ScheduleSpec + Schedule); Go SDK
+equivalent is `client.Schedule()` + `client.ScheduleClient()`.
+
+Cross-refs:
+- [Plan §10 (deployment)](../rebuild-plan.md#10-deployment) — full deployment spec
+- [orchestration.md](./orchestration.md) — workflow inventory + wire-up
+- [temporal.md](./temporal.md) — Client/Worker adapter shape
