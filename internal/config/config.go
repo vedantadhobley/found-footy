@@ -26,10 +26,10 @@ type Config struct {
 	Postgres      PGConfig
 	NATS          NATSConfig
 	S3            S3Config
+	Temporal      TemporalConfig
 
 	// Sub-configs added in later S-phase commits:
 	//   LLM          llm.Config
-	//   Temporal     temporal.Config
 	//   APIFootball  apifootball.Config
 	//   Twitter      twitter.Config
 	//   Syndication  syndication.Config
