@@ -29,6 +29,48 @@ update is treated as incomplete — same status as one missing tests.
 
 ---
 
+## 2026-07-07 — Temporal adapter divergences from plan §9
+
+Three divergences between `internal/infra/temporal/` (shipped in S5)
+and plan §9's temporal spec. Retrospectively logged as part of the
+doc retro.
+
+**1. `NewClient` takes `*Instruments`, not `*slog.Logger`.** Plan §9
+had `func NewClient(ctx, cfg, logger *slog.Logger) (client.Client, error)`.
+Shipped: `func NewClient(ctx, cfg, ins *Instruments) (*Client, error)`.
+**Silent.** Instruments carry logger + metrics + (eventually) tracing
+together; the plan's logger-only param would be an outlier vs every
+other adapter (S2+). **Keep — consistent with adapter template.**
+
+**2. `Client` wraps SDK type; doesn't return raw `client.Client`.**
+Plan §9 wanted `(client.Client, error)` return. Shipped: `(*Client,
+error)` with our type. **Silent.** Rationale: (a) `WorkerShutdownTimeout()`
+accessor for graceful shutdown ordering, (b) our `Close()` hook can
+emit metrics, (c) tracing hookup later without changing callers.
+**Keep.**
+
+**3. `worker.Options` param on `NewWorker`; no hardcoded defaults.**
+Plan §9 wanted `NewWorker(c, cfg, logger)` returning a worker with
+"sensible defaults" (MaxConcurrentActivityExecutions:30,
+MaxConcurrentWorkflowTasks:10) baked in. Shipped:
+`NewWorker(c, ins, options worker.Options)` with caller-supplied
+options. **Silent.** Rationale: cmd binaries know what they're
+running; adapter shouldn't decide concurrency. **Keep.**
+
+**4. `DefaultRetryPolicy()` helper not shipped.** Plan §9 called for
+`func DefaultRetryPolicy() *temporal.RetryPolicy`. Not implemented.
+Each workflow defines its own `workflow.ActivityOptions` inline
+(e.g. `internal/workflow/ingest.go`). Rationale: retry policy visible
+at call site is easier to audit than a shared default that hides its
+config. **Keep the divergence; delete the plan's helper on next plan
+revision.**
+
+**5. `SignalWorkflow` method added on Client.** Not in plan §9.
+Sensible addition; kept for future AssetPersistenceWorkflow signal
+paths.
+
+---
+
 ## 2026-07-07 — Log-catalog generator (§11.3) not shipped
 
 Plan §11.3 specifies a generated `docs/generated/log-catalog.md`
