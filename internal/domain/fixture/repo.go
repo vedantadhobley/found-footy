@@ -28,9 +28,16 @@ type Repo interface {
 	Upsert(ctx context.Context, f *Fixture) error
 
 	// ListByState returns all fixtures currently in the given state,
-	// most recently updated first. The API-Football monitor loop calls
-	// this with StateActive every 30s to pull the poll set.
+	// most recently updated first. Used for callers that need the
+	// full Fixture rows (e.g. building a dashboard view).
 	ListByState(ctx context.Context, state State) ([]*Fixture, error)
+
+	// ListActiveIDs returns only the IDs of active fixtures. Called by
+	// MonitorWorkflow every 30s to build the batched
+	// `apifootball.ListFixturesByIDs` call. Distinct from ListByState
+	// because the monitor doesn't need the whole row — hitting the DB
+	// for just the ID column keeps the per-cycle overhead near-zero.
+	ListActiveIDs(ctx context.Context) ([]int64, error)
 
 	// ListStagingBeforeKickoff returns staging fixtures whose kickoff
 	// is before threshold. The monitor loop pre-activates the returned

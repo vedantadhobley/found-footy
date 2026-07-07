@@ -156,6 +156,33 @@ func (r *FixtureRepo) ListByState(ctx context.Context, state fixture.State) ([]*
 	return collectFixtures(rows)
 }
 
+// ListActiveIDs returns only the fixture IDs currently in state=active.
+// The MonitorWorkflow calls this every 30s to build its batched
+// /fixtures?ids= API call, and needs just the ID column — hitting the
+// full row set (ListByState) would waste pgx unmarshaling on ~2KB
+// of fields we throw away. The index on (state) makes this a cheap
+// index-only scan.
+func (r *FixtureRepo) ListActiveIDs(ctx context.Context) ([]int64, error) {
+	rows, err := r.pool.Query(ctx,
+		"SELECT id FROM fixtures WHERE state = 'active' ORDER BY id")
+	if err != nil {
+		return nil, fmt.Errorf("pg.FixtureRepo.ListActiveIDs: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("pg.FixtureRepo.ListActiveIDs: scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pg.FixtureRepo.ListActiveIDs: rows: %w", err)
+	}
+	return ids, nil
+}
+
 // ListStagingBeforeKickoff returns staging fixtures whose kickoff is
 // at or before threshold. The MonitorWorkflow's PreActivateUpcoming
 // step calls this every 30s with threshold = now + activation window
