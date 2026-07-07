@@ -24,9 +24,9 @@ import (
 type Config struct {
 	Observability ObservabilityConfig
 	Postgres      PGConfig
+	NATS          NATSConfig
 
 	// Sub-configs added in later S-phase commits:
-	//   NATS         nats.Config
 	//   S3           s3.Config
 	//   LLM          llm.Config
 	//   Temporal     temporal.Config
