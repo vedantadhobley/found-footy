@@ -33,22 +33,38 @@ Phased delivery — see §16 for the phase map. Where we are (2026-07-07):
 | F | ✅ shipped | Scaffold: `cmd/`, `internal/`, docker-compose, air, Caddy stubs, Makefile |
 | S1 | ✅ shipped | Observability substrate: `config`, `logging` (slog + typed Field), `vocabulary` (typed Module/Action enums), `metrics` (Prometheus), `bootstrap` (shared binary startup with Closer registry) |
 | S2 | ✅ shipped | Postgres adapter: `pool.go` (pgxpool wrapper), `instruments.go` (query tracer + pool-stats collector), full §3 schema in `schema.sql`, wired into `cmd/worker` + `cmd/api` |
-| S3 | ⏳ next | NATS adapter (workspace NATS bus for events + SSE fan-out + JetStream webhook delivery) |
-| S4-S7 | 📅 planned | Garage/S3, Temporal, LLM, external HTTP adapters |
-| D | 📅 planned | Domain layer (fixture, event, video, alias, discovery, vision, session, textanalysis) |
-| O, V, A, T, M, C | 📅 planned | Orchestration, video pipeline, API surface, testing, migration, cutover |
+| S3 | ✅ shipped | NATS adapter (workspace NATS bus for events + SSE fan-out + JetStream webhook delivery) |
+| S4 | ✅ shipped | Garage / S3 adapter (aws-sdk-go-v2 client wrapper + tests) |
+| S5 | ✅ shipped | Temporal adapter (Client + Worker wrappers with Instruments) |
+| S6 | ✅ shipped | LLM adapter (OpenAI-compatible client + typed errors + Chat) |
+| S7 | ✅ shipped | External HTTP adapters (apifootball, twitter, syndication, wikidata) |
+| D | ✅ shipped | Domain layer — 4 of 8 packages complete (fixture, event, video, alias); discovery/vision/session/textanalysis stubbed for build-when-needed |
+| O1 | ✅ shipped | IngestWorkflow + 4 activities + wire-up + live e2e verification |
+| O1e | ⏳ next | Realign IngestWorkflow I/O shape to plan §5 W1 (per decisions.md); register daily Temporal Schedule |
+| O2–O5 | 📅 planned | Monitor, Discovery, VideoValidation, AssetPersistence workflows |
+| V, A, T, M, C | 📅 planned | Video pipeline, API surface, testing (synthetic e2e), migration, cutover |
 
 **Where to look for Go rebuild work:**
 
 - [`docs/rebuild-plan.md`](./docs/rebuild-plan.md) — **the design bible**. §1-§16 covers architecture, schema, adapters, workflows, deployment, migration. Read the section relevant to what you're touching before starting.
-- [`docs/rebuild/README.md`](./docs/rebuild/README.md) — routing index for per-topic rebuild docs (mostly stubs until each phase fills them in).
-- [`docs/rebuild/architecture.md`](./docs/rebuild/architecture.md) — pending
-- [`docs/rebuild/orchestration.md`](./docs/rebuild/orchestration.md) — pending
-- [`docs/rebuild/observability.md`](./docs/rebuild/observability.md) — pending
-- [`docs/rebuild/deployment.md`](./docs/rebuild/deployment.md) — pending
-- [`docs/rebuild/testing.md`](./docs/rebuild/testing.md) — pending
+- [`docs/rebuild/README.md`](./docs/rebuild/README.md) — routing index for per-topic rebuild docs.
+- [`docs/rebuild/architecture.md`](./docs/rebuild/architecture.md) — **as-shipped ledger** of internal/ + cmd/ tree with per-package status.
+- [`docs/rebuild/orchestration.md`](./docs/rebuild/orchestration.md) — **as-shipped ledger** of workflows + activities (IngestWorkflow complete).
+- [`docs/rebuild/observability.md`](./docs/rebuild/observability.md) — **as-shipped ledger** of vocabulary + logging + metrics substrate.
+- [`docs/rebuild/logging.md`](./docs/rebuild/logging.md) — **emission reference** — how to call Emit + add new (Module, Action).
+- [`docs/rebuild/temporal.md`](./docs/rebuild/temporal.md) — **as-shipped ledger** of Client/Worker adapter + registration flow.
+- [`docs/rebuild/testing.md`](./docs/rebuild/testing.md) — **as-shipped ledger** of ~175 tests across the tiers.
+- [`docs/rebuild/deployment.md`](./docs/rebuild/deployment.md) — compose files + Caddy + first-time bootstrap steps.
+- [`docs/decisions.md`](./docs/decisions.md) — append-only architectural decisions, including divergences from `rebuild-plan.md`.
 - [`internal/observability/vocabulary/vocabulary.go`](./internal/observability/vocabulary/vocabulary.go) — typed enum registry (Module, Action). Every log emission uses these. Adding a new Module or Action = one const declaration.
 - [`internal/infra/pg/`](./internal/infra/pg/) — the **template** all future adapters follow: `Instruments` bundle + `RegisterMetrics` constructor + framework-native tracer + prometheus.Collector for scrape-time stats.
+
+**Doc discipline (working rule since 2026-07-07):** every implementation
+commit that changes a package, adapter, workflow, or activity MUST
+update the relevant `docs/rebuild/<topic>.md` in the SAME commit.
+Divergences from `docs/rebuild-plan.md` land in `docs/decisions.md`.
+Code-only commits are treated as incomplete — same status as missing
+tests. See [decisions.md 2026-07-07 working-rule entry](./docs/decisions.md).
 
 **`.env` / `.env.example` convention (load-bearing):** Docker Compose's
 `env_file` parser does **not** strip inline `#` comments — everything
