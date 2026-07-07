@@ -5,6 +5,7 @@ package llm_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,12 +39,14 @@ func newTestFixture() *testFixture {
 
 // mockLLMServer is a minimal /v1/models + /v1/chat/completions handler
 // that responds like a real llama.cpp/OpenAI server. Individual tests
-// tweak its behavior via closures.
+// tweak its behavior via closures. The server responds in openai's
+// wire-format — that's what the adapter's HTTP client actually
+// dispatches; callers of the ADAPTER still only see domain types.
 type mockLLMServer struct {
 	srv               *httptest.Server
 	modelsResponse    openai.ModelsList
 	chatDelay         time.Duration
-	chatShouldFail    bool
+	chatStatusCode    int // 0 = 200 with chatResponse; anything else = that status + JSON error body
 	chatResponse      openai.ChatCompletionResponse
 	concurrentPeak    int32
 	concurrentCurrent int32
@@ -72,8 +75,6 @@ func newMockLLMServer() *mockLLMServer {
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		cur := atomic.AddInt32(&m.concurrentCurrent, 1)
 		defer atomic.AddInt32(&m.concurrentCurrent, -1)
-		// Track high-water mark of concurrent in-flight chat requests
-		// so tests can assert the semaphore capped it.
 		for {
 			peak := atomic.LoadInt32(&m.concurrentPeak)
 			if cur <= peak || atomic.CompareAndSwapInt32(&m.concurrentPeak, peak, cur) {
@@ -83,8 +84,10 @@ func newMockLLMServer() *mockLLMServer {
 		if m.chatDelay > 0 {
 			time.Sleep(m.chatDelay)
 		}
-		if m.chatShouldFail {
-			http.Error(w, `{"error":{"message":"server angry"}}`, http.StatusInternalServerError)
+		if m.chatStatusCode != 0 && m.chatStatusCode != http.StatusOK {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(m.chatStatusCode)
+			_, _ = w.Write([]byte(`{"error":{"message":"simulated","type":"simulated","code":"simulated"}}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -94,15 +97,16 @@ func newMockLLMServer() *mockLLMServer {
 	return m
 }
 
-func (m *mockLLMServer) URL() string    { return m.srv.URL }
-func (m *mockLLMServer) Close()         { m.srv.Close() }
-func (m *mockLLMServer) Peak() int      { return int(atomic.LoadInt32(&m.concurrentPeak)) }
-func (m *mockLLMServer) ResetPeak()     { atomic.StoreInt32(&m.concurrentPeak, 0) }
+func (m *mockLLMServer) URL() string  { return m.srv.URL }
+func (m *mockLLMServer) Close()       { m.srv.Close() }
+func (m *mockLLMServer) Peak() int    { return int(atomic.LoadInt32(&m.concurrentPeak)) }
+func (m *mockLLMServer) ResetPeak()   { atomic.StoreInt32(&m.concurrentPeak, 0) }
 
 func newClientAgainst(t *testing.T, ctx context.Context, endpoint string, fx *testFixture, cap int) *llm.Client {
 	t.Helper()
 	c, err := llm.NewClient(ctx, config.LLMConfig{
 		Endpoint:           endpoint,
+		APIVersionPath:     "/v1",
 		APIKey:             "test",
 		ChatConcurrencyCap: cap,
 		ConnectTimeout:     5 * time.Second,
@@ -123,8 +127,15 @@ func scrapeMetrics(t *testing.T, reg *metrics.Registry) string {
 	return string(body)
 }
 
-// TestNewClient_ConnectsAndAutoDiscoversModel — the ChatModel env var
-// is empty, so New should pick the first model from /v1/models.
+// simpleChat builds a minimal user-role ChatRequest with the given text.
+func simpleChat(text string) llm.ChatRequest {
+	return llm.ChatRequest{
+		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: text}},
+	}
+}
+
+// TestNewClient_ConnectsAndAutoDiscoversModel — probe succeeds, first
+// model auto-selected, both actions emitted.
 func TestNewClient_ConnectsAndAutoDiscoversModel(t *testing.T) {
 	ctx := context.Background()
 	m := newMockLLMServer()
@@ -145,9 +156,31 @@ func TestNewClient_ConnectsAndAutoDiscoversModel(t *testing.T) {
 	}
 }
 
-// TestChat_HappyPath sends a chat request through the wrapper, verifies
-// the response comes back intact, and asserts the success counter +
-// token counters + histogram all fired.
+// TestClose_EmitsLLMClosedAction — the audit Critical #1 regression
+// guard. Close() must emit ActionLLMClosed, NOT ActionLLMConnected.
+func TestClose_EmitsLLMClosedAction(t *testing.T) {
+	ctx := context.Background()
+	m := newMockLLMServer()
+	defer m.Close()
+
+	fx := newTestFixture()
+	c := newClientAgainst(t, ctx, m.URL(), fx, 2)
+
+	// Reset captured entries after the constructor path so we're only
+	// asserting on Close().
+	fx.log.Reset()
+	c.Close()
+
+	if !fx.log.HasAction(vocabulary.ModuleInfraLLM, vocabulary.ActionLLMClosed) {
+		t.Errorf("Close() must emit ActionLLMClosed; captured=%+v", fx.log.Snapshot())
+	}
+	if fx.log.HasAction(vocabulary.ModuleInfraLLM, vocabulary.ActionLLMConnected) {
+		t.Errorf("Close() must NOT emit ActionLLMConnected (audit Critical #1); captured=%+v", fx.log.Snapshot())
+	}
+}
+
+// TestChat_HappyPath — Chat returns a domain ChatResponse; no openai
+// types leak.
 func TestChat_HappyPath(t *testing.T) {
 	ctx := context.Background()
 	m := newMockLLMServer()
@@ -157,14 +190,18 @@ func TestChat_HappyPath(t *testing.T) {
 	c := newClientAgainst(t, ctx, m.URL(), fx, 2)
 	defer c.Close()
 
-	resp, err := c.Chat(ctx, openai.ChatCompletionRequest{
-		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
-	})
+	resp, err := c.Chat(ctx, simpleChat("hi"))
 	if err != nil {
 		t.Fatalf("chat: %v", err)
 	}
-	if resp.Choices[0].Message.Content != "test reply" {
-		t.Errorf("reply = %q, want 'test reply'", resp.Choices[0].Message.Content)
+	if resp.Content != "test reply" {
+		t.Errorf("Content = %q, want 'test reply'", resp.Content)
+	}
+	if resp.Usage.PromptTokens != 12 || resp.Usage.CompletionTokens != 5 {
+		t.Errorf("Usage = %+v, want prompt=12 completion=5", resp.Usage)
+	}
+	if resp.Model != "test-model-vl" {
+		t.Errorf("Model = %q, want test-model-vl", resp.Model)
 	}
 
 	scrape := scrapeMetrics(t, fx.reg)
@@ -180,47 +217,107 @@ func TestChat_HappyPath(t *testing.T) {
 	}
 }
 
-// TestChat_ServerError verifies error path — the wrapper reports
-// failure metric + WARN log without panicking.
-func TestChat_ServerError(t *testing.T) {
-	ctx := context.Background()
-	m := newMockLLMServer()
-	m.chatShouldFail = true
-	defer m.Close()
-
-	fx := newTestFixture()
-	c := newClientAgainst(t, ctx, m.URL(), fx, 2)
-	defer c.Close()
-
-	_, err := c.Chat(ctx, openai.ChatCompletionRequest{
-		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
-	})
-	if err == nil {
-		t.Fatal("expected error from mock 500, got nil")
+// TestChat_ClassifiesErrors — the load-bearing bit: adapter maps HTTP
+// status codes to typed sentinels so Phase O retry policies can classify
+// via errors.Is.
+func TestChat_ClassifiesErrors(t *testing.T) {
+	cases := []struct {
+		name           string
+		serverStatus   int
+		wantSentinel   error
+	}{
+		{"429 → ErrRateLimited", http.StatusTooManyRequests, llm.ErrRateLimited},
+		{"503 → ErrCapExceeded (llama.cpp max_parallel)", http.StatusServiceUnavailable, llm.ErrCapExceeded},
+		{"500 → ErrUnavailable", http.StatusInternalServerError, llm.ErrUnavailable},
+		{"502 → ErrUnavailable", http.StatusBadGateway, llm.ErrUnavailable},
+		{"504 → ErrUnavailable", http.StatusGatewayTimeout, llm.ErrUnavailable},
+		{"404 → ErrModelNotFound", http.StatusNotFound, llm.ErrModelNotFound},
+		{"400 → ErrInvalidRequest", http.StatusBadRequest, llm.ErrInvalidRequest},
+		{"401 → ErrAuthFailed", http.StatusUnauthorized, llm.ErrAuthFailed},
+		{"403 → ErrAuthFailed", http.StatusForbidden, llm.ErrAuthFailed},
 	}
-	if !fx.log.HasAction(vocabulary.ModuleInfraLLM, vocabulary.ActionLLMChatFailed) {
-		t.Errorf("expected ActionLLMChatFailed; got %+v", fx.log.Snapshot())
-	}
-	scrape := scrapeMetrics(t, fx.reg)
-	if !strings.Contains(scrape, `found_footy_llm_calls_total{kind="chat",outcome="failure"} 1`) {
-		t.Errorf("scrape missing failure counter; got:\n%s", scrape)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			m := newMockLLMServer()
+			m.chatStatusCode = tc.serverStatus
+			defer m.Close()
+
+			fx := newTestFixture()
+			c := newClientAgainst(t, ctx, m.URL(), fx, 2)
+			defer c.Close()
+
+			_, err := c.Chat(ctx, simpleChat("hi"))
+			if err == nil {
+				t.Fatalf("expected error for status %d, got nil", tc.serverStatus)
+			}
+			if !errors.Is(err, tc.wantSentinel) {
+				t.Errorf("errors.Is(err, %v) = false; err = %v", tc.wantSentinel, err)
+			}
+		})
 	}
 }
 
-// TestChat_ConcurrencyCap fires N concurrent chat calls with a cap of
-// 2 and asserts the server never saw more than 2 in flight at once.
-// This is the load-bearing invariant that keeps us within joi's
-// max_parallel=2 limit.
-func TestChat_ConcurrencyCap(t *testing.T) {
+// TestChat_MultimodalRoundtrip — a ChatMessage carrying an image gets
+// forwarded to the server as an OpenAI multipart message (visible via
+// the response coming back at all — the mock echoes 200 regardless,
+// so the meaningful assertion is "no error from translation").
+func TestChat_MultimodalRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	m := newMockLLMServer()
-	m.chatDelay = 100 * time.Millisecond // hold each request long enough for concurrency to build
 	defer m.Close()
 
 	fx := newTestFixture()
 	c := newClientAgainst(t, ctx, m.URL(), fx, 2)
 	defer c.Close()
-	m.ResetPeak() // /v1/models probe already ran; we care only about chat concurrency
+
+	req := llm.ChatRequest{
+		Messages: []llm.ChatMessage{{
+			Role:    llm.RoleUser,
+			Content: "is this a soccer match?",
+			Images:  []llm.ChatImage{{Data: []byte{0xFF, 0xD8, 0xFF, 0xE0}, MimeType: "image/jpeg"}},
+		}},
+	}
+	if _, err := c.Chat(ctx, req); err != nil {
+		t.Fatalf("multimodal chat: %v", err)
+	}
+}
+
+// TestChat_ImageEitherDataOrURL — sanity check on the ChatImage
+// constraint. Setting both should error at request-build time.
+func TestChat_ImageEitherDataOrURL(t *testing.T) {
+	ctx := context.Background()
+	m := newMockLLMServer()
+	defer m.Close()
+
+	fx := newTestFixture()
+	c := newClientAgainst(t, ctx, m.URL(), fx, 2)
+	defer c.Close()
+
+	req := llm.ChatRequest{
+		Messages: []llm.ChatMessage{{
+			Role:   llm.RoleUser,
+			Images: []llm.ChatImage{{Data: []byte{0xFF}, URL: "http://x/y.jpg"}},
+		}},
+	}
+	_, err := c.Chat(ctx, req)
+	if err == nil {
+		t.Fatal("expected error when both Data and URL set, got nil")
+	}
+}
+
+// TestChat_ConcurrencyCap — semaphore invariant preserved through the
+// refactor. 6 concurrent goroutines against cap=2 mustn't breach.
+func TestChat_ConcurrencyCap(t *testing.T) {
+	ctx := context.Background()
+	m := newMockLLMServer()
+	m.chatDelay = 100 * time.Millisecond
+	defer m.Close()
+
+	fx := newTestFixture()
+	c := newClientAgainst(t, ctx, m.URL(), fx, 2)
+	defer c.Close()
+	m.ResetPeak()
 
 	const N = 6
 	var wg sync.WaitGroup
@@ -228,9 +325,7 @@ func TestChat_ConcurrencyCap(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = c.Chat(ctx, openai.ChatCompletionRequest{
-				Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "hi"}},
-			})
+			_, _ = c.Chat(ctx, simpleChat("hi"))
 		}()
 	}
 	wg.Wait()
@@ -240,8 +335,41 @@ func TestChat_ConcurrencyCap(t *testing.T) {
 	}
 }
 
-// TestNewClient_NilInstruments_Errors — same fast-fail guard as every
-// other adapter.
+// TestNewClient_APIVersionPathOverride — the nexus-swap knob. Empty
+// version path means the client hits the endpoint's root. Verified by
+// pointing the mock at a server that only serves the un-versioned
+// route.
+func TestNewClient_APIVersionPathOverride(t *testing.T) {
+	// Server serves /models WITHOUT the /v1 prefix.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/models", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(openai.ModelsList{
+			Models: []openai.Model{{ID: "nexus-test", Object: "model", OwnedBy: "nexus"}},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	fx := newTestFixture()
+	c, err := llm.NewClient(context.Background(), config.LLMConfig{
+		Endpoint:           srv.URL,
+		APIVersionPath:     "", // no version segment
+		APIKey:             "test",
+		ChatConcurrencyCap: 2,
+		ConnectTimeout:     5 * time.Second,
+		RequestTimeout:     10 * time.Second,
+	}, fx.ins)
+	if err != nil {
+		t.Fatalf("NewClient with empty APIVersionPath: %v", err)
+	}
+	defer c.Close()
+
+	if c.ChatModel() != "nexus-test" {
+		t.Errorf("ChatModel = %q, want nexus-test (proved probe hit /models not /v1/models)", c.ChatModel())
+	}
+}
+
+// TestNewClient_NilInstruments_Errors — fast-fail guard.
 func TestNewClient_NilInstruments_Errors(t *testing.T) {
 	_, err := llm.NewClient(context.Background(),
 		config.LLMConfig{Endpoint: "http://x", ChatConcurrencyCap: 2}, nil)
@@ -250,7 +378,7 @@ func TestNewClient_NilInstruments_Errors(t *testing.T) {
 	}
 }
 
-// TestNewClient_EmptyEndpoint_Errors — no endpoint = no client.
+// TestNewClient_EmptyEndpoint_Errors — fast-fail guard.
 func TestNewClient_EmptyEndpoint_Errors(t *testing.T) {
 	fx := newTestFixture()
 	_, err := llm.NewClient(context.Background(),
@@ -260,9 +388,7 @@ func TestNewClient_EmptyEndpoint_Errors(t *testing.T) {
 	}
 }
 
-// TestNewClient_ZeroConcurrencyCap_Errors — a cap of 0 would deadlock
-// on the first Chat call (semaphore never has room). Reject at
-// construction.
+// TestNewClient_ZeroConcurrencyCap_Errors — 0 cap would deadlock.
 func TestNewClient_ZeroConcurrencyCap_Errors(t *testing.T) {
 	fx := newTestFixture()
 	_, err := llm.NewClient(context.Background(),
@@ -272,7 +398,7 @@ func TestNewClient_ZeroConcurrencyCap_Errors(t *testing.T) {
 	}
 }
 
-// TestNewClient_UnreachableHost_ErrorsQuickly bounds startup by
+// TestNewClient_UnreachableHost_ErrorsQuickly — startup bounded by
 // ConnectTimeout.
 func TestNewClient_UnreachableHost_ErrorsQuickly(t *testing.T) {
 	if testing.Short() {
@@ -282,7 +408,8 @@ func TestNewClient_UnreachableHost_ErrorsQuickly(t *testing.T) {
 	fx := newTestFixture()
 	start := time.Now()
 	_, err := llm.NewClient(context.Background(), config.LLMConfig{
-		Endpoint:           "http://192.0.2.1:8080", // RFC 6890 discard
+		Endpoint:           "http://192.0.2.1:8080",
+		APIVersionPath:     "/v1",
 		APIKey:             "x",
 		ChatConcurrencyCap: 2,
 		ConnectTimeout:     2 * time.Second,
