@@ -12,6 +12,7 @@ import (
 
 	"go.temporal.io/sdk/worker"
 
+	ingestactivity "github.com/vedantadhobley/found-footy/internal/activity/ingest"
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	"github.com/vedantadhobley/found-footy/internal/infra/llm"
@@ -22,6 +23,7 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/infra/temporal"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
 	"github.com/vedantadhobley/found-footy/internal/infra/wikidata"
+	ffwf "github.com/vedantadhobley/found-footy/internal/workflow"
 )
 
 // gitSHA, builtAt are baked in at build time via -ldflags per §11
@@ -79,7 +81,6 @@ func main() {
 		if err != nil {
 			return err
 		}
-		_ = afClient // consumed by ingest + monitor activities in Phase O
 		// No closer — http.Client has no persistent state to drain.
 
 		wdIns := wikidata.RegisterMetrics(deps.Metrics, deps.Log)
@@ -114,7 +115,19 @@ func main() {
 		})
 
 		w := temporal.NewWorker(tempClient, tempIns, worker.Options{})
-		// Phase O will register workflows + activities on `w` here.
+
+		// Phase O1d — IngestWorkflow + its four activities.
+		// Repos + adapters constructed above are injected into the
+		// Activities struct; workflow + activities registered under
+		// their default (short function name) identifiers.
+		ingestActs := &ingestactivity.Activities{
+			APIFootball: afClient,
+			FixtureRepo: pg.NewFixtureRepo(pool),
+			AliasRepo:   pg.NewAliasRepo(pool),
+		}
+		w.RegisterWorkflow(ffwf.IngestWorkflow)
+		w.RegisterActivity(ingestActs)
+
 		if err := w.Start(ctx); err != nil {
 			return err
 		}
