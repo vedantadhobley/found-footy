@@ -1,3 +1,4 @@
+// TestEmitter — in-memory Emitter for downstream test assertions.
 package logging
 
 import (

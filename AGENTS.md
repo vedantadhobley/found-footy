@@ -117,6 +117,15 @@ Three layers of persistence, each for a different knowledge type:
 2. **Code-level docstrings** — every file gets a module-level docstring;
    every function/method/class gets a docstring. Doc-heavy by design.
    Applies to both Python and Go. Explain WHY, not WHAT.
+
+   For Go specifically: **every `.go` file (including `_test.go` files)
+   gets at least a one-line comment above `package X`** describing what
+   that specific file contributes to the package. Go's convention is
+   "package doc lives on one file"; found-footy overrides that so every
+   file is self-documenting. Godoc concatenates the per-file comments,
+   so the package doc grows naturally as files accumulate. Longer
+   package-level context (multi-paragraph) still goes on the primary
+   entry-point file (e.g., `conn.go` for `internal/infra/nats/`).
 3. **Per-agent auto-memory** — `~/.claude/projects/<project>/memory/`
    and analogous paths for other agents. Reserved for user preferences
    and collaboration tone. Project facts do NOT go here — they go in

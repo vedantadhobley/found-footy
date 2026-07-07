@@ -1,3 +1,4 @@
+// ObservabilityConfig — env-driven settings for logging + /metrics.
 package config
 
 // ObservabilityConfig covers the log level + format that the

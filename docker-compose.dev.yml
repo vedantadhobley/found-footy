@@ -153,7 +153,9 @@ services:
       - .:/src                                     # bind mount for air hot-reload
       - go-cache:/gocache
       - go-mod-cache:/gomodcache
-      - ~/workspace/nats/creds/found-footy-dev.creds:/etc/nats/found-footy.creds:ro
+      # NATS creds mount removed 2026-07-07: workspace NATS runs no-auth
+      # (accounts section commented in ~/workspace/nats/nats.conf). Re-add
+      # when nsc-generated creds land + accounts are wired.
     networks:
       - found-footy-dev
       - luv-dev  # workspace NATS + cross-project HTTP
@@ -178,7 +180,9 @@ services:
       - .:/src
       - go-cache:/gocache
       - go-mod-cache:/gomodcache
-      - ~/workspace/nats/creds/found-footy-dev.creds:/etc/nats/found-footy.creds:ro
+      # NATS creds mount removed 2026-07-07: workspace NATS runs no-auth
+      # (accounts section commented in ~/workspace/nats/nats.conf). Re-add
+      # when nsc-generated creds land + accounts are wired.
     networks:
       - found-footy-dev
       - proxy       # Caddy-fronted

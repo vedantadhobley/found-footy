@@ -1,3 +1,5 @@
+// Tests for ParseLevel, Emit output shape, baseline counter wiring,
+// and vocabulary-unknown warn path.
 package logging
 
 import (

@@ -11,6 +11,7 @@ import (
 	"context"
 
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
+	"github.com/vedantadhobley/found-footy/internal/infra/nats"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 )
 
@@ -33,8 +34,18 @@ func main() {
 			return nil
 		})
 
-		// Domain workflows land here in Phase O. For now: hold the pool
-		// open until the signal-handled context cancels.
+		natsIns := nats.RegisterMetrics(deps.Metrics, deps.Log)
+		nc, err := nats.New(ctx, deps.Cfg.NATS, natsIns)
+		if err != nil {
+			return err
+		}
+		deps.RegisterCloser("nats", func(_ context.Context) error {
+			nc.Close()
+			return nil
+		})
+
+		// Domain workflows land here in Phase O. For now: hold the
+		// adapters open until the signal-handled context cancels.
 		<-ctx.Done()
 		return nil
 	})

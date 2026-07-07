@@ -1,3 +1,4 @@
+// PGConfig — env-driven settings for the Postgres adapter (DSN + pool sizing).
 package config
 
 import "time"

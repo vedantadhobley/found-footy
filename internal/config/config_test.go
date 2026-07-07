@@ -1,3 +1,4 @@
+// Tests for the top-level Config loader + observability sub-config defaults.
 package config
 
 import (

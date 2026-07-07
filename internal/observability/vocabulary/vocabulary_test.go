@@ -1,3 +1,4 @@
+// Tests asserting every declared Module + Action label is registered.
 package vocabulary
 
 import "testing"

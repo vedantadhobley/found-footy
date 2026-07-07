@@ -1,3 +1,4 @@
+// NATSConfig — env-driven settings for the workspace NATS bus adapter.
 package config
 
 import "time"
