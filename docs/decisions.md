@@ -6,6 +6,24 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-07 — Workflow renames for Phase O
+
+The Go rebuild renames three of the six Python-era Temporal workflows.
+Nothing runs under the Go names yet — workflow IDs live in Temporal
+history permanently, so renaming after Phase O ships would leave a
+mixed vocabulary in perpetuity. Renaming now = free.
+
+| Python name         | Go rebuild name              | Reason |
+|---------------------|------------------------------|--------|
+| `IngestWorkflow`    | `IngestWorkflow`             | unchanged — does exactly what it says |
+| `MonitorWorkflow`   | `MonitorWorkflow`            | unchanged — poll active fixtures every 30s |
+| `TwitterWorkflow`   | **`DiscoveryWorkflow`**      | "Twitter" describes the source; the workflow's job is discovering candidate videos. Rename lets a future YouTube/TikTok/Reddit source fold in without a rename cascade. |
+| `DownloadWorkflow`  | **`VideoValidationWorkflow`** | downloads + AI-validates + hashes. "Download" undersells what the workflow does. |
+| `UploadWorkflow`    | **`AssetPersistenceWorkflow`** | dedups first, THEN maybe uploads. The dedup is the load-bearing part; "Upload" hides it. |
+| `RAGWorkflow`       | **(folded into `IngestWorkflow` as a sub-activity)** | "RAG" is implementation vocabulary. Alias resolution is one step of ingest, not a separate top-level workflow. |
+
+Naming for Temporal task types + workflow IDs follows the new names.
+
 ## 2026-07-02 — NATS is metadata-plane only; video bytes go over HTTP
 
 **Decision:** NATS/JetStream carries semantic events, SSE fan-out, and
