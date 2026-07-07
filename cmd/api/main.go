@@ -14,6 +14,7 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/infra/nats"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 	"github.com/vedantadhobley/found-footy/internal/infra/s3"
+	"github.com/vedantadhobley/found-footy/internal/infra/temporal"
 )
 
 // gitSHA, builtAt are baked in at build time via -ldflags per §11
@@ -52,6 +53,17 @@ func main() {
 		}
 		_ = s3c // consumed by the /videos/{share_id} presign path in Phase A
 		// s3 client has no explicit Close (no persistent connection).
+
+		tempIns := temporal.RegisterMetrics(deps.Metrics, deps.Log)
+		tempClient, err := temporal.NewClient(ctx, deps.Cfg.Temporal, tempIns)
+		if err != nil {
+			return err
+		}
+		deps.RegisterCloser("temporal-client", func(_ context.Context) error {
+			tempClient.Close()
+			return nil
+		})
+		_ = tempClient // consumed by on-demand StartWorkflow endpoints in Phase A
 
 		// Public API surface lands here in Phase A. For now: hold the
 		// adapters open until the signal-handled context cancels.

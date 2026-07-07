@@ -10,10 +10,13 @@ package main
 import (
 	"context"
 
+	"go.temporal.io/sdk/worker"
+
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
 	"github.com/vedantadhobley/found-footy/internal/infra/nats"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 	"github.com/vedantadhobley/found-footy/internal/infra/s3"
+	"github.com/vedantadhobley/found-footy/internal/infra/temporal"
 )
 
 // gitSHA, builtAt are baked in at build time via -ldflags per §11
@@ -54,6 +57,29 @@ func main() {
 		// s3 client has no explicit Close (no persistent connection); no
 		// closer needed — leaving it out is intentional and symmetric
 		// with the aws-sdk-go-v2 client's lifecycle.
+
+		tempIns := temporal.RegisterMetrics(deps.Metrics, deps.Log)
+		tempClient, err := temporal.NewClient(ctx, deps.Cfg.Temporal, tempIns)
+		if err != nil {
+			return err
+		}
+		deps.RegisterCloser("temporal-client", func(_ context.Context) error {
+			tempClient.Close()
+			return nil
+		})
+
+		w := temporal.NewWorker(tempClient, tempIns, worker.Options{})
+		// Phase O will register workflows + activities on `w` here.
+		if err := w.Start(ctx); err != nil {
+			return err
+		}
+		// Worker shutdown MUST run before its downstream deps close so
+		// draining activities can still use pg/nats/s3. LIFO order
+		// (temporal-worker registered last → drained first) gives us this.
+		deps.RegisterCloser("temporal-worker", func(_ context.Context) error {
+			w.Stop()
+			return nil
+		})
 
 		// Domain workflows land here in Phase O. For now: hold the
 		// adapters open until the signal-handled context cancels.
