@@ -104,7 +104,7 @@ func TestPool_LifecycleAgainstRealPostgres(t *testing.T) {
 	fx := newTestFixture(t)
 
 	pool, err := pg.New(ctx, config.PGConfig{
-		URL:            connStr,
+		DSN:            connStr,
 		MaxConns:       5,
 		MinConns:       1,
 		ConnectTimeout: 10 * time.Second,
@@ -152,7 +152,7 @@ func TestSchemaLoaded_CoreTables(t *testing.T) {
 	fx := newTestFixture(t)
 
 	pool, err := pg.New(ctx, config.PGConfig{
-		URL:            connStr,
+		DSN:            connStr,
 		MaxConns:       2,
 		MinConns:       1,
 		ConnectTimeout: 10 * time.Second,
@@ -232,7 +232,7 @@ func TestQueryTracer_EmitsMetricsAndLogs(t *testing.T) {
 	fx := newTestFixture(t)
 
 	pool, err := pg.New(ctx, config.PGConfig{
-		URL:            connStr,
+		DSN:            connStr,
 		MaxConns:       2,
 		MinConns:       1,
 		ConnectTimeout: 10 * time.Second,
@@ -295,7 +295,7 @@ func TestPoolStats_ReportedOnScrape(t *testing.T) {
 	fx := newTestFixture(t)
 
 	pool, err := pg.New(ctx, config.PGConfig{
-		URL:            connStr,
+		DSN:            connStr,
 		MaxConns:       7, // distinctive value so we can assert on the max gauge
 		MinConns:       1,
 		ConnectTimeout: 10 * time.Second,
@@ -332,24 +332,24 @@ func TestPoolStats_ReportedOnScrape(t *testing.T) {
 // TestNew_NilObs_Errors ensures the constructor rejects a nil
 // Observability up front — no silent fallback, no partial startup.
 func TestNew_NilObs_Errors(t *testing.T) {
-	_, err := pg.New(context.Background(), config.PGConfig{URL: "postgres://x@x/x"}, nil)
+	_, err := pg.New(context.Background(), config.PGConfig{DSN: "postgres://x@x/x"}, nil)
 	if err == nil {
 		t.Fatal("expected error for nil Observability, got nil")
 	}
 }
 
 // TestNew_EmptyURL_Errors covers the fast-fail path: a binary starts
-// without POSTGRES_URL and pg.New refuses to build a broken pool. No
+// without PG_DSN and pg.New refuses to build a broken pool. No
 // container needed.
 func TestNew_EmptyURL_Errors(t *testing.T) {
 	fx := newTestFixture(t)
 	_, err := pg.New(context.Background(), config.PGConfig{
-		URL:      "",
+		DSN:      "",
 		MaxConns: 5,
 		MinConns: 1,
 	}, fx.obs)
 	if err == nil {
-		t.Fatal("expected error for empty POSTGRES_URL, got nil")
+		t.Fatal("expected error for empty PG_DSN, got nil")
 	}
 }
 
@@ -364,7 +364,7 @@ func TestNew_UnreachableHost_ErrorsQuickly(t *testing.T) {
 	start := time.Now()
 	_, err := pg.New(context.Background(), config.PGConfig{
 		// Reserved discard address per RFC 6890 — should refuse-connect fast.
-		URL:            "postgres://x:x@192.0.2.1:5432/none?sslmode=disable",
+		DSN:            "postgres://x:x@192.0.2.1:5432/none?sslmode=disable",
 		MaxConns:       1,
 		MinConns:       1,
 		ConnectTimeout: 2 * time.Second,

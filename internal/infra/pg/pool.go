@@ -44,17 +44,17 @@ func New(ctx context.Context, cfg config.PGConfig, obs *Observability) (*Pool, e
 	if obs == nil {
 		return nil, fmt.Errorf("pg.New: Observability is required (call RegisterMetrics first)")
 	}
-	if cfg.URL == "" {
-		return nil, fmt.Errorf("pg.New: POSTGRES_URL not set")
+	if cfg.DSN == "" {
+		return nil, fmt.Errorf("pg.New: PG_DSN not set")
 	}
 
-	poolCfg, err := pgxpool.ParseConfig(cfg.URL)
+	poolCfg, err := pgxpool.ParseConfig(cfg.DSN)
 	if err != nil {
 		obs.log.Emit(ctx, logging.LevelError, vocabulary.ModuleInfraPG, vocabulary.ActionPoolConnectFailed,
-			"parse POSTGRES_URL failed",
+			"parse PG_DSN failed",
 			logging.Err(err),
 		)
-		return nil, fmt.Errorf("pg.New: parse URL: %w", err)
+		return nil, fmt.Errorf("pg.New: parse DSN: %w", err)
 	}
 	poolCfg.MaxConns = cfg.MaxConns
 	poolCfg.MinConns = cfg.MinConns
