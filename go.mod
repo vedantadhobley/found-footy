@@ -10,6 +10,7 @@ require (
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/nats-io/nats.go v1.52.0
+	github.com/sashabaranov/go-openai v1.41.2
 	github.com/testcontainers/testcontainers-go v0.43.0
 	github.com/testcontainers/testcontainers-go/modules/minio v0.43.0
 	github.com/testcontainers/testcontainers-go/modules/nats v0.43.0

@@ -27,9 +27,9 @@ type Config struct {
 	NATS          NATSConfig
 	S3            S3Config
 	Temporal      TemporalConfig
+	LLM           LLMConfig
 
 	// Sub-configs added in later S-phase commits:
-	//   LLM          llm.Config
 	//   APIFootball  apifootball.Config
 	//   Twitter      twitter.Config
 	//   Syndication  syndication.Config
