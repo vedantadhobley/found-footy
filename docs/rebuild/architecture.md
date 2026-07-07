@@ -130,8 +130,12 @@ Core type `event.Event` with `State` (detected/stable/removed) and
 per-event debounce counters. Model captures the 3-poll invariant
 Python enforced via monitor-cycle registration counts.
 
-Repo methods per plan §4 event — full implementation deferred (event
-CRUD hits pg only when MonitorWorkflow lands in O2).
+Repo methods shipped in `internal/infra/pg/event_repo.go` (O2 fix 3a):
+`Get`, `GetByNaturalKey`, `Insert`, `Upsert` (state updates),
+`ListPending`. Debounce methods (`RegisterMonitorWorkflow`,
+`RegisterDropWorkflow`, `RegisterVideoValidationWorkflow`) land in
+fix 3b. Delete-drops-on-presence + soft-delete helper additions land
+in fix 3c.
 
 ### video domain (D3)
 
