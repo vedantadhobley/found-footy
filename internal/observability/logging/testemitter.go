@@ -2,7 +2,6 @@ package logging
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 
 	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
@@ -18,14 +17,14 @@ type TestEmitter struct {
 	Captured []CapturedEntry
 }
 
-// CapturedEntry is one recorded emission. Fields is the raw slog.Attr
-// slice as-passed; test helpers can walk it.
+// CapturedEntry is one recorded emission. Fields is the raw Field slice
+// as-passed; test helpers can walk it.
 type CapturedEntry struct {
 	Level  Level
 	Module vocabulary.Module
 	Action vocabulary.Action
 	Msg    string
-	Fields []slog.Attr
+	Fields []Field
 }
 
 // Emit implements Emitter. Appends to Captured under mu.
@@ -35,7 +34,7 @@ func (t *TestEmitter) Emit(
 	module vocabulary.Module,
 	action vocabulary.Action,
 	msg string,
-	fields ...slog.Attr,
+	fields ...Field,
 ) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -2,7 +2,6 @@ package pg
 
 import (
 	"context"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -121,7 +120,7 @@ func (t *queryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.T
 	t.obs.queries.WithLabelValues(d.op, outcome).Inc()
 	t.obs.queryDuration.WithLabelValues(d.op).Observe(elapsed.Seconds())
 
-	fields := []slog.Attr{
+	fields := []logging.Field{
 		logging.String("op", d.op),
 		logging.Int64("elapsed_ms", elapsed.Milliseconds()),
 	}
