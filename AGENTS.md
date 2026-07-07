@@ -39,9 +39,9 @@ Phased delivery — see §16 for the phase map. Where we are (2026-07-07):
 | S6 | ✅ shipped | LLM adapter (OpenAI-compatible client + typed errors + Chat) |
 | S7 | ✅ shipped | External HTTP adapters (apifootball, twitter, syndication, wikidata) |
 | D | ✅ shipped | Domain layer — 4 of 8 packages complete (fixture, event, video, alias); discovery/vision/session/textanalysis stubbed for build-when-needed |
-| O1 | ✅ shipped | IngestWorkflow + 4 activities + wire-up + live e2e verification |
-| O1e | ⏳ next | Realign IngestWorkflow I/O shape to plan §5 W1 (per decisions.md); register daily Temporal Schedule |
-| O2–O5 | 📅 planned | Monitor, Discovery, VideoValidation, AssetPersistence workflows |
+| O1 | ✅ shipped | IngestWorkflow + 4 activities + wire-up + live e2e verification + daily 00:05 UTC Temporal Schedule (O1e complete) |
+| O2 | ⏳ next | MonitorWorkflow — 30s cycle, staging-poll 15-min amortization, event debounce (see decisions.md 2026-07-07 staging-poll entry) |
+| O3–O5 | 📅 planned | Discovery, VideoValidation, AssetPersistence workflows |
 | V, A, T, M, C | 📅 planned | Video pipeline, API surface, testing (synthetic e2e), migration, cutover |
 
 **Where to look for Go rebuild work:**
@@ -59,12 +59,80 @@ Phased delivery — see §16 for the phase map. Where we are (2026-07-07):
 - [`internal/observability/vocabulary/vocabulary.go`](./internal/observability/vocabulary/vocabulary.go) — typed enum registry (Module, Action). Every log emission uses these. Adding a new Module or Action = one const declaration.
 - [`internal/infra/pg/`](./internal/infra/pg/) — the **template** all future adapters follow: `Instruments` bundle + `RegisterMetrics` constructor + framework-native tracer + prometheus.Collector for scrape-time stats.
 
-**Doc discipline (working rule since 2026-07-07):** every implementation
-commit that changes a package, adapter, workflow, or activity MUST
-update the relevant `docs/rebuild/<topic>.md` in the SAME commit.
-Divergences from `docs/rebuild-plan.md` land in `docs/decisions.md`.
-Code-only commits are treated as incomplete — same status as missing
-tests. See [decisions.md 2026-07-07 working-rule entry](./docs/decisions.md).
+## Working discipline (mandatory, since 2026-07-07 retro)
+
+Learned the hard way — Phases S1–O1d shipped without living-doc
+updates, and IngestWorkflow drifted from `docs/rebuild-plan.md` §5 W1
+in six places before anyone noticed. The retro caught the damage;
+this section prevents recurrence.
+
+**Before writing code** for any workflow, activity, adapter, or
+domain change:
+
+1. **Read the plan §.** `docs/rebuild-plan.md` is the design bible.
+   Find the section relevant to what you're about to touch (§2 tree,
+   §3 schema, §4 domain, §5 orchestration, §9 adapters, §11 obs,
+   etc.). Read it before touching code. If you don't know which §,
+   see `docs/rebuild/README.md` for the mapping.
+2. **Read the archive/ Python** — as INPUT, not template. The
+   Python code is the reference implementation for BEHAVIOR ("what
+   was Python doing when X happened?"). It is NOT the template for
+   HOW to write the Go version. The rewrite exists to raise the
+   quality bar: enterprise-grade code, thoughtful concurrency where
+   safe, clean domain boundaries. Copy the behavior, redesign the
+   shape.
+3. **Surface deviations BEFORE coding.** If the plan or Python
+   behavior implies design X and you want to do Y, propose Y to the
+   user with reasoning first. Silent design decisions are the
+   specific failure mode this discipline exists to prevent.
+
+**When shipping the change:**
+
+4. **Update `docs/rebuild/<topic>.md` in the SAME commit.** The
+   ledger docs (architecture, orchestration, observability, temporal,
+   testing, etc.) get updated with what shipped in the same commit
+   that ships the code. A code-only commit is treated as incomplete —
+   same status as missing tests.
+5. **Log divergences in `docs/decisions.md`.** If what shipped
+   differs from `rebuild-plan.md`, add an append-only entry with
+   date + rationale. Reference the diverged plan § so the doc trail
+   is auditable.
+6. **Verify `git diff --stat --cached` matches the commit message
+   before push.** Write/Edit tool failures produce silent no-ops.
+   If the commit message says "filled observability.md" but the diff
+   doesn't show observability.md, fix it before push. The retro's
+   own commits made this exact mistake twice — verifying the diff
+   catches it.
+
+**Quality bar:**
+
+7. **Enterprise-grade > Python-shape.** Python was expedient. The
+   rewrite is what production should be. Concrete implications:
+     - **Concurrency where safe + beneficial.** `workflow.Go` for
+       per-fixture parallelism in MonitorWorkflow. Goroutines with
+       proper error aggregation for pipeline stages. Don't Python-port
+       sequential loops when independent work is available.
+     - **Typed everything.** Vocabulary enums for logs. Typed errors
+       (per-adapter) that workflows can `errors.Is` against. No
+       stringly-typed dispatch except where Temporal SDK requires it.
+     - **Invariants enforced at the schema layer.** CHECK constraints,
+       FOREIGN KEY RESTRICT/CASCADE, UNIQUE, NOT NULL. Domain code
+       enforces the same invariants + generates friendlier errors, but
+       the DB is the ultimate arbiter.
+     - **Idempotency by design.** Ingest UPSERTs, Schedule creation
+       swallows AlreadyRunning, event_monitor_workflows uses
+       ON CONFLICT DO NOTHING. Every write op should be safe to retry.
+     - **No half-finished implementations.** If you can't ship the
+       full thing, don't ship the stub — it lies. See
+       `internal/errors/` rip in decisions.md.
+
+**When in doubt, ask.** The user would rather answer a question
+mid-flow than review a commit that violated their intent.
+
+See the [2026-07-07 doc retro closure](./docs/decisions.md) for the
+history that produced these rules.
+
+
 
 **`.env` / `.env.example` convention (load-bearing):** Docker Compose's
 `env_file` parser does **not** strip inline `#` comments — everything
