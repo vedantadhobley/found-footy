@@ -15,6 +15,9 @@ const (
 	ActionTemporalWorkerStarted  Action = "temporal_worker_started"  // Worker.Start returned (background loop running)
 	ActionTemporalWorkerStopped  Action = "temporal_worker_stopped"  // Worker.Stop returned (drain complete)
 	ActionTemporalWorkerFailed   Action = "temporal_worker_failed"   // Worker.Start returned an error
+	ActionTemporalScheduleCreated       Action = "temporal_schedule_created"        // Schedule.Create succeeded
+	ActionTemporalScheduleAlreadyExists Action = "temporal_schedule_already_exists" // Create returned ErrScheduleAlreadyRunning; treated as success
+	ActionTemporalScheduleFailed        Action = "temporal_schedule_failed"         // Schedule.Create returned an unexpected error
 )
 
 func init() {
@@ -29,5 +32,8 @@ func init() {
 		ActionTemporalWorkerStarted,
 		ActionTemporalWorkerStopped,
 		ActionTemporalWorkerFailed,
+		ActionTemporalScheduleCreated,
+		ActionTemporalScheduleAlreadyExists,
+		ActionTemporalScheduleFailed,
 	)
 }

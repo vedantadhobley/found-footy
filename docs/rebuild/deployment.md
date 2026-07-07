@@ -102,22 +102,40 @@ Restart worker + api (`docker compose up -d --force-recreate worker api`)
 - Every binary bakes `gitSHA` + `builtAt` via `-ldflags "-X main.gitSHA=... -X main.builtAt=..."` at container build time.
 - Values surface in the `found_footy_deploy_git_sha_info{binary,git_sha,image_tag,built_at}` gauge + the `startup` log line.
 
-## Workflow scheduling — NOT WIRED
+## Workflow scheduling
 
-Plan §5 W1 says IngestWorkflow runs on `5 0 * * *` (daily 00:05 UTC)
-via a Temporal Schedule registered at worker startup. **No schedules
-are registered in `cmd/worker/main.go` today.** The workflow is
-registered on the worker (per O1d) but only fires from a manual
-trigger:
+**IngestWorkflow** — daily at 00:05 UTC. Registered on worker startup
+via `ensureIngestSchedule` in `cmd/worker/main.go` (O1e/b).
+
+- Schedule ID: `ingest-scheduled-daily`
+- Cron: `5 0 * * *` (00:05 UTC)
+- Overlap policy: `SCHEDULE_OVERLAP_POLICY_SKIP` (if a prior run is
+  still executing, skip this one)
+- Args: `IngestWorkflowInput{RetentionDays: 14}` — plan §5 W1
+  default retention
+
+Idempotent: on subsequent worker restarts, the create call returns
+`temporal.ErrScheduleAlreadyRunning` and the code logs an `already
+exists` action rather than erroring. Manual updates via `temporal
+schedule update` are safe; the startup code does NOT overwrite them.
+
+Verification: `docker exec found-footy-dev-temporal temporal --address
+temporal:7233 schedule list` shows the schedule with its next run
+time. Schedules survive worker restarts (state lives in Temporal
+server, not on the worker).
+
+**MonitorWorkflow, DiscoveryWorkflow, etc.** — schedules registered
+as their workflows land in O2+.
+
+**Manual trigger** for ad-hoc re-ingest (e.g. testing after a code
+change) still works:
 
 ```bash
 docker exec found-footy-dev-worker sh -c 'cd /src && go run ./scripts/trigger_ingest'
 ```
 
-Schedule registration is an O1e task before MonitorWorkflow starts.
-The Python-era `archive/src/worker.py` shows the reference pattern
-(client.create_schedule with ScheduleSpec + Schedule); Go SDK
-equivalent is `client.Schedule()` + `client.ScheduleClient()`.
+This bypasses the schedule entirely and fires a one-off workflow run
+against the current worker.
 
 Cross-refs:
 - [Plan §10 (deployment)](../rebuild-plan.md#10-deployment) — full deployment spec

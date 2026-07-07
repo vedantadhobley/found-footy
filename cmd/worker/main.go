@@ -9,7 +9,12 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
+	enums "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/client"
+	sdktemporal "go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 
 	ingestactivity "github.com/vedantadhobley/found-footy/internal/activity/ingest"
@@ -23,6 +28,8 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/infra/temporal"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
 	"github.com/vedantadhobley/found-footy/internal/infra/wikidata"
+	"github.com/vedantadhobley/found-footy/internal/observability/logging"
+	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 	ffwf "github.com/vedantadhobley/found-footy/internal/workflow"
 )
 
@@ -139,9 +146,65 @@ func main() {
 			return nil
 		})
 
-		// Domain workflows land here in Phase O. For now: hold the
-		// adapters open until the signal-handled context cancels.
+		// Phase O1e/b — register the daily IngestWorkflow schedule.
+		// Idempotent: subsequent worker restarts hit ErrScheduleAlreadyRunning
+		// and treat it as success. Manual updates via `temporal schedule
+		// update` are safe; this code will not overwrite them.
+		if err := ensureIngestSchedule(ctx, tempClient, deps); err != nil {
+			return err
+		}
+
 		<-ctx.Done()
 		return nil
 	})
+}
+
+// ensureIngestSchedule registers the daily IngestWorkflow Temporal
+// Schedule if it doesn't exist. Empty input means the workflow
+// self-configures its anchor + defaults (see internal/workflow/ingest.go
+// IngestWorkflowInput docstring). RetentionDays=14 is the plan §5 W1
+// default — sent explicitly so the workflow prunes 14-day-old
+// completed fixtures each daily run.
+func ensureIngestSchedule(ctx context.Context, tempClient *temporal.Client, deps *bootstrap.Deps) error {
+	const scheduleID = "ingest-scheduled-daily"
+
+	_, err := tempClient.ScheduleClient().Create(ctx, client.ScheduleOptions{
+		ID: scheduleID,
+		Spec: client.ScheduleSpec{
+			CronExpressions: []string{"5 0 * * *"}, // 00:05 UTC daily
+		},
+		Action: &client.ScheduleWorkflowAction{
+			ID:        "ingest-scheduled",
+			Workflow:  ffwf.IngestWorkflow,
+			TaskQueue: tempClient.TaskQueue(),
+			Args: []any{ffwf.IngestWorkflowInput{
+				RetentionDays: 14, // plan §5 W1 default retention
+			}},
+		},
+		Overlap: enums.SCHEDULE_OVERLAP_POLICY_SKIP,
+	})
+	if err != nil {
+		if errors.Is(err, sdktemporal.ErrScheduleAlreadyRunning) {
+			deps.Log.Emit(ctx, logging.LevelInfo,
+				vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleAlreadyExists,
+				"IngestWorkflow schedule already registered",
+				logging.String("schedule_id", scheduleID),
+			)
+			return nil
+		}
+		deps.Log.Emit(ctx, logging.LevelError,
+			vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleFailed,
+			"failed to create IngestWorkflow schedule",
+			logging.String("schedule_id", scheduleID),
+			logging.Err(err),
+		)
+		return fmt.Errorf("create ingest schedule: %w", err)
+	}
+	deps.Log.Emit(ctx, logging.LevelInfo,
+		vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleCreated,
+		"IngestWorkflow schedule registered",
+		logging.String("schedule_id", scheduleID),
+		logging.String("cron", "5 0 * * *"),
+	)
+	return nil
 }
