@@ -3,8 +3,11 @@
 // pgxpool directly — that keeps the driver swap-able and lets us layer
 // observability + retry policy in one place.
 //
-// Phase S2.1: pool construction, ping, close. Query-level metric hooks
-// and structured DEBUG logging land in S2.3.
+// Phase S2.1: pool construction, ping, close.
+// Phase S2.2: initial schema (schema.sql, applied via docker-entrypoint-initdb.d
+// in dev and tcpostgres.WithInitScripts in tests).
+// Phase S2.3: query-level metrics + structured logs via pgx.QueryTracer;
+// pool-stats collector for pgxpool.Stat gauges at scrape time.
 package pg
 
 import (
@@ -22,25 +25,32 @@ import (
 // Pool is the Postgres connection pool the domain layer depends on.
 // Embeds *pgxpool.Pool so callers get every pgx method for free (Query,
 // QueryRow, Exec, Acquire, BeginTx, ...) without a pass-through layer.
-// The wrapper exists to (a) close cleanly with a lifecycle log line and
-// (b) give us a place to hang observability hooks in S2.3.
+// The wrapper exists to (a) emit lifecycle log lines, (b) hold the
+// Observability instance for pool-stats deregistration on Close, and
+// (c) override Ping with an explicit ActionPing / ActionPingFailed
+// emission for /healthz callers that want a clean signal.
 type Pool struct {
 	*pgxpool.Pool
-	log logging.Emitter
+	obs            *Observability
+	statsCollector *poolStatsCollector
 }
 
-// New builds a pool from cfg + Pings it. Returns a descriptive error
-// on any failure — never panics — so binaries can log-and-exit cleanly.
+// New builds a pool from cfg + attaches the query tracer + registers a
+// pool-stats collector on obs.reg. Pings the pool once, bounded by
+// cfg.ConnectTimeout, so a dead Postgres can't hang startup.
 //
 // The caller is responsible for calling Close when done.
-func New(ctx context.Context, cfg config.PGConfig, log logging.Emitter) (*Pool, error) {
+func New(ctx context.Context, cfg config.PGConfig, obs *Observability) (*Pool, error) {
+	if obs == nil {
+		return nil, fmt.Errorf("pg.New: Observability is required (call RegisterMetrics first)")
+	}
 	if cfg.URL == "" {
 		return nil, fmt.Errorf("pg.New: POSTGRES_URL not set")
 	}
 
 	poolCfg, err := pgxpool.ParseConfig(cfg.URL)
 	if err != nil {
-		log.Emit(ctx, logging.LevelError, vocabulary.ModuleInfraPG, vocabulary.ActionPoolConnectFailed,
+		obs.log.Emit(ctx, logging.LevelError, vocabulary.ModuleInfraPG, vocabulary.ActionPoolConnectFailed,
 			"parse POSTGRES_URL failed",
 			logging.Err(err),
 		)
@@ -49,10 +59,14 @@ func New(ctx context.Context, cfg config.PGConfig, log logging.Emitter) (*Pool, 
 	poolCfg.MaxConns = cfg.MaxConns
 	poolCfg.MinConns = cfg.MinConns
 	poolCfg.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
+	// Attach the pgx-native query tracer — every Query/QueryRow/Exec on
+	// this pool fires TraceQueryStart + TraceQueryEnd, which increments
+	// found_footy_pg_queries_total and emits a structured log line.
+	poolCfg.ConnConfig.Tracer = &queryTracer{obs: obs}
 
 	pgxPool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
-		log.Emit(ctx, logging.LevelError, vocabulary.ModuleInfraPG, vocabulary.ActionPoolConnectFailed,
+		obs.log.Emit(ctx, logging.LevelError, vocabulary.ModuleInfraPG, vocabulary.ActionPoolConnectFailed,
 			"construct pool failed",
 			logging.Err(err),
 		)
@@ -65,39 +79,58 @@ func New(ctx context.Context, cfg config.PGConfig, log logging.Emitter) (*Pool, 
 	defer cancel()
 	if err := pgxPool.Ping(pingCtx); err != nil {
 		pgxPool.Close()
-		log.Emit(ctx, logging.LevelError, vocabulary.ModuleInfraPG, vocabulary.ActionPoolConnectFailed,
+		obs.log.Emit(ctx, logging.LevelError, vocabulary.ModuleInfraPG, vocabulary.ActionPoolConnectFailed,
 			"initial ping failed",
 			logging.Err(err),
 		)
 		return nil, fmt.Errorf("pg.New: ping: %w", err)
 	}
 
-	log.Emit(ctx, logging.LevelInfo, vocabulary.ModuleInfraPG, vocabulary.ActionPoolConnected,
+	// Register a pool-stats collector so scrape-time gauges reflect the
+	// live pgxpool.Stat. One collector per pool; unregistered in Close.
+	statsCollector := newPoolStatsCollector(pgxPool)
+	obs.reg.PrometheusRegistry().MustRegister(statsCollector)
+
+	obs.log.Emit(ctx, logging.LevelInfo, vocabulary.ModuleInfraPG, vocabulary.ActionPoolConnected,
 		"pg pool ready",
 		logging.Int("max_conns", int(cfg.MaxConns)),
 		logging.Int("min_conns", int(cfg.MinConns)),
 		logging.String("connect_timeout", cfg.ConnectTimeout.String()),
 	)
 
-	return &Pool{Pool: pgxPool, log: log}, nil
+	return &Pool{
+		Pool:           pgxPool,
+		obs:            obs,
+		statsCollector: statsCollector,
+	}, nil
 }
 
-// Close shuts down the pool + emits a lifecycle log line. Safe to call
-// once; pgxpool.Close is idempotent under a single caller.
+// Close shuts down the pool, deregisters the pool-stats collector, and
+// emits a lifecycle log line. Safe to call once.
 func (p *Pool) Close() {
-	p.log.Emit(context.Background(), logging.LevelInfo,
+	if p.statsCollector != nil {
+		p.obs.reg.PrometheusRegistry().Unregister(p.statsCollector)
+		p.statsCollector = nil
+	}
+	p.obs.log.Emit(context.Background(), logging.LevelInfo,
 		vocabulary.ModuleInfraPG, vocabulary.ActionPoolClosed,
 		"pg pool closed",
 	)
 	p.Pool.Close()
 }
 
-// Ping runs a health-probe round trip and emits a matching action.
-// Callers use this in /healthz handlers and pre-query gates.
+// Ping runs a health-probe round trip and emits ActionPing /
+// ActionPingFailed. Callers use this in /healthz handlers and pre-query
+// gates for a clean single-outcome signal, distinct from the
+// per-query traffic ActionQuery reports.
+//
+// Note: pgxpool's internal Ping issues a "SELECT 1" that also flows
+// through the query tracer — expect one ActionPing/ActionPingFailed
+// plus one ActionQuery per Ping call.
 func (p *Pool) Ping(ctx context.Context) error {
 	start := time.Now()
 	if err := p.Pool.Ping(ctx); err != nil {
-		p.log.Emit(ctx, logging.LevelWarn,
+		p.obs.log.Emit(ctx, logging.LevelWarn,
 			vocabulary.ModuleInfraPG, vocabulary.ActionPingFailed,
 			"pg ping failed",
 			logging.Int64("elapsed_ms", time.Since(start).Milliseconds()),
@@ -105,7 +138,7 @@ func (p *Pool) Ping(ctx context.Context) error {
 		)
 		return err
 	}
-	p.log.Emit(ctx, logging.LevelDebug,
+	p.obs.log.Emit(ctx, logging.LevelDebug,
 		vocabulary.ModuleInfraPG, vocabulary.ActionPing,
 		"pg ping ok",
 		logging.Int64("elapsed_ms", time.Since(start).Milliseconds()),
