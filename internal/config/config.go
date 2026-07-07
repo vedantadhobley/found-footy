@@ -28,9 +28,9 @@ type Config struct {
 	S3            S3Config
 	Temporal      TemporalConfig
 	LLM           LLMConfig
+	APIFootball   APIFootballConfig
 
 	// Sub-configs added in later S-phase commits:
-	//   APIFootball  apifootball.Config
 	//   Twitter      twitter.Config
 	//   Syndication  syndication.Config
 	//   FFmpeg       ffmpeg.Config
