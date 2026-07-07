@@ -59,7 +59,8 @@ func NewClient(ctx context.Context, cfg config.APIFootballConfig, ins *Instrumen
 	}
 
 	// Probe /status. api-sports.io returns account info + quota.
-	if _, err := c.Status(ctx); err != nil {
+	status, err := c.Status(ctx)
+	if err != nil {
 		ins.emitEvent(ctx, logging.LevelError, vocabulary.ActionAPIFootballFailed,
 			"apifootball /status probe failed",
 			logging.String("base_url", c.baseURL),
@@ -67,6 +68,17 @@ func NewClient(ctx context.Context, cfg config.APIFootballConfig, ins *Instrumen
 		)
 		return nil, fmt.Errorf("apifootball.NewClient: /status probe: %w", err)
 	}
+	// Emit an INFO connected event mirroring pg/nats/s3/llm — every
+	// adapter's startup should show a single _connected line so
+	// operators can grep "action=*_connected" and see the substrate
+	// come up.
+	ins.emitEvent(ctx, logging.LevelInfo, vocabulary.ActionAPIFootballConnected,
+		"apifootball client ready",
+		logging.String("base_url", c.baseURL),
+		logging.String("plan", status.Subscription.Plan),
+		logging.Int("requests_today", status.Requests.Current),
+		logging.Int("daily_limit", status.Requests.LimitDay),
+	)
 	return c, nil
 }
 
