@@ -29,12 +29,12 @@ type Config struct {
 	Temporal      TemporalConfig
 	LLM           LLMConfig
 	APIFootball   APIFootballConfig
+	Wikidata      WikidataConfig
+	Syndication   SyndicationConfig
+	Twitter       TwitterConfig
 
 	// Sub-configs added in later S-phase commits:
-	//   Twitter      twitter.Config
-	//   Syndication  syndication.Config
 	//   FFmpeg       ffmpeg.Config
-	//   Wikidata     wikidata.Config
 }
 
 // Load parses the process environment into a Config.
