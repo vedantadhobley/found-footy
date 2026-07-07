@@ -6,6 +6,43 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-07 — Ripped `internal/errors/` stub
+
+Plan §2 tree listed `internal/errors/ # typed error taxonomy`. Shipped
+state until today: a 5-line `doc.go` with no types, no functions, no
+imports from anywhere in the codebase.
+
+**Decision:** delete the file + directory. Reconsidered under the
+`docs/rebuild-plan.md` = intent / `docs/rebuild/*.md` = ledger
+framing: an empty stub sends a **false signal** that "typed error
+taxonomy lives here" when it doesn't. Every adapter defines its own
+error types locally (LLM has typed errors, apifootball has HTTP
+status classification, etc.). Cross-cutting sentinels haven't been
+needed yet because no workflow branches on error class — IngestWorkflow
+uses uniform exponential backoff regardless of failure mode.
+
+**When to rebuild:** when the first workflow (probably MonitorWorkflow
+in O2, more likely DiscoveryWorkflow in O3) needs `errors.Is(err,
+ffserrors.ErrRateLimited)` to distinguish "back off harder" from
+"give up." At that point create `internal/errors/errors.go` fresh
+with only the sentinels we actually need. Each adapter's own errors.go
+wraps with `fmt.Errorf("apifootball: quota exhausted: %w",
+ffserrors.ErrRateLimited)`.
+
+**Trigger criteria:** a workflow's retry policy needs to branch on
+error class, OR two different adapters emit conceptually-identical
+errors (e.g. both LLM and apifootball emit rate-limit) that a
+workflow needs to treat uniformly.
+
+**Not building this now on the "plan said so" reason.** Follows
+the CLAUDE.md rule against half-finished implementations. Follows the
+"don't add abstractions beyond what the task requires" rule.
+
+Ripped in the same commit as this entry. Two-second `git rm`; two-second
+recreation later when actually needed.
+
+---
+
 ## 2026-07-07 — Working rule: living docs update in the same commit as code
 
 Retrospective response to a stretch of ~15 commits (S1–O1d) where code
@@ -302,9 +339,12 @@ the fact.
 
 **No divergence** from plan §2 tree for: `cmd/`, `internal/domain/`
 (the shipped 4), `internal/workflow/`, `internal/activity/`,
-`internal/api/`, `internal/config/`, `internal/errors/`,
-`internal/observability/`, `internal/scaler/`, adapter tree (except
-the two composer stubs above), `caddy/`, Dockerfiles, Makefile.
+`internal/api/`, `internal/config/`, `internal/observability/`,
+`internal/scaler/`, adapter tree (except the two composer stubs
+above), `caddy/`, Dockerfiles, Makefile.
+
+(Note: `internal/errors/` was on this list at retro time but has
+since been ripped — see [2026-07-07 later entry](#2026-07-07--ripped-internalerrors-stub).)
 
 ---
 

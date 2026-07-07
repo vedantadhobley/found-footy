@@ -56,7 +56,6 @@ found-footy/
 │   ├── bootstrap/                       ✓ S1 (NOT IN PLAN — see decisions.md 2026-07-07)
 │   │   └── bootstrap.go                 Deps + LIFO Closer registry; shared binary startup
 │   ├── config/                          ✓ S1: envconfig-based Config with per-adapter sub-structs
-│   ├── errors/                          scaffold only — populated as errors surface
 │   ├── observability/
 │   │   ├── vocabulary/                  ✓ S1: typed Module + Action enums
 │   │   ├── logging/                     ✓ S1: slog Emit() + TestEmitter for unit tests
