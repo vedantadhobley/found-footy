@@ -6,6 +6,62 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-07 — Pre-O1e cleanup — LastPolledAt fix + Errors []string
+
+Small pre-O1e batch, three changes to `internal/activity/ingest/`:
+
+**1. `LastPolledAt` now set on all ingest paths.** Was a real bug:
+ingest hit api-sports.io (that IS a poll) but the fixture's
+`LastPolledAt` field stayed nil on fresh rows and stale on existing
+rows. Consequences would have been: MonitorWorkflow's future poll-
+bucket logic re-polls every fixture on its first cycle after ingest,
+wasting the amortization the whole scheme exists to provide. Fixed
+on both branches of `reconcileFixture` (existing: `existing.LastPolledAt
+= &now`; fresh: `f.LastPolledAt = &now` before state transitions,
+which don't touch that field). Two new regression tests
+(`TestCategorize_SetsLastPolledAt_OnFresh`,
+`TestCategorize_UpdatesLastPolledAt_OnExisting`).
+
+**2. Removed redundant `f.CreatedAt = now; f.UpdatedAt = now`** from
+`reconcileFixture` fresh branch. `fixture.New` sets both internally
+via `time.Now().UTC()`; state transitions (Activate/Complete)
+overwrite UpdatedAt anyway. Manual re-sets were dead code. Off-by-ns
+CreatedAt drift vs the injected test `now` is harmless (no test
+asserts on it — the field is a "when was this row born" audit
+signal).
+
+**3. `Errors int` → `Errors []string` with context.** Was one of
+the 6 IngestWorkflow divergences from plan §5 W1 logged in the retro
+as "silent, realign in O1e." Doing it now as part of the small
+batch. Per-fixture / per-team failures inside activity loops now
+land as strings like `"reconcile fixture=1515514: pool exhausted"`,
+aggregated at the workflow level into `IngestWorkflowOutput.Errors
+[]string`. Operators see WHAT failed and WHY in Temporal UI without
+joining logs. Deleted the workflow's `CategorizeErrors int` and
+`AliasErrors int` fields (subsumed by the aggregated Errors slice).
+One new test (`TestCategorize_ErrorsCarryFixtureContext`).
+
+**Doesn't touch input shape.** Full O1e (input reshape to
+`ManualDate + ManualFixtureIDs + RetentionDays`, schedule
+registration) is still queued. This batch fixes the specific gaps
+the user surfaced without expanding scope.
+
+**Doc updates** (per the same-commit rule):
+- `docs/rebuild/orchestration.md` — new I/O shape + LastPolledAt
+  notes in the reconcile-logic section.
+
+**Files:**
+- `internal/activity/ingest/activities.go` — the three changes
+- `internal/activity/ingest/activities_test.go` — 3 new tests
+- `internal/workflow/ingest.go` — `IngestWorkflowOutput.Errors`
+  aggregation
+- `internal/workflow/ingest_test.go` — no changes needed (mocks
+  don't reference removed fields)
+
+Test count: 19 in ingest + workflow (was 16), all passing.
+
+---
+
 ## 2026-07-07 — Ripped `internal/errors/` stub
 
 Plan §2 tree listed `internal/errors/ # typed error taxonomy`. Shipped

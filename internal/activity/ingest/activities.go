@@ -90,12 +90,16 @@ type CategorizeInput struct {
 }
 
 // CategorizeOutput counts landed rows by state + surfaces the unique
-// team refs the alias step consumes.
+// team refs the alias step consumes. Errors carries per-fixture
+// context strings for anything that failed inside the loop but
+// didn't fail the activity — the workflow aggregates these into its
+// top-level Errors []string so Temporal UI + Loki surface them
+// without having to join per-fixture debug logs.
 type CategorizeOutput struct {
 	Staging   int
 	Active    int
 	Completed int
-	Errors    int
+	Errors    []string
 	TeamRefs  []TeamRef
 }
 
@@ -128,11 +132,11 @@ func (a *Activities) CategorizeAndUpsertFixtures(ctx context.Context, in Categor
 	for _, apiFix := range in.Fixtures {
 		final, err := a.reconcileFixture(ctx, apiFix, in.ActivationWindow, now)
 		if err != nil {
-			out.Errors++
+			out.Errors = append(out.Errors, fmt.Sprintf("reconcile fixture=%d: %v", apiFix.Fixture.ID, err))
 			continue
 		}
 		if err := a.FixtureRepo.Upsert(ctx, final); err != nil {
-			out.Errors++
+			out.Errors = append(out.Errors, fmt.Sprintf("upsert fixture=%d: %v", apiFix.Fixture.ID, err))
 			continue
 		}
 		switch final.State {
@@ -175,6 +179,9 @@ func (a *Activities) reconcileFixture(
 
 	if existing != nil {
 		// Refresh API fields in place; leave state + timestamps alone.
+		// LastPolledAt DOES get updated — ingest is a poll against
+		// api-sports.io, and the monitor's future bucket-aware logic
+		// benefits from knowing the fixture was seen fresh.
 		existing.APIStatus = fixture.APIStatus{
 			Short: apiFix.Fixture.Status.Short,
 			Long:  apiFix.Fixture.Status.Long,
@@ -187,25 +194,32 @@ func (a *Activities) reconcileFixture(
 		existing.League = fixture.League{ID: apiFix.League.ID, Name: apiFix.League.Name, Season: apiFix.League.Season}
 		existing.HomeScore = apiFix.Goals.Home
 		existing.AwayScore = apiFix.Goals.Away
+		existing.LastPolledAt = &now
 		existing.UpdatedAt = now
 		return existing, nil
 	}
 
 	// Fresh — construct + apply initial state.
+	// fixture.New sets CreatedAt/UpdatedAt via its own time.Now() —
+	// we don't override here because state transitions (Activate/
+	// Complete) rewrite UpdatedAt anyway, and CreatedAt drift of a
+	// few ns from the injected `now` is harmless (no test asserts
+	// on it; it's a "when was this row born" audit field).
 	f := fixture.New(
 		apiFix.Fixture.ID,
 		fixture.APIStatus{Short: apiFix.Fixture.Status.Short, Long: apiFix.Fixture.Status.Long},
 		apiFix.Fixture.Date.UTC(),
 		fixture.Team{ID: apiFix.Teams.Home.ID, Name: apiFix.Teams.Home.Name},
-		fixture.Team{ID: apiFix.Teams.Away.ID, Name: apiFix.Teams.Away.Name},
-		fixture.League{ID: apiFix.League.ID, Name: apiFix.League.Name, Season: apiFix.League.Season},
+		fixture.Team{ID: apiFix.Teams.Away.ID, Name: apiFix.Teams.Away.Name}, fixture.League{ID: apiFix.League.ID, Name: apiFix.League.Name, Season: apiFix.League.Season},
 	)
 	f.APIElapsed = apiFix.Fixture.Status.Elapsed
 	f.APIExtra = apiFix.Fixture.Status.Extra
 	f.HomeScore = apiFix.Goals.Home
 	f.AwayScore = apiFix.Goals.Away
-	f.CreatedAt = now
-	f.UpdatedAt = now
+	// LastPolledAt — ingest just polled api-sports.io; record that.
+	// Set on the fresh Fixture BEFORE state transitions (Activate/
+	// Complete don't touch LastPolledAt so this survives).
+	f.LastPolledAt = &now
 
 	// Apply initial state per the API's status:
 	//   Terminal (FT/AET/etc.) → activate at kickoff, then complete now
@@ -244,11 +258,13 @@ type EnsureAliasPlaceholdersInput struct {
 }
 
 // EnsureAliasPlaceholdersOutput counts existing (already-cached) vs
-// newly-inserted (placeholder) rows.
+// newly-inserted (placeholder) rows. Errors carries per-team context
+// strings for anything that failed inside the loop but didn't fail
+// the activity — aggregated into the workflow's top-level Errors.
 type EnsureAliasPlaceholdersOutput struct {
 	Existing int
 	Inserted int
-	Errors   int
+	Errors   []string
 }
 
 // EnsureAliasPlaceholders BulkGets existing alias rows for each
@@ -283,7 +299,7 @@ func (a *Activities) EnsureAliasPlaceholders(ctx context.Context, in EnsureAlias
 		}
 		ta := alias.New(t.TeamID, t.TeamName, t.IsNational, t.Country, t.City, now)
 		if err := a.AliasRepo.Upsert(ctx, ta); err != nil {
-			out.Errors++
+			out.Errors = append(out.Errors, fmt.Sprintf("alias upsert team=%d: %v", t.TeamID, err))
 			continue
 		}
 		out.Inserted++
