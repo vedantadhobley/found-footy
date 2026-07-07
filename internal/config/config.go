@@ -25,9 +25,9 @@ type Config struct {
 	Observability ObservabilityConfig
 	Postgres      PGConfig
 	NATS          NATSConfig
+	S3            S3Config
 
 	// Sub-configs added in later S-phase commits:
-	//   S3           s3.Config
 	//   LLM          llm.Config
 	//   Temporal     temporal.Config
 	//   APIFootball  apifootball.Config
