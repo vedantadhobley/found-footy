@@ -1,3 +1,6 @@
+# found-footy .gitignore — Python-era build artifacts (still real for prod)
+# plus Go rebuild build outputs, dev env, and secrets.
+
 # Python
 __pycache__/
 *.py[cod]
