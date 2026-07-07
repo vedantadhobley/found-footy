@@ -28,7 +28,10 @@ func main() {
 		if err != nil {
 			return err
 		}
-		defer pool.Close()
+		deps.RegisterCloser("pg", func(_ context.Context) error {
+			pool.Close()
+			return nil
+		})
 
 		// Domain workflows land here in Phase O. For now: hold the pool
 		// open until the signal-handled context cancels.
