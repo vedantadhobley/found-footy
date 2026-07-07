@@ -58,8 +58,15 @@ func Run(binary, gitSHA, builtAt string, work Work) {
 		os.Exit(1)
 	}
 
-	// Logger init.
-	log := logging.New(cfg.Observability)
+	// Metrics registry FIRST — the logger depends on it so baseline
+	// calls_total + log_lines_total counters can increment on every
+	// Emit (§11 four-pillars principle: same emissions drive logs +
+	// metrics).
+	m := metrics.New()
+	m.DeployInfo.WithLabelValues(binary, gitSHA, os.Getenv("IMAGE_TAG"), builtAt).Set(1)
+
+	// Logger init with the registry attached.
+	log := logging.New(cfg.Observability, m)
 	ctx := context.Background()
 
 	log.Emit(ctx, logging.LevelInfo, vocabulary.ModuleDeploy, vocabulary.ActionConfigLoaded,
@@ -69,11 +76,6 @@ func Run(binary, gitSHA, builtAt string, work Work) {
 		logging.String("log_format", cfg.Observability.LogFormat),
 		logging.Bool("loki_enabled", cfg.Observability.LokiEnabled),
 	)
-
-	// Metrics registry + deploy-info gauge. Empty image_tag for now —
-	// docker-compose passes it via env when a real tag exists.
-	m := metrics.New()
-	m.DeployInfo.WithLabelValues(binary, gitSHA, os.Getenv("IMAGE_TAG"), builtAt).Set(1)
 
 	// Metrics HTTP listener. Runs on a goroutine so signal handling
 	// stays on the main goroutine; ListenAndServe errors are logged
