@@ -23,9 +23,9 @@ import (
 // here matches the adapter inventory in rebuild-plan.md §9.
 type Config struct {
 	Observability ObservabilityConfig
+	Postgres      PGConfig
 
 	// Sub-configs added in later S-phase commits:
-	//   Postgres     pg.Config
 	//   NATS         nats.Config
 	//   S3           s3.Config
 	//   LLM          llm.Config
