@@ -43,15 +43,14 @@ type IngestWorkflowInput struct {
 }
 
 type IngestWorkflowOutput struct {
-    Fetched          int
-    Staging          int
-    Active           int
-    Completed        int
-    CategorizeErrors int
-    ExistingAliases  int
-    InsertedAliases  int
-    AliasErrors      int
-    PrunedFixtures   int
+    Fetched         int
+    Staging         int
+    Active          int
+    Completed       int
+    ExistingAliases int
+    InsertedAliases int
+    PrunedFixtures  int
+    Errors          []string  // aggregated per-fixture/per-team failure context
 }
 ```
 
@@ -77,14 +76,18 @@ on the worker as methods of `*ingest.Activities`.
 `CategorizeAndUpsertFixtures` calls `reconcileFixture` per API fixture:
 
 **Existing row present:** refresh only API-mutable fields (Status,
-Elapsed, Extra, Kickoff, Home, Away, League, Scores) + UpdatedAt.
-Preserve domain-managed fields (State, ActivatedAt, CompletedAt,
-LastActivityAt, CreatedAt). Rationale: a fixture already active in
-our DB (activated_at set) MUST NOT have its activated_at cleared by
-the daily 00:05 re-ingest.
+Elapsed, Extra, Kickoff, Home, Away, League, Scores) + LastPolledAt
++ UpdatedAt. Preserve domain-managed fields (State, ActivatedAt,
+CompletedAt, LastActivityAt, CreatedAt). Rationale: a fixture already
+active in our DB (activated_at set) MUST NOT have its activated_at
+cleared by the daily 00:05 re-ingest. LastPolledAt DOES get updated
+because ingest is a poll — future MonitorWorkflow bucket logic will
+consult LastPolledAt to skip freshly-touched fixtures.
 
 **Fresh row (Get returns ErrNotFound):** construct via `fixture.New`,
-then apply initial state by API status:
+set `LastPolledAt = now` (before state transitions — Activate/Complete
+don't touch LastPolledAt so it survives), then apply initial state by
+API status:
 
 - **Terminal** (`FT`, `AET`, `PEN`, `CANC`, `ABD`, `AWD`, `WO`) →
   `Activate(kickoff)` + `Complete(now)`. Missed-the-match case;

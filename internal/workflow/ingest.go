@@ -44,17 +44,20 @@ type IngestWorkflowInput struct {
 
 // IngestWorkflowOutput surfaces counts from each activity so the
 // scheduler-side observer / Temporal UI can see landing metrics
-// without joining logs.
+// without joining logs. Errors aggregates per-fixture / per-team
+// context strings from every activity that had non-fatal failures
+// (a fixture that failed to reconcile, a team whose alias upsert
+// hit a pg error) — the workflow itself completes successfully but
+// operators see WHAT failed and WHY without joining logs.
 type IngestWorkflowOutput struct {
-	Fetched          int
-	Staging          int
-	Active           int
-	Completed        int
-	CategorizeErrors int
-	ExistingAliases  int
-	InsertedAliases  int
-	AliasErrors      int
-	PrunedFixtures   int
+	Fetched         int
+	Staging         int
+	Active          int
+	Completed       int
+	ExistingAliases int
+	InsertedAliases int
+	PrunedFixtures  int
+	Errors          []string
 }
 
 // IngestWorkflow — the workflow function. Registered at worker
@@ -115,12 +118,12 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 	out.Staging = catOut.Staging
 	out.Active = catOut.Active
 	out.Completed = catOut.Completed
-	out.CategorizeErrors = catOut.Errors
+	out.Errors = append(out.Errors, catOut.Errors...)
 	logger.Info("categorized",
 		"staging", out.Staging,
 		"active", out.Active,
 		"completed", out.Completed,
-		"errors", out.CategorizeErrors,
+		"errors", len(catOut.Errors),
 	)
 
 	// ── Step 3: alias placeholders ──
@@ -135,11 +138,11 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		}
 		out.ExistingAliases = aliasOut.Existing
 		out.InsertedAliases = aliasOut.Inserted
-		out.AliasErrors = aliasOut.Errors
+		out.Errors = append(out.Errors, aliasOut.Errors...)
 		logger.Info("alias placeholders",
 			"existing", out.ExistingAliases,
 			"inserted", out.InsertedAliases,
-			"errors", out.AliasErrors,
+			"errors", len(aliasOut.Errors),
 		)
 	}
 
