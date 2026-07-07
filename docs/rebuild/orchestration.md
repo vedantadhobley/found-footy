@@ -60,16 +60,29 @@ type IngestWorkflowOutput struct {
 ### Activity sequence
 
 ```
-1. FetchFixturesForWindow(From, To) → []APIFixture
-2. CategorizeAndUpsertFixtures(fixtures, ActivationWindow) → {Staging, Active, Completed, TeamRefs}
+1. Fetch (branches on ManualFixtureIDs):
+     IF len(ManualFixtureIDs) > 0:
+       FetchFixturesByIDs(IDs) → []APIFixture
+     ELSE:
+       from := anchor - 1d;  to := anchor + 3d
+       FetchFixturesForWindow(from, to) → []APIFixture
+2. CategorizeAndUpsertFixtures(fixtures, ActivationWindow)
+     → {Staging, Active, Completed, TeamRefs, Errors}
 3. IF len(TeamRefs) > 0:
      EnsureAliasPlaceholders(TeamRefs) → {Existing, Inserted, Errors}
-4. IF RetentionThreshold NOT zero:
-     PruneOldFixtures(RetentionThreshold) → Deleted
+4. IF RetentionDays > 0:
+     threshold := anchor - RetentionDays days
+     PruneOldFixtures(threshold) → Deleted
 ```
 
-All four live in `internal/activity/ingest/activities.go`. Registered
-on the worker as methods of `*ingest.Activities`.
+Anchor: `ManualDate` if set, else `workflow.Now(ctx)` — deterministic
+across replays. Manual-date override propagates through the whole
+workflow (fetch window AND retention cutoff both computed from the
+anchor) so re-ingesting a past date behaves consistently.
+
+All five activity methods live in
+`internal/activity/ingest/activities.go`. Registered on the worker
+as methods of `*ingest.Activities`.
 
 ### Reconcile logic — the load-bearing merge
 

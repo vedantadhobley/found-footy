@@ -42,15 +42,12 @@ func main() {
 	}
 	defer c.Close()
 
-	now := time.Now().UTC()
-	in := ffwf.IngestWorkflowInput{
-		// Tight window: today only. Cheap; still exercises the real path.
-		FetchWindowFrom:  now.Truncate(24 * time.Hour),
-		FetchWindowTo:    now.Truncate(24 * time.Hour).Add(24 * time.Hour),
-		ActivationWindow: 30 * time.Minute,
-		// Retention nowhere close to real fixtures — safe no-op.
-		RetentionThreshold: now.Add(-365 * 24 * time.Hour),
-	}
+	// Empty input mimics the scheduled invocation: workflow computes
+	// its own anchor via workflow.Now, uses default 30-min activation
+	// window, and skips prune (RetentionDays=0 = no prune, safe for a
+	// dev trigger). Manual reingest of specific IDs works by setting
+	// ManualFixtureIDs; date override by setting ManualDate.
+	in := ffwf.IngestWorkflowInput{}
 	inJSON, _ := json.MarshalIndent(in, "", "  ")
 	fmt.Printf("Triggering IngestWorkflow with input:\n%s\n\n", inJSON)
 

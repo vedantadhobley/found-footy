@@ -6,6 +6,70 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-07 — O1e/a — IngestWorkflow input reshape complete
+
+Realigns three of the six IngestWorkflow divergences from plan §5 W1
+that the retro logged (see [earlier entry](#2026-07-07--ingestworkflow-divergences-from-plan-5-w1)).
+
+**Changes:**
+
+**1. Input shape → plan §5 W1 + ActivationWindow.**
+```go
+type IngestWorkflowInput struct {
+    ManualDate       *time.Time
+    ManualFixtureIDs []int64
+    ActivationWindow time.Duration
+    RetentionDays    int
+}
+```
+Was:
+```go
+type IngestWorkflowInput struct {
+    FetchWindowFrom    time.Time
+    FetchWindowTo      time.Time
+    ActivationWindow   time.Duration
+    RetentionThreshold time.Time
+}
+```
+Behavior: workflow computes fetch window from anchor (ManualDate or
+workflow.Now) using plan's `[anchor-1d, anchor+3d]` bracket. Retention
+cutoff is `anchor - RetentionDays*24h`. Everything derives from the
+anchor so manual-date re-ingest is consistent.
+
+**2. `ManualFixtureIDs` path added.** When populated, workflow
+dispatches to a new `FetchFixturesByIDs` activity (thin wrapper over
+`apifootball.ListFixturesByIDs`, existing adapter method from O1a).
+`FetchFixturesForWindow` is bypassed entirely. Cap: 20 IDs per call
+(api-sports.io limit; workflow does NOT chunk — callers must batch).
+
+**3. `RetentionDays int` replaces `RetentionThreshold time.Time`.**
+Zero still means "skip prune." The schedule spec sends 14 explicitly
+(not injected as default at workflow level — callers own the value).
+
+**Test updates:**
+- Two new activity tests: `TestFetchFixturesByIDs_HappyPath`,
+  `TestFetchFixturesByIDs_PropagatesError`
+- Two new workflow tests: `TestIngestWorkflow_ManualFixtureIDs_UsesByIDsPath`,
+  `TestIngestWorkflow_EmptyInput_UsesDefaults`
+- Updated `stdInput` helper + `TestIngestWorkflow_ZeroRetention_SkipsPrune`
+  for the new shape
+- Total ingest+workflow tests: 23 (was 19), all passing
+
+**`scripts/trigger_ingest/main.go` simplified:** now passes empty
+input; workflow self-configures with `workflow.Now` as anchor + skip
+prune (dev safety default).
+
+**Doc updates in same commit** per working rule:
+- `docs/rebuild/orchestration.md` — new input shape + branching
+  activity sequence + anchor propagation notes.
+
+**Two divergences from the original 6 still open:** input reshape (this
+entry — DONE) and output reshape / Errors []string (done in the
+[2026-07-07 pre-O1e cleanup batch](#2026-07-07--pre-o1e-cleanup--lastpolledat-fix--errors-string)).
+Remaining unfinished O1e item: schedule registration (O1e/b, queued).
+
+---
+
 ## 2026-07-07 — Pre-O1e cleanup — LastPolledAt fix + Errors []string
 
 Small pre-O1e batch, three changes to `internal/activity/ingest/`:
