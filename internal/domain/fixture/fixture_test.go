@@ -62,13 +62,16 @@ func TestAPIStatus_TerminalAndLive(t *testing.T) {
 		}
 	}
 
-	lives := []string{"1H", "HT", "2H", "ET", "BT", "P", "LIVE"}
+	// Live matches Python's classification per
+	// archive/src/utils/fixture_status.py:
+	// obvious playing codes + SUSP/INT/PST (may resume any minute).
+	lives := []string{"1H", "HT", "2H", "ET", "BT", "P", "LIVE", "SUSP", "INT", "PST"}
 	for _, code := range lives {
 		if !(fixture.APIStatus{Short: code}).Live() {
 			t.Errorf("APIStatus(%q).Live() = false, want true", code)
 		}
 	}
-	nonLives := []string{"NS", "TBD", "FT", "PST", "CANC"}
+	nonLives := []string{"NS", "TBD", "FT", "CANC", "AET", "PEN", "ABD"}
 	for _, code := range nonLives {
 		if (fixture.APIStatus{Short: code}).Live() {
 			t.Errorf("APIStatus(%q).Live() = true, want false", code)

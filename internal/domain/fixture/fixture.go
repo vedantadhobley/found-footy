@@ -55,12 +55,27 @@ func (a APIStatus) Terminal() bool {
 	return false
 }
 
-// Live reports whether the API considers the fixture currently in
-// progress (kick + play + halftime, etc). Excludes pre-kickoff and
-// terminal states.
+// Live reports whether the API considers the fixture currently
+// worth active-cadence polling. Includes the obvious "playing" codes
+// (1H/HT/2H/ET/BT/P/LIVE) AND three "not-currently-playing but might
+// resume any minute" codes: SUSP (suspended), INT (interrupted), and
+// PST (postponed).
+//
+// Matches Python's classification per archive/src/utils/fixture_status.py:
+// "PST is treated as ACTIVE, not completed! Short delays (15-30 min)
+//  are common and the match may still happen the same day."
+//
+// Consequences downstream:
+//   • MonitorWorkflow polls Live()==true fixtures every 30s via the
+//     batched /fixtures?ids= call. Cost of adding SUSP/INT/PST to
+//     that batch is zero — one API call carries them all.
+//   • A fresh fixture whose API returns any Live() code gets
+//     emergency-activated by the ingest activity (already implemented
+//     that way, this just widens the set of statuses that trigger it).
 func (a APIStatus) Live() bool {
 	switch a.Short {
-	case "1H", "HT", "2H", "ET", "BT", "P", "LIVE":
+	case "1H", "HT", "2H", "ET", "BT", "P", "LIVE",
+		"SUSP", "INT", "PST":
 		return true
 	}
 	return false
