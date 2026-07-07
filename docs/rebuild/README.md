@@ -37,11 +37,14 @@ top-level `docs/*.md` and the current top-level docs move to
 | [`api-contract.md`](./api-contract.md) | ⊘ Phase F stub | Populated during Phase A. §8. |
 | [`operations.md`](./operations.md) | ⊘ Phase F stub | Populated during Phase M/C bring-up + failure procedures. §10, §14. |
 
-**Ledger discipline (since 2026-07-07):** every code change that
-touches a topic updates its ledger doc in the same commit.
-Divergences from `../rebuild-plan.md` land in
-[`../decisions.md`](../decisions.md). See [the working-rule
-decisions.md entry](../decisions.md).
+**Ledger discipline (since 2026-07-07 — MANDATORY):** every code
+change that touches a topic updates its ledger doc in the same
+commit. Divergences from `../rebuild-plan.md` land in
+[`../decisions.md`](../decisions.md). Full working discipline —
+including "read the plan §", "reference archive/ but improve, don't
+port", "verify diff before push" — lives in
+[`../../AGENTS.md § Working discipline`](../../AGENTS.md#working-discipline-mandatory-since-2026-07-07-retro).
+Non-negotiable.
 
 ## Where the design lives right now
 
