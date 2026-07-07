@@ -13,6 +13,7 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
+	"github.com/vedantadhobley/found-footy/internal/infra/llm"
 	"github.com/vedantadhobley/found-footy/internal/infra/nats"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 	"github.com/vedantadhobley/found-footy/internal/infra/s3"
@@ -57,6 +58,17 @@ func main() {
 		// s3 client has no explicit Close (no persistent connection); no
 		// closer needed — leaving it out is intentional and symmetric
 		// with the aws-sdk-go-v2 client's lifecycle.
+
+		llmIns := llm.RegisterMetrics(deps.Metrics, deps.Log)
+		llmClient, err := llm.NewClient(ctx, deps.Cfg.LLM, llmIns)
+		if err != nil {
+			return err
+		}
+		deps.RegisterCloser("llm", func(_ context.Context) error {
+			llmClient.Close()
+			return nil
+		})
+		_ = llmClient // consumed by vision + RAG activities in Phase O
 
 		tempIns := temporal.RegisterMetrics(deps.Metrics, deps.Log)
 		tempClient, err := temporal.NewClient(ctx, deps.Cfg.Temporal, tempIns)

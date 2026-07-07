@@ -50,6 +50,19 @@ Phased delivery — see §16 for the phase map. Where we are (2026-07-07):
 - [`internal/observability/vocabulary/vocabulary.go`](./internal/observability/vocabulary/vocabulary.go) — typed enum registry (Module, Action). Every log emission uses these. Adding a new Module or Action = one const declaration.
 - [`internal/infra/pg/`](./internal/infra/pg/) — the **template** all future adapters follow: `Instruments` bundle + `RegisterMetrics` constructor + framework-native tracer + prometheus.Collector for scrape-time stats.
 
+**`.env` / `.env.example` convention (load-bearing):** Docker Compose's
+`env_file` parser does **not** strip inline `#` comments — everything
+after `=` becomes the value, whitespace and all. Put descriptive
+comments on their **own line above** the assignment:
+
+```
+# LLM_CHAT_MODEL empty = discover from /v1/models
+LLM_CHAT_MODEL=
+```
+
+Never `KEY=value  # comment`. Same discipline for any dotenv file used
+with `env_file`.
+
 **Go rebuild conventions:**
 
 - Go 1.25 (bumped from 1.23 for air compatibility). Toolchain via container — nothing installed on host.
