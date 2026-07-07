@@ -23,41 +23,39 @@ At cutover completion (§15.10 Phase B), `docs/rebuild/*.md` moves to
 top-level `docs/*.md` and the current top-level docs move to
 `docs/legacy/`.
 
-## What lives here (targets)
+## What lives here + current status (2026-07-07)
 
-- [`architecture.md`](./architecture.md) — domain model + adapter tree + workflow hierarchy
-- [`orchestration.md`](./orchestration.md) — event lifecycle state machine, debouncing, VAR
-- [`temporal.md`](./temporal.md) — per-workflow retry / timeout / heartbeat policies
-- [`observability.md`](./observability.md) — log + metric + trace catalog
-- [`api-contract.md`](./api-contract.md) — HTTP + SSE + webhook contract (auto-derived from Huma tags)
-- [`logging.md`](./logging.md) — structured JSON emission convention + Loki query cookbook
-- [`operations.md`](./operations.md) — runbook: bring-up, scaling, common issues
-- [`deployment.md`](./deployment.md) — docker-compose reference + Caddy routes
-- [`testing.md`](./testing.md) — three-tier pyramid + factory conventions
+| Doc | Status | Covers |
+|---|---|---|
+| [`architecture.md`](./architecture.md) | ✓ **filled** | Repo tree + domain + adapter + workflow inventory per phase. §2/3/4/9. |
+| [`orchestration.md`](./orchestration.md) | ✓ **filled** (IngestWorkflow) | Workflow inventory + IngestWorkflow ledger (input/output/activities/reconcile/wire-up). §5. |
+| [`temporal.md`](./temporal.md) | ✓ **filled** | Client + Worker adapter shape, registration flow, workflow conventions. §5, §9. |
+| [`observability.md`](./observability.md) | ✓ **filled** | Four pillars status, vocabulary + Emitter + metrics + tracing stub. §11. |
+| [`logging.md`](./logging.md) | ✓ **filled** | Emission reference — Emit call site, Field helpers, TestEmitter. §11. |
+| [`deployment.md`](./deployment.md) | ✓ **filled** | Compose files + Garage bootstrap + Caddy + workflow scheduling state. §10. |
+| [`testing.md`](./testing.md) | ✓ **filled** | Test tier ledger (~175 tests) + make targets. §12. |
+| [`api-contract.md`](./api-contract.md) | ⊘ Phase F stub | Populated during Phase A. §8. |
+| [`operations.md`](./operations.md) | ⊘ Phase F stub | Populated during Phase M/C bring-up + failure procedures. §10, §14. |
 
-Every file exists as a stub during Phase F. They get filled in as the
-corresponding code lands.
+**Ledger discipline (since 2026-07-07):** every code change that
+touches a topic updates its ledger doc in the same commit.
+Divergences from `../rebuild-plan.md` land in
+[`../decisions.md`](../decisions.md). See [the working-rule
+decisions.md entry](../decisions.md).
 
 ## Where the design lives right now
 
-Until each stub gets populated, the canonical description of the Go
-rebuild's target design lives in
-[`../rebuild-plan.md`](../rebuild-plan.md). Section pointers per file:
+Filled ledgers are the source of truth for what shipped. For topics
+without a shipped ledger yet (api-contract.md, operations.md), the
+canonical design lives in [`../rebuild-plan.md`](../rebuild-plan.md):
 
 | Stub | Design lives at (rebuild-plan.md sections) |
 |------|-------------------------------------------|
-| `architecture.md` | §2, §4, §9 |
-| `orchestration.md` | §5, §6 |
-| `temporal.md` | §5 (retry/timeout tables), §16.5 |
-| `observability.md` | §11 |
 | `api-contract.md` | §8 |
-| `logging.md` | §11 (vocabulary + Loki query cookbook) |
 | `operations.md` | §10, §14 |
-| `deployment.md` | §10 |
-| `testing.md` | §12 |
 
 Once a stub gets populated, its rebuild-plan section becomes "historical
-context" per §15.7 — the stub is the source of truth going forward.
+context" per §15.7 — the ledger is the source of truth going forward.
 
 ## Intake rules
 
