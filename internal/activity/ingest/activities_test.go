@@ -82,6 +82,9 @@ func (r *fakeFixtureRepo) Upsert(_ context.Context, f *fixture.Fixture) error {
 func (r *fakeFixtureRepo) ListByState(context.Context, fixture.State) ([]*fixture.Fixture, error) {
 	panic("fakeFixtureRepo.ListByState: not implemented (test scope drift)")
 }
+func (r *fakeFixtureRepo) ListActiveIDs(context.Context) ([]int64, error) {
+	panic("fakeFixtureRepo.ListActiveIDs: not implemented (test scope drift)")
+}
 func (r *fakeFixtureRepo) ListStagingBeforeKickoff(context.Context, time.Time) ([]*fixture.Fixture, error) {
 	panic("fakeFixtureRepo.ListStagingBeforeKickoff: not implemented (test scope drift)")
 }

@@ -197,6 +197,67 @@ func TestFixtureRepo_ListByState(t *testing.T) {
 	}
 }
 
+// ListActiveIDs --------------------------------------------------
+
+func TestFixtureRepo_ListActiveIDs(t *testing.T) {
+	ctx, _, repo := setupRepo(t)
+	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+
+	// Seed a mix: staging, active x2, completed. Only the actives
+	// should come back.
+	staging := makeStaging(6001, kickoff)
+	if err := repo.Upsert(ctx, staging); err != nil {
+		t.Fatalf("staging Upsert: %v", err)
+	}
+	activeA := makeStaging(6002, kickoff)
+	if err := activeA.Activate(kickoff.Add(-15 * time.Minute)); err != nil {
+		t.Fatalf("Activate A: %v", err)
+	}
+	if err := repo.Upsert(ctx, activeA); err != nil {
+		t.Fatalf("active A Upsert: %v", err)
+	}
+	activeB := makeStaging(6003, kickoff)
+	if err := activeB.Activate(kickoff.Add(-15 * time.Minute)); err != nil {
+		t.Fatalf("Activate B: %v", err)
+	}
+	if err := repo.Upsert(ctx, activeB); err != nil {
+		t.Fatalf("active B Upsert: %v", err)
+	}
+	completed := makeStaging(6004, kickoff)
+	if err := completed.Activate(kickoff); err != nil {
+		t.Fatalf("Activate for completion: %v", err)
+	}
+	if err := completed.Complete(kickoff.Add(100 * time.Minute)); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if err := repo.Upsert(ctx, completed); err != nil {
+		t.Fatalf("completed Upsert: %v", err)
+	}
+
+	ids, err := repo.ListActiveIDs(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveIDs: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("got %d IDs, want 2; ids=%v", len(ids), ids)
+	}
+	// Ordering: ORDER BY id, so [6002, 6003] deterministically.
+	if ids[0] != 6002 || ids[1] != 6003 {
+		t.Errorf("ids = %v, want [6002, 6003]", ids)
+	}
+}
+
+func TestFixtureRepo_ListActiveIDs_Empty(t *testing.T) {
+	ctx, _, repo := setupRepo(t)
+	ids, err := repo.ListActiveIDs(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveIDs on empty: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("empty pg returned %v", ids)
+	}
+}
+
 // ListStagingBeforeKickoff ---------------------------------------
 
 func TestFixtureRepo_ListStagingBeforeKickoff(t *testing.T) {

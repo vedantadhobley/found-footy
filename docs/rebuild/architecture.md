@@ -120,8 +120,9 @@ activity (at-upsert-time activation for imminent kickoffs) and the
 future MonitorWorkflow's `PreActivateUpcoming` step.
 
 Repo methods shipped in `internal/infra/pg/fixture_repo.go`:
-`Get`, `Upsert`, `ListByState`, `ListStagingBeforeKickoff`,
-`PruneCompleted`.
+`Get`, `Upsert`, `ListByState`, `ListActiveIDs` (cheap ID-only
+projection for MonitorWorkflow's batched API call),
+`ListStagingBeforeKickoff`, `PruneCompleted`.
 
 ### event domain (D2)
 
