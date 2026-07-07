@@ -6,6 +6,59 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-07 — APIStatus bucketing preserves Python's SUSP/INT/PST=active
+
+Preserves Python's status classification (`archive/src/utils/fixture_status.py`)
+for the Go rebuild. Load-bearing detail I initially got wrong:
+
+**Python's active bucket**: `1H, HT, 2H, ET, BT, P, LIVE, SUSP, INT,
+PST` — the obvious playing codes PLUS three "not-currently-playing
+but might resume any minute" codes.
+
+**My initial Go implementation (`internal/domain/fixture/fixture.go`
+`APIStatus.Live()`)** was missing `SUSP`, `INT`, `PST`. That would
+have caused MonitorWorkflow to skip these fixtures when they should
+be polled — real bug, caught during O2 planning.
+
+**Fix**: added `SUSP, INT, PST` to `APIStatus.Live()`. Matches Python
+exactly. Test updated to cover the new codes explicitly.
+
+**Why preserve Python's design** (not overhaul):
+- Cost isn't wasteful: our API calls are BATCHED via `?ids=...`.
+  Adding a PST fixture to the batch costs 0 additional API calls.
+  My earlier "PST fixtures burn API budget" concern was wrong; the
+  batching model already makes this free.
+- Short delays (15-30 min) are common in real matches. Polling PST
+  fixtures every 30s means we catch the resume within one cycle.
+- Only truly-lost postponed fixtures (never resume) cost anything,
+  and those get handled by daily ingest / a future cleanup job.
+
+**Consequences downstream**:
+- MonitorWorkflow's active-fixture-list query stays `state = active`
+  regardless of underlying api_status. No distinct `postponed` state
+  added.
+- A fresh fixture that ingest sees with `status=PST` gets emergency-
+  activated (same as if `status=1H`). Same-day resume within 30 min
+  of pre-activation window fires normally.
+- The "stuck PST forever" edge case is a real but small residue —
+  handled separately by a future cleanup (Python does this via a
+  "next day cleanup" I haven't yet grepped).
+
+**Doc updates in same commit** (per working rule):
+- `internal/domain/fixture/fixture.go` — `APIStatus.Live()` +
+  docstring explaining the classification + Python source cite
+- `internal/domain/fixture/fixture_test.go` — test now covers all
+  10 Live codes explicitly
+- `docs/rebuild/orchestration.md` — IngestWorkflow initial-state
+  paragraph updated to reflect the full Live() code set
+
+**Not decided in this entry** (queued for later O2 questions):
+- Whether to add adaptive polling frequency at all
+- The "next day cleanup" for stuck PST — need to read Python's impl
+  first
+
+---
+
 ## 2026-07-07 — O1e complete — schedule registered + all §5 W1 divergences realigned
 
 Closes the O1e sequence started after the retro. All six IngestWorkflow

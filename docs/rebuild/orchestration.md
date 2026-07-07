@@ -107,10 +107,13 @@ API status:
   ended before we noticed. Two-step transition maintains the
   invariant that completed rows have both activated_at and
   completed_at set.
-- **Live** (`1H`, `HT`, `2H`, `ET`, `BT`, `P`, `LIVE`) →
-  `Activate(now)`. Emergency case: API says the match is already
-  playing but our DB doesn't have it. Land as active immediately
-  so MonitorWorkflow starts polling next cycle.
+- **Live** (`1H`, `HT`, `2H`, `ET`, `BT`, `P`, `LIVE`, `SUSP`, `INT`,
+  `PST`) → `Activate(now)`. Emergency case: API says the match is
+  already playing (or paused mid-play, or postponed with maybe-same-
+  day resume) but our DB doesn't have it. Land as active so
+  MonitorWorkflow starts polling next cycle. See
+  [decisions.md 2026-07-07 status bucketing](../decisions.md) for
+  why SUSP/INT/PST count as Live — matches Python.
 - **Not started** (`NS`, `TBD`, etc.) → check
   `ShouldActivateNow(now, ActivationWindow)`. If true (kickoff within
   30 min), Activate before first Upsert (avoids the "manual ingest at
