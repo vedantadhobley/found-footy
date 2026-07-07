@@ -18,8 +18,9 @@ package vocabulary
 type Module string
 
 // All Module values known to the vocabulary. Adding a Module here makes
-// it available to logging.Emit; ValidModules is the runtime-verifiable
-// registry used at startup to catch typos.
+// it available to logging.Emit; the logging package's Emit checks
+// against IsKnownModule to catch strays that slipped through the
+// compile-time enum (e.g. Module("typo") built at a call site).
 const (
 	// ── Workflows (Temporal orchestration layer) ──
 	ModuleIngestWorkflow    Module = "ingest_workflow"
@@ -64,10 +65,9 @@ const (
 	ModuleDeploy          Module = "deploy" // startup + shutdown markers
 )
 
-// ValidModules is the runtime-verifiable list of every declared Module.
-// The logging package's initializer walks this to build an in-memory set
-// used to catch typos in tests + to feed the vocabulary catalog
-// generator per §15.3.
+// ValidModules is the flat list of every declared Module. Consumed by
+// IsKnownModule (lazy-hydrates a set on first call) and by the
+// vocabulary catalog generator per §15.3.
 var ValidModules = []Module{
 	ModuleIngestWorkflow, ModuleMonitorWorkflow, ModuleDiscoveryWorkflow,
 	ModuleDownloadWorkflow, ModuleUploadWorkflow,
@@ -92,12 +92,50 @@ var ValidModules = []Module{
 type Action string
 
 // ValidActions is populated by each actions_<family>.go file via an
-// init() function. The logging package walks it at startup for the
-// same reasons as ValidModules.
+// init() function. The logging package's Emit checks against
+// IsKnownAction to catch strays that slipped through the compile-time
+// enum (e.g. Action("typo") built at a call site).
 var ValidActions = []Action{}
 
 // registerActions is called by each per-family actions file's init() to
 // append its declared actions to the global ValidActions list.
 func registerActions(actions ...Action) {
 	ValidActions = append(ValidActions, actions...)
+}
+
+// moduleSet + actionSet are hydrated on first lookup and act as O(1)
+// membership registries. IsKnownModule / IsKnownAction hit these
+// on every Emit — cheap enough to not care about the extra map lookup.
+var (
+	moduleSet map[Module]struct{}
+	actionSet map[Action]struct{}
+)
+
+// IsKnownModule reports whether m was declared in ValidModules. Used by
+// the logging package to catch stray Module("typo") casts at runtime —
+// the compile-time enum blocks most typos, but code that constructs a
+// Module from a string variable can still leak.
+func IsKnownModule(m Module) bool {
+	if moduleSet == nil {
+		moduleSet = make(map[Module]struct{}, len(ValidModules))
+		for _, v := range ValidModules {
+			moduleSet[v] = struct{}{}
+		}
+	}
+	_, ok := moduleSet[m]
+	return ok
+}
+
+// IsKnownAction reports whether a was registered via registerActions
+// from one of the actions_<family>.go files. Same purpose as
+// IsKnownModule.
+func IsKnownAction(a Action) bool {
+	if actionSet == nil {
+		actionSet = make(map[Action]struct{}, len(ValidActions))
+		for _, v := range ValidActions {
+			actionSet[v] = struct{}{}
+		}
+	}
+	_, ok := actionSet[a]
+	return ok
 }
