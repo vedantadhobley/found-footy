@@ -25,19 +25,19 @@ import (
 const pgImage = "pgvector/pgvector:pg16"
 
 // testFixture bundles a fresh metrics.Registry, TestEmitter, and
-// pg.Observability per test. Isolated registries mean multi-pool tests
+// pg.Instruments per test. Isolated registries mean multi-pool tests
 // don't collide on Prometheus's "duplicate metrics" rule.
 type testFixture struct {
 	reg *metrics.Registry
 	log *logging.TestEmitter
-	obs *pg.Observability
+	ins *pg.Instruments
 }
 
 func newTestFixture(_ *testing.T) *testFixture {
 	reg := metrics.New()
 	log := &logging.TestEmitter{}
-	obs := pg.RegisterMetrics(reg, log)
-	return &testFixture{reg: reg, log: log, obs: obs}
+	ins := pg.RegisterMetrics(reg, log)
+	return &testFixture{reg: reg, log: log, ins: ins}
 }
 
 // runTestPostgres starts an ephemeral Postgres container with the app
@@ -108,7 +108,7 @@ func TestPool_LifecycleAgainstRealPostgres(t *testing.T) {
 		MaxConns:       5,
 		MinConns:       1,
 		ConnectTimeout: 10 * time.Second,
-	}, fx.obs)
+	}, fx.ins)
 	if err != nil {
 		t.Fatalf("pg.New: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestSchemaLoaded_CoreTables(t *testing.T) {
 		MaxConns:       2,
 		MinConns:       1,
 		ConnectTimeout: 10 * time.Second,
-	}, fx.obs)
+	}, fx.ins)
 	if err != nil {
 		t.Fatalf("pg.New: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestQueryTracer_EmitsMetricsAndLogs(t *testing.T) {
 		MaxConns:       2,
 		MinConns:       1,
 		ConnectTimeout: 10 * time.Second,
-	}, fx.obs)
+	}, fx.ins)
 	if err != nil {
 		t.Fatalf("pg.New: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestPoolStats_ReportedOnScrape(t *testing.T) {
 		MaxConns:       7, // distinctive value so we can assert on the max gauge
 		MinConns:       1,
 		ConnectTimeout: 10 * time.Second,
-	}, fx.obs)
+	}, fx.ins)
 	if err != nil {
 		t.Fatalf("pg.New: %v", err)
 	}
@@ -330,11 +330,11 @@ func TestPoolStats_ReportedOnScrape(t *testing.T) {
 }
 
 // TestNew_NilObs_Errors ensures the constructor rejects a nil
-// Observability up front — no silent fallback, no partial startup.
+// Instruments up front — no silent fallback, no partial startup.
 func TestNew_NilObs_Errors(t *testing.T) {
 	_, err := pg.New(context.Background(), config.PGConfig{DSN: "postgres://x@x/x"}, nil)
 	if err == nil {
-		t.Fatal("expected error for nil Observability, got nil")
+		t.Fatal("expected error for nil Instruments, got nil")
 	}
 }
 
@@ -347,7 +347,7 @@ func TestNew_EmptyURL_Errors(t *testing.T) {
 		DSN:      "",
 		MaxConns: 5,
 		MinConns: 1,
-	}, fx.obs)
+	}, fx.ins)
 	if err == nil {
 		t.Fatal("expected error for empty PG_DSN, got nil")
 	}
@@ -368,7 +368,7 @@ func TestNew_UnreachableHost_ErrorsQuickly(t *testing.T) {
 		MaxConns:       1,
 		MinConns:       1,
 		ConnectTimeout: 2 * time.Second,
-	}, fx.obs)
+	}, fx.ins)
 	elapsed := time.Since(start)
 
 	if err == nil {

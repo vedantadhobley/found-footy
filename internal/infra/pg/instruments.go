@@ -14,12 +14,12 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 )
 
-// Observability bundles the pg adapter's metric handles + logger.
+// Instruments bundles the pg adapter's metric handles + logger.
 // One instance per binary, constructed at startup by the bootstrap
 // layer and passed into pg.New(). The same instance can back multiple
 // pools in the (rare) case a binary opens more than one — the
 // queryTracer references the same counters and histograms.
-type Observability struct {
+type Instruments struct {
 	log logging.Emitter
 	reg *metrics.Registry
 
@@ -28,7 +28,7 @@ type Observability struct {
 }
 
 // RegisterMetrics builds the pg adapter's counters + histograms,
-// registers them into reg, and returns the Observability instance to
+// registers them into reg, and returns the Instruments instance to
 // pass to pg.New. Call once per binary before opening any pool.
 //
 // Metrics:
@@ -41,7 +41,7 @@ type Observability struct {
 //   - found_footy_pg_pool_connections_{acquired,idle,total,max} —
 //     gauges reported at scrape time via a Collector attached in
 //     pg.New (one per pool).
-func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Observability {
+func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Instruments {
 	queries := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "found_footy",
 		Subsystem: "pg",
@@ -59,7 +59,7 @@ func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Observability 
 
 	reg.PrometheusRegistry().MustRegister(queries, queryDuration)
 
-	return &Observability{
+	return &Instruments{
 		log:           log,
 		reg:           reg,
 		queries:       queries,
@@ -71,7 +71,7 @@ func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Observability 
 // every query fires start/end callbacks, letting us record metrics +
 // structured logs without wrapping every pool method.
 type queryTracer struct {
-	obs *Observability
+	ins *Instruments
 }
 
 // queryTraceCtxKey is the private context key carrying per-query state
@@ -117,8 +117,8 @@ func (t *queryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.T
 		msg = "pg query failed"
 	}
 
-	t.obs.queries.WithLabelValues(d.op, outcome).Inc()
-	t.obs.queryDuration.WithLabelValues(d.op).Observe(elapsed.Seconds())
+	t.ins.queries.WithLabelValues(d.op, outcome).Inc()
+	t.ins.queryDuration.WithLabelValues(d.op).Observe(elapsed.Seconds())
 
 	fields := []logging.Field{
 		logging.String("op", d.op),
@@ -130,7 +130,7 @@ func (t *queryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.T
 			logging.Err(data.Err),
 		)
 	}
-	t.obs.log.Emit(ctx, level, vocabulary.ModuleInfraPG, action, msg, fields...)
+	t.ins.log.Emit(ctx, level, vocabulary.ModuleInfraPG, action, msg, fields...)
 }
 
 // classifyOp derives a bounded op label from the SQL string. Keeps the

@@ -23,8 +23,8 @@ var (
 
 func main() {
 	bootstrap.Run("api", gitSHA, builtAt, func(ctx context.Context, deps *bootstrap.Deps) error {
-		pgObs := pg.RegisterMetrics(deps.Metrics, deps.Log)
-		pool, err := pg.New(ctx, deps.Cfg.Postgres, pgObs)
+		pgIns := pg.RegisterMetrics(deps.Metrics, deps.Log)
+		pool, err := pg.New(ctx, deps.Cfg.Postgres, pgIns)
 		if err != nil {
 			return err
 		}
