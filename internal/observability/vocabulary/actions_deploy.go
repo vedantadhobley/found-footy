@@ -1,3 +1,4 @@
+// Deploy / binary-lifecycle Action enum values + init-time registration.
 package vocabulary
 
 // Deploy / binary-lifecycle actions — the first actions to land because

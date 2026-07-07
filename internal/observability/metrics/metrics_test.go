@@ -1,3 +1,4 @@
+// Tests for baseline counter registration + independent label series.
 package metrics
 
 import (

@@ -1,3 +1,6 @@
+// Instruments bundle + prometheus metric registration for the pg adapter,
+// plus the pgx query tracer and pool-stats collector wired at pool
+// construction time. See pool.go for the connection wrapper.
 package pg
 
 import (

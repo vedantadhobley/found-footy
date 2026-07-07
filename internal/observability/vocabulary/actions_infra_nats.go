@@ -1,3 +1,4 @@
+// NATS-adapter Action enum values + init-time registration.
 package vocabulary
 
 // NATS-adapter actions. Cover the connection lifecycle + publish/

@@ -1,3 +1,4 @@
+// schema.sql embedded at build time as pg.Schema for programmatic apply.
 package pg
 
 import _ "embed"

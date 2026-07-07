@@ -1,3 +1,4 @@
+// Integration + unit tests for the NATS conn wrapper.
 package nats_test
 
 import (

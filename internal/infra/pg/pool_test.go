@@ -1,3 +1,4 @@
+// Integration + unit tests for the pg pool wrapper.
 package pg_test
 
 import (

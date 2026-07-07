@@ -1,3 +1,4 @@
+// Postgres-adapter Action enum values + init-time registration.
 package vocabulary
 
 // Postgres-adapter actions. Cover the pool lifecycle + per-query

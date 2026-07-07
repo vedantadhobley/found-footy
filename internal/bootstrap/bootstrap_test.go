@@ -1,3 +1,4 @@
+// Tests for the metrics/healthz mux and Closer registry LIFO ordering.
 package bootstrap
 
 import (

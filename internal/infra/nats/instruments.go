@@ -1,3 +1,5 @@
+// Instruments bundle + prometheus metric registration for the NATS adapter.
+// See conn.go for the connection wrapper that consumes it.
 package nats
 
 import (
