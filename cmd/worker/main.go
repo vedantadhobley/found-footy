@@ -13,11 +13,15 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
+	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	"github.com/vedantadhobley/found-footy/internal/infra/llm"
 	"github.com/vedantadhobley/found-footy/internal/infra/nats"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 	"github.com/vedantadhobley/found-footy/internal/infra/s3"
+	"github.com/vedantadhobley/found-footy/internal/infra/syndication"
 	"github.com/vedantadhobley/found-footy/internal/infra/temporal"
+	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
+	"github.com/vedantadhobley/found-footy/internal/infra/wikidata"
 )
 
 // gitSHA, builtAt are baked in at build time via -ldflags per §11
@@ -69,6 +73,35 @@ func main() {
 			return nil
 		})
 		_ = llmClient // consumed by vision + RAG activities in Phase O
+
+		afIns := apifootball.RegisterMetrics(deps.Metrics, deps.Log)
+		afClient, err := apifootball.NewClient(ctx, deps.Cfg.APIFootball, afIns)
+		if err != nil {
+			return err
+		}
+		_ = afClient // consumed by ingest + monitor activities in Phase O
+		// No closer — http.Client has no persistent state to drain.
+
+		wdIns := wikidata.RegisterMetrics(deps.Metrics, deps.Log)
+		wdClient, err := wikidata.NewClient(deps.Cfg.Wikidata, wdIns)
+		if err != nil {
+			return err
+		}
+		_ = wdClient // consumed by RAG alias activity in Phase O
+
+		syndIns := syndication.RegisterMetrics(deps.Metrics, deps.Log)
+		syndClient, err := syndication.NewClient(deps.Cfg.Syndication, syndIns)
+		if err != nil {
+			return err
+		}
+		_ = syndClient // consumed by tweet-content activities in Phase O
+
+		// internal twitter/ service wire-up deferred: the dev twitter
+		// container currently runs the Go BlockUntilDone stub (no
+		// Twitter API surface on :8888 yet). Adapter code lives in
+		// internal/infra/twitter/ and is tested against mocks; wire it
+		// in when the Go twitter service ports across.
+		_ = twitter.RegisterMetrics // silence unused-import; real wire-up follows
 
 		tempIns := temporal.RegisterMetrics(deps.Metrics, deps.Log)
 		tempClient, err := temporal.NewClient(ctx, deps.Cfg.Temporal, tempIns)
