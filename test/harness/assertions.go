@@ -20,6 +20,7 @@ func AssertFinalState(ctx context.Context, t *testing.T, pool *pg.Pool, expected
 	t.Helper()
 	assertFixtures(ctx, t, pool, expected.Fixtures)
 	assertTeamAliases(ctx, t, pool, expected.TeamAliases)
+	assertEvents(ctx, t, pool, expected.Events)
 	assertCounts(ctx, t, pool, expected.Counts)
 }
 
@@ -74,6 +75,58 @@ func assertTeamAliases(ctx context.Context, t *testing.T, pool *pg.Pool, expecte
 		}
 		if ea.TeamName != "" && ea.TeamName != gotName {
 			t.Errorf("team_alias team_id=%d team_name = %q, want %q", ea.TeamID, gotName, ea.TeamName)
+		}
+	}
+}
+
+func assertEvents(ctx context.Context, t *testing.T, pool *pg.Pool, expected []ExpectedEvent) {
+	t.Helper()
+	for _, ee := range expected {
+		var (
+			gotDebounce           int
+			gotDownstreamTriggered bool
+			gotRemoved            bool
+			gotRemovedReason      *string
+			gotMonitorComplete    bool
+		)
+		err := pool.QueryRow(ctx, `
+			SELECT debounce_count, downstream_triggered, removed,
+			       removed_reason, monitor_complete
+			FROM events
+			WHERE fixture_id = $1 AND natural_key = $2
+		`, ee.FixtureID, ee.NaturalKey).Scan(
+			&gotDebounce, &gotDownstreamTriggered, &gotRemoved,
+			&gotRemovedReason, &gotMonitorComplete,
+		)
+		if err != nil {
+			t.Errorf("event fixture=%d natural_key=%q not found or unreadable: %v",
+				ee.FixtureID, ee.NaturalKey, err)
+			continue
+		}
+		if ee.DebounceCount != nil && *ee.DebounceCount != gotDebounce {
+			t.Errorf("event fixture=%d nk=%q debounce_count = %d, want %d",
+				ee.FixtureID, ee.NaturalKey, gotDebounce, *ee.DebounceCount)
+		}
+		if ee.DownstreamTriggered != nil && *ee.DownstreamTriggered != gotDownstreamTriggered {
+			t.Errorf("event fixture=%d nk=%q downstream_triggered = %v, want %v",
+				ee.FixtureID, ee.NaturalKey, gotDownstreamTriggered, *ee.DownstreamTriggered)
+		}
+		if ee.Removed != nil && *ee.Removed != gotRemoved {
+			t.Errorf("event fixture=%d nk=%q removed = %v, want %v",
+				ee.FixtureID, ee.NaturalKey, gotRemoved, *ee.Removed)
+		}
+		if ee.RemovedReason != "" {
+			if gotRemovedReason == nil {
+				t.Errorf("event fixture=%d nk=%q removed_reason = nil, want %q",
+					ee.FixtureID, ee.NaturalKey, ee.RemovedReason)
+			} else if *gotRemovedReason != ee.RemovedReason {
+				t.Errorf("event fixture=%d nk=%q removed_reason = %q, want %q",
+					ee.FixtureID, ee.NaturalKey, *gotRemovedReason, ee.RemovedReason)
+			}
+		}
+		if ee.MonitorComplete != nil && *ee.MonitorComplete != gotMonitorComplete {
+			t.Errorf("event fixture=%d nk=%q monitor_complete = %v, want %v",
+				ee.FixtureID, ee.NaturalKey, gotMonitorComplete, *ee.MonitorComplete)
 		}
 	}
 }

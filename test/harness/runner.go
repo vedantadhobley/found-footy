@@ -4,12 +4,15 @@ package harness
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
 
 	"github.com/vedantadhobley/found-footy/internal/activity/ingest"
+	"github.com/vedantadhobley/found-footy/internal/activity/monitor"
 	"github.com/vedantadhobley/found-footy/internal/config"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
@@ -65,12 +68,75 @@ func RunScenario(ctx context.Context, t *testing.T, pool *pg.Pool, mockAPI *Mock
 	switch s.Workflow {
 	case "IngestWorkflow":
 		runIngest(ctx, t, pool, afClient, s)
+	case "MonitorWorkflow":
+		runMonitor(ctx, t, pool, afClient, mockAPI, s)
 	default:
 		t.Fatalf("harness.RunScenario: unknown workflow %q", s.Workflow)
 	}
 
 	// 6. Assert final state.
 	AssertFinalState(ctx, t, pool, s.ExpectedFinalState)
+}
+
+// runMonitor iterates the scenario's cycles, executing MonitorWorkflow
+// once per cycle. The activity clock closure captures a mutable
+// currentCycleTime — advanced between cycles without recreating the
+// Activities struct. Each cycle uses a fresh testsuite env because
+// each env's ExecuteWorkflow is single-use.
+func runMonitor(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apifootball.Client, mockAPI *MockAPI, s *Scenario) {
+	t.Helper()
+	if len(s.Cycles) == 0 {
+		t.Fatal("harness.runMonitor: scenario declares workflow=MonitorWorkflow but no cycles")
+	}
+
+	// Shared clock — mutated between cycles; closure reads it.
+	// Wall-clock behavior in prod (Now=nil) is what makes injecting
+	// this cheap: we're setting a field production leaves nil.
+	var currentCycleTime time.Time
+	acts := &monitor.Activities{
+		APIFootball: afClient,
+		FixtureRepo: pg.NewFixtureRepo(pool),
+		EventRepo:   pg.NewEventRepo(pool),
+		Now:         func() time.Time { return currentCycleTime.UTC() },
+	}
+
+	// Translate scenario input → workflow input.
+	in := ffwf.MonitorWorkflowInput{}
+	if s.MonitorInput != nil {
+		in.ActivationWindow = s.MonitorInput.ActivationWindow
+	}
+
+	for i, cycle := range s.Cycles {
+		// Configure per-cycle: clock advances, mock re-primed.
+		currentCycleTime = cycle.T
+		mockAPI.SetResponses(cycle.APIResponses)
+
+		// Fresh env per cycle (each env allows only one ExecuteWorkflow).
+		var ts testsuite.WorkflowTestSuite
+		env := ts.NewTestWorkflowEnvironment()
+		// Set testsuite's own clock so workflow.Now(ctx) reads
+		// cycle.T too — otherwise the workflow disagrees with the
+		// activity about "now".
+		env.SetStartTime(cycle.T)
+		// Assign a distinct workflow ID per cycle. Debounce vote
+		// idempotency uses (event_id, workflow_id) as the PRIMARY KEY;
+		// if all cycles used testsuite's default "default-test-workflow-id"
+		// they'd count as ONE voter and count would stay at 1.
+		env.SetStartWorkflowOptions(client.StartWorkflowOptions{
+			ID:        fmt.Sprintf("monitor-cycle-%d-%s", i, cycle.T.Format("20060102T150405Z")),
+			TaskQueue: "found-footy",
+		})
+		env.RegisterWorkflow(ffwf.MonitorWorkflow)
+		env.RegisterActivity(acts)
+
+		env.ExecuteWorkflow(ffwf.MonitorWorkflow, in)
+		if !env.IsWorkflowCompleted() {
+			t.Fatalf("cycle %d (t=%s) MonitorWorkflow did not complete", i, cycle.T)
+		}
+		if err := env.GetWorkflowError(); err != nil {
+			t.Fatalf("cycle %d (t=%s) MonitorWorkflow error: %v", i, cycle.T, err)
+		}
+	}
 }
 
 func runIngest(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apifootball.Client, s *Scenario) {
