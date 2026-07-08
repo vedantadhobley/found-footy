@@ -1,0 +1,87 @@
+name: debounce-threshold-flip
+description: |
+  Verifies downstream_triggered is one-way: fires exactly ONCE on
+  the first crossing of count=3, never again. Continued presence
+  after triggering caps the counter at 3 but doesn't re-flip anything.
+
+  Trace: goal present for 8 cycles. Counts 1→2→3 (triggers on cycle
+  3), then 3, 3, 3, 3, 3 (capped, no retrigger).
+
+  Post-cycle assertion: exactly ONE monitor workflow got the
+  "justTriggered" signal during the run — reflected in monitor state.
+  We can't easily assert "justTriggered fired once" from pg alone
+  since it's a return value; the closest DB-level check is
+  downstream_triggered=true + counters make sense.
+
+workflow: MonitorWorkflow
+
+setup:
+  fixtures:
+    - id: 999003
+      state: active
+      kickoff: 2026-07-08T15:00:00Z
+      activated_at: 2026-07-08T14:45:00Z
+      last_polled_at: 2026-07-08T15:29:30Z
+      api_status_short: "1H"
+      api_status_long: First Half
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+
+_goal_present: &goal_present
+  fixtures:
+    - id: 999003
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: "1H"
+      status_long: First Half
+      status_elapsed: 30
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      events:
+        - type: Goal
+          detail: Normal Goal
+          team_id: 40
+          team_name: Liverpool
+          player_id: 111
+          player_name: Salah
+          minute: 30
+
+cycles:
+  - t: 2026-07-08T15:30:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+  - t: 2026-07-08T15:30:30Z
+    api_responses: {fixtures_by_ids: *goal_present}
+  - t: 2026-07-08T15:31:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+  - t: 2026-07-08T15:31:30Z
+    api_responses: {fixtures_by_ids: *goal_present}
+  - t: 2026-07-08T15:32:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+  - t: 2026-07-08T15:32:30Z
+    api_responses: {fixtures_by_ids: *goal_present}
+  - t: 2026-07-08T15:33:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+  - t: 2026-07-08T15:33:30Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+expected_final_state:
+  events:
+    - fixture_id: 999003
+      natural_key: "40_111_Goal_1"
+      debounce_count: 3
+      downstream_triggered: true
+      removed: false
+  counts:
+    events: 1
+    # 8 distinct presence votes: Insert (cycle 1) + cycles 2-8
+    event_monitor_workflows: 8
+    event_drop_workflows: 0

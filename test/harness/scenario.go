@@ -40,18 +40,49 @@ type Scenario struct {
 	Setup Setup `yaml:"setup"`
 
 	// APIResponses configure what the mock apifootball server returns
-	// for specific endpoints during the run. Currently a single blob
-	// per endpoint since Ingest is one-shot; when Monitor scenarios
-	// arrive we'll extend to per-cycle responses.
+	// for the single-invocation Ingest path (one blob). Monitor
+	// scenarios use per-cycle responses via Cycles below instead.
 	APIResponses APIResponses `yaml:"api_responses"`
 
 	// IngestInput populates the IngestWorkflow input when
 	// Workflow == "IngestWorkflow". Times parse from YAML as RFC3339.
 	IngestInput *IngestInput `yaml:"ingest_input,omitempty"`
 
-	// ExpectedFinalState is what pg must look like after the workflow
-	// completes. Tier 1 assertions only for now.
+	// Cycles drive multi-cycle Monitor scenarios. Each cycle is one
+	// MonitorWorkflow invocation with mock responses configured for
+	// that cycle's timestamp. Empty for single-invocation workflows.
+	Cycles []Cycle `yaml:"cycles,omitempty"`
+
+	// MonitorInput populates the MonitorWorkflowInput when Workflow
+	// == "MonitorWorkflow". All fields optional; harness applies
+	// per-cycle to each MonitorWorkflow.ExecuteWorkflow call.
+	MonitorInput *MonitorInput `yaml:"monitor_input,omitempty"`
+
+	// ExpectedFinalState is what pg must look like after all
+	// cycles/invocations complete. Tier 1 assertions.
 	ExpectedFinalState ExpectedFinalState `yaml:"expected_final_state"`
+}
+
+// Cycle is one MonitorWorkflow invocation in a multi-cycle scenario.
+// The harness sets both the workflow clock (via testsuite env) and
+// the activity clock (via Activities.Now closure) to T before
+// executing the workflow. api_responses are reconfigured on the
+// mock server for THIS cycle only.
+type Cycle struct {
+	// T is the wall-clock time both the workflow and activities see
+	// during this cycle. Must be strictly increasing across cycles.
+	T time.Time `yaml:"t"`
+
+	// APIResponses reconfigures the mock apifootball server for this
+	// cycle. Absent → mock keeps prior cycle's responses (rare).
+	APIResponses APIResponses `yaml:"api_responses,omitempty"`
+}
+
+// MonitorInput populates workflow.MonitorWorkflowInput. Kept as a
+// separate struct so we don't have to expose the internal workflow
+// package to yaml.v3 (which walks types via reflection).
+type MonitorInput struct {
+	ActivationWindow time.Duration `yaml:"activation_window,omitempty"`
 }
 
 // Setup pre-seeds rows before the workflow runs. Any of these blocks
@@ -116,21 +147,38 @@ type FixturesResponse struct {
 // mock server translates these into the JSON envelope
 // production code expects.
 type APIFixture struct {
-	ID              int64     `yaml:"id"`
-	Kickoff         time.Time `yaml:"kickoff"`
-	StatusShort     string    `yaml:"status_short"`
-	StatusLong      string    `yaml:"status_long"`
-	StatusElapsed   *int      `yaml:"status_elapsed,omitempty"`
-	StatusExtra     *int      `yaml:"status_extra,omitempty"`
-	HomeID          int       `yaml:"home_id"`
-	HomeName        string    `yaml:"home_name"`
-	AwayID          int       `yaml:"away_id"`
-	AwayName        string    `yaml:"away_name"`
-	LeagueID        int       `yaml:"league_id"`
-	LeagueName      string    `yaml:"league_name"`
-	LeagueSeason    int       `yaml:"league_season"`
-	GoalsHome       *int      `yaml:"goals_home,omitempty"`
-	GoalsAway       *int      `yaml:"goals_away,omitempty"`
+	ID              int64      `yaml:"id"`
+	Kickoff         time.Time  `yaml:"kickoff"`
+	StatusShort     string     `yaml:"status_short"`
+	StatusLong      string     `yaml:"status_long"`
+	StatusElapsed   *int       `yaml:"status_elapsed,omitempty"`
+	StatusExtra     *int       `yaml:"status_extra,omitempty"`
+	HomeID          int        `yaml:"home_id"`
+	HomeName        string     `yaml:"home_name"`
+	AwayID          int        `yaml:"away_id"`
+	AwayName        string     `yaml:"away_name"`
+	LeagueID        int        `yaml:"league_id"`
+	LeagueName      string     `yaml:"league_name"`
+	LeagueSeason    int        `yaml:"league_season"`
+	GoalsHome       *int       `yaml:"goals_home,omitempty"`
+	GoalsAway       *int       `yaml:"goals_away,omitempty"`
+	// Events populate the API response's events array — the field
+	// Monitor's ReconcileFixture reads to detect goals + debounce.
+	Events          []APIEvent `yaml:"events,omitempty"`
+}
+
+// APIEvent is one entry in an APIFixture's Events array. Currently
+// only Goal events matter for Monitor's downstream work; Cards/
+// Subst/Var are ignored at the reconcile layer.
+type APIEvent struct {
+	Type       string `yaml:"type"`                  // "Goal"
+	Detail     string `yaml:"detail,omitempty"`      // "Normal Goal", "Penalty", etc.
+	TeamID     int    `yaml:"team_id"`
+	TeamName   string `yaml:"team_name,omitempty"`
+	PlayerID   *int   `yaml:"player_id,omitempty"`   // nullable — API sometimes reports unknown scorer
+	PlayerName string `yaml:"player_name,omitempty"`
+	Minute     int    `yaml:"minute"`
+	Extra      *int   `yaml:"extra,omitempty"`
 }
 
 // IngestInput populates IngestWorkflowInput. All fields optional;
@@ -154,6 +202,11 @@ type ExpectedFinalState struct {
 	// only-checked-if-declared semantic.
 	TeamAliases []ExpectedTeamAlias `yaml:"team_aliases,omitempty"`
 
+	// Events asserts specific event rows exist with declared debounce
+	// state. Key is (fixture_id, natural_key). Fields not declared
+	// aren't checked.
+	Events []ExpectedEvent `yaml:"events,omitempty"`
+
 	// Counts asserts overall row counts in pg tables. Missing keys
 	// aren't checked; declared keys must match exactly.
 	Counts map[string]int `yaml:"counts,omitempty"`
@@ -175,6 +228,19 @@ type ExpectedFixture struct {
 type ExpectedTeamAlias struct {
 	TeamID   int    `yaml:"team_id"`
 	TeamName string `yaml:"team_name,omitempty"`
+}
+
+// ExpectedEvent verifies an event row. Located by (fixture_id,
+// natural_key). Fields not declared aren't checked (pointer-optional
+// pattern via *int / *bool where "declared vs undeclared" matters).
+type ExpectedEvent struct {
+	FixtureID           int64  `yaml:"fixture_id"`
+	NaturalKey          string `yaml:"natural_key"`
+	DebounceCount       *int   `yaml:"debounce_count,omitempty"`
+	DownstreamTriggered *bool  `yaml:"downstream_triggered,omitempty"`
+	Removed             *bool  `yaml:"removed,omitempty"`
+	RemovedReason       string `yaml:"removed_reason,omitempty"`
+	MonitorComplete     *bool  `yaml:"monitor_complete,omitempty"`
 }
 
 // LoadScenario reads and parses a YAML scenario file. Fills in

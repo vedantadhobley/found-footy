@@ -126,9 +126,9 @@ func (m *MockAPI) applyFault(w http.ResponseWriter) bool {
 }
 
 // scenarioFixturesToAPI translates the YAML-friendly APIFixture
-// shape to the exact JSON envelope api-sports.io returns.
+// shape to the exact JSON envelope api-sports.io returns —
 // production code's json.Unmarshal into apifootball.APIFixture
-// consumes.
+// consumes this shape directly.
 func scenarioFixturesToAPI(fixtures []APIFixture) []map[string]any {
 	out := make([]map[string]any, 0, len(fixtures))
 	for _, f := range fixtures {
@@ -170,8 +170,54 @@ func scenarioFixturesToAPI(fixtures []APIFixture) []map[string]any {
 				"extratime": map[string]any{"home": nil, "away": nil},
 				"penalty":   map[string]any{"home": nil, "away": nil},
 			},
+			"events": scenarioEventsToAPI(f.Events),
 		})
 	}
 	return out
+}
+
+// scenarioEventsToAPI mirrors api-sports.io's per-fixture events array
+// shape. Nil scenario events → empty array in the JSON (matches API's
+// behavior on fixtures with no reported events).
+func scenarioEventsToAPI(events []APIEvent) []map[string]any {
+	if len(events) == 0 {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(events))
+	for _, e := range events {
+		out = append(out, map[string]any{
+			"time": map[string]any{
+				"elapsed": e.Minute,
+				"extra":   e.Extra,
+			},
+			"team": map[string]any{
+				"id":     e.TeamID,
+				"name":   e.TeamName,
+				"logo":   "",
+				"winner": nil,
+			},
+			"player": map[string]any{
+				"id":   e.PlayerID,
+				"name": nullableString(e.PlayerName),
+			},
+			"assist": map[string]any{
+				"id":   nil,
+				"name": nil,
+			},
+			"type":     e.Type,
+			"detail":   e.Detail,
+			"comments": nil,
+		})
+	}
+	return out
+}
+
+// nullableString returns nil for an empty string, matching how
+// api-sports.io renders unknown players.
+func nullableString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 

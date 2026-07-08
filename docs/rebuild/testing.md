@@ -116,9 +116,22 @@ scenarios under `test/scenarios/<suite>/<name>.yaml`. Design in
 - `regression/` — scenarios born from prod bugs (link each YAML to
   the git commit or Loki query that surfaced it)
 
-**Currently shipped scenarios:**
-- `basic/ingest_happy_path.yaml` — daily ingest, 2 fixtures land as
-  staging, 4 alias placeholders created
+**Currently shipped scenarios (8, all passing in 2.75s):**
+
+basic/ (5):
+- `ingest_happy_path` — daily ingest, 2 staging fixtures
+- `ingest_manual_ids` — ManualFixtureIDs re-ingest path
+- `ingest_terminal_at_seed` — API returns FT → completed at ingest
+- `ingest_activate_at_seed` — kickoff within 30-min window → activate
+- `ingest_existing_preserves_state` — merge preserves activated_at
+
+debounce/ (3):
+- `var_overturn` — full 6-cycle debounce: 3 present cycles trigger
+  downstream, 3 absent cycles hit-zero → soft-delete with reason=var
+- `flicker_no_reset` — 7-cycle oscillation demonstrating symmetric
+  counter (NOT Python's hard reset). Ends at count=3, not removed.
+- `threshold_flip` — 8 consecutive present cycles verify
+  downstream_triggered flips exactly once + counter caps at 3
 
 **Runtime:** ~3s per scenario (dominated by testcontainer boot).
 Amortized when running the full corpus: ~2s once, then ~40ms per
