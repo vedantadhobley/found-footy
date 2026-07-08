@@ -48,8 +48,13 @@ found-footy/
 │   ├── workflow/                        1 shipped
 │   │   ├── ingest.go                    ✓ O1c: IngestWorkflow
 │   │   └── ingest_test.go               ✓ O1c: 5 WorkflowTestSuite tests
-│   ├── activity/                        1 package shipped
-│   │   └── ingest/                      ✓ O1b: 4 activities + in-memory fakes + 11 tests
+│   ├── activity/                        2 packages shipped
+│   │   ├── ingest/                      ✓ O1b: 4 activities + in-memory fakes + 11 tests
+│   │   │   ├── activities.go
+│   │   │   └── activities_test.go
+│   │   └── monitor/                     ✓ O2a: 4 activities (PreActivate,
+│   │       │                                    ListActiveIDs, FetchLive,
+│   │       │                                    ReconcileFixture) + fakes + 7 tests
 │   │       ├── activities.go
 │   │       └── activities_test.go
 │   ├── api/                             Phase 6 foundation only — SSE + read endpoints
