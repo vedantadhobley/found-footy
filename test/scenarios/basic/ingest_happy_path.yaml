@@ -1,0 +1,66 @@
+name: ingest-happy-path
+description: |
+  IngestWorkflow run against a 3-day window with 2 upcoming fixtures
+  in the API response. Both fixtures land as staging (kickoff far
+  from anchor), both teams get placeholder alias rows. No prune since
+  no prior completed fixtures exist.
+
+workflow: IngestWorkflow
+
+ingest_input:
+  manual_date: 2026-07-07T00:05:00Z
+  activation_window: 30m
+  retention_days: 14
+
+api_responses:
+  fixtures_window:
+    fixtures:
+      - id: 900001
+        kickoff: 2026-07-08T15:00:00Z
+        status_short: NS
+        status_long: Not Started
+        home_id: 40
+        home_name: Liverpool
+        away_id: 42
+        away_name: Arsenal
+        league_id: 39
+        league_name: Premier League
+        league_season: 2026
+      - id: 900002
+        kickoff: 2026-07-09T17:30:00Z
+        status_short: NS
+        status_long: Not Started
+        home_id: 33
+        home_name: Manchester United
+        away_id: 50
+        away_name: Manchester City
+        league_id: 39
+        league_name: Premier League
+        league_season: 2026
+
+expected_final_state:
+  fixtures:
+    - id: 900001
+      state: staging
+      api_status_short: NS
+      has_activated_at: false
+      has_completed_at: false
+      has_last_polled_at: true
+    - id: 900002
+      state: staging
+      api_status_short: NS
+      has_activated_at: false
+      has_completed_at: false
+      has_last_polled_at: true
+  team_aliases:
+    - team_id: 40
+      team_name: Liverpool
+    - team_id: 42
+      team_name: Arsenal
+    - team_id: 33
+      team_name: Manchester United
+    - team_id: 50
+      team_name: Manchester City
+  counts:
+    fixtures: 2
+    team_aliases: 4

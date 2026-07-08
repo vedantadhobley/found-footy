@@ -26,7 +26,7 @@ GOLANGCI_RUN := $(DOCKER_RUN) $(GOLANGCI_IMAGE)
 TEST_DOCKER_ARGS := -v /var/run/docker.sock:/var/run/docker.sock --network=host
 GO_TEST_RUN      := docker run --rm $(DOCKER_ENV) $(DOCKER_VOLS) $(TEST_DOCKER_ARGS) -w /src $(GO_IMAGE)
 
-.PHONY: help build test test-short test-race lint fmt vet tidy clean cache-init \
+.PHONY: help build test test-short test-race test-corpus lint fmt vet tidy clean cache-init \
         dev-up dev-down dev-logs dev-restart dev-shell dev-ps
 
 help: ## Show this help
@@ -53,6 +53,9 @@ test-short: cache-init ## Run unit tests only (skips integration tests that requ
 
 test-race: cache-init ## Run tests with the race detector
 	$(GO_TEST_RUN) go test -buildvcs=false -race ./...
+
+test-corpus: cache-init ## Run the scenario harness (test/scenarios/*.yaml)
+	$(GO_TEST_RUN) go test -buildvcs=false -v -run TestScenarios ./test/
 
 # ────── Lint + format ──────
 

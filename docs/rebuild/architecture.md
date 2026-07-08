@@ -69,6 +69,15 @@ found-footy/
 ├── scripts/                             smoke + trigger scripts
 │   ├── smoke_repos/main.go              ✓ live pg + repo smoke test (dev only)
 │   └── trigger_ingest/main.go           ✓ live IngestWorkflow trigger (O1d verification)
+├── test/                                ✓ scenario harness (Phase T shipped early)
+│   ├── harness/                         ✓ testcontainer pg + mock apifootball + assertion engine
+│   ├── scenarios/                       ✓ YAML corpus organized by suite
+│   │   ├── basic/                       ✓ happy paths
+│   │   ├── debounce/                    ⊘ pending Monitor implementation
+│   │   ├── faults/                      ⊘ pending
+│   │   ├── edge_cases/                  ⊘ pending
+│   │   └── regression/                  ⊘ pending
+│   └── scenarios_test.go                ✓ corpus runner (iterates YAML files)
 ├── caddy/found-footy.caddy              routing stubs; not yet copied into ~/workspace/proxy/caddy.d/
 ├── docker-compose.dev.yml               ✓ dev stack; air hot-reload on all 4 Go binaries
 ├── docker-compose.prod.yml              runs PYTHON codebase; unchanged (name reflects intent)
