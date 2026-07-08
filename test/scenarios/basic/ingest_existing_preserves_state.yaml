@@ -1,0 +1,66 @@
+name: ingest-existing-preserves-state
+description: |
+  A fixture is already active in pg (activated_at set during a
+  previous ingest cycle). Today's daily ingest sees it again in the
+  API window and re-processes it. The reconcile merge MUST preserve
+  the existing state + timestamps — refreshing only API-mutable
+  fields.
+
+  Load-bearing invariant: a fixture that was activated hours ago must
+  NOT get its activated_at cleared by the daily 00:05 UTC re-ingest.
+  This is the specific bug reconcileFixture's existing-branch guards
+  against.
+
+workflow: IngestWorkflow
+
+setup:
+  fixtures:
+    - id: 800003
+      state: active
+      kickoff: 2026-07-08T15:00:00Z
+      activated_at: 2026-07-08T14:45:00Z    # activated 15 min before kickoff
+      last_polled_at: 2026-07-08T14:55:00Z
+      api_status_short: NS
+      api_status_long: Not Started
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+
+ingest_input:
+  manual_date: 2026-07-08T15:30:00Z    # 30 min into the match
+  activation_window: 30m
+  retention_days: 14
+
+api_responses:
+  fixtures_window:
+    fixtures:
+      - id: 800003
+        kickoff: 2026-07-08T15:00:00Z
+        status_short: 1H                  # match now playing
+        status_long: First Half
+        status_elapsed: 30
+        home_id: 40
+        home_name: Liverpool
+        away_id: 42
+        away_name: Arsenal
+        league_id: 39
+        league_name: Premier League
+        league_season: 2026
+        goals_home: 1
+        goals_away: 0
+
+expected_final_state:
+  fixtures:
+    - id: 800003
+      state: active                     # unchanged from setup
+      api_status_short: "1H"             # refreshed from API
+      has_activated_at: true            # PRESERVED — not overwritten
+      has_completed_at: false
+      has_last_polled_at: true          # updated during merge
+  counts:
+    fixtures: 1
+    team_aliases: 2
