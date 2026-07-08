@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
@@ -18,6 +19,7 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	ingestactivity "github.com/vedantadhobley/found-footy/internal/activity/ingest"
+	monitoractivity "github.com/vedantadhobley/found-footy/internal/activity/monitor"
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	"github.com/vedantadhobley/found-footy/internal/infra/llm"
@@ -127,13 +129,29 @@ func main() {
 		// Repos + adapters constructed above are injected into the
 		// Activities struct; workflow + activities registered under
 		// their default (short function name) identifiers.
+		fixtureRepo := pg.NewFixtureRepo(pool)
+		aliasRepo := pg.NewAliasRepo(pool)
+		eventRepo := pg.NewEventRepo(pool)
+
 		ingestActs := &ingestactivity.Activities{
 			APIFootball: afClient,
-			FixtureRepo: pg.NewFixtureRepo(pool),
-			AliasRepo:   pg.NewAliasRepo(pool),
+			FixtureRepo: fixtureRepo,
+			AliasRepo:   aliasRepo,
 		}
 		w.RegisterWorkflow(ffwf.IngestWorkflow)
 		w.RegisterActivity(ingestActs)
+
+		// Phase O2c — MonitorWorkflow + its four activities.
+		// Shares fixtureRepo + eventRepo with the rest of the worker.
+		// Now clock left nil → real wall clock in prod (per the
+		// injectable-clock discipline for scenario testing).
+		monitorActs := &monitoractivity.Activities{
+			APIFootball: afClient,
+			FixtureRepo: fixtureRepo,
+			EventRepo:   eventRepo,
+		}
+		w.RegisterWorkflow(ffwf.MonitorWorkflow)
+		w.RegisterActivity(monitorActs)
 
 		if err := w.Start(ctx); err != nil {
 			return err
@@ -151,6 +169,14 @@ func main() {
 		// and treat it as success. Manual updates via `temporal schedule
 		// update` are safe; this code will not overwrite them.
 		if err := ensureIngestSchedule(ctx, tempClient, deps); err != nil {
+			return err
+		}
+
+		// Phase O2c — register the 30-second MonitorWorkflow schedule.
+		// Same idempotent shape. Every-30s means the schedule spec uses
+		// an INTERVAL, not a cron expression (cron doesn't support
+		// sub-minute resolution).
+		if err := ensureMonitorSchedule(ctx, tempClient, deps); err != nil {
 			return err
 		}
 
@@ -205,6 +231,55 @@ func ensureIngestSchedule(ctx context.Context, tempClient *temporal.Client, deps
 		"IngestWorkflow schedule registered",
 		logging.String("schedule_id", scheduleID),
 		logging.String("cron", "5 0 * * *"),
+	)
+	return nil
+}
+
+// ensureMonitorSchedule registers the 30-second MonitorWorkflow
+// Schedule if it doesn't exist. Uses an interval spec (cron doesn't
+// support sub-minute resolution). Overlap SKIP: if the prior cycle
+// is still running when the next tick fires, we skip — better than
+// double-fanning-out reconcile activities.
+func ensureMonitorSchedule(ctx context.Context, tempClient *temporal.Client, deps *bootstrap.Deps) error {
+	const scheduleID = "monitor-scheduled-30s"
+
+	_, err := tempClient.ScheduleClient().Create(ctx, client.ScheduleOptions{
+		ID: scheduleID,
+		Spec: client.ScheduleSpec{
+			Intervals: []client.ScheduleIntervalSpec{
+				{Every: 30 * time.Second},
+			},
+		},
+		Action: &client.ScheduleWorkflowAction{
+			ID:        "monitor-scheduled",
+			Workflow:  ffwf.MonitorWorkflow,
+			TaskQueue: tempClient.TaskQueue(),
+			Args:      []any{ffwf.MonitorWorkflowInput{}},
+		},
+		Overlap: enums.SCHEDULE_OVERLAP_POLICY_SKIP,
+	})
+	if err != nil {
+		if errors.Is(err, sdktemporal.ErrScheduleAlreadyRunning) {
+			deps.Log.Emit(ctx, logging.LevelInfo,
+				vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleAlreadyExists,
+				"MonitorWorkflow schedule already registered",
+				logging.String("schedule_id", scheduleID),
+			)
+			return nil
+		}
+		deps.Log.Emit(ctx, logging.LevelError,
+			vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleFailed,
+			"failed to create MonitorWorkflow schedule",
+			logging.String("schedule_id", scheduleID),
+			logging.Err(err),
+		)
+		return fmt.Errorf("create monitor schedule: %w", err)
+	}
+	deps.Log.Emit(ctx, logging.LevelInfo,
+		vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleCreated,
+		"MonitorWorkflow schedule registered",
+		logging.String("schedule_id", scheduleID),
+		logging.String("interval", "30s"),
 	)
 	return nil
 }
