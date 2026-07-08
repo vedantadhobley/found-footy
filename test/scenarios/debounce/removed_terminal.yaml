@@ -1,0 +1,107 @@
+name: debounce-removed-terminal
+description: |
+  Once an event is soft-removed (debounce_count hit zero), it MUST
+  stay removed even if the API brings back the same natural_key.
+  Terminal state semantic — matches decisions.md 2026-07-08 debounce
+  entry.
+
+  Trace: goal detected cycle 1 (count=1), vanishes cycle 2
+  (count=0, hitZero, soft-delete). Cycles 3-4 API brings the goal
+  back in the response. Monitor's reconcile tries to Insert (because
+  ListPending excludes removed events), fails on UNIQUE(fixture_id,
+  natural_key), error surfaced but not fatal. Row stays removed.
+
+  Documents the current implementation shortcut noted in
+  internal/activity/monitor/activities.go — a cleaner path would
+  query all natural_keys (including removed) up front and skip
+  before attempting Insert. Behavior is correct either way; this
+  scenario locks in the observable outcome.
+
+workflow: MonitorWorkflow
+
+setup:
+  fixtures:
+    - id: 999005
+      state: active
+      kickoff: 2026-07-08T15:00:00Z
+      activated_at: 2026-07-08T14:45:00Z
+      last_polled_at: 2026-07-08T15:29:30Z
+      api_status_short: "1H"
+      api_status_long: First Half
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+
+_goal_present: &goal_present
+  fixtures:
+    - id: 999005
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: "1H"
+      status_long: First Half
+      status_elapsed: 30
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      events:
+        - type: Goal
+          detail: Normal Goal
+          team_id: 40
+          team_name: Liverpool
+          player_id: 111
+          player_name: Salah
+          minute: 30
+
+_goal_absent: &goal_absent
+  fixtures:
+    - id: 999005
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: "1H"
+      status_long: First Half
+      status_elapsed: 31
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      events: []
+
+cycles:
+  # Cycle 1: goal appears. Insert seeds count=1.
+  - t: 2026-07-08T15:30:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+  # Cycle 2: absent, count=0, hit-zero soft-delete.
+  # (Insert seeded at 1, one absence brings to 0.)
+  - t: 2026-07-08T15:30:30Z
+    api_responses: {fixtures_by_ids: *goal_absent}
+
+  # Cycles 3-4: goal reappears in API. Row stays removed —
+  # Insert attempts fail on UNIQUE(fixture_id, natural_key).
+  # No state change on the removed event.
+  - t: 2026-07-08T15:31:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+  - t: 2026-07-08T15:31:30Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+expected_final_state:
+  events:
+    - fixture_id: 999005
+      natural_key: "40_111_Goal_1"
+      debounce_count: 0
+      downstream_triggered: false    # NEVER triggered — count only reached 1
+      removed: true                  # soft-deleted at cycle 2
+      removed_reason: var
+  counts:
+    events: 1                        # Still just the one event
+    event_monitor_workflows: 1       # Only the cycle-1 Insert recorded a monitor vote
+    event_drop_workflows: 1          # Only the cycle-2 absence recorded a drop vote
