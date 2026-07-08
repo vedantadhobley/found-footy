@@ -91,13 +91,44 @@ the same schema file dev postgres mounts via
 docker-entrypoint-initdb.d. Provides confidence that dev + test + prod
 DDL are the same source.
 
-## Tier 3 — synthetic e2e — NOT SHIPPED
+## Tier 3 — synthetic e2e — SHIPPED (Phase 1a)
 
-Plan §12 called for YAML-scenario e2e tests driving the full pipeline
-with recorded API-Football + Twitter + LLM responses. **Not
-implemented.** Deferred to Phase T (testing) per §16 phase roadmap.
+YAML scenario harness lives at [`test/`](../../test/) with
+scenarios under `test/scenarios/<suite>/<name>.yaml`. Design in
+[`proposals/test-corpus.md`](./proposals/test-corpus.md).
 
-The live smoke-test scripts in `scripts/` provide partial coverage:
+**How it works** (recap):
+- One testcontainer Postgres per test binary run (shared across
+  scenarios via TRUNCATE between)
+- One httptest.Server mocking api-sports.io (reconfigured per scenario
+  via SetResponses)
+- One `testsuite.WorkflowTestSuite` per scenario (in-memory Temporal)
+- Real workflow + activity code executed against the real pg
+- Activity clock injected from scenario's `manual_date` for
+  determinism
+
+**Suites** (each a subdirectory under `test/scenarios/`):
+- `basic/` — happy paths, sanity checks
+- `debounce/` — symmetric counter behavior (increment, decrement, cap,
+  floor, threshold flip)
+- `faults/` — API 500, timeout, rate-limit
+- `edge_cases/` — postponed, own goals, late-game
+- `regression/` — scenarios born from prod bugs (link each YAML to
+  the git commit or Loki query that surfaced it)
+
+**Currently shipped scenarios:**
+- `basic/ingest_happy_path.yaml` — daily ingest, 2 fixtures land as
+  staging, 4 alias placeholders created
+
+**Runtime:** ~3s per scenario (dominated by testcontainer boot).
+Amortized when running the full corpus: ~2s once, then ~40ms per
+scenario after. Target for full corpus of 50 scenarios: <90s.
+
+**Run:** `make test-corpus` — runs just the harness. `make test`
+includes it. `make test-short` excludes it (no docker).
+
+The live smoke-test scripts in `scripts/` provide different coverage
+(real api-sports.io + real Temporal + dev pg):
 - `scripts/smoke_repos/main.go` — dev pg + repo roundtrip
 - `scripts/trigger_ingest/main.go` — dev end-to-end IngestWorkflow
   against real api-sports.io + pg (~1 API request per run)

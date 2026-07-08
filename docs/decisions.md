@@ -6,6 +6,83 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-08 — Test corpus harness Phase 1a shipped + activity clock injection pattern
+
+Ships the minimum viable scenario harness designed in
+[`proposals/test-corpus.md`](./rebuild/proposals/test-corpus.md). The
+"catch prod-class bugs before shipping" testing gap Python has had
+forever, and that we've been building against without.
+
+**What shipped in Phase 1a:**
+- `test/harness/` — scenario loader (scenario.go), testcontainer pg
+  helper (pg.go), httptest mock apifootball (mock_api.go), Tier 1
+  assertion engine (assertions.go), scenario runner (runner.go)
+- `test/scenarios/basic/ingest_happy_path.yaml` — first scenario
+- `test/scenarios_test.go` — the test binary; iterates all YAML under
+  `test/scenarios/`, dispatches each to `harness.RunScenario`
+- `Makefile` — new `test-corpus` target
+
+**First scenario passing end-to-end.** Total runtime: ~2-3s (mostly
+testcontainer pg boot). Actual scenario execution: ~40ms. Full
+corpus of 50 scenarios projected <90s per the proposal target.
+
+**Real bug caught during first-run** — the harness immediately
+surfaced a determinism issue: `ingest.Activities.now()` reads
+wall-clock time, so a scenario with kickoffs relative to
+2026-07-07 would non-deterministically activate fixtures whose
+kickoff is "in the past" relative to today's real clock.
+
+**Fix pattern established: activity clock injection from scenario.**
+The runner sets `acts.Now = func() time.Time { return
+scenario.ManualDate.UTC() }` when a scenario declares a `manual_date`.
+Activities that need "now" go through this injected clock; scenarios
+control what time the activity sees. Every new activity (monitor,
+discovery, etc.) MUST expose an injectable clock — same discipline
+as `ingest.Activities.Now`. Non-injectable clocks are a determinism
+bug caught immediately by the harness on first scenario.
+
+**Why this matters strategically:**
+The user's currently-live prod pain ("goal stuck in debounce, video
+not found for 5 minutes") is exactly the class of bug the corpus can
+catch — interaction of API flakiness with debounce state can be
+reproduced in a scenario and asserted against forever. Once we have
+Loki logs of a prod bug, the FIRST step becomes "write a regression
+scenario that reproduces it" — then we can iterate on the fix with
+tight feedback.
+
+**Design decisions logged during implementation:**
+- **Truncate between scenarios** (not scenario-prefixed IDs). Chose
+  simplicity + guaranteed clean slate.
+- **Scenarios at `test/scenarios/`** (repo root). Not `internal/` —
+  integration-test-scoped.
+- **Every scenario runs on every push via `make test`.** Corpus is
+  fast enough not to gate behind nightly.
+- **Suites are subdirectories** under `test/scenarios/`. Test name
+  includes the suite path so filtering works:
+  `go test -run TestScenarios/basic ./test`.
+- **Scenario file specifies `workflow: <Name>`** — runner dispatches
+  to per-workflow handlers. Currently only "IngestWorkflow"
+  supported; adding MonitorWorkflow just extends the switch.
+
+**Deferred to future phases:**
+- Tier 2 assertions (workflow spawns, video shares, semantic events)
+  — build when scenarios need them
+- Tier 3 (log lines, metrics, timing bounds) — same
+- Per-cycle API responses (currently one blob per scenario) — extend
+  when Monitor scenarios arrive
+- Real Temporal server (currently in-memory testsuite) — probably
+  never; live smoke via `scripts/trigger_ingest` covers that gap
+
+Next scenarios to write (before Monitor code lands, so the code
+comes to fit these):
+- `debounce/var_overturn.yaml` — count 1→2→3→trigger→2→1→0→soft-delete
+- `debounce/flicker_no_reset.yaml` — the symmetric counter's
+  differentiator vs Python
+- `basic/ingest_manual_ids.yaml` — manual re-ingest path
+- More as needed.
+
+---
+
 ## 2026-07-07 — Symmetric-counter debounce (Go rebuild's improvement over Python)
 
 Designed during O2 planning, implemented in fix 3b. Replaces Python's

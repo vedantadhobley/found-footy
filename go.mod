@@ -17,8 +17,10 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/minio v0.43.0
 	github.com/testcontainers/testcontainers-go/modules/nats v0.43.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.43.0
+	go.temporal.io/api v1.62.12
 	go.temporal.io/sdk v1.45.0
 	golang.org/x/text v0.39.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -93,7 +95,6 @@ require (
 	go.opentelemetry.io/otel v1.41.0 // indirect
 	go.opentelemetry.io/otel/metric v1.41.0 // indirect
 	go.opentelemetry.io/otel/trace v1.41.0 // indirect
-	go.temporal.io/api v1.62.12 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
@@ -101,7 +102,6 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260120221211-b8f7ae30c516 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260120221211-b8f7ae30c516 // indirect
 	google.golang.org/grpc v1.79.3 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 require (
