@@ -1,0 +1,45 @@
+name: ingest-activate-at-seed
+description: |
+  Ingest sees a fixture whose kickoff is within the ActivationWindow
+  (30 min) of the manual_date anchor. ShouldActivateNow returns true,
+  so reconcile calls Activate(now) before Upsert. Fresh row lands as
+  active — never sits in staging.
+
+  Fixes the Python-era bug where manual ingest at 14:55 for a 15:00
+  kickoff sat in staging until the next 15-min monitor cycle, missing
+  the opening minutes. See decisions.md 2026-07-07 fixture activation
+  triggers entry.
+
+workflow: IngestWorkflow
+
+ingest_input:
+  manual_date: 2026-07-08T14:55:00Z    # 5 min before kickoff
+  activation_window: 30m
+  retention_days: 14
+
+api_responses:
+  fixtures_window:
+    fixtures:
+      - id: 800002
+        kickoff: 2026-07-08T15:00:00Z    # 5 min from now — within 30-min window
+        status_short: NS
+        status_long: Not Started
+        home_id: 33
+        home_name: Manchester United
+        away_id: 50
+        away_name: Manchester City
+        league_id: 39
+        league_name: Premier League
+        league_season: 2026
+
+expected_final_state:
+  fixtures:
+    - id: 800002
+      state: active                     # ShouldActivateNow → Activate(now)
+      api_status_short: NS
+      has_activated_at: true
+      has_completed_at: false
+      has_last_polled_at: true
+  counts:
+    fixtures: 1
+    team_aliases: 2

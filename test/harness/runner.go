@@ -124,7 +124,7 @@ func applySetup(ctx context.Context, pool *pg.Pool, setup Setup) error {
 		_, err := pool.Exec(ctx, `
 			INSERT INTO fixtures (
 				id, state, api_status_short, api_status_long,
-				kickoff, home_id, home_name, away_id, away_name,
+				kickoff, home_team_id, home_team_name, away_team_id, away_team_name,
 				league_id, league_name, league_season,
 				activated_at, completed_at, last_polled_at
 			) VALUES (

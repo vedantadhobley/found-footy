@@ -1,0 +1,46 @@
+name: ingest-terminal-at-seed
+description: |
+  Ingest sees a fixture whose API status is already terminal (FT).
+  IngestWorkflow's reconcile logic detects APIStatus.Terminal(),
+  chains Activate(kickoff) + Complete(now) to satisfy the completed-
+  requires-activated invariant. Fresh row lands as completed with
+  both timestamps populated.
+
+  This exercises the "missed the match" path — the daily ingest picks
+  up a fixture that already played before we ever saw it.
+
+workflow: IngestWorkflow
+
+ingest_input:
+  manual_date: 2026-07-08T00:05:00Z
+  activation_window: 30m
+  retention_days: 14
+
+api_responses:
+  fixtures_window:
+    fixtures:
+      - id: 800001
+        kickoff: 2026-07-07T15:00:00Z    # played yesterday
+        status_short: FT                  # terminal
+        status_long: Match Finished
+        home_id: 40
+        home_name: Liverpool
+        away_id: 42
+        away_name: Arsenal
+        league_id: 39
+        league_name: Premier League
+        league_season: 2026
+        goals_home: 2
+        goals_away: 1
+
+expected_final_state:
+  fixtures:
+    - id: 800001
+      state: completed
+      api_status_short: FT
+      has_activated_at: true    # Activate(kickoff) fired
+      has_completed_at: true    # Complete(now) fired
+      has_last_polled_at: true
+  counts:
+    fixtures: 1
+    team_aliases: 2
