@@ -104,6 +104,22 @@ Restart worker + api (`docker compose up -d --force-recreate worker api`)
 
 ## Workflow scheduling
 
+**MonitorWorkflow** — every 30 seconds. Registered on worker startup
+via `ensureMonitorSchedule` in `cmd/worker/main.go` (O2c).
+
+- Schedule ID: `monitor-scheduled-30s`
+- Interval: 30 seconds (via `ScheduleIntervalSpec` — cron doesn't
+  support sub-minute resolution)
+- Overlap: `SCHEDULE_OVERLAP_POLICY_SKIP` — if the prior cycle is
+  still running when the next tick fires, skip. Better than
+  double-fanning-out reconcile activities.
+- Args: empty `MonitorWorkflowInput{}` — workflow self-configures
+  with 30-min default ActivationWindow.
+
+Verified live: cycles firing every 30s exactly. When no active
+fixtures exist (e.g. before today's ingest ran), workflow completes
+early after `ListActiveFixtureIDs → []`.
+
 **IngestWorkflow** — daily at 00:05 UTC. Registered on worker startup
 via `ensureIngestSchedule` in `cmd/worker/main.go` (O1e/b).
 

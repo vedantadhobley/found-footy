@@ -18,7 +18,7 @@ the same commit. Per the [2026-07-07 working rule](../decisions.md).
 | Workflow | Status | Trigger | Location |
 |---|---|---|---|
 | IngestWorkflow | ✓ O1c shipped + O1e scheduled daily 00:05 UTC | Temporal Schedule | `internal/workflow/ingest.go` |
-| MonitorWorkflow | ✓ O2b shipped | Every 30s (Schedule wire-up in O2c) | `internal/workflow/monitor.go` |
+| MonitorWorkflow | ✓ O2c shipped + scheduled | Every 30s via Temporal Schedule | `internal/workflow/monitor.go` |
 | DiscoveryWorkflow | ⊘ O3 planned | NATS `event.stable` subscriber | — |
 | VideoValidationWorkflow | ⊘ O4 planned | Child of Discovery | — |
 | AssetPersistenceWorkflow | ⊘ O5 planned | SignalWithStart from Validation | — |
