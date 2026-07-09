@@ -42,12 +42,14 @@ func main() {
 	}
 	defer c.Close()
 
-	// Empty input mimics the scheduled invocation: workflow computes
-	// its own anchor via workflow.Now, uses default 30-min activation
-	// window, and skips prune (RetentionDays=0 = no prune, safe for a
-	// dev trigger). Manual reingest of specific IDs works by setting
+	// Dev trigger with FetchFuture=true so we exercise the full
+	// today + tomorrow + smart-lookahead path (matches scheduled
+	// invocation). RetentionDays=0 skips prune (safe for a dev
+	// trigger). Manual reingest of specific IDs works by setting
 	// ManualFixtureIDs; date override by setting ManualDate.
-	in := ffwf.IngestWorkflowInput{}
+	in := ffwf.IngestWorkflowInput{
+		FetchFuture: true,
+	}
 	inJSON, _ := json.MarshalIndent(in, "", "  ")
 	fmt.Printf("Triggering IngestWorkflow with input:\n%s\n\n", inJSON)
 

@@ -132,11 +132,16 @@ func main() {
 		fixtureRepo := pg.NewFixtureRepo(pool)
 		aliasRepo := pg.NewAliasRepo(pool)
 		eventRepo := pg.NewEventRepo(pool)
+		teamRepo := pg.NewTeamRepo(pool)
 
 		ingestActs := &ingestactivity.Activities{
-			APIFootball: afClient,
-			FixtureRepo: fixtureRepo,
-			AliasRepo:   aliasRepo,
+			APIFootball:           afClient,
+			FixtureRepo:           fixtureRepo,
+			AliasRepo:             aliasRepo,
+			TeamRepo:              teamRepo,
+			TrackedLeagueIDs:      deps.Cfg.APIFootball.TrackedLeagueIDs,
+			TopFlightCacheHours:   deps.Cfg.APIFootball.TopFlightCacheHours,
+			FetchWindowFutureDays: deps.Cfg.APIFootball.FetchWindowFutureDays,
 		}
 		w.RegisterWorkflow(ffwf.IngestWorkflow)
 		w.RegisterActivity(ingestActs)
@@ -204,7 +209,8 @@ func ensureIngestSchedule(ctx context.Context, tempClient *temporal.Client, deps
 			Workflow:  ffwf.IngestWorkflow,
 			TaskQueue: tempClient.TaskQueue(),
 			Args: []any{ffwf.IngestWorkflowInput{
-				RetentionDays: 14, // plan §5 W1 default retention
+				RetentionDays: 14,   // plan §5 W1 default retention
+				FetchFuture:   true, // scheduled runs get the full future-days window
 			}},
 		},
 		Overlap: enums.SCHEDULE_OVERLAP_POLICY_SKIP,

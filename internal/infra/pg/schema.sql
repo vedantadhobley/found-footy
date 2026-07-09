@@ -321,6 +321,29 @@ CREATE TRIGGER trg_team_aliases_updated_at
     BEFORE UPDATE ON team_aliases
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+-- 9b. tracked_teams_cache — dynamic top-flight team list for ingest filter.
+-- IngestWorkflow's step 0 refreshes this every 24h (default) by calling
+-- /leagues?id=X for each TRACKED_LEAGUES entry to get current season, then
+-- /teams?league=X&season=Y to get every team in that league. All those
+-- team IDs land here; the fetch step filters returned fixtures by
+-- (home_team_id OR away_team_id) ∈ this set.
+--
+-- Mirrors Python's `get_top_flight_team_ids` (archive/src/utils/team_data.py)
+-- with pg replacing Mongo. Season rollover + promotion/relegation are handled
+-- automatically because the refresh re-fetches every 24h. See decisions.md
+-- 2026-07-09 Ingest-regression-fix entry for the design rationale.
+CREATE TABLE tracked_teams_cache (
+    team_id INT PRIMARY KEY,                                -- API-Football team ID
+    team_name TEXT NOT NULL,                                -- for observability + debugging
+    league_id INT NOT NULL,                                 -- which league's roster this team came from
+    league_name TEXT NOT NULL,                              -- denormalized for debug logs
+    season INT NOT NULL,                                    -- season year (2026 = 2026-27 for European leagues)
+    refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()         -- ingest workflow reads to decide refresh vs cache-hit
+);
+
+CREATE INDEX tracked_teams_cache_league_season ON tracked_teams_cache (league_id, season);
+CREATE INDEX tracked_teams_cache_refreshed_at ON tracked_teams_cache (refreshed_at);
+
 -- 10. twitter_sessions — cookie coordination, single-row canonical pattern
 CREATE TABLE twitter_sessions (
     id TEXT PRIMARY KEY,                                    -- 'canonical'

@@ -6,6 +6,112 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-09 — Ingest regression fix: dynamic top-flight team lookup + per-day fetch + smart lookahead
+
+**The bug**: dev postgres had zero fixtures across all states after
+overnight scheduled Ingest ran. Investigation showed the Ingest activity
+was calling `/fixtures?from=X&to=Y` bare — the vendor returns empty
+responses for that query shape. Every vendor-doc `from/to` example includes
+at least one additional filter (league/team/season); bare from/to is
+silently broken. Introduced during Phase O1a, never caught because tests
+mock the API and live-verify hit `date=` and `ids=` paths only, not
+`from/to`.
+
+**The Python reference impl** (`archive/src/api/api_client.py:fixtures`
++ `archive/src/utils/team_data.py`):
+
+- Fetches per-day via `/fixtures?date=YYYY-MM-DD` (one HTTP call per day).
+- Filters returned fixtures by a dynamic team-ID set: fetches top-5
+  European league team rosters via `/teams?league=X&season=Y`, caches
+  in Mongo for 24h.
+- IngestWorkflow does smart lookahead: fetches today + tomorrow always;
+  if tomorrow is empty, scans up to 30 days ahead for the next non-empty
+  day and fetches that + day-after for timezone coverage.
+
+**What shipped in Go (this commit)**:
+
+- **New pg schema**: `tracked_teams_cache` table (team_id PK, league_id,
+  league_name, team_name, season, refreshed_at). Small (~150 rows
+  typical), single truncate-and-copy refresh path via transaction.
+- **New adapter methods**: `GetCurrentSeason(leagueID)` via
+  `/leagues?id=X` reading `seasons[].current`; `ListTeamsForLeague(leagueID, season)`
+  via `/teams?league=X&season=Y`. Response types `APILeague` +
+  `APITeam`.
+- **New domain package**: `internal/domain/team` — `TrackedTeam` value
+  type, `Set` for O(1) filter lookup, `Repo` interface with `List`,
+  `OldestRefreshedAt`, `Replace`.
+- **New pg repo**: `internal/infra/pg/team_repo.go` — `Replace` is
+  atomic (TRUNCATE + `pgx.CopyFrom` in a single transaction).
+- **Ingest activity changes**:
+  - Removed broken `FetchFixturesForWindow(from, to)` bare from/to path.
+  - New `FetchFixturesForDay(date)` — single day, filtered by tracked
+    team set. Workflow orchestrates the day-by-day loop.
+  - New `RefreshTrackedTeamsIfStale` — checks cache age vs
+    `TopFlightCacheHours` config; refreshes by looping tracked leagues
+    if stale. Fail-open on total failure so ingest keeps working with
+    the previous cache.
+  - New `GetIngestConfig` — trivial config accessor exposing
+    `MaxLookaheadDays` to the workflow (workflows can't touch env
+    directly per Temporal determinism rules).
+- **IngestWorkflow orchestration**:
+  - Step 0: RefreshTrackedTeamsIfStale.
+  - Step 1a: Fetch anchor day.
+  - Step 1b (if `FetchFuture`): fetch anchor+1. If non-empty, also
+    fetch anchor+2 for timezone coverage. If empty, scan anchor+2
+    through anchor+MaxLookahead for next non-empty day, then fetch
+    that + day-after. Matches Python's `MAX_LOOKAHEAD_DAYS=30`.
+  - Dedupe fixtures by ID across days.
+- **New workflow input**: `FetchFuture bool` — the daily Temporal
+  Schedule sets `true` (full window); manual triggers default `false`
+  (anchor-day only, for surgical re-ingests without burning quota).
+- **Config**: three new fields on `APIFootballConfig`:
+  - `TrackedLeagueIDs []int` (env CSV) — leagues to fetch team rosters
+    from. Default `39,140,78,135,61,1` (top-5 + WC).
+  - `TopFlightCacheHours int` — cache TTL. Default 24 (Python parity).
+  - `FetchWindowFutureDays int` — max lookahead scan. Default 30
+    (Python parity).
+
+**WC handling — temporary + intentional.** League ID `1` (World Cup)
+is in the tracked-leagues env. `RefreshTrackedTeamsIfStale` calls
+`/teams?league=1&season=<current>` and unions those 48 team IDs
+(includes qualifiers) into the tracked set. Filter then catches any
+fixture between two tracked teams — automatically covers France vs
+Morocco, Spain vs Belgium, etc. **The general national-team tracking
+problem stays open** — user and Vedanta discussed but deferred a
+proper design. For any tournament we care about, add its league ID
+to the env. When we design the general solution, this env-based
+approach gets replaced.
+
+**Live verification** — manual `trigger_ingest` against v3 API:
+
+- TrackedTeams refreshed: 144 total (WC=48, PL=20, La Liga=20, Serie A=20,
+  Bundesliga=18, Ligue 1=18).
+- Fetched: 14 fixtures across today + tomorrow + day-after.
+- Filtered out: 882 global fixtures where neither team was tracked
+  (validates the filter is doing real work, not fail-open).
+- Categorized: 12 staging, 1 active, 1 completed. Includes France vs
+  Morocco WC 20:00 UTC (staging), Spain vs Belgium WC 7/10 (staging),
+  Norway vs England WC 7/11 (staging).
+- Monitor picked up the live friendly (Chemnitzer vs Union Berlin,
+  1H) and captured a real goal event in the 24th minute — debounced
+  through the symmetric counter to stable state within a few 30s
+  cycles. First real end-to-end pipeline execution in the Go rebuild.
+
+**Deferred follow-ups** (not blocking):
+
+- Static UEFA fallback for team-refresh total failure (Python has
+  `TOP_UEFA_IDS = [15 clubs]`; Go fails open with empty cache instead).
+  Different failure mode; not necessarily worse.
+- Frontend refresh notification at end of Ingest (Python signals;
+  Go waits for NATS wire-up).
+- General national-team tracking design (currently piggy-backing on
+  tournament league IDs).
+- Removed `FetchFixturesForWindow` type left one dead spot in
+  workflow tests — cleanup opportunity if we ever pass a broader
+  input shape.
+
+---
+
 ## 2026-07-09 — apifootball adapter: bugfixes + chunk-parallel refactor
 
 Two-part change on top of the earlier same-day docs-seeding entry.

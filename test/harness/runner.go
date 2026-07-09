@@ -163,9 +163,13 @@ func runIngest(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apifo
 	// with kickoffs relative to 2026-07-07 would activate any fixture
 	// whose kickoff is in the past relative to today's real clock.
 	acts := &ingest.Activities{
-		APIFootball: afClient,
-		FixtureRepo: pg.NewFixtureRepo(pool),
-		AliasRepo:   pg.NewAliasRepo(pool),
+		APIFootball:           afClient,
+		FixtureRepo:           pg.NewFixtureRepo(pool),
+		AliasRepo:             pg.NewAliasRepo(pool),
+		TeamRepo:              pg.NewTeamRepo(pool),
+		TrackedLeagueIDs:      []int{39, 140, 78, 135, 61, 1},
+		TopFlightCacheHours:   24,
+		FetchWindowFutureDays: 7,
 		Now: func() time.Time {
 			if s.IngestInput != nil && s.IngestInput.ManualDate != nil {
 				return s.IngestInput.ManualDate.UTC()

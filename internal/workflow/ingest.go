@@ -36,8 +36,6 @@ func fmtIngestMissedIDsMsg(count, attempts int) string {
 const (
 	defaultActivationWindow = 30 * time.Minute
 	defaultRetentionDays    = 14
-	fetchWindowPastDays     = 1  // fetch fixtures back this many days from anchor
-	fetchWindowFutureDays   = 3  // ...and forward this many days
 
 	// Manual-IDs targeted-retry policy. If FetchFixturesByIDs returns
 	// FailedIDs, we re-run the activity with JUST those IDs; loop up
@@ -68,6 +66,15 @@ type IngestWorkflowInput struct {
 	// the IDs that didn't come back).
 	ManualFixtureIDs []int64
 
+	// FetchFuture controls whether the by-window fetch path also pulls
+	// FetchWindowFutureDays days beyond the anchor. Default false
+	// (manual triggers reingest a single day). The daily Temporal
+	// Schedule sets this to TRUE alongside RetentionDays=14 so
+	// scheduled runs get the full "today + N future days" window.
+	// Ignored when ManualFixtureIDs is non-empty (that path is by-ID,
+	// not date-based).
+	FetchFuture bool
+
 	// ActivationWindow: staging fixtures with kickoff within this
 	// duration get auto-activated during categorization. Zero →
 	// defaults to 30 * time.Minute.
@@ -88,7 +95,20 @@ type IngestWorkflowInput struct {
 // hit a pg error) — the workflow itself completes successfully but
 // operators see WHAT failed and WHY without joining logs.
 type IngestWorkflowOutput struct {
+	// TrackedTeamsRefreshed=true iff RefreshTrackedTeamsIfStale did a
+	// full re-fetch on this run (false if the cache was still fresh).
+	TrackedTeamsRefreshed bool
+	// TrackedTeamsCount reflects the cache size AFTER a refresh; 0 on
+	// cache-hit runs (Ingest doesn't re-read the cache size for
+	// observability when it didn't touch it).
+	TrackedTeamsCount int
+
 	Fetched         int
+	// FilteredOut is the count of fixtures the API returned but the
+	// tracked-teams filter dropped. Load-bearing signal: 0 usually
+	// means the filter is empty (bug) or the vendor returned nothing.
+	FilteredOut     int
+
 	Staging         int
 	Active          int
 	Completed       int
@@ -124,6 +144,7 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		"anchor", anchor.Format(time.RFC3339),
 		"manual_date_override", in.ManualDate != nil,
 		"manual_ids_count", len(in.ManualFixtureIDs),
+		"fetch_future", in.FetchFuture,
 		"retention_days", in.RetentionDays,
 	)
 
@@ -139,6 +160,42 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, ao)
+
+	// ── Step 0: refresh tracked-teams cache if stale ──
+	// Skipped on the manual-IDs path — that path targets specific
+	// fixtures by ID, so no filter is applied downstream. Otherwise
+	// we ensure the tracked-teams filter has fresh data before fetch.
+	if len(in.ManualFixtureIDs) == 0 {
+		// Longer timeout: the refresh loops over ~6 leagues × 2 API
+		// calls each. Each call can take 1-5s under load, so 60s is
+		// tight for the worst case — bump to 120s.
+		refreshCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 120 * time.Second,
+			RetryPolicy:         ao.RetryPolicy,
+		})
+		var refreshOut ingest.RefreshTrackedTeamsIfStaleOutput
+		if err := workflow.ExecuteActivity(refreshCtx,
+			"RefreshTrackedTeamsIfStale",
+			ingest.RefreshTrackedTeamsIfStaleInput{},
+		).Get(ctx, &refreshOut); err != nil {
+			// Non-fatal — if refresh fails, fetch will use whatever's in
+			// the cache (possibly stale, possibly empty which triggers
+			// fail-open behavior in the fetch activity).
+			logger.Warn("RefreshTrackedTeamsIfStale failed; continuing with existing cache",
+				"error", err)
+			out.Errors = append(out.Errors, "RefreshTrackedTeamsIfStale: "+err.Error())
+		} else {
+			out.TrackedTeamsRefreshed = refreshOut.Refreshed
+			out.TrackedTeamsCount = refreshOut.TotalTeams
+			out.Errors = append(out.Errors, refreshOut.Errors...)
+			if refreshOut.Refreshed {
+				logger.Info("tracked teams refreshed",
+					"total", refreshOut.TotalTeams,
+					"per_league", refreshOut.PerLeagueCounts,
+				)
+			}
+		}
+	}
 
 	// ── Step 1: fetch fixtures ──
 	// Two paths — by-window (normal) or by-IDs (manual re-ingest).
@@ -183,14 +240,134 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		}
 		fetchOut = ingest.FetchFixturesOutput{Fixtures: accumulated, Count: len(accumulated)}
 	} else {
-		from := anchor.AddDate(0, 0, -fetchWindowPastDays)
-		to := anchor.AddDate(0, 0, fetchWindowFutureDays)
-		if err := workflow.ExecuteActivity(ctx,
-			"FetchFixturesForWindow",
-			ingest.FetchFixturesInput{From: from, To: to},
-		).Get(ctx, &fetchOut); err != nil {
+		// By-date scan with smart lookahead. Mirrors Python's
+		// ingest_workflow flow (archive/src/workflows/ingest_workflow.py):
+		//
+		//   1. Always fetch anchor day
+		//   2. If FetchFuture: also fetch anchor+1 (tomorrow — needed for
+		//      timezone coverage of "today" across all locales)
+		//   3. If tomorrow has fixtures: also fetch anchor+2 (far-side
+		//      timezone cover)
+		//   4. If tomorrow is empty: scan anchor+2 through anchor+MaxLookahead
+		//      for the next non-empty day, then also fetch that day + 1
+		//      (near-side + far-side timezone cover for the next fixture)
+		//
+		// Dedupe by fixture ID across days.
+		var accumulated []apifootball.APIFixture
+		var totalFilteredOut int
+		seenIDs := map[int64]struct{}{}
+
+		appendUnique := func(dayOut ingest.FetchFixturesForDayOutput) {
+			totalFilteredOut += dayOut.FilteredOut
+			for _, f := range dayOut.Fixtures {
+				if _, dup := seenIDs[f.Fixture.ID]; dup {
+					continue
+				}
+				seenIDs[f.Fixture.ID] = struct{}{}
+				accumulated = append(accumulated, f)
+			}
+		}
+
+		fetchDay := func(d time.Time, label string) (ingest.FetchFixturesForDayOutput, error) {
+			var dOut ingest.FetchFixturesForDayOutput
+			err := workflow.ExecuteActivity(ctx,
+				"FetchFixturesForDay",
+				ingest.FetchFixturesForDayInput{Date: d},
+			).Get(ctx, &dOut)
+			if err != nil {
+				return dOut, fmt.Errorf("FetchFixturesForDay(%s, %s): %w",
+					label, d.Format("2006-01-02"), err)
+			}
+			return dOut, nil
+		}
+
+		// 1. Anchor day (always).
+		anchorOut, err := fetchDay(anchor, "anchor")
+		if err != nil {
 			return out, err
 		}
+		appendUnique(anchorOut)
+
+		if in.FetchFuture {
+			// Read lookahead cap from config.
+			var cfgOut ingest.GetIngestConfigOutput
+			if err := workflow.ExecuteActivity(ctx,
+				"GetIngestConfig",
+				ingest.GetIngestConfigInput{},
+			).Get(ctx, &cfgOut); err != nil {
+				return out, fmt.Errorf("read ingest config: %w", err)
+			}
+			maxLookahead := cfgOut.MaxLookaheadDays
+			if maxLookahead < 2 {
+				maxLookahead = 2 // must at least cover anchor+1 + anchor+2
+			}
+
+			// 2. Anchor+1 (always when FetchFuture).
+			tomorrow := anchor.AddDate(0, 0, 1)
+			tomorrowOut, err := fetchDay(tomorrow, "tomorrow")
+			if err != nil {
+				return out, err
+			}
+			appendUnique(tomorrowOut)
+
+			// 3 or 4: branch on tomorrow's count.
+			if tomorrowOut.Count > 0 {
+				// Standard path — tomorrow has fixtures, cover far side.
+				dayAfter := anchor.AddDate(0, 0, 2)
+				dayAfterOut, err := fetchDay(dayAfter, "day-after")
+				if err != nil {
+					return out, err
+				}
+				appendUnique(dayAfterOut)
+				logger.Info("standard 3-day fetch complete",
+					"anchor_count", anchorOut.Count,
+					"tomorrow_count", tomorrowOut.Count,
+					"day_after_count", dayAfterOut.Count,
+				)
+			} else {
+				// Lookahead path — tomorrow is empty, scan forward.
+				logger.Info("tomorrow empty; entering lookahead scan",
+					"anchor_count", anchorOut.Count,
+					"max_lookahead", maxLookahead,
+				)
+				foundDay := time.Time{}
+				var foundCount int
+				for d := 2; d <= maxLookahead; d++ {
+					candidate := anchor.AddDate(0, 0, d)
+					candOut, err := fetchDay(candidate, fmt.Sprintf("lookahead+%d", d))
+					if err != nil {
+						return out, err
+					}
+					appendUnique(candOut)
+					if candOut.Count > 0 {
+						foundDay = candidate
+						foundCount = candOut.Count
+						break
+					}
+				}
+				if !foundDay.IsZero() {
+					// Cover the far side of the found day too.
+					afterFound := foundDay.AddDate(0, 0, 1)
+					afterOut, err := fetchDay(afterFound, "after-found")
+					if err != nil {
+						return out, err
+					}
+					appendUnique(afterOut)
+					logger.Info("lookahead fetch complete",
+						"found_day", foundDay.Format("2006-01-02"),
+						"found_count", foundCount,
+						"after_count", afterOut.Count,
+					)
+				} else {
+					logger.Warn("no upcoming fixtures found within lookahead",
+						"max_lookahead", maxLookahead,
+					)
+				}
+			}
+		}
+
+		fetchOut = ingest.FetchFixturesOutput{Fixtures: accumulated, Count: len(accumulated)}
+		out.FilteredOut = totalFilteredOut
 	}
 	out.Fetched = fetchOut.Count
 	logger.Info("fetched fixtures", "count", out.Fetched)

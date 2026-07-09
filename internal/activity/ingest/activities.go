@@ -18,6 +18,7 @@ import (
 
 	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
+	"github.com/vedantadhobley/found-footy/internal/domain/team"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
@@ -35,6 +36,13 @@ type fixtureFetcher interface {
 	ListFixturesByIDs(ctx context.Context, ids []int64) (
 		fixtures []apifootball.APIFixture, failedIDs []int64, err error,
 	)
+
+	// GetCurrentSeason + ListTeamsForLeague back the tracked-team
+	// refresh step. Kept on the same interface as the fixture calls
+	// because the same *apifootball.Client satisfies both — no reason
+	// to split.
+	GetCurrentSeason(ctx context.Context, leagueID int) (int, error)
+	ListTeamsForLeague(ctx context.Context, leagueID, season int) ([]apifootball.APITeam, error)
 }
 
 // Activities bundles the dependencies each ingest activity method
@@ -44,6 +52,22 @@ type Activities struct {
 	APIFootball fixtureFetcher
 	FixtureRepo fixture.Repo
 	AliasRepo   alias.Repo
+	TeamRepo    team.Repo
+
+	// TrackedLeagueIDs — which league IDs Refresh iterates over
+	// (typically the top-5 European club leagues + current major
+	// tournament). Sourced from config at worker startup.
+	TrackedLeagueIDs []int
+
+	// TopFlightCacheHours — how stale tracked_teams_cache can get
+	// before RefreshTrackedTeamsIfStale re-fetches. Sourced from
+	// config at worker startup.
+	TopFlightCacheHours int
+
+	// FetchWindowFutureDays — how many days beyond today
+	// FetchFixturesForWindow queries. Sourced from config at worker
+	// startup.
+	FetchWindowFutureDays int
 
 	// Now is injectable so tests can drive time deterministically.
 	// Defaults to time.Now if unset.
@@ -57,34 +81,211 @@ func (a *Activities) now() time.Time {
 	return time.Now().UTC()
 }
 
-// ── FetchFixturesForWindow ─────────────────────────────────────
+// ── GetIngestConfig ────────────────────────────────────────────
 
-// FetchFixturesInput narrows what the workflow passes.
-type FetchFixturesInput struct {
-	From time.Time
-	To   time.Time
+// GetIngestConfigInput has no fields.
+type GetIngestConfigInput struct{}
+
+// GetIngestConfigOutput exposes env-driven config to the workflow.
+// Workflows can't touch env / files directly (Temporal determinism),
+// so a trivial activity is the standard idiom for "workflow needs to
+// know a config value."
+type GetIngestConfigOutput struct {
+	// MaxLookaheadDays bounds the smart-lookahead scan when tomorrow
+	// is empty. Sourced from FetchWindowFutureDays config. Matches
+	// Python's MAX_LOOKAHEAD_DAYS behavior.
+	MaxLookaheadDays int
 }
 
-// FetchFixturesOutput is the raw API response array. The next
-// activity translates each to domain.
+// GetIngestConfig — trivial config accessor for the workflow.
+func (a *Activities) GetIngestConfig(
+	_ context.Context, _ GetIngestConfigInput,
+) (GetIngestConfigOutput, error) {
+	return GetIngestConfigOutput{MaxLookaheadDays: a.FetchWindowFutureDays}, nil
+}
+
+// ── RefreshTrackedTeamsIfStale ─────────────────────────────────
+
+// RefreshTrackedTeamsIfStaleInput carries no fields — the activity
+// reads TrackedLeagueIDs + TopFlightCacheHours off the Activities
+// struct so the workflow doesn't need to plumb them through.
+type RefreshTrackedTeamsIfStaleInput struct{}
+
+// RefreshTrackedTeamsIfStaleOutput surfaces what happened for
+// observability: whether a refresh actually fired, how many teams
+// landed in the cache, per-league counts for debug.
+type RefreshTrackedTeamsIfStaleOutput struct {
+	Refreshed       bool
+	TotalTeams      int
+	PerLeagueCounts map[int]int // league_id → team count
+	Errors          []string    // per-league fetch failures — non-fatal
+}
+
+// RefreshTrackedTeamsIfStale checks whether tracked_teams_cache is
+// older than TopFlightCacheHours and, if so, re-populates it from the
+// API. Cache-hit path exits early with Refreshed=false.
+//
+// Refresh path (per-league, sequential — small N):
+//  1. GetCurrentSeason(leagueID) via /leagues?id=X
+//  2. ListTeamsForLeague(leagueID, season) via /teams?league=X&season=Y
+//  3. Append to accumulator
+//
+// After looping every league, call TeamRepo.Replace(teams, now) — a
+// single transaction that truncates + copies the new set. Concurrent
+// Ingest cycles never see a partial cache.
+//
+// Non-fatal per-league failures are aggregated into Errors so a bad
+// league ID (or a single failed API call) doesn't nuke the whole
+// refresh — we still populate the cache with the leagues that did
+// return.
+//
+// Mirrors Python's `get_top_flight_team_ids` shape.
+func (a *Activities) RefreshTrackedTeamsIfStale(
+	ctx context.Context, _ RefreshTrackedTeamsIfStaleInput,
+) (RefreshTrackedTeamsIfStaleOutput, error) {
+	out := RefreshTrackedTeamsIfStaleOutput{PerLeagueCounts: map[int]int{}}
+
+	// Cache-freshness check.
+	oldest, hasCache, err := a.TeamRepo.OldestRefreshedAt(ctx)
+	if err != nil {
+		return out, fmt.Errorf("ingest.RefreshTrackedTeamsIfStale: check cache: %w", err)
+	}
+	now := a.now()
+	if hasCache {
+		age := now.Sub(oldest)
+		if age < time.Duration(a.TopFlightCacheHours)*time.Hour {
+			// Cache is fresh — skip.
+			return out, nil
+		}
+	}
+
+	// Refresh path — walk every tracked league.
+	var accumulated []team.TrackedTeam
+	seen := map[int64]struct{}{}
+	for _, leagueID := range a.TrackedLeagueIDs {
+		season, err := a.APIFootball.GetCurrentSeason(ctx, leagueID)
+		if err != nil {
+			out.Errors = append(out.Errors,
+				fmt.Sprintf("GetCurrentSeason(league=%d): %v", leagueID, err))
+			continue
+		}
+		apiTeams, err := a.APIFootball.ListTeamsForLeague(ctx, leagueID, season)
+		if err != nil {
+			out.Errors = append(out.Errors,
+				fmt.Sprintf("ListTeamsForLeague(league=%d,season=%d): %v", leagueID, season, err))
+			continue
+		}
+		// The vendor's league record contains league name — we don't
+		// re-fetch it just for the denormalized display field. Passing
+		// an empty leagueName is acceptable; refresh + observability
+		// still work. Follow-up if we want richer logs.
+		for _, t := range apiTeams {
+			if _, dup := seen[t.ID]; dup {
+				continue
+			}
+			seen[t.ID] = struct{}{}
+			accumulated = append(accumulated, team.TrackedTeam{
+				ID:          t.ID,
+				Name:        t.Name,
+				LeagueID:    leagueID,
+				LeagueName:  "", // not fetched; not load-bearing
+				Season:      season,
+				RefreshedAt: now,
+			})
+			out.PerLeagueCounts[leagueID]++
+		}
+	}
+
+	if len(accumulated) == 0 {
+		// Every league failed. Don't nuke the existing cache — return
+		// error so the workflow can decide.
+		return out, fmt.Errorf(
+			"ingest.RefreshTrackedTeamsIfStale: all %d leagues failed to refresh",
+			len(a.TrackedLeagueIDs))
+	}
+
+	if err := a.TeamRepo.Replace(ctx, accumulated, now); err != nil {
+		return out, fmt.Errorf("ingest.RefreshTrackedTeamsIfStale: replace cache: %w", err)
+	}
+	out.Refreshed = true
+	out.TotalTeams = len(accumulated)
+	return out, nil
+}
+
+// FetchFixturesOutput is a workflow-scoped aggregator type — the
+// IngestWorkflow accumulates day-by-day fetch results (and the by-IDs
+// path) into this shape before handing off to CategorizeAndUpsertFixtures.
+// Not returned by any activity directly.
 type FetchFixturesOutput struct {
 	Fixtures []apifootball.APIFixture
 	Count    int
 }
 
-// FetchFixturesForWindow calls api-sports.io /fixtures with the
-// [From, To] window. Returns the raw response array; translation to
-// domain types happens in CategorizeAndUpsertFixtures so that the
-// fetch step stays a pure I/O boundary.
-func (a *Activities) FetchFixturesForWindow(ctx context.Context, in FetchFixturesInput) (FetchFixturesOutput, error) {
-	fixtures, err := a.APIFootball.ListFixtures(ctx, apifootball.FixtureListParams{
-		From: in.From,
-		To:   in.To,
-	})
+// ── FetchFixturesForDay ────────────────────────────────────────
+
+// FetchFixturesForDayInput carries the UTC date to query.
+type FetchFixturesForDayInput struct {
+	Date time.Time // must be a UTC calendar date; time component ignored
+}
+
+// FetchFixturesForDayOutput carries filtered results for the day.
+type FetchFixturesForDayOutput struct {
+	Fixtures    []apifootball.APIFixture
+	Count       int
+	FilteredOut int // dropped because neither team is tracked
+}
+
+// FetchFixturesForDay queries /fixtures?date=X for a single UTC day
+// and filters results to fixtures where at least one team is in the
+// tracked-teams cache. IngestWorkflow orchestrates the day-by-day
+// scan (including smart lookahead) by calling this activity multiple
+// times.
+//
+// Design — per-day activity granularity mirrors Python's
+// `fetch_todays_fixtures(target_date_str)` shape. Each call is one
+// HTTP request, one Temporal Activity, one retry unit. Workflow-side
+// orchestration means retry policies + timeouts scope to the day,
+// not to a whole window.
+//
+// Empty tracked-teams cache = fail-open (return everything). Matches
+// the "if refresh failed, still ingest something" safety net; better
+// than silent zero.
+func (a *Activities) FetchFixturesForDay(ctx context.Context, in FetchFixturesForDayInput) (FetchFixturesForDayOutput, error) {
+	// Build tracked-teams filter set on each call. Small overhead
+	// (~250 rows, PK-indexed SELECT) preferable to threading the set
+	// through the workflow, which would balloon Temporal history.
+	tracked, err := a.TeamRepo.List(ctx)
 	if err != nil {
-		return FetchFixturesOutput{}, fmt.Errorf("ingest.FetchFixturesForWindow: %w", err)
+		return FetchFixturesForDayOutput{}, fmt.Errorf("ingest.FetchFixturesForDay: load tracked: %w", err)
 	}
-	return FetchFixturesOutput{Fixtures: fixtures, Count: len(fixtures)}, nil
+	trackedSet := team.NewSetFromTeams(tracked)
+
+	// Normalize to midnight UTC so the API's date semantics are stable
+	// regardless of how the workflow constructed the input.
+	day := time.Date(in.Date.Year(), in.Date.Month(), in.Date.Day(), 0, 0, 0, 0, time.UTC)
+
+	dayFixtures, err := a.APIFootball.ListFixtures(ctx, apifootball.FixtureListParams{Date: day})
+	if err != nil {
+		return FetchFixturesForDayOutput{}, fmt.Errorf(
+			"ingest.FetchFixturesForDay: date=%s: %w", day.Format("2006-01-02"), err)
+	}
+
+	// Fail-open: empty cache → no filter. Ingest still works, downstream
+	// categorize sees more fixtures than expected but doesn't break.
+	if trackedSet.Len() == 0 {
+		return FetchFixturesForDayOutput{Fixtures: dayFixtures, Count: len(dayFixtures)}, nil
+	}
+
+	kept := make([]apifootball.APIFixture, 0, len(dayFixtures))
+	filteredOut := 0
+	for _, f := range dayFixtures {
+		if trackedSet.Has(int64(f.Teams.Home.ID)) || trackedSet.Has(int64(f.Teams.Away.ID)) {
+			kept = append(kept, f)
+			continue
+		}
+		filteredOut++
+	}
+	return FetchFixturesForDayOutput{Fixtures: kept, Count: len(kept), FilteredOut: filteredOut}, nil
 }
 
 // FetchFixturesByIDsInput carries the ManualFixtureIDs list from the
