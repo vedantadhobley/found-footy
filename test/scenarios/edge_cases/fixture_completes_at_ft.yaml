@@ -1,0 +1,116 @@
+name: edge-fixture-completes-at-ft
+description: |
+  Goal detected at cycle 2 (count=1) as the match is ending.
+  API returns FT status starting cycle 3. Verify:
+    - Goal that's mid-debounce when match ends can still reach
+      count=3 and trigger (API keeps returning FT events)
+    - InPlay() gate prevents absence votes during FT cycles too
+      (FT is Terminal, not InPlay). So if API returned empty events
+      during FT, event wouldn't be falsely dropped.
+    - Fixture stays in `active` state (Monitor doesn't do fixture
+      completion — deferred to O3+).
+
+  Real-world risk: 89th-minute goal scored, match FT-whistles at
+  cycle 3 of debounce. If we treated FT as "no more polling" the
+  event would be stuck at count=1 forever.
+
+workflow: MonitorWorkflow
+
+setup:
+  fixtures:
+    - id: 999012
+      state: active
+      kickoff: 2026-07-08T15:00:00Z
+      activated_at: 2026-07-08T14:45:00Z
+      last_polled_at: 2026-07-08T16:34:30Z
+      api_status_short: "2H"
+      api_status_long: Second Half
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+
+_goal_2h: &goal_2h
+  fixtures:
+    - id: 999012
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: "2H"
+      status_long: Second Half
+      status_elapsed: 89
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      events:
+        - type: Goal
+          detail: Normal Goal
+          team_id: 40
+          team_name: Liverpool
+          player_id: 111
+          player_name: Salah
+          minute: 89
+
+_goal_ft: &goal_ft
+  fixtures:
+    - id: 999012
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: FT
+      status_long: Match Finished
+      status_elapsed: 90
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      goals_home: 1
+      goals_away: 0
+      events:
+        - type: Goal
+          detail: Normal Goal
+          team_id: 40
+          team_name: Liverpool
+          player_id: 111
+          player_name: Salah
+          minute: 89
+
+cycles:
+  # Cycle 1: goal detected mid-2H, count=1 (INSERT)
+  - t: 2026-07-08T16:34:00Z
+    api_responses: {fixtures_by_ids: *goal_2h}
+
+  # Cycle 2: 2H still, count=2
+  - t: 2026-07-08T16:34:30Z
+    api_responses: {fixtures_by_ids: *goal_2h}
+
+  # Cycle 3: match ends, FT status, event still in array. count=3, TRIGGERS.
+  - t: 2026-07-08T16:35:00Z
+    api_responses: {fixtures_by_ids: *goal_ft}
+
+  # Cycles 4-5: FT continues, event stays returned. count capped at 3.
+  - t: 2026-07-08T16:35:30Z
+    api_responses: {fixtures_by_ids: *goal_ft}
+  - t: 2026-07-08T16:36:00Z
+    api_responses: {fixtures_by_ids: *goal_ft}
+
+expected_final_state:
+  fixtures:
+    - id: 999012
+      state: active               # Monitor doesn't complete — deferred
+      api_status_short: FT         # refreshed
+      has_activated_at: true
+      has_completed_at: false      # never transitioned
+      has_last_polled_at: true
+  events:
+    - fixture_id: 999012
+      natural_key: "40_111_Goal_1"
+      debounce_count: 3
+      downstream_triggered: true
+      removed: false
