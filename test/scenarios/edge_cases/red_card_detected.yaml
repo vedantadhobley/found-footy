@@ -1,0 +1,149 @@
+name: edge-red-card-detected
+description: |
+  Red card tracked as a first-class event with independent debounce.
+  Yellow cards ignored (noise). Second yellows track same as reds
+  (dismissal-producing).
+
+  Trace:
+    Cycle 1: Goal min 20 (INSERT count=1).
+    Cycles 2-3: goal count → 2, 3 (triggers).
+    Cycle 4: Yellow card min 40 (IGNORED — noise). Goal still stable.
+    Cycle 5-6-7: Red card min 55 for a different player.
+                 count 1 → 2 → 3, triggers downstream.
+
+  Verifies:
+    - Goal + Card coexist as separate natural_keys per (team, player, type)
+    - Yellow cards don't produce events
+    - Red card path mirrors Goal path (debounce, trigger, storage)
+    - seq assignment is per-(team, player, type), so seq=1 for the
+      Goal AND seq=1 for the Card don't collide
+
+workflow: MonitorWorkflow
+
+setup:
+  fixtures:
+    - id: 999014
+      state: active
+      kickoff: 2026-07-08T15:00:00Z
+      activated_at: 2026-07-08T14:45:00Z
+      last_polled_at: 2026-07-08T15:19:30Z
+      api_status_short: "1H"
+      api_status_long: First Half
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+
+_base_fixture: &base_fixture
+  id: 999014
+  kickoff: 2026-07-08T15:00:00Z
+  status_short: "1H"
+  status_long: First Half
+  home_id: 40
+  home_name: Liverpool
+  away_id: 42
+  away_name: Arsenal
+  league_id: 39
+  league_name: Premier League
+  league_season: 2026
+
+_goal: &goal
+  type: Goal
+  detail: Normal Goal
+  team_id: 40
+  team_name: Liverpool
+  player_id: 111
+  player_name: Salah
+  minute: 20
+
+_yellow_card: &yellow_card
+  type: Card
+  detail: Yellow Card
+  team_id: 42
+  team_name: Arsenal
+  player_id: 222
+  player_name: Rice
+  minute: 40
+
+_red_card: &red_card
+  type: Card
+  detail: Red card                # lowercase 'c' matches real API-Football (per Python event_config.py)
+  team_id: 42
+  team_name: Arsenal
+  player_id: 333
+  player_name: Saliba
+  minute: 55
+
+cycles:
+  # Goal detected + debounced + triggered
+  - t: 2026-07-08T15:20:00Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            status_elapsed: 20
+            events: [*goal]
+  - t: 2026-07-08T15:20:30Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            status_elapsed: 20
+            events: [*goal]
+  - t: 2026-07-08T15:21:00Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            status_elapsed: 20
+            events: [*goal]
+
+  # Yellow card appears — should be ignored (noise). Goal stays.
+  - t: 2026-07-08T15:40:00Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            status_elapsed: 40
+            events: [*goal, *yellow_card]
+
+  # Red card debounces to trigger
+  - t: 2026-07-08T15:55:00Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            status_elapsed: 55
+            events: [*goal, *yellow_card, *red_card]
+  - t: 2026-07-08T15:55:30Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            status_elapsed: 55
+            events: [*goal, *yellow_card, *red_card]
+  - t: 2026-07-08T15:56:00Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            status_elapsed: 55
+            events: [*goal, *yellow_card, *red_card]
+
+expected_final_state:
+  events:
+    - fixture_id: 999014
+      natural_key: "40_111_Goal_1"
+      debounce_count: 3
+      downstream_triggered: true
+      removed: false
+    - fixture_id: 999014
+      natural_key: "42_333_Card_1"
+      debounce_count: 3
+      downstream_triggered: true
+      removed: false
+  counts:
+    events: 2                       # goal + red card. Yellow ignored.

@@ -237,14 +237,20 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	seqCounter := make(map[string]int)
 
 	for _, apiEv := range in.APIFixture.Events {
-		// Only goals for now — Cards/Subst/Var events don't spawn
-		// downstream video work.
-		if apiEv.Type != "Goal" {
+		// Filter to trackable event types via event.TrackableEventType.
+		// Details:
+		//   Goal with detail in {Normal Goal, Penalty, Own Goal} +
+		//     no "Penalty Shootout" in comments → tracked
+		//   Card with detail = "Red card" → tracked
+		//   Everything else (yellow cards, substitutions, VAR
+		//     announcements, missed penalties, shootout goals) → skip
+		domainType := trackableType(apiEv)
+		if domainType == "" {
 			continue
 		}
-		seqKey := seqCounterKey(apiEv)
+		seqKey := seqCounterKey(apiEv, domainType)
 		seqCounter[seqKey]++
-		domainEv, key, err := a.buildDomainEvent(f, apiEv, seqCounter[seqKey], now)
+		domainEv, key, err := a.buildDomainEvent(f, apiEv, domainType, seqCounter[seqKey], now)
 		if err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("build event: %v", err))
 			continue
@@ -339,7 +345,7 @@ func collectNaturalKeysForFixture(ctx context.Context, repo event.Repo, fixtureI
 // with the caller-supplied seq. Seq is assigned by the reconcile
 // loop's per-(team, player, type) counter — stable across cycles
 // because api-sports.io returns events in chronological order.
-func (a *Activities) buildDomainEvent(f *fixture.Fixture, apiEv apifootball.APIFixtureEvent, seq int, now time.Time) (*event.Event, string, error) {
+func (a *Activities) buildDomainEvent(f *fixture.Fixture, apiEv apifootball.APIFixtureEvent, domainType event.Type, seq int, now time.Time) (*event.Event, string, error) {
 	teamID := apiEv.Team.ID
 	teamName := apiEv.Team.Name
 	if teamID == 0 {
@@ -354,13 +360,13 @@ func (a *Activities) buildDomainEvent(f *fixture.Fixture, apiEv apifootball.APIF
 	}
 	detail := apiEv.Detail
 	if detail == "" {
-		detail = "Goal"
+		detail = string(domainType)
 	}
 	e := event.New(
 		f.ID,
 		event.Team{ID: teamID, Name: teamName},
 		player,
-		event.TypeGoal,
+		domainType,
 		detail,
 		minute,
 		extra,
@@ -370,14 +376,26 @@ func (a *Activities) buildDomainEvent(f *fixture.Fixture, apiEv apifootball.APIF
 	return e, e.NaturalKey, nil
 }
 
+// trackableType — thin wrapper around event.TrackableEventType that
+// handles the nullable Comments field. Filtering logic lives in the
+// domain layer per event_config.py's role in Python.
+func trackableType(apiEv apifootball.APIFixtureEvent) event.Type {
+	comments := ""
+	if apiEv.Comments != nil {
+		comments = *apiEv.Comments
+	}
+	t, _ := event.TrackableEventType(apiEv.Type, apiEv.Detail, comments)
+	return t
+}
+
 // seqCounterKey returns the key used to increment per-cycle seq for
 // an API event. Matches Python's counter key from
 // archive/src/data/fixtures.py: (player_id, event_type) — team_id is
 // implied since it's part of the event.
-func seqCounterKey(apiEv apifootball.APIFixtureEvent) string {
+func seqCounterKey(apiEv apifootball.APIFixtureEvent, domainType event.Type) string {
 	pidStr := "unknown"
 	if apiEv.Player.ID != nil {
 		pidStr = fmt.Sprintf("%d", *apiEv.Player.ID)
 	}
-	return fmt.Sprintf("%d_%s_%s", apiEv.Team.ID, pidStr, "Goal")
+	return fmt.Sprintf("%d_%s_%s", apiEv.Team.ID, pidStr, string(domainType))
 }

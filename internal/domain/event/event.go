@@ -16,6 +16,7 @@ package event
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,6 +41,44 @@ func (t Type) Valid() bool {
 		return true
 	}
 	return false
+}
+
+// TrackableEventType classifies a raw API-Football event by its Type,
+// Detail, and Comments fields, returning the domain event.Type to
+// store OR the zero-value + false if we don't track this event.
+//
+// Case-insensitive comparison at the boundary (API may vary casing
+// across versions). Whitelist-based filtering per Python's
+// event_config.py — the source of truth for what's trackable:
+//
+//   Goal + detail in {Normal Goal, Penalty, Own Goal} + no
+//     "Penalty Shootout" in comments → TypeGoal
+//   Card + detail = "Red card"                            → TypeCard
+//
+// Everything else (yellow cards, substitutions, VAR events,
+// unrecognized detail strings, penalty-shootout goals, missed
+// penalties) → skip.
+//
+// Detail comparison is case-insensitive after trimming whitespace,
+// so future API casing drift ("red card" vs "Red card" vs
+// "RED CARD") doesn't silently break tracking.
+func TrackableEventType(apiType, apiDetail, apiComments string) (Type, bool) {
+	detailLower := strings.ToLower(strings.TrimSpace(apiDetail))
+	switch apiType {
+	case "Goal":
+		if strings.Contains(strings.ToLower(apiComments), "penalty shootout") {
+			return "", false
+		}
+		switch detailLower {
+		case "normal goal", "penalty", "own goal":
+			return TypeGoal, true
+		}
+	case "Card":
+		if detailLower == "red card" {
+			return TypeCard, true
+		}
+	}
+	return "", false
 }
 
 // RemovalReason captures why an event was marked removed. Matches the
