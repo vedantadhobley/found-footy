@@ -14,7 +14,7 @@ and plan match, no entry — silence == alignment.
 an adapter shape, or lands a new domain type updates this doc in
 the SAME commit. Not the next commit. Same commit.
 
-## As-shipped tree (2026-07-07, end of Phase O1)
+## As-shipped tree (2026-07-09, end of Phase O2 + harness Phase 1a)
 
 ```
 found-footy/
@@ -45,9 +45,11 @@ found-footy/
 │   │   ├── wikidata/                    ✓ S7: SPARQL client + tests
 │   │   ├── event/                       ⊘ doc.go stub — semantic-event composer (build for O2 NATS emissions)
 │   │   └── ffmpeg/                      ⊘ doc.go stub — subprocess wrapper (build for Phase A video pipeline)
-│   ├── workflow/                        1 shipped
+│   ├── workflow/                        2 shipped
 │   │   ├── ingest.go                    ✓ O1c: IngestWorkflow
-│   │   └── ingest_test.go               ✓ O1c: 5 WorkflowTestSuite tests
+│   │   ├── ingest_test.go               ✓ O1c: 5 WorkflowTestSuite tests
+│   │   ├── monitor.go                   ✓ O2b: MonitorWorkflow (30s cycle)
+│   │   └── monitor_test.go              ✓ O2b: 5 WorkflowTestSuite tests
 │   ├── activity/                        2 packages shipped
 │   │   ├── ingest/                      ✓ O1b: 4 activities + in-memory fakes + 11 tests
 │   │   │   ├── activities.go

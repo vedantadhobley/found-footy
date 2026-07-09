@@ -13,12 +13,12 @@ is the intent.
 **Update rule.** Every workflow/activity commit updates this doc in
 the same commit. Per the [2026-07-07 working rule](../decisions.md).
 
-## Workflow inventory (2026-07-08, end of Phase O2b)
+## Workflow inventory (2026-07-09, end of Phase O2 + pause fix)
 
 | Workflow | Status | Trigger | Location |
 |---|---|---|---|
 | IngestWorkflow | ✓ O1c shipped + O1e scheduled daily 00:05 UTC | Temporal Schedule | `internal/workflow/ingest.go` |
-| MonitorWorkflow | ✓ O2c shipped + scheduled | Every 30s via Temporal Schedule | `internal/workflow/monitor.go` |
+| MonitorWorkflow | ✓ O2c shipped + scheduled + pause-fix (2026-07-09) | Every 30s via Temporal Schedule | `internal/workflow/monitor.go` |
 | DiscoveryWorkflow | ⊘ O3 planned | NATS `event.stable` subscriber | — |
 | VideoValidationWorkflow | ⊘ O4 planned | Child of Discovery | — |
 | AssetPersistenceWorkflow | ⊘ O5 planned | SignalWithStart from Validation | — |
