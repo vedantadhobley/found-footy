@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
+
 	"github.com/google/uuid"
 )
 
@@ -43,38 +45,38 @@ func (t Type) Valid() bool {
 	return false
 }
 
-// TrackableEventType classifies a raw API-Football event by its Type,
-// Detail, and Comments fields, returning the domain event.Type to
-// store OR the zero-value + false if we don't track this event.
+// TrackableEventType classifies an already-decoded API-Football event
+// by its typed Type + Detail + free-text Comments, returning the
+// domain event.Type to store OR the zero-value + false if we don't
+// track this event.
 //
-// Case-insensitive comparison at the boundary (API may vary casing
-// across versions). Whitelist-based filtering per Python's
-// event_config.py — the source of truth for what's trackable:
+// The Type + Detail params are the canonical enum values produced by
+// apifootball.APIEventType / APIEventDetail — normalized at wire
+// unmarshal so this function's switches use `==` on typed constants,
+// no case-normalization needed.
+//
+// Whitelist per docs/api-football/events-shape.md:
 //
 //   Goal + detail in {Normal Goal, Penalty, Own Goal} + no
 //     "Penalty Shootout" in comments → TypeGoal
-//   Card + detail = "Red card"                            → TypeCard
+//   Card + detail = Red card                              → TypeCard
 //
-// Everything else (yellow cards, substitutions, VAR events,
-// unrecognized detail strings, penalty-shootout goals, missed
-// penalties) → skip.
-//
-// Detail comparison is case-insensitive after trimming whitespace,
-// so future API casing drift ("red card" vs "Red card" vs
-// "RED CARD") doesn't silently break tracking.
-func TrackableEventType(apiType, apiDetail, apiComments string) (Type, bool) {
-	detailLower := strings.ToLower(strings.TrimSpace(apiDetail))
+// Everything else (yellow cards, substitutions, VAR events, missed
+// penalties, penalty-shootout goals, or unknown enum values) → skip.
+func TrackableEventType(apiType apifootball.APIEventType, apiDetail apifootball.APIEventDetail, apiComments string) (Type, bool) {
 	switch apiType {
-	case "Goal":
+	case apifootball.EventTypeGoal:
 		if strings.Contains(strings.ToLower(apiComments), "penalty shootout") {
 			return "", false
 		}
-		switch detailLower {
-		case "normal goal", "penalty", "own goal":
+		switch apiDetail {
+		case apifootball.DetailNormalGoal,
+			apifootball.DetailPenalty,
+			apifootball.DetailOwnGoal:
 			return TypeGoal, true
 		}
-	case "Card":
-		if detailLower == "red card" {
+	case apifootball.EventTypeCard:
+		if apiDetail == apifootball.DetailRedCard {
 			return TypeCard, true
 		}
 	}
@@ -131,7 +133,7 @@ type Event struct {
 	NaturalKey string // immutable after construction
 
 	Type   Type
-	Detail string // "Normal Goal", "Yellow Card", etc.
+	Detail apifootball.APIEventDetail // canonical enum value from the vendor
 	Team   Team
 	Player Player
 	Minute int
@@ -192,7 +194,7 @@ func New(
 	team Team,
 	player Player,
 	eventType Type,
-	detail string,
+	detail apifootball.APIEventDetail,
 	minute int,
 	extra *int,
 	seq int,

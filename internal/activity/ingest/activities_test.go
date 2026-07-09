@@ -236,7 +236,7 @@ func mkAPIFixture(id int64, status string, kickoff time.Time, homeID, awayID int
 			ID:   id,
 			Date: kickoff,
 			Status: apifootball.APIFixtureStatus{
-				Short: status,
+				Short: apifootball.APIStatusCode(status),
 				Long:  status,
 			},
 		},

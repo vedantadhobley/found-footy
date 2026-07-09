@@ -404,9 +404,12 @@ func (a *Activities) buildDomainEvent(f *fixture.Fixture, apiEv apifootball.APIF
 	if apiEv.Time.Extra != nil {
 		extra = apiEv.Time.Extra
 	}
+	// Empty detail fallback — vendor sometimes omits detail on early
+	// event updates. Fall back to the domain type's string rep so the
+	// row still has something searchable.
 	detail := apiEv.Detail
 	if detail == "" {
-		detail = string(domainType)
+		detail = apifootball.APIEventDetail(string(domainType))
 	}
 	e := event.New(
 		f.ID,

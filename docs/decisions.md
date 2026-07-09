@@ -6,6 +6,93 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-09 — Typed enums for API-Sports wire values (Status + EventType + EventDetail)
+
+Prior state had three vendor-shaped fields as bare `string`:
+`APIFixtureStatus.Short` (19 documented values), `APIFixtureEvent.Type`
+(4 values), `APIFixtureEvent.Detail` (~11 values). Comparisons happened
+at each call site — mostly bare `switch { case "FT": ... }`. Downstream
+audits (docs/rebuild/proposals/api-football-audit-2026-07-09.md #1)
+caught the class of bug: `TrackableEventType`'s docstring claimed
+case-insensitive Type comparison but the switch was `case "Goal":`,
+case-sensitive. Works today because vendor sends title-case; silently
+breaks if vendor ever normalizes.
+
+**What shipped**:
+
+- New `internal/infra/apifootball/enums.go` with three typed enum
+  families, all constants matching vendor doc casing exactly (including
+  the vendor's own inconsistencies like `"Red card"` lowercase 'c' and
+  `"Goal cancelled"` lowercase 'c').
+- `APIStatusCode` — 19 constants for all documented fixture statuses.
+- `APIEventType` — 4 constants (Goal, Card, Subst, Var).
+- `APIEventDetail` — 9 named constants + a canonical `Substitution`
+  that Parse maps `"Substitution 1"`, `"Substitution 2"`, ... to via
+  prefix-match (vendor sends per-team indexed substitutions; we don't
+  track them so the collapse is inert).
+- Three `Parse*` functions accept any casing, normalize via lowercased
+  map lookup, return canonical constants OR preserve unknown values
+  as-is with `known=false` so callers can log + continue. Vendor may
+  add new values without notice; ingest continuing is more important
+  than strict validation.
+- `UnmarshalJSON` methods on each type call Parse — every value that
+  crosses the wire boundary is canonicalized before it hits domain
+  code. No more string comparisons downstream.
+- `TrackableEventType` signature changed from `(apiType, apiDetail,
+  apiComments string)` to `(apifootball.APIEventType,
+  apifootball.APIEventDetail, string)`. Switches use typed constants;
+  no `strings.ToLower` needed. The docstring lie is gone.
+- `domain/fixture.APIStatus.Short` changed from `string` to
+  `apifootball.APIStatusCode`. `Live()` / `Terminal()` switches use
+  named constants.
+- `domain/event.Event.Detail` and `event.New`'s detail parameter both
+  changed from `string` to `apifootball.APIEventDetail`.
+
+**Design choices logged**:
+
+- **Canonical form = vendor doc casing** (over all-lowercase). Log
+  lines + debug tools mirror what the vendor console shows, easy
+  cross-reference during incident triage. Const names have a small
+  ergonomic hit (`CardRed = "Red card"` reads weird because vendor
+  writes it weird), but consistency with source docs wins.
+- **Preserve-unknown over reject-unknown**. Vendor may add new
+  fixture statuses (never seen but the doc has no versioning
+  guarantee) or event types (VAR arrived in 2020-21 season). If
+  unmarshal errored on unknowns, ingest would fail hard on the first
+  new value. Preserve + `known=false` lets us log a warning and
+  continue.
+- **Subst collapsed to one constant via prefix-parse**. Vendor
+  sends `"Substitution 1"`, `"Substitution 2"`, ... — per-team
+  numbering we don't care about. Canonical is `"Substitution"`;
+  numeric suffix dropped. If we ever start tracking substitutions
+  we can un-collapse.
+- **Domain imports infra** for the enum types. Debated briefly but
+  went pragmatic: `apifootball/enums.go` has no internal deps
+  (stdlib only), so it's a safe leaf for domain to import. Cleaner
+  than shuffling types into a new shared package.
+- **Went Large scope** over Medium (per user judgment call).
+  Detail enums have low current ROI (we don't track Yellow Card /
+  Subst / Var event details for outbound logic), but VAR tracking
+  is on the near-term roadmap and doing it later would be a
+  migration commit. One-time investment now.
+
+**Enum coverage counts**:
+
+- 22 tests pass (all previous tests + 9 new enum-parser tests).
+- Boundary case tests cover: known-all-casings, unknown preservation,
+  empty input, JSON unmarshal path, Subst prefix-parse for indexed
+  variants.
+
+**Deferred**:
+
+- No Parse for the vendor's `Long` field on fixture status
+  (`"Match Finished"`, `"First Half, Kick Off"`, etc.). Kept as raw
+  string for logging/debug only — nothing switches on it.
+- Domain event's `RemovalReason` type stays as-is (already a typed
+  enum, just not vendor-shaped).
+
+---
+
 ## 2026-07-09 — Cross-workflow config centralized in WorkflowsConfig
 
 Prior state had `defaultActivationWindow = 30 * time.Minute` declared as
