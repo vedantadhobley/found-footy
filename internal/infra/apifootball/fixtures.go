@@ -14,8 +14,18 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
+
+// IDsBatchLimit is the api-sports.io `/fixtures?ids=` per-call cap
+// (docs/api-football/fixtures-endpoint.md → query params table). Callers
+// that need to fetch more than this should use ListFixturesByIDs, which
+// chunks internally and fires per-chunk requests in parallel via
+// goroutines — see the method comment for partial-failure semantics.
+const IDsBatchLimit = 20
 
 // APIFixture is one item in the /fixtures response array. Only the
 // fields we consume are named; unknown fields get dropped by
@@ -202,17 +212,90 @@ func buildFixtureListQuery(p FixtureListParams) (url.Values, error) {
 	return q, nil
 }
 
-// ListFixturesByIDs fetches multiple fixtures in one call via the
-// ids= query param. api-sports.io accepts up to 20 IDs per request;
-// callers batching more should chunk. Returns the response array with
-// one entry per successfully-resolved ID (missing IDs simply absent).
-func (c *Client) ListFixturesByIDs(ctx context.Context, ids []int64) ([]APIFixture, error) {
+// ListFixturesByIDs fetches multiple fixtures via the `/fixtures?ids=`
+// endpoint, splitting the input into IDsBatchLimit-sized chunks and
+// firing per-chunk HTTP calls in PARALLEL via an errgroup. The vendor
+// caps at 20 IDs per request (docs/api-football/fixtures-endpoint.md).
+//
+// PARTIAL-FAILURE SEMANTICS. When one chunk's HTTP call fails while
+// others succeed, we still return the fixtures that came back and
+// list the IDs that didn't in failedIDs. Callers decide whether to
+// retry (Ingest loops with backoff on failedIDs; Monitor logs and
+// lets the next poll cycle recover). err is set only on catastrophic
+// failure: ctx cancelled, or every chunk failed. When err is nil,
+// failedIDs may still be non-empty — check it explicitly.
+//
+// Zero-length input short-circuits with no round trip.
+func (c *Client) ListFixturesByIDs(ctx context.Context, ids []int64) (
+	fixtures []APIFixture,
+	failedIDs []int64,
+	err error,
+) {
 	if len(ids) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	if len(ids) > 20 {
-		return nil, fmt.Errorf("apifootball.ListFixturesByIDs: max 20 ids per call, got %d", len(ids))
+
+	chunks := chunkIDs(ids, IDsBatchLimit)
+	results := make([][]APIFixture, len(chunks))
+	failedChunks := make([]bool, len(chunks))
+
+	var mu sync.Mutex
+	g, gctx := errgroup.WithContext(ctx)
+	for i, chunk := range chunks {
+		i, chunk := i, chunk
+		g.Go(func() error {
+			got, err := c.fetchFixturesByIDsChunk(gctx, chunk)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				// Record + swallow — siblings continue. The caller
+				// gets the partial + explicit failedIDs list.
+				failedChunks[i] = true
+				return nil
+			}
+			results[i] = got
+			return nil
+		})
 	}
+	// g.Wait always returns nil here because all goroutines return nil
+	// (errors get recorded into failedChunks instead of aborting the
+	// group). Kept for API consistency.
+	_ = g.Wait()
+
+	// If ctx was cancelled underneath us, surface that as the error.
+	// Chunks that hadn't started yet count as failed.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		for _, chunk := range chunks {
+			failedIDs = append(failedIDs, chunk...)
+		}
+		return nil, failedIDs, ctxErr
+	}
+
+	// Flatten successes + collect failed IDs.
+	successCount := 0
+	for i, r := range results {
+		if failedChunks[i] {
+			failedIDs = append(failedIDs, chunks[i]...)
+			continue
+		}
+		successCount++
+		fixtures = append(fixtures, r...)
+	}
+
+	// Catastrophic: every chunk failed. Return error so caller can
+	// distinguish "API is down" from "some IDs didn't resolve."
+	if successCount == 0 {
+		return nil, failedIDs, fmt.Errorf(
+			"apifootball.ListFixturesByIDs: all %d chunks failed", len(chunks))
+	}
+
+	return fixtures, failedIDs, nil
+}
+
+// fetchFixturesByIDsChunk is one HTTP call to /fixtures?ids= for a
+// single chunk that MUST already be ≤ IDsBatchLimit. Callers should
+// use ListFixturesByIDs, which chunks + parallelizes.
+func (c *Client) fetchFixturesByIDsChunk(ctx context.Context, ids []int64) ([]APIFixture, error) {
 	// api-sports.io wants ids as "1234-5678-9012" (dash-separated).
 	var b []byte
 	for i, id := range ids {
@@ -231,4 +314,24 @@ func (c *Client) ListFixturesByIDs(ctx context.Context, ids []int64) ([]APIFixtu
 		return nil, err
 	}
 	return envelope.Response, nil
+}
+
+// chunkIDs splits ids into batches of at most n. Preserves ordering;
+// the last chunk may be shorter than n. Empty input returns nil.
+func chunkIDs(ids []int64, n int) [][]int64 {
+	if len(ids) == 0 || n <= 0 {
+		return nil
+	}
+	if len(ids) <= n {
+		return [][]int64{ids}
+	}
+	out := make([][]int64, 0, (len(ids)+n-1)/n)
+	for i := 0; i < len(ids); i += n {
+		end := i + n
+		if end > len(ids) {
+			end = len(ids)
+		}
+		out = append(out, ids[i:end])
+	}
+	return out
 }

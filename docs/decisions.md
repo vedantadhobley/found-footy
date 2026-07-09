@@ -6,6 +6,90 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-09 — apifootball adapter: bugfixes + chunk-parallel refactor
+
+Two-part change on top of the earlier same-day docs-seeding entry.
+
+**Part 1: bugfixes from the doc-seeding follow-ups.**
+
+Both flagged in the earlier entry, both verified live against the
+real API after fix:
+
+- Auth header: `x-rapidapi-key` → `x-apisports-key`. Regressed
+  somewhere during Phase S7.1; Python's `api_client.py:api_key`
+  had always used the doc-correct name. The API tolerated the
+  RapidAPI header (why Ingest worked despite the bug), but doc-
+  correct + Python-matching is `x-apisports-key`.
+- Rate-limit header parsing wired backwards:
+  - `x-ratelimit-requests-remaining` (name has "requests") is the
+    DAILY quota per doc → wired to `dailyQuotaRemain` gauge.
+  - `X-RateLimit-Remaining` (no "requests") is the PER-MINUTE burst
+    per doc → wired to `rateLimitRemain` gauge.
+  - Old code read a phantom `x-rapidapi-requests-remaining` header
+    that api-sports.io never sends.
+
+**Part 2: ListFixturesByIDs refactor — chunk-parallel + partial return.**
+
+Old shape: client hard-rejected >20 IDs. Workflows had their own
+`chunkIDs` helper (`internal/workflow/monitor.go`) + fanned out one
+Activity per chunk via `workflow.ExecuteActivity`. IngestWorkflow
+comment claimed "does NOT chunk" — latent bug: a manual-override
+call with >20 IDs would fail hard.
+
+New shape: `Client.ListFixturesByIDs(ids)` accepts any size, splits
+internally at `IDsBatchLimit=20` (now exported), fires per-chunk
+HTTP calls in parallel via `errgroup`, returns
+`(fixtures, failedIDs, err)`. Partial failure is expressed via
+non-empty `failedIDs` with `err=nil`; catastrophic failure (all
+chunks failed / ctx cancelled) surfaces as an actual error.
+
+**Why partial-return over Temporal-native fan-out (workflow-side
+Activity-per-chunk):** discussed at length with user before code
+changes. The retry-granularity story that "Activity per chunk gives
+per-chunk retry" turned out to matter less than expected for the
+Monitor workload — Monitor polls every 30s, so the poll IS the
+retry, and per-chunk Temporal fan-out costs 3× Temporal history for
+recovery that's already ~30s. Client-side parallel goroutines +
+FailedIDs return value + per-workflow retry policy gives the same
+parallelism at 1/3 the Temporal overhead.
+
+Per-workflow retry policy:
+
+- **MonitorWorkflow**: no explicit retry. Just logs `MissedIDs`
+  count. Next 30s cycle re-requests missed IDs naturally via the
+  full active-fixtures pull. Cheaper than Temporal-native retry
+  and equivalent in outcome.
+- **IngestWorkflow (manual-ID path)**: explicit workflow-level
+  loop, 3 attempts, 5s×attempt backoff, TARGETED at only the
+  FailedIDs from the previous attempt. Ingest is daily — recovery
+  in-cycle beats waiting 24h. Also fixes the latent bug where
+  >20 manual IDs would fail hard.
+
+**Live verification** — `scripts/verify_apifootball` hit real
+`v3.football.api-sports.io` and confirmed end-to-end:
+
+- Auth via `x-apisports-key`: OK (plan=Pro, 7500/day quota).
+- 15-ID single-chunk: 15/15 back, 0 failed, one HTTP call.
+- **50-ID multi-chunk: 50/50 back, 0 failed, 0.12s wall-clock** —
+  three chunks (20+20+10) fired concurrently. Sequential would have
+  been ~600-1500ms; parallel achieved ~5-10× speedup.
+- Both rate-limit gauges populated correctly from doc-correct
+  headers: `ratelimit_remaining 296` (per-minute), `daily_quota_remaining 7453`.
+
+**Follow-up items (deferred, not blocking):**
+
+- `FixtureListParams` missing a `Live` field — can't currently
+  hit `/fixtures?live=all` through the adapter. Not needed by any
+  workflow today; add when a caller wants it.
+- `ListFixtures` (window/date variant) doesn't yet support the
+  same failedIDs semantics; not applicable since it doesn't chunk
+  (no `ids=` param).
+- Verify script currently uses raw `fmt.Println` for output. If
+  we start capturing verify runs into CI or Loki, promote to the
+  standard log emitter.
+
+---
+
 ## 2026-07-09 — API-Football docs archived + frozen reference seeded
 
 Vendor docs at <https://www.api-football.com/documentation-v3> are

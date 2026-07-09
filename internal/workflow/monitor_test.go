@@ -94,9 +94,13 @@ func TestMonitorWorkflow_EmptyActive_SkipsFetchAndReconcile(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
-// TestMonitorWorkflow_ChunksLargeBatch — 25 active fixtures → 2
-// FetchLiveFixtures calls (20 + 5). Verifies chunking.
-func TestMonitorWorkflow_ChunksLargeBatch(t *testing.T) {
+// TestMonitorWorkflow_LargeBatch_SingleActivityCall — 25 active
+// fixtures. Since chunking moved into apifootball.ListFixturesByIDs
+// (parallel goroutine fan-out inside the client), the workflow now
+// dispatches ONE FetchLiveFixtures activity call regardless of the
+// input size. Locks in the invariant that Temporal history stays
+// lean and per-chunk retry is delegated to the client.
+func TestMonitorWorkflow_LargeBatch_SingleActivityCall(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newMonitorEnv(&s)
 
@@ -110,9 +114,11 @@ func TestMonitorWorkflow_ChunksLargeBatch(t *testing.T) {
 	env.OnActivity("ListActiveFixtureIDs", mock.Anything).
 		Return(monitor.ListActiveFixtureIDsOutput{IDs: ids}, nil).Once()
 
-	// Expect FetchLiveFixtures called twice (chunks of 20 + 5).
+	// Exactly one activity call — Once() enforces "no more than 1"
+	// via the mock; if the workflow ever regressed to chunk-side
+	// dispatching, this test would fail with unexpected extra calls.
 	env.OnActivity("FetchLiveFixtures", mock.Anything, mock.Anything).
-		Return(monitor.FetchLiveFixturesOutput{Fixtures: nil}, nil).Twice()
+		Return(monitor.FetchLiveFixturesOutput{Fixtures: nil}, nil).Once()
 
 	env.ExecuteWorkflow(workflow.MonitorWorkflow, workflow.MonitorWorkflowInput{})
 	if err := env.GetWorkflowError(); err != nil {

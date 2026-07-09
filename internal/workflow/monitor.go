@@ -1,11 +1,14 @@
 // monitor.go — the 30-second MonitorWorkflow. Fires per cycle via
 // Temporal Schedule (registered in cmd/worker/main.go). Orchestrates
-// the four activities in internal/activity/monitor:
+// four activities in internal/activity/monitor:
 //   1. PreActivateUpcoming — staging fixtures with imminent kickoff
 //      get promoted to active before we poll.
 //   2. ListActiveFixtureIDs — cheap ID pull for the batched API call.
-//   3. FetchLiveFixtures — batched /fixtures?ids= call (chunked at
-//      20 per API-Football's cap).
+//   3. FetchLiveFixtures — one activity call regardless of ID count;
+//      the apifootball client chunks internally at IDsBatchLimit and
+//      fires per-chunk HTTP calls in parallel via goroutines. Partial
+//      failures surface as FailedIDs — Monitor logs them and lets the
+//      next 30s cycle naturally re-request (the poll IS the retry).
 //   4. ReconcileFixture — per fixture, refresh row + diff events +
 //      vote presence/absence. Concurrent across fixtures via
 //      workflow.ExecuteActivity in a loop (dispatched in parallel;
@@ -27,7 +30,6 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/vedantadhobley/found-footy/internal/activity/monitor"
-	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
 // MonitorWorkflowInput carries per-cycle overrides. All fields
@@ -45,18 +47,17 @@ type MonitorWorkflowOutput struct {
 	StagingActivated   int
 	ActiveFixtureCount int
 	FetchedCount       int
+	// MissedIDs — IDs the client-side chunk fetch didn't get back
+	// this cycle. Not retried in-workflow; the next 30s poll picks
+	// them up naturally. Surfaced for observability.
+	MissedIDs          int
 	NewEvents          int
 	EventsBecameStable []string
 	EventsRemoved      []string
 	Errors             []string
 }
 
-const (
-	defaultMonitorActivationWindow = 30 * time.Minute
-	// apifootball caps by-IDs at 20 per call. If we have more active
-	// fixtures than this, chunk the batch.
-	maxByIDsChunk = 20
-)
+const defaultMonitorActivationWindow = 30 * time.Minute
 
 // MonitorWorkflow — the coordinator. Called every 30s by the
 // Temporal Schedule.
@@ -108,44 +109,44 @@ func MonitorWorkflow(ctx workflow.Context, in MonitorWorkflowInput) (MonitorWork
 		return out, nil
 	}
 
-	// ── Step 3: FetchLiveFixtures (chunked) ──
-	// Chunk IDs at maxByIDsChunk (20) — API's per-call cap. Multiple
-	// chunks dispatched in parallel via ExecuteActivity + Get later.
-	chunks := chunkIDs(listOut.IDs, maxByIDsChunk)
-	fetchFutures := make([]workflow.Future, 0, len(chunks))
-	for _, chunk := range chunks {
-		fetchFutures = append(fetchFutures,
-			workflow.ExecuteActivity(ctx, "FetchLiveFixtures",
-				monitor.FetchLiveFixturesInput{IDs: chunk}))
+	// ── Step 3: FetchLiveFixtures ──
+	// One activity call regardless of ID count. The apifootball client
+	// chunks internally at IDsBatchLimit and fires parallel HTTP calls.
+	// Partial failures come back as FailedIDs — we log the count and
+	// let the next 30s poll pick them up.
+	var fetchOut monitor.FetchLiveFixturesOutput
+	if err := workflow.ExecuteActivity(ctx, "FetchLiveFixtures",
+		monitor.FetchLiveFixturesInput{IDs: listOut.IDs},
+	).Get(ctx, &fetchOut); err != nil {
+		// Catastrophic (all chunks failed / ctx cancelled) — log and
+		// exit. Next cycle retries the whole set.
+		logger.Warn("FetchLiveFixtures failed catastrophically", "error", err)
+		out.Errors = append(out.Errors, "FetchLiveFixtures: "+err.Error())
+		return out, nil
+	}
+	out.FetchedCount = len(fetchOut.Fixtures)
+	out.MissedIDs = len(fetchOut.FailedIDs)
+	if out.MissedIDs > 0 {
+		logger.Warn("FetchLiveFixtures partial: missed IDs will retry next cycle",
+			"missed", out.MissedIDs, "fetched", out.FetchedCount)
 	}
 
-	var allFixtures []apifootball.APIFixture
-	for _, f := range fetchFutures {
-		var fetchOut monitor.FetchLiveFixturesOutput
-		if err := f.Get(ctx, &fetchOut); err != nil {
-			logger.Warn("FetchLiveFixtures chunk failed", "error", err)
-			out.Errors = append(out.Errors, "FetchLiveFixtures: "+err.Error())
-			continue
-		}
-		allFixtures = append(allFixtures, fetchOut.Fixtures...)
-	}
-	out.FetchedCount = len(allFixtures)
-
-	if len(allFixtures) == 0 {
+	if len(fetchOut.Fixtures) == 0 {
 		logger.Warn("MonitorWorkflow: fetched zero fixtures despite active IDs",
-			"active_ids_count", out.ActiveFixtureCount)
+			"active_ids_count", out.ActiveFixtureCount,
+			"missed_ids", out.MissedIDs)
 		return out, nil
 	}
 
 	// ── Step 4: ReconcileFixture per fixture, concurrent ──
-	reconcileFutures := make([]workflow.Future, 0, len(allFixtures))
+	reconcileFutures := make([]workflow.Future, 0, len(fetchOut.Fixtures))
 	// Longer per-fixture timeout — reconcile does multiple pg ops per
 	// event.
 	reconcileCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 45 * time.Second,
 		RetryPolicy:         baseAO.RetryPolicy,
 	})
-	for _, apiFix := range allFixtures {
+	for _, apiFix := range fetchOut.Fixtures {
 		reconcileFutures = append(reconcileFutures,
 			workflow.ExecuteActivity(reconcileCtx, "ReconcileFixture",
 				monitor.ReconcileFixtureInput{
@@ -169,28 +170,12 @@ func MonitorWorkflow(ctx workflow.Context, in MonitorWorkflowInput) (MonitorWork
 	logger.Info("MonitorWorkflow cycle complete",
 		"active", out.ActiveFixtureCount,
 		"fetched", out.FetchedCount,
+		"missed", out.MissedIDs,
 		"new_events", out.NewEvents,
 		"stable", len(out.EventsBecameStable),
 		"removed", len(out.EventsRemoved),
 		"errors", len(out.Errors),
 	)
 	return out, nil
-}
-
-// chunkIDs splits the ID slice into batches of at most n. If the
-// slice is short enough, returns a single-chunk slice.
-func chunkIDs(ids []int64, n int) [][]int64 {
-	if len(ids) <= n {
-		return [][]int64{ids}
-	}
-	chunks := make([][]int64, 0, (len(ids)+n-1)/n)
-	for i := 0; i < len(ids); i += n {
-		end := i + n
-		if end > len(ids) {
-			end = len(ids)
-		}
-		chunks = append(chunks, ids[i:end])
-	}
-	return chunks
 }
 

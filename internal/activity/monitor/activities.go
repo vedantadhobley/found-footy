@@ -26,9 +26,14 @@ import (
 )
 
 // fixtureFetcher is the narrow interface the Monitor activities need
-// from the apifootball adapter — same idiom as ingest's fetcher.
+// from the apifootball adapter — same idiom as ingest's fetcher. The
+// (fixtures, failedIDs, err) return shape carries partial-failure info
+// per apifootball.ListFixturesByIDs — err is set only on catastrophic
+// failure, failedIDs lists the IDs that didn't come back.
 type fixtureFetcher interface {
-	ListFixturesByIDs(ctx context.Context, ids []int64) ([]apifootball.APIFixture, error)
+	ListFixturesByIDs(ctx context.Context, ids []int64) (
+		fixtures []apifootball.APIFixture, failedIDs []int64, err error,
+	)
 }
 
 // Activities bundles the deps every monitor activity needs. Now is
@@ -116,16 +121,21 @@ func (a *Activities) ListActiveFixtureIDs(ctx context.Context) (ListActiveFixtur
 
 // ── FetchLiveFixtures ─────────────────────────────────────────
 
-// FetchLiveFixturesInput carries the batched ID slice.
+// FetchLiveFixturesInput carries the ID slice. The activity accepts any
+// size — chunking to the vendor's 20/call cap happens inside the client
+// (apifootball.ListFixturesByIDs), which fires per-chunk HTTP calls in
+// parallel via goroutines.
 type FetchLiveFixturesInput struct {
 	IDs []int64
 }
 
-// FetchLiveFixturesOutput carries the API response array. api-sports.io
-// caps by-IDs batches at 20 — the workflow chunks caller-side if the
-// active set is larger; this activity is one atomic batch call.
+// FetchLiveFixturesOutput carries the API response array plus any IDs
+// that didn't come back (partial failure). The workflow decides what
+// to do with FailedIDs — Monitor logs and lets the next 30s cycle
+// naturally re-request them; other callers might loop with backoff.
 type FetchLiveFixturesOutput struct {
-	Fixtures []apifootball.APIFixture
+	Fixtures  []apifootball.APIFixture
+	FailedIDs []int64
 }
 
 // FetchLiveFixtures calls apifootball with the given IDs. Zero-length
@@ -134,11 +144,11 @@ func (a *Activities) FetchLiveFixtures(ctx context.Context, in FetchLiveFixtures
 	if len(in.IDs) == 0 {
 		return FetchLiveFixturesOutput{}, nil
 	}
-	fixtures, err := a.APIFootball.ListFixturesByIDs(ctx, in.IDs)
+	fixtures, failedIDs, err := a.APIFootball.ListFixturesByIDs(ctx, in.IDs)
 	if err != nil {
-		return FetchLiveFixturesOutput{}, fmt.Errorf("monitor.FetchLiveFixtures: %w", err)
+		return FetchLiveFixturesOutput{FailedIDs: failedIDs}, fmt.Errorf("monitor.FetchLiveFixtures: %w", err)
 	}
-	return FetchLiveFixturesOutput{Fixtures: fixtures}, nil
+	return FetchLiveFixturesOutput{Fixtures: fixtures, FailedIDs: failedIDs}, nil
 }
 
 // ── ReconcileFixture ──────────────────────────────────────────

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,12 +18,21 @@ import (
 
 // mockFixturesServer — extends the basic mockAPIServer pattern from
 // client_test.go with a /fixtures handler that returns a canned
-// response and captures the query string for assertions.
+// response and captures the query string for assertions. Concurrent-safe:
+// parallel chunking in ListFixturesByIDs fires goroutines that all hit
+// /fixtures, so state is guarded by mu.
 type mockFixturesServer struct {
 	srv                *httptest.Server
-	receivedQuery      string
+	mu                 sync.Mutex
+	receivedQuery      string   // last query (kept for back-compat with existing tests)
+	receivedQueries    []string // ALL queries in call order — used by parallel-chunk tests
 	fixturesResponse   any
 	fixturesStatusCode int
+	// perQueryStatusCode — optional per-query override. If a request's
+	// ids= param string matches a key in this map, respond with that
+	// status code instead of fixturesStatusCode. Used to simulate
+	// partial failure (chunk X fails while chunk Y succeeds).
+	perQueryStatusCode map[string]int
 }
 
 func newMockFixturesServer() *mockFixturesServer {
@@ -43,11 +53,21 @@ func newMockFixturesServer() *mockFixturesServer {
 		})
 	})
 	mux.HandleFunc("/fixtures", func(w http.ResponseWriter, r *http.Request) {
-		m.receivedQuery = r.URL.RawQuery
+		q := r.URL.RawQuery
+		m.mu.Lock()
+		m.receivedQuery = q
+		m.receivedQueries = append(m.receivedQueries, q)
+		status := m.fixturesStatusCode
+		if override, ok := m.perQueryStatusCode[r.URL.Query().Get("ids")]; ok {
+			status = override
+		}
+		resp := m.fixturesResponse
+		m.mu.Unlock()
+
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(m.fixturesStatusCode)
-		if m.fixturesStatusCode == http.StatusOK {
-			_ = json.NewEncoder(w).Encode(m.fixturesResponse)
+		w.WriteHeader(status)
+		if status == http.StatusOK {
+			_ = json.NewEncoder(w).Encode(resp)
 		} else {
 			_, _ = w.Write([]byte(`{"error":"simulated"}`))
 		}
@@ -312,7 +332,9 @@ func TestListFixtures_HalfWindow_Errors(t *testing.T) {
 	}
 }
 
-// TestListFixturesByIDs — dash-separated ids format.
+// TestListFixturesByIDs — dash-separated ids format, single chunk.
+// 2 IDs fits in one chunk (≤ IDsBatchLimit), so exactly one /fixtures
+// call. failedIDs is empty on success.
 func TestListFixturesByIDs(t *testing.T) {
 	ctx := context.Background()
 	m := newMockFixturesServer()
@@ -320,41 +342,126 @@ func TestListFixturesByIDs(t *testing.T) {
 	defer m.Close()
 
 	c := newClientForFixtures(t, ctx, m.URL())
-	if _, err := c.ListFixturesByIDs(ctx, []int64{1_515_514, 1_515_515}); err != nil {
+	_, failedIDs, err := c.ListFixturesByIDs(ctx, []int64{1_515_514, 1_515_515})
+	if err != nil {
 		t.Fatalf("ListFixturesByIDs: %v", err)
+	}
+	if len(failedIDs) != 0 {
+		t.Errorf("failedIDs = %v; want empty", failedIDs)
 	}
 	if !strings.Contains(m.receivedQuery, "ids=1515514-1515515") {
 		t.Errorf("query %q missing ids=1515514-1515515", m.receivedQuery)
 	}
+	if got := len(m.receivedQueries); got != 1 {
+		t.Errorf("call count %d; want 1", got)
+	}
 }
 
-// TestListFixturesByIDs_Empty — zero-id input returns nil, nil (no
-// round-trip).
+// TestListFixturesByIDs_Empty — zero-id input returns (nil, nil, nil)
+// with no round-trip.
 func TestListFixturesByIDs_Empty(t *testing.T) {
 	ctx := context.Background()
 	m := newMockFixturesServer()
 	defer m.Close()
 	c := newClientForFixtures(t, ctx, m.URL())
-	got, err := c.ListFixturesByIDs(ctx, nil)
+	got, failedIDs, err := c.ListFixturesByIDs(ctx, nil)
 	if err != nil {
 		t.Fatalf("ListFixturesByIDs(nil): %v", err)
 	}
 	if got != nil {
-		t.Errorf("returned %v, want nil", got)
+		t.Errorf("returned fixtures %v, want nil", got)
+	}
+	if failedIDs != nil {
+		t.Errorf("returned failedIDs %v, want nil", failedIDs)
+	}
+	if len(m.receivedQueries) != 0 {
+		t.Errorf("expected zero round-trips, got %d", len(m.receivedQueries))
 	}
 }
 
-// TestListFixturesByIDs_MaxCap — >20 IDs rejected client-side.
-func TestListFixturesByIDs_MaxCap(t *testing.T) {
+// TestListFixturesByIDs_ChunksAndParallels — 25 IDs > IDsBatchLimit (20),
+// so the client should split into 2 chunks (20 + 5) and fire them in
+// parallel. Verify exactly 2 HTTP calls hit /fixtures.
+func TestListFixturesByIDs_ChunksAndParallels(t *testing.T) {
 	ctx := context.Background()
 	m := newMockFixturesServer()
+	m.fixturesResponse = canonicalFixturesResponse()
 	defer m.Close()
-	c := newClientForFixtures(t, ctx, m.URL())
-	ids := make([]int64, 21)
+
+	ids := make([]int64, 25)
 	for i := range ids {
 		ids[i] = int64(i + 1)
 	}
-	if _, err := c.ListFixturesByIDs(ctx, ids); err == nil {
-		t.Fatal("expected error for >20 ids, got nil")
+
+	c := newClientForFixtures(t, ctx, m.URL())
+	_, failedIDs, err := c.ListFixturesByIDs(ctx, ids)
+	if err != nil {
+		t.Fatalf("ListFixturesByIDs(25): %v", err)
+	}
+	if len(failedIDs) != 0 {
+		t.Errorf("failedIDs = %v; want empty", failedIDs)
+	}
+	if got := len(m.receivedQueries); got != 2 {
+		t.Errorf("call count %d; want 2 (20-chunk + 5-chunk)", got)
+	}
+}
+
+// TestListFixturesByIDs_PartialFailure — 25 IDs → 2 chunks; the
+// second chunk (the 5-ID one, dash-joined "21-22-23-24-25") gets a
+// 500. Expect fixtures back from chunk 1, failedIDs = chunk 2's IDs,
+// err = nil (partial failure is expressed via failedIDs, not err).
+func TestListFixturesByIDs_PartialFailure(t *testing.T) {
+	ctx := context.Background()
+	m := newMockFixturesServer()
+	m.fixturesResponse = canonicalFixturesResponse()
+	m.perQueryStatusCode = map[string]int{
+		"21-22-23-24-25": http.StatusInternalServerError,
+	}
+	defer m.Close()
+
+	ids := make([]int64, 25)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+
+	c := newClientForFixtures(t, ctx, m.URL())
+	_, failedIDs, err := c.ListFixturesByIDs(ctx, ids)
+	if err != nil {
+		t.Fatalf("expected partial failure to be expressed via failedIDs, not err; got err=%v", err)
+	}
+	if len(failedIDs) != 5 {
+		t.Errorf("failedIDs len = %d; want 5", len(failedIDs))
+	}
+	for i, want := range []int64{21, 22, 23, 24, 25} {
+		if i >= len(failedIDs) || failedIDs[i] != want {
+			t.Errorf("failedIDs[%d] = %d; want %d", i, failedIDs[i], want)
+		}
+	}
+}
+
+// TestListFixturesByIDs_AllChunksFail — every chunk returns 500. The
+// client should surface this as a real error since no forward progress
+// is possible (distinguish from partial: nothing came back at all).
+func TestListFixturesByIDs_AllChunksFail(t *testing.T) {
+	ctx := context.Background()
+	m := newMockFixturesServer()
+	m.fixturesStatusCode = http.StatusInternalServerError
+	defer m.Close()
+
+	ids := make([]int64, 25)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+
+	c := newClientForFixtures(t, ctx, m.URL())
+	fixtures, failedIDs, err := c.ListFixturesByIDs(ctx, ids)
+	if err == nil {
+		t.Fatal("expected err on total failure, got nil")
+	}
+	if len(fixtures) != 0 {
+		t.Errorf("fixtures len = %d; want 0", len(fixtures))
+	}
+	if len(failedIDs) != 25 {
+		t.Errorf("failedIDs len = %d; want 25 (all input)", len(failedIDs))
 	}
 }

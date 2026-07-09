@@ -69,12 +69,17 @@ func newMockAPIServer() *mockAPIServer {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-		m.receivedKey = r.Header.Get("x-rapidapi-key")
+		// Auth is x-apisports-key on the direct API-Sports endpoint
+		// (docs/api-football/vendor/api-football-v3.9.3.pdf p.1).
+		m.receivedKey = r.Header.Get("x-apisports-key")
+		// Per doc: `X-RateLimit-Remaining` is the PER-MINUTE burst
+		// counter, `x-ratelimit-requests-remaining` (name has "requests")
+		// is the DAILY quota. See docs/api-football/rate-limits.md.
 		if m.statusRatelimitRemain != "" {
-			w.Header().Set("x-ratelimit-requests-remaining", m.statusRatelimitRemain)
+			w.Header().Set("X-RateLimit-Remaining", m.statusRatelimitRemain)
 		}
 		if m.statusQuotaRemain != "" {
-			w.Header().Set("x-rapidapi-requests-remaining", m.statusQuotaRemain)
+			w.Header().Set("x-ratelimit-requests-remaining", m.statusQuotaRemain)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(m.statusStatusCode)
@@ -124,7 +129,7 @@ func TestClient_ConnectsAndSendsAuth(t *testing.T) {
 	_ = newClientAgainst(t, ctx, m.URL(), fx)
 
 	if m.receivedKey != "test-key-abc123" {
-		t.Errorf("server received x-rapidapi-key = %q, want test-key-abc123", m.receivedKey)
+		t.Errorf("server received x-apisports-key = %q, want test-key-abc123", m.receivedKey)
 	}
 	if !fx.log.HasAction(vocabulary.ModuleInfraAPIFootball, vocabulary.ActionAPIFootballCall) {
 		t.Errorf("expected ActionAPIFootballCall from probe; got %+v", fx.log.Snapshot())
