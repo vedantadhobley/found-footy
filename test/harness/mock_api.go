@@ -21,18 +21,24 @@ import (
 type MockAPI struct {
 	srv       *httptest.Server
 	responses APIResponses
-	// Injected fault: if set, endpoints return the given status +
-	// body. Nil = normal responses.
-	Fault *APIFault
+	// fault primed by SetFault; applyFault consumes remaining count.
+	fault *APIFault
 }
 
-// APIFault is a fault to inject on the next request (or all requests
-// if Persistent is true).
+// APIFault is a fault to inject on the next requests. If Remaining
+// decrements to zero AND the fault is not permanent (Remaining
+// started >0), the fault clears itself after that request. If
+// Remaining is negative, the fault persists for the entire scenario
+// segment (until SetFault(nil) or SetResponses clears it).
 type APIFault struct {
 	StatusCode int
 	Body       string
-	Persistent bool
+	Remaining  int // >0: applies next N requests then clears; -1: persistent
 }
+
+// SetFault primes the mock to fail the next request(s). Pass nil to
+// clear any pending fault.
+func (m *MockAPI) SetFault(f *APIFault) { m.fault = f }
 
 // NewMockAPI starts an httptest.Server. Cleanup registered via
 // t.Cleanup. Call SetResponses / SetFault to configure per-scenario.
@@ -110,17 +116,26 @@ func (m *MockAPI) handleFixtures(w http.ResponseWriter, r *http.Request) {
 }
 
 // applyFault returns true if a fault was applied (caller returns
-// without writing the normal body). One-shot faults auto-clear.
+// without writing the normal body). Decrements Remaining; clears the
+// fault when it hits zero (unless Remaining started negative =
+// persistent).
 func (m *MockAPI) applyFault(w http.ResponseWriter) bool {
-	if m.Fault == nil {
+	if m.fault == nil {
 		return false
 	}
-	w.WriteHeader(m.Fault.StatusCode)
-	if m.Fault.Body != "" {
-		_, _ = w.Write([]byte(m.Fault.Body))
+	w.WriteHeader(m.fault.StatusCode)
+	body := m.fault.Body
+	if body == "" {
+		// Realistic api-sports.io error envelope by default. Fits
+		// what production code has seen in the wild.
+		body = `{"response":[],"errors":{"api":"simulated harness fault"},"results":0}`
 	}
-	if !m.Fault.Persistent {
-		m.Fault = nil
+	_, _ = w.Write([]byte(body))
+	if m.fault.Remaining > 0 {
+		m.fault.Remaining--
+		if m.fault.Remaining == 0 {
+			m.fault = nil
+		}
 	}
 	return true
 }

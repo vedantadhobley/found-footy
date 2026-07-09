@@ -1,0 +1,95 @@
+name: fault-api-429-rate-limited
+description: |
+  api-sports.io returns 429 (per-minute burst limit exceeded). Our
+  adapter treats 429 as a distinct failure class (rate_limited
+  outcome metric), retries per policy, and if retries fail, the
+  cycle logs and moves on.
+
+  Real-world case: Pro plan is 300/min. During Champions League
+  night with 8 simultaneous matches, burst can exceed. Response
+  includes rate-limit headers our adapter scrapes into metrics.
+
+  Trace: cycle 3 hits 429 on both retry attempts. Activity fails.
+  No reconcile — debounce state preserved. Cycle 4 recovers.
+
+  Same invariant as api_persistent_500: "api unavailable" ≠
+  "event absent." Debounce budget NOT spent on communication
+  failures.
+
+workflow: MonitorWorkflow
+
+setup:
+  fixtures:
+    - id: 999008
+      state: active
+      kickoff: 2026-07-08T15:00:00Z
+      activated_at: 2026-07-08T14:45:00Z
+      last_polled_at: 2026-07-08T15:29:30Z
+      api_status_short: "1H"
+      api_status_long: First Half
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+
+_goal_present: &goal_present
+  fixtures:
+    - id: 999008
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: "1H"
+      status_long: First Half
+      status_elapsed: 30
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      events:
+        - type: Goal
+          detail: Normal Goal
+          team_id: 40
+          team_name: Liverpool
+          player_id: 111
+          player_name: Salah
+          minute: 30
+
+cycles:
+  - t: 2026-07-08T15:30:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+  - t: 2026-07-08T15:30:30Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+  # Cycle 3: burst rate limit — persistent 429 for the cycle.
+  - t: 2026-07-08T15:31:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+    api_fault:
+      status_code: 429
+      body: '{"response":[],"errors":{"rateLimit":"Too many requests"},"results":0}'
+      attempts: -1
+
+  # Cycle 4: quota window rolled, back to normal.
+  - t: 2026-07-08T15:31:30Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+  # Cycle 5: crosses threshold.
+  - t: 2026-07-08T15:32:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+expected_final_state:
+  events:
+    - fixture_id: 999008
+      natural_key: "40_111_Goal_1"
+      debounce_count: 3
+      downstream_triggered: true
+      removed: false
+  counts:
+    # Cycle 1 Insert, cycle 2 vote, cycle 3 FAULT (skipped),
+    # cycles 4-5 votes → 4 total presence votes
+    event_monitor_workflows: 4
+    event_drop_workflows: 0
