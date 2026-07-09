@@ -1,0 +1,166 @@
+name: edge-hat-trick
+description: |
+  Same player scores 3 times in one match. Each goal has its own
+  seq assignment (1, 2, 3), each gets its own independent debounce,
+  each triggers downstream independently.
+
+  Trace: player 111 scores at min 30, min 60, min 85. Each goal
+  goes through its own 3-cycle debounce as it appears.
+
+  Verifies: seq counter per-cycle iteration (Python-style) assigns
+  1, 2, 3 for goals in chronological order in the API's events
+  array. Each natural_key ("40_111_Goal_1", "..._2", "..._3") is
+  distinct and gets its own debounce state.
+
+workflow: MonitorWorkflow
+
+setup:
+  fixtures:
+    - id: 999010
+      state: active
+      kickoff: 2026-07-08T15:00:00Z
+      activated_at: 2026-07-08T14:45:00Z
+      last_polled_at: 2026-07-08T15:29:30Z
+      api_status_short: "1H"
+      api_status_long: First Half
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+
+_base_fixture: &base_fixture
+  id: 999010
+  kickoff: 2026-07-08T15:00:00Z
+  status_short: "2H"
+  status_long: Second Half
+  status_elapsed: 85
+  home_id: 40
+  home_name: Liverpool
+  away_id: 42
+  away_name: Arsenal
+  league_id: 39
+  league_name: Premier League
+  league_season: 2026
+
+_goal_1: &goal_1
+  type: Goal
+  detail: Normal Goal
+  team_id: 40
+  team_name: Liverpool
+  player_id: 111
+  player_name: Salah
+  minute: 30
+
+_goal_2: &goal_2
+  type: Goal
+  detail: Normal Goal
+  team_id: 40
+  team_name: Liverpool
+  player_id: 111
+  player_name: Salah
+  minute: 60
+
+_goal_3: &goal_3
+  type: Goal
+  detail: Normal Goal
+  team_id: 40
+  team_name: Liverpool
+  player_id: 111
+  player_name: Salah
+  minute: 85
+
+cycles:
+  # Cycles 1-2-3: only goal 1 exists. Debounces to trigger.
+  - t: 2026-07-08T15:30:00Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            status_short: "1H"
+            status_elapsed: 30
+            events: [*goal_1]
+  - t: 2026-07-08T15:30:30Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            status_short: "1H"
+            status_elapsed: 30
+            events: [*goal_1]
+  - t: 2026-07-08T15:31:00Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            status_short: "1H"
+            status_elapsed: 30
+            events: [*goal_1]
+
+  # Cycles 4-5-6: goal 2 appears. Goal 1 stays.
+  - t: 2026-07-08T16:00:00Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            status_short: "2H"
+            status_elapsed: 60
+            events: [*goal_1, *goal_2]
+  - t: 2026-07-08T16:00:30Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            status_short: "2H"
+            status_elapsed: 60
+            events: [*goal_1, *goal_2]
+  - t: 2026-07-08T16:01:00Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            status_short: "2H"
+            status_elapsed: 60
+            events: [*goal_1, *goal_2]
+
+  # Cycles 7-8-9: goal 3 appears at min 85. Hat trick complete.
+  - t: 2026-07-08T16:25:00Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            events: [*goal_1, *goal_2, *goal_3]
+  - t: 2026-07-08T16:25:30Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            events: [*goal_1, *goal_2, *goal_3]
+  - t: 2026-07-08T16:26:00Z
+    api_responses:
+      fixtures_by_ids:
+        fixtures:
+          - <<: *base_fixture
+            events: [*goal_1, *goal_2, *goal_3]
+
+expected_final_state:
+  events:
+    - fixture_id: 999010
+      natural_key: "40_111_Goal_1"    # min 30 goal
+      debounce_count: 3
+      downstream_triggered: true
+      removed: false
+    - fixture_id: 999010
+      natural_key: "40_111_Goal_2"    # min 60 goal
+      debounce_count: 3
+      downstream_triggered: true
+      removed: false
+    - fixture_id: 999010
+      natural_key: "40_111_Goal_3"    # min 85 goal
+      debounce_count: 3
+      downstream_triggered: true
+      removed: false
+  counts:
+    events: 3
