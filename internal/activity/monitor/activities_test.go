@@ -21,14 +21,17 @@ import (
 // ── fakes ──────────────────────────────────────────────────────
 
 type fakeFetcher struct {
-	response []apifootball.APIFixture
-	err      error
-	lastIDs  []int64
+	response  []apifootball.APIFixture
+	failedIDs []int64 // simulate partial failure — set to non-nil to exercise the FailedIDs path
+	err       error
+	lastIDs   []int64
 }
 
-func (f *fakeFetcher) ListFixturesByIDs(_ context.Context, ids []int64) ([]apifootball.APIFixture, error) {
+func (f *fakeFetcher) ListFixturesByIDs(_ context.Context, ids []int64) (
+	[]apifootball.APIFixture, []int64, error,
+) {
 	f.lastIDs = ids
-	return f.response, f.err
+	return f.response, f.failedIDs, f.err
 }
 
 type fakeFixtureRepo struct {

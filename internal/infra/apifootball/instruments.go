@@ -35,10 +35,11 @@ type Instruments struct {
 //   - found_footy_apifootball_call_duration_seconds{endpoint} — 14
 //     exp buckets, 50ms → ~400s. Remote occasionally takes 5-10s.
 //   - found_footy_apifootball_ratelimit_remaining — parsed from the
-//     x-ratelimit-requests-remaining response header (or the equivalent
-//     RapidAPI header). Falling toward 0 warns the ingest job.
-//   - found_footy_apifootball_daily_quota_remaining — parsed from
-//     x-rapidapi-requests-remaining. Same purpose at a longer horizon.
+//     X-RateLimit-Remaining response header (PER-MINUTE burst window).
+//     Falling toward 0 warns the ingest job.
+//   - found_footy_apifootball_daily_quota_remaining — parsed from the
+//     x-ratelimit-requests-remaining header (DAILY quota, distinct
+//     from per-minute — see docs/api-football/rate-limits.md).
 func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Instruments {
 	calls := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "found_footy",

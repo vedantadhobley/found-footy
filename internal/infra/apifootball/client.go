@@ -134,7 +134,7 @@ func (c *Client) getJSON(
 	if err != nil {
 		return fmt.Errorf("apifootball.getJSON: build request: %w", err)
 	}
-	req.Header.Set("x-rapidapi-key", c.apiKey)
+	req.Header.Set("x-apisports-key", c.apiKey)
 	req.Header.Set("Accept", "application/json")
 
 	start := time.Now()
@@ -197,18 +197,24 @@ func (c *Client) getJSON(
 }
 
 // observeRateLimitHeaders scrapes rate-limit + quota values from the
-// response headers and updates the gauges. api-sports.io emits both
-// x-ratelimit-* (per-minute window) and x-rapidapi-* (daily quota)
-// headers depending on the deployment path.
+// response headers and updates the gauges. Per the vendor doc
+// (docs/api-football/rate-limits.md), the API emits two windows with
+// similarly-named-but-distinct headers:
+//
+//   x-ratelimit-requests-remaining — DAILY quota (name has "requests")
+//   X-RateLimit-Remaining          — PER-MINUTE burst (no "requests")
+//
+// Header keys go through Go's canonical form (Textproto), so
+// resp.Header.Get is case-insensitive but exact-key on the canonical.
 func (c *Client) observeRateLimitHeaders(resp *http.Response) {
 	if v := resp.Header.Get("x-ratelimit-requests-remaining"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			c.ins.rateLimitRemain.Set(float64(n))
+			c.ins.dailyQuotaRemain.Set(float64(n))
 		}
 	}
-	if v := resp.Header.Get("x-rapidapi-requests-remaining"); v != "" {
+	if v := resp.Header.Get("X-RateLimit-Remaining"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			c.ins.dailyQuotaRemain.Set(float64(n))
+			c.ins.rateLimitRemain.Set(float64(n))
 		}
 	}
 }

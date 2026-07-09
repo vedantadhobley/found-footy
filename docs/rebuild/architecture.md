@@ -215,8 +215,14 @@ Adapter-specific notes:
 - **llm**: types.go owns domain-shaped `ChatRequest`/`ChatResponse`;
   classifyError translates HTTP status codes to typed errors
   (ErrRateLimited, ErrCapExceeded, etc.).
-- **apifootball**: getJSON helper handles auth + rate-limit-header
-  parsing + error classification; `/fixtures` (single + by-IDs) landed in O1a.
+- **apifootball**: getJSON helper handles auth (`x-apisports-key` per
+  doc) + rate-limit-header parsing (per-minute + daily distinct) +
+  error classification. `/fixtures` (single + by-IDs) landed in O1a.
+  `ListFixturesByIDs` accepts any-size input, chunks internally at
+  `IDsBatchLimit=20` (exported const, sourced from vendor doc), fires
+  per-chunk HTTP calls in parallel via `errgroup`, returns
+  `(fixtures, failedIDs, err)`. Partial failure surfaces as non-empty
+  `failedIDs`. See decisions.md 2026-07-09 refactor entry.
 
 **Twitter service note.** `internal/infra/twitter/` is the HTTP client;
 tests pass against a mock. The actual twitter container in dev runs

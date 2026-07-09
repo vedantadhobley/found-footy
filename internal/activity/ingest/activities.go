@@ -25,9 +25,16 @@ import (
 // Defined in the consumer package (per Go idiom); prod passes a
 // *apifootball.Client, tests pass an in-memory fake. Isolates the
 // activity from the full apifootball surface.
+//
+// ListFixturesByIDs returns (fixtures, failedIDs, err): fixtures are
+// the IDs that came back, failedIDs are the IDs that didn't. err is
+// only set on catastrophic failure — partial failures surface as
+// non-empty failedIDs with err=nil. See apifootball.ListFixturesByIDs.
 type fixtureFetcher interface {
 	ListFixtures(ctx context.Context, params apifootball.FixtureListParams) ([]apifootball.APIFixture, error)
-	ListFixturesByIDs(ctx context.Context, ids []int64) ([]apifootball.APIFixture, error)
+	ListFixturesByIDs(ctx context.Context, ids []int64) (
+		fixtures []apifootball.APIFixture, failedIDs []int64, err error,
+	)
 }
 
 // Activities bundles the dependencies each ingest activity method
@@ -81,22 +88,34 @@ func (a *Activities) FetchFixturesForWindow(ctx context.Context, in FetchFixture
 }
 
 // FetchFixturesByIDsInput carries the ManualFixtureIDs list from the
-// workflow's ad-hoc-reingest path.
+// workflow's ad-hoc-reingest path. Any-size slice — the adapter
+// chunks internally at apifootball.IDsBatchLimit and parallelizes.
 type FetchFixturesByIDsInput struct {
 	IDs []int64
 }
 
-// FetchFixturesByIDs calls api-sports.io /fixtures with an ids= query.
-// api-sports.io accepts up to 20 IDs per call; the adapter enforces
-// that cap client-side (returns an error for >20). Reuses the same
-// FetchFixturesOutput shape so downstream activities don't care which
-// fetch path fed them.
-func (a *Activities) FetchFixturesByIDs(ctx context.Context, in FetchFixturesByIDsInput) (FetchFixturesOutput, error) {
-	fixtures, err := a.APIFootball.ListFixturesByIDs(ctx, in.IDs)
-	if err != nil {
-		return FetchFixturesOutput{}, fmt.Errorf("ingest.FetchFixturesByIDs: %w", err)
+// FetchFixturesByIDsOutput is FetchFixturesOutput plus a FailedIDs
+// list so the workflow can loop with backoff on just the IDs that
+// didn't come back — see IngestWorkflow's retry loop.
+type FetchFixturesByIDsOutput struct {
+	Fixtures  []apifootball.APIFixture
+	Count     int
+	FailedIDs []int64
+}
+
+// FetchFixturesByIDs calls apifootball with the given IDs. Zero-length
+// input short-circuits. The adapter chunks + parallelizes internally;
+// partial failures surface as non-empty FailedIDs (err still nil).
+// The workflow decides whether to retry FailedIDs.
+func (a *Activities) FetchFixturesByIDs(ctx context.Context, in FetchFixturesByIDsInput) (FetchFixturesByIDsOutput, error) {
+	if len(in.IDs) == 0 {
+		return FetchFixturesByIDsOutput{}, nil
 	}
-	return FetchFixturesOutput{Fixtures: fixtures, Count: len(fixtures)}, nil
+	fixtures, failedIDs, err := a.APIFootball.ListFixturesByIDs(ctx, in.IDs)
+	if err != nil {
+		return FetchFixturesByIDsOutput{FailedIDs: failedIDs}, fmt.Errorf("ingest.FetchFixturesByIDs: %w", err)
+	}
+	return FetchFixturesByIDsOutput{Fixtures: fixtures, Count: len(fixtures), FailedIDs: failedIDs}, nil
 }
 
 // ── CategorizeAndUpsertFixtures ────────────────────────────────

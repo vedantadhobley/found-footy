@@ -14,13 +14,21 @@
 package workflow
 
 import (
+	"fmt"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/vedantadhobley/found-footy/internal/activity/ingest"
+	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
+
+// fmtIngestMissedIDsMsg — shared message shape for the errors slice,
+// so operators can grep for the "gave up after N attempts" pattern.
+func fmtIngestMissedIDsMsg(count, attempts int) string {
+	return fmt.Sprintf("FetchFixturesByIDs: %d IDs missed after %d attempts", count, attempts)
+}
 
 // Defaults injected by the workflow when the caller passes zero.
 // The schedule spec typically leaves everything zero and lets these
@@ -30,6 +38,13 @@ const (
 	defaultRetentionDays    = 14
 	fetchWindowPastDays     = 1  // fetch fixtures back this many days from anchor
 	fetchWindowFutureDays   = 3  // ...and forward this many days
+
+	// Manual-IDs targeted-retry policy. If FetchFixturesByIDs returns
+	// FailedIDs, we re-run the activity with JUST those IDs; loop up
+	// to ingestManualIDsMaxAttempts times with linear backoff. Ingest
+	// runs daily — recovery in-cycle beats waiting 24h.
+	ingestManualIDsMaxAttempts    = 3
+	ingestManualIDsBackoffInitial = 5 * time.Second
 )
 
 // IngestWorkflowInput matches plan §5 W1 shape + the ActivationWindow
@@ -47,8 +62,10 @@ type IngestWorkflowInput struct {
 
 	// ManualFixtureIDs, when non-empty, switches the fetch path from
 	// FetchFixturesForWindow to FetchFixturesByIDs. Bypasses the
-	// 3-day window entirely. Cap: 20 IDs per call (api-sports.io
-	// limit — the workflow does NOT chunk).
+	// 3-day window entirely. Any size — the adapter chunks internally
+	// at apifootball.IDsBatchLimit; the workflow retries failed chunks
+	// via the ingestManualIDsFetchRetry loop below (targeted at only
+	// the IDs that didn't come back).
 	ManualFixtureIDs []int64
 
 	// ActivationWindow: staging fixtures with kickoff within this
@@ -127,12 +144,44 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 	// Two paths — by-window (normal) or by-IDs (manual re-ingest).
 	var fetchOut ingest.FetchFixturesOutput
 	if len(in.ManualFixtureIDs) > 0 {
-		if err := workflow.ExecuteActivity(ctx,
-			"FetchFixturesByIDs",
-			ingest.FetchFixturesByIDsInput{IDs: in.ManualFixtureIDs},
-		).Get(ctx, &fetchOut); err != nil {
-			return out, err
+		// Targeted-retry loop: on partial failure, re-request just
+		// the IDs that didn't come back. Cap at ingestManualIDsMaxAttempts;
+		// backoff linearly. Aggregate successful fixtures across attempts.
+		remaining := in.ManualFixtureIDs
+		var accumulated []apifootball.APIFixture // typed via ingest package alias below
+		for attempt := 1; attempt <= ingestManualIDsMaxAttempts && len(remaining) > 0; attempt++ {
+			var byIDsOut ingest.FetchFixturesByIDsOutput
+			if err := workflow.ExecuteActivity(ctx,
+				"FetchFixturesByIDs",
+				ingest.FetchFixturesByIDsInput{IDs: remaining},
+			).Get(ctx, &byIDsOut); err != nil {
+				// Catastrophic failure of the activity itself (Temporal
+				// retry policy already exhausted). Bail — nothing more
+				// we can salvage in-workflow.
+				return out, err
+			}
+			accumulated = append(accumulated, byIDsOut.Fixtures...)
+			remaining = byIDsOut.FailedIDs
+			if len(remaining) == 0 {
+				break
+			}
+			logger.Warn("partial by-ID fetch; retrying failed IDs",
+				"attempt", attempt,
+				"got", len(byIDsOut.Fixtures),
+				"remaining", len(remaining),
+			)
+			workflow.Sleep(ctx, time.Duration(attempt)*ingestManualIDsBackoffInitial)
 		}
+		if len(remaining) > 0 {
+			// Exhausted attempts; log the persistent misses but proceed
+			// with what we got — categorize still valuable for the
+			// fetched slice.
+			logger.Warn("by-ID fetch exhausted retries; proceeding without missing IDs",
+				"missed", len(remaining))
+			out.Errors = append(out.Errors,
+				fmtIngestMissedIDsMsg(len(remaining), ingestManualIDsMaxAttempts))
+		}
+		fetchOut = ingest.FetchFixturesOutput{Fixtures: accumulated, Count: len(accumulated)}
 	} else {
 		from := anchor.AddDate(0, 0, -fetchWindowPastDays)
 		to := anchor.AddDate(0, 0, fetchWindowFutureDays)

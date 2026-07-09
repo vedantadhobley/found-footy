@@ -18,7 +18,7 @@ updates this doc if it introduces a new test tier or pattern.
 | Tier | Location | Count | Runtime |
 |---|---|---|---|
 | Unit (pure Go) | domain, activity, config, bootstrap, observability | ~120 | <100ms total |
-| Adapter unit (httptest-based) | infra/apifootball, twitter, syndication, wikidata, llm | ~30 | <200ms total |
+| Adapter unit (httptest-based) | infra/apifootball, twitter, syndication, wikidata, llm | ~35 (grew 2026-07-09 with chunk-parallel + partial-failure coverage) | <200ms total |
 | Adapter integration (testcontainers) | infra/pg, s3, nats, temporal | ~30 | ~30-60s total |
 | Workflow (testsuite.WorkflowTestSuite) | internal/workflow | ~5 (Ingest only, growing) | <100ms per workflow |
 | Synthetic e2e | not shipped | 0 | — |

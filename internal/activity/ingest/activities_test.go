@@ -23,14 +23,15 @@ import (
 // response field applies.
 type fakeFetcher struct {
 	// ListFixtures behavior
-	response   []apifootball.APIFixture
-	err        error
-	lastCall   apifootball.FixtureListParams
+	response []apifootball.APIFixture
+	err      error
+	lastCall apifootball.FixtureListParams
 
 	// ListFixturesByIDs behavior
-	byIDsResponse []apifootball.APIFixture
-	byIDsErr      error
-	byIDsLastCall []int64
+	byIDsResponse  []apifootball.APIFixture
+	byIDsFailedIDs []int64 // set to non-nil to simulate partial failure
+	byIDsErr       error
+	byIDsLastCall  []int64
 }
 
 func (f *fakeFetcher) ListFixtures(_ context.Context, params apifootball.FixtureListParams) ([]apifootball.APIFixture, error) {
@@ -38,9 +39,11 @@ func (f *fakeFetcher) ListFixtures(_ context.Context, params apifootball.Fixture
 	return f.response, f.err
 }
 
-func (f *fakeFetcher) ListFixturesByIDs(_ context.Context, ids []int64) ([]apifootball.APIFixture, error) {
+func (f *fakeFetcher) ListFixturesByIDs(_ context.Context, ids []int64) (
+	[]apifootball.APIFixture, []int64, error,
+) {
 	f.byIDsLastCall = ids
-	return f.byIDsResponse, f.byIDsErr
+	return f.byIDsResponse, f.byIDsFailedIDs, f.byIDsErr
 }
 
 // fakeFixtureRepo — in-memory Repo satisfying fixture.Repo.

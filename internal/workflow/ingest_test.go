@@ -217,9 +217,10 @@ func TestIngestWorkflow_ManualFixtureIDs_UsesByIDsPath(t *testing.T) {
 	env := newEnv(&s)
 
 	env.OnActivity("FetchFixturesByIDs", mock.Anything, mock.Anything).
-		Return(ingest.FetchFixturesOutput{
-			Fixtures: make([]apifootball.APIFixture, 2),
-			Count:    2,
+		Return(ingest.FetchFixturesByIDsOutput{
+			Fixtures:  make([]apifootball.APIFixture, 2),
+			Count:     2,
+			FailedIDs: nil, // clean fetch — no targeted-retry loop
 		}, nil).Once()
 	// FetchFixturesForWindow NOT registered — should not be called.
 
