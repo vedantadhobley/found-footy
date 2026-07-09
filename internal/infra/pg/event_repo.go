@@ -3,11 +3,15 @@
 // shared column list, rowScanner-based scan, ErrNoRows → domain
 // sentinel translation.
 //
-// Fix 3a of the O2 sequence — basic CRUD only (Get, GetByNaturalKey,
-// Insert, Upsert, ListPending). Debounce methods
-// (RegisterMonitorWorkflow, RegisterDropWorkflow, etc.) land in fix
-// 3b. Interface additions for delete-drops-on-presence + soft-delete
-// helpers land in fix 3c.
+// Implements the symmetric-counter debounce model per decisions.md
+// 2026-07-07 entry:
+//   - Insert(ctx, e, workflowID) — atomic new-event + first vote seed
+//   - RegisterEventPresence — idempotent increment, may flip
+//     downstream_triggered on the first crossing of count=3
+//   - RegisterEventAbsence — idempotent decrement, atomic soft-delete
+//     with removed_reason='var' on hit-zero
+//   - RegisterVideoValidationWorkflow — monotonic attempt counter
+//     (unchanged by the debounce redesign)
 package pg
 
 import (
