@@ -69,6 +69,18 @@ type Activities struct {
 	// startup.
 	FetchWindowFutureDays int
 
+	// ActivationWindow — kickoff-lookahead for pre-activation at
+	// Ingest categorize time. Sourced from config.Workflows at worker
+	// startup. See internal/config/workflows.go for the 2× invariant
+	// against StagingPollInterval.
+	ActivationWindow time.Duration
+
+	// RetentionDays — completed fixtures older than this get pruned
+	// by PruneOldFixtures. Sourced from config.Workflows at worker
+	// startup. Scheduled invocation uses this; manual triggers can
+	// override via input.
+	RetentionDays int
+
 	// Now is injectable so tests can drive time deterministically.
 	// Defaults to time.Now if unset.
 	Now func() time.Time
@@ -95,13 +107,28 @@ type GetIngestConfigOutput struct {
 	// is empty. Sourced from FetchWindowFutureDays config. Matches
 	// Python's MAX_LOOKAHEAD_DAYS behavior.
 	MaxLookaheadDays int
+
+	// ActivationWindow — the kickoff-lookahead used at Ingest categorize
+	// time to promote imminent fixtures straight to `active`. Sourced
+	// from config.Workflows.ActivationWindow; MUST match what
+	// MonitorWorkflow uses for its PreActivateUpcoming lookahead.
+	ActivationWindow time.Duration
+
+	// RetentionDays — completed fixtures older than this get pruned.
+	// Sourced from config.Workflows.RetentionDays. Zero here means the
+	// scheduled invocation is expected to explicitly override.
+	RetentionDays int
 }
 
 // GetIngestConfig — trivial config accessor for the workflow.
 func (a *Activities) GetIngestConfig(
 	_ context.Context, _ GetIngestConfigInput,
 ) (GetIngestConfigOutput, error) {
-	return GetIngestConfigOutput{MaxLookaheadDays: a.FetchWindowFutureDays}, nil
+	return GetIngestConfigOutput{
+		MaxLookaheadDays: a.FetchWindowFutureDays,
+		ActivationWindow: a.ActivationWindow,
+		RetentionDays:    a.RetentionDays,
+	}, nil
 }
 
 // ── RefreshTrackedTeamsIfStale ─────────────────────────────────

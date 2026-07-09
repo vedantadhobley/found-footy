@@ -43,7 +43,20 @@ type Activities struct {
 	APIFootball fixtureFetcher
 	FixtureRepo fixture.Repo
 	EventRepo   event.Repo
-	Now         func() time.Time
+
+	// ActivationWindow — kickoff-lookahead used by PreActivateUpcoming.
+	// Sourced from config.Workflows at worker startup; kept aligned
+	// with IngestWorkflow's activation window (both from the same
+	// config). See internal/config/workflows.go for the 2× invariant.
+	ActivationWindow time.Duration
+
+	// StagingPollInterval — how often staging fixtures get polled via
+	// the API. Sourced from config.Workflows. NOT YET WIRED — the
+	// staging-poll behavior itself is not shipped; this field is here
+	// so the wire-up commit doesn't need another config refactor.
+	StagingPollInterval time.Duration
+
+	Now func() time.Time
 }
 
 func (a *Activities) now() time.Time {
@@ -51,6 +64,29 @@ func (a *Activities) now() time.Time {
 		return a.Now().UTC()
 	}
 	return time.Now().UTC()
+}
+
+// ── GetMonitorConfig ──────────────────────────────────────────
+
+// GetMonitorConfigInput has no fields.
+type GetMonitorConfigInput struct{}
+
+// GetMonitorConfigOutput exposes env-driven config to the workflow.
+// Mirrors the ingest.GetIngestConfig pattern for the same reason
+// (workflows can't touch env directly per Temporal determinism).
+type GetMonitorConfigOutput struct {
+	ActivationWindow    time.Duration
+	StagingPollInterval time.Duration
+}
+
+// GetMonitorConfig — trivial config accessor for MonitorWorkflow.
+func (a *Activities) GetMonitorConfig(
+	_ context.Context, _ GetMonitorConfigInput,
+) (GetMonitorConfigOutput, error) {
+	return GetMonitorConfigOutput{
+		ActivationWindow:    a.ActivationWindow,
+		StagingPollInterval: a.StagingPollInterval,
+	}, nil
 }
 
 // ── PreActivateUpcoming ───────────────────────────────────────

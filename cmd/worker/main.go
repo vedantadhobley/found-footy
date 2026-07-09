@@ -11,7 +11,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
@@ -142,6 +141,8 @@ func main() {
 			TrackedLeagueIDs:      deps.Cfg.APIFootball.TrackedLeagueIDs,
 			TopFlightCacheHours:   deps.Cfg.APIFootball.TopFlightCacheHours,
 			FetchWindowFutureDays: deps.Cfg.APIFootball.FetchWindowFutureDays,
+			ActivationWindow:      deps.Cfg.Workflows.ActivationWindow(),
+			RetentionDays:         deps.Cfg.Workflows.RetentionDays,
 		}
 		w.RegisterWorkflow(ffwf.IngestWorkflow)
 		w.RegisterActivity(ingestActs)
@@ -151,9 +152,11 @@ func main() {
 		// Now clock left nil → real wall clock in prod (per the
 		// injectable-clock discipline for scenario testing).
 		monitorActs := &monitoractivity.Activities{
-			APIFootball: afClient,
-			FixtureRepo: fixtureRepo,
-			EventRepo:   eventRepo,
+			APIFootball:         afClient,
+			FixtureRepo:         fixtureRepo,
+			EventRepo:           eventRepo,
+			ActivationWindow:    deps.Cfg.Workflows.ActivationWindow(),
+			StagingPollInterval: deps.Cfg.Workflows.StagingPollInterval,
 		}
 		w.RegisterWorkflow(ffwf.MonitorWorkflow)
 		w.RegisterActivity(monitorActs)
@@ -241,11 +244,17 @@ func ensureIngestSchedule(ctx context.Context, tempClient *temporal.Client, deps
 	return nil
 }
 
-// ensureMonitorSchedule registers the 30-second MonitorWorkflow
+// ensureMonitorSchedule registers the MonitorWorkflow Temporal
 // Schedule if it doesn't exist. Uses an interval spec (cron doesn't
 // support sub-minute resolution). Overlap SKIP: if the prior cycle
 // is still running when the next tick fires, we skip — better than
 // double-fanning-out reconcile activities.
+//
+// Interval is sourced from config.Workflows.ActiveFixturePollInterval
+// (default 30s). Note: the schedule ID is intentionally NOT interval-
+// dependent — if you change the interval, the existing schedule keeps
+// running under its old settings until you delete + recreate it. That's
+// intentional (schedule config lives in Temporal state, not code).
 func ensureMonitorSchedule(ctx context.Context, tempClient *temporal.Client, deps *bootstrap.Deps) error {
 	const scheduleID = "monitor-scheduled-30s"
 
@@ -253,7 +262,7 @@ func ensureMonitorSchedule(ctx context.Context, tempClient *temporal.Client, dep
 		ID: scheduleID,
 		Spec: client.ScheduleSpec{
 			Intervals: []client.ScheduleIntervalSpec{
-				{Every: 30 * time.Second},
+				{Every: deps.Cfg.Workflows.ActiveFixturePollInterval},
 			},
 		},
 		Action: &client.ScheduleWorkflowAction{
