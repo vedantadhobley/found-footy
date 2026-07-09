@@ -94,10 +94,12 @@ func runMonitor(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apif
 	// this cheap: we're setting a field production leaves nil.
 	var currentCycleTime time.Time
 	acts := &monitor.Activities{
-		APIFootball: afClient,
-		FixtureRepo: pg.NewFixtureRepo(pool),
-		EventRepo:   pg.NewEventRepo(pool),
-		Now:         func() time.Time { return currentCycleTime.UTC() },
+		APIFootball:         afClient,
+		FixtureRepo:         pg.NewFixtureRepo(pool),
+		EventRepo:           pg.NewEventRepo(pool),
+		ActivationWindow:    30 * time.Minute,
+		StagingPollInterval: 15 * time.Minute,
+		Now:                 func() time.Time { return currentCycleTime.UTC() },
 	}
 
 	// Translate scenario input → workflow input.
@@ -170,6 +172,8 @@ func runIngest(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apifo
 		TrackedLeagueIDs:      []int{39, 140, 78, 135, 61, 1},
 		TopFlightCacheHours:   24,
 		FetchWindowFutureDays: 7,
+		ActivationWindow:      30 * time.Minute,
+		RetentionDays:         14,
 		Now: func() time.Time {
 			if s.IngestInput != nil && s.IngestInput.ManualDate != nil {
 				return s.IngestInput.ManualDate.UTC()

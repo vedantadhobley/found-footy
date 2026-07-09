@@ -33,6 +33,12 @@ type Config struct {
 	Syndication   SyndicationConfig
 	Twitter       TwitterConfig
 
+	// Cross-workflow orchestration values (activation window, staging
+	// poll interval, retention). Consumed by both IngestWorkflow and
+	// MonitorWorkflow — kept centralized to preserve the 2×
+	// coupling invariant between ActivationWindow and StagingPollInterval.
+	Workflows WorkflowsConfig
+
 	// Sub-configs added in later S-phase commits:
 	//   FFmpeg       ffmpeg.Config
 }

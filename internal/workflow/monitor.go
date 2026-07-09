@@ -24,6 +24,7 @@
 package workflow
 
 import (
+	"fmt"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -57,18 +58,11 @@ type MonitorWorkflowOutput struct {
 	Errors             []string
 }
 
-const defaultMonitorActivationWindow = 30 * time.Minute
-
 // MonitorWorkflow — the coordinator. Called every 30s by the
 // Temporal Schedule.
 func MonitorWorkflow(ctx workflow.Context, in MonitorWorkflowInput) (MonitorWorkflowOutput, error) {
 	logger := workflow.GetLogger(ctx)
 	out := MonitorWorkflowOutput{}
-
-	activationWindow := in.ActivationWindow
-	if activationWindow == 0 {
-		activationWindow = defaultMonitorActivationWindow
-	}
 
 	// Default activity options — individual steps may override.
 	baseAO := workflow.ActivityOptions{
@@ -81,6 +75,22 @@ func MonitorWorkflow(ctx workflow.Context, in MonitorWorkflowInput) (MonitorWork
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, baseAO)
+
+	// Resolve activation window: caller override wins, else read from
+	// config via GetMonitorConfig activity (workflows can't touch env
+	// directly per Temporal determinism). Same 30-min value that
+	// IngestWorkflow uses; both sourced from config.Workflows.
+	activationWindow := in.ActivationWindow
+	if activationWindow == 0 {
+		var cfgOut monitor.GetMonitorConfigOutput
+		if err := workflow.ExecuteActivity(ctx,
+			"GetMonitorConfig",
+			monitor.GetMonitorConfigInput{},
+		).Get(ctx, &cfgOut); err != nil {
+			return out, fmt.Errorf("read monitor config: %w", err)
+		}
+		activationWindow = cfgOut.ActivationWindow
+	}
 
 	workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
 	logger.Info("MonitorWorkflow cycle started", "workflow_id", workflowID)

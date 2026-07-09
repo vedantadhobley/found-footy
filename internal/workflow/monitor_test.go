@@ -20,6 +20,15 @@ func newMonitorEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnviro
 	env := s.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(workflow.MonitorWorkflow)
 	env.RegisterActivity(&monitor.Activities{})
+	// Default GetMonitorConfig — tests that don't override this get the
+	// same 30-min activation window as production. Tests that pass an
+	// explicit MonitorWorkflowInput.ActivationWindow bypass this call
+	// entirely.
+	env.OnActivity("GetMonitorConfig", mock.Anything, mock.Anything).
+		Return(monitor.GetMonitorConfigOutput{
+			ActivationWindow:    30 * time.Minute,
+			StagingPollInterval: 15 * time.Minute,
+		}, nil).Maybe()
 	return env
 }
 

@@ -30,17 +30,13 @@ func fmtIngestMissedIDsMsg(count, attempts int) string {
 	return fmt.Sprintf("FetchFixturesByIDs: %d IDs missed after %d attempts", count, attempts)
 }
 
-// Defaults injected by the workflow when the caller passes zero.
-// The schedule spec typically leaves everything zero and lets these
-// take effect; manual triggers override individual fields.
+// Manual-IDs targeted-retry policy. If FetchFixturesByIDs returns
+// FailedIDs, we re-run the activity with JUST those IDs; loop up
+// to ingestManualIDsMaxAttempts times with linear backoff. Ingest
+// runs daily — recovery in-cycle beats waiting 24h. Kept as workflow-
+// local constants (not shared cross-workflow) so they stay near their
+// only caller.
 const (
-	defaultActivationWindow = 30 * time.Minute
-	defaultRetentionDays    = 14
-
-	// Manual-IDs targeted-retry policy. If FetchFixturesByIDs returns
-	// FailedIDs, we re-run the activity with JUST those IDs; loop up
-	// to ingestManualIDsMaxAttempts times with linear backoff. Ingest
-	// runs daily — recovery in-cycle beats waiting 24h.
 	ingestManualIDsMaxAttempts    = 3
 	ingestManualIDsBackoffInitial = 5 * time.Second
 )
@@ -135,21 +131,9 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 	if in.ManualDate != nil {
 		anchor = *in.ManualDate
 	}
-	activationWindow := in.ActivationWindow
-	if activationWindow == 0 {
-		activationWindow = defaultActivationWindow
-	}
 
-	logger.Info("IngestWorkflow started",
-		"anchor", anchor.Format(time.RFC3339),
-		"manual_date_override", in.ManualDate != nil,
-		"manual_ids_count", len(in.ManualFixtureIDs),
-		"fetch_future", in.FetchFuture,
-		"retention_days", in.RetentionDays,
-	)
-
-	// Default activity options. Individual steps can override via
-	// workflow.WithActivityOptions when their profile differs.
+	// Default activity options need to be set before the first
+	// ExecuteActivity call, including the config accessor below.
 	ao := workflow.ActivityOptions{
 		StartToCloseTimeout: 60 * time.Second,
 		RetryPolicy: &temporal.RetryPolicy{
@@ -160,6 +144,36 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, ao)
+
+	// Read config once at start of workflow — activation window +
+	// retention come from env-driven WorkflowsConfig, so we can't
+	// hardcode them here. Manual triggers can override individual
+	// values via the input.
+	var cfgOut ingest.GetIngestConfigOutput
+	if err := workflow.ExecuteActivity(ctx,
+		"GetIngestConfig",
+		ingest.GetIngestConfigInput{},
+	).Get(ctx, &cfgOut); err != nil {
+		return out, fmt.Errorf("read ingest config: %w", err)
+	}
+	activationWindow := in.ActivationWindow
+	if activationWindow == 0 {
+		activationWindow = cfgOut.ActivationWindow
+	}
+	// RetentionDays: caller override takes precedence; zero from
+	// caller falls back to config; if config also 0, prune skipped.
+	retentionDays := in.RetentionDays
+	if retentionDays == 0 {
+		retentionDays = cfgOut.RetentionDays
+	}
+
+	logger.Info("IngestWorkflow started",
+		"anchor", anchor.Format(time.RFC3339),
+		"manual_date_override", in.ManualDate != nil,
+		"manual_ids_count", len(in.ManualFixtureIDs),
+		"fetch_future", in.FetchFuture,
+		"retention_days", retentionDays,
+	)
 
 	// ── Step 0: refresh tracked-teams cache if stale ──
 	// Skipped on the manual-IDs path — that path targets specific
@@ -289,14 +303,8 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		appendUnique(anchorOut)
 
 		if in.FetchFuture {
-			// Read lookahead cap from config.
-			var cfgOut ingest.GetIngestConfigOutput
-			if err := workflow.ExecuteActivity(ctx,
-				"GetIngestConfig",
-				ingest.GetIngestConfigInput{},
-			).Get(ctx, &cfgOut); err != nil {
-				return out, fmt.Errorf("read ingest config: %w", err)
-			}
+			// cfgOut was already loaded at workflow start; use its
+			// MaxLookaheadDays here.
 			maxLookahead := cfgOut.MaxLookaheadDays
 			if maxLookahead < 2 {
 				maxLookahead = 2 // must at least cover anchor+1 + anchor+2
@@ -424,8 +432,8 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 	// so manual-date-override runs prune relative to the anchor,
 	// not workflow.Now — matters for re-ingest scenarios where you
 	// want the retention math consistent with the fetch math.
-	if in.RetentionDays > 0 {
-		threshold := anchor.AddDate(0, 0, -in.RetentionDays)
+	if retentionDays > 0 {
+		threshold := anchor.AddDate(0, 0, -retentionDays)
 		var pruneOut ingest.PruneOldFixturesOutput
 		if err := workflow.ExecuteActivity(ctx,
 			"PruneOldFixtures",
@@ -434,7 +442,7 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 			return out, err
 		}
 		out.PrunedFixtures = pruneOut.Deleted
-		logger.Info("pruned", "count", out.PrunedFixtures, "threshold_days", in.RetentionDays)
+		logger.Info("pruned", "count", out.PrunedFixtures, "threshold_days", retentionDays)
 	}
 
 	logger.Info("IngestWorkflow complete", "output", out)

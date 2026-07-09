@@ -6,6 +6,81 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-09 — Cross-workflow config centralized in WorkflowsConfig
+
+Prior state had `defaultActivationWindow = 30 * time.Minute` declared as
+a const in both `internal/workflow/ingest.go` AND
+`internal/workflow/monitor.go`. Same value, two places — one accidental
+edit away from silent divergence. User called this out.
+
+Deeper issue: the 30-min activation window is derived from the 15-min
+staging poll interval (2× the interval, so a fixture whose kickoff lands
+between polls still activates before its kickoff). Making activation
+window the config source hid this relationship.
+
+**What shipped**:
+
+- New `internal/config/workflows.go` with `WorkflowsConfig`. Fields:
+  - `StagingPollInterval` — SOURCE OF TRUTH for the activation window
+    (default 15m). How often MonitorWorkflow's designed 15-min staging
+    poll fires. Not yet shipped as behavior; value lives here so
+    wire-up doesn't need a config refactor.
+  - `ActivationMultiplier` — integer (default 2). Bounds the derived
+    activation window.
+  - `ActiveFixturePollInterval` — Monitor's schedule interval
+    (default 30s). Wired at cmd/worker/main.go into the
+    `ScheduleIntervalSpec`.
+  - `RetentionDays` — completed-fixture prune threshold (default 14).
+    Mirrors Python's `FIXTURE_RETENTION_DAYS`.
+- Method `WorkflowsConfig.ActivationWindow() time.Duration` returns
+  `ActivationMultiplier × StagingPollInterval` (with a floor of 1× so
+  a misconfigured 0 doesn't produce a zero-duration window). No
+  separate `ActivationWindow` config field — the invariant can't
+  silently drift.
+
+**Design choices logged**:
+
+- **Method + multiplier over method-only**: user picked the multiplier
+  approach after I initially recommended method-only. Right call — the
+  invariant "activation is always integer × poll" is still enforced;
+  the multiplier just lets us tune the multiplier value without a code
+  change. Bounded config knob, not a foot-gun.
+- **StagingPollInterval as source, not ActivationWindow**: derives from
+  the design decision that the staging poll interval is the natural
+  cadence and the activation window follows from it. Reversing the
+  direction (making ActivationWindow the source) would let someone bump
+  it to 45m with a 30s poll — technically valid but semantically wrong.
+- **ActiveFixturePollInterval wired into the schedule spec**: `cmd/worker/main.go`
+  reads `deps.Cfg.Workflows.ActiveFixturePollInterval` for the Monitor
+  schedule's `Intervals` field. Note: changing this env var doesn't
+  update an ALREADY-CREATED schedule (Temporal state persists) — you
+  have to delete + recreate the schedule to change intervals. Same
+  applies if we ever need to change the Ingest schedule's cron.
+
+**Threading**:
+
+- `ingest.Activities` gained `ActivationWindow` + `RetentionDays` fields.
+  Populated in `cmd/worker/main.go` from `deps.Cfg.Workflows.ActivationWindow()`
+  and `deps.Cfg.Workflows.RetentionDays`.
+- `monitor.Activities` gained `ActivationWindow` + `StagingPollInterval`
+  fields (StagingPollInterval defined but not yet consumed — future
+  staging-poll implementation will read it).
+- Workflows read the values via new zero-cost activities
+  `GetIngestConfig` / `GetMonitorConfig` (workflows can't touch config
+  directly per Temporal determinism).
+- Workflow tests updated: `newEnv` / `newMonitorEnv` register default
+  `.Maybe()` mocks so tests that don't care about config still work.
+
+**Deferred**:
+
+- 15-min staging poll behavior itself — designed 2026-07-07, config
+  now in place, wire-up is next.
+- Startup-time assertion that ActivationMultiplier × StagingPollInterval
+  produces a sane value (e.g. > 5s and < 4h). Currently only bounded
+  by "don't produce zero duration."
+
+---
+
 ## 2026-07-09 — Ingest regression fix: dynamic top-flight team lookup + per-day fetch + smart lookahead
 
 **The bug**: dev postgres had zero fixtures across all states after
