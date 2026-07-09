@@ -1,0 +1,120 @@
+name: edge-postponed-mid-play
+description: |
+  Real edge case: match goes PST mid-play (e.g. weather delay,
+  floodlight failure). Verifies our SUSP/INT/PST=active decision
+  from decisions.md 2026-07-07 works end-to-end + surfaces whether
+  we falsely soft-delete goals during pause cycles.
+
+  Trace:
+    Cycles 1-2-3: goal present at min 30, API status=1H.
+                  Count 1→2→3, triggers downstream.
+    Cycles 4-5-6: match postponed (weather). API status=PST,
+                  events array empty. Fixture stays active (PST
+                  is in Live() bucket per decisions.md).
+    Cycle 7: match resumes. Status=1H, goal in events.
+
+  CRITICAL question this exercises: during PST cycles, do we vote
+  ABSENCE for the tracked goal (because the API's events array is
+  empty)? If yes, three PST cycles would drop count 3→2→1→0 and
+  falsely soft-delete a legitimate goal. If our code handles PST
+  differently (skips reconciliation), the goal survives.
+
+  Expected outcome IF our current code handles PST correctly:
+  goal remains at count=3, downstream_triggered=true, not removed
+  after resume. If the scenario FAILS, we've identified a real
+  bug to fix.
+
+workflow: MonitorWorkflow
+
+setup:
+  fixtures:
+    - id: 999009
+      state: active
+      kickoff: 2026-07-08T15:00:00Z
+      activated_at: 2026-07-08T14:45:00Z
+      last_polled_at: 2026-07-08T15:29:30Z
+      api_status_short: "1H"
+      api_status_long: First Half
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+
+_goal_present: &goal_present
+  fixtures:
+    - id: 999009
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: "1H"
+      status_long: First Half
+      status_elapsed: 30
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      events:
+        - type: Goal
+          detail: Normal Goal
+          team_id: 40
+          team_name: Liverpool
+          player_id: 111
+          player_name: Salah
+          minute: 30
+
+_postponed: &postponed
+  fixtures:
+    - id: 999009
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: PST
+      status_long: Match Postponed
+      status_elapsed: 30
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      events: []
+
+cycles:
+  # Cycles 1-2-3: goal detected + debounced + triggered
+  - t: 2026-07-08T15:30:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+  - t: 2026-07-08T15:30:30Z
+    api_responses: {fixtures_by_ids: *goal_present}
+  - t: 2026-07-08T15:31:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+  # Cycles 4-5-6: PST — empty events array from API.
+  # Does our reconcile falsely vote absence? Test tells us.
+  - t: 2026-07-08T15:31:30Z
+    api_responses: {fixtures_by_ids: *postponed}
+  - t: 2026-07-08T15:32:00Z
+    api_responses: {fixtures_by_ids: *postponed}
+  - t: 2026-07-08T15:32:30Z
+    api_responses: {fixtures_by_ids: *postponed}
+
+  # Cycle 7: resume
+  - t: 2026-07-08T15:33:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+expected_final_state:
+  fixtures:
+    - id: 999009
+      state: active                # never changed state
+      api_status_short: "1H"        # cycle 7 refreshed to 1H
+      has_activated_at: true
+      has_completed_at: false
+      has_last_polled_at: true
+  events:
+    - fixture_id: 999009
+      natural_key: "40_111_Goal_1"
+      debounce_count: 3            # optimistic: PST doesn't burn budget
+      downstream_triggered: true
+      removed: false               # goal preserved through pause

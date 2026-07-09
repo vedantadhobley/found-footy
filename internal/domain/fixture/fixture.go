@@ -55,6 +55,27 @@ func (a APIStatus) Terminal() bool {
 	return false
 }
 
+// InPlay reports whether the match is actively being PLAYED right
+// now — score can change, new events can happen. Distinguishes
+// "actual play in progress" from paused-but-still-active statuses
+// (HT, PST, SUSP, INT).
+//
+// Load-bearing use: MonitorWorkflow's ReconcileFixture only votes
+// ABSENCE for events during InPlay states. During a pause (HT, PST,
+// SUSP, INT), the API may return empty or partial events without
+// meaning "the event was removed" — it just means "the match is
+// paused, nothing new to report." Without this gate, 3 consecutive
+// pause cycles would falsely soft-delete stable goals.
+//
+// Regression-tested by test/scenarios/edge_cases/postponed_mid_play.
+func (a APIStatus) InPlay() bool {
+	switch a.Short {
+	case "1H", "2H", "ET", "LIVE":
+		return true
+	}
+	return false
+}
+
 // Live reports whether the API considers the fixture currently
 // worth active-cadence polling. Includes the obvious "playing" codes
 // (1H/HT/2H/ET/BT/P/LIVE) AND three "not-currently-playing but might

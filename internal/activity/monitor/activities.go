@@ -277,17 +277,30 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	}
 
 	// Absence votes: pg events NOT in the API this cycle.
-	for key, pgEv := range pgByKey {
-		if _, present := apiKeys[key]; present {
-			continue
-		}
-		_, hitZero, err := a.EventRepo.RegisterEventAbsence(ctx, pgEv.ID, in.WorkflowID)
-		if err != nil {
-			out.Errors = append(out.Errors, fmt.Sprintf("absence event=%s: %v", key, err))
-			continue
-		}
-		if hitZero {
-			out.EventsRemoved = append(out.EventsRemoved, key)
+	//
+	// Load-bearing skip: only vote absence when the match is actually
+	// IN PLAY. During pauses (HT, PST, SUSP, INT), the API may return
+	// empty or partial events without meaning "the event was removed"
+	// — it just means "the match is paused." Without this gate, 3
+	// consecutive pause cycles would falsely soft-delete stable
+	// goals. Fix landed with test/scenarios/edge_cases/postponed_mid_play.
+	apiStatus := fixture.APIStatus{
+		Short: in.APIFixture.Fixture.Status.Short,
+		Long:  in.APIFixture.Fixture.Status.Long,
+	}
+	if apiStatus.InPlay() {
+		for key, pgEv := range pgByKey {
+			if _, present := apiKeys[key]; present {
+				continue
+			}
+			_, hitZero, err := a.EventRepo.RegisterEventAbsence(ctx, pgEv.ID, in.WorkflowID)
+			if err != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("absence event=%s: %v", key, err))
+				continue
+			}
+			if hitZero {
+				out.EventsRemoved = append(out.EventsRemoved, key)
+			}
 		}
 	}
 
