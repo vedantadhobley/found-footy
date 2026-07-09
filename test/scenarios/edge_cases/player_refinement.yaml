@@ -1,0 +1,133 @@
+name: edge-player-refinement
+description: |
+  Real behavior: API sometimes reports a goal without knowing the
+  scorer (player_id=null). Later cycles refine it once the scorer
+  is identified. What happens to our natural_key?
+
+  Our ComposeNaturalKey uses "unknown" for null player_id:
+    Unknown scorer → "40_unknown_Goal_1"
+    Known scorer   → "40_111_Goal_1"
+
+  These are DIFFERENT natural_keys. Consequence: when the API
+  refines the player, our reconcile sees an event that WAS
+  "40_unknown_Goal_1" become "40_111_Goal_1" in the API. We treat
+  it as absence for the unknown-scorer entry + a new event for the
+  known-scorer entry.
+
+  This scenario documents the current behavior — the ORIGINAL
+  entry with unknown scorer will eventually get soft-deleted after
+  3 consecutive absence cycles once the API only shows the refined
+  version.
+
+  Realistic call: this is arguably fine because Discovery can't
+  usefully search Twitter for "unknown scorer" anyway. But if we
+  ever want cleaner behavior (in-place mutation of the natural_key),
+  it's a schema-level design decision.
+
+  Assertion: verify the CURRENT behavior — 2 events land (unknown
+  + known), unknown eventually removed.
+
+workflow: MonitorWorkflow
+
+setup:
+  fixtures:
+    - id: 999013
+      state: active
+      kickoff: 2026-07-08T15:00:00Z
+      activated_at: 2026-07-08T14:45:00Z
+      last_polled_at: 2026-07-08T15:29:30Z
+      api_status_short: "1H"
+      api_status_long: First Half
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+
+_unknown_scorer: &unknown_scorer
+  fixtures:
+    - id: 999013
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: "1H"
+      status_long: First Half
+      status_elapsed: 30
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      events:
+        - type: Goal
+          detail: Normal Goal
+          team_id: 40
+          team_name: Liverpool
+          # player_id: null (omitted)
+          minute: 30
+
+_known_scorer: &known_scorer
+  fixtures:
+    - id: 999013
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: "1H"
+      status_long: First Half
+      status_elapsed: 30
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      events:
+        - type: Goal
+          detail: Normal Goal
+          team_id: 40
+          team_name: Liverpool
+          player_id: 111
+          player_name: Salah
+          minute: 30
+
+cycles:
+  # Cycle 1: unknown scorer, natural_key=40_unknown_Goal_1 (INSERT)
+  - t: 2026-07-08T15:30:00Z
+    api_responses: {fixtures_by_ids: *unknown_scorer}
+
+  # Cycle 2: unknown scorer still, count=2 on unknown row
+  - t: 2026-07-08T15:30:30Z
+    api_responses: {fixtures_by_ids: *unknown_scorer}
+
+  # Cycle 3: player identified! natural_key becomes 40_111_Goal_1.
+  # Reconcile sees:
+  #   - "40_unknown_Goal_1" NOT in API → absence vote (count=1)
+  #   - "40_111_Goal_1" NEW → INSERT (count=1)
+  - t: 2026-07-08T15:31:00Z
+    api_responses: {fixtures_by_ids: *known_scorer}
+
+  # Cycles 4-5: known scorer persists. Unknown decays.
+  - t: 2026-07-08T15:31:30Z
+    api_responses: {fixtures_by_ids: *known_scorer}
+  - t: 2026-07-08T15:32:00Z
+    api_responses: {fixtures_by_ids: *known_scorer}
+
+expected_final_state:
+  events:
+    # Unknown-scorer row: count went 1→2→1 (cycle 3 absent) →
+    # 0 (cycle 4 absent) → soft-deleted at cycle 4.
+    - fixture_id: 999013
+      natural_key: "40_unknown_Goal_1"
+      debounce_count: 0
+      downstream_triggered: false   # never triggered — max was 2
+      removed: true                 # hit zero at cycle 4
+      removed_reason: var
+    # Known-scorer row: cycle 3 INSERT (1) → cycle 4 (2) → cycle 5 (3, TRIGGERS)
+    - fixture_id: 999013
+      natural_key: "40_111_Goal_1"
+      debounce_count: 3
+      downstream_triggered: true
+      removed: false
+  counts:
+    events: 2
