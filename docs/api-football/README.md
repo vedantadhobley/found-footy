@@ -4,60 +4,95 @@
 <https://www.api-football.com/documentation-v3> are behind a Cloudflare
 bot challenge. No agent tool (WebFetch, curl+UA, etc.) can bypass the
 JS challenge — verified 2026-07-09. Rather than repeatedly rediscover
-the API's behavior from Python code + guesswork, we mirror the
-relevant doc sections here as human-copied markdown.
+the API's behavior from Python code + guesswork, we mirror the docs
+here.
 
-**Human update flow.** When the API adds a field, changes a status
-code, or introduces a new event type, the human updating this repo
-opens the docs in a browser, copies the relevant section, updates
-the appropriate file below, and notes the update date at the top of
-that file. Agents reading these files treat them as ground truth
-until superseded.
+## Layout
 
-**Source of truth precedence** (when files disagree):
-1. This directory — most authoritative for API behavior
-2. `archive/src/utils/event_config.py` — Python's accumulated
-   wisdom, but frozen at whenever Python was last updated
-3. `internal/infra/apifootball/*.go` — what our adapter actually
-   sends + parses; observed behavior
-4. Live API responses captured under `examples/` — ground truth
-   for what the API actually returned at capture time
+```
+docs/api-football/
+├── README.md                (this file)
+├── events-shape.md          per-fixture events array
+├── fixtures-endpoint.md     /fixtures + envelope + query params
+├── status-codes.md          fixture status short codes (NS, 1H, HT, FT, PST, ...)
+├── rate-limits.md           headers, quotas, retry semantics
+├── examples/                real captured API responses (JSON)
+└── vendor/                  raw vendor-doc archive — do NOT edit
+    ├── api-football-v3.9.3.pdf           131-page PDF export
+    ├── api-football-v3.9.3.html          browser-save HTML mirror
+    └── api-football-v3.9.3_files/        assets (gitignored — 5MB of screenshots)
+```
+
+## Source-of-truth precedence
+
+When files disagree, higher-numbered sources win:
+
+1. `vendor/` — the vendor's own doc export. Authoritative for API
+   contract as of the archive date.
+2. This directory's `.md` files — human-distilled from `vendor/`.
+   Faster to read; may lag if the vendor site updates between
+   archives.
+3. `archive/src/utils/event_config.py` — Python's accumulated
+   wisdom, frozen at Python's last update. Historically load-bearing
+   (the "Red card" casing came from here); now superseded by `vendor/`.
+4. `internal/infra/apifootball/*.go` — what our Go adapter actually
+   sends + parses. Observed behavior; may not match doc.
+5. `examples/` — live captured API responses. Ground truth for what
+   the API actually returned at capture time.
+
+## Human update flow
+
+When the vendor updates the API:
+
+1. Open <https://www.api-football.com/documentation-v3> in a browser.
+2. **File → Save Page As → Web Page, Complete** → download
+   `API-Football - Documentation.html` + `_files/` dir.
+   Also **Print → Save as PDF** for a searchable archive.
+3. Drop the artifacts into this repo's root or somewhere convenient.
+4. Move + rename:
+   ```
+   mv "API-Football - Documentation.pdf"   \
+      "docs/api-football/vendor/api-football-v<X.Y.Z>.pdf"
+   mv "API-Football - Documentation.html"  \
+      "docs/api-football/vendor/api-football-v<X.Y.Z>.html"
+   mv "API-Football - Documentation_files" \
+      "docs/api-football/vendor/api-football-v<X.Y.Z>_files"
+   ```
+5. Fix the HTML's asset references (browser save hardcodes the
+   original dir name, URL-encoded):
+   ```
+   sed -i 's|API-Football%20-%20Documentation_files|api-football-v<X.Y.Z>_files|g' \
+       "docs/api-football/vendor/api-football-v<X.Y.Z>.html"
+   ```
+6. Reconcile the seeded `.md` files against the new archive. Update
+   the `Status:` line at the top of each with the new date.
+7. Log the version bump in [../decisions.md](../decisions.md).
+
+The current archive is **v3.9.3** captured **2026-07-09**.
 
 ## Files
 
-| File | Covers | Last updated |
+| File | Covers | Seeded from vendor |
 |---|---|---|
-| [fixtures-endpoint.md](./fixtures-endpoint.md) | `/fixtures` + `/fixtures?ids=` + response envelope | ⚠️ stub, needs seeding |
-| [events-shape.md](./events-shape.md) | Per-fixture events array — types + details + comments | ⚠️ stub, needs seeding |
-| [status-codes.md](./status-codes.md) | Fixture status short codes (NS, 1H, HT, FT, PST, ...) | ⚠️ stub, needs seeding |
-| [rate-limits.md](./rate-limits.md) | Burst limits, quotas, rate-limit response headers, 429 body | ⚠️ stub, needs seeding |
+| [events-shape.md](./events-shape.md) | Per-fixture events array — types + details + comments | ✓ 2026-07-09 (PDF p. 69) |
+| [fixtures-endpoint.md](./fixtures-endpoint.md) | `/fixtures` + `/fixtures?ids=` + response envelope | ✓ 2026-07-09 (PDF pp. 58-62) |
+| [status-codes.md](./status-codes.md) | Fixture status short codes (NS, 1H, HT, FT, PST, ...) | ✓ 2026-07-09 (PDF pp. 58-59) |
+| [rate-limits.md](./rate-limits.md) | Rate-limit headers, quotas, 429 body | ⚠ partial 2026-07-09 (headers only; plans table not in this export) |
 | [examples/](./examples/) | Real captured API responses (JSON) | as-needed |
-
-## Suggested capture priorities
-
-Order matters — the most Monitor-critical sections first:
-
-1. **events-shape.md** — every distinct `type` + `detail` + `comments`
-   value the API can return. Currently the biggest unknown after
-   tonight's "Red Card" vs "Red card" bug. Card types especially.
-2. **fixtures-endpoint.md** — exact shape of `/fixtures?ids=`
-   response envelope + query params.
-3. **status-codes.md** — the FIFA status short codes list. Our
-   fixture domain's Live()/Terminal() methods encode assumptions
-   here.
-4. **rate-limits.md** — headers we scrape (already partially covered
-   in `internal/infra/apifootball/client.go`) + burst quotas.
-5. **examples/** — actual JSON captured from live matches. Useful
-   for corpus scenarios that want to mirror real API shape rather
-   than my best guess.
 
 ## When agents can't find a value here
 
-If an agent needs a field/value that's NOT in these files, correct
-behavior is:
-1. **Say so explicitly** — "the docs entry for X isn't in
-   `docs/api-football/`; I'm going off Python code or observation"
-2. **Ask the human** to seed the relevant file OR paste the
-   specific detail
-3. **Do NOT silently guess casing / values** — that's exactly the
-   failure mode this directory prevents.
+If an agent needs a field/value that's NOT in these seeded files:
+
+1. **Grep the vendor archive first.** The HTML mirror is text-heavy
+   and searchable:
+   ```
+   grep -i 'red card' docs/api-football/vendor/api-football-v3.9.3.html
+   ```
+   Or open the PDF via Read with a page range.
+2. **If found in vendor**, update the corresponding seeded `.md`
+   with the finding — don't just answer from the archive silently.
+3. **If NOT found in vendor**, say so explicitly: "the vendor
+   archive doesn't cover X; I'm inferring from Python / prod
+   observation." Do NOT silently guess casing / enum values — the
+   whole point of this directory is to avoid that failure mode.
