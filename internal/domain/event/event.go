@@ -16,7 +16,6 @@ package event
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
@@ -30,43 +29,49 @@ import (
 type Type string
 
 const (
-	TypeGoal  Type = "Goal"
-	TypeCard  Type = "Card"
-	TypeSubst Type = "Subst"
-	TypeVar   Type = "Var"
+	TypeGoal          Type = "Goal"
+	TypeCard          Type = "Card"
+	TypeSubst         Type = "Subst"
+	TypeVar           Type = "Var"
+	TypeMissedPenalty Type = "MissedPenalty" // domain-only classification (vendor sends this under Type=Goal); see TrackableEventType
 )
 
 // Valid reports whether t is one of the known event types.
 func (t Type) Valid() bool {
 	switch t {
-	case TypeGoal, TypeCard, TypeSubst, TypeVar:
+	case TypeGoal, TypeCard, TypeSubst, TypeVar, TypeMissedPenalty:
 		return true
 	}
 	return false
 }
 
 // TrackableEventType classifies an already-decoded API-Football event
-// by its typed Type + Detail + free-text Comments, returning the
-// domain event.Type to store OR the zero-value + false if we don't
-// track this event.
+// by its typed Type + Detail + Comments, returning the domain
+// event.Type to store OR the zero-value + false if we don't track
+// this event.
 //
 // The Type + Detail params are the canonical enum values produced by
 // apifootball.APIEventType / APIEventDetail — normalized at wire
 // unmarshal so this function's switches use `==` on typed constants,
-// no case-normalization needed.
+// no case-normalization needed. Comments stays a string (context-
+// dependent per parent type); shootout filtering uses the typed
+// predicate apifootball.HasPenaltyShootoutComment.
 //
 // Whitelist per docs/api-football/events-shape.md:
 //
 //   Goal + detail in {Normal Goal, Penalty, Own Goal} + no
-//     "Penalty Shootout" in comments → TypeGoal
-//   Card + detail = Red card                              → TypeCard
+//     "Penalty Shootout" in comments                        → TypeGoal
+//   Goal + detail = Missed Penalty + no "Penalty Shootout"  → TypeMissedPenalty
+//     (a saved penalty in open play is highlight-worthy;
+//     shootout misses are just shootout mechanics, filtered.)
+//   Card + detail = Red Card                                → TypeCard
 //
-// Everything else (yellow cards, substitutions, VAR events, missed
-// penalties, penalty-shootout goals, or unknown enum values) → skip.
+// Everything else (yellow cards, substitutions, VAR events,
+// penalty-shootout goals, or unknown enum values) → skip.
 func TrackableEventType(apiType apifootball.APIEventType, apiDetail apifootball.APIEventDetail, apiComments string) (Type, bool) {
 	switch apiType {
 	case apifootball.EventTypeGoal:
-		if strings.Contains(strings.ToLower(apiComments), "penalty shootout") {
+		if apifootball.HasPenaltyShootoutComment(apiComments) {
 			return "", false
 		}
 		switch apiDetail {
@@ -74,6 +79,8 @@ func TrackableEventType(apiType apifootball.APIEventType, apiDetail apifootball.
 			apifootball.DetailPenalty,
 			apifootball.DetailOwnGoal:
 			return TypeGoal, true
+		case apifootball.DetailMissedPenalty:
+			return TypeMissedPenalty, true
 		}
 	case apifootball.EventTypeCard:
 		if apiDetail == apifootball.DetailRedCard {

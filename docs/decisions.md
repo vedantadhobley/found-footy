@@ -6,6 +6,109 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-09 — Real-data enum audit: card/goal comments + Missed Penalty tracking + vendor casing reality
+
+Follow-up to the earlier same-day enum refactor. User pushed back on my
+"comments field is free-text" claim from `events-shape.md` and asked me
+to verify against real vendor data instead of just the doc. Live audit
+against 4 recent WC fixtures + 1 shootout fixture (2026-07-06 through
+2026-07-07) surfaced three findings that shifted the design:
+
+**Finding 1: `comments` is NOT free-text — it's a discrete enum per
+parent event type.**
+
+Card comments observed (values are exact vendor strings):
+- `Foul` (most common on Yellow Card)
+- `Argument`
+- `Roughing`
+- `Unsportsmanlike conduct`
+- `Serious foul` (observed on straight red)
+- _(null)_
+
+Goal comments observed:
+- `Penalty Shootout` (on shootout goals + missed shootout penalties)
+- _(null)_ (regular-play goals)
+
+Subst / Var: no non-null comments seen. Extend enums if we ever
+observe values.
+
+**Finding 2: vendor emits `"Red Card"` (title case) in live data,
+contradicting its own doc which says `"Red card"` (lowercase 'c').**
+
+This isn't a doc typo we can normalize away — vendor is internally
+inconsistent about casing across doc + emission across event types
+(compare `"Red Card"` observed vs `"Goal cancelled"` doc'd + observed
+with lowercase 'c'). Parse handles both via case-insensitive lookup,
+but the canonical form is a policy decision.
+
+**Finding 3: `Missed Penalty` occurs in both shootout AND open play.**
+
+Shootout misses have `comments="Penalty Shootout"` — same filter as
+shootout goals catches them. Open-play misses (rare — saved
+penalties) have `comments=null` and are highlight-worthy but
+semantically different from goals. User wants them tracked as a
+distinct domain event type so the UI can display them differently.
+
+**What shipped**:
+
+- New `APICardComment` enum with 5 canonical constants +
+  ParseAPICardComment. Wire type stays `*string` on APIFixtureEvent
+  since comments is context-dependent per parent Type; parsing is
+  callable at consumption sites.
+- New `APIGoalComment` enum with `GoalCommentPenaltyShootout` +
+  ParseAPIGoalComment + `HasPenaltyShootoutComment(string) bool`
+  predicate. TrackableEventType now calls the predicate instead of
+  a string literal.
+- `DetailRedCard` canonical value changed from `"Red card"` to
+  `"Red Card"` (matches real vendor emission). Parse still accepts
+  both casings so nothing downstream breaks. Log lines now mirror
+  the vendor console.
+- New domain event type `TypeMissedPenalty`. Added to the
+  `event_type` pg enum (`ALTER TYPE event_type ADD VALUE 'MissedPenalty'`
+  on running dev DB + updated `schema.sql` for future fresh volumes).
+  TrackableEventType returns `(TypeMissedPenalty, true)` when
+  `Type=Goal + Detail=Missed Penalty + NOT Penalty Shootout comment`.
+- VAR parsing tests added — end-to-end unmarshal path verified for
+  both `Goal cancelled` and `Penalty confirmed` details. VAR events
+  still skip TrackableEventType (no downstream trigger); user
+  wanted the parsing path proven correct so future storage/display
+  is unblocked.
+- events-shape.md updated with real-data findings + correction of
+  the "free-text" claim.
+
+**Design decisions logged**:
+
+- **Canonical case follows real emission, not doc.** Original policy
+  (2026-07-09 typed enums entry) said "match vendor doc casing" for
+  log-line consistency with the vendor console. But real emission
+  diverges from the doc — canonical policy is now "match live
+  emission," with Parse's case-insensitive lookup handling both.
+- **Wire type stays `*string` for comments.** Considered typing
+  APIFixtureEvent.Comments as APIEventComment (or per-type unions),
+  but the field's semantics differ across parent Types. Cleaner to
+  keep the wire field untyped + expose ParseAPICardComment /
+  ParseAPIGoalComment for consumers.
+- **Deferred: lowercase-all-canonical follow-up.** User has flagged
+  three times now that a policy of "all lowercase internal
+  representation" would be cleaner than dancing around vendor's
+  casing inconsistencies. Not doing it this commit (bigger churn +
+  breaks the current match-real-emission decision), but flagged
+  here as a possible future policy shift.
+- **Missed Penalty as distinct domain type over TypeGoal + flag.**
+  Two options were considered: (a) return TypeGoal + let consumers
+  distinguish via Detail field, or (b) introduce TypeMissedPenalty
+  as its own domain classification. Chose (b) — cleaner query
+  patterns, no risk of consumer forgetting the check, event_type pg
+  enum extension is trivial.
+
+**Verification**:
+- 22 tests pass (existing + 9 new for CardComment/GoalComment/VAR/
+  TrackableEventType classification matrix + updated Red Card casing).
+- Dev worker (air hot-reload) still cycling active fixture after
+  changes; no runtime errors.
+
+---
+
 ## 2026-07-09 — Typed enums for API-Sports wire values (Status + EventType + EventDetail)
 
 Prior state had three vendor-shaped fields as bare `string`:
