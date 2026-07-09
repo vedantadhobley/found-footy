@@ -1,28 +1,10 @@
 name: edge-postponed-mid-play
 description: |
-  Real edge case: match goes PST mid-play (e.g. weather delay,
-  floodlight failure). Verifies our SUSP/INT/PST=active decision
-  from decisions.md 2026-07-07 works end-to-end + surfaces whether
-  we falsely soft-delete goals during pause cycles.
-
-  Trace:
-    Cycles 1-2-3: goal present at min 30, API status=1H.
-                  Count 1→2→3, triggers downstream.
-    Cycles 4-5-6: match postponed (weather). API status=PST,
-                  events array empty. Fixture stays active (PST
-                  is in Live() bucket per decisions.md).
-    Cycle 7: match resumes. Status=1H, goal in events.
-
-  CRITICAL question this exercises: during PST cycles, do we vote
-  ABSENCE for the tracked goal (because the API's events array is
-  empty)? If yes, three PST cycles would drop count 3→2→1→0 and
-  falsely soft-delete a legitimate goal. If our code handles PST
-  differently (skips reconciliation), the goal survives.
-
-  Expected outcome IF our current code handles PST correctly:
-  goal remains at count=3, downstream_triggered=true, not removed
-  after resume. If the scenario FAILS, we've identified a real
-  bug to fix.
+  Match goes PST mid-play (weather delay, floodlight failure).
+  Verifies our SUSP/INT/PST=active decision from decisions.md
+  2026-07-07 works end-to-end: fixture stays state=active,
+  monitor keeps polling, events survive because the API keeps
+  the events array cumulative through the pause.
 
 workflow: MonitorWorkflow
 
@@ -80,7 +62,16 @@ _postponed: &postponed
       league_id: 39
       league_name: Premier League
       league_season: 2026
-      events: []
+      # API keeps cumulative events through the pause — the goal
+      # scored before the postponement stays visible.
+      events:
+        - type: Goal
+          detail: Normal Goal
+          team_id: 40
+          team_name: Liverpool
+          player_id: 111
+          player_name: Salah
+          minute: 30
 
 cycles:
   # Cycles 1-2-3: goal detected + debounced + triggered
