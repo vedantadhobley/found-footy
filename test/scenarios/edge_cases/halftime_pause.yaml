@@ -1,0 +1,135 @@
+name: edge-halftime-pause
+description: |
+  Goal in first half, then match goes to halftime (HT status),
+  then second half resumes. Verifies:
+    - Goal from 1H survives the HT pause (absence votes gated by
+      InPlay() per 2026-07-09 pause fix)
+    - Once 2H begins, goal remains stable
+    - No new events during HT don't count as "goal removed"
+
+  This is the common case for every 90-minute match — happens twice
+  per game (HT and FT). Getting HT wrong would soft-delete every
+  first-half goal at cycle 3 of halftime (~90 seconds in).
+
+workflow: MonitorWorkflow
+
+setup:
+  fixtures:
+    - id: 999011
+      state: active
+      kickoff: 2026-07-08T15:00:00Z
+      activated_at: 2026-07-08T14:45:00Z
+      last_polled_at: 2026-07-08T15:29:30Z
+      api_status_short: "1H"
+      api_status_long: First Half
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+
+_goal_1h: &goal_1h
+  fixtures:
+    - id: 999011
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: "1H"
+      status_long: First Half
+      status_elapsed: 30
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      events:
+        - type: Goal
+          detail: Normal Goal
+          team_id: 40
+          team_name: Liverpool
+          player_id: 111
+          player_name: Salah
+          minute: 30
+
+# Halftime: status=HT, events may or may not include the 1H goal
+# depending on API behavior. Realistically it usually DOES include
+# them, but our safety net (pause fix) protects even if it doesn't.
+_halftime: &halftime
+  fixtures:
+    - id: 999011
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: HT
+      status_long: Halftime
+      status_elapsed: 45
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      events: []          # worst case — API drops events during HT
+
+_second_half: &second_half
+  fixtures:
+    - id: 999011
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: "2H"
+      status_long: Second Half
+      status_elapsed: 46
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      events:
+        - type: Goal
+          detail: Normal Goal
+          team_id: 40
+          team_name: Liverpool
+          player_id: 111
+          player_name: Salah
+          minute: 30
+
+cycles:
+  # 1H: goal detected, debounces to trigger
+  - t: 2026-07-08T15:30:00Z
+    api_responses: {fixtures_by_ids: *goal_1h}
+  - t: 2026-07-08T15:30:30Z
+    api_responses: {fixtures_by_ids: *goal_1h}
+  - t: 2026-07-08T15:31:00Z
+    api_responses: {fixtures_by_ids: *goal_1h}
+
+  # HT: 30 cycles worth of pause (~15 min real halftime).
+  # We only need 4-5 cycles to prove the invariant holds.
+  - t: 2026-07-08T15:45:00Z
+    api_responses: {fixtures_by_ids: *halftime}
+  - t: 2026-07-08T15:45:30Z
+    api_responses: {fixtures_by_ids: *halftime}
+  - t: 2026-07-08T15:46:00Z
+    api_responses: {fixtures_by_ids: *halftime}
+  - t: 2026-07-08T15:46:30Z
+    api_responses: {fixtures_by_ids: *halftime}
+
+  # 2H resumes, goal still there
+  - t: 2026-07-08T16:00:00Z
+    api_responses: {fixtures_by_ids: *second_half}
+
+expected_final_state:
+  fixtures:
+    - id: 999011
+      state: active
+      api_status_short: "2H"        # cycle 8 refreshed
+      has_activated_at: true
+      has_completed_at: false
+      has_last_polled_at: true
+  events:
+    - fixture_id: 999011
+      natural_key: "40_111_Goal_1"
+      debounce_count: 3            # never dropped during HT
+      downstream_triggered: true
+      removed: false
