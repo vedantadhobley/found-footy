@@ -106,7 +106,9 @@ mongodb-keyfile
 *.out
 coverage.out
 coverage.html
-vendor/
+# Anchored to repo root — Go vendor dir only. Do NOT match
+# docs/api-football/vendor/ (frozen vendor-doc archive).
+/vendor/
 # Stray root-level binaries produced by `go build ./cmd/<x>` — each
 # cmd/<x> package produces an executable at repo root by default.
 /worker
@@ -117,3 +119,8 @@ vendor/
 # air hot-reload
 tmp/
 build-errors.log
+
+# Browser-save asset dirs from vendor-doc HTML mirrors — the HTML
+# references them by relative path, but they're 5+ MB of images we
+# don't want in git. Keep locally, don't commit.
+docs/api-football/vendor/*_files/

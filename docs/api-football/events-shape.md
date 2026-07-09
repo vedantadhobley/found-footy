@@ -1,115 +1,122 @@
 # /fixtures events array — types + details
 
-**Status: STUB. Not yet seeded from docs. Do not treat as authoritative.**
+**Status: Seeded from vendor doc v3.9.3, 2026-07-09.**
 
-**Source URL** (Cloudflare-blocked to agents):
-<https://www.api-football.com/documentation-v3> — Fixtures section →
-Events response.
+**Source**: `docs/api-football/vendor/api-football-v3.9.3.{pdf,html}`
+→ "Events" section (PDF page 69). Live URL:
+<https://www.api-football.com/documentation-v3> (Cloudflare-blocked
+to agents).
 
-## Structure
+Two ways to get events:
 
-Per-fixture events array. Each element:
+- Inline in `/fixtures?ids=…&id=…&live=…` — every fixture response
+  includes an `events` array. Confirmed by the request-sample
+  comment on page 61: *"In this request events, lineups, statistics
+  fixture and players fixture are returned in the response."*
+- Dedicated `/fixtures/events?fixture={id}` endpoint — same shape,
+  supports optional `team`, `player`, `type` filters.
+
+Update frequency: **15 seconds**. Recommended calls: 1/min for
+in-progress fixtures, otherwise 1/day.
+
+## Element structure
 
 ```json
 {
-  "time": { "elapsed": 30, "extra": null },
-  "team": { "id": 40, "name": "Liverpool", "logo": "..." },
+  "time":   { "elapsed": 30, "extra": null },
+  "team":   { "id": 40, "name": "Liverpool", "logo": "..." },
   "player": { "id": 111, "name": "M. Salah" },
   "assist": { "id": 222, "name": "..." },
-  "type": "Goal",
+  "type":   "Goal",
   "detail": "Normal Goal",
   "comments": null
 }
 ```
 
-## Type values
+## Enum table (page 69, verbatim)
 
-Based on `archive/src/utils/event_config.py` (Python's frozen
-knowledge, LAST UPDATED unknown):
+| Type    | Detail values                              |
+|---------|--------------------------------------------|
+| `Goal`  | `Normal Goal`, `Own Goal`, `Penalty`, `Missed Penalty` |
+| `Card`  | `Yellow Card`, `Red card`                  |
+| `Subst` | `Substitution [1, 2, 3...]`                |
+| `Var`   | `Goal cancelled`, `Penalty confirmed`      |
 
-| Type | Description | Case |
-|---|---|---|
-| `Goal` | Score-changing event | Title case |
-| `Card` | Yellow/red/second-yellow | Title case |
-| `Var` | VAR decision | Title case |
-| `subst` | Substitution | **lowercase** |
+> *"VAR events are available from the 2020-2021 season."* — doc note.
 
-## Detail values by Type
+**Casing is authoritative** — this table is our source of truth:
 
-### Type=Goal
+- `Red card` — **lowercase 'c'** on "card" (verified against page 69
+  formatted table; Python's config matched).
+- `Yellow Card` — title case on both words.
+- Type strings are title case (`Goal`, `Card`, `Subst`, `Var`).
+  Note: Python's `event_config.py` writes `subst` lowercase; the
+  doc's TYPE column shows `Subst`. The API's actual over-the-wire
+  string might follow either convention — captured samples in
+  `examples/` are ground truth if this ever matters. We don't
+  currently track substitutions so the discrepancy is inert.
 
-Per Python `event_config.py:11`:
+## What our system tracks
 
-| Detail | Track? | Notes |
-|---|---|---|
-| `Normal Goal` | ✓ | Regular open-play goal |
-| `Penalty` | ✓ | Penalty kick converted |
-| `Own Goal` | ✓ | Own goal (see attribution note) |
-| `Missed Penalty` | ✗ | NOT a goal despite Type=Goal |
+Per `internal/domain/event/event.go` `TrackableEventType`:
 
-**Comments filter**: goals where `comments` field contains
-`"Penalty Shootout"` are shootout goals, not match goals — skip.
+| Type + Detail                       | Tracked? | Notes                            |
+|-------------------------------------|----------|----------------------------------|
+| `Goal` / `Normal Goal`              | ✓        | Regular open-play goal           |
+| `Goal` / `Penalty`                  | ✓        | Penalty kick converted           |
+| `Goal` / `Own Goal`                 | ✓        | See attribution note below       |
+| `Goal` / `Missed Penalty`           | ✗        | Type=Goal but not a goal          |
+| `Goal` / \* + `comments` ∋ `Penalty Shootout` | ✗ | Shootout goals, not match goals |
+| `Card` / `Red card`                 | ✓        | Dismissal event                  |
+| `Card` / `Yellow Card`              | ✗        | Noise; too many per match         |
+| `Subst` / \*                        | ✗        | Not scored/highlighted           |
+| `Var` / \*                          | ✗ (today) | See open question below         |
 
-**Own goal attribution quirk (unverified)**: API may report own goals
-with the SCORING team's ID rather than the CONCEDING team's ID. Needs
-verification.
+## Own goal attribution quirk
 
-### Type=Card
+**Unverified — doc doesn't say either way.** Python's Twitter search
+compensated for a rumored behavior where own goals get reported
+against the SCORING team's ID rather than the CONCEDING team. Needs
+verification against captured live samples before we bake anything
+into Go. If confirmed, `event.NaturalKey` would want to swap the
+team field on Detail=`Own Goal`.
 
-Per Python `event_config.py:24`:
+## Open questions the doc doesn't resolve
 
-| Detail | Track? | Notes |
-|---|---|---|
-| `Red card` | ✓ | **NOTE: lowercase 'c' per Python config. Verify.** |
-| `Yellow Card` | ✗ | Noise; would flood pg |
-| `Second Yellow card` OR `Second yellow` | ⚠️ Unknown | Effectively a dismissal; want to track but exact string not documented in Python |
-
-### Type=Var
-
-Per Python `event_config.py:32`: not tracked, no details enumerated.
-
-### Type=subst
-
-Per Python `event_config.py:38`: not tracked.
+1. **VAR overturn behavior.** If a goal is checked and cancelled by
+   VAR, does the ORIGINAL `Goal` element get removed from the
+   events array, OR does a separate `Var` / `Goal cancelled` element
+   appear alongside it, OR both? Our set-diff debounce handles case
+   #1 naturally; case #2 would need explicit handling. Capture a
+   real overturn into `examples/` when it happens live.
+2. **Second Yellow.** The doc lists only `Yellow Card` and
+   `Red card` for the `Card` type — no `Second Yellow` or
+   `Second yellow card` detail. Presumably a second yellow shows up
+   as a second `Yellow Card` event followed by a `Red card` event
+   (the API composes it that way). Verify from captured samples.
+3. **`Substitution [1, 2, 3...]`**. The bracket notation suggests
+   a substitution index — per-player? per-team? per-match? Not
+   documented. We don't track subs so this is inert.
 
 ## Field-level details
 
 ### `time`
 
-- `elapsed` (int) — match minute (1-90 typically, can exceed for extra time)
-- `extra` (int, nullable) — stoppage minutes added within a period.
+- `elapsed` (int) — match minute (1-90+; can exceed for stoppage)
+- `extra` (int, nullable) — stoppage minutes within a period.
   `elapsed=45, extra=2` = "45+2 minute"
 
 ### `player` and `assist`
 
-- `id` can be `null` for early API updates before scorer is identified
-- Our natural_key uses `"unknown"` when player.id is null; see
-  `event.ComposeNaturalKey`
+- `id` can be `null` when the API hasn't identified the scorer yet
+  (early notifications). Our `event.ComposeNaturalKey` substitutes
+  `"unknown"` in that case.
+- `assist.id` is `null` for unassisted goals (penalties, direct free
+  kicks, own goals).
 
 ### `comments`
 
-- Free-text vendor notes
-- **Used by our filter** to drop Penalty Shootout goals
-
-## Gaps in our knowledge
-
-Fields we're not sure how the API actually populates:
-
-1. Exact casing of `Red card` — Python config says lowercase `c`,
-   scenarios were written with title case before correction.
-2. Whether `Second yellow card` has a distinct detail string or
-   collapses to `Red card`.
-3. Whether `Var` events fire when a goal gets overturned (and if so,
-   the detail values).
-4. Whether the `Substitution 1`/`Substitution 2` details we saw in
-   Python examples are numbered per player or per team.
-5. The full enumeration of `Card` detail values (Second Yellow /
-   Yellow Card variants).
-
-## Doc sections to paste in when you have time
-
-1. Events response schema (the full JSON envelope for `/fixtures`
-   events)
-2. Enum tables for `type` + `detail`
-3. Sample responses showing edge cases (VAR overturn, own goal,
-   penalty shootout)
+- Free-text vendor annotations.
+- **Load-bearing**: shootout goals carry `"Penalty Shootout"` in
+  this field; `TrackableEventType` filters them out on
+  case-insensitive substring match.

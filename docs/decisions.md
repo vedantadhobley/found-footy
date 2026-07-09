@@ -6,6 +6,88 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-09 — API-Football docs archived + frozen reference seeded
+
+Vendor docs at <https://www.api-football.com/documentation-v3> are
+behind a Cloudflare bot challenge — no agent-side WebFetch or curl
+UA-spoof gets through. Rediscovering the API's shape from Python +
+observation had become expensive (two nights this week alone —
+"Red Card" vs "Red card" casing was one of them). Fixed the whole
+class of problem in one pass.
+
+**What shipped:**
+- PDF export of the docs site (v3.9.3, 131 pages) archived at
+  `docs/api-football/vendor/api-football-v3.9.3.pdf` (`git mv` from
+  repo root, where it was accidentally committed the night before).
+- Full browser-save HTML mirror at
+  `docs/api-football/vendor/api-football-v3.9.3.html` — grepable /
+  searchable by agents. Asset dir gitignored (5 MB of screenshots).
+- Four frozen reference docs under `docs/api-football/` seeded from
+  the archive: events-shape.md, fixtures-endpoint.md, status-codes.md,
+  rate-limits.md. Each cites the specific PDF page it was seeded
+  from.
+- `.gitignore` line 109 `vendor/` → `/vendor/` (Go convention is
+  root-only; the un-anchored form would also catch the vendor-doc
+  archive).
+
+**Key findings that resolve open questions:**
+
+1. **PST → NS on reschedule (RESOLVED — was open in 2026-07-07 entry).**
+   Doc explicitly states: *"Postponed to another day, once the new
+   date and time is known the status will change to Not Started."*
+   Fixture IDs are immutable across this transition. Our current
+   worker doesn't watch for date-field changes on active fixtures
+   — a deferred behavior noted in the 2026-07-07 "fixture activation
+   triggers" entry. Now that we know the transition is a real
+   thing, the deferred handler is worth implementing when a real
+   PST-reschedule surfaces in prod.
+
+2. **ABD may or may not reschedule.** Doc says *"Can be rescheduled
+   or not, it depends on the competition."* We treat ABD as Terminal
+   (drops out of Monitor). Reschedules would only be caught by
+   daily re-seeding, not in-cycle recovery. Follow-up: should ABD
+   get PST-like Live treatment? Not urgent; leave until we see one
+   in prod.
+
+3. **429 is NOT documented in the /fixtures response set.** Only
+   200 / 204 / 499 / 500 are documented. The doc's Rate Limiting
+   Policy says *"Excess traffic may be temporarily or permanently
+   blocked without notice"* — vendor-choice error, no promise of
+   429. Our adapter's 429-specific handling is defensive against
+   observed prod behavior, not doc-specified — kept, but the
+   frozen doc now reflects reality.
+
+4. **Rate-limit header names — two axes, easy to confuse.**
+   `x-ratelimit-requests-limit` / `-remaining` are **daily**.
+   `X-RateLimit-Limit` / `-Remaining` (no "requests" segment,
+   mixed case) are **per-minute**. Our older `rate-limits.md`
+   stub speculated `x-rapidapi-*` was daily — wrong; that's a
+   different vendor's convention.
+
+**Follow-up items surfaced (not blocking):**
+
+- `internal/infra/apifootball/client.go:137` sets
+  `x-rapidapi-key` for auth. Direct API-Sports endpoint (which
+  we're on) uses `x-apisports-key` per doc page 1. The API may
+  tolerate both, but the doc-correct header is the API-Sports
+  one. Verify + fix.
+- `internal/infra/apifootball/client.go:209` reads
+  `x-rapidapi-requests-remaining` — a phantom header not in the
+  API-Sports docs. Should read `X-RateLimit-Remaining` for the
+  per-minute value.
+- Both are silent-degrade paths (missing auth would 401; missing
+  header just doesn't observe the metric) — not blocking, but
+  worth a cleanup pass.
+
+**Human update flow** for the frozen docs: when the vendor updates
+the site, re-save PDF + HTML, drop into `vendor/`, sed the HTML's
+asset paths, update the version in filenames, and reconcile the
+seeded markdown files. Precedence for source-of-truth remains:
+vendor archive > seeded markdown > Python config > adapter
+observation.
+
+---
+
 ## 2026-07-08 — Test corpus harness Phase 1a shipped + activity clock injection pattern
 
 Ships the minimum viable scenario harness designed in
