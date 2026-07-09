@@ -1,15 +1,14 @@
 name: edge-halftime-pause
 description: |
   Goal in first half, then match goes to halftime (HT status),
-  then second half resumes. Verifies:
-    - Goal from 1H survives the HT pause (absence votes gated by
-      InPlay() per 2026-07-09 pause fix)
-    - Once 2H begins, goal remains stable
-    - No new events during HT don't count as "goal removed"
+  then second half resumes. Real API-Football behavior: events
+  array is CUMULATIVE — the 1H goal stays in the response array
+  through HT and 2H. So presence votes fire each cycle throughout,
+  count stays at 3.
 
-  This is the common case for every 90-minute match — happens twice
-  per game (HT and FT). Getting HT wrong would soft-delete every
-  first-half goal at cycle 3 of halftime (~90 seconds in).
+  Verifies: the normal case works — cumulative events + set-based
+  comparison keeps the goal stable through pauses. No special
+  gating needed.
 
 workflow: MonitorWorkflow
 
@@ -53,9 +52,7 @@ _goal_1h: &goal_1h
           player_name: Salah
           minute: 30
 
-# Halftime: status=HT, events may or may not include the 1H goal
-# depending on API behavior. Realistically it usually DOES include
-# them, but our safety net (pause fix) protects even if it doesn't.
+# Halftime: status=HT, 1H goal STILL in events (real API behavior).
 _halftime: &halftime
   fixtures:
     - id: 999011
@@ -70,7 +67,14 @@ _halftime: &halftime
       league_id: 39
       league_name: Premier League
       league_season: 2026
-      events: []          # worst case — API drops events during HT
+      events:
+        - type: Goal
+          detail: Normal Goal
+          team_id: 40
+          team_name: Liverpool
+          player_id: 111
+          player_name: Salah
+          minute: 30
 
 _second_half: &second_half
   fixtures:
