@@ -13,6 +13,7 @@ import (
 
 	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
+	"github.com/vedantadhobley/found-footy/internal/domain/team"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
@@ -23,19 +24,44 @@ import (
 // response field applies.
 type fakeFetcher struct {
 	// ListFixtures behavior
-	response []apifootball.APIFixture
-	err      error
-	lastCall apifootball.FixtureListParams
+	response          []apifootball.APIFixture
+	responseByDate    map[string][]apifootball.APIFixture // optional per-date map keyed YYYY-MM-DD
+	err               error
+	lastCall          apifootball.FixtureListParams
+	listFixturesCalls int
 
 	// ListFixturesByIDs behavior
 	byIDsResponse  []apifootball.APIFixture
 	byIDsFailedIDs []int64 // set to non-nil to simulate partial failure
 	byIDsErr       error
 	byIDsLastCall  []int64
+
+	// GetCurrentSeason behavior — per-league map. If not set, returns
+	// a default (2026) so tests that don't care about season don't
+	// need to configure it.
+	seasonByLeague map[int]int
+	seasonErr      error
+
+	// ListTeamsForLeague behavior — per-(league,season) map. If not
+	// set, returns nil (empty).
+	teamsByLeague map[int][]apifootball.APITeam
+	teamsErr      error
 }
 
 func (f *fakeFetcher) ListFixtures(_ context.Context, params apifootball.FixtureListParams) ([]apifootball.APIFixture, error) {
 	f.lastCall = params
+	f.listFixturesCalls++
+	// If test set a per-date map, use it. Else fall back to the single
+	// f.response (returned on the FIRST call only, empty after) so the
+	// per-date loop doesn't multiply an intended-once response by N.
+	if f.responseByDate != nil {
+		if !params.Date.IsZero() {
+			return f.responseByDate[params.Date.Format("2006-01-02")], f.err
+		}
+	}
+	if f.listFixturesCalls > 1 {
+		return nil, f.err
+	}
 	return f.response, f.err
 }
 
@@ -44,6 +70,23 @@ func (f *fakeFetcher) ListFixturesByIDs(_ context.Context, ids []int64) (
 ) {
 	f.byIDsLastCall = ids
 	return f.byIDsResponse, f.byIDsFailedIDs, f.byIDsErr
+}
+
+func (f *fakeFetcher) GetCurrentSeason(_ context.Context, leagueID int) (int, error) {
+	if f.seasonErr != nil {
+		return 0, f.seasonErr
+	}
+	if s, ok := f.seasonByLeague[leagueID]; ok {
+		return s, nil
+	}
+	return 2026, nil // safe default for tests that don't care
+}
+
+func (f *fakeFetcher) ListTeamsForLeague(_ context.Context, leagueID, _ int) ([]apifootball.APITeam, error) {
+	if f.teamsErr != nil {
+		return nil, f.teamsErr
+	}
+	return f.teamsByLeague[leagueID], nil
 }
 
 // fakeFixtureRepo — in-memory Repo satisfying fixture.Repo.
@@ -149,6 +192,44 @@ func (r *fakeAliasRepo) Upsert(_ context.Context, ta *alias.TeamAlias) error {
 
 // ── helpers ────────────────────────────────────────────────────
 
+// fakeTeamRepo — in-memory team.Repo. Tests pre-populate via Replace
+// (either directly or by seeding fresh via RefreshTrackedTeamsIfStale
+// through the activity). Empty by default; FetchFixturesForWindow's
+// fail-open semantics kick in when List returns empty.
+type fakeTeamRepo struct {
+	mu          sync.Mutex
+	teams       []team.TrackedTeam
+	refreshedAt time.Time
+	hasRefresh  bool
+}
+
+func newFakeTeamRepo() *fakeTeamRepo {
+	return &fakeTeamRepo{}
+}
+
+func (r *fakeTeamRepo) List(_ context.Context) ([]team.TrackedTeam, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	dup := make([]team.TrackedTeam, len(r.teams))
+	copy(dup, r.teams)
+	return dup, nil
+}
+
+func (r *fakeTeamRepo) OldestRefreshedAt(_ context.Context) (time.Time, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.refreshedAt, r.hasRefresh, nil
+}
+
+func (r *fakeTeamRepo) Replace(_ context.Context, teams []team.TrackedTeam, at time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.teams = append(r.teams[:0], teams...)
+	r.refreshedAt = at
+	r.hasRefresh = true
+	return nil
+}
+
 func mkAPIFixture(id int64, status string, kickoff time.Time, homeID, awayID int) apifootball.APIFixture {
 	return apifootball.APIFixture{
 		Fixture: apifootball.APIFixtureFixture{
@@ -169,10 +250,14 @@ func mkAPIFixture(id int64, status string, kickoff time.Time, homeID, awayID int
 
 func newActivities(fetcher fixtureFetcher, fRepo fixture.Repo, aRepo alias.Repo, now time.Time) *Activities {
 	return &Activities{
-		APIFootball: fetcher,
-		FixtureRepo: fRepo,
-		AliasRepo:   aRepo,
-		Now:         func() time.Time { return now },
+		APIFootball:           fetcher,
+		FixtureRepo:           fRepo,
+		AliasRepo:             aRepo,
+		TeamRepo:              newFakeTeamRepo(), // empty by default; tests can pre-populate via the returned struct
+		TrackedLeagueIDs:      []int{39, 140, 78, 135, 61, 1},
+		TopFlightCacheHours:   24,
+		FetchWindowFutureDays: 7,
+		Now:                   func() time.Time { return now },
 	}
 }
 
@@ -180,33 +265,39 @@ func newActivities(fetcher fixtureFetcher, fRepo fixture.Repo, aRepo alias.Repo,
 
 func TestFetchFixturesForWindow_HappyPath(t *testing.T) {
 	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
-	fetcher := &fakeFetcher{response: []apifootball.APIFixture{
-		mkAPIFixture(1, "NS", kickoff, 40, 42),
-		mkAPIFixture(2, "NS", kickoff, 33, 50),
+	// Per-date responses: 2 fixtures on 7/8, nothing on 7/7 or 7/9/7/10.
+	fetcher := &fakeFetcher{responseByDate: map[string][]apifootball.APIFixture{
+		"2026-07-08": {
+			mkAPIFixture(1, "NS", kickoff, 40, 42),
+			mkAPIFixture(2, "NS", kickoff, 33, 50),
+		},
 	}}
 	a := newActivities(fetcher, newFakeFixtureRepo(), newFakeAliasRepo(), kickoff.Add(-3*time.Hour))
 
-	out, err := a.FetchFixturesForWindow(context.Background(), FetchFixturesInput{
-		From: kickoff.Add(-24 * time.Hour),
-		To:   kickoff.Add(48 * time.Hour),
-	})
+	out, err := a.FetchFixturesForDay(context.Background(), FetchFixturesForDayInput{Date: kickoff})
 	if err != nil {
-		t.Fatalf("FetchFixturesForWindow: %v", err)
+		t.Fatalf("FetchFixturesForDay: %v", err)
 	}
 	if out.Count != 2 || len(out.Fixtures) != 2 {
 		t.Errorf("out = %+v, want 2 fixtures", out)
 	}
-	if !fetcher.lastCall.From.Equal(kickoff.Add(-24 * time.Hour)) {
-		t.Errorf("From mismatch: %v", fetcher.lastCall.From)
+	// Empty tracked-teams cache → fail-open (no filter). Verify.
+	if out.FilteredOut != 0 {
+		t.Errorf("FilteredOut = %d; want 0 (empty tracked cache)", out.FilteredOut)
+	}
+	if fetcher.listFixturesCalls != 1 {
+		t.Errorf("listFixturesCalls = %d; want 1 (single day)", fetcher.listFixturesCalls)
+	}
+	// Date param normalized to midnight UTC.
+	if got := fetcher.lastCall.Date.Format("2006-01-02"); got != "2026-07-08" {
+		t.Errorf("last call Date = %s; want 2026-07-08", got)
 	}
 }
 
-func TestFetchFixturesForWindow_PropagatesError(t *testing.T) {
+func TestFetchFixturesForDay_PropagatesError(t *testing.T) {
 	fetcher := &fakeFetcher{err: errors.New("simulated transport failure")}
 	a := newActivities(fetcher, newFakeFixtureRepo(), newFakeAliasRepo(), time.Now().UTC())
-	_, err := a.FetchFixturesForWindow(context.Background(), FetchFixturesInput{
-		From: time.Now(), To: time.Now().Add(24 * time.Hour),
-	})
+	_, err := a.FetchFixturesForDay(context.Background(), FetchFixturesForDayInput{Date: time.Now()})
 	if err == nil {
 		t.Fatal("expected error from fetcher, got nil")
 	}

@@ -22,6 +22,18 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
 
+// mkFixtures returns n APIFixtures with distinct IDs (1..n). Needed
+// because the workflow deduplicates fixtures by ID across per-day
+// activity calls — a bare `make([]APIFixture, n)` gives all zero IDs
+// which collapse to one after dedup.
+func mkFixtures(n int) []apifootball.APIFixture {
+	out := make([]apifootball.APIFixture, n)
+	for i := range out {
+		out[i].Fixture.ID = int64(i + 1)
+	}
+	return out
+}
+
 // newEnv sets up a test workflow environment with the workflow and
 // ingest activities registered. Individual tests then attach
 // OnActivity mocks before ExecuteWorkflow.
@@ -31,6 +43,15 @@ func newEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvironment {
 	// Register with zero-value deps — mocks intercept, real methods
 	// never execute.
 	env.RegisterActivity(&ingest.Activities{})
+	// Default no-op mocks for the two new "always-fires" activities so
+	// individual tests don't have to register them explicitly. Tests
+	// that DO care can override via a later OnActivity(...).
+	env.OnActivity("RefreshTrackedTeamsIfStale", mock.Anything, mock.Anything).
+		Return(ingest.RefreshTrackedTeamsIfStaleOutput{}, nil).Maybe()
+	env.OnActivity("GetIngestConfig", mock.Anything, mock.Anything).
+		Return(ingest.GetIngestConfigOutput{MaxLookaheadDays: 30}, nil).Maybe()
+	// FetchFixturesForDay is NOT defaulted — each test registers it
+	// explicitly so `.Once()` / count assertions actually enforce.
 	return env
 }
 
@@ -52,9 +73,9 @@ func TestIngestWorkflow_HappyPath(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newEnv(&s)
 
-	env.OnActivity("FetchFixturesForWindow", mock.Anything, mock.Anything).
-		Return(ingest.FetchFixturesOutput{
-			Fixtures: make([]apifootball.APIFixture, 5), // 5 fixtures, contents don't matter
+	env.OnActivity("FetchFixturesForDay", mock.Anything, mock.Anything).
+		Return(ingest.FetchFixturesForDayOutput{
+			Fixtures: mkFixtures(5), // 5 fixtures, distinct IDs for dedup
 			Count:    5,
 		}, nil).Once()
 
@@ -107,8 +128,8 @@ func TestIngestWorkflow_NoTeamRefs_SkipsAliasStep(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newEnv(&s)
 
-	env.OnActivity("FetchFixturesForWindow", mock.Anything, mock.Anything).
-		Return(ingest.FetchFixturesOutput{Count: 0}, nil).Once()
+	env.OnActivity("FetchFixturesForDay", mock.Anything, mock.Anything).
+		Return(ingest.FetchFixturesForDayOutput{Count: 0}, nil).Once()
 
 	env.OnActivity("CategorizeAndUpsertFixtures", mock.Anything, mock.Anything).
 		Return(ingest.CategorizeOutput{TeamRefs: nil}, nil).Once()
@@ -137,8 +158,8 @@ func TestIngestWorkflow_ZeroRetention_SkipsPrune(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newEnv(&s)
 
-	env.OnActivity("FetchFixturesForWindow", mock.Anything, mock.Anything).
-		Return(ingest.FetchFixturesOutput{Count: 1, Fixtures: make([]apifootball.APIFixture, 1)}, nil).Once()
+	env.OnActivity("FetchFixturesForDay", mock.Anything, mock.Anything).
+		Return(ingest.FetchFixturesForDayOutput{Count: 1, Fixtures: mkFixtures(1)}, nil).Once()
 	env.OnActivity("CategorizeAndUpsertFixtures", mock.Anything, mock.Anything).
 		Return(ingest.CategorizeOutput{Staging: 1, TeamRefs: []ingest.TeamRef{{TeamID: 40}}}, nil).Once()
 	env.OnActivity("EnsureAliasPlaceholders", mock.Anything, mock.Anything).
@@ -171,8 +192,8 @@ func TestIngestWorkflow_FetchFails_AbortsEarly(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newEnv(&s)
 
-	env.OnActivity("FetchFixturesForWindow", mock.Anything, mock.Anything).
-		Return(ingest.FetchFixturesOutput{}, errors.New("api-sports.io down")).Times(3)
+	env.OnActivity("FetchFixturesForDay", mock.Anything, mock.Anything).
+		Return(ingest.FetchFixturesForDayOutput{}, errors.New("api-sports.io down")).Times(3)
 	// No Categorize / Alias / Prune expected — fetch failure aborts.
 
 	env.ExecuteWorkflow(workflow.IngestWorkflow, stdInput(time.Date(2026, 7, 8, 0, 5, 0, 0, time.UTC)))
@@ -192,8 +213,8 @@ func TestIngestWorkflow_CategorizeFails_PropagatesError(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newEnv(&s)
 
-	env.OnActivity("FetchFixturesForWindow", mock.Anything, mock.Anything).
-		Return(ingest.FetchFixturesOutput{Count: 2, Fixtures: make([]apifootball.APIFixture, 2)}, nil).Once()
+	env.OnActivity("FetchFixturesForDay", mock.Anything, mock.Anything).
+		Return(ingest.FetchFixturesForDayOutput{Count: 2, Fixtures: mkFixtures(2)}, nil).Once()
 
 	env.OnActivity("CategorizeAndUpsertFixtures", mock.Anything, mock.Anything).
 		Return(ingest.CategorizeOutput{}, errors.New("pg pool exhausted")).Times(3)
@@ -209,7 +230,7 @@ func TestIngestWorkflow_CategorizeFails_PropagatesError(t *testing.T) {
 
 // TestIngestWorkflow_ManualFixtureIDs_UsesByIDsPath — populating
 // ManualFixtureIDs must switch the fetch step from
-// FetchFixturesForWindow → FetchFixturesByIDs. Verified by only
+// FetchFixturesForDay → FetchFixturesByIDs. Verified by only
 // registering the byIDs mock; if the workflow dispatched to the
 // window activity instead, the test would panic (unregistered).
 func TestIngestWorkflow_ManualFixtureIDs_UsesByIDsPath(t *testing.T) {
@@ -218,11 +239,11 @@ func TestIngestWorkflow_ManualFixtureIDs_UsesByIDsPath(t *testing.T) {
 
 	env.OnActivity("FetchFixturesByIDs", mock.Anything, mock.Anything).
 		Return(ingest.FetchFixturesByIDsOutput{
-			Fixtures:  make([]apifootball.APIFixture, 2),
+			Fixtures:  mkFixtures(2),
 			Count:     2,
 			FailedIDs: nil, // clean fetch — no targeted-retry loop
 		}, nil).Once()
-	// FetchFixturesForWindow NOT registered — should not be called.
+	// FetchFixturesForDay NOT registered — should not be called.
 
 	env.OnActivity("CategorizeAndUpsertFixtures", mock.Anything, mock.Anything).
 		Return(ingest.CategorizeOutput{Staging: 2, TeamRefs: []ingest.TeamRef{{TeamID: 40}}}, nil).Once()
@@ -253,8 +274,8 @@ func TestIngestWorkflow_EmptyInput_UsesDefaults(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newEnv(&s)
 
-	env.OnActivity("FetchFixturesForWindow", mock.Anything, mock.Anything).
-		Return(ingest.FetchFixturesOutput{Count: 0}, nil).Once()
+	env.OnActivity("FetchFixturesForDay", mock.Anything, mock.Anything).
+		Return(ingest.FetchFixturesForDayOutput{Count: 0}, nil).Once()
 	env.OnActivity("CategorizeAndUpsertFixtures", mock.Anything, mock.Anything).
 		Return(ingest.CategorizeOutput{TeamRefs: nil}, nil).Once()
 	// Alias skipped (nil TeamRefs). Prune skipped (RetentionDays=0).
