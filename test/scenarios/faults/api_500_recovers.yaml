@@ -1,0 +1,87 @@
+name: fault-api-500-recovers
+description: |
+  api-sports.io returns 500 mid-cycle. Activity retry policy handles
+  it — attempt 1 fails, attempt 2 succeeds. Goal detection is
+  unaffected by the transient fault.
+
+  Real-world case: api-sports.io has intermittent 500s during high-
+  traffic periods (Champions League nights). Activity's 2-attempt
+  retry with exp backoff should recover.
+
+  Trace:
+    Cycle 1: goal present, INSERT (count=1)
+    Cycle 2: goal present, count=2
+    Cycle 3: goal present. Mock returns 500 on FIRST request,
+             success on RETRY. count=3, TRIGGERS downstream.
+    Cycle 4: goal present, count stays at 3 (capped, no retrigger)
+
+  Verifies: activity retry policy recovers cleanly + no false
+  absence vote fires because of transient failure.
+
+workflow: MonitorWorkflow
+
+setup:
+  fixtures:
+    - id: 999006
+      state: active
+      kickoff: 2026-07-08T15:00:00Z
+      activated_at: 2026-07-08T14:45:00Z
+      last_polled_at: 2026-07-08T15:29:30Z
+      api_status_short: "1H"
+      api_status_long: First Half
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+
+_goal_present: &goal_present
+  fixtures:
+    - id: 999006
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: "1H"
+      status_long: First Half
+      status_elapsed: 30
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      events:
+        - type: Goal
+          detail: Normal Goal
+          team_id: 40
+          team_name: Liverpool
+          player_id: 111
+          player_name: Salah
+          minute: 30
+
+cycles:
+  - t: 2026-07-08T15:30:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+  - t: 2026-07-08T15:30:30Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+  # Cycle 3: 500 fault, one-shot. First request 500 → activity retry
+  # attempt 2 → success. Response has goal. count=3, TRIGGERS.
+  - t: 2026-07-08T15:31:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+    api_fault:
+      status_code: 500
+      attempts: 1              # first request fails, retry succeeds
+
+  - t: 2026-07-08T15:31:30Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+expected_final_state:
+  events:
+    - fixture_id: 999006
+      natural_key: "40_111_Goal_1"
+      debounce_count: 3
+      downstream_triggered: true
+      removed: false

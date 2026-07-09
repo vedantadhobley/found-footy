@@ -111,6 +111,22 @@ func runMonitor(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apif
 		currentCycleTime = cycle.T
 		mockAPI.SetResponses(cycle.APIResponses)
 
+		// Fault injection: convert scenario-level CycleFault → mock's
+		// internal APIFault. Cleared at the start of each cycle (nil
+		// SetFault) before the new one is primed.
+		mockAPI.SetFault(nil)
+		if cycle.APIFault != nil {
+			remaining := cycle.APIFault.Attempts
+			if remaining == 0 {
+				remaining = 1 // default: fault clears after one request
+			}
+			mockAPI.SetFault(&APIFault{
+				StatusCode: cycle.APIFault.StatusCode,
+				Body:       cycle.APIFault.Body,
+				Remaining:  remaining,
+			})
+		}
+
 		// Fresh env per cycle (each env allows only one ExecuteWorkflow).
 		var ts testsuite.WorkflowTestSuite
 		env := ts.NewTestWorkflowEnvironment()

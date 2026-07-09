@@ -1,0 +1,96 @@
+name: fault-api-persistent-500
+description: |
+  api-sports.io is DOWN — 500 across all activity retries within
+  one cycle. FetchLiveFixtures activity fails, workflow logs the
+  error and continues (per monitor.go's chunk failure handling).
+
+  CRITICAL invariant: the tracked event's debounce state is NOT
+  touched during the failed cycle. No false absence vote is
+  recorded because reconcile only runs on fixtures we successfully
+  fetched.
+
+  Trace:
+    Cycle 1-2: goal detected, count=1→2
+    Cycle 3: 500 for all retries. Activity fails. NO reconcile
+             runs for this fixture. debounce_count STAYS at 2.
+    Cycle 4: API recovers, goal present. count=3, TRIGGERS.
+
+  This is the "api down doesn't count as absence" invariant —
+  without it, a 3-cycle outage would falsely soft-delete every
+  tracked event.
+
+workflow: MonitorWorkflow
+
+setup:
+  fixtures:
+    - id: 999007
+      state: active
+      kickoff: 2026-07-08T15:00:00Z
+      activated_at: 2026-07-08T14:45:00Z
+      last_polled_at: 2026-07-08T15:29:30Z
+      api_status_short: "1H"
+      api_status_long: First Half
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+
+_goal_present: &goal_present
+  fixtures:
+    - id: 999007
+      kickoff: 2026-07-08T15:00:00Z
+      status_short: "1H"
+      status_long: First Half
+      status_elapsed: 30
+      home_id: 40
+      home_name: Liverpool
+      away_id: 42
+      away_name: Arsenal
+      league_id: 39
+      league_name: Premier League
+      league_season: 2026
+      events:
+        - type: Goal
+          detail: Normal Goal
+          team_id: 40
+          team_name: Liverpool
+          player_id: 111
+          player_name: Salah
+          minute: 30
+
+cycles:
+  - t: 2026-07-08T15:30:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+  - t: 2026-07-08T15:30:30Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+  # Cycle 3: PERSISTENT 500 — all retries fail. Activity errors.
+  # debounce_count for the tracked event STAYS at 2 (no reconcile).
+  - t: 2026-07-08T15:31:00Z
+    api_responses: {fixtures_by_ids: *goal_present}
+    api_fault:
+      status_code: 500
+      attempts: -1              # persistent — never clears within cycle
+
+  # Cycle 4: API recovered. Present again. count=3, TRIGGERS.
+  - t: 2026-07-08T15:31:30Z
+    api_responses: {fixtures_by_ids: *goal_present}
+
+expected_final_state:
+  events:
+    - fixture_id: 999007
+      natural_key: "40_111_Goal_1"
+      debounce_count: 3
+      downstream_triggered: true
+      removed: false
+  counts:
+    # Cycle 1: Insert (1 monitor vote)
+    # Cycle 2: presence vote (2 total)
+    # Cycle 3: FAULT — no vote recorded
+    # Cycle 4: presence vote (3 total)
+    event_monitor_workflows: 3
+    event_drop_workflows: 0   # never voted absence

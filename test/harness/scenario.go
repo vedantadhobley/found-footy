@@ -76,6 +76,38 @@ type Cycle struct {
 	// APIResponses reconfigures the mock apifootball server for this
 	// cycle. Absent → mock keeps prior cycle's responses (rare).
 	APIResponses APIResponses `yaml:"api_responses,omitempty"`
+
+	// APIFault, if declared, primes the mock to fail (or delay) the
+	// next request(s) with the configured behavior. Simulates
+	// api-sports.io misbehavior (429, 5xx, timeout, malformed body).
+	// See CycleFault below for semantics.
+	APIFault *CycleFault `yaml:"api_fault,omitempty"`
+}
+
+// CycleFault configures the mock apifootball server to inject a
+// failure for the current cycle. Cleared between cycles (each cycle
+// declares its own fault or none). Attempts controls whether the
+// fault persists across activity retries.
+type CycleFault struct {
+	// StatusCode is the HTTP status to return. Typical values:
+	//   429 — rate limited (real: burst > 30/min on Pro plan)
+	//   500/502/503 — api-sports.io outages (real: seen during CL nights)
+	//   401/403 — auth failures (real: rotated key without redeploy)
+	StatusCode int `yaml:"status_code"`
+
+	// Body is the response body returned with the fault. Empty →
+	// harness returns a small JSON payload that looks like an
+	// api-sports.io error envelope.
+	Body string `yaml:"body,omitempty"`
+
+	// Attempts controls fault persistence across activity retries.
+	//   0 or 1: fault applies to next request, then clears —
+	//     activity's retry sees success. Verifies retry-recovery.
+	//   >1:   fault applies to next N requests, then clears.
+	//   -1:   fault persists for entire cycle — activity's retries
+	//     all fail, workflow logs error, cycle completes without
+	//     corrupting state. This is the "hard failure" test.
+	Attempts int `yaml:"attempts,omitempty"`
 }
 
 // MonitorInput populates workflow.MonitorWorkflowInput. Kept as a
