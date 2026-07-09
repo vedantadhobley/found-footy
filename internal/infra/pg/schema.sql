@@ -32,11 +32,17 @@ CREATE TYPE fixture_state AS ENUM ('staging', 'active', 'completed');
 -- API-Football uses lowercase 'subst'; ingest-side normalization title-cases
 -- to match this enum before INSERT.
 -- event_type is the DOMAIN classification (not raw vendor Type). Includes
--- MissedPenalty as a distinct domain type — the vendor sends this under
+-- `missed penalty` as a distinct domain type — the vendor sends this under
 -- Type=Goal with Detail=Missed Penalty, but we classify it separately so
 -- the UI can display "saved penalty" moments differently from goals.
 -- Subst / Var currently parse but aren't stored (see TrackableEventType).
-CREATE TYPE event_type AS ENUM ('Goal', 'Card', 'Subst', 'Var', 'MissedPenalty');
+--
+-- Casing policy (decisions.md 2026-07-09 lowercase-canonical entry):
+-- ALL enum values across vendor + domain use lowercase, preserving
+-- vendor's word separators (spaces) for multi-word values. Parse
+-- normalizes at wire boundary so vendor's casing inconsistencies
+-- (e.g., "Red Card" vs "Red card") don't propagate.
+CREATE TYPE event_type AS ENUM ('goal', 'card', 'subst', 'var', 'missed penalty');
 
 -- Video share state
 CREATE TYPE share_state AS ENUM ('active', 'removed');

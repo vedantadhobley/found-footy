@@ -239,7 +239,7 @@ func (r *fakeEventRepo) RegisterVideoValidationWorkflow(context.Context, uuid.UU
 
 func mkActiveFixture(id int64, kickoff time.Time) *fixture.Fixture {
 	f := fixture.New(id,
-		fixture.APIStatus{Short: "1H", Long: "First Half"},
+		fixture.APIStatus{Short: "1h", Long: "First Half"},
 		kickoff,
 		fixture.Team{ID: 40, Name: "Liverpool"},
 		fixture.Team{ID: 42, Name: "Arsenal"},
@@ -265,8 +265,8 @@ func mkAPIGoal(teamID int, playerID int, minute int) apifootball.APIFixtureEvent
 		Time:   apifootball.APIFixtureEventTime{Elapsed: minute},
 		Team:   apifootball.APIFixtureTeam{ID: teamID, Name: fmt.Sprintf("Team-%d", teamID)},
 		Player: apifootball.APIFixturePlayerRef{ID: &pid, Name: &pname},
-		Type:   "Goal",
-		Detail: "Normal Goal",
+		Type:   apifootball.EventTypeGoal,
+		Detail: apifootball.DetailNormalGoal,
 	}
 }
 
@@ -277,7 +277,7 @@ func TestPreActivateUpcoming_ActivatesImminent(t *testing.T) {
 	now := kickoff.Add(-10 * time.Minute)
 	fRepo := newFakeFixtureRepo()
 	staging := fixture.New(1,
-		fixture.APIStatus{Short: "NS"},
+		fixture.APIStatus{Short: "ns"},
 		kickoff,
 		fixture.Team{ID: 40, Name: "Liverpool"},
 		fixture.Team{ID: 42, Name: "Arsenal"},
@@ -304,7 +304,7 @@ func TestPreActivateUpcoming_SkipsFarFuture(t *testing.T) {
 	now := kickoff.Add(-48 * time.Hour) // 2 days out
 	fRepo := newFakeFixtureRepo()
 	staging := fixture.New(1,
-		fixture.APIStatus{Short: "NS"},
+		fixture.APIStatus{Short: "ns"},
 		kickoff,
 		fixture.Team{ID: 40, Name: "Liverpool"},
 		fixture.Team{ID: 42, Name: "Arsenal"},
@@ -326,7 +326,7 @@ func TestListActiveFixtureIDs(t *testing.T) {
 	fRepo.Upsert(context.Background(), mkActiveFixture(101, time.Now()))
 	fRepo.Upsert(context.Background(), mkActiveFixture(102, time.Now()))
 	staging := fixture.New(103,
-		fixture.APIStatus{Short: "NS"},
+		fixture.APIStatus{Short: "ns"},
 		time.Now().Add(24*time.Hour),
 		fixture.Team{ID: 40}, fixture.Team{ID: 42},
 		fixture.League{ID: 39, Season: 2026},
@@ -370,7 +370,7 @@ func TestReconcileFixture_NewGoalInserted_CountIs1(t *testing.T) {
 	eRepo := newFakeEventRepo()
 
 	apiFix := apifootball.APIFixture{
-		Fixture: apifootball.APIFixtureFixture{ID: 999, Status: apifootball.APIFixtureStatus{Short: "1H", Long: "First Half"}},
+		Fixture: apifootball.APIFixtureFixture{ID: 999, Status: apifootball.APIFixtureStatus{Short: "1h", Long: "First Half"}},
 		Events:  []apifootball.APIFixtureEvent{mkAPIGoal(40, 111, 30)},
 	}
 	acts := newActs(&fakeFetcher{}, fRepo, eRepo, now)
@@ -396,7 +396,7 @@ func TestReconcileFixture_ThreeCyclesTriggersDownstream(t *testing.T) {
 	eRepo := newFakeEventRepo()
 
 	apiFix := apifootball.APIFixture{
-		Fixture: apifootball.APIFixtureFixture{ID: 999, Status: apifootball.APIFixtureStatus{Short: "1H"}},
+		Fixture: apifootball.APIFixtureFixture{ID: 999, Status: apifootball.APIFixtureStatus{Short: "1h"}},
 		Events:  []apifootball.APIFixtureEvent{mkAPIGoal(40, 111, 30)},
 	}
 	acts := newActs(&fakeFetcher{}, fRepo, eRepo, now)
@@ -431,7 +431,7 @@ func TestReconcileFixture_AbsenceHitZeroSoftDeletes(t *testing.T) {
 	fRepo.Upsert(context.Background(), mkActiveFixture(999, kickoff))
 	eRepo := newFakeEventRepo()
 	apiFix := apifootball.APIFixture{
-		Fixture: apifootball.APIFixtureFixture{ID: 999, Status: apifootball.APIFixtureStatus{Short: "1H"}},
+		Fixture: apifootball.APIFixtureFixture{ID: 999, Status: apifootball.APIFixtureStatus{Short: "1h"}},
 		Events:  []apifootball.APIFixtureEvent{mkAPIGoal(40, 111, 30)},
 	}
 

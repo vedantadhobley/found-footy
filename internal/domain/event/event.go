@@ -29,11 +29,11 @@ import (
 type Type string
 
 const (
-	TypeGoal          Type = "Goal"
-	TypeCard          Type = "Card"
-	TypeSubst         Type = "Subst"
-	TypeVar           Type = "Var"
-	TypeMissedPenalty Type = "MissedPenalty" // domain-only classification (vendor sends this under Type=Goal); see TrackableEventType
+	TypeGoal          Type = "goal"
+	TypeCard          Type = "card"
+	TypeSubst         Type = "subst"
+	TypeVar           Type = "var"
+	TypeMissedPenalty Type = "missed penalty" // domain-only classification (vendor sends this under Type=Goal); see TrackableEventType
 )
 
 // Valid reports whether t is one of the known event types.

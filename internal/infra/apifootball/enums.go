@@ -38,37 +38,37 @@ type APIStatusCode string
 
 const (
 	// Scheduled
-	StatusTBD           APIStatusCode = "TBD"  // Time To Be Defined
-	StatusNotStarted    APIStatusCode = "NS"   // Not Started
+	StatusTBD        APIStatusCode = "tbd" // Time To Be Defined
+	StatusNotStarted APIStatusCode = "ns"  // Not Started
 
 	// In Play
-	StatusFirstHalf     APIStatusCode = "1H"   // First Half, Kick Off
-	StatusHalftime      APIStatusCode = "HT"   // Halftime
-	StatusSecondHalf    APIStatusCode = "2H"   // Second Half, 2nd Half Started
-	StatusExtraTime     APIStatusCode = "ET"   // Extra Time
-	StatusBreakTime     APIStatusCode = "BT"   // Break Time (between periods)
-	StatusPenaltyPlay   APIStatusCode = "P"    // Penalty In Progress
-	StatusSuspended     APIStatusCode = "SUSP" // Match Suspended
-	StatusInterrupted   APIStatusCode = "INT"  // Match Interrupted
-	StatusLive          APIStatusCode = "LIVE" // In Progress (rare fallback — no elapsed data)
+	StatusFirstHalf   APIStatusCode = "1h"   // First Half, Kick Off
+	StatusHalftime    APIStatusCode = "ht"   // Halftime
+	StatusSecondHalf  APIStatusCode = "2h"   // Second Half, 2nd Half Started
+	StatusExtraTime   APIStatusCode = "et"   // Extra Time
+	StatusBreakTime   APIStatusCode = "bt"   // Break Time (between periods)
+	StatusPenaltyPlay APIStatusCode = "p"    // Penalty In Progress
+	StatusSuspended   APIStatusCode = "susp" // Match Suspended
+	StatusInterrupted APIStatusCode = "int"  // Match Interrupted
+	StatusLive        APIStatusCode = "live" // In Progress (rare fallback — no elapsed data)
 
 	// Finished
-	StatusFullTime      APIStatusCode = "FT"  // Match Finished (regular)
-	StatusAfterExtra    APIStatusCode = "AET" // Match Finished (after extra time)
-	StatusPenaltyDone   APIStatusCode = "PEN" // Match Finished (after penalty shootout)
+	StatusFullTime    APIStatusCode = "ft"  // Match Finished (regular)
+	StatusAfterExtra  APIStatusCode = "aet" // Match Finished (after extra time)
+	StatusPenaltyDone APIStatusCode = "pen" // Match Finished (after penalty shootout)
 
 	// Postponed
-	StatusPostponed     APIStatusCode = "PST" // Match Postponed (may flip back to NS)
+	StatusPostponed APIStatusCode = "pst" // Match Postponed (may flip back to NS)
 
 	// Cancelled
-	StatusCancelled     APIStatusCode = "CANC" // Match Cancelled
+	StatusCancelled APIStatusCode = "canc" // Match Cancelled
 
 	// Abandoned
-	StatusAbandoned     APIStatusCode = "ABD" // Match Abandoned (may or may not reschedule)
+	StatusAbandoned APIStatusCode = "abd" // Match Abandoned (may or may not reschedule)
 
 	// Not Played
-	StatusTechnicalLoss APIStatusCode = "AWD" // Technical Loss
-	StatusWalkover      APIStatusCode = "WO"  // WalkOver (forfeit)
+	StatusTechnicalLoss APIStatusCode = "awd" // Technical Loss
+	StatusWalkover      APIStatusCode = "wo"  // WalkOver (forfeit)
 )
 
 // knownStatusCodes maps a lowercased vendor string to the canonical
@@ -96,18 +96,19 @@ var knownStatusCodes = map[string]APIStatusCode{
 }
 
 // ParseAPIStatusCode normalizes a raw vendor string to the canonical
-// APIStatusCode. Unknown values are preserved as-is (returned as
-// APIStatusCode(raw), known=false) so callers can log + continue
-// rather than fail. Empty input returns ("", false, nil).
+// APIStatusCode (lowercase). Unknown values are lowercased too so the
+// enum type has a uniform casing invariant regardless of vendor
+// emission. Empty input returns ("", false, nil).
 func ParseAPIStatusCode(raw string) (code APIStatusCode, known bool, err error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", false, nil
 	}
-	if v, ok := knownStatusCodes[strings.ToLower(trimmed)]; ok {
+	lower := strings.ToLower(trimmed)
+	if v, ok := knownStatusCodes[lower]; ok {
 		return v, true, nil
 	}
-	return APIStatusCode(trimmed), false, nil
+	return APIStatusCode(lower), false, nil
 }
 
 // UnmarshalJSON accepts any casing, normalizes to canonical, and
@@ -133,10 +134,10 @@ func (c *APIStatusCode) UnmarshalJSON(b []byte) error {
 type APIEventType string
 
 const (
-	EventTypeGoal  APIEventType = "Goal"
-	EventTypeCard  APIEventType = "Card"
-	EventTypeSubst APIEventType = "Subst"
-	EventTypeVar   APIEventType = "Var"
+	EventTypeGoal  APIEventType = "goal"
+	EventTypeCard  APIEventType = "card"
+	EventTypeSubst APIEventType = "subst"
+	EventTypeVar   APIEventType = "var"
 )
 
 // knownEventTypes maps lowercased vendor strings to canonical types.
@@ -150,16 +151,17 @@ var knownEventTypes = map[string]APIEventType{
 }
 
 // ParseAPIEventType normalizes a raw event type string. Unknown
-// values preserved as-is.
+// values lowercased for consistent internal representation.
 func ParseAPIEventType(raw string) (t APIEventType, known bool, err error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", false, nil
 	}
-	if v, ok := knownEventTypes[strings.ToLower(trimmed)]; ok {
+	lower := strings.ToLower(trimmed)
+	if v, ok := knownEventTypes[lower]; ok {
 		return v, true, nil
 	}
-	return APIEventType(trimmed), false, nil
+	return APIEventType(lower), false, nil
 }
 
 // UnmarshalJSON — see UnmarshalJSON on APIStatusCode.
@@ -191,25 +193,22 @@ type APIEventDetail string
 
 const (
 	// Goal
-	DetailNormalGoal     APIEventDetail = "Normal Goal"
-	DetailOwnGoal        APIEventDetail = "Own Goal"
-	DetailPenalty        APIEventDetail = "Penalty"
-	DetailMissedPenalty  APIEventDetail = "Missed Penalty"
+	DetailNormalGoal    APIEventDetail = "normal goal"
+	DetailOwnGoal       APIEventDetail = "own goal"
+	DetailPenalty       APIEventDetail = "penalty"
+	DetailMissedPenalty APIEventDetail = "missed penalty"
 
-	// Card. Vendor DOC says "Red card" (lowercase 'c') but LIVE
-	// vendor emission uses "Red Card" (title case). Canonical follows
-	// real emission for log-line consistency with the vendor console.
-	// Parse still handles both casings.
-	DetailYellowCard APIEventDetail = "Yellow Card"
-	DetailRedCard    APIEventDetail = "Red Card"
+	// Card
+	DetailYellowCard APIEventDetail = "yellow card"
+	DetailRedCard    APIEventDetail = "red card"
 
 	// Subst — canonical, prefix-parsed. Vendor sends "Substitution 1",
 	// "Substitution 2", ... — Parse collapses all of them to this.
-	DetailSubstitution APIEventDetail = "Substitution"
+	DetailSubstitution APIEventDetail = "substitution"
 
-	// Var — vendor's exact strings, both lowercase second word.
-	DetailGoalCancelled    APIEventDetail = "Goal cancelled"
-	DetailPenaltyConfirmed APIEventDetail = "Penalty confirmed"
+	// Var
+	DetailGoalCancelled    APIEventDetail = "goal cancelled"
+	DetailPenaltyConfirmed APIEventDetail = "penalty confirmed"
 )
 
 // knownEventDetails maps lowercased vendor strings to canonical
@@ -226,7 +225,8 @@ var knownEventDetails = map[string]APIEventDetail{
 }
 
 // ParseAPIEventDetail normalizes a raw detail string. Handles the
-// Substitution N family via prefix-check.
+// Substitution N family via prefix-check. Unknown values lowercased
+// for consistent internal representation.
 func ParseAPIEventDetail(raw string) (d APIEventDetail, known bool, err error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -239,7 +239,7 @@ func ParseAPIEventDetail(raw string) (d APIEventDetail, known bool, err error) {
 	if v, ok := knownEventDetails[lower]; ok {
 		return v, true, nil
 	}
-	return APIEventDetail(trimmed), false, nil
+	return APIEventDetail(lower), false, nil
 }
 
 // UnmarshalJSON — see UnmarshalJSON on APIStatusCode.
@@ -268,11 +268,11 @@ func (d *APIEventDetail) UnmarshalJSON(b []byte) error {
 type APICardComment string
 
 const (
-	CardCommentFoul                  APICardComment = "Foul"
-	CardCommentArgument              APICardComment = "Argument"
-	CardCommentRoughing              APICardComment = "Roughing"
-	CardCommentUnsportsmanlikeConduct APICardComment = "Unsportsmanlike conduct"
-	CardCommentSeriousFoul           APICardComment = "Serious foul"
+	CardCommentFoul                   APICardComment = "foul"
+	CardCommentArgument               APICardComment = "argument"
+	CardCommentRoughing               APICardComment = "roughing"
+	CardCommentUnsportsmanlikeConduct APICardComment = "unsportsmanlike conduct"
+	CardCommentSeriousFoul            APICardComment = "serious foul"
 )
 
 var knownCardComments = map[string]APICardComment{
@@ -285,17 +285,18 @@ var knownCardComments = map[string]APICardComment{
 
 // ParseAPICardComment normalizes a raw card comment string. Empty
 // input is legal (returns "" with known=false, err=nil). Unknown
-// non-empty values are preserved with known=false — vendor may add
-// new foul reasons over time.
+// non-empty values are lowercased for consistent internal
+// representation — vendor may add new foul reasons over time.
 func ParseAPICardComment(raw string) (c APICardComment, known bool, err error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", false, nil
 	}
-	if v, ok := knownCardComments[strings.ToLower(trimmed)]; ok {
+	lower := strings.ToLower(trimmed)
+	if v, ok := knownCardComments[lower]; ok {
 		return v, true, nil
 	}
-	return APICardComment(trimmed), false, nil
+	return APICardComment(lower), false, nil
 }
 
 // ── APIGoalComment ─────────────────────────────────────────────
@@ -315,7 +316,7 @@ const (
 	// GoalCommentPenaltyShootout — vendor marker on Goal events that
 	// happened during a penalty shootout (not regular match goals).
 	// See HasPenaltyShootoutComment for the load-bearing check.
-	GoalCommentPenaltyShootout APIGoalComment = "Penalty Shootout"
+	GoalCommentPenaltyShootout APIGoalComment = "penalty shootout"
 )
 
 var knownGoalComments = map[string]APIGoalComment{
@@ -323,16 +324,18 @@ var knownGoalComments = map[string]APIGoalComment{
 }
 
 // ParseAPIGoalComment normalizes a raw goal comment string. Empty
-// input is legal (returns "" with known=false, err=nil).
+// input is legal (returns "" with known=false, err=nil). Unknown
+// values lowercased for consistent internal representation.
 func ParseAPIGoalComment(raw string) (c APIGoalComment, known bool, err error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", false, nil
 	}
-	if v, ok := knownGoalComments[strings.ToLower(trimmed)]; ok {
+	lower := strings.ToLower(trimmed)
+	if v, ok := knownGoalComments[lower]; ok {
 		return v, true, nil
 	}
-	return APIGoalComment(trimmed), false, nil
+	return APIGoalComment(lower), false, nil
 }
 
 // HasPenaltyShootoutComment reports whether the vendor-provided
