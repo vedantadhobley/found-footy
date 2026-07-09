@@ -196,9 +196,12 @@ const (
 	DetailPenalty        APIEventDetail = "Penalty"
 	DetailMissedPenalty  APIEventDetail = "Missed Penalty"
 
-	// Card — note "Red card" has a lowercase 'c'. Vendor's exact string.
+	// Card. Vendor DOC says "Red card" (lowercase 'c') but LIVE
+	// vendor emission uses "Red Card" (title case). Canonical follows
+	// real emission for log-line consistency with the vendor console.
+	// Parse still handles both casings.
 	DetailYellowCard APIEventDetail = "Yellow Card"
-	DetailRedCard    APIEventDetail = "Red card"
+	DetailRedCard    APIEventDetail = "Red Card"
 
 	// Subst — canonical, prefix-parsed. Vendor sends "Substitution 1",
 	// "Substitution 2", ... — Parse collapses all of them to this.
@@ -251,4 +254,98 @@ func (d *APIEventDetail) UnmarshalJSON(b []byte) error {
 	}
 	*d = parsed
 	return nil
+}
+
+// ── APICardComment ─────────────────────────────────────────────
+
+// APICardComment is the "comments" field on Card events. The vendor
+// doc calls this "free-text" but real emission (see decisions.md
+// 2026-07-09 real-data audit + docs/api-football/events-shape.md)
+// shows it's a discrete enum of foul-reason values.
+//
+// Empty comment (nil / "") is legal and semantically means "no
+// annotation." Parse returns ("", false, nil) for empty input.
+type APICardComment string
+
+const (
+	CardCommentFoul                  APICardComment = "Foul"
+	CardCommentArgument              APICardComment = "Argument"
+	CardCommentRoughing              APICardComment = "Roughing"
+	CardCommentUnsportsmanlikeConduct APICardComment = "Unsportsmanlike conduct"
+	CardCommentSeriousFoul           APICardComment = "Serious foul"
+)
+
+var knownCardComments = map[string]APICardComment{
+	"foul":                    CardCommentFoul,
+	"argument":                CardCommentArgument,
+	"roughing":                CardCommentRoughing,
+	"unsportsmanlike conduct": CardCommentUnsportsmanlikeConduct,
+	"serious foul":            CardCommentSeriousFoul,
+}
+
+// ParseAPICardComment normalizes a raw card comment string. Empty
+// input is legal (returns "" with known=false, err=nil). Unknown
+// non-empty values are preserved with known=false — vendor may add
+// new foul reasons over time.
+func ParseAPICardComment(raw string) (c APICardComment, known bool, err error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false, nil
+	}
+	if v, ok := knownCardComments[strings.ToLower(trimmed)]; ok {
+		return v, true, nil
+	}
+	return APICardComment(trimmed), false, nil
+}
+
+// ── APIGoalComment ─────────────────────────────────────────────
+
+// APIGoalComment is the "comments" field on Goal events. Currently
+// only one known semantic value ("Penalty Shootout") — used to
+// filter shootout goals out of match-goal tracking. Vendor uses
+// nil / empty on regular-play goals.
+//
+// The "SubstrPenaltyShootout" naming reflects that Python + Go
+// both do a case-insensitive SUBSTRING match against comments,
+// not an equality check — vendor might wrap the marker in longer
+// text in the future.
+type APIGoalComment string
+
+const (
+	// GoalCommentPenaltyShootout — vendor marker on Goal events that
+	// happened during a penalty shootout (not regular match goals).
+	// See HasPenaltyShootoutComment for the load-bearing check.
+	GoalCommentPenaltyShootout APIGoalComment = "Penalty Shootout"
+)
+
+var knownGoalComments = map[string]APIGoalComment{
+	"penalty shootout": GoalCommentPenaltyShootout,
+}
+
+// ParseAPIGoalComment normalizes a raw goal comment string. Empty
+// input is legal (returns "" with known=false, err=nil).
+func ParseAPIGoalComment(raw string) (c APIGoalComment, known bool, err error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false, nil
+	}
+	if v, ok := knownGoalComments[strings.ToLower(trimmed)]; ok {
+		return v, true, nil
+	}
+	return APIGoalComment(trimmed), false, nil
+}
+
+// HasPenaltyShootoutComment reports whether the vendor-provided
+// comments field flags this event as a penalty shootout goal.
+// Case-insensitive substring match: vendor might embed the marker
+// in longer text in the future (currently just emits the bare
+// marker as observed in real data).
+//
+// Used by domain.event.TrackableEventType to filter shootout goals
+// out of match-goal tracking.
+func HasPenaltyShootoutComment(comments string) bool {
+	return strings.Contains(
+		strings.ToLower(comments),
+		strings.ToLower(string(GoalCommentPenaltyShootout)),
+	)
 }

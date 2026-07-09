@@ -116,7 +116,68 @@ team field on Detail=`Own Goal`.
 
 ### `comments`
 
-- Free-text vendor annotations.
-- **Load-bearing**: shootout goals carry `"Penalty Shootout"` in
-  this field; `TrackableEventType` filters them out on
-  case-insensitive substring match.
+**Correction from earlier "free-text" claim** — the field is NOT
+free-text on any observed event family. Live vendor audit
+2026-07-09 (WC + top-5 club fixtures) surfaced discrete enum-like
+value sets per parent event type:
+
+**On `Card` events** (foul reason):
+
+| Value | Emitted for |
+|---|---|
+| `Foul` | Most common. Direct foul. |
+| `Argument` | Dissent / arguing with official. |
+| `Roughing` | Physical play beyond a foul. |
+| `Unsportsmanlike conduct` | Simulation, delay of game, etc. |
+| `Serious foul` | Observed on straight red cards. |
+| _(null)_ | Vendor sometimes omits the field entirely. |
+
+Modelled as `apifootball.APICardComment` enum with 5 constants +
+Parse function that preserves unknown values.
+
+**On `Goal` events** (shootout marker):
+
+| Value | Emitted for |
+|---|---|
+| `Penalty Shootout` | Every shootout goal + missed shootout penalty. |
+| _(null)_ | Regular-play goals. |
+
+Modelled as `apifootball.APIGoalComment` enum with one constant +
+`apifootball.HasPenaltyShootoutComment(string) bool` predicate for
+the case-insensitive substring match `TrackableEventType` uses.
+
+**On `Subst` / `Var` events**: no observed comment values so far
+(vendor emits null). If we ever see values here, extend the
+same-shape enum.
+
+## Vendor casing reality vs doc
+
+Live emission audit 2026-07-09 caught this: the vendor DOC says
+`"Red card"` (lowercase 'c') for the Card / Red card detail, but
+LIVE emission shows `"Red Card"` (title case). Our canonical
+constant now matches real emission (`DetailRedCard = "Red Card"`),
+and Parse handles both. Log lines mirror the vendor console.
+
+Related quirks:
+- `Subst` type — vendor emits lowercase `"subst"`, our canonical
+  is `"Subst"` per doc. Parse handles both.
+- `Var` details `"Goal cancelled"` and `"Penalty confirmed"` have
+  lowercase second word per doc; observed emission matches doc.
+  Preserved as-is in canonicals.
+
+The vendor is internally inconsistent about casing. Our current
+"canonical matches real emission" policy handles this via Parse
+normalization, but we've flagged in decisions.md that a
+lowercase-all-canonical follow-up might be cleaner if we accumulate
+more inconsistencies.
+
+## Missed Penalty tracking
+
+**Added 2026-07-09**: `DetailMissedPenalty` on `Type=Goal` now
+maps to a new domain event type `TypeMissedPenalty` (NOT `TypeGoal`)
+when the comment is NOT `Penalty Shootout`. A saved / missed penalty
+in open play is highlight-worthy but semantically different from a
+goal; the domain distinction lets the UI display it distinctly.
+
+Shootout misses still filter out via `HasPenaltyShootoutComment`,
+matching Python's behavior.

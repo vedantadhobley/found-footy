@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
+	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
 // helpers ---------------------------------------------------------
@@ -35,7 +36,7 @@ func makeGoal() *event.Event {
 // Enums -----------------------------------------------------------
 
 func TestType_Valid(t *testing.T) {
-	valid := []event.Type{event.TypeGoal, event.TypeCard, event.TypeSubst, event.TypeVar}
+	valid := []event.Type{event.TypeGoal, event.TypeCard, event.TypeSubst, event.TypeVar, event.TypeMissedPenalty}
 	for _, v := range valid {
 		if !v.Valid() {
 			t.Errorf("Type(%q).Valid() = false, want true", v)
@@ -45,6 +46,42 @@ func TestType_Valid(t *testing.T) {
 		if bogus.Valid() {
 			t.Errorf("Type(%q).Valid() = true, want false", bogus)
 		}
+	}
+}
+
+// TestTrackableEventType — locks in the classification rules matching
+// docs/api-football/events-shape.md + real vendor emission audit.
+func TestTrackableEventType(t *testing.T) {
+	cases := []struct {
+		name       string
+		apiType    apifootball.APIEventType
+		apiDetail  apifootball.APIEventDetail
+		apiComment string
+		wantType   event.Type
+		wantOK     bool
+	}{
+		{"normal goal", apifootball.EventTypeGoal, apifootball.DetailNormalGoal, "", event.TypeGoal, true},
+		{"penalty goal", apifootball.EventTypeGoal, apifootball.DetailPenalty, "", event.TypeGoal, true},
+		{"own goal", apifootball.EventTypeGoal, apifootball.DetailOwnGoal, "", event.TypeGoal, true},
+		{"missed penalty (open play)", apifootball.EventTypeGoal, apifootball.DetailMissedPenalty, "", event.TypeMissedPenalty, true},
+		{"missed penalty (shootout)", apifootball.EventTypeGoal, apifootball.DetailMissedPenalty, "Penalty Shootout", "", false},
+		{"shootout goal", apifootball.EventTypeGoal, apifootball.DetailPenalty, "Penalty Shootout", "", false},
+		{"shootout goal case-insensitive", apifootball.EventTypeGoal, apifootball.DetailPenalty, "penalty shootout", "", false},
+		{"red card", apifootball.EventTypeCard, apifootball.DetailRedCard, "Foul", event.TypeCard, true},
+		{"red card serious foul", apifootball.EventTypeCard, apifootball.DetailRedCard, "Serious foul", event.TypeCard, true},
+		{"yellow card skipped", apifootball.EventTypeCard, apifootball.DetailYellowCard, "Foul", "", false},
+		{"subst skipped", apifootball.EventTypeSubst, apifootball.DetailSubstitution, "", "", false},
+		{"var goal-cancelled skipped", apifootball.EventTypeVar, apifootball.DetailGoalCancelled, "", "", false},
+		{"var penalty-confirmed skipped", apifootball.EventTypeVar, apifootball.DetailPenaltyConfirmed, "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := event.TrackableEventType(tc.apiType, tc.apiDetail, tc.apiComment)
+			if got != tc.wantType || ok != tc.wantOK {
+				t.Errorf("TrackableEventType(%q, %q, %q) = (%q, %v), want (%q, %v)",
+					tc.apiType, tc.apiDetail, tc.apiComment, got, ok, tc.wantType, tc.wantOK)
+			}
+		})
 	}
 }
 

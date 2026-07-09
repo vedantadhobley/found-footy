@@ -197,3 +197,169 @@ func TestParseAPIEventDetail_Unknown(t *testing.T) {
 		t.Errorf("got %q, want raw preserved", got)
 	}
 }
+
+// TestParseAPIEventDetail_RealVendorRedCardCasing — vendor DOC says
+// "Red card" (lowercase c) but LIVE emission observed as "Red Card"
+// (title case). Parse must accept both; canonical matches real
+// emission per decisions.md 2026-07-09 real-data audit.
+func TestParseAPIEventDetail_RealVendorRedCardCasing(t *testing.T) {
+	for _, in := range []string{"Red Card", "Red card", "RED CARD", "red card"} {
+		got, known, err := apifootball.ParseAPIEventDetail(in)
+		if err != nil || !known {
+			t.Errorf("ParseAPIEventDetail(%q): err=%v known=%v", in, err, known)
+			continue
+		}
+		if got != apifootball.DetailRedCard {
+			t.Errorf("ParseAPIEventDetail(%q) = %q, want %q", in, got, apifootball.DetailRedCard)
+		}
+	}
+	// Canonical is title-case "Red Card" per real vendor emission.
+	if string(apifootball.DetailRedCard) != "Red Card" {
+		t.Errorf("DetailRedCard canonical = %q, want %q", apifootball.DetailRedCard, "Red Card")
+	}
+}
+
+// ── APICardComment ─────────────────────────────────────────────
+
+func TestParseAPICardComment_KnownAllCasings(t *testing.T) {
+	// Real vendor emission observed 2026-07-09 across WC + club fixtures.
+	cases := []struct {
+		in   string
+		want apifootball.APICardComment
+	}{
+		{"Foul", apifootball.CardCommentFoul},
+		{"foul", apifootball.CardCommentFoul},
+		{"FOUL", apifootball.CardCommentFoul},
+		{"  Foul  ", apifootball.CardCommentFoul}, // whitespace
+		{"Argument", apifootball.CardCommentArgument},
+		{"Roughing", apifootball.CardCommentRoughing},
+		{"Unsportsmanlike conduct", apifootball.CardCommentUnsportsmanlikeConduct},
+		{"unsportsmanlike CONDUCT", apifootball.CardCommentUnsportsmanlikeConduct},
+		{"Serious foul", apifootball.CardCommentSeriousFoul},
+	}
+	for _, tc := range cases {
+		got, known, err := apifootball.ParseAPICardComment(tc.in)
+		if err != nil {
+			t.Errorf("ParseAPICardComment(%q): err = %v", tc.in, err)
+			continue
+		}
+		if !known {
+			t.Errorf("ParseAPICardComment(%q): known=false, want true", tc.in)
+		}
+		if got != tc.want {
+			t.Errorf("ParseAPICardComment(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestParseAPICardComment_EmptyIsLegal(t *testing.T) {
+	// Vendor emits nil/empty for cards without a documented reason.
+	// Not an error — just no known enum value.
+	got, known, err := apifootball.ParseAPICardComment("")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if known || got != "" {
+		t.Errorf("got (%q, known=%t), want (\"\", false)", got, known)
+	}
+}
+
+func TestParseAPICardComment_Unknown(t *testing.T) {
+	got, known, err := apifootball.ParseAPICardComment("Handball")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if known {
+		t.Errorf("known=true, want false")
+	}
+	if got != apifootball.APICardComment("Handball") {
+		t.Errorf("got %q, want raw preserved", got)
+	}
+}
+
+// ── APIGoalComment ─────────────────────────────────────────────
+
+func TestParseAPIGoalComment_PenaltyShootout(t *testing.T) {
+	// Real vendor emission on shootout goals (verified against WC
+	// fixture 1576805, 2026-07-07).
+	for _, in := range []string{"Penalty Shootout", "penalty shootout", "PENALTY SHOOTOUT"} {
+		got, known, err := apifootball.ParseAPIGoalComment(in)
+		if err != nil || !known {
+			t.Errorf("ParseAPIGoalComment(%q): err=%v known=%v", in, err, known)
+			continue
+		}
+		if got != apifootball.GoalCommentPenaltyShootout {
+			t.Errorf("ParseAPIGoalComment(%q) = %q, want %q", in, got, apifootball.GoalCommentPenaltyShootout)
+		}
+	}
+}
+
+func TestHasPenaltyShootoutComment(t *testing.T) {
+	cases := []struct {
+		comments string
+		want     bool
+	}{
+		{"Penalty Shootout", true},          // exact match, canonical
+		{"penalty shootout", true},          // lowercased
+		{"PENALTY SHOOTOUT", true},          // upper
+		{"contains Penalty Shootout text", true}, // substring — future-proof
+		{"", false},                         // empty
+		{"Foul", false},                     // wrong marker
+		{"Normal Goal", false},              // detail leaking in
+	}
+	for _, tc := range cases {
+		got := apifootball.HasPenaltyShootoutComment(tc.comments)
+		if got != tc.want {
+			t.Errorf("HasPenaltyShootoutComment(%q) = %v, want %v", tc.comments, got, tc.want)
+		}
+	}
+}
+
+// ── VAR event parsing verification ─────────────────────────────
+
+// TestParseVarEvent_EndToEnd — verifies that a VAR event JSON payload
+// (canonical vendor shape) decodes cleanly to typed enums via
+// UnmarshalJSON. We don't currently trigger downstream workflows on
+// VAR events, but the parsing path MUST work so the events can be
+// stored / logged / eventually acted on.
+func TestParseVarEvent_EndToEnd(t *testing.T) {
+	cases := []struct {
+		name       string
+		json       string
+		wantType   apifootball.APIEventType
+		wantDetail apifootball.APIEventDetail
+	}{
+		{
+			name:       "goal cancelled",
+			json:       `{"type": "Var", "detail": "Goal cancelled"}`,
+			wantType:   apifootball.EventTypeVar,
+			wantDetail: apifootball.DetailGoalCancelled,
+		},
+		{
+			name:       "penalty confirmed",
+			json:       `{"type": "Var", "detail": "Penalty confirmed"}`,
+			wantType:   apifootball.EventTypeVar,
+			wantDetail: apifootball.DetailPenaltyConfirmed,
+		},
+		{
+			name:       "goal cancelled casing variant",
+			json:       `{"type": "var", "detail": "GOAL CANCELLED"}`,
+			wantType:   apifootball.EventTypeVar,
+			wantDetail: apifootball.DetailGoalCancelled,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var e apifootball.APIFixtureEvent
+			if err := json.Unmarshal([]byte(tc.json), &e); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if e.Type != tc.wantType {
+				t.Errorf("Type = %q, want %q", e.Type, tc.wantType)
+			}
+			if e.Detail != tc.wantDetail {
+				t.Errorf("Detail = %q, want %q", e.Detail, tc.wantDetail)
+			}
+		})
+	}
+}
