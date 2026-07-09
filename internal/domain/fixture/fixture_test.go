@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
+	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
 // helpers ---------------------------------------------------------
@@ -51,13 +52,13 @@ func TestState_Valid(t *testing.T) {
 func TestAPIStatus_TerminalAndLive(t *testing.T) {
 	terminals := []string{"FT", "AET", "PEN", "CANC", "ABD", "AWD", "WO"}
 	for _, code := range terminals {
-		if !(fixture.APIStatus{Short: code}).Terminal() {
+		if !(fixture.APIStatus{Short: apifootball.APIStatusCode(code)}).Terminal() {
 			t.Errorf("APIStatus(%q).Terminal() = false, want true", code)
 		}
 	}
 	nonTerminals := []string{"NS", "TBD", "1H", "PST", "SUSP"}
 	for _, code := range nonTerminals {
-		if (fixture.APIStatus{Short: code}).Terminal() {
+		if (fixture.APIStatus{Short: apifootball.APIStatusCode(code)}).Terminal() {
 			t.Errorf("APIStatus(%q).Terminal() = true, want false", code)
 		}
 	}
@@ -67,13 +68,13 @@ func TestAPIStatus_TerminalAndLive(t *testing.T) {
 	// obvious playing codes + SUSP/INT/PST (may resume any minute).
 	lives := []string{"1H", "HT", "2H", "ET", "BT", "P", "LIVE", "SUSP", "INT", "PST"}
 	for _, code := range lives {
-		if !(fixture.APIStatus{Short: code}).Live() {
+		if !(fixture.APIStatus{Short: apifootball.APIStatusCode(code)}).Live() {
 			t.Errorf("APIStatus(%q).Live() = false, want true", code)
 		}
 	}
 	nonLives := []string{"NS", "TBD", "FT", "CANC", "AET", "PEN", "ABD"}
 	for _, code := range nonLives {
-		if (fixture.APIStatus{Short: code}).Live() {
+		if (fixture.APIStatus{Short: apifootball.APIStatusCode(code)}).Live() {
 			t.Errorf("APIStatus(%q).Live() = true, want false", code)
 		}
 	}

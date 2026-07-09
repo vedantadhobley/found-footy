@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
 // State is the lifecycle phase of a fixture. Matches the fixture_state
@@ -35,12 +37,12 @@ func (s State) Valid() bool {
 	return false
 }
 
-// APIStatus captures the API-reported fixture status. Kept as a small
-// struct rather than a bare string so we can add helpers (Terminal,
-// Live, Interrupted) without changing call sites.
+// APIStatus captures the API-reported fixture status. Short is the
+// typed enum; Long is the human-readable form the vendor sends
+// alongside (kept for logs + debugging, not for comparisons).
 type APIStatus struct {
-	Short string // 'NS', '1H', 'HT', '2H', 'FT', 'PST', 'CANC', ...
-	Long  string // human-readable form from the API
+	Short apifootball.APIStatusCode
+	Long  string
 }
 
 // Terminal reports whether the API-reported status is one the API
@@ -49,7 +51,13 @@ type APIStatus struct {
 // still play later).
 func (a APIStatus) Terminal() bool {
 	switch a.Short {
-	case "FT", "AET", "PEN", "CANC", "ABD", "AWD", "WO":
+	case apifootball.StatusFullTime,
+		apifootball.StatusAfterExtra,
+		apifootball.StatusPenaltyDone,
+		apifootball.StatusCancelled,
+		apifootball.StatusAbandoned,
+		apifootball.StatusTechnicalLoss,
+		apifootball.StatusWalkover:
 		return true
 	}
 	return false
@@ -74,8 +82,16 @@ func (a APIStatus) Terminal() bool {
 //     that way, this just widens the set of statuses that trigger it).
 func (a APIStatus) Live() bool {
 	switch a.Short {
-	case "1H", "HT", "2H", "ET", "BT", "P", "LIVE",
-		"SUSP", "INT", "PST":
+	case apifootball.StatusFirstHalf,
+		apifootball.StatusHalftime,
+		apifootball.StatusSecondHalf,
+		apifootball.StatusExtraTime,
+		apifootball.StatusBreakTime,
+		apifootball.StatusPenaltyPlay,
+		apifootball.StatusLive,
+		apifootball.StatusSuspended,
+		apifootball.StatusInterrupted,
+		apifootball.StatusPostponed:
 		return true
 	}
 	return false

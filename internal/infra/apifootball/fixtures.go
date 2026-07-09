@@ -63,10 +63,10 @@ type APIFixtureVenue struct {
 // Elapsed is the current match minute (nullable pre-kickoff); Extra is
 // stoppage-time minutes (nullable outside stoppage).
 type APIFixtureStatus struct {
-	Long    string `json:"long"`
-	Short   string `json:"short"`
-	Elapsed *int   `json:"elapsed"`
-	Extra   *int   `json:"extra"`
+	Long    string        `json:"long"`
+	Short   APIStatusCode `json:"short"` // typed enum, normalized at unmarshal
+	Elapsed *int          `json:"elapsed"`
+	Extra   *int          `json:"extra"`
 }
 
 type APIFixtureLeague struct {
@@ -115,13 +115,13 @@ type APIFixtureScoreLine struct {
 // completeness; the Monitor path uses a separate /fixtures/events
 // endpoint that returns just the event list.
 type APIFixtureEvent struct {
-	Time     APIFixtureEventTime   `json:"time"`
-	Team     APIFixtureTeam        `json:"team"`
-	Player   APIFixturePlayerRef   `json:"player"`
-	Assist   APIFixturePlayerRef   `json:"assist"`
-	Type     string                `json:"type"`   // "Goal" / "Card" / "subst" / "Var"
-	Detail   string                `json:"detail"` // "Normal Goal" / "Yellow Card" / ...
-	Comments *string               `json:"comments"`
+	Time     APIFixtureEventTime `json:"time"`
+	Team     APIFixtureTeam      `json:"team"`
+	Player   APIFixturePlayerRef `json:"player"`
+	Assist   APIFixturePlayerRef `json:"assist"`
+	Type     APIEventType        `json:"type"`   // typed enum, normalized at unmarshal
+	Detail   APIEventDetail      `json:"detail"` // typed enum, normalized at unmarshal (incl. Substitution N → Substitution)
+	Comments *string             `json:"comments"`
 }
 
 type APIFixtureEventTime struct {
