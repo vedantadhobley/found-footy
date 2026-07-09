@@ -11,13 +11,13 @@ full testing intent. Divergences from §12 live in
 **Update rule.** Every commit that adds a package/adapter/workflow
 updates this doc if it introduces a new test tier or pattern.
 
-## Test count by tier (end of Phase O1)
+## Test count by tier (2026-07-09, end of O2 + first-full-corpus)
 
-175 tests across the internal/ tree, roughly:
+~200 tests across the internal/ tree + 16 scenarios in test/scenarios/:
 
 | Tier | Location | Count | Runtime |
 |---|---|---|---|
-| Unit (pure Go) | domain, activity, config, bootstrap, observability | ~100 | <100ms total |
+| Unit (pure Go) | domain, activity, config, bootstrap, observability | ~120 | <100ms total |
 | Adapter unit (httptest-based) | infra/apifootball, twitter, syndication, wikidata, llm | ~30 | <200ms total |
 | Adapter integration (testcontainers) | infra/pg, s3, nats, temporal | ~30 | ~30-60s total |
 | Workflow (testsuite.WorkflowTestSuite) | internal/workflow | ~5 (Ingest only, growing) | <100ms per workflow |
@@ -116,7 +116,7 @@ scenarios under `test/scenarios/<suite>/<name>.yaml`. Design in
 - `regression/` — scenarios born from prod bugs (link each YAML to
   the git commit or Loki query that surfaced it)
 
-**Currently shipped scenarios (8, all passing in 2.75s):**
+**Currently shipped scenarios (16, all passing in ~2.4s):**
 
 basic/ (5):
 - `ingest_happy_path` — daily ingest, 2 staging fixtures
@@ -125,13 +125,22 @@ basic/ (5):
 - `ingest_activate_at_seed` — kickoff within 30-min window → activate
 - `ingest_existing_preserves_state` — merge preserves activated_at
 
-debounce/ (3):
-- `var_overturn` — full 6-cycle debounce: 3 present cycles trigger
-  downstream, 3 absent cycles hit-zero → soft-delete with reason=var
-- `flicker_no_reset` — 7-cycle oscillation demonstrating symmetric
-  counter (NOT Python's hard reset). Ends at count=3, not removed.
-- `threshold_flip` — 8 consecutive present cycles verify
-  downstream_triggered flips exactly once + counter caps at 3
+debounce/ (5):
+- `var_overturn` — 6 cycles: 3 present trigger → 3 absent hit-zero → soft-delete
+- `flicker_no_reset` — 7 cycles oscillating; symmetric counter (NOT Python's reset). Ends stable at 3.
+- `threshold_flip` — 8 consecutive present; downstream_triggered flips once, counter caps
+- `multiple_goals` — 2 different players score, independent debounce per event
+- `removed_terminal` — soft-removed events stay terminal; API bringing back same natural_key doesn't re-track
+
+faults/ (3):
+- `api_500_recovers` — transient 500 → retry recovers, no state impact
+- `api_persistent_500` — sustained 500 outage doesn't burn debounce budget
+- `api_429_rate_limited` — 429 rate limit same protection as 500 outage
+
+edge_cases/ (3):
+- `postponed_mid_play` — PST mid-play doesn't false-delete goals (2026-07-09 pause fix)
+- `hat_trick` — same player scores 3 times; seq assignment (1, 2, 3) works
+- `halftime_pause` — 1H goal survives HT pause; every match hits this
 
 **Runtime:** ~3s per scenario (dominated by testcontainer boot).
 Amortized when running the full corpus: ~2s once, then ~40ms per
