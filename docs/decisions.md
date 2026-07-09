@@ -6,6 +6,74 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-09 — All-lowercase canonical for enums (uniform internal representation)
+
+Prior enum policy went through two revisions today:
+1. "Match vendor doc casing" (initial typed enums commit)
+2. "Match vendor real emission" (real-data audit commit)
+
+Both revisions ran into the same problem: **the vendor is
+internally inconsistent about casing.** Doc says `"Red card"` but
+emission is `"Red Card"`. Doc says `"Subst"` but emission is
+`"subst"`. Doc says `"Goal cancelled"` (lowercase 'c') and we've
+never observed VAR emission to verify. Every rule of "match X"
+produces a mixed-case codebase where the canonical form of each
+enum family depends on vendor's particular whims for that family.
+
+User pushed for a uniform rule after seeing the third revision come
+up: convert all canonicals to lowercase, preserve vendor's word
+separators (spaces) for multi-word values, let Parse handle
+case-insensitive normalization at the boundary.
+
+**What shipped**:
+
+- All ~40 enum constants across five families (`APIStatusCode`,
+  `APIEventType`, `APIEventDetail`, `APICardComment`, `APIGoalComment`)
+  changed to lowercase canonical values. Examples:
+    - `StatusNotStarted = "ns"` (was `"NS"`)
+    - `EventTypeGoal = "goal"` (was `"Goal"`)
+    - `DetailRedCard = "red card"` (was `"Red Card"`)
+    - `DetailNormalGoal = "normal goal"` (was `"Normal Goal"`)
+    - `CardCommentUnsportsmanlikeConduct = "unsportsmanlike conduct"`
+- Domain `event.Type` constants same treatment:
+    - `TypeGoal = "goal"`, `TypeMissedPenalty = "missed penalty"`
+- `event_type` pg enum recreated with lowercase values:
+    - `CREATE TYPE event_type AS ENUM ('goal', 'card', 'subst', 'var', 'missed penalty');`
+- Parse functions updated: unknown values now lowercase too, so the
+  enum type has a uniform casing invariant regardless of vendor
+  emission. Prior behavior preserved unknowns as-is (mixed casing).
+- Tests updated: raw string literals `"1H"`, `"NS"`, `"FT"`, `"Goal"`,
+  etc. changed to lowercase OR replaced with typed constant refs
+  (`apifootball.EventTypeGoal`, etc.) where it made the intent clearer.
+- events-shape.md updated with the new policy statement.
+
+**Design choices logged**:
+
+- **Lowercase over doc-canonical or emission-canonical**: fewer
+  case-by-case rules to remember. Constants read consistently
+  across all families. Vendor inconsistencies still surface if we
+  care to log them but don't leak into canonical form.
+- **Preserve vendor's word separators (spaces)**: `"missed penalty"`,
+  not `"missed_penalty"`. Reason — same value can appear in both
+  the domain `event_type` enum (as a domain classification) AND the
+  vendor `events.detail` text column (as raw wire value). Using the
+  same string keeps DB rows visually simple; column names already
+  tell you which layer you're at.
+- **Domain enums match vendor format too**: `TypeMissedPenalty = "missed penalty"`
+  is the exact same string as `DetailMissedPenalty = "missed penalty"`.
+  Semantic layers coexist without collision because they occupy
+  different columns.
+- **Dev pg volume wiped** to pick up the new event_type enum values.
+  Chose wipe-and-reingest over `ALTER TYPE ... RENAME VALUE` because
+  the dev DB had only test data (France v Morocco events would
+  regenerate on next Ingest cycle anyway).
+
+**Verification**:
+- 22 tests pass after the refactor (existing + updated for new casing).
+- Dev worker restarted with fresh schema + running.
+
+---
+
 ## 2026-07-09 — Real-data enum audit: card/goal comments + Missed Penalty tracking + vendor casing reality
 
 Follow-up to the earlier same-day enum refactor. User pushed back on my

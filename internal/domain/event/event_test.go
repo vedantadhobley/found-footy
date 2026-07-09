@@ -42,7 +42,9 @@ func TestType_Valid(t *testing.T) {
 			t.Errorf("Type(%q).Valid() = false, want true", v)
 		}
 	}
-	for _, bogus := range []event.Type{"", "goal" /* lowercase */, "PenaltyShootout"} {
+	// Canonical form is lowercase per the 2026-07-09 lowercase-canonical
+	// policy — "Goal" (title case) is now bogus, "goal" is valid.
+	for _, bogus := range []event.Type{"", "Goal" /* was canonical, now bogus */, "PenaltyShootout"} {
 		if bogus.Valid() {
 			t.Errorf("Type(%q).Valid() = true, want false", bogus)
 		}
@@ -116,13 +118,13 @@ func TestPlayer_Known(t *testing.T) {
 func TestComposeNaturalKey(t *testing.T) {
 	pid := 234
 	got := event.ComposeNaturalKey(40, &pid, event.TypeGoal, 1)
-	if got != "40_234_Goal_1" {
-		t.Errorf("known player key = %q, want 40_234_Goal_1", got)
+	if got != "40_234_goal_1" {
+		t.Errorf("known player key = %q, want 40_234_goal_1", got)
 	}
 
 	got = event.ComposeNaturalKey(40, nil, event.TypeGoal, 1)
-	if got != "40_unknown_Goal_1" {
-		t.Errorf("unknown player key = %q, want 40_unknown_Goal_1", got)
+	if got != "40_unknown_goal_1" {
+		t.Errorf("unknown player key = %q, want 40_unknown_goal_1", got)
 	}
 }
 
@@ -136,8 +138,8 @@ func TestNew_PopulatesRequiredFields(t *testing.T) {
 	if e.FixtureID != 5000 {
 		t.Errorf("FixtureID = %d, want 5000", e.FixtureID)
 	}
-	if e.NaturalKey != "40_234_Goal_1" {
-		t.Errorf("NaturalKey = %q, want 40_234_Goal_1", e.NaturalKey)
+	if e.NaturalKey != "40_234_goal_1" {
+		t.Errorf("NaturalKey = %q, want 40_234_goal_1", e.NaturalKey)
 	}
 	if e.MonitorComplete || e.DownloadComplete || e.Removed {
 		t.Error("New event must start with all flags false")
@@ -275,7 +277,7 @@ func TestUpdatePlayer_PopulatesFromUnknown(t *testing.T) {
 		t.Error("UpdatePlayer did not populate player")
 	}
 	// natural_key must NOT change — that's the immutability rule.
-	if e.NaturalKey != "40_unknown_Goal_1" {
+	if e.NaturalKey != "40_unknown_goal_1" {
 		t.Errorf("natural_key changed to %q; should be immutable", e.NaturalKey)
 	}
 }

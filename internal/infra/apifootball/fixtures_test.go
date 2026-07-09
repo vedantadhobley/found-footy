@@ -174,8 +174,10 @@ func TestListFixtures_ParsesCanonicalResponse(t *testing.T) {
 	if f.Fixture.ID != 1_515_514 {
 		t.Errorf("Fixture.ID = %d, want 1_515_514", f.Fixture.ID)
 	}
-	if f.Fixture.Status.Short != "1H" {
-		t.Errorf("Status.Short = %q, want 1H", f.Fixture.Status.Short)
+	// Vendor JSON sends "1H" (uppercase); UnmarshalJSON normalizes to
+	// canonical lowercase "1h" per the 2026-07-09 lowercase policy.
+	if f.Fixture.Status.Short != apifootball.StatusFirstHalf {
+		t.Errorf("Status.Short = %q, want %q", f.Fixture.Status.Short, apifootball.StatusFirstHalf)
 	}
 	if f.Fixture.Status.Elapsed == nil || *f.Fixture.Status.Elapsed != 45 {
 		t.Errorf("Status.Elapsed = %v, want 45", f.Fixture.Status.Elapsed)

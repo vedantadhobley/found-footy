@@ -268,8 +268,8 @@ func TestFetchFixturesForWindow_HappyPath(t *testing.T) {
 	// Per-date responses: 2 fixtures on 7/8, nothing on 7/7 or 7/9/7/10.
 	fetcher := &fakeFetcher{responseByDate: map[string][]apifootball.APIFixture{
 		"2026-07-08": {
-			mkAPIFixture(1, "NS", kickoff, 40, 42),
-			mkAPIFixture(2, "NS", kickoff, 33, 50),
+			mkAPIFixture(1, "ns", kickoff, 40, 42),
+			mkAPIFixture(2, "ns", kickoff, 33, 50),
 		},
 	}}
 	a := newActivities(fetcher, newFakeFixtureRepo(), newFakeAliasRepo(), kickoff.Add(-3*time.Hour))
@@ -308,8 +308,8 @@ func TestFetchFixturesForDay_PropagatesError(t *testing.T) {
 func TestFetchFixturesByIDs_HappyPath(t *testing.T) {
 	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	fetcher := &fakeFetcher{byIDsResponse: []apifootball.APIFixture{
-		mkAPIFixture(1_515_514, "NS", kickoff, 40, 42),
-		mkAPIFixture(1_515_515, "NS", kickoff, 33, 50),
+		mkAPIFixture(1_515_514, "ns", kickoff, 40, 42),
+		mkAPIFixture(1_515_515, "ns", kickoff, 33, 50),
 	}}
 	a := newActivities(fetcher, newFakeFixtureRepo(), newFakeAliasRepo(), kickoff.Add(-3*time.Hour))
 
@@ -345,7 +345,7 @@ func TestCategorize_NewStagingKickoffFar_LandsStaging(t *testing.T) {
 	a := newActivities(&fakeFetcher{}, fRepo, newFakeAliasRepo(), now)
 
 	out, err := a.CategorizeAndUpsertFixtures(context.Background(), CategorizeInput{
-		Fixtures:         []apifootball.APIFixture{mkAPIFixture(1, "NS", kickoff, 40, 42)},
+		Fixtures:         []apifootball.APIFixture{mkAPIFixture(1, "ns", kickoff, 40, 42)},
 		ActivationWindow: 30 * time.Minute,
 	})
 	if err != nil {
@@ -367,7 +367,7 @@ func TestCategorize_NewStagingKickoffImminent_LandsActive(t *testing.T) {
 	a := newActivities(&fakeFetcher{}, fRepo, newFakeAliasRepo(), now)
 
 	out, err := a.CategorizeAndUpsertFixtures(context.Background(), CategorizeInput{
-		Fixtures:         []apifootball.APIFixture{mkAPIFixture(1, "NS", kickoff, 40, 42)},
+		Fixtures:         []apifootball.APIFixture{mkAPIFixture(1, "ns", kickoff, 40, 42)},
 		ActivationWindow: 30 * time.Minute,
 	})
 	if err != nil {
@@ -391,7 +391,7 @@ func TestCategorize_APILive_LandsActive(t *testing.T) {
 	a := newActivities(&fakeFetcher{}, fRepo, newFakeAliasRepo(), now)
 
 	_, err := a.CategorizeAndUpsertFixtures(context.Background(), CategorizeInput{
-		Fixtures:         []apifootball.APIFixture{mkAPIFixture(1, "1H", kickoff, 40, 42)},
+		Fixtures:         []apifootball.APIFixture{mkAPIFixture(1, "1h", kickoff, 40, 42)},
 		ActivationWindow: 30 * time.Minute,
 	})
 	if err != nil {
@@ -411,7 +411,7 @@ func TestCategorize_APITerminal_LandsCompleted(t *testing.T) {
 	a := newActivities(&fakeFetcher{}, fRepo, newFakeAliasRepo(), now)
 
 	_, err := a.CategorizeAndUpsertFixtures(context.Background(), CategorizeInput{
-		Fixtures:         []apifootball.APIFixture{mkAPIFixture(1, "FT", kickoff, 40, 42)},
+		Fixtures:         []apifootball.APIFixture{mkAPIFixture(1, "ft", kickoff, 40, 42)},
 		ActivationWindow: 30 * time.Minute,
 	})
 	if err != nil {
@@ -436,7 +436,7 @@ func TestCategorize_ExistingActive_PreservesDomainFields(t *testing.T) {
 
 	// Seed: fixture already active, activated 30 min before kickoff.
 	existing := fixture.New(1,
-		fixture.APIStatus{Short: "1H", Long: "First Half"},
+		fixture.APIStatus{Short: "1h", Long: "First Half"},
 		kickoff,
 		fixture.Team{ID: 40, Name: "Liverpool"},
 		fixture.Team{ID: 42, Name: "Arsenal"},
@@ -455,7 +455,7 @@ func TestCategorize_ExistingActive_PreservesDomainFields(t *testing.T) {
 	one := 1
 	zero := 0
 	elapsed := 30
-	fx := mkAPIFixture(1, "1H", kickoff, 40, 42)
+	fx := mkAPIFixture(1, "1h", kickoff, 40, 42)
 	fx.Fixture.Status.Elapsed = &elapsed
 	fx.Goals.Home = &one
 	fx.Goals.Away = &zero
@@ -487,8 +487,8 @@ func TestCategorize_CollectsUniqueTeams(t *testing.T) {
 	// Two fixtures, team 40 in both — should appear once in TeamRefs.
 	out, err := a.CategorizeAndUpsertFixtures(context.Background(), CategorizeInput{
 		Fixtures: []apifootball.APIFixture{
-			mkAPIFixture(1, "NS", kickoff, 40, 42),
-			mkAPIFixture(2, "NS", kickoff, 40, 33),
+			mkAPIFixture(1, "ns", kickoff, 40, 42),
+			mkAPIFixture(2, "ns", kickoff, 40, 33),
 		},
 		ActivationWindow: 30 * time.Minute,
 	})
@@ -553,7 +553,7 @@ func TestPruneOldFixtures(t *testing.T) {
 	fRepo := newFakeFixtureRepo()
 
 	// Two completed fixtures at different completion times.
-	old := fixture.New(1, fixture.APIStatus{Short: "FT"},
+	old := fixture.New(1, fixture.APIStatus{Short: "ft"},
 		now.Add(-30*24*time.Hour),
 		fixture.Team{ID: 40}, fixture.Team{ID: 42},
 		fixture.League{ID: 39, Season: 2026})
@@ -565,7 +565,7 @@ func TestPruneOldFixtures(t *testing.T) {
 	}
 	fRepo.Upsert(context.Background(), old)
 
-	recent := fixture.New(2, fixture.APIStatus{Short: "FT"},
+	recent := fixture.New(2, fixture.APIStatus{Short: "ft"},
 		now.Add(-7*24*time.Hour),
 		fixture.Team{ID: 33}, fixture.Team{ID: 50},
 		fixture.League{ID: 39, Season: 2026})
@@ -596,7 +596,7 @@ func TestCategorize_SetsLastPolledAt_OnFresh(t *testing.T) {
 	a := newActivities(&fakeFetcher{}, fRepo, newFakeAliasRepo(), now)
 
 	_, err := a.CategorizeAndUpsertFixtures(context.Background(), CategorizeInput{
-		Fixtures:         []apifootball.APIFixture{mkAPIFixture(1, "NS", kickoff, 40, 42)},
+		Fixtures:         []apifootball.APIFixture{mkAPIFixture(1, "ns", kickoff, 40, 42)},
 		ActivationWindow: 30 * time.Minute,
 	})
 	if err != nil {
@@ -621,7 +621,7 @@ func TestCategorize_UpdatesLastPolledAt_OnExisting(t *testing.T) {
 	fRepo := newFakeFixtureRepo()
 
 	existing := fixture.New(1,
-		fixture.APIStatus{Short: "1H", Long: "First Half"},
+		fixture.APIStatus{Short: "1h", Long: "First Half"},
 		kickoff,
 		fixture.Team{ID: 40, Name: "Liverpool"},
 		fixture.Team{ID: 42, Name: "Arsenal"},
@@ -638,7 +638,7 @@ func TestCategorize_UpdatesLastPolledAt_OnExisting(t *testing.T) {
 
 	a := newActivities(&fakeFetcher{}, fRepo, newFakeAliasRepo(), now)
 	_, err := a.CategorizeAndUpsertFixtures(context.Background(), CategorizeInput{
-		Fixtures:         []apifootball.APIFixture{mkAPIFixture(1, "1H", kickoff, 40, 42)},
+		Fixtures:         []apifootball.APIFixture{mkAPIFixture(1, "1h", kickoff, 40, 42)},
 		ActivationWindow: 30 * time.Minute,
 	})
 	if err != nil {
@@ -682,8 +682,8 @@ func TestCategorize_ErrorsCarryFixtureContext(t *testing.T) {
 
 	out, err := a.CategorizeAndUpsertFixtures(context.Background(), CategorizeInput{
 		Fixtures: []apifootball.APIFixture{
-			mkAPIFixture(111, "NS", kickoff, 40, 42),
-			mkAPIFixture(222, "NS", kickoff, 33, 50),
+			mkAPIFixture(111, "ns", kickoff, 40, 42),
+			mkAPIFixture(222, "ns", kickoff, 33, 50),
 		},
 		ActivationWindow: 30 * time.Minute,
 	})

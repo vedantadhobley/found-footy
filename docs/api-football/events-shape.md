@@ -150,26 +150,26 @@ the case-insensitive substring match `TrackableEventType` uses.
 (vendor emits null). If we ever see values here, extend the
 same-shape enum.
 
-## Vendor casing reality vs doc
+## Casing policy: all lowercase internal (2026-07-09)
 
-Live emission audit 2026-07-09 caught this: the vendor DOC says
-`"Red card"` (lowercase 'c') for the Card / Red card detail, but
-LIVE emission shows `"Red Card"` (title case). Our canonical
-constant now matches real emission (`DetailRedCard = "Red Card"`),
-and Parse handles both. Log lines mirror the vendor console.
+Vendor is internally inconsistent about casing:
+- Doc: `"Red card"` (lowercase 'c'); emission: `"Red Card"` (title case)
+- Doc: `"Subst"` (title case); emission: `"subst"` (lowercase)
+- Doc: `"Goal cancelled"` / `"Penalty confirmed"` (lowercase second word); emission unverified
 
-Related quirks:
-- `Subst` type — vendor emits lowercase `"subst"`, our canonical
-  is `"Subst"` per doc. Parse handles both.
-- `Var` details `"Goal cancelled"` and `"Penalty confirmed"` have
-  lowercase second word per doc; observed emission matches doc.
-  Preserved as-is in canonicals.
+Rather than dance around vendor's inconsistencies with per-family
+"canonical matches vendor doc" or "canonical matches real emission"
+rules, we adopted a uniform **all-lowercase internal representation**
+per decisions.md 2026-07-09 lowercase-canonical entry.
 
-The vendor is internally inconsistent about casing. Our current
-"canonical matches real emission" policy handles this via Parse
-normalization, but we've flagged in decisions.md that a
-lowercase-all-canonical follow-up might be cleaner if we accumulate
-more inconsistencies.
+- All enum constants (status, event type, event detail, card comment,
+  goal comment) are lowercase, preserving vendor's whitespace where
+  applicable (`"missed penalty"`, not `"missed_penalty"`).
+- Parse functions normalize inputs via `strings.ToLower` and preserve
+  unknown values as lowercase too — the enum type has a uniform
+  casing invariant regardless of vendor emission.
+- Log lines show lowercase; incident triage should normalize when
+  cross-referencing vendor console.
 
 ## Missed Penalty tracking
 

@@ -48,14 +48,14 @@ func TestParseAPIStatusCode_KnownAllCasings(t *testing.T) {
 func TestParseAPIStatusCode_Unknown(t *testing.T) {
 	// Vendor may add new codes. Preserve as-is, return known=false so
 	// callers can log + continue.
-	got, known, err := apifootball.ParseAPIStatusCode("FUTURE_CODE_X")
+	got, known, err := apifootball.ParseAPIStatusCode("future_code_x")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if known {
 		t.Errorf("known=true, want false")
 	}
-	if got != apifootball.APIStatusCode("FUTURE_CODE_X") {
+	if got != apifootball.APIStatusCode("future_code_x") {
 		t.Errorf("got %q, want raw preserved", got)
 	}
 }
@@ -114,14 +114,14 @@ func TestParseAPIEventType_KnownAllCasings(t *testing.T) {
 }
 
 func TestParseAPIEventType_Unknown(t *testing.T) {
-	got, known, err := apifootball.ParseAPIEventType("Injury")
+	got, known, err := apifootball.ParseAPIEventType("injury")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if known {
 		t.Errorf("known=true, want false")
 	}
-	if got != apifootball.APIEventType("Injury") {
+	if got != apifootball.APIEventType("injury") {
 		t.Errorf("got %q, want raw preserved", got)
 	}
 }
@@ -186,14 +186,14 @@ func TestParseAPIEventDetail_SubstitutionPrefix(t *testing.T) {
 }
 
 func TestParseAPIEventDetail_Unknown(t *testing.T) {
-	got, known, err := apifootball.ParseAPIEventDetail("Injury Stoppage")
+	got, known, err := apifootball.ParseAPIEventDetail("injury stoppage")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if known {
 		t.Errorf("known=true, want false")
 	}
-	if got != apifootball.APIEventDetail("Injury Stoppage") {
+	if got != apifootball.APIEventDetail("injury stoppage") {
 		t.Errorf("got %q, want raw preserved", got)
 	}
 }
@@ -213,9 +213,12 @@ func TestParseAPIEventDetail_RealVendorRedCardCasing(t *testing.T) {
 			t.Errorf("ParseAPIEventDetail(%q) = %q, want %q", in, got, apifootball.DetailRedCard)
 		}
 	}
-	// Canonical is title-case "Red Card" per real vendor emission.
-	if string(apifootball.DetailRedCard) != "Red Card" {
-		t.Errorf("DetailRedCard canonical = %q, want %q", apifootball.DetailRedCard, "Red Card")
+	// Canonical is lowercase per the 2026-07-09 lowercase-canonical
+	// policy — real vendor emission uses "Red Card" but we normalize
+	// to a uniform lowercase internal representation regardless of
+	// vendor casing drift.
+	if string(apifootball.DetailRedCard) != "red card" {
+		t.Errorf("DetailRedCard canonical = %q, want %q", apifootball.DetailRedCard, "red card")
 	}
 }
 
@@ -265,14 +268,14 @@ func TestParseAPICardComment_EmptyIsLegal(t *testing.T) {
 }
 
 func TestParseAPICardComment_Unknown(t *testing.T) {
-	got, known, err := apifootball.ParseAPICardComment("Handball")
+	got, known, err := apifootball.ParseAPICardComment("handball")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if known {
 		t.Errorf("known=true, want false")
 	}
-	if got != apifootball.APICardComment("Handball") {
+	if got != apifootball.APICardComment("handball") {
 		t.Errorf("got %q, want raw preserved", got)
 	}
 }

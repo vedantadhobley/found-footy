@@ -50,29 +50,30 @@ func TestState_Valid(t *testing.T) {
 // APIStatus helpers -----------------------------------------------
 
 func TestAPIStatus_TerminalAndLive(t *testing.T) {
-	terminals := []string{"FT", "AET", "PEN", "CANC", "ABD", "AWD", "WO"}
+	// Values are pre-canonicalized (lowercase) because production
+	// callers construct APIStatus via Parse or JSON unmarshal, which
+	// normalize at the boundary. Bypassing Parse in tests uses the
+	// canonical form directly.
+	terminals := []string{"ft", "aet", "pen", "canc", "abd", "awd", "wo"}
 	for _, code := range terminals {
 		if !(fixture.APIStatus{Short: apifootball.APIStatusCode(code)}).Terminal() {
 			t.Errorf("APIStatus(%q).Terminal() = false, want true", code)
 		}
 	}
-	nonTerminals := []string{"NS", "TBD", "1H", "PST", "SUSP"}
+	nonTerminals := []string{"ns", "tbd", "1h", "pst", "susp"}
 	for _, code := range nonTerminals {
 		if (fixture.APIStatus{Short: apifootball.APIStatusCode(code)}).Terminal() {
 			t.Errorf("APIStatus(%q).Terminal() = true, want false", code)
 		}
 	}
 
-	// Live matches Python's classification per
-	// archive/src/utils/fixture_status.py:
-	// obvious playing codes + SUSP/INT/PST (may resume any minute).
-	lives := []string{"1H", "HT", "2H", "ET", "BT", "P", "LIVE", "SUSP", "INT", "PST"}
+	lives := []string{"1h", "ht", "2h", "et", "bt", "p", "live", "susp", "int", "pst"}
 	for _, code := range lives {
 		if !(fixture.APIStatus{Short: apifootball.APIStatusCode(code)}).Live() {
 			t.Errorf("APIStatus(%q).Live() = false, want true", code)
 		}
 	}
-	nonLives := []string{"NS", "TBD", "FT", "CANC", "AET", "PEN", "ABD"}
+	nonLives := []string{"ns", "tbd", "ft", "canc", "aet", "pen", "abd"}
 	for _, code := range nonLives {
 		if (fixture.APIStatus{Short: apifootball.APIStatusCode(code)}).Live() {
 			t.Errorf("APIStatus(%q).Live() = true, want false", code)
