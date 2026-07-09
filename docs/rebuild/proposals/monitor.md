@@ -1,9 +1,47 @@
-# MonitorWorkflow — design proposal (O2)
+# MonitorWorkflow — design proposal (O2) — SUPERSEDED
 
-**Status:** design-first draft. Do not implement anything from this
-doc until it's reviewed + signed off. Once signed off, the ledger
-(`docs/rebuild/orchestration.md`) is updated per the same-commit
-discipline and this proposal is superseded.
+**Status:** SUPERSEDED. Phase O2 (a/b/c) shipped 2026-07-08. The
+implementation deviated from this proposal in several places based
+on downstream design conversation. Do NOT read this doc as
+authoritative — use these instead:
+
+- `docs/rebuild/orchestration.md` — as-shipped ledger of workflow
+  + activity behavior
+- `docs/decisions.md`:
+  - 2026-07-07 APIStatus bucketing (SUSP/INT/PST=active,
+    superseding the "add a postponed state" section here)
+  - 2026-07-07 symmetric-counter debounce (superseding the
+    delete-drops-on-presence proposal below)
+  - 2026-07-08 test corpus + activity clock injection
+    (superseding the "no scenario testing" gap)
+  - 2026-07-09 don't vote absence during paused-play (extends
+    the SUSP/INT/PST decision to event-level absence handling)
+
+Sections of this proposal that were REJECTED during implementation:
+- **Adaptive staging poll frequency tiering** (4h/24h/24h+ tiers) —
+  rejected in favor of keeping Python's 15-min bucket amortization
+  as-is.
+- **New `postponed` fixture state** — rejected in favor of keeping
+  PST fixtures in `active` state (SUSP/INT/PST=active decision).
+- **Adaptive debounce thresholds** — deferred to Phase M with
+  telemetry.
+
+Kept from this proposal (accurately describes shipped state):
+- Fire-per-cycle model (30s Temporal Schedule, SKIP overlap)
+- Debounce via symmetric counter (though the model changed from
+  what's described here — see decisions.md 2026-07-07 symmetric
+  counter entry for the actual implementation)
+- NATS emissions deferred to O3
+- Fixture completion transition deferred to O3
+
+Original preamble follows for historical context.
+
+---
+
+**Status (original):** design-first draft. Do not implement anything
+from this doc until it's reviewed + signed off. Once signed off, the
+ledger (`docs/rebuild/orchestration.md`) is updated per the same-
+commit discipline and this proposal is superseded.
 
 **Cross-refs:**
 - Plan intent — [`../../rebuild-plan.md`](../../rebuild-plan.md) §5 W2
