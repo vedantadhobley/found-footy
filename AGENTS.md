@@ -46,7 +46,8 @@ Phased delivery — see §16 for the phase map. Where we are (2026-07-07):
 
 **Where to look for Go rebuild work:**
 
-- [`docs/rebuild-plan.md`](./docs/rebuild-plan.md) — **the design bible**. §1-§16 covers architecture, schema, adapters, workflows, deployment, migration. Read the section relevant to what you're touching before starting.
+- [`docs/rebuild-plan.md`](./docs/rebuild-plan.md) — **the design bible for the TARGET architecture**. §1-§16 covers architecture, schema, adapters, workflows, deployment, migration. Read the section relevant to what you're touching before starting.
+- [`docs/rebuild/python-functional-spec.md`](./docs/rebuild/python-functional-spec.md) — **behavioral spec of the CURRENT Python system** — WHAT it does, not HOW. Data schema, per-workflow contracts, cross-workflow coordination, failure modes, edge cases, config reference. Authoritative "does Python do X?" reference during Go implementation.
 - [`docs/rebuild/README.md`](./docs/rebuild/README.md) — routing index for per-topic rebuild docs.
 - [`docs/rebuild/architecture.md`](./docs/rebuild/architecture.md) — **as-shipped ledger** of internal/ + cmd/ tree with per-package status.
 - [`docs/rebuild/orchestration.md`](./docs/rebuild/orchestration.md) — **as-shipped ledger** of workflows + activities (IngestWorkflow complete).
