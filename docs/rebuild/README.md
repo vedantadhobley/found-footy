@@ -62,9 +62,31 @@ canonical design lives in [`../rebuild-plan.md`](../rebuild-plan.md):
 Once a stub gets populated, its rebuild-plan section becomes "historical
 context" per §15.7 — the ledger is the source of truth going forward.
 
+## proposals/ — pre-commit design drafts + cross-cutting audits
+
+`proposals/` is where **design-first drafts** and **cross-cutting
+audits** live, distinct from the ledger docs above. When picking up
+the rebuild, read here BEFORE proposing new designs — the next phase
+may already have an open proposal awaiting review.
+
+| Doc | Kind | Status | Purpose |
+|---|---|---|---|
+| [`proposals/workflow-audit-2026-07-09.md`](./proposals/workflow-audit-2026-07-09.md) | Audit | ✓ **THE CURRENT PUNCH LIST** | Cross-referenced audit of shipped Go IngestWorkflow + MonitorWorkflow against Python + rebuild-plan. Severity-ranked (P0/P1/P2). Has a "What to do next" section. Read this FIRST when picking up the rebuild — don't re-derive an audit that already exists. |
+| [`proposals/api-football-audit-2026-07-09.md`](./proposals/api-football-audit-2026-07-09.md) | Audit | ✓ filled | Vendor doc audit — endpoints, rate limits, casing quirks, per-family enum values. Backs the frozen `docs/api-football/` reference. |
+| [`proposals/monitor.md`](./proposals/monitor.md) | Phase proposal | ⚠ **SUPERSEDED** | O2 design proposal from 2026-07-07. Phase O2 shipped 2026-07-08 with deviations. Kept for historical context only — read `orchestration.md` for actual shipped shape. |
+| [`proposals/discovery.md`](./proposals/discovery.md) | Phase proposal | ⏳ **AWAITING REVIEW** | O3 design proposal — DiscoveryWorkflow + NATS composer. Has 4 open questions at the bottom awaiting user sign-off before O3/a starts. |
+| [`proposals/test-corpus.md`](./proposals/test-corpus.md) | Design | ✓ filled | Scenario test-corpus design + YAML shape. |
+
+**Lifecycle:** an approved proposal → the code lands → the ledger
+doc (architecture / orchestration / etc.) is updated in the same
+commit → the proposal is marked SUPERSEDED or moved to
+`proposals/superseded/` (TBD). Cross-cutting audits stay where they
+are since they don't map to a single ledger.
+
 ## Intake rules
 
 Same as top-level `docs/README.md` — architectural decisions land in
 [`../decisions.md`](../decisions.md), open work in
 [`../todo.md`](../todo.md). Structural facts about the Go system land
-here, in the relevant stub.
+here, in the relevant stub. New design proposals for un-shipped
+phases land in `proposals/`.
