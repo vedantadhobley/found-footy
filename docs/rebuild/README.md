@@ -34,6 +34,7 @@ top-level `docs/*.md` and the current top-level docs move to
 | [`logging.md`](./logging.md) | ✓ **filled** | Emission reference — Emit call site, Field helpers, TestEmitter. §11. |
 | [`deployment.md`](./deployment.md) | ✓ **filled** | Compose files + Garage bootstrap + Caddy + workflow scheduling state. §10. |
 | [`testing.md`](./testing.md) | ✓ **filled** | Test tier ledger (~175 tests) + make targets. §12. |
+| [`run-flow.md`](./run-flow.md) | ✓ **filled** (2026-07-09) | Narrative walk-throughs of Ingest + Monitor cycles, concurrency inventory, state-transition diagrams, latency profile, and known gaps. Cross-reference doc that connects the ledgers into a coherent "how does one run happen" story. |
 | [`api-contract.md`](./api-contract.md) | ⊘ Phase F stub | Populated during Phase A. §8. |
 | [`operations.md`](./operations.md) | ⊘ Phase F stub | Populated during Phase M/C bring-up + failure procedures. §10, §14. |
 
