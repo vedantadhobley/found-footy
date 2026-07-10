@@ -35,6 +35,7 @@ top-level `docs/*.md` and the current top-level docs move to
 | [`deployment.md`](./deployment.md) | ✓ **filled** | Compose files + Garage bootstrap + Caddy + workflow scheduling state. §10. |
 | [`testing.md`](./testing.md) | ✓ **filled** | Test tier ledger (~175 tests) + make targets. §12. |
 | [`run-flow.md`](./run-flow.md) | ✓ **filled** (2026-07-09) | Narrative walk-throughs of Ingest + Monitor cycles, concurrency inventory, state-transition diagrams, latency profile, and known gaps. Cross-reference doc that connects the ledgers into a coherent "how does one run happen" story. |
+| [`python-functional-spec.md`](./python-functional-spec.md) | ✓ **filled** (2026-07-10) | Behavioral spec of the Python system — WHAT it does, not HOW. Data schema, per-workflow contracts, cross-workflow coordination, failure modes, edge cases, config reference. Use as the authoritative "does Python do X?" reference during Go implementation; complements rebuild-plan.md which describes the TARGET architecture. |
 | [`api-contract.md`](./api-contract.md) | ⊘ Phase F stub | Populated during Phase A. §8. |
 | [`operations.md`](./operations.md) | ⊘ Phase F stub | Populated during Phase M/C bring-up + failure procedures. §10, §14. |
 
