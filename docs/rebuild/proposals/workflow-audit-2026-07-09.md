@@ -47,7 +47,15 @@ own docstring, no surprises.
      + updated integration test harness.
    See `orchestration.md` for the as-shipped ledger.
 
-2. **Fixture completion detection** — no code marks fixtures `completed`.
+2. **Fixture completion detection** — ✅ **SHIPPED 2026-07-11** via
+   pluggable per-event workflow checklist. Design in
+   [`completion-contract.md`](./completion-contract.md); decision in
+   [`../../decisions.md` 2026-07-11 completion-contract entry](../../decisions.md).
+   Full contract implemented: Terminal + counter/winner + all events
+   settled + no in-flight downstream workflows. Pre-cutover behavior
+   auto-widens as O3-O5 land and start registering rows in
+   `event_downstream_workflows`. See ORIGINAL P0 #2 for the historical
+   context of what was still missing:
    Fixtures stay in `active` state forever. Python's `complete_fixture_if_ready`
    (`archive/src/activities/monitor.py:367-483`) checks per-event
    `_monitor_complete + _download_complete` before promoting to

@@ -288,6 +288,128 @@ func TestFixtureRepo_ListStagingBeforeKickoff(t *testing.T) {
 	}
 }
 
+// FixtureReadyToComplete ------------------------------------------
+
+// TestFixtureRepo_FixtureReadyToComplete_TruthTable exercises each
+// leg of the completion query against real Postgres. The mapping:
+//   - Terminal status + counter=3 + no events + no in-flight
+//     downstream workflows → ready
+//   - Non-Terminal status → not ready (regardless of counter)
+//   - Terminal + counter=0 + no winner → not ready
+//   - Terminal + winner fast-path → ready
+//   - Terminal + counter=3 + an event in mid-debounce → not ready
+//   - Terminal + counter=3 + an in-flight downstream workflow → not ready
+func TestFixtureRepo_FixtureReadyToComplete_TruthTable(t *testing.T) {
+	ctx, pool, repo := setupRepo(t)
+	base := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+
+	// Fresh fixture in staging — not eligible (not Terminal).
+	f := makeStaging(9101, base)
+	f.APIStatus = fixture.APIStatus{Short: "ns", Long: "Not Started"}
+	if err := repo.Upsert(ctx, f); err != nil {
+		t.Fatalf("upsert staging: %v", err)
+	}
+	if ready, err := repo.FixtureReadyToComplete(ctx, 9101); err != nil || ready {
+		t.Errorf("staging fixture ready = %v (err=%v), want false", ready, err)
+	}
+
+	// Move to active, set counter to 3 + Terminal status. No events, no downstream.
+	if err := f.Activate(base); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	// Simulate 3 Terminal polls to prime the counter.
+	for i := 0; i < 3; i++ {
+		f.UpdateFromPoll(
+			fixture.APIStatus{Short: "ft", Long: "Match Finished"},
+			nil, nil, nil, nil, base.Add(time.Duration(i)*30*time.Second),
+		)
+	}
+	if err := repo.Upsert(ctx, f); err != nil {
+		t.Fatalf("upsert active-terminal: %v", err)
+	}
+	if ready, err := repo.FixtureReadyToComplete(ctx, 9101); err != nil || !ready {
+		t.Errorf("terminal+counter=3+no-events ready = %v (err=%v), want true", ready, err)
+	}
+
+	// Winner fast-path: reset counter, set winner. Should still be ready.
+	f.CompletionCounter = 0
+	trueBool := true
+	f.HomeWinner = &trueBool
+	if err := repo.Upsert(ctx, f); err != nil {
+		t.Fatalf("upsert winner: %v", err)
+	}
+	if ready, err := repo.FixtureReadyToComplete(ctx, 9101); err != nil || !ready {
+		t.Errorf("terminal+winner+counter=0 ready = %v (err=%v), want true", ready, err)
+	}
+
+	// Add an event in mid-debounce (removed=false, downstream_triggered=false).
+	// Directly INSERT bypassing repo since we need to control debounce_count.
+	eventID := uuid.New()
+	_, err := pool.Exec(ctx, `
+		INSERT INTO events (
+			id, fixture_id, natural_key, event_type, team_id, team_name,
+			player_id, player_name, detail, minute,
+			debounce_count, downstream_triggered, removed, first_seen_at
+		) VALUES (
+			$1, $2, '40_111_goal_1', 'goal', 40, 'Liverpool',
+			111, 'M.Salah', 'normal goal', 42,
+			2, false, false, $3
+		)
+	`, eventID, 9101, base.Add(42*time.Minute))
+	if err != nil {
+		t.Fatalf("insert mid-debounce event: %v", err)
+	}
+	if ready, err := repo.FixtureReadyToComplete(ctx, 9101); err != nil || ready {
+		t.Errorf("terminal+event-mid-debounce ready = %v (err=%v), want false", ready, err)
+	}
+
+	// Settle the event (downstream_triggered = true).
+	_, err = pool.Exec(ctx, `
+		UPDATE events SET debounce_count = 3, downstream_triggered = true
+		WHERE id = $1
+	`, eventID)
+	if err != nil {
+		t.Fatalf("settle event: %v", err)
+	}
+	if ready, err := repo.FixtureReadyToComplete(ctx, 9101); err != nil || !ready {
+		t.Errorf("terminal+event-settled+no-downstream ready = %v (err=%v), want true", ready, err)
+	}
+
+	// Register an in-flight downstream workflow — completion should
+	// block until the row's completed_at fills in.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO event_downstream_workflows (event_id, workflow_type, workflow_id)
+		VALUES ($1, 'discovery', 'discovery-9101-1')
+	`, eventID)
+	if err != nil {
+		t.Fatalf("register downstream workflow: %v", err)
+	}
+	if ready, err := repo.FixtureReadyToComplete(ctx, 9101); err != nil || ready {
+		t.Errorf("terminal+downstream-in-flight ready = %v (err=%v), want false", ready, err)
+	}
+
+	// Mark the downstream workflow completed.
+	_, err = pool.Exec(ctx, `
+		UPDATE event_downstream_workflows SET completed_at = NOW(), outcome_class = 'success'
+		WHERE event_id = $1 AND workflow_id = 'discovery-9101-1'
+	`, eventID)
+	if err != nil {
+		t.Fatalf("complete downstream workflow: %v", err)
+	}
+	if ready, err := repo.FixtureReadyToComplete(ctx, 9101); err != nil || !ready {
+		t.Errorf("terminal+downstream-completed ready = %v (err=%v), want true", ready, err)
+	}
+}
+
+// TestFixtureRepo_FixtureReadyToComplete_NotFound
+func TestFixtureRepo_FixtureReadyToComplete_NotFound(t *testing.T) {
+	ctx, _, repo := setupRepo(t)
+	_, err := repo.FixtureReadyToComplete(ctx, 999_999)
+	if !errors.Is(err, fixture.ErrNotFound) {
+		t.Errorf("Ready for non-existent fixture returned %v, want ErrNotFound", err)
+	}
+}
+
 // PruneCompleted --------------------------------------------------
 
 // completedFixture inserts a fixture that traveled staging → active →

@@ -102,6 +102,29 @@ func (r *fakeFixtureRepo) PruneCompleted(context.Context, time.Time) (int, error
 	panic("fakeFixtureRepo.PruneCompleted: not implemented (test scope drift)")
 }
 
+// FixtureReadyToComplete — in-memory version of the completion check.
+// Mirrors the pg query semantics so completion tests see the same
+// truth-table shape as production.
+func (r *fakeFixtureRepo) FixtureReadyToComplete(_ context.Context, id int64) (bool, error) {
+	r.mu.Lock()
+	f, ok := r.data[id]
+	r.mu.Unlock()
+	if !ok {
+		return false, fixture.ErrNotFound
+	}
+	if !f.APIStatus.Terminal() {
+		return false, nil
+	}
+	if f.CompletionCounter < 3 && !f.HasDecidedWinner() {
+		return false, nil
+	}
+	// Fake has no events map — the completion check for events
+	// requires the fakeEventRepo. Callers that want event-level
+	// coverage should wire a joint check via a scenario-level fake.
+	// For unit tests here we treat "no events" as "all settled."
+	return true, nil
+}
+
 // fakeEventRepo — in-memory event.Repo that supports the symmetric
 // counter model. Tracks votes via a map keyed by (event_id,
 // workflow_id) for idempotency.
@@ -620,6 +643,86 @@ func TestReconcileFixture_ThreeCyclesTriggersDownstream(t *testing.T) {
 	}
 	if len(out3.EventsBecameStable) != 1 {
 		t.Errorf("cycle 3 EventsBecameStable = %v, want 1 event", out3.EventsBecameStable)
+	}
+}
+
+// TestReconcileFixture_TerminalWithWinner_Completes exercises the
+// full completion contract: fixture in active with FT status +
+// winner data → completion check passes → state transitions to
+// completed in the same reconcile pass. Fake repo's
+// FixtureReadyToComplete mirrors the pg query's truth table for the
+// no-events case; per-event completion checks land in the pg
+// integration tests.
+func TestReconcileFixture_TerminalWithWinner_Completes(t *testing.T) {
+	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	now := kickoff.Add(105 * time.Minute) // post-FT
+	fRepo := newFakeFixtureRepo()
+
+	// Fixture in active state, ready for completion via winner fast-path.
+	f := mkActiveFixture(999, kickoff)
+	trueBool := true
+	f.HomeWinner = &trueBool
+	_ = fRepo.Upsert(context.Background(), f)
+
+	// API response: FT status, no events.
+	apiFix := apifootball.APIFixture{
+		Fixture: apifootball.APIFixtureFixture{
+			ID:     999,
+			Status: apifootball.APIFixtureStatus{Short: "ft", Long: "Match Finished"},
+		},
+	}
+	acts := newActs(&fakeFetcher{}, fRepo, newFakeEventRepo(), now)
+	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{
+		APIFixture: apiFix, WorkflowID: "monitor-w1",
+	})
+	if err != nil {
+		t.Fatalf("ReconcileFixture: %v", err)
+	}
+	if !out.Completed {
+		t.Errorf("out.Completed = false, want true (winner fast-path)")
+	}
+	got, _ := fRepo.Get(context.Background(), 999)
+	if got.State != fixture.StateCompleted {
+		t.Errorf("state = %q, want completed", got.State)
+	}
+	if got.CompletedAt == nil {
+		t.Error("CompletedAt should be set after completion")
+	}
+}
+
+// TestReconcileFixture_TerminalCounterBelowThreshold_DoesNotComplete —
+// FT status but only 1 Terminal poll observed. Counter is 1, no winner.
+// Fixture should stay in active waiting for more Terminal polls.
+func TestReconcileFixture_TerminalCounterBelowThreshold_DoesNotComplete(t *testing.T) {
+	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	now := kickoff.Add(95 * time.Minute)
+	fRepo := newFakeFixtureRepo()
+	f := mkActiveFixture(888, kickoff)
+	// No winner data set — must debounce via counter.
+	_ = fRepo.Upsert(context.Background(), f)
+
+	apiFix := apifootball.APIFixture{
+		Fixture: apifootball.APIFixtureFixture{
+			ID:     888,
+			Status: apifootball.APIFixtureStatus{Short: "ft"},
+		},
+	}
+	acts := newActs(&fakeFetcher{}, fRepo, newFakeEventRepo(), now)
+	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{
+		APIFixture: apiFix, WorkflowID: "monitor-w1",
+	})
+	if err != nil {
+		t.Fatalf("ReconcileFixture: %v", err)
+	}
+	if out.Completed {
+		t.Errorf("out.Completed = true, want false (counter = 1, no winner)")
+	}
+	got, _ := fRepo.Get(context.Background(), 888)
+	if got.State != fixture.StateActive {
+		t.Errorf("state = %q, want active (still debouncing)", got.State)
+	}
+	if got.CompletionCounter != 1 {
+		t.Errorf("CompletionCounter = %d, want 1", got.CompletionCounter)
 	}
 }
 
