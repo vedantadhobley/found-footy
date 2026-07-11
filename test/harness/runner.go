@@ -68,8 +68,12 @@ func RunScenario(ctx context.Context, t *testing.T, pool *pg.Pool, mockAPI *Mock
 	switch s.Workflow {
 	case "IngestWorkflow":
 		runIngest(ctx, t, pool, afClient, s)
-	case "MonitorWorkflow":
-		runMonitor(ctx, t, pool, afClient, mockAPI, s)
+	case "ActivePollWorkflow", "MonitorWorkflow":
+		// Scenario name aliases — "MonitorWorkflow" kept for legacy
+		// scenario YAMLs authored before the 2026-07-10 split. Both
+		// route to ActivePollWorkflow (the scenarios exercise event
+		// debounce, which lives in the active path).
+		runActivePoll(ctx, t, pool, afClient, mockAPI, s)
 	default:
 		t.Fatalf("harness.RunScenario: unknown workflow %q", s.Workflow)
 	}
@@ -78,15 +82,15 @@ func RunScenario(ctx context.Context, t *testing.T, pool *pg.Pool, mockAPI *Mock
 	AssertFinalState(ctx, t, pool, s.ExpectedFinalState)
 }
 
-// runMonitor iterates the scenario's cycles, executing MonitorWorkflow
+// runActivePoll iterates the scenario's cycles, executing ActivePollWorkflow
 // once per cycle. The activity clock closure captures a mutable
 // currentCycleTime — advanced between cycles without recreating the
 // Activities struct. Each cycle uses a fresh testsuite env because
 // each env's ExecuteWorkflow is single-use.
-func runMonitor(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apifootball.Client, mockAPI *MockAPI, s *Scenario) {
+func runActivePoll(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apifootball.Client, mockAPI *MockAPI, s *Scenario) {
 	t.Helper()
 	if len(s.Cycles) == 0 {
-		t.Fatal("harness.runMonitor: scenario declares workflow=MonitorWorkflow but no cycles")
+		t.Fatal("harness.runActivePoll: scenario declares an active-poll workflow but no cycles")
 	}
 
 	// Shared clock — mutated between cycles; closure reads it.
@@ -94,16 +98,15 @@ func runMonitor(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apif
 	// this cheap: we're setting a field production leaves nil.
 	var currentCycleTime time.Time
 	acts := &monitor.Activities{
-		APIFootball:         afClient,
-		FixtureRepo:         pg.NewFixtureRepo(pool),
-		EventRepo:           pg.NewEventRepo(pool),
-		ActivationWindow:    30 * time.Minute,
-		StagingPollInterval: 15 * time.Minute,
-		Now:                 func() time.Time { return currentCycleTime.UTC() },
+		APIFootball:      afClient,
+		FixtureRepo:      pg.NewFixtureRepo(pool),
+		EventRepo:        pg.NewEventRepo(pool),
+		ActivationWindow: 5 * time.Minute,
+		Now:              func() time.Time { return currentCycleTime.UTC() },
 	}
 
 	// Translate scenario input → workflow input.
-	in := ffwf.MonitorWorkflowInput{}
+	in := ffwf.ActivePollWorkflowInput{}
 	if s.MonitorInput != nil {
 		in.ActivationWindow = s.MonitorInput.ActivationWindow
 	}
@@ -141,18 +144,18 @@ func runMonitor(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apif
 		// if all cycles used testsuite's default "default-test-workflow-id"
 		// they'd count as ONE voter and count would stay at 1.
 		env.SetStartWorkflowOptions(client.StartWorkflowOptions{
-			ID:        fmt.Sprintf("monitor-cycle-%d-%s", i, cycle.T.Format("20060102T150405Z")),
+			ID:        fmt.Sprintf("active-poll-cycle-%d-%s", i, cycle.T.Format("20060102T150405Z")),
 			TaskQueue: "found-footy",
 		})
-		env.RegisterWorkflow(ffwf.MonitorWorkflow)
+		env.RegisterWorkflow(ffwf.ActivePollWorkflow)
 		env.RegisterActivity(acts)
 
-		env.ExecuteWorkflow(ffwf.MonitorWorkflow, in)
+		env.ExecuteWorkflow(ffwf.ActivePollWorkflow, in)
 		if !env.IsWorkflowCompleted() {
-			t.Fatalf("cycle %d (t=%s) MonitorWorkflow did not complete", i, cycle.T)
+			t.Fatalf("cycle %d (t=%s) ActivePollWorkflow did not complete", i, cycle.T)
 		}
 		if err := env.GetWorkflowError(); err != nil {
-			t.Fatalf("cycle %d (t=%s) MonitorWorkflow error: %v", i, cycle.T, err)
+			t.Fatalf("cycle %d (t=%s) ActivePollWorkflow error: %v", i, cycle.T, err)
 		}
 	}
 }
@@ -172,7 +175,7 @@ func runIngest(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apifo
 		TrackedLeagueIDs:      []int{39, 140, 78, 135, 61, 1},
 		TopFlightCacheHours:   24,
 		FetchWindowFutureDays: 7,
-		ActivationWindow:      30 * time.Minute,
+		ActivationWindow:      5 * time.Minute,
 		RetentionDays:         14,
 		Now: func() time.Time {
 			if s.IngestInput != nil && s.IngestInput.ManualDate != nil {

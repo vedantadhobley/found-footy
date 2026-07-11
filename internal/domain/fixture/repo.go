@@ -40,8 +40,9 @@ type Repo interface {
 	ListActiveIDs(ctx context.Context) ([]int64, error)
 
 	// ListStagingBeforeKickoff returns staging fixtures whose kickoff
-	// is before threshold. The monitor loop pre-activates the returned
-	// fixtures within a lookahead window (default 30 min).
+	// is before threshold. ActivePollWorkflow's PreActivateUpcoming
+	// step pre-activates the returned fixtures within a lookahead
+	// window (default 30 min).
 	ListStagingBeforeKickoff(ctx context.Context, threshold time.Time) ([]*Fixture, error)
 
 	// PruneCompleted deletes completed fixtures older than threshold

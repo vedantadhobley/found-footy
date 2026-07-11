@@ -23,14 +23,29 @@ own docstring, no surprises.
 
 ### P0 — blocks O2 completion (Monitor gaps only)
 
-1. **15-min staging poll** — designed 2026-07-07, config landed 2026-07-09,
-   behavior NOT SHIPPED. Currently staging fixtures get no API poll until
-   pre-activation. Postponements + kickoff changes on staging fixtures
-   go undetected (the exact bug that surfaced in Python's 2026-07-05
-   Mexico vs England postponement). Monitor's own docstring calls this
-   out.
-   - Files: [`internal/activity/monitor/activities.go`](../../../internal/activity/monitor/activities.go) `PreActivateUpcoming` (line ~113) has DB-only logic; needs sibling `PollStagingFixtures` activity that runs on 15-min aligned boundaries.
-   - Est. scope: ~150 lines + tests, ~1 commit.
+1. **15-min staging poll** — ✅ **SHIPPED 2026-07-11.** After a first
+   attempt with bucket-suppression inside the single MonitorWorkflow
+   (2026-07-10, reverted same day), the design pivoted to a
+   two-workflow split — see decisions.md 2026-07-11 workflow-split
+   entry. Final shape:
+   - `StagingPollWorkflow` — new workflow on Temporal Schedule
+     `staging-poll-scheduled`, default cron `*/15 * * * *`. Runtime-
+     tunable via `temporal schedule update`. Fires
+     `PollStagingFixtures` activity which polls ALL staging fixtures
+     (no bucket math — the schedule owns cadence). Reconciles
+     vendor edge cases: kickoff-corrected activation (Path 3a) and
+     Live()-emergency activation (Path 3b).
+   - `ActivePollWorkflow` (renamed from MonitorWorkflow) — every 30s
+     via IntervalSpec. Owns the standard activation path
+     (`ActivateUpcoming`, DB-only, renamed from `PreActivateUpcoming`)
+     + the active-fixture reconcile chain.
+   - Config: `StagingPollInterval` + `ActivationMultiplier` deleted,
+     `StagingPollCron` added, `ActivationWindow` becomes direct field
+     with default tightened to 5m.
+   - Bundled emergency activation (P1 #4 below) into `PollStagingFixtures`.
+   - Ships with 6 activity unit tests + 3 workflow tests per workflow
+     + updated integration test harness.
+   See `orchestration.md` for the as-shipped ledger.
 
 2. **Fixture completion detection** — no code marks fixtures `completed`.
    Fixtures stay in `active` state forever. Python's `complete_fixture_if_ready`
@@ -55,13 +70,11 @@ own docstring, no surprises.
 
 ### P1 — worth doing sooner rather than later
 
-4. **Emergency activation on APIStatus.Live()** — decisions.md 2026-07-07
-   activation triggers §3: if a staging fixture's API response comes back
-   showing `Live()`, promote immediately (already-live case where ingest
-   had the wrong kickoff or the vendor published a corrected one). Python
-   has this (`activities/monitor.py:243-251`). Go doesn't.
-   - Only observable after #1 (staging poll) ships. Cheap to add at the
-     same time.
+4. **Emergency activation on APIStatus.Live()** — ✅ **SHIPPED 2026-07-10**
+   as part of #1 above. `PollStagingFixtures` calls `f.Activate(now)`
+   when the API response's `APIStatus.Live()` returns true, folding
+   the emergency count into `MonitorWorkflowOutput.StagingActivated`
+   alongside PreActivateUpcoming's DB-driven activations.
 
 5. **Tournament coverage requires config edits** — Go filters fixtures
    by tracked team IDs, and tracked teams come from `/teams?league=X`
@@ -128,17 +141,18 @@ own docstring, no surprises.
 | Category | Ingest | Monitor | Total |
 |---|---|---|---|
 | MISMATCH (real bugs) | 0 | 0 | **0** |
-| GAP — blocking | 0 | 3 | 3 |
-| GAP — worth doing | 2 | 1 | 3 |
+| GAP — blocking | 0 | 2 | 2 |
+| GAP — worth doing | 2 | 0 | 2 |
 | GAP — polish | 3 | 0 | 3 |
+| GAP — SHIPPED (2026-07-10) | 0 | 2 | 2 |
 | SAFE_DIVERGENCE (Go improvement) | 5 | 3 | 8 |
 | MATCH | 3 | 4 | 7 |
 
 **Ingest**: essentially done. Zero blockers, three documented follow-ups.
 
-**Monitor**: three known deferrals (staging poll, completion, NATS
-emissions) block O2 completion. All flagged in monitor.go's own
-docstring. No surprises.
+**Monitor**: 2026-07-10 shipped the staging poll + emergency
+activation. Two blockers remain (fixture completion, NATS emissions);
+partial completion is the next commit.
 
 ---
 
@@ -201,10 +215,13 @@ chunking + partial-failure `FailedIDs`. Per-fixture parallel
 reconcile via `workflow.ExecuteActivity` loop + Future.Get. Same
 outcome as Python's `asyncio.gather`.
 
-**Pre-activation** (partial GAP): DB-only `PreActivateUpcoming`
-implemented. Emergency activation on `APIStatus.Live()` NOT implemented.
+**Pre-activation** (✅ COMPLETE 2026-07-10): DB-only `PreActivateUpcoming`
+implemented earlier. Emergency activation on `APIStatus.Live()` now
+shipped as part of `PollStagingFixtures`.
 
-**15-min staging poll** (BLOCKING GAP): Designed, configured, not shipped.
+**15-min staging poll** (✅ SHIPPED 2026-07-10): `PollStagingFixtures`
+activity + `FixtureRepo.ListStagingForBucketPoll` pg query. Same-
+bucket cycles short-circuit at the DB layer.
 
 **Event debounce** (SAFE_DIVERGENCE): Symmetric counter is defensible
 improvement over Python's asymmetric model. Both detect NEW /
@@ -233,19 +250,25 @@ not yet consumed (staging poll not shipped).
 
 ## What to do next
 
-The user should decide priorities. Suggested sequence:
+Updated after 2026-07-10 staging-poll ship:
 
-1. **Ship the 15-min staging poll** (punch list #1). Config is already
-   there, activity + workflow step is ~150 lines. Standalone — doesn't
-   depend on O3.
-2. **Add emergency activation** (punch list #4). ~10 lines added to
-   `PreActivateUpcoming` after #1 lands.
-3. **Design conversation on national-team coverage** (punch list #5).
+1. ~~Ship the 15-min staging poll~~ ✅ SHIPPED 2026-07-10.
+2. ~~Emergency activation~~ ✅ SHIPPED 2026-07-10 (bundled with #1).
+3. **Ship partial fixture completion** (punch list #2 partial). Mark
+   fixtures completed when API status is Terminal AND all non-removed
+   events have `downstream_triggered = true` (monitor's finished with
+   them). Add a 3-poll completion counter. Strengthen later with
+   `download_complete = true` per-event gate when O4 lands. ~100 lines,
+   unblocks retention prune (which today never fires because fixtures
+   never leave active state).
+4. **Design conversation on national-team coverage** (punch list #5).
    User-flagged as an open design item; decide static-vs-dynamic
    before shipping.
-4. **Kick off O3** — NATS emissions + Discovery spawn (punch list #3).
-   Bigger phase; separate planning conversation warranted.
-5. **Polish items** (#7-#9) — batch commit when convenient.
+5. **Kick off O3** — NATS emissions + Discovery spawn (punch list #3).
+   Bigger phase. `discovery.md` proposal has 4 open questions awaiting
+   sign-off before O3/a starts.
+6. **Polish items** (#7-#9) — batch commit when convenient.
 
 Ingest is done enough to leave alone until we start using it in
-anger. Monitor's blockers are the load-bearing ones now.
+anger. Monitor's remaining blockers are fixture completion (partial
+now, full needs O4) and NATS event emission (O3 kickoff).

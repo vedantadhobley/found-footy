@@ -93,3 +93,26 @@ func (f *Fixture) UpdateFromPoll(status APIStatus, elapsed, extra *int, homeScor
 	f.LastActivityAt = &utc
 	f.UpdatedAt = utc
 }
+
+// RecordStagingPoll captures the result of a passive API poll on a
+// staging fixture that did NOT result in a state transition. Refreshes
+// APIStatus, Kickoff (vendor sometimes publishes corrected kickoff
+// times), and LastPolledAt.
+//
+// LastActivityAt is intentionally NOT set — a passive poll doesn't
+// count as "activity" for frontend-sort purposes; only Activate/
+// Complete set that field. Matches Python's semantics from
+// archive/src/activities/monitor.py where `_last_activity` is only
+// touched on NS/TBD → live transitions, not on plain staging polls.
+//
+// Callers: monitor.PollStagingFixtures activity, when the API poll
+// returns a non-Live status AND the kickoff isn't in the activation
+// window. If either of those triggers activation, call Activate
+// instead (it sets LastActivityAt correctly).
+func (f *Fixture) RecordStagingPoll(status APIStatus, kickoff time.Time, at time.Time) {
+	utc := at.UTC()
+	f.APIStatus = status
+	f.Kickoff = kickoff.UTC()
+	f.LastPolledAt = &utc
+	f.UpdatedAt = utc
+}
