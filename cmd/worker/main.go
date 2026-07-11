@@ -141,24 +141,24 @@ func main() {
 			TrackedLeagueIDs:      deps.Cfg.APIFootball.TrackedLeagueIDs,
 			TopFlightCacheHours:   deps.Cfg.APIFootball.TopFlightCacheHours,
 			FetchWindowFutureDays: deps.Cfg.APIFootball.FetchWindowFutureDays,
-			ActivationWindow:      deps.Cfg.Workflows.ActivationWindow(),
+			ActivationWindow:      deps.Cfg.Workflows.ActivationWindow,
 			RetentionDays:         deps.Cfg.Workflows.RetentionDays,
 		}
 		w.RegisterWorkflow(ffwf.IngestWorkflow)
 		w.RegisterActivity(ingestActs)
 
-		// Phase O2c — MonitorWorkflow + its four activities.
+		// Phase O2 — the two poll workflows share one activities struct.
 		// Shares fixtureRepo + eventRepo with the rest of the worker.
 		// Now clock left nil → real wall clock in prod (per the
 		// injectable-clock discipline for scenario testing).
 		monitorActs := &monitoractivity.Activities{
-			APIFootball:         afClient,
-			FixtureRepo:         fixtureRepo,
-			EventRepo:           eventRepo,
-			ActivationWindow:    deps.Cfg.Workflows.ActivationWindow(),
-			StagingPollInterval: deps.Cfg.Workflows.StagingPollInterval,
+			APIFootball:      afClient,
+			FixtureRepo:      fixtureRepo,
+			EventRepo:        eventRepo,
+			ActivationWindow: deps.Cfg.Workflows.ActivationWindow,
 		}
-		w.RegisterWorkflow(ffwf.MonitorWorkflow)
+		w.RegisterWorkflow(ffwf.ActivePollWorkflow)
+		w.RegisterWorkflow(ffwf.StagingPollWorkflow)
 		w.RegisterActivity(monitorActs)
 
 		if err := w.Start(ctx); err != nil {
@@ -180,11 +180,14 @@ func main() {
 			return err
 		}
 
-		// Phase O2c — register the 30-second MonitorWorkflow schedule.
-		// Same idempotent shape. Every-30s means the schedule spec uses
-		// an INTERVAL, not a cron expression (cron doesn't support
-		// sub-minute resolution).
-		if err := ensureMonitorSchedule(ctx, tempClient, deps); err != nil {
+		// Phase O2 — register the two poll workflow schedules. Both
+		// idempotent (ErrScheduleAlreadyRunning → success). Independent
+		// Temporal Schedules so ops can `temporal schedule update`
+		// either cadence at runtime without a redeploy.
+		if err := ensureActivePollSchedule(ctx, tempClient, deps); err != nil {
+			return err
+		}
+		if err := ensureStagingPollSchedule(ctx, tempClient, deps); err != nil {
 			return err
 		}
 
@@ -244,19 +247,20 @@ func ensureIngestSchedule(ctx context.Context, tempClient *temporal.Client, deps
 	return nil
 }
 
-// ensureMonitorSchedule registers the MonitorWorkflow Temporal
+// ensureActivePollSchedule registers the ActivePollWorkflow Temporal
 // Schedule if it doesn't exist. Uses an interval spec (cron doesn't
-// support sub-minute resolution). Overlap SKIP: if the prior cycle
-// is still running when the next tick fires, we skip — better than
+// support sub-minute resolution). Overlap SKIP: if the prior cycle is
+// still running when the next tick fires, we skip — better than
 // double-fanning-out reconcile activities.
 //
-// Interval is sourced from config.Workflows.ActiveFixturePollInterval
-// (default 30s). Note: the schedule ID is intentionally NOT interval-
-// dependent — if you change the interval, the existing schedule keeps
-// running under its old settings until you delete + recreate it. That's
-// intentional (schedule config lives in Temporal state, not code).
-func ensureMonitorSchedule(ctx context.Context, tempClient *temporal.Client, deps *bootstrap.Deps) error {
-	const scheduleID = "monitor-scheduled-30s"
+// Interval sourced from config.Workflows.ActiveFixturePollInterval
+// (default 30s). The schedule ID is intentionally NOT interval-
+// dependent — if config changes, the existing schedule keeps running
+// under its Temporal-state settings until an operator deletes + recreates
+// or runs `temporal schedule update`. That's intentional (schedule
+// config lives in Temporal state, not code).
+func ensureActivePollSchedule(ctx context.Context, tempClient *temporal.Client, deps *bootstrap.Deps) error {
+	const scheduleID = "active-poll-scheduled"
 
 	_, err := tempClient.ScheduleClient().Create(ctx, client.ScheduleOptions{
 		ID: scheduleID,
@@ -266,10 +270,10 @@ func ensureMonitorSchedule(ctx context.Context, tempClient *temporal.Client, dep
 			},
 		},
 		Action: &client.ScheduleWorkflowAction{
-			ID:        "monitor-scheduled",
-			Workflow:  ffwf.MonitorWorkflow,
+			ID:        "active-poll-scheduled",
+			Workflow:  ffwf.ActivePollWorkflow,
 			TaskQueue: tempClient.TaskQueue(),
-			Args:      []any{ffwf.MonitorWorkflowInput{}},
+			Args:      []any{ffwf.ActivePollWorkflowInput{}},
 		},
 		Overlap: enums.SCHEDULE_OVERLAP_POLICY_SKIP,
 	})
@@ -277,24 +281,71 @@ func ensureMonitorSchedule(ctx context.Context, tempClient *temporal.Client, dep
 		if errors.Is(err, sdktemporal.ErrScheduleAlreadyRunning) {
 			deps.Log.Emit(ctx, logging.LevelInfo,
 				vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleAlreadyExists,
-				"MonitorWorkflow schedule already registered",
+				"ActivePollWorkflow schedule already registered",
 				logging.String("schedule_id", scheduleID),
 			)
 			return nil
 		}
 		deps.Log.Emit(ctx, logging.LevelError,
 			vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleFailed,
-			"failed to create MonitorWorkflow schedule",
+			"failed to create ActivePollWorkflow schedule",
 			logging.String("schedule_id", scheduleID),
 			logging.Err(err),
 		)
-		return fmt.Errorf("create monitor schedule: %w", err)
+		return fmt.Errorf("create active-poll schedule: %w", err)
 	}
 	deps.Log.Emit(ctx, logging.LevelInfo,
 		vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleCreated,
-		"MonitorWorkflow schedule registered",
+		"ActivePollWorkflow schedule registered",
 		logging.String("schedule_id", scheduleID),
-		logging.String("interval", "30s"),
+		logging.String("interval", deps.Cfg.Workflows.ActiveFixturePollInterval.String()),
+	)
+	return nil
+}
+
+// ensureStagingPollSchedule registers the StagingPollWorkflow Temporal
+// Schedule if it doesn't exist. Cron-driven (default `*/15 * * * *`).
+// Tunable at runtime via `temporal schedule update
+// staging-poll-scheduled --cron ...`.
+func ensureStagingPollSchedule(ctx context.Context, tempClient *temporal.Client, deps *bootstrap.Deps) error {
+	const scheduleID = "staging-poll-scheduled"
+	cronExpr := deps.Cfg.Workflows.StagingPollCron
+
+	_, err := tempClient.ScheduleClient().Create(ctx, client.ScheduleOptions{
+		ID: scheduleID,
+		Spec: client.ScheduleSpec{
+			CronExpressions: []string{cronExpr},
+		},
+		Action: &client.ScheduleWorkflowAction{
+			ID:        "staging-poll-scheduled",
+			Workflow:  ffwf.StagingPollWorkflow,
+			TaskQueue: tempClient.TaskQueue(),
+			Args:      []any{ffwf.StagingPollWorkflowInput{}},
+		},
+		Overlap: enums.SCHEDULE_OVERLAP_POLICY_SKIP,
+	})
+	if err != nil {
+		if errors.Is(err, sdktemporal.ErrScheduleAlreadyRunning) {
+			deps.Log.Emit(ctx, logging.LevelInfo,
+				vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleAlreadyExists,
+				"StagingPollWorkflow schedule already registered",
+				logging.String("schedule_id", scheduleID),
+			)
+			return nil
+		}
+		deps.Log.Emit(ctx, logging.LevelError,
+			vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleFailed,
+			"failed to create StagingPollWorkflow schedule",
+			logging.String("schedule_id", scheduleID),
+			logging.Err(err),
+		)
+		return fmt.Errorf("create staging-poll schedule: %w", err)
+	}
+	deps.Log.Emit(ctx, logging.LevelInfo,
+		vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleCreated,
+		"StagingPollWorkflow schedule registered",
+		logging.String("schedule_id", scheduleID),
+		logging.String("cron", cronExpr),
 	)
 	return nil
 }

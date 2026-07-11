@@ -13,15 +13,26 @@ is the intent.
 **Update rule.** Every workflow/activity commit updates this doc in
 the same commit. Per the [2026-07-07 working rule](../decisions.md).
 
-## Workflow inventory (2026-07-09, end of Phase O2 + pause fix)
+## Workflow inventory (2026-07-11, end of Phase O2 + workflow split)
 
 | Workflow | Status | Trigger | Location |
 |---|---|---|---|
-| IngestWorkflow | ✓ O1c shipped + O1e scheduled daily 00:05 UTC | Temporal Schedule | `internal/workflow/ingest.go` |
-| MonitorWorkflow | ✓ O2c shipped + scheduled + pause-fix (2026-07-09) | Every 30s via Temporal Schedule | `internal/workflow/monitor.go` |
+| IngestWorkflow | ✓ O1c shipped + O1e scheduled daily 00:05 UTC | Temporal Schedule `ingest-scheduled-daily` (`5 0 * * *`) | `internal/workflow/ingest.go` |
+| ActivePollWorkflow | ✓ O2 shipped + scheduled 2026-07-11 | Temporal Schedule `active-poll-scheduled` (IntervalSpec 30s) | `internal/workflow/active_poll.go` |
+| StagingPollWorkflow | ✓ O2 shipped 2026-07-11 | Temporal Schedule `staging-poll-scheduled` (cron `*/15 * * * *`, runtime-tunable) | `internal/workflow/staging_poll.go` |
 | DiscoveryWorkflow | ⊘ O3 planned | NATS `event.stable` subscriber | — |
 | VideoValidationWorkflow | ⊘ O4 planned | Child of Discovery | — |
 | AssetPersistenceWorkflow | ⊘ O5 planned | SignalWithStart from Validation | — |
+
+**Note on the ActivePoll + StagingPoll split** (2026-07-11): plan §5 W2
+speced a single `MonitorWorkflow` combining active + staging polling
+via bucket-suppression. During implementation the bucket math emerged
+as a workaround for cramming two cadences into one workflow. Split
+into two workflows on independent Temporal Schedules — see
+[`../decisions.md` 2026-07-11 workflow-split entry](../decisions.md)
+for the full reasoning (failure isolation, runtime tunability, config
+honesty). `PreActivateUpcoming` renamed to `ActivateUpcoming` at the
+same time — the "Pre" prefix was misleading.
 
 ## IngestWorkflow — as shipped
 

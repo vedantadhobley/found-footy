@@ -1,14 +1,23 @@
-// monitor.go — the 30-second MonitorWorkflow. Fires per cycle via
-// Temporal Schedule (registered in cmd/worker/main.go). Orchestrates
-// four activities in internal/activity/monitor:
-//   1. PreActivateUpcoming — staging fixtures with imminent kickoff
-//      get promoted to active before we poll.
-//   2. ListActiveFixtureIDs — cheap ID pull for the batched API call.
+// active_poll.go — the 30-second ActivePollWorkflow. Fires per cycle
+// via Temporal Schedule (registered in cmd/worker/main.go). Handles
+// the active-fixture hot path — everything that has to happen fast
+// enough to catch live match events. Staging-fixture polling lives in
+// a separate workflow (StagingPollWorkflow) on a slower cadence, so
+// this one stays lean.
+//
+// Steps (all in internal/activity/monitor):
+//   1. ActivateUpcoming — DB-only. Staging fixtures with STORED
+//      kickoff inside the activation window (default 5 min) get
+//      promoted to active. Runs here at 30s cadence for failure
+//      isolation: activation is P0 and inherits the resilient hot-path
+//      cadence rather than being tied to the slower StagingPoll.
+//   2. ListActiveFixtureIDs — cheap ID pull. Includes anything step
+//      1 just activated.
 //   3. FetchLiveFixtures — one activity call regardless of ID count;
 //      the apifootball client chunks internally at IDsBatchLimit and
 //      fires per-chunk HTTP calls in parallel via goroutines. Partial
-//      failures surface as FailedIDs — Monitor logs them and lets the
-//      next 30s cycle naturally re-request (the poll IS the retry).
+//      failures surface as FailedIDs — we log them and let the next
+//      30s cycle naturally re-request (the poll IS the retry).
 //   4. ReconcileFixture — per fixture, refresh row + diff events +
 //      vote presence/absence. Concurrent across fixtures via
 //      workflow.ExecuteActivity in a loop (dispatched in parallel;
@@ -20,7 +29,11 @@
 //   • Destroy pipeline (Temporal cancel + video_shares soft-delete)
 //     for removed events (currently just logged via EventsRemoved).
 //   • Fixture completion transition (needs Discovery to define
-//     "fully done").
+//     "fully done"). Partial completion (Terminal-status only)
+//     shipping in a follow-up commit.
+//
+// See decisions.md 2026-07-10 workflow-split entry for the rationale
+// behind splitting Monitor into ActivePoll + StagingPoll.
 package workflow
 
 import (
@@ -33,24 +46,29 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/activity/monitor"
 )
 
-// MonitorWorkflowInput carries per-cycle overrides. All fields
+// ActivePollWorkflowInput carries per-cycle overrides. All fields
 // optional; zero defaults match the scheduled invocation.
-type MonitorWorkflowInput struct {
+type ActivePollWorkflowInput struct {
 	// ActivationWindow — staging fixtures with kickoff within this
-	// window get pre-activated. Zero → 30 minutes.
+	// window get activated by step 1. Zero → read from config
+	// (default 5 min per WORKFLOWS_ACTIVATION_WINDOW).
 	ActivationWindow time.Duration
 }
 
-// MonitorWorkflowOutput carries counts + surfaced errors for the
+// ActivePollWorkflowOutput carries counts + surfaced errors for the
 // cycle. The schedule doesn't consume this; the Temporal UI + log
 // aggregation do.
-type MonitorWorkflowOutput struct {
-	StagingActivated   int
+type ActivePollWorkflowOutput struct {
+	// Activated — number of fixtures promoted from staging to active
+	// by step 1's DB check this cycle.
+	Activated int
+	// ActiveFixtureCount — total active fixtures polled this cycle
+	// (includes anything Activated flipped just now).
 	ActiveFixtureCount int
 	FetchedCount       int
-	// MissedIDs — IDs the client-side chunk fetch didn't get back
-	// this cycle. Not retried in-workflow; the next 30s poll picks
-	// them up naturally. Surfaced for observability.
+	// MissedIDs — IDs the client-side chunk fetch didn't get back this
+	// cycle. Not retried in-workflow; the next 30s poll picks them up
+	// naturally. Surfaced for observability.
 	MissedIDs          int
 	NewEvents          int
 	EventsBecameStable []string
@@ -58,11 +76,11 @@ type MonitorWorkflowOutput struct {
 	Errors             []string
 }
 
-// MonitorWorkflow — the coordinator. Called every 30s by the
-// Temporal Schedule.
-func MonitorWorkflow(ctx workflow.Context, in MonitorWorkflowInput) (MonitorWorkflowOutput, error) {
+// ActivePollWorkflow — the coordinator for the 30s hot path. Called
+// by the Temporal Schedule `active-poll-scheduled`.
+func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (ActivePollWorkflowOutput, error) {
 	logger := workflow.GetLogger(ctx)
-	out := MonitorWorkflowOutput{}
+	out := ActivePollWorkflowOutput{}
 
 	// Default activity options — individual steps may override.
 	baseAO := workflow.ActivityOptions{
@@ -77,9 +95,8 @@ func MonitorWorkflow(ctx workflow.Context, in MonitorWorkflowInput) (MonitorWork
 	ctx = workflow.WithActivityOptions(ctx, baseAO)
 
 	// Resolve activation window: caller override wins, else read from
-	// config via GetMonitorConfig activity (workflows can't touch env
-	// directly per Temporal determinism). Same 30-min value that
-	// IngestWorkflow uses; both sourced from config.Workflows.
+	// config via GetMonitorConfig (workflows can't touch env directly
+	// per Temporal determinism).
 	activationWindow := in.ActivationWindow
 	if activationWindow == 0 {
 		var cfgOut monitor.GetMonitorConfigOutput
@@ -93,19 +110,22 @@ func MonitorWorkflow(ctx workflow.Context, in MonitorWorkflowInput) (MonitorWork
 	}
 
 	workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
-	logger.Info("MonitorWorkflow cycle started", "workflow_id", workflowID)
+	logger.Info("ActivePollWorkflow cycle started", "workflow_id", workflowID)
 
-	// ── Step 1: PreActivateUpcoming ──
-	var preActivateOut monitor.PreActivateUpcomingOutput
-	if err := workflow.ExecuteActivity(ctx, "PreActivateUpcoming",
-		monitor.PreActivateUpcomingInput{Lookahead: activationWindow},
-	).Get(ctx, &preActivateOut); err != nil {
+	// ── Step 1: ActivateUpcoming ──
+	// DB-only kickoff-window check. Cheap. Owns the standard activation
+	// path (Path 2) — see decisions.md 2026-07-10 workflow-split entry
+	// for why activation lives in the fast-cadence workflow.
+	var activateOut monitor.ActivateUpcomingOutput
+	if err := workflow.ExecuteActivity(ctx, "ActivateUpcoming",
+		monitor.ActivateUpcomingInput{Lookahead: activationWindow},
+	).Get(ctx, &activateOut); err != nil {
 		// Not fatal — log and continue to the active-fixtures path.
-		logger.Warn("PreActivateUpcoming failed; continuing", "error", err)
-		out.Errors = append(out.Errors, "PreActivateUpcoming: "+err.Error())
+		logger.Warn("ActivateUpcoming failed; continuing", "error", err)
+		out.Errors = append(out.Errors, "ActivateUpcoming: "+err.Error())
 	}
-	out.StagingActivated = preActivateOut.Activated
-	out.Errors = append(out.Errors, preActivateOut.Errors...)
+	out.Activated = activateOut.Activated
+	out.Errors = append(out.Errors, activateOut.Errors...)
 
 	// ── Step 2: ListActiveFixtureIDs ──
 	var listOut monitor.ListActiveFixtureIDsOutput
@@ -115,7 +135,7 @@ func MonitorWorkflow(ctx workflow.Context, in MonitorWorkflowInput) (MonitorWork
 	out.ActiveFixtureCount = len(listOut.IDs)
 
 	if len(listOut.IDs) == 0 {
-		logger.Info("MonitorWorkflow: no active fixtures", "staging_activated", out.StagingActivated)
+		logger.Info("ActivePollWorkflow: no active fixtures", "activated", out.Activated)
 		return out, nil
 	}
 
@@ -142,7 +162,7 @@ func MonitorWorkflow(ctx workflow.Context, in MonitorWorkflowInput) (MonitorWork
 	}
 
 	if len(fetchOut.Fixtures) == 0 {
-		logger.Warn("MonitorWorkflow: fetched zero fixtures despite active IDs",
+		logger.Warn("ActivePollWorkflow: fetched zero fixtures despite active IDs",
 			"active_ids_count", out.ActiveFixtureCount,
 			"missed_ids", out.MissedIDs)
 		return out, nil
@@ -177,7 +197,8 @@ func MonitorWorkflow(ctx workflow.Context, in MonitorWorkflowInput) (MonitorWork
 		out.Errors = append(out.Errors, reconcileOut.Errors...)
 	}
 
-	logger.Info("MonitorWorkflow cycle complete",
+	logger.Info("ActivePollWorkflow cycle complete",
+		"activated", out.Activated,
 		"active", out.ActiveFixtureCount,
 		"fetched", out.FetchedCount,
 		"missed", out.MissedIDs,
@@ -188,4 +209,3 @@ func MonitorWorkflow(ctx workflow.Context, in MonitorWorkflowInput) (MonitorWork
 	)
 	return out, nil
 }
-

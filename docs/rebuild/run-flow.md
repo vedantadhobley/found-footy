@@ -31,24 +31,25 @@ when they land.
         └───┬────────────────────┬──────────────────────────────┘
             │                    │
             ▼                    ▼
-   ┌────────────────┐   ┌──────────────────────────────────────┐
-   │ IngestWorkflow │   │ MonitorWorkflow                      │
-   │ (00:05 UTC     │   │ (every 30s, schedule interval)       │
-   │  daily)        │   │                                      │
-   │ • refresh      │   │ • PreActivateUpcoming (DB-only)      │
-   │   tracked      │   │ • ListActiveFixtureIDs                │
-   │   teams        │   │ • FetchLiveFixtures (batch by IDs)   │
-   │ • fetch        │   │ • ReconcileFixture (per-fixture,      │
-   │   fixtures     │   │   parallel across active set)         │
-   │   per-day      │   │                                      │
-   │ • categorize   │   │ [GAP] 15-min staging poll             │
-   │ • ensure       │   │ [GAP] Fixture completion detection    │
-   │   aliases      │   │ [GAP] Semantic-event NATS emission    │
-   │ • prune        │   │                                      │
-   └───────┬────────┘   └──────────────┬───────────────────────┘
-           │                           │
-           └───────────┬───────────────┘
-                       ▼
+   ┌────────────────┐   ┌────────────────────┐   ┌────────────────────┐
+   │ IngestWorkflow │   │ ActivePollWorkflow │   │ StagingPollWorkflow│
+   │ (00:05 UTC     │   │ (every 30s)        │   │ (every 15m cron)   │
+   │  daily)        │   │                    │   │                    │
+   │ • refresh      │   │ • ActivateUpcoming │   │ • PollStagingFixtures
+   │   tracked      │   │   (DB-only)        │   │   (API, vendor     │
+   │   teams        │   │ • ListActive       │   │    edge cases)     │
+   │ • fetch        │   │ • FetchLive        │   │                    │
+   │   fixtures     │   │   (batch by IDs)   │   │ [GAP] Semantic     │
+   │   per-day      │   │ • Reconcile        │   │   NATS emission    │
+   │ • categorize   │   │   (per-fixture,    │   │                    │
+   │ • ensure       │   │   parallel)        │   │                    │
+   │   aliases      │   │                    │   │                    │
+   │ • prune        │   │ [GAP] Completion   │   │                    │
+   └───────┬────────┘   │ [GAP] NATS emit    │   │                    │
+           │            └──────────┬─────────┘   └──────────┬─────────┘
+           │                       │                        │
+           └───────────────────────┼────────────────────────┘
+                                   ▼
       ┌────────────────────────────────────────────────┐
       │  Postgres (17)                                 │
       │  • fixtures (state, kickoff, status, ...)      │
@@ -60,12 +61,22 @@ when they land.
       └────────────────────────────────────────────────┘
 ```
 
-Two Temporal Schedules drive the whole thing:
+Three Temporal Schedules drive the whole thing:
 
 | Schedule ID | Cron / Interval | Workflow | Overlap policy |
 |---|---|---|---|
-| `ingest-scheduled-daily` | `5 0 * * *` (00:05 UTC) | `IngestWorkflow` (`FetchFuture=true`) | default |
-| `monitor-scheduled-30s` | every `WORKFLOWS_ACTIVE_FIXTURE_POLL_INTERVAL` (default 30s) | `MonitorWorkflow` | `SKIP` (skip if prior still running) |
+| `ingest-scheduled-daily` | `5 0 * * *` (00:05 UTC) | `IngestWorkflow` (`FetchFuture=true`) | `SKIP` |
+| `active-poll-scheduled` | every `WORKFLOWS_ACTIVE_FIXTURE_POLL_INTERVAL` (default 30s) | `ActivePollWorkflow` | `SKIP` |
+| `staging-poll-scheduled` | `WORKFLOWS_STAGING_POLL_CRON` (default `*/15 * * * *`) | `StagingPollWorkflow` | `SKIP` |
+
+**Split rationale** (2026-07-11): plan §5 W2 originally speced a
+single MonitorWorkflow combining the active + staging polling via
+bucket-suppression. Split into two workflows on independent Temporal
+Schedules — see [`../decisions.md` 2026-07-11 workflow-split entry](../decisions.md)
+for the full reasoning (failure isolation, runtime cadence tuning,
+config honesty). The staging cadence is now tunable at runtime via
+`temporal schedule update staging-poll-scheduled --cron ...` without
+a code redeploy.
 
 Neither Ingest nor Monitor blocks the other — they run on the same
 Temporal worker but their activity queues + retries are independent.
@@ -83,14 +94,14 @@ paths are that way for good reason.
 | Location | Fan-out | Bound | Impact |
 |---|---|---|---|
 | `apifootball.Client.ListFixturesByIDs` internal chunking | ⌈len(ids)/20⌉ goroutines via `errgroup` | vendor's 20-ID cap per call | Verified live 2026-07-09: 50-ID call = 0.12s wall (~5-10× sequential) |
-| `MonitorWorkflow` per-fixture reconcile | 1 goroutine per active fixture | Temporal worker concurrency cap (default 100 activities in-flight) | Cycle wall-clock ≈ slowest single reconcile, not sum |
+| `ActivePollWorkflow` per-fixture reconcile | 1 goroutine per active fixture | Temporal worker concurrency cap (default 100 activities in-flight) | Cycle wall-clock ≈ slowest single reconcile, not sum |
 | Monitor's activity retry (per chunk) | independent per chunk | client's `RetryPolicy` | Failed chunks retry without redoing successful ones |
 
 ### Intentionally sequential (design, not oversight)
 
 | Location | Why sequential | Alternative + why we didn't |
 |---|---|---|
-| `MonitorWorkflow` step order (PreActivate → List → Fetch → Reconcile) | Each step depends on prior output | N/A — genuine dependency chain |
+| `ActivePollWorkflow` step order (ActivateUpcoming → List → Fetch → Reconcile) | Each step depends on prior output | N/A — genuine dependency chain |
 | `IngestWorkflow` step order (RefreshTeams → Fetch → Categorize → Aliases → Prune) | Same — chain of dependencies | N/A |
 | `IngestWorkflow` smart-lookahead scan (day+2 → day+3 → ...) | Have to see if day+2 is empty before checking day+3; parallel scan of 30 days would burn vendor quota unnecessarily | Speculative parallel (fire N candidate days at once, take first non-empty) — quota-costly; not worth it |
 | Ingest by-date loop for the "standard 3-day fetch" | Only 3 calls; parallel gain ~50ms; complicates workflow | Could parallelize; low ROI |
@@ -120,7 +131,7 @@ time.
                      │ Fixture.Activate(now)
                      │   • Ingest: kickoff within ActivationWindow OR
                      │             API status ∈ {1h, ht, 2h, ...} (Live())
-                     │   • Monitor: PreActivateUpcoming(30min) fires
+                     │   • Monitor: ActivateUpcoming(30min) fires
                      │             on staging fixtures with imminent kickoff
                      ▼
                 ┌─────────┐
@@ -147,15 +158,22 @@ time.
   this on the NEXT DAY if the fixture is still in the 3-day window
   (categorize sees Terminal → completed on FRESH fixtures), but
   fixtures that were `active` from the start of the day never
-  transition. This is the biggest known gap right now.
+  transition. Partial fix (Terminal-status + monitor-done events)
+  shipping next commit; full contract needs O4's `download_complete`
+  gate.
 - **PST → NS reschedule detection**: `fixture.Reschedule()` primitive
   exists in domain but no production caller. If a postponed fixture
-  gets rescheduled, the new kickoff date isn't picked up.
+  gets rescheduled to a much later date (>24h), the fixture stays in
+  `active` state rather than moving back to staging. (Same-day
+  postponements now update the stored kickoff via the shipped
+  staging-poll path, but the state transition back to staging is
+  still not wired.)
 
-Emergency-activation path (not shipped yet — see punch list): if a
-staging fixture's next poll shows `APIStatus.Live()`, promote
-immediately + refresh `Kickoff` from API. Prevents the "user sees
-fixture jump from postponed to 15-min-in" UX pothole.
+**Shipped 2026-07-11** — emergency-activation path: a staging fixture
+whose API poll returns `APIStatus.Live()` (early start, corrected
+kickoff, PST-resumed) activates immediately, refreshing `Kickoff`
+from the API. Bundled into `PollStagingFixtures` (the sole step of
+`StagingPollWorkflow`).
 
 ---
 
@@ -163,7 +181,7 @@ fixture jump from postponed to 15-min-in" UX pothole.
 
 Every tracked event (goal, red card, missed penalty) has a symmetric
 counter oscillating over `0..3` on presence/absence votes across
-Monitor cycles. Repo state in `internal/infra/pg/event_repo.go`;
+ActivePoll cycles. Repo state in `internal/infra/pg/event_repo.go`;
 counter semantics in
 [`docs/decisions.md`](../decisions.md) 2026-07-07 symmetric-counter
 entry.
@@ -199,7 +217,7 @@ entry.
   it spawns run to their own completion regardless of subsequent
   counter oscillation.
 - Vote idempotency is keyed by `(event_id, workflow_id)` — same
-  MonitorWorkflow run's repeat calls don't double-count. Different
+  ActivePollWorkflow run's repeat calls don't double-count. Different
   runs each get one vote.
 - Soft-delete on absence-to-zero: `Removed=true`, `RemovedAt=now`,
   `RemovedReason` currently hardcoded to `var` (see workflow-audit
@@ -329,36 +347,67 @@ public URL stability — a fixture with a shared video never gets pruned.
 
 ---
 
-## Monitor run walkthrough
+## ActivePoll + StagingPoll walkthrough
 
-Fires every 30s via `monitor-scheduled-30s` Temporal Schedule. Empty
-input. Overlap policy: `SKIP` — if the prior cycle is still running
-when the next tick fires, skip. Prevents fan-out cascades.
+**Two independent Temporal Schedules.** ActivePoll fires every 30s
+via `active-poll-scheduled` (IntervalSpec). StagingPoll fires per
+`staging-poll-scheduled` cron (default `*/15 * * * *`, runtime-tunable
+via `temporal schedule update`). Both use overlap policy `SKIP` — if
+the prior cycle is still running when the next tick fires, skip.
+Prevents fan-out cascades.
 
-### Step 1: `PreActivateUpcoming(ActivationWindow=30min)`
+### ActivePollWorkflow — Step 1: `ActivateUpcoming(ActivationWindow=5min)`
 
-**What**: DB-only, no API call.
+**What**: DB-only, no API call. Standard 30-min-before activation lives
+here at 30s cadence for failure isolation — see decisions.md 2026-07-11
+workflow-split entry.
 
-1. `FixtureRepo.ListStagingBeforeKickoff(now + 30min)` — get all
-   staging fixtures with kickoff within the next 30 min.
-2. For each: if `Fixture.ShouldActivateNow(now, 30min)` → call
+1. `FixtureRepo.ListStagingBeforeKickoff(now + 5min)` — staging
+   fixtures with kickoff within the next 5 min.
+2. For each: if `Fixture.ShouldActivateNow(now, 5min)` → call
    `Fixture.Activate(now)`, upsert.
 
 **Latency**: <100ms (one indexed SELECT + up to a handful of UPDATEs).
 
-**Not implemented** ([GAP]): emergency activation on API-status. See the
-15-min staging poll design — a staging fixture whose LIVE status
-appears in an API response should activate immediately, refreshing
-kickoff.
+### StagingPollWorkflow — sole step: `PollStagingFixtures`
 
-### Step 2: `ListActiveFixtureIDs`
+**What**: API poll of ALL staging fixtures each scheduled tick (no
+bucket math — the schedule owns cadence). Two vendor-side activation
+triggers.
+
+1. `FixtureRepo.ListByState(StateStaging)` — every staging fixture.
+2. `apifootball.ListFixturesByIDs(ids)` (chunked-parallel via
+   existing client).
+3. Per response:
+   - `APIStatus.Live()` → `RecordStagingPoll` + `Activate(now)` →
+     **EmergencyActivated** (Path 3b). Match started early / vendor-
+     corrected kickoff / postponement resumed.
+   - `ShouldActivateNow(now, ActivationWindow)` on the possibly-
+     updated kickoff → `Activate(now)` → **KickoffActivated** (Path 3a).
+     Vendor pushed a corrected kickoff into the activation window.
+   - Neither → `RecordStagingPoll` only (updates APIStatus + Kickoff +
+     last_polled_at; intentionally does NOT touch last_activity_at).
+4. Errors are non-fatal — the workflow catches, logs, and completes.
+   Next scheduled tick retries.
+
+**Latency**: dominated by the batched vendor call — ~200-400ms for
+the typical staging fixture count.
+
+**Interaction with ActivePoll**: emergency-activated fixtures land in
+`fixtures.state='active'` at StagingPoll tick T. They get their first
+event reconcile at the next ActivePoll tick — average delay ~15s,
+worst case 30s. Accepted trade-off; emergency-activation means we
+were already several minutes behind by definition, and the 3-cycle
+debounce (90s) downstream dominates the pipeline latency budget.
+
+### ActivePollWorkflow — Step 2: `ListActiveFixtureIDs`
 
 **What**: `SELECT id FROM fixtures WHERE state='active'`. One
 indexed query.
 
 **Latency**: <10ms.
 
-### Step 3: `FetchLiveFixtures(ids)`
+### ActivePollWorkflow — Step 3: `FetchLiveFixtures(ids)`
 
 **What**: one activity call regardless of ID count. The client
 (`apifootball.ListFixturesByIDs`) chunks at 20 IDs per HTTP request
@@ -375,7 +424,7 @@ Returns `{Fixtures, FailedIDs}`.
 **Latency**: dominated by slowest chunk's round-trip. 3 chunks × ~300ms
 each (parallel) = ~300ms total. Sequential would be ~1s.
 
-### Step 4: `ReconcileFixture` per fixture — PARALLEL
+### ActivePollWorkflow — Step 4: `ReconcileFixture` per fixture — PARALLEL
 
 **What**: for each fetched fixture, spawn one `ReconcileFixture`
 activity via `workflow.ExecuteActivity`, collect all Futures, then
@@ -405,7 +454,7 @@ Output per fixture: `{NewEventsDetected, EventsBecameStable[], EventsRemoved[]}`
 active fixture, ~50ms per event round-trip = ~500ms per fixture.
 Parallel across fixtures.
 
-### Monitor overall (per cycle)
+### ActivePoll overall (per cycle)
 
 - Cycle wall-clock: **~1-2 seconds** typical, dominated by
   `ReconcileFixture` fan-out slowest tail. On a night with 30
@@ -416,14 +465,13 @@ Parallel across fixtures.
 
 **Not implemented** ([GAP]):
 
-- **15-min staging poll**: designed in decisions.md 2026-07-07,
-  behavior not shipped. Should fire on `:00 / :15 / :30 / :45`
-  boundaries, poll staging fixtures via API to catch
-  postponements + kickoff drift + PST→LIVE transitions.
 - **Semantic-event emissions**: no NATS. `EventsBecameStable`
   from output goes nowhere. Blocks entire O3 downstream pipeline.
 - **Fixture completion detection**: fixtures never transition to
   `completed`. See fixture state machine section above.
+  Partial-completion follow-up shipping next (Terminal-status + all
+  events downstream-triggered; strengthens with `download_complete`
+  gate when O4 lands).
 
 ---
 
@@ -445,15 +493,16 @@ depend on network to vendor, DB load, and Temporal task queue depth.
 | Step 3: EnsureAliasPlaceholders | <500ms | <500ms |
 | Step 4: PruneOldFixtures | <100ms | <100ms |
 
-### Monitor (per cycle)
+### ActivePoll (per cycle)
 
-| Stage | Wall-clock |
-|---|---|
-| Overall | 1-2s |
-| Step 1: PreActivateUpcoming | <100ms |
-| Step 2: ListActiveFixtureIDs | <10ms |
-| Step 3: FetchLiveFixtures | 200-400ms (dominated by vendor RTT) |
-| Step 4: ReconcileFixture (per fixture, parallel) | ~500ms slowest tail |
+| Stage | Wall-clock (same-bucket) | Wall-clock (bucket-flip) |
+|---|---|---|
+| Overall | 1-2s | 1.5-2.5s |
+| Step 1: ActivateUpcoming | <100ms | <100ms |
+| Step 2: PollStagingFixtures | <10ms (SQL short-circuit) | 200-400ms (batched vendor call) |
+| Step 3: ListActiveFixtureIDs | <10ms | <10ms |
+| Step 4: FetchLiveFixtures | 200-400ms (dominated by vendor RTT) | same |
+| Step 5: ReconcileFixture (per fixture, parallel) | ~500ms slowest tail | same |
 
 ---
 
@@ -465,15 +514,36 @@ impact.
 
 ### Blocks O2 completion
 
-- **15-min staging poll** — configured, not shipped. Postponements +
-  kickoff drift undetected between activations.
 - **Fixture completion detection** — nothing marks fixtures completed;
-  they stay active indefinitely.
+  they stay active indefinitely. Partial fix (Terminal-status +
+  monitor-done events) is the next commit; full contract needs O4's
+  `download_complete` gate.
 - **Semantic event NATS emissions** — the O3 kickoff. Discovery /
   VideoValidation / AssetPersistence workflows all blocked until this
   lands.
-- **Emergency activation on Live() staging** — small addition to
-  `PreActivateUpcoming`, depends on staging poll design.
+
+### Shipped 2026-07-11
+
+- **Workflow split** — `MonitorWorkflow` replaced by `ActivePollWorkflow`
+  (30s interval) + `StagingPollWorkflow` (cron `*/15 * * * *`, runtime-
+  tunable). See [`../decisions.md` 2026-07-11 workflow-split entry](../decisions.md).
+- **Staging poll** (`PollStagingFixtures` activity, sole step of
+  `StagingPollWorkflow`). API-polls ALL staging fixtures on each
+  scheduled tick (no bucket math — the schedule owns cadence).
+  Catches vendor-side postponements, kickoff drift, and early starts.
+- **Emergency activation on Live() staging** (Path 3b) — bundled into
+  `PollStagingFixtures`. A staging fixture whose API poll returns a
+  Live() status gets activated immediately.
+- **Kickoff-corrected activation** (Path 3a) — same activity. Vendor-
+  pushed kickoff correction that lands inside `ActivationWindow`
+  triggers activation without waiting for the DB-only `ActivateUpcoming`.
+- **`PreActivateUpcoming` renamed to `ActivateUpcoming`** — dropped
+  the misleading "Pre" prefix; this IS the standard activation path.
+- **`ActivationWindow` tightened from 30m to 5m default.** Was sized
+  as safety margin over the 15-min staging cadence; with `ActivateUpcoming`
+  now running at 30s cadence in `ActivePollWorkflow`, the margin
+  required is drift buffer against vendor kickoff variance (~5 min
+  covers real-world early/late starts).
 
 ### Correctness follow-ups (small)
 

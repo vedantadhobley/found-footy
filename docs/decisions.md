@@ -6,6 +6,121 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-11 — Split MonitorWorkflow into ActivePollWorkflow + StagingPollWorkflow
+
+**Supersedes:** rebuild-plan.md §5 W2 (single MonitorWorkflow spec) and
+the 2026-07-07 staging-poll design (bucket-suppression inside a single
+MonitorWorkflow at 30s cadence).
+
+### Context
+
+Plan §5 W2 speced a single MonitorWorkflow that fired every 30s and
+internally handled two conceptually different jobs on two different
+cadences:
+
+- **Active fixture polling** (30s cadence, batched vendor call, event
+  reconciliation) — the hot path for goal detection.
+- **Staging fixture polling** (nominally 15-min cadence, batched vendor
+  call, vendor-side edge cases like postponement and kickoff correction).
+
+The 2026-07-07 staging-poll entry landed the design for the second job
+by suppressing most 30s cycles via 15-min bucket arithmetic
+(`hour*4 + minute//15` derived from `last_polled_at`) so the API call
+only fired on 15-min-aligned boundaries.
+
+Implementation of that design surfaced the bucket math as a workaround
+for cramming two jobs into one workflow. The `StagingPollInterval`
+config field wasn't actually consumed by the bucket math — the 15-min
+bucket count was hardcoded, meaning changing the config knob did
+nothing. The config field lied about what it controlled.
+
+### Decision
+
+Split into two workflows on independent Temporal Schedules:
+
+**`ActivePollWorkflow`** — Temporal Schedule `active-poll-scheduled`,
+IntervalSpec `Every: 30s` (source: `Workflows.ActiveFixturePollInterval`).
+Steps:
+
+1. `ActivateUpcoming` (DB-only, renamed from `PreActivateUpcoming` —
+   the "Pre" prefix was misleading; this IS the standard activation)
+2. `ListActiveFixtureIDs`
+3. `FetchLiveFixtures`
+4. `ReconcileFixture` (parallel per fixture)
+
+**`StagingPollWorkflow`** — Temporal Schedule `staging-poll-scheduled`,
+cron `*/15 * * * *` (source: `Workflows.StagingPollCron`, runtime-tunable
+via `temporal schedule update` without redeploy). Steps:
+
+1. `PollStagingFixtures` — vendor edge cases only. Two activation
+   sub-paths inside: Live()-emergency (Path 3b) and kickoff-corrected
+   (Path 3a). No bucket math — the schedule owns cadence; the
+   activity polls all staging fixtures on each tick.
+
+### Rationale
+
+- **Bucket math was a workaround.** One workflow trying to do work
+  on two cadences forces suppression logic to skip most cycles.
+  Removing the cram removes the workaround.
+- **Failure isolation.** ActivateUpcoming (P0 — missing this loses
+  matches) now inherits the resilient 30s workflow's failure profile
+  instead of being coupled to the P2 staging poll (P2 because vendor
+  edge cases can be re-tried next tick without user-visible impact).
+  A broken StagingPollWorkflow should be a P2 incident; a broken
+  activation would be P0 (missing matches). Colocating them meant
+  one incident.
+- **Runtime tunability.** Each schedule is independently
+  `temporal schedule update`-able. Operations can pause staging
+  poll during a vendor incident, tighten cadence during a major
+  tournament, etc., without a code redeploy.
+- **Config becomes honest.** `StagingPollInterval` config field
+  deleted (it was a lie — 15 min was hardcoded in bucket math).
+  `StagingPollCron` string field added, used to create the schedule
+  at worker startup. Runtime updates via Temporal admin override the
+  code-driven cron on subsequent restarts (Create is idempotent —
+  ErrScheduleAlreadyRunning → success).
+- **`ActivationWindow` decoupled from staging cadence.** Was
+  `StagingPollInterval × ActivationMultiplier`. Now a direct config
+  field, default tightened from 30m to 5m. Reasoning: 30m was sized
+  as safety margin over 15-min staging cadence; with ActivateUpcoming
+  running every 30s at the DB layer, the margin required is drift
+  buffer against vendor kickoff timestamp variance (~5 min covers
+  real-world early/late starts) rather than cadence coverage. Matches
+  starting >5 min earlier than scheduled are essentially impossible
+  in professional football (TV constraints); StagingPoll's Live()
+  emergency path (Path 3b) covers the impossible-case backstop.
+
+### Consequences
+
+- Two workflows registered in `cmd/worker/main.go` instead of one.
+- Two Temporal Schedule create calls (both idempotent — existing
+  schedules survive worker restart).
+- `fixture.Repo.ListStagingForBucketPoll` deleted (added earlier
+  same day, before this decision). `PollStagingFixtures` now uses
+  the existing `ListByState(StateStaging)`.
+- Emergency-activated fixtures (Path 3b) land in `active` state at
+  StagingPoll tick T. First reconcile happens at the next
+  ActivePoll tick — average delay ~15s, worst case 30s. Not a
+  correctness regression; emergency-activation means we were
+  already several minutes behind by definition, and the 3-cycle
+  debounce (90s) downstream dominates the pipeline latency budget.
+- Config: `StagingPollInterval` deleted, `ActivationMultiplier`
+  deleted, `ActivationWindow()` method deleted; `StagingPollCron`
+  added, `ActivationWindow` becomes a direct field, default `5m`.
+- Test harness's scenario `workflow: "MonitorWorkflow"` accepted as
+  legacy alias for `ActivePollWorkflow`. Scenarios exercise event
+  reconcile, which lives in the active path.
+- `PreActivateUpcoming` renamed to `ActivateUpcoming` (input/output
+  types renamed similarly). "Pre" prefix was misleading — it IS the
+  standard activation, not a preliminary step.
+
+Working discipline followed: read plan §5 W2 + Python spec §4 before
+touching code, surfaced the split as a divergence before implementing,
+updated `orchestration.md` + `run-flow.md` + `workflow-audit-2026-07-09.md`
+in the same commit.
+
+---
+
 ## 2026-07-09 — All-lowercase canonical for enums (uniform internal representation)
 
 Prior enum policy went through two revisions today:

@@ -1,12 +1,27 @@
-// Package monitor holds the Temporal activities the MonitorWorkflow
-// orchestrates. Every 30 seconds (per Temporal Schedule):
-//   1. PreActivateUpcoming — DB-only check; promotes staging fixtures
-//      whose kickoff is within the activation window.
+// Package monitor holds the Temporal activities that the two poll
+// workflows orchestrate.
+//
+// ActivePollWorkflow (fires every 30s) uses:
+//   1. ActivateUpcoming — DB-only check; promotes staging fixtures
+//      whose stored kickoff is within the activation window.
 //   2. ListActiveFixtureIDs — cheap ID pull.
 //   3. FetchLiveFixtures — one batched /fixtures?ids= call.
 //   4. ReconcileFixture — per fixture, refresh row + diff events +
 //      vote presence/absence for each event. Concurrent via
 //      workflow.Go in the coordinator.
+//
+// StagingPollWorkflow (fires per cron schedule, default 15 min) uses:
+//   1. PollStagingFixtures — API poll of ALL staging fixtures.
+//      Catches vendor-side postponements, kickoff corrections, and
+//      early starts (Live() status → emergency activation). Also
+//      re-checks ShouldActivateNow after applying any vendor kickoff
+//      correction so a corrected kickoff inside the activation window
+//      triggers activation the same tick.
+//
+// The two workflows run on independent Temporal Schedules — the
+// staging cadence can be tuned at runtime with `temporal schedule
+// update staging-poll-scheduled --cron ...` without a redeploy. See
+// decisions.md 2026-07-10 workflow-split entry.
 //
 // Debounce model per decisions.md 2026-07-07 symmetric-counter entry.
 // NATS emissions and DiscoveryWorkflow spawn are DEFERRED to O3;
@@ -44,17 +59,12 @@ type Activities struct {
 	FixtureRepo fixture.Repo
 	EventRepo   event.Repo
 
-	// ActivationWindow — kickoff-lookahead used by PreActivateUpcoming.
-	// Sourced from config.Workflows at worker startup; kept aligned
-	// with IngestWorkflow's activation window (both from the same
-	// config). See internal/config/workflows.go for the 2× invariant.
+	// ActivationWindow — kickoff-lookahead used by both
+	// ActivateUpcoming (DB-only check every 30s) and
+	// PollStagingFixtures (API poll each staging tick, for the
+	// "vendor pushed corrected kickoff into window" case). Sourced
+	// from config.Workflows.ActivationWindow at worker startup.
 	ActivationWindow time.Duration
-
-	// StagingPollInterval — how often staging fixtures get polled via
-	// the API. Sourced from config.Workflows. NOT YET WIRED — the
-	// staging-poll behavior itself is not shipped; this field is here
-	// so the wire-up commit doesn't need another config refactor.
-	StagingPollInterval time.Duration
 
 	Now func() time.Time
 }
@@ -75,48 +85,49 @@ type GetMonitorConfigInput struct{}
 // Mirrors the ingest.GetIngestConfig pattern for the same reason
 // (workflows can't touch env directly per Temporal determinism).
 type GetMonitorConfigOutput struct {
-	ActivationWindow    time.Duration
-	StagingPollInterval time.Duration
+	ActivationWindow time.Duration
 }
 
-// GetMonitorConfig — trivial config accessor for MonitorWorkflow.
+// GetMonitorConfig — trivial config accessor for the poll workflows.
+// Consumed by ActivePollWorkflow's ActivateUpcoming step and
+// StagingPollWorkflow's PollStagingFixtures step — both need
+// ActivationWindow.
 func (a *Activities) GetMonitorConfig(
 	_ context.Context, _ GetMonitorConfigInput,
 ) (GetMonitorConfigOutput, error) {
 	return GetMonitorConfigOutput{
-		ActivationWindow:    a.ActivationWindow,
-		StagingPollInterval: a.StagingPollInterval,
+		ActivationWindow: a.ActivationWindow,
 	}, nil
 }
 
-// ── PreActivateUpcoming ───────────────────────────────────────
+// ── ActivateUpcoming ───────────────────────────────────────
 
-// PreActivateUpcomingInput carries the lookahead window (typically 30
+// ActivateUpcomingInput carries the lookahead window (typically 30
 // min). Fixtures in staging with kickoff <= now+lookahead get promoted
 // to active so the batched poll starts covering them next cycle.
-type PreActivateUpcomingInput struct {
+type ActivateUpcomingInput struct {
 	Lookahead time.Duration
 }
 
-// PreActivateUpcomingOutput reports how many fixtures got promoted +
+// ActivateUpcomingOutput reports how many fixtures got promoted +
 // how many were considered (for observability).
-type PreActivateUpcomingOutput struct {
+type ActivateUpcomingOutput struct {
 	Considered int
 	Activated  int
 	Errors     []string
 }
 
-// PreActivateUpcoming reads staging fixtures with kickoff before
+// ActivateUpcoming reads staging fixtures with kickoff before
 // now+Lookahead, promotes any that ShouldActivateNow returns true for.
 // Uses the same domain predicate ingest uses at first-sight
 // activation, so the rule stays in one place.
-func (a *Activities) PreActivateUpcoming(ctx context.Context, in PreActivateUpcomingInput) (PreActivateUpcomingOutput, error) {
-	out := PreActivateUpcomingOutput{}
+func (a *Activities) ActivateUpcoming(ctx context.Context, in ActivateUpcomingInput) (ActivateUpcomingOutput, error) {
+	out := ActivateUpcomingOutput{}
 	now := a.now()
 
 	candidates, err := a.FixtureRepo.ListStagingBeforeKickoff(ctx, now.Add(in.Lookahead))
 	if err != nil {
-		return out, fmt.Errorf("monitor.PreActivateUpcoming: list: %w", err)
+		return out, fmt.Errorf("monitor.ActivateUpcoming: list: %w", err)
 	}
 	out.Considered = len(candidates)
 
@@ -133,6 +144,133 @@ func (a *Activities) PreActivateUpcoming(ctx context.Context, in PreActivateUpco
 			continue
 		}
 		out.Activated++
+	}
+	return out, nil
+}
+
+// ── PollStagingFixtures ───────────────────────────────────────
+
+// PollStagingFixturesInput carries the ActivationWindow the workflow
+// resolved for this cycle. Passed through PollStagingFixtures'
+// kickoff-correction check.
+type PollStagingFixturesInput struct {
+	// ActivationWindow — same value ActivePollWorkflow's ActivateUpcoming
+	// uses. A staging fixture whose kickoff was corrected into this
+	// window by the vendor gets activated the same tick even if the
+	// API status is still NS.
+	ActivationWindow time.Duration
+}
+
+// PollStagingFixturesOutput reports what happened this tick.
+// Considered is the raw count of staging fixtures polled; Polled is
+// how many the API returned data for; MissedIDs counts vendor-side
+// chunk failures; EmergencyActivated + KickoffActivated separate the
+// two activation paths so operators can see which triggered.
+type PollStagingFixturesOutput struct {
+	Considered         int
+	Polled             int
+	MissedIDs          int
+	EmergencyActivated int // API status flipped to Live() while still staging
+	KickoffActivated   int // vendor-corrected kickoff pulled fixture into activation window
+	Errors             []string
+}
+
+// PollStagingFixtures fires a batched /fixtures?ids= call against
+// EVERY staging fixture (no bucket filter — StagingPollWorkflow's
+// Temporal Schedule decides when to fire, not us), then reconciles
+// each response. Two activation paths:
+//
+//   • Live() emergency: the API says the match is already playing
+//     (or paused mid-play) while we still have it in staging. Ingest
+//     had the wrong kickoff, or the vendor published a corrected one,
+//     or the match started early. Activate immediately.
+//   • Kickoff-corrected: the vendor pushed a new kickoff time that
+//     brings the fixture inside our activation window. Same fix as
+//     ActivePollWorkflow's ActivateUpcoming DB-only check but
+//     works on API-side mutations ingest hasn't caught yet.
+//
+// If neither triggers, RecordStagingPoll updates APIStatus + Kickoff
+// + last_polled_at without touching last_activity_at (matches Python
+// — passive polls don't count as activity for frontend sort).
+//
+// Called by StagingPollWorkflow on its cron cadence (default 15 min).
+// Cadence tunable at runtime via `temporal schedule update
+// staging-poll-scheduled --cron ...` — this activity doesn't care
+// about cadence, only about doing one full poll pass per invocation.
+func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixturesInput) (PollStagingFixturesOutput, error) {
+	out := PollStagingFixturesOutput{}
+	now := a.now()
+
+	candidates, err := a.FixtureRepo.ListByState(ctx, fixture.StateStaging)
+	if err != nil {
+		return out, fmt.Errorf("monitor.PollStagingFixtures: list: %w", err)
+	}
+	out.Considered = len(candidates)
+	if len(candidates) == 0 {
+		return out, nil
+	}
+
+	ids := make([]int64, len(candidates))
+	for i, f := range candidates {
+		ids[i] = f.ID
+	}
+	apiFixtures, failedIDs, err := a.APIFootball.ListFixturesByIDs(ctx, ids)
+	if err != nil {
+		// Catastrophic (all chunks failed / ctx cancelled) — surface the
+		// error but keep the FailedIDs count so the workflow can log it.
+		out.MissedIDs = len(failedIDs)
+		return out, fmt.Errorf("monitor.PollStagingFixtures: fetch: %w", err)
+	}
+	out.MissedIDs = len(failedIDs)
+
+	apiByID := make(map[int64]apifootball.APIFixture, len(apiFixtures))
+	for _, af := range apiFixtures {
+		apiByID[af.Fixture.ID] = af
+	}
+
+	for _, f := range candidates {
+		af, ok := apiByID[f.ID]
+		if !ok {
+			// Missed this chunk — next tick picks it up naturally.
+			continue
+		}
+		newStatus := fixture.APIStatus{
+			Short: af.Fixture.Status.Short,
+			Long:  af.Fixture.Status.Long,
+		}
+		newKickoff := af.Fixture.Date
+
+		switch {
+		case newStatus.Live():
+			// Emergency — API says the match is already live.
+			// Refresh the fields Activate doesn't touch (kickoff, status)
+			// FIRST via RecordStagingPoll, then transition.
+			f.RecordStagingPoll(newStatus, newKickoff, now)
+			if err := f.Activate(now); err != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("emergency activate fixture=%d: %v", f.ID, err))
+				continue
+			}
+			out.EmergencyActivated++
+
+		default:
+			// Non-Live status. Update the fields, then check if the
+			// (possibly-corrected) kickoff pulls us into the activation
+			// window.
+			f.RecordStagingPoll(newStatus, newKickoff, now)
+			if f.ShouldActivateNow(now, in.ActivationWindow) {
+				if err := f.Activate(now); err != nil {
+					out.Errors = append(out.Errors, fmt.Sprintf("kickoff activate fixture=%d: %v", f.ID, err))
+					continue
+				}
+				out.KickoffActivated++
+			}
+		}
+
+		if err := a.FixtureRepo.Upsert(ctx, f); err != nil {
+			out.Errors = append(out.Errors, fmt.Sprintf("upsert fixture=%d: %v", f.ID, err))
+			continue
+		}
+		out.Polled++
 	}
 	return out, nil
 }
