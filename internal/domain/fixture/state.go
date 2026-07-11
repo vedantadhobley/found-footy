@@ -75,9 +75,10 @@ func (f *Fixture) Reschedule(newKickoff time.Time, at time.Time) error {
 }
 
 // UpdateFromPoll captures a fresh API poll result on an active fixture.
-// Refreshes api_status_*, api_elapsed, api_extra, home/away score, and
-// last_polled_at without changing state. State transitions happen
-// through the dedicated methods above.
+// Refreshes api_status_*, api_elapsed, api_extra, home/away score,
+// winner flags, last_polled_at, and the completion counter without
+// changing state. State transitions happen through the dedicated
+// methods above.
 func (f *Fixture) UpdateFromPoll(status APIStatus, elapsed, extra *int, homeScore, awayScore *int, at time.Time) {
 	utc := at.UTC()
 	f.APIStatus = status
@@ -92,6 +93,43 @@ func (f *Fixture) UpdateFromPoll(status APIStatus, elapsed, extra *int, homeScor
 	f.LastPolledAt = &utc
 	f.LastActivityAt = &utc
 	f.UpdatedAt = utc
+	f.updateCompletionCounter()
+}
+
+// UpdateWinners records vendor-side winner flags from the API poll.
+// Kept separate from UpdateFromPoll since not every poll response
+// includes teams.home.winner / teams.away.winner (they're populated
+// only when the result is decided).
+func (f *Fixture) UpdateWinners(home, away *bool) {
+	if home != nil {
+		f.HomeWinner = home
+	}
+	if away != nil {
+		f.AwayWinner = away
+	}
+}
+
+// updateCompletionCounter runs the 3-poll debounce on Terminal status.
+// Called from UpdateFromPoll (active-fixture path) and
+// RecordStagingPoll (staging-fixture path — a staging fixture that
+// mysteriously goes Terminal via vendor edge case still needs to
+// track its counter for later completion).
+//
+// Terminal observation → increment (cap 3).
+// Non-Terminal observation → reset to 0.
+//
+// Design intentionally symmetric with the debounce_count on events
+// but without the absence-vote path (Terminal is a positive signal,
+// not-Terminal is its absence and resets outright rather than
+// decrementing).
+func (f *Fixture) updateCompletionCounter() {
+	if f.APIStatus.Terminal() {
+		if f.CompletionCounter < 3 {
+			f.CompletionCounter++
+		}
+	} else {
+		f.CompletionCounter = 0
+	}
 }
 
 // RecordStagingPoll captures the result of a passive API poll on a

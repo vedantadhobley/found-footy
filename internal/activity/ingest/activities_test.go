@@ -134,6 +134,9 @@ func (r *fakeFixtureRepo) ListActiveIDs(context.Context) ([]int64, error) {
 func (r *fakeFixtureRepo) ListStagingBeforeKickoff(context.Context, time.Time) ([]*fixture.Fixture, error) {
 	panic("fakeFixtureRepo.ListStagingBeforeKickoff: not implemented (test scope drift)")
 }
+func (r *fakeFixtureRepo) FixtureReadyToComplete(context.Context, int64) (bool, error) {
+	panic("fakeFixtureRepo.FixtureReadyToComplete: not implemented (test scope drift)")
+}
 
 func (r *fakeFixtureRepo) PruneCompleted(_ context.Context, threshold time.Time) (int, error) {
 	r.mu.Lock()

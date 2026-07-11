@@ -131,14 +131,35 @@ type Fixture struct {
 
 	HomeScore *int
 	AwayScore *int
+	// Winner data from api teams.home.winner / teams.away.winner.
+	// Vendor sets these to true/false when the result is decided —
+	// usually simultaneously with terminal status, sometimes slightly
+	// earlier. Fixture completion has a fast-path when either is
+	// non-nil (skips the 3-poll completion counter).
+	HomeWinner *bool
+	AwayWinner *bool
 
 	ActivatedAt    *time.Time
 	CompletedAt    *time.Time
 	LastActivityAt *time.Time
 	LastPolledAt   *time.Time
 
+	// CompletionCounter — 3-poll debounce on APIStatus.Terminal().
+	// Increments (cap 3) each ActivePoll cycle where status is
+	// Terminal; resets to 0 on any non-Terminal observation.
+	// Fixture ready to complete when counter >= 3 OR HasDecidedWinner().
+	// See docs/rebuild/proposals/completion-contract.md.
+	CompletionCounter int
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// HasDecidedWinner reports whether the vendor has flagged either
+// team as the winner. Used as the fast-path in the completion check
+// alongside the 3-poll counter.
+func (f *Fixture) HasDecidedWinner() bool {
+	return f.HomeWinner != nil || f.AwayWinner != nil
 }
 
 // New constructs a fresh Fixture in the staging state. Callers set only

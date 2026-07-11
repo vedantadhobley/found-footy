@@ -34,8 +34,9 @@ const fixtureColumns = `
 	kickoff,
 	home_team_id, home_team_name, away_team_id, away_team_name,
 	league_id, league_name, league_season,
-	home_score, away_score,
+	home_score, away_score, home_winner, away_winner,
 	activated_at, completed_at, last_activity_at, last_polled_at,
+	completion_counter,
 	created_at, updated_at
 `
 
@@ -58,8 +59,9 @@ func scanFixture(row rowScanner) (*fixture.Fixture, error) {
 		&f.Kickoff,
 		&f.Home.ID, &f.Home.Name, &f.Away.ID, &f.Away.Name,
 		&f.League.ID, &f.League.Name, &f.League.Season,
-		&f.HomeScore, &f.AwayScore,
+		&f.HomeScore, &f.AwayScore, &f.HomeWinner, &f.AwayWinner,
 		&f.ActivatedAt, &f.CompletedAt, &f.LastActivityAt, &f.LastPolledAt,
+		&f.CompletionCounter,
 		&f.CreatedAt, &f.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -94,16 +96,18 @@ func (r *FixtureRepo) Upsert(ctx context.Context, f *fixture.Fixture) error {
 			kickoff,
 			home_team_id, home_team_name, away_team_id, away_team_name,
 			league_id, league_name, league_season,
-			home_score, away_score,
-			activated_at, completed_at, last_activity_at, last_polled_at
+			home_score, away_score, home_winner, away_winner,
+			activated_at, completed_at, last_activity_at, last_polled_at,
+			completion_counter
 		) VALUES (
 			$1, $2,
 			$3, $4, $5, $6,
 			$7,
 			$8, $9, $10, $11,
 			$12, $13, $14,
-			$15, $16,
-			$17, $18, $19, $20
+			$15, $16, $17, $18,
+			$19, $20, $21, $22,
+			$23
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			state = EXCLUDED.state,
@@ -121,10 +125,13 @@ func (r *FixtureRepo) Upsert(ctx context.Context, f *fixture.Fixture) error {
 			league_season = EXCLUDED.league_season,
 			home_score = EXCLUDED.home_score,
 			away_score = EXCLUDED.away_score,
+			home_winner = EXCLUDED.home_winner,
+			away_winner = EXCLUDED.away_winner,
 			activated_at = EXCLUDED.activated_at,
 			completed_at = EXCLUDED.completed_at,
 			last_activity_at = EXCLUDED.last_activity_at,
-			last_polled_at = EXCLUDED.last_polled_at
+			last_polled_at = EXCLUDED.last_polled_at,
+			completion_counter = EXCLUDED.completion_counter
 	`
 	_, err := r.pool.Exec(ctx, query,
 		f.ID, string(f.State),
@@ -132,8 +139,9 @@ func (r *FixtureRepo) Upsert(ctx context.Context, f *fixture.Fixture) error {
 		f.Kickoff,
 		f.Home.ID, f.Home.Name, f.Away.ID, f.Away.Name,
 		f.League.ID, f.League.Name, f.League.Season,
-		f.HomeScore, f.AwayScore,
+		f.HomeScore, f.AwayScore, f.HomeWinner, f.AwayWinner,
 		f.ActivatedAt, f.CompletedAt, f.LastActivityAt, f.LastPolledAt,
+		f.CompletionCounter,
 	)
 	if err != nil {
 		return fmt.Errorf("pg.FixtureRepo.Upsert: %w", err)
@@ -196,6 +204,47 @@ func (r *FixtureRepo) ListStagingBeforeKickoff(ctx context.Context, threshold ti
 	}
 	defer rows.Close()
 	return collectFixtures(rows)
+}
+
+// FixtureReadyToComplete evaluates the full completion contract per
+// docs/rebuild/proposals/completion-contract.md as a single SQL
+// query. Returns fixture.ErrNotFound if id doesn't exist.
+//
+// Cheap-by-design: the partial index event_downstream_workflows_pending
+// makes the "any workflow in flight" check O(1) when the answer is no,
+// and the events NOT EXISTS clause short-circuits on the events partial
+// index. Runs once per fixture per 30s ActivePoll cycle.
+func (r *FixtureRepo) FixtureReadyToComplete(ctx context.Context, id int64) (bool, error) {
+	const query = `
+		SELECT
+		    f.api_status_short IN ('ft','aet','pen','canc','abd','wo','awd')
+		    AND (f.completion_counter >= 3
+		         OR f.home_winner IS NOT NULL
+		         OR f.away_winner IS NOT NULL)
+		    AND NOT EXISTS (
+		        SELECT 1 FROM events e
+		        WHERE e.fixture_id = f.id
+		          AND e.removed = false
+		          AND e.downstream_triggered = false
+		    )
+		    AND NOT EXISTS (
+		        SELECT 1 FROM event_downstream_workflows edw
+		        JOIN events e ON edw.event_id = e.id
+		        WHERE e.fixture_id = f.id
+		          AND edw.completed_at IS NULL
+		    ) AS ready
+		FROM fixtures f
+		WHERE f.id = $1
+	`
+	var ready bool
+	err := r.pool.QueryRow(ctx, query, id).Scan(&ready)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, fixture.ErrNotFound
+		}
+		return false, fmt.Errorf("pg.FixtureRepo.FixtureReadyToComplete: %w", err)
+	}
+	return ready, nil
 }
 
 // PruneCompleted deletes completed fixtures whose completed_at is

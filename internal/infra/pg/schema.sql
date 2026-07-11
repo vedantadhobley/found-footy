@@ -100,12 +100,26 @@ CREATE TABLE fixtures (
     league_season INT NOT NULL,
     home_score INT,
     away_score INT,
+    -- Winner data (populated from api teams.home.winner / away.winner).
+    -- Nullable BOOLEAN — vendor sets true/false when result is decided
+    -- (usually simultaneously with terminal status, sometimes slightly
+    -- earlier). Fixture completion has a fast-path on either being
+    -- non-null (skips the 3-poll completion counter).
+    home_winner BOOLEAN,
+    away_winner BOOLEAN,
 
     -- Our enhancement fields
     activated_at TIMESTAMPTZ,                               -- when we moved to 'active'
     completed_at TIMESTAMPTZ,                               -- when we moved to 'completed'
     last_activity_at TIMESTAMPTZ,                           -- for frontend sort ordering
     last_polled_at TIMESTAMPTZ,                             -- most recent monitor cycle
+
+    -- Completion counter — 3-poll debounce on APIStatus.Terminal().
+    -- Increments (cap 3) each ActivePoll cycle where status is Terminal;
+    -- resets to 0 on any non-Terminal observation. See
+    -- docs/rebuild/proposals/completion-contract.md.
+    completion_counter INT NOT NULL DEFAULT 0
+        CHECK (completion_counter >= 0 AND completion_counter <= 3),
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -205,7 +219,42 @@ CREATE TABLE event_drop_workflows (
     PRIMARY KEY (event_id, workflow_id)
 );
 
--- 6. video_assets — canonical byte-store, one row per unique perceptual hash per fixture
+-- 6. event_downstream_workflows — the pluggable fixture-completion
+-- checklist. Every downstream workflow (Discovery, DownloadWorkflow-N,
+-- UploadWorkflow, future sentiment analysis, etc.) registers a row at
+-- START with completed_at=NULL and UPDATEs completed_at when it exits.
+--
+-- Fixture completion asks: any rows for any event in this fixture where
+-- completed_at IS NULL? If yes, fixture stays active (downstream still
+-- writing). If no, fixture is a candidate to complete (given API status
+-- Terminal + counter satisfied + all events debounce-settled).
+--
+-- Pluggability: adding a new downstream workflow type requires ZERO
+-- schema change — just pick a new workflow_type string. See
+-- docs/rebuild/proposals/completion-contract.md.
+--
+-- Coexistence note: event_download_workflows (above) tracks the 10-
+-- download registration threshold specifically. As of the 2026-07-11
+-- completion contract, new downstream workflows should register here
+-- instead — event_download_workflows may be consolidated into this
+-- table when O4 lands.
+CREATE TABLE event_downstream_workflows (
+    event_id      UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    workflow_type TEXT NOT NULL,                             -- 'discovery', 'download', 'upload', 'sentiment', ...
+    workflow_id   TEXT NOT NULL,                             -- Temporal workflow ID
+    started_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at  TIMESTAMPTZ,                               -- NULL = still in flight
+    outcome_class TEXT,                                      -- 'success', 'failed_geo_restricted', 'timeout', ...
+    metadata      JSONB,                                     -- workflow-type-specific extras
+    PRIMARY KEY (event_id, workflow_type, workflow_id)
+);
+
+-- Partial index optimized for the "any in-flight?" completion check.
+CREATE INDEX event_downstream_workflows_pending
+    ON event_downstream_workflows (event_id)
+    WHERE completed_at IS NULL;
+
+-- 7. video_assets — canonical byte-store, one row per unique perceptual hash per fixture
 CREATE TABLE video_assets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     fixture_id BIGINT NOT NULL REFERENCES fixtures(id) ON DELETE RESTRICT,

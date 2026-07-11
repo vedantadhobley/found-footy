@@ -6,6 +6,109 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-11 — Fixture completion contract via pluggable per-event workflow checklist
+
+**Design ref:** [`rebuild/proposals/completion-contract.md`](./rebuild/proposals/completion-contract.md)
+
+### Context
+
+Plan §8 speced fixture completion as "API status Terminal + all
+non-removed events have `_monitor_complete AND _download_complete`."
+Python's implementation checked these per-event booleans plus a 3-poll
+counter. Two things surfaced during design:
+
+1. **Extensibility.** As we add downstream workflows (sentiment
+   analysis, text summarization, future post-MVP things), each new
+   type would need its own boolean on `events` and its own branch in
+   the completion check. Anti-pluggability.
+2. **Correctness.** `downstream_triggered=true` only means we STARTED
+   downstream. It doesn't mean downstream FINISHED. If we move the
+   fixture to `completed` state while a DownloadWorkflow or
+   UploadWorkflow is still writing to `events` / `video_shares` /
+   `video_assets`, those writes land on a "frozen" fixture. Bad.
+
+### Decision
+
+Pluggable per-event workflow checklist via a new table
+`event_downstream_workflows`. Every downstream workflow (Discovery,
+each DownloadWorkflow, UploadWorkflow, future workflows) follows a
+uniform register/complete protocol:
+
+- **On start:** INSERT (event_id, workflow_type, workflow_id) with
+  `completed_at=NULL`. `ON CONFLICT DO NOTHING` for Temporal replay
+  idempotency.
+- **On exit** (success or failure): UPDATE the row with
+  `completed_at=NOW()`, `outcome_class`, optional `metadata` JSONB.
+
+Fixture completion check reduces to:
+
+1. `api_status_short` in the Terminal set (`ft`,`aet`,`pen`,`canc`,
+   `abd`,`wo`,`awd`).
+2. `completion_counter >= 3` OR `home_winner IS NOT NULL` OR
+   `away_winner IS NOT NULL` (fast-path when vendor sets winner flags
+   before the 3-poll debounce completes).
+3. `NOT EXISTS` any event where `removed=false AND
+   downstream_triggered=false` (no mid-debounce events — events must
+   have settled to either VAR'd or stable).
+4. `NOT EXISTS` any row in `event_downstream_workflows` where
+   `completed_at IS NULL` for any event in the fixture.
+
+All in one SQL query via `FixtureRepo.FixtureReadyToComplete(fixtureID)`.
+Called from `ReconcileFixture` at the end of its per-cycle work; if
+ready, transitions state to `completed` in the same activity.
+
+### Rationale
+
+- **Pluggability without schema migration.** New downstream workflow
+  type lands → picks a new `workflow_type` string. Completion check
+  code doesn't change. Just more rows to consider.
+- **Introspectability.** "Which workflow is holding this fixture
+  from completing?" → `SELECT workflow_type, workflow_id, started_at
+  FROM event_downstream_workflows WHERE event_id=$1 AND completed_at
+  IS NULL`. Reference-counter alternatives can't answer this.
+- **Race-free polling.** ActivePoll's per-fixture reconcile does the
+  check. Workflows just update their row. No signal wiring, no
+  "am I the last?" logic.
+- **Winner fast-path preserved.** Python's Python's fast-path
+  (move to completed when winner data appears, before the 3-poll
+  counter finishes) matches natural user expectations — the fixture
+  is "over" as soon as the vendor commits to a result.
+- **Completion counter symmetric with event debounce.** Same
+  0-to-3 cap pattern used for event presence votes. Familiar
+  invariant.
+
+### Consequences
+
+- Schema additions: `event_downstream_workflows` table,
+  `fixtures.completion_counter`, `fixtures.home_winner`,
+  `fixtures.away_winner`.
+- `Fixture.UpdateFromPoll` now maintains `completion_counter`
+  (increment on Terminal, reset on non-Terminal).
+- `Fixture.UpdateWinners(home, away)` added — separate from
+  UpdateFromPoll since winner flags don't appear in every poll.
+- `Fixture.HasDecidedWinner() bool` — used by the completion check.
+- `ReconcileFixture` runs the completion check at the end; sets
+  `out.Completed = true` and transitions state on ready.
+- **Pre-cutover behavior:** `event_downstream_workflows` is empty
+  (O3-O5 unbuilt). Fixtures with no non-removed events complete
+  correctly at Terminal + counter. Fixtures with stabilized events
+  ALSO complete, prematurely, because no downstream workflows exist
+  to hold them. This is fine pre-cutover (no user-facing consequence);
+  as soon as O3-O5 land and start registering rows, the completion
+  check auto-widens.
+- **Coexistence:** `event_download_workflows` (the 10-download
+  registration threshold table) stays for now. When O4 lands, its
+  downloads will register in `event_downstream_workflows` for
+  completion tracking and continue using `event_download_workflows`
+  for the "10 attempts" counting. Consolidation is a future
+  optimization.
+- Rejected alternatives (see completion-contract.md § Rejected):
+  reference counter (no introspection), JSONB blob (write cost),
+  per-workflow-type tables (anti-pluggability), event-driven
+  completion trigger (race-prone).
+
+---
+
 ## 2026-07-11 — Split MonitorWorkflow into ActivePollWorkflow + StagingPollWorkflow
 
 **Supersedes:** rebuild-plan.md §5 W2 (single MonitorWorkflow spec) and

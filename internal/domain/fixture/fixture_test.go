@@ -329,6 +329,87 @@ func TestShouldActivateNow_Completed_False(t *testing.T) {
 	}
 }
 
+// Completion counter + winner data --------------------------------
+
+func TestUpdateFromPoll_Terminal_IncrementsCompletionCounter(t *testing.T) {
+	f := makeStaging()
+	at := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	mustActivate(t, f, at)
+	if f.CompletionCounter != 0 {
+		t.Fatalf("counter must start at 0, got %d", f.CompletionCounter)
+	}
+
+	// Three Terminal polls → counter climbs to 3, then caps.
+	for i := 0; i < 5; i++ {
+		f.UpdateFromPoll(
+			fixture.APIStatus{Short: "ft", Long: "Match Finished"},
+			nil, nil, nil, nil, at.Add(time.Duration(i)*30*time.Second),
+		)
+	}
+	if f.CompletionCounter != 3 {
+		t.Errorf("counter after 5 Terminal polls = %d, want 3 (capped)", f.CompletionCounter)
+	}
+}
+
+func TestUpdateFromPoll_NonTerminal_ResetsCompletionCounter(t *testing.T) {
+	f := makeStaging()
+	at := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	mustActivate(t, f, at)
+
+	// Climb to 2.
+	for i := 0; i < 2; i++ {
+		f.UpdateFromPoll(
+			fixture.APIStatus{Short: "ft"},
+			nil, nil, nil, nil, at.Add(time.Duration(i)*30*time.Second),
+		)
+	}
+	if f.CompletionCounter != 2 {
+		t.Fatalf("counter after 2 Terminal polls = %d, want 2", f.CompletionCounter)
+	}
+
+	// A single non-Terminal observation (vendor flickered back to 2H)
+	// should reset the counter.
+	f.UpdateFromPoll(
+		fixture.APIStatus{Short: "2h"},
+		nil, nil, nil, nil, at.Add(3*30*time.Second),
+	)
+	if f.CompletionCounter != 0 {
+		t.Errorf("counter after non-Terminal poll = %d, want 0 (reset)", f.CompletionCounter)
+	}
+}
+
+func TestHasDecidedWinner_TruthTable(t *testing.T) {
+	f := makeStaging()
+	if f.HasDecidedWinner() {
+		t.Error("fresh fixture must not have decided winner")
+	}
+
+	trueBool := true
+	f.HomeWinner = &trueBool
+	if !f.HasDecidedWinner() {
+		t.Error("HomeWinner set → HasDecidedWinner should be true")
+	}
+
+	f.HomeWinner = nil
+	falseBool := false
+	f.AwayWinner = &falseBool
+	if !f.HasDecidedWinner() {
+		t.Error("AwayWinner set to false (loser flag) → HasDecidedWinner should still be true")
+	}
+}
+
+func TestUpdateWinners_NilInputsPreserveExisting(t *testing.T) {
+	f := makeStaging()
+	trueBool := true
+	f.HomeWinner = &trueBool
+
+	// Passing nil should not clear the existing winner.
+	f.UpdateWinners(nil, nil)
+	if f.HomeWinner == nil || *f.HomeWinner != true {
+		t.Errorf("nil-input UpdateWinners cleared HomeWinner: got %v", f.HomeWinner)
+	}
+}
+
 // Invariant validator ---------------------------------------------
 
 func TestValidateInvariants_CatchesInconsistentTimestamps(t *testing.T) {

@@ -44,8 +44,9 @@ when they land.
    │ • categorize   │   │   (per-fixture,    │   │                    │
    │ • ensure       │   │   parallel)        │   │                    │
    │   aliases      │   │                    │   │                    │
-   │ • prune        │   │ [GAP] Completion   │   │                    │
-   └───────┬────────┘   │ [GAP] NATS emit    │   │                    │
+   │ • prune        │   │ • Complete fixture │   │                    │
+   └───────┬────────┘   │   (per contract)   │   │                    │
+                        │ [GAP] NATS emit    │   │                    │
            │            └──────────┬─────────┘   └──────────┬─────────┘
            │                       │                        │
            └───────────────────────┼────────────────────────┘
@@ -152,15 +153,19 @@ time.
 
 **Currently missing** ([GAP] — see workflow audit 2026-07-09 punch list):
 
-- **Fixture completion transition**: Monitor never actually promotes
-  fixtures from `active` to `completed`. Currently a fixture whose
-  API status is `ft` stays in `active` state forever. Ingest catches
-  this on the NEXT DAY if the fixture is still in the 3-day window
-  (categorize sees Terminal → completed on FRESH fixtures), but
-  fixtures that were `active` from the start of the day never
-  transition. Partial fix (Terminal-status + monitor-done events)
-  shipping next commit; full contract needs O4's `download_complete`
-  gate.
+- ~~Fixture completion transition~~ ✅ **SHIPPED 2026-07-11.**
+  `ReconcileFixture` runs a completion check at the end of each
+  per-fixture pass, transitioning `active → completed` when all
+  conditions hold: Terminal status + counter/winner + all events
+  settled + no in-flight downstream workflows. Pluggable via new
+  `event_downstream_workflows` table — any downstream workflow that
+  registers/completes rows there participates in the check
+  automatically. See [`proposals/completion-contract.md`](./proposals/completion-contract.md)
+  and [`../decisions.md` 2026-07-11 completion-contract entry](../decisions.md).
+  Pre-cutover behavior: the checklist table is empty until O3-O5 land,
+  so fixtures with stabilized events complete immediately at Terminal
+  status. When O3-O5 land, the checklist auto-populates and completion
+  correctly waits for downstream to finish.
 - **PST → NS reschedule detection**: `fixture.Reschedule()` primitive
   exists in domain but no production caller. If a postponed fixture
   gets rescheduled to a much later date (>24h), the fixture stays in
