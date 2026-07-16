@@ -8,6 +8,24 @@ doc until it's reviewed + signed off.
   right after O3, before O4, per [`discovery.md`](./discovery.md)
   Q3 sign-off — Twitter is the pipeline's most load-bearing external
   dependency and deserves its own dedicated design + review runway.
+- 2026-07-17 (T/a PoC finding) — the PoC gate returned a
+  **definitive negative** on Playwright-Go for Firefox: playwright-go
+  v0.4700.0 AND v0.5001.0 both fail to download their driver because
+  Playwright upstream moved their CDN. The three URLs
+  playwright-go's downloader tries (`playwright.azureedge.net`,
+  `playwright-akamai.azureedge.net`, `playwright-verizon.azureedge.net`)
+  all return 404 for driver versions v1.47+. Container built cleanly;
+  Go code compiled; container startup surfaced the driver-download
+  error before browser launch could be attempted. Fallback per the
+  proposal's Q1 sign-off: **T/a resolves as Selenium Go bindings +
+  geckodriver + Firefox** — mechanical port of Python's proven
+  `session.py`. Playwright-Go can be revisited if upstream fixes the
+  CDN URL, but not in the T track — the fallback lane is faster to
+  ship and less risky than debugging a broken CDN pipeline. The
+  scaffold code committed under `internal/twitter/` + `cmd/twitter/`
+  + `docker/twitter/` remains as a signpost; the Selenium
+  implementation replaces `browser.go` while `service.go`, the
+  stealth constant, and the cmd wire-up stay largely unchanged.
 - 2026-07-16 (second pass, this doc) — walkthrough with user corrected
   a misframing: **dual-mode auth is an OPERATIONAL pattern (VNC as
   login terminal, save cookies to shared disk, headless fleet loads),
