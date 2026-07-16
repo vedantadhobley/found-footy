@@ -202,7 +202,7 @@ Field meanings — TIGHTENED from Python's current definitions (`vision.py:552` 
 - `soccer` — **true ONLY if this is DIRECT BROADCAST FOOTAGE from a professional live soccer match camera source**. Includes: match play, official broadcaster-produced replays, VAR footage shown by the broadcast, **on-field player celebrations following a goal** (running to the corner flag, group hugs, signature reactions, dugout reactions — legitimate broadcast tail content of a goal clip). **Excludes:**
   - **Commentary / reaction / livestream videos** — person visible or audible discussing the game, even with game footage embedded (livestreamers, YouTube reaction channels)
   - **Fan compilations** — multiple goals from different matches edited together
-  - **Fan-shot stadium footage** — phone recorded from crowd angle (Python's "stadium recordings" allowance is exactly this rejection category — remove)
+  - **Fan-shot stadium footage from crowd angle** — phone recorded from the stands. **Rejected in initial ship** for the false-positive/false-negative-on-broadcast reason: user wants to eventually WELCOME MORE fan-shot arena content, but current filters (both Python and this proposal) let too much unrelated content through when the rubric widens. Get proper broadcast footage classification working correctly first, then expand this category in a follow-up. Documented here so it's not a permanent design choice; it's a "phase 1 of a larger content ambition."
   - **Studio content / press conferences / interviews / post-match panels**
   - **Other sports / graphics-only / logos**
   - When in doubt about commentary vs pure broadcast → **false** (prefer false-reject to false-accept — pollution of the S3 corpus is worse than losing one candidate for one event).
@@ -313,21 +313,39 @@ The only race the per-event serialization does NOT handle is: two different even
 
 If both had already started S3 upload before the pg race resolved (very rare — requires them to both reach Stage 9 simultaneously): second upload is either idempotent (same key, same bytes) or a swallowable "key exists" error. Never incorrect, occasionally slightly wasteful.
 
+### Text-based capture from day one (extensibility path)
+
+Even though O3-V's primary consumer of `event_tweets` is video, the table **stores every tweet encountered during scroll**, not just video tweets. Overhead is negligible (~20-40ms extra per full 10-scroll search; ~500 bytes per text tweet stored). Rationale: future workflow types (sentiment analysis, text extraction, quote analysis, source-trust scoring) all read tweet text + author, and building the capture path from day one is trivially cheaper than adding a "backfill text tweets" migration later. See the schema below — `tweet_text`, `tweet_author`, `has_video` columns support text-based workflows without any schema migration; `processing` JSONB carries per-workflow-type outcomes as they land.
+
+**Scroll-stop counter operates on the full set** of already-seen tweets (video or not), so the "3 consecutive already-seen → halt" heuristic works uniformly regardless of tweet type. Text-only tweets encountered in a previous attempt count toward the halt threshold on subsequent attempts, same as video tweets.
+
+**Sentiment-analysis path (illustrative):** future `SentimentAnalysisWorkflow` reads `SELECT tweet_url, tweet_text FROM event_tweets WHERE event_id = $1 AND processing->'sentiment_analysis' IS NULL`, LLM-scores each, writes result into `processing.sentiment_analysis`. No schema migration needed. Similarly for text extraction, quote analysis, etc.
+
 ### Extensible tweet-processing tracking — `event_tweets` table
 
 Python's "seen tweets" tracking is per-DownloadWorkflow in-memory state. Fine for video-only; doesn't extend to future non-video processing (sentiment, translation, transcript extraction, etc.). Proposed schema:
 
 ```sql
 CREATE TABLE event_tweets (
-    event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    tweet_url TEXT NOT NULL,
-    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    processing JSONB NOT NULL DEFAULT '{}',
+    event_id       UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    tweet_url      TEXT NOT NULL,
+    first_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- Captured at scroll time for future text-based workflows:
+    tweet_text     TEXT,                -- from [data-testid='tweetText']
+    tweet_author   TEXT,                -- @username, useful for source-trust filtering
+    has_video      BOOLEAN NOT NULL DEFAULT FALSE,  -- fast filter for the video pipeline
+    processing     JSONB NOT NULL DEFAULT '{}',    -- per-workflow-type outcome keys
     PRIMARY KEY (event_id, tweet_url)
 );
-CREATE INDEX event_tweets_scan ON event_tweets (event_id, last_seen_at);
+CREATE INDEX event_tweets_scan       ON event_tweets (event_id, last_seen_at);
+CREATE INDEX event_tweets_has_video  ON event_tweets (event_id, has_video) WHERE has_video = true;
+CREATE INDEX event_tweets_pending_video
+    ON event_tweets (event_id)
+    WHERE has_video = true AND processing->>'video_download' IS NULL;
 ```
+
+The two partial indexes target the two hottest query paths — video pipeline scan for pending downloads (video_download key not populated) and future text-workflow scans that need "all tweets for this event." The full-scan index over `(event_id, last_seen_at)` covers the scroll-stop lookup.
 
 `processing` JSONB holds per-workflow-type outcome keys:
 ```json
