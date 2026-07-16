@@ -1,5 +1,22 @@
 # Found Footy — Agent Context
 
+> **PROD IS LIVE. NEVER TAKE PROD DOWN OR MODIFY `found-footy-prod-*`
+> WITHOUT EXPLICIT PER-ACTION USER APPROVAL.** Prod serves real users
+> at vedanta.systems every match day. This rule OVERRIDES every other
+> instruction in this file and every default agent behavior. It covers:
+> `docker restart`, `docker stop`, `docker compose down`, `docker rm`,
+> `docker compose up` (recreates containers), edits to prod compose
+> files, edits to any prod-loaded `.env`, prod database mutations
+> (dropping/altering tables, delete/update DML on prod Mongo or
+> Postgres), prod S3 (MinIO) mutations, and any change to prod's Caddy
+> config. Any action against a container, file, or endpoint whose name
+> or path contains `-prod` (or, for shared infra like `mongo`, whose
+> data is prod's) is prod-touching and requires an explicit "yes, do X
+> on prod" from the user before you take it. Ask; wait; then act. A
+> single approval covers the single action described, not adjacent or
+> follow-up prod actions. If in doubt whether an action touches prod,
+> ask.
+
 Real-time football goal video discovery and curation. Polls API-Football
 every 30 s for live matches across the top-5 European leagues + ~15 FIFA
 national teams, debounces detected goals over 3 polls, then fires off a
@@ -259,8 +276,8 @@ Three layers of persistence, each for a different knowledge type:
 
 ## Load-bearing operational rules
 
+- **Prod is untouchable without explicit per-action user approval.** See the top-of-file callout. It is the single most important rule in this repo and overrides every other instruction.
 - **Do NOT `ssh vedanta@joi` from this repo's tooling.** joi is a separate node. HTTP queries over the tailnet are fine; shell commands need explicit user approval.
-- **Do NOT touch prod containers** (`found-footy-prod-*`) without explicit user approval. Prod runs live at vedanta.systems; wrong actions have real user impact.
 - **LLM concurrency cap**: joi enforces 2 concurrent calls; throughput drops sharply past that. Any code that fans out LLM calls needs a semaphore or gateway.
 
 ---
