@@ -199,7 +199,7 @@ Frames sampled from the clip go to joi's Qwen3-VL-8B endpoint. Structured output
 
 Field meanings — TIGHTENED from Python's current definitions (`vision.py:552` prompt shows Python's `soccer` accepts "highlights, celebrations, stadium recordings" which is what lets non-broadcast content through; Python's `screen` only catches phone-filming-TV, misses software screen recordings):
 
-- `soccer` — **true ONLY if this is DIRECT BROADCAST FOOTAGE from a professional live soccer match camera source**. Includes: match play, official broadcaster-produced replays, VAR footage shown by the broadcast. **Excludes:**
+- `soccer` — **true ONLY if this is DIRECT BROADCAST FOOTAGE from a professional live soccer match camera source**. Includes: match play, official broadcaster-produced replays, VAR footage shown by the broadcast, **on-field player celebrations following a goal** (running to the corner flag, group hugs, signature reactions, dugout reactions — legitimate broadcast tail content of a goal clip). **Excludes:**
   - **Commentary / reaction / livestream videos** — person visible or audible discussing the game, even with game footage embedded (livestreamers, YouTube reaction channels)
   - **Fan compilations** — multiple goals from different matches edited together
   - **Fan-shot stadium footage** — phone recorded from crowd angle (Python's "stadium recordings" allowance is exactly this rejection category — remove)
