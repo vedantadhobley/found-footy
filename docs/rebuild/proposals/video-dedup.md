@@ -5,7 +5,7 @@ doc until it's reviewed + signed off.
 
 **Revision log:**
 - 2026-07-16 (first pass) — initial proposal, committed 71afc8e.
-- 2026-07-16 (second pass, this doc) — walked through with user; substantive changes:
+- 2026-07-16 (second pass) — walked through with user; substantive changes:
   categories collapsed from 3 to binary (wrong-clock = hard-reject, not a stored category);
   metadata hard-filter added as cheapest first-real-work stage (duration/resolution/aspect/framerate);
   content-hash short-circuit reordered ahead of any vision calls so already-owned bytes skip LLM
@@ -16,6 +16,19 @@ doc until it's reviewed + signed off.
   perceptual hash at quarter-second frame intervals (revised from 8 uniform-interval guess);
   `event_tweets` extensible table for cross-batch scroll dedup with pluggable per-workflow-type
   processing state.
+- 2026-07-16 (third pass, this doc) — grepped Python's actual perceptual hash implementation
+  (`archive/src/activities/hashing.py`, `archive/src/utils/dedup_match.py`,
+  `archive/src/utils/config.py`) and corrected several algorithm details I had wrong in the
+  second pass. Python uses **dHash + histogram equalization + dense 0.25s sampling +
+  offset-tolerant sliding-window matching** with `max_hamming=10` per frame and
+  `min_consecutive=3` frames as thresholds — NOT pHash + concatenated 512-bit signature + LSH
+  as the second pass claimed. The offset-tolerance is load-bearing: same-goal clips with
+  different clip boundaries (5s pre-goal vs 2s pre-goal) match via sliding-window offset
+  search that signature-Hamming would miss. Q1 (algo choice), Q2 (LSH prefix), and Q3
+  (similarity threshold) collapse under Python-preservation. Q4-Q7 unchanged. Storage format
+  stays Python's text format initially for cutover compat; binary format is a post-cutover
+  optimization. Indexing (LSH or similar) deferred to a future optimization phase — Python
+  does all-pairs comparison which is tolerable at our corpus size (~thousands).
 
 **Cross-refs:**
 - Plan intent — [`../../rebuild-plan.md`](../../rebuild-plan.md) §5 W4-W5 (VideoValidation + AssetPersistence)
@@ -180,13 +193,24 @@ Code applies decisions from the output:
 - `has_visible_clock == true` AND minute matches → mark `verified = true`.
 - `has_visible_clock == false` → mark `verified = false` (kept as unverified, lower confidence).
 
-**Stage 6 — Perceptual frame hashing** (only for Stage-5 survivors).
-Extract frames at quarter-second intervals (4 fps sample rate). Per-frame pHash (64 bits/frame). For a 30s clip → 120 frames × 64 bits = 7680-bit signature. Assemble into `signature` (full stored form) + `perceptual_hash_prefix` (LSH bucket key derived from a subset of the signature).
+**Stage 6 — Perceptual frame hashing** (only for Stage-5 survivors). Preserve Python's algorithm verbatim (`archive/src/activities/hashing.py`):
+- Extract frames every 0.25s via ffmpeg.
+- **Histogram equalization** on each frame to normalize contrast/brightness (matters for videos with different color grading of the same underlying clip).
+- Resize to 9x8 grayscale.
+- **dHash** (difference hash) — compare adjacent pixels to build a 64-bit hash per frame.
+- Storage format (preserve Python's text shape for cutover compat): `"dense:0.25:0.25=abc123,0.50=def456,0.75=..."`. Variable-length depending on clip duration.
 
-**Stage 7 — Batch perceptual dedup + S3 perceptual lookup.**
-Within same category (verified pool vs unverified pool) only:
-- Batch: pairwise-compare surviving representatives by Hamming(signature). Below threshold → merge (URL lists combined into one cluster).
-- S3 corpus: SELECT candidates in the same LSH bucket, Hamming-verify against stored `perceptual_hash`. Hit → this candidate is perceptually the same clip as an existing asset.
+**Stage 7 — Batch perceptual dedup + S3 perceptual lookup.** Preserve Python's offset-tolerant matching algorithm (`archive/src/utils/dedup_match.py` `_dense_hashes_match`). Within same category (verified vs unverified) only:
+- For each candidate pair, iterate over every possible time offset between them.
+- At each offset, count consecutive matching frames (per-frame Hamming distance ≤ `max_hamming=10`, timestamp tolerance = interval/2).
+- If ≥ `min_consecutive=3` consecutive frames match at ANY offset → declare "same video."
+
+The offset-tolerance is load-bearing: two clips of the same goal often start at different times (Clip A 5s pre-goal, Clip B 2s pre-goal). Signature-Hamming approaches would miss this because the same underlying frames land at different signature positions. Python's sliding-window offset search finds the alignment.
+
+- **Batch:** run `_dense_hashes_match` pairwise over surviving representatives in the current event's batch. Below threshold → merge (URL lists combined into one cluster).
+- **S3 corpus:** for each candidate, all-pairs `_dense_hashes_match` against `video_assets.perceptual_hash` within the same category filter. Hit → this candidate is perceptually the same clip as an existing asset. At corpus size ~thousands, all-pairs is tolerable; indexing (LSH-like structure over frame lists) is deferred to a future optimization phase.
+
+Thresholds `max_hamming=10` per frame and `min_consecutive=3` are empirically tuned (Python's `MAX_HAMMING_DISTANCE` and `MIN_CONSECUTIVE_MATCHES` constants). Preserve as-is; re-tune only if V/d backfill surfaces false positives/negatives on real clusters.
 
 **Stage 8 — Vision call #2: quality comparison** (only fires if 2+ candidates survive to this point in a single perceptual cluster).
 Frames from all cluster members (including the existing S3 asset if one was matched in Stage 7) go into ONE call. Structured output ranks them:
@@ -442,27 +466,29 @@ Documented in this proposal above (§ AssetWorkflow serialization, § Cross-even
 - **Rank recalculation** (event.rank_recalculated NATS emit) — the
   ranking algorithm redesign is its own conversation.
 
-## Resolved during 2026-07-16 second-pass walkthrough
+## Resolved during 2026-07-16 walkthrough
 
+**Second pass:**
 - **Frame sampling** — quarter-second intervals (4 fps), not 8 uniform frames.
 - **URL check scope** — indexed `video_shares.tweet_url`. Start simple; dedicated URL table if index cost surfaces later.
 - **V/a vs V/c split boundary** — Video owns Stages 1-5 (URL + download + metadata + content hash + vision #1). Asset owns Stages 6-9 (perceptual + vision #2 + upload + share). Preserves existing phase boundary and independent evolution of the perceptual pipeline.
 - **Cutover backfill scope** — full backfill of Python-era corpus. Manageable single-digit-thousands size; catches duplicate-object cleanup as a bonus.
 
+**Third pass (after grepping Python's hash + match implementation):**
+- **Perceptual hash algorithm** — **dHash** (9x8 grayscale, adjacent-pixel comparison, 64 bits/frame) with **histogram equalization** for lighting normalization. Preserve Python's algorithm verbatim (`archive/src/activities/hashing.py`). My earlier lean toward pHash was wrong on offset-tolerance grounds — see below.
+- **Storage format** — Python's text form `"dense:0.25:t1=h1,t2=h2,..."` initially for cutover compat. Binary format is a post-cutover optimization; not blocking.
+- **Matching algorithm** — Python's offset-tolerant sliding-window match (`_dense_hashes_match`): for every possible time offset between two videos, count consecutive per-frame matches (Hamming ≤ threshold, timestamp tolerance = interval/2); require ≥ N consecutive → same. The offset-tolerance is load-bearing (same-goal clips with different pre-goal buffer land the same underlying frames at different signature positions; signature-Hamming would miss). Preserve algorithm.
+- **Similarity thresholds** — Python's `MAX_HAMMING_DISTANCE=10` per frame + `MIN_CONSECUTIVE_MATCHES=3` frames (0.75s at 0.25s sampling). Empirically tuned. Preserve. Re-tune only if V/d backfill surfaces false positives/negatives on real clusters.
+- **LSH-style indexing** — dropped from initial scope. Python does all-pairs comparison against the corpus (O(N) per lookup, tolerable at ~thousands of assets). Deferred to a future optimization phase; when we need it we'll design an index structure suitable for variable-length frame lists (MinHash over frame hashes, representative-frame index, or similar) — LSH prefix on a fixed-size signature doesn't fit Python's variable-length frame-list shape.
+
 ## Genuinely open (need decisions or empirical tuning)
 
-1. **Perceptual hash algorithm.** pHash (DCT-based, robust to compression + scaling, ~1ms/frame in Go), dHash (fastest, robust to brightness, weaker on crops), wHash (wavelet, most robust but 5-10× cost). My lean: **pHash** — best speed/robustness balance for Twitter re-encodes. Empirical tuning during V/d backfill will confirm.
+1. **Aspect ratio tolerance band.** Placeholder ±5% around 16:9 (1.777). Rejects clean 4:3 or portrait obviously, but should accept slight Twitter-re-encode aspect artifacts. Widen if we see legit clips rejected in real corpus.
 
-2. **LSH prefix bit-width.** For the ~7680-bit full signatures, prefix length trades selectivity vs bucket size. 16 bits → 65k buckets, cheap lookup, some false-positives need Hamming verification. 24 bits → 16M buckets, more selective. 32 bits → ~4B buckets, near-unique but bloats index. My lean: **16 bits** initially — bucket count fits pg btree comfortably; Hamming verification against a handful of candidates per lookup is fast.
+2. **Scroll-stop threshold** for Twitter search using `event_tweets`. Placeholder: **3 consecutive already-seen tweets → halt scrolling.** Confirm the current Python value or set new during O4 shakeout.
 
-3. **Similarity threshold** (Hamming distance cutoff for "same clip"). For a ~7680-bit signature, needs empirical tuning. Placeholder: 6-10% of signature length (~500-770 bits). Real threshold set during V/d backfill against the natural duplicate clusters that surface.
+3. **Vision call combining vs separating.** Whether call #1 (is-soccer + clock check) stays as ONE structured-output call or splits into two independent activities. Combined is my lean (one round trip per unique content), but real answer depends on model behavior at that structured-output shape — needs testing. Fine to ship combined and split later if quality regresses.
 
-4. **Aspect ratio tolerance band.** Placeholder ±5% around 16:9 (1.777). Rejects clean 4:3 or portrait obviously, but should accept slight Twitter-re-encode aspect artifacts. Widen if we see legit clips rejected in real corpus.
+4. **Vision call #2 rubric.** Quality-comparison prompt design — what dimensions to score (sharpness / compression artifacts / color fidelity / motion smoothness / broadcast overlay legibility)? Iteration during implementation with real dedup clusters as calibration data.
 
-5. **Scroll-stop threshold** for Twitter search using `event_tweets`. Placeholder: **3 consecutive already-seen tweets → halt scrolling.** Confirm the current Python value or set new during O4 shakeout.
-
-6. **Vision call combining vs separating.** Whether call #1 (is-soccer + clock check) stays as ONE structured-output call or splits into two independent activities. Combined is my lean (one round trip per unique content), but real answer depends on model behavior at that structured-output shape — needs testing. Fine to ship combined and split later if quality regresses.
-
-7. **Vision call #2 rubric.** Quality-comparison prompt design — what dimensions to score (sharpness / compression artifacts / color fidelity / motion smoothness / broadcast overlay legibility)? Iteration during implementation with real dedup clusters as calibration data.
-
-Sign off on any of the 7 (or mark as "empirical, defer to V/d") and V/a starts (after O3/a-c and T ship).
+Sign off on any of the 4 (or mark as "empirical, defer to V/d") and V/a starts (after O3/a-c and T ship).
