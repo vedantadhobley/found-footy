@@ -169,6 +169,7 @@ func (a *Activities) ActivateUpcoming(ctx context.Context, in ActivateUpcomingIn
 			continue
 		}
 		out.Activated++
+		a.emitFixtureActivated(ctx, f.ID, now, "kickoff_soon")
 	}
 	return out, nil
 }
@@ -276,6 +277,7 @@ func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixt
 				continue
 			}
 			out.EmergencyActivated++
+			a.emitFixtureActivated(ctx, f.ID, now, "already_started")
 
 		default:
 			// Non-Live status. Update the fields, then check if the
@@ -288,6 +290,7 @@ func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixt
 					continue
 				}
 				out.KickoffActivated++
+				a.emitFixtureActivated(ctx, f.ID, now, "kickoff_correction")
 			}
 		}
 
@@ -528,6 +531,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		}
 		if hitZero {
 			out.EventsRemoved = append(out.EventsRemoved, key)
+			a.emitEventRemoved(ctx, pgEv.ID, in.APIFixture.Fixture.ID, now)
 		}
 	}
 
@@ -606,6 +610,35 @@ func (a *Activities) emitEventStable(ctx context.Context, evID uuid.UUID, fixtur
 		TeamName:   e.Team.Name,
 	}
 	if _, err := a.Composer.Publish(ctx, eventinfra.KindEventStable, evID, fixtureID, payload); err != nil {
+		_ = err
+	}
+}
+
+func (a *Activities) emitFixtureActivated(ctx context.Context, fixtureID int64, activatedAt time.Time, reason string) {
+	if a.Composer == nil {
+		return
+	}
+	payload := eventinfra.FixtureActivatedPayload{
+		FixtureID:   fixtureID,
+		ActivatedAt: activatedAt,
+		Reason:      reason,
+	}
+	if _, err := a.Composer.Publish(ctx, eventinfra.KindFixtureActivated, uuid.Nil, fixtureID, payload); err != nil {
+		_ = err
+	}
+}
+
+func (a *Activities) emitEventRemoved(ctx context.Context, evID uuid.UUID, fixtureID int64, removedAt time.Time) {
+	if a.Composer == nil {
+		return
+	}
+	payload := eventinfra.EventRemovedPayload{
+		EventID:   evID,
+		FixtureID: fixtureID,
+		RemovedAt: removedAt,
+		Reason:    "debounce_zero",
+	}
+	if _, err := a.Composer.Publish(ctx, eventinfra.KindEventRemoved, evID, fixtureID, payload); err != nil {
 		_ = err
 	}
 }
