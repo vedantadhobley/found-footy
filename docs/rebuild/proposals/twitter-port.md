@@ -4,10 +4,20 @@
 doc until it's reviewed + signed off.
 
 **Revision log:**
-- 2026-07-16 (first pass, this doc) — initial proposal. Phase T is
-  sequenced right after O3, before O4, per [`discovery.md`](./discovery.md)
+- 2026-07-16 (first pass) — initial proposal. Phase T is sequenced
+  right after O3, before O4, per [`discovery.md`](./discovery.md)
   Q3 sign-off — Twitter is the pipeline's most load-bearing external
   dependency and deserves its own dedicated design + review runway.
+- 2026-07-16 (second pass, this doc) — walkthrough with user corrected
+  a misframing: **dual-mode auth is an OPERATIONAL pattern (VNC as
+  login terminal, save cookies to shared disk, headless fleet loads),
+  NOT an anti-detection workaround** as I originally implied. The
+  operational split is preserved and formalized: VNC container runs
+  raw Firefox only (no automation library, no scraping), headless
+  fleet runs Playwright-Go for scraping only (never login). Browser
+  library locked to Playwright-Go + Firefox with the T/a PoC gate as
+  a fallback trigger to port Python's Selenium implementation if
+  Firefox-in-Docker-with-Playwright-Go proves fragile.
 
 **Cross-refs:**
 - Plan intent — [`../../rebuild-plan.md`](../../rebuild-plan.md) §9 external adapters, §5 W3 Discovery
@@ -61,50 +71,60 @@ Read `archive/twitter/README.md` for the end-user view. Summary of the behavior 
 - **No metrics.** Python service has logs; no per-instance counters for search rate / success rate / rate-limit encounters / auth-expiry events / avg tweets scanned per search / etc. Redesign: instrument the service the same way every other Go adapter is instrumented — Prometheus counters + histograms via the shared observability substrate.
 - **Direct video download coupling.** Python's `/download_video` uses the authenticated browser session to extract CDN URL + download bytes in one round trip. Works but couples download timing to search timing on the same browser instance. Redesign: split into `/extract_cdn_url` (returns the CDN URL for a given tweet, cheap) + separate downloader that hits the CDN URL from any HTTP client with the shared session cookies attached. Enables parallel downloads from a search's results without serializing on the browser.
 
-## Browser automation library choice — the biggest single decision
+## Browser automation library — Playwright-Go + Firefox
 
-Four candidates:
-
-| Library | Browsers | Pure Go | Anti-detection | Trade-offs |
-|---|---|---|---|---|
-| **Playwright-Go** | Chromium, Firefox, WebKit | No (Node runtime for driver, ~50MB) | Strong out-of-box | Multi-browser matters — Firefox is Python's proven-good choice against Twitter's detection. Playwright's API is modern, retries + auto-waits built in. Downside: Node runtime bundled with the driver adds container size + a language boundary. |
-| **Rod** | Chromium only | Yes | Moderate (stealth plugin available) | Cleanest pure-Go API. But Chromium-only means dropping Firefox → higher bot-detection exposure. |
-| **Chromedp** | Chromium only | Yes | Weak (need manual spoofing) | Mature, direct CDP. Same Chromium-only limitation as Rod. Lower-level API. |
-| **Selenium Go bindings** (`tebeka/selenium`) | Any WebDriver browser (geckodriver → Firefox, chromedriver → Chrome) | Semi (needs WebDriver process) | Same as Python (weak; relies on browser + profile config) | Directly ports Python's approach — Selenium + Firefox. Zero learning curve. But we inherit Selenium's known anti-detection footprint (`navigator.webdriver = true`), which is exactly the reason Python has the dual-mode workaround. |
-
-**My lean: Playwright-Go.**
+**Locked (2026-07-16):** Playwright-Go with Firefox for the scraping fleet. Raw Firefox in the VNC container (no automation library at all — that container's job is manual login only, per the operational reframing above).
 
 Reasoning:
-- **Firefox support** — matches Python's proven-good browser choice against Twitter's detection.
-- **Modern API** with async/retries/auto-waits + typed responses. Less boilerplate than Selenium bindings.
-- **Anti-detection defaults** — Playwright spoofs `navigator.webdriver` and other WebDriver telltales by default. May let us drop Python's dual-mode workaround entirely (test in dev; keep dual-mode as fallback).
-- **Container size** — Node runtime + driver adds ~50MB. Not zero but not disqualifying.
 
-Runner-up: Selenium Go bindings + geckodriver. Same-shape port, minimal risk, but inherits Selenium's known detection footprint.
+- **Firefox** matches Python's proven-good choice against Twitter's detection surface (Chromium is more heavily targeted). Firefox-vs-Chromium is orthogonal to automation-library choice — we're keeping Firefox regardless of library.
+- **Playwright-Go over Selenium Go bindings** for code quality:
+  - Modern async API with typed responses, auto-waits, and built-in retries. Selenium's API leans on manual polling loops that make Go code noisy.
+  - Anti-detection defaults are slightly better — Playwright spoofs `navigator.webdriver = false` and uses a patched Firefox fork (juggler) with a different fingerprint than plain geckodriver. Not critical for our use case (we scrape only, never log in via automation), but a marginal win.
+  - Active development, larger community, Microsoft-backed.
+- **NOT the reasons — anti-detection isn't the driver.** Dual-mode is preserved for operational reasons (VNC-as-login-terminal), not because Selenium would trip Twitter's detection during login (which is what I originally wrote in the first pass — corrected here).
+- **Chromium-only options rejected** (Rod, Chromedp, Playwright-Chromium): dropping Firefox increases detection risk against Twitter specifically. Not worth it for pure-Go convenience.
 
-**Open question at the top of the list**: Playwright-Go's Firefox support has historically been less battle-tested than Chromium. Test with a dev container against Twitter search + login flows before committing.
+### Trade-offs we're accepting
+
+- **Node runtime in the container** — Playwright-Go bundles a Node driver (~50MB overhead). Fine.
+- **Firefox-in-Docker with Playwright-Go is less battle-tested than Selenium+geckodriver in Docker.** Known Playwright-Go GitHub issues around Firefox startup in containers. The T/a PoC gate is exactly this test — if it works, ship. If it doesn't, fall back.
+
+### Fallback strategy
+
+**If T/a's PoC gate fails** (Playwright-Go + Firefox in Docker proves unreliable against Twitter):
+- Port Python's `session.py` directly using `tebeka/selenium` Go bindings + geckodriver + Firefox.
+- Mechanical translation from Python — the Selenium API shape is nearly identical across languages.
+- We lose the modern-API code-quality argument but preserve Firefox-for-detection.
+- No redesign of T's other work — the fallback is contained to the browser wrapper module.
+
+Fallback commitment: if the PoC gate fails, DON'T pivot to Chromium in some pure-Go option. Firefox stays. The pivot is Playwright-Go → Selenium Go bindings, that's it.
 
 ## Authentication + cookie lifecycle
 
-Preserving Python's win, adapting to Go + Playwright:
+Preserving Python's operational pattern (VNC-as-login-terminal, headless-fleet-as-scrapers, cookies shared via disk). Explicit container split:
 
-- **Cookie storage:** JSON file at `/config/twitter_cookies.json` (host-side `~/.config/found-footy/twitter_cookies.json`), same shape as Python for cross-compat during migration. Bind-mounted into every twitter container.
-- **Startup sequence:**
-  1. Launch Firefox via Playwright in a persistent context (`launchPersistentContext`) pointed at `/data/firefox-profile/`.
-  2. On startup, if `/config/twitter_cookies.json` exists AND is not expired → load cookies into the Playwright context.
-  3. Probe an auth-required endpoint (`x.com/home`) to verify the session is live.
-  4. If probe passes → mark service healthy, expose `/health` 200.
-  5. If probe fails → mark service `authenticated: false`, expose `/health` 503, launch manual Firefox via `xdotool` or subprocess for VNC visibility.
-- **Manual re-auth flow (VNC):**
-  1. User visits `http://<host>:<vnc_port>`, sees Firefox.
-  2. User logs into Twitter (real Firefox, no automation library attached — same as Python's dual-mode LEFT half).
-  3. Service polls the manual-Firefox profile for the `auth_token` cookie every 5s.
-  4. Once detected, service exports cookies from manual-Firefox profile → `/config/twitter_cookies.json`.
-  5. Playwright reloads cookies into its context → service transitions to `healthy`.
-  6. Broadcast a `twitter.reauthed` NATS event so scaled instances refresh their cookies from the backup file.
-- **Cookie expiry monitoring:** Playwright cookie inspection every N minutes; if `auth_token` cookie is missing or expired → mark unhealthy, fire `twitter.auth_expired` NATS event.
+### VNC container — login terminal only
 
-**Open question:** does Playwright-Go's persistent context play well with Xvfb + VNC for the manual-login flow, or do we need to keep a subprocess-launched raw Firefox for the manual half? Requires testing.
+- **Runs raw Firefox in Xvfb, exposed via x11vnc + websockify.** No Playwright, no automation library — the whole point is a real Firefox that Twitter's detection sees as an actual user.
+- **On startup:** launch Firefox pointed at `x.com/login`. Idle until a human connects via VNC.
+- **Login watcher:** a Go process monitors the Firefox profile's `cookies.sqlite` for the `auth_token` cookie appearing.
+- **Cookie capture:** once `auth_token` is present + non-expired, extract cookies from `cookies.sqlite` → write to `/config/twitter_cookies.json` (JSON format, compatible with Python's existing format for migration).
+- **NATS emit:** publish `twitter.reauthed` event so the headless fleet knows to reload cookies from disk.
+- **Post-capture behavior:** container goes idle. Firefox stays running so a human can re-open VNC and re-auth on future expiry. Not a scraping instance.
+- **HTTP endpoints:** just `/health` + `/status` (report last-capture timestamp, cookie expiry) — no `/search`, no `/download_video`. The scaler routes search traffic away from this container.
+
+### Headless fleet — scraping only, never login
+
+- **Runs Playwright-Go with Firefox.** Persistent context pointed at `/data/firefox-profile/` (per-container profile; NOT shared, because Playwright's persistent context isn't multi-writer-safe).
+- **Cookie loading:** on startup, read `/config/twitter_cookies.json` and load cookies into the Playwright context. Probe `x.com/home` to verify the session is live. Success → serve traffic. Failure → mark `/health` 503, log for scaler visibility.
+- **Cookie expiry monitoring:** every N minutes, inspect current session cookies for `auth_token` validity. If missing/expired → mark unhealthy, fire `twitter.auth_expired` NATS event so someone can re-auth via VNC.
+- **Cookie reload on NATS `twitter.reauthed`:** subscriber goroutine reloads cookies from disk, restarts the Playwright context if necessary, transitions back to healthy.
+- **NEVER attempts login itself.** If cookies are invalid, the correct behavior is to go unhealthy and wait for a human-driven VNC re-auth. Automating login in a headless container defeats the whole operational split (defensive Firefox for login, automation for scraping).
+
+### Cookie format
+
+JSON file at `/config/twitter_cookies.json` (host-side `~/.config/found-footy/twitter_cookies.json`), bind-mounted into every twitter container. Same top-level shape as Python's format (array of cookie objects) plus optional metadata fields for observability. See Q4 below for open question on the metadata schema.
 
 ## Search + scrape strategy
 
@@ -279,7 +299,9 @@ PoC gate: launch Playwright + Firefox in a dev container, load a cookie fixture,
 |---|---|
 | T is a dedicated phase sequenced right after O3, before O4. | discovery.md Q3 sign-off |
 | Preserve Python's API contract (`/search`, `/health`, `/authenticate`, `/auth/verify`, `/download_video`) so existing S7 client works with minimal changes. | Minimize cutover risk |
-| Preserve Python's dual-mode auth pattern (manual Firefox for login, automation library for scrape) as fallback. Test whether Playwright-Go's anti-detection is enough to skip manual half in normal operation. | 2026-07-16 walkthrough |
+| Dual-mode auth pattern preserved AS PRIMARY DESIGN, not fallback — reason is operational (VNC as login terminal, save cookies to disk, headless fleet loads), not anti-detection as originally miswritten. VNC container runs raw Firefox only, headless fleet runs Playwright-Go only. Container roles are formally split. | 2026-07-16 walkthrough |
+| Browser library locked: **Playwright-Go + Firefox** for the headless scraping fleet. Reasons: modern async API + typed responses + auto-waits + built-in retries make cleaner Go code than Selenium's polling-loop shape. Firefox retained regardless of library because it has less Twitter-detection surface than Chromium. Chromium-only options rejected. | 2026-07-16 walkthrough |
+| Fallback strategy on T/a PoC failure: port Python's `session.py` directly using `tebeka/selenium` Go bindings + geckodriver + Firefox. Mechanical translation. Firefox stays. No pivot to Chromium under any option. | 2026-07-16 walkthrough |
 | Preserve Python's cookie backup file at `/config/twitter_cookies.json` shared via bind mount. Same shape as Python for migration compat. | Minimize cutover risk |
 | Preserve Python's dual-container deployment (twitter-vnc + N twitter-headless). Scale N via docker compose replicas. | Proven pattern |
 | Preserve Python's URL exclusion + time-based scroll termination + OR-syntax search — the search API contract from Discovery's perspective is unchanged. | Discovery integration compat |
@@ -290,11 +312,12 @@ PoC gate: launch Playwright + Firefox in a dev container, load a cookie fixture,
 | Instance registry moves from scaler-owned in-memory state to pg table `twitter_instances` — observable via SQL, survives restarts. | Improvement over Python |
 | Prometheus instrumentation via shared observability substrate. | Standard for all Go adapters |
 
+## Resolved during 2026-07-16 walkthrough
+
+- **Q1 — Browser library** — Playwright-Go + Firefox for the scraping fleet. Fallback if the T/a PoC gate fails: `tebeka/selenium` + geckodriver + Firefox (mechanical port of Python's `session.py`). Firefox stays regardless.
+- **Q2 — Dual-mode auth** — preserved AS PRIMARY DESIGN, not fallback. Framed as operational (VNC = login terminal, headless fleet = scrapers, cookies shared via disk), not anti-detection. VNC container is login-only (no automation library); headless containers are scraping-only (Playwright-Go, never login). Cookie reload via NATS `twitter.reauthed` event.
+
 ## Open questions
-
-1. **Browser library — Playwright-Go with Firefox, or fall back to Selenium Go bindings + geckodriver?** My lean: Playwright-Go, with a T/a PoC gate that tests Firefox support against Twitter. Fall back to Selenium bindings if Firefox in Playwright-Go proves fragile.
-
-2. **Can we drop the dual-mode manual-Firefox-for-login pattern with Playwright's anti-detection?** Would simplify the service. Test in dev: try Playwright-driven login flow with anti-detection defaults; keep dual-mode as fallback if bot detection catches it.
 
 3. **`/download_video` — split into extract + external download, or preserve Python's browser-driven download?** My lean: split. But the browser-driven download bypasses yt-dlp rate limits by riding session cookies — if Twitter's CDN URLs require cookies attached to the request, we still need to attach them from the HTTP client after extraction. Confirm CDN URL auth requirements before committing.
 
