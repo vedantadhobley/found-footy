@@ -160,21 +160,54 @@ O3/d becomes the bridge: for now, Discovery just calls a stub activity that "wou
 - Destroy pipeline (Temporal cancel + video_shares soft-delete on
   `event.removed`)
 
-## Open questions for your review
+## Resolved 2026-07-16 — Q1-Q4 signed off
 
-**Discovery-trigger transport is closed** (2026-07-16 decision:
-Temporal-direct + register-on-flip). The four questions below remain.
+**Discovery-trigger transport** — closed by [2026-07-16 decisions.md](../../decisions.md): Temporal-direct + register-on-flip.
 
-1. **NATS composer scope for O3/a — full dual-write or NATS-only for now?**
-   Full dual-write is right per the plan but adds pg schema pressure (event_log table + dedup constraints). NATS-only is faster to ship. My lean: **full dual-write** — the audit trail matters, and building it now avoids retrofitting later.
+1. **Q1 — NATS composer scope for O3/a: FULL DUAL-WRITE.**
+   Composer writes to pg `event_log` (append-only audit table with
+   JSONB payload) AND publishes to NATS. Skew is a metric, not a
+   failure. Rationale: debug queries against pg beat digging through
+   JetStream streams during O3-O5 development; browser reconnect
+   gap-fill via `/events?since=<ts>` querying pg becomes trivial when
+   we need it; retrofit cost avoided (every emission call site would
+   otherwise need touching later).
 
-2. **Should MonitorWorkflow update its scenario assertions in O3/b?**
-   If yes, every existing debounce scenario adds `expected_final_state.event_log` blocks to verify emissions **and** `expected_final_state.event_downstream_workflows` blocks to verify Monitor-inserted Discovery rows. Real coverage but more YAML noise. My lean: **yes** — the harness is exactly the place to verify emissions + row-insert atomicity, and doing it now catches spawn-path bugs at commit time.
+2. **Q2 — Monitor scenario assertions in O3/b: YES, UPDATE EVERY SCENARIO.**
+   Every existing scenario YAML grows two new expected-state blocks:
+   `expected_final_state.event_log` to verify Monitor emissions, and
+   `expected_final_state.event_downstream_workflows` to verify
+   Monitor-inserted Discovery rows. Rationale: the spawn path is now
+   on the critical path for fixture completion (checklist row is what
+   holds the fixture open) — every scenario should double as a spawn-
+   path smoke test. YAML noise is predictable and cheap next to bug
+   escape cost.
 
-3. **Twitter service — do we port Playwright-Go now, or keep the Go stub through O3?**
-   Real question because a Discovery workflow that "logs and returns" isn't testable end-to-end. But porting Twitter is a whole separate track. My lean: **stub for O3/c, port in a dedicated Twitter-service commit later**. Discovery's control flow is verifiable in scenarios without real Twitter.
+3. **Q3 — Twitter service porting: STUB FOR O3, DEDICATED T PHASE RIGHT AFTER O3.**
+   O3 keeps the Go stub. The stub stays as the test harness's
+   permanent stand-in even post-port (real browser automation belongs
+   nowhere near integration tests). T (Twitter port) sequenced
+   immediately after O3, before O4 — own proposal doc + own design
+   conversation covering browser choice (Playwright-Go / Chromedp /
+   Rod), cookie persistence + refresh, VNC bootstrap for re-auth,
+   rate-limit handling, search-string tuning + team-alias RAG, error
+   taxonomy, session recovery. Rationale: Twitter is one of the most
+   critical pieces of the project; deserves its own dedicated design
+   runway, not bundled into O3.
 
-4. **Video URL sharing (from Python) — preserve or design fresh?**
-   Python's URL-sharing across events (multiple events sharing a video_asset via video_shares) worked for the trivial case. My earlier proposal was a 3-layer dedup (URL → content hash → perceptual hash + LSH). That belongs in O4/O5, but the SCHEMA (video_assets.content_hash UNIQUE, perceptual_hash_prefix indexed) already exists in schema.sql. My lean: **keep the schema, defer design conversation to O4**.
+4. **Q4 — Video URL sharing: DESIGN FRESH IN O4 (schema stays as-is).**
+   Python's URL-as-identity dedup misses same-clip-different-URL
+   cases and does no cross-batch dedup against the S3 corpus —
+   result: duplicate S3 objects across batches, no multi-share
+   against existing assets. O4 design direction (signed off now, to
+   be detailed in O4's proposal): full-video hash (batch → S3)
+   followed by perceptual hash (batch → S3), with interleave
+   optimization checking S3 during the batch pass to short-circuit
+   further work on already-owned clips. Cheap check first at every
+   layer. Perceptual-hash algorithm choice (pHash / dHash / averaged
+   frame hash / keyframe-only) + LSH bucket sizing to be decided in
+   the O4 proposal. Schema in `schema.sql`
+   (`video_assets.content_hash` UNIQUE + `perceptual_hash_prefix`
+   indexed) is compatible with the direction and stays.
 
-Sign off on the 4 questions above and O3/a starts.
+**O3/a is unblocked and can start.**
