@@ -386,6 +386,23 @@ func (r *EventRepo) RegisterEventAbsence(ctx context.Context, eventID uuid.UUID,
 	return newCount, hitZero, nil
 }
 
+// RegisterDownstreamWorkflow inserts a pending row into
+// event_downstream_workflows so FixtureReadyToComplete sees the
+// workflow as in-flight. Idempotent on
+// (event_id, workflow_type, workflow_id). See event.Repo
+// docstring for the load-bearing rationale.
+func (r *EventRepo) RegisterDownstreamWorkflow(ctx context.Context, eventID uuid.UUID, workflowType, workflowID string) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO event_downstream_workflows (event_id, workflow_type, workflow_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (event_id, workflow_type, workflow_id) DO NOTHING
+	`, eventID, workflowType, workflowID)
+	if err != nil {
+		return fmt.Errorf("pg.EventRepo.RegisterDownstreamWorkflow: %w", err)
+	}
+	return nil
+}
+
 // RegisterVideoValidationWorkflow records a download attempt. Unchanged
 // by the O2 debounce redesign — tracks download attempts, not
 // presence/absence stability.

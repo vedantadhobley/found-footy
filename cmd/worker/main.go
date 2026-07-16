@@ -11,16 +11,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 	sdktemporal "go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 
+	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	ingestactivity "github.com/vedantadhobley/found-footy/internal/activity/ingest"
 	monitoractivity "github.com/vedantadhobley/found-footy/internal/activity/monitor"
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
+	eventinfra "github.com/vedantadhobley/found-footy/internal/infra/event"
 	"github.com/vedantadhobley/found-footy/internal/infra/llm"
 	"github.com/vedantadhobley/found-footy/internal/infra/nats"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
@@ -147,6 +150,25 @@ func main() {
 		w.RegisterWorkflow(ffwf.IngestWorkflow)
 		w.RegisterActivity(ingestActs)
 
+		// Phase O3/a — event composer for dual-write to pg event_log +
+		// NATS. See decisions.md 2026-07-16 for the NATS-scope narrowing.
+		composerIns := eventinfra.RegisterMetrics(deps.Metrics, deps.Log)
+		composer, err := eventinfra.New(pool, nc, composerIns)
+		if err != nil {
+			return err
+		}
+
+		// Phase O3/b — spawner for DiscoveryWorkflow, bundled with the
+		// event_downstream_workflows row insert in the same activity.
+		spawner := monitoractivity.NewTemporalSpawner(tempClient, 10*time.Second)
+
+		// Phase O3/c — Discovery activities (currently just
+		// MarkDownstreamComplete which updates the checklist row on
+		// workflow exit). The stub DiscoveryWorkflow calls it.
+		discoveryActs := &discoveryactivity.Activities{
+			Pool: pool,
+		}
+
 		// Phase O2 — the two poll workflows share one activities struct.
 		// Shares fixtureRepo + eventRepo with the rest of the worker.
 		// Now clock left nil → real wall clock in prod (per the
@@ -155,11 +177,15 @@ func main() {
 			APIFootball:      afClient,
 			FixtureRepo:      fixtureRepo,
 			EventRepo:        eventRepo,
+			Composer:         composer,
+			Spawner:          spawner,
 			ActivationWindow: deps.Cfg.Workflows.ActivationWindow,
 		}
 		w.RegisterWorkflow(ffwf.ActivePollWorkflow)
 		w.RegisterWorkflow(ffwf.StagingPollWorkflow)
+		w.RegisterWorkflow(ffwf.DiscoveryWorkflow)
 		w.RegisterActivity(monitorActs)
+		w.RegisterActivity(discoveryActs)
 
 		if err := w.Start(ctx); err != nil {
 			return err

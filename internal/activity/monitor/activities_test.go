@@ -254,6 +254,12 @@ func (r *fakeEventRepo) RegisterEventAbsence(_ context.Context, eventID uuid.UUI
 	}
 	return e.DebounceCount, hitZero, nil
 }
+func (r *fakeEventRepo) RegisterDownstreamWorkflow(_ context.Context, _ uuid.UUID, _, _ string) error {
+	// Composer + Spawner nil in these tests → this method is not
+	// reached; returning nil keeps interface satisfaction without
+	// implementing test-side state that the tests don't inspect.
+	return nil
+}
 func (r *fakeEventRepo) RegisterVideoValidationWorkflow(context.Context, uuid.UUID, string, string) (int, error) {
 	panic("fakeEventRepo.RegisterVideoValidationWorkflow: not implemented (test scope drift)")
 }

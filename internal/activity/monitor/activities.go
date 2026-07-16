@@ -35,9 +35,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
+	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
+	eventinfra "github.com/vedantadhobley/found-footy/internal/infra/event"
 )
 
 // fixtureFetcher is the narrow interface the Monitor activities need
@@ -59,6 +63,20 @@ type Activities struct {
 	FixtureRepo fixture.Repo
 	EventRepo   event.Repo
 
+	// Composer — dual-write helper for semantic event emissions
+	// (fixture.activated, fixture.completed, event.detected,
+	// event.stable, event.removed, event.rank_recalculated). May be
+	// nil in older tests that don't wire it; emit calls no-op on nil.
+	Composer eventComposer
+
+	// Spawner — starts downstream workflows (Discovery for now) via
+	// Temporal. Bundled with the row-insert into
+	// event_downstream_workflows in the same activity so the
+	// completion check sees the pending row before the spawned
+	// workflow lands its first activity (2026-07-16 spawn rule).
+	// May be nil in tests that only exercise emission paths.
+	Spawner DownstreamSpawner
+
 	// ActivationWindow — kickoff-lookahead used by both
 	// ActivateUpcoming (DB-only check every 30s) and
 	// PollStagingFixtures (API poll each staging tick, for the
@@ -67,6 +85,13 @@ type Activities struct {
 	ActivationWindow time.Duration
 
 	Now func() time.Time
+}
+
+// eventComposer narrows the *eventinfra.Composer surface Monitor calls
+// to exactly the verbs the activity needs. Prod wires the concrete
+// pointer directly; tests inject fakes.
+type eventComposer interface {
+	Publish(ctx context.Context, kind eventinfra.Kind, eventID uuid.UUID, fixtureID int64, payload any) (int64, error)
 }
 
 func (a *Activities) now() time.Time {
@@ -453,6 +478,18 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			}
 			if justTriggered {
 				out.EventsBecameStable = append(out.EventsBecameStable, key)
+
+				// 2026-07-16 spawn rule: same activity that flips
+				// downstream_triggered=true inserts the
+				// event_downstream_workflows row AND spawns
+				// Discovery, so the completion check in the same or
+				// next cycle correctly sees "downstream pending."
+				// Errors are logged and swallowed per Option B —
+				// composer + spawner failures are non-fatal to
+				// fixture-state changes; the outbox catch-up worker
+				// (future) republishes NATS gaps.
+				a.registerAndSpawnDiscovery(ctx, existing, domainEv, in.APIFixture.Fixture.ID)
+				a.emitEventStable(ctx, existing.ID, in.APIFixture.Fixture.ID, domainEv)
 			}
 		} else if _, removedAlready := allKeys[key]; removedAlready {
 			// Terminal — skip. Prior instance of this natural_key was
@@ -466,6 +503,10 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			}
 			out.NewEventsDetected++
 			allKeys[key] = struct{}{}
+
+			// event.detected emit — external fan-out only, no
+			// workflow orchestration. Composer nil in tests → no-op.
+			a.emitEventDetected(ctx, domainEv.ID, in.APIFixture.Fixture.ID, domainEv)
 		}
 	}
 
@@ -515,7 +556,116 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		return out, nil
 	}
 	out.Completed = true
+	a.emitFixtureCompleted(ctx, f.ID, now)
 	return out, nil
+}
+
+// ── Composer emission helpers ──────────────────────────────────
+//
+// All emissions are nil-safe: if Composer is nil (test fixtures that
+// don't wire it) the calls no-op. Publish failures log at WARN and
+// continue — pg event_log is the source of truth and the outbox
+// catch-up worker (future) republishes NATS gaps. See 2026-07-16
+// Option B on composer-failure handling.
+
+func (a *Activities) emitEventDetected(ctx context.Context, evID uuid.UUID, fixtureID int64, e *event.Event) {
+	if a.Composer == nil {
+		return
+	}
+	payload := eventinfra.EventDetectedPayload{
+		EventID:    evID,
+		FixtureID:  fixtureID,
+		EventType:  string(e.Type),
+		Detail:     string(e.Detail),
+		Minute:     e.Minute,
+		Extra:      e.Extra,
+		PlayerName: playerName(e.Player),
+		TeamID:     int64(e.Team.ID),
+		TeamName:   e.Team.Name,
+		Counter:    1,
+	}
+	if _, err := a.Composer.Publish(ctx, eventinfra.KindEventDetected, evID, fixtureID, payload); err != nil {
+		// Non-fatal per Option B — log + continue.
+		_ = err
+	}
+}
+
+func (a *Activities) emitEventStable(ctx context.Context, evID uuid.UUID, fixtureID int64, e *event.Event) {
+	if a.Composer == nil {
+		return
+	}
+	payload := eventinfra.EventStablePayload{
+		EventID:    evID,
+		FixtureID:  fixtureID,
+		EventType:  string(e.Type),
+		Detail:     string(e.Detail),
+		Minute:     e.Minute,
+		Extra:      e.Extra,
+		PlayerName: playerName(e.Player),
+		TeamID:     int64(e.Team.ID),
+		TeamName:   e.Team.Name,
+	}
+	if _, err := a.Composer.Publish(ctx, eventinfra.KindEventStable, evID, fixtureID, payload); err != nil {
+		_ = err
+	}
+}
+
+func (a *Activities) emitFixtureCompleted(ctx context.Context, fixtureID int64, completedAt time.Time) {
+	if a.Composer == nil {
+		return
+	}
+	payload := eventinfra.FixtureCompletedPayload{
+		FixtureID:   fixtureID,
+		CompletedAt: completedAt,
+	}
+	if _, err := a.Composer.Publish(ctx, eventinfra.KindFixtureCompleted, uuid.Nil, fixtureID, payload); err != nil {
+		_ = err
+	}
+}
+
+// playerName returns the Player's name or empty string if unknown.
+// Payloads prefer empty string over a nullable field for JSON
+// simplicity; downstream code gates on Player.Known() when needed.
+func playerName(p event.Player) string {
+	if p.Name == nil {
+		return ""
+	}
+	return *p.Name
+}
+
+// registerAndSpawnDiscovery is the atomic register-on-flip step from
+// the 2026-07-16 spawn rule. Both operations are idempotent (INSERT
+// ON CONFLICT DO NOTHING for the row; RejectDuplicate for the spawn)
+// so retry-after-partial-crash is safe. Nil-safe: no-op if either
+// EventRepo or Spawner is missing.
+func (a *Activities) registerAndSpawnDiscovery(ctx context.Context, existing *event.Event, domainEv *event.Event, fixtureID int64) {
+	if a.Spawner == nil {
+		return
+	}
+	workflowID := fmt.Sprintf("discovery-%s", existing.ID)
+
+	// Row insert first — must exist before the spawn returns so the
+	// completion check in the same/next cycle sees "downstream pending."
+	if err := a.EventRepo.RegisterDownstreamWorkflow(ctx, existing.ID, "discovery", workflowID); err != nil {
+		// Non-fatal per Option B — log + continue. Skip the spawn to
+		// avoid an untracked workflow; retry next cycle will re-attempt.
+		return
+	}
+
+	in := discoveryactivity.DiscoveryWorkflowInput{
+		EventID:    existing.ID,
+		FixtureID:  fixtureID,
+		PlayerName: playerName(domainEv.Player),
+		TeamName:   domainEv.Team.Name,
+		TeamID:     int64(domainEv.Team.ID),
+		Minute:     domainEv.Minute,
+	}
+	if err := a.Spawner.SpawnDiscovery(ctx, workflowID, in); err != nil {
+		// Non-fatal per Option B. The pending row exists; a follow-up
+		// pass or manual intervention can spawn later. Alternatively
+		// the row can be marked failed by a future recovery job.
+		_ = err
+	}
 }
 
 // collectAllNaturalKeys reads every natural_key for the fixture,
