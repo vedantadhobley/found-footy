@@ -1,7 +1,21 @@
 # Video dedup redesign — design proposal (O4/O5)
 
-**Status:** design-first draft. Do not implement anything from this
+**Status:** design-first draft, second pass 2026-07-16. Do not implement anything from this
 doc until it's reviewed + signed off.
+
+**Revision log:**
+- 2026-07-16 (first pass) — initial proposal, committed 71afc8e.
+- 2026-07-16 (second pass, this doc) — walked through with user; substantive changes:
+  categories collapsed from 3 to binary (wrong-clock = hard-reject, not a stored category);
+  metadata hard-filter added as cheapest first-real-work stage (duration/resolution/aspect/framerate);
+  content-hash short-circuit reordered ahead of any vision calls so already-owned bytes skip LLM
+  entirely; combined vision call for is-soccer + clock check with tighter rubric (fixes Python's
+  too-lenient soccer filter); quality-comparison as a second, multi-video vision call for close
+  perceptual clusters; AssetWorkflow uses queue-drain completion (counter + queue-empty) instead
+  of Python's 5-minute idle-timeout; popularity derived from `COUNT(video_shares)` not a counter;
+  perceptual hash at quarter-second frame intervals (revised from 8 uniform-interval guess);
+  `event_tweets` extensible table for cross-batch scroll dedup with pluggable per-workflow-type
+  processing state.
 
 **Cross-refs:**
 - Plan intent — [`../../rebuild-plan.md`](../../rebuild-plan.md) §5 W4-W5 (VideoValidation + AssetPersistence)
@@ -57,176 +71,226 @@ per-frame Python-side hashing. The redesign addresses each.
 
 ## Semantic model
 
-Three orthogonal dedup layers, cheap → expensive:
+### Category axis — binary, not three-way
+
+- **verified** — clip has a visible broadcast clock AND its minute matches the API-reported minute for this event. Highest confidence — provably THE goal.
+- **unverified** — clip has NO visible clock. Kept as a lower-confidence source; ranked below verified in the same event, but still shown.
+- **wrong-clock rejection** — clip has a visible clock BUT its minute disagrees with the API. **Hard-reject before persistence.** Not a stored category; the candidate exits the pipeline. Reasoning: a clip showing minute 34 when the API says minute 78 is provably a clip of a different match minute (or a different match entirely), not "just less confident."
+
+Dedup is **category-scoped**: verified dedups only against verified; unverified against unverified. Ranking: verified above unverified regardless of popularity, popularity sorts within each pool.
+
+### Dedup layers — cheap → expensive
+
+Four layers, ordered by cost:
 
 | Layer | Signal | Cost | Catches |
 |---|---|---|---|
-| **URL** | Exact `tweet_url` match against `video_shares.tweet_url` | O(1) index lookup, zero bytes | Same tweet seen before; same tweet referenced by two events |
-| **Content hash** | SHA256 of downloaded bytes | One hash op per downloaded clip | Same bytes at different URLs (identical re-uploads, mirror accounts) |
-| **Perceptual hash** | Per-frame perceptual hash → LSH bucket signature | Frame extraction + N per-frame hashes | Re-encodes, watermarks, minor crops of the same underlying video |
+| **Metadata hard-filter** | duration, resolution, aspect ratio, framerate via ffprobe | milliseconds | Corrupt / off-spec clips: sub-3s, over-90s, sub-720p, non-broadcast aspect ratios (portrait / 4:3 / weird), sub-20fps |
+| **URL** | Exact `tweet_url` match against `video_shares.tweet_url` | O(1) index lookup, zero bytes | Same tweet seen before, or same tweet referenced by two events |
+| **Content hash** | SHA256 of downloaded bytes | One hash over bytes we already have on disk | Same bytes at different URLs (re-uploads, mirror accounts) |
+| **Perceptual hash** | Per-frame pHash at **quarter-second intervals** → LSH bucket signature | Frame extraction + N per-frame hashes (most expensive local op) | Re-encodes, watermarks, minor crops of the same underlying clip |
 
 Each layer runs at TWO scopes:
 
-- **Batch (within one event's Video pipeline)** — collapse duplicates found in the current event's search results before doing more work on any of them.
-- **S3 corpus (against previously stored assets)** — check if any candidate matches something we already have; if yes, multi-share the existing asset instead of re-uploading.
+- **Batch (within one event's Video pipeline)** — collapse duplicates found in the current event's search results before doing more work on any of them. All duplicates within a batch contribute their popularity to the survivor.
+- **S3 corpus (against previously stored assets)** — check if any candidate matches something we already have; if yes, multi-share the existing asset instead of re-uploading. Cross-event dedup is what Python is missing today.
+
+### Cost hierarchy for LLM vs local ops
+
+For sequencing decisions later in this doc, the real cost order is:
+
+`metadata read < content hash < LLM vision call (~2 concurrent on joi) < perceptual frame hashing at quarter-second intervals`
+
+Perceptual frame hashing is more expensive than an LLM call in wall-clock terms — 120 frames for a 30s clip × per-frame hash work. This inverts the naive intuition that "local is always cheaper than network." Pipeline stage order reflects this: LLM validation happens BEFORE perceptual hashing so we don't hash a clip we're about to discard.
+
+### Hard-filter thresholds (fixed 2026-07-16)
+
+Configurable via env vars (with these defaults), but treated as fixed for the proposal:
+
+| Filter | Threshold |
+|---|---|
+| Duration minimum | 3s |
+| Duration maximum | 90s |
+| Resolution minimum | 720p (height ≥ 720) |
+| Aspect ratio | 16:9 broadcast, with a small tolerance band (~±5%) for Twitter re-encode artifacts. Portrait (9:16), 4:3, square, and other broadcast-atypical ratios are rejected. |
+| Framerate minimum | 20fps |
+
+Any candidate failing ANY of these exits the pipeline at Stage 2 (metadata hard-filter) before hashing or vision. No re-check of these downstream.
 
 ## Algorithm — the pipeline
 
-For each event's Video pipeline processing N candidate URLs from
-Discovery's Twitter search:
+The pipeline runs per event. Each of N Discovery-search DownloadWorkflows produces a batch of candidate URLs → downloads → local dedup → signals results to the per-event AssetWorkflow which serializes S3-affecting work. AssetWorkflow completes deterministically when all N Download batches have signaled AND its queue is empty (see § AssetWorkflow serialization + queue-drain completion below).
 
-**Stage 0 — URL check (per candidate URL, before download).**
+Each candidate URL flows through these stages:
+
+**Stage 1 — URL check** (per candidate URL, before download).
 ```
-For each candidate_url in N candidates:
-    SELECT video_asset_id FROM video_shares
-    WHERE tweet_url = candidate_url
-    LIMIT 1
-
-    If hit:
-        INSERT INTO video_shares (video_asset_id, event_id,
-                                   tweet_url, discovered_at)
-        Skip to next candidate.  # zero download, zero hash.
+SELECT video_asset_id FROM video_shares
+WHERE tweet_url = candidate_url
+LIMIT 1
 ```
+Hit → INSERT a new `video_shares` row for the current event pointing at the existing asset. Zero download, zero hash. Miss → continue.
 
-Cheapest possible check. Catches same-clip-re-shared-by-same-account
-and same-tweet-quoted-in-multiple-searches. Fast index lookup.
+**Stage 2 — Download bytes.** Twitter service call. Failure → drop candidate.
 
-**Stage 1 — Download + content hash + batch dedup (per surviving candidate).**
+**Stage 3 — Metadata hard-filter** (ffprobe read).
+Reject candidate immediately if ANY of: duration < 3s, duration > 90s, height < 720, aspect ratio outside 16:9 tolerance band, framerate < 20fps. Free wins — cheapest actual work in the pipeline, kills obvious garbage before any hashing or vision.
+
+**Stage 4 — Content hash + batch dedup + S3 corpus short-circuit.**
 ```
-downloads_by_hash = {}    # local to this Video workflow
+hash = sha256(bytes)
 
-For each surviving candidate_url:
-    bytes = download(candidate_url)          # goes to disk
-    if !bytes: skip                          # download failed
-    hash = sha256(bytes)
+# Batch dedup: does another candidate in this batch have the same hash?
+if hash exists in this-batch's downloads_by_hash:
+    # Same bytes, different tweet. Popularity gets absorbed via video_shares
+    # (each URL will produce its own video_share row against the same asset).
+    downloads_by_hash[hash].urls.append(candidate_url)
+    delete bytes
+    return  # skip everything below; the batch-representative for this hash
+            # will handle vision/perceptual/upload for the whole cluster.
 
-    if hash in downloads_by_hash:
-        # Same bytes as another candidate in this batch.
-        # Discard this download; add candidate_url to shared list.
-        downloads_by_hash[hash].urls.append(candidate_url)
-        delete bytes
-        continue
+# S3 corpus check: does this hash already exist in video_assets?
+SELECT id FROM video_assets WHERE content_hash = hash
+if hit:
+    # We already own these bytes — already validated, already scored, already stored.
+    INSERT INTO video_shares (video_asset_id=existing_id, event_id, tweet_url=candidate_url)
+    delete bytes
+    return  # skip all vision + perceptual + upload work.
 
-    downloads_by_hash[hash] = { bytes, url: candidate_url, urls: [candidate_url] }
-```
-
-Result: `downloads_by_hash` has one entry per unique content within
-the batch, with the list of URLs that produced identical bytes.
-
-**Stage 2 — S3 content-hash short-circuit (per unique-in-batch hash).**
-```
-For each hash, entry in downloads_by_hash:
-    SELECT id FROM video_assets WHERE content_hash = hash
-
-    If hit (existing_asset_id):
-        For each url in entry.urls:
-            INSERT INTO video_shares (video_asset_id: existing_asset_id,
-                                       event_id, tweet_url: url,
-                                       discovered_at)
-        delete entry.bytes
-        remove from downloads_by_hash
-        continue
-
-    # Miss — this hash is new to S3.
+# Truly new content — add to batch as a fresh representative.
+downloads_by_hash[hash] = { bytes, urls: [candidate_url], is_verified: undecided }
 ```
 
-Same short-circuit as Stage 0 but at bytes level, not URL. Saves the
-perceptual-hash cost AND the S3 upload cost for anything already
-stored.
+**Key insight:** batch dedup + S3 dedup here means **the vision call in Stage 5 runs at most once per unique content hash**, not once per download attempt. If 4 tweets share the same bytes, Python's current code runs vision 4 times; we run it once. If we already own the bytes, we don't run vision at all.
 
-**Interleave optimization (recommended):** run Stages 1 + 2 as a
-single pass — hash each download as it completes, immediately check
-S3, discard bytes on hit. Never accumulate more than one unique
-survivor's bytes before pruning known-owned ones. Cuts memory + disk
-pressure for busy matches.
-
-**Stage 3 — VideoValidation (AI vision against clock).**
-The workflow O4 has always been named for. Validates that the clip's
-broadcast clock matches the API's reported match minute. Runs only
-on Stage-2 survivors — clips we don't already own.
-
-Failure of validation → discard candidate (no perceptual hash, no
-upload). Success → continue to Stage 4.
-
-**Stage 4 — Perceptual hash + batch perceptual dedup (per validated
-survivor).**
+**Stage 5 — Vision call #1: combined is-soccer + clock check.** Fires only on unique-in-batch, fresh-to-S3 representatives. Frames sampled from the clip go to joi's Qwen3-VL-8B endpoint. Structured output:
+```json
+{
+  "is_soccer_broadcast": true|false,
+  "confidence": 0..1,
+  "has_visible_clock": true|false,
+  "clock_minute": int | null
+}
 ```
-For each validated survivor in downloads_by_hash:
-    signature = perceptual_hash(bytes)   # 8 sampled frames × 64-bit pHash
-    bucket_prefix = signature[:PREFIX_BITS]  # LSH bucket key
-    survivor.signature = signature
-    survivor.bucket_prefix = bucket_prefix
+Rubric (tightened from Python's too-lenient current filter): "Is this a broadcast-camera view of a live soccer match with a visible pitch and players in play?" — filters out celebration compilations, tunnel cams, meme edits, TikTok highlight reels, non-broadcast angles.
 
-# Batch perceptual dedup: pairwise-compare signatures within batch.
-# Only relevant if 2+ candidates survived to this stage.
-Merge any two survivors whose Hamming(signature) < THRESHOLD into one entry
-(carry both URL lists forward).
+Code applies decisions from the output:
+- `is_soccer_broadcast == false` → **discard** (not a soccer broadcast).
+- `has_visible_clock == true` AND `clock_minute` mismatches API's minute for this event → **discard** (wrong-clock rejection, provably a clip of a different moment).
+- `has_visible_clock == true` AND minute matches → mark `verified = true`.
+- `has_visible_clock == false` → mark `verified = false` (kept as unverified, lower confidence).
+
+**Stage 6 — Perceptual frame hashing** (only for Stage-5 survivors).
+Extract frames at quarter-second intervals (4 fps sample rate). Per-frame pHash (64 bits/frame). For a 30s clip → 120 frames × 64 bits = 7680-bit signature. Assemble into `signature` (full stored form) + `perceptual_hash_prefix` (LSH bucket key derived from a subset of the signature).
+
+**Stage 7 — Batch perceptual dedup + S3 perceptual lookup.**
+Within same category (verified pool vs unverified pool) only:
+- Batch: pairwise-compare surviving representatives by Hamming(signature). Below threshold → merge (URL lists combined into one cluster).
+- S3 corpus: SELECT candidates in the same LSH bucket, Hamming-verify against stored `perceptual_hash`. Hit → this candidate is perceptually the same clip as an existing asset.
+
+**Stage 8 — Vision call #2: quality comparison** (only fires if 2+ candidates survive to this point in a single perceptual cluster).
+Frames from all cluster members (including the existing S3 asset if one was matched in Stage 7) go into ONE call. Structured output ranks them:
+```json
+{
+  "ranked_by_quality": [
+    {"clip_index": 2, "score": 0.87, "notes": "sharpest, minimal macroblocking"},
+    {"clip_index": 0, "score": 0.71, "notes": "..."},
+    {"clip_index": 1, "score": 0.54, "notes": "heavy compression"}
+  ]
+}
+```
+Rationale: Python uses `(duration, file_size)` as a quality proxy — resolution alone lies (a 1080p heavy-compression clip looks worse than a clean 720p). LLM quality scoring on frames is more accurate.
+
+Winner outcome:
+- If winner is an EXISTING S3 asset (came in from Stage 7 corpus match) → losers become `video_shares` against it, delete losers' bytes.
+- If winner is a NEW candidate AND an EXISTING S3 asset was in the cluster → **replace + absorb**: upload winner as a new `video_assets` row; migrate old asset's `video_shares` to new asset via `UPDATE video_shares SET video_asset_id = new_id WHERE video_asset_id = old_id`; delete old asset row; delete old asset's S3 object; other cluster members become shares against winner.
+- If winner is a NEW candidate AND no S3 match → upload winner; other cluster members become shares against winner (perceptual duplicates within batch, correct multi-share).
+
+**Stage 9 — Upload winner + insert `video_assets` + insert `video_shares`.**
+Optimistic INSERT with `ON CONFLICT (content_hash) DO NOTHING RETURNING id` for the cross-event race (two events, two different tweet_urls, same bytes discovered concurrently). Winner uploads bytes; loser looks up winner's asset id and shares against it.
+
+**End state:** every candidate URL from Discovery is accounted for by a `video_shares` row pointing at exactly one `video_asset` — either a freshly uploaded one, an existing corpus one (via URL, content-hash, or perceptual match), or the replacement of an existing corpus one that lost a quality-comparison.
+
+### Popularity
+
+Derived from `COUNT(video_shares) WHERE video_asset_id = X`, not stored as a counter.
+
+- Every candidate that survives to Stage 9 (or hits Stage 1/4/7 shares) produces exactly one `video_shares` row.
+- Batch dedup: N candidates with the same content hash → 1 asset row + N share rows → popularity = N.
+- Cross-event multi-share: fixture B's tweet share against fixture A's asset → asset's popularity increments naturally.
+- Replace + absorb: old asset's shares migrated to new asset → new asset inherits old asset's popularity, plus its own new shares.
+
+No counter to keep in sync. Never drifts.
+
+### AssetWorkflow serialization + queue-drain completion
+
+Preserves Python's win (per-event upload serialization avoids intra-event races) but fixes Python's waste (5-min idle timeout on the tail of the last batch).
+
+- **One AssetWorkflow per event_id.** Started via signal-with-start from the first DownloadWorkflow's batch. Deterministic workflow_id.
+- **Signal delivery order = processing order.** Each DownloadWorkflow, on completion, sends `add_batch(batch)` including a `batch_index` (1..N, where N is currently 10). AssetWorkflow keeps a queue and processes signals FIFO.
+- **Completion condition** (not idle-timeout):
+  ```
+  batches_seen = set()
+  queue = deque()
+
+  while True:
+      wait for either:
+          (a) signal → batches_seen.add(batch.index); queue.append(batch)
+          (b) hard-cap timeout (~30 min from workflow start; safety net only,
+              covers the case where a DownloadWorkflow crashed silently)
+
+      if queue is non-empty:
+          process one batch  # single-threaded S3/pg mutation, per Python
+
+      if len(batches_seen) == N and len(queue) == 0:
+          # All expected batches have arrived AND we've drained them.
+          exit immediately.
+  ```
+  Zero idle waste. Exit is deterministic when the last batch is processed.
+- **Different events run different AssetWorkflow instances in parallel.** No cross-event coupling.
+
+### Cross-event race handling
+
+The only race the per-event serialization does NOT handle is: two different events (different AssetWorkflows) discover the same clip concurrently. Rare in practice but real. Resolution:
+- Both compute the same content hash.
+- Both try `INSERT INTO video_assets (content_hash, ...) ON CONFLICT DO NOTHING RETURNING id`.
+- One wins → uploads bytes.
+- Loser gets empty RETURNING → looks up winner's asset id → shares against it → deletes local bytes.
+
+If both had already started S3 upload before the pg race resolved (very rare — requires them to both reach Stage 9 simultaneously): second upload is either idempotent (same key, same bytes) or a swallowable "key exists" error. Never incorrect, occasionally slightly wasteful.
+
+### Extensible tweet-processing tracking — `event_tweets` table
+
+Python's "seen tweets" tracking is per-DownloadWorkflow in-memory state. Fine for video-only; doesn't extend to future non-video processing (sentiment, translation, transcript extraction, etc.). Proposed schema:
+
+```sql
+CREATE TABLE event_tweets (
+    event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    tweet_url TEXT NOT NULL,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    processing JSONB NOT NULL DEFAULT '{}',
+    PRIMARY KEY (event_id, tweet_url)
+);
+CREATE INDEX event_tweets_scan ON event_tweets (event_id, last_seen_at);
 ```
 
-Perceptual hash algorithm choice → open question. Frame sampling
-strategy → open question. Threshold → open question. Store the full
-signature in `video_assets.perceptual_hash` (BYTEA) and the LSH
-bucket prefix in `video_assets.perceptual_hash_prefix` (indexed
-TEXT).
-
-**Stage 5 — S3 perceptual-hash lookup (per batch survivor).**
-```
-For each survivor in downloads_by_hash:
-    # LSH bucket narrowing: fetch candidates in the same bucket.
-    SELECT id, perceptual_hash FROM video_assets
-    WHERE perceptual_hash_prefix = survivor.bucket_prefix
-
-    For each candidate_asset from that query:
-        If Hamming(survivor.signature, candidate_asset.perceptual_hash) < THRESHOLD:
-            existing_asset_id = candidate_asset.id
-            For each url in survivor.urls:
-                INSERT INTO video_shares (video_asset_id: existing_asset_id,
-                                           event_id, tweet_url: url,
-                                           discovered_at)
-            delete survivor.bytes
-            remove from downloads_by_hash
-            break
+`processing` JSONB holds per-workflow-type outcome keys:
+```json
+{
+  "video_download": {"status": "success", "at": "..."},
+  "video_download": {"status": "filtered", "reason": "duration<3s", "at": "..."},
+  "sentiment": {"score": 0.85, "at": "..."},
+  "transcript": {"text_ref": "s3://...", "at": "..."}
+}
 ```
 
-LSH bucket_prefix narrows the search from "all of S3" to
-"perceptually-similar candidates." Then Hamming distance against the
-full signature confirms.
-
-**Stage 6 — Truly-new upload + video_assets insert + video_shares
-insert (per remaining survivor).**
-```
-For each truly-new survivor in downloads_by_hash:
-    s3_key = generate_key(survivor.hash)
-
-    # Optimistic insert first — race handling below.
-    INSERT INTO video_assets (content_hash, s3_key, perceptual_hash,
-                              perceptual_hash_prefix, ...)
-    VALUES (survivor.hash, s3_key, survivor.signature,
-            survivor.bucket_prefix, ...)
-    ON CONFLICT (content_hash) DO NOTHING
-    RETURNING id AS new_asset_id
-
-    If new_asset_id was populated:
-        # We won the race. Upload bytes.
-        s3.PutObject(s3_key, survivor.bytes)
-
-    Else:
-        # Another concurrent Video workflow already inserted this
-        # hash. Look up their asset_id; don't upload.
-        SELECT id AS existing_asset_id FROM video_assets
-        WHERE content_hash = survivor.hash
-        new_asset_id = existing_asset_id
-
-    For each url in survivor.urls:
-        INSERT INTO video_shares (video_asset_id: new_asset_id,
-                                   event_id, tweet_url: url,
-                                   discovered_at)
-    delete survivor.bytes
-```
-
-**End state:** every candidate URL from Discovery is accounted for by
-a `video_shares` row pointing at exactly one `video_asset` — either a
-freshly uploaded one or an existing one.
+Behavior:
+- Every DownloadWorkflow batch, before scrolling, queries `SELECT tweet_url FROM event_tweets WHERE event_id = $1` into a set → skips those during scroll.
+- Every new tweet encountered → INSERT ON CONFLICT DO UPDATE `last_seen_at` + write into `processing` under this workflow-type's key.
+- Scroll-stop heuristic (Python's "we've hit already-seen tweets, stop"): configurable N-consecutive-already-seen tweets before halting.
+- Per-event scope is deliberate: fixture B's search should not skip a tweet fixture A processed.
+- Extensibility: any new workflow-type appends its outcome under a new key in `processing`. No schema migration per new type.
 
 ## What's decided going in
 
@@ -234,106 +298,136 @@ freshly uploaded one or an existing one.
 |---|---|
 | Dedup identity is `content_hash` (SHA256 of raw bytes), NOT tweet URL. Same clip at different URLs collapses into one asset. | 2026-07-16 Q4 sign-off |
 | Multi-share against existing S3 assets. When ANY layer's check hits an existing asset, the current event's URL(s) become `video_shares` rows pointing at that asset, NOT new uploads. | 2026-07-16 Q4 sign-off |
-| Cheap check first at every layer: URL → content hash → perceptual hash, both within batch and against S3 corpus. | 2026-07-16 Q4 sign-off |
-| Interleave optimization: S3 content-hash check runs during the batch pass, not as a separate stage, so already-owned bytes drop before any perceptual work. | 2026-07-16 Q4 sign-off |
+| Cheap check first at every layer: metadata → URL → content hash → perceptual, both within batch and against S3 corpus. | 2026-07-16 walkthrough |
 | Content hash algorithm: SHA256. Fast (Go stdlib native), collision-resistant to the point of overkill for our corpus size. | Default; not user-signed |
 | Schema stays as-is: `video_assets.content_hash` UNIQUE, `video_assets.perceptual_hash` BYTEA (full signature), `video_assets.perceptual_hash_prefix` TEXT indexed for LSH. | Already in `schema.sql` from prior migration |
 | Concurrency safety on `video_assets` inserts: optimistic `ON CONFLICT DO NOTHING RETURNING id`; loser looks up winner's id and shares. | Standard pg idempotency pattern |
-| Cutover backfill: existing S3 corpus gets its assets' `content_hash` + `perceptual_hash` populated by a one-shot backfill activity before cutover, so Stage 2 + Stage 5 lookups have data to match against. | Migration requirement |
+| Cutover backfill: existing S3 corpus gets its assets' `content_hash` + `perceptual_hash` populated by a one-shot backfill activity before cutover, so Stages 4 + 7 lookups have data to match against. Bonus cleanup: catches Python-era duplicate S3 objects during backfill. | Migration requirement |
+| Category axis is BINARY: `verified` (has clock + matches) vs `unverified` (no clock). Wrong-clock is HARD-REJECT before persistence, not a third category. | 2026-07-16 walkthrough |
+| Dedup is category-scoped: verified only against verified; unverified only against unverified. Ranking: verified above unverified regardless of popularity; popularity sorts within pool. | 2026-07-16 walkthrough |
+| Metadata hard-filter is Stage 3 (before hashing). Thresholds: duration 3s–90s, resolution ≥720p, aspect ratio 16:9 with small tolerance, framerate ≥20fps. Env-tunable but treated as fixed. | 2026-07-16 walkthrough |
+| Perceptual hashing samples at quarter-second frame intervals (4 fps). Per-frame pHash 64 bits → concatenated signature (e.g. 7680 bits for a 30s clip). LSH prefix derived from a subset for bucket indexing. | 2026-07-16 walkthrough |
+| Perceptual hashing is the MOST EXPENSIVE local op — more expensive than a joi LLM call. Pipeline runs vision BEFORE perceptual hashing so discarded candidates never get hashed. | 2026-07-16 walkthrough |
+| Two LLM vision calls per pipeline run, both with structured output + rubric-based prompts: (#1) combined is-soccer + clock check per candidate, one call per unique-content-hash cluster survivor; (#2) quality comparison across cluster members, multi-video input, only fires when 2+ perceptual survivors remain. | 2026-07-16 walkthrough |
+| Vision call #1 rubric tightened: "broadcast-camera view of a live soccer match with visible pitch and players in play." Fixes Python's too-lenient current filter that lets celebration reels / meme edits through. | 2026-07-16 walkthrough |
+| Vision call #2 replaces Python's `(duration, file_size)` quality proxy which lies for compressed high-resolution clips. LLM scores actual perceived quality on frames. | 2026-07-16 walkthrough |
+| AssetWorkflow is per-event, signal-based FIFO, single-threaded S3/pg mutations — preserves Python's serialization win. But completion is queue-drain-with-batch-count (exits when all N batches have signaled AND queue is empty), NOT idle-timeout — kills Python's 5-min tail waste. Hard-cap timeout remains as safety net for crashed DownloadWorkflows. | 2026-07-16 walkthrough |
+| Cross-event race handled by pg `ON CONFLICT DO NOTHING RETURNING id` on `video_assets.content_hash`. Loser looks up winner's asset and shares. Per-event AssetWorkflow serialization handles intra-event; pg constraint handles cross-event. | 2026-07-16 walkthrough |
+| Popularity is DERIVED from `COUNT(video_shares) WHERE video_asset_id = X`, not a stored counter. Batch dedup + cross-event multi-share + replace+absorb all reduce to correct share-row counts naturally, no counter to keep in sync. | 2026-07-16 walkthrough |
+| Replace + absorb semantics: when a fresh candidate wins quality-comparison against an existing S3 asset (same perceptual signature, higher LLM quality score), OLD asset's `video_shares` migrate to NEW asset via `UPDATE video_shares SET video_asset_id = new_id`, OLD asset row deleted, OLD S3 object deleted. Shared consumers silently benefit from the quality upgrade — treated as a feature. | 2026-07-16 walkthrough |
+| Extensible per-event tweet-processing tracking via `event_tweets` table with JSONB `processing` column keyed by workflow-type. Every workflow (video_download, future sentiment, future transcript, etc.) writes its outcome under its own key. No schema migration per new type. Scroll-stop heuristic reads this table. | 2026-07-16 walkthrough |
 
 ## Sequenced sub-commits
 
-Total shape sits across O4 (Video pipeline — download, hash, batch
-dedup, validation) and O5 (Asset pipeline — perceptual hash,
-S3-corpus dedup, upload, share).
+Total shape sits across O4 (Video pipeline — download, metadata filter, content hash, vision #1) and O5 (Asset pipeline — perceptual hash, corpus dedup, quality comparison, upload, share, per-event serialization).
 
-### V/a — Content-hash pipeline (O4 scope)
+Assumes T (Twitter port) has landed — Download activity relies on the ported service. Prior to T, tests use scenario-defined stubs.
 
-`internal/workflow/video.go` — VideoWorkflow input: `VideoInput{EventID, CandidateURL, ...}` (one workflow per URL, spawned by Discovery's activity per the chain rule).
+### V/a — event_tweets table + URL check + Download activity (O4)
+
+Schema: `event_tweets` table per § Extensible tweet-processing tracking above. Backfill from Python's existing "seen tweets" state during cutover (empty at fresh start; `event_tweets` grows as new Discovery searches run).
+
+VideoWorkflow input: `VideoInput{EventID, CandidateURL, ...}` — one workflow per candidate URL, spawned by Discovery's activity per the chain rule.
 
 Activities:
-- `URLCheck(url) → (found: bool, existing_asset_id)` — Stage 0 fast lookup.
-- `DownloadCandidate(url) → bytes_location` — Twitter service call (stub-satisfied in O4; real bytes after T lands).
+- `URLCheck(url) → (found: bool, existing_asset_id)` — Stage 1 fast lookup against `video_shares.tweet_url`.
+- `DownloadCandidate(url) → (bytes_location, err)` — Twitter service call.
+- `RecordTweetProcessed(event_id, tweet_url, workflow_type, outcome)` — writes into `event_tweets.processing` under `video_download` key.
+
+Wire into the chain: Discovery's activity spawns one VideoWorkflow per candidate URL. Discovery's `event_downstream_workflows` row completes when all its Video children settle. Each Video workflow inserts its own row on start, marks complete on exit.
+
+~400 lines including tests.
+
+### V/b — Metadata hard-filter + content hash + batch dedup + S3 short-circuit (O4)
+
+Activities:
+- `ExtractMetadata(bytes_location) → {duration, height, width, aspect, fps}` — ffprobe wrapper.
+- `HardFilter(metadata) → (accept: bool, reason)` — applies 3s-90s / ≥720p / 16:9±tolerance / ≥20fps thresholds. Config-driven so we can tune without code changes.
 - `ContentHash(bytes_location) → hash` — SHA256 stream over the file.
-- `S3ContentHashLookup(hash) → (found: bool, existing_asset_id)` — Stage 2.
+- `S3ContentHashLookup(hash) → (found: bool, existing_asset_id)` — Stage 4 corpus check.
+- Batch dedup happens in VideoWorkflow orchestration logic (not a distinct activity) — tracks per-event downloads_by_hash across parallel VideoWorkflow siblings via a shared pg staging table `video_pipeline_batch(event_id, content_hash, first_workflow_id)` with `(event_id, content_hash)` UNIQUE. First to insert wins; losers see the winner's `first_workflow_id` and share against whatever asset the winner ultimately produces.
 
-Fires video_shares insert against existing asset on URL / S3 hit.
-Returns "candidate is new, needs validation + perceptual dedup" or
-"already owned, done."
-
-Wire into the chain: Discovery's activity spawns one VideoWorkflow
-per candidate URL. Discovery's `event_downstream_workflows` row
-completes when all its Video children are settled. Each Video
-workflow inserts its own row on start, marks complete on exit.
+Batch dedup implementation note: Python does this in-workflow because it has one UploadWorkflow. Our Video-per-URL fan-out needs a pg-mediated batch state to avoid re-running vision + perceptual on candidates whose bytes already match another sibling's. This is the significant departure from Python — worth flagging as an implementation-detail decision to revisit if the pg staging table proves noisy.
 
 ~500 lines including tests.
 
-### V/b — VideoValidation activity (O4 scope)
+### V/c — Vision call #1 (combined is-soccer + clock check) (O4)
 
-Existing plan §5 W4 shape. VideoWorkflow calls a Validate activity
-after Stage 2 miss:
-- Vision model call against joi's Qwen3-VL-8B endpoint
-- Extracts broadcast clock from clip; compares to API-reported minute
-- Returns valid / invalid + rationale
+Activity:
+- `AnalyzeSoccerClip(frames_samples) → {is_soccer_broadcast, confidence, has_visible_clock, clock_minute}` — vision model call with structured output enforced by LLM adapter S6.
+- Frame sampling for vision: fixed count (e.g. 6-8 frames uniformly sampled across the clip). Separate from perceptual hashing's quarter-second interval — vision doesn't need that granularity.
 
-Only Stage-2 misses hit this — clips we already own are trusted from
-prior validation.
+VideoWorkflow applies decisions from the output per the semantic model above. Fail (not soccer, or wrong clock) → mark `event_downstream_workflows` row complete with outcome_class, do NOT signal AssetWorkflow. Pass → signal AssetWorkflow with `(bytes_location, content_hash, event_id, urls, verified: bool)`.
 
-Validation fail → VideoWorkflow marks its row complete with
-`outcome_class='rejected_validation'` and does not spawn Asset.
-Validation pass → spawn AssetWorkflow with (bytes, content_hash,
-event_id, urls).
+Rubric prompt for the vision call lives in `internal/prompts/soccer_analysis.md` — versioned separately so it can be tuned without code changes.
 
-~200 lines (leans on existing LLM adapter S6).
+~250 lines.
 
-### V/c — Perceptual-hash pipeline (O5 scope)
+### V/d — AssetWorkflow scaffolding (per-event, signal-based, queue-drain completion) (O5)
 
-`internal/workflow/asset.go` — AssetWorkflow. Called by Video on
-validation-pass.
+`internal/workflow/asset.go` — one workflow instance per event_id. Started via signal-with-start pattern from the first VideoWorkflow to reach validation-pass.
+
+Signal handler: `add_video_batch(batch)` — batch carries `{content_hash, bytes_location, verified, urls, download_workflow_index}`.
+
+Main loop: queue-drain completion per § AssetWorkflow serialization above. Exits when `batches_seen == N (10)` AND queue is empty. Hard-cap 30-min timeout as safety net for crashed DownloadWorkflows.
+
+Wire into completion contract: AssetWorkflow inserts its own `event_downstream_workflows` row on start, marks complete on exit. Fixture completion (per 2026-07-11 contract) waits for it plus every VideoWorkflow.
+
+~300 lines (workflow orchestration only; dedup activities land in V/e, V/f).
+
+### V/e — Perceptual hash + LSH lookup + batch/S3 perceptual dedup (O5)
 
 Activities:
-- `PerceptualHash(bytes_location) → (signature, bucket_prefix)` —
-  Stage 4. Frame extraction (ffmpeg or Go-native), per-frame pHash,
-  signature assembly. Algorithm choice → open question.
-- `S3PerceptualHashLookup(bucket_prefix, signature, threshold) → (found: bool, existing_asset_id)` —
-  Stage 5. LSH-narrowed candidates + Hamming distance verification.
-- `UploadNewAsset(bytes, content_hash, signature, bucket_prefix) → asset_id` —
-  Stage 6. Optimistic INSERT + S3 PutObject + race-loser lookup.
-- `InsertShares(asset_id, event_id, urls[])` — final step.
+- `PerceptualHash(bytes_location) → (signature, bucket_prefix)` — extract frames at quarter-second intervals, per-frame pHash, concatenate into full signature, derive LSH prefix.
+- `S3PerceptualHashLookup(bucket_prefix, signature, threshold, verified) → (found: bool, matched_asset_ids: []UUID)` — LSH-narrowed candidates within same category pool, Hamming-verify against stored signatures.
+- Batch perceptual dedup lives in AssetWorkflow orchestration logic (it holds all incoming batches serialized) — pairwise Hamming comparison across in-flight cluster members.
 
-~500 lines including tests.
+Storage: `video_assets.perceptual_hash` (BYTEA full signature) + `video_assets.perceptual_hash_prefix` (indexed TEXT LSH bucket key). Both already in schema.sql from prior migration.
 
-### V/d — Cutover backfill
+~500 lines.
 
-`cmd/backfill-video-assets/main.go` — one-shot binary that:
-- Enumerates all S3 objects under `video-shares/`
-- For each object, downloads bytes, computes SHA256 + perceptual hash
-- Inserts `video_assets` row if not already present (dedup during
-  backfill catches Python-era duplicates too — bonus cleanup)
-- Idempotent: safe to re-run
+### V/f — Vision call #2 (quality comparison) (O5)
 
-Runs during the migration window before cutover flips traffic. See
-plan §13.
+Activity:
+- `CompareClipQuality(clips_frames_bundle) → {ranked: [{clip_index, score, notes}, ...]}` — multi-video vision call. Input is a bundle of frame-samples from each cluster member (fresh candidates + optionally the existing S3 asset's stored keyframes if one was in the cluster). Output is a ranked list with scores + reasoning.
+
+AssetWorkflow orchestration picks the winner per the rules in Stage 8 of the algorithm (existing S3 asset wins → losers become shares; fresh candidate wins and existing S3 in cluster → replace + absorb; fresh candidate wins with no S3 in cluster → upload winner + shares).
+
+Rubric prompt in `internal/prompts/quality_comparison.md`.
+
+Only fires when 2+ candidates survived to this stage in a single perceptual cluster. Zero cost when singletons.
 
 ~300 lines.
 
-### V/e — Cross-cutting: concurrency + failure modes
+### V/g — Upload winner + video_assets insert + video_shares insert + replace-and-absorb (O5)
 
-- **Optimistic pg inserts** with `ON CONFLICT DO NOTHING RETURNING`
-  handle two-events-discover-same-clip races. Race loser looks up
-  winner's asset id and inserts video_shares against it.
-- **Race on S3 upload** — the losing side does NOT upload. If both
-  sides had already started uploading before the pg race resolved
-  (rare), the second upload is either a no-op (same key, same
-  bytes) or gets a "key exists" error we can safely swallow.
-- **Download failures** — Temporal activity retry handles transient.
-  After max retries, VideoWorkflow marks row complete with
-  `outcome_class='download_failed'`. Does not spawn Asset.
-- **Perceptual-hash false positives** — LSH bucket hit narrows to
-  candidates, Hamming distance verifies. Threshold too loose →
-  merges distinct clips. Threshold too tight → misses re-encodes.
-  Real-data tuning during backfill (which produces a natural
-  duplicate set) informs the threshold before cutover.
+Activities:
+- `UploadNewAsset(bytes, content_hash, signature, bucket_prefix, verified) → asset_id` — optimistic pg insert with `ON CONFLICT (content_hash) DO NOTHING RETURNING id`, S3 PutObject on winner side, race-loser lookup on loser side.
+- `MigrateShares(from_asset_id, to_asset_id)` — `UPDATE video_shares SET video_asset_id = to_asset_id WHERE video_asset_id = from_asset_id`. Used by replace + absorb.
+- `DeleteAsset(asset_id)` — DELETE from video_assets + S3 DeleteObject. Used after MigrateShares in replace + absorb.
+- `InsertShares(asset_id, event_id, urls[])` — bulk-inserts one row per URL against the target asset.
+
+AssetWorkflow serializes these — the per-event FIFO ordering guarantees no intra-event race, and pg constraint handles cross-event.
+
+~400 lines including tests.
+
+### V/h — Cutover backfill
+
+`cmd/backfill-video-assets/main.go` — one-shot binary that:
+- Enumerates all S3 objects under Python-era prefixes
+- For each object, downloads bytes, extracts metadata, computes SHA256 + perceptual hash + LSH prefix, calls Vision #1 for soccer + clock check (populates verified flag)
+- Inserts `video_assets` row idempotently (dedup during backfill catches Python-era duplicate S3 objects — bonus cleanup; `MigrateShares` from duplicate to canonical)
+- Runs during the migration window before cutover flips traffic
+
+Empirical output from this run also produces the Hamming similarity threshold calibration data.
+
+~500 lines.
+
+### V/i — Cross-cutting: concurrency + failure modes + hard-cap timeouts
+
+Documented in this proposal above (§ AssetWorkflow serialization, § Cross-event race handling). Implementation coverage lands here as tests, retry policies, hard-cap safety-net timers.
+
+~200 lines of hardening.
 
 ## Deferred / not this proposal's scope
 
@@ -348,59 +442,27 @@ plan §13.
 - **Rank recalculation** (event.rank_recalculated NATS emit) — the
   ranking algorithm redesign is its own conversation.
 
-## Open questions for review
+## Resolved during 2026-07-16 second-pass walkthrough
 
-1. **Perceptual hash algorithm.** pHash (DCT-based, robust to
-   compression + scaling, ~1ms per frame in Go), dHash (difference
-   hash, fastest, robust to brightness, slightly weaker on crops),
-   or wHash (wavelet, most robust, slowest). My lean: **pHash** —
-   best balance of robustness to Twitter's re-encoding + speed.
-   Push back if you have a preference from Python-era experiments.
+- **Frame sampling** — quarter-second intervals (4 fps), not 8 uniform frames.
+- **URL check scope** — indexed `video_shares.tweet_url`. Start simple; dedicated URL table if index cost surfaces later.
+- **V/a vs V/c split boundary** — Video owns Stages 1-5 (URL + download + metadata + content hash + vision #1). Asset owns Stages 6-9 (perceptual + vision #2 + upload + share). Preserves existing phase boundary and independent evolution of the perceptual pipeline.
+- **Cutover backfill scope** — full backfill of Python-era corpus. Manageable single-digit-thousands size; catches duplicate-object cleanup as a bonus.
 
-2. **Frame sampling strategy.** Options: (a) 8 frames at uniform
-   time intervals (fast, deterministic, works well for typical goal
-   clips 20-45s); (b) keyframe extraction only (variable count, more
-   semantically meaningful, expensive to extract); (c) fixed rate
-   like 1fps up to a cap. My lean: **(a) 8 uniform-interval frames**
-   — deterministic, fast, sufficient for our clip length distribution.
+## Genuinely open (need decisions or empirical tuning)
 
-3. **Signature format.** Options: (a) concatenate 8 × 64-bit
-   pHashes → 512-bit signature, LSH prefix = first 16 bits; (b)
-   average frame pHashes → single 64-bit signature; (c) MinHash the
-   frame pHashes into a shorter signature. My lean: **(a)
-   concatenate + LSH prefix** — highest fidelity, easy to reason
-   about Hamming distance.
+1. **Perceptual hash algorithm.** pHash (DCT-based, robust to compression + scaling, ~1ms/frame in Go), dHash (fastest, robust to brightness, weaker on crops), wHash (wavelet, most robust but 5-10× cost). My lean: **pHash** — best speed/robustness balance for Twitter re-encodes. Empirical tuning during V/d backfill will confirm.
 
-4. **Similarity threshold (Hamming distance cutoff for "same").**
-   Needs real-data tuning during backfill. My placeholder: for a
-   512-bit signature, threshold of 32-48 bits (6-10% of signature
-   length) as starting point. Confirm empirically during V/d.
+2. **LSH prefix bit-width.** For the ~7680-bit full signatures, prefix length trades selectivity vs bucket size. 16 bits → 65k buckets, cheap lookup, some false-positives need Hamming verification. 24 bits → 16M buckets, more selective. 32 bits → ~4B buckets, near-unique but bloats index. My lean: **16 bits** initially — bucket count fits pg btree comfortably; Hamming verification against a handful of candidates per lookup is fast.
 
-5. **URL check scope.** Options: (a) `video_shares.tweet_url`
-   indexed lookup (simple; but video_shares grows fast — index cost);
-   (b) dedicated `video_share_urls (tweet_url PK, video_asset_id
-   FK)` narrow lookup table (extra table; faster lookups). My lean:
-   **(a) indexed video_shares.tweet_url** — start simple, add a
-   dedicated table if index cost becomes a problem.
+3. **Similarity threshold** (Hamming distance cutoff for "same clip"). For a ~7680-bit signature, needs empirical tuning. Placeholder: 6-10% of signature length (~500-770 bits). Real threshold set during V/d backfill against the natural duplicate clusters that surface.
 
-6. **Where does dedup live in the workflow chain — V/a in Video, V/c
-   in Asset, or all in one?** Current proposal splits: Video owns URL
-   + content-hash + validation (natural — Video has the URL, has to
-   download to validate), Asset owns perceptual + S3 upload + share
-   (natural — Asset owns the final storage decision). Alternative:
-   collapse V/c into V/a so Video handles everything. My lean: **keep
-   the split** — Asset as a distinct workflow lets us evolve the
-   perceptual pipeline independently and matches the existing plan
-   phase boundary.
+4. **Aspect ratio tolerance band.** Placeholder ±5% around 16:9 (1.777). Rejects clean 4:3 or portrait obviously, but should accept slight Twitter-re-encode aspect artifacts. Widen if we see legit clips rejected in real corpus.
 
-7. **Backfill scope for cutover.** Options: (a) full backfill of
-   every video_asset in the Python-era corpus (thousands of objects,
-   expensive); (b) backfill only assets referenced by non-completed
-   events (smaller); (c) lazy backfill on first cross-reference
-   (adds complexity to Stage 2/5 lookups). My lean: **(a) full
-   backfill** — one-shot batch job during migration window, corpus
-   size is manageable (single-digit thousands), simplest correctness
-   story.
+5. **Scroll-stop threshold** for Twitter search using `event_tweets`. Placeholder: **3 consecutive already-seen tweets → halt scrolling.** Confirm the current Python value or set new during O4 shakeout.
 
-Sign off on the 7 questions above and V/a starts (after O3/a-c and T
-ship).
+6. **Vision call combining vs separating.** Whether call #1 (is-soccer + clock check) stays as ONE structured-output call or splits into two independent activities. Combined is my lean (one round trip per unique content), but real answer depends on model behavior at that structured-output shape — needs testing. Fine to ship combined and split later if quality regresses.
+
+7. **Vision call #2 rubric.** Quality-comparison prompt design — what dimensions to score (sharpness / compression artifacts / color fidelity / motion smoothness / broadcast overlay legibility)? Iteration during implementation with real dedup clusters as calibration data.
+
+Sign off on any of the 7 (or mark as "empirical, defer to V/d") and V/a starts (after O3/a-c and T ship).
