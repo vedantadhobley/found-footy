@@ -6,6 +6,135 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-16 — Downstream workflow spawn via Temporal-direct + register-on-flip (chain, not NATS)
+
+**Supersedes:** the [O3/c NATS-triggered spawn design](./rebuild/proposals/discovery.md) inside `rebuild/proposals/discovery.md`. NATS-as-event-bus (2026-07-01) remains in force for external fan-out; it is no longer the trigger path for internal named workflows.
+
+**Design ref:** [`rebuild/proposals/discovery.md`](./rebuild/proposals/discovery.md), revised in the same commit.
+
+### Context
+
+The plan-of-record for O3 spawned DiscoveryWorkflow via a NATS
+subscriber goroutine reading `event.stable`. Monitor's
+`ReconcileFixture` would flip `events.downstream_triggered=true` and
+publish to NATS; the subscriber would then spawn Discovery. This left
+a race window between the flag flip and Discovery's row appearing in
+`event_downstream_workflows`:
+
+1. `ReconcileFixture` flips `downstream_triggered=true`, publishes
+   `event.stable`.
+2. Same activity's Step 6 runs `FixtureReadyToComplete`. Sees Terminal
+   ✓ + counter ≥ 3 ✓ + all events settled ✓ + no in-flight downstream
+   rows (Discovery hasn't spawned yet) ✓ → transitions fixture to
+   `completed`.
+3. Milliseconds later, NATS subscriber picks up `event.stable`, spawns
+   DiscoveryWorkflow. Discovery's first activity registers its
+   checklist row against a fixture already in `completed` state.
+   Discovery + downstream continue writing to `events`, `video_shares`,
+   `video_assets` while the fixture publicly reads as done. The
+   completion state is a lie for the duration of the downstream chain.
+
+Sub-second window in practice. Football produces the exact
+last-minute-goal-then-full-time timeline that hits it — reliably.
+
+Deeper design issue: NATS-triggered spawn splits ownership of a single
+logical state change ("this event now has Discovery pending") across
+two processes. Monitor writes the flag; the subscriber writes the row.
+Atomicity across that boundary is unreachable without either a
+two-cycle rule (adds 30s to happy-path completion + still splits
+ownership) or a synthetic pending-marker (equivalent to just doing the
+insert on the Monitor side).
+
+### Decision
+
+**Spawn rule for every downstream workflow in the chain:**
+
+The code that decides to spawn a downstream workflow does three things
+in a single activity, with pg-transaction atomicity for the state
+changes and idempotent spawn semantics:
+
+1. Flip the source-of-truth state change (e.g. `events.downstream_triggered=true`) — pg tx.
+2. INSERT the `event_downstream_workflows` row for the workflow being spawned — same pg tx, commit. Deterministic `workflow_id` (e.g. `discovery-{event_id}`).
+3. Call `temporalClient.ExecuteWorkflow` with that same deterministic ID and `WorkflowIDReusePolicy: RejectDuplicate`. Swallow `WorkflowExecutionAlreadyStarted` — expected on activity retry.
+
+Applied per pipeline stage — **chain, not fan-out coordinator:**
+
+- **Monitor → Discovery.** `ReconcileFixture` flips flag, inserts Discovery row, spawns Discovery.
+- **Discovery → Video.** A Discovery activity that identifies a candidate clip inserts Video's row, spawns Video.
+- **Video → Asset.** A Video activity that finalizes clip validation inserts Asset's row, spawns Asset.
+
+Each stage owns its checklist row + successor spawn. Fixture
+completion check unchanged: "any rows for this fixture's events with
+`completed_at IS NULL`?" The checklist is self-populating as work
+fans down the chain.
+
+**NATS scope narrowed:**
+
+NATS emissions for `event.stable`, `event.detected`, `event.removed`,
+`fixture.activated`, `fixture.completed`, `event.rank_recalculated`
+still happen — but only for external fan-out consumers:
+
+- SSE bridge in `cmd/api` (browser real-time)
+- Webhook delivery worker (JetStream durable consumer)
+- Any future non-workflow consumer we don't know about yet
+
+**NATS is not the trigger path for named internal workflows.** When
+producer and consumer are both Temporal workflows inside our
+namespace, transport is Temporal. NATS earns its keep across process
+boundaries where consumers are dynamic, unknown, or non-workflow —
+cross-project, cross-node, browser, or user-registered endpoints.
+
+pg `event_log` remains the source of truth; NATS remains best-effort
+with pg replay for reconnecting subscribers.
+
+### Rationale
+
+- **Atomicity for free.** Checklist row exists before the flipping
+  activity returns → the completion check in the same or next cycle
+  correctly sees "downstream pending." No two-cycle rule, no synthetic
+  pending marker.
+- **Right tool for the job.** Temporal is built for named workflow
+  orchestration with state tracking, retry, and an observable
+  execution graph. NATS is built for pub/sub fan-out to dynamic or
+  unknown consumers. Discovery is a known named consumer, always;
+  routing that through a broker adds a hop and a delivery model
+  without earning it.
+- **NATS keeps its purpose.** Fan-out to consumers whose identity the
+  producer shouldn't have to know (SSE frontends, webhook endpoints,
+  external services on other nodes) is exactly pub/sub's sweet spot.
+  Intra-Temporal workflow orchestration is not.
+- **Observability preserved.** Temporal's workflow graph shows
+  Monitor → Discovery → Video → Asset causal linkage. Under the
+  NATS-triggered design that linkage was broken — Discovery appeared
+  to be "started by the NATS subscriber."
+- **One delivery model.** Temporal's activity + workflow retry
+  semantics cover the whole orchestration path. No JetStream consumer
+  position + ack/nack + dead-letter reasoning layered on top.
+- **Chain over coordinator.** The Discovery → Video → Asset
+  dependency is real data flow (Video needs Discovery's candidate
+  URLs; Asset needs Video's validated clip). Making each stage the
+  spawner of its successor puts the dependency where it lives. A
+  per-event coordinator would abstract the dependency behind
+  indirection that earns no keep. Rejected.
+
+### Consequences
+
+- **[`rebuild/proposals/discovery.md`](./rebuild/proposals/discovery.md)** revised:
+  - O3/a — NATS event composer stays. Still needed for external emit + audit trail.
+  - O3/b — Monitor emits to NATS for external consumers **and** inserts Discovery row + spawns Discovery via Temporal client in the same activity as the flag flip.
+  - O3/c — DiscoveryWorkflow skeleton stays; the "NATS subscriber goroutine" section removed.
+- **`internal/activity/monitor/activities.go`** `ReconcileFixture` gains a paired step alongside the flag flip: row insert + spawn. Deps grow a `DownstreamSpawner` interface (thin wrapper over the Temporal client, so activities stay unit-testable with a fake).
+- **Deterministic workflow-ID convention** documented at the domain layer: `discovery-{event_id}`, `video-{event_id}-{share_id}`, `asset-{share_id}`. `RejectDuplicate` policy enforces uniqueness server-side.
+- **Activity retry semantics** preserved: `event_downstream_workflows` insert uses `ON CONFLICT DO NOTHING`; Temporal spawn returns `WorkflowExecutionAlreadyStarted` on retry which we swallow as success.
+- **Race from the completion-contract era eliminated.** `FixtureReadyToComplete` needs no two-cycle safety net.
+- **Rejected alternatives:**
+  - NATS-triggered spawn + two-cycle completion rule — adds 30s to happy-path completion; still splits ownership.
+  - NATS-triggered spawn + Monitor pre-inserts a pending marker — equivalent in structure to this decision, plus a useless broker hop.
+  - Per-event coordinator workflow — adds a layer; the pipeline is a chain, not a fan-out.
+  - Singleton lifecycle manager — bottleneck + event history bloat.
+
+---
+
 ## 2026-07-11 — Fixture completion contract via pluggable per-event workflow checklist
 
 **Design ref:** [`rebuild/proposals/completion-contract.md`](./rebuild/proposals/completion-contract.md)
