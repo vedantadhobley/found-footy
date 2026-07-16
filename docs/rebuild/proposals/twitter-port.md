@@ -243,15 +243,20 @@ PoC gate: launch Playwright + Firefox in a dev container, load a cookie fixture,
 
 ~600 lines (includes docker/ files).
 
-### T/c — Search + scrape + behavior jitter
+### T/c — Search + scrape + behavior jitter + consecutive-already-seen early stop
 
 - `internal/twitter/search.go` — scroll loop, DOM extraction (mirrors Python `scrape.py` helpers).
 - Endpoint: `/search` — full contract with `exclude_urls`, `max_age_minutes`, structured response.
+- **Four scroll-stop conditions** (Python has 3; we add the 4th):
+  1. Tweet age > `max_age_minutes` → stop (preserved from Python).
+  2. `scroll_count >= max_scrolls` (default 10) → stop (preserved from Python).
+  3. Empty page after ≥1 scroll → stop (preserved from Python).
+  4. **`consecutive_already_seen >= consecutive_stop_threshold` → stop (NEW).** Counter increments on each tweet whose URL is in `exclude_urls`, RESETS on any new-to-us tweet. Default threshold: **3 consecutive**. Env-tunable. Fixes Python's under-utilization of exclude_urls — Python only uses it to skip individual tweets, not to short-circuit scroll. Late-attempt searches (7-10 out of 10) walk through mostly-known tweets in Python; the early-stop cuts that waste. Counter-reset-on-new-tweet handles genuine sparse-new-content interleaving correctly.
 - **Behavior jitter (baseline stealth #2 + #4):** random 0.5-3s pause between scroll actions; random ±20-40s jitter added to the "1 minute between attempts" interval that Discovery uses when calling `/search` repeatedly.
-- Instrumentation: Prometheus counters + histograms via shared observability substrate.
+- Instrumentation: Prometheus counters + histograms via shared observability substrate. Track which stop condition fired per search (age/max-scrolls/empty/consecutive-seen) — feeds threshold tuning during T shakeout.
 - Structured error responses with `error_class` taxonomy.
 
-~750 lines including tests (grew slightly with jitter code + tests).
+~800 lines including tests (grew from ~750 with the consecutive-already-seen counter + stop-condition telemetry).
 
 ### T/d — Rate-limit detection + backoff state
 
@@ -315,6 +320,7 @@ PoC gate: launch Playwright + Firefox in a dev container, load a cookie fixture,
 | **Baseline stealth in default scope** — Playwright stealth patches (spoof `navigator.webdriver` + related WebDriver telltales), timing jitter on searches, header rotation across sessions, random scroll pauses. All #1-4 of the § Stealth improvements list ship in T/a and T/c by default. Python has ZERO stealth config, so this is a step-change improvement. | 2026-07-16 walkthrough |
 | **Deeper stealth options (#5-8) documented for empirical evaluation, not baseline scope.** Per-container fingerprint differentiation, mobile.twitter.com alt path, residential proxy pool, full behavior simulation. Tracked in § Stealth improvements with escalation triggers. Do not build upfront; add if T/a/T/c dev testing shows detection signals. | 2026-07-16 walkthrough |
 | **Instance load-balancing: even distribution.** Random selection from healthy-and-not-backed-off pool via `ORDER BY RANDOM() LIMIT 1`. Statistically even over many selections, zero coordination cost across Discovery workers. Python's in-memory round-robin counter doesn't compose across worker processes. If metrics show uneven distribution, upgrade to pg-backed round-robin. | 2026-07-16 walkthrough |
+| **Scroll-stop early exit on consecutive already-seen tweets** — Python has THREE stop conditions in `_do_search` (age > max_age_minutes, scroll_count ≥ 10, empty page); we add a FOURTH: consecutive_already_seen ≥ 3 → stop. Counter resets on new tweets so genuine interleaving doesn't trigger false halts. Fixes Python's under-utilization of exclude_urls — Python uses it only to per-tweet skip, not to short-circuit scroll. Real speed improvement for late attempts (7-10 out of 10) which currently walk mostly-known tweets. | 2026-07-16 walkthrough |
 
 ## Resolved during 2026-07-16 walkthrough
 
