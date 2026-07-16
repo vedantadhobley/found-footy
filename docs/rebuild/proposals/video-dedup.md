@@ -116,19 +116,27 @@ For sequencing decisions later in this doc, the real cost order is:
 
 Perceptual frame hashing is more expensive than an LLM call in wall-clock terms — 120 frames for a 30s clip × per-frame hash work. This inverts the naive intuition that "local is always cheaper than network." Pipeline stage order reflects this: LLM validation happens BEFORE perceptual hashing so we don't hash a clip we're about to discard.
 
-### Hard-filter thresholds (fixed 2026-07-16)
+### Hard-filter thresholds (fixed 2026-07-16, refined third pass)
 
-Configurable via env vars (with these defaults), but treated as fixed for the proposal:
+All values from ffprobe output. Configurable via env vars (with these defaults):
 
-| Filter | Threshold |
-|---|---|
-| Duration minimum | 3s |
-| Duration maximum | 90s |
-| Resolution minimum | 720p (height ≥ 720) |
-| Aspect ratio | 16:9 broadcast, with a small tolerance band (~±5%) for Twitter re-encode artifacts. Portrait (9:16), 4:3, square, and other broadcast-atypical ratios are rejected. |
-| Framerate minimum | 20fps |
+| Filter | Threshold | Source |
+|---|---|---|
+| Duration minimum | 3s | Python `MIN_VIDEO_DURATION` |
+| Duration maximum | 90s | Python `MAX_VIDEO_DURATION` |
+| Aspect ratio minimum | 1.75 | Python `MIN_ASPECT_RATIO` |
+| Aspect ratio maximum | 1.80 | tightened from Python's 1.82 (centers 16:9=1.7777 in the band) |
+| Short edge minimum | 600px | Python `MIN_SHORT_EDGE` — allows letterboxed 720p content |
+| Framerate minimum | 20fps | new in Go — Python has no fps filter, broadcast is 24/25/30/50/60 |
 
-Any candidate failing ANY of these exits the pipeline at Stage 2 (metadata hard-filter) before hashing or vision. No re-check of these downstream.
+**Evaluation order (short-circuit on first failure):**
+
+1. **Duration** — most definitive; sub-3s = malformed/thumbnail loop, over-90s = compilation reel or half footage. Fails caught here don't burn log space on other reasons.
+2. **Aspect ratio** — rejects portrait/mobile clips next-most-commonly.
+3. **Framerate** — filters unusual encodes (animated GIFs re-encoded, low-fps upscales).
+4. **Short edge** — last because letterbox semantics are fuzzier; earlier filters catch more definitive garbage first.
+
+Short-circuit rather than collect-all-failures — simpler code, log-line-per-reject is enough for observability. Any candidate failing ANY of these exits the pipeline at Stage 3 before any hashing or vision work. No re-check of these downstream.
 
 ## Algorithm — the pipeline
 
@@ -480,15 +488,13 @@ Documented in this proposal above (§ AssetWorkflow serialization, § Cross-even
 - **Matching algorithm** — Python's offset-tolerant sliding-window match (`_dense_hashes_match`): for every possible time offset between two videos, count consecutive per-frame matches (Hamming ≤ threshold, timestamp tolerance = interval/2); require ≥ N consecutive → same. The offset-tolerance is load-bearing (same-goal clips with different pre-goal buffer land the same underlying frames at different signature positions; signature-Hamming would miss). Preserve algorithm.
 - **Similarity thresholds** — Python's `MAX_HAMMING_DISTANCE=10` per frame + `MIN_CONSECUTIVE_MATCHES=3` frames (0.75s at 0.25s sampling). Empirically tuned. Preserve. Re-tune only if V/d backfill surfaces false positives/negatives on real clusters.
 - **LSH-style indexing** — dropped from initial scope. Python does all-pairs comparison against the corpus (O(N) per lookup, tolerable at ~thousands of assets). Deferred to a future optimization phase; when we need it we'll design an index structure suitable for variable-length frame lists (MinHash over frame hashes, representative-frame index, or similar) — LSH prefix on a fixed-size signature doesn't fit Python's variable-length frame-list shape.
+- **Metadata hard-filter values + order** — reconciled with Python's actual config. Duration 3-90s (Python `MIN_VIDEO_DURATION` / `MAX_VIDEO_DURATION`), aspect band 1.75-1.80 (user's tightened centering of Python's 1.75-1.82), short edge ≥600px (Python `MIN_SHORT_EDGE`, allows letterboxed 720p content), framerate ≥20fps (new — Python has no fps filter). Evaluation order duration → aspect → framerate → short_edge, short-circuit on first fail. See § Hard-filter thresholds above.
+- **Scroll-stop threshold via `event_tweets`** — **early stop on consecutive already-seen tweets in Twitter search scroll** — improvement over Python which uses exclude_urls only to skip individual tweets, not to stop the scroll. Python leaves real efficiency on the table for late attempts (7-10 out of 10) that walk through mostly-known tweets. Design: counter increments on each already-seen tweet, RESETS on each new tweet, stops scroll when counter reaches threshold. Default threshold: **3 consecutive**. Env-tunable. Discovery queries `event_tweets` before each search, passes URLs to T as `exclude_urls`; T's scroll loop uses them for both per-tweet skip AND the new early-stop. See `twitter-port.md` for the loop implementation.
 
 ## Genuinely open (need decisions or empirical tuning)
 
-1. **Aspect ratio tolerance band.** Placeholder ±5% around 16:9 (1.777). Rejects clean 4:3 or portrait obviously, but should accept slight Twitter-re-encode aspect artifacts. Widen if we see legit clips rejected in real corpus.
+1. **Vision call combining vs separating.** Whether call #1 (is-soccer + clock check) stays as ONE structured-output call or splits into two independent activities. Combined is my lean (one round trip per unique content), but real answer depends on model behavior at that structured-output shape — needs testing. Fine to ship combined and split later if quality regresses.
 
-2. **Scroll-stop threshold** for Twitter search using `event_tweets`. Placeholder: **3 consecutive already-seen tweets → halt scrolling.** Confirm the current Python value or set new during O4 shakeout.
+2. **Vision call #2 rubric.** Quality-comparison prompt design — what dimensions to score (sharpness / compression artifacts / color fidelity / motion smoothness / broadcast overlay legibility)? Iteration during implementation with real dedup clusters as calibration data.
 
-3. **Vision call combining vs separating.** Whether call #1 (is-soccer + clock check) stays as ONE structured-output call or splits into two independent activities. Combined is my lean (one round trip per unique content), but real answer depends on model behavior at that structured-output shape — needs testing. Fine to ship combined and split later if quality regresses.
-
-4. **Vision call #2 rubric.** Quality-comparison prompt design — what dimensions to score (sharpness / compression artifacts / color fidelity / motion smoothness / broadcast overlay legibility)? Iteration during implementation with real dedup clusters as calibration data.
-
-Sign off on any of the 4 (or mark as "empirical, defer to V/d") and V/a starts (after O3/a-c and T ship).
+Sign off on either of the 2 (or mark as "empirical, defer to V/d") and V/a starts (after O3/a-c and T ship).
