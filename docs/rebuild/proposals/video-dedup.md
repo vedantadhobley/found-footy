@@ -184,22 +184,34 @@ downloads_by_hash[hash] = { bytes, urls: [candidate_url], is_verified: undecided
 
 **Key insight:** batch dedup + S3 dedup here means **the vision call in Stage 5 runs at most once per unique content hash**, not once per download attempt. If 4 tweets share the same bytes, Python's current code runs vision 4 times; we run it once. If we already own the bytes, we don't run vision at all.
 
-**Stage 5 — Vision call #1: combined is-soccer + clock check.** Fires only on unique-in-batch, fresh-to-S3 representatives. Frames sampled from the clip go to joi's Qwen3-VL-8B endpoint. Structured output:
+**Stage 5 — Vision call #1: combined is-soccer + screen-recording + clock check.** Fires only on unique-in-batch, fresh-to-S3 representatives. Preserves Python's approach (`archive/src/activities/vision.py:552` `validate_video_is_soccer`) which is already a combined structured-JSON call covering three orthogonal concerns.
+
+Frames sampled from the clip go to joi's Qwen3-VL-8B endpoint. Structured output (5 fields, mirroring Python's proven shape):
 ```json
 {
-  "is_soccer_broadcast": true|false,
-  "confidence": 0..1,
-  "has_visible_clock": true|false,
-  "clock_minute": int | null
+  "soccer": true|false,
+  "screen": true|false,
+  "clock": "MM:SS" | null,
+  "added": "+N" | null,
+  "stoppage_clock": "MM:SS" | null
 }
 ```
-Rubric (tightened from Python's too-lenient current filter): "Is this a broadcast-camera view of a live soccer match with a visible pitch and players in play?" — filters out celebration compilations, tunnel cams, meme edits, TikTok highlight reels, non-broadcast angles.
 
-Code applies decisions from the output:
-- `is_soccer_broadcast == false` → **discard** (not a soccer broadcast).
-- `has_visible_clock == true` AND `clock_minute` mismatches API's minute for this event → **discard** (wrong-clock rejection, provably a clip of a different moment).
-- `has_visible_clock == true` AND minute matches → mark `verified = true`.
-- `has_visible_clock == false` → mark `verified = false` (kept as unverified, lower confidence).
+Field meanings:
+- `soccer` — is this a broadcast-camera view of a live soccer match? Rubric TIGHTENED from Python's too-lenient current version: narrow to "active match play + goals + VAR + replays" while explicitly rejecting non-broadcast celebration compilations, tunnel cams, meme edits, TikTok highlight reels, press conferences, studio content, other sports, graphics-only content. Python's current prompt allows "highlights, celebrations, stadium recordings" which is what lets non-goal content through.
+- `screen` — is someone filming a TV with their phone (moiré patterns, visible bezel, screen glare, tilted angle, visible room/furniture)? Hard-reject category. NEW in the proposal — I originally missed this class entirely. Python catches it in the same call.
+- `clock` — MM:SS reading of the main broadcast clock, or null if not visible. Clock stops at 45:00 (halftime) and 90:00 (full-time).
+- `added` — "+N" text if an added-time indicator is visible ("+3", "+7", etc.), or null.
+- `stoppage_clock` — MM:SS reading of the SECOND clock that appears during added time (counts up from 45:00 or 90:00), or null. Python handles this two-clock case properly.
+
+**Two-checkpoint verification** (preserved from Python — `vision.py:745+762`): the same structured call runs TWICE per video, at 25% and 75% frame positions. Both must agree on `soccer` and `screen` for `is_valid=true`. Doubles vision cost per unique clip but provides real robustness against transient bad frames or momentary graphics-only content.
+
+Code applies decisions from the combined output:
+- `soccer == false` (at either checkpoint) → **discard** (not a soccer broadcast).
+- `screen == true` (at either checkpoint) → **discard** (phone-filming-TV, low quality + copyright-ambiguous).
+- `soccer == true` AND `screen == false` AND some `clock` field mismatches API's minute for this event (accounting for the main + stoppage clock combination) → **discard** (wrong-clock rejection, provably a different match moment).
+- `soccer == true` AND `screen == false` AND clock reading matches → mark `verified = true`.
+- `soccer == true` AND `screen == false` AND no clock visible → mark `verified = false` (kept as unverified, lower confidence — no clock present is different from wrong-clock).
 
 **Stage 6 — Perceptual frame hashing** (only for Stage-5 survivors). Preserve Python's algorithm verbatim (`archive/src/activities/hashing.py`):
 - Extract frames every 0.25s via ffmpeg.
@@ -490,11 +502,10 @@ Documented in this proposal above (§ AssetWorkflow serialization, § Cross-even
 - **LSH-style indexing** — dropped from initial scope. Python does all-pairs comparison against the corpus (O(N) per lookup, tolerable at ~thousands of assets). Deferred to a future optimization phase; when we need it we'll design an index structure suitable for variable-length frame lists (MinHash over frame hashes, representative-frame index, or similar) — LSH prefix on a fixed-size signature doesn't fit Python's variable-length frame-list shape.
 - **Metadata hard-filter values + order** — reconciled with Python's actual config. Duration 3-90s (Python `MIN_VIDEO_DURATION` / `MAX_VIDEO_DURATION`), aspect band 1.75-1.80 (user's tightened centering of Python's 1.75-1.82), short edge ≥600px (Python `MIN_SHORT_EDGE`, allows letterboxed 720p content), framerate ≥20fps (new — Python has no fps filter). Evaluation order duration → aspect → framerate → short_edge, short-circuit on first fail. See § Hard-filter thresholds above.
 - **Scroll-stop threshold via `event_tweets`** — **early stop on consecutive already-seen tweets in Twitter search scroll** — improvement over Python which uses exclude_urls only to skip individual tweets, not to stop the scroll. Python leaves real efficiency on the table for late attempts (7-10 out of 10) that walk through mostly-known tweets. Design: counter increments on each already-seen tweet, RESETS on each new tweet, stops scroll when counter reaches threshold. Default threshold: **3 consecutive**. Env-tunable. Discovery queries `event_tweets` before each search, passes URLs to T as `exclude_urls`; T's scroll loop uses them for both per-tweet skip AND the new early-stop. See `twitter-port.md` for the loop implementation.
+- **Vision call #1 shape** — combined structured-JSON call preserving Python's `validate_video_is_soccer` (`archive/src/activities/vision.py:552`). 5 output fields: `soccer`, `screen` (phone-filming-TV, hard-reject, NEW in proposal — I missed this class originally), `clock` (MM:SS), `added` ("+N" added-time indicator), `stoppage_clock` (MM:SS of the second clock during added time). Two-checkpoint verification at 25% and 75% frame positions, both must agree on `soccer` and `screen`. Rubric TIGHTENED from Python's too-lenient version — narrow to "active match play + goals + VAR + replays," explicitly reject "celebration compilations, tunnel cams, meme edits, TikTok highlight reels." Doubles vision cost per unique clip (2 calls × unique-in-batch-and-fresh-to-S3 clusters) but provides real robustness against transient bad frames.
 
 ## Genuinely open (need decisions or empirical tuning)
 
-1. **Vision call combining vs separating.** Whether call #1 (is-soccer + clock check) stays as ONE structured-output call or splits into two independent activities. Combined is my lean (one round trip per unique content), but real answer depends on model behavior at that structured-output shape — needs testing. Fine to ship combined and split later if quality regresses.
+1. **Vision call #2 rubric.** Quality-comparison prompt design — what dimensions to score (sharpness / compression artifacts / color fidelity / motion smoothness / broadcast overlay legibility)? Iteration during implementation with real dedup clusters as calibration data. This is the ONE call with no Python precedent — genuinely new.
 
-2. **Vision call #2 rubric.** Quality-comparison prompt design — what dimensions to score (sharpness / compression artifacts / color fidelity / motion smoothness / broadcast overlay legibility)? Iteration during implementation with real dedup clusters as calibration data.
-
-Sign off on either of the 2 (or mark as "empirical, defer to V/d") and V/a starts (after O3/a-c and T ship).
+Sign off on Q1 (or mark as "empirical, defer to V/d") and V/a starts (after O3/a-c and T ship).
