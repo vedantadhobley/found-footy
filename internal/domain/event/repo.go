@@ -101,4 +101,26 @@ type Repo interface {
 	// This one is UNCHANGED by the O2 debounce redesign — it tracks
 	// download attempts, not presence/absence stability.
 	RegisterVideoValidationWorkflow(ctx context.Context, eventID uuid.UUID, workflowID string, outcomeClass string) (count int, err error)
+
+	// RegisterDownstreamWorkflow inserts a fresh row into
+	// event_downstream_workflows so the fixture-completion check
+	// (FixtureRepo.FixtureReadyToComplete) sees the workflow as
+	// pending. Idempotent via ON CONFLICT DO NOTHING on
+	// (event_id, workflow_type, workflow_id) so activity retries after
+	// partial-success crashes don't double-insert.
+	//
+	// Called by Monitor.ReconcileFixture when it flips
+	// downstream_triggered=true and spawns Discovery — the row insert
+	// runs BEFORE the Temporal spawn so the completion check in the
+	// same or next cycle correctly sees "downstream pending."
+	// See decisions.md 2026-07-16 "Downstream workflow spawn via
+	// Temporal-direct + register-on-flip" for the load-bearing
+	// rationale.
+	//
+	// workflowType is a short identifier ("discovery", "video",
+	// "asset", …) matching the enum values on
+	// event_downstream_workflows.workflow_type. workflowID is the
+	// deterministic Temporal workflow_id (e.g. "discovery-{event_id}")
+	// so Temporal's RejectDuplicate policy pairs 1:1 with a row.
+	RegisterDownstreamWorkflow(ctx context.Context, eventID uuid.UUID, workflowType, workflowID string) error
 }
