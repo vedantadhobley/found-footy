@@ -220,16 +220,17 @@ Existing S7 Go client at `internal/infra/twitter/client.go` needs additive chang
 
 ## Sequenced sub-commits
 
-### T/a — Skeleton service + Playwright-Go PoC
+### T/a — Skeleton service + Playwright-Go PoC + baseline stealth
 
 - `cmd/twitter/main.go` — HTTP server (net/http or chi router)
 - `internal/twitter/service.go` — service wrapper (state machine: `starting`, `authenticated`, `unauthenticated`, `backoff`)
 - `internal/twitter/browser.go` — Playwright-Go wrapper: launch Firefox in persistent context, load cookies, verify session
+- `internal/twitter/stealth.go` — baseline anti-detection: stealth init script applied to the Playwright context on every session (spoofs `navigator.webdriver`, chrome-runtime, plugin arrays, WebGL vendor/renderer, ~15 other WebDriver telltales — see § Stealth improvements). Header rotation config (User-Agent pool, Accept-Language variants).
 - Health + status endpoints only
 
-PoC gate: launch Playwright + Firefox in a dev container, load a cookie fixture, verify session against `x.com/home`. If Firefox support in Playwright-Go proves fragile → fall back to Selenium Go bindings + geckodriver.
+PoC gate: launch Playwright + Firefox in a dev container, load a cookie fixture, verify session against `x.com/home` with stealth applied. If Firefox support in Playwright-Go proves fragile → fall back to Selenium Go bindings + geckodriver (stealth patches transfer since they're browser-level, not library-level).
 
-~400 lines.
+~500 lines (grew from ~400 with stealth init script + header rotation config).
 
 ### T/b — Auth + cookie lifecycle
 
@@ -242,14 +243,15 @@ PoC gate: launch Playwright + Firefox in a dev container, load a cookie fixture,
 
 ~600 lines (includes docker/ files).
 
-### T/c — Search + scrape
+### T/c — Search + scrape + behavior jitter
 
 - `internal/twitter/search.go` — scroll loop, DOM extraction (mirrors Python `scrape.py` helpers).
 - Endpoint: `/search` — full contract with `exclude_urls`, `max_age_minutes`, structured response.
+- **Behavior jitter (baseline stealth #2 + #4):** random 0.5-3s pause between scroll actions; random ±20-40s jitter added to the "1 minute between attempts" interval that Discovery uses when calling `/search` repeatedly.
 - Instrumentation: Prometheus counters + histograms via shared observability substrate.
 - Structured error responses with `error_class` taxonomy.
 
-~700 lines including tests.
+~750 lines including tests (grew slightly with jitter code + tests).
 
 ### T/d — Rate-limit detection + backoff state
 
@@ -310,6 +312,9 @@ PoC gate: launch Playwright + Firefox in a dev container, load a cookie fixture,
 | Session recovery watchdog for browser crashes with auto-relaunch + one retry. | Improvement over Python |
 | Instance registry moves from scaler-owned in-memory state to pg table `twitter_instances` — observable via SQL, survives restarts. | Improvement over Python |
 | Prometheus instrumentation via shared observability substrate. | Standard for all Go adapters |
+| **Baseline stealth in default scope** — Playwright stealth patches (spoof `navigator.webdriver` + related WebDriver telltales), timing jitter on searches, header rotation across sessions, random scroll pauses. All #1-4 of the § Stealth improvements list ship in T/a and T/c by default. Python has ZERO stealth config, so this is a step-change improvement. | 2026-07-16 walkthrough |
+| **Deeper stealth options (#5-8) documented for empirical evaluation, not baseline scope.** Per-container fingerprint differentiation, mobile.twitter.com alt path, residential proxy pool, full behavior simulation. Tracked in § Stealth improvements with escalation triggers. Do not build upfront; add if T/a/T/c dev testing shows detection signals. | 2026-07-16 walkthrough |
+| **Instance load-balancing: even distribution.** Random selection from healthy-and-not-backed-off pool via `ORDER BY RANDOM() LIMIT 1`. Statistically even over many selections, zero coordination cost across Discovery workers. Python's in-memory round-robin counter doesn't compose across worker processes. If metrics show uneven distribution, upgrade to pg-backed round-robin. | 2026-07-16 walkthrough |
 
 ## Resolved during 2026-07-16 walkthrough
 
@@ -317,18 +322,79 @@ PoC gate: launch Playwright + Firefox in a dev container, load a cookie fixture,
 - **Q2 — Dual-mode auth** — preserved AS PRIMARY DESIGN, not fallback. Framed as operational (VNC = login terminal, headless fleet = scrapers, cookies shared via disk), not anti-detection. VNC container is login-only (no automation library); headless containers are scraping-only (Playwright-Go, never login). Cookie reload via NATS `twitter.reauthed` event.
 - **Q3 — `/download_video` split** — split into `/extract_cdn_url` + external HTTP download. Enables parallel downloads while the browser stays free for search requests. **Twitter's CDN validates the full request context, not just the signed URL** — Python's `download_video_direct` attaches all browser cookies + User-Agent + Referer + Origin (`session.py:874-885`). That's what bypasses yt-dlp's rate limits. So `/extract_cdn_url` returns a bundle: `{cdn_url, cookies, user_agent, referer, origin}`. External HTTP client attaches all of it. If URL expiry proves flaky, retry via re-extract. Do NOT build a fallback to browser-driven download preemptively — add it only if we see download failures we can't handle otherwise.
 - **Q4 — Cookie backup format** — collapsed. First-pass proposal was based on wrong information: Python's format isn't a bare array, it's already an object: `{exported_at: "...", cookies: [...]}` (see `session.py:298-304`). Python's restore reads `backup_data.get('cookies', [])` and ignores unknown top-level keys. So we preserve Python's existing shape and add fields (`captured_by_instance`, `auth_token_expires_at`, `twitter_username`) as we find them useful. Zero migration friction — Python silently ignores the extras. **Cookies stay shared between dev + prod** — the multi-account fraud detection risk from creating a second Twitter account outweighs the isolation benefits of separate accounts, especially given our READ-only usage stays well under Twitter's rate limits regardless.
+- **Q5 — Instance registry table** — new dedicated pg table `twitter_instances`, mirroring the shape of Python's MongoDB collection (grepped `src/scaler/registry.py`) plus fields for our improvements. Schema:
+  ```sql
+  CREATE TABLE twitter_instances (
+      instance_id      TEXT PRIMARY KEY,
+      url              TEXT NOT NULL,
+      status           TEXT NOT NULL CHECK (status IN ('available', 'busy', 'unavailable')),
+      last_heartbeat   TIMESTAMPTZ NOT NULL,
+      registered_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      backoff_until    TIMESTAMPTZ,   -- rate-limit awareness, new in Go
+      last_error_class TEXT,           -- observability, new in Go
+      last_error_at    TIMESTAMPTZ
+  );
+  CREATE INDEX twitter_instances_available
+      ON twitter_instances (status, last_heartbeat)
+      WHERE status = 'available';
+  ```
+- **Q6 — Routing strategy** — **even load-balancing across the healthy fleet**. The whole point of running N instances is to spread load; "prefer freshest heartbeat" (my earlier lean) concentrates work on whichever instance most recently checked in, defeating the scale-out. Python uses in-memory round-robin via `TwitterRegistry._round_robin_index` (a singleton counter in the scaler process) — works fine within one worker but doesn't compose across workers. Go port: **random selection from the healthy-and-not-backed-off set**. Statistically even over many selections, no coordination needed across Discovery workers. If metrics show uneven distribution in practice, upgrade to a pg-backed round-robin counter. Sample query:
+  ```sql
+  SELECT instance_id, url
+  FROM twitter_instances
+  WHERE status = 'available'
+    AND (backoff_until IS NULL OR backoff_until < NOW())
+    AND last_heartbeat > NOW() - INTERVAL '30 seconds'
+  ORDER BY RANDOM()
+  LIMIT 1;
+  ```
+  Fallback: same query without the `status = 'available'` filter (include busy). Final fallback: default URL.
+- **Q7 — Search query construction** — Discovery assembles the OR-syntax query via Wikidata + LLM team-alias RAG. T stays stateless w.r.t. alias resolution. Confirmed from Python's `TwitterWorkflow` + `archive/twitter/README.md`. Preserve exactly.
+- **Q8 — Playwright-Go Firefox in Docker** — not a design question, an empirical PoC gate for T/a. If it works we ship Playwright-Go; if it doesn't we fall back to Selenium Go bindings (both fully specified above). Removed from the open-question list — it's an execution risk tracked in T/a's PoC gate criteria.
 
 ## Open questions
 
-5. **Instance registry table — new dedicated table or extend an existing one?** No existing table fits. New table `twitter_instances(id TEXT PK, url TEXT, healthy BOOL, busy BOOL, backoff_until TIMESTAMPTZ, last_heartbeat TIMESTAMPTZ, cookie_expires_at TIMESTAMPTZ)`. My lean: new dedicated table.
+None blocking sign-off. T/a is unblocked (after O3/a-c ship).
 
-6. **Discovery's routing strategy across instances** — round-robin, least-busy, hash-by-event-id? My lean: least-busy from the registry (query `WHERE healthy AND (backoff_until IS NULL OR backoff_until < NOW()) AND NOT busy ORDER BY last_heartbeat DESC LIMIT 1`). Falls back to round-robin if all instances are busy.
+## Stealth improvements — captured for T/a-and-beyond empirical testing
 
-7. **Search query construction — does Discovery already assemble the OR-syntax string, or does T do it?** Python has Discovery assemble it (from Wikidata + LLM team alias lookup). Preserve. T stays stateless w.r.t. alias resolution. Confirm.
+Python's current setup uses plain Firefox + Selenium with **zero** anti-detection config (confirmed from `session.py:123-141` — only idle-CPU preferences set, no fingerprint spoofing). Twitter tolerates this for our current load, but detection surfaces evolve. The following stealth options are documented for empirical evaluation during T's implementation phase — not all required by default, but captured here so future-us (or an agent picking up T's implementation) doesn't have to re-derive the list. What we have works, but it's not the best solution for stealth Twitter scraping.
 
-8. **Playwright-Go Firefox in Docker — proven to work with headless + persistent context under Docker?** Some Playwright-Go issues in GitHub report Firefox startup problems in containers. T/a PoC needs to confirm.
+Any of these can move up in scope if T/a's PoC gate or T/c's initial dev testing surfaces detection signals (429s, "Are you a robot?" pages, empty search results on known-good queries, unexpected session invalidation).
 
-Sign off on the 8 above (or mark as "confirm in T/a PoC") and T/a starts.
+### Cheap, high-impact — bake into T/a and T/c by default
+
+1. **Playwright stealth patches.** Spoof `navigator.webdriver`, `chrome-runtime`, plugin arrays, WebGL vendor/renderer, and ~15 other WebDriver telltales. Python has none of this. Small implementation cost — a single init script applied to the Playwright context. Ship in T/a alongside the browser wrapper.
+2. **Timing jitter on searches.** Python's "10 attempts, 1 minute apart" is a regular pattern — perfect for detection heuristics that key on request regularity. Add ±20-40s uniform jitter within the window. Trivial code change in T/c's scroll orchestration.
+3. **Header rotation.** Vary User-Agent (within a small pool of realistic current Firefox strings), Accept-Language, and related fingerprint headers across sessions or per-request. Python uses whatever Firefox ships by default. Small config addition in T/a.
+4. **Random scroll pauses.** Add jittered 0.5-3s pauses between scroll actions during search. Python probably scrolls at consistent intervals. Small code addition in T/c.
+
+### Medium-effort — evaluate during T implementation
+
+5. **Per-container fingerprint differentiation.** Each headless instance runs with its own randomized WebGL renderer, Canvas signature, timezone. Real complexity — requires per-instance Playwright context config. Do this if concentrated same-fingerprint traffic from our IP starts drawing attention.
+6. **`mobile.twitter.com` / `m.twitter.com` scrape path.** Different detection surface, sometimes weaker. Requires an alt DOM extraction path (scrape.go logic changes for a different DOM shape). Diverges from x.com's UI. Fallback if x.com detection gets tighter.
+
+### High-effort, high-impact — evaluate if detection tightens
+
+7. **Residential proxy pool.** Rotates IP per request via a residential proxy service (Bright Data, Oxylabs, similar). Real monthly cost, real integration work. Biggest impact on IP-based detection but only necessary if we start seeing detection specifically tied to our IP. Bloody expensive.
+8. **Full behavior simulation** — mouse movements, keyboard events, natural navigation patterns. Diminishing returns beyond basic timing jitter (#2) and scroll pauses (#4). Do only if simpler measures leak.
+
+### Explicit non-improvements
+
+- **Multi-account rotation** — multi-account fraud detection risk outweighs the benefit for our READ-only use case. Losing the working account is worse than any isolation benefit.
+- **Aggressive request pace** — we're not rate-limit constrained and going faster is a detection signal.
+
+### Empirical evaluation triggers
+
+The T/a-through-T/h implementation and dev testing should track these signals to know when to escalate up the list:
+
+- 429 rate-limit responses per instance per day
+- "Are you a robot?" interstitials encountered
+- Empty search results on queries known to have matches (post-hoc check via `/search?f=live` in a browser)
+- Session invalidations forcing re-auth via VNC
+- Search response time drift (detection sometimes shows as latency injection before hard-blocking)
+
+If any exceed a threshold, escalate from the currently-shipped set (#1-4) to #5-6, and eventually #7 if the pattern is IP-fingerprint-based.
 
 ## Deferred / not this proposal's scope
 
