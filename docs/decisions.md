@@ -6,6 +6,73 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-18 — Video share ranking derived at read time, no stored rank column
+
+**Supersedes:** `rebuild-plan.md` §5 W5 (AssetWorkflow includes rank recalc activity) and `rebuild/proposals/video-dedup.md` V/g (rank recalc during upload). Python's `upload_workflow.recalculate_video_ranks` pattern is NOT ported.
+
+**Design ref:** design conversation captured mid-session 2026-07-18 while discussing AssetWorkflow completion mechanics.
+
+### Context
+
+Python stores a `rank` column on each video share and recalculates it inside `upload_workflow._process_batch` via `store.recalculate_video_ranks` (see [python-functional-spec.md upload spec §8](./rebuild/python-functional-spec.md)). The pattern has two known production issues:
+
+1. **`rank=0` bug observed in prod.** `save_video_objects` writes the video record with default `rank=0`. `recalculate_video_ranks` is treated as non-fatal, max-2-retries, log-and-move-on (upload-spec §8). If both retries fail, ranks stay at default silently. User has confirmed seeing rank=0 videos in the current prod frontend.
+2. **Concurrent-batch race window.** Between a video insert in one batch and the rank recalc that follows, another batch's insert can land, showing rank=0 on the frontend until the next batch's recalc fires. On a Champions League night with 10+ concurrent event pipelines, this window is real.
+
+Both are architectural — no amount of "retry harder" fixes them without introducing more complex transaction reasoning. The root cause is that rank is a cached-derivation-of-underlying-columns treated as authoritative, with the cache-invalidation logic (recalc after each batch) racing against the mutation logic (insert new share).
+
+### Decision
+
+**Rank is derived at read time via SQL window function, not stored.**
+
+Concretely:
+
+- `video_shares` table has NO `rank` column.
+- API queries for shares return them already ranked, e.g.:
+  ```sql
+  SELECT
+    s.*,
+    ROW_NUMBER() OVER (
+      PARTITION BY s.event_id
+      ORDER BY a.verified DESC, popularity DESC, a.quality_score DESC NULLS LAST
+    ) AS rank
+  FROM video_shares s
+  JOIN video_assets a ON a.id = s.video_asset_id
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*) AS popularity FROM video_shares WHERE video_asset_id = a.id
+  ) p ON true
+  WHERE s.event_id = $1 AND NOT s.removed
+  ORDER BY rank
+  ```
+- No rank-recalc activity in any workflow.
+- No `event.rank_recalculated` NATS emit during normal flow. Any share change (insert / remove / migrate via replace+absorb) implicitly means ranks may have changed; SSE consumers re-fetching on the invalidation event see fresh ranks automatically.
+- The shipped `KindEventRankRecalculated` in `internal/infra/event/subjects.go` is kept in the enum for future use (e.g., algorithm-change or quality-score backfill scenarios that don't produce share changes) but is not emitted during normal workflow flow.
+
+### Rationale
+
+- **`rank=0` becomes impossible** — no column to be stale, no "just inserted, not yet ranked" intermediate state.
+- **No race conditions** — every read sees consistent, criteria-derived ordering.
+- **Ranking criteria can change without migrations.** Adding a "recency" bonus, tuning weights, adding a factor → change the ORDER BY expression. No column rewrite, no historical data to migrate, no in-flight recalc storm.
+- **Simpler code** — one activity deleted (rank recalc), one workflow signal removed, one NATS emit removed, one column not added.
+- **Cheap reads at our scale** — video_shares per event are dozens at most; a window function ranking is trivial compute compared to any HTTP round trip.
+- **Correct-by-construction** — no "cache invalidation" question exists.
+
+### Consequences
+
+- `video_shares.rank` column: **not added to schema**. If it accidentally lands in a migration, remove it.
+- `AssetWorkflow`: no rank-recalc activity, no `event.rank_recalculated` emit in normal flow, per-batch drain completion focuses only on dedup + upload + share insert (see decisions.md 2026-07-16 downstream spawn rule + queue-drain pattern discussed 2026-07-18).
+- API query surface (`cmd/api`): use window-function ORDER BY in the "shares for event X" query.
+- SSE consumers: re-fetch shares on any `event.*` / `fixture.*` invalidate event they care about — ranks always fresh.
+- Preserved as-is: `verified` classification, popularity via `COUNT(video_shares)`, quality score from vision call #2. These are the ORDER BY inputs; how they're computed doesn't change.
+- Preserved conceptually: the frontend's "top clip gets a badge" pattern still works — rank = 1 comes from the same window function that would have populated the column. UI code changes zero.
+- Rejected alternatives:
+  - Per-video recalc (10× redundant work per batch)
+  - Per-batch recalc, harden the retry (still races)
+  - Post-drain single recalc at workflow completion (5–10 min of stale ranks during a goal)
+  - Debounced separate recalc workflow signaled on every share change (works but adds moving parts for a problem the derived-at-read pattern makes disappear entirely)
+
+---
+
 ## 2026-07-16 — Downstream workflow spawn via Temporal-direct + register-on-flip (chain, not NATS)
 
 **Supersedes:** the [O3/c NATS-triggered spawn design](./rebuild/proposals/discovery.md) inside `rebuild/proposals/discovery.md`. NATS-as-event-bus (2026-07-01) remains in force for external fan-out; it is no longer the trigger path for internal named workflows.
