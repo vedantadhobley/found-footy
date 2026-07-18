@@ -18,7 +18,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 // Browser wraps Playwright's persistent context. The zero value is

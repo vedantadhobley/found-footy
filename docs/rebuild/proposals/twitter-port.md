@@ -8,24 +8,29 @@ doc until it's reviewed + signed off.
   right after O3, before O4, per [`discovery.md`](./discovery.md)
   Q3 sign-off — Twitter is the pipeline's most load-bearing external
   dependency and deserves its own dedicated design + review runway.
-- 2026-07-17 (T/a PoC finding) — the PoC gate returned a
-  **definitive negative** on Playwright-Go for Firefox: playwright-go
-  v0.4700.0 AND v0.5001.0 both fail to download their driver because
-  Playwright upstream moved their CDN. The three URLs
-  playwright-go's downloader tries (`playwright.azureedge.net`,
-  `playwright-akamai.azureedge.net`, `playwright-verizon.azureedge.net`)
-  all return 404 for driver versions v1.47+. Container built cleanly;
-  Go code compiled; container startup surfaced the driver-download
-  error before browser launch could be attempted. Fallback per the
-  proposal's Q1 sign-off: **T/a resolves as Selenium Go bindings +
-  geckodriver + Firefox** — mechanical port of Python's proven
-  `session.py`. Playwright-Go can be revisited if upstream fixes the
-  CDN URL, but not in the T track — the fallback lane is faster to
-  ship and less risky than debugging a broken CDN pipeline. The
-  scaffold code committed under `internal/twitter/` + `cmd/twitter/`
-  + `docker/twitter/` remains as a signpost; the Selenium
-  implementation replaces `browser.go` while `service.go`, the
-  stealth constant, and the cmd wire-up stay largely unchanged.
+- 2026-07-17 (T/a PoC first attempt) — hit a driver-CDN wall on
+  `playwright-community/playwright-go` v0.4700-v0.5700: all three
+  mirror URLs 404 because Playwright upstream moved to
+  `cdn.playwright.dev` and that fork stopped receiving CDN URL
+  updates. Committed a note pivoting to Selenium fallback — the
+  wrong call, as the next day's dig showed.
+- 2026-07-18 (T/a PoC PASSED) — root cause was the module fork.
+  The `playwright-community/playwright-go` GitHub repo redirects to
+  `mxschmitt/playwright-go` (the original author's personal repo);
+  releases v0.5900+ landed under the mxschmitt module path. v0.6100.0
+  uses `cdn.playwright.dev` cleanly. Swapped the import to
+  `github.com/mxschmitt/playwright-go@v0.6100.0`, matched to
+  Playwright base image v1.61.1-noble, added a Dockerfile step to
+  copy the pre-installed driver from `/root/.cache/ms-playwright-go`
+  in the builder stage to `/home/pwuser/.cache/ms-playwright-go` in
+  the runtime stage (playwright.Run() looks at `$HOME/.cache/...`
+  and the base image switches user to pwuser). Standalone
+  `docker run` produces the intended gate-pass output: `/health`
+  returns 503 with `state=unauthenticated` and reason "no cookies"
+  — Firefox launched, driver initialized, state machine
+  transitioned, HTTP endpoints served. Selenium fallback commitment
+  from 2026-07-17 rescinded; **T/a resolves as Playwright-Go
+  v0.6100.0 (mxschmitt path) + Firefox as originally planned.**
 - 2026-07-16 (second pass, this doc) — walkthrough with user corrected
   a misframing: **dual-mode auth is an OPERATIONAL pattern (VNC as
   login terminal, save cookies to shared disk, headless fleet loads),
