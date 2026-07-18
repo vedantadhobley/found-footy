@@ -28,7 +28,7 @@ volumes:
   temporal-postgres-data:
   garage-data:
   garage-meta:
-  twitter-profiles:
+  twitter-profile:
 
 networks:
   found-footy-dev:
@@ -193,23 +193,50 @@ services:
   # Dev twitter always has noVNC on (cookie re-auth needs it). Prod
   # gates VNC behind a compose profile.
   twitter:
+    # Swapped 2026-07-18 from the bootstrap-stub Dockerfile.dev to the
+    # T/a-passing Playwright-Go + Firefox Dockerfile. No hot-reload
+    # via air here — twitter service iterates less than the worker,
+    # so trading off `docker compose build twitter && up -d` for
+    # matched-driver Firefox is the right dev ergonomics for now.
     build:
       context: .
-      dockerfile: Dockerfile.dev
-      args:
-        BINARY: twitter
+      dockerfile: docker/twitter/Dockerfile
     image: found-footy-dev-twitter:latest
     container_name: found-footy-dev-twitter
     env_file: .env
+    # Firefox sandbox needs relaxed seccomp — its clone3()/unshare()
+    # calls for user-namespace creation are blocked by Docker's default
+    # seccomp profile, surfacing as "CanCreateUserNamespace clone()
+    # failure: EPERM" at browser launch. Standard Playwright-in-Docker
+    # workaround; safe here because the browser is the only untrusted
+    # code in the container.
+    security_opt:
+      - seccomp:unconfined
+    # /dev/shm defaults to 64MB in Docker; Firefox needs more (browser
+    # rendering + shared memory across processes). --ipc=host would
+    # work too but is more permissive; shm_size is scoped.
+    shm_size: 1gb
+    environment:
+      # Override the Dockerfile ENV defaults for dev-mode observability:
+      # let /status expose that we're in dev, and keep the log verbosity
+      # up. Profile dir + cookie file paths inherit from the Dockerfile.
+      TWITTER_HEADLESS: "true"
     volumes:
-      - .:/src
-      - go-cache:/gocache
-      - go-mod-cache:/gomodcache
-      - twitter-profiles:/data/firefox_profiles
+      # Persistent Firefox profile across container rebuilds so we don't
+      # re-download browser state every time. Mount at /data (parent)
+      # so the code's os.MkdirAll(/data/firefox-profile) creates the
+      # subdir with pwuser ownership — mounting the volume directly at
+      # /data/firefox-profile makes it root-owned and Firefox's
+      # user-namespace sandbox fails silently with a misleading
+      # "Firefox is already running" error.
+      - twitter-profile:/data
+      # Cookie backup file — shared with (future) VNC container. Read-
+      # write so the service can save refreshed cookies mid-session
+      # (Python does this every successful search per twitter-spec §2).
       - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
     networks:
       - found-footy-dev
-      - proxy       # noVNC HTTP fronted by Caddy
+      - proxy       # noVNC HTTP fronted by Caddy (VNC container lands in T/b)
     restart: unless-stopped
 
   # Scaler is NOT included in dev. Auto-scaling only makes sense
