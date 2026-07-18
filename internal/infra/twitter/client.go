@@ -31,7 +31,7 @@ type Client struct {
 
 // SearchRequest is the JSON body of a POST /search call.
 type SearchRequest struct {
-	Query         string   `json:"query"`
+	Query         string   `json:"search_query"`
 	ExcludeURLs   []string `json:"exclude_urls,omitempty"`
 	MaxAgeMinutes int      `json:"max_age_minutes,omitempty"`
 }

@@ -108,12 +108,26 @@ func main() {
 		}
 		_ = syndClient // consumed by tweet-content activities in Phase O
 
-		// internal twitter/ service wire-up deferred: the dev twitter
-		// container currently runs the Go BlockUntilDone stub (no
-		// Twitter API surface on :8888 yet). Adapter code lives in
-		// internal/infra/twitter/ and is tested against mocks; wire it
-		// in when the Go twitter service ports across.
-		_ = twitter.RegisterMetrics // silence unused-import; real wire-up follows
+		// Option 1 wire (2026-07-17): point Go DiscoveryWorkflow at a
+		// running Twitter service via S7's HTTP client. The dev
+		// twitter container currently runs a Go stub (no HTTP surface)
+		// so this NewClient call FAILS in dev — we tolerate that so
+		// the worker still boots. When someone stands up the Python
+		// twitter service in dev (or when T ships a real Go
+		// implementation), the client goes live automatically.
+		// Discovery activities check for nil and surface a clear
+		// "twitter client not wired" error via Temporal retries.
+		twitterIns := twitter.RegisterMetrics(deps.Metrics, deps.Log)
+		var twitterClient *twitter.Client
+		if c, err := twitter.NewClient(ctx, deps.Cfg.Twitter, twitterIns); err == nil {
+			twitterClient = c
+		} else {
+			deps.Log.Emit(ctx, logging.LevelWarn, vocabulary.ModuleInfraTwitter, vocabulary.ActionTwitterConnectFailed,
+				"twitter service unreachable at startup — Discovery searches will fail until it's up",
+				logging.String("base_url", deps.Cfg.Twitter.BaseURL),
+				logging.Err(err),
+			)
+		}
 
 		tempIns := temporal.RegisterMetrics(deps.Metrics, deps.Log)
 		tempClient, err := temporal.NewClient(ctx, deps.Cfg.Temporal, tempIns)
@@ -162,11 +176,18 @@ func main() {
 		// event_downstream_workflows row insert in the same activity.
 		spawner := monitoractivity.NewTemporalSpawner(tempClient, 10*time.Second)
 
-		// Phase O3/c — Discovery activities (currently just
-		// MarkDownstreamComplete which updates the checklist row on
-		// workflow exit). The stub DiscoveryWorkflow calls it.
+		// Phase O3/c + 2026-07-17 Option-1 wire: Discovery activities
+		// call the Twitter service for real search, then mark the
+		// event_downstream_workflows row complete. Only assign
+		// Twitter when the concrete pointer is non-nil — assigning a
+		// nil *twitter.Client to an interface field makes the field
+		// non-nil (holding a nil pointer), which would defeat the
+		// SearchTweets nil-check and cause a nil-deref panic.
 		discoveryActs := &discoveryactivity.Activities{
 			Pool: pool,
+		}
+		if twitterClient != nil {
+			discoveryActs.Twitter = twitterClient
 		}
 
 		// Phase O2 — the two poll workflows share one activities struct.
