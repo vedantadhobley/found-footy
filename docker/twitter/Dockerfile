@@ -2,10 +2,10 @@
 #
 # Two-stage build:
 #   1. builder: golang:1.25 compiles the twitter binary
-#   2. runner: mcr.microsoft.com/playwright:v1.47.0-noble has Firefox
+#   2. runner: mcr.microsoft.com/playwright:v1.61.1-noble has Firefox
 #      + Playwright driver + all Firefox runtime deps pre-installed.
 #      We just install the driver at the version playwright-go
-#      v0.4700.0 expects, drop the binary in, and set the entrypoint.
+#      v0.6100.0 expects, drop the binary in, and set the entrypoint.
 #
 # T/a PoC gate: `docker build` this + `docker run` it + probe /status.
 # If /status responds with state=unauthenticated (browser launched
@@ -17,7 +17,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-# playwright-go v0.4700.0 pairs with Playwright driver v1.47.0.
+# playwright-go v0.6100.0 pairs with Playwright driver v1.47.0.
 # Building with VCS ignoring flag because container layers can't run git.
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -o /out/twitter ./cmd/twitter
 
@@ -25,37 +25,33 @@ RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -o /out/twitter ./cmd/twit
 # location playwright.Run() looks for it: ~/.cache/ms-playwright-go.
 # Firefox itself comes from the Microsoft playwright base image in
 # the runtime stage; only the driver needs to be here.
-RUN go run github.com/playwright-community/playwright-go/cmd/playwright@v0.4700.0 install --dry-run || true
+RUN go run github.com/mxschmitt/playwright-go/cmd/playwright@v0.6100.0 install --dry-run || true
 RUN CGO_ENABLED=0 go build -buildvcs=false -o /out/playwright-install \
-    github.com/playwright-community/playwright-go/cmd/playwright
+    github.com/mxschmitt/playwright-go/cmd/playwright
 RUN mkdir -p /root/.cache && /out/playwright-install install firefox || true
 RUN ls -la /root/.cache/ 2>&1 || true
 
-# Runtime: official Playwright image with browsers + system deps.
-# Uses the Focal-based image because the Bookworm variant of
-# playwright-go's driver has known Firefox startup issues (see
-# playwright-go issue tracker; Focal is the reference environment).
-FROM mcr.microsoft.com/playwright:v1.47.0-noble
+# Runtime: official Playwright image v1.61.1-noble ships browsers +
+# system libs matching playwright-go v0.6100.0's driver version.
+FROM mcr.microsoft.com/playwright:v1.61.1-noble
 WORKDIR /app
-
-# Playwright-Go v0.4700.0 needs to install its own driver even when
-# the host image already has one — the versions must match. This
-# installs the Go-side driver into the location playwright.Run()
-# expects.
-RUN mkdir -p /root/.cache/ms-playwright-go
 
 COPY --from=builder /out/twitter /usr/local/bin/twitter
 
-# playwright-go's driver auto-installs on first Run() if missing.
-# For the PoC we pre-install so container startup doesn't stall on
-# network. --with-deps ensures Firefox has its runtime shared libs;
-# on the microsoft playwright image these are already present.
-# Note: not all playwright-go versions ship a `playwright install`
-# subcommand — if this RUN fails, remove and let the first Run() do it.
-RUN /usr/local/bin/twitter --version 2>/dev/null || true
+# Copy the pre-installed playwright-go Node driver from the builder
+# stage into pwuser's home. playwright.Run() at runtime looks at
+# $HOME/.cache/ms-playwright-go/<version>/package. Skipping this
+# step means the runtime tries to download the driver on first Run(),
+# which stalls container startup on network + fails offline.
+COPY --from=builder /root/.cache/ms-playwright-go /home/pwuser/.cache/ms-playwright-go
+RUN chown -R pwuser:pwuser /home/pwuser/.cache
 
-# Non-privileged user so any renderer sandbox that expects a real UID
-# works. The playwright base image already has `pwuser`.
+# /data + /config are bind-mount targets; pwuser needs write access
+# to the profile dir. Volume-mounted dirs at runtime inherit their
+# host permissions, but for the standalone PoC (no mount) we create
+# a writable stub inside the image.
+RUN mkdir -p /data /config && chown -R pwuser:pwuser /data /config
+
 USER pwuser
 WORKDIR /home/pwuser
 
