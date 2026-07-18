@@ -37,10 +37,17 @@ type DiscoveryWorkflowOutput struct {
 	Completed bool      `json:"completed"`
 }
 
-// DiscoveryWorkflow logs its input, marks the pre-inserted
-// event_downstream_workflows row as completed with outcome_class
-// "stub_ok", and returns. When real Discovery work lands (Twitter
-// search + candidate selection), it goes BEFORE the completion mark.
+// DiscoveryWorkflow calls SearchTweets (via the Twitter service —
+// currently Python's twitter/ container behind S7's HTTP client),
+// then marks its event_downstream_workflows row complete with the
+// count of tweets found. Video download / validation / share
+// creation lands in V/a and beyond — this workflow just proves
+// end-to-end that Monitor → Discovery → real Twitter search works.
+//
+// MVP query construction: "player teamname goal". No Wikidata team-
+// alias RAG yet — that's a follow-up phase. For unknown-player
+// events (Player.Known()==false at Monitor's spawn time), the
+// workflow logs + skips the search.
 func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (DiscoveryWorkflowOutput, error) {
 	log := workflow.GetLogger(ctx)
 	log.Info("DiscoveryWorkflow started",
@@ -50,6 +57,47 @@ func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (Discove
 		"team", in.TeamName,
 		"minute", in.Minute,
 	)
+
+	outcomeClass := "no_search_unknown_player"
+	var tweetsFound int
+
+	// Skip Twitter search if the player is unknown — no useful query
+	// to build and Twitter results would be noise.
+	if in.PlayerName != "" {
+		searchCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 2 * time.Minute, // Python's default search timeout
+			HeartbeatTimeout:    30 * time.Second,
+			RetryPolicy: &temporal.RetryPolicy{
+				InitialInterval:    2 * time.Second,
+				BackoffCoefficient: 2,
+				MaximumAttempts:    3, // Twitter service rate limits + auth expiry are the common failures
+			},
+		})
+		query := in.PlayerName + " " + in.TeamName + " goal"
+		var searchOut discoveryactivity.SearchTweetsOutput
+		if err := workflow.ExecuteActivity(searchCtx,
+			(*discoveryactivity.Activities).SearchTweets,
+			discoveryactivity.SearchTweetsInput{
+				EventID:       in.EventID,
+				FixtureID:     in.FixtureID,
+				Query:         query,
+				MaxAgeMinutes: 5,
+			}).Get(searchCtx, &searchOut); err != nil {
+			log.Warn("SearchTweets failed", "err", err, "query", query)
+			outcomeClass = "search_failed"
+		} else {
+			tweetsFound = searchOut.Count
+			if tweetsFound == 0 {
+				outcomeClass = "no_tweets_found"
+			} else {
+				outcomeClass = "tweets_found"
+			}
+			log.Info("SearchTweets succeeded",
+				"query", query,
+				"count", tweetsFound,
+			)
+		}
+	}
 
 	// Mark the event_downstream_workflows row completed on exit.
 	// Row was inserted by Monitor pre-spawn; this UPDATEs it.
@@ -69,7 +117,7 @@ func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (Discove
 			EventID:      in.EventID,
 			WorkflowType: "discovery",
 			WorkflowID:   workflow.GetInfo(ctx).WorkflowExecution.ID,
-			OutcomeClass: "stub_ok",
+			OutcomeClass: outcomeClass,
 		}).Get(actCtx, &completeOut); err != nil {
 		// Row-update failure is not fatal to the workflow logic —
 		// the outbox catch-up worker (future) could reconcile.
@@ -79,6 +127,10 @@ func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (Discove
 		return DiscoveryWorkflowOutput{EventID: in.EventID, Completed: false}, err
 	}
 
-	log.Info("DiscoveryWorkflow completed (stub)", "event_id", in.EventID)
+	log.Info("DiscoveryWorkflow completed",
+		"event_id", in.EventID,
+		"outcome", outcomeClass,
+		"tweets_found", tweetsFound,
+	)
 	return DiscoveryWorkflowOutput{EventID: in.EventID, Completed: true}, nil
 }
