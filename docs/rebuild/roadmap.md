@@ -162,11 +162,13 @@ Critical path:
   - **`ALLOW_DUPLICATE` reuse policy** (upload-spec §1, load-bearing) so late-arriving signals after a Completed workflow start a fresh instance rather than silently drop
   - Empty-batch signals suppressed at the sending activity (upload-spec §1)
   - Fresh S3 state fetched INSIDE the serialized workflow per-batch, not per-workflow (upload-spec §2, load-bearing for race-free dedup)
-  - Fixed per-batch order: fetch state → MD5 dedup → popularity bump → split MD5 replacements from perceptual → verified/unverified perceptual dedup in parallel → popularity bumps → uploads → save video objects → in-place updates → rank recalc → frontend notify → cleanup INDIVIDUAL files (NOT the temp dir, per upload-spec §11)
+  - Fixed per-batch order: fetch state → MD5 dedup → popularity bump → split MD5 replacements from perceptual → verified/unverified perceptual dedup in parallel → popularity bumps → uploads → share inserts → frontend notify → cleanup INDIVIDUAL files (NOT the temp dir, per upload-spec §11)
   - **`dedup-failure-skips-batch` invariant** (upload-spec §11) — perceptual dedup failure zeros both upload/replace lists; do NOT fall back to "upload everything" (regresses duplicate-upload bug)
   - **VAR event-removal hard-terminate** (upload-spec §9) — `fetch_event_data` returns `event_not_found` → workflow completes immediately, discards remaining queued batches
   - Hard-cap timeout (~30 min) as safety net for crashed downstream workflows
-  - **Rank recalc treated as non-fatal, retry-lite** (upload-spec §8) — max 2 attempts, no batch failure on rank failure
+  - **No rank recalc activity** — ranks are derived at read time per [decisions.md 2026-07-18](../decisions.md). AssetWorkflow does NOT store a rank column or fire `event.rank_recalculated` during normal flow.
+  - **Parallel batch processing via `workflow.Go`** (2026-07-18 design discussion) — within-batch dedup + S3 upload can run concurrently across signal-received batches. pg's `INSERT ... ON CONFLICT (content_hash) DO NOTHING RETURNING id` provides the atomic dedup+upload primitive; popularity via `COUNT(video_shares)` handles multi-source correctly regardless of ordering. Python's per-batch serialization was a Mongo-forced constraint that pg lifts.
+  - **Completion condition via pg queue query** (2026-07-18 design discussion) — Discovery pre-inserts `event_download_workflows` rows for all N expected downloads. AssetWorkflow polls: when `count(completed_at IS NOT NULL) == expected AND queue empty AND no in-flight goroutines`, drain done. Deterministic + failure-resilient + no idle-timeout waste.
 - **Downstream spawn rule for Discovery → Video → Asset chain** [~1 day]
   - Discovery activity spawns Video via Temporal client + inserts Video's `event_downstream_workflows` row atomically
   - Video's finalize activity spawns Asset via signal-with-start
@@ -192,7 +194,7 @@ Critical path:
 Buffer:
 
 - Alias table seed (team_aliases rows for tracked leagues) — half day
-- `event.rank_recalculated` emit from Asset's ranking recompute — small
+- ~~`event.rank_recalculated` emit from Asset's ranking recompute~~ — dropped per [decisions.md 2026-07-18 derived-at-read ranking](../decisions.md)
 - Backfill script skeleton (V/h) if time permits
 
 **Milestone gate:** on Sunday match day (Aug 3 in the middle of Week 3), rehearse: point Go worker at active fixtures, observe end-to-end pipeline, compare video clips output against Python's prod output. Any regressions logged as Week 4 fix tasks.
@@ -220,6 +222,7 @@ Critical path:
   - `Last-Event-ID` cursor for reconnect backfill from `event_log` (improvement over Python which returns REST-only replay)
   - Video URL rewrite at boundary: stored `/video/<bucket>/<key>` → public `/api/v1/videos/<bucket>/<key>` (scaler-spec §B10)
   - Server-side status derivation for `/events/{id}` (watching / extracting / complete / validating)
+  - **Ranks derived at query time via `ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY verified DESC, popularity DESC, quality_score DESC NULLS LAST)`** (per [decisions.md 2026-07-18](../decisions.md)). No stored rank column, no rank recalc anywhere. Every SSE-triggered client re-fetch sees fresh ordering.
   - CORS explicit origin (not `*`)
 - **`notify_frontend_refresh` sites — 5 workflows** [in-line during workflow work above]
   - Ingest, Monitor, Discovery, Video, Asset workflows each fire on state-mutation

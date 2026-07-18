@@ -511,8 +511,7 @@ Documented in this proposal above (§ AssetWorkflow serialization, § Cross-even
   addressed in T.
 - **Destroy pipeline** (event.removed → cancel in-flight Video,
   soft-delete video_shares) — deferred to a follow-up phase after V.
-- **Rank recalculation** (event.rank_recalculated NATS emit) — the
-  ranking algorithm redesign is its own conversation.
+- **Rank recalculation** — resolved 2026-07-18: **ranks are derived at read time via SQL window function**, no stored column, no rank-recalc activity, no `event.rank_recalculated` emit during normal flow. See [`../../decisions.md`](../../decisions.md) 2026-07-18 entry. Fixes Python's rank=0 bug + concurrent-batch race window at the root.
 
 ## Resolved during 2026-07-16 walkthrough
 
