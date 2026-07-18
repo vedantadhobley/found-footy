@@ -78,6 +78,7 @@ func (s *Service) State() (State, string) {
 func (s *Service) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/search", s.handleSearch)
 }
 
 func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
