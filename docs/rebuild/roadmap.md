@@ -6,6 +6,10 @@
 
 **Philosophy:** feature parity means the user experience matches or exceeds Python's — same clip discovery quality, same or better latency, same or better rank ordering. Internally the rewrite is dramatically cleaner (typed enums, structured concurrency, dual-write observability, atomic spawn semantics) but that's not user-visible; parity is measured by output.
 
+**Scope discipline:** user's call 2026-07-18 — **no shortcuts, full scope**. Everything in this document is in-flight; nothing is cut for expedience. If a week runs long, we push into weekend/evening rather than skip work. The doc is aggressive on purpose.
+
+**Ground truth:** the detailed Python behavior spec (`docs/rebuild/python-functional-spec.md` addendum, updated 2026-07-18) describes what each subsystem does today with WHY-annotations for load-bearing behaviors. Every week's checklist below is grounded in that spec; when in doubt during implementation, consult it first.
+
 ---
 
 ## Where we are on 2026-07-18
@@ -45,33 +49,54 @@ Critical path:
 
 - **T/b — Auth + cookie lifecycle** [~2 days]
   - VNC container (Xvfb + x11vnc + websockify + raw Firefox)
-  - `cookies.sqlite` watcher that captures `auth_token` on login + writes shared `/config/twitter_cookies.json`
-  - Cookie expiry monitor loop + NATS `twitter.auth_expired` emission on expiry
+  - `cookies.sqlite` mtime watcher that fires when manual login completes (per twitter-spec §1)
+  - **Cookie backup is EVENT-DRIVEN, not timer-driven** (per twitter-spec §2): backup fires after every successful search + after cookie restore + after login verify — Python's pattern preserved
+  - **`auth_token` presence guard on both backup and restore** — silently drop the operation if missing (twitter-spec §10, load-bearing)
+  - `/config/twitter_cookies.json` shared via bind mount; cookies-shared-across-fleet
+  - Cookie expiry monitor + NATS `twitter.auth_expired` emission on expiry
   - Cookie reload on NATS `twitter.reauthed` subscription (headless fleet)
-  - Docker compose: dev + prod stacks pick up the split (VNC + N headless)
+  - **60 s warm-path fast-check in `EnsureAuthenticated`** — skip full `x.com/home` GET if last activity was < 60 s ago (twitter-spec §10, saves 3-4 s per search during goal burst)
+  - `busy` flag exposed via `/status` — True only during active search (twitter-spec §10) — scaler needs this to safely scale down
+  - Instance-scoped profile dir via hostname hash to prevent multi-instance profile corruption (twitter-spec §10)
+  - Idle-CPU containment Firefox prefs: autoplay off, GIF animation off, background video suspended (~20 % CPU per container savings, twitter-spec §10)
+  - Docker compose: dev + prod stacks pick up VNC + N headless split; `twitter-vnc` and `twitter-N` share the same profile-dir volume vs cookie file mount
 - **T/c — Full search + scrape** [~2 days]
-  - Port `scrape.py`'s DOM extraction helpers (tweet URL, age, video duration, promoted-tweet skip, snowflake sanity check)
+  - Port `scrape.py`'s DOM extraction helpers (tweet URL, age, video duration, promoted-tweet skip, snowflake sanity check per `MIN_SNOWFLAKE_LEN = 18`)
+  - **Preserve typed error taxonomy** for downloads: `VideoNotAvailableError` (404), `VideoGeoRestrictedError` (403), `TwitterRateLimitedError` (429), `VideoCDNTimeoutError`, `VideoDownloadError`, `VideoMalformedURLError` with `failure_mode=truncated_snowflake` (video-spec §2, load-bearing for Grafana observability)
   - Time-based scroll termination (`max_age_minutes` boundary)
   - `max_scrolls = 10` safety cap (from Python's `_do_search`)
   - Empty-page stop after ≥1 scroll
   - **Consecutive-already-seen early-stop (3 default) — improvement over Python** (per video-dedup Q2)
-  - `exclude_urls` filter honored per-tweet
+  - `exclude_urls` normalized to tweet-ID SET so callers can pass either `/user/status/…` or `/i/status/…` shapes (twitter-spec §3, load-bearing)
   - Baseline stealth #2 (timing jitter ±20–40 s on Discovery's search cadence)
   - Baseline stealth #4 (random 0.5–3 s scroll pauses)
+  - Baseline stealth #3 (User-Agent + Accept-Language rotation)
+  - `Referer: https://x.com/` and `Origin: https://x.com` headers on CDN download requests (twitter-spec §6, load-bearing — CDN rejects without them)
+  - Per-tweet exception swallowing to avoid log flood (twitter-spec §4, deliberate)
 - **T/d — Rate-limit detection + backoff** [~half day]
   - 429 detection + "Are you a robot?" interstitial detection
   - Per-instance `backoff_until` written to `twitter_instances` pg table
   - `/status` surfaces backoff state; Discovery-side router skips backed-off instances
-- **T/e — Instance registry + heartbeat** [~half day]
+- **T/e — Instance registry + heartbeat + scaler** [~1 day]
   - `twitter_instances` pg schema (see twitter-port.md Q5)
   - 10 s heartbeat goroutine
+  - 30 s eviction cutoff on staleness (passive eviction — do not mutate stale rows, they fall out of the filter and reappear on next heartbeat, per scaler-spec §A3)
   - `ORDER BY RANDOM()` router in Discovery (per twitter-port.md Q6)
-
-Buffer work if week runs ahead:
-
-- T/g browser-crash watchdog (nice-to-have; can slip to week 2)
-- T/h adapter update to match new API (mostly done; small polish)
-- Baseline stealth #3 header rotation (defer if pressed)
+  - **Single fallback URL path** — collapse Python's three redundant fallbacks (scaler-spec §A6, drop the stale `TWITTER_SESSION_URL` default)
+  - **Registry routing wired end-to-end** — either drop `busy` state entirely or make the router actually consult it (scaler-spec §A4 flags Python's dead-code hook; rebuild picks one)
+  - Scaler service: separate binary watching two independent signals — worker workflow count (Temporal `ListWorkflowExecutions`) + twitter active goal count (pg query on `events` where downstream not complete); each signal scales its own service pool, min=2/max=8 per Python's tuning; 30 s check cadence + 60 s cooldown
+- **T/f — CDN URL extract + external download split** [~1 day]
+  - `/extract_cdn_url` endpoint returns bundle `{cdn_url, cookies, user_agent, referer, origin}`
+  - Discovery-side Go HTTP downloader attaches the bundle exactly, streams to disk
+  - Cookies (`auth_token`, `ct0`, `twid`, `guest_id`) attached to CDN request (video-spec §2, load-bearing for `amplify_video` variants)
+  - Typed error propagation preserved through the boundary
+- **T/g — Session recovery watchdog** [~half day]
+  - `page.Ping()` heartbeat every N seconds
+  - On failure: relaunch context + reload cookies + one retry
+  - Emit `twitter.browser_recovered` NATS event
+- **T/h — Twitter HTTP client adapter update** [~half day]
+  - Match the new `/extract_cdn_url` + typed error shape
+  - Update S7 adapter tests to cover the new endpoint
 
 **Milestone gate before Week 2:** Discovery can search Twitter end-to-end from Go worker → Twitter service → real tweets returned → `event_tweets` populated. Manual match-day rehearsal against a live weekend match validates.
 
@@ -92,16 +117,26 @@ Critical path:
   - ffprobe metadata extract, hard-filter with short-circuit (duration 3–90 s, aspect 1.75–1.80, short-edge ≥ 600 px, framerate ≥ 20 fps)
   - SHA256 content hash, batch dedup within event, S3 content-hash lookup, popularity via `COUNT(video_shares)`
 - **V/b — Vision call #1 (combined analyze)** [~1.5 days]
-  - Structured JSON output: 5 fields (soccer, screen, clock, added, stoppage_clock)
+  - Structured JSON output: 5 fields (soccer, screen, clock, added, stoppage_clock) — preserve the shape (vision-spec §3)
   - Dual-checkpoint verification at 25 % and 75 % frame positions
-  - Rubric tightened per video-dedup Q3 (celebrations narrowed to "on-field player celebrations following a goal"; screen expanded to catch software screen recording)
-  - `verified` bool derived + wrong-clock hard-reject
+  - **50 % tiebreaker fires ONLY on soccer/screen disagreement**, not for timestamp validation (vision-spec §2, load-bearing — extending tiebreaker to timestamp would silently loosen acceptance)
+  - Rubric tightened per video-dedup Q3 (celebrations narrowed to "on-field player celebrations following a goal"; screen expanded to catch software screen recording — vision-spec §5 flags this as a known gap in Python)
+  - **Three-state timestamp classification: verified / unverified / rejected** (vision-spec §7-§8, load-bearing distinction). Rejected = discard; unverified = keep in corpus but rank lower; verified = full confidence
+  - `is_valid = is_soccer AND NOT is_screen_recording AND timestamp_status != "rejected"` (vision-spec §8)
+  - LLM concurrency semaphore pinned to 2 per worker (matches joi's parallel-cap)
+  - Typed error taxonomy: `LLMUnavailableError` / `LLMTimeoutError` / `LLMValidationError` (vision-spec §9)
+  - `added` field captured but not summed into absolute minute; `stoppage_clock` IS summed (vision-spec §6, preserve both fields for future OCR-quality improvements)
 - **V/c — Perceptual hash + batch perceptual dedup** [~1.5 days]
-  - dHash (9x8 grayscale + histogram equalization) at 0.25 s frame intervals — preserve Python's algorithm verbatim
-  - Storage format: `"dense:0.25:t1=h1,..."` for cutover compat with Python's on-disk hash strings
-  - `_dense_hashes_match` sliding-window offset-tolerant matcher (`max_hamming=10`, `min_consecutive=3`)
-  - Batch dedup + S3 perceptual lookup (all-pairs against corpus; indexing deferred)
-  - Category-scoped (verified pool vs unverified pool only)
+  - dHash (9x8 grayscale + histogram equalization) at 0.25 s frame intervals — preserve Python's algorithm verbatim (video-spec §5)
+  - Storage format: `"dense:0.25:t1=h1,..."` for cutover compat with Python's on-disk hash strings; parse once into typed `[]struct{ts float32; hash uint64}` in memory for 10× faster matching (video-spec §5 REMARKS)
+  - **Single ffmpeg invocation with select filter to stream all frames**, not one subprocess per frame (video-spec §5 REMARKS, ~100× subprocess overhead reduction over Python)
+  - Heartbeat before every ffmpeg call (video-spec §5 + §8, load-bearing under contention)
+  - `_dense_hashes_match` sliding-window offset-tolerant matcher (`max_hamming=10`, `min_consecutive=3`, timestamp tolerance = interval/2)
+  - **Index `frames_b` by rounded timestamp for O(1) tolerance lookup** (video-spec §6 REMARKS, drops worst-case O(N²·M²))
+  - Empty-perceptual-hash on either side treated as no-signal, pair NOT collapsed (video-spec §7)
+  - Batch dedup + S3 perceptual lookup (all-pairs against corpus)
+  - **Category-scoped: verified pool vs unverified pool ONLY** (upload-spec §3, load-bearing — prevents verified-goal replacement by unverified-clip-of-different-moment)
+  - `HASH_VERSION` field stored per-video for future algorithm swap (video-spec §9)
 
 Buffer:
 
@@ -121,10 +156,17 @@ Buffer:
 Critical path:
 
 - **AssetWorkflow (per-event signal-based FIFO)** [~1.5 days]
-  - Signal-with-start pattern, deterministic workflow ID per event
+  - Signal-with-start pattern, deterministic workflow ID `asset-{event_id}` per event
   - `add_batch` signal from Video workflows
-  - **Queue-drain completion**: expected N batches seen AND queue empty → exit (fixes Python's 5-min tail waste)
-  - Hard-cap timeout (~30 min) as safety net for crashed DownloadWorkflows
+  - **Queue-drain completion**: expected N batches seen AND queue empty → exit (fixes Python's 5-min tail waste per upload-spec §10)
+  - **`ALLOW_DUPLICATE` reuse policy** (upload-spec §1, load-bearing) so late-arriving signals after a Completed workflow start a fresh instance rather than silently drop
+  - Empty-batch signals suppressed at the sending activity (upload-spec §1)
+  - Fresh S3 state fetched INSIDE the serialized workflow per-batch, not per-workflow (upload-spec §2, load-bearing for race-free dedup)
+  - Fixed per-batch order: fetch state → MD5 dedup → popularity bump → split MD5 replacements from perceptual → verified/unverified perceptual dedup in parallel → popularity bumps → uploads → save video objects → in-place updates → rank recalc → frontend notify → cleanup INDIVIDUAL files (NOT the temp dir, per upload-spec §11)
+  - **`dedup-failure-skips-batch` invariant** (upload-spec §11) — perceptual dedup failure zeros both upload/replace lists; do NOT fall back to "upload everything" (regresses duplicate-upload bug)
+  - **VAR event-removal hard-terminate** (upload-spec §9) — `fetch_event_data` returns `event_not_found` → workflow completes immediately, discards remaining queued batches
+  - Hard-cap timeout (~30 min) as safety net for crashed downstream workflows
+  - **Rank recalc treated as non-fatal, retry-lite** (upload-spec §8) — max 2 attempts, no batch failure on rank failure
 - **Downstream spawn rule for Discovery → Video → Asset chain** [~1 day]
   - Discovery activity spawns Video via Temporal client + inserts Video's `event_downstream_workflows` row atomically
   - Video's finalize activity spawns Asset via signal-with-start
@@ -132,8 +174,13 @@ Critical path:
 - **V/g — Upload + video_assets + video_shares + replace-and-absorb** [~2 days]
   - Optimistic `INSERT ... ON CONFLICT (content_hash) DO NOTHING RETURNING id` for cross-event race safety
   - S3 upload only on race winner
-  - `UPDATE video_shares SET video_asset_id` for replace + absorb; delete old asset + S3 object
+  - **Same S3 key reused on replacement** (upload-spec §7) — URL stability preserves shared consumer links; MongoDB→pg positional in-place update, NEVER remove-then-add
+  - **Popularity carried into replacement candidate BEFORE the S3 PUT** (upload-spec §6, load-bearing — remove-then-add would zero the counter)
+  - `UPDATE video_shares SET video_asset_id` for share migration; delete old asset row + S3 object
   - Popularity via `COUNT(video_shares)` — no counter to maintain
+  - **Duration-vs-resolution winner picking**: 15 % `DURATION_SIMILARITY_THRESHOLD` — within 15 % → prefer higher resolution; more than 15 % → prefer longer (upload-spec §4)
+  - **Should-replace-S3 same 15 % rule** with reason string threaded into logs for Grafana debugging (upload-spec §5, load-bearing)
+  - `bump_video_popularity` idempotent write path
 - **V/f — Vision call #2 quality comparison** [~half day]
   - One representative frame per clip (from ~50 % timestamp)
   - Multi-image call to Qwen3-VL-8B; ranked JSON output with per-clip score + reasoning
@@ -162,10 +209,21 @@ Buffer:
 Critical path:
 
 - **`cmd/api` SSE bridge + REST surface** [~2 days]
-  - HTTP surface exposing `/api/v1/fixtures`, `/api/v1/events`, `/api/v1/events/{id}/shares`, SSE at `/api/v1/stream`
-  - Bearer token auth checked at Caddy edge
-  - SSE bridge subscribes to NATS `event.>` + `fixture.>` subjects, forwards to browser clients
-  - SSE reconnect uses `event_log_id` cursor for backfill from pg
+  - HTTP surface exposing `/api/v1/fixtures`, `/api/v1/events`, `/api/v1/events/{id}/shares`, `/api/v1/dates`, `/api/v1/search`, SSE at `/api/v1/stream`
+  - **Preserve exact SSE envelope schema** — `{type, id, ts, data}` with types `connected`, `invalidate`, `heartbeat`, `health` (scaler-spec §B13, copy-paste contract with vedanta-systems)
+  - `redirect_slashes=False` (scaler-spec §Preserve)
+  - Bearer token auth checked at Caddy edge; `X-Internal-Token` for `/api/v1/internal/notify`
+  - SSE bridge subscribes to NATS `event.>` + `fixture.>` subjects, forwards to browser clients via `EventSource` envelopes
+  - **`X-Accel-Buffering: no` header on the SSE response** (scaler-spec §B12, load-bearing hint to Caddy)
+  - Bounded queue per connection (`maxsize=100`), slow-client policy = drop connection, EventSource reconnects and catches up via REST
+  - Idle heartbeat every 30 s + `ping=15` TCP keepalive comments
+  - `Last-Event-ID` cursor for reconnect backfill from `event_log` (improvement over Python which returns REST-only replay)
+  - Video URL rewrite at boundary: stored `/video/<bucket>/<key>` → public `/api/v1/videos/<bucket>/<key>` (scaler-spec §B10)
+  - Server-side status derivation for `/events/{id}` (watching / extracting / complete / validating)
+  - CORS explicit origin (not `*`)
+- **`notify_frontend_refresh` sites — 5 workflows** [in-line during workflow work above]
+  - Ingest, Monitor, Discovery, Video, Asset workflows each fire on state-mutation
+  - **Dual-publish during migration**: (a) legacy vedanta-systems Express `POST /api/found-footy/refresh` coarse trigger, (b) new FastAPI-equivalent `POST /api/v1/internal/notify` typed envelope (scaler-spec §B13, load-bearing during migration)
 - **Webhook delivery worker** [~1 day]
   - JetStream durable consumer subscribing to same subjects
   - Registered endpoints get HMAC-signed POSTs with retry + dead-letter
@@ -235,21 +293,26 @@ Buffer / late-breaking:
 
 ---
 
-## Deferred to post-2026-08-15 (post-season-start)
+## Out of scope for Aug 15 (genuinely deferred — user-approved)
 
-Explicitly named so we don't second-guess these during the 4 weeks:
+Only genuinely-out-of-scope items go here. Every "could-cut-if-we-slip" item from an earlier draft was pulled back into the weekly plan per the 2026-07-18 no-shortcuts directive.
 
-1. Full V/h Python-era corpus backfill (perceptual + verified for every historical clip). Doing enough during Week 4 to avoid immediate duplicate S3 explosion; full backfill can happen during Oct international break.
-2. Structured error taxonomy refinement (Twitter service ships with 503/500 catchall like Python's today).
-3. Grafana dashboards for the Go pipeline (Python-era dashboards keep working; Go writes to same Loki + Prometheus).
-4. Scenario YAML additions for O3/b's 5 emissions.
-5. Enum-casing scenario test failures.
-6. LSH-style indexing for perceptual corpus lookup (all-pairs is fine at our size for now).
-7. Perceptual hash storage format upgrade from text to binary (Python-format text still works; binary is a post-cutover perf tweak).
-8. Baseline stealth #3 header rotation (User-Agent + Accept-Language variation).
-9. Deeper stealth options #5–8 from video-dedup catalog (per-container fingerprints, mobile.twitter.com path, residential proxy pool, behavior simulation).
-10. Multiple Twitter accounts (multi-account fraud detection risk >> isolation benefit).
-11. Alias RAG replacement — simple table lookup permanently replaces the Python-era Wikidata + LLM pipeline.
+1. **LSH-style indexing** for perceptual corpus lookup — all-pairs is fine at our current size (~thousands of assets); revisit when the corpus grows past ~10 k.
+2. **Perceptual hash storage format upgrade from text to binary** — Python-format text works and is what the migration bridges against; binary is a post-cutover perf tweak.
+3. **Deeper stealth options #5–8** from video-dedup catalog (per-container fingerprints, mobile.twitter.com path, residential proxy pool, full behavior simulation) — baseline #1–4 ship pre-cutover; escalate to #5–8 only if empirical detection surfaces post-cutover.
+4. **Multiple Twitter accounts** — multi-account fraud detection risk >> isolation benefit for a read-only service (per twitter-port.md Q4).
+5. **Wikidata + LLM alias RAG** — permanently replaced by a curated `team_aliases` table + Twitter advanced-search OR-syntax (user's 2026-07-17 call). Not "deferred" — dead.
+6. **Scenario YAML additions for O3/b's 5 emissions** — code is correct + inert-safe; scenario harness update fits into V/i cross-cutting week if there's time, else post-cutover cleanup.
+7. **Pre-existing enum-casing scenario test failures** — unrelated to the rebuild; independent bug ticket.
+8. **Full Grafana dashboard build-out for the Go pipeline** — Prometheus + Loki writes land during weeks 1–4; dashboard authoring is post-cutover polish. Python-era dashboards keep working through cutover because Go writes to the same substrates.
+
+In-scope items called out explicitly (no cuts):
+
+- **V/h full Python-era corpus backfill** — was previously flagged as "maybe October." Now in Week 4 as full scope. Runs in one shot during cutover window; we do NOT ship with a half-backfilled corpus.
+- **Vision call #2 quality comparison** — was previously flagged as "post-season addition." Now in Week 3 as full scope.
+- **Structured error taxonomy** — was previously flagged as "ship with 503/500 catchall like Python." Now in scope everywhere the Python spec cites a typed error (Twitter downloads, LLM validation, workflow retries).
+- **Baseline stealth #1–4 all four** — Playwright defaults + timing jitter + header rotation + scroll pauses. All ship pre-cutover.
+- **`notify_frontend_refresh` dual-publish** — legacy Express + new FastAPI both hit until vedanta-systems Express migration is verified in prod.
 
 ---
 
@@ -280,4 +343,6 @@ If (9) shows > 10 % regression: rollback, investigate.
 
 Check in weekly, update the "where we are" section, cross off shipped items, add newly-discovered work to the deferred list.
 
-Last updated: 2026-07-18 (initial draft, agents currently producing detailed Python behavior specs to be merged into python-functional-spec.md).
+Last updated: 2026-07-18 (initial draft + spec integration + no-shortcuts scope stance).
+
+Detailed Python behavior specs merged into `python-functional-spec.md` on 2026-07-18 as an addendum; every week's checklist above is now grounded in those specs. Line-number references in each week's bullets point at Python source; the addendum has PURPOSE + BEHAVIOR + REMARKS per subsystem.
