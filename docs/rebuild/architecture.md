@@ -249,18 +249,37 @@ interface with a `CountryVariations` cache (both injected — domain
 stays pure Go). Two branches on `LookupInput.IsNational`:
 
 - Clubs (`lookup_club.go`): 9 fuzzy `wbsearchentities` search
-  variants + description-scoring against per-country variations
-  derived from Wikidata P1549 + P1448. Ports Python's rag.py fuzzy
-  stack. Perfect city match short-circuits (return after first hit).
-  Filters women's / reserve / youth / futsal / B-team candidates by
-  description keyword + label suffix.
-- Nationals (`lookup_national.go`): 3 variants, first football-team
-  candidate wins. Ambiguity is low (national-team names are usually
-  unique in Wikidata). USA gets substituted to "United States" per
-  Wikidata's index convention.
+  variants collect candidates, one SPARQL P31 batch query filters
+  them by Wikidata's own ontology (accept: Q476028 association
+  football club, Q103229495 men's association football team; reject:
+  Q2412834 reserve team, Q51481377 women's association football
+  club), then description-scoring against per-country variations
+  derived from Wikidata P1549 + P1448 ranks survivors. Ports Python's
+  rag.py fuzzy stack. Perfect city match short-circuits after P31.
+  Description-keyword pre-skip catches women/reserve/youth/futsal
+  label variants P31 can miss.
+- Nationals (`lookup_national.go`): 3 variants collect candidates,
+  same P31 batch pattern (accept: Q135408445 men's national
+  association football team, Q6979593 legacy national football team;
+  reject: Q6997908 women's national football team), first survivor
+  wins. USA gets substituted to "United States" per Wikidata's index
+  convention.
 
 `ErrNoMatch` when no candidate survives filtering — legitimate
 outcome for obscure teams not in Wikidata; not a bug.
+
+**P31 batch verification (2026-07-20, task #143):** Replaces the
+brittle description-contains-"football" heuristic that let entities
+like Milan TV (Q2478275, a television channel) pass as an AC Milan
+match. `wikidata.BatchGetP31([qids])` sends ONE SPARQL query
+(`SELECT ?item ?type WHERE { VALUES ?item { … } ?item wdt:P31 ?type }`)
+and returns QID → P31 type list. Cost: 1 extra HTTP per Resolve call.
+Structural type check replaces text heuristics — TV channels,
+stadiums, museums, disambiguation pages, supporters' associations,
+match instances (Q109623729 assn. football match) all get dropped
+even when their descriptions happen to contain "football". Wikidata
+SPARQL rate limits are much friendlier than wbsearchentities'
+anonymous burst window.
 
 Shared word-processing in `text.go`: NFD normalize, strip diacritics,
 `ß→ss`, split on whitespace/dashes/slashes, strip periods/commas/

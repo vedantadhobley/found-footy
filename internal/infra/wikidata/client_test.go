@@ -226,3 +226,66 @@ func TestSearchEntities_Non2xxSurfacesFailure(t *testing.T) {
 	}
 }
 
+// BatchGetP31 sends the QIDs as a VALUES clause and returns a
+// QID → P31 map keyed on the last path segment of each URI.
+func TestBatchGetP31_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		sparql := q.Get("query")
+		if !strings.Contains(sparql, "wd:Q1543") || !strings.Contains(sparql, "wd:Q2478275") {
+			t.Errorf("SPARQL missing expected VALUES: %s", sparql)
+		}
+		if !strings.Contains(sparql, "wdt:P31") {
+			t.Errorf("SPARQL missing wdt:P31 predicate: %s", sparql)
+		}
+		w.Header().Set("Content-Type", "application/sparql-results+json")
+		_, _ = w.Write([]byte(`{
+			"head":{"vars":["item","type"]},
+			"results":{"bindings":[
+				{"item":{"type":"uri","value":"http://www.wikidata.org/entity/Q1543"},
+				 "type":{"type":"uri","value":"http://www.wikidata.org/entity/Q476028"}},
+				{"item":{"type":"uri","value":"http://www.wikidata.org/entity/Q1543"},
+				 "type":{"type":"uri","value":"http://www.wikidata.org/entity/Q103229495"}},
+				{"item":{"type":"uri","value":"http://www.wikidata.org/entity/Q2478275"},
+				 "type":{"type":"uri","value":"http://www.wikidata.org/entity/Q2001305"}}
+			]}
+		}`))
+	}))
+	defer srv.Close()
+
+	ins, _ := newFixture()
+	c, err := wikidata.NewClient(config.WikidataConfig{
+		Endpoint: srv.URL, UserAgent: "found-footy-test", Timeout: 5 * time.Second,
+	}, ins)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	got, err := c.BatchGetP31(context.Background(), []string{"Q1543", "Q2478275"})
+	if err != nil {
+		t.Fatalf("BatchGetP31: %v", err)
+	}
+	if len(got["Q1543"]) != 2 {
+		t.Errorf("Q1543 P31s = %v; want 2 entries", got["Q1543"])
+	}
+	if len(got["Q2478275"]) != 1 || got["Q2478275"][0] != "Q2001305" {
+		t.Errorf("Q2478275 P31s = %v; want [Q2001305]", got["Q2478275"])
+	}
+}
+
+func TestBatchGetP31_EmptyInput(t *testing.T) {
+	ins, _ := newFixture()
+	c, err := wikidata.NewClient(config.WikidataConfig{
+		Endpoint: "http://x", UserAgent: "found-footy-test", Timeout: 5 * time.Second,
+	}, ins)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	got, err := c.BatchGetP31(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("BatchGetP31(nil): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("nil input should return empty map; got %+v", got)
+	}
+}
+

@@ -33,6 +33,10 @@ func (stubWD) GetEntity(_ context.Context, qid string) (*wikidata.Entity, error)
 	return nil, fmt.Errorf("stubWD.GetEntity(%s): no entity", qid)
 }
 
+func (stubWD) BatchGetP31(_ context.Context, _ []string) (map[string][]string, error) {
+	return map[string][]string{}, nil
+}
+
 // ── fakes ──────────────────────────────────────────────────────
 
 // fakeFetcher records the params it was called with + returns

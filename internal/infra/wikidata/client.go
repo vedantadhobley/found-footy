@@ -268,6 +268,78 @@ func (c *Client) SearchEntities(ctx context.Context, term string, opts SearchOpt
 	return hits, nil
 }
 
+// BatchGetP31 returns the P31 (instance-of) type set for each QID via
+// ONE SPARQL query. Backs the alias-lookup pipeline's candidate
+// filtering: after wbsearchentities collects candidates, we type-check
+// them against Wikidata's own ontology instead of the fragile
+// text-heuristic "description contains 'football'" filter.
+//
+// Empty input returns an empty map (no HTTP call). Each returned entry
+// is (QID → sorted list of P31 type QIDs, e.g. Q1543 → [Q103229495,
+// Q476028]). A QID with no P31 assertions is absent from the map,
+// which callers treat the same as "no acceptable type" — safe default.
+//
+// Uses VALUES clause + wbsearchentities-style Q-prefix input. Vendor
+// SPARQL endpoint handles ~200-item VALUES lists comfortably; we
+// bound to 100 to leave headroom.
+func (c *Client) BatchGetP31(ctx context.Context, qids []string) (map[string][]string, error) {
+	if len(qids) == 0 {
+		return map[string][]string{}, nil
+	}
+	// Bound the batch. Wikidata rejects massive VALUES lists via query
+	// length; 100 candidates * ~12 chars = ~1200 chars, well within the
+	// SPARQL endpoint's URL-length tolerance.
+	if len(qids) > 100 {
+		qids = qids[:100]
+	}
+	var values strings.Builder
+	for i, q := range qids {
+		if i > 0 {
+			values.WriteByte(' ')
+		}
+		values.WriteString("wd:")
+		values.WriteString(q)
+	}
+	sparql := "SELECT ?item ?type WHERE { VALUES ?item { " + values.String() +
+		" } ?item wdt:P31 ?type . }"
+
+	res, err := c.Query(ctx, sparql)
+	if err != nil {
+		return nil, fmt.Errorf("wikidata.BatchGetP31: %w", err)
+	}
+	out := make(map[string][]string, len(qids))
+	for _, b := range res.Results.Bindings {
+		itemV, ok := b["item"]
+		if !ok {
+			continue
+		}
+		typeV, ok := b["type"]
+		if !ok {
+			continue
+		}
+		item := lastPathSegment(itemV.Value)
+		typ := lastPathSegment(typeV.Value)
+		if item == "" || typ == "" {
+			continue
+		}
+		out[item] = append(out[item], typ)
+	}
+	return out, nil
+}
+
+// lastPathSegment returns the substring after the final '/'. Wikidata
+// SPARQL returns entities as full URIs ("http://www.wikidata.org/
+// entity/Q1543"); the QID is the last segment.
+func lastPathSegment(uri string) string {
+	if uri == "" {
+		return ""
+	}
+	if idx := strings.LastIndexByte(uri, '/'); idx >= 0 && idx+1 < len(uri) {
+		return uri[idx+1:]
+	}
+	return uri
+}
+
 // GetEntity fetches full entity JSON from Special:EntityData/{QID}.json.
 // One HTTP call returns labels + aliases in every language + all
 // claims. Caller navigates via the Entity accessor methods.
