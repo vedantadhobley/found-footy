@@ -227,6 +227,22 @@ retried on the next Ingest cycle. Mirrors Python's per-day-fixture-
 team pattern (workflow.execute_activity in a loop; not all tracked
 teams at once). Output counts: cache_hits, resolved, no_match, failed.
 
+**Per-team API-Football enrichment (2026-07-20, task #142):** Each
+cache-miss team in `ResolveAliasesForTeams` first calls the new
+`apifootball.GetTeamProfile(teamID)` — one `GET /teams?id=X` per
+team. Returns `venue.city` (native-language, e.g. "Milano" not
+"Milan"), authoritative `team.country` (works for friendlies where
+`league.country == "World"`), `team.national` (source of truth), and
+`team.code` (3-letter FIFA/UEFA). Enriched vendor fields are upserted
+back to `team_aliases` immediately via `UpsertVendorFields` so the
+row is captured even when Wikidata resolution fails downstream. Then
+the enriched values (city especially — decisive for the club-branch
+scoring's short-circuit) get passed into `alias.LookupInput` for the
+Wikidata pipeline. Ports Python's `get_team_info` call in
+`archive/src/activities/rag.py:555`. Cost: 1 API-Football call per
+team lifetime (cache-hits skip both this call and Wikidata). Soft-fail
+per team — profile fetch error keeps the TeamRef fallback values.
+
 **Lookup pipeline (2026-07-20, task #133):** The name → Wikidata QID
 resolution step. `Resolver` type composes a `WikidataFetcher`
 interface with a `CountryVariations` cache (both injected — domain

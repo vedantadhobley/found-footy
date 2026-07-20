@@ -441,8 +441,20 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		// already set) are skipped inside the activity — QIDs are
 		// permanent so we never re-run the expensive fuzzy stack.
 		// Soft-fail per team; a Wikidata hiccup doesn't fail Ingest.
+		//
+		// Longer timeout: per-team work is now ~7s (500ms throttle +
+		// 1 GetTeamProfile + up to 9 wbsearchentities calls + 1
+		// GetEntity in Select). At 38 teams that's ~4.5 min; at 100
+		// teams (major-tournament peak) ~12 min. 15 min covers both
+		// with headroom without masking a legitimately-stuck workflow.
+		// Retries stay idempotent — UpsertVendorFields + UpsertResolution
+		// are both UPSERTs and cache-hit skip in-flight teams cleanly.
+		resolveCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 15 * time.Minute,
+			RetryPolicy:         ao.RetryPolicy,
+		})
 		var resolveOut ingest.ResolveAliasesForTeamsOutput
-		if err := workflow.ExecuteActivity(ctx,
+		if err := workflow.ExecuteActivity(resolveCtx,
 			"ResolveAliasesForTeams",
 			ingest.ResolveAliasesForTeamsInput{Teams: catOut.TeamRefs},
 		).Get(ctx, &resolveOut); err != nil {

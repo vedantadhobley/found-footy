@@ -147,3 +147,34 @@ func (c *Client) ListTeamsForLeague(ctx context.Context, leagueID, season int) (
 	}
 	return teams, nil
 }
+
+// GetTeamProfile returns the full team + venue envelope for a specific
+// team ID. Backs the alias-resolution enrichment path (ports Python's
+// `get_team_info` in archive/src/api/api_client.py): before running the
+// Wikidata lookup, we call this to surface venue.city + authoritative
+// team.country + team.national + team.code — signals the fixture-side
+// data alone doesn't carry.
+//
+// One HTTP call per team on first resolution. Cached permanently in
+// team_aliases once the row is written, so subsequent ingest cycles
+// short-circuit on cache-hit and never re-fetch.
+//
+// Returns (nil, error) on transport/decode failure. Returns (nil, err)
+// with a "not found" error if the vendor's response is empty for the
+// given ID — activity code soft-fails rather than aborting the whole
+// resolution loop.
+func (c *Client) GetTeamProfile(ctx context.Context, teamID int64) (*APITeamEnvelope, error) {
+	q := url.Values{"id": {strconv.FormatInt(teamID, 10)}}
+
+	var envelope struct {
+		Response []APITeamEnvelope `json:"response"`
+		Errors   any               `json:"errors"`
+	}
+	if err := c.getJSON(ctx, "teams_profile", "/teams", q, &envelope); err != nil {
+		return nil, err
+	}
+	if len(envelope.Response) == 0 {
+		return nil, fmt.Errorf("apifootball.GetTeamProfile: team %d not found", teamID)
+	}
+	return &envelope.Response[0], nil
+}
