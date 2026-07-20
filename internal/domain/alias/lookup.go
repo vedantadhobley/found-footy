@@ -31,6 +31,11 @@ import (
 type WikidataFetcher interface {
 	SearchEntities(ctx context.Context, term string, opts wikidata.SearchOpts) ([]wikidata.SearchHit, error)
 	GetEntity(ctx context.Context, qid string) (*wikidata.Entity, error)
+	// BatchGetP31 returns QID → P31 type-list (one SPARQL query for
+	// many QIDs). The club + national branches use it to type-check
+	// wbsearchentities candidates against Wikidata's own ontology,
+	// replacing the fragile description-contains-"football" heuristic.
+	BatchGetP31(ctx context.Context, qids []string) (map[string][]string, error)
 }
 
 // LookupInput carries the API-Football vendor data the pipeline uses

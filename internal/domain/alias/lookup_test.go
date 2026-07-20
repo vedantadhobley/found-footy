@@ -28,6 +28,12 @@ type fakeWD struct {
 	mu             sync.Mutex
 	searchHandler  func(term string, opts wikidata.SearchOpts) ([]wikidata.SearchHit, error)
 	entityHandler  func(qid string) (*wikidata.Entity, error)
+	// p31 maps QID → P31 type list. Nil → empty map. Used by BatchGetP31
+	// to return canned type-lists for the lookup pipeline's filter step.
+	// Tests that don't set this get an "empty types → filter drops
+	// everything" behavior, which matches ErrNoMatch in most scenarios.
+	p31            map[string][]string
+	batchP31Calls  [][]string
 	searchCalls    []string
 	entityCalls    []string
 }
@@ -52,6 +58,23 @@ func (f *fakeWD) GetEntity(_ context.Context, qid string) (*wikidata.Entity, err
 		return nil, nil
 	}
 	return handler(qid)
+}
+
+func (f *fakeWD) BatchGetP31(_ context.Context, qids []string) (map[string][]string, error) {
+	f.mu.Lock()
+	f.batchP31Calls = append(f.batchP31Calls, append([]string(nil), qids...))
+	table := f.p31
+	f.mu.Unlock()
+	out := make(map[string][]string, len(qids))
+	if table == nil {
+		return out, nil
+	}
+	for _, q := range qids {
+		if t, ok := table[q]; ok {
+			out[q] = append([]string(nil), t...)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeWD) searchCallCount() int {
@@ -88,13 +111,11 @@ func TestResolver_Resolve_NoCandidates_ReturnsErrNoMatch(t *testing.T) {
 	}
 }
 
-// Club branch: constructs the full 9-variant search set and only the
-// first city-matching candidate wins (short-circuit).
+// Club branch: constructs the full 9-variant search set. Candidates
+// are collected across variants, then P31-filtered, then scored;
+// city-match short-circuit fires on the first survivor with score
+// ≥200 (avoids scoring the rest).
 func TestResolver_ClubBranch_CityMatchShortCircuits(t *testing.T) {
-	// Fake wbsearchentities returns a single football-club candidate
-	// whose description mentions the city. The scoring +200 city
-	// bonus alone triggers the short-circuit return, so we should
-	// only see ONE SearchEntities call (the first variant).
 	fake := &fakeWD{
 		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
 			return []wikidata.SearchHit{
@@ -104,6 +125,11 @@ func TestResolver_ClubBranch_CityMatchShortCircuits(t *testing.T) {
 					Description: "association football club in Liverpool, England",
 				},
 			}, nil
+		},
+		// P31 accept: Q476028 (association football club) puts Liverpool
+		// through the type filter.
+		p31: map[string][]string{
+			"Q1130849": {"Q476028"},
 		},
 	}
 	r := alias.NewResolver(fake, nil)
@@ -122,18 +148,9 @@ func TestResolver_ClubBranch_CityMatchShortCircuits(t *testing.T) {
 	if got.Score < 200 {
 		t.Errorf("Score = %d, want ≥200 (city-match short-circuit)", got.Score)
 	}
-	// Country-variations lookup for "England" hits SearchEntities once,
-	// then the first club variant short-circuits. Total = 2. Assert on
-	// the club-search count (terms containing "FC" or "football").
-	clubSearches := 0
-	for _, term := range fake.searchCalls {
-		if strings.Contains(term, "FC") || strings.Contains(term, "football") ||
-			strings.Contains(term, "Liverpool") {
-			clubSearches++
-		}
-	}
-	if clubSearches != 1 {
-		t.Errorf("club-variant searches = %d; city-match short-circuit should stop after 1", clubSearches)
+	// One batch P31 call fires per Resolve (over all deduped candidates).
+	if len(fake.batchP31Calls) != 1 {
+		t.Errorf("BatchGetP31 called %d times; want 1 (single batch across variants)", len(fake.batchP31Calls))
 	}
 }
 
@@ -196,6 +213,70 @@ func TestResolver_ClubBranch_FiltersBTeamLabels(t *testing.T) {
 	}
 }
 
+// P31 filter: even when a candidate's description contains "football",
+// a non-club P31 (TV channel, stadium, etc.) drops it. This is the
+// marquee AC Milan / Milan TV regression case — Q2478275 (Milan TV)
+// has description "subscription-based television channel operated by
+// Italian football club AC Milan" and would pass the old text-based
+// isFootball check, but its P31 is Q2001305 (television channel) not
+// Q476028 (association football club).
+func TestResolver_ClubBranch_P31RejectsTelevisionChannel(t *testing.T) {
+	fake := &fakeWD{
+		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
+			return []wikidata.SearchHit{
+				{ID: "Q1543", Label: "AC Milan", Description: "football club in Milan, Italy"},
+				{ID: "Q2478275", Label: "Milan TV", Description: "subscription-based television channel operated by Italian football club AC Milan"},
+			}, nil
+		},
+		p31: map[string][]string{
+			"Q1543":    {"Q476028", "Q103229495"}, // association football club + men's team
+			"Q2478275": {"Q2001305", "Q561068"},   // television channel + specialty channel — no accept type
+		},
+	}
+	r := alias.NewResolver(fake, nil)
+	got, err := r.Resolve(context.Background(), alias.LookupInput{
+		CanonicalName: "AC Milan",
+		Country:       strPtr("Italy"),
+		City:          strPtr("Milano"),
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.QID != "Q1543" {
+		t.Errorf("QID = %q, want Q1543 (Milan TV must be P31-rejected)", got.QID)
+	}
+}
+
+// P31 reject-set: candidates whose P31 includes reserve-team
+// (Q2412834) or women's-club (Q51481377) types are dropped even when
+// they ALSO have an accept type. Verifies the reject-set discipline
+// against Milan Futuro-style entities.
+func TestResolver_ClubBranch_P31RejectsReserveTeam(t *testing.T) {
+	fake := &fakeWD{
+		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
+			return []wikidata.SearchHit{
+				{ID: "Q1543", Label: "AC Milan", Description: "football club in Milan, Italy"},
+				{ID: "Q126923253", Label: "Milan Futuro", Description: "senior side of AC Milan's reserves"},
+			}, nil
+		},
+		p31: map[string][]string{
+			"Q1543":      {"Q476028"},              // accept
+			"Q126923253": {"Q2412834", "Q476028"}, // accept + reject → reject wins
+		},
+	}
+	r := alias.NewResolver(fake, nil)
+	got, err := r.Resolve(context.Background(), alias.LookupInput{
+		CanonicalName: "AC Milan",
+		City:          strPtr("Milano"),
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.QID != "Q1543" {
+		t.Errorf("QID = %q, want Q1543 (reserve team must be P31-rejected)", got.QID)
+	}
+}
+
 // Club branch: with no city match but a country match, highest
 // scoring candidate wins (via description-length base score + country
 // bonus). Requires all variants to run since no short-circuit fires.
@@ -208,6 +289,10 @@ func TestResolver_ClubBranch_CountryMatchScoring(t *testing.T) {
 				{ID: "Q_short", Label: "X FC", Description: "association football club"},
 				{ID: "Q_long", Label: "X FC", Description: "Spanish association football club based in a Spanish city"},
 			}, nil
+		},
+		p31: map[string][]string{
+			"Q_short": {"Q476028"},
+			"Q_long":  {"Q476028"},
 		},
 	}
 	r := alias.NewResolver(fake, nil)
@@ -223,7 +308,10 @@ func TestResolver_ClubBranch_CountryMatchScoring(t *testing.T) {
 	}
 }
 
-// National branch: uses the 3 variants + first valid candidate wins.
+// National branch: uses the 3 variants; candidates are collected
+// across all variants, then batch-P31-filtered, then first survivor
+// wins (national naming is unambiguous enough that further scoring
+// adds noise).
 func TestResolver_NationalBranch_FirstValidWins(t *testing.T) {
 	fake := &fakeWD{
 		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
@@ -234,6 +322,10 @@ func TestResolver_NationalBranch_FirstValidWins(t *testing.T) {
 					Description: "men's national association football team representing France",
 				},
 			}, nil
+		},
+		p31: map[string][]string{
+			// Q135408445 = men's national association football team
+			"Q47774": {"Q135408445"},
 		},
 	}
 	r := alias.NewResolver(fake, nil)
@@ -247,18 +339,17 @@ func TestResolver_NationalBranch_FirstValidWins(t *testing.T) {
 	if got.QID != "Q47774" {
 		t.Errorf("QID = %q, want Q47774", got.QID)
 	}
-	// National branch made ONE search call — first valid hit wins so
-	// the other two variants weren't tried.
-	if fake.searchCallCount() != 1 {
-		t.Errorf("SearchEntities called %d times; first-valid should stop after 1", fake.searchCallCount())
+	// National branch runs all 3 variants + 1 batch P31 (candidates
+	// deduped by QID across variants).
+	if len(fake.batchP31Calls) != 1 {
+		t.Errorf("BatchGetP31 called %d times; want 1 (single batch across variants)", len(fake.batchP31Calls))
 	}
 }
 
-// National branch: women's national team filtered out; men's team
-// resolved instead on a later variant.
+// National branch: women's national team filtered out via P31 reject
+// (Q6997908 = women's national football team); men's team resolved
+// instead.
 func TestResolver_NationalBranch_FiltersWomensTeam(t *testing.T) {
-	// First variant returns only the women's team → filtered.
-	// Second variant (adds "men's") returns the men's team → wins.
 	callIdx := 0
 	fake := &fakeWD{
 		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
@@ -266,13 +357,20 @@ func TestResolver_NationalBranch_FiltersWomensTeam(t *testing.T) {
 			switch callIdx {
 			case 1:
 				return []wikidata.SearchHit{
-					{ID: "Q_women", Label: "France women's national football team", Description: "women's national football team representing France"},
+					// Description drops "women"/"femen" keywords so the
+					// pre-P31 skip-list doesn't catch this — pure P31
+					// reject-set test.
+					{ID: "Q_ladies", Label: "France ladies national football team", Description: "national association football team representing France (ladies)"},
 				}, nil
 			default:
 				return []wikidata.SearchHit{
-					{ID: "Q_men", Label: "France men's national football team", Description: "men's national football team representing France"},
+					{ID: "Q_men", Label: "France men's national football team", Description: "national football team representing France"},
 				}, nil
 			}
+		},
+		p31: map[string][]string{
+			"Q_ladies": {"Q6997908"},  // women's national → reject
+			"Q_men":    {"Q135408445"}, // men's national → accept
 		},
 	}
 	r := alias.NewResolver(fake, nil)
@@ -284,7 +382,7 @@ func TestResolver_NationalBranch_FiltersWomensTeam(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if got.QID != "Q_men" {
-		t.Errorf("QID = %q, want Q_men (women's filtered)", got.QID)
+		t.Errorf("QID = %q, want Q_men (women's P31-rejected)", got.QID)
 	}
 }
 
@@ -301,6 +399,9 @@ func TestResolver_NationalBranch_USAExpandedToUnitedStates(t *testing.T) {
 					Description: "men's national association football (soccer) team representing the USA",
 				},
 			}, nil
+		},
+		p31: map[string][]string{
+			"Q164134": {"Q135408445"},
 		},
 	}
 	r := alias.NewResolver(fake, nil)
