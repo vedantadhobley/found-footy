@@ -22,6 +22,7 @@ import (
 	ingestactivity "github.com/vedantadhobley/found-footy/internal/activity/ingest"
 	monitoractivity "github.com/vedantadhobley/found-footy/internal/activity/monitor"
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
+	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	eventinfra "github.com/vedantadhobley/found-footy/internal/infra/event"
 	"github.com/vedantadhobley/found-footy/internal/infra/llm"
@@ -99,7 +100,10 @@ func main() {
 		if err != nil {
 			return err
 		}
-		_ = wdClient // consumed by RAG alias activity in Phase O
+		// Wired below into ingest.Activities.AliasResolver — the
+		// alias lookup + selection pipeline consumes SearchEntities +
+		// GetEntity via the WikidataFetcher interface.
+		aliasResolver := alias.NewResolver(wdClient, nil)
 
 		syndIns := syndication.RegisterMetrics(deps.Metrics, deps.Log)
 		syndClient, err := syndication.NewClient(deps.Cfg.Syndication, syndIns)
@@ -160,6 +164,8 @@ func main() {
 			FetchWindowFutureDays: deps.Cfg.APIFootball.FetchWindowFutureDays,
 			ActivationWindow:      deps.Cfg.Workflows.ActivationWindow,
 			RetentionDays:         deps.Cfg.Workflows.RetentionDays,
+			AliasResolver:         aliasResolver,
+			AliasThrottle:         500 * time.Millisecond,
 		}
 		w.RegisterWorkflow(ffwf.IngestWorkflow)
 		w.RegisterActivity(ingestActs)

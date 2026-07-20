@@ -110,8 +110,18 @@ type IngestWorkflowOutput struct {
 	Completed       int
 	ExistingAliases int
 	InsertedAliases int
-	PrunedFixtures  int
-	Errors          []string
+
+	// Alias-resolution outcomes (Step 3.5). Cache-hit teams already
+	// had wikidata_qid; resolved teams got a fresh wikidata lookup +
+	// selection; no-match teams ran cleanly but Wikidata returned no
+	// candidate; failed teams hit transport / decode errors.
+	AliasCacheHits  int
+	AliasesResolved int
+	AliasNoMatch    int
+	AliasFailed     int
+
+	PrunedFixtures int
+	Errors         []string
 }
 
 // IngestWorkflow — the workflow function. Registered at worker
@@ -424,6 +434,30 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 			"existing", out.ExistingAliases,
 			"inserted", out.InsertedAliases,
 			"errors", len(aliasOut.Errors),
+		)
+
+		// Step 3.5: resolve aliases via Wikidata for teams that
+		// don't yet have a wikidata_qid. Cache-hit teams (QID
+		// already set) are skipped inside the activity — QIDs are
+		// permanent so we never re-run the expensive fuzzy stack.
+		// Soft-fail per team; a Wikidata hiccup doesn't fail Ingest.
+		var resolveOut ingest.ResolveAliasesForTeamsOutput
+		if err := workflow.ExecuteActivity(ctx,
+			"ResolveAliasesForTeams",
+			ingest.ResolveAliasesForTeamsInput{Teams: catOut.TeamRefs},
+		).Get(ctx, &resolveOut); err != nil {
+			return out, err
+		}
+		out.AliasCacheHits = resolveOut.CacheHits
+		out.AliasesResolved = resolveOut.Resolved
+		out.AliasNoMatch = resolveOut.NoMatch
+		out.AliasFailed = resolveOut.Failed
+		out.Errors = append(out.Errors, resolveOut.Errors...)
+		logger.Info("alias resolution",
+			"cache_hits", out.AliasCacheHits,
+			"resolved", out.AliasesResolved,
+			"no_match", out.AliasNoMatch,
+			"failed", out.AliasFailed,
 		)
 	}
 

@@ -28,7 +28,7 @@ found-footy/
 │   │   ├── fixture/                     ✓ D1: model + State + Repo + tests
 │   │   ├── event/                       ✓ D2: model + State + Repo + tests
 │   │   ├── video/                       ✓ D3: model + Repo + rank + tests
-│   │   ├── alias/                       ✓ D4: model + Repo + Normalize + tests
+│   │   ├── alias/                       ✓ D4 (reshaped 2026-07-19): two-phase model + Repo + Normalize + Resolver (lookup pipeline) + tests
 │   │   ├── discovery/                   ⊘ doc.go stub — build when DiscoveryWorkflow lands (O3)
 │   │   ├── vision/                      ⊘ doc.go stub — build when VideoValidationWorkflow lands (O4)
 │   │   ├── session/                     ⊘ doc.go stub — build when Twitter Go service ports (post-O)
@@ -168,18 +168,100 @@ tie-break Python's frontend uses).
 
 ### alias domain (D4)
 
-Core type `alias.TeamAlias`. Fields: team_id, team_name, is_national,
-country, city, wikidata_qid, wikidata_aliases, twitter_aliases,
-LLM model + timestamp.
+Reshaped 2026-07-19 for the deterministic (no-LLM) Wikidata pipeline;
+see [decisions.md 2026-07-19](../decisions.md) and
+[proposals/team-aliases.md](./proposals/team-aliases.md).
 
-Predicates: `HasWikidataResolution()`, `HasTwitterAliases()`.
-Setter: `SetTwitterAliases(aliases, model, at)` with normalization
-(NFD Latin-diacritic strip).
+Core type `alias.TeamAlias`. Two-phase fields:
 
-Repo methods shipped: `Get`, `BulkGet`, `Upsert`. Load-bearing detail:
-`Upsert` normalizes nil-slice fields to `[]string{}` before writing
-because pg schema is `TEXT[] NOT NULL DEFAULT '{}'` and pgx serializes
-Go nil-slice as SQL NULL.
+- Phase-1 (vendor, Ingest-populated): `team_id`, `canonical_name`,
+  `team_code`, `country`, `city`, `is_national`.
+- Phase-2 (resolution-populated): `wikidata_qid`, `aliases`, `resolved_at`.
+
+Predicates: `IsResolved()`, `IsFresh(now, ttl)` — the 30-day TTL check
+runs at pipeline read-time before Discovery consumes aliases.
+
+Setter: `SetResolution(qid, aliases, at)` writes all three phase-2
+fields atomically + copies the aliases slice defensively.
+
+Normalize helper: NFD Latin-diacritic strip, preserved case. Kept
+exported because both the pipeline and (future) Twitter search-query
+builder call it.
+
+Repo methods shipped: `Get`, `BulkGet`, `UpsertVendorFields`,
+`UpsertResolution`. The Upsert split enforces the invariant that
+Ingest's daily vendor-refresh CANNOT wipe an existing resolution —
+`UpsertVendorFields` writes only phase-1 columns via ON CONFLICT DO
+UPDATE. `UpsertResolution` writes both phases and is the only entry
+point for the (upcoming task #134) resolution activity.
+
+**Selection pipeline (2026-07-20, task #134):** The QID → `[]string`
+aliases step. `Resolver.Select` fetches the team entity, extracts
+multilingual aliases + labels (11 Latin-script langs: en/es/fr/it/pt/de/ca/gl/nl/pl/ro) + P1449 nicknames + canonical name tokens, runs
+the keep rule (≥2 langs OR P1449 OR canonical), rescues single-lang
+English aliases (LFC, CFC, MCFC), and — for clubs — drops the venue
+city token if it's not in the canonical name (Arsenal ≠ London;
+Liverpool ✓ Liverpool). Nationals additionally fetch the linked
+country entity (via P17) and inject English P1549 demonyms
+(Argentina → Argentine + Argentinian + Argentinean).
+
+Skip-list (`skiplist.go`) drops pure organizational descriptors +
+articles across 11 languages. Explicit "never skip" carve-outs for
+team-identifying words that look generic — `united, city, athletic,
+sporting, real, rangers, rovers, borussia, juventus, elftal,
+mannschaft, seleção, seleccion, oranje, azzurri` — so Python's LLM
+over-filtering behavior doesn't recur.
+
+Output is sorted for stable pg storage + human-diffable rows.
+
+**Ingest wiring (2026-07-20, task #134):** New activity
+`ResolveAliasesForTeams` runs after `EnsureAliasPlaceholders` in
+`IngestWorkflow`. Per-team loop: `BulkGet` existing rows → skip
+cache-hits (row has `wikidata_qid` set) → for each miss,
+`AliasResolver.Resolve` (fuzzy lookup) → `AliasResolver.Select`
+(entity fetch + selection) → `AliasRepo.UpsertResolution`. Sequential
+with 500ms throttle between teams (respects Wikidata's
+wbsearchentities rate-limit, ~50 anonymous req/window). Soft-fail
+per team — a Wikidata hiccup leaves the placeholder row and gets
+retried on the next Ingest cycle. Mirrors Python's per-day-fixture-
+team pattern (workflow.execute_activity in a loop; not all tracked
+teams at once). Output counts: cache_hits, resolved, no_match, failed.
+
+**Lookup pipeline (2026-07-20, task #133):** The name → Wikidata QID
+resolution step. `Resolver` type composes a `WikidataFetcher`
+interface with a `CountryVariations` cache (both injected — domain
+stays pure Go). Two branches on `LookupInput.IsNational`:
+
+- Clubs (`lookup_club.go`): 9 fuzzy `wbsearchentities` search
+  variants + description-scoring against per-country variations
+  derived from Wikidata P1549 + P1448. Ports Python's rag.py fuzzy
+  stack. Perfect city match short-circuits (return after first hit).
+  Filters women's / reserve / youth / futsal / B-team candidates by
+  description keyword + label suffix.
+- Nationals (`lookup_national.go`): 3 variants, first football-team
+  candidate wins. Ambiguity is low (national-team names are usually
+  unique in Wikidata). USA gets substituted to "United States" per
+  Wikidata's index convention.
+
+`ErrNoMatch` when no candidate survives filtering — legitimate
+outcome for obscure teams not in Wikidata; not a bug.
+
+Shared word-processing in `text.go`: NFD normalize, strip diacritics,
+`ß→ss`, split on whitespace/dashes/slashes, strip periods/commas/
+apostrophes, lowercase, drop ≤2 char / all-digit / CamelCase-concat.
+Same rules the (upcoming task #134) selection pipeline will use.
+
+Wikidata adapter added two methods for #133 (both used by #134 as
+well): `SearchEntities` (wraps `wbsearchentities`) and `GetEntity`
+(wraps `Special:EntityData/{QID}.json` with typed accessor methods
+for `LabelEn`, `AliasesByLang`, `NicknamesP1449`, `DemonymsP1549`,
+`NativeNamesP1448`, `FirstClaimQID`). `WWWHost` config field added
+so tests can point the MediaWiki path at a mock server; prod default
+is `https://www.wikidata.org`.
+
+Integration test in `lookup_integration_test.go` verifies real
+Wikidata resolutions for 4 teams (Liverpool, Man United, France,
+Brazil) — skipped in `-short`, passes in ~1s against live Wikidata.
 
 ## Adapters — as-shipped template
 

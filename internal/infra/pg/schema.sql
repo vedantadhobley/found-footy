@@ -18,8 +18,11 @@
 -- ────────────────────────────────────────────────────────────────
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;                    -- gen_random_uuid()
-CREATE EXTENSION IF NOT EXISTS pg_trgm;                     -- fuzzy team-name matching
 CREATE EXTENSION IF NOT EXISTS vector;                      -- pgvector for embeddings
+-- Note: pg_trgm was declared for a team_name fuzzy-match GIN index in
+-- an earlier team_aliases shape. The new deterministic pipeline looks
+-- up teams by exact team_id (API-Football), so trigram matching isn't
+-- needed. Re-add if a future feature needs fuzzy string search.
 
 -- ────────────────────────────────────────────────────────────────
 -- Enums
@@ -360,22 +363,43 @@ CREATE INDEX tweet_intent_source ON tweet_intent (source_type);
 CREATE INDEX tweet_intent_embedding ON tweet_intent
     USING hnsw (embedding vector_cosine_ops);
 
--- 9. team_aliases — RAG cache
+-- 9. team_aliases — deterministic Wikidata alias cache.
+--
+-- One row per API-Football team. Two-phase population:
+--
+--   Phase 1 (Ingest): placeholder row inserted when we first see a team
+--   (canonical_name + team_code + country + city + is_national from
+--   the vendor). wikidata_qid and aliases stay NULL/empty until the
+--   resolution activity runs.
+--
+--   Phase 2 (alias resolution): the deterministic Wikidata pipeline
+--   populates wikidata_qid + aliases + resolved_at. wikidata_qid is
+--   cached permanently — QIDs are stable, so subsequent 30-day TTL
+--   refreshes skip the expensive fuzzy wbsearchentities lookup and
+--   just re-fetch entity JSON + re-run selection.
+--
+-- 30-day TTL: resolved_at + interval '30 days' > now() = fresh.
+-- Placeholder rows have resolved_at IS NULL and are always eligible for
+-- next-refresh. Design ref: docs/rebuild/proposals/team-aliases.md.
 CREATE TABLE team_aliases (
     team_id INT PRIMARY KEY,                                -- API-Football team ID
-    team_name TEXT NOT NULL,                                -- original name, for display
-    is_national BOOLEAN NOT NULL,
-    country TEXT,
-    city TEXT,
-    wikidata_qid TEXT,
-    wikidata_aliases TEXT[] NOT NULL DEFAULT '{}',          -- raw Wikidata pipeline output (audit trail)
-    twitter_aliases TEXT[] NOT NULL DEFAULT '{}',           -- LLM-selected, normalized (diacritics stripped)
-    llm_model TEXT,                                         -- which model generated twitter_aliases
+    canonical_name TEXT NOT NULL,                           -- API-Football team.name at ingest time
+    team_code TEXT,                                         -- API-Football team.code (3-letter FIFA/UEFA)
+    country TEXT,                                           -- API-Football team.country
+    city TEXT,                                              -- API-Football venue.city
+    is_national BOOLEAN NOT NULL,                           -- API-Football team.national
+    wikidata_qid TEXT,                                      -- NULL until first resolution; permanent thereafter
+    aliases TEXT[] NOT NULL DEFAULT '{}',                   -- normalized lowercase words for Twitter OR-query
+    resolved_at TIMESTAMPTZ,                                -- NULL = placeholder; set on successful resolution
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX team_aliases_name_trgm ON team_aliases USING gin (team_name gin_trgm_ops);
+-- Refresh scan predicate: placeholders (resolved_at IS NULL) OR stale
+-- (resolved_at < now() - '30 days'). Partial index keeps the scan cheap
+-- even after every tracked team has been resolved.
+CREATE INDEX team_aliases_needs_refresh
+    ON team_aliases (resolved_at NULLS FIRST);
 
 CREATE TRIGGER trg_team_aliases_updated_at
     BEFORE UPDATE ON team_aliases

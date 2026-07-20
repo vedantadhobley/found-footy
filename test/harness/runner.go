@@ -234,8 +234,8 @@ func applySetup(ctx context.Context, pool *pg.Pool, setup Setup) error {
 	}
 	for _, sa := range setup.TeamAliases {
 		_, err := pool.Exec(ctx, `
-			INSERT INTO team_aliases (team_id, team_name, is_national, wikidata_aliases, twitter_aliases)
-			VALUES ($1, $2, $3, '{}', '{}')
+			INSERT INTO team_aliases (team_id, canonical_name, is_national, aliases)
+			VALUES ($1, $2, $3, '{}')
 		`, sa.TeamID, sa.TeamName, sa.IsNational)
 		if err != nil {
 			return err

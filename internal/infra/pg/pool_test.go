@@ -193,7 +193,9 @@ func TestSchemaLoaded_CoreTables(t *testing.T) {
 		}
 	}
 
-	expectedExtensions := []string{"pgcrypto", "pg_trgm", "vector"}
+	// pg_trgm removed 2026-07-19 alongside the team_name trigram index
+	// (deterministic alias pipeline looks up by exact team_id).
+	expectedExtensions := []string{"pgcrypto", "vector"}
 	for _, ext := range expectedExtensions {
 		var exists bool
 		err := pool.QueryRow(ctx,

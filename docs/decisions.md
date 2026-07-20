@@ -6,6 +6,62 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-19 — Team alias pipeline: deterministic Wikidata, no LLM
+
+**Supersedes:** Python's `archive/src/activities/rag.py` full RAG pipeline (LLM in three roles).
+
+**Design ref:** [`./rebuild/proposals/team-aliases.md`](./rebuild/proposals/team-aliases.md) — full pipeline + empirical basis + implementation plan.
+
+### Context
+
+Python's alias pipeline used the LLM for three different jobs conflated into one prompt:
+
+1. **Selection** — pick 3-5 best words from Wikidata's raw alias list.
+2. **Derivation** — Argentina → "Argentine", "Argentinian".
+3. **Gap-fill / world-knowledge augmentation** — supply nicknames absent from Wikidata (Atlético's Colchoneros/Rojiblancos, Argentina's Scaloneta, Brazil's Canarinho/Verdeamarela).
+
+Working through the redesign 2026-07-18 → 2026-07-19, an empirical evaluation (session-scoped `alias-eval.md` produced by a research agent) tested 10 deterministic algorithm variants against 15 clubs + 10 nationals with a hand-curated gold standard. Key findings:
+
+- **Multilingual Wikidata (11 Latin-script langs) + P1449 nickname property covers roles 1 and 2 well** — matches Python's 99.9% lookup hit rate with better recall on distinctive nicknames (Barça, Les Bleus, Albiceleste, Seleção — all recoverable).
+- **P1549 demonym property replaces Python's LLM-derived nationality adjectives**. Both single-form and dual-form recovered: Argentina → Argentine + Argentinian, UK → British + Briton, Spain → Spanish + Spaniard, all in Wikidata's country entities.
+- **Role 3 (gap-fill) has NO deterministic replacement**. Colchoneros, Scaloneta, Canarinho are simply absent from Wikidata. No algorithm variant recovers them.
+
+Options for role 3: (a) accept the tail loss, (b) hardcode fallback (YAML in repo or supplemental pg table), (c) narrow LLM gap-fill call cached 30d. Path traversed briefly through (c) mid-session, then rejected — the deterministic pipeline captures the essential aliases (canonical name variants + P1549 demonyms + P1449 nicknames + cross-language distinctive terms), and the tail (Scaloneta, Colchoneros, Palanganas) represents ~5% of legit tweet-relevant nicknames. Tweets using those niche nicknames also almost always contain a dominant term (Argentina, Atlético, Sevilla) that our OR-query catches. User's preference: avoid LLM complexity unless empirically needed.
+
+### Decision
+
+**Deterministic Wikidata pipeline, no LLM in the alias path. 30-day pg cache.**
+
+**Selection algorithm** — split by team type, both branches share word-processing:
+
+- **Word-processing**: NFD normalize, strip Unicode combining marks (diacritics), `ß → ss` preprocessing, split on space/dash, drop punctuation, lowercase, drop ≤2 chars, drop pure-digit, drop CamelCase concatenations. Multilingual skip-list of pure organizational descriptors (`fc/ac/sc/cf/football/futbol/futebol/calcio/fussball/nazionale/nationalmannschaft/selection/national/team/equipe/reprezentacja/nogometna/voetbal/etc.` + articles). **Team-identifying words that look generic are explicitly NOT skipped**: `united, city, athletic, sporting, real, rangers, rovers, town, wanderers, borussia, juventus, seleção, seleccion, elftal, mannschaft` — these DO distinguish teams when combined with context (Manchester United, Real Madrid, Sporting CP, Netherlands, Germany, etc.), and Python's LLM was known to over-filter them. Corrected mid-design after the eval agent's initial skip-list incorrectly included `sporting` (per proposal doc, 2026-07-19).
+
+- **Clubs** (V5-shaped): aliases from `labels.<lang>` + `aliases.<lang>` in `en/es/fr/it/pt/de/ca/gl/nl/pl/ro` (11-language Latin-script subset) + P1449 nickname property values (language-agnostic). Keep rule: word is kept if it's canonical team name from API-Football, or in P1449, or appears in **≥2 distinct languages** after normalization. Empirically ≥2 beats ≥3 by 0.03 F1 (≥3 drops legit acronyms LFC/CFC/MCFC). Additional venue-city skip: drop the venue city if it's not a substring of the canonical team name (fixes "London" for Arsenal; preserves "Liverpool" for Liverpool F.C.).
+
+- **Nationals** (V8-shaped): same word-processing + language subset + keep rule. Plus P1549 demonym extraction: query the linked country entity (via P17), extract demonym forms restricted to the same 11-language subset (drops Bulgarian/Hebrew/Tamil noise while preserving Argentine + Argentinian, Spanish + Spaniard). No venue-city concept for nationals.
+
+- **No top-N cap** — advanced Twitter search OR-syntax handles unlimited alias count in one query, bounded only by ~500-char query limit (never approached in practice, ~25 aliases per team typical).
+
+**Inputs from API-Football that participate in the pipeline:**
+
+- `team.name` — canonical name. Kept as a phrase for exact-match, word-split into candidate aliases (each word through the skip-list / keep-rule).
+- `team.code` — 3-letter FIFA/UEFA code (NEW/LIV/BAR/etc.). Added as a candidate alias; passes skip-list if distinctive, filtered if it collides with a generic English word.
+- `team.country` — used for lookup-phase disambiguation.
+- `venue.city` — used for the venue-city skip rule in selection.
+- `team.national` — determines which branch (V5 clubs vs V8 nationals) runs.
+
+**Caching model (`team_aliases` pg table):**
+
+Row per team_id with columns: `aliases text[]`, `wikidata_qid text`, `resolved_at timestamptz`, `canonical_name text`. 30-day TTL on `resolved_at`. On refresh: if `wikidata_qid` is populated (cache hit for lookup phase), skip fuzzy search and re-run selection directly. Only genuinely new teams (never seen before) hit the expensive lookup path. QIDs are effectively permanent (football-club entities on Wikidata don't get deleted), so lookup is one-time-per-team-ever.
+
+### Coverage acknowledgment
+
+Deterministic pipeline captures ~90-95% of legit tweet-relevant aliases. Missing tail (~5-10%) includes: Colchoneros/Rojiblancos (Atlético), Palanganas/Nervionenses (Sevilla), Scaloneta (Argentina, post-2022 nickname), Canarinho/Verde-amarela (Brazil), ManU/ManCity (concatenated shorthands), Madridistas (Real Madrid), Tricolores (France). All are legitimate but niche — dominant tweets about these teams also contain canonical or common-nickname terms that our OR-query catches. LLM gap-fill can be added later as targeted enhancement if prod hit-rate suggests a specific team is underperforming; not part of the initial ship.
+
+### Not decided
+
+- Lookup (name → Wikidata QID) pipeline is task #133 — porting Python's 7-variant fuzzy `wbsearchentities` + description-scoring stack as-is, replacing Python's LLM-derived country variations with Wikidata P1549 + P1448 lookups.
+
 ## 2026-07-18 — Video share ranking derived at read time, no stored rank column
 
 **Supersedes:** `rebuild-plan.md` §5 W5 (AssetWorkflow includes rank recalc activity) and `rebuild/proposals/video-dedup.md` V/g (rank recalc during upload). Python's `upload_workflow.recalculate_video_ranks` pattern is NOT ported.

@@ -42,13 +42,18 @@ func main() {
 	}
 	defer c.Close()
 
-	// Dev trigger with FetchFuture=true so we exercise the full
-	// today + tomorrow + smart-lookahead path (matches scheduled
-	// invocation). RetentionDays=0 skips prune (safe for a dev
-	// trigger). Manual reingest of specific IDs works by setting
-	// ManualFixtureIDs; date override by setting ManualDate.
-	in := ffwf.IngestWorkflowInput{
-		FetchFuture: true,
+	// Dev trigger. Supports MANUAL_DATE=YYYY-MM-DD env override to
+	// simulate a specific ingest date (useful mid-summer when real
+	// leagues haven't started yet). Otherwise uses today +
+	// FetchFuture=true.
+	in := ffwf.IngestWorkflowInput{FetchFuture: true}
+	if raw := os.Getenv("MANUAL_DATE"); raw != "" {
+		d, err := time.Parse("2006-01-02", raw)
+		if err != nil {
+			fatal("parse MANUAL_DATE", err)
+		}
+		in.ManualDate = &d
+		in.FetchFuture = false
 	}
 	inJSON, _ := json.MarshalIndent(in, "", "  ")
 	fmt.Printf("Triggering IngestWorkflow with input:\n%s\n\n", inJSON)

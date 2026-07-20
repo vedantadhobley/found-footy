@@ -81,6 +81,17 @@ type Activities struct {
 	// override via input.
 	RetentionDays int
 
+	// AliasResolver runs the alias lookup + selection pipeline for
+	// ResolveAliasesForTeams. Nil = pipeline skipped (safe soft-fail
+	// for worker configs that don't wire Wikidata).
+	AliasResolver *alias.Resolver
+
+	// AliasThrottle is the sleep between per-team alias resolutions
+	// inside ResolveAliasesForTeams. Zero = no throttle (fine for
+	// tests + tiny team lists). Prod defaults to ~500ms — Wikidata
+	// rate-limits anonymous wbsearchentities at ~50 req / short window.
+	AliasThrottle time.Duration
+
 	// Now is injectable so tests can drive time deterministically.
 	// Defaults to time.Now if unset.
 	Now func() time.Time
@@ -414,10 +425,44 @@ func (a *Activities) CategorizeAndUpsertFixtures(ctx context.Context, in Categor
 		case fixture.StateCompleted:
 			out.Completed++
 		}
-		// Record teams. IsNational + Country + City not in the fixture
-		// response — alias resolution refines them later.
-		teams[apiFix.Teams.Home.ID] = TeamRef{TeamID: apiFix.Teams.Home.ID, TeamName: apiFix.Teams.Home.Name}
-		teams[apiFix.Teams.Away.ID] = TeamRef{TeamID: apiFix.Teams.Away.ID, TeamName: apiFix.Teams.Away.Name}
+		// Record teams. Country from league (proxy per Python's
+		// `country = league.get("country")` in rag pre-cache) — for
+		// league fixtures both teams are the league's country; for
+		// international/cup fixtures the league country is a mixed
+		// signal but still better than nil. Only overwrite if we
+		// don't already have a non-empty value from a prior fixture
+		// (a team seen in a domestic league keeps that country over
+		// an international-cup one).
+		countryPtr := (*string)(nil)
+		if apiFix.League.Country != "" && apiFix.League.Country != "World" {
+			c := apiFix.League.Country
+			countryPtr = &c
+		}
+		// IsNational + City still not in the fixture response —
+		// alias resolution can't refine those from here. IsNational
+		// requires a separate /teams?id=X lookup; City requires
+		// venue.city from the same endpoint. Both deferred until we
+		// need them (rare enough that per-team API-Football calls
+		// might be justified — but not right now).
+		for _, tm := range []struct {
+			id   int
+			name string
+		}{
+			{apiFix.Teams.Home.ID, apiFix.Teams.Home.Name},
+			{apiFix.Teams.Away.ID, apiFix.Teams.Away.Name},
+		} {
+			existing, seen := teams[tm.id]
+			if !seen {
+				teams[tm.id] = TeamRef{TeamID: tm.id, TeamName: tm.name, Country: countryPtr}
+				continue
+			}
+			// Already seen — enrich country if we didn't have one
+			// but do now.
+			if existing.Country == nil && countryPtr != nil {
+				existing.Country = countryPtr
+				teams[tm.id] = existing
+			}
+		}
 	}
 
 	out.TeamRefs = make([]TeamRef, 0, len(teams))
@@ -536,13 +581,17 @@ type EnsureAliasPlaceholdersOutput struct {
 
 // EnsureAliasPlaceholders BulkGets existing alias rows for each
 // team ID; for teams without a cached row, inserts a placeholder
-// (input fields only, resolved fields nil). The separate RAG
-// resolution activity/workflow — design deferred — fills in
-// Wikidata + Twitter aliases later.
+// (phase-1 vendor fields only, phase-2 resolution fields nil). The
+// deterministic Wikidata resolution activity (task #134) fills in
+// wikidata_qid + aliases + resolved_at asynchronously.
 //
-// This is the decoupling that keeps IngestWorkflow independent of
-// Wikidata + LLM availability. If joi is down or the daily quota
-// exhausted, ingest still succeeds; only the resolution job pauses.
+// This decoupling keeps IngestWorkflow independent of Wikidata
+// availability. If Wikidata is down or rate-limiting, ingest still
+// succeeds; only the resolution job pauses.
+//
+// TeamCode isn't in TeamRef yet — passed as nil for the placeholder
+// (the resolution activity can fetch it fresh if needed). Add it to
+// TeamRef when a future consumer needs it at Ingest time.
 func (a *Activities) EnsureAliasPlaceholders(ctx context.Context, in EnsureAliasPlaceholdersInput) (EnsureAliasPlaceholdersOutput, error) {
 	out := EnsureAliasPlaceholdersOutput{}
 	if len(in.Teams) == 0 {
@@ -564,12 +613,130 @@ func (a *Activities) EnsureAliasPlaceholders(ctx context.Context, in EnsureAlias
 			out.Existing++
 			continue
 		}
-		ta := alias.New(t.TeamID, t.TeamName, t.IsNational, t.Country, t.City, now)
-		if err := a.AliasRepo.Upsert(ctx, ta); err != nil {
+		ta := alias.New(t.TeamID, t.TeamName, t.IsNational, nil, t.Country, t.City, now)
+		if err := a.AliasRepo.UpsertVendorFields(ctx, ta); err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("alias upsert team=%d: %v", t.TeamID, err))
 			continue
 		}
 		out.Inserted++
+	}
+	return out, nil
+}
+
+// ── ResolveAliasesForTeams ─────────────────────────────────────
+
+// ResolveAliasesForTeamsInput carries the team refs to resolve. Same
+// dedup discipline as EnsureAliasPlaceholders — one entry per team_id.
+type ResolveAliasesForTeamsInput struct {
+	Teams []TeamRef
+}
+
+// ResolveAliasesForTeamsOutput counts per-team outcomes for
+// observability. Errors carries per-team failure strings (not fatal
+// to the activity — soft-fail matches Python's rag_success /
+// rag_failed pattern).
+type ResolveAliasesForTeamsOutput struct {
+	CacheHits int // team already had wikidata_qid — skipped
+	Resolved  int // new resolution completed + persisted
+	NoMatch   int // lookup ran but Wikidata returned no candidate
+	Failed    int // transport / decode / other errors
+	Errors    []string
+}
+
+// ResolveAliasesForTeams runs the full alias pipeline for each team
+// that lacks a resolved wikidata_qid. Cache-hit teams (row exists AND
+// wikidata_qid is set) are skipped — QIDs never expire, so once we've
+// resolved a team we don't redo the expensive fuzzy lookup.
+//
+// Sequential loop with a short delay between teams to keep Wikidata
+// happy — matches Python's per-team workflow.execute_activity pattern
+// (which was naturally sequential because Temporal activities in a
+// workflow loop don't parallelize).
+//
+// Soft-fail per team: transport errors don't stop the activity; the
+// bad team just doesn't get its aliases populated this cycle. It
+// remains a placeholder row and will be retried on the next Ingest.
+func (a *Activities) ResolveAliasesForTeams(ctx context.Context, in ResolveAliasesForTeamsInput) (ResolveAliasesForTeamsOutput, error) {
+	out := ResolveAliasesForTeamsOutput{}
+	if len(in.Teams) == 0 {
+		return out, nil
+	}
+	if a.AliasResolver == nil {
+		// If no resolver is wired (e.g., worker started without
+		// Wikidata config), skip cleanly rather than fail the workflow.
+		return out, nil
+	}
+
+	// Bulk-load existing rows so cache-hit teams don't roundtrip to pg.
+	ids := make([]int, 0, len(in.Teams))
+	for _, t := range in.Teams {
+		ids = append(ids, t.TeamID)
+	}
+	existing, err := a.AliasRepo.BulkGet(ctx, ids)
+	if err != nil {
+		return out, fmt.Errorf("ingest.ResolveAliasesForTeams: BulkGet: %w", err)
+	}
+
+	now := a.now()
+	for i, t := range in.Teams {
+		// Cache hit: row exists AND wikidata_qid is set → skip fuzzy
+		// lookup entirely. QID is permanent so we never redo this work
+		// unless a future refresh cadence explicitly invalidates it.
+		if row, ok := existing[t.TeamID]; ok && row != nil && row.WikidataQID != nil && *row.WikidataQID != "" {
+			out.CacheHits++
+			continue
+		}
+
+		// Throttle between teams. Wikidata's wbsearchentities rate-
+		// limits anonymous clients at roughly 50 requests / short
+		// window. Each team = up to ~10 HTTP calls; 500ms between
+		// teams keeps us well under the burst threshold even for
+		// cold-start scenarios with many new teams.
+		if i > 0 && a.AliasThrottle > 0 {
+			time.Sleep(a.AliasThrottle)
+		}
+
+		lookupIn := alias.LookupInput{
+			CanonicalName: t.TeamName,
+			Country:       t.Country,
+			City:          t.City,
+			IsNational:    t.IsNational,
+		}
+		lookupOut, err := a.AliasResolver.Resolve(ctx, lookupIn)
+		if err != nil {
+			if errors.Is(err, alias.ErrNoMatch) {
+				out.NoMatch++
+			} else {
+				out.Failed++
+				out.Errors = append(out.Errors, fmt.Sprintf("resolve team=%d: %v", t.TeamID, err))
+			}
+			continue
+		}
+
+		aliases, err := a.AliasResolver.Select(ctx, alias.SelectInput{
+			QID:           lookupOut.QID,
+			IsNational:    t.IsNational,
+			CanonicalName: t.TeamName,
+			VenueCity:     t.City,
+		})
+		if err != nil {
+			out.Failed++
+			out.Errors = append(out.Errors, fmt.Sprintf("select team=%d qid=%s: %v", t.TeamID, lookupOut.QID, err))
+			continue
+		}
+
+		// Build the TeamAlias row: phase-1 vendor fields + phase-2
+		// resolution. Reuse the existing row if we already had a
+		// placeholder so we preserve created_at + observed vendor
+		// data (which may have evolved since the placeholder wrote it).
+		ta := alias.New(t.TeamID, t.TeamName, t.IsNational, nil, t.Country, t.City, now)
+		ta.SetResolution(lookupOut.QID, aliases, now)
+		if err := a.AliasRepo.UpsertResolution(ctx, ta); err != nil {
+			out.Failed++
+			out.Errors = append(out.Errors, fmt.Sprintf("upsert team=%d: %v", t.TeamID, err))
+			continue
+		}
+		out.Resolved++
 	}
 	return out, nil
 }

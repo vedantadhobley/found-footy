@@ -185,7 +185,24 @@ func (r *fakeAliasRepo) BulkGet(_ context.Context, ids []int) (map[int]*alias.Te
 	return out, nil
 }
 
-func (r *fakeAliasRepo) Upsert(_ context.Context, ta *alias.TeamAlias) error {
+// UpsertVendorFields preserves any phase-2 resolution data already
+// in the fake store (mirrors the pg adapter's COALESCE-ish semantics).
+func (r *fakeAliasRepo) UpsertVendorFields(_ context.Context, ta *alias.TeamAlias) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	dup := *ta
+	if existing, ok := r.data[ta.TeamID]; ok {
+		// Preserve phase-2 fields from any prior resolution.
+		dup.WikidataQID = existing.WikidataQID
+		dup.Aliases = existing.Aliases
+		dup.ResolvedAt = existing.ResolvedAt
+	}
+	r.data[ta.TeamID] = &dup
+	return nil
+}
+
+// UpsertResolution writes a full row including phase-2 fields.
+func (r *fakeAliasRepo) UpsertResolution(_ context.Context, ta *alias.TeamAlias) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	dup := *ta
@@ -509,8 +526,8 @@ func TestEnsureAliasPlaceholders_MixedExistingAndNew(t *testing.T) {
 	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
 	aRepo := newFakeAliasRepo()
 	// Seed one team already cached.
-	seed := alias.New(40, "Liverpool", false, nil, nil, now.Add(-24*time.Hour))
-	if err := aRepo.Upsert(context.Background(), seed); err != nil {
+	seed := alias.New(40, "Liverpool", false, nil, nil, nil, now.Add(-24*time.Hour))
+	if err := aRepo.UpsertVendorFields(context.Background(), seed); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -533,7 +550,7 @@ func TestEnsureAliasPlaceholders_MixedExistingAndNew(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get placeholder: %v", err)
 	}
-	if ta.HasWikidataResolution() || ta.HasTwitterAliases() {
+	if ta.IsResolved() {
 		t.Errorf("placeholder should be unresolved: %+v", ta)
 	}
 }

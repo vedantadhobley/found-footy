@@ -1,5 +1,5 @@
-// repo.go — storage-side port. The pg adapter implements this. Domain
-// callers depend only on the interface.
+// repo.go — storage port for team_aliases. The pg adapter implements
+// this. Domain callers depend only on the interface.
 package alias
 
 import (
@@ -19,13 +19,20 @@ type Repo interface {
 
 	// BulkGet returns a map of team_id → *TeamAlias for every team_id
 	// in ids that has a cached entry. Missing IDs are simply absent from
-	// the returned map — no error. Used by the ingest activity's
-	// pre-caching step to skip teams whose aliases are already resolved.
+	// the returned map — no error. Used by Ingest's pre-caching step to
+	// skip teams whose aliases already exist.
 	BulkGet(ctx context.Context, ids []int) (map[int]*TeamAlias, error)
 
-	// Upsert inserts or updates by team_id primary key. Used by the
-	// alias resolution activity at both the "we just discovered this
-	// team via ingest" moment (Wikidata + LLM fields still nil) AND
-	// after each stage of the RAG pipeline populates its results.
-	Upsert(ctx context.Context, t *TeamAlias) error
+	// UpsertVendorFields writes ONLY the phase-1 vendor fields
+	// (canonical_name / team_code / country / city / is_national).
+	// If the row exists, phase-2 fields (wikidata_qid / aliases /
+	// resolved_at) are preserved. Used by Ingest's daily refresh —
+	// vendor data changes (team rename, venue move) but resolution
+	// data shouldn't get wiped.
+	UpsertVendorFields(ctx context.Context, t *TeamAlias) error
+
+	// UpsertResolution writes a full row including phase-2 fields.
+	// Used by the alias resolution activity after SetResolution has
+	// populated wikidata_qid + aliases + resolved_at.
+	UpsertResolution(ctx context.Context, t *TeamAlias) error
 }

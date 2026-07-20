@@ -17,32 +17,36 @@ type Instruments struct {
 	log logging.Emitter
 	reg *metrics.Registry
 
-	queries      *prometheus.CounterVec
-	queryLatency *prometheus.HistogramVec
+	// requests_total labeled by (endpoint, outcome). endpoint is one of
+	// "sparql" (Query), "search" (SearchEntities), "entity" (GetEntity).
+	// outcome is one of "success", "failure".
+	requests       *prometheus.CounterVec
+	requestLatency *prometheus.HistogramVec
 }
 
 // RegisterMetrics: two metric families:
-//   - wikidata_queries_total{outcome} — SPARQL query outcomes.
-//   - wikidata_query_duration_seconds — 14 exp buckets, 50ms → ~400s
-//     (Wikidata SPARQL can be slow for complex team lookups).
+//   - wikidata_requests_total{endpoint,outcome} — outcomes per endpoint.
+//   - wikidata_request_duration_seconds{endpoint} — 14 exp buckets, 50ms → ~400s.
+//     Wikidata SPARQL can be slow; wbsearchentities and entity-JSON
+//     fetches are fast (usually <500ms). Same histogram covers both.
 func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Instruments {
-	queries := prometheus.NewCounterVec(prometheus.CounterOpts{
+	requests := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "found_footy",
 		Subsystem: "wikidata",
-		Name:      "queries_total",
-		Help:      "Cumulative Wikidata SPARQL queries, by outcome.",
-	}, []string{"outcome"})
+		Name:      "requests_total",
+		Help:      "Cumulative Wikidata HTTP requests, by endpoint and outcome.",
+	}, []string{"endpoint", "outcome"})
 
-	queryLatency := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+	requestLatency := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "found_footy",
 		Subsystem: "wikidata",
-		Name:      "query_duration_seconds",
-		Help:      "Wikidata SPARQL query duration in seconds.",
+		Name:      "request_duration_seconds",
+		Help:      "Wikidata request duration in seconds, by endpoint.",
 		Buckets:   prometheus.ExponentialBuckets(0.05, 2, 14),
-	}, []string{})
+	}, []string{"endpoint"})
 
-	reg.PrometheusRegistry().MustRegister(queries, queryLatency)
-	return &Instruments{log: log, reg: reg, queries: queries, queryLatency: queryLatency}
+	reg.PrometheusRegistry().MustRegister(requests, requestLatency)
+	return &Instruments{log: log, reg: reg, requests: requests, requestLatency: requestLatency}
 }
 
 func (ins *Instruments) emitEvent(ctx context.Context, level logging.Level, action vocabulary.Action, msg string, fields ...logging.Field) {
