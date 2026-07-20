@@ -43,7 +43,7 @@ func strPtr(s string) *string { return &s }
 func makeClubAlias(teamID int, name string) *alias.TeamAlias {
 	return alias.New(
 		teamID, name, false,
-		strPtr("Spain"), strPtr("Madrid"),
+		strPtr("ATM"), strPtr("Spain"), strPtr("Madrid"),
 		time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC),
 	)
 }
@@ -58,29 +58,27 @@ func TestAliasRepo_Get_NotFound(t *testing.T) {
 	}
 }
 
-// Full roundtrip: input fields + resolved fields (Wikidata + Twitter
-// arrays + LLM model). Non-null arrays, non-null country/city,
-// populated wikidata_qid + twitter_aliases + llm_model.
-func TestAliasRepo_UpsertThenGet_AllFieldsRoundtrip(t *testing.T) {
+// Full phase-1 + phase-2 roundtrip using UpsertResolution.
+func TestAliasRepo_UpsertResolutionThenGet_AllFieldsRoundtrip(t *testing.T) {
 	ctx, repo := setupAliasRepo(t)
 
 	at := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
 	ta := makeClubAlias(530, "Atlético de Madrid")
-	ta.SetWikidataResolution("Q8701", []string{"Atletico Madrid", "El Atleti", "ATM", "Colchoneros"}, at.Add(1*time.Minute))
-	if err := ta.SetTwitterAliases([]string{"Atletico", "Atleti", "ATM"}, "Qwen3-VL-8B", at.Add(2*time.Minute)); err != nil {
-		t.Fatalf("SetTwitterAliases: %v", err)
-	}
+	ta.SetResolution("Q8701", []string{"atletico", "atleti", "atm"}, at.Add(1*time.Minute))
 
-	if err := repo.Upsert(ctx, ta); err != nil {
-		t.Fatalf("Upsert: %v", err)
+	if err := repo.UpsertResolution(ctx, ta); err != nil {
+		t.Fatalf("UpsertResolution: %v", err)
 	}
 	got, err := repo.Get(ctx, 530)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 
-	if got.TeamID != 530 || got.TeamName != "Atlético de Madrid" || got.IsNational {
-		t.Errorf("input fields wrong: %+v", got)
+	if got.TeamID != 530 || got.CanonicalName != "Atlético de Madrid" || got.IsNational {
+		t.Errorf("phase-1 fields wrong: %+v", got)
+	}
+	if got.TeamCode == nil || *got.TeamCode != "ATM" {
+		t.Errorf("TeamCode = %v, want ATM", got.TeamCode)
 	}
 	if got.Country == nil || *got.Country != "Spain" {
 		t.Errorf("Country = %v, want Spain", got.Country)
@@ -91,30 +89,31 @@ func TestAliasRepo_UpsertThenGet_AllFieldsRoundtrip(t *testing.T) {
 	if got.WikidataQID == nil || *got.WikidataQID != "Q8701" {
 		t.Errorf("WikidataQID = %v, want Q8701", got.WikidataQID)
 	}
-	if len(got.WikidataAliases) != 4 {
-		t.Errorf("WikidataAliases len = %d, want 4", len(got.WikidataAliases))
+	if len(got.Aliases) != 3 {
+		t.Errorf("Aliases len = %d, want 3", len(got.Aliases))
 	}
-	if len(got.TwitterAliases) != 3 || got.TwitterAliases[0] != "Atletico" {
-		t.Errorf("TwitterAliases = %v", got.TwitterAliases)
-	}
-	if got.LLMModel == nil || *got.LLMModel != "Qwen3-VL-8B" {
-		t.Errorf("LLMModel = %v, want Qwen3-VL-8B", got.LLMModel)
+	if got.ResolvedAt == nil {
+		t.Error("ResolvedAt should be set after UpsertResolution")
 	}
 	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
 		t.Error("timestamps not populated by DB defaults / trigger")
 	}
+	if !got.IsResolved() {
+		t.Error("IsResolved should be true after UpsertResolution roundtrip")
+	}
 }
 
-// A national team with country=nil, city=nil, no Wikidata resolution
-// yet. Verifies the nullable-pointer path scans back as (*string)(nil).
-func TestAliasRepo_UpsertThenGet_UnresolvedNationalTeam(t *testing.T) {
+// A national team as unresolved placeholder: country=nil, city=nil,
+// no Wikidata resolution yet. Verifies UpsertVendorFields leaves
+// phase-2 fields as scan-back nil.
+func TestAliasRepo_UpsertVendorFieldsThenGet_UnresolvedNationalTeam(t *testing.T) {
 	ctx, repo := setupAliasRepo(t)
 
 	at := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
-	ta := alias.New(20, "Netherlands", true, nil, nil, at)
+	ta := alias.New(20, "Netherlands", true, nil, nil, nil, at)
 
-	if err := repo.Upsert(ctx, ta); err != nil {
-		t.Fatalf("Upsert: %v", err)
+	if err := repo.UpsertVendorFields(ctx, ta); err != nil {
+		t.Fatalf("UpsertVendorFields: %v", err)
 	}
 	got, err := repo.Get(ctx, 20)
 	if err != nil {
@@ -132,31 +131,81 @@ func TestAliasRepo_UpsertThenGet_UnresolvedNationalTeam(t *testing.T) {
 	if got.WikidataQID != nil {
 		t.Errorf("WikidataQID = %v, want nil (unresolved)", got.WikidataQID)
 	}
-	if got.HasWikidataResolution() {
-		t.Error("HasWikidataResolution should be false")
+	if got.ResolvedAt != nil {
+		t.Errorf("ResolvedAt = %v, want nil (unresolved)", got.ResolvedAt)
 	}
-	if got.HasTwitterAliases() {
-		t.Error("HasTwitterAliases should be false")
+	if got.IsResolved() {
+		t.Error("IsResolved should be false for a placeholder")
 	}
-	// Arrays are NOT NULL DEFAULT '{}' — scan should give empty slice
-	// (or non-nil zero-len; both are semantically empty).
-	if len(got.WikidataAliases) != 0 {
-		t.Errorf("WikidataAliases = %v, want empty", got.WikidataAliases)
-	}
-	if len(got.TwitterAliases) != 0 {
-		t.Errorf("TwitterAliases = %v, want empty", got.TwitterAliases)
+	// aliases is NOT NULL DEFAULT '{}' — scan should give empty slice.
+	if len(got.Aliases) != 0 {
+		t.Errorf("Aliases = %v, want empty for placeholder", got.Aliases)
 	}
 }
 
-// Second Upsert on the same team_id updates resolved fields but keeps
-// created_at (mirrors the fixture repo discipline).
-func TestAliasRepo_Upsert_UpdatesExisting_PreservesCreatedAt(t *testing.T) {
+// Placeholder-preserves-resolution semantics: after resolution has
+// populated phase-2 fields, an Ingest-triggered UpsertVendorFields
+// (e.g., daily refresh with an updated venue city) MUST NOT wipe
+// wikidata_qid, aliases, or resolved_at.
+func TestAliasRepo_UpsertVendorFields_PreservesResolution(t *testing.T) {
+	ctx, repo := setupAliasRepo(t)
+
+	// Phase 1: placeholder.
+	at := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	ta := makeClubAlias(541, "Real Madrid")
+	if err := repo.UpsertVendorFields(ctx, ta); err != nil {
+		t.Fatalf("first UpsertVendorFields: %v", err)
+	}
+
+	// Phase 2: resolution runs.
+	got, err := repo.Get(ctx, 541)
+	if err != nil {
+		t.Fatalf("Get after placeholder: %v", err)
+	}
+	got.SetResolution("Q8682", []string{"real", "madrid", "blancos"}, at.Add(5*time.Minute))
+	if err := repo.UpsertResolution(ctx, got); err != nil {
+		t.Fatalf("UpsertResolution: %v", err)
+	}
+
+	// Ingest re-runs with a "fresh" placeholder (e.g., a new venue city
+	// picked up from the vendor). Its UpsertVendorFields must NOT wipe
+	// the resolution data.
+	refreshed := alias.New(541, "Real Madrid", false,
+		strPtr("RMA"), strPtr("Spain"), strPtr("Madrid"), at.Add(24*time.Hour))
+	if err := repo.UpsertVendorFields(ctx, refreshed); err != nil {
+		t.Fatalf("second UpsertVendorFields: %v", err)
+	}
+
+	after, err := repo.Get(ctx, 541)
+	if err != nil {
+		t.Fatalf("Get after second placeholder: %v", err)
+	}
+	// Phase-2 fields intact.
+	if after.WikidataQID == nil || *after.WikidataQID != "Q8682" {
+		t.Errorf("resolution wiped by second UpsertVendorFields: WikidataQID = %v", after.WikidataQID)
+	}
+	if len(after.Aliases) != 3 {
+		t.Errorf("resolution wiped by second UpsertVendorFields: Aliases = %v", after.Aliases)
+	}
+	if after.ResolvedAt == nil {
+		t.Error("resolution wiped by second UpsertVendorFields: ResolvedAt = nil")
+	}
+	// Phase-1 fields refreshed.
+	if after.TeamCode == nil || *after.TeamCode != "RMA" {
+		t.Errorf("TeamCode not refreshed by second UpsertVendorFields: %v", after.TeamCode)
+	}
+}
+
+// UpsertResolution twice with the same team_id preserves created_at
+// (trigger discipline).
+func TestAliasRepo_UpsertResolution_UpdatesExisting_PreservesCreatedAt(t *testing.T) {
 	ctx, repo := setupAliasRepo(t)
 
 	at := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
 	ta := makeClubAlias(541, "Real Madrid")
-	if err := repo.Upsert(ctx, ta); err != nil {
-		t.Fatalf("first Upsert: %v", err)
+	ta.SetResolution("Q8682", []string{"real", "madrid"}, at.Add(1*time.Minute))
+	if err := repo.UpsertResolution(ctx, ta); err != nil {
+		t.Fatalf("first UpsertResolution: %v", err)
 	}
 	first, err := repo.Get(ctx, 541)
 	if err != nil {
@@ -164,22 +213,22 @@ func TestAliasRepo_Upsert_UpdatesExisting_PreservesCreatedAt(t *testing.T) {
 	}
 	origCreated := first.CreatedAt
 
-	first.SetWikidataResolution("Q8682", []string{"Real Madrid", "Los Blancos"}, at.Add(5*time.Minute))
-	if err := repo.Upsert(ctx, first); err != nil {
-		t.Fatalf("second Upsert: %v", err)
+	first.SetResolution("Q8682", []string{"real", "madrid", "blancos"}, at.Add(6*time.Minute))
+	if err := repo.UpsertResolution(ctx, first); err != nil {
+		t.Fatalf("second UpsertResolution: %v", err)
 	}
 	after, err := repo.Get(ctx, 541)
 	if err != nil {
 		t.Fatalf("second Get: %v", err)
-	}
-	if after.WikidataQID == nil || *after.WikidataQID != "Q8682" {
-		t.Errorf("resolved WikidataQID = %v, want Q8682", after.WikidataQID)
 	}
 	if !after.CreatedAt.Equal(origCreated) {
 		t.Errorf("CreatedAt drifted: was %v, now %v", origCreated, after.CreatedAt)
 	}
 	if !after.UpdatedAt.After(origCreated) {
 		t.Errorf("UpdatedAt didn't advance past CreatedAt: got %v vs %v", after.UpdatedAt, origCreated)
+	}
+	if len(after.Aliases) != 3 {
+		t.Errorf("second Aliases len = %d, want 3", len(after.Aliases))
 	}
 }
 
@@ -188,11 +237,10 @@ func TestAliasRepo_Upsert_UpdatesExisting_PreservesCreatedAt(t *testing.T) {
 func TestAliasRepo_BulkGet_MixedHitsMisses(t *testing.T) {
 	ctx, repo := setupAliasRepo(t)
 
-	// Insert 40 + 42; ask for 40, 42, 999.
-	if err := repo.Upsert(ctx, makeClubAlias(40, "Liverpool")); err != nil {
+	if err := repo.UpsertVendorFields(ctx, makeClubAlias(40, "Liverpool")); err != nil {
 		t.Fatalf("upsert 40: %v", err)
 	}
-	if err := repo.Upsert(ctx, makeClubAlias(42, "Arsenal")); err != nil {
+	if err := repo.UpsertVendorFields(ctx, makeClubAlias(42, "Arsenal")); err != nil {
 		t.Fatalf("upsert 42: %v", err)
 	}
 
@@ -203,10 +251,10 @@ func TestAliasRepo_BulkGet_MixedHitsMisses(t *testing.T) {
 	if len(got) != 2 {
 		t.Errorf("map len = %d, want 2", len(got))
 	}
-	if got[40] == nil || got[40].TeamName != "Liverpool" {
+	if got[40] == nil || got[40].CanonicalName != "Liverpool" {
 		t.Errorf("40 missing/wrong: %+v", got[40])
 	}
-	if got[42] == nil || got[42].TeamName != "Arsenal" {
+	if got[42] == nil || got[42].CanonicalName != "Arsenal" {
 		t.Errorf("42 missing/wrong: %+v", got[42])
 	}
 	if _, present := got[999]; present {
@@ -226,29 +274,27 @@ func TestAliasRepo_BulkGet_EmptyInput(t *testing.T) {
 	}
 }
 
-// The nil-slice-vs-empty-slice defense: Upsert's normalizer converts
-// nil arrays to []string{} so the NOT NULL DEFAULT '{}' constraint
-// holds regardless of caller discipline.
-func TestAliasRepo_Upsert_NilArrays_Normalized(t *testing.T) {
+// Nil-slice defense: UpsertResolution normalizes nil aliases to
+// []string{} so the NOT NULL DEFAULT '{}' constraint holds.
+func TestAliasRepo_UpsertResolution_NilAliases_Normalized(t *testing.T) {
 	ctx, repo := setupAliasRepo(t)
 
 	at := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
-	ta := alias.New(60, "Sample FC", false, nil, nil, at)
-	// Both arrays are nil ([]string(nil)) — the default zero value.
-	if ta.WikidataAliases != nil || ta.TwitterAliases != nil {
-		t.Fatalf("test setup: arrays should start nil, got %+v / %+v",
-			ta.WikidataAliases, ta.TwitterAliases)
-	}
-	if err := repo.Upsert(ctx, ta); err != nil {
-		t.Fatalf("Upsert with nil arrays: %v", err)
+	ta := alias.New(60, "Sample FC", false, nil, nil, nil, at)
+	ta.SetResolution("Q99999", nil, at.Add(1*time.Minute)) // nil aliases
+	if err := repo.UpsertResolution(ctx, ta); err != nil {
+		t.Fatalf("UpsertResolution with nil aliases: %v", err)
 	}
 	got, err := repo.Get(ctx, 60)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	// Empty arrays roundtrip; length 0 is the correct outcome.
-	if len(got.WikidataAliases) != 0 || len(got.TwitterAliases) != 0 {
-		t.Errorf("empty-array roundtrip failed: WikidataAliases=%v TwitterAliases=%v",
-			got.WikidataAliases, got.TwitterAliases)
+	if len(got.Aliases) != 0 {
+		t.Errorf("empty-aliases roundtrip failed: Aliases=%v", got.Aliases)
+	}
+	// Empty aliases + non-nil ResolvedAt is the "we ran, nothing matched"
+	// state — IsResolved should still be true.
+	if !got.IsResolved() {
+		t.Error("resolution with empty aliases should still count as resolved")
 	}
 }

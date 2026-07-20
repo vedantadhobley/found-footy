@@ -153,46 +153,56 @@ func smokeAlias(ctx context.Context, pool *pg.Pool) {
 	}
 	fmt.Println("  Get miss → ErrNotFound ✓")
 
-	// The footgun scenario: Upsert with nil arrays (default zero value).
-	// If the nil-normalize in AliasRepo.Upsert is working, this succeeds;
-	// if it were missing, we'd get a NOT NULL constraint violation.
+	// Phase 1: placeholder via UpsertVendorFields. Empty aliases array
+	// covered by schema NOT NULL DEFAULT '{}'.
 	spain := "Spain"
-	ta := alias.New(testID, "Test Club FC", false, &spain, nil, time.Now().UTC())
-	if err := repo.Upsert(ctx, ta); err != nil {
-		fatal("Upsert with nil arrays (footgun regression)", err)
+	code := "TST"
+	ta := alias.New(testID, "Test Club FC", false, &code, &spain, nil, time.Now().UTC())
+	if err := repo.UpsertVendorFields(ctx, ta); err != nil {
+		fatal("UpsertVendorFields (placeholder)", err)
 	}
-	fmt.Println("  Upsert insert (nil arrays normalized) ✓")
+	fmt.Println("  UpsertVendorFields placeholder ✓")
 
 	got, err := repo.Get(ctx, testID)
 	if err != nil {
 		fatal("Get after upsert", err)
 	}
-	if got.TeamName != "Test Club FC" || got.HasWikidataResolution() || got.HasTwitterAliases() {
-		fatal("roundtrip", fmt.Errorf("got %+v", got))
+	if got.CanonicalName != "Test Club FC" || got.IsResolved() {
+		fatal("placeholder roundtrip", fmt.Errorf("got %+v", got))
 	}
-	if len(got.WikidataAliases) != 0 || len(got.TwitterAliases) != 0 {
-		fatal("nil arrays didn't roundtrip as empty", fmt.Errorf("wd=%v tw=%v", got.WikidataAliases, got.TwitterAliases))
+	if len(got.Aliases) != 0 {
+		fatal("aliases should be empty on placeholder", fmt.Errorf("aliases=%v", got.Aliases))
 	}
-	fmt.Println("  Get roundtrip (empty arrays preserved) ✓")
+	fmt.Println("  Placeholder roundtrip (empty aliases) ✓")
 
-	got.SetWikidataResolution("Q999999", []string{"Test Club", "TC", "The Testers"}, time.Now().UTC())
-	if err := got.SetTwitterAliases([]string{"Test", "TC"}, "smoke-model", time.Now().UTC()); err != nil {
-		fatal("SetTwitterAliases", err)
-	}
-	if err := repo.Upsert(ctx, got); err != nil {
-		fatal("Upsert update with resolution", err)
+	// Phase 2: resolution.
+	got.SetResolution("Q999999", []string{"test", "tc", "testers"}, time.Now().UTC())
+	if err := repo.UpsertResolution(ctx, got); err != nil {
+		fatal("UpsertResolution", err)
 	}
 	after, err := repo.Get(ctx, testID)
 	if err != nil {
 		fatal("Get after resolution", err)
 	}
-	if !after.HasWikidataResolution() || len(after.WikidataAliases) != 3 {
-		fatal("Wikidata roundtrip", fmt.Errorf("qid=%v aliases=%v", after.WikidataQID, after.WikidataAliases))
+	if !after.IsResolved() || len(after.Aliases) != 3 {
+		fatal("resolution roundtrip", fmt.Errorf("qid=%v aliases=%v resolved_at=%v", after.WikidataQID, after.Aliases, after.ResolvedAt))
 	}
-	if !after.HasTwitterAliases() || after.LLMModel == nil || *after.LLMModel != "smoke-model" {
-		fatal("Twitter/LLM roundtrip", fmt.Errorf("twitter=%v model=%v", after.TwitterAliases, after.LLMModel))
+	fmt.Println("  UpsertResolution roundtrip ✓")
+
+	// Placeholder-preserves-resolution: refresh with UpsertVendorFields
+	// after resolution ran must NOT wipe the phase-2 fields.
+	refreshed := alias.New(testID, "Test Club FC", false, &code, &spain, nil, time.Now().UTC())
+	if err := repo.UpsertVendorFields(ctx, refreshed); err != nil {
+		fatal("second UpsertVendorFields", err)
 	}
-	fmt.Println("  Upsert update with resolution ✓")
+	still, err := repo.Get(ctx, testID)
+	if err != nil {
+		fatal("Get after second placeholder", err)
+	}
+	if !still.IsResolved() || len(still.Aliases) != 3 {
+		fatal("second UpsertVendorFields wiped resolution", fmt.Errorf("resolved=%v aliases=%v", still.IsResolved(), still.Aliases))
+	}
+	fmt.Println("  Placeholder preserves resolution ✓")
 
 	bulk, err := repo.BulkGet(ctx, []int{testID, 900_999})
 	if err != nil {

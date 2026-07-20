@@ -68,7 +68,7 @@ func assertTeamAliases(ctx context.Context, t *testing.T, pool *pg.Pool, expecte
 	for _, ea := range expected {
 		var gotName string
 		err := pool.QueryRow(ctx,
-			"SELECT team_name FROM team_aliases WHERE team_id = $1", ea.TeamID).Scan(&gotName)
+			"SELECT canonical_name FROM team_aliases WHERE team_id = $1", ea.TeamID).Scan(&gotName)
 		if err != nil {
 			t.Errorf("team_alias team_id=%d not found: %v", ea.TeamID, err)
 			continue

@@ -473,7 +473,7 @@ func TestFixtureRepo_PruneCompleted_WithShares_Retains(t *testing.T) {
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO events (id, fixture_id, natural_key, event_type, detail,
 			team_id, team_name, minute)
-		VALUES ($1, $2, '40_234_Goal_1', 'Goal', 'Normal Goal', 40, 'Liverpool', 23)
+		VALUES ($1, $2, '40_234_Goal_1', 'goal', 'Normal Goal', 40, 'Liverpool', 23)
 	`, eventID, f.ID); err != nil {
 		t.Fatalf("insert event: %v", err)
 	}

@@ -23,12 +23,12 @@ func NewAliasRepo(pool *Pool) *AliasRepo {
 	return &AliasRepo{pool: pool}
 }
 
-// Column list for team_aliases. Same discipline as fixture — one const
-// keeps read + write column order aligned.
+// Column list for team_aliases. One const keeps read + write column
+// order aligned across scanAlias / UpsertVendorFields / UpsertResolution.
 const aliasColumns = `
-	team_id, team_name, is_national,
-	country, city,
-	wikidata_qid, wikidata_aliases, twitter_aliases, llm_model,
+	team_id, canonical_name, team_code,
+	country, city, is_national,
+	wikidata_qid, aliases, resolved_at,
 	created_at, updated_at
 `
 
@@ -38,9 +38,9 @@ const aliasColumns = `
 func scanAlias(row rowScanner) (*alias.TeamAlias, error) {
 	var ta alias.TeamAlias
 	if err := row.Scan(
-		&ta.TeamID, &ta.TeamName, &ta.IsNational,
-		&ta.Country, &ta.City,
-		&ta.WikidataQID, &ta.WikidataAliases, &ta.TwitterAliases, &ta.LLMModel,
+		&ta.TeamID, &ta.CanonicalName, &ta.TeamCode,
+		&ta.Country, &ta.City, &ta.IsNational,
+		&ta.WikidataQID, &ta.Aliases, &ta.ResolvedAt,
 		&ta.CreatedAt, &ta.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -62,8 +62,7 @@ func (r *AliasRepo) Get(ctx context.Context, teamID int) (*alias.TeamAlias, erro
 // that has a cached row. Missing IDs are simply absent from the map
 // (no error). Empty ids input returns an empty map.
 //
-// The IngestWorkflow's alias-pre-caching step calls this with the
-// flattened team-ID set from the day's fixtures — one SQL round-trip
+// Ingest's daily team-cache refresh uses this: one SQL round-trip
 // instead of len(ids) Gets.
 func (r *AliasRepo) BulkGet(ctx context.Context, ids []int) (map[int]*alias.TeamAlias, error) {
 	if len(ids) == 0 {
@@ -90,51 +89,77 @@ func (r *AliasRepo) BulkGet(ctx context.Context, ids []int) (map[int]*alias.Team
 	return out, nil
 }
 
-// Upsert inserts or updates by team_id primary key. Written columns
-// exclude created_at + updated_at: created_at preserved on UPDATE by
-// omission; updated_at maintained by the trg_team_aliases_updated_at
-// trigger.
+// UpsertVendorFields writes phase-1 vendor fields only. If the row
+// exists, phase-2 fields (wikidata_qid / aliases / resolved_at) are
+// preserved via COALESCE / conditional update.
 //
-// nil-vs-empty-slice discipline: the schema has NOT NULL DEFAULT '{}'
-// on both alias arrays, so passing []string(nil) would attempt a NULL
-// insert and fail the constraint. Normalize to empty slice here.
-func (r *AliasRepo) Upsert(ctx context.Context, ta *alias.TeamAlias) error {
-	wikidataAliases := ta.WikidataAliases
-	if wikidataAliases == nil {
-		wikidataAliases = []string{}
-	}
-	twitterAliases := ta.TwitterAliases
-	if twitterAliases == nil {
-		twitterAliases = []string{}
-	}
-
+// created_at is set on INSERT via table default; updated_at is
+// refreshed by the trg_team_aliases_updated_at trigger.
+func (r *AliasRepo) UpsertVendorFields(ctx context.Context, ta *alias.TeamAlias) error {
 	const query = `
 		INSERT INTO team_aliases (
-			team_id, team_name, is_national,
-			country, city,
-			wikidata_qid, wikidata_aliases, twitter_aliases, llm_model
+			team_id, canonical_name, team_code,
+			country, city, is_national
 		) VALUES (
 			$1, $2, $3,
-			$4, $5,
-			$6, $7, $8, $9
+			$4, $5, $6
 		)
 		ON CONFLICT (team_id) DO UPDATE SET
-			team_name = EXCLUDED.team_name,
-			is_national = EXCLUDED.is_national,
+			canonical_name = EXCLUDED.canonical_name,
+			team_code = EXCLUDED.team_code,
 			country = EXCLUDED.country,
 			city = EXCLUDED.city,
-			wikidata_qid = EXCLUDED.wikidata_qid,
-			wikidata_aliases = EXCLUDED.wikidata_aliases,
-			twitter_aliases = EXCLUDED.twitter_aliases,
-			llm_model = EXCLUDED.llm_model
+			is_national = EXCLUDED.is_national
 	`
 	_, err := r.pool.Exec(ctx, query,
-		ta.TeamID, ta.TeamName, ta.IsNational,
-		ta.Country, ta.City,
-		ta.WikidataQID, wikidataAliases, twitterAliases, ta.LLMModel,
+		ta.TeamID, ta.CanonicalName, ta.TeamCode,
+		ta.Country, ta.City, ta.IsNational,
 	)
 	if err != nil {
-		return fmt.Errorf("pg.AliasRepo.Upsert: %w", err)
+		return fmt.Errorf("pg.AliasRepo.UpsertVendorFields: %w", err)
+	}
+	return nil
+}
+
+// UpsertResolution writes a full row including phase-2 fields. Used
+// by the alias resolution activity after SetResolution has populated
+// wikidata_qid + aliases + resolved_at.
+//
+// nil-slice discipline: schema has NOT NULL DEFAULT '{}' on aliases,
+// so a nil []string would fail the constraint on INSERT. Normalize
+// to empty slice.
+func (r *AliasRepo) UpsertResolution(ctx context.Context, ta *alias.TeamAlias) error {
+	aliases := ta.Aliases
+	if aliases == nil {
+		aliases = []string{}
+	}
+	const query = `
+		INSERT INTO team_aliases (
+			team_id, canonical_name, team_code,
+			country, city, is_national,
+			wikidata_qid, aliases, resolved_at
+		) VALUES (
+			$1, $2, $3,
+			$4, $5, $6,
+			$7, $8, $9
+		)
+		ON CONFLICT (team_id) DO UPDATE SET
+			canonical_name = EXCLUDED.canonical_name,
+			team_code = EXCLUDED.team_code,
+			country = EXCLUDED.country,
+			city = EXCLUDED.city,
+			is_national = EXCLUDED.is_national,
+			wikidata_qid = EXCLUDED.wikidata_qid,
+			aliases = EXCLUDED.aliases,
+			resolved_at = EXCLUDED.resolved_at
+	`
+	_, err := r.pool.Exec(ctx, query,
+		ta.TeamID, ta.CanonicalName, ta.TeamCode,
+		ta.Country, ta.City, ta.IsNational,
+		ta.WikidataQID, aliases, ta.ResolvedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("pg.AliasRepo.UpsertResolution: %w", err)
 	}
 	return nil
 }

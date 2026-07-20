@@ -1,14 +1,21 @@
-// Package alias is the domain layer for team-alias resolution. Pure Go
-// — no HTTP, no DB. Mirrors the team_aliases table (see
-// internal/infra/pg/schema.sql).
+// Package alias models per-team alias resolution: the words we feed
+// into Twitter advanced-search OR-queries to find goal-video candidates.
 //
-// The RAG pipeline that populates a TeamAlias runs as a Phase O
-// activity: Wikidata SPARQL for candidate aliases → LLM chat for
-// selection → Normalize each survivor → store. Multiple callers
-// consume Normalize (this pipeline, the Discovery activity's Twitter
-// search-query builder, potentially the read-side API), so it lives in
-// domain. LLM output validation ("did the LLM hallucinate?") lives with
-// the alias activity — one caller, no benefit to sharing.
+// Pure Go — no HTTP, no DB. Adapters wire Wikidata (lookup + fetch) and
+// pg (cache). The pipeline itself is deterministic, no LLM: multilingual
+// Wikidata aliases (11 Latin-script langs) + P1449 nicknames + P1549
+// demonyms for nationals + word-processing rules (NFD strip diacritics,
+// multilingual skip-list, ≥2-lang keep threshold, venue-city skip for
+// clubs). Design ref: docs/rebuild/proposals/team-aliases.md.
+//
+// Callers:
+//   - Ingest activity: inserts placeholder rows (canonical vendor data
+//     only) as new teams appear; the alias resolution activity fills
+//     in wikidata_qid + aliases + resolved_at asynchronously.
+//   - Discovery activity: reads Aliases for the two teams in a fixture
+//     when building a Twitter search query.
+//   - Normalize helper: exported for shared use by the alias pipeline
+//     and the search-query builder.
 package alias
 
 import (
@@ -22,95 +29,98 @@ import (
 // TeamAlias is the domain type. Field order aligned with the schema for
 // straightforward scanner mapping in the pg adapter.
 //
-// Fields split into two groups:
-//   INPUT (known at ingest): TeamID, TeamName, IsNational, Country, City
-//   RESOLVED (populated by the alias activity):
-//     WikidataQID, WikidataAliases, TwitterAliases, LLMModel
+// Two-phase population:
 //
-// A row can exist with only the input fields populated — meaning the
-// alias activity hasn't run yet (or ran + failed to resolve). Callers
-// gate on HasWikidataResolution / HasTwitterAliases before consuming
-// the resolved fields.
+//	Phase 1 (Ingest):  CanonicalName, TeamCode, Country, City, IsNational
+//	Phase 2 (resolve): WikidataQID, Aliases, ResolvedAt
+//
+// A row can exist with only phase-1 fields populated — that means the
+// resolution pipeline hasn't run yet. Callers gate on IsResolved before
+// consuming Aliases.
 type TeamAlias struct {
-	// Input fields — set at construction.
-	TeamID     int
-	TeamName   string
-	IsNational bool
-	Country    *string
-	City       *string
+	// Phase-1 fields — from API-Football via Ingest.
+	TeamID        int
+	CanonicalName string
+	TeamCode      *string // API-Football team.code (3-letter FIFA); often absent
+	Country       *string
+	City          *string
+	IsNational    bool
 
-	// Resolved fields — populated by the RAG pipeline in Phase O.
-	WikidataQID     *string
-	WikidataAliases []string // raw Wikidata pipeline output (audit trail)
-	TwitterAliases  []string // LLM-selected + Normalize'd (search-ready)
-	LLMModel        *string  // which model generated TwitterAliases
+	// Phase-2 fields — from the alias resolution pipeline.
+	//
+	// WikidataQID is cached permanently on first successful resolution
+	// (Wikidata QIDs for football clubs / national teams don't change).
+	// On subsequent 30-day TTL refreshes we skip the expensive fuzzy
+	// wbsearchentities lookup and just re-fetch entity JSON.
+	WikidataQID *string
+	// Aliases is the normalized lowercase word list submitted to Twitter
+	// advanced search as an OR clause. Empty slice means either "not yet
+	// resolved" (ResolvedAt is nil) or "resolved but pipeline yielded
+	// zero surviving tokens" (ResolvedAt is set) — distinguished by
+	// IsResolved().
+	Aliases []string
+	// ResolvedAt is set when the pipeline completes successfully. Drives
+	// the 30-day TTL check via IsFresh.
+	ResolvedAt *time.Time
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
-// New constructs a TeamAlias with only the input fields populated.
-// Resolved fields are left as zero values (nil pointer / empty slice)
-// and get filled in by SetWikidataResolution / SetTwitterAliases as the
-// RAG pipeline runs.
-func New(teamID int, teamName string, isNational bool, country, city *string, at time.Time) *TeamAlias {
+// New constructs a TeamAlias placeholder with only the phase-1 vendor
+// fields populated. Phase-2 fields stay nil / empty — the alias
+// resolution activity fills them in via SetResolution.
+func New(teamID int, canonicalName string, isNational bool, teamCode, country, city *string, at time.Time) *TeamAlias {
 	utc := at.UTC()
 	return &TeamAlias{
-		TeamID:     teamID,
-		TeamName:   teamName,
-		IsNational: isNational,
-		Country:    country,
-		City:       city,
-		CreatedAt:  utc,
-		UpdatedAt:  utc,
+		TeamID:        teamID,
+		CanonicalName: canonicalName,
+		TeamCode:      teamCode,
+		Country:       country,
+		City:          city,
+		IsNational:    isNational,
+		CreatedAt:     utc,
+		UpdatedAt:     utc,
 	}
 }
 
-// SetWikidataResolution records the QID + raw alias list returned by
-// the Wikidata SPARQL query. Both stored together — a QID without
-// aliases means "the entity exists but had no useful alias data,"
-// which is a distinct state from "we haven't looked yet."
-func (t *TeamAlias) SetWikidataResolution(qid string, aliases []string, at time.Time) {
+// SetResolution records a completed pipeline run: the Wikidata QID that
+// was resolved, the derived alias set, and the resolution timestamp
+// (which anchors the 30-day TTL check).
+//
+// Passing an empty aliases slice is valid — it means "we ran the
+// pipeline and no tokens survived filtering." That's distinct from
+// "we haven't looked yet" (ResolvedAt still nil). Callers should
+// gate on IsResolved rather than len(Aliases).
+func (t *TeamAlias) SetResolution(qid string, aliases []string, at time.Time) {
 	t.WikidataQID = &qid
-	// Store a defensive copy so callers who reuse their slice don't
-	// mutate our state. Cheap; the list is typically 5-20 strings.
-	t.WikidataAliases = append([]string(nil), aliases...)
-	t.UpdatedAt = at.UTC()
+	// Defensive copy so callers who reuse their slice don't mutate our
+	// state. Cheap; the list is typically 5-30 tokens.
+	t.Aliases = append([]string(nil), aliases...)
+	utc := at.UTC()
+	t.ResolvedAt = &utc
+	t.UpdatedAt = utc
 }
 
-// SetTwitterAliases records the LLM-filtered + normalized alias list
-// alongside the model that generated it. The Model field is required
-// (empty string errors) — attribution matters when we later ask "why
-// did we pick these particular aliases?"
-func (t *TeamAlias) SetTwitterAliases(aliases []string, llmModel string, at time.Time) error {
-	if strings.TrimSpace(llmModel) == "" {
-		return &InvalidArgError{Field: "llmModel", Reason: "must be non-empty when setting TwitterAliases"}
+// IsResolved reports whether the resolution pipeline has run for this
+// team (regardless of outcome — an empty Aliases result with ResolvedAt
+// set still counts as resolved).
+func (t *TeamAlias) IsResolved() bool {
+	return t.ResolvedAt != nil
+}
+
+// IsFresh reports whether the resolution is fresh relative to a TTL.
+// Unresolved rows are never fresh. The reference now is passed in so
+// tests and workflow-time-aware callers can pass their own clock.
+func (t *TeamAlias) IsFresh(now time.Time, ttl time.Duration) bool {
+	if t.ResolvedAt == nil {
+		return false
 	}
-	t.TwitterAliases = append([]string(nil), aliases...)
-	t.LLMModel = &llmModel
-	t.UpdatedAt = at.UTC()
-	return nil
-}
-
-// HasWikidataResolution reports whether the RAG pipeline's Wikidata
-// stage has run for this alias. False = "we haven't looked yet"; true
-// = "we looked, and the QID + WikidataAliases fields reflect what we
-// found (potentially empty aliases)."
-func (t *TeamAlias) HasWikidataResolution() bool {
-	return t.WikidataQID != nil
-}
-
-// HasTwitterAliases reports whether the LLM selection stage has
-// populated the TwitterAliases field. Callers of the Discovery
-// activity's Twitter search-query builder gate on this — no aliases,
-// no query.
-func (t *TeamAlias) HasTwitterAliases() bool {
-	return len(t.TwitterAliases) > 0
+	return now.UTC().Sub(*t.ResolvedAt) < ttl
 }
 
 // InvalidArgError is returned by domain methods that reject a caller's
-// input for reasons that aren't a proper enum violation (which get
-// dedicated sentinel errors elsewhere in the domain package).
+// input for reasons that aren't a proper enum violation.
 type InvalidArgError struct {
 	Field  string
 	Reason string
@@ -123,7 +133,7 @@ func (e *InvalidArgError) Error() string {
 // Normalize strips combining diacritic marks (Unicode category Mn)
 // after NFD decomposition. Preserves case.
 //
-// Intended for Latin-alphabet team names — that's what the RAG
+// Intended for Latin-alphabet team names — that's what the alias
 // pipeline and Twitter search query builder call it on. Cyrillic
 // mostly passes through unchanged (few Cyrillic letters have combining
 // forms). CJK is NOT safe: Japanese dakuten (ガ = カ + combining
