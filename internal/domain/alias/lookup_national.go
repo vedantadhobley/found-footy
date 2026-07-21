@@ -1,144 +1,88 @@
-// lookup_national.go — national-team branch of the alias-lookup
-// pipeline.
+// lookup_national.go — national-team branch of the alias-lookup pipeline.
 //
-// National team names are near-unambiguous in Wikidata — "France
-// national football team" resolves cleanly to Q47774 without the
-// disambiguation gymnastics clubs require. Three fuzzy variants +
-// batch P31 verification against the "men's national association
-// football team" type (Q135408445) picks the right entity even when
-// wbsearchentities also returns fictional characters or misclassified
-// entities that happen to share the country's name.
+// Same shape as the club branch (Wikipedia CirrusSearch + P31 verify)
+// with a different query template. Wikipedia's article titling
+// convention for national teams is highly regular — `{country} men's
+// national football team` matches the exact article title in most
+// cases, making this branch nearly deterministic.
 package alias
 
 import (
 	"context"
 	"strings"
 
-	"github.com/vedantadhobley/found-footy/internal/infra/wikidata"
+	"github.com/vedantadhobley/found-footy/internal/infra/wikipedia"
 )
 
 // P31 accept-set for national candidates. Verified across Brazil /
-// England / France / Japan / Argentina (2026-07-20): all real national
-// men's teams have Q135408445 as their canonical type. Older entities
-// might additionally have Q6979593 (national association football
-// team) so it's included for forward-compat but not strictly needed
-// against modern data.
+// England / France / Japan (2026-07-20): all modern national men's
+// teams have Q135408445 as their canonical type. Older entities might
+// additionally have Q6979593 (national association football team) so
+// it's included for forward-compat but not strictly needed against
+// modern data.
 var nationalAcceptP31 = map[string]struct{}{
 	"Q135408445": {}, // men's national association football team
 	"Q6979593":   {}, // national association football team (legacy)
 }
 
-// nationalRejectP31 mirrors the club shape — women's national teams
-// have their own P31 (Q6997908, women's national association football
-// team). Youth-national types exist too but P31 alone catches the
-// senior/junior split cleanly.
+// nationalRejectP31 mirrors the club reject-set shape — women's national
+// teams have their own P31 (Q6997908).
 var nationalRejectP31 = map[string]struct{}{
 	"Q6997908": {}, // women's national association football team
 }
 
-// resolveNational is the national-branch entry point. Same 3-variant
-// fuzzy stack as before + a P31 batch-filter step (replaces the
-// description-contains-"national"/"football" text checks).
+// resolveNational runs the national-team branch. Same two-HTTP shape
+// as resolveClub. Query template uses country when available (more
+// reliable than the name in the "England" / "United States" cases
+// where the country IS the team name); falls back to name + `national
+// football team` when country isn't provided.
 func (r *Resolver) resolveNational(ctx context.Context, name string, country *string) (LookupResult, error) {
-	variants := buildNationalSearchVariants(name)
-
-	// Stage 1: collect candidates + keyword pre-skip.
-	var (
-		candidates []wikidata.SearchHit
-		seen       = make(map[string]struct{})
-	)
-	for _, variant := range variants {
-		hits, err := r.wd.SearchEntities(ctx, variant, defaultSearchOpts())
-		if err != nil {
-			continue
-		}
-		for _, h := range hits {
-			if _, dupe := seen[h.ID]; dupe {
-				continue
-			}
-			seen[h.ID] = struct{}{}
-			if !nationalCandidatePassesFilter(h) {
-				continue
-			}
-			candidates = append(candidates, h)
-		}
+	// Prefer country in the query when available — matches Wikipedia's
+	// article title conventions ("France men's national football team",
+	// "Brazil men's national football team", etc.). Nil country falls
+	// back to the name-based template.
+	base := name
+	if country != nil && *country != "" {
+		base = *country
 	}
-	if len(candidates) == 0 {
+	// USA is a specific Wikipedia quirk — the US team's article is
+	// titled "United States men's national soccer team" (not
+	// "football"). Substitute the fuller form when the input matches.
+	if strings.EqualFold(base, "USA") {
+		base = "United States"
+	}
+	query := base + " men's national football team"
+
+	hits, err := r.wp.SearchAndResolve(ctx, query, wikipedia.SearchOpts{Limit: 10})
+	if err != nil {
+		return LookupResult{}, err
+	}
+	if len(hits) == 0 {
 		return LookupResult{}, ErrNoMatch
 	}
 
-	// Stage 2: batch P31 type-check. Kills wbsearchentities false
-	// positives (fictional characters, museums, towns) that happen to
-	// share a country's name. SPARQL failure falls back to the
-	// pre-Layer-2 description-text heuristic (must contain "national"
-	// + "football"/"soccer") so a Wikidata blip doesn't cascade to a
-	// NoMatch for the whole national roster.
-	candidateIDs := make([]string, 0, len(candidates))
-	for _, h := range candidates {
-		candidateIDs = append(candidateIDs, h.ID)
+	candidateIDs := make([]string, 0, len(hits))
+	for _, h := range hits {
+		if h.WikidataQID != "" {
+			candidateIDs = append(candidateIDs, h.WikidataQID)
+		}
 	}
+	if len(candidateIDs) == 0 {
+		return LookupResult{}, ErrNoMatch
+	}
+
 	p31, p31Err := r.wd.BatchGetP31(ctx, candidateIDs)
-	for _, h := range candidates {
-		if p31Err != nil {
-			if !descriptionLooksNational(h.Description) {
-				continue
-			}
-		} else if !passesP31Filter(p31[h.ID], nationalAcceptP31, nationalRejectP31) {
+	for _, h := range hits {
+		if h.WikidataQID == "" {
 			continue
 		}
-		// First surviving candidate wins — national-team naming is
-		// unambiguous enough that further scoring adds noise.
-		return LookupResult{
-			QID:         h.ID,
-			Label:       h.Label,
-			Description: h.Description,
-			Score:       0,
-		}, nil
+		if p31Err != nil {
+			return LookupResult{QID: h.WikidataQID, Label: h.Title}, nil
+		}
+		if !passesP31Filter(p31[h.WikidataQID], nationalAcceptP31, nationalRejectP31) {
+			continue
+		}
+		return LookupResult{QID: h.WikidataQID, Label: h.Title}, nil
 	}
 	return LookupResult{}, ErrNoMatch
-}
-
-// descriptionLooksNational is the national-branch fallback filter
-// used only when BatchGetP31 fails. Same rules Python used pre-P31.
-func descriptionLooksNational(description string) bool {
-	desc := strings.ToLower(description)
-	if !strings.Contains(desc, "national") {
-		return false
-	}
-	return strings.Contains(desc, "football") || strings.Contains(desc, "soccer")
-}
-
-// buildNationalSearchVariants returns the ordered search-term list
-// for national teams. Same three variants Python uses. The "USA"
-// aliasing is a specific Wikidata quirk: their search finds the US
-// team under "United States men's national soccer team", so we
-// substitute the fuller form when input is bare "USA".
-func buildNationalSearchVariants(name string) []string {
-	n := strings.TrimSpace(name)
-	nameForSearch := n
-	if strings.EqualFold(nameForSearch, "USA") {
-		nameForSearch = "United States"
-	}
-	return []string{
-		nameForSearch + " national football team",
-		nameForSearch + " men's national football team",
-		nameForSearch + " national soccer team",
-	}
-}
-
-// nationalCandidatePassesFilter is the pre-P31 label/description
-// keyword guard. P31 handles the "is this a national team" question;
-// this function catches women/youth/futsal variants whose P31
-// might not distinguish (they sometimes share the parent type with
-// senior men's teams). Uses the same skip-list as clubs.
-func nationalCandidatePassesFilter(h wikidata.SearchHit) bool {
-	desc := strings.ToLower(h.Description)
-	labelLower := strings.ToLower(h.Label)
-
-	for _, kw := range clubDescriptionSkipKeywords {
-		if strings.Contains(desc, kw) || strings.Contains(labelLower, kw) {
-			return false
-		}
-	}
-	return true
 }

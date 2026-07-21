@@ -54,6 +54,7 @@ const (
 	ModuleInfraSyndication Module = "infra_syndication"
 	ModuleInfraFFmpeg      Module = "infra_ffmpeg"
 	ModuleInfraWikidata    Module = "infra_wikidata"
+	ModuleInfraWikipedia   Module = "infra_wikipedia"
 
 	// ── Cross-cutting subsystems ──
 	ModuleAPI             Module = "api"
@@ -81,7 +82,7 @@ var ValidModules = []Module{
 	ModuleInfraPG, ModuleInfraNATS, ModuleInfraEvent, ModuleInfraS3,
 	ModuleInfraLLM, ModuleInfraTemporal, ModuleInfraAPIFootball,
 	ModuleInfraTwitter, ModuleInfraSyndication, ModuleInfraFFmpeg,
-	ModuleInfraWikidata,
+	ModuleInfraWikidata, ModuleInfraWikipedia,
 
 	ModuleAPI, ModuleAPISSE, ModuleWebhookDelivery, ModuleScaler,
 	ModuleWorker, ModuleAPIServer, ModuleTwitterService,

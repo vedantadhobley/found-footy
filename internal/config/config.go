@@ -30,6 +30,7 @@ type Config struct {
 	LLM           LLMConfig
 	APIFootball   APIFootballConfig
 	Wikidata      WikidataConfig
+	Wikipedia     WikipediaConfig
 	Syndication   SyndicationConfig
 	Twitter       TwitterConfig
 

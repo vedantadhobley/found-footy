@@ -33,6 +33,7 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/infra/temporal"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
 	"github.com/vedantadhobley/found-footy/internal/infra/wikidata"
+	"github.com/vedantadhobley/found-footy/internal/infra/wikipedia"
 	"github.com/vedantadhobley/found-footy/internal/observability/logging"
 	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 	ffwf "github.com/vedantadhobley/found-footy/internal/workflow"
@@ -100,10 +101,20 @@ func main() {
 		if err != nil {
 			return err
 		}
-		// Wired below into ingest.Activities.AliasResolver — the
-		// alias lookup + selection pipeline consumes SearchEntities +
-		// GetEntity via the WikidataFetcher interface.
-		aliasResolver := alias.NewResolver(wdClient, nil)
+
+		// Wikipedia is the entity resolver — CirrusSearch full-text
+		// candidate generation, bridging back to Wikidata via each
+		// article's pageprops.wikibase_item. See
+		// docs/rebuild/proposals/alias-entity-resolution.md.
+		wpIns := wikipedia.RegisterMetrics(deps.Metrics, deps.Log)
+		wpClient, err := wikipedia.NewClient(deps.Cfg.Wikipedia, wpIns)
+		if err != nil {
+			return err
+		}
+
+		// The resolver consumes Wikipedia for lookup + Wikidata for
+		// P31 type verification and downstream alias extraction.
+		aliasResolver := alias.NewResolver(wdClient, wpClient)
 
 		syndIns := syndication.RegisterMetrics(deps.Metrics, deps.Log)
 		syndClient, err := syndication.NewClient(deps.Cfg.Syndication, syndIns)

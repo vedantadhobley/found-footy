@@ -18,6 +18,7 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/config"
 	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 	"github.com/vedantadhobley/found-footy/internal/infra/wikidata"
+	"github.com/vedantadhobley/found-footy/internal/infra/wikipedia"
 	"github.com/vedantadhobley/found-footy/internal/observability/logging"
 	"github.com/vedantadhobley/found-footy/internal/observability/metrics"
 )
@@ -32,17 +33,27 @@ func TestResolver_Integration_LiveWikidata(t *testing.T) {
 	}
 
 	log := &logging.TestEmitter{}
-	ins := wikidata.RegisterMetrics(metrics.New(), log)
-	c, err := wikidata.NewClient(config.WikidataConfig{
+	reg := metrics.New()
+	wdIns := wikidata.RegisterMetrics(reg, log)
+	wd, err := wikidata.NewClient(config.WikidataConfig{
 		Endpoint:  "https://query.wikidata.org/sparql",
 		WWWHost:   "https://www.wikidata.org",
 		UserAgent: "found-footy/dev (integration-test)",
 		Timeout:   15 * time.Second,
-	}, ins)
+	}, wdIns)
 	if err != nil {
-		t.Fatalf("NewClient: %v", err)
+		t.Fatalf("wikidata.NewClient: %v", err)
 	}
-	r := alias.NewResolver(c, nil)
+	wpIns := wikipedia.RegisterMetrics(reg, log)
+	wp, err := wikipedia.NewClient(config.WikipediaConfig{
+		Host:      "https://en.wikipedia.org",
+		UserAgent: "found-footy/dev (integration-test)",
+		Timeout:   15 * time.Second,
+	}, wpIns)
+	if err != nil {
+		t.Fatalf("wikipedia.NewClient: %v", err)
+	}
+	r := alias.NewResolver(wd, wp)
 
 	strPtr := func(s string) *string { return &s }
 

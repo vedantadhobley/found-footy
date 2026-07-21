@@ -19,6 +19,7 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/config"
 	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 	"github.com/vedantadhobley/found-footy/internal/infra/wikidata"
+	"github.com/vedantadhobley/found-footy/internal/infra/wikipedia"
 	"github.com/vedantadhobley/found-footy/internal/observability/logging"
 	"github.com/vedantadhobley/found-footy/internal/observability/metrics"
 	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
@@ -35,18 +36,29 @@ var roster = []alias.LookupInput{
 
 func main() {
 	log := &logging.TestEmitter{}
-	ins := wikidata.RegisterMetrics(metrics.New(), log)
-	c, err := wikidata.NewClient(config.WikidataConfig{
+	reg := metrics.New()
+	wdIns := wikidata.RegisterMetrics(reg, log)
+	wd, err := wikidata.NewClient(config.WikidataConfig{
 		Endpoint:  "https://query.wikidata.org/sparql",
 		WWWHost:   "https://www.wikidata.org",
 		UserAgent: "FoundFooty/1.0 (research; https://github.com/vedantadhobley/found-footy) probe_lookup",
 		Timeout:   15 * time.Second,
-	}, ins)
+	}, wdIns)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "NewClient: %v\n", err)
+		fmt.Fprintf(os.Stderr, "wikidata.NewClient: %v\n", err)
 		os.Exit(1)
 	}
-	r := alias.NewResolver(c, nil)
+	wpIns := wikipedia.RegisterMetrics(reg, log)
+	wp, err := wikipedia.NewClient(config.WikipediaConfig{
+		Host:      "https://en.wikipedia.org",
+		UserAgent: "FoundFooty/1.0 (research; https://github.com/vedantadhobley/found-footy) probe_lookup",
+		Timeout:   15 * time.Second,
+	}, wpIns)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wikipedia.NewClient: %v\n", err)
+		os.Exit(1)
+	}
+	r := alias.NewResolver(wd, wp)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -81,7 +93,8 @@ func main() {
 				// Search-failure emissions on the log fixture tell us.
 				failCount := 0
 				for _, e := range log.Snapshot() {
-					if e.Action == vocabulary.ActionWikidataSearchFailed ||
+					if e.Action == vocabulary.ActionWikipediaSearchFailed ||
+						e.Action == vocabulary.ActionWikidataQueryFailed ||
 						e.Action == vocabulary.ActionWikidataEntityFailed {
 						failCount++
 					}
