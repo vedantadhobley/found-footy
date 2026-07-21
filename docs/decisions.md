@@ -6,6 +6,115 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-21 — Alias entity resolution: Wikipedia CirrusSearch replaces `wbsearchentities`
+
+**Supersedes (partial):** the LOOKUP section of the 2026-07-19 decision
+below. Selection pipeline unchanged.
+
+**Design ref:** [`./rebuild/proposals/alias-entity-resolution.md`](./rebuild/proposals/alias-entity-resolution.md).
+
+### Context
+
+The Wikidata-first pipeline shipped in commits `482d4ed` (baseline) →
+`f5f11db` (api-football enrichment) → `0560b12` (P31 batch verify)
+resolved 37 of 38 tracked-league teams on the 2026-04-26 dev roster.
+The persistent miss — Nice (target Q185163 OGC Nice) — was NOT solvable
+by any downstream filter: `wbsearchentities` never returned Q185163 for
+any of our 9 fuzzy variants (`Nice FC`, `Nice football club`, `Nice
+France football`, etc.) in any language. Root cause: `wbsearchentities`
+is a **prefix-oriented label + alias index**. Wikidata's canonical
+label for OGC Nice is `OGC Nice` (in every language sampled), and our
+search inputs contain no prefix that hits it.
+
+This is a general class — sponsor-prefixed clubs (Red Bull Salzburg vs
+Salzburg), organization-prefixed clubs (OGC Nice vs Nice), and
+non-Latin native scripts (Al-Ahly = الأهلي) all fail the same way. It
+gets strictly worse as coverage expands beyond the top-5 European
+leagues.
+
+The proposal doc considered three approaches (A/C/D). A (multi-language
+`wbsearchentities`) was empirically tested and rejected — it's the same
+prefix index, just in a different language. C (Wikipedia full-text
+search + Wikidata cross-reference via `pageprops.wikibase_item`) tested
+successfully and is what shipped. D (Twitter-usage bootstrap) is
+shelved for post-MVP.
+
+### Decision
+
+**Wikipedia is the entity resolver; Wikidata is the alias source.**
+
+Pipeline (per cache-miss team):
+
+1. `apifootball.GetTeamProfile(teamID)` — enrichment (venue.city,
+   authoritative country/national, team.code). One HTTP.
+2. `wikipedia.SearchAndResolve(query, opts)` — CirrusSearch full-text
+   over article bodies with template:
+   - Clubs: `{name} {country} football club`
+   - Nationals: `{country} men's national football team`
+   Returns hits with each article's Wikidata QID extracted from
+   `pageprops.wikibase_item`. ONE HTTP round-trip via
+   `list=search + generator=search + prop=pageprops` composed.
+3. `wikidata.BatchGetP31([qids])` — ONE SPARQL query, structural type
+   verification. Accept-set + reject-set unchanged from the 2026-07-20
+   commit `0560b12`.
+4. First Wikipedia-ranked survivor of P31 verify wins.
+5. `wikidata.GetEntity(qid)` — canonical labels + multi-lang aliases +
+   P1449 nicknames + P17 country link for the SELECT phase (unchanged).
+
+Fallback on SPARQL failure: take Wikipedia's top hit unconditionally
+rather than cascade to NoMatch across the whole roster. Wikipedia's
+BM25 + field-boosted ranking is generally right; graceful degradation
+beats a vendor-blip outage.
+
+### Why Wikipedia's full-text search works when `wbsearchentities` doesn't
+
+- CirrusSearch (ElasticSearch under the hood) indexes **article body
+  text**, not just short curated labels. Every paraphrase, historical
+  name, sponsor-prefix variant that Wikipedia editors have written into
+  intro paragraphs and infoboxes is retrievable.
+- BM25 scoring favors articles where the query terms are dense and
+  topically central. An OGC Nice article that mentions "Nice" 100 times
+  in a football context outranks the "Nice (city)" article for the
+  query `Nice France football club` — even though the city article
+  ALSO contains "Nice" and "France".
+- Wikipedia is effectively a crowd-sourced redirect table from ANY
+  plausible mention of an entity to its canonical article. Wikidata is
+  a downstream structured extract that loses that paraphrase density.
+
+### Consequences
+
+- Interface diet: `alias.WikidataFetcher` shrunk from 3 methods to 2
+  (`GetEntity` + `BatchGetP31`; `SearchEntities` removed).
+- New `alias.WikipediaResolver` interface + `internal/infra/wikipedia/`
+  adapter (roughly the same shape as the wikidata adapter, one
+  method: `SearchAndResolve`).
+- Deleted from the domain: 9 club search variants, 3 national
+  variants, description-quality scoring (3 constants + `isFootball`
+  text heuristic + fallback function), the `CountryVariations`
+  machinery for description-scoring, description skip keywords, label
+  skip suffixes. Net ~440 lines removed.
+- Two hardcoded query templates replace 12 wbsearchentities variants
+  + related scoring hardcoding. Reduction, not addition.
+- HTTP volume per team lifetime: down from ~12 to 4-5.
+- Nice resolves to Q185163 with rich alias set
+  `{cote, gymnaste, nice, niza, nizza, ogc, ogcn, olympique}`. Inter
+  now includes `milan` as an alias (Wikipedia article title is "Inter
+  Milan") — an alias the earlier pipeline was dropping.
+
+### Note on `docs/rebuild-plan.md` (the design bible)
+
+Plan §9 `internal/infra/wikidata` still describes a `SearchEntities`
+method on the client interface. That reflects the pre-2026-07-21
+design; the shipped interface is `GetEntity + BatchGetP31 +
+SearchEntities` (the last remains on the client for future callers but
+is no longer on the narrow `alias.WikidataFetcher` interface). No
+separate rebuild-plan §9 subsection for `internal/infra/wikipedia`
+exists yet — treat this decision + `proposals/alias-entity-resolution.md`
+as the authoritative reference until the plan gets its next scheduled
+sweep.
+
+---
+
 ## 2026-07-19 — Team alias pipeline: deterministic Wikidata, no LLM
 
 **Supersedes:** Python's `archive/src/activities/rag.py` full RAG pipeline (LLM in three roles).

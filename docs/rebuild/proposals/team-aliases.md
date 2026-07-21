@@ -1,10 +1,26 @@
 # Team aliases pipeline — design proposal
 
+> **⚠ LOOKUP SECTION SUPERSEDED 2026-07-21.** The Phase 1 (Lookup) design
+> described below uses Wikidata's `wbsearchentities` as the candidate
+> retriever, which was replaced by Wikipedia's CirrusSearch full-text
+> search on 2026-07-21 after the Nice-class miss showed
+> `wbsearchentities`'s prefix-only matching couldn't reach entities whose
+> canonical label doesn't share a prefix with the api-football name.
+> Current pipeline: see
+> [`./alias-entity-resolution.md`](./alias-entity-resolution.md) and
+> `docs/decisions.md` 2026-07-21 entry.
+>
+> The Phase 2 (Selection) section below remains accurate — Wikidata's
+> structured aliases + P1449 nicknames + P1549 demonyms are still the
+> source of the alias token set, and the selection rules (≥2-lang
+> threshold, English rescue, venue-city skip) are unchanged.
+
 **Status:** design-first draft. Signed off in principle 2026-07-19; implementation pending per tasks #134, #138. Do not deviate from this design without a new proposal or decisions.md entry.
 
 **Cross-refs:**
 
-- Decision — [`../../decisions.md`](../../decisions.md) 2026-07-19 entry (this proposal is the design ref)
+- Decision — [`../../decisions.md`](../../decisions.md) 2026-07-19 + 2026-07-21 entries
+- Wikipedia-first lookup — [`./alias-entity-resolution.md`](./alias-entity-resolution.md) (2026-07-21 supersede)
 - Python behavior — [`../python-functional-spec.md`](../python-functional-spec.md) team-alias RAG section; source code at `archive/src/activities/rag.py`
 - Plan intent — [`../../rebuild-plan.md`](../../rebuild-plan.md) §5 W3 (DiscoveryWorkflow consumes aliases)
 - Empirical basis — `/tmp/claude-1000/.../scratchpad/alias-eval.md` (session-scoped, results summarized here)
