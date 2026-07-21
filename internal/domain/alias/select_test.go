@@ -352,3 +352,96 @@ func assertExcludes(t *testing.T, actual []string, unwanted ...string) {
 		t.Errorf("unwanted tokens present: %v\n  actual output: %v", present, actual)
 	}
 }
+
+// TestSelect_AcronymRescue_PSGClass — the PSG regression case. Wikidata's
+// English alias for PSG is "PSGFC" (no separator), so the base tokenizer
+// produces the single token `psgfc`. Italian's alias "PSG F.C."
+// tokenizes to `psg`, but that's only ONE language and would fail the
+// ≥2-lang threshold on its own. The acronym-rescue augmentation
+// surfaces the implicit `psg` prefix from English's PSGFC, giving it a
+// count of 2 (English augmented + Italian natural). Threshold satisfied
+// → `psg` survives.
+func TestSelect_AcronymRescue_PSGClass(t *testing.T) {
+	c := newTestClient(t, entitySpec{
+		QID: "Q_psg",
+		AliasesByLang: map[string][]string{
+			"en": {"PSGFC", "Paris"},
+			"it": {"PSG F.C.", "Paris-SG"},
+			"de": {"Paris St. Germain"},
+			"nl": {"Paris St. Germain"},
+		},
+		LabelsByLang: map[string]string{"en": "Paris Saint-Germain FC"},
+	})
+	r := alias.NewResolver(c, nil)
+
+	aliases, err := r.Select(context.Background(), alias.SelectInput{
+		QID:           "Q_psg",
+		IsNational:    false,
+		CanonicalName: "Paris Saint Germain",
+	})
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	// psg must be present — implicit from PSGFC + explicit in Italian.
+	assertIncludes(t, aliases, "psg", "paris")
+}
+
+// TestSelect_AcronymRescue_DoesNotInventNYCFCTokens — the negative case.
+// Wikidata's NYCFC data has "NYCFC" as an alias in many languages but no
+// language has `nyc` as a standalone. The augmentation adds `nyc` to
+// English's implicit set, but no other language has it → count of 1 →
+// dropped by ≥2-lang threshold. We must NOT invent `nyc` from thin air.
+func TestSelect_AcronymRescue_DoesNotInventNYCFCTokens(t *testing.T) {
+	c := newTestClient(t, entitySpec{
+		QID: "Q_nycfc",
+		AliasesByLang: map[string][]string{
+			"en": {"NYCFC", "New York City Football Club"},
+			"de": {"NYCFC", "New York City Football Club"},
+			"fr": {"NYCFC", "New York City Football Club"},
+			"es": {"NYCFC", "New York City Football Club"},
+		},
+		LabelsByLang: map[string]string{"en": "New York City FC"},
+	})
+	r := alias.NewResolver(c, nil)
+
+	aliases, err := r.Select(context.Background(), alias.SelectInput{
+		QID:           "Q_nycfc",
+		IsNational:    false,
+		CanonicalName: "New York City",
+	})
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	// nycfc, new, york, city all fine. nyc must NOT appear — it exists
+	// only as the augmented English prefix; no other language has it.
+	assertExcludes(t, aliases, "nyc")
+}
+
+// TestSelect_AcronymRescue_DoesNotTouchShortForms — MUFC, AVFC, NUFC,
+// CFC etc. must stay whole. Their 2-char prefixes (mu, av, nu) fall
+// below the ≥3 char guard.
+func TestSelect_AcronymRescue_DoesNotTouchShortForms(t *testing.T) {
+	c := newTestClient(t, entitySpec{
+		QID: "Q_manutd",
+		AliasesByLang: map[string][]string{
+			"en": {"MUFC", "Man Utd"},
+			"de": {"MUFC"},
+			"es": {"MUFC"},
+		},
+		LabelsByLang: map[string]string{"en": "Manchester United F.C."},
+	})
+	r := alias.NewResolver(c, nil)
+
+	aliases, err := r.Select(context.Background(), alias.SelectInput{
+		QID:           "Q_manutd",
+		IsNational:    false,
+		CanonicalName: "Manchester United",
+	})
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	// mufc kept whole. The 2-char stub "mu" must NOT appear (below
+	// the ≥3 char prefix guard).
+	assertIncludes(t, aliases, "mufc")
+	assertExcludes(t, aliases, "mu")
+}

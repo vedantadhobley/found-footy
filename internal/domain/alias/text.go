@@ -124,6 +124,49 @@ func isAllDigit(w string) bool {
 	return true
 }
 
+// knownOrgSuffixes are the 2-char club-abbreviation suffixes that
+// commonly terminate a concatenated English alias like "PSGFC". Kept
+// deliberately narrow — expanding this list means auditing every team
+// for new false-positive risks.
+var knownOrgSuffixes = []string{"fc", "ac", "sc", "cf"}
+
+// stripKnownOrgSuffix returns (prefix, true) if tok's last 2 chars
+// are in knownOrgSuffixes AND the prefix is ≥3 chars. Otherwise
+// returns ("", false).
+//
+// Used by the selection pipeline (select.go extractSources) to surface
+// implicit English acronyms hidden inside concatenated Wikidata
+// aliases: e.g. Wikidata's English alias for PSG (Q483020) is "PSGFC"
+// with no separator, so our tokenizer produces the single token
+// "psgfc". Fans use "PSG" as the primary handle — we recover it by
+// stripping the known "fc" suffix and adding "psg" as an implicit
+// English alias token, which then participates in the normal ≥2-lang
+// threshold. If some other language of Wikidata already tokenized to
+// "psg" (Italian's "PSG F.C." does), the two-language corroboration
+// keeps the token. If no other language has it, ≥2-lang drops it
+// (e.g. NYCFC — nyc appears nowhere else in Wikidata's aliases →
+// dropped by threshold). Evidence-based rescue.
+//
+// The 3-char prefix guard specifically protects AVFC / MUFC / NUFC /
+// CFC / AFC — all 4-char forms whose 2-char prefix falls below the
+// guard and is left untouched.
+func stripKnownOrgSuffix(tok string) (string, bool) {
+	if len(tok) < 5 {
+		return "", false
+	}
+	lastTwo := tok[len(tok)-2:]
+	for _, sfx := range knownOrgSuffixes {
+		if lastTwo == sfx {
+			prefix := tok[:len(tok)-2]
+			if len(prefix) >= 3 {
+				return prefix, true
+			}
+			return "", false
+		}
+	}
+	return "", false
+}
+
 // lowerASCII returns a lowercased, diacritic-stripped version of s.
 // Used as a map key normalizer (e.g., country-name cache keys).
 func lowerASCII(s string) string {
