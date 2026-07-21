@@ -2,49 +2,58 @@
 //
 // Two branches, dispatched on IsNational:
 //
-//   Clubs   → 9-variant wbsearchentities fuzzy search + description-quality
-//             scoring against per-country variations (see lookup_club.go).
-//             Ported from Python's rag.py `_search_wikidata_qid` for clubs.
-//   Nationals → 3-variant search, first valid football-team candidate wins
-//               (see lookup_national.go). Nationals rarely have the
-//               reserve/women's-team ambiguity clubs suffer from.
+//   Clubs   → Wikipedia CirrusSearch full-text lookup with the template
+//             `{name} {country} football club`, then batch P31 verify
+//             against Wikidata's ontology (Q476028 association football
+//             club + Q103229495 men's team). See lookup_club.go.
+//   Nationals → Wikipedia lookup with `{country} men's national football
+//               team`, same P31 verify (Q135408445 + Q6979593). See
+//               lookup_national.go.
 //
-// Wikidata is injected via the narrow WikidataFetcher interface so the
-// domain package stays pure Go — no HTTP. Prod passes an
-// *infra/wikidata.Client. Tests pass a fake.
+// The Wikipedia + Wikidata split is deliberate. Wikipedia's CirrusSearch
+// is a full-text retriever over article bodies (BM25 with field
+// boosting) — vastly better than Wikidata's `wbsearchentities` prefix
+// index at fuzzy candidate generation. Wikipedia articles carry
+// `pageprops.wikibase_item` which bridges results back to Wikidata for
+// the P31 type check + downstream alias extraction.
 //
-// Design ref: docs/rebuild/proposals/team-aliases.md § "Phase 1 — Lookup".
+// Design ref: docs/rebuild/proposals/alias-entity-resolution.md.
 package alias
 
 import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/vedantadhobley/found-footy/internal/infra/wikidata"
+	"github.com/vedantadhobley/found-footy/internal/infra/wikipedia"
 )
 
-// WikidataFetcher is the narrow interface the lookup pipeline needs
-// from the wikidata adapter. Defined in the consumer package (per Go
-// idiom); prod passes *wikidata.Client. Tests pass an in-memory fake.
+// WikidataFetcher is the narrow interface the lookup + selection
+// pipelines need from the wikidata adapter. Reduced from earlier — the
+// lookup pipeline no longer uses SearchEntities (Wikipedia's search
+// replaces it entirely for candidate generation), only BatchGetP31 for
+// structural type verification and GetEntity for alias extraction.
 type WikidataFetcher interface {
-	SearchEntities(ctx context.Context, term string, opts wikidata.SearchOpts) ([]wikidata.SearchHit, error)
 	GetEntity(ctx context.Context, qid string) (*wikidata.Entity, error)
-	// BatchGetP31 returns QID → P31 type-list (one SPARQL query for
-	// many QIDs). The club + national branches use it to type-check
-	// wbsearchentities candidates against Wikidata's own ontology,
-	// replacing the fragile description-contains-"football" heuristic.
 	BatchGetP31(ctx context.Context, qids []string) (map[string][]string, error)
 }
 
+// WikipediaResolver is the narrow interface the lookup pipeline needs
+// from the wikipedia adapter. One method — full-text search returning
+// hits with their Wikidata QIDs — is enough for both club + national
+// branches.
+type WikipediaResolver interface {
+	SearchAndResolve(ctx context.Context, query string, opts wikipedia.SearchOpts) ([]wikipedia.Hit, error)
+}
+
 // LookupInput carries the API-Football vendor data the pipeline uses
-// to construct search variants + score candidates.
+// to construct the Wikipedia query.
 //
-// CanonicalName is required. Country and City are optional — clubs
-// benefit strongly from both (better disambiguation of same-named
-// clubs across countries); nationals need only the country implicit
-// in the team name.
+// CanonicalName is required. Country is strongly recommended for
+// disambiguation (fixes collisions like Al-Ahly Egypt vs Al-Ahli
+// Amman, Sao Paulo FC vs São Paulo city). City is passed through for
+// the downstream SELECT phase's venue-city skip; not used by lookup.
 type LookupInput struct {
 	CanonicalName string
 	Country       *string
@@ -54,37 +63,38 @@ type LookupInput struct {
 
 // LookupResult is what the pipeline returns on success.
 type LookupResult struct {
-	QID         string
-	Label       string // Wikidata en label of the resolved entity
-	Description string // Wikidata en description — audit trail
-	Score       int    // 0 for nationals (first-valid-wins); scoring bucket for clubs
+	QID   string
+	Label string // Wikipedia article title of the resolved entity
+	// Description is left empty in the Wikipedia-based pipeline — CirrusSearch
+	// doesn't return the article's Wikidata description in-band. Kept in the
+	// struct for backward compat with test expectations + future audit hooks.
+	Description string
+	Score       int // reserved; Wikipedia's own ranking supersedes scoring here
 }
 
-// Resolver is the pipeline entry point. Depends on a WikidataFetcher +
-// a CountryVariations cache (both injected). Safe for concurrent use;
-// the CountryVariations cache is internally mutex-guarded.
+// Resolver is the pipeline entry point. Depends on both Wikipedia
+// (candidate generation) and Wikidata (type verification + alias
+// extraction). Safe for concurrent use.
 type Resolver struct {
-	wd       WikidataFetcher
-	varCache *CountryVariations
+	wd WikidataFetcher
+	wp WikipediaResolver
 }
 
-// NewResolver constructs a Resolver. varCache may be nil — in that
-// case a fresh in-memory cache is created (fine for a single worker
-// process; cross-process sharing would need pg-backing later).
-func NewResolver(wd WikidataFetcher, varCache *CountryVariations) *Resolver {
-	if varCache == nil {
-		varCache = NewCountryVariations(wd)
-	}
-	return &Resolver{wd: wd, varCache: varCache}
+// NewResolver constructs a Resolver bound to the two adapters.
+//
+// wp may be nil for callers that only intend to use Select (the
+// selection pipeline never touches Wikipedia; passing nil there keeps
+// select-focused test setups minimal). Resolve requires wp non-nil.
+func NewResolver(wd WikidataFetcher, wp WikipediaResolver) *Resolver {
+	return &Resolver{wd: wd, wp: wp}
 }
 
 // Resolve runs the appropriate branch and returns the winning QID +
 // audit fields. Errors surface as:
-//   - ErrNoMatch: pipeline ran cleanly but no candidate survived
-//     filtering. Not a bug — some vendor teams genuinely aren't in
-//     Wikidata (typically obscure cup opposition).
-//   - Other errors: transport / decode / rate-limit failures from
-//     the wikidata adapter, propagated as-is.
+//   - ErrNoMatch: pipeline ran cleanly but no candidate passed the
+//     P31 verify. Legitimate for obscure teams not on Wikipedia at all.
+//   - Other errors: transport / decode failures from the wikipedia
+//     or wikidata adapters, propagated as-is.
 func (r *Resolver) Resolve(ctx context.Context, in LookupInput) (LookupResult, error) {
 	name := strings.TrimSpace(in.CanonicalName)
 	if name == "" {
@@ -93,7 +103,7 @@ func (r *Resolver) Resolve(ctx context.Context, in LookupInput) (LookupResult, e
 	if in.IsNational {
 		return r.resolveNational(ctx, name, in.Country)
 	}
-	return r.resolveClub(ctx, name, in.Country, in.City)
+	return r.resolveClub(ctx, name, in.Country)
 }
 
 // ErrNoMatch is returned when the pipeline ran without transport
@@ -102,35 +112,8 @@ func (r *Resolver) Resolve(ctx context.Context, in LookupInput) (LookupResult, e
 // WikidataQID and can be retried next refresh cycle.
 var ErrNoMatch = fmt.Errorf("alias.Resolver: no matching Wikidata entity")
 
-// CountryVariations is an in-memory cache of country-name variations
-// derived from Wikidata's P1549 demonyms + P1448 native names for
-// each country's entity. Used by the club branch's description-
-// quality scoring: knowing spain ≈ spanish ≈ espana lets us match
-// entity descriptions like "Spanish football club based in Seville".
-//
-// Deterministic replacement for Python's LLM-generated country name
-// variations. Same input, same output, no LLM.
-//
-// Cache is keyed by lowercased country name (as it appears in the
-// API-Football vendor response). Values are lowercased + diacritic-
-// stripped variation tokens. Miss triggers a Wikidata lookup:
-// wbsearchentities for the country name → GetEntity for the top hit
-// → extract P1549 (all langs) + P1448 (all langs) → normalize.
-type CountryVariations struct {
-	wd    WikidataFetcher
-	mu    sync.RWMutex
-	cache map[string][]string // country-lowered → variations
-	// countryQID cache: some future callers might want the QID of
-	// the country entity too. Not exposed yet; keeping the field for
-	// symmetry with the fetch path.
-	qidCache map[string]string // country-lowered → country QID
-}
-
-// NewCountryVariations constructs a fresh cache bound to wd.
-func NewCountryVariations(wd WikidataFetcher) *CountryVariations {
-	return &CountryVariations{
-		wd:       wd,
-		cache:    make(map[string][]string),
-		qidCache: make(map[string]string),
-	}
-}
+// Ensure the wikidata import is still referenced (removes lint noise
+// when the whole pipeline is refactored). The alias.WikidataFetcher
+// interface consumes wikidata.Entity via GetEntity; direct usage stays
+// pointed at the concrete type.
+var _ = wikidata.Entity{}

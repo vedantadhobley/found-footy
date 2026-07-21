@@ -1,478 +1,359 @@
-// Tests for the alias-lookup pipeline. Uses a fake WikidataFetcher so
-// the domain package stays free of live Wikidata dependencies in
-// unit tests. An integration test in a separate file (skipped in
-// -short) exercises real Wikidata for a small team roster.
+// Tests for the alias-lookup pipeline. Uses fakes for both WikipediaResolver
+// and WikidataFetcher so the domain package stays free of live vendor
+// dependencies in unit tests. An integration test in a separate file
+// (skipped in -short) exercises real endpoints for a small roster.
 package alias_test
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 
 	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 	"github.com/vedantadhobley/found-footy/internal/infra/wikidata"
+	"github.com/vedantadhobley/found-footy/internal/infra/wikipedia"
 )
 
-// fakeWD is an in-memory fake for the WikidataFetcher interface.
-//
-// searchHandler receives (term, opts) and returns hits (or an error).
-// entityHandler receives a QID and returns an *Entity (or nil).
-// Empty handlers behave as "no hits" / "empty entity".
-//
-// Call counts are captured for assertions (e.g., "the resolver made
-// N SearchEntities calls").
-type fakeWD struct {
-	mu             sync.Mutex
-	searchHandler  func(term string, opts wikidata.SearchOpts) ([]wikidata.SearchHit, error)
-	entityHandler  func(qid string) (*wikidata.Entity, error)
-	// p31 maps QID → P31 type list. Nil → empty map. Used by BatchGetP31
-	// to return canned type-lists for the lookup pipeline's filter step.
-	// Tests that don't set this get an "empty types → filter drops
-	// everything" behavior, which matches ErrNoMatch in most scenarios.
-	p31            map[string][]string
-	batchP31Calls  [][]string
-	searchCalls    []string
-	entityCalls    []string
+// fakeWP is an in-memory WikipediaResolver. Hits are keyed by exact
+// search query so tests can assert both the query construction and the
+// candidate set at once.
+type fakeWP struct {
+	mu    sync.Mutex
+	hits  map[string][]wikipedia.Hit
+	err   error
+	calls []string
 }
 
-func (f *fakeWD) SearchEntities(_ context.Context, term string, opts wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
+func (f *fakeWP) SearchAndResolve(_ context.Context, query string, _ wikipedia.SearchOpts) ([]wikipedia.Hit, error) {
 	f.mu.Lock()
-	f.searchCalls = append(f.searchCalls, term)
-	handler := f.searchHandler
+	f.calls = append(f.calls, query)
 	f.mu.Unlock()
-	if handler == nil {
-		return nil, nil
+	if f.err != nil {
+		return nil, f.err
 	}
-	return handler(term, opts)
+	return f.hits[query], nil
 }
 
-func (f *fakeWD) GetEntity(_ context.Context, qid string) (*wikidata.Entity, error) {
+// fakeWDLookup implements the reduced WikidataFetcher interface used by
+// the lookup pipeline (GetEntity + BatchGetP31). GetEntity is present
+// to satisfy the interface but the lookup pipeline never calls it — the
+// tests below panic in it defensively.
+type fakeWDLookup struct {
+	mu       sync.Mutex
+	p31      map[string][]string
+	p31Err   error
+	p31Calls [][]string
+}
+
+func (f *fakeWDLookup) BatchGetP31(_ context.Context, qids []string) (map[string][]string, error) {
 	f.mu.Lock()
-	f.entityCalls = append(f.entityCalls, qid)
-	handler := f.entityHandler
+	f.p31Calls = append(f.p31Calls, append([]string(nil), qids...))
 	f.mu.Unlock()
-	if handler == nil {
-		return nil, nil
+	if f.p31Err != nil {
+		return nil, f.p31Err
 	}
-	return handler(qid)
-}
-
-func (f *fakeWD) BatchGetP31(_ context.Context, qids []string) (map[string][]string, error) {
-	f.mu.Lock()
-	f.batchP31Calls = append(f.batchP31Calls, append([]string(nil), qids...))
-	table := f.p31
-	f.mu.Unlock()
 	out := make(map[string][]string, len(qids))
-	if table == nil {
-		return out, nil
-	}
 	for _, q := range qids {
-		if t, ok := table[q]; ok {
+		if t, ok := f.p31[q]; ok {
 			out[q] = append([]string(nil), t...)
 		}
 	}
 	return out, nil
 }
 
-func (f *fakeWD) searchCallCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.searchCalls)
+func (f *fakeWDLookup) GetEntity(_ context.Context, qid string) (*wikidata.Entity, error) {
+	panic(fmt.Sprintf("fakeWDLookup.GetEntity(%s): lookup pipeline never calls GetEntity — test scope drift", qid))
 }
 
 // Resolve fast-fails on empty CanonicalName.
 func TestResolver_Resolve_EmptyName(t *testing.T) {
-	r := alias.NewResolver(&fakeWD{}, nil)
+	r := alias.NewResolver(&fakeWDLookup{}, &fakeWP{})
 	_, err := r.Resolve(context.Background(), alias.LookupInput{CanonicalName: "   "})
 	if err == nil {
 		t.Fatal("expected error for empty CanonicalName, got nil")
 	}
 }
 
-// Resolve returns ErrNoMatch when every variant search returns no
-// candidates that pass filtering.
-func TestResolver_Resolve_NoCandidates_ReturnsErrNoMatch(t *testing.T) {
-	fake := &fakeWD{
-		searchHandler: func(_ string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
-			return nil, nil
+// Club branch happy path: Wikipedia returns OGC Nice at top, P31
+// verify passes, resolver returns Q185163.
+func TestResolver_ClubBranch_TopHitWithValidP31(t *testing.T) {
+	wp := &fakeWP{
+		hits: map[string][]wikipedia.Hit{
+			"Nice France football club": {
+				{Title: "OGC Nice", WikidataQID: "Q185163", Index: 1},
+				{Title: "2016 Nice truck attack", WikidataQID: "Q25893254", Index: 2},
+			},
 		},
 	}
-	r := alias.NewResolver(fake, nil)
-	_, err := r.Resolve(context.Background(), alias.LookupInput{
-		CanonicalName: "Some Obscure Club",
-		Country:       strPtr("Someplace"),
-		City:          strPtr("Somewhere"),
-	})
-	if !errors.Is(err, alias.ErrNoMatch) {
-		t.Fatalf("err = %v, want ErrNoMatch", err)
-	}
-}
-
-// Club branch: constructs the full 9-variant search set. Candidates
-// are collected across variants, then P31-filtered, then scored;
-// city-match short-circuit fires on the first survivor with score
-// ≥200 (avoids scoring the rest).
-func TestResolver_ClubBranch_CityMatchShortCircuits(t *testing.T) {
-	fake := &fakeWD{
-		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
-			return []wikidata.SearchHit{
-				{
-					ID:          "Q1130849",
-					Label:       "Liverpool F.C.",
-					Description: "association football club in Liverpool, England",
-				},
-			}, nil
-		},
-		// P31 accept: Q476028 (association football club) puts Liverpool
-		// through the type filter.
+	wd := &fakeWDLookup{
 		p31: map[string][]string{
-			"Q1130849": {"Q476028"},
+			"Q185163": {"Q476028"},  // association football club — accepts
+			"Q25893254": {"Q7860"},  // attack event — not in accept set
 		},
 	}
-	r := alias.NewResolver(fake, nil)
+	r := alias.NewResolver(wd, wp)
 	got, err := r.Resolve(context.Background(), alias.LookupInput{
-		CanonicalName: "Liverpool",
-		Country:       strPtr("England"),
-		City:          strPtr("Liverpool"),
-		IsNational:    false,
+		CanonicalName: "Nice",
+		Country:       strPtr("France"),
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if got.QID != "Q1130849" {
-		t.Errorf("QID = %q, want Q1130849", got.QID)
+	if got.QID != "Q185163" {
+		t.Errorf("QID = %q; want Q185163", got.QID)
 	}
-	if got.Score < 200 {
-		t.Errorf("Score = %d, want ≥200 (city-match short-circuit)", got.Score)
+	if got.Label != "OGC Nice" {
+		t.Errorf("Label = %q; want 'OGC Nice' (Wikipedia article title)", got.Label)
 	}
-	// One batch P31 call fires per Resolve (over all deduped candidates).
-	if len(fake.batchP31Calls) != 1 {
-		t.Errorf("BatchGetP31 called %d times; want 1 (single batch across variants)", len(fake.batchP31Calls))
-	}
-}
-
-// Club branch: candidates without football/soccer in description
-// get filtered.
-func TestResolver_ClubBranch_FiltersNonFootballCandidates(t *testing.T) {
-	fake := &fakeWD{
-		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
-			// Return candidates whose descriptions contain neither
-			// "football" nor "soccer" nor "multisport".
-			return []wikidata.SearchHit{
-				{ID: "Q1", Label: "Something", Description: "a book about sports"},
-				{ID: "Q2", Label: "Other", Description: "a movie"},
-				{ID: "Q3", Label: "Third", Description: "a person"},
-			}, nil
-		},
-	}
-	r := alias.NewResolver(fake, nil)
-	_, err := r.Resolve(context.Background(), alias.LookupInput{CanonicalName: "Anonymous"})
-	if !errors.Is(err, alias.ErrNoMatch) {
-		t.Errorf("err = %v, want ErrNoMatch (all candidates non-football)", err)
+	if len(wp.calls) != 1 || wp.calls[0] != "Nice France football club" {
+		t.Errorf("wikipedia calls = %v; want single 'Nice France football club'", wp.calls)
 	}
 }
 
-// Club branch: women's / reserve / youth teams filtered.
-func TestResolver_ClubBranch_FiltersWomensAndReserveTeams(t *testing.T) {
-	fake := &fakeWD{
-		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
-			return []wikidata.SearchHit{
-				{ID: "Q1", Label: "Real Madrid Femenino", Description: "women's football club in Madrid"},
-				{ID: "Q2", Label: "Real Madrid Castilla", Description: "reserve football team of Real Madrid"},
-				{ID: "Q3", Label: "Real Madrid U-19", Description: "youth football team"},
-			}, nil
+// P31 filter skips over a candidate that Wikipedia ranked at top but
+// doesn't have an acceptable type. This is the marquee AC Milan / Milan
+// TV regression case: Wikipedia might rank a TV channel article first,
+// but P31 filter drops it and we take the next surviving hit.
+func TestResolver_ClubBranch_P31RejectsWrongTypeAtTop(t *testing.T) {
+	wp := &fakeWP{
+		hits: map[string][]wikipedia.Hit{
+			"AC Milan Italy football club": {
+				{Title: "Milan TV", WikidataQID: "Q2478275", Index: 1},
+				{Title: "AC Milan", WikidataQID: "Q1543", Index: 2},
+			},
 		},
 	}
-	r := alias.NewResolver(fake, nil)
-	_, err := r.Resolve(context.Background(), alias.LookupInput{
-		CanonicalName: "Real Madrid",
-		Country:       strPtr("Spain"),
-	})
-	if !errors.Is(err, alias.ErrNoMatch) {
-		t.Errorf("err = %v, want ErrNoMatch (all candidates women/reserve/youth)", err)
-	}
-}
-
-// Club branch: B-team labels (Real Madrid B) filtered by label
-// suffix.
-func TestResolver_ClubBranch_FiltersBTeamLabels(t *testing.T) {
-	fake := &fakeWD{
-		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
-			return []wikidata.SearchHit{
-				{ID: "Q1", Label: "Real Madrid B", Description: "association football club in Madrid, Spain"},
-			}, nil
-		},
-	}
-	r := alias.NewResolver(fake, nil)
-	_, err := r.Resolve(context.Background(), alias.LookupInput{CanonicalName: "Real Madrid"})
-	if !errors.Is(err, alias.ErrNoMatch) {
-		t.Errorf("err = %v, want ErrNoMatch (B-team label)", err)
-	}
-}
-
-// P31 filter: even when a candidate's description contains "football",
-// a non-club P31 (TV channel, stadium, etc.) drops it. This is the
-// marquee AC Milan / Milan TV regression case — Q2478275 (Milan TV)
-// has description "subscription-based television channel operated by
-// Italian football club AC Milan" and would pass the old text-based
-// isFootball check, but its P31 is Q2001305 (television channel) not
-// Q476028 (association football club).
-func TestResolver_ClubBranch_P31RejectsTelevisionChannel(t *testing.T) {
-	fake := &fakeWD{
-		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
-			return []wikidata.SearchHit{
-				{ID: "Q1543", Label: "AC Milan", Description: "football club in Milan, Italy"},
-				{ID: "Q2478275", Label: "Milan TV", Description: "subscription-based television channel operated by Italian football club AC Milan"},
-			}, nil
-		},
+	wd := &fakeWDLookup{
 		p31: map[string][]string{
+			"Q2478275": {"Q2001305"},              // TV channel — no accept
 			"Q1543":    {"Q476028", "Q103229495"}, // association football club + men's team
-			"Q2478275": {"Q2001305", "Q561068"},   // television channel + specialty channel — no accept type
 		},
 	}
-	r := alias.NewResolver(fake, nil)
+	r := alias.NewResolver(wd, wp)
 	got, err := r.Resolve(context.Background(), alias.LookupInput{
 		CanonicalName: "AC Milan",
 		Country:       strPtr("Italy"),
-		City:          strPtr("Milano"),
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if got.QID != "Q1543" {
-		t.Errorf("QID = %q, want Q1543 (Milan TV must be P31-rejected)", got.QID)
+		t.Errorf("QID = %q; want Q1543 (Milan TV must be P31-rejected)", got.QID)
 	}
 }
 
-// P31 reject-set: candidates whose P31 includes reserve-team
-// (Q2412834) or women's-club (Q51481377) types are dropped even when
-// they ALSO have an accept type. Verifies the reject-set discipline
-// against Milan Futuro-style entities.
-func TestResolver_ClubBranch_P31RejectsReserveTeam(t *testing.T) {
-	fake := &fakeWD{
-		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
-			return []wikidata.SearchHit{
-				{ID: "Q1543", Label: "AC Milan", Description: "football club in Milan, Italy"},
-				{ID: "Q126923253", Label: "Milan Futuro", Description: "senior side of AC Milan's reserves"},
-			}, nil
-		},
-		p31: map[string][]string{
-			"Q1543":      {"Q476028"},              // accept
-			"Q126923253": {"Q2412834", "Q476028"}, // accept + reject → reject wins
+// P31 reject-set: even when a candidate has an accept type, ANY reject
+// type drops it. Mimics Milan Futuro (reserve team + football club).
+func TestResolver_ClubBranch_P31RejectsReserveEvenWithAcceptType(t *testing.T) {
+	wp := &fakeWP{
+		hits: map[string][]wikipedia.Hit{
+			"AC Milan Italy football club": {
+				{Title: "Milan Futuro", WikidataQID: "Q126923253", Index: 1},
+				{Title: "AC Milan", WikidataQID: "Q1543", Index: 2},
+			},
 		},
 	}
-	r := alias.NewResolver(fake, nil)
+	wd := &fakeWDLookup{
+		p31: map[string][]string{
+			"Q126923253": {"Q2412834", "Q476028"}, // reserve + club — reject wins
+			"Q1543":      {"Q476028"},              // accept
+		},
+	}
+	r := alias.NewResolver(wd, wp)
 	got, err := r.Resolve(context.Background(), alias.LookupInput{
 		CanonicalName: "AC Milan",
-		City:          strPtr("Milano"),
+		Country:       strPtr("Italy"),
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if got.QID != "Q1543" {
-		t.Errorf("QID = %q, want Q1543 (reserve team must be P31-rejected)", got.QID)
+		t.Errorf("QID = %q; want Q1543 (Milan Futuro must be reject-filtered)", got.QID)
 	}
 }
 
-// Club branch: with no city match but a country match, highest
-// scoring candidate wins (via description-length base score + country
-// bonus). Requires all variants to run since no short-circuit fires.
-func TestResolver_ClubBranch_CountryMatchScoring(t *testing.T) {
-	fake := &fakeWD{
-		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
-			// Return two candidates on every variant: one with a
-			// Spanish-country match in its description, one without.
-			return []wikidata.SearchHit{
-				{ID: "Q_short", Label: "X FC", Description: "association football club"},
-				{ID: "Q_long", Label: "X FC", Description: "Spanish association football club based in a Spanish city"},
-			}, nil
-		},
-		p31: map[string][]string{
-			"Q_short": {"Q476028"},
-			"Q_long":  {"Q476028"},
+// Nil country falls back to the bare `{name} football club` template.
+// Works but less reliable — kept as a defensive fallback in the code.
+func TestResolver_ClubBranch_NoCountry_UsesBareTemplate(t *testing.T) {
+	wp := &fakeWP{
+		hits: map[string][]wikipedia.Hit{
+			"Barcelona football club": {
+				{Title: "FC Barcelona", WikidataQID: "Q7156", Index: 1},
+			},
 		},
 	}
-	r := alias.NewResolver(fake, nil)
+	wd := &fakeWDLookup{
+		p31: map[string][]string{"Q7156": {"Q103229495"}}, // men's association football team
+	}
+	r := alias.NewResolver(wd, wp)
+	got, err := r.Resolve(context.Background(), alias.LookupInput{CanonicalName: "Barcelona"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.QID != "Q7156" {
+		t.Errorf("QID = %q; want Q7156", got.QID)
+	}
+	if wp.calls[0] != "Barcelona football club" {
+		t.Errorf("query = %q; want 'Barcelona football club' (nil-country fallback)", wp.calls[0])
+	}
+}
+
+// Hits without a wikibase_item (article with no Wikidata sitelink) are
+// silently skipped — they can't be P31-verified anyway.
+func TestResolver_ClubBranch_HitWithoutQIDSkipped(t *testing.T) {
+	wp := &fakeWP{
+		hits: map[string][]wikipedia.Hit{
+			"Foo France football club": {
+				{Title: "Some Article", WikidataQID: "", Index: 1},
+				{Title: "Foo FC", WikidataQID: "Q_valid", Index: 2},
+			},
+		},
+	}
+	wd := &fakeWDLookup{
+		p31: map[string][]string{"Q_valid": {"Q476028"}},
+	}
+	r := alias.NewResolver(wd, wp)
 	got, err := r.Resolve(context.Background(), alias.LookupInput{
-		CanonicalName: "X",
-		Country:       strPtr("Spain"),
+		CanonicalName: "Foo",
+		Country:       strPtr("France"),
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if got.QID != "Q_long" {
-		t.Errorf("QID = %q, want Q_long (longer description + country match)", got.QID)
+	if got.QID != "Q_valid" {
+		t.Errorf("QID = %q; want Q_valid (empty-QID hit must be skipped)", got.QID)
 	}
 }
 
-// National branch: uses the 3 variants; candidates are collected
-// across all variants, then batch-P31-filtered, then first survivor
-// wins (national naming is unambiguous enough that further scoring
-// adds noise).
-func TestResolver_NationalBranch_FirstValidWins(t *testing.T) {
-	fake := &fakeWD{
-		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
-			return []wikidata.SearchHit{
-				{
-					ID:          "Q47774",
-					Label:       "France national football team",
-					Description: "men's national association football team representing France",
-				},
-			}, nil
-		},
-		p31: map[string][]string{
-			// Q135408445 = men's national association football team
-			"Q47774": {"Q135408445"},
+// SPARQL failure falls back to taking Wikipedia's top hit unconditionally
+// rather than cascading to NoMatch. Wikipedia's ranking is good enough
+// that even without type verification the top hit is usually right;
+// preferring a possible wrong answer to a hard failure keeps daily
+// resolution working through vendor blips.
+func TestResolver_ClubBranch_SPARQLFailureFallsBackToTopHit(t *testing.T) {
+	wp := &fakeWP{
+		hits: map[string][]wikipedia.Hit{
+			"Nice France football club": {
+				{Title: "OGC Nice", WikidataQID: "Q185163", Index: 1},
+			},
 		},
 	}
-	r := alias.NewResolver(fake, nil)
+	wd := &fakeWDLookup{p31Err: errors.New("SPARQL blip")}
+	r := alias.NewResolver(wd, wp)
+	got, err := r.Resolve(context.Background(), alias.LookupInput{
+		CanonicalName: "Nice",
+		Country:       strPtr("France"),
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.QID != "Q185163" {
+		t.Errorf("QID = %q; want Q185163 (SPARQL blip → take Wikipedia's top hit)", got.QID)
+	}
+}
+
+// Wikipedia returning zero hits surfaces as ErrNoMatch — the caller
+// treats this as "team unresolvable; retry next cycle".
+func TestResolver_ClubBranch_NoHits_ErrNoMatch(t *testing.T) {
+	wp := &fakeWP{hits: map[string][]wikipedia.Hit{}}
+	wd := &fakeWDLookup{}
+	r := alias.NewResolver(wd, wp)
+	_, err := r.Resolve(context.Background(), alias.LookupInput{
+		CanonicalName: "Nothing",
+		Country:       strPtr("Nowhere"),
+	})
+	if !errors.Is(err, alias.ErrNoMatch) {
+		t.Errorf("err = %v; want ErrNoMatch", err)
+	}
+}
+
+// National branch happy path: Wikipedia article title convention lets
+// `{country} men's national football team` resolve near-deterministically.
+func TestResolver_NationalBranch_HappyPath(t *testing.T) {
+	wp := &fakeWP{
+		hits: map[string][]wikipedia.Hit{
+			"France men's national football team": {
+				{Title: "France men's national football team", WikidataQID: "Q47774", Index: 1},
+			},
+		},
+	}
+	wd := &fakeWDLookup{
+		p31: map[string][]string{"Q47774": {"Q135408445"}}, // men's national football team
+	}
+	r := alias.NewResolver(wd, wp)
 	got, err := r.Resolve(context.Background(), alias.LookupInput{
 		CanonicalName: "France",
+		Country:       strPtr("France"),
 		IsNational:    true,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if got.QID != "Q47774" {
-		t.Errorf("QID = %q, want Q47774", got.QID)
-	}
-	// National branch runs all 3 variants + 1 batch P31 (candidates
-	// deduped by QID across variants).
-	if len(fake.batchP31Calls) != 1 {
-		t.Errorf("BatchGetP31 called %d times; want 1 (single batch across variants)", len(fake.batchP31Calls))
+		t.Errorf("QID = %q; want Q47774", got.QID)
 	}
 }
 
-// National branch: women's national team filtered out via P31 reject
-// (Q6997908 = women's national football team); men's team resolved
-// instead.
-func TestResolver_NationalBranch_FiltersWomensTeam(t *testing.T) {
-	callIdx := 0
-	fake := &fakeWD{
-		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
-			callIdx++
-			switch callIdx {
-			case 1:
-				return []wikidata.SearchHit{
-					// Description drops "women"/"femen" keywords so the
-					// pre-P31 skip-list doesn't catch this — pure P31
-					// reject-set test.
-					{ID: "Q_ladies", Label: "France ladies national football team", Description: "national association football team representing France (ladies)"},
-				}, nil
-			default:
-				return []wikidata.SearchHit{
-					{ID: "Q_men", Label: "France men's national football team", Description: "national football team representing France"},
-				}, nil
-			}
-		},
-		p31: map[string][]string{
-			"Q_ladies": {"Q6997908"},  // women's national → reject
-			"Q_men":    {"Q135408445"}, // men's national → accept
+// USA gets substituted to "United States" per Wikipedia's article title
+// convention ("United States men's national soccer team" etc.).
+func TestResolver_NationalBranch_USAExpanded(t *testing.T) {
+	wp := &fakeWP{
+		hits: map[string][]wikipedia.Hit{
+			"United States men's national football team": {
+				{Title: "United States men's national soccer team", WikidataQID: "Q_us_national", Index: 1},
+			},
 		},
 	}
-	r := alias.NewResolver(fake, nil)
+	wd := &fakeWDLookup{
+		p31: map[string][]string{"Q_us_national": {"Q135408445"}},
+	}
+	r := alias.NewResolver(wd, wp)
 	got, err := r.Resolve(context.Background(), alias.LookupInput{
-		CanonicalName: "France",
-		IsNational:    true,
-	})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if got.QID != "Q_men" {
-		t.Errorf("QID = %q, want Q_men (women's P31-rejected)", got.QID)
-	}
-}
-
-// National branch: bare "USA" gets substituted to "United States" in
-// search variants (Wikidata quirk — the US team is indexed under the
-// long form).
-func TestResolver_NationalBranch_USAExpandedToUnitedStates(t *testing.T) {
-	fake := &fakeWD{
-		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
-			return []wikidata.SearchHit{
-				{
-					ID:          "Q164134",
-					Label:       "United States men's national soccer team",
-					Description: "men's national association football (soccer) team representing the USA",
-				},
-			}, nil
-		},
-		p31: map[string][]string{
-			"Q164134": {"Q135408445"},
-		},
-	}
-	r := alias.NewResolver(fake, nil)
-	_, err := r.Resolve(context.Background(), alias.LookupInput{
 		CanonicalName: "USA",
 		IsNational:    true,
 	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	// Sanity: first search term should NOT be literal "USA national ..."
-	// (the substitution should have happened).
-	if !strings.Contains(fake.searchCalls[0], "United States") {
-		t.Errorf("first search term = %q, expected substitution to 'United States ...'", fake.searchCalls[0])
+	if got.QID != "Q_us_national" {
+		t.Errorf("QID = %q; want Q_us_national", got.QID)
+	}
+	if wp.calls[0] != "United States men's national football team" {
+		t.Errorf("query = %q; want USA → 'United States' substituted", wp.calls[0])
 	}
 }
 
-// CountryVariations cache: hits Wikidata only on cache miss.
-func TestCountryVariations_Caches(t *testing.T) {
-	entityCalls := 0
-	fake := &fakeWD{
-		searchHandler: func(term string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
-			return []wikidata.SearchHit{
-				{ID: "Q29", Label: "Spain", Description: "country in southwestern Europe"},
-			}, nil
-		},
-		entityHandler: func(qid string) (*wikidata.Entity, error) {
-			entityCalls++
-			// Return an empty entity — cache should still populate.
-			return &wikidata.Entity{QID: qid}, nil
+// National branch: Country takes precedence over name (real ingest often
+// has CanonicalName == team.name == 'England' both — but the country
+// field is the authoritative signal). Also tests women's-team rejection
+// via P31 reject-set.
+func TestResolver_NationalBranch_P31RejectsWomensNational(t *testing.T) {
+	wp := &fakeWP{
+		hits: map[string][]wikipedia.Hit{
+			"England men's national football team": {
+				{Title: "England women's national football team", WikidataQID: "Q_eng_w", Index: 1},
+				{Title: "England men's national football team", WikidataQID: "Q47762", Index: 2},
+			},
 		},
 	}
-	cv := alias.NewCountryVariations(fake)
-	ctx := context.Background()
-
-	first := cv.For(ctx, "Spain")
-	second := cv.For(ctx, "Spain")
-	// Both calls return same variations (from cache).
-	if len(first) == 0 {
-		t.Fatalf("first call returned no variations")
-	}
-	if fmt.Sprint(first) != fmt.Sprint(second) {
-		t.Errorf("cached call returned different variations: first=%v second=%v", first, second)
-	}
-	// GetEntity only called once — second is a cache hit.
-	if entityCalls != 1 {
-		t.Errorf("GetEntity called %d times, want 1 (cache hit on second)", entityCalls)
-	}
-}
-
-// CountryVariations always includes the country name itself as a
-// variation — even if Wikidata is down.
-func TestCountryVariations_FallsBackToCountryNameOnWikidataFailure(t *testing.T) {
-	fake := &fakeWD{
-		searchHandler: func(_ string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
-			return nil, errors.New("wikidata down")
+	wd := &fakeWDLookup{
+		p31: map[string][]string{
+			"Q_eng_w": {"Q6997908"},   // women's national → reject
+			"Q47762":  {"Q135408445"}, // men's national → accept
 		},
 	}
-	cv := alias.NewCountryVariations(fake)
-	got := cv.For(context.Background(), "Spain")
-	if len(got) == 0 {
-		t.Fatal("expected at least the country name itself as a fallback variation")
+	r := alias.NewResolver(wd, wp)
+	got, err := r.Resolve(context.Background(), alias.LookupInput{
+		CanonicalName: "England",
+		Country:       strPtr("England"),
+		IsNational:    true,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
 	}
-	found := false
-	for _, v := range got {
-		if v == "spain" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("fallback variations = %v, missing 'spain'", got)
+	if got.QID != "Q47762" {
+		t.Errorf("QID = %q; want Q47762 (women's P31-rejected)", got.QID)
 	}
 }

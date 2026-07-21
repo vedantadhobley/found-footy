@@ -16,18 +16,16 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/domain/team"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	"github.com/vedantadhobley/found-footy/internal/infra/wikidata"
+	"github.com/vedantadhobley/found-footy/internal/infra/wikipedia"
 )
 
-// stubWD is a minimal alias.WikidataFetcher — always empty. Lets us
-// exercise ResolveAliasesForTeams end-to-end (including the GetTeamProfile
-// enrichment call and the vendor-field upsert path) without depending on
-// live Wikidata. Wikidata-side outcomes end up as NoMatch, which is fine —
+// stubWD is a minimal alias.WikidataFetcher — always empty. Combined
+// with stubWP (below), lets us exercise ResolveAliasesForTeams
+// end-to-end (including the GetTeamProfile enrichment call and the
+// vendor-field upsert path) without depending on live Wikidata or
+// Wikipedia. Wikidata-side outcomes end up as NoMatch, which is fine —
 // this test asserts on the enrichment side.
 type stubWD struct{}
-
-func (stubWD) SearchEntities(_ context.Context, _ string, _ wikidata.SearchOpts) ([]wikidata.SearchHit, error) {
-	return nil, nil
-}
 
 func (stubWD) GetEntity(_ context.Context, qid string) (*wikidata.Entity, error) {
 	return nil, fmt.Errorf("stubWD.GetEntity(%s): no entity", qid)
@@ -35,6 +33,16 @@ func (stubWD) GetEntity(_ context.Context, qid string) (*wikidata.Entity, error)
 
 func (stubWD) BatchGetP31(_ context.Context, _ []string) (map[string][]string, error) {
 	return map[string][]string{}, nil
+}
+
+// stubWP is a minimal alias.WikipediaResolver — always empty. Same
+// role as stubWD for the Wikipedia side of the lookup pipeline. Every
+// Resolve call ends in NoMatch, exercising the enrichment path without
+// depending on live vendor endpoints.
+type stubWP struct{}
+
+func (stubWP) SearchAndResolve(_ context.Context, _ string, _ wikipedia.SearchOpts) ([]wikipedia.Hit, error) {
+	return nil, nil
 }
 
 // ── fakes ──────────────────────────────────────────────────────
@@ -811,7 +819,7 @@ func TestResolveAliasesForTeams_EnrichesFromTeamProfile(t *testing.T) {
 	}
 	aRepo := newFakeAliasRepo()
 	a := newActivities(fetcher, newFakeFixtureRepo(), aRepo, now)
-	a.AliasResolver = alias.NewResolver(stubWD{}, nil)
+	a.AliasResolver = alias.NewResolver(stubWD{}, stubWP{})
 	// Zero throttle keeps the test fast.
 	a.AliasThrottle = 0
 
@@ -896,7 +904,7 @@ func TestResolveAliasesForTeams_ProfileFetchSoftFails(t *testing.T) {
 	}
 	aRepo := newFakeAliasRepo()
 	a := newActivities(fetcher, newFakeFixtureRepo(), aRepo, now)
-	a.AliasResolver = alias.NewResolver(stubWD{}, nil)
+	a.AliasResolver = alias.NewResolver(stubWD{}, stubWP{})
 	a.AliasThrottle = 0
 
 	teams := []TeamRef{
@@ -942,7 +950,7 @@ func TestResolveAliasesForTeams_CacheHitSkipsProfileFetch(t *testing.T) {
 	}
 
 	a := newActivities(fetcher, newFakeFixtureRepo(), aRepo, now)
-	a.AliasResolver = alias.NewResolver(stubWD{}, nil)
+	a.AliasResolver = alias.NewResolver(stubWD{}, stubWP{})
 	a.AliasThrottle = 0
 
 	out, err := a.ResolveAliasesForTeams(context.Background(), ResolveAliasesForTeamsInput{

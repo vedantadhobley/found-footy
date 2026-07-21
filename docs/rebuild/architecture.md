@@ -220,8 +220,10 @@ Output is sorted for stable pg storage + human-diffable rows.
 cache-hits (row has `wikidata_qid` set) → for each miss,
 `AliasResolver.Resolve` (fuzzy lookup) → `AliasResolver.Select`
 (entity fetch + selection) → `AliasRepo.UpsertResolution`. Sequential
-with 500ms throttle between teams (respects Wikidata's
-wbsearchentities rate-limit, ~50 anonymous req/window). Soft-fail
+with 500ms throttle between teams (belt-and-braces against vendor
+rate limits — Wikipedia's CirrusSearch handles 200 req/s per IP,
+Wikidata SPARQL is friendlier, but the throttle keeps a runaway
+loop from ever tripping either). Soft-fail
 per team — a Wikidata hiccup leaves the placeholder row and gets
 retried on the next Ingest cycle. Mirrors Python's per-day-fixture-
 team pattern (workflow.execute_activity in a loop; not all tracked
@@ -243,60 +245,72 @@ Wikidata pipeline. Ports Python's `get_team_info` call in
 team lifetime (cache-hits skip both this call and Wikidata). Soft-fail
 per team — profile fetch error keeps the TeamRef fallback values.
 
-**Lookup pipeline (2026-07-20, task #133):** The name → Wikidata QID
-resolution step. `Resolver` type composes a `WikidataFetcher`
-interface with a `CountryVariations` cache (both injected — domain
-stays pure Go). Two branches on `LookupInput.IsNational`:
+**Lookup pipeline (2026-07-21, task #147):** The name → Wikidata QID
+resolution step. `Resolver` composes a `WikipediaResolver` interface
+(CirrusSearch full-text candidate generation) with a
+`WikidataFetcher` interface (P31 verification + alias extraction) —
+both injected so the domain stays pure Go. Two branches on
+`LookupInput.IsNational`:
 
-- Clubs (`lookup_club.go`): 9 fuzzy `wbsearchentities` search
-  variants collect candidates, one SPARQL P31 batch query filters
-  them by Wikidata's own ontology (accept: Q476028 association
-  football club, Q103229495 men's association football team; reject:
-  Q2412834 reserve team, Q51481377 women's association football
-  club), then description-scoring against per-country variations
-  derived from Wikidata P1549 + P1448 ranks survivors. Ports Python's
-  rag.py fuzzy stack. Perfect city match short-circuits after P31.
-  Description-keyword pre-skip catches women/reserve/youth/futsal
-  label variants P31 can miss.
-- Nationals (`lookup_national.go`): 3 variants collect candidates,
-  same P31 batch pattern (accept: Q135408445 men's national
-  association football team, Q6979593 legacy national football team;
-  reject: Q6997908 women's national football team), first survivor
-  wins. USA gets substituted to "United States" per Wikidata's index
-  convention.
+- Clubs (`lookup_club.go`): ONE Wikipedia CirrusSearch query with
+  template `{name} {country} football club` → hits with Wikidata
+  QIDs (extracted from `pageprops.wikibase_item`) → ONE SPARQL P31
+  batch verify against Wikidata's ontology (accept: Q476028
+  association football club, Q103229495 men's association football
+  team; reject: Q2412834 reserve team, Q51481377 women's football
+  club) → first Wikipedia-ranked survivor wins. 2 HTTP calls per
+  cache-miss team.
+- Nationals (`lookup_national.go`): same shape, query is `{country}
+  men's national football team` (Wikipedia's article-title convention
+  makes this near-deterministic). P31 accept set adds Q135408445
+  men's national football team and legacy Q6979593; reject Q6997908
+  women's national. USA substituted to "United States" per Wikipedia
+  article-title convention.
 
-`ErrNoMatch` when no candidate survives filtering — legitimate
-outcome for obscure teams not in Wikidata; not a bug.
+Fallback: on SPARQL failure the resolver takes Wikipedia's top hit
+unconditionally rather than cascading to NoMatch. CirrusSearch's
+BM25 + field-boosted ranking is generally good enough that even
+without type verification the top hit is right; graceful degradation
+beats a whole-roster miss during vendor blips.
 
-**P31 batch verification (2026-07-20, task #143):** Replaces the
-brittle description-contains-"football" heuristic that let entities
-like Milan TV (Q2478275, a television channel) pass as an AC Milan
-match. `wikidata.BatchGetP31([qids])` sends ONE SPARQL query
-(`SELECT ?item ?type WHERE { VALUES ?item { … } ?item wdt:P31 ?type }`)
-and returns QID → P31 type list. Cost: 1 extra HTTP per Resolve call.
-Structural type check replaces text heuristics — TV channels,
-stadiums, museums, disambiguation pages, supporters' associations,
-match instances (Q109623729 assn. football match) all get dropped
-even when their descriptions happen to contain "football". Wikidata
-SPARQL rate limits are much friendlier than wbsearchentities'
-anonymous burst window.
+`ErrNoMatch` when Wikipedia returns zero hits (or zero with valid
+`wikibase_item`) — legitimate for obscure teams not on Wikipedia,
+not a bug. In practice 38 of 38 tracked-league teams resolve on the
+2026-04-26 dev roster.
+
+**P31 batch verification (2026-07-20, task #143):** `wikidata.BatchGetP31([qids])`
+sends ONE SPARQL query (`SELECT ?item ?type WHERE { VALUES ?item { … } ?item wdt:P31 ?type }`)
+and returns QID → P31 type list. Structural type check replaces the
+earlier text heuristics — TV channels, stadiums, museums, disambiguation
+pages, supporters' associations, match instances all get dropped even
+when their descriptions happen to contain "football".
+
+**Why Wikipedia + Wikidata split (design ref
+[`proposals/alias-entity-resolution.md`](./proposals/alias-entity-resolution.md)):**
+Wikidata's `wbsearchentities` is a label + alias prefix index — misses
+entities whose mention doesn't share a prefix with the canonical label
+(Nice ≠ OGC Nice's prefix). Wikipedia's CirrusSearch (ElasticSearch
+BM25 over article body) finds them via context-augmented queries.
+Wikipedia articles carry `pageprops.wikibase_item` → the Wikidata QID
+bridges cleanly back to the structured KB for aliases, P31, and
+demonyms. **Wikipedia is the entity resolver; Wikidata is the alias
+source.**
+
+Adapter surface consumed by the Resolver:
+- `wikipedia.SearchAndResolve(query, opts)` — one HTTP round-trip
+  (`list=search` + `generator=search` + `prop=pageprops` composed)
+  returning `[]Hit{Title, WikidataQID, Index}`. `internal/infra/wikipedia/`.
+- `wikidata.BatchGetP31(qids)` — one SPARQL query per Resolve.
+- `wikidata.GetEntity(qid)` — used by the SELECT phase for alias
+  extraction (unchanged from earlier).
 
 Shared word-processing in `text.go`: NFD normalize, strip diacritics,
 `ß→ss`, split on whitespace/dashes/slashes, strip periods/commas/
 apostrophes, lowercase, drop ≤2 char / all-digit / CamelCase-concat.
-Same rules the (upcoming task #134) selection pipeline will use.
-
-Wikidata adapter added two methods for #133 (both used by #134 as
-well): `SearchEntities` (wraps `wbsearchentities`) and `GetEntity`
-(wraps `Special:EntityData/{QID}.json` with typed accessor methods
-for `LabelEn`, `AliasesByLang`, `NicknamesP1449`, `DemonymsP1549`,
-`NativeNamesP1448`, `FirstClaimQID`). `WWWHost` config field added
-so tests can point the MediaWiki path at a mock server; prod default
-is `https://www.wikidata.org`.
 
 Integration test in `lookup_integration_test.go` verifies real
-Wikidata resolutions for 4 teams (Liverpool, Man United, France,
-Brazil) — skipped in `-short`, passes in ~1s against live Wikidata.
+Wikipedia + Wikidata resolutions for 4 teams (Liverpool, Man United,
+France, Brazil) — skipped in `-short`.
 
 ## Adapters — as-shipped template
 
