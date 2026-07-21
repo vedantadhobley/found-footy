@@ -132,6 +132,59 @@ func extractSources(ent entityLike, canonicalName string) selectionSources {
 			}
 		}
 	}
+
+	// Acronym rescue for English aliases stored without a separator.
+	// Wikidata's English alias for PSG is "PSGFC" — tokenized as the
+	// single token "psgfc" because there's no whitespace or dash to
+	// split on. Fans use "PSG" as the primary handle, and Wikidata's
+	// Italian alias "PSG F.C." tokenizes to include the standalone
+	// "psg".
+	//
+	// Rescue strategy: augment aliases.en with the implicit prefix
+	// ONLY IF that prefix already exists as a token in some other
+	// language's aliases/labels. This turns the rule from "invent a
+	// token by pattern" into "surface an implicit English token that
+	// Wikidata already has elsewhere in some other language but
+	// happened to encode without a separator in English."
+	//
+	// The "must exist elsewhere" gate is load-bearing. Without it the
+	// V10 English rescue (see select_club.go) would keep the augmented
+	// prefix regardless of the ≥2-lang threshold — meaning NYCFC's
+	// `nyc` would be invented from thin air. With the gate, augmented
+	// tokens are evidence-based: PSG bridges to Italian (kept); NYCFC
+	// bridges to nothing (dropped).
+	if en := src.aliasesByLang["en"]; en != nil {
+		// Union of tokens across every language OTHER than English.
+		otherLangTokens := make(map[string]struct{})
+		for lang, toks := range src.aliasesByLang {
+			if lang == "en" {
+				continue
+			}
+			for t := range toks {
+				otherLangTokens[t] = struct{}{}
+			}
+		}
+		for lang, toks := range src.labelsByLang {
+			if lang == "en" {
+				continue
+			}
+			for t := range toks {
+				otherLangTokens[t] = struct{}{}
+			}
+		}
+
+		toAdd := make([]string, 0)
+		for tok := range en {
+			if prefix, ok := stripKnownOrgSuffix(tok); ok && !isSkipped(prefix) {
+				if _, hasElsewhere := otherLangTokens[prefix]; hasElsewhere {
+					toAdd = append(toAdd, prefix)
+				}
+			}
+		}
+		for _, p := range toAdd {
+			en[p] = struct{}{}
+		}
+	}
 	// labels[lang]
 	for lang, val := range ent.LabelsByLang() {
 		if _, ok := langSet[lang]; !ok {
