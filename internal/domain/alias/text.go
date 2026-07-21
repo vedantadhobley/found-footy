@@ -23,8 +23,25 @@ import (
 )
 
 // tokenize breaks a Wikidata alias string into individual words with
-// full normalization applied. Returns lowercased, diacritic-stripped
-// tokens. Order preserved (callers usually de-dupe).
+// full normalization applied. Returns lowercased, diacritic-stripped,
+// ASCII-only tokens. Order preserved (callers usually de-dupe).
+//
+// Non-Latin-script tokens (Chinese, Greek, Cyrillic, Arabic, Japanese,
+// etc.) are dropped. Latin-script tokens with diacritics (München,
+// Atlético, São Paulo, Fußball) survive after the NFD normalize + Mn
+// strip + ß→ss pre-normalize sequence turns them into pure ASCII. This
+// keeps foreign-language coverage in Latin scripts (which English
+// tweets do encounter) while dropping non-Latin scripts that generate
+// generic-language noise more than team-specific signal (Greek `οι`
+// = "the", would match any Greek tweet).
+//
+// Known limitation: Latin-1 supplement chars that don't decompose to
+// ASCII (Ø, Æ, Œ, Þ, Ð, Ł) also get dropped by the ASCII-only rule.
+// For the current tracked roster (top-5 European leagues + FIFA
+// nationals) no team's canonical form uses these, so no recall loss.
+// If we ever expand to Norwegian/Icelandic/Polish clubs whose primary
+// labels use them, add explicit char mappings (Ø→o, Æ→ae, etc.)
+// before the ASCII check.
 func tokenize(phrase string) []string {
 	if phrase == "" {
 		return nil
@@ -63,9 +80,29 @@ func tokenize(phrase string) []string {
 		if isAllDigit(low) {
 			continue
 		}
+		if hasNonASCII(low) {
+			// Non-Latin-script token (CJK, Greek, Cyrillic, Arabic, etc.)
+			// The NFD strip above turned Latin scripts with diacritics into
+			// pure ASCII; anything with runes > 127 surviving here is
+			// necessarily a different script.
+			continue
+		}
 		out = append(out, low)
 	}
 	return out
+}
+
+// hasNonASCII reports whether s contains any rune outside the ASCII
+// range (0..127). See tokenize's doc for the rationale — after NFD
+// normalization, Latin scripts fold to ASCII and non-Latin scripts
+// don't, so this becomes the script-identity check we need.
+func hasNonASCII(s string) bool {
+	for _, r := range s {
+		if r > 127 {
+			return true
+		}
+	}
+	return false
 }
 
 // splitWords splits on whitespace, hyphen, en-dash, em-dash, and
