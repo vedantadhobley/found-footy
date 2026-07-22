@@ -56,19 +56,10 @@ Critical path:
   - `internal/twitter/search.go` — full replacement of T/a stub. POST /search endpoint aligned with S7 client's SearchRequest/SearchResponse/VideoRef contract. Full DOM extraction ported from `scrape.py` — tweet URL, age (Go-side from time[datetime]), video presence + duration (multi-selector walk with M:SS overlay fallback), promoted-tweet skip, snowflake sanity check (`MIN_SNOWFLAKE_LEN=18`). Single JS evaluate per scroll for IPC efficiency. Scroll loop with all four stop conditions (age, max_scrolls=10, empty after ≥1 scroll, consecutive_already_seen=3). Combined verify+search — checks for switcher button on the search page directly instead of separate x.com/home hop (saves 3-4s per warm-path-expired call). BackupCookies invoked on success. Baseline stealth #4: random 500-3000ms scroll timing jitter. Structured error taxonomy: `bad_request` / `empty_query` / `method_not_allowed` / `auth_expired` / `navigation_failed` / `internal`. Config surface via ServiceOptions (MaxScrolls / ConsecutiveSeenStop / ScrollJitterMin/Max / PageLoadTimeout / TweetFeedTimeout).
   - 12 new unit tests (helpers: URL parsing, snowflake check, exclude normalization, age computation round-trip, HTTP method + empty query validation, URL builder, truncation). All pure Go — the scroll loop + browser paths are validated end-to-end via the running dev twitter service.
   - Live smoke test 2026-07-23 against real Twitter: query `(fernandes OR tottenham OR spurs OR thfc) filter:videos` (Tottenham preseason friendly happened earlier) — returned 14 videos including a real `@SpursOfficial` tweet, `max_scrolls` stop reason, 10 scrolls, 19.4s elapsed. Confirms full end-to-end DOM extraction + scroll + backup flow works against production Twitter markup.
-- **T/c — Full search + scrape** [~2 days] — original scope, now shipped:
-  - Port `scrape.py`'s DOM extraction helpers (tweet URL, age, video duration, promoted-tweet skip, snowflake sanity check per `MIN_SNOWFLAKE_LEN = 18`)
-  - **Preserve typed error taxonomy** for downloads: `VideoNotAvailableError` (404), `VideoGeoRestrictedError` (403), `TwitterRateLimitedError` (429), `VideoCDNTimeoutError`, `VideoDownloadError`, `VideoMalformedURLError` with `failure_mode=truncated_snowflake` (video-spec §2, load-bearing for Grafana observability)
-  - Time-based scroll termination (`max_age_minutes` boundary)
-  - `max_scrolls = 10` safety cap (from Python's `_do_search`)
-  - Empty-page stop after ≥1 scroll
-  - **Consecutive-already-seen early-stop (3 default) — improvement over Python** (per video-dedup Q2)
-  - `exclude_urls` normalized to tweet-ID SET so callers can pass either `/user/status/…` or `/i/status/…` shapes (twitter-spec §3, load-bearing)
-  - Baseline stealth #2 (timing jitter ±20–40 s on Discovery's search cadence)
-  - Baseline stealth #4 (random 0.5–3 s scroll pauses)
-  - Baseline stealth #3 (User-Agent + Accept-Language rotation)
-  - `Referer: https://x.com/` and `Origin: https://x.com` headers on CDN download requests (twitter-spec §6, load-bearing — CDN rejects without them)
-  - Per-tweet exception swallowing to avoid log flood (twitter-spec §4, deliberate)
+  - Deferred to T/b.5: User-Agent + Accept-Language rotation (baseline stealth #3).
+  - Deferred to T/d: rate-limit detection (429 / interstitial), per-instance backoff.
+  - Deferred to T/f: video download error taxonomy (VideoNotAvailableError / VideoGeoRestrictedError / VideoCDNTimeoutError / VideoMalformedURLError with `failure_mode=truncated_snowflake`), CDN Referer/Origin headers on download requests (twitter-spec §6, load-bearing — CDN rejects without them).
+  - Deferred to Discovery-side (O3): baseline stealth #2 (±20-40s attempt-cadence jitter — this is a Discovery timing concern, not a Twitter-service one).
 - **T/d — Rate-limit detection + backoff** [~half day]
   - 429 detection + "Are you a robot?" interstitial detection
   - Per-instance `backoff_until` written to `twitter_instances` pg table
