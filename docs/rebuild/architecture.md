@@ -80,8 +80,8 @@ found-footy/
 │   │   ├── service.go                   ✓ T/a + T/b: state machine (starting/loading/healthy/unauthenticated/failed), /health, /status
 │   │   ├── auth.go                      ✓ T/b: EnsureAuthenticated (mtime → warm-path → verify) + BackupCookies + /authenticate + /auth/verify
 │   │   ├── cookies_backup.go            ✓ T/b: Fingerprint, WriteBackup (atomic), ReadBackup, BackupFileMtime, auth_token guard
-│   │   ├── search.go                    T/a stub; full DOM scrape lands T/c
-│   │   └── *_test.go                    26 unit tests (10 cookie backup + 16 auth flow)
+│   │   ├── search.go                    ✓ T/c: POST /search + full DOM scrape + 4-condition scroll loop + BackupCookies hook + combined verify+search + stealth jitter
+│   │   └── *_test.go                    40 unit tests (10 cookie backup + 16 auth flow + 12 search + 2 more from T/b.5)
 │   └── usecases/                        ⊘ doc.go stub (build when cross-domain ops surface)
 ├── docker/twitter/                      ✓ T/b: twitter service image + entrypoint (peer of internal/)
 │   ├── Dockerfile                       Playwright base + playwright-go driver + optional WITH_VNC layer (~150 MB xvfb+fluxbox+x11vnc+novnc+websockify)
