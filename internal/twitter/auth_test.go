@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -243,6 +244,74 @@ func TestEnsureAuthenticated_VerifyFailsAfterReload(t *testing.T) {
 	}
 	if state, _ := svc.State(); state != StateUnauthenticated {
 		t.Errorf("state = %s, want unauthenticated", state)
+	}
+}
+
+// TestEnsureAuthenticated_UnreadableCookieFile_ProceedsToVerify —
+// a cookie file that exists but is corrupt (bad JSON, missing
+// auth_token, empty) is NOT a hard error. maybeReloadCookies bumps
+// lastLoadedMtime so we don't retry the same broken file every call,
+// then EnsureAuthenticated falls through to verify — verify decides
+// whether the current browser state is still authed (unlikely, but
+// possible if browser has stale-but-valid cookies from a prior
+// session) or should flip to unauth.
+//
+// This is the code path that lets the smoke-test flow "move cookie
+// file aside → restart container → operator logs in via VNC" work:
+// stopped container gets restarted with an unreadable/missing
+// shared file, unauth is reached via verify failure, operator can
+// re-auth without the state getting stuck at StateLoading.
+func TestEnsureAuthenticated_UnreadableCookieFile_ProceedsToVerify(t *testing.T) {
+	fake := &fakeBrowser{verifyErr: errors.New("indicator missing")}
+	svc, cookieFile := newTestService(t, fake)
+
+	// Seed a corrupt file (bad JSON) so ReadBackup errors but
+	// BackupFileMtime succeeds.
+	if err := os.WriteFile(cookieFile, []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("seed corrupt: %v", err)
+	}
+
+	err := svc.EnsureAuthenticated(context.Background())
+	if !errors.Is(err, ErrUnauthenticated) {
+		t.Errorf("expected ErrUnauthenticated (verify decides auth outcome), got %v", err)
+	}
+	if state, _ := svc.State(); state != StateUnauthenticated {
+		t.Errorf("state = %s, want unauthenticated (not stuck at loading)", state)
+	}
+	if atomic.LoadInt64(&fake.verifyCalls) != 1 {
+		t.Errorf("verify should run despite bad cookie file: got %d calls", fake.verifyCalls)
+	}
+	if atomic.LoadInt64(&fake.replaceCalls) != 0 {
+		t.Errorf("replace should NOT run when ReadBackup fails: got %d calls", fake.replaceCalls)
+	}
+}
+
+// TestEnsureAuthenticated_UnreadableCookieFile_MtimeAdvanced —
+// second EnsureAuthenticated call with the same broken file should
+// skip the ReadBackup retry (mtime not advanced past the one we
+// recorded on the first failed read). Prevents log floods + repeated
+// wasted syscalls on a persistently-broken file.
+func TestEnsureAuthenticated_UnreadableCookieFile_MtimeAdvanced(t *testing.T) {
+	fake := &fakeBrowser{verifyErr: errors.New("indicator missing")}
+	svc, cookieFile := newTestService(t, fake)
+
+	if err := os.WriteFile(cookieFile, []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// First call absorbs the ReadBackup failure + verify runs.
+	_ = svc.EnsureAuthenticated(context.Background())
+	v1 := atomic.LoadInt64(&fake.verifyCalls)
+
+	// Wait past warm-path TTL so verify runs again.
+	time.Sleep(700 * time.Millisecond)
+
+	// Second call: mtime unchanged relative to what we recorded, so
+	// no retry of ReadBackup — but verify still fires because auth
+	// state is unauth and warm-path expired.
+	_ = svc.EnsureAuthenticated(context.Background())
+	if atomic.LoadInt64(&fake.verifyCalls) != v1+1 {
+		t.Errorf("verify should re-run after TTL expiry: got %d calls (want %d)", fake.verifyCalls, v1+1)
 	}
 }
 

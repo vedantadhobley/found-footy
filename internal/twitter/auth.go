@@ -128,11 +128,17 @@ func (s *Service) EnsureAuthenticated(ctx context.Context) error {
 // the browser context, updating lastLoadedMtime + lastFingerprint.
 //
 // Returns (reloaded, err):
-//   - (false, nil) — file missing or mtime unchanged; caller proceeds
-//     with existing browser cookies.
+//   - (false, nil) — file missing, mtime unchanged, or file is present
+//     but unreadable/corrupt. Caller proceeds with existing browser
+//     state; verify will decide the auth outcome. Unreadable file is
+//     specifically NOT an error return because the healthy caller path
+//     (verify against current browser cookies) is still valid — a bad
+//     file on disk shouldn't block auth if the browser session works
+//     from prior state, and should transition to unauth via verify if
+//     it doesn't.
 //   - (true, nil) — fresh cookies successfully loaded into browser.
-//   - (_, err) — file exists but read/parse/replace failed. Caller
-//     treats as an infrastructure error, not an auth failure.
+//   - (_, err) — stat failed with a non-not-exist error, or ReplaceCookies
+//     failed (browser in an unrecoverable state). Caller propagates.
 func (s *Service) maybeReloadCookies(lastLoadedMtime time.Time) (bool, error) {
 	mtime, err := BackupFileMtime(s.cookieFile)
 	if err != nil {
@@ -147,12 +153,27 @@ func (s *Service) maybeReloadCookies(lastLoadedMtime time.Time) (bool, error) {
 		return false, nil
 	}
 
-	s.SetState(StateLoading, "reloading cookies from shared backup file")
-
+	// Attempt the read BEFORE transitioning to Loading. If ReadBackup
+	// errors (corrupt/empty file, missing auth_token guard fires, file
+	// is actually a directory because bind-mount source went missing),
+	// we drop into the "nothing to reload" path and let verify decide
+	// auth outcome. Skipping the SetState(Loading) here means /status
+	// doesn't misleadingly report we're actively loading.
+	//
+	// Bump lastLoadedMtime to the current mtime so we don't retry the
+	// same broken file every EnsureAuthenticated call — next time the
+	// file changes (VNC operator logs in, another instance rewrites)
+	// mtime advances again and we re-attempt.
 	cookies, _, err := ReadBackup(s.cookieFile)
 	if err != nil {
-		return false, fmt.Errorf("read backup: %w", err)
+		s.mu.Lock()
+		s.lastLoadedMtime = mtime
+		s.mu.Unlock()
+		return false, nil
 	}
+
+	s.SetState(StateLoading, "reloading cookies from shared backup file")
+
 	if err := s.browser.ReplaceCookies(cookies); err != nil {
 		// Browser is in a weird state. Escalate to failed — process
 		// restart is cleaner than trying to recover an unknown context.
