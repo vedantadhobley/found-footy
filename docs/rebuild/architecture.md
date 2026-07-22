@@ -70,6 +70,15 @@ found-footy/
 │   │   └── tracing/                     ⊘ empty (Phase 5+ per plan; deferred)
 │   ├── scaler/                          scaffold; no logic (Phase A/M)
 │   ├── testutil/                        ⊘ empty (build as testing needs surface)
+│   ├── twitter/                         Twitter *service* (browser + auth + scrape); imported by cmd/twitter
+│   │   ├── browser.go                   ✓ T/a: Playwright-Go + Firefox persistent context, GetCookies + ReplaceCookies + LoadCookies + VerifySession
+│   │   ├── browser_iface.go             ✓ T/b: sessionBrowser interface — auth flow testable without Playwright
+│   │   ├── stealth.go                   ✓ T/a: navigator.webdriver / plugins / permissions patches
+│   │   ├── service.go                   ✓ T/a + T/b: state machine (starting/loading/healthy/unauthenticated/failed), /health, /status
+│   │   ├── auth.go                      ✓ T/b: EnsureAuthenticated (mtime → warm-path → verify) + BackupCookies + /authenticate + /auth/verify
+│   │   ├── cookies_backup.go            ✓ T/b: Fingerprint, WriteBackup (atomic), ReadBackup, BackupFileMtime, auth_token guard
+│   │   ├── search.go                    T/a stub; full DOM scrape lands T/c
+│   │   └── *_test.go                    26 unit tests (10 cookie backup + 16 auth flow)
 │   └── usecases/                        ⊘ doc.go stub (build when cross-domain ops surface)
 ├── migrations/                          ⊘ EMPTY — schema.sql lives in internal/infra/pg/ instead
 │                                          (see decisions.md 2026-07-07)

@@ -189,6 +189,66 @@ func (b *Browser) LoadCookies(path string) (int, error) {
 	return len(pwCookies), nil
 }
 
+// GetCookies returns the current cookies from the browser context,
+// converted to our on-disk Cookie shape. Used by the auth backup
+// flow to persist fresh cookies after every successful search
+// (Twitter rotates csrf token + occasionally guest_id on each
+// authenticated request; we preserve those refreshes so container
+// restarts pick up the latest session state).
+func (b *Browser) GetCookies() ([]Cookie, error) {
+	pw, err := b.ctx.Cookies()
+	if err != nil {
+		return nil, fmt.Errorf("twitter.Browser.GetCookies: %w", err)
+	}
+	out := make([]Cookie, 0, len(pw))
+	for _, c := range pw {
+		out = append(out, Cookie{
+			Name:     c.Name,
+			Value:    c.Value,
+			Domain:   c.Domain,
+			Path:     c.Path,
+			Expires:  c.Expires,
+			HTTPOnly: c.HttpOnly,
+			Secure:   c.Secure,
+			SameSite: string(*c.SameSite),
+		})
+	}
+	return out, nil
+}
+
+// ReplaceCookies clears the current context's cookies and adds the
+// provided set. Used by the auth reload flow when another instance
+// or the VNC container has written fresh cookies to the shared
+// backup file (detected via mtime); we discard our in-memory
+// cookies and adopt the fresh ones before the next verify.
+func (b *Browser) ReplaceCookies(cookies []Cookie) error {
+	if err := b.ctx.ClearCookies(); err != nil {
+		return fmt.Errorf("twitter.Browser.ReplaceCookies: clear: %w", err)
+	}
+	if len(cookies) == 0 {
+		return nil
+	}
+	pwCookies := make([]playwright.OptionalCookie, 0, len(cookies))
+	for _, c := range cookies {
+		pw := playwright.OptionalCookie{
+			Name:     c.Name,
+			Value:    c.Value,
+			Domain:   playwright.String(c.Domain),
+			Path:     playwright.String(c.Path),
+			HttpOnly: playwright.Bool(c.HTTPOnly),
+			Secure:   playwright.Bool(c.Secure),
+		}
+		if c.Expires > 0 {
+			pw.Expires = playwright.Float(c.Expires)
+		}
+		pwCookies = append(pwCookies, pw)
+	}
+	if err := b.ctx.AddCookies(pwCookies); err != nil {
+		return fmt.Errorf("twitter.Browser.ReplaceCookies: add: %w", err)
+	}
+	return nil
+}
+
 // VerifySession navigates to x.com/home and returns nil if a
 // logged-in indicator is present, or an error describing the miss.
 // Used at startup to determine whether the loaded cookies are still

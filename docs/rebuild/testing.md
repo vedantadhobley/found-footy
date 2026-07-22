@@ -21,6 +21,7 @@ updates this doc if it introduces a new test tier or pattern.
 | Adapter unit (httptest-based) | infra/apifootball, twitter, syndication, wikidata, llm | ~35 (grew 2026-07-09 with chunk-parallel + partial-failure coverage) | <200ms total |
 | Adapter integration (testcontainers) | infra/pg, s3, nats, temporal | ~30 | ~30-60s total |
 | Workflow (testsuite.WorkflowTestSuite) | internal/workflow | ~5 (Ingest only, growing) | <100ms per workflow |
+| Twitter service unit (fake sessionBrowser) | internal/twitter | 26 (T/b — 10 cookie backup + 16 auth flow) | ~5s (mtime tests sleep 1.1s to detect fs granularity) |
 | Synthetic e2e | not shipped | 0 | — |
 
 Counts approximate; grep `grep -r "^func Test" internal/ --include="*_test.go" \| wc -l` for the live number.
@@ -90,6 +91,35 @@ func TestFixtureRepo_Upsert_RoundTrip(t *testing.T) {
 the same schema file dev postgres mounts via
 docker-entrypoint-initdb.d. Provides confidence that dev + test + prod
 DDL are the same source.
+
+## Tier 1.7 — Twitter service unit tests (T/b, shipped 2026-07-21)
+
+The Twitter service (`internal/twitter/`) is exercised by 26 unit
+tests that run without Playwright / Firefox / a browser at all.
+Pattern: a `sessionBrowser` interface (`browser_iface.go`) abstracts
+the browser operations Service depends on (VerifySession,
+ReplaceCookies, GetCookies, Navigate). Tests inject `fakeBrowser`
+from `auth_test.go` that lets each test set per-method behaviour +
+inspect call counts under a mutex.
+
+Two files:
+
+- `cookies_backup_test.go` (10 tests) — fingerprint stability,
+  value-rotation detection, `auth_token` guard on write and read,
+  domain filter, **atomic-write-no-torn-reads under 5×20×50
+  concurrent writer/reader stress**, mtime advancement.
+- `auth_test.go` (16 tests) — first-boot no-cookies, happy path,
+  warm-path skip, TTL expiry re-verifies, external reload
+  (VNC-container-simulated), verify failure escalates to
+  `StateUnauthenticated`, browser failure escalates to `StateFailed`,
+  **five concurrent EnsureAuthenticated callers dedupe to 1 verify
+  via warm-path**, `BackupCookies` fingerprint dedupe (unchanged
+  cookies skip write), `BackupCookies` rewrite-on-rotation, all
+  `/authenticate` + `/auth/verify` HTTP paths (POST-only guard,
+  reauth config env-var passthrough, fallback message).
+
+Slowest test: `~1.1s` (mtime-detection tests sleep to defeat
+1-second-granularity filesystems). Total package runtime ~5s.
 
 ## Tier 3 — synthetic e2e — SHIPPED (Phase 1a)
 
