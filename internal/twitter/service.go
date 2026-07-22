@@ -77,6 +77,17 @@ type ServiceOptions struct {
 	// deterministic tests.
 	ScrollJitterMin time.Duration
 	ScrollJitterMax time.Duration
+
+	// AuditEmit is called on structured state transitions that need
+	// external observability (Grafana/Loki alerting). Currently fires
+	// on any-state → StateUnauthenticated with action=
+	// `twitter.auth_expired`. Nil (default) makes it a no-op — tests
+	// and standalone unit runs don't need to plumb an emitter.
+	//
+	// Contract: called synchronously from SetState under s.mu, so
+	// implementations MUST NOT block or acquire other locks. Push
+	// events to a channel or write to stdout — no I/O beyond that.
+	AuditEmit func(action string, fields map[string]any)
 }
 
 // Defaults for the scroll/extract loop constants that don't come from
@@ -107,6 +118,7 @@ type Service struct {
 	consecutiveSeenStop int
 	scrollJitterMin     time.Duration
 	scrollJitterMax     time.Duration
+	auditEmit           func(string, map[string]any)
 
 	// authMu serializes EnsureAuthenticated calls so we don't fire
 	// multiple concurrent VerifySession round-trips on the same browser.
@@ -166,6 +178,7 @@ func NewService(b sessionBrowser, opts ServiceOptions) *Service {
 		consecutiveSeenStop: opts.ConsecutiveSeenStop,
 		scrollJitterMin:     opts.ScrollJitterMin,
 		scrollJitterMax:     opts.ScrollJitterMax,
+		auditEmit:           opts.AuditEmit,
 		state:               StateStarting,
 		startedAt:           time.Now().UTC(),
 	}
@@ -174,13 +187,33 @@ func NewService(b sessionBrowser, opts ServiceOptions) *Service {
 // SetState transitions the service to a new state with an
 // optional human-readable reason (surfaced in /status responses).
 // Concurrent-safe.
+//
+// Emits action=`twitter.auth_expired` via auditEmit on any transition
+// FROM a non-unauth state TO StateUnauthenticated. Fires once per
+// transition — repeated SetState(StateUnauthenticated, ...) calls
+// don't re-emit. Alerting hooks (Grafana/Loki `{action="twitter.auth_expired"}`)
+// need this event to know when the fleet degrades.
 func (s *Service) SetState(newState State, reason string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	prevState := s.state
 	s.state = newState
 	s.stateReason = reason
 	if newState == StateHealthy || newState == StateUnauthenticated {
 		s.lastAuthCheck = time.Now().UTC()
+	}
+	lastLoadedMtime := s.lastLoadedMtime
+	s.mu.Unlock()
+
+	// Emit auth-expired event on transition to unauth (fresh transition
+	// only — no re-emission on repeated SetState(unauth) calls). Held
+	// outside the lock because auditEmit's contract allows I/O (stdout
+	// write in prod).
+	if newState == StateUnauthenticated && prevState != StateUnauthenticated && s.auditEmit != nil {
+		s.auditEmit("twitter.auth_expired", map[string]any{
+			"reason":            reason,
+			"previous_state":    string(prevState),
+			"last_loaded_mtime": lastLoadedMtime.Format(time.RFC3339),
+		})
 	}
 }
 

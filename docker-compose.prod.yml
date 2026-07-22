@@ -17,8 +17,12 @@ volumes:
   temporal-postgres-data:
   garage-data:
   garage-meta:
-  twitter-profiles:      # shared across headless twitter replicas
   twitter-vnc-profile:   # dedicated to the twitter-vnc container (per T/b.4)
+  # NOTE: headless twitter's Firefox profile lives in the container's
+  # writable layer, NOT a shared volume — matches Python-shape ephemeral
+  # profiles. Firefox refuses to run two processes against the same
+  # profile dir (.parentlock guard), so sharing across replicas would
+  # crash all but the first. See decisions.md 2026-07-23.
 
 networks:
   found-footy-prod:
@@ -198,7 +202,9 @@ services:
       - seccomp:unconfined
     shm_size: 1gb
     volumes:
-      - twitter-profiles:/data
+      # NOTE (decisions.md 2026-07-23): headless Firefox profile lives
+      # in the container's writable layer, NOT a shared volume — no
+      # cross-replica SQLite locking.
       - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
     networks:
       - found-footy-prod

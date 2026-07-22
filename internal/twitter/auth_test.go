@@ -566,6 +566,100 @@ func TestHandleAuthVerify_ForcesVerify(t *testing.T) {
 	}
 }
 
+// TestSetState_EmitsAuthExpiredOnTransition — T/b.5 hardening #3.
+// SetState(StateUnauthenticated) FROM a non-unauth state must emit
+// action=twitter.auth_expired via the auditEmit callback. Grafana/Loki
+// alerts key on this action string.
+func TestSetState_EmitsAuthExpiredOnTransition(t *testing.T) {
+	fake := &fakeBrowser{}
+	var captured []map[string]any
+	svc := NewService(fake, ServiceOptions{
+		CookieFile:    filepath.Join(t.TempDir(), "cookies.json"),
+		VerifyTimeout: time.Second,
+		AuditEmit: func(action string, fields map[string]any) {
+			f := make(map[string]any, len(fields)+1)
+			for k, v := range fields {
+				f[k] = v
+			}
+			f["_action"] = action
+			captured = append(captured, f)
+		},
+	})
+
+	// Initial state: StateStarting. Transition to Unauthenticated
+	// should fire the emit.
+	svc.SetState(StateUnauthenticated, "cookies missing")
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 emit, got %d", len(captured))
+	}
+	if captured[0]["_action"] != "twitter.auth_expired" {
+		t.Errorf("action = %v, want twitter.auth_expired", captured[0]["_action"])
+	}
+	if captured[0]["reason"] != "cookies missing" {
+		t.Errorf("reason = %v, want %q", captured[0]["reason"], "cookies missing")
+	}
+	if captured[0]["previous_state"] != "starting" {
+		t.Errorf("previous_state = %v, want starting", captured[0]["previous_state"])
+	}
+}
+
+// TestSetState_DoesNotRe_EmitOnRepeatedUnauth — repeated
+// SetState(StateUnauthenticated) calls should NOT re-emit. Alerting
+// hooks would flap otherwise.
+func TestSetState_DoesNotRe_EmitOnRepeatedUnauth(t *testing.T) {
+	fake := &fakeBrowser{}
+	emits := 0
+	svc := NewService(fake, ServiceOptions{
+		CookieFile:    filepath.Join(t.TempDir(), "cookies.json"),
+		VerifyTimeout: time.Second,
+		AuditEmit:     func(string, map[string]any) { emits++ },
+	})
+
+	svc.SetState(StateUnauthenticated, "first")
+	svc.SetState(StateUnauthenticated, "second — should not re-emit")
+	svc.SetState(StateUnauthenticated, "third — should not re-emit")
+	if emits != 1 {
+		t.Errorf("emits = %d, want 1 (only the transition fires)", emits)
+	}
+}
+
+// TestSetState_EmitsOnHealthyToUnauthTransition — the primary
+// production path: session was healthy, cookies expired, transition
+// to unauth must alert.
+func TestSetState_EmitsOnHealthyToUnauthTransition(t *testing.T) {
+	fake := &fakeBrowser{}
+	emits := 0
+	svc := NewService(fake, ServiceOptions{
+		CookieFile:    filepath.Join(t.TempDir(), "cookies.json"),
+		VerifyTimeout: time.Second,
+		AuditEmit:     func(string, map[string]any) { emits++ },
+	})
+	svc.SetState(StateHealthy, "startup verify passed")
+	if emits != 0 {
+		t.Errorf("healthy transition should NOT emit; got %d", emits)
+	}
+	svc.SetState(StateUnauthenticated, "session expired mid-run")
+	if emits != 1 {
+		t.Errorf("healthy → unauth should emit; got %d", emits)
+	}
+}
+
+// TestSetState_NilEmitterIsSafe — auditEmit=nil (tests, standalone
+// runs) must not panic. Fires quietly.
+func TestSetState_NilEmitterIsSafe(t *testing.T) {
+	fake := &fakeBrowser{}
+	svc := NewService(fake, ServiceOptions{
+		CookieFile:    filepath.Join(t.TempDir(), "cookies.json"),
+		VerifyTimeout: time.Second,
+		// AuditEmit deliberately unset.
+	})
+	// Should not panic.
+	svc.SetState(StateUnauthenticated, "test")
+	if state, _ := svc.State(); state != StateUnauthenticated {
+		t.Errorf("state = %s, want unauthenticated", state)
+	}
+}
+
 // TestBuildReauthMessage covers the four config-combinations.
 func TestBuildReauthMessage(t *testing.T) {
 	tests := []struct {

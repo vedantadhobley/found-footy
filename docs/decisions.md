@@ -6,6 +6,108 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-23 — Twitter Firefox profile: ephemeral per-container (Python-shape), not shared volume
+
+### Context
+
+T/b.4's docker-compose (2026-07-22) set up a `twitter-profiles` Docker
+volume shared across all headless twitter replicas, mounted at `/data`.
+The intent was to preserve Firefox's cached browser data (WASM caches,
+media compressors, safebrowsing DB) across container restarts for
+warm-start on scale-out.
+
+T/b.5 hardening #1 was originally planned as "per-instance profile
+dir via hostname hash" — a subdir-per-replica scheme under the shared
+volume to avoid Firefox's cross-process SQLite locking conflict.
+
+During implementation, mid-session investigation surfaced that:
+
+1. Firefox's `.parentlock` file at the profile root is a hard mutex —
+   the SECOND Firefox process to start against the same profile dir
+   refuses to launch, regardless of what we intend to write. Not an
+   SQLite issue we could work around at the app layer.
+2. Python's twitter service (~months in prod) uses **ephemeral
+   per-container profiles** — no shared volume, each container's
+   `/data/firefox-profile/` lives in the container's own writable
+   layer (Docker copy-on-write isolation). No locking conflicts
+   because no sharing.
+3. The subdir-per-hostname approach solves the locking problem but
+   introduces its own class of bugs:
+   - Stale `.parentlock` files from unclean shutdowns block replica
+     restart until manual cleanup.
+   - Old `compatibility.ini` from previous Firefox versions triggers
+     profile migration prompts on Playwright base-image upgrades.
+   - Shared volume disk usage accumulates across scale-down cycles.
+   - Cross-instance state coupling — one replica's corrupted subdir
+     could affect neighbors via the shared volume.
+
+### Decision
+
+Adopt Python-shape ephemeral profiles for the headless twitter fleet:
+
+- Remove `twitter-profiles` volume from both compose files.
+- Each headless container's Firefox profile lives in its own writable
+  layer at `/data/firefox-profile/` — isolated by Docker's copy-on-
+  write, destroyed when container is removed.
+- VNC container keeps its dedicated `twitter-vnc-profile` volume —
+  needs cross-session persistence for operator's logged-in state.
+- Cookie backup file (`~/.config/found-footy/twitter_cookies.json`)
+  remains bind-mounted from host — this is our cross-instance auth-
+  sharing layer, independent of Firefox's profile.
+
+### Rationale
+
+- **Simpler.** No subdir logic in code, no stale-lock cleanup, no
+  shared-volume management. Compose is smaller.
+- **Matches proven prod behavior.** Python has run this shape for
+  months without profile-related incidents.
+- **Robust to unclean crashes.** Container OOM / SIGKILL / panic
+  destroys the writable layer; fresh restart gets clean state.
+- **Firefox-version upgrades work cleanly.** Fresh profile matches
+  fresh Firefox — no migration prompts, no compat.ini surprises.
+- **Cold-start cost is manageable.** ~5-15s per container Firefox
+  boot, mitigated further by disabling safebrowsing DB downloads
+  (~200MB Google pull on first boot) via prefs — see hardening #2.
+- **No shared state means no shared-state bugs.** Each container is
+  an island; debugging is straightforward.
+
+### Cost accepted
+
+- ~10-15s slower cold start on scale-out (bounded, mitigated by
+  disabling safebrowsing DB pull).
+- No warm cache benefit on rolling restarts — but rolling restarts
+  are rare, and the warm-cache benefit was overstated (Firefox's
+  cache is regenerated on every page load anyway).
+
+### Alternatives rejected
+
+- **Subdirs per hostname hash on shared volume** — the original T/b.5
+  #1 design. Introduces stale-lock and Firefox-version-upgrade
+  fragility for a ~10s cold-start savings that's rarely realized in
+  practice.
+- **Named volumes per replica** (compose `deploy.replicas` + per-
+  replica volume declaration) — doesn't scale beyond declared count;
+  wouldn't survive scale-up past the initial declaration.
+- **Firefox launched with `--headless --profile=/tmp/firefox-N`
+  ephemeral tmpdir per instance** — same shape as our choice but
+  under `/tmp` instead of `/data`. Not an improvement.
+
+### Impact
+
+- `docker-compose.dev.yml` — `twitter-profiles` volume removed, mount
+  removed from twitter service, explanation comment added.
+- `docker-compose.prod.yml` — same.
+- `cmd/twitter/main.go` — `resolveProfileDir` hostname-hash function
+  removed. TWITTER_PROFILE_DIR env stays with `/data/firefox-profile`
+  default.
+- `internal/twitter/browser.go` — `NewBrowserOptions.FirefoxUserPrefs`
+  added to plumb the idle-CPU + safebrowsing-disable prefs from
+  main.go into Playwright's LaunchPersistentContext.
+- Deferred/reverted: no per-instance profile subdir logic, no stale-
+  lock cleanup code, no shared-volume backup/cleanup runbook needed.
+
+---
+
 ## 2026-07-22 — Query builder: D3 confirmed (no event vocabulary), sentiment_mode → video_only, own-goal invariant flagged
 
 Written after the design conversation + empirical validation session

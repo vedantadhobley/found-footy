@@ -37,13 +37,28 @@ type Browser struct {
 // sensible defaults; the zero value works for the T/a PoC.
 type NewBrowserOptions struct {
 	// ProfileDir is the persistent Firefox profile path. Default:
-	// /data/firefox-profile. Bind-mounted from the host so cookies
-	// survive container restarts.
+	// /data/firefox-profile. Lives in the container's writable layer
+	// (headless) — each container has its own private profile, no
+	// shared volume, no cross-instance SQLite locking. VNC container
+	// mounts its own dedicated volume here for operator session
+	// persistence. See decisions.md 2026-07-23 for the ephemeral-vs-
+	// shared rationale.
 	ProfileDir string
 
 	// Headless: true for headless scraping (default), false for VNC
 	// container's manual-login mode where a human interacts.
 	Headless bool
+
+	// FirefoxUserPrefs is a map of Firefox about:config preferences
+	// applied at persistent-context launch. Passed verbatim to
+	// Playwright's LaunchPersistentContextOptions.FirefoxUserPrefs.
+	//
+	// Values must be JSON-serializable and match the pref's Firefox-
+	// side type — passing the wrong type is a silent no-op with no
+	// error surface, so caller is responsible for correctness. See
+	// cmd/twitter/main.go idleCPUFirefoxPrefs for the production
+	// prefs (CPU-savings + cold-start-speedup set).
+	FirefoxUserPrefs map[string]any
 }
 
 // NewBrowser launches Playwright + Firefox in a persistent context
@@ -65,6 +80,9 @@ func NewBrowser(opts NewBrowserOptions) (*Browser, error) {
 
 	launchOpts := playwright.BrowserTypeLaunchPersistentContextOptions{
 		Headless: playwright.Bool(opts.Headless),
+	}
+	if len(opts.FirefoxUserPrefs) > 0 {
+		launchOpts.FirefoxUserPrefs = opts.FirefoxUserPrefs
 	}
 	pctx, err := pw.Firefox.LaunchPersistentContext(opts.ProfileDir, launchOpts)
 	if err != nil {
