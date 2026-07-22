@@ -445,3 +445,57 @@ func TestSelect_AcronymRescue_DoesNotTouchShortForms(t *testing.T) {
 	assertIncludes(t, aliases, "mufc")
 	assertExcludes(t, aliases, "mu")
 }
+
+// TestSelect_MultiWordCrossLanguageDedup — Wikidata contributors
+// often copy verbatim multi-word aliases from one language into
+// another (real 2026-07-23 example: Bayer 04 Leverkusen's German
+// full name "Turn- und Sportverein Bayer 04 Leverkusen" listed as
+// both an Italian and a Polish alias). Without dedup, tokens like
+// `und` / `turn` / `sportverein` — monolingual German words — would
+// pass the ≥2-lang threshold based on the copy-paste inflation.
+//
+// Rule: multi-word alias STRINGS get counted for exactly ONE
+// language (sorted-alphabetically first). Single-word abbreviations
+// (MUFC, RMCF, PSG) are NOT deduped — they're legitimately shared
+// across languages by international football fans.
+func TestSelect_MultiWordCrossLanguageDedup(t *testing.T) {
+	c := newTestClient(t, entitySpec{
+		QID: "Q_leverkusen",
+		AliasesByLang: map[string][]string{
+			// Same German multi-word phrase copied into 3 language slots.
+			// Without the fix, `turn`/`und`/`sportverein` would be counted
+			// in de+it+pl → 3 languages → passes ≥2-lang threshold.
+			// With the fix, only one language (alphabetically-first: de)
+			// gets credit → 1 language → fails threshold → dropped.
+			"de": {"Turn- und Sportverein Bayer 04 Leverkusen"},
+			"it": {"Turn- und Sportverein Bayer 04 Leverkusen"},
+			"pl": {"Turn- und Sportverein Bayer 04 Leverkusen"},
+			// Legitimate single-word abbreviation shared across languages
+			// — MUST survive the dedup (still single-token, not deduped).
+			"en": {"B04"},
+			"es": {"B04"},
+			"fr": {"B04"},
+		},
+		LabelsByLang: map[string]string{"en": "Bayer 04 Leverkusen"},
+	})
+	r := alias.NewResolver(c, nil)
+	aliases, err := r.Select(context.Background(), alias.SelectInput{
+		QID:           "Q_leverkusen",
+		IsNational:    false,
+		CanonicalName: "Bayer Leverkusen",
+	})
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	// Multi-word phrase tokens: only counted for 1 language now,
+	// fail ≥2-lang threshold, dropped.
+	assertExcludes(t, aliases, "turn")
+	assertExcludes(t, aliases, "und")
+	assertExcludes(t, aliases, "sportverein")
+	// Single-word abbreviation: not deduped, still counted in 3
+	// languages, passes threshold, kept.
+	assertIncludes(t, aliases, "b04")
+	// Canonical name tokens always survive regardless of threshold.
+	assertIncludes(t, aliases, "bayer")
+	assertIncludes(t, aliases, "leverkusen")
+}

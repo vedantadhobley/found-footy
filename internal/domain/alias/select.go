@@ -26,6 +26,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // selectionLanguages is the Latin-script language subset both branches
@@ -115,13 +116,59 @@ func extractSources(ent entityLike, canonicalName string) selectionSources {
 		langSet[l] = struct{}{}
 	}
 
-	// aliases[lang]
-	for lang, values := range ent.AliasesByLang() {
+	// aliases[lang], with cross-language dedup for MULTI-WORD strings.
+	//
+	// Wikidata contributors often copy verbatim MULTI-WORD aliases from
+	// one language into another (e.g. the German full name "Turn- und
+	// Sportverein Bayer 04 Leverkusen" appearing as both an Italian
+	// AND a Polish alias for Q104761). Without dedup, the ≥2-lang
+	// threshold would count `und`/`turn`/`sportverein` as multi-language
+	// corroborated even though they're monolingual German tokens that
+	// no Italian or Polish speaker would use in a tweet.
+	//
+	// SINGLE-word aliases (abbreviations like MUFC, RMCF, PSG) are
+	// legitimately shared across languages by international football
+	// fans — Wikidata contributors correctly add them to multiple
+	// language slots because that's real usage. We MUST NOT dedup
+	// those, or we'd filter out `mufc`/`rmcf`/`psg` which are the
+	// signal we want.
+	//
+	// Rule: an alias string is deduped across languages IFF it
+	// tokenizes to >1 token. Single-token aliases get full multi-
+	// language credit. Multi-word aliases get counted for exactly one
+	// language — the first in sorted iteration order (deterministic).
+	//
+	// Introduced 2026-07-23 after the real-pipeline probe surfaced
+	// `und` / `turn` / `sportverein` in Bayer Leverkusen's alias set;
+	// see decisions.md.
+	langs := make([]string, 0, len(ent.AliasesByLang()))
+	for lang := range ent.AliasesByLang() {
+		langs = append(langs, lang)
+	}
+	sort.Strings(langs)
+
+	seenMultiWordAliases := make(map[string]struct{})
+	for _, lang := range langs {
 		if _, ok := langSet[lang]; !ok {
 			continue
 		}
+		values := ent.AliasesByLang()[lang]
 		for _, val := range values {
-			for _, tok := range tokenize(val) {
+			toks := tokenize(val)
+			if len(toks) > 1 {
+				// Multi-word alias: dedup across languages.
+				// Case-insensitive key — Wikidata is inconsistent about
+				// casing across languages.
+				key := strings.ToLower(strings.TrimSpace(val))
+				if _, seen := seenMultiWordAliases[key]; seen {
+					continue
+				}
+				seenMultiWordAliases[key] = struct{}{}
+			}
+			// Single-word aliases: no dedup — abbreviations like MUFC
+			// are legitimately shared across languages by international
+			// football-fan usage. Full multi-language credit.
+			for _, tok := range toks {
 				if isSkipped(tok) {
 					continue
 				}
