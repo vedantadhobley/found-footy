@@ -270,16 +270,24 @@ func TestBuild_VideoOnlyToggle(t *testing.T) {
 	}
 }
 
-// TestBuild_DeduplicatesPlayerAndTeam — Salah with `salah` in team
-// aliases (contrived — but tests dedup). Should not repeat `salah`.
-func TestBuild_DeduplicatesPlayerAndTeam(t *testing.T) {
+// TestBuild_NoCrossSlot_Dedup — separation of concerns: player-name
+// tokens and team-slot tokens are independent. If a player name
+// happens to overlap a team alias (contrived — a data-pipeline anomaly,
+// not a query-builder concern), the token appears in BOTH slots. Query
+// builder does NOT enforce global dedup; the concern is at the data
+// layer. Twitter handles duplicate OR terms cleanly regardless.
+func TestBuild_NoCrossSlot_Dedup(t *testing.T) {
 	got, err := Build("Salah", "Egypt", []string{"salah", "pharaohs"})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
+	// `salah` appears twice: once as player token, once via team
+	// alias slot. Query builder does not dedup across slots per
+	// separation-of-concerns.
 	count := strings.Count(got, "salah")
-	if count != 1 {
-		t.Errorf("`salah` should appear exactly once (dedup), got %d in %q", count, got)
+	if count != 2 {
+		t.Errorf("`salah` should appear TWICE (player + team, no cross-slot dedup); got %d in %q",
+			count, got)
 	}
 }
 

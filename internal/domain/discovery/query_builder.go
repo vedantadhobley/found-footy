@@ -112,25 +112,18 @@ func BuildTwitterQuery(in QueryInput) (string, error) {
 		return "", ErrEmptyPlayerName
 	}
 
-	// Player slot — expand via the shared tokenizer.
+	// Player slot — expand via the shared tokenizer. Independent of
+	// the team slot below; no cross-slot dedup (player name overlapping
+	// a team alias is a data-pipeline concern, not the query builder's).
 	playerTokens := alias.TokenizePlayerName(in.PlayerName)
 
-	// Team slot — union of canonical-name tokens + curated aliases.
-	// Always tokenize canonical (not just as an aliases-empty fallback)
-	// because the alias pipeline's ≥2-lang threshold + venue-city skip
-	// occasionally drop obvious canonical tokens that fail the multi-
-	// language corroboration rule. Example: "Bayer Leverkusen" — if
-	// `bayer` only appears in the German Wikidata label, the ≥2-lang
-	// rule would exclude it. Merging canonical here guarantees the
-	// team's api-reported name is always represented; dedup collapses
-	// the common case where aliases already include those tokens.
-	//
-	// D4c fallback (aliases empty) is now implicit — if TeamAliases is
-	// nil the union is just the canonical tokens.
-	canonicalTokens := alias.TokenizePlayerName(in.TeamCanonicalName)
-	teamTokens := make([]string, 0, len(canonicalTokens)+len(in.TeamAliases))
-	teamSeen := make(map[string]struct{}, cap(teamTokens))
-	for _, tok := range canonicalTokens {
+	// Team slot — union of canonical-name tokens + curated aliases,
+	// deduped WITHIN the team slot only. See TeamCanonicalName
+	// docstring for the "Bayer Leverkusen" rationale (always merge
+	// canonical, don't just fallback). One set for the team unit.
+	teamTokens := make([]string, 0, 16)
+	teamSeen := make(map[string]struct{}, 16)
+	for _, tok := range alias.TokenizePlayerName(in.TeamCanonicalName) {
 		if _, dup := teamSeen[tok]; dup {
 			continue
 		}
@@ -145,43 +138,33 @@ func BuildTwitterQuery(in QueryInput) (string, error) {
 		teamTokens = append(teamTokens, tok)
 	}
 
-	// Union player + team tokens with dedup + order preservation.
-	// Player tokens go first so player identity leads in the query
-	// (helps debug readability; Twitter's OR is commutative).
-	tokens := make([]string, 0, len(playerTokens)+len(teamTokens))
-	seen := make(map[string]struct{}, cap(tokens))
-	for _, tok := range playerTokens {
-		if _, dup := seen[tok]; dup {
-			continue
-		}
-		seen[tok] = struct{}{}
-		tokens = append(tokens, tok)
-	}
-	for _, tok := range teamTokens {
-		if _, dup := seen[tok]; dup {
-			continue
-		}
-		seen[tok] = struct{}{}
-		tokens = append(tokens, tok)
-	}
-
-	if len(tokens) == 0 {
+	// Emit order: player tokens first, then team tokens. Human-
+	// readable debug logs lead with player identity.
+	if len(playerTokens) == 0 && len(teamTokens) == 0 {
 		return "", ErrEmptyQuery
 	}
 
 	// Compose: (tok1 OR tok2 OR ... OR tokN) [filter:videos]
-	// Parens wrap the OR group so `filter:videos` ANDs against the
-	// whole disjunction, not just the last term. filter:videos is
-	// appended based on VideoOnly; omitted otherwise for future
-	// sentiment mode.
+	// Player tokens lead, then team tokens. Parens wrap the OR group
+	// so `filter:videos` ANDs against the whole disjunction, not just
+	// the last term. filter:videos is appended based on VideoOnly;
+	// omitted otherwise for future sentiment mode.
 	var b strings.Builder
-	b.Grow(64 + len(tokens)*10)
+	b.Grow(64 + (len(playerTokens)+len(teamTokens))*10)
 	b.WriteByte('(')
-	for i, tok := range tokens {
-		if i > 0 {
+	first := true
+	writeTok := func(tok string) {
+		if !first {
 			b.WriteString(" OR ")
 		}
 		b.WriteString(tok)
+		first = false
+	}
+	for _, tok := range playerTokens {
+		writeTok(tok)
+	}
+	for _, tok := range teamTokens {
+		writeTok(tok)
 	}
 	b.WriteByte(')')
 	if in.VideoOnly {
