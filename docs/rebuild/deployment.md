@@ -17,11 +17,35 @@ Both files are explicitly named — bare `docker compose` from this
 directory has no default file and errors out, preventing a typo from
 targeting prod. Every command must pass `-f docker-compose.{prod,dev}.yml`.
 
-- `docker-compose.dev.yml` — hot-reload dev stack. All four Go binaries
-  (worker, api, scaler, twitter) run via `air` with source bind-mounted.
+- `docker-compose.dev.yml` — hot-reload dev stack. worker/api/scaler
+  binaries run via `air` with source bind-mounted; twitter uses the
+  reconciled `docker/twitter/Dockerfile` (Playwright base + driver
+  install) without air — iterate via `docker compose build twitter`.
+  Includes opt-in `twitter-vnc` service under `profiles: [vnc]` for
+  manual cookie re-auth.
 - `docker-compose.prod.yml` — currently still runs the Python codebase.
   Will migrate to Go binaries during Phase M/C cutover per rebuild-plan.md
-  §13.
+  §13. Twitter + twitter-vnc services already wired to the reconciled
+  Dockerfile as of 2026-07-22 (previously referenced a broken top-level
+  Dockerfile that would have crashed on `playwright.Run()`).
+
+**Twitter image shape** (per decisions.md 2026-07-22): one Dockerfile
+serves both `twitter` (headless) and `twitter-vnc` (visible display).
+Runtime branches on `TWITTER_VNC_MODE=true` env var —
+`docker/twitter/entrypoint.sh` boots Xvfb + fluxbox + x11vnc +
+websockify+noVNC before exec'ing the binary when set. Build-time
+`WITH_VNC=true` arg gates the ~150 MB of VNC binaries so the headless
+image stays lean. See [decisions.md](../decisions.md#2026-07-22)
+for full rationale.
+
+**Twitter VNC one-command flow:**
+
+```bash
+make twitter-vnc-up     # brings up twitter-vnc via `docker compose --profile vnc up`
+# operator logs in at http://found-footy-dev-twitter-vnc.luv (dev)
+# or http://found-footy-prod-twitter-vnc.luv (prod)
+make twitter-vnc-down   # stops + removes the container when done
+```
 
 Cross-project external networks that must exist before either stack
 comes up (created once at workspace bootstrap):

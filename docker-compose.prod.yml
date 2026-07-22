@@ -17,7 +17,8 @@ volumes:
   temporal-postgres-data:
   garage-data:
   garage-meta:
-  twitter-profiles:
+  twitter-profiles:      # shared across headless twitter replicas
+  twitter-vnc-profile:   # dedicated to the twitter-vnc container (per T/b.4)
 
 networks:
   found-footy-prod:
@@ -173,16 +174,31 @@ services:
       - found-footy-prod
     restart: "no"  # Phase F only — flip to unless-stopped in Phase S
 
+  # Headless twitter scrapers. Multi-instance — scaler adjusts replicas
+  # between 2 and 8 at runtime based on active-goal count. Cookies
+  # shared with twitter-vnc via the twitter-cookies bind mount.
   twitter:
     build:
       context: .
-      dockerfile: Dockerfile
-      args:
-        BINARY: twitter
-    image: found-footy-twitter:latest
+      dockerfile: docker/twitter/Dockerfile
+    image: found-footy-prod-twitter:latest
     env_file: .env
+    environment:
+      # /authenticate response points operators at the VNC container.
+      # These get baked into the reauth message so operators see the
+      # exact command + URL to click.
+      TWITTER_VNC_URL: http://found-footy-prod-twitter-vnc.luv
+      TWITTER_VNC_START_CMD: "docker compose --profile vnc up -d twitter-vnc"
+      # Not the VNC container — leave headless-mode default (true) alone.
+    # Playwright headless in Docker: Firefox sandbox needs relaxed
+    # seccomp for its clone3()/unshare() user-namespace calls, plus
+    # more /dev/shm than Docker's 64MB default for the renderer's
+    # shared memory. Both apply here even in headless mode.
+    security_opt:
+      - seccomp:unconfined
+    shm_size: 1gb
     volumes:
-      - twitter-profiles:/data/firefox_profiles
+      - twitter-profiles:/data
       - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
     networks:
       - found-footy-prod
@@ -190,23 +206,38 @@ services:
       replicas: 2  # scaler adjusts between 2 and 8 at runtime
     restart: "no"  # Phase F only — flip to unless-stopped in Phase S
 
-  # Twitter cookie-reauth container — only started when the `vnc` profile
-  # is active: `docker compose --profile vnc up twitter-vnc`
+  # Cookie re-auth container — opt-in via the `vnc` profile:
+  #   docker compose --profile vnc up -d twitter-vnc
+  # Runs the same twitter binary but with Playwright non-headless
+  # (TWITTER_VNC_MODE=true triggers entrypoint.sh to start Xvfb +
+  # fluxbox + x11vnc + websockify+noVNC). Operator opens noVNC in a
+  # browser at found-footy-prod-twitter-vnc.luv, logs in, cookies
+  # land in the shared file, headless fleet picks them up on next
+  # mtime check.
+  #
+  # Shares the same cookie file with headless; separate profile
+  # volume (twitter-vnc-profile) so the visible-display Firefox's
+  # profile state doesn't collide with headless SQLite writes.
   twitter-vnc:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/twitter/Dockerfile
       args:
-        BINARY: twitter
         WITH_VNC: "true"
-    image: found-footy-twitter-vnc:latest
+    image: found-footy-prod-twitter-vnc:latest
     container_name: found-footy-prod-twitter-vnc
     profiles: [vnc]
     env_file: .env
+    environment:
+      TWITTER_VNC_MODE: "true"       # triggers entrypoint's VNC stack
+      TWITTER_HEADLESS: "false"      # Playwright uses the Xvfb display
+    security_opt:
+      - seccomp:unconfined
+    shm_size: 1gb
     volumes:
-      - twitter-profiles:/data/firefox_profiles
+      - twitter-vnc-profile:/data
       - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
     networks:
       - found-footy-prod
-      - proxy
+      - proxy                        # Caddy fronts noVNC:6080
     restart: "no"

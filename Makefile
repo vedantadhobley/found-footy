@@ -27,7 +27,8 @@ TEST_DOCKER_ARGS := -v /var/run/docker.sock:/var/run/docker.sock --network=host
 GO_TEST_RUN      := docker run --rm $(DOCKER_ENV) $(DOCKER_VOLS) $(TEST_DOCKER_ARGS) -w /src $(GO_IMAGE)
 
 .PHONY: help build test test-short test-race test-corpus lint fmt vet tidy clean cache-init \
-        dev-up dev-down dev-logs dev-restart dev-shell dev-ps
+        dev-up dev-down dev-logs dev-restart dev-shell dev-ps \
+        twitter-vnc-up twitter-vnc-down twitter-vnc-logs
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -95,6 +96,35 @@ dev-shell: ## Open a shell inside the worker dev container
 
 dev-ps: ## List running dev containers
 	docker compose -f $(DEV_COMPOSE) ps
+
+# ────── Twitter VNC (opt-in cookie re-auth container) ──────
+#
+# These targets bring up the twitter-vnc container ONLY when an
+# operator needs to log in (cookies expired). The container runs
+# raw Playwright Firefox on a Xvfb display and exposes noVNC over
+# http://found-footy-<env>-twitter-vnc.luv — open in a browser,
+# log in, cookies land in the shared file, headless fleet picks
+# them up via mtime and resumes. Then run `make twitter-vnc-down`
+# to reclaim resources.
+#
+# The dev target defaults to the dev compose file; prod targets
+# operate against the prod compose file explicitly.
+
+PROD_COMPOSE := docker-compose.prod.yml
+
+twitter-vnc-up: ## Bring up the DEV twitter-vnc container for manual cookie re-auth
+	docker compose -f $(DEV_COMPOSE) --profile vnc up -d --build twitter-vnc
+	@echo ""
+	@echo "  ✓ twitter-vnc running. Log in at http://found-footy-dev-twitter-vnc.luv"
+	@echo "  When done: make twitter-vnc-down"
+	@echo ""
+
+twitter-vnc-down: ## Stop and remove the DEV twitter-vnc container
+	docker compose -f $(DEV_COMPOSE) --profile vnc stop twitter-vnc
+	docker compose -f $(DEV_COMPOSE) --profile vnc rm -f twitter-vnc
+
+twitter-vnc-logs: ## Tail logs from the DEV twitter-vnc container
+	docker compose -f $(DEV_COMPOSE) --profile vnc logs -f --tail 50 twitter-vnc
 
 # ────── Housekeeping ──────
 

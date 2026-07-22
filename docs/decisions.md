@@ -6,6 +6,112 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-22 — Twitter Dockerfile: one file, WITH_VNC-gated, matches Python's shape
+
+### Context
+
+Two twitter Dockerfiles existed on this branch and contradicted each
+other:
+
+- `docker/twitter/Dockerfile` — Playwright base image, installs the
+  playwright-go Node driver. This is what T/a's PoC actually validated
+  (standalone `docker build` + `docker run` passed the /health probe
+  with state=unauthenticated). Only referenced by the dev compose file.
+- Top-level `/Dockerfile` — Debian-based, parameterized on BINARY,
+  gated a WITH_VNC=true build arg that installs x11vnc + novnc +
+  websockify. Meant to be one Dockerfile serving all four binaries.
+  **Broken for the twitter binary** because it didn't install the
+  playwright-go driver — `playwright.Run()` would fail on first
+  launch. Referenced by the prod compose file for twitter + twitter-vnc.
+
+Nobody noticed the prod-compose brokenness because T/a was tested via
+standalone build against `docker/twitter/Dockerfile`, and Phase F
+kept `restart: "no"` on all Go services so nothing was actually
+attempting to start.
+
+The next work item (T/b.3, the VNC container image) forced the
+reconciliation.
+
+### Decision
+
+**One Dockerfile per binary "shape"**, not per-service:
+
+- `docker/twitter/Dockerfile` — Playwright base + driver install +
+  optional WITH_VNC layer. Serves BOTH `twitter` (headless) and
+  `twitter-vnc` (visible display). Behavior differs at runtime via
+  `TWITTER_VNC_MODE=true` env var (compose sets per service);
+  entrypoint script conditionally starts Xvfb + fluxbox + x11vnc +
+  websockify+noVNC before exec'ing the binary.
+- Top-level `/Dockerfile` — Debian base, worker/api/scaler only.
+  Explicitly rejects `BINARY=twitter` with a clear error to prevent
+  a future accidental regression.
+
+This is the Python shape (one image, one binary, two modes distinguished
+by entrypoint script) but leaner: the WITH_VNC=true build arg gates
+the ~150 MB of VNC binaries so the headless twitter image doesn't
+carry them. Python's monolith installs everything in every image.
+
+### Runtime split
+
+- Headless container (`twitter` service, compose default): no
+  TWITTER_VNC_MODE, Playwright runs headless=true, no display
+  server needed.
+- VNC container (`twitter-vnc` service, opt-in via `profiles: [vnc]`):
+  compose sets `TWITTER_VNC_MODE=true` + `TWITTER_HEADLESS=false`,
+  entrypoint boots the VNC daemon stack, Playwright renders to the
+  Xvfb display, operator sees it via noVNC in a browser.
+
+### Rationale
+
+- **Same code path scraping in both containers** — Python's most
+  important structural property. Divergent binaries risk scraping-
+  behavior drift.
+- **Runtime env-var switch beats build-time flag** for the mode
+  selection because compose is the natural authority on "which
+  service runs which way" — one build produces an image that can
+  serve either role (headless in prod at scale, visible for ops).
+- **Cross-image parity** — headless and VNC images differ ONLY by
+  the WITH_VNC layer + entrypoint's runtime branch. Any scraping
+  bugfix ships to both by rebuilding the same source.
+
+### Alternatives rejected
+
+- **Two totally separate Dockerfiles** (Dockerfile.twitter +
+  Dockerfile.twitter-vnc) — cleaner file-level separation but
+  duplicates 90% of the content. Any bugfix to the shared parts
+  requires two edits.
+- **Two runtime targets in one Dockerfile via --target** — Docker
+  multi-stage lets you pick a runtime stage, but the compose service
+  definitions would need `target:` args and reading them cross-
+  references. Runtime env-var branching is simpler and more visible.
+- **Python's monolith** (install everything everywhere) — simpler
+  but wastes ~150 MB on every headless image. We already committed
+  to per-binary optimization for worker/api/scaler; extending to
+  twitter for consistency.
+
+### Impact
+
+- Deleted: nothing (both Dockerfiles updated; the top-level one just
+  loses its twitter-specific branches and gains a rejection guard).
+- Changed: `docker/twitter/Dockerfile` — now the single canonical
+  twitter image, gains WITH_VNC layer + entrypoint script hookup.
+- New: `docker/twitter/entrypoint.sh` — bash script that boots the
+  VNC daemon stack when `TWITTER_VNC_MODE=true`, otherwise passthrough.
+- `docker-compose.dev.yml` — twitter service switched to reconciled
+  Dockerfile; new twitter-vnc service (opt-in via profiles: [vnc]);
+  `TWITTER_VNC_URL` + `TWITTER_VNC_START_CMD` env vars set on
+  headless so /authenticate response surfaces them.
+- `docker-compose.prod.yml` — twitter + twitter-vnc both switched to
+  the reconciled Dockerfile (twitter was broken before this).
+- `Makefile` — `twitter-vnc-up`, `twitter-vnc-down`, `twitter-vnc-logs`
+  targets for one-command operator flow.
+- Cross-repo `~/workspace/proxy/caddy/caddy.d/found-footy.caddy` —
+  rename `found-footy-dev-twitter.luv` → `found-footy-dev-twitter-vnc.luv`
+  to match the new dev container name. Flagged for user approval
+  (cross-project edit).
+
+---
+
 ## 2026-07-21 — VNC container is opt-in (not always running)
 
 ### Context

@@ -80,6 +80,9 @@ found-footy/
 │   │   ├── search.go                    T/a stub; full DOM scrape lands T/c
 │   │   └── *_test.go                    26 unit tests (10 cookie backup + 16 auth flow)
 │   └── usecases/                        ⊘ doc.go stub (build when cross-domain ops surface)
+├── docker/twitter/                      ✓ T/b: twitter service image + entrypoint (peer of internal/)
+│   ├── Dockerfile                       Playwright base + playwright-go driver + optional WITH_VNC layer (~150 MB xvfb+fluxbox+x11vnc+novnc+websockify)
+│   └── entrypoint.sh                    Conditionally boots VNC daemon stack when TWITTER_VNC_MODE=true, otherwise passthrough
 ├── migrations/                          ⊘ EMPTY — schema.sql lives in internal/infra/pg/ instead
 │                                          (see decisions.md 2026-07-07)
 ├── scripts/                             smoke + trigger scripts
