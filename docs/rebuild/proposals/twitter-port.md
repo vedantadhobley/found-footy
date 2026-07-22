@@ -4,6 +4,7 @@
 doc until it's reviewed + signed off.
 
 **Revision log:**
+- 2026-07-23 (T/c shipped) — Full /search endpoint replacing the T/a stub. HTTP contract now matches the S7 client (POST + SearchRequest/SearchResponse/VideoRef shape). DOM extraction ported from `scrape.py` including video duration multi-selector walk with M:SS overlay parsing. Scroll loop with all four stop conditions (age / max_scrolls / empty / consecutive_already_seen). Combined verify+search — switcher button check moved inline with search navigation (saves 3-4s per warm-path-expired call). BackupCookies wired into search success path. Baseline stealth #4 (500-3000ms scroll jitter). Structured error_class taxonomy. Live smoke test against real Twitter returned 14 videos including a real @SpursOfficial tweet — full end-to-end verified. Empirically-validated 2026-07-23; see decisions.md for cross-refs.
 - 2026-07-22 (T/b MVP experiment result) — during T/b.3+T/b.4 smoke
   test, ran the Playwright-login validation experiment: moved
   cookies aside, restarted twitter-vnc, opened noVNC to log in

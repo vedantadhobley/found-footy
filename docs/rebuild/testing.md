@@ -21,7 +21,7 @@ updates this doc if it introduces a new test tier or pattern.
 | Adapter unit (httptest-based) | infra/apifootball, twitter, syndication, wikidata, llm | ~35 (grew 2026-07-09 with chunk-parallel + partial-failure coverage) | <200ms total |
 | Adapter integration (testcontainers) | infra/pg, s3, nats, temporal | ~30 | ~30-60s total |
 | Workflow (testsuite.WorkflowTestSuite) | internal/workflow | ~5 (Ingest only, growing) | <100ms per workflow |
-| Twitter service unit (fake sessionBrowser) | internal/twitter | 26 (T/b — 10 cookie backup + 16 auth flow) | ~5s (mtime tests sleep 1.1s to detect fs granularity) |
+| Twitter service unit (fake sessionBrowser) | internal/twitter | 40 (T/b — 10 cookie backup + 16 auth flow + 2 T/b.5 loose ends; T/c — 12 search helpers) | ~5s (mtime tests sleep 1.1s to detect fs granularity) |
 | Synthetic e2e | not shipped | 0 | — |
 
 Counts approximate; grep `grep -r "^func Test" internal/ --include="*_test.go" \| wc -l` for the live number.

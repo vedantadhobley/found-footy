@@ -48,7 +48,43 @@ type ServiceOptions struct {
 	// under load; anything shorter false-flags healthy sessions as
 	// expired.
 	VerifyTimeout time.Duration
+
+	// PageLoadTimeout bounds the initial navigation to a search URL.
+	// Default: 30s — matches Python's driver.set_page_load_timeout(30).
+	// Rare that Twitter takes >30s to render the search shell; longer
+	// waits usually indicate a wedged browser or upstream outage.
+	PageLoadTimeout time.Duration
+
+	// TweetFeedTimeout bounds the wait for the first article to appear
+	// after navigation. Default: 10s. Absent-tweet timeout ≠ error —
+	// treated as legitimate "no results in the age window".
+	TweetFeedTimeout time.Duration
+
+	// MaxScrolls caps the scroll loop. Default: 10 (matches Python).
+	// Safety valve against runaway scrolling on abnormal feed shape.
+	MaxScrolls int
+
+	// ConsecutiveSeenStop is the fourth stop condition (NEW vs Python).
+	// After N consecutive tweets whose IDs are in exclude_urls, stop
+	// scrolling — late-attempt searches walk through mostly-known
+	// tweets and this cuts the waste. Default: 3.
+	ConsecutiveSeenStop int
+
+	// ScrollJitterMin / ScrollJitterMax bound the random sleep between
+	// scroll actions. Default: 500ms / 3000ms (baseline stealth #4
+	// per twitter-port.md T/c). Jitter interval is
+	// [min, max) — set both to the same value to disable jitter for
+	// deterministic tests.
+	ScrollJitterMin time.Duration
+	ScrollJitterMax time.Duration
 }
+
+// Defaults for the scroll/extract loop constants that don't come from
+// the request. Kept as package-level names so tests can reference
+// them without a Service instance.
+const (
+	defaultMaxAgeMinutes = 3 // per twitter-search-query.md D4
+)
 
 // Service is the state-machine wrapper around a sessionBrowser
 // (concrete *Browser in production; fakes in tests). Exposes HTTP
@@ -62,9 +98,15 @@ type Service struct {
 	browser sessionBrowser
 
 	// Config (immutable post-construction — no lock needed).
-	cookieFile    string
-	warmPathTTL   time.Duration
-	verifyTimeout time.Duration
+	cookieFile          string
+	warmPathTTL         time.Duration
+	verifyTimeout       time.Duration
+	pageLoadTimeout     time.Duration
+	tweetFeedTimeout    time.Duration
+	maxScrolls          int
+	consecutiveSeenStop int
+	scrollJitterMin     time.Duration
+	scrollJitterMax     time.Duration
 
 	// authMu serializes EnsureAuthenticated calls so we don't fire
 	// multiple concurrent VerifySession round-trips on the same browser.
@@ -95,13 +137,37 @@ func NewService(b sessionBrowser, opts ServiceOptions) *Service {
 	if opts.VerifyTimeout == 0 {
 		opts.VerifyTimeout = 15 * time.Second
 	}
+	if opts.PageLoadTimeout == 0 {
+		opts.PageLoadTimeout = 30 * time.Second
+	}
+	if opts.TweetFeedTimeout == 0 {
+		opts.TweetFeedTimeout = 10 * time.Second
+	}
+	if opts.MaxScrolls == 0 {
+		opts.MaxScrolls = 10
+	}
+	if opts.ConsecutiveSeenStop == 0 {
+		opts.ConsecutiveSeenStop = 3
+	}
+	if opts.ScrollJitterMin == 0 {
+		opts.ScrollJitterMin = 500 * time.Millisecond
+	}
+	if opts.ScrollJitterMax == 0 {
+		opts.ScrollJitterMax = 3000 * time.Millisecond
+	}
 	return &Service{
-		browser:       b,
-		cookieFile:    opts.CookieFile,
-		warmPathTTL:   opts.WarmPathTTL,
-		verifyTimeout: opts.VerifyTimeout,
-		state:         StateStarting,
-		startedAt:     time.Now().UTC(),
+		browser:             b,
+		cookieFile:          opts.CookieFile,
+		warmPathTTL:         opts.WarmPathTTL,
+		verifyTimeout:       opts.VerifyTimeout,
+		pageLoadTimeout:     opts.PageLoadTimeout,
+		tweetFeedTimeout:    opts.TweetFeedTimeout,
+		maxScrolls:          opts.MaxScrolls,
+		consecutiveSeenStop: opts.ConsecutiveSeenStop,
+		scrollJitterMin:     opts.ScrollJitterMin,
+		scrollJitterMax:     opts.ScrollJitterMax,
+		state:               StateStarting,
+		startedAt:           time.Now().UTC(),
 	}
 }
 
