@@ -53,8 +53,8 @@ Critical path:
   - **Cookie backup is EVENT-DRIVEN, not timer-driven** (per twitter-spec §2): backup fires after every successful search + after cookie restore + after login verify — Python's pattern preserved
   - **`auth_token` presence guard on both backup and restore** — silently drop the operation if missing (twitter-spec §10, load-bearing)
   - `/config/twitter_cookies.json` shared via bind mount; cookies-shared-across-fleet
-  - Cookie expiry monitor + NATS `twitter.auth_expired` emission on expiry
-  - Cookie reload on NATS `twitter.reauthed` subscription (headless fleet)
+  - Cookie expiry monitor + `pg NOTIFY twitter_auth` event=auth_expired on expiry (updated 2026-07-21; was NATS — see decisions.md)
+  - Cookie reload on `pg LISTEN twitter_auth` subscription (headless fleet coordinates via pg intra-project bus)
   - **60 s warm-path fast-check in `EnsureAuthenticated`** — skip full `x.com/home` GET if last activity was < 60 s ago (twitter-spec §10, saves 3-4 s per search during goal burst)
   - `busy` flag exposed via `/status` — True only during active search (twitter-spec §10) — scaler needs this to safely scale down
   - Instance-scoped profile dir via hostname hash to prevent multi-instance profile corruption (twitter-spec §10)

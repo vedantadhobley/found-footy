@@ -6,6 +6,88 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-21 — NATS scope: inter-project only; pg NOTIFY for intra-project pub/sub
+
+**Supersedes (partial):** T/b portion of `docs/rebuild/proposals/twitter-port.md`
+that specified `twitter.auth_expired` / `twitter.reauthed` NATS events for
+Twitter fleet auth coordination. Also flags a follow-up revision to
+`docs/rebuild/proposals/api-contract.md`'s SSE-bridge section.
+
+### Context
+
+Conversation triggered by the T/b Twitter auth work: the signed-off
+`twitter-port.md` proposal used NATS subjects (`twitter.auth_expired`,
+`twitter.reauthed`) to coordinate cookie state across a headless fleet.
+Discussing whether to implement it exposed a broader architectural
+question — the twitter-port design was treating NATS as an
+intra-project pub/sub mechanism, but the workspace's original design
+intent (per `~/workspace/nats/`) is that NATS is workspace-level infra
+for **inter-project** communication (found-footy ↔ vedanta-systems,
+found-footy ↔ joi control plane, found-footy ↔ nexus, plus optional
+Grafana / webhook-dispatcher subscribers). Same pattern nexus itself
+uses per `~/workspace/nexus/docs/cluster/control-plane.md`.
+
+The O3/a-c commits published `event.*` and `fixture.*` to NATS — those
+publishes ARE inter-project (vedanta-systems is the intended
+subscriber for browser SSE fan-out). That usage is correct and stays.
+
+The mistake was scoping twitter fleet auth coordination — a
+genuinely intra-project concern — as another NATS use.
+
+### Decision
+
+**NATS is reserved for inter-project communication.** Concretely, in
+found-footy:
+
+- Publishing domain events (`event.*`, `fixture.*`) to workspace NATS
+  for consumption by vedanta-systems, Grafana, webhook-dispatcher,
+  and future subscribers → **NATS** (unchanged from O3)
+- Talking to joi's control plane (once it's deployed on luv) for LLM
+  inference requests → **NATS request/reply** (replacing today's
+  direct HTTP to `llama-*.joi`, matching workspace principle even
+  though nexus/joi control planes accept both HTTP and NATS ingress)
+- Talking to nexus's control plane → **NATS request/reply** for
+  consistency with the same principle
+- Twitter fleet auth coordination (intra-project) → **pg NOTIFY**
+  (uses existing pg dependency, no cross-project coupling)
+- API's live-updates fan-out to browsers → **vedanta-systems'
+  responsibility** (subscribe to workspace NATS, do SSE from there);
+  found-footy's API surface stays focused on request/response
+  (historical query GETs + webhook subscription management)
+
+### Consequences
+
+- twitter-port.md T/b section updated: replace NATS auth
+  coordination with pg NOTIFY on channel `twitter_auth`. Same
+  behavior (all instances notified when auth state changes),
+  different transport, no cross-project involvement.
+- roadmap.md Week 1 T/b task updated same way.
+- api-contract.md's SSE bridge description needs revision to reflect
+  vedanta-systems being the SSE-to-browsers layer, not found-footy.
+  DEFERRED — no code shipped today depends on this; revise when API
+  surface (Phase A) actually starts implementation.
+- The `internal/infra/nats/` adapter stays exactly as-is — it's
+  found-footy's client to workspace NATS, valid for cross-project
+  publishes. No code churn from this decision.
+- Future joi/nexus control-plane work: when those come online, the
+  `internal/infra/llm/` adapter's transport swaps from direct HTTP
+  to NATS request/reply. `LLMClient` interface stays the same;
+  concurrency semaphore moves out of found-footy code into the
+  control plane. No urgency — direct HTTP works fine until the
+  control planes are deployed.
+
+### Note on pg NOTIFY as the intra-project bus
+
+`pg LISTEN`/`NOTIFY` uses the existing pg dependency (no new server,
+no new client library, no new failure mode). Payload limit is 8 KB
+per message which is fine for coordination signals (Twitter auth
+state, config reload triggers, etc. — not for large event payloads
+which stay on the NATS bus via O3's dual-write pattern). If found-
+footy ever needs intra-project pub/sub for something that outgrows
+8 KB, we revisit; for now pg NOTIFY handles all foreseeable use.
+
+---
+
 ## 2026-07-21 — Alias entity resolution: Wikipedia CirrusSearch replaces `wbsearchentities`
 
 **Supersedes (partial):** the LOOKUP section of the 2026-07-19 decision

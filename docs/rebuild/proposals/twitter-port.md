@@ -132,7 +132,7 @@ Preserving Python's operational pattern (VNC-as-login-terminal, headless-fleet-a
 - **On startup:** launch Firefox pointed at `x.com/login`. Idle until a human connects via VNC.
 - **Login watcher:** a Go process monitors the Firefox profile's `cookies.sqlite` for the `auth_token` cookie appearing.
 - **Cookie capture:** once `auth_token` is present + non-expired, extract cookies from `cookies.sqlite` → write to `/config/twitter_cookies.json` (JSON format, compatible with Python's existing format for migration).
-- **NATS emit:** publish `twitter.reauthed` event so the headless fleet knows to reload cookies from disk.
+- **pg NOTIFY emit:** publish on channel `twitter_auth` with payload `{"event":"reauthed","at":"<ts>"}` so the headless fleet reloads cookies from disk. (Updated 2026-07-21 — was NATS event; changed to pg NOTIFY because twitter fleet coordination is intra-project and NATS is reserved for cross-project comms per decisions.md 2026-07-21.)
 - **Post-capture behavior:** container goes idle. Firefox stays running so a human can re-open VNC and re-auth on future expiry. Not a scraping instance.
 - **HTTP endpoints:** just `/health` + `/status` (report last-capture timestamp, cookie expiry) — no `/search`, no `/download_video`. The scaler routes search traffic away from this container.
 
@@ -140,8 +140,8 @@ Preserving Python's operational pattern (VNC-as-login-terminal, headless-fleet-a
 
 - **Runs Playwright-Go with Firefox.** Persistent context pointed at `/data/firefox-profile/` (per-container profile; NOT shared, because Playwright's persistent context isn't multi-writer-safe).
 - **Cookie loading:** on startup, read `/config/twitter_cookies.json` and load cookies into the Playwright context. Probe `x.com/home` to verify the session is live. Success → serve traffic. Failure → mark `/health` 503, log for scaler visibility.
-- **Cookie expiry monitoring:** every N minutes, inspect current session cookies for `auth_token` validity. If missing/expired → mark unhealthy, fire `twitter.auth_expired` NATS event so someone can re-auth via VNC.
-- **Cookie reload on NATS `twitter.reauthed`:** subscriber goroutine reloads cookies from disk, restarts the Playwright context if necessary, transitions back to healthy.
+- **Cookie expiry monitoring:** every N minutes, inspect current session cookies for `auth_token` validity. If missing/expired → mark unhealthy, emit `pg NOTIFY twitter_auth` with payload `{"event":"auth_expired","instance":"<hostname>","at":"<ts>"}` so operators / other instances see fleet-wide auth trouble. (Updated 2026-07-21 — was NATS event; see decisions.md 2026-07-21 for rationale.)
+- **Cookie reload on `pg NOTIFY twitter_auth` with event=reauthed:** subscriber goroutine (a `LISTEN twitter_auth` connection with a background loop) reloads cookies from disk, restarts the Playwright context if necessary, transitions back to healthy. (Updated 2026-07-21 — was NATS subscription; changed for the same reason.)
 - **NEVER attempts login itself.** If cookies are invalid, the correct behavior is to go unhealthy and wait for a human-driven VNC re-auth. Automating login in a headless container defeats the whole operational split (defensive Firefox for login, automation for scraping).
 
 ### Cookie format
@@ -218,7 +218,7 @@ Preserving Python's fleet pattern with Go-native process management:
 - **`found-footy-{dev,prod}-twitter-vnc`** — one instance, Xvfb + x11vnc + websockify + Firefox + Go service. Exposes VNC on 4103/3203 (dev/prod). Used for manual re-auth + debugging.
 - **`found-footy-{dev,prod}-twitter-N`** — headless instances, no Xvfb / VNC. Go service + Playwright launching Firefox headless. Scale count via docker compose replicas.
 - **Instance registry:** each instance heartbeats to a shared registry (pg table `twitter_instances(id, url, healthy, busy, last_heartbeat, backoff_until)`) every 10s. Discovery reads this to route search requests.
-- **Cookie backup shared** via bind-mount `/config/twitter_cookies.json` — all instances read the same file, `twitter.reauthed` NATS event triggers reload.
+- **Cookie backup shared** via bind-mount `/config/twitter_cookies.json` — all instances read the same file. `pg NOTIFY twitter_auth` event=reauthed triggers reload across the fleet. (Updated 2026-07-21 — was NATS event; see decisions.md 2026-07-21.)
 
 Improvements over Python:
 - Instance registry moves from scaler-owned in-memory state to pg table. Observable via SQL, survives scaler restarts.
@@ -348,7 +348,7 @@ PoC gate: launch Playwright + Firefox in a dev container, load a cookie fixture,
 ## Resolved during 2026-07-16 walkthrough
 
 - **Q1 — Browser library** — Playwright-Go + Firefox for the scraping fleet. Fallback if the T/a PoC gate fails: `tebeka/selenium` + geckodriver + Firefox (mechanical port of Python's `session.py`). Firefox stays regardless.
-- **Q2 — Dual-mode auth** — preserved AS PRIMARY DESIGN, not fallback. Framed as operational (VNC = login terminal, headless fleet = scrapers, cookies shared via disk), not anti-detection. VNC container is login-only (no automation library); headless containers are scraping-only (Playwright-Go, never login). Cookie reload via NATS `twitter.reauthed` event.
+- **Q2 — Dual-mode auth** — preserved AS PRIMARY DESIGN, not fallback. Framed as operational (VNC = login terminal, headless fleet = scrapers, cookies shared via disk), not anti-detection. VNC container is login-only (no automation library); headless containers are scraping-only (Playwright-Go, never login). Cookie reload via `pg NOTIFY twitter_auth` event=reauthed. (Updated 2026-07-21 — was NATS event; see decisions.md 2026-07-21 for the intra-project pub/sub decision.)
 - **Q3 — `/download_video` split** — split into `/extract_cdn_url` + external HTTP download. Enables parallel downloads while the browser stays free for search requests. **Twitter's CDN validates the full request context, not just the signed URL** — Python's `download_video_direct` attaches all browser cookies + User-Agent + Referer + Origin (`session.py:874-885`). That's what bypasses yt-dlp's rate limits. So `/extract_cdn_url` returns a bundle: `{cdn_url, cookies, user_agent, referer, origin}`. External HTTP client attaches all of it. If URL expiry proves flaky, retry via re-extract. Do NOT build a fallback to browser-driven download preemptively — add it only if we see download failures we can't handle otherwise.
 - **Q4 — Cookie backup format** — collapsed. First-pass proposal was based on wrong information: Python's format isn't a bare array, it's already an object: `{exported_at: "...", cookies: [...]}` (see `session.py:298-304`). Python's restore reads `backup_data.get('cookies', [])` and ignores unknown top-level keys. So we preserve Python's existing shape and add fields (`captured_by_instance`, `auth_token_expires_at`, `twitter_username`) as we find them useful. Zero migration friction — Python silently ignores the extras. **Cookies stay shared between dev + prod** — the multi-account fraud detection risk from creating a second Twitter account outweighs the isolation benefits of separate accounts, especially given our READ-only usage stays well under Twitter's rate limits regardless.
 - **Q5 — Instance registry table** — new dedicated pg table `twitter_instances`, mirroring the shape of Python's MongoDB collection (grepped `src/scaler/registry.py`) plus fields for our improvements. Schema:
