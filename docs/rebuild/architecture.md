@@ -29,7 +29,7 @@ found-footy/
 │   │   ├── event/                       ✓ D2: model + State + Repo + tests
 │   │   ├── video/                       ✓ D3: model + Repo + rank + tests
 │   │   ├── alias/                       ✓ D4 (reshaped 2026-07-19): two-phase model + Repo + Normalize + Resolver (lookup pipeline) + tests
-│   │   ├── discovery/                   ✓ Query builder shipped 2026-07-22; rest (workflow, scoring) still O3
+│   │   ├── discovery/                   ✓ Query builder (2026-07-22) + real DiscoveryWorkflow (O3/d, 2026-07-23)
 │   │   │   ├── doc.go                   Package doc — query construction, URL extraction, source scoring
 │   │   │   ├── query_builder.go         BuildTwitterQuery, ErrEmptyQuery, ErrEmptyPlayerName (D1/D4b/D4c/D4d/D7 per twitter-search-query.md)
 │   │   │   └── query_builder_test.go    18 tests — D8 name table, particles, dedup, fallback, safeguards

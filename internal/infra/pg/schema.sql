@@ -329,6 +329,57 @@ CREATE UNIQUE INDEX video_shares_event_rank_active
 CREATE INDEX video_shares_event ON video_shares (event_id);
 CREATE INDEX video_shares_asset ON video_shares (asset_id);
 
+-- 7b. event_search_candidates — Discovery workflow's raw candidate log.
+--
+-- Every video-carrying tweet DiscoveryWorkflow surfaces via a
+-- /search call gets one row here — accepted or later rejected, we
+-- want the audit trail. Enables post-hoc learning ("did our query
+-- surface the tweet with the good goal video? was it discarded by
+-- V-phase LLM validation or dedup?") without re-running historical
+-- searches (which don't reliably reproduce past-window results, per
+-- decisions.md 2026-07-22).
+--
+-- Per twitter-search-query.md D5 + 2026-07-23 sign-off: Discovery
+-- runs a fixed 10 attempts × 60 s spacing. search_attempt is the
+-- 1-10 attempt number that produced this candidate — attempts 2+
+-- typically insert very few new rows because our T/c consecutive-
+-- already-seen scroll stop terminates the search early once we hit
+-- the exclude_urls tail.
+--
+-- Uniqueness: (event_id, tweet_url) — the same tweet can't be
+-- re-inserted for the same event across attempts. Downstream V-phase
+-- adds decision fields (rejection_reason, decision_class) via ALTER
+-- when it ships; kept out of the initial DDL to avoid speculating on
+-- shape before we have empirical rejection cases.
+CREATE TABLE event_search_candidates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    fixture_id BIGINT NOT NULL REFERENCES fixtures(id) ON DELETE RESTRICT,
+
+    -- Search context — which attempt surfaced this candidate.
+    search_attempt INT NOT NULL CHECK (search_attempt BETWEEN 1 AND 20),
+    query TEXT NOT NULL,                                    -- the exact query string; useful for observability + query-tuning audits
+
+    -- Candidate tweet payload (from Twitter service's VideoRef).
+    tweet_url TEXT NOT NULL,
+    tweet_text TEXT NOT NULL DEFAULT '',
+    video_page_url TEXT NOT NULL,
+    duration_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+    username TEXT NOT NULL DEFAULT '',
+    age_minutes_at_discovery DOUBLE PRECISION,              -- extracted from time[datetime] at scrape time; NULL if Twitter didn't render it
+
+    discovered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE (event_id, tweet_url)                            -- same tweet can't re-insert across attempts
+);
+
+CREATE INDEX event_search_candidates_event
+    ON event_search_candidates (event_id);
+CREATE INDEX event_search_candidates_fixture
+    ON event_search_candidates (fixture_id);
+CREATE INDEX event_search_candidates_discovered_at
+    ON event_search_candidates (discovered_at);
+
 -- 8. tweet_intent — semantic intent extraction (§1 extensibility hook, wired from day one)
 CREATE TABLE tweet_intent (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

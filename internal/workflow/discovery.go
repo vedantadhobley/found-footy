@@ -1,26 +1,33 @@
-// DiscoveryWorkflow — MVP stub. Spawned by Monitor's ReconcileFixture
-// via DownstreamSpawner when an event's downstream_triggered flag is
-// flipped (2026-07-16 decision: Temporal-direct spawn + register-on-
-// flip, not NATS-triggered). The stub logs its input, marks its
-// event_downstream_workflows row completed, and returns. No Twitter
-// search yet — that's the T phase (Twitter port) + a later O3/d
-// activity that wires real Discovery work into the stub.
+// DiscoveryWorkflow — production Twitter search + candidate collection.
 //
-// Deterministic workflow ID convention: "discovery-{event_id}" so the
-// row inserted by Monitor pairs 1:1 with the Temporal WorkflowID
+// Spawned by Monitor's ReconcileFixture via DownstreamSpawner when an
+// event's downstream_triggered flag is flipped (2026-07-16 decision:
+// Temporal-direct spawn + register-on-flip, not NATS-triggered).
+// Runs a fixed 10 attempts × 60 s spacing (per user 2026-07-23 sign-
+// off — time-based coverage, not count-based termination). Each
+// attempt is a full /search call; per-event exclude_urls accumulate
+// across attempts so the Twitter service's consecutive-already-seen
+// scroll stop terminates attempts 2+ quickly. Every candidate the
+// search surfaces gets persisted to event_search_candidates for
+// downstream V-phase pickup + post-hoc query-quality learning.
+//
+// Deterministic workflow ID convention: "discovery-{event_id}" so
+// the row inserted by Monitor pairs 1:1 with the Temporal WorkflowID
 // under RejectDuplicate policy. Activity retries after partial-
-// success crashes hit "WorkflowExecutionAlreadyStarted" which is
-// swallowed as success (see the spawner impl).
+// success crashes hit "WorkflowExecutionAlreadyStarted" which the
+// spawner swallows as success.
 package workflow
 
 import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
+	querybuilder "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 )
 
 // DiscoveryWorkflowInput re-exports the shared type so callers that
@@ -30,84 +37,211 @@ import (
 type DiscoveryWorkflowInput = discoveryactivity.DiscoveryWorkflowInput
 
 // DiscoveryWorkflowOutput reports the run outcome for observability.
-// Since the stub does no real work yet, Completed is trivially true
-// once the completion-marking activity returns.
 type DiscoveryWorkflowOutput struct {
-	EventID   uuid.UUID `json:"event_id"`
-	Completed bool      `json:"completed"`
+	EventID         uuid.UUID `json:"event_id"`
+	Completed       bool      `json:"completed"`
+	AttemptsRun     int       `json:"attempts_run"`
+	CandidatesFound int       `json:"candidates_found"`
+	OutcomeClass    string    `json:"outcome_class"`
 }
 
-// DiscoveryWorkflow calls SearchTweets (via the Twitter service —
-// currently Python's twitter/ container behind S7's HTTP client),
-// then marks its event_downstream_workflows row complete with the
-// count of tweets found. Video download / validation / share
-// creation lands in V/a and beyond — this workflow just proves
-// end-to-end that Monitor → Discovery → real Twitter search works.
-//
-// MVP query construction: "player teamname goal". No Wikidata team-
-// alias RAG yet — that's a follow-up phase. For unknown-player
-// events (Player.Known()==false at Monitor's spawn time), the
-// workflow logs + skips the search.
+// Attempt loop constants — per twitter-search-query.md D5 + 2026-07-23
+// user clarification (fixed 10 attempts × 60 s, no jitter, no count-
+// based early exit).
+const (
+	discoveryMaxAttempts        = 10
+	discoveryAttemptSpacing     = 60 * time.Second
+	discoveryMaxAgeMinutes      = 3 // per D4
+	discoveryQueryTimeout       = 2 * time.Minute
+	discoveryPGShortActivityTTL = 30 * time.Second
+	discoveryPGRetryAttempts    = 5
+)
+
+// DiscoveryWorkflow orchestrates the full candidate collection cycle:
+// fetch team aliases → build query → run 10 attempts of /search with
+// accumulated exclude_urls → persist each candidate → mark row complete.
 func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (DiscoveryWorkflowOutput, error) {
 	log := workflow.GetLogger(ctx)
 	log.Info("DiscoveryWorkflow started",
 		"event_id", in.EventID,
 		"fixture_id", in.FixtureID,
+		"team_id", in.TeamID,
 		"player", in.PlayerName,
 		"team", in.TeamName,
 		"minute", in.Minute,
 	)
 
-	outcomeClass := "no_search_unknown_player"
-	var tweetsFound int
+	out := DiscoveryWorkflowOutput{EventID: in.EventID}
 
-	// Skip Twitter search if the player is unknown — no useful query
-	// to build and Twitter results would be noise.
-	if in.PlayerName != "" {
-		searchCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-			StartToCloseTimeout: 2 * time.Minute, // Python's default search timeout
-			HeartbeatTimeout:    30 * time.Second,
-			RetryPolicy: &temporal.RetryPolicy{
-				InitialInterval:    2 * time.Second,
-				BackoffCoefficient: 2,
-				MaximumAttempts:    3, // Twitter service rate limits + auth expiry are the common failures
-			},
-		})
-		query := in.PlayerName + " " + in.TeamName + " goal"
+	// D4b guard — Monitor's debounce should hold events until player
+	// is known. If it fires empty, log + mark complete with a distinct
+	// outcome_class so we can grep Loki for pipeline bugs.
+	if in.PlayerName == "" {
+		out.OutcomeClass = "unknown_player"
+		return finalizeDiscovery(ctx, in, out, log)
+	}
+
+	// Step 1: fetch team aliases from pg.
+	fetchCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: discoveryPGShortActivityTTL,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    time.Second,
+			BackoffCoefficient: 2,
+			MaximumAttempts:    discoveryPGRetryAttempts,
+		},
+	})
+	var aliasesOut discoveryactivity.FetchTeamAliasesOutput
+	if err := workflow.ExecuteActivity(fetchCtx,
+		(*discoveryactivity.Activities).FetchTeamAliases,
+		discoveryactivity.FetchTeamAliasesInput{TeamID: in.TeamID},
+	).Get(fetchCtx, &aliasesOut); err != nil {
+		log.Warn("FetchTeamAliases failed — falling back to TeamName only",
+			"team_id", in.TeamID, "err", err)
+	}
+
+	// Step 2: build the query. Canonical name falls back to
+	// in.TeamName (api-football team.name) if team_aliases row is
+	// unresolved — the query builder always tokenizes canonical, so
+	// even with empty aliases we get something to search on.
+	canonicalName := aliasesOut.CanonicalName
+	if canonicalName == "" {
+		canonicalName = in.TeamName
+	}
+	query, err := querybuilder.Build(in.PlayerName, canonicalName, aliasesOut.Aliases)
+	if err != nil {
+		log.Warn("query builder rejected input", "err", err,
+			"player", in.PlayerName, "canonical", canonicalName,
+			"alias_count", len(aliasesOut.Aliases))
+		out.OutcomeClass = "empty_query"
+		return finalizeDiscovery(ctx, in, out, log)
+	}
+	log.Info("query built", "query", query, "length", len(query))
+
+	// Step 3: 10-attempt search loop with accumulated exclude_urls.
+	//
+	// exclude_urls is a workflow-local []string so retries + replays
+	// deterministically rebuild the same accumulation. Each attempt's
+	// candidates that pass the "new to us" check get appended.
+	excludeURLs := make([]string, 0, 64)
+	seenTweetIDs := make(map[string]struct{}, 64) // dedup within workflow state
+
+	searchOptions := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: discoveryQueryTimeout,
+		HeartbeatTimeout:    30 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    2 * time.Second,
+			BackoffCoefficient: 2,
+			MaximumAttempts:    3, // per-search transient failures only
+		},
+	})
+	storeOptions := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: discoveryPGShortActivityTTL,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    time.Second,
+			BackoffCoefficient: 2,
+			MaximumAttempts:    discoveryPGRetryAttempts,
+		},
+	})
+
+	for attempt := 1; attempt <= discoveryMaxAttempts; attempt++ {
 		var searchOut discoveryactivity.SearchTweetsOutput
-		if err := workflow.ExecuteActivity(searchCtx,
+		if err := workflow.ExecuteActivity(searchOptions,
 			(*discoveryactivity.Activities).SearchTweets,
 			discoveryactivity.SearchTweetsInput{
 				EventID:       in.EventID,
 				FixtureID:     in.FixtureID,
 				Query:         query,
-				MaxAgeMinutes: 5,
-			}).Get(searchCtx, &searchOut); err != nil {
-			log.Warn("SearchTweets failed", "err", err, "query", query)
-			outcomeClass = "search_failed"
+				ExcludeURLs:   excludeURLs,
+				MaxAgeMinutes: discoveryMaxAgeMinutes,
+			}).Get(searchOptions, &searchOut); err != nil {
+			// Transient search failure — log and move on to the next
+			// attempt after the spacing timer. Don't fail the whole
+			// workflow because one attempt didn't land.
+			log.Warn("SearchTweets attempt failed",
+				"attempt", attempt, "err", err)
 		} else {
-			tweetsFound = searchOut.Count
-			if tweetsFound == 0 {
-				outcomeClass = "no_tweets_found"
-			} else {
-				outcomeClass = "tweets_found"
+			// Persist newly-surfaced candidates.
+			for _, v := range searchOut.Videos {
+				if v.TweetURL == "" {
+					continue
+				}
+				if _, dup := seenTweetIDs[v.TweetURL]; dup {
+					continue
+				}
+				seenTweetIDs[v.TweetURL] = struct{}{}
+				excludeURLs = append(excludeURLs, v.TweetURL)
+
+				var storeOut discoveryactivity.StoreCandidateOutput
+				if err := workflow.ExecuteActivity(storeOptions,
+					(*discoveryactivity.Activities).StoreCandidate,
+					discoveryactivity.StoreCandidateInput{
+						EventID:               in.EventID,
+						FixtureID:             in.FixtureID,
+						SearchAttempt:         attempt,
+						Query:                 query,
+						TweetURL:              v.TweetURL,
+						TweetText:             v.TweetText,
+						VideoPageURL:          v.VideoPageURL,
+						DurationSeconds:       v.DurationSeconds,
+						Username:              v.Username,
+						AgeMinutesAtDiscovery: v.AgeMinutes,
+					}).Get(storeOptions, &storeOut); err != nil {
+					// Don't blow up the workflow on a per-candidate
+					// insert failure — log + continue. The candidate
+					// data is still in seenTweetIDs so retry-time
+					// re-discovery won't produce dupes.
+					log.Warn("StoreCandidate failed",
+						"tweet_url", v.TweetURL, "err", err)
+				} else if storeOut.Inserted {
+					out.CandidatesFound++
+				}
 			}
-			log.Info("SearchTweets succeeded",
-				"query", query,
-				"count", tweetsFound,
+			log.Info("attempt complete",
+				"attempt", attempt,
+				"videos_returned", searchOut.Count,
+				"cumulative_candidates", out.CandidatesFound,
+				"stop_reason", searchOut.StopReason,
 			)
+		}
+		out.AttemptsRun = attempt
+
+		// Wait 60s before the next attempt. Skip the timer after the
+		// last attempt — no point sleeping when we're about to finalize.
+		if attempt < discoveryMaxAttempts {
+			_ = workflow.Sleep(ctx, discoveryAttemptSpacing)
 		}
 	}
 
-	// Mark the event_downstream_workflows row completed on exit.
-	// Row was inserted by Monitor pre-spawn; this UPDATEs it.
-	// See decisions.md 2026-07-16 spawn rule + completion-contract.md.
+	// Classify the outcome for observability. tweets_found /
+	// no_tweets_found preserved from the earlier stub for continuity;
+	// added attempts_completed_no_candidates to distinguish "10
+	// attempts, zero results" (query miss) from "10 attempts, some
+	// results" (normal).
+	switch {
+	case out.CandidatesFound > 0:
+		out.OutcomeClass = "candidates_found"
+	default:
+		out.OutcomeClass = "no_candidates"
+	}
+	return finalizeDiscovery(ctx, in, out, log)
+}
+
+// finalizeDiscovery is the exit ramp — marks the
+// event_downstream_workflows row completed with the outcome_class,
+// returns the workflow output. Called from every exit path so the
+// checklist row always transitions to completed.
+func finalizeDiscovery(
+	ctx workflow.Context,
+	in DiscoveryWorkflowInput,
+	out DiscoveryWorkflowOutput,
+	logger log.Logger,
+) (DiscoveryWorkflowOutput, error) {
 	actCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Second,
+		StartToCloseTimeout: discoveryPGShortActivityTTL,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:    time.Second,
 			BackoffCoefficient: 2,
-			MaximumAttempts:    5,
+			MaximumAttempts:    discoveryPGRetryAttempts,
 		},
 	})
 	var completeOut discoveryactivity.MarkDownstreamCompleteOutput
@@ -117,20 +251,18 @@ func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (Discove
 			EventID:      in.EventID,
 			WorkflowType: "discovery",
 			WorkflowID:   workflow.GetInfo(ctx).WorkflowExecution.ID,
-			OutcomeClass: outcomeClass,
+			OutcomeClass: out.OutcomeClass,
 		}).Get(actCtx, &completeOut); err != nil {
-		// Row-update failure is not fatal to the workflow logic —
-		// the outbox catch-up worker (future) could reconcile.
-		// Log via the workflow logger; return the error so Temporal
-		// records the workflow as failed for observability.
-		log.Warn("MarkDownstreamComplete failed", "err", err)
-		return DiscoveryWorkflowOutput{EventID: in.EventID, Completed: false}, err
+		logger.Warn("MarkDownstreamComplete failed", "err", err)
+		return out, err
 	}
 
-	log.Info("DiscoveryWorkflow completed",
+	out.Completed = true
+	logger.Info("DiscoveryWorkflow finished",
 		"event_id", in.EventID,
-		"outcome", outcomeClass,
-		"tweets_found", tweetsFound,
+		"attempts_run", out.AttemptsRun,
+		"candidates_found", out.CandidatesFound,
+		"outcome", out.OutcomeClass,
 	)
-	return DiscoveryWorkflowOutput{EventID: in.EventID, Completed: true}, nil
+	return out, nil
 }

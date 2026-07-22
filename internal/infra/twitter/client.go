@@ -37,19 +37,29 @@ type SearchRequest struct {
 }
 
 // SearchResponse is the parsed body of a successful POST /search.
-// Videos is the list of discovered tweet + video URLs.
+// Videos is the list of discovered tweet + video URLs. Extra
+// observability fields (StopReason, Scrolls) are omitempty for
+// backward compat — Python service leaves them zero.
 type SearchResponse struct {
-	Status string     `json:"status"`
-	Videos []VideoRef `json:"videos"`
-	Count  int        `json:"count"`
+	Status     string     `json:"status"`
+	Videos     []VideoRef `json:"videos"`
+	Count      int        `json:"count"`
+	StopReason string     `json:"stop_reason,omitempty"`
+	Scrolls    int        `json:"scrolls,omitempty"`
 }
 
-// VideoRef is one discovered video from a Twitter search.
+// VideoRef is one discovered video from a Twitter search. Extra
+// omitempty fields (Username, AgeMinutes) match the Twitter service's
+// SearchResponse — they're populated by T/c but the older Python
+// service leaves them zero, so JSON encoding skips them for backward
+// compat.
 type VideoRef struct {
 	TweetURL        string  `json:"tweet_url"`
 	TweetText       string  `json:"tweet_text"`
 	VideoPageURL    string  `json:"video_page_url"`
 	DurationSeconds float64 `json:"duration_seconds"`
+	Username        string  `json:"username,omitempty"`
+	AgeMinutes      float64 `json:"age_minutes,omitempty"`
 }
 
 // NewClient — validates config + probes /health so a dead twitter
