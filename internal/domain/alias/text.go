@@ -92,6 +92,41 @@ func tokenize(phrase string) []string {
 	return out
 }
 
+// TokenizePlayerName tokenizes a player's name string and filters
+// through the multilingual skip-list. Used by the Discovery-side
+// Twitter query builder (per twitter-search-query.md D8) to expand
+// a player name like "Kevin De Bruyne" into query tokens `{kevin,
+// bruyne}` — with `de` filtered as a Romance-language particle.
+//
+// Applies both tokenize's normalization (NFD strip, ß→ss, dash split,
+// ≤2-char drop, non-Latin script filter) AND the skip-list filter
+// (particles like `de/van/der/von/la/le/el/il/das/di/da`). Deduplicates
+// while preserving first-seen order.
+//
+// The alias selection pipeline uses tokenize + skip-list too but
+// with additional layers (per-language threshold, English rescue,
+// venue-city skip) — this helper is the player-name variant that
+// stops after the core two steps.
+func TokenizePlayerName(name string) []string {
+	tokens := tokenize(name)
+	if len(tokens) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(tokens))
+	seen := make(map[string]struct{}, len(tokens))
+	for _, tok := range tokens {
+		if isSkipped(tok) {
+			continue
+		}
+		if _, dup := seen[tok]; dup {
+			continue
+		}
+		seen[tok] = struct{}{}
+		out = append(out, tok)
+	}
+	return out
+}
+
 // hasNonASCII reports whether s contains any rune outside the ASCII
 // range (0..127). See tokenize's doc for the rationale — after NFD
 // normalization, Latin scripts fold to ASCII and non-Latin scripts
