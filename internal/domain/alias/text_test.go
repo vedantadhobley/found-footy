@@ -108,6 +108,40 @@ func TestTokenize_ShortAndDigitFiltered(t *testing.T) {
 	}
 }
 
+// TestTokenize_ConcatFormsDropped — Wikidata sometimes stores aliases
+// as period-separated concats like "A.C.F.Fiorentina" (English alias
+// for Q2052). After stripPunct collapses the periods we get
+// "ACFFiorentina" — should be caught by isCamelConcat's upper→lower
+// pattern (added 2026-07-23 after the O3/d smoke test surfaced
+// `acffiorentina` in Fiorentina's alias set).
+//
+// Also verifies the classic camelCase concat still drops
+// (LiverpoolFC, FCBarcelona).
+func TestTokenize_ConcatFormsDropped(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"A.C.F.Fiorentina", nil},   // dot-concat → ACFFiorentina → upper→lower pattern → drop
+		{"S.S.C.Napoli", nil},        // same pattern
+		{"LiverpoolFC", nil},         // classic camelCase → drop
+		{"FCBarcelona", nil},         // acronym+word already tested elsewhere; assert drop
+		{"AtléticoMadrid", nil},      // NFD strip runs BEFORE camel check on the tokenizer path,
+		                              // but this specific test drives tokenize() directly and
+		                              // the diacritic stripping still applies via norm.NFD
+		{"ACF Fiorentina", []string{"acf", "fiorentina"}}, // space-separated: both survive
+		{"F.C. Barcelona", []string{"barcelona"}},         // fc drops via ≤2
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got := tokenize(tc.in)
+			if !equalSets(got, tc.want) {
+				t.Errorf("tokenize(%q) = %v; want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestStripKnownOrgSuffix — the acronym-rescue helper.
 func TestStripKnownOrgSuffix(t *testing.T) {
 	cases := []struct {
