@@ -28,8 +28,12 @@ volumes:
   temporal-postgres-data:
   garage-data:
   garage-meta:
-  twitter-profile:       # shared across headless twitter instances
   twitter-vnc-profile:   # dedicated to twitter-vnc (opt-in `vnc` profile)
+  # NOTE: headless twitter's Firefox profile lives in the container's
+  # writable layer, NOT a shared volume — matches Python-shape ephemeral
+  # profiles. Firefox refuses to run two processes against the same
+  # profile dir (.parentlock guard), so sharing across replicas would
+  # crash all but the first. See decisions.md 2026-07-23.
 
 networks:
   found-footy-dev:
@@ -224,18 +228,15 @@ services:
       TWITTER_VNC_URL: http://found-footy-dev-twitter-vnc.luv
       TWITTER_VNC_START_CMD: "docker compose -f docker-compose.dev.yml --profile vnc up -d twitter-vnc"
     volumes:
-      # Persistent Firefox profile across container rebuilds so we don't
-      # re-download browser state every time. Mount at /data (parent)
-      # so the code's os.MkdirAll(/data/firefox-profile) creates the
-      # subdir with pwuser ownership — mounting the volume directly at
-      # /data/firefox-profile makes it root-owned and Firefox's
-      # user-namespace sandbox fails silently with a misleading
-      # "Firefox is already running" error.
-      - twitter-profile:/data
       # Cookie backup file — shared with twitter-vnc. Read-write so
       # the service can save refreshed cookies mid-session (per
       # twitter-spec §2). Bind mount to host so it survives full
       # docker-compose down + volume prune.
+      #
+      # NOTE (decisions.md 2026-07-23): headless twitter's Firefox
+      # profile lives in the container's writable layer, NOT a shared
+      # volume. Firefox's .parentlock guard would refuse to start
+      # replicas 2+ if all mounted the same profile dir.
       - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
     networks:
       - found-footy-dev
