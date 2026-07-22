@@ -28,7 +28,6 @@ package discovery
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/vedantadhobley/found-footy/internal/domain/alias"
@@ -98,15 +97,19 @@ var ErrEmptyQuery = errors.New("discovery: query has no tokens")
 var ErrEmptyPlayerName = errors.New("discovery: player name is empty (D4b upstream invariant)")
 
 // BuildTwitterQuery composes the OR-everything query string per
-// twitter-search-query.md D1. Deduplicates tokens (player + team
-// slots can overlap — e.g. a player named "Argentina Sanchez"),
-// preserves first-seen order for deterministic output that makes
-// tests + observability logs comparable.
+// twitter-search-query.md D1. Player tokens and team tokens are kept
+// as separate concerns — dedup happens WITHIN the team slot (canonical
+// name + curated aliases can produce overlapping tokens like `liverpool`
+// in both) but NOT across slots (a player name overlapping a team
+// alias is a data-pipeline anomaly, not the query builder's problem).
+// Emit order: player tokens first, then team tokens.
 //
 // Returns:
 //   - (query, nil) on success
-//   - ("", ErrEmptyPlayerName) if in.PlayerName is empty
-//   - ("", ErrEmptyQuery) if all slots produce no tokens
+//   - ("", ErrEmptyPlayerName) if in.PlayerName is empty or whitespace
+//   - ("", ErrEmptyQuery) if both slots produce zero tokens (only fires
+//     when player fully skip-lists AND team has no canonical/aliases —
+//     a compound edge case)
 func BuildTwitterQuery(in QueryInput) (string, error) {
 	if strings.TrimSpace(in.PlayerName) == "" {
 		return "", ErrEmptyPlayerName
@@ -194,12 +197,4 @@ func Build(playerName, teamCanonicalName string, teamAliases []string) (string, 
 // past Twitter's ~500 char query limit.
 func LengthWarn(query string) bool {
 	return len(query) > QueryLengthWarnThreshold
-}
-
-// String helper for a debug envelope. Not exported — used by tests.
-func debugSummary(in QueryInput, out string, err error) string {
-	if err != nil {
-		return fmt.Sprintf("query build failed: player=%q, err=%v", in.PlayerName, err)
-	}
-	return fmt.Sprintf("query=%q, len=%d (warn=%v)", out, len(out), LengthWarn(out))
 }

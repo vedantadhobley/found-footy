@@ -63,6 +63,18 @@ var skipList = map[string]struct{}{
 	"el":   {}, "il": {}, "das": {}, "der": {}, "die": {}, "den": {},
 	"de":   {}, "del": {}, "du": {}, "di": {}, "da": {}, "do": {}, "dos": {},
 	"and":  {}, "of": {}, "van": {}, "en": {}, "y": {},
+	"und":  {}, // German "and" — surfaced 2026-07-22 audit as Bayer Leverkusen alias
+
+	// Generic-noise words observed leaking through the ≥2-lang threshold
+	// during the 2026-07-22 real-pipeline audit. Each catches a specific
+	// team's alias set including a token that matches millions of
+	// unrelated tweets in the target language:
+	"sportverein": {}, // German "sports association" — Bayer Leverkusen (Turn- und Sportverein)
+	"turn":        {}, // German "gymnastics" — Bayer Leverkusen; English "turn" also generic
+	"company":     {}, // English generic — Bayer Leverkusen (Bayer AG corporate context?)
+	"casa":        {}, // Spanish "house" — Real Madrid; matches every Spanish tweet
+	"royal":       {}, // English "royal" — Real Madrid (translation of "Real"); too generic alone
+	"mecanica":    {}, // Spanish "mechanical" — Netherlands (unclear source, likely tokenization artifact)
 
 	// Placeholder junk from tokenization artifacts.
 	"mens": {}, // from splitting "X men's national football team" → mens
