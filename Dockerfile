@@ -1,21 +1,23 @@
-# Prod image for all four Go binaries. Parameterized on BINARY.
+# Prod image for worker + api + scaler binaries. Parameterized on BINARY.
 #
 # Build with:
 #   docker build --build-arg BINARY=worker -t found-footy-worker .
 #   docker build --build-arg BINARY=api    -t found-footy-api    .
 #   docker build --build-arg BINARY=scaler -t found-footy-scaler .
-#   docker build --build-arg BINARY=twitter -t found-footy-twitter .
 #
-# docker-compose.prod.yml passes BINARY per service. See §10.
+# The twitter binary has its own Dockerfile (docker/twitter/Dockerfile)
+# because it needs the Playwright base image + Firefox + optional VNC
+# stack — a substantial delta from what worker/api/scaler need.
 
 # ────── build stage ──────
-# bookworm (not alpine) because the twitter binary target needs glibc
-# for Playwright's Firefox launcher. Same base for all four binaries;
-# cheaper than juggling two build images.
+# bookworm (not alpine) because we want glibc for CGO-agnostic
+# consistency with the twitter Dockerfile's builder — future CGO deps
+# (if any) don't ambush us with musl-vs-glibc drift.
 FROM golang:1.25-bookworm AS build
 
 ARG BINARY
-RUN test -n "$BINARY" || (echo "ERROR: BINARY build arg is required (worker|api|scaler|twitter)" && exit 1)
+RUN test -n "$BINARY" || (echo "ERROR: BINARY build arg is required (worker|api|scaler)" && exit 1)
+RUN test "$BINARY" != "twitter" || (echo "ERROR: use docker/twitter/Dockerfile for the twitter binary" && exit 1)
 
 WORKDIR /src
 
@@ -43,34 +45,14 @@ FROM debian:bookworm-slim
 ARG BINARY
 ENV BINARY=${BINARY}
 
-# Base runtime deps that every binary needs.
+# Base runtime deps. ffmpeg is present because the api + worker may
+# invoke it for future video pipeline hooks (§14 Phase V); trimming
+# it is a Phase-Z cleanup, not worth the branching now.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         tzdata \
         ffmpeg \
     && rm -rf /var/lib/apt/lists/*
-
-# Twitter target: add Firefox + Xvfb for Playwright headless browser.
-# Skipped for other binaries (BINARY != "twitter" → the RUN is a no-op
-# per the shell `if` — no layer growth beyond a few KB).
-RUN if [ "$BINARY" = "twitter" ]; then \
-        apt-get update && apt-get install -y --no-install-recommends \
-            firefox-esr \
-            xvfb \
-        && rm -rf /var/lib/apt/lists/*; \
-    fi
-
-# noVNC layer — only for the twitter-vnc container (docker-compose "vnc"
-# profile). Adds ~100 MB, so we gate it behind a build arg rather than
-# baking into every twitter image.
-ARG WITH_VNC=false
-RUN if [ "$WITH_VNC" = "true" ]; then \
-        apt-get update && apt-get install -y --no-install-recommends \
-            x11vnc \
-            novnc \
-            websockify \
-        && rm -rf /var/lib/apt/lists/*; \
-    fi
 
 RUN adduser --disabled-password --gecos "" --uid 1000 app
 USER app

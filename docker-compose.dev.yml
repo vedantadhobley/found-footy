@@ -6,10 +6,10 @@
 # garage) share the same dev network and speak service-name DNS.
 #
 # HTTP services fronted by workspace Caddy at:
-#   found-footy-dev-api.luv          → api:8080
-#   found-footy-dev-temporal-ui.luv  → temporal-ui:8080
-#   found-footy-dev-garage-web.luv   → garage-web:3902 (if enabled)
-#   found-footy-dev-twitter.luv      → twitter:6080  (noVNC, always on in dev)
+#   found-footy-dev-api.luv           → api:8080
+#   found-footy-dev-temporal-ui.luv   → temporal-ui:8080
+#   found-footy-dev-garage-web.luv    → garage-web:3902 (if enabled)
+#   found-footy-dev-twitter-vnc.luv   → twitter-vnc:6080  (opt-in via `vnc` profile)
 #
 # Only host port published: temporal gRPC 7233 for host-side dev clients.
 
@@ -28,7 +28,8 @@ volumes:
   temporal-postgres-data:
   garage-data:
   garage-meta:
-  twitter-profile:
+  twitter-profile:       # shared across headless twitter instances
+  twitter-vnc-profile:   # dedicated to twitter-vnc (opt-in `vnc` profile)
 
 networks:
   found-footy-dev:
@@ -190,14 +191,13 @@ services:
     restart: unless-stopped
 
   # ────── Go: twitter (Playwright browser automation) ──────
-  # Dev twitter always has noVNC on (cookie re-auth needs it). Prod
-  # gates VNC behind a compose profile.
+  # Dev twitter runs headless — same as prod. VNC container is opt-in
+  # via the `vnc` compose profile below (matches prod's shape per
+  # decisions.md 2026-07-22, VNC-opt-in reconciliation).
   twitter:
-    # Swapped 2026-07-18 from the bootstrap-stub Dockerfile.dev to the
-    # T/a-passing Playwright-Go + Firefox Dockerfile. No hot-reload
-    # via air here — twitter service iterates less than the worker,
-    # so trading off `docker compose build twitter && up -d` for
-    # matched-driver Firefox is the right dev ergonomics for now.
+    # Reconciled 2026-07-22 to use the merged docker/twitter/Dockerfile
+    # (Playwright base + driver install + optional WITH_VNC layer);
+    # the top-level Dockerfile is worker/api/scaler-only.
     build:
       context: .
       dockerfile: docker/twitter/Dockerfile
@@ -217,10 +217,12 @@ services:
     # work too but is more permissive; shm_size is scoped.
     shm_size: 1gb
     environment:
-      # Override the Dockerfile ENV defaults for dev-mode observability:
-      # let /status expose that we're in dev, and keep the log verbosity
-      # up. Profile dir + cookie file paths inherit from the Dockerfile.
       TWITTER_HEADLESS: "true"
+      # /authenticate response points operators at the (opt-in) VNC
+      # container. Baked into the reauth message so operators see the
+      # exact command + URL to click.
+      TWITTER_VNC_URL: http://found-footy-dev-twitter-vnc.luv
+      TWITTER_VNC_START_CMD: "docker compose -f docker-compose.dev.yml --profile vnc up -d twitter-vnc"
     volumes:
       # Persistent Firefox profile across container rebuilds so we don't
       # re-download browser state every time. Mount at /data (parent)
@@ -230,14 +232,48 @@ services:
       # user-namespace sandbox fails silently with a misleading
       # "Firefox is already running" error.
       - twitter-profile:/data
-      # Cookie backup file — shared with (future) VNC container. Read-
-      # write so the service can save refreshed cookies mid-session
-      # (Python does this every successful search per twitter-spec §2).
+      # Cookie backup file — shared with twitter-vnc. Read-write so
+      # the service can save refreshed cookies mid-session (per
+      # twitter-spec §2). Bind mount to host so it survives full
+      # docker-compose down + volume prune.
       - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
     networks:
       - found-footy-dev
-      - proxy       # noVNC HTTP fronted by Caddy (VNC container lands in T/b)
     restart: unless-stopped
+
+  # ────── Go: twitter-vnc (manual cookie re-auth container) ──────
+  # Opt-in only. Started via:
+  #   docker compose -f docker-compose.dev.yml --profile vnc up -d twitter-vnc
+  # or via `make twitter-vnc-up`. Same twitter binary; entrypoint
+  # boots Xvfb + fluxbox + x11vnc + websockify+noVNC because
+  # TWITTER_VNC_MODE=true, Playwright renders into the visible display.
+  # Operator opens noVNC via found-footy-dev-twitter-vnc.luv, logs in,
+  # cookies land in the shared file, headless picks up via mtime.
+  twitter-vnc:
+    build:
+      context: .
+      dockerfile: docker/twitter/Dockerfile
+      args:
+        WITH_VNC: "true"
+    image: found-footy-dev-twitter-vnc:latest
+    container_name: found-footy-dev-twitter-vnc
+    profiles: [vnc]
+    env_file: .env
+    security_opt:
+      - seccomp:unconfined
+    shm_size: 1gb
+    environment:
+      TWITTER_VNC_MODE: "true"       # entrypoint boots the VNC stack
+      TWITTER_HEADLESS: "false"      # Playwright uses the Xvfb display
+    volumes:
+      # Separate profile dir from headless — visible Firefox's SQLite
+      # writes shouldn't race with the headless Playwright context.
+      - twitter-vnc-profile:/data
+      - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
+    networks:
+      - found-footy-dev
+      - proxy       # Caddy fronts noVNC:6080 as twitter-vnc.luv
+    restart: "no"   # opt-in service; operator controls its lifecycle
 
   # Scaler is NOT included in dev. Auto-scaling only makes sense
   # when you have replicas to scale; dev runs one of each service.
