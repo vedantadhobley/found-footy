@@ -47,16 +47,22 @@ type QueryInput struct {
 	PlayerName string
 
 	// TeamCanonicalName is the api-football team.name for the
-	// scoring team (or beneficiary for own goals). Used as the
-	// D4c fallback when TeamAliases is empty — tokenizes the
-	// canonical name to seed the team slot with something rather
-	// than skipping to empty-team.
+	// scoring team (or beneficiary for own goals). ALWAYS tokenized
+	// and unioned with TeamAliases. Not just a fallback — the
+	// canonical name is the team's api-reported identity and needs
+	// to be in the query regardless of whether the alias pipeline
+	// happened to include it. Example: "Bayer Leverkusen" — if the
+	// ≥2-lang threshold dropped `bayer` (only present in the German
+	// Wikidata label), merging canonical here guarantees it's still
+	// in the query. Dedup collapses the common case where aliases
+	// already contain the canonical tokens.
 	TeamCanonicalName string
 
 	// TeamAliases is the curated set produced by alias.Resolver.Select
-	// for the scoring team. Primary source for the team slot.
-	// Empty is legal (Nice-class NoMatch teams) — fallback via
-	// TeamCanonicalName kicks in.
+	// for the scoring team. Unioned with the canonical-name tokens
+	// (see TeamCanonicalName docstring). Empty is legal (Nice-class
+	// NoMatch teams) — canonical tokens carry the team slot in
+	// that case.
 	TeamAliases []string
 
 	// VideoOnly toggles the `filter:videos` server-side restriction.
@@ -109,13 +115,34 @@ func BuildTwitterQuery(in QueryInput) (string, error) {
 	// Player slot — expand via the shared tokenizer.
 	playerTokens := alias.TokenizePlayerName(in.PlayerName)
 
-	// Team slot — prefer the curated alias set from the pipeline.
-	// D4c fallback: if empty, tokenize the canonical name and use
-	// those tokens. If canonical is also empty (upstream shouldn't
-	// let this happen), we end up with just player tokens.
-	teamTokens := in.TeamAliases
-	if len(teamTokens) == 0 && in.TeamCanonicalName != "" {
-		teamTokens = alias.TokenizePlayerName(in.TeamCanonicalName)
+	// Team slot — union of canonical-name tokens + curated aliases.
+	// Always tokenize canonical (not just as an aliases-empty fallback)
+	// because the alias pipeline's ≥2-lang threshold + venue-city skip
+	// occasionally drop obvious canonical tokens that fail the multi-
+	// language corroboration rule. Example: "Bayer Leverkusen" — if
+	// `bayer` only appears in the German Wikidata label, the ≥2-lang
+	// rule would exclude it. Merging canonical here guarantees the
+	// team's api-reported name is always represented; dedup collapses
+	// the common case where aliases already include those tokens.
+	//
+	// D4c fallback (aliases empty) is now implicit — if TeamAliases is
+	// nil the union is just the canonical tokens.
+	canonicalTokens := alias.TokenizePlayerName(in.TeamCanonicalName)
+	teamTokens := make([]string, 0, len(canonicalTokens)+len(in.TeamAliases))
+	teamSeen := make(map[string]struct{}, cap(teamTokens))
+	for _, tok := range canonicalTokens {
+		if _, dup := teamSeen[tok]; dup {
+			continue
+		}
+		teamSeen[tok] = struct{}{}
+		teamTokens = append(teamTokens, tok)
+	}
+	for _, tok := range in.TeamAliases {
+		if _, dup := teamSeen[tok]; dup {
+			continue
+		}
+		teamSeen[tok] = struct{}{}
+		teamTokens = append(teamTokens, tok)
 	}
 
 	// Union player + team tokens with dedup + order preservation.

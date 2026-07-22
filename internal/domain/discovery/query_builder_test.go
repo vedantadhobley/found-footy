@@ -166,6 +166,52 @@ func TestBuild_CanonicalFallback_AliasesEmpty(t *testing.T) {
 	}
 }
 
+// TestBuild_CanonicalMergesWithAliases_BayerLeverkusen — canonical
+// name is ALWAYS unioned with aliases (not just fallback). Guards
+// against the alias pipeline's ≥2-lang threshold dropping obvious
+// canonical tokens. Hypothetical: aliases contain only `werkself`
+// (the German nickname, ≥2-lang corroborated); `bayer` and
+// `leverkusen` didn't make the multi-lang cut. Query builder must
+// still include them via the canonical-name tokenization path.
+func TestBuild_CanonicalMergesWithAliases_BayerLeverkusen(t *testing.T) {
+	got, err := Build(
+		"Florian Wirtz",
+		"Bayer Leverkusen",
+		[]string{"werkself"}, // pretend the alias pipeline only surfaced this
+	)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// All three team tokens must appear: bayer + leverkusen from
+	// canonical, werkself from the alias pipeline.
+	for _, needle := range []string{"bayer", "leverkusen", "werkself"} {
+		if !strings.Contains(got, needle) {
+			t.Errorf("query missing team token %q (canonical union should include it): %s",
+				needle, got)
+		}
+	}
+}
+
+// TestBuild_CanonicalDedupedAgainstAliases — the common case: aliases
+// already contain the canonical-name tokens. Merge should collapse
+// the duplicates; each token appears exactly once.
+func TestBuild_CanonicalDedupedAgainstAliases(t *testing.T) {
+	got, err := Build(
+		"Salah",
+		"Liverpool", // canonical tokenizes to {liverpool}
+		[]string{"liverpool", "reds", "lfc"}, // liverpool overlaps
+	)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// `liverpool` must appear exactly once despite being in both
+	// canonical AND aliases.
+	if count := strings.Count(got, "liverpool"); count != 1 {
+		t.Errorf("`liverpool` should appear exactly once (dedup), got %d in %q",
+			count, got)
+	}
+}
+
 // TestBuild_PlayerNameRequired — D4b: empty PlayerName returns
 // ErrEmptyPlayerName. Upstream (debounce) is supposed to prevent this;
 // query builder enforces as a safety net.
