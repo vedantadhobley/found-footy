@@ -1,9 +1,17 @@
-// Activities for DiscoveryWorkflow. Currently just one:
-// MarkDownstreamComplete updates the event_downstream_workflows row
-// that Monitor inserted pre-spawn so FixtureReadyToComplete stops
-// treating the workflow as pending. When real Discovery work lands
-// (Twitter search, candidate extraction, downstream Video spawn),
-// those activities will land in this package.
+// Activities for DiscoveryWorkflow. Four activities cover the
+// production shape:
+//
+//   1. FetchTeamAliases — pull team_aliases row (canonical_name +
+//      curated aliases) for the scoring team so the query builder
+//      has real inputs.
+//   2. SearchTweets — call the Twitter service's POST /search with
+//      the query builder's output + accumulated exclude_urls.
+//   3. StoreCandidate — persist one candidate tweet to
+//      event_search_candidates. Idempotent via
+//      ON CONFLICT DO NOTHING on (event_id, tweet_url).
+//   4. MarkDownstreamComplete — updates event_downstream_workflows
+//      so FixtureReadyToComplete stops treating this workflow as
+//      pending.
 package discovery
 
 import (
@@ -33,6 +41,48 @@ type twitterClient interface {
 	Search(ctx context.Context, req twitter.SearchRequest) (*twitter.SearchResponse, error)
 }
 
+// FetchTeamAliasesInput identifies the team whose alias set we need.
+// Discovery calls this once at workflow start to hydrate query-builder
+// inputs.
+type FetchTeamAliasesInput struct {
+	TeamID int64
+}
+
+// FetchTeamAliasesOutput carries the row shape Discovery needs for
+// query construction. Empty CanonicalName + nil Aliases means "team
+// not resolved yet" — Discovery falls back to what it has on the
+// DiscoveryWorkflowInput (TeamName from api-football) as a canonical
+// stand-in.
+type FetchTeamAliasesOutput struct {
+	CanonicalName string
+	Aliases       []string
+	Found         bool // false = no row for this team_id (unusual; ingest should have created a placeholder)
+}
+
+// FetchTeamAliases reads the team_aliases row for a given team.
+// Returns Found=false with empty fields if no row exists — Discovery
+// treats that as a fallback signal, not a hard error, because the
+// alias-resolution pipeline may lag behind Ingest during startup.
+func (a *Activities) FetchTeamAliases(ctx context.Context, in FetchTeamAliasesInput) (FetchTeamAliasesOutput, error) {
+	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var out FetchTeamAliasesOutput
+	err := a.Pool.QueryRow(callCtx, `
+		SELECT canonical_name, aliases
+		FROM team_aliases
+		WHERE team_id = $1
+	`, in.TeamID).Scan(&out.CanonicalName, &out.Aliases)
+	if err == pgx.ErrNoRows {
+		return FetchTeamAliasesOutput{Found: false}, nil
+	}
+	if err != nil {
+		return FetchTeamAliasesOutput{}, fmt.Errorf("discovery.FetchTeamAliases: team_id=%d: %w", in.TeamID, err)
+	}
+	out.Found = true
+	return out, nil
+}
+
 // SearchTweetsInput carries what SearchTweets needs to construct a
 // query + record the outcome. Kept minimal — the workflow builds the
 // query string itself from event data before invoking the activity.
@@ -56,10 +106,14 @@ type SearchTweetsInput struct {
 // SearchTweetsOutput reports what came back. Videos is the list of
 // tweet + CDN + duration triples for downstream Video pipeline. Empty
 // list is a valid outcome (no candidates found — Discovery just
-// completes with count=0).
+// completes with count=0). StopReason is the T/c scroll-loop
+// termination class ("age" / "max_scrolls" / "empty" /
+// "consecutive_seen") — kept as observability metadata for Discovery
+// loop logging.
 type SearchTweetsOutput struct {
-	Videos []twitter.VideoRef
-	Count  int
+	Videos     []twitter.VideoRef
+	Count      int
+	StopReason string
 }
 
 // SearchTweets calls the Twitter service (currently Python's
@@ -87,9 +141,72 @@ func (a *Activities) SearchTweets(ctx context.Context, in SearchTweetsInput) (Se
 		return SearchTweetsOutput{}, fmt.Errorf("discovery.SearchTweets: %w", err)
 	}
 	return SearchTweetsOutput{
-		Videos: resp.Videos,
-		Count:  resp.Count,
+		Videos:     resp.Videos,
+		Count:      resp.Count,
+		StopReason: resp.StopReason,
 	}, nil
+}
+
+// StoreCandidateInput is one candidate tweet Discovery persists to
+// event_search_candidates. Fields mirror the schema — see schema.sql
+// for the intent.
+type StoreCandidateInput struct {
+	EventID              uuid.UUID
+	FixtureID            int64
+	SearchAttempt        int
+	Query                string
+	TweetURL             string
+	TweetText            string
+	VideoPageURL         string
+	DurationSeconds      float64
+	Username             string
+	AgeMinutesAtDiscovery float64 // 0 = not extracted; NULL in the DB
+}
+
+// StoreCandidateOutput reports whether the row was inserted or
+// deduplicated. Inserted=false on ON CONFLICT hit — expected during
+// retry of the SAME attempt after a partial-success crash, but on
+// happy path each candidate hits Inserted=true.
+type StoreCandidateOutput struct {
+	Inserted bool
+}
+
+// StoreCandidate inserts one candidate into event_search_candidates.
+// Uses ON CONFLICT (event_id, tweet_url) DO NOTHING so the activity is
+// idempotent on retry. Runs one SQL statement per candidate — batch
+// insertion is a future optimization; typical Discovery attempts
+// surface <20 candidates so per-candidate insert overhead is trivial.
+func (a *Activities) StoreCandidate(ctx context.Context, in StoreCandidateInput) (StoreCandidateOutput, error) {
+	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// Null the age field when we didn't extract it (age=0 is used as
+	// the sentinel by the search endpoint's decodeExtractResult).
+	var agePtr *float64
+	if in.AgeMinutesAtDiscovery > 0 {
+		agePtr = &in.AgeMinutesAtDiscovery
+	}
+
+	tag, err := a.Pool.Exec(callCtx, `
+		INSERT INTO event_search_candidates (
+			event_id, fixture_id, search_attempt, query,
+			tweet_url, tweet_text, video_page_url, duration_seconds,
+			username, age_minutes_at_discovery
+		) VALUES (
+			$1, $2, $3, $4,
+			$5, $6, $7, $8,
+			$9, $10
+		)
+		ON CONFLICT (event_id, tweet_url) DO NOTHING
+	`,
+		in.EventID, in.FixtureID, in.SearchAttempt, in.Query,
+		in.TweetURL, in.TweetText, in.VideoPageURL, in.DurationSeconds,
+		in.Username, agePtr,
+	)
+	if err != nil {
+		return StoreCandidateOutput{}, fmt.Errorf("discovery.StoreCandidate: event=%s tweet=%s: %w", in.EventID, in.TweetURL, err)
+	}
+	return StoreCandidateOutput{Inserted: tag.RowsAffected() == 1}, nil
 }
 
 // MarkDownstreamCompleteInput identifies which row to mark complete.
