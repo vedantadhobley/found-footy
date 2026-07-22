@@ -6,6 +6,110 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-22 — Playwright-login validation: Twitter blocks Playwright login, raw-Firefox-subprocess fallback confirmed required
+
+### Context
+
+T/b landed with Playwright-Go non-headless as the login path in the
+twitter-vnc container — the "MVP first" call from the [T/b.3 phase
+proposal review](./rebuild/proposals/twitter-port.md). The bet was
+that Playwright-instrumented Firefox might be acceptable to Twitter
+at login time, letting us skip Python's raw-Firefox-subprocess trick
+([`archive/twitter/session.py`](../archive/twitter/session.py):313
+`_launch_manual_firefox`). If it worked, T/b.5's fallback code
+wouldn't be needed. If not, we'd know quickly and add it.
+
+Live experiment ran during T/b smoke testing:
+
+- Moved cookies aside → twitter-vnc container came up unauthenticated
+  (verified via `/status`; `EnsureAuthenticated`'s new
+  unreadable-file path from this session's fix worked correctly).
+- Opened `found-footy-dev-twitter-vnc.luv` in browser, saw Twitter
+  login form (Playwright's auto-open at `x.com/` redirected to /login
+  as expected).
+- Entered `FoundFootyApp` in the username field, clicked Continue.
+- Twitter responded: **"We've temporarily limited your login.
+  Please try again later."** — before any password was entered.
+
+### Decision
+
+**Raw-Firefox-subprocess fallback is REQUIRED for the login path.**
+Match Python's design pattern from
+[`archive/twitter/session.py:313`](../archive/twitter/session.py):
+
+- Login: `pkill firefox` → `firefox --new-instance -profile <dir>
+  https://x.com/i/flow/login` via subprocess. Human logs in through
+  the visible display; profile inherits cookies.
+- Scraping + verify (session-time): Playwright, unchanged.
+
+Implementation stays deferred (T/b.5 pending item) until either
+(a) current cookies actually expire or (b) T/c ships. Rationale for
+deferring: current cookies are healthy, T/c is higher-value work,
+half-day of subprocess-lifecycle + Playwright teardown/relaunch code
+is scoped and clear when we come back to it. Ship the structured
+`auth_expired` log event alongside T/c work so we get alerting the
+moment cookies fail.
+
+### Rationale
+
+- **Playwright-Go for scraping continues to work fine.** All-session
+  observation: both dev containers healthy against Twitter with
+  existing cookies, verify succeeds against x.com/home. The failure
+  is at login specifically.
+- **Python's archive documents the same failure mode.**
+  [`docs/audit.md`](./audit.md) notes the abandoned
+  `twitter/auth.py` module attempted automated login via Selenium
+  and got accounts banned. Whether Playwright specifically has
+  distinguishable fingerprints from Selenium at login time is
+  academic — both trigger Twitter's login-time bot defenses, and
+  Python's raw-Firefox-subprocess design is the mitigation that
+  Python's actual prod uses today.
+- **Session-time detection is much lighter than login-time
+  detection.** Same Twitter, same account, same automation
+  framework — cookies from a prior login work fine for months of
+  scraping. What triggers defense is the login attempt itself. This
+  is why raw-Firefox is only needed for the ~seconds-long login
+  window, not for continuous browser operation.
+
+### Open question — dev/prod account isolation
+
+The experiment consumed a login-limit token against the shared
+account. Since dev and prod share cookies (per
+[twitter-port.md Q4 sign-off](./rebuild/proposals/twitter-port.md),
+2026-07-16), dev experimentation can affect prod's ability to
+re-authenticate when its cookies eventually expire. Not urgent
+(cookies typically valid weeks-to-months; Twitter's login-limit
+cooldown decays), but worth revisiting before La Liga launch
+(2026-08-15):
+
+- **Same account, throttle dev experimentation** (current): cheap,
+  requires discipline about no gratuitous re-auth attempts in dev.
+- **Separate dev account:** isolates dev experimentation. Accepts
+  the multi-account correlation risk Q4 flagged (both accounts on
+  same IP, similar activity patterns). Whether Twitter still
+  correlates in 2026 is unclear.
+
+Deferred as a pre-launch decision. Not blocking T/c.
+
+### Impact
+
+- `docs/rebuild/proposals/twitter-port.md` revision log gets an entry
+  noting today's experiment result.
+- T/b.5 raw-Firefox-subprocess item stays pending but moves from
+  "maybe needed" to "definitely needed, timing deferred."
+- T/b.5 structured `auth_expired` log event moves up in priority —
+  ship alongside T/c so we have alerting if cookies fail during
+  T/c development or La Liga runup.
+- No change to shipped code today.
+
+### What was NOT changed
+
+The Q4 shared-cookies decision (dev + prod share the same Twitter
+account) STANDS. Today's experiment surfaces an argument for
+revisiting, not a decision to reverse — see "Open question" above.
+
+---
+
 ## 2026-07-22 — Twitter Dockerfile: one file, WITH_VNC-gated, matches Python's shape
 
 ### Context

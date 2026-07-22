@@ -4,6 +4,19 @@
 doc until it's reviewed + signed off.
 
 **Revision log:**
+- 2026-07-22 (T/b MVP experiment result) — during T/b.3+T/b.4 smoke
+  test, ran the Playwright-login validation experiment: moved
+  cookies aside, restarted twitter-vnc, opened noVNC to log in
+  fresh. Twitter blocked the login attempt at username entry with
+  "We've temporarily limited your login" — before any password was
+  entered. Playwright-instrumented Firefox is detected at login
+  time. Session-time (scraping with valid cookies) continues to
+  work fine; the failure is login-specific. Conclusion recorded in
+  [`../../decisions.md`](../../decisions.md) 2026-07-22 — raw-Firefox-
+  subprocess fallback is CONFIRMED required (matches Python's
+  session.py:313 pattern). T/b.5 item moves from "maybe needed" to
+  "definitely needed, implementation timing deferred to post-T/c"
+  because current cookies are healthy and T/c is higher-value work.
 - 2026-07-21 (T/b partially shipped) — cookie backup file management
   + auth flow (mtime → warm-path → verify) + service state machine +
   `/authenticate` + `/auth/verify` endpoints all shipped and unit-
