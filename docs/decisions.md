@@ -6,6 +6,76 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-21 — Twitter fleet coordination: filesystem mtime, not pg NOTIFY
+
+**Supersedes (partial):** the pg NOTIFY portion of the 2026-07-21 entry
+below. The broader "NATS scope: inter-project only" decision still
+stands. What changed: after further design discussion, Twitter fleet
+auth coordination doesn't need ANY pub/sub mechanism at all — not
+NATS, not pg NOTIFY. Filesystem mtime IS the coordination signal.
+
+### Context
+
+The pg NOTIFY design assumed there was a real coordination problem
+between headless Twitter instances: one instance detects auth failure,
+needs to notify others. But every real cookie-failure scenario (Twitter
+invalidates session, cookies expire by timestamp, password change, admin
+revoke) causes ALL instances to fail simultaneously because they share
+the same cookies for the same account. There's no case where "instance
+A is logged out and instances B-C-D are still logged in."
+
+So the "notify other instances of auth failure" broadcast was solving
+a non-problem — each instance discovers the same failure on its own
+next check within 60 seconds.
+
+The ONE case where cross-instance signaling MIGHT help is telling
+others "cookies were just refreshed" (either by VNC re-auth or by
+another instance's successful search that got fresh Twitter refresh
+tokens). But this is handled cleanly by filesystem mtime — each
+`EnsureAuthenticated` stat's the backup file; if mtime is newer than
+last-loaded, reload before doing the auth check. Python's own
+`auto_verify_loop` (session.py:739) uses this exact mtime pattern for
+a related purpose (detecting VNC login completion); Go generalizes it
+for fleet coordination.
+
+### Decision
+
+**Twitter fleet coordination uses filesystem mtime.** Concretely:
+
+- On each `EnsureAuthenticated`: `os.Stat` the cookie backup file. If
+  `ModTime > lastLoadedMtime`, reload cookies from file, update
+  `lastLoadedMtime`. Then proceed to warm-path or full verify.
+- On each successful search: compute cookie fingerprint (sha256 of
+  sorted name+value tuples). If unchanged from last-in-memory
+  fingerprint, skip write. Else atomic write (temp+rename) with
+  `auth_token` presence guard, update fingerprint.
+- No pub/sub. No pg NOTIFY. No NATS. No message-bus wiring.
+
+### Consequences
+
+- Simpler code than either NATS or pg NOTIFY design — no subscription
+  goroutine, no channel management, no message handler.
+- Zero coordination bugs possible — filesystem semantics are
+  well-understood.
+- Multi-instance concurrent writes are safe: atomic rename means
+  readers see either full old or full new file, never partial.
+- Fingerprint dedupe drops probably 60-80% of Python's backup writes
+  during a goal burst — most searches don't rotate cookies.
+- All Twitter service instances self-recover on their own next auth
+  check when cookies get refreshed (whether by VNC or by another
+  instance's search); no coordination needed.
+
+### What the earlier "pg NOTIFY" bit of the decision below still means
+
+The broader architectural principle — NATS is workspace-level infra
+for inter-project pub/sub only, intra-project reactive triggers use
+pg NOTIFY when needed — still applies. Just, Twitter fleet auth
+coordination turned out not to need any reactive trigger at all.
+pg NOTIFY is still available for future intra-project use cases that
+genuinely need it; it's just not needed here.
+
+---
+
 ## 2026-07-21 — NATS scope: inter-project only; pg NOTIFY for intra-project pub/sub
 
 **Supersedes (partial):** T/b portion of `docs/rebuild/proposals/twitter-port.md`

@@ -53,8 +53,8 @@ Critical path:
   - **Cookie backup is EVENT-DRIVEN, not timer-driven** (per twitter-spec §2): backup fires after every successful search + after cookie restore + after login verify — Python's pattern preserved
   - **`auth_token` presence guard on both backup and restore** — silently drop the operation if missing (twitter-spec §10, load-bearing)
   - `/config/twitter_cookies.json` shared via bind mount; cookies-shared-across-fleet
-  - Cookie expiry monitor + `pg NOTIFY twitter_auth` event=auth_expired on expiry (updated 2026-07-21; was NATS — see decisions.md)
-  - Cookie reload on `pg LISTEN twitter_auth` subscription (headless fleet coordinates via pg intra-project bus)
+  - Cookie expiry surfaces via `EnsureAuthenticated` failure — each instance discovers auth-expired on its own next check; no fleet notification needed (all instances share same session, all fail together). Structured `auth_expired` log event for operator visibility.
+  - Cookie reload on `EnsureAuthenticated` via filesystem mtime check on `/config/twitter_cookies.json` — if newer than last-loaded, reload from file. Handles both VNC re-auth and other-instance cookie refresh. No pub/sub needed. Atomic writes (temp+rename) + fingerprint dedupe on the write side. (Design settled 2026-07-21 after NATS → pg NOTIFY → filesystem mtime iteration; see decisions.md)
   - **60 s warm-path fast-check in `EnsureAuthenticated`** — skip full `x.com/home` GET if last activity was < 60 s ago (twitter-spec §10, saves 3-4 s per search during goal burst)
   - `busy` flag exposed via `/status` — True only during active search (twitter-spec §10) — scaler needs this to safely scale down
   - Instance-scoped profile dir via hostname hash to prevent multi-instance profile corruption (twitter-spec §10)
