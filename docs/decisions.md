@@ -6,6 +6,133 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-22 — Query builder: D3 confirmed (no event vocabulary), sentiment_mode → video_only, own-goal invariant flagged
+
+Written after the design conversation + empirical validation session
+that culminated in the query builder shipping in
+[`internal/domain/discovery/query_builder.go`](../internal/domain/discovery/query_builder.go).
+
+### D3 (no event-type vocabulary) — REAFFIRMED with empirical evidence
+
+The signed-off `twitter-search-query.md` D3 said the query is
+identical for all trackable event types — no `goal` / `red card`
+/ `penalty` vocabulary in the query itself. User pushed back on this
+in the design conversation (2026-07-22), arguing OR-everything
+should include event-type expansions because our OR-semantics makes
+event tokens "free recall boost."
+
+Ran the experiment. Findings:
+
+1. **Some event tokens are safe** — `goal`, `scored`, `nets` didn't
+   fire on non-football content in either quiet or fresh windows.
+2. **Others are catastrophic noise generators** — `booked`/`booking`
+   matched movie tickets ("40K+ tickets booked"), hotel bookings,
+   Berlin tattoo appointments in a quiet Twitter window. `card`,
+   `red`, `off`, `sent` all had strong theoretical noise potential.
+3. **Real match test (Tottenham M. Fernandes goal today, bounded to
+   the 3-min post-event window)** returned 4/4 legitimate goal-
+   reaction tweets with player+team OR alone. Adding event terms
+   under AND semantics REMOVED 3 of them (the "SUUUIII" celebration
+   tweet, the "goa" typo tweet, and a general comment tweet). Adding
+   event terms under OR semantics is unnecessary — every legit tweet
+   already matched via player/team.
+4. **User's revised requirement:** player token OR team alias MUST
+   match. Event-only tweets should NOT include. Which structurally
+   means event terms don't help — they can't match on their own.
+
+Conclusion: D3 stands. Query is `(player_tokens OR team_aliases)
+filter:videos`. Event vocabulary excluded. If real production data
+shows systematic recall gaps for reaction tweets that don't name
+player/team, revisit with data.
+
+### D7 — SentimentMode renamed to VideoOnly (default true)
+
+User feedback 2026-07-22: `SentimentMode` was awkwardly named
+(described what it TURNED OFF rather than what it did). Renamed to
+`VideoOnly` in `QueryInput`. Default `true` — matches Python's
+current behavior (searches always include `filter:videos`). When
+sentiment mode ships (fetching same corpus for text + video),
+callers pass `VideoOnly: false` explicitly. No signed-off spec text
+changed — this is an implementation-name refinement.
+
+### Own goals — api-football does the swap; invariant flagged for verification
+
+Per Python's archive (`archive/src/utils/event_enhancement.py`
+`calculate_score_context` + `build_twitter_search`), Python treats
+`event.team` at face value with NO swap logic for own goals — and
+Python's Twitter search has been in prod for months without
+complaints. This strongly implies api-football reports own goals
+with `team_id = beneficiary team` (the one whose score increased)
+and `player = the defender who scored into their own net`.
+
+Our own `docs/api-football/events-shape.md` records this as an
+"unverified but rumored behavior" pending live-sample validation.
+
+For the query builder: **no special-case logic.** `event.player.name`
+goes through `alias.TokenizePlayerName` (defender's name). `event.team`
+resolves to `team_aliases[]` via the alias pipeline (beneficiary
+team's aliases). Same code path as regular goals — the resulting
+query catches BOTH the celebrating side (via team aliases) and the
+scorer's name.
+
+**Assumption to validate:** when the first own-goal event fires in
+production, verify api-football's `team` field IS the beneficiary
+(not the conceding team). If the assumption is wrong, fix belongs in
+`internal/domain/event/` — the query builder itself doesn't need
+to know.
+
+### Testing methodology finding — bounded historical search is unreliable
+
+Twitter's `since:`/`until:` operators work for FRESH events (proven
+via the Tottenham test — 4/4 legit tweets in a 3-min bounded window
+around a goal that happened minutes earlier) but silently fail for
+older bounded queries. Proof: searching `the since:2026-07-19_20:00
+until:2026-07-19_21:00` (extremely common word, 1-hour window 3
+days back) returned 0 tweets. Same query without bounds surfaces
+massive tweet volume.
+
+Implication for production: **doesn't matter.** Real pipeline searches
+seconds after events fire, always in the fresh window. Implication
+for backfill / historical testing: **can't use bounded search for
+retrospective analysis.** Deferred until we care.
+
+### `max_age_minutes` is load-bearing
+
+OR-everything's failure mode (Test 2 quiet-window returned 0 Enzo-
+specific tweets and 3 unrelated Argentina reactions) is bounded in
+production by the 3-minute client-side age cutoff. Without the age
+filter, OR-everything is strictly worse than Python's AND-semantics
+in quiet windows. T/c MUST ship with `max_age_minutes` support in
+the search endpoint — it's not optional polish. Called out here so
+future refactors don't drop it thinking it's cosmetic.
+
+### Not decided this session (deferred)
+
+- **Event-type token expansion revisit** — logged as "revisit if
+  real match data shows we're missing legitimate reaction tweets
+  that don't name player/team."
+- **Storing search candidates for post-hoc learning** — task #156.
+  Currently only `video_assets` + `tweet_intent` persist. Adding
+  candidate storage (accepted + rejected) requires a schema
+  addition; lands with Discovery workflow (O3).
+- **`event_search_candidates` schema shape** — TBD in #156.
+
+### Files touched
+
+- `internal/domain/alias/text.go` — new `TokenizePlayerName(name)
+  []string` helper. Combines the existing (unexported) `tokenize`
+  with `isSkipped` filter + dedup. Exported for use by the
+  Discovery-side query builder.
+- `internal/domain/discovery/query_builder.go` — new. `BuildTwitterQuery`,
+  `Build` ergonomic wrapper, `LengthWarn`, typed errors.
+- `internal/domain/discovery/query_builder_test.go` — 18 tests
+  covering D1/D4b/D4c/D4d/D7 + full D8 player-name table + own-goal
+  invariant.
+- `docs/rebuild/architecture.md` — discovery/ flipped from ⊘ stub to
+  ✓ query builder shipped.
+
+---
+
 ## 2026-07-22 — Playwright-login validation: Twitter blocks Playwright login, raw-Firefox-subprocess fallback confirmed required
 
 ### Context
