@@ -164,10 +164,30 @@ func stripPunct(w string) string {
 	}, w)
 }
 
-// isCamelConcat detects lowercase → uppercase transitions inside a
-// single un-split token: "LiverpoolFC", "FCBarcelona", "AtléticoMadrid".
-// Wikidata sometimes stores concatenated forms as aliases; those are
-// noise for our token-based match.
+// isCamelConcat detects concatenated forms Wikidata sometimes stores
+// as aliases (noise for our token-based match). Two patterns caught:
+//
+//  1. Lowercase → uppercase transition inside a token: "LiverpoolFC",
+//     "FCBarcelona", "AtléticoMadrid". The classic camelCase concat.
+//
+//  2. Acronym → word transition: THREE or more consecutive uppercase
+//     letters followed by a lowercase letter, e.g. "ACFFiorentina"
+//     (from Wikidata alias "A.C.F.Fiorentina" after stripPunct
+//     collapses the periods). Discovered 2026-07-23 during the O3/d
+//     smoke test.
+//
+//     Threshold is 3+ uppercase not 2+ so we don't wrongly drop
+//     legitimate contractions like "L'Olympique" (which becomes
+//     "LOlympique" after stripPunct — only 2 uppercase before the
+//     lowercase, so it survives). Real acronym-concat cases we've
+//     seen (ACFFiorentina, SSCNapoli, HSVHamburg) have ≥3 uppercase
+//     letters at the start, matching the length of the org
+//     abbreviation.
+//
+// Any token flagged as concat is dropped. Other Wikidata aliases
+// typically carry the individual tokens ("ACF" alone, "Fiorentina"
+// alone), so recall isn't affected — the concat form is redundant
+// noise, not signal.
 func isCamelConcat(w string) bool {
 	if len(w) < 4 {
 		return false
@@ -175,7 +195,15 @@ func isCamelConcat(w string) bool {
 	for i := 1; i < len(w); i++ {
 		prev := rune(w[i-1])
 		curr := rune(w[i])
+		// Pattern 1: LiverpoolFC — lower → upper.
 		if unicode.IsLower(prev) && unicode.IsUpper(curr) {
+			return true
+		}
+		// Pattern 2: ACFFiorentina — need at least THREE uppercase
+		// letters BEFORE the lower letter. Requires i >= 3 so we can
+		// look at w[i-2] and w[i-3].
+		if i >= 3 && unicode.IsUpper(prev) && unicode.IsLower(curr) &&
+			unicode.IsUpper(rune(w[i-2])) && unicode.IsUpper(rune(w[i-3])) {
 			return true
 		}
 	}
