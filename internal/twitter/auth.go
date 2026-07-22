@@ -109,6 +109,17 @@ func (s *Service) EnsureAuthenticated(ctx context.Context) error {
 		return fmt.Errorf("twitter.EnsureAuthenticated: %w: %v", ErrUnauthenticated, err)
 	}
 	s.SetState(StateHealthy, "verified")
+
+	// Post-verify: sync browser cookies to the shared backup file.
+	// Closes the loop for the VNC re-auth path — operator logs in via
+	// the visible display, hits POST /auth/verify, verify succeeds
+	// against the freshly-authenticated context, and BackupCookies
+	// persists the new cookies here so the headless fleet picks them
+	// up on their next mtime check. Best-effort: verify already
+	// proved the session works, so backup failure doesn't invalidate
+	// the healthy state — dedupe skips the write if fingerprint
+	// unchanged, empty-cookies case no-ops.
+	_ = s.BackupCookies(ctx)
 	return nil
 }
 
@@ -168,6 +179,12 @@ func (s *Service) maybeReloadCookies(lastLoadedMtime time.Time) (bool, error) {
 // instances don't get spuriously woken up to reload identical
 // cookies.
 //
+// No-ops (return nil, no write) when the browser has no Twitter
+// cookies yet — legitimate during a startup race before Playwright
+// fully populates the context, or in the VNC container before the
+// operator has logged in. Not an error case; the next invocation
+// picks up whatever's there.
+//
 // Refuses to write if the browser's current cookies don't include
 // auth_token (WriteBackup's guard fires). Callers can log this as
 // "browser lost auth mid-search" and trigger a re-auth path.
@@ -180,6 +197,10 @@ func (s *Service) BackupCookies(_ context.Context) error {
 	// we'd persist. Prevents unrelated cookies (from a stray redirect)
 	// from constantly flipping the fingerprint and forcing writes.
 	filtered := filterToTwitterDomain(cookies)
+	if len(filtered) == 0 {
+		// Nothing to persist yet; not an error. See docstring.
+		return nil
+	}
 	fp := Fingerprint(filtered)
 
 	s.mu.RLock()

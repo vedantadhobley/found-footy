@@ -57,6 +57,11 @@ func main() {
 		CookieFile: cookieFile,
 	})
 
+	// TWITTER_VNC_MODE=true only in the twitter-vnc container (set by
+	// docker-compose). Drives the "open a browser tab so the operator
+	// sees Twitter" behavior below — no effect on headless.
+	vncMode := os.Getenv("TWITTER_VNC_MODE") == "true"
+
 	// Kick off first auth check. EnsureAuthenticated handles the full
 	// sequence: mtime check → reload from shared file if newer →
 	// verify. Best-effort in the background — /health reports the
@@ -70,6 +75,23 @@ func main() {
 			// failed / etc.). Log for visibility; process stays up so
 			// the VNC re-auth path can recover it without a restart.
 			printJSON("initial_auth_failed", map[string]string{"err": err.Error()})
+		}
+
+		// VNC nicety: keep a Twitter tab open in the visible browser
+		// so the operator lands somewhere useful. If authed → x.com
+		// serves /home. If not → Twitter redirects to /login. Either
+		// way the operator sees Twitter, not Firefox's default new-
+		// tab page. Best-effort — a nav failure here doesn't affect
+		// service health (headless containers skip this block).
+		if vncMode {
+			navCtx, navCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer navCancel()
+			// Deliberately not closing the returned page — leaving
+			// it open is the point. Playwright will close it when
+			// the browser context tears down at process exit.
+			if _, err := browser.Navigate(navCtx, "https://x.com/", 20*time.Second); err != nil {
+				printJSON("vnc_landing_nav_failed", map[string]string{"err": err.Error()})
+			}
 		}
 	}()
 

@@ -282,6 +282,8 @@ PoC gate: launch Playwright + Firefox in a dev container, load a cookie fixture,
 
 - `internal/twitter/search.go` — scroll loop, DOM extraction (mirrors Python `scrape.py` helpers).
 - Endpoint: `/search` — full contract with `exclude_urls`, `max_age_minutes`, structured response.
+- **Combine verify + search into one navigation** (design added 2026-07-22 from user question during T/b smoke test). Current `EnsureAuthenticated` does a separate `x.com/home` navigation (~3-4s) to check the logged-in indicator before search runs. On the search hot path (warm-path just expired, next search comes in), that's a redundant 3-4s hop — the switcher-button indicator lives on the search results page too (Twitter's SPA has the same side nav everywhere). T/c's search entry point navigates DIRECTLY to the search URL, checks for the switcher button as part of that page's load, and only falls back to a standalone `EnsureAuthenticated` if the indicator is absent (auth failure). Startup + `POST /auth/verify` keep using the standalone `EnsureAuthenticated` (no search URL available in those cases). Savings: 3-4s per search-after-warm-path-expiry, non-trivial during goal bursts (15 search attempts per goal).
+- Hook `BackupCookies` into the search success path — after tweets returned, call `s.BackupCookies(ctx)` so Twitter's rotated csrf tokens end up on disk. Fingerprint dedupe skips no-op writes. Complements the post-verify BackupCookies hook added in T/b.5 (which covers the re-auth path) — this covers the steady-state token rotation.
 - **Four scroll-stop conditions** (Python has 3; we add the 4th):
   1. Tweet age > `max_age_minutes` → stop (preserved from Python).
   2. `scroll_count >= max_scrolls` (default 10) → stop (preserved from Python).
