@@ -6,6 +6,83 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-21 — VNC container is opt-in (not always running)
+
+### Context
+
+Twitter service's manual-login path uses a dedicated VNC container
+(Xvfb + x11vnc + websockify + non-headless Firefox) for the operator
+to log in when cookies expire. Original T/b plan had it running
+continuously in dev + prod compose so operators could always click
+through to it. User pushback during implementation: "I don't think it
+should be always running? We can launch it ideally IF there's a
+failure and I need to come over and log in."
+
+### Decision
+
+VNC container is opt-in. Docker compose entry uses
+`profiles: ["vnc"]` so `docker compose up` skips it by default.
+Operator runs `docker compose --profile vnc up twitter-vnc` (or a
+Makefile target) only when auth actually needs re-establishing.
+
+Impact on the service HTTP surface: `/authenticate` on headless
+instances can't return a live VNC URL (VNC may not be running).
+Instead it returns instructive guidance — includes
+`TWITTER_VNC_URL` + `TWITTER_VNC_START_CMD` env vars in the response
+so an operator sees:
+
+```json
+{
+  "state": "unauthenticated",
+  "action_required": "manual_reauth",
+  "reauth_url": "http://twitter-vnc.luv:5900",
+  "reauth_command": "make twitter-vnc-up",
+  "message": "Twitter session expired. Start the VNC container: `make twitter-vnc-up`. Then log in at http://twitter-vnc.luv:5900."
+}
+```
+
+Copy-paste-ready. When operator finishes login, VNC container writes
+cookies to shared `/config/twitter_cookies.json`, headless fleet picks
+up via mtime on next check (per 2026-07-21 filesystem mtime decision
+below), and VNC container can be stopped.
+
+### Rationale
+
+- Zero always-on cost for the 99% of time when auth is fine.
+- Same operator flow either way — auth breaks, operator gets alerted,
+  operator does one docker command + one login. That command being
+  "start VNC and log in" vs "just log in" is negligible extra effort.
+- Keeps VNC container from being a persistent attack surface (Firefox
+  + noVNC exposed even during quiet weeks).
+- Coordinated with the filesystem-mtime coordination decision below:
+  neither instance-to-instance nor instance-to-VNC needs a pub/sub
+  layer; the shared file's mtime is the only signal anyone reads.
+
+### Alternatives rejected
+
+- **Always-on VNC container.** Simpler compose but strictly worse:
+  running Firefox + noVNC for nothing 99% of the time, and adds
+  attack surface. Only real advantage is "operator clicks through
+  faster" — which the reauth_command in the response mitigates
+  entirely.
+- **Auto-start VNC when auth breaks.** Scaler or watchdog watches
+  for `auth_expired` and spins up VNC. Reasonable extension for
+  Phase M but not needed for T/b — operator will be in the loop
+  either way (they have to physically log in).
+
+### Impact
+
+- `docker-compose.dev.yml` + `docker-compose.prod.yml` (T/b.4) —
+  VNC service gets `profiles: ["vnc"]`.
+- `Makefile` (T/b.4) — add `twitter-vnc-up` / `twitter-vnc-down`
+  targets that shell into `docker compose --profile vnc up/down`.
+- `internal/twitter/auth.go` (T/b.2, shipped) — `handleAuthenticate`
+  reads `TWITTER_VNC_URL` + `TWITTER_VNC_START_CMD` env vars and
+  surfaces them in the 503 response body. Tests cover both
+  configured and unconfigured paths.
+
+---
+
 ## 2026-07-21 — Twitter fleet coordination: filesystem mtime, not pg NOTIFY
 
 **Supersedes (partial):** the pg NOTIFY portion of the 2026-07-21 entry

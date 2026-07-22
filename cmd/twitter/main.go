@@ -53,23 +53,24 @@ func main() {
 	}
 	defer func() { _ = browser.Close() }()
 
-	svc := twitter.NewService(browser)
+	svc := twitter.NewService(browser, twitter.ServiceOptions{
+		CookieFile: cookieFile,
+	})
 
-	// Cookie load + session verify — best-effort; missing cookies
-	// means the service comes up unauthenticated (VNC re-auth path
-	// kicks in for T/b's manual-login flow).
+	// Kick off first auth check. EnsureAuthenticated handles the full
+	// sequence: mtime check → reload from shared file if newer →
+	// verify. Best-effort in the background — /health reports the
+	// outcome so the orchestrator + scaler see it. Missing cookie
+	// file → StateUnauthenticated, VNC operator needs to log in.
 	go func() {
-		if _, err := browser.LoadCookies(cookieFile); err != nil {
-			svc.SetState(twitter.StateUnauthenticated, "no cookies: "+err.Error())
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		if err := browser.VerifySession(ctx, 20*time.Second); err != nil {
-			svc.SetState(twitter.StateUnauthenticated, "verify: "+err.Error())
-			return
+		if err := svc.EnsureAuthenticated(ctx); err != nil {
+			// State is already set by EnsureAuthenticated (unauth /
+			// failed / etc.). Log for visibility; process stays up so
+			// the VNC re-auth path can recover it without a restart.
+			printJSON("initial_auth_failed", map[string]string{"err": err.Error()})
 		}
-		svc.SetState(twitter.StateHealthy, "cookies loaded, session verified")
 	}()
 
 	mux := http.NewServeMux()

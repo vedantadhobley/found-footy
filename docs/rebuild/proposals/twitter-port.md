@@ -4,6 +4,18 @@
 doc until it's reviewed + signed off.
 
 **Revision log:**
+- 2026-07-21 (T/b partially shipped) — cookie backup file management
+  + auth flow (mtime → warm-path → verify) + service state machine +
+  `/authenticate` + `/auth/verify` endpoints all shipped and unit-
+  tested (26 tests). See [`../roadmap.md`](../roadmap.md) T/b.1 +
+  T/b.2 entries for what's in the tree. Remaining T/b work: VNC
+  container image, docker-compose splits, instance-scoped profile
+  dir, idle-CPU Firefox prefs, `BackupCookies` invocation from
+  search's success path (lands with T/c). Design settled during
+  implementation: VNC container is opt-in (profiles: ["vnc"]), not
+  always-running, per decisions.md 2026-07-21 — `/authenticate`
+  response surfaces `TWITTER_VNC_URL` + `TWITTER_VNC_START_CMD` env
+  vars so operator gets copy-paste instructions.
 - 2026-07-16 (first pass) — initial proposal. Phase T is sequenced
   right after O3, before O4, per [`discovery.md`](./discovery.md)
   Q3 sign-off — Twitter is the pipeline's most load-bearing external
