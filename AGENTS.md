@@ -26,6 +26,17 @@ AI-validates the broadcast clock against the API's reported match minute
 S3 corpus, and surfaces the surviving clips through the `vedanta-systems`
 portal via SSE.
 
+## Cross-cutting context
+
+Workspace-wide rules, node topology, and cross-project decisions live in [`~/workspace/vedanta-dhobley/`](../../vedanta-dhobley/). Every agent session reads its global `AGENTS.md` automatically via symlinks (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`); this pointer exists so anyone browsing the repo sees the pattern.
+
+- [`AGENTS.md`](../../vedanta-dhobley/AGENTS.md) — operating model, commit conventions, Docker-first policy, host-port scheme, `mem_limit` rules, tailnet FQDN rule, privacy preferences
+- [`docs/topology.md`](../../vedanta-dhobley/docs/topology.md) — aerial view of nodes, services, routing, messaging, roadmap
+- [`docs/decisions.md`](../../vedanta-dhobley/docs/decisions.md) — timestamped rationale for locked-in choices (top-of-file entries constrain this project: joi model swap to Gemma 4 12B, Prom-format /metrics standard, shared NATS Go client library)
+- [`docs/plans/2026-08-15-cutover.md`](../../vedanta-dhobley/docs/plans/2026-08-15-cutover.md) — this project is the anchor deliverable of the Aug 15 cutover
+
+**Where things belong:** if a decision in this project turns out to be cross-project, raise it in dhobley — do not duplicate it here.
+
 This file is your front door. Which section applies depends on why you
 landed here:
 
@@ -174,7 +185,6 @@ with `env_file`.
 - Everything runs in Docker. `make build`, `make test`, `make test-short` all spin `golang:1.25-bookworm` throwaway containers with the source bind-mounted.
 - Dev stack: `docker compose -f docker-compose.dev.yml up -d` — air hot-reload on all four Go binaries.
 - Prod stack: `docker compose -f docker-compose.prod.yml` — **still runs the Python codebase**. Files intentionally renamed from bare `docker-compose.yml` so a stray `docker compose <cmd>` from this directory refuses to resolve.
-- Commits: no `Co-Authored-By` trailer. Lowercase prefix + optional scope. Multi-paragraph via HEREDOC.
 - Tests: unit + integration in the same package; integration tests spin real Postgres via testcontainers-go (`/var/run/docker.sock` mounted + `--network=host` in the `test` make target). Skip with `-short`.
 
 **Things to check before doing X (Go rebuild):**
