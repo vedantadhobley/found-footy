@@ -6,6 +6,108 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-23 — Discovery filter: wall-clock-relative sliding window, not server-side time bounds
+
+### Context
+
+DiscoveryWorkflow ([`internal/workflow/discovery.go`](../internal/workflow/discovery.go))
+fires a fixed sequence of Twitter searches (currently 10 attempts × 60 s
+spacing, moving to 15 × 60 s per #162) per detected event. Each attempt
+returns a set of tweet candidates; T/c's `/search` endpoint filters those
+candidates by tweet age using a client-side `max_age_minutes` cutoff (3 min
+per [twitter-search-query.md D4](../docs/rebuild/proposals/twitter-search-query.md#d4)),
+measured against **current wall clock**.
+
+An alternative was seriously proposed and tested during this session:
+use Twitter's advanced-search operators `since:YYYY-MM-DD_HH:MM:SS_UTC`
+and `until:...` to hard-bound the search server-side to an explicit time
+range tied to the event's debounce-completion timestamp. Theoretically
+this is cleaner:
+
+- Deterministic — same query at any wall-clock time returns the same result set
+- No dependency on Twitter's timeline-ordering staying "recent-first"
+- Could theoretically extend Discovery to backscan events hours old
+  (bounded by known debounce timestamp)
+
+### Decision
+
+**Wall-clock-relative filter kept. Server-side `since:`/`until:` bounds
+rejected as empirically unreliable.**
+
+### Evidence
+
+Ran two live smoke tests during the 2026-07-22 session to compare the
+two designs:
+
+**Smoke #1 — bounded windows against a stale event.** Fiorentina
+Gudmundsson goal, ~2 hours old at test time. Query pattern:
+
+```
+(gudmundsson OR fiorentina OR acf OR florentia OR viola)
+    since:2026-07-22_19:22:00_UTC until:2026-07-22_19:25:00_UTC
+    filter:videos
+```
+
+Ran 10 overlapping 3-min windows shifted by 1 min each (attempts 1–10
+covering 19:22 → 19:34 UTC). Result: **3 unique tweets across 10
+windows**. Same query submitted twice returned the same 3 tweets
+deterministically. Tweets in those exact time ranges provably existed
+(surface via unbounded queries) but Twitter's server-side filter silently
+dropped them. Twitter's `since:`/`until:` operators are undocumented,
+best-effort, and non-idempotent for identical queries.
+
+**Smoke #2 — wall-clock filter against a live event.** Inter Miami
+L. Suarez penalty goal, ~20 min old at test time. Same 15-min coverage
+period done differently — 10 attempts × 60 s spacing with
+`max_age_minutes=3` client-side filter. Query pattern:
+
+```
+(suarez OR inter OR miami OR intermiami OR imcf OR imfc OR herons) filter:videos
+```
+
+Result: **27 candidates surfaced across the 10 attempts**, ages 0.2–3.0 min.
+**Real goal videos landed at attempts 5, 6, 8, 9, 10** — an @LARGOESPN
+video at attempt 8 and a VQV_Futbol clip at attempt 10 would have been
+missed entirely by a single-shot bounded window. Multi-attempt time-based
+coverage caught candidates that server-side bounds could not.
+
+Full smoke-test log: task #159 (2026-07-22, completed).
+
+### Implications
+
+- Discovery works only for real-time events (goal detected → immediate
+  workflow spawn). Hours-old backscans are out of scope by design.
+- Multi-attempt time-based coverage is load-bearing — a single search
+  at debounce-completion misses candidates that only surface minutes
+  later. The 15-attempt × 60 s design (#162) is the minimum viable
+  coverage per this evidence.
+- If Twitter's non-bounded timeline search ever degrades (recent-tweets
+  no longer surface reliably in ordered order), we have no fallback —
+  bounded search is already known to fail. This is a real risk to note
+  but not to design against yet; monitor via candidate-count metrics
+  once shipped.
+
+### Follow-ups
+
+- Bounded search MIGHT be viable for a future "scheduled rescan of
+  yesterday's misses" background job — separate from live Discovery.
+  Not shipping now, noted as an option if wall-clock recall ever falls
+  below target and we need a recovery mechanism.
+- Peak vulnerability window: goal happens, Discovery starts within
+  ~90 s (debounce), then runs for 15 min. Any Twitter-side outage
+  during that window silently drops candidates for that goal — no
+  recovery. Live-only coverage means we accept transient outages
+  as data loss.
+
+### Related
+
+- [twitter-search-query.md](../docs/rebuild/proposals/twitter-search-query.md) — D4 (`max_age_minutes=3`), D1 (recall-first OR shape)
+- [discovery.md](../docs/rebuild/proposals/discovery.md) — signed-off Discovery design (2026-07-16)
+- [`internal/workflow/discovery.go`](../internal/workflow/discovery.go) — `discoveryMaxAttempts`, `discoveryAttemptSpacing`, `discoveryMaxAgeMinutes` constants (moving to config per #162)
+- [`internal/twitter/search.go`](../internal/twitter/search.go) — `max_age_minutes` client-side filter application
+
+---
+
 ## 2026-07-23 — Twitter Firefox profile: ephemeral per-container (Python-shape), not shared volume
 
 ### Context
