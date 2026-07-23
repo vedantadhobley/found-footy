@@ -29,9 +29,78 @@ import (
 // Activities bundles Discovery's activity implementations. Held on
 // *Activities so tests can inject fakes for the pg pool via a
 // pool-shaped interface (currently just the concrete pg.Pool).
+//
+// Config fields (MaxAttempts, AttemptSpacing, MaxAgeMinutes,
+// QueryTimeout) mirror config.DiscoveryConfig. Populated at
+// cmd/worker startup — see GetDiscoveryConfig below for the
+// workflow-side accessor.
 type Activities struct {
 	Pool    *pg.Pool
 	Twitter twitterClient
+
+	// DiscoveryWorkflow tuning knobs, mirrored from
+	// config.DiscoveryConfig at worker init. Zero values are
+	// treated as "use hardcoded fallback" inside GetDiscoveryConfig
+	// so tests that leave these unset get a valid workflow run.
+	MaxAttempts    int
+	AttemptSpacing time.Duration
+	MaxAgeMinutes  int
+	QueryTimeout   time.Duration
+}
+
+// ── GetDiscoveryConfig ─────────────────────────────────────────
+
+// GetDiscoveryConfigInput has no fields.
+type GetDiscoveryConfigInput struct{}
+
+// GetDiscoveryConfigOutput exposes env-driven config to
+// DiscoveryWorkflow. Workflows can't touch env / files directly
+// (Temporal determinism), so a trivial activity is the standard
+// idiom — matches the ingest.GetIngestConfig pattern.
+type GetDiscoveryConfigOutput struct {
+	MaxAttempts    int
+	AttemptSpacing time.Duration
+	MaxAgeMinutes  int
+	QueryTimeout   time.Duration
+}
+
+// Fallbacks used when config isn't populated on Activities (test
+// environments, forgotten wire-up). Match the pre-#162 hardcoded
+// values so nothing gets slower in the accidental-omission case.
+// Fallback for MaxAttempts is 10 (not 15) because 10 is the pre-#162
+// shipped value; the 15 bump is a config-side default, not a fallback.
+const (
+	fallbackMaxAttempts    = 10
+	fallbackAttemptSpacing = 60 * time.Second
+	fallbackMaxAgeMinutes  = 3
+	fallbackQueryTimeout   = 2 * time.Minute
+)
+
+// GetDiscoveryConfig — trivial config accessor for DiscoveryWorkflow.
+// Returns values from the Activities struct with per-field fallbacks
+// so a zero-value Activities in tests still yields a runnable workflow.
+func (a *Activities) GetDiscoveryConfig(
+	_ context.Context, _ GetDiscoveryConfigInput,
+) (GetDiscoveryConfigOutput, error) {
+	out := GetDiscoveryConfigOutput{
+		MaxAttempts:    a.MaxAttempts,
+		AttemptSpacing: a.AttemptSpacing,
+		MaxAgeMinutes:  a.MaxAgeMinutes,
+		QueryTimeout:   a.QueryTimeout,
+	}
+	if out.MaxAttempts == 0 {
+		out.MaxAttempts = fallbackMaxAttempts
+	}
+	if out.AttemptSpacing == 0 {
+		out.AttemptSpacing = fallbackAttemptSpacing
+	}
+	if out.MaxAgeMinutes == 0 {
+		out.MaxAgeMinutes = fallbackMaxAgeMinutes
+	}
+	if out.QueryTimeout == 0 {
+		out.QueryTimeout = fallbackQueryTimeout
+	}
+	return out, nil
 }
 
 // twitterClient narrows the *twitter.Client surface Discovery uses to

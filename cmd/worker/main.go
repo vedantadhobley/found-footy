@@ -202,6 +202,14 @@ func main() {
 		// SearchTweets nil-check and cause a nil-deref panic.
 		discoveryActs := &discoveryactivity.Activities{
 			Pool: pool,
+			// #162 — Discovery tunables from env-driven config, exposed
+			// to the workflow via GetDiscoveryConfig activity. Zero-value
+			// safety: GetDiscoveryConfig falls back to hardcoded defaults
+			// per-field if any of these are unset (tests / mis-wired).
+			MaxAttempts:    deps.Cfg.Discovery.MaxAttempts,
+			AttemptSpacing: deps.Cfg.Discovery.AttemptSpacing,
+			MaxAgeMinutes:  deps.Cfg.Discovery.MaxAgeMinutes,
+			QueryTimeout:   deps.Cfg.Discovery.QueryTimeout,
 		}
 		if twitterClient != nil {
 			discoveryActs.Twitter = twitterClient

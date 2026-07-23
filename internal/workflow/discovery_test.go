@@ -13,6 +13,7 @@ package workflow_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
@@ -30,6 +31,19 @@ func newDiscoveryEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvi
 	env := s.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(workflow.DiscoveryWorkflow)
 	env.RegisterActivity(&discoveryactivity.Activities{})
+	// Default GetDiscoveryConfig stub. MaxAttempts=10 matches the
+	// pre-#162 hardcoded value that existing tests were written
+	// against (`want 10` assertions in AttemptsRun tests). Tests
+	// that need a different value override this mock explicitly.
+	// AttemptSpacing stays realistic (60s) but TestWorkflowEnvironment
+	// auto-fires timers so real wall-clock waits don't happen.
+	env.OnActivity("GetDiscoveryConfig", mock.Anything, mock.Anything).
+		Return(discoveryactivity.GetDiscoveryConfigOutput{
+			MaxAttempts:    10,
+			AttemptSpacing: 60 * time.Second,
+			MaxAgeMinutes:  3,
+			QueryTimeout:   2 * time.Minute,
+		}, nil).Maybe()
 	// Default MarkDownstreamComplete + FetchTeamAliases stubs so tests
 	// only need to override the interesting cases.
 	env.OnActivity("MarkDownstreamComplete", mock.Anything, mock.Anything).
