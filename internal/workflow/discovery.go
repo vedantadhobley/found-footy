@@ -3,13 +3,14 @@
 // Spawned by Monitor's ReconcileFixture via DownstreamSpawner when an
 // event's downstream_triggered flag is flipped (2026-07-16 decision:
 // Temporal-direct spawn + register-on-flip, not NATS-triggered).
-// Runs a fixed 10 attempts × 60 s spacing (per user 2026-07-23 sign-
-// off — time-based coverage, not count-based termination). Each
-// attempt is a full /search call; per-event exclude_urls accumulate
-// across attempts so the Twitter service's consecutive-already-seen
-// scroll stop terminates attempts 2+ quickly. Every candidate the
-// search surfaces gets persisted to event_search_candidates for
-// downstream V-phase pickup + post-hoc query-quality learning.
+// Runs a fixed N attempts × M spacing (defaults: 15 × 60 s = 15 min
+// lifetime per goal, tunable via config.DiscoveryConfig / DISCOVERY_*
+// env vars — see #162). Each attempt is a full /search call; per-event
+// exclude_urls accumulate across attempts so the Twitter service's
+// consecutive-already-seen scroll stop terminates attempts 2+ quickly.
+// Every candidate the search surfaces gets persisted to
+// event_search_candidates for downstream V-phase pickup + post-hoc
+// query-quality learning.
 //
 // Deterministic workflow ID convention: "discovery-{event_id}" so
 // the row inserted by Monitor pairs 1:1 with the Temporal WorkflowID
@@ -45,14 +46,15 @@ type DiscoveryWorkflowOutput struct {
 	OutcomeClass    string    `json:"outcome_class"`
 }
 
-// Attempt loop constants — per twitter-search-query.md D5 + 2026-07-23
-// user clarification (fixed 10 attempts × 60 s, no jitter, no count-
-// based early exit).
+// Small-activity infra constants that stay hardcoded — they bound
+// pg-side calls (FetchTeamAliases / StoreCandidate / MarkComplete)
+// which are milliseconds in the happy path. Bumping these is a
+// worker-restart concern, not an operator-tuning concern, so no env
+// surface. The tunables that DO care about operator control
+// (MaxAttempts / AttemptSpacing / MaxAgeMinutes / QueryTimeout) live
+// in config.DiscoveryConfig and are read at workflow start via
+// GetDiscoveryConfig.
 const (
-	discoveryMaxAttempts        = 10
-	discoveryAttemptSpacing     = 60 * time.Second
-	discoveryMaxAgeMinutes      = 3 // per D4
-	discoveryQueryTimeout       = 2 * time.Minute
 	discoveryPGShortActivityTTL = 30 * time.Second
 	discoveryPGRetryAttempts    = 5
 )
@@ -72,6 +74,37 @@ func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (Discove
 	)
 
 	out := DiscoveryWorkflowOutput{EventID: in.EventID}
+
+	// Read tunable config once at workflow start via a config activity
+	// (Temporal determinism — workflows can't touch env directly).
+	// Mirrors ingest.GetIngestConfig pattern. GetDiscoveryConfig always
+	// returns a valid output — fallback values inside the activity
+	// cover the zero-value Activities case (tests, mis-wired workers).
+	cfgCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: discoveryPGShortActivityTTL,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    time.Second,
+			BackoffCoefficient: 2,
+			MaximumAttempts:    discoveryPGRetryAttempts,
+		},
+	})
+	var cfgOut discoveryactivity.GetDiscoveryConfigOutput
+	if err := workflow.ExecuteActivity(cfgCtx,
+		(*discoveryactivity.Activities).GetDiscoveryConfig,
+		discoveryactivity.GetDiscoveryConfigInput{},
+	).Get(cfgCtx, &cfgOut); err != nil {
+		// Hard-fail this — GetDiscoveryConfig is a trivial in-process
+		// call, if it errors something is deeply wrong (Activities
+		// not registered? Bad codec?). Better to fail the workflow
+		// than silently proceed with unknown attempt/spacing.
+		return out, err
+	}
+	log.Info("discovery config loaded",
+		"max_attempts", cfgOut.MaxAttempts,
+		"attempt_spacing", cfgOut.AttemptSpacing,
+		"max_age_minutes", cfgOut.MaxAgeMinutes,
+		"query_timeout", cfgOut.QueryTimeout,
+	)
 
 	// D4b guard — Monitor's debounce should hold events until player
 	// is known. If it fires empty, log + mark complete with a distinct
@@ -126,7 +159,7 @@ func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (Discove
 	seenTweetIDs := make(map[string]struct{}, 64) // dedup within workflow state
 
 	searchOptions := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: discoveryQueryTimeout,
+		StartToCloseTimeout: cfgOut.QueryTimeout,
 		HeartbeatTimeout:    30 * time.Second,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:    2 * time.Second,
@@ -143,7 +176,7 @@ func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (Discove
 		},
 	})
 
-	for attempt := 1; attempt <= discoveryMaxAttempts; attempt++ {
+	for attempt := 1; attempt <= cfgOut.MaxAttempts; attempt++ {
 		var searchOut discoveryactivity.SearchTweetsOutput
 		if err := workflow.ExecuteActivity(searchOptions,
 			(*discoveryactivity.Activities).SearchTweets,
@@ -152,7 +185,7 @@ func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (Discove
 				FixtureID:     in.FixtureID,
 				Query:         query,
 				ExcludeURLs:   excludeURLs,
-				MaxAgeMinutes: discoveryMaxAgeMinutes,
+				MaxAgeMinutes: cfgOut.MaxAgeMinutes,
 			}).Get(searchOptions, &searchOut); err != nil {
 			// Transient search failure — log and move on to the next
 			// attempt after the spacing timer. Don't fail the whole
@@ -205,10 +238,11 @@ func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (Discove
 		}
 		out.AttemptsRun = attempt
 
-		// Wait 60s before the next attempt. Skip the timer after the
-		// last attempt — no point sleeping when we're about to finalize.
-		if attempt < discoveryMaxAttempts {
-			_ = workflow.Sleep(ctx, discoveryAttemptSpacing)
+		// Wait AttemptSpacing before the next attempt. Skip the timer
+		// after the last attempt — no point sleeping when we're about
+		// to finalize.
+		if attempt < cfgOut.MaxAttempts {
+			_ = workflow.Sleep(ctx, cfgOut.AttemptSpacing)
 		}
 	}
 

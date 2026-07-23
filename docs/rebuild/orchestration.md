@@ -20,7 +20,7 @@ the same commit. Per the [2026-07-07 working rule](../decisions.md).
 | IngestWorkflow | ✓ O1c shipped + O1e scheduled daily 00:05 UTC | Temporal Schedule `ingest-scheduled-daily` (`5 0 * * *`) | `internal/workflow/ingest.go` |
 | ActivePollWorkflow | ✓ O2 shipped + scheduled 2026-07-11 | Temporal Schedule `active-poll-scheduled` (IntervalSpec 30s) | `internal/workflow/active_poll.go` |
 | StagingPollWorkflow | ✓ O2 shipped 2026-07-11 | Temporal Schedule `staging-poll-scheduled` (cron `*/15 * * * *`, runtime-tunable) | `internal/workflow/staging_poll.go` |
-| DiscoveryWorkflow | ⊘ O3 planned | NATS `event.stable` subscriber | — |
+| DiscoveryWorkflow | ✓ O3/d shipped 2026-07-23 | Spawned by Monitor's `ReconcileFixture` via `DownstreamSpawner` when `downstream_triggered` flag flips (2026-07-16 decision — Temporal-direct spawn, not NATS-triggered) | `internal/workflow/discovery.go` |
 | VideoValidationWorkflow | ⊘ O4 planned | Child of Discovery | — |
 | AssetPersistenceWorkflow | ⊘ O5 planned | SignalWithStart from Validation | — |
 
