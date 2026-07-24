@@ -6,6 +6,93 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-24 — Event primary key is synthesized (team_player_type_seq); the VAR slot-shift is a known, accepted tradeoff
+
+### Why we synthesize a key at all
+
+**API-Football reports no stable per-event identifier.** A fixture's
+events come back as a bare array with no `id` field (verified on the
+`APIFixtureEvent` struct). To match "the same real-world goal" across
+30 s monitor cycles — for debounce, presence/absence voting, and the
+`event_downstream_workflows` FK — we must **assemble our own primary
+key** from the event's attributes.
+
+### The key, and why seq (not minute)
+
+`natural_key = "{team_id}_{player_id}_{type}_{seq}"`, where `seq` is the
+per-`(team, player, type)` ordinal within the current API event list
+(1st goal by this player = 1, 2nd = 2, …). Fixture scope comes from the
+FK, not the string.
+
+Of the attributes available, none is perfectly stable:
+
+- **minute — drifts.** The vendor adjusts the reported minute as a goal
+  settles (44'→45', 55'→55+1'). If minute were in the key, each
+  adjustment would look like a *new* event → old key absence-voted away,
+  new key inserted fresh → **debounce restarts on every goal.** This is
+  frequent, so minute is disqualified as a key. (Python's own
+  `fixtures.py:112` comment records this exact reasoning.)
+- **seq — shifts on removal.** seq is positional and recomputed each
+  cycle. If an *earlier* same-`(team, player, type)` event is removed
+  from the API while later ones remain, every later event's seq shifts
+  down one.
+
+We chose **seq**, accepting the shift, because minute-drift is the
+common case and shift is the rare one.
+
+### The accepted cost (the "VAR slot-shift")
+
+If a player scores 2+ same-type goals AND an *earlier* one is
+VAR-overturned *after* a later one already exists in pg, the later
+goals re-map onto the wrong rows: the overturned goal's row keeps
+receiving presence votes (never removed → its video is kept), and the
+last real goal's row stops being produced (absence-voted to 0 →
+soft-removed → its video is lost). **Silent** — no crash, no error.
+
+**Why it's low-risk (not the scary-P1 the audit filed it as):**
+VAR resolves a goal within ~1–3 min, well before the same player scores
+again, so the bad interleaving (goal A triggered → goal B triggered →
+*then* A overturned) requires an unusually delayed VAR decision layered
+on a brace/hat-trick — rare-squared. Impact is degraded, not
+catastrophic: the Discovery query still carries the player name +
+canonical team name regardless. And **Python has run this identical
+design in prod without it surfacing as an incident** — we inherited the
+tradeoff, we did not introduce it.
+
+Note: Python's comment ("VAR'd events are deleted entirely, freeing the
+sequence slot for new goals") describes the shift as if benign. It is
+not — that "freed slot" is exactly what causes the re-map. This entry
+corrects that record.
+
+### The real fix (deferred — not Aug-14-critical)
+
+Stop recomputing the key each cycle. **Freeze the key at first insert**
+(it never changes thereafter) and match incoming API events to existing
+rows by **fuzzy attribute proximity** — same `(team, player, type)`,
+minute within a small tolerance — instead of an exact recomputed key.
+That absorbs minute-drift (54' matches the existing 55' row) *and*
+immunizes against seq-shift (matched by what the goal *is*, not where it
+sits). It gives up strict O(1), but n ≤ ~10 goals/fixture, so an O(n)
+scan per event is free.
+
+Not pursued now: the minute-tolerance parameter is a genuine heuristic
+with its own false-match edges (two distinct goals within tolerance),
+it needs careful scenario testing, and the bug it fixes is rare +
+degraded. Revisit post-Aug-14 if real match-day telemetry shows it
+matters. Cheap interim option if desired: log a warning when a
+`(team, player, type)` group's event *count decreases* mid-match (the
+VAR-removal signature) — turns silent mis-map into a visible anomaly
+without touching the key.
+
+### Related
+
+- [`internal/activity/monitor/activities.go`](../internal/activity/monitor/activities.go) — `ReconcileFixture` (set-diff), `seqCounterKey`, `buildDomainEvent`
+- [`internal/domain/event/event.go`](../internal/domain/event/event.go) — `ComposeNaturalKey`
+- `archive/src/data/fixtures.py:108-140` — Python original (same seq method, misleading VAR comment)
+- [audit-2026-07-26.md](./audit-2026-07-26.md) — filed this as P1; downgraded here to documented known-limitation
+
+---
+
 ## 2026-07-24 — Club entity selection: reverted name-match, kept Wikipedia-rank (correct for the tracked roster)
 
 Short-lived experiment reverted the same day. Do NOT re-attempt without
