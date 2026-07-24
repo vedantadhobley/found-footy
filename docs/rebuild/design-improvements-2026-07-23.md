@@ -382,6 +382,208 @@ used yt-dlp per video, serially).
 
 ---
 
+## Ingest + Monitor (earlier design era)
+
+Surfaced during the 2026-07-07 to 2026-07-11 workflow-design conversations
+that produced Monitor + Ingest as they exist today. Deferred at the time,
+still real, some are Aug-14 blocking or near-blocking. Sourced from
+[`docs/rebuild/proposals/monitor.md`](./proposals/monitor.md) §3-4 and
+[`docs/rebuild/proposals/workflow-audit-2026-07-09.md`](./proposals/workflow-audit-2026-07-09.md)
+P1/P2 items that never became tasks.
+
+### 15. Adaptive staging poll tiering
+
+[`monitor.md`](./proposals/monitor.md#1-adaptive-staging-tiering) proposed a
+kickoff-proximity tiered poll: within 4h → every 15 min, 4-24h → every
+60 min, 24h+ → daily via Ingest only. Currently we run a flat 15-min
+cron for all staging fixtures regardless of kickoff distance. That's
+~90% of staging API calls hitting fixtures we already know don't need
+frequent updates.
+
+**Cost of shipping tiered**: small — `PollStagingBucket` becomes tier-aware
+via a filter on `ListStagingForBucketPoll`. Half a day. Ships as pure
+optimization; behavior at reasonable poll cadences is identical.
+
+**When**: not Aug-14 blocking, but Aug 14 will see peak fixture load
+(top-5 European leagues resuming). API burn under peak = real cost.
+Land during a lull.
+
+### 16. Adaptive debounce thresholds for late-game goals
+
+[`monitor.md` §3](./proposals/monitor.md#3-adaptive-debounce-thresholds-deferred)
+flagged this: 92-minute goals are common; a 3-poll × 30s debounce means
+we spawn Discovery ~90s after the final whistle. Missed clip windows.
+
+Trade-off: 2-poll debounce is more susceptible to false positives (a
+transient event that vanishes next poll). Would want telemetry on
+mis-report frequency before committing. That telemetry exists now —
+`events.debounce_count` history + `event.removed` NATS emission =
+real data on how often events drop back to zero after being sighted.
+
+**Cost**: small — one branch in the debounce activity + one config
+value + telemetry review. But NEEDS the drop-frequency review first,
+otherwise we're tuning blind.
+
+**When**: post-audit, when we can look at real prod drop counts. Aug 14
+launch itself is when we'll first accumulate meaningful telemetry.
+
+### 17. Long-postponement handling (PST design gap)
+
+Currently shipped design (per [`fixture.go:70-80`](../../internal/domain/fixture/fixture.go)):
+PST is treated as ACTIVE. The design comment explicitly targets "short
+delays (15-30 min)" — weather postponements that resume within the same
+window. Correct for that case.
+
+**The gap**: long/indefinite postponements. Ligue 1 matches moved 2
+weeks later, Bundesliga winter weather-cancellations rescheduled to
+midweek, etc. "Treated as active" means we keep polling a fixture
+that's effectively dead for days. Wasted API calls; also potentially
+confusing state (fixture stuck at api_elapsed=0 forever).
+
+[`monitor.md` §2](./proposals/monitor.md#2-postponed-fixture-handling--new-state)
+originally proposed a fourth `fixture.State` value `postponed`. That's
+one option. Another: extend the current active state with a
+`postponed_since` timestamp — if PST persists >6h, back off polling to
+daily; if >30d, prune.
+
+**Cost of state option**: medium — schema migration (`ALTER TYPE
+fixture_state ADD VALUE 'postponed'`), domain methods
+`Postpone`/`Resume`, Ingest rescan logic to unpause on schedule
+change, Monitor filter to skip.
+
+**Cost of back-off option**: small — one timestamp column + one
+Monitor filter change. No new state.
+
+**When**: not Aug-14 blocking (short delays work). But once Aug 14
+lands and we see a long delay in prod, this becomes P1. Design-
+improvements pass should pick between the two options.
+
+### 18. `/fixtures?live=all` API alternative
+
+[`monitor.md` opened by asking](./proposals/monitor.md) whether to poll
+active fixtures via `live=all` (single API call, no ID tracking) or by
+IDs (current path — couples our state to API state cleanly). Kept the
+by-IDs path.
+
+**But**: `live=all` gives us API-native "who's live right now" without
+us needing to maintain an active-set. Simpler. Might auto-catch
+fixtures we don't know are live (transient IDs Ingest missed, tournament
+kickoffs we didn't preload). Could be a fallback belt-and-suspenders
+alongside by-IDs, not a replacement.
+
+**Cost**: small — new activity + comparator. Would surface Ingest gaps
+as a side effect.
+
+**When**: post-Aug-14. Ingest already catches the vast majority; the
+edge cases this catches are rare.
+
+### 19. Static national-team fallback (TOP_FIFA_IDS)
+
+[`workflow-audit-2026-07-09` P1 #5](./proposals/workflow-audit-2026-07-09.md#p1--worth-doing-sooner-rather-than-later):
+Python has a static list of ~15 top FIFA national team IDs unioned into
+the tracked set. Catches Euros, Copa America, Nations League fixtures
+transparently — no per-tournament config edit. Go currently doesn't;
+each tournament needs the league ID added to `TRACKED_LEAGUES` env when
+it starts.
+
+Aug 14 falls after Nations League autumn window opens. If Nations
+League fixtures aren't caught, that's a coverage gap for user-facing
+content on a launch weekend.
+
+**Cost**: small — `TOP_NATIONAL_TEAMS` const in ingest config +
+union-into-tracked in the tracked-teams cache step. ~2 hours.
+
+**When**: BEFORE Aug 14. Real coverage risk.
+
+### 20. Static UEFA-club fallback for team-fetch failure
+
+[`workflow-audit-2026-07-09` P1 #6](./proposals/workflow-audit-2026-07-09.md#p1--worth-doing-sooner-rather-than-later):
+Python has `TOP_UEFA_IDS = [15 clubs]` fallback if the top-flight fetch
+completely fails. Go currently returns error → keeps previous cache →
+fail-open (no filter) if cache is empty.
+
+Fail-open is BROADER than Python's static list — first-ever cache-miss
+followed by API failure means Monitor thinks every fixture is trackable.
+Real risk if the first-ever run hits an API outage.
+
+**Cost**: small — hardcoded fallback list + apply on cache-miss path.
+~1 hour.
+
+**When**: pre-Aug-14 if we're doing a fresh prod deploy from empty
+cache. Otherwise defer.
+
+### 21. Alias `country` metadata passthrough
+
+[`workflow-audit-2026-07-09` P2 #7](./proposals/workflow-audit-2026-07-09.md#p2--polish):
+Python passes `league.country` into RAG (alias resolution). Go's
+`EnsureAliasPlaceholders` stores only `TeamID + TeamName`. Minor —
+RAG can still infer country, just costs one extra API call per team.
+
+**Cost**: trivial — pass country through the placeholder + into the
+resolution job. ~30 min.
+
+**When**: whenever the RAG resolution job comes online (see #23 below).
+
+### 22. Ingest retry constants → config
+
+[`workflow-audit-2026-07-09` P2 #8](./proposals/workflow-audit-2026-07-09.md#p2--polish):
+`ingestManualIDsMaxAttempts=3`, `ingestManualIDsBackoffInitial=5s`
+hardcoded in ingest.go. Workflow-scoped so not a drift risk, but
+inconsistent with the just-landed `WorkflowsConfig` pattern (and now
+inconsistent with today's Discovery config move via #162).
+
+**Cost**: trivial — same pattern as #162. ~30 min.
+
+**When**: sweep-along with any other Ingest work. Or right now while
+the pattern's fresh in my head.
+
+### 23. RAG resolution job — the "TBD design"
+
+Multiple decisions.md entries reference "a separate resolution job
+(design TBD) fills placeholder alias rows." That design is still TBD.
+Currently placeholder rows exist; something is presumably resolving
+them (Wikipedia CirrusSearch + LLM per decisions.md 2026-07-21) but
+the ORCHESTRATION shape isn't documented — is it triggered on
+placeholder-row insert, on a schedule, on-demand from Discovery?
+
+If it's on-demand from Discovery (which we saw during Miami — Discovery
+falls back to TeamName when aliases are unresolved), that's fine but
+means Discovery's first attempt for a fresh team runs with poor recall
+until aliases fill in. Not ideal.
+
+**Better options** to consider:
+- **NATIVE Temporal Schedule** — a daily job resolves all
+  `resolved_at IS NULL` rows via the standard resolver
+- **On-insert triggered workflow** — Ingest's `EnsureAliasPlaceholders`
+  spawns a resolver workflow for each new placeholder immediately
+- **Batch on-need pre-warm** — Ingest's fixture-fetch step notes new
+  team IDs, batches resolution before Monitor starts polling
+
+**Cost**: depends on which shape. Small on-schedule is easy, on-insert
+is medium, on-need pre-warm is medium+ but best UX.
+
+**When**: needs to land by Aug 14 or Discovery's first-hit recall on
+fresh teams is degraded. Priority for the design-improvements pass.
+
+### 24. Workflow-audit as recurring practice
+
+The 2026-07-09 workflow audit was a valuable one-time exercise —
+cross-referenced current Go vs Python vs plan, produced a punch list,
+several items shipped as direct outcomes. Never repeated.
+
+Every 2-3 phases (or every ~200 commits) another cross-reference audit
+would catch drift while it's cheap. Especially useful during a big
+push like V-phase where the ratio of "code shipping" to "docs updating"
+tends to drift.
+
+**Cost**: medium per audit — half day if scripted the same way
+(parallel Explore agents per workflow).
+
+**When**: schedule for post-V-phase. Doesn't need to be automated;
+just needs to happen.
+
+---
+
 ## Not-yet-articulated opportunities (placeholders)
 
 These are things I've mentioned in passing that deserve their own entry
