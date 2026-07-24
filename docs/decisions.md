@@ -41,17 +41,20 @@ but rejected: it hardcodes "always want the most-popular entity," which
 is wrong for the legitimate case where api-football names a B team (e.g.
 in a friendly). Neither single signal is complete.
 
-**Known limitation (deferred, NOT Aug-14-blocking).** A team whose
+**Reserve-suffix demotion (FIXED, follow-up commit).** A team whose
 reserve/"II"/B page outranks the senior in Wikipedia search AND whose
-reserve entity isn't tagged `Q2412834` in Wikidata mis-resolves to the
-reserve side. The reverted-code roster run (2026-07-24) shows this hits
-**2 tracked teams**: Hamburger SV → Hamburger SV II, VfB Stuttgart → VfB
-Stuttgart II (both German, non-La-Liga). Impact is degraded nickname
-recall, not a blackout — canonical name + player name still carry the
-Discovery query. Cheapest real fix if we choose to: demote a `" II"/" B"`
-title suffix ONLY when the api name lacks it (narrow, no new API, no
-cross-language problem — unlike the reverted full name-match). Deferred;
-tracked in design-improvements.
+reserve entity isn't tagged `Q2412834` in Wikidata was mis-resolving to
+the reserve side — the reverted-code roster run showed 2 tracked teams
+hit it (Hamburger SV → Hamburger SV II, VfB Stuttgart → VfB Stuttgart II).
+Fixed with a narrow rule (`reserveMarker` + demotion in `resolveClub`):
+a candidate whose title ends in a reserve suffix (`II`/`III`/`B`/`C`/…)
+the api-football name lacks is demoted, kept only as a fallback if no
+senior candidate passes. If api itself names the reserve (a friendly),
+the marker matches on both sides and it is NOT demoted. This is the
+consistent-convention subset; named reserves without the suffix
+(Real Madrid Castilla, Barça Atlètic) are handled separately by
+Wikipedia ranking matching the exact api name. No new API call, no
+cross-language pitfall (unlike the reverted full name-match).
 
 **Kept from the reverted work:** nothing in code. The unidecode tokenizer
 change (446bf1c, separate commit) stands. The full-roster resolver test

@@ -9,9 +9,37 @@ package alias
 
 import (
 	"context"
+	"strings"
 
 	"github.com/vedantadhobley/found-footy/internal/infra/wikipedia"
 )
+
+// reserveSuffixes are the trailing tokens clubs consistently use to name
+// a reserve / youth side: Roman numerals (II/III/…) and single letters
+// (B/C/D). A candidate whose title ends in one of these — when the
+// api-football name does NOT — is a reserve team we should skip in favour
+// of the senior side. Named reserves without this convention (Real Madrid
+// Castilla, Barça Atlètic) are NOT covered here; those are disambiguated
+// by Wikipedia's ranking matching the exact api name instead.
+var reserveSuffixes = map[string]struct{}{
+	"ii": {}, "iii": {}, "iv": {}, "v": {},
+	"b": {}, "c": {}, "d": {},
+}
+
+// reserveMarker returns the trailing reserve/youth marker of a name
+// (lowercased last whitespace token, e.g. "ii" for "Hamburger SV II"),
+// or "" if the name doesn't end in one.
+func reserveMarker(name string) string {
+	fields := strings.Fields(name)
+	if len(fields) == 0 {
+		return ""
+	}
+	last := strings.ToLower(fields[len(fields)-1])
+	if _, ok := reserveSuffixes[last]; ok {
+		return last
+	}
+	return ""
+}
 
 // P31 accept-set for club candidates. Verified against a sweep of 15
 // well-known clubs (2026-07-20): 14 have Q476028 directly; FC Barcelona
@@ -42,7 +70,10 @@ var clubRejectP31 = map[string]struct{}{
 //   2. SPARQL P31 batch verify against Wikidata → filter to hits whose
 //      type set intersects clubAcceptP31 and doesn't touch clubRejectP31.
 //
-// First surviving hit (Wikipedia's own rank position) wins.
+// First surviving hit (Wikipedia's own rank position) wins — EXCEPT a
+// hit whose title carries a reserve suffix (" II"/" B"/…) the api name
+// lacks is demoted, so "Sporting CP" doesn't resolve to "Sporting CP B".
+// See reserveMarker.
 //
 // Country is strongly recommended for disambiguation — same-name clubs
 // across regions (Al-Ahly Egypt vs Al-Ahli Amman, São Paulo FC vs
@@ -81,7 +112,18 @@ func (r *Resolver) resolveClub(ctx context.Context, name string, country *string
 	// top hit is usually the right entity. Better than cascading to
 	// NoMatch when the vendor blips.
 	p31, p31Err := r.wd.BatchGetP31(ctx, candidateIDs)
-	for _, h := range hits {
+
+	// api-football is ground truth for WHICH side scored. If it named a
+	// reserve ("... II"), we want the reserve; otherwise we want the
+	// senior. So a candidate carrying a reserve suffix the api name lacks
+	// is DEMOTED — kept only as a fallback if no senior candidate passes.
+	// This fixes the "Sporting CP → Sporting CP B" / "Hamburger SV →
+	// Hamburger SV II" class without the cross-language pitfalls of full
+	// name-matching (see decisions.md 2026-07-24).
+	apiMarker := reserveMarker(name)
+	var fallback *wikipedia.Hit
+	for i := range hits {
+		h := hits[i]
 		if h.WikidataQID == "" {
 			continue
 		}
@@ -92,7 +134,18 @@ func (r *Resolver) resolveClub(ctx context.Context, name string, country *string
 		if !passesP31Filter(p31[h.WikidataQID], clubAcceptP31, clubRejectP31) {
 			continue
 		}
+		if m := reserveMarker(h.Title); m != "" && m != apiMarker {
+			if fallback == nil {
+				fallback = &hits[i]
+			}
+			continue // demote — prefer a senior candidate if one passes
+		}
 		return LookupResult{QID: h.WikidataQID, Label: h.Title}, nil
+	}
+	if fallback != nil {
+		// Only reserve candidates passed — better than ErrNoMatch, and
+		// correct when api itself named the reserve or only it exists.
+		return LookupResult{QID: fallback.WikidataQID, Label: fallback.Title}, nil
 	}
 	return LookupResult{}, ErrNoMatch
 }
