@@ -199,6 +199,9 @@ func (b *Browser) LoadCookies(path string) (int, error) {
 		if c.Expires > 0 {
 			pw.Expires = playwright.Float(c.Expires)
 		}
+		// Preserve SameSite through the round-trip so we don't re-create
+		// the nil that cookieFromPW has to guard. nil = leave unset.
+		pw.SameSite = pwSameSite(c.SameSite)
 		pwCookies = append(pwCookies, pw)
 	}
 	if err := b.ctx.AddCookies(pwCookies); err != nil {
@@ -220,18 +223,51 @@ func (b *Browser) GetCookies() ([]Cookie, error) {
 	}
 	out := make([]Cookie, 0, len(pw))
 	for _, c := range pw {
-		out = append(out, Cookie{
-			Name:     c.Name,
-			Value:    c.Value,
-			Domain:   c.Domain,
-			Path:     c.Path,
-			Expires:  c.Expires,
-			HTTPOnly: c.HttpOnly,
-			Secure:   c.Secure,
-			SameSite: string(*c.SameSite),
-		})
+		out = append(out, cookieFromPW(c))
 	}
 	return out, nil
+}
+
+// cookieFromPW converts a Playwright cookie to our on-disk shape.
+// SameSite is a *SameSiteAttribute in playwright-go and is nil whenever
+// the cookie carries no SameSite attribute — common for cookies added
+// via AddCookies without one, which is exactly what LoadCookies /
+// ReplaceCookies used to do. Dereferencing it unconditionally
+// (`string(*c.SameSite)`) panicked on the backup after every cookie
+// load; the nil-guard here is mandatory.
+func cookieFromPW(c playwright.Cookie) Cookie {
+	ss := ""
+	if c.SameSite != nil {
+		ss = string(*c.SameSite)
+	}
+	return Cookie{
+		Name:     c.Name,
+		Value:    c.Value,
+		Domain:   c.Domain,
+		Path:     c.Path,
+		Expires:  c.Expires,
+		HTTPOnly: c.HttpOnly,
+		Secure:   c.Secure,
+		SameSite: ss,
+	}
+}
+
+// pwSameSite maps our stored SameSite string back to Playwright's
+// *SameSiteAttribute so LoadCookies / ReplaceCookies preserve it on the
+// way IN — otherwise the read→store→load round-trip silently drops
+// SameSite and manufactures the nil that cookieFromPW then has to guard.
+// Empty / unrecognized → nil (leave unset; Playwright applies its default).
+func pwSameSite(s string) *playwright.SameSiteAttribute {
+	// playwright-go exposes these constants as *SameSiteAttribute already.
+	switch s {
+	case string(*playwright.SameSiteAttributeStrict):
+		return playwright.SameSiteAttributeStrict
+	case string(*playwright.SameSiteAttributeLax):
+		return playwright.SameSiteAttributeLax
+	case string(*playwright.SameSiteAttributeNone):
+		return playwright.SameSiteAttributeNone
+	}
+	return nil
 }
 
 // ReplaceCookies clears the current context's cookies and adds the
@@ -259,6 +295,9 @@ func (b *Browser) ReplaceCookies(cookies []Cookie) error {
 		if c.Expires > 0 {
 			pw.Expires = playwright.Float(c.Expires)
 		}
+		// Preserve SameSite through the round-trip so we don't re-create
+		// the nil that cookieFromPW has to guard. nil = leave unset.
+		pw.SameSite = pwSameSite(c.SameSite)
 		pwCookies = append(pwCookies, pw)
 	}
 	if err := b.ctx.AddCookies(pwCookies); err != nil {
