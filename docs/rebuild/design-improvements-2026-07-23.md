@@ -584,6 +584,46 @@ just needs to happen.
 
 ---
 
+## Tokenizer / normalization
+
+### 25. Revisit dropping non-Latin scripts entirely
+
+Raised by the user 2026-07-24 ("why do we drop things at all?"). The
+tokenizer has two drops: the **accidental** extended-Latin drop (ø æ ð
+…) was a bug, fixed 2026-07-24 (see decisions.md). The **deliberate**
+drop — genuinely non-Latin scripts (Arabic, CJK, Cyrillic, Greek) get
+discarded by the `hasNonASCII` guard — is still as-designed and worth
+questioning.
+
+**Original rationale**: non-Latin tokens generate generic-language noise
+more than team-specific signal (Greek `οι` = "the" matches any Greek
+tweet), and query length is bounded (~500 chars).
+
+**Counter-evidence**: goals are tweeted about in every language — the
+Miami smoke test surfaced legitimate Portuguese, Spanish, and Polish
+candidates. An Arabic label for "ريال مدريد" (Real Madrid) in the OR
+query would catch Arabic goal tweets we currently miss. Dropping by
+*script* is a blunt proxy for dropping by *genericness*.
+
+**But**: most viral goal tweets carry a Latin hashtag or the player's
+romanized name (`#Odegaard`), which our Latin tokens already catch. So
+the recall lost to this drop is the slice of tweets that are BOTH
+non-Latin-script AND carry no Latin token — probably small. And Twitter
+folds diacritics but does NOT transliterate across scripts (searching
+"madrid" won't match "مدريد"), so adding non-Latin tokens is the only
+way to reach pure-non-Latin tweets.
+
+**Options**: (a) keep dropping (status quo, simplest); (b) include a
+curated set of high-value non-Latin team labels (e.g. the Arabic/Japanese
+names of globally-followed clubs) rather than all-or-nothing by script;
+(c) measure the actual recall loss post-launch via `event_search_candidates`
+before deciding.
+
+**When**: not Aug-14 blocking. Measure first (option c), decide later.
+Low priority unless a specific team's recall underperforms in prod.
+
+---
+
 ## Not-yet-articulated opportunities (placeholders)
 
 These are things I've mentioned in passing that deserve their own entry

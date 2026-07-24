@@ -85,6 +85,66 @@ func TestTokenize_NonLatinScriptDropped(t *testing.T) {
 	}
 }
 
+// TestTokenizePlayerName_ExtendedLatinFolded — the audit P0 (2026-07-24).
+// Precomposed stroke/ligature letters that NFD cannot decompose (ø æ ð þ
+// ł …) must fold to ASCII, not be dropped. These are real football
+// surnames; before the fix they produced EMPTY player-token sets, which
+// collapsed Discovery queries to team-aliases-only (thousands of generic
+// tweets, no name signal). Twitter search folds these the same way
+// (searching "odegaard" returns "Ødegaard" tweets — verified 2026-07-24),
+// so the ASCII form is the correct — and optimal — query token.
+func TestTokenizePlayerName_ExtendedLatinFolded(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"S. Ødegaard", []string{"odegaard"}},                     // Arsenal captain — was []
+		{"R. Højlund", []string{"hojlund"}},                       // Man Utd striker — was []
+		{"Rasmus Højlund", []string{"rasmus", "hojlund"}},
+		{"Albert Guðmundsson", []string{"albert", "gudmundsson"}}, // Fiorentina, Icelandic ð
+		{"Łukasz Fabiański", []string{"lukasz", "fabianski"}},     // Polish Ł + ń(NFD)
+		{"Mbappé", []string{"mbappe"}},                            // accent still works (regression guard)
+		{"Gyökeres", []string{"gyokeres"}},                        // ö via NFD (regression guard)
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got := TokenizePlayerName(tc.in)
+			if !equalSets(got, tc.want) {
+				t.Errorf("TokenizePlayerName(%q) = %v; want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFoldExtendedLatin — the shared transliteration table, pinned
+// directly so the mapping is covered independent of the tokenize
+// pipeline. Only atomic (NFD-undecomposable) letters belong here;
+// accents like é/ö are NFD's job and intentionally absent from the table.
+func TestFoldExtendedLatin(t *testing.T) {
+	cases := map[string]string{
+		"ø":       "o",
+		"Ø":       "O",
+		"æ":       "ae",
+		"œ":       "oe",
+		"đ":       "d",
+		"ð":       "d",
+		"þ":       "th",
+		"Þ":       "Th",
+		"ł":       "l",
+		"Ł":       "L",
+		"ß":       "ss",
+		"ħ":       "h",
+		"Højlund": "Hojlund", // only the ø folds; rest untouched
+		"plain":   "plain",   // pure ASCII unchanged
+		"":        "",        // empty unchanged
+	}
+	for in, want := range cases {
+		if got := foldExtendedLatin(in); got != want {
+			t.Errorf("foldExtendedLatin(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestTokenize_SkipListStillWorks — spot-check that the existing
 // filters (≤2 chars, all-digit, camel-concat) still fire alongside
 // the new non-Latin check.

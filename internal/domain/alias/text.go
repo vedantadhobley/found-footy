@@ -35,20 +35,29 @@ import (
 // generic-language noise more than team-specific signal (Greek `οι`
 // = "the", would match any Greek tweet).
 //
-// Known limitation: Latin-1 supplement chars that don't decompose to
-// ASCII (Ø, Æ, Œ, Þ, Ð, Ł) also get dropped by the ASCII-only rule.
-// For the current tracked roster (top-5 European leagues + FIFA
-// nationals) no team's canonical form uses these, so no recall loss.
-// If we ever expand to Norwegian/Icelandic/Polish clubs whose primary
-// labels use them, add explicit char mappings (Ø→o, Æ→ae, etc.)
-// before the ASCII check.
+// Precomposed extended-Latin letters that NFD canNOT decompose — the
+// stroked / barred / ligature letters (ø æ œ þ ð ł đ ħ) — are folded to
+// ASCII by foldExtendedLatin BEFORE the non-ASCII guard, so names like
+// Ødegaard, Højlund, and Guðmundsson tokenize correctly. This was a
+// silent P0 (audit 2026-07-24): NFD handles accents (é→e, ö→o are
+// base+combining-mark pairs) but the atomic stroke letters have no
+// canonical decomposition, so they trip the >127 guard and get dropped
+// entirely — erasing player names, not just team names (the original
+// scoping of this limitation to team rosters missed that the same
+// function tokenizes player names). Folding to ASCII is not just safe
+// but optimal: Twitter search is stroke-insensitive — searching
+// "odegaard" returns "Ødegaard" tweets (empirically verified
+// 2026-07-24 — see docs/decisions.md), so the ASCII form catches both
+// the special-char writers and the majority who type the plain form.
 func tokenize(phrase string) []string {
 	if phrase == "" {
 		return nil
 	}
-	// ß → ss so "fußball" survives NFD as "fussball" (matches an
-	// eventual skip-list; keeps German content indexable).
-	phrase = strings.ReplaceAll(phrase, "ß", "ss")
+	// Fold precomposed extended-Latin letters (ß→ss, ø→o, æ→ae, …) that
+	// NFD cannot decompose. MUST run before the NFD+Mn sequence so the
+	// atomic stroke / ligature letters become ASCII instead of tripping
+	// the non-ASCII guard below. See foldExtendedLatin.
+	phrase = foldExtendedLatin(phrase)
 
 	// NFD + strip Mn (combining marks) — same as public Normalize but
 	// we want lowercase for filter purposes.
@@ -138,6 +147,49 @@ func hasNonASCII(s string) bool {
 		}
 	}
 	return false
+}
+
+// extendedLatinFolder transliterates the precomposed extended-Latin
+// letters that Unicode NFD does NOT decompose to ASCII. Accented letters
+// (é ö ñ ç ş) are modelled as base-letter + combining-mark, so NFD splits
+// them and the Mn-strip removes the mark — they need no entry here. The
+// letters below are ATOMIC codepoints whose stroke / bar / ligature is
+// part of the character identity, not a separable mark, so NFD leaves
+// them untouched and they trip the >127 guard. Without this table they
+// are dropped entirely, silently erasing real football names:
+//
+//	Ødegaard, Højlund (Nordic ø)   Guðmundsson (Icelandic ð)
+//	Piątek→Piatek is fine (ą = a+ogonek, NFD handles) but Łukasz needs ł
+//	Þórðarson (Icelandic þ + ð)    København (Danish ø, if ever a name)
+//
+// Mappings follow the conventional Latin transliteration (ø→o, æ→ae,
+// þ→th). Applied BEFORE NFD so downstream sees pure ASCII. Add new
+// letters HERE — this is the single table shared by tokenize, lowerASCII
+// and Normalize, so every normalization entry point stays consistent.
+var extendedLatinFolder = strings.NewReplacer(
+	"ß", "ss", "ẞ", "SS", // German sharp s (both cases)
+	"ø", "o", "Ø", "O", // Danish/Norwegian o-stroke
+	"æ", "ae", "Æ", "Ae", // ash ligature
+	"œ", "oe", "Œ", "Oe", // oe ligature (French)
+	"đ", "d", "Đ", "D", // d-stroke (Croatian/Serbian/Vietnamese)
+	"ð", "d", "Ð", "D", // eth (Icelandic/Faroese)
+	"þ", "th", "Þ", "Th", // thorn (Icelandic)
+	"ł", "l", "Ł", "L", // l-stroke (Polish)
+	"ħ", "h", "Ħ", "H", // h-stroke (Maltese)
+	"ı", "i", "İ", "I", // dotless/dotted i (Turkish)
+	"ŧ", "t", "Ŧ", "T", // t-stroke (Sami)
+	"ĸ", "k", // kra (Greenlandic)
+)
+
+// foldExtendedLatin applies extendedLatinFolder. Named (not an inline
+// .Replace) so the three normalization entry points share exactly one
+// transliteration table — see extendedLatinFolder's doc for why NFD
+// alone is insufficient.
+func foldExtendedLatin(s string) string {
+	if s == "" {
+		return s
+	}
+	return extendedLatinFolder.Replace(s)
 }
 
 // splitWords splits on whitespace, hyphen, en-dash, em-dash, and
@@ -273,7 +325,7 @@ func lowerASCII(s string) string {
 	if s == "" {
 		return s
 	}
-	s = strings.ReplaceAll(s, "ß", "ss")
+	s = foldExtendedLatin(s)
 	decomposed := norm.NFD.String(s)
 	var b strings.Builder
 	b.Grow(len(decomposed))
