@@ -58,22 +58,25 @@ func TestTokenize_LatinWithDiacriticsPreserved(t *testing.T) {
 	}
 }
 
-// TestTokenize_NonLatinScriptDropped — non-Latin scripts (Chinese,
-// Greek, Cyrillic, Arabic, Japanese, Korean) don't decompose to ASCII
-// via NFD and get dropped by the hasNonASCII check.
-func TestTokenize_NonLatinScriptDropped(t *testing.T) {
+// TestTokenize_NonLatinScriptRomanized — post-2026-07-24, non-Latin
+// scripts are ROMANIZED by unidecode, not dropped. Cyrillic/Greek/Korean
+// romanize to tokens English tweets actually use (Спартак→spartak,
+// 레알→real); CJK/Arabic romanize to phonetic noise (红魔→"hong mo") that
+// no English tweet contains. The tokenizer keeps ALL of it — judgment
+// about which tokens are real signal is the alias-selection pipeline's
+// ≥2-language threshold voting, NOT the tokenizer's job. See decisions.md
+// 2026-07-24 (romanize + let threshold decide → fully dynamic).
+func TestTokenize_NonLatinScriptRomanized(t *testing.T) {
 	cases := []struct {
 		in   string
 		want []string
 	}{
-		{"红魔", nil},                    // Chinese "Red Devil" — dropped
-		{"γαλαζιοι", nil},               // Greek "the blues" — dropped
-		{"οι", nil},                     // Greek article "the" — also ≤2 chars but ALSO non-Latin
-		{"الأهلي", nil},                 // Arabic "Al-Ahly" — dropped
-		{"Спартак", nil},                // Cyrillic "Spartak" — dropped
-		{"ヴィッセル神戸", nil},              // Japanese "Vissel Kobe" — dropped
-		{"레알 마드리드", nil},               // Korean "Real Madrid" — dropped
-		{"Manchester 红魔 United", []string{"manchester", "united"}}, // mixed — Latin kept, CJK dropped
+		{"Спартак", []string{"spartak"}},                    // Cyrillic → real token (was dropped pre-fix)
+		{"Спартак Москва", []string{"spartak", "moskva"}},   // Cyrillic multi-word
+		{"γαλαζιοι", []string{"galazioi"}},                  // Greek → romanized
+		{"οι", nil},                                          // Greek "the" → "oi", dropped by ≤2 filter
+		{"红魔", []string{"hong"}},                            // Chinese → "hong mo"; "mo" dropped ≤2; "hong" is noise the threshold drops downstream
+		{"Manchester 红魔 United", []string{"manchester", "hong", "united"}}, // mixed — Latin kept, CJK romanized (threshold drops "hong")
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -86,13 +89,13 @@ func TestTokenize_NonLatinScriptDropped(t *testing.T) {
 }
 
 // TestTokenizePlayerName_ExtendedLatinFolded — the audit P0 (2026-07-24).
-// Precomposed stroke/ligature letters that NFD cannot decompose (ø æ ð þ
-// ł …) must fold to ASCII, not be dropped. These are real football
-// surnames; before the fix they produced EMPTY player-token sets, which
-// collapsed Discovery queries to team-aliases-only (thousands of generic
-// tweets, no name signal). Twitter search folds these the same way
-// (searching "odegaard" returns "Ødegaard" tweets — verified 2026-07-24),
-// so the ASCII form is the correct — and optimal — query token.
+// Precomposed stroke/ligature letters (ø æ ð þ ł …) must transliterate
+// to ASCII, not be dropped. These are real football surnames; before the
+// fix they produced EMPTY player-token sets, which collapsed Discovery
+// queries to team-aliases-only (thousands of generic tweets, no name
+// signal). Twitter search folds these the same way (searching "odegaard"
+// returns "Ødegaard" tweets — verified 2026-07-24), so the ASCII form is
+// the correct — and optimal — query token. Now handled by unidecode.
 func TestTokenizePlayerName_ExtendedLatinFolded(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -102,9 +105,9 @@ func TestTokenizePlayerName_ExtendedLatinFolded(t *testing.T) {
 		{"R. Højlund", []string{"hojlund"}},                       // Man Utd striker — was []
 		{"Rasmus Højlund", []string{"rasmus", "hojlund"}},
 		{"Albert Guðmundsson", []string{"albert", "gudmundsson"}}, // Fiorentina, Icelandic ð
-		{"Łukasz Fabiański", []string{"lukasz", "fabianski"}},     // Polish Ł + ń(NFD)
-		{"Mbappé", []string{"mbappe"}},                            // accent still works (regression guard)
-		{"Gyökeres", []string{"gyokeres"}},                        // ö via NFD (regression guard)
+		{"Łukasz Fabiański", []string{"lukasz", "fabianski"}},     // Polish Ł + ń
+		{"Mbappé", []string{"mbappe"}},                            // accent (regression guard)
+		{"Gyökeres", []string{"gyokeres"}},                        // ö accent (regression guard)
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -113,35 +116,6 @@ func TestTokenizePlayerName_ExtendedLatinFolded(t *testing.T) {
 				t.Errorf("TokenizePlayerName(%q) = %v; want %v", tc.in, got, tc.want)
 			}
 		})
-	}
-}
-
-// TestFoldExtendedLatin — the shared transliteration table, pinned
-// directly so the mapping is covered independent of the tokenize
-// pipeline. Only atomic (NFD-undecomposable) letters belong here;
-// accents like é/ö are NFD's job and intentionally absent from the table.
-func TestFoldExtendedLatin(t *testing.T) {
-	cases := map[string]string{
-		"ø":       "o",
-		"Ø":       "O",
-		"æ":       "ae",
-		"œ":       "oe",
-		"đ":       "d",
-		"ð":       "d",
-		"þ":       "th",
-		"Þ":       "Th",
-		"ł":       "l",
-		"Ł":       "L",
-		"ß":       "ss",
-		"ħ":       "h",
-		"Højlund": "Hojlund", // only the ø folds; rest untouched
-		"plain":   "plain",   // pure ASCII unchanged
-		"":        "",        // empty unchanged
-	}
-	for in, want := range cases {
-		if got := foldExtendedLatin(in); got != want {
-			t.Errorf("foldExtendedLatin(%q) = %q, want %q", in, got, want)
-		}
 	}
 }
 

@@ -19,60 +19,47 @@ import (
 	"strings"
 	"unicode"
 
-	"golang.org/x/text/unicode/norm"
+	"github.com/gosimple/unidecode"
 )
 
-// tokenize breaks a Wikidata alias string into individual words with
-// full normalization applied. Returns lowercased, diacritic-stripped,
-// ASCII-only tokens. Order preserved (callers usually de-dupe).
+// tokenize breaks a name (team alias or player name) into individual
+// lowercased ASCII word tokens. Order preserved (callers usually de-dupe).
 //
-// Non-Latin-script tokens (Chinese, Greek, Cyrillic, Arabic, Japanese,
-// etc.) are dropped. Latin-script tokens with diacritics (München,
-// Atlético, São Paulo, Fußball) survive after the NFD normalize + Mn
-// strip + ß→ss pre-normalize sequence turns them into pure ASCII. This
-// keeps foreign-language coverage in Latin scripts (which English
-// tweets do encounter) while dropping non-Latin scripts that generate
-// generic-language noise more than team-specific signal (Greek `οι`
-// = "the", would match any Greek tweet).
+// Normalization is a single transliteration pass via gosimple/unidecode,
+// which maps ANY Unicode — accents, stroke/ligature letters, Cyrillic,
+// Greek, CJK, Arabic — to a best-effort ASCII approximation. This
+// replaced the former NFD + Mn-strip + hand-rolled extended-Latin table
+// (which handled only a subset) AND the old "drop non-Latin scripts"
+// rule. Rationale (decisions.md 2026-07-24):
 //
-// Precomposed extended-Latin letters that NFD canNOT decompose — the
-// stroked / barred / ligature letters (ø æ œ þ ð ł đ ħ) — are folded to
-// ASCII by foldExtendedLatin BEFORE the non-ASCII guard, so names like
-// Ødegaard, Højlund, and Guðmundsson tokenize correctly. This was a
-// silent P0 (audit 2026-07-24): NFD handles accents (é→e, ö→o are
-// base+combining-mark pairs) but the atomic stroke letters have no
-// canonical decomposition, so they trip the >127 guard and get dropped
-// entirely — erasing player names, not just team names (the original
-// scoping of this limitation to team rosters missed that the same
-// function tokenizes player names). Folding to ASCII is not just safe
-// but optimal: Twitter search is stroke-insensitive — searching
-// "odegaard" returns "Ødegaard" tweets (empirically verified
-// 2026-07-24 — see docs/decisions.md), so the ASCII form catches both
-// the special-char writers and the majority who type the plain form.
+//   - Latin diacritics/strokes fold correctly: Ødegaard→odegaard,
+//     Guðmundsson→gudmundsson, Fußball→fussball, München→munchen.
+//     Twitter search is diacritic/stroke-insensitive, so the ASCII token
+//     is optimal — it catches both special-char and plain-keyboard tweets.
+//   - Non-Latin scripts are now ROMANIZED, not dropped: Cyrillic
+//     Спартак→spartak and Korean 레알→real are real tokens English tweets
+//     use. We keep the recall rather than discard it by script.
+//   - Romanization noise (Chinese 红魔→"hong mo", Arabic ريال→"ryl mdryd"
+//     — phonetic strings no English tweet contains) is NOT filtered here.
+//     The tokenizer normalizes; it does not judge. The alias-selection
+//     pipeline's ≥2-language threshold voting is the arbiter: a token
+//     seen in only one language's label is dropped as noise, one
+//     corroborated across languages survives. "romanize + let the
+//     threshold decide" keeps the pipeline fully dynamic — no hardcoded
+//     roster, no per-script special-casing.
+//
+// The other filters (≤2-char, all-digit, camelCase-concat) still apply.
+// Known follow-up: isCamelConcat also drops Mc/Mac names (McTominay) —
+// pre-existing, tracked separately, not a regression from this change.
 func tokenize(phrase string) []string {
 	if phrase == "" {
 		return nil
 	}
-	// Fold precomposed extended-Latin letters (ß→ss, ø→o, æ→ae, …) that
-	// NFD cannot decompose. MUST run before the NFD+Mn sequence so the
-	// atomic stroke / ligature letters become ASCII instead of tripping
-	// the non-ASCII guard below. See foldExtendedLatin.
-	phrase = foldExtendedLatin(phrase)
-
-	// NFD + strip Mn (combining marks) — same as public Normalize but
-	// we want lowercase for filter purposes.
-	decomposed := norm.NFD.String(phrase)
-	var stripped strings.Builder
-	stripped.Grow(len(decomposed))
-	for _, r := range decomposed {
-		if unicode.Is(unicode.Mn, r) {
-			continue
-		}
-		stripped.WriteRune(r)
-	}
+	// Single transliteration pass: any script → best-effort ASCII.
+	ascii := unidecode.Unidecode(phrase)
 
 	// Split on whitespace + dashes; strip trailing/leading punctuation.
-	words := splitWords(stripped.String())
+	words := splitWords(ascii)
 	out := make([]string, 0, len(words))
 	for _, w := range words {
 		w = stripPunct(w)
@@ -89,13 +76,6 @@ func tokenize(phrase string) []string {
 		if isAllDigit(low) {
 			continue
 		}
-		if hasNonASCII(low) {
-			// Non-Latin-script token (CJK, Greek, Cyrillic, Arabic, etc.)
-			// The NFD strip above turned Latin scripts with diacritics into
-			// pure ASCII; anything with runes > 127 surviving here is
-			// necessarily a different script.
-			continue
-		}
 		out = append(out, low)
 	}
 	return out
@@ -107,10 +87,10 @@ func tokenize(phrase string) []string {
 // a player name like "Kevin De Bruyne" into query tokens `{kevin,
 // bruyne}` — with `de` filtered as a Romance-language particle.
 //
-// Applies both tokenize's normalization (NFD strip, ß→ss, dash split,
-// ≤2-char drop, non-Latin script filter) AND the skip-list filter
-// (particles like `de/van/der/von/la/le/el/il/das/di/da`). Deduplicates
-// while preserving first-seen order.
+// Applies both tokenize's normalization (unidecode transliteration to
+// ASCII, dash split, ≤2-char drop) AND the skip-list filter (particles
+// like `de/van/der/von/la/le/el/il/das/di/da`). Deduplicates while
+// preserving first-seen order.
 //
 // The alias selection pipeline uses tokenize + skip-list too but
 // with additional layers (per-language threshold, English rescue,
@@ -134,62 +114,6 @@ func TokenizePlayerName(name string) []string {
 		out = append(out, tok)
 	}
 	return out
-}
-
-// hasNonASCII reports whether s contains any rune outside the ASCII
-// range (0..127). See tokenize's doc for the rationale — after NFD
-// normalization, Latin scripts fold to ASCII and non-Latin scripts
-// don't, so this becomes the script-identity check we need.
-func hasNonASCII(s string) bool {
-	for _, r := range s {
-		if r > 127 {
-			return true
-		}
-	}
-	return false
-}
-
-// extendedLatinFolder transliterates the precomposed extended-Latin
-// letters that Unicode NFD does NOT decompose to ASCII. Accented letters
-// (é ö ñ ç ş) are modelled as base-letter + combining-mark, so NFD splits
-// them and the Mn-strip removes the mark — they need no entry here. The
-// letters below are ATOMIC codepoints whose stroke / bar / ligature is
-// part of the character identity, not a separable mark, so NFD leaves
-// them untouched and they trip the >127 guard. Without this table they
-// are dropped entirely, silently erasing real football names:
-//
-//	Ødegaard, Højlund (Nordic ø)   Guðmundsson (Icelandic ð)
-//	Piątek→Piatek is fine (ą = a+ogonek, NFD handles) but Łukasz needs ł
-//	Þórðarson (Icelandic þ + ð)    København (Danish ø, if ever a name)
-//
-// Mappings follow the conventional Latin transliteration (ø→o, æ→ae,
-// þ→th). Applied BEFORE NFD so downstream sees pure ASCII. Add new
-// letters HERE — this is the single table shared by tokenize, lowerASCII
-// and Normalize, so every normalization entry point stays consistent.
-var extendedLatinFolder = strings.NewReplacer(
-	"ß", "ss", "ẞ", "SS", // German sharp s (both cases)
-	"ø", "o", "Ø", "O", // Danish/Norwegian o-stroke
-	"æ", "ae", "Æ", "Ae", // ash ligature
-	"œ", "oe", "Œ", "Oe", // oe ligature (French)
-	"đ", "d", "Đ", "D", // d-stroke (Croatian/Serbian/Vietnamese)
-	"ð", "d", "Ð", "D", // eth (Icelandic/Faroese)
-	"þ", "th", "Þ", "Th", // thorn (Icelandic)
-	"ł", "l", "Ł", "L", // l-stroke (Polish)
-	"ħ", "h", "Ħ", "H", // h-stroke (Maltese)
-	"ı", "i", "İ", "I", // dotless/dotted i (Turkish)
-	"ŧ", "t", "Ŧ", "T", // t-stroke (Sami)
-	"ĸ", "k", // kra (Greenlandic)
-)
-
-// foldExtendedLatin applies extendedLatinFolder. Named (not an inline
-// .Replace) so the three normalization entry points share exactly one
-// transliteration table — see extendedLatinFolder's doc for why NFD
-// alone is insufficient.
-func foldExtendedLatin(s string) string {
-	if s == "" {
-		return s
-	}
-	return extendedLatinFolder.Replace(s)
 }
 
 // splitWords splits on whitespace, hyphen, en-dash, em-dash, and
@@ -319,23 +243,15 @@ func stripKnownOrgSuffix(tok string) (string, bool) {
 	return "", false
 }
 
-// lowerASCII returns a lowercased, diacritic-stripped version of s.
-// Used as a map key normalizer (e.g., country-name cache keys).
+// lowerASCII returns a lowercased, transliterated-to-ASCII version of s.
+// Used as a map key normalizer (e.g., country-name cache keys). Shares
+// the tokenizer's unidecode pass so key normalization matches token
+// normalization.
 func lowerASCII(s string) string {
 	if s == "" {
 		return s
 	}
-	s = foldExtendedLatin(s)
-	decomposed := norm.NFD.String(s)
-	var b strings.Builder
-	b.Grow(len(decomposed))
-	for _, r := range decomposed {
-		if unicode.Is(unicode.Mn, r) {
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return strings.ToLower(strings.TrimSpace(b.String()))
+	return strings.ToLower(strings.TrimSpace(unidecode.Unidecode(s)))
 }
 
 // sortedKeys returns the keys of a set in stable sorted order. Used

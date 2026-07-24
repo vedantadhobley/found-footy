@@ -6,7 +6,7 @@ add a new one above it pointing at the change.
 
 ---
 
-## 2026-07-24 — Tokenizer folds precomposed extended-Latin letters; Twitter search is stroke-insensitive
+## 2026-07-24 — Tokenizer transliterates via unidecode (romanize, don't drop); Twitter search is stroke-insensitive
 
 ### Context
 
@@ -36,14 +36,41 @@ player from our own 2026-07-22 smoke test) all live. Every goal by these
 players fired a team-aliases-only query with no name signal → thousands
 of generic tweets → wasted discovery budget → LLM-validator flood.
 
-### Decision
+### Decision (evolved same day — final form is a library)
 
-**Fold precomposed extended-Latin letters to ASCII via an explicit
-transliteration table (`foldExtendedLatin`), applied before NFD in all
-three normalization entry points** (`tokenize`, `lowerASCII`,
-`Normalize`). Mappings: `ø→o æ→ae œ→oe đ→d ð→d þ→th ł→l ħ→h ı→i ŧ→t
-ĸ→k ß→ss` (both cases). Accents stay NFD's job — they are intentionally
-absent from the table.
+**Step 1 (interim, commit f198a13):** a hand-rolled `foldExtendedLatin`
+transliteration table (`ø→o æ→ae þ→th …`) applied before NFD. Fixed the
+P0 immediately and validated the approach.
+
+**Step 2 (final, this commit):** replaced the hand table AND the NFD
+sequence AND the drop-non-Latin rule with a single transliteration pass
+via **`gosimple/unidecode`** (v1.0.1, Apache-2.0). `tokenize` and
+`lowerASCII` now call `unidecode.Unidecode(s)`. Rationale: the hand
+table was reinventing — worse and incompletely — what a maintained
+library does comprehensively. A library survey (2026-07-24) picked
+gosimple/unidecode over mozillazg/go-unidecode (faithful Python port,
+kept as fallback) and the dormant rainycape/unidecode (which gosimple
+forked).
+
+**The bigger decision this unlocked — romanize non-Latin, don't drop.**
+With a real transliterator, non-Latin scripts no longer survive as
+>127 runes to be dropped; they get **romanized**. So we deleted the
+"drop non-Latin script" rule entirely. Empirically (2026-07-24):
+Cyrillic `Спартак → spartak`, Korean `레알 → real` — real tokens English
+tweets use, recall we previously threw away. CJK/Arabic romanize to
+phonetic noise (`红魔 → hong mo`, `ريال → ryl mdryd`) that no English
+tweet contains — but the tokenizer does NOT judge that. The
+alias-selection pipeline's **≥2-language threshold voting is the
+arbiter**: a token seen in one language's label is dropped as noise, one
+corroborated across languages survives. "Romanize + let the threshold
+decide" keeps the pipeline **fully dynamic** — no hardcoded roster, no
+per-script special-casing (user decision 2026-07-24, chosen over a
+curated static-alias file precisely because it stays dynamic).
+
+`Normalize` (alias.go) stays a distinct pure-NFD diacritic-strip that
+**preserves script** (Спартак stays Cyrillic) — it is a different
+operation from the tokenizer's romanize, has its own contract + tests,
+and no non-test callers.
 
 ### Why fold to ASCII (not search the special-char form)
 
@@ -62,31 +89,41 @@ majority who type the plain form on English keyboards. Searching the
 Twitter's fold ever changed. This vindicates the whole fold-to-ASCII
 normalization strategy; the only defect was an incomplete table.
 
-### Scope note — the OTHER drop is a separate, still-open question
+### Scope note — this RESOLVES the "why drop at all" question
 
-There are two drops in the tokenizer. This decision fixes the
-**accidental** one (extended-Latin letters). The **deliberate** one —
-dropping genuinely non-Latin scripts (Arabic / CJK / Cyrillic / Greek)
-— remains as designed and is a separate open design question (query-
-length limits + generic-token noise vs. multilingual recall). Tracked in
+The interim entry flagged a second, "deliberate" drop (non-Latin scripts)
+as a still-open question. Step 2 **closes it**: we don't drop by script
+anymore, we romanize and let threshold voting decide. The remaining
+tokenizer brittleness is NOT normalization — it's `isCamelConcat`
+over-dropping Mc/Mac names (McTominay), the Wikidata entity-ranking bug
+(Sporting CP → reserve team), and generic-token survival (fire/foot/ball).
+Those are separate, tracked in
 [`design-improvements-2026-07-23.md`](./rebuild/design-improvements-2026-07-23.md).
 
 ### Consequences
 
-- `foldExtendedLatin` + `extendedLatinFolder` added to `text.go` as the
-  single shared table; `tokenize`/`lowerASCII`/`Normalize` all call it.
-- Table tests added for Ødegaard, Højlund, Guðmundsson, Łukasz Fabiański
-  + regression guards for Mbappé/Gyökeres (NFD path still works).
+- `gosimple/unidecode` v1.0.1 added to go.mod. `tokenize` + `lowerASCII`
+  reduced to a single `Unidecode()` call; the NFD/Mn-strip loop, the
+  `hasNonASCII` drop, and the interim `foldExtendedLatin`/`extendedLatinFolder`
+  all **deleted**. Net simpler.
+- The "drop non-Latin script" rule is gone — Cyrillic/Greek/Korean now
+  romanize and survive to threshold voting.
+- Tests: `TokenizePlayerName` cases (Ødegaard/Højlund/Guðmundsson/Łukasz)
+  kept — unidecode satisfies them; `TestTokenize_NonLatinScriptDropped`
+  flipped to `_Romanized` (Спартак→spartak now KEPT); `TestFoldExtendedLatin`
+  removed with the helper.
+- `Normalize` reverted to pure NFD (preserve-script); `lowerASCII` now
+  uses unidecode. Both still have zero non-test callers (dead-code
+  cleanup candidate).
 - Resolves audit-2026-07-26 P0.
-- `Normalize` + `lowerASCII` have zero non-test callers today (noted as a
-  dead-code cleanup candidate) — folding there is blast-radius-free and
-  keeps them correct if used later.
 
 ### Related
 
-- [`internal/domain/alias/text.go`](../internal/domain/alias/text.go) — `foldExtendedLatin`, `tokenize`
+- [`internal/domain/alias/text.go`](../internal/domain/alias/text.go) — `tokenize`, `lowerASCII` (unidecode)
 - [audit-2026-07-26.md](./audit-2026-07-26.md) — P0 finding
+- [design-improvements-2026-07-23.md #25](./rebuild/design-improvements-2026-07-23.md) — the "why drop" discussion (now resolved) + isCamelConcat/entity-ranking follow-ups
 - [twitter-search-query.md](./rebuild/proposals/twitter-search-query.md) — D8 tokenizer rules
+- gosimple/unidecode: <https://github.com/gosimple/unidecode>
 
 ---
 
