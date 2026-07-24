@@ -147,6 +147,8 @@ func (e *InvalidArgError) Error() string {
 //	Atlético  → Atletico
 //	Bayern München → Bayern Munchen
 //	Señor      → Senor
+//	Ødegaard   → Odegaard      (stroke letter folded by foldExtendedLatin)
+//	Fußball    → Fussball      (sharp-s folded)
 //	Spartak    → Spartak       (unchanged — no combining marks)
 //	Спартак    → Спартак       (Cyrillic without decomposition)
 //	""         → ""
@@ -154,6 +156,10 @@ func Normalize(s string) string {
 	if s == "" {
 		return s
 	}
+	// Fold precomposed extended-Latin letters NFD can't decompose
+	// (ø→o, æ→ae, ß→ss, …) so stroke/ligature letters become ASCII
+	// rather than surviving as >127 runes. See foldExtendedLatin.
+	s = foldExtendedLatin(s)
 	decomposed := norm.NFD.String(s)
 	var b strings.Builder
 	b.Grow(len(decomposed))

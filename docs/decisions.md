@@ -6,6 +6,90 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-24 — Tokenizer folds precomposed extended-Latin letters; Twitter search is stroke-insensitive
+
+### Context
+
+The alias/player tokenizer ([`internal/domain/alias/text.go`](../internal/domain/alias/text.go))
+normalizes names to ASCII query tokens via NFD decomposition + combining-
+mark strip. The audit (2026-07-26, finding P0) surfaced that
+`TokenizePlayerName("S. Ødegaard")` returned `[]` — **empty**. Same for
+Højlund, and for any name with `ø æ œ þ ð ł đ ħ` (Nordic, Icelandic,
+Polish, Croatian, Maltese letters).
+
+Root cause is a Unicode subtlety. NFD decomposes **accents** because
+they are modelled as base-letter + combining-mark: `ö` = `o` + U+0308,
+`é` = `e` + U+0301 — NFD splits them, the Mn-strip removes the mark,
+ASCII survives. But **stroke / bar / ligature letters are atomic
+codepoints** with no canonical decomposition: `ø` (U+00F8) is not
+`o` + a combining stroke, it is one indivisible character. NFD leaves it
+untouched, it survives as a rune > 127, and the tokenizer's non-ASCII
+guard (which correctly drops genuinely non-Latin scripts — Arabic, CJK,
+Cyrillic) drops it as collateral. The letter is Latin but *looks*
+non-Latin to a rune-value check.
+
+The original code documented this as a known limitation but scoped it to
+team rosters ("no team's canonical form uses these") — missing that the
+**same shared function tokenizes player names**, where Ødegaard (Arsenal
+captain), Højlund (Man Utd striker), and Guðmundsson (Fiorentina — the
+player from our own 2026-07-22 smoke test) all live. Every goal by these
+players fired a team-aliases-only query with no name signal → thousands
+of generic tweets → wasted discovery budget → LLM-validator flood.
+
+### Decision
+
+**Fold precomposed extended-Latin letters to ASCII via an explicit
+transliteration table (`foldExtendedLatin`), applied before NFD in all
+three normalization entry points** (`tokenize`, `lowerASCII`,
+`Normalize`). Mappings: `ø→o æ→ae œ→oe đ→d ð→d þ→th ł→l ħ→h ı→i ŧ→t
+ĸ→k ß→ss` (both cases). Accents stay NFD's job — they are intentionally
+absent from the table.
+
+### Why fold to ASCII (not search the special-char form)
+
+Empirically verified against live Twitter 2026-07-24 (dev twitter
+service, `/search`):
+
+- Search ASCII `mbappe` → 14 results, **9 contained "Mbappé"** (é).
+- Search ASCII `odegaard` → 16 results, **3 explicitly contained
+  "Ødegaard"** (ø), plus 10 with plain "odegaard".
+
+**Twitter's search engine is diacritic-AND-stroke-insensitive.** The
+ASCII token is therefore not merely adequate but *optimal*: it catches
+both the special-char writers (via Twitter's internal fold) and the
+majority who type the plain form on English keyboards. Searching the
+`ø`-form would be strictly worse — it would miss every ASCII typer if
+Twitter's fold ever changed. This vindicates the whole fold-to-ASCII
+normalization strategy; the only defect was an incomplete table.
+
+### Scope note — the OTHER drop is a separate, still-open question
+
+There are two drops in the tokenizer. This decision fixes the
+**accidental** one (extended-Latin letters). The **deliberate** one —
+dropping genuinely non-Latin scripts (Arabic / CJK / Cyrillic / Greek)
+— remains as designed and is a separate open design question (query-
+length limits + generic-token noise vs. multilingual recall). Tracked in
+[`design-improvements-2026-07-23.md`](./rebuild/design-improvements-2026-07-23.md).
+
+### Consequences
+
+- `foldExtendedLatin` + `extendedLatinFolder` added to `text.go` as the
+  single shared table; `tokenize`/`lowerASCII`/`Normalize` all call it.
+- Table tests added for Ødegaard, Højlund, Guðmundsson, Łukasz Fabiański
+  + regression guards for Mbappé/Gyökeres (NFD path still works).
+- Resolves audit-2026-07-26 P0.
+- `Normalize` + `lowerASCII` have zero non-test callers today (noted as a
+  dead-code cleanup candidate) — folding there is blast-radius-free and
+  keeps them correct if used later.
+
+### Related
+
+- [`internal/domain/alias/text.go`](../internal/domain/alias/text.go) — `foldExtendedLatin`, `tokenize`
+- [audit-2026-07-26.md](./audit-2026-07-26.md) — P0 finding
+- [twitter-search-query.md](./rebuild/proposals/twitter-search-query.md) — D8 tokenizer rules
+
+---
+
 ## 2026-07-23 — Discovery filter: wall-clock-relative sliding window, not server-side time bounds
 
 ### Context
