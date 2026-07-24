@@ -586,41 +586,38 @@ just needs to happen.
 
 ## Tokenizer / normalization
 
-### 25. Revisit dropping non-Latin scripts entirely
+### 25. ~~Revisit dropping non-Latin scripts~~ — RESOLVED 2026-07-24
 
-Raised by the user 2026-07-24 ("why do we drop things at all?"). The
-tokenizer has two drops: the **accidental** extended-Latin drop (ø æ ð
-…) was a bug, fixed 2026-07-24 (see decisions.md). The **deliberate**
-drop — genuinely non-Latin scripts (Arabic, CJK, Cyrillic, Greek) get
-discarded by the `hasNonASCII` guard — is still as-designed and worth
-questioning.
+Raised by the user ("why do we drop things at all?"). **Resolved same
+day**: adopted `gosimple/unidecode` and deleted the drop-non-Latin rule.
+Non-Latin scripts now romanize (Спартак→spartak, 레알→real) instead of
+being discarded; the ≥2-language threshold voting drops romanization
+noise (红魔→"hong mo"). Fully dynamic, no per-script special-casing.
+See [decisions.md 2026-07-24](../decisions.md). Kept here as the record
+of the question; no further action.
 
-**Original rationale**: non-Latin tokens generate generic-language noise
-more than team-specific signal (Greek `οι` = "the" matches any Greek
-tweet), and query length is bounded (~500 chars).
+### 26. isCamelConcat over-drops Mc/Mac names (McTominay)
 
-**Counter-evidence**: goals are tweeted about in every language — the
-Miami smoke test surfaced legitimate Portuguese, Spanish, and Polish
-candidates. An Arabic label for "ريال مدريد" (Real Madrid) in the OR
-query would catch Arabic goal tweets we currently miss. Dropping by
-*script* is a blunt proxy for dropping by *genericness*.
+Found 2026-07-24 during the unidecode work. `isCamelConcat` drops any
+token with an internal lower→upper transition (designed to kill Wikidata
+concat forms like `LiverpoolFC`, `ACFFiorentina`). But it also drops
+legitimate names: **McTominay** (Man Utd/Napoli), **McBurnie**,
+**DeAndre**, any `Mc`/`Mac`/`De`+capital surname written without a space.
+Pre-existing (not a unidecode regression), but now more visible since
+it's the last non-normalization tokenizer edge case.
 
-**But**: most viral goal tweets carry a Latin hashtag or the player's
-romanized name (`#Odegaard`), which our Latin tokens already catch. So
-the recall lost to this drop is the slice of tweets that are BOTH
-non-Latin-script AND carry no Latin token — probably small. And Twitter
-folds diacritics but does NOT transliterate across scripts (searching
-"madrid" won't match "مدريد"), so adding non-Latin tokens is the only
-way to reach pure-non-Latin tweets.
+**Fix options**: (a) whitelist `Mc`/`Mac`/`De`/`O'` prefixes before the
+camelConcat check; (b) only treat as concat if the token also has no
+spaces AND is ≥N chars AND matches a known org-suffix — narrow the rule
+to actual Wikidata concats. (a) is simplest.
 
-**Options**: (a) keep dropping (status quo, simplest); (b) include a
-curated set of high-value non-Latin team labels (e.g. the Arabic/Japanese
-names of globally-followed clubs) rather than all-or-nothing by script;
-(c) measure the actual recall loss post-launch via `event_search_candidates`
-before deciding.
+**Note**: unidecode now produces camelCase mashups for CJK
+(ヴィッセル神戸→"vuitsuseruShen") that isCamelConcat happens to drop — a
+useful side effect. Any fix to (a)/(b) should confirm CJK noise still
+gets dropped by the threshold, not rely on isCamelConcat for it.
 
-**When**: not Aug-14 blocking. Measure first (option c), decide later.
-Low priority unless a specific team's recall underperforms in prod.
+**When**: not Aug-14 blocking (Scottish/Irish surnames are a minority),
+but a real recall hole. Cheap fix (option a).
 
 ---
 

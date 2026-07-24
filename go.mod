@@ -9,6 +9,7 @@ require (
 	github.com/aws/smithy-go v1.27.3
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/google/uuid v1.6.0
+	github.com/gosimple/unidecode v1.0.1
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/mxschmitt/playwright-go v0.6100.0
 	github.com/nats-io/nats.go v1.52.0
