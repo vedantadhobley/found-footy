@@ -41,12 +41,17 @@ but rejected: it hardcodes "always want the most-popular entity," which
 is wrong for the legitimate case where api-football names a B team (e.g.
 in a friendly). Neither single signal is complete.
 
-**Known limitation (deferred, NOT Aug-14-blocking).** Multisport clubs
-whose B-team page outranks the umbrella page in Wikipedia search
-(Sporting CP) can mis-resolve — but only for teams outside our tracked
-leagues. If we ever track such a club, the fix is a hybrid (Wikipedia
-rank + exact-name-match override, or sitelink count with an exact-match
-override), not either signal alone. Tracked in design-improvements.
+**Known limitation (deferred, NOT Aug-14-blocking).** A team whose
+reserve/"II"/B page outranks the senior in Wikipedia search AND whose
+reserve entity isn't tagged `Q2412834` in Wikidata mis-resolves to the
+reserve side. The reverted-code roster run (2026-07-24) shows this hits
+**2 tracked teams**: Hamburger SV → Hamburger SV II, VfB Stuttgart → VfB
+Stuttgart II (both German, non-La-Liga). Impact is degraded nickname
+recall, not a blackout — canonical name + player name still carry the
+Discovery query. Cheapest real fix if we choose to: demote a `" II"/" B"`
+title suffix ONLY when the api name lacks it (narrow, no new API, no
+cross-language problem — unlike the reverted full name-match). Deferred;
+tracked in design-improvements.
 
 **Kept from the reverted work:** nothing in code. The unidecode tokenizer
 change (446bf1c, separate commit) stands. The full-roster resolver test
