@@ -116,30 +116,6 @@ func TokenizePlayerName(name string) []string {
 	return out
 }
 
-// nameTokenSet returns the set of lowercased, transliterated word tokens
-// in an entity/team name — WITHOUT the ≤2-char drop that tokenize applies.
-// Used for entity-name MATCHING in the lookup pipeline (resolveClub's
-// pickBestNameMatch), where short discriminators like "CP", "B", "II",
-// "FC" are exactly what tells a senior side apart from its B team or a
-// women's side. tokenize deliberately drops those for query building;
-// name-matching deliberately keeps them — different jobs, different rules.
-func nameTokenSet(s string) map[string]struct{} {
-	ascii := unidecode.Unidecode(s)
-	fields := strings.FieldsFunc(ascii, func(r rune) bool {
-		return unicode.IsSpace(r) || r == '-' || r == '‐' || r == '–' || r == '—' ||
-			r == '/' || r == '(' || r == ')'
-	})
-	out := make(map[string]struct{}, len(fields))
-	for _, f := range fields {
-		f = strings.ToLower(stripPunct(f))
-		if f == "" {
-			continue
-		}
-		out[f] = struct{}{}
-	}
-	return out
-}
-
 // splitWords splits on whitespace, hyphen, en-dash, em-dash, and
 // forward slash. Empty tokens dropped.
 func splitWords(s string) []string {

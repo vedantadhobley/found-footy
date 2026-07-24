@@ -621,35 +621,6 @@ but a real recall hole. Cheap fix (option a).
 
 ---
 
-### 27. Apply name-match selection to the national branch too
-
-`resolveClub` now ranks candidates by api-name match (2026-07-24,
-decisions.md) instead of trusting Wikipedia's rank order. `resolveNational`
-([`lookup_national.go`](../../internal/domain/alias/lookup_national.go))
-still has the **identical** "first P31-passing hit wins" structure + a
-`nationalRejectP31` reject-set. Same bug shape: "Brazil" could resolve to
-"Brazil U20" / "Brazil (women)" if Wikipedia ranks a variant first, and
-the reject-set could wrongly drop a variant we're genuinely tracking (an
-Olympic U23 side, say). Fix: reuse `pickBestNameMatch` + `nameTokenSet`
-(already generic), drop the hard reject, keep the accept-set. Small —
-mirrors the club change. Not Aug-14 blocking (senior men's nationals
-dominate our tracked set), but do it before the fix drifts apart across
-the two branches.
-
-### 28. Full-roster resolver quality test
-
-Run the resolver against all ~130 tracked teams offline, dump
-`(team → chosen QID + aliases)`, review for wrong entities + weak alias
-sets + tokenization regressions. NOT curation (no hand-authoring) — a
-quality gate on the dynamic output, and the before/after evidence that
-the name-match selection (2026-07-24) fixes Sporting without breaking
-teams that already resolved correctly. Rate-limited against Wikidata
-(~real minutes) → run in the background. Doubles as validation for the
-unidecode change (Cyrillic/accented teams tokenize cleanly). Recommended
-before Aug 14 as the resolver-confidence check.
-
----
-
 ## Not-yet-articulated opportunities (placeholders)
 
 These are things I've mentioned in passing that deserve their own entry
