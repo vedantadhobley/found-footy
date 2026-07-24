@@ -14,21 +14,22 @@ and plan match, no entry — silence == alignment.
 an adapter shape, or lands a new domain type updates this doc in
 the SAME commit. Not the next commit. Same commit.
 
-## As-shipped tree (2026-07-09, end of Phase O2 + harness Phase 1a)
+## As-shipped tree (2026-07-24, through O3/d + T/c + audit doc-sync)
 
 ```
 found-footy/
 ├── cmd/                                 4 binaries — each imports from internal/
 │   ├── api/main.go                      Phase 6 — FastAPI-shaped read surface + SSE
 │   ├── scaler/main.go                   scaffold; no scale logic yet (Phase A/M)
-│   ├── twitter/main.go                  Go stub (BlockUntilDone); Python still runs prod
-│   └── worker/main.go                   Temporal worker; wired for IngestWorkflow (O1d)
+│   ├── twitter/main.go                  ✓ T/a+T/b+T/c: real Playwright-Go service (ephemeral profile + idle-CPU prefs)
+│   └── worker/main.go                   Temporal worker; registers Ingest + ActivePoll + StagingPoll + Discovery
 ├── internal/
-│   ├── domain/                          4 shipped, 4 stubbed
+│   ├── domain/                          6 shipped, 3 stubbed
 │   │   ├── fixture/                     ✓ D1: model + State + Repo + tests
 │   │   ├── event/                       ✓ D2: model + State + Repo + tests
 │   │   ├── video/                       ✓ D3: model + Repo + rank + tests
 │   │   ├── alias/                       ✓ D4 (reshaped 2026-07-19): two-phase model + Repo + Normalize + Resolver (lookup pipeline) + tests
+│   │   ├── team/                        ✓ TrackedTeam set — tracked-teams-cache ingest filter (team.go + repo.go)
 │   │   ├── discovery/                   ✓ Query builder (2026-07-22) + real DiscoveryWorkflow (O3/d, 2026-07-23)
 │   │   │   ├── doc.go                   Package doc — query construction, URL extraction, source scoring
 │   │   │   ├── query_builder.go         BuildTwitterQuery, ErrEmptyQuery, ErrEmptyPlayerName (D1/D4b/D4c/D4d/D7 per twitter-search-query.md)
@@ -36,7 +37,7 @@ found-footy/
 │   │   ├── vision/                      ⊘ doc.go stub — build when VideoValidationWorkflow lands (O4)
 │   │   ├── session/                     ⊘ doc.go stub — build when Twitter Go service ports (post-O)
 │   │   └── textanalysis/                ⊘ doc.go stub — extensibility hook per plan §4
-│   ├── infra/                           9 live, 2 stubbed
+│   ├── infra/                           11 live, 1 stubbed (ffmpeg)
 │   │   ├── pg/                          ✓ S2: pool + instruments + schema.sql + FixtureRepo + AliasRepo
 │   │   ├── nats/                        ✓ S3: client + instruments
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
@@ -46,22 +47,20 @@ found-footy/
 │   │   ├── twitter/                     ✓ S7: HTTP client + tests against mock (real service is Python)
 │   │   ├── syndication/                 ✓ S7: Twitter syndication client + tests
 │   │   ├── wikidata/                    ✓ S7: SPARQL client + tests
-│   │   ├── event/                       ⊘ doc.go stub — semantic-event composer (build for O2 NATS emissions)
+│   │   ├── wikipedia/                ✓ S7: CirrusSearch entity resolution (per 2026-07-21) + tests
+│   │   ├── event/                       ✓ O3/a: dual-write composer (pg event_log + NATS Publish, 6 kinds) + tests
 │   │   └── ffmpeg/                      ⊘ doc.go stub — subprocess wrapper (build for Phase A video pipeline)
-│   ├── workflow/                        2 shipped
+│   ├── workflow/                        4 shipped
 │   │   ├── ingest.go                    ✓ O1c: IngestWorkflow
-│   │   ├── ingest_test.go               ✓ O1c: 5 WorkflowTestSuite tests
-│   │   ├── monitor.go                   ✓ O2b: MonitorWorkflow (30s cycle)
-│   │   └── monitor_test.go              ✓ O2b: 5 WorkflowTestSuite tests
-│   ├── activity/                        2 packages shipped
+│   │   ├── active_poll.go               ✓ O2: ActivePollWorkflow (30s IntervalSpec)
+│   │   ├── staging_poll.go              ✓ O2: StagingPollWorkflow (*/15 cron)
+│   │   └── discovery.go                 ✓ O3/d: DiscoveryWorkflow (15-attempt search loop) + *_test.go
+│   ├── activity/                        3 packages shipped
 │   │   ├── ingest/                      ✓ O1b: 4 activities + in-memory fakes + 11 tests
 │   │   │   ├── activities.go
 │   │   │   └── activities_test.go
-│   │   └── monitor/                     ✓ O2a: 4 activities (PreActivate,
-│   │       │                                    ListActiveIDs, FetchLive,
-│   │       │                                    ReconcileFixture) + fakes + 7 tests
-│   │       ├── activities.go
-│   │       └── activities_test.go
+│   │   ├── monitor/                     ✓ O2a: 6 activities (GetMonitorConfig, ActivateUpcoming, PollStagingFixtures, ListActiveFixtureIDs, FetchLiveFixtures, ReconcileFixture) + fakes + tests
+│   │   └── discovery/                   ✓ O3/d: GetDiscoveryConfig, FetchTeamAliases, SearchTweets, StoreCandidate, MarkDownstreamComplete (no _test.go yet — audit gap)
 │   ├── api/                             Phase 6 foundation only — SSE + read endpoints
 │   ├── bootstrap/                       ✓ S1 (NOT IN PLAN — see decisions.md 2026-07-07)
 │   │   └── bootstrap.go                 Deps + LIFO Closer registry; shared binary startup
@@ -148,11 +147,11 @@ State transitions:
 
 Predicates: `ShouldActivateNow(now, window)` — used by both the ingest
 activity (at-upsert-time activation for imminent kickoffs) and the
-future MonitorWorkflow's `PreActivateUpcoming` step.
+ActivePollWorkflow's `ActivateUpcoming` step.
 
 Repo methods shipped in `internal/infra/pg/fixture_repo.go`:
 `Get`, `Upsert`, `ListByState`, `ListActiveIDs` (cheap ID-only
-projection for MonitorWorkflow's batched API call),
+projection for ActivePollWorkflow's batched API call),
 `ListStagingBeforeKickoff`, `PruneCompleted`.
 
 ### event domain (D2)
@@ -372,7 +371,7 @@ Adapter-specific notes:
 
 **Twitter service note.** `internal/infra/twitter/` is the HTTP client;
 tests pass against a mock. The actual twitter container in dev runs
-the Go BlockUntilDone stub (real Twitter search service is Python
+the real Go Twitter search service (T/a+T/b+T/c shipped 2026-07-23; Python
 `twitter/` in prod). Wire-up deferred until the Go twitter service
 lands.
 

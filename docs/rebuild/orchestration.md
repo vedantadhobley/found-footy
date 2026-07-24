@@ -47,10 +47,11 @@ fixtures beyond retention.
 package workflow
 
 type IngestWorkflowInput struct {
-    FetchWindowFrom    time.Time      // both required; brackets kickoff window
-    FetchWindowTo      time.Time
-    ActivationWindow   time.Duration  // typical: 30 * time.Minute
-    RetentionThreshold time.Time      // zero value = skip prune step
+    ManualDate       *time.Time     // nil = today's anchor; set = re-ingest a specific day
+    ManualFixtureIDs []int64        // non-empty = fetch by IDs, bypass the 3-day window
+    FetchFuture      bool           // daily schedule sets true (today + N future days)
+    ActivationWindow time.Duration  // kickoff-lookahead auto-activation; zero → 30m
+    RetentionDays    int            // prune completed older than this; zero → skip
 }
 
 type IngestWorkflowOutput struct {
@@ -134,11 +135,11 @@ API status:
 
 ### Alias placeholder pattern (RAG deferral)
 
-`EnsureAliasPlaceholders` deliberately does NOT resolve aliases via
-Wikidata/LLM. It only inserts blank-resolution placeholders for teams
-without existing rows. A separate resolution
-activity/workflow — design deferred — will fill Wikidata + Twitter
-aliases later.
+`EnsureAliasPlaceholders` inserts blank-resolution placeholder rows;
+**Step 3.5 `ResolveAliasesForTeams`** (shipped) then resolves them via
+Wikipedia CirrusSearch + Wikidata for teams without a `wikidata_qid`
+(cache-hit skip; soft-fail per team so a Wikidata hiccup doesn't fail
+ingest; NULL-QID teams auto-retry next cycle).
 
 Rationale: keeps IngestWorkflow independent of joi + Wikidata
 availability. If joi is down or the daily LLM quota exhausted,
@@ -181,9 +182,38 @@ w.RegisterActivity(ingestActs)
 Registration happens BEFORE `w.Start(ctx)` — Temporal's reflection
 walk runs on Start; anything registered after is silently ignored.
 
-**Not yet wired:** the daily Temporal Schedule (`5 0 * * *`). Manual
-trigger via `scripts/trigger_ingest/main.go` for now. Schedule
-registration lands as an O1e follow-up.
+**Wired (O1e):** the daily Temporal Schedule `ingest-scheduled-daily`
+(`5 0 * * *`) is registered by `ensureIngestSchedule` in
+`cmd/worker/main.go`; Create is idempotent (swallows AlreadyRunning).
+Manual trigger via `scripts/trigger_ingest/main.go` remains for ad-hoc
+re-ingests.
+
+## ActivePollWorkflow — as shipped
+
+30s poll of ACTIVE fixtures. Schedule `active-poll-scheduled` (IntervalSpec 30s).
+Per cycle: `GetMonitorConfig` → `ActivateUpcoming` (DB-only staging→active
+promotion) → `ListActiveFixtureIDs` → `FetchLiveFixtures` (batched
+/fixtures?ids=) → `ReconcileFixture` per fixture (the event set-diff +
+3-poll debounce + downstream spawn + completion check). Location:
+`internal/workflow/active_poll.go` + `internal/activity/monitor/`.
+
+## StagingPollWorkflow — as shipped
+
+15-min poll of STAGING fixtures. Schedule `staging-poll-scheduled` (cron
+`*/15 * * * *`, runtime-tunable). Fires `PollStagingFixtures`: polls all
+staging fixtures + handles vendor edge cases (kickoff-corrected activation,
+Live()-emergency activation). Location: `internal/workflow/staging_poll.go`.
+
+## DiscoveryWorkflow — as shipped
+
+Spawned Temporal-direct by Monitor's `ReconcileFixture` when
+`downstream_triggered` flips (NOT scheduled — 2026-07-16). Per event:
+N attempts × M spacing (config, default 15 × 60s). Each attempt:
+`GetDiscoveryConfig` → `FetchTeamAliases` → build query → `SearchTweets`
+(accumulated `exclude_urls`) → `StoreCandidate` per hit → finally
+`MarkDownstreamComplete`. Wall-clock `max_age_minutes` filter
+(decisions.md 2026-07-23). Location: `internal/workflow/discovery.go` +
+`internal/activity/discovery/`.
 
 ## Testing shape
 
