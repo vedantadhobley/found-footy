@@ -24,27 +24,25 @@ var clubAcceptP31 = map[string]struct{}{
 	"Q103229495": {}, // men's association football team
 }
 
-// NOTE (2026-07-24): the former club REJECT-set (reserve teams, women's
-// teams) was removed. It hard-dropped B/women sides even when
-// api-football itself named one as the team that scored — which happens
-// in friendlies (first team vs a B side). api-football is ground truth
-// for WHICH team scored, so selection now ranks candidates by name-match
-// to the api name (pickBestNameMatch) rather than excluding subtypes.
-// The accept-set stays as a sanity guard (must be a football club, not a
-// stadium/song). See decisions.md 2026-07-24.
+// P31 reject-set for club candidates. A candidate that matches ANY
+// reject type is dropped even if it also matches an accept type. This
+// catches subclasses of "football club" that we specifically don't want
+// (reserves, women's teams) — e.g. Milan Futuro (Q126923253) has both
+// Q476028 AND Q2412834; the reject rule filters it out.
+var clubRejectP31 = map[string]struct{}{
+	"Q2412834":  {}, // reserve team
+	"Q51481377": {}, // women's association football club
+}
 
 // resolveClub runs the club branch of the lookup pipeline.
 //
 // Two HTTP calls, one round trip each:
 //   1. Wikipedia CirrusSearch with template `{name} {country} football club`
 //      → hits with pageprops.wikibase_item extracted.
-//   2. SPARQL P31 batch verify against Wikidata → keep hits whose type
-//      set intersects clubAcceptP31 (sanity: must be a football club).
+//   2. SPARQL P31 batch verify against Wikidata → filter to hits whose
+//      type set intersects clubAcceptP31 and doesn't touch clubRejectP31.
 //
-// Among the survivors, the winner is the one whose Wikipedia title best
-// matches the api-football team name (pickBestNameMatch) — NOT Wikipedia's
-// rank order, which mis-picked reserve teams it happened to rank first
-// (Sporting CP B over Sporting CP; see decisions.md 2026-07-24).
+// First surviving hit (Wikipedia's own rank position) wins.
 //
 // Country is strongly recommended for disambiguation — same-name clubs
 // across regions (Al-Ahly Egypt vs Al-Ahli Amman, São Paulo FC vs
@@ -77,76 +75,26 @@ func (r *Resolver) resolveClub(ctx context.Context, name string, country *string
 		return LookupResult{}, ErrNoMatch
 	}
 
-	// Batch P31 verify, then collect ALL candidates worth ranking (not
-	// just the first). With P31 available, keep hits whose type passes
-	// the accept-set. On SPARQL failure we can't type-check, so keep
-	// every hit and let name-matching decide — still better than blindly
-	// trusting Wikipedia's #1. (nil reject-set: subtype exclusion is gone,
-	// see the NOTE above — name-matching handles senior-vs-B.)
+	// Batch P31 verify. On SPARQL failure fall back to "take the top
+	// Wikipedia hit unconditionally" — CirrusSearch's ranking is
+	// generally good enough that even without type verification the
+	// top hit is usually the right entity. Better than cascading to
+	// NoMatch when the vendor blips.
 	p31, p31Err := r.wd.BatchGetP31(ctx, candidateIDs)
-	candidates := make([]wikipedia.Hit, 0, len(hits))
 	for _, h := range hits {
 		if h.WikidataQID == "" {
 			continue
 		}
-		if p31Err != nil || passesP31Filter(p31[h.WikidataQID], clubAcceptP31, nil) {
-			candidates = append(candidates, h)
+		if p31Err != nil {
+			// SPARQL unavailable — trust Wikipedia's ranking.
+			return LookupResult{QID: h.WikidataQID, Label: h.Title}, nil
 		}
-	}
-	if len(candidates) == 0 {
-		return LookupResult{}, ErrNoMatch
-	}
-
-	// Rank by title-vs-api-name similarity, not Wikipedia rank order.
-	best := pickBestNameMatch(name, candidates)
-	return LookupResult{QID: best.WikidataQID, Label: best.Title}, nil
-}
-
-// pickBestNameMatch selects, from the P31-passing candidates, the hit
-// whose Wikipedia title most closely matches the api-football team name.
-// Replaces the old "first hit in Wikipedia rank order wins" rule, which
-// mis-picked reserve sides Wikipedia ranked above their senior team.
-//
-// The api name is ground truth for WHICH team scored, so we rank by
-// token-set similarity to it: the best candidate neither ADDS qualifier
-// tokens the api name lacks ("b", "ii", "women") nor MISSES tokens it has
-// ("castilla"). Symmetric, so it self-corrects in both directions —
-// api "Sporting CP" picks the senior (B is penalized for the extra "b"),
-// api "Real Madrid Castilla" picks the B side (senior is penalized for
-// missing "castilla"). Wikipedia rank order breaks exact ties (the range
-// loop preserves input order and `>` keeps the earliest).
-//
-// Caller guarantees len(hits) > 0.
-func pickBestNameMatch(apiName string, hits []wikipedia.Hit) wikipedia.Hit {
-	want := nameTokenSet(apiName)
-	best := hits[0]
-	bestScore := nameMatchScore(want, nameTokenSet(hits[0].Title))
-	for _, h := range hits[1:] {
-		if s := nameMatchScore(want, nameTokenSet(h.Title)); s > bestScore {
-			bestScore = s
-			best = h
+		if !passesP31Filter(p31[h.WikidataQID], clubAcceptP31, clubRejectP31) {
+			continue
 		}
+		return LookupResult{QID: h.WikidataQID, Label: h.Title}, nil
 	}
-	return best
-}
-
-// nameMatchScore scores a candidate token set against the wanted set as
-// the negative symmetric difference: 0 is an exact match, and each token
-// present in one set but not the other costs one point. Higher (closer to
-// 0) is better.
-func nameMatchScore(want, got map[string]struct{}) int {
-	diff := 0
-	for t := range got {
-		if _, ok := want[t]; !ok {
-			diff++
-		}
-	}
-	for t := range want {
-		if _, ok := got[t]; !ok {
-			diff++
-		}
-	}
-	return -diff
+	return LookupResult{}, ErrNoMatch
 }
 
 // passesP31Filter checks a candidate's P31 type list against accept +

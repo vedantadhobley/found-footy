@@ -6,90 +6,51 @@ add a new one above it pointing at the change.
 
 ---
 
-## 2026-07-24 — Club entity selection: rank by api-name match, not Wikipedia rank order
+## 2026-07-24 — Club entity selection: reverted name-match, kept Wikipedia-rank (correct for the tracked roster)
 
-### Context
+Short-lived experiment reverted the same day. Do NOT re-attempt without
+reading this.
 
-`resolveClub` ([`internal/domain/alias/lookup_club.go`](../internal/domain/alias/lookup_club.go))
-picks a Wikidata entity for a team in three steps: (1) Wikipedia
-CirrusSearch → ranked hits with QIDs, (2) Wikidata P31 batch verify,
-(3) selection. The audit (2026-07-26 P1) found "Sporting CP" resolving
-to **Q3494112 (Sporting CP B**, the reserve team) instead of the senior
-side.
+**What happened.** `resolveClub` originally returns the **first
+P31-passing hit in Wikipedia CirrusSearch rank order**. The audit found
+"Sporting CP" resolving to Sporting CP B (the reserve team) — Wikipedia
+ranks the B-team page above the multisport-umbrella senior page. I
+replaced the selection with token-set name-matching against the api name
+(commit e996265).
 
-Diagnosed empirically (2026-07-24). The error is in **step 3, not the
-search or the P31 lookup**:
+**Why it was reverted.** A full-roster resolver test (all 144 tracked
+teams) caught that name-matching **regressed two tracked teams**:
 
-- CirrusSearch ranks `Sporting CP B` at #1, senior `Sporting CP` at #2 —
-  the B-team page is purely football; the senior page is a multisport
-  umbrella that matches "football club" more weakly. The search is not
-  wrong (the senior IS in the results); it just ranks B first.
-- Both QIDs carry P31 `Q476028` (football club), so **both pass** the
-  filter. Wikidata never tagged B as a reserve team (`Q2412834`), so the
-  old reject-set never fired.
-- Step 3 returned "the first P31-passing hit **in Wikipedia rank order**"
-  → B wins. It trusted Wikipedia's ranking and never checked which
-  candidate's *name* matched the team api-football actually named.
+- `Bayern München` → *Türkgücü München* (should be FC Bayern Munich). The
+  api name is German (`München` → unidecode `munchen`); English Wikipedia
+  says `Munich`, so a wrong club sharing the German spelling out-scored
+  the correct one.
+- `Athletic Club` → *Alumni Athletic Club* (Argentine; should be Athletic
+  Bilbao, whose Wikipedia title is "Athletic Bilbao", not "Athletic Club").
 
-This is a class, not a one-off: multisport clubs whose umbrella
-Wikipedia page loses the "football club" ranking to a dedicated B-team
-page (Sporting confirmed; Benfica/Real/Bayern are candidates —
-single-sport clubs like Athletic/Leverkusen resolve fine).
+Pure name-matching breaks whenever the api name doesn't token-match the
+English Wikipedia title (foreign-language names, short forms). **The
+original Wikipedia-rank behaviour is correct for every team we actually
+track** — Wikipedia's relevance ranking gets the famous team right. The
+Sporting bug only affects Portugal (Primeira Liga), which we do NOT
+track. We traded a theoretical bug for two real ones, so: reverted.
 
-### Decision
+**Sitelink-count ranking** was considered as the robust alternative
+(FC Bayern 124 sitelinks vs Türkgücü 17; the main entity always has more)
+but rejected: it hardcodes "always want the most-popular entity," which
+is wrong for the legitimate case where api-football names a B team (e.g.
+in a friendly). Neither single signal is complete.
 
-**Rank the P31-passing candidates by token-set similarity to the
-api-football team name; pick the closest.** api-football is ground truth
-for *which* team scored, so selection matches to it rather than deferring
-to Wikipedia's rank order. `nameMatchScore` = negative symmetric
-difference of token sets: the winner neither ADDS qualifier tokens the
-api name lacks (`b`, `ii`, `women`) nor MISSES tokens it has (`castilla`).
-Symmetric → self-corrects both ways:
+**Known limitation (deferred, NOT Aug-14-blocking).** Multisport clubs
+whose B-team page outranks the umbrella page in Wikipedia search
+(Sporting CP) can mis-resolve — but only for teams outside our tracked
+leagues. If we ever track such a club, the fix is a hybrid (Wikipedia
+rank + exact-name-match override, or sitelink count with an exact-match
+override), not either signal alone. Tracked in design-improvements.
 
-- api `Sporting CP` → senior (B penalized for extra `b`)
-- api `Sporting CP B` / `Real Madrid Castilla` → the B side (senior
-  penalized for the missing token)
-
-### Why NOT just demote B teams
-
-A first considered fix — blanket-demote reserve/B/women hits — is
-**wrong**: a B team can genuinely be the tracked team, notably in
-**friendlies** (which we track), where a first team plays a B/youth
-side and both score. So the reserve/women **reject-set was removed**
-too — it hard-dropped exactly those api-named B sides → `ErrNoMatch` →
-no aliases. Name-matching handles senior-vs-B without excluding
-subtypes. The **accept-set stays** as a sanity guard (must be a football
-club, not a stadium/song). Net: less hardcoded type-policy, more
-source-string-driven selection.
-
-### Token-set detail
-
-`nameTokenSet` (new, in text.go) is like `tokenize` but **keeps** ≤2-char
-tokens — `cp`, `b`, `ii`, `fc` are exactly the discriminators, and the
-query tokenizer drops them. Two normalization paths on purpose: tokenize
-for query building (drop short noise), nameTokenSet for entity matching
-(keep short discriminators). Both share the unidecode pass.
-
-### Consequences
-
-- `resolveClub` selection rewritten: collect ALL accept-passing
-  candidates, `pickBestNameMatch(name, candidates)`. `clubRejectP31`
-  removed. On SPARQL failure, name-match over all hits (better than blind
-  top-hit).
-- `nameTokenSet` + `pickBestNameMatch` + `nameMatchScore` added, unit-
-  tested (candidate lists put B first so the test proves we override
-  Wikipedia's order; both directions covered).
-- **Follow-up**: the national branch (`lookup_national.go`) has the
-  identical "first passer wins" structure + a reject-set — same fix
-  applies (Brazil vs Brazil U20/women). Tracked in design-improvements.
-- Resolves audit-2026-07-26 Sporting-CP P1. Full-roster resolver quality
-  test still recommended to scope how many teams this corrects.
-
-### Related
-
-- [`internal/domain/alias/lookup_club.go`](../internal/domain/alias/lookup_club.go) — `resolveClub`, `pickBestNameMatch`
-- [`internal/domain/alias/text.go`](../internal/domain/alias/text.go) — `nameTokenSet`
-- [audit-2026-07-26.md](./audit-2026-07-26.md) — Sporting-CP finding
+**Kept from the reverted work:** nothing in code. The unidecode tokenizer
+change (446bf1c, separate commit) stands. The full-roster resolver test
+script (`scripts/resolver_roster_test`) is kept — it caught this.
 
 ---
 
