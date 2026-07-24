@@ -68,9 +68,11 @@ Phased delivery — see §16 for the phase map. Where we are (2026-07-07):
 | S7 | ✅ shipped | External HTTP adapters (apifootball, twitter, syndication, wikidata) |
 | D | ✅ shipped | Domain layer — 4 of 8 packages complete (fixture, event, video, alias); discovery/vision/session/textanalysis stubbed for build-when-needed |
 | O1 | ✅ shipped | IngestWorkflow + 4 activities + wire-up + live e2e verification + daily 00:05 UTC Temporal Schedule (O1e complete) |
-| O2 | ⏳ next | MonitorWorkflow — 30s cycle, staging-poll 15-min amortization, event debounce (see decisions.md 2026-07-07 staging-poll entry) |
-| O3–O5 | 📅 planned | Discovery, VideoValidation, AssetPersistence workflows |
-| V, A, T, M, C | 📅 planned | Video pipeline, API surface, testing (synthetic e2e), migration, cutover |
+| O2 | ✅ shipped | ActivePollWorkflow (30s) + StagingPollWorkflow (*/15 cron) — split from single MonitorWorkflow (2026-07-11) |
+| O3 | ✅ shipped | DiscoveryWorkflow (event compose + spawn + 15-attempt search + candidate persistence, O3/a–d) |
+| O4–O5 | 📅 planned | VideoValidation, AssetPersistence workflows |
+| T (twitter svc) | ✅ T/a–c shipped | Playwright-Go search service (auth + scrape + backup); T/d scaler planned |
+| V, A, M, C | 📅 planned | Video pipeline, API surface, migration, cutover |
 
 **Where to look for Go rebuild work:**
 
