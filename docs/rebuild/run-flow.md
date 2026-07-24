@@ -468,9 +468,10 @@ Parallel across fixtures.
 - API calls per cycle: 1 (via `/fixtures?ids=`, chunked). Total:
   **~2880 calls/day** for the active poll. Well under quota.
 
-**Not implemented** ([GAP]):
+**Shipped since** (2026-07-11 → 2026-07-23):
 
-- **Semantic-event emissions**: no NATS. `EventsBecameStable`
+- **Semantic-event emissions**: dual-write composer (pg event_log + NATS
+  Publish, 6 kinds) wired into Monitor. `EventsBecameStable`
   from output goes nowhere. Blocks entire O3 downstream pipeline.
 - **Fixture completion detection**: fixtures never transition to
   `completed`. See fixture state machine section above.
@@ -517,9 +518,9 @@ Cross-referenced from `docs/rebuild/proposals/workflow-audit-2026-07-09.md`
 and `docs/rebuild/proposals/api-football-audit-2026-07-09.md`. Ranked by
 impact.
 
-### Blocks O2 completion
+### O2 completion — SHIPPED (2026-07-11)
 
-- **Fixture completion detection** — nothing marks fixtures completed;
+- **Fixture completion detection** — FixtureReadyToComplete + Complete transition marks fixtures completed;
   they stay active indefinitely. Partial fix (Terminal-status +
   monitor-done events) is the next commit; full contract needs O4's
   `download_complete` gate.

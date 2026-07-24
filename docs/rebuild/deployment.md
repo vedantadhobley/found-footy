@@ -129,9 +129,9 @@ Restart worker + api (`docker compose up -d --force-recreate worker api`)
 ## Workflow scheduling
 
 **MonitorWorkflow** — every 30 seconds. Registered on worker startup
-via `ensureMonitorSchedule` in `cmd/worker/main.go` (O2c).
+via `ensureActivePollSchedule` + `ensureStagingPollSchedule` in `cmd/worker/main.go` (O2).
 
-- Schedule ID: `monitor-scheduled-30s`
+- Schedule IDs: `active-poll-scheduled` (30s IntervalSpec) + `staging-poll-scheduled` (cron `*/15 * * * *`)
 - Interval: 30 seconds (via `ScheduleIntervalSpec` — cron doesn't
   support sub-minute resolution)
 - Overlap: `SCHEDULE_OVERLAP_POLICY_SKIP` — if the prior cycle is
@@ -164,7 +164,7 @@ temporal:7233 schedule list` shows the schedule with its next run
 time. Schedules survive worker restarts (state lives in Temporal
 server, not on the worker).
 
-**MonitorWorkflow, DiscoveryWorkflow, etc.** — schedules registered
+**ActivePollWorkflow + StagingPollWorkflow** — schedules registered (DiscoveryWorkflow is Temporal-direct spawn by Monitor, NOT scheduled — 2026-07-16)
 as their workflows land in O2+.
 
 **Manual trigger** for ad-hoc re-ingest (e.g. testing after a code
