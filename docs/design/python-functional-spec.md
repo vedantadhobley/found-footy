@@ -16,7 +16,7 @@ useful for:
 - **Design conversations**: Answer "does Python do X?" without reading
   code
 
-This spec **complements** [`rebuild-plan.md`](../rebuild-plan.md),
+This spec **complements** [`rebuild-plan.md`](rebuild-plan.md),
 which describes the *target* architecture. This spec captures the
 *actual* behavior of the Python production system, workflow-by-
 workflow, so the Go rewrite can be a faithful mechanical translation
@@ -2587,7 +2587,7 @@ BEHAVIOR:
 - Text-fallback also accepts "SKIP" as soccer-true (lines 682-684), inherited from an older prompt.
 - Classification is per frame — a promo insert at one frame won't reject the video if the other frame is clean.
 
-REMARKS: **The user has flagged this as too lenient for production.** Including "celebrations" and "stadium recordings" unconditionally is why non-broadcast content (fan-shot phone videos of trophy lifts, stadium exteriors, tunnel walks) still passes. The rebuild's `docs/rebuild/proposals/video-dedup.md` rubric should tighten this: celebrations should require in-play context (players in kit on pitch, immediate goal aftermath), stadium recordings should require active match play visible. Splitting `soccer` into `soccer_broadcast` vs `soccer_adjacent` would let ranking keep celebrations without letting them count as passing broadcast content.
+REMARKS: **The user has flagged this as too lenient for production.** Including "celebrations" and "stadium recordings" unconditionally is why non-broadcast content (fan-shot phone videos of trophy lifts, stadium exteriors, tunnel walks) still passes. The rebuild's `docs/design/proposals/video-dedup.md` rubric should tighten this: celebrations should require in-play context (players in kit on pitch, immediate goal aftermath), stadium recordings should require active match play visible. Splitting `soccer` into `soccer_broadcast` vs `soccer_adjacent` would let ranking keep celebrations without letting them count as passing broadcast content.
 
 ### 5. `screen` rubric today
 

@@ -21,7 +21,7 @@ doc until it's reviewed + signed off.
 - 2026-07-21 (T/b partially shipped) — cookie backup file management
   + auth flow (mtime → warm-path → verify) + service state machine +
   `/authenticate` + `/auth/verify` endpoints all shipped and unit-
-  tested (26 tests). See [`../roadmap.md`](../roadmap.md) T/b.1 +
+  tested (26 tests). See [`../roadmap.md`](../../roadmap.md) T/b.1 +
   T/b.2 entries for what's in the tree. Remaining T/b work: VNC
   container image, docker-compose splits, instance-scoped profile
   dir, idle-CPU Firefox prefs, `BackupCookies` invocation from
@@ -69,7 +69,7 @@ doc until it's reviewed + signed off.
   Firefox-in-Docker-with-Playwright-Go proves fragile.
 
 **Cross-refs:**
-- Plan intent — [`../../rebuild-plan.md`](../../rebuild-plan.md) §9 external adapters, §5 W3 Discovery
+- Plan intent — [`../../rebuild-plan.md`](../rebuild-plan.md) §9 external adapters, §5 W3 Discovery
 - Prior decisions — [`../../decisions.md`](../../decisions.md):
   - 2026-07-16 Downstream workflow spawn via Temporal-direct + register-on-flip
   - 2026-07-11 Fixture completion contract

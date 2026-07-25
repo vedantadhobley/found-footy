@@ -314,7 +314,7 @@ Task #135 can be marked resolved by this design. Implementation is a one-line ca
 
 ## Wiring back into architecture.md
 
-When Discovery's search activity ships (part of the O3 or Video-pipeline commits), update `docs/rebuild/architecture.md`'s Discovery-workflow section with:
+When Discovery's search activity ships (part of the O3 or Video-pipeline commits), update `docs/architecture.md`'s Discovery-workflow section with:
 
 - One paragraph pointing here + the exact env vars
 - Cross-ref to the twitter-port.md `/search` endpoint contract

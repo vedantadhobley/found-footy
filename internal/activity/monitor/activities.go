@@ -373,7 +373,7 @@ type ReconcileFixtureOutput struct {
 	EventsBecameStable []string // natural_keys of events that just crossed count=3
 	EventsRemoved      []string // natural_keys of events that just hit count=0
 	// Completed — true if this reconcile pass transitioned the fixture
-	// from active → completed. See docs/rebuild/proposals/completion-contract.md.
+	// from active → completed. See docs/design/proposals/completion-contract.md.
 	Completed bool
 	Errors    []string
 }
@@ -536,7 +536,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	}
 
 	// Step 6: fixture completion check. See
-	// docs/rebuild/proposals/completion-contract.md. Runs at the end so
+	// docs/design/proposals/completion-contract.md. Runs at the end so
 	// any absence votes above that just soft-removed events count toward
 	// "all events settled." Failure to check is non-fatal — the next
 	// cycle will retry.

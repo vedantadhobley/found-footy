@@ -4,9 +4,9 @@ A holistic look at what found-footy is, what it does well, what it does
 clumsily, and which clumsy parts are missing a *primitive* (vs which are
 just legacy inertia or solved-but-undeployed). Companion to:
 
-- [`audit.md`](./audit.md) — file-level correctness audit (May 2026,
+- [`audit.md`](../../archive/docs/audit.md) — file-level correctness audit (May 2026,
   ~50 findings still mostly open). Asks "what's wrong at this line?"
-- [`roadmap.md`](./roadmap.md) — the committed 7-phase rewrite plan.
+- [`roadmap.md`](../roadmap.md) — the committed 7-phase rewrite plan.
   Asks "what do we ship this quarter?"
 
 This audit asks **"is this the right shape?"** It's opinionated, and the
@@ -56,7 +56,7 @@ keep:
   validation in P2b). Shape is right; values are tunable.
 - **Caddy-based hostname routing for HTTP services.** The 2026-05
   migration from host ports to `proxy` Caddy was right — see
-  [`decisions.md`](./decisions.md). Don't revisit.
+  [`decisions.md`](../decisions.md). Don't revisit.
 - **joi via Caddy hostname (`http://llama-small.joi`).** Stable across
   model swaps and port reassignments. Right.
 
@@ -1560,7 +1560,7 @@ that requires a live x.com or a live joi to pass isn't a real test.
 **Current state.** ~5% coverage. `tests/test_clock_parsing.py` and
 `tests/test_activity_registration.py` are the only real tests.
 `tests/test_rag_pipeline.py` is broken at import (per May
-[`audit.md`](./audit.md)). No fixtures, no factories, no synthetic
+[`audit.md`](../../archive/docs/audit.md)). No fixtures, no factories, no synthetic
 end-to-end harness. The dev stack is the de-facto test environment;
 "does it work?" is answered by ingesting a fixture and watching a
 real match.
@@ -1586,7 +1586,7 @@ real match.
    write that would have exercised it; the fix sat uncommitted
    because there was no signal it worked.
 4. **The 2026-06-30 video-rank-drift bug** (added to
-   [`todo.md`](./todo.md)) is exactly the kind of partial-write /
+   [`todo.md`](../../archive/docs/todo.md)) is exactly the kind of partial-write /
    race condition a unit test of `recalculate_video_ranks` against a
    range of synthetic inputs would have caught. None exists.
 5. **No regression catch on the 2026-06-30 deploy gap.** When
@@ -2226,7 +2226,7 @@ stay on luv (network round-trip costs).
 
 ## 16. Implementation order
 
-Reorganizing the existing [roadmap](./roadmap.md) given this audit:
+Reorganizing the existing [roadmap](../roadmap.md) given this audit:
 
 ### Phase F-0: Foundation (must-do-first, ~3 days)
 

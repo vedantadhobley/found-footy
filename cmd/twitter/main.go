@@ -1,6 +1,6 @@
 // Command twitter is the Firefox+Playwright-Go browser-automation
 // service that scrapes Twitter for goal video links. See
-// docs/rebuild/proposals/twitter-port.md for phase T design + PoC gate.
+// docs/design/proposals/twitter-port.md for phase T design + PoC gate.
 //
 // T/a scope: Playwright-Go + Firefox launches, stealth patches applied,
 // /health + /status. T/b: auth flow + cookie lifecycle + VNC re-auth

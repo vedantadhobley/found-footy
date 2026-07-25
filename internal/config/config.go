@@ -1,5 +1,5 @@
 // Package config parses environment variables into typed structs via
-// caarlos0/env. See §9 adapter Config blocks in docs/rebuild-plan.md.
+// caarlos0/env. See §9 adapter Config blocks in docs/design/rebuild-plan.md.
 //
 // The pattern:
 //

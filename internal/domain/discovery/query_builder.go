@@ -3,7 +3,7 @@
 // penalty / red card) to produce the query string that the twitter
 // container's /search endpoint navigates to.
 //
-// Design ref: docs/rebuild/proposals/twitter-search-query.md
+// Design ref: docs/design/proposals/twitter-search-query.md
 // (signed off 2026-07-16, empirically validated 2026-07-22 via the
 // Tottenham M. Fernandes goal end-to-end test). Deviations from the
 // signed spec live in docs/decisions.md.

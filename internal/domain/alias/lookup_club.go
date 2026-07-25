@@ -3,7 +3,7 @@
 // One Wikipedia CirrusSearch query, one SPARQL P31 batch verify, first
 // P31-passing hit wins. Replaced the earlier 9-variant `wbsearchentities`
 // stack + description-quality scoring — see
-// docs/rebuild/proposals/alias-entity-resolution.md for the empirical
+// docs/design/proposals/alias-entity-resolution.md for the empirical
 // basis and reasoning.
 package alias
 

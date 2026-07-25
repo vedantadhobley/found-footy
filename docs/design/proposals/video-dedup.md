@@ -43,7 +43,7 @@ doc until it's reviewed + signed off.
   does all-pairs comparison which is tolerable at our corpus size (~thousands).
 
 **Cross-refs:**
-- Plan intent — [`../../rebuild-plan.md`](../../rebuild-plan.md) §5 W4-W5 (VideoValidation + AssetPersistence)
+- Plan intent — [`../../rebuild-plan.md`](../rebuild-plan.md) §5 W4-W5 (VideoValidation + AssetPersistence)
 - Prior decisions — [`../../decisions.md`](../../decisions.md):
   - 2026-07-16 Downstream workflow spawn via Temporal-direct + register-on-flip
   - 2026-07-11 Fixture completion contract via pluggable per-event workflow checklist

@@ -1,5 +1,5 @@
 // Package harness — scenario-based end-to-end test harness for the
-// found-footy Go rebuild. See docs/rebuild/proposals/test-corpus.md
+// found-footy Go rebuild. See docs/design/proposals/test-corpus.md
 // for the design.
 //
 // A scenario is a YAML file at test/scenarios/<suite>/<name>.yaml that

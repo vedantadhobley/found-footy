@@ -24,7 +24,7 @@ audit for the reasoning behind each choice.
 
 ## Post-drafting revision: workspace NATS as event bus
 
-**Revised 2026-07-01, per [`decisions.md`](./decisions.md) 2026-07-01 "Workspace
+**Revised 2026-07-01, per [`decisions.md`](../decisions.md) 2026-07-01 "Workspace
 NATS as event bus" entry:** early revisions of this document spec'd Postgres
 LISTEN/NOTIFY as the semantic event stream fan-out mechanism. After further
 discussion, the decision landed to use **workspace-shared NATS at
@@ -60,14 +60,14 @@ publications." The wiring landing pattern is: worker/api both INSERTs into
 two paths are always paired.
 
 Rationale + ecosystem-level context in
-[`~/workspace/vedanta-dhobley/docs/decisions.md`](../../vedanta-dhobley/docs/decisions.md)
+[`~/workspace/vedanta-dhobley/docs/decisions.md`](../decisions.md)
 2026-07-01 entry.
 
 ---
 
 ## How this relates to the roadmap and audit
 
-- [`roadmap.md`](./roadmap.md) F-0..F-6 phases described *incremental*
+- [`roadmap.md`](../roadmap.md) F-0..F-6 phases described *incremental*
   work. This rebuild plan supersedes those phases for the *build side*
   — the fresh-build subsumes what the incremental phases would have
   done and lets us skip the "refactor in place" tax.
@@ -75,7 +75,7 @@ Rationale + ecosystem-level context in
   throughout this document for the *why* on each decision. When this
   plan says "share-id indirection for URL stability," it's pointing
   at audit §4 for the full rationale, not repeating it.
-- [`decisions.md`](./decisions.md) gets dated entries for each
+- [`decisions.md`](../decisions.md) gets dated entries for each
   foundational reversal (Postgres-not-Mongo, Garage-not-MinIO,
   fresh-build-not-incremental) so future-reader isn't left thinking
   the audit and rebuild plan contradict.
@@ -205,7 +205,7 @@ External endpoints:
 - **LLM inference**: `LLM_ENDPOINT_URL` in `.env`. Today
   `http://llama-small.joi`. When nexus lands, one `.env` edit and
   container restart; application code unchanged (per the
-  [`decisions.md`](./decisions.md) 2026-07-01 entry).
+  [`decisions.md`](../decisions.md) 2026-07-01 entry).
 - **API-Football**: unchanged.
 
 ### Why Go
@@ -254,7 +254,7 @@ around it:
 
 ### Why Postgres for structured data
 
-Rationale in [`decisions.md`](./decisions.md) 2026-07-01 entry
+Rationale in [`decisions.md`](../decisions.md) 2026-07-01 entry
 ("Postgres over Mongo"). Go client: **[pgx](https://github.com/jackc/pgx)**.
 Native driver, connection pooling, type-safe query results via `sqlc`
 code generation or raw `Scan`. `database/sql` + `lib/pq` remains a
@@ -271,7 +271,7 @@ TimescaleDB and `pg_partman` deferred until telemetry volume warrants.
 
 ### Why Garage for blob storage
 
-Rationale in [`decisions.md`](./decisions.md) 2026-07-01 entry
+Rationale in [`decisions.md`](../decisions.md) 2026-07-01 entry
 ("Garage over MinIO"). Go S3 client: **`aws-sdk-go-v2/service/s3`**.
 Fully S3-compatible, works against any endpoint. Presigned URL
 generation for the share-id endpoint (audit
@@ -603,7 +603,7 @@ code and the outside." Each has its own package with:
 - Test doubles (fakes for unit tests, testcontainers-based real
   clients for integration tests)
 
-The `infra/llm` package is where the [`decisions.md`](./decisions.md)
+The `infra/llm` package is where the [`decisions.md`](../decisions.md)
 2026-07-01 "LLM endpoint abstracted" invariant lives: one client
 struct, reads `LLM_ENDPOINT_URL` from `internal/config`, exposes
 methods like `ChatCompletionMultiImage(ctx, req) → (Response, error)`.
@@ -1192,7 +1192,7 @@ adapter's `Emit` helper:
 The durable INSERT must succeed first; a NATS publish failure does NOT
 roll back the INSERT (SSE reconnect covers the drop via `event_log`
 lookup, and `dual_write_skew_total{event_type}` fires per §11). This is
-the workspace NATS pattern per [`decisions.md`](./decisions.md) 2026-07-01.
+the workspace NATS pattern per [`decisions.md`](../decisions.md) 2026-07-01.
 
 `api`'s SSE handlers subscribe to NATS `event.>` / `fixture.>` and
 forward to connected clients. The webhook delivery worker consumes a
@@ -1371,7 +1371,7 @@ the schema:
   for SSE fan-out. This §3 delivers it as `event_log` (durable audit +
   reconnect-backfill source) paired with workspace NATS publishes for
   realtime fan-out (dual-write pattern per §9's `internal/infra/event`).
-  Rationale: [`decisions.md`](./decisions.md) 2026-07-01.
+  Rationale: [`decisions.md`](../decisions.md) 2026-07-01.
 
 ### Extensibility hook this schema enables
 
@@ -4191,7 +4191,7 @@ type Pool interface {
 
 Event fan-out (`LISTEN` / `NOTIFY`) is deliberately NOT on this interface —
 that's the workspace NATS decision (per top-of-doc revision +
-[`decisions.md`](./decisions.md) 2026-07-01). See `internal/infra/nats`
+[`decisions.md`](../decisions.md) 2026-07-01). See `internal/infra/nats`
 below.
 
 **Real implementation** wraps `*pgxpool.Pool`. Constructor reads pool
@@ -4662,7 +4662,7 @@ the code lands.
 
 The **config-swappable LLM endpoint client**. The one adapter that
 codifies the joi-today-nexus-tomorrow invariant from
-[`decisions.md`](./decisions.md) 2026-07-01. All LLM calls go through
+[`decisions.md`](../decisions.md) 2026-07-01. All LLM calls go through
 this client; endpoint URL is one env var.
 
 **Client interface:**
@@ -11373,18 +11373,18 @@ collide across projects.
 
 - Within a project: `[descriptive text](./relative-path.md)` from the
   linking file. `decisions.md` linking architecture is
-  `[architecture](./architecture.md)`; `proposals/foo.md` linking up is
+  `[architecture](../architecture.md)`; `proposals/foo.md` linking up is
   `[architecture](../architecture.md)`.
 - Across projects: prefer routing through `vedanta-dhobley/docs/` as
   the cross-project knowledge hub. Direct project-to-project links
   are allowed but rare; they should mention the target project so a
   reader can navigate manually if the file has moved.
-- Deep links: `[testing conventions](./testing.md#three-tier-pyramid)`
+- Deep links: `[testing conventions](../testing.md#three-tier-pyramid)`
   when a section anchor exists.
 
 **Link text:**
 
-- Descriptive. "See [the dedup design doc](./proposals/dedup-unification.md)"
+- Descriptive. "See [the dedup design doc](../../archive/docs/proposals/dedup-unification.md)"
   beats "See [this doc](...)" or bare `./proposals/dedup-unification.md`.
 - Read out of context: if a reader clicks the link and the surrounding
   sentence is invisible, the link text should still tell them where they're
@@ -11457,7 +11457,7 @@ if any. `See 2025-XX-YY entry on X.`
 
 - New entries can reference old ones: "See 2026-06-30 entry on X."
 - Old entries can be linked from other docs: `docs/architecture.md`
-  linking a rationale is `see [decisions.md 2026-07-01](./decisions.md#2026-07-01--fresh-rebuild-in-parallel-not-incremental-refactor)`.
+  linking a rationale is `see [decisions.md 2026-07-01](../decisions.md#2026-07-01--fresh-rebuild-in-parallel-not-incremental-refactor)`.
 
 **Superseding an old decision:**
 
@@ -11523,7 +11523,7 @@ health" section of the internal monitoring dashboard.
 
 ### 15.7 The rebuild plan and design audit as historical artifacts
 
-The `docs/rebuild-plan.md` (this document) and `docs/design-audit.md`
+The `docs/design/rebuild-plan.md` (this document) and `docs/design/design-audit.md`
 are **historical artifacts**. They stay in the repo because they
 explain *why* the current architecture is what it is, but they don't
 get maintained after cutover.
@@ -11541,8 +11541,8 @@ plan.
 > **Historical.** This document describes the design intent for the
 > found-footy Go rebuild, drafted 2026-06 through 2026-07 and shipped
 > 2026-QX. It is preserved as a snapshot of the architectural reasoning
-> at that time. For current architecture, see [architecture.md](./architecture.md).
-> For post-rebuild decisions, see [decisions.md](./decisions.md).
+> at that time. For current architecture, see [architecture.md](../architecture.md).
+> For post-rebuild decisions, see [decisions.md](../decisions.md).
 ```
 
 **What happens if a §-section turns out to be wrong:**
@@ -11550,7 +11550,7 @@ plan.
 - Do NOT edit the section in place.
 - Add a `decisions.md` entry that supersedes it.
 - Add a note at the top of the section: "This section is historical;
-  see [decisions.md YYYY-MM-DD entry](./decisions.md#...)."
+  see [decisions.md YYYY-MM-DD entry](../decisions.md#...)."
 
 **Same for `design-audit.md`:** it was a snapshot of the pre-rebuild
 audit. Preserved for the reasoning about what was wrong; not updated
@@ -11704,8 +11704,8 @@ order — not "delete everything and rewrite" — so that during cutover
 - Current `docs/*.md` files stay as-is; they describe the Python
   system that's still in prod.
 - New Go-side documentation lives in `docs/rebuild/` — a sibling
-  directory that gets `docs/rebuild/architecture.md`,
-  `docs/rebuild/operations.md`, etc. Same file names, different
+  directory that gets `docs/architecture.md`,
+  `docs/operations.md`, etc. Same file names, different
   parent.
 - `docs/README.md` gets a header: "Two directories: `docs/*.md`
   describes the current Python system; `docs/rebuild/*.md` describes
@@ -11880,7 +11880,7 @@ Cutover comes last.
   `Makefile` with `make test`, `make build`, `make lint`, `make docs`.
 - CI skeleton: GitHub Actions workflows for build, lint, test,
   docs-freshness (per §15.6). All passing on empty code.
-- Docs infrastructure: `docs/rebuild/README.md`, empty stub files for
+- Docs infrastructure: `docs/design/README.md`, empty stub files for
   each subsystem doc, `docs/generated/` placeholder committed with a
   README explaining it's auto-generated.
 - Pre-commit hooks: link check, `gofmt`, `go generate` freshness.
@@ -11895,7 +11895,7 @@ Cutover comes last.
 - CI is green on an empty commit.
 - A junior dev could clone the repo, run `make build`, and see
   every target succeed on empty code.
-- `docs/rebuild/README.md` renders and its links resolve.
+- `docs/design/README.md` renders and its links resolve.
 
 **Explicit non-goals:**
 
@@ -12177,7 +12177,7 @@ into single atomic operations like `MintShareAndRecalculateRanks`.
 - A dev-mode "seed a fake event" script creates a Postgres event and
   triggers the workflow chain end-to-end, producing an S3 video +
   event NATS message.
-- Every workflow has retry policy documented in `docs/rebuild/temporal.md`,
+- Every workflow has retry policy documented in `docs/temporal.md`,
   auto-generated from source.
 - Integration tests exercise the workflow chain against the dev stack.
 
@@ -12255,7 +12255,7 @@ first; write paths come from workflows independently.
 - `internal/api/webhooks/` — subscription CRUD + JetStream durable
   consumer for delivery.
 - `docs/generated/openapi.yaml` — auto-generated from Huma tags.
-- `docs/rebuild/api-contract.md` — hand-maintained intent + versioning
+- `docs/design/api-contract.md` — hand-maintained intent + versioning
   policy, linking to the generated spec.
 
 **Sub-milestone order:**
@@ -12573,7 +12573,7 @@ Not part of this plan, but worth naming so we know what's deferred:
 - **Cutover automation** — the current cutover is manual; automated
   flag flipping + threshold-triggered rollback is a follow-up.
 
-These live in `docs/rebuild/roadmap.md` (fresh file, not the current
+These live in `docs/roadmap.md` (fresh file, not the current
 `docs/roadmap.md` which is Python-era).
 
 ### 16.15 Retrospective and this document's future

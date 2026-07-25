@@ -73,7 +73,7 @@ Three Temporal Schedules drive the whole thing:
 **Split rationale** (2026-07-11): plan §5 W2 originally speced a
 single MonitorWorkflow combining the active + staging polling via
 bucket-suppression. Split into two workflows on independent Temporal
-Schedules — see [`../decisions.md` 2026-07-11 workflow-split entry](../decisions.md)
+Schedules — see [`../decisions.md` 2026-07-11 workflow-split entry](decisions.md)
 for the full reasoning (failure isolation, runtime cadence tuning,
 config honesty). The staging cadence is now tunable at runtime via
 `temporal schedule update staging-poll-scheduled --cron ...` without
@@ -160,8 +160,8 @@ time.
   settled + no in-flight downstream workflows. Pluggable via new
   `event_downstream_workflows` table — any downstream workflow that
   registers/completes rows there participates in the check
-  automatically. See [`proposals/completion-contract.md`](./proposals/completion-contract.md)
-  and [`../decisions.md` 2026-07-11 completion-contract entry](../decisions.md).
+  automatically. See [`proposals/completion-contract.md`](design/proposals/completion-contract.md)
+  and [`../decisions.md` 2026-07-11 completion-contract entry](decisions.md).
   Pre-cutover behavior: the checklist table is empty until O3-O5 land,
   so fixtures with stabilized events complete immediately at Terminal
   status. When O3-O5 land, the checklist auto-populates and completion
@@ -188,7 +188,7 @@ Every tracked event (goal, red card, missed penalty) has a symmetric
 counter oscillating over `0..3` on presence/absence votes across
 ActivePoll cycles. Repo state in `internal/infra/pg/event_repo.go`;
 counter semantics in
-[`docs/decisions.md`](../decisions.md) 2026-07-07 symmetric-counter
+[`docs/decisions.md`](decisions.md) 2026-07-07 symmetric-counter
 entry.
 
 ```
@@ -514,8 +514,8 @@ depend on network to vendor, DB load, and Temporal task queue depth.
 
 ## Known gaps + deferred behaviors
 
-Cross-referenced from `docs/rebuild/proposals/workflow-audit-2026-07-09.md`
-and `docs/rebuild/proposals/api-football-audit-2026-07-09.md`. Ranked by
+Cross-referenced from `docs/design/proposals/workflow-audit-2026-07-09.md`
+and `docs/design/proposals/api-football-audit-2026-07-09.md`. Ranked by
 impact.
 
 ### O2 completion — SHIPPED (2026-07-11)
@@ -532,7 +532,7 @@ impact.
 
 - **Workflow split** — `MonitorWorkflow` replaced by `ActivePollWorkflow`
   (30s interval) + `StagingPollWorkflow` (cron `*/15 * * * *`, runtime-
-  tunable). See [`../decisions.md` 2026-07-11 workflow-split entry](../decisions.md).
+  tunable). See [`../decisions.md` 2026-07-11 workflow-split entry](decisions.md).
 - **Staging poll** (`PollStagingFixtures` activity, sole step of
   `StagingPollWorkflow`). API-polls ALL staging fixtures on each
   scheduled tick (no bucket math — the schedule owns cadence).
@@ -609,11 +609,11 @@ Not yet handled ([GAP]):
 - [`temporal.md`](./temporal.md) — Client + Worker adapter internals.
 - [`observability.md`](./observability.md) + [`logging.md`](./logging.md)
   — typed vocabulary + metric families + Loki queries.
-- [`../decisions.md`](../decisions.md) — architectural decisions log,
+- [`../decisions.md`](decisions.md) — architectural decisions log,
   particularly:
   - 2026-07-07 symmetric-counter debounce
   - 2026-07-07 fixture activation triggers + staging-poll design
   - 2026-07-09 cross-workflow config
   - 2026-07-09 Ingest regression fix
-- [`proposals/workflow-audit-2026-07-09.md`](./proposals/workflow-audit-2026-07-09.md)
+- [`proposals/workflow-audit-2026-07-09.md`](design/proposals/workflow-audit-2026-07-09.md)
   — punch list feeding this doc's "Known gaps" section.

@@ -4,5 +4,5 @@
 // Wikidata pipeline (fuzzy QID lookup + multilingual alias fetch +
 // P1449/P1549 + word-processing rules) and populates aliases with a
 // 30-day TTL. No LLM. Design ref:
-// docs/rebuild/proposals/team-aliases.md.
+// docs/design/proposals/team-aliases.md.
 package alias

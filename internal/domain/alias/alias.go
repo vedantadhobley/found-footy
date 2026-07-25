@@ -6,7 +6,7 @@
 // Wikidata aliases (11 Latin-script langs) + P1449 nicknames + P1549
 // demonyms for nationals + word-processing rules (NFD strip diacritics,
 // multilingual skip-list, ≥2-lang keep threshold, venue-city skip for
-// clubs). Design ref: docs/rebuild/proposals/team-aliases.md.
+// clubs). Design ref: docs/design/proposals/team-aliases.md.
 //
 // Callers:
 //   - Ingest activity: inserts placeholder rows (canonical vendor data

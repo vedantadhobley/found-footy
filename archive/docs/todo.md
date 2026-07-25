@@ -86,7 +86,7 @@ Suspects to investigate, none verified yet:
   always). Worth checking what the actual values look like for the
   affected event.
 
-Connects to [`docs/design-audit.md`](./design-audit.md) **§4** (the
+Connects to [`docs/design/design-audit.md`](../../docs/design/design-audit.md) **§4** (the
 dedup re-arch puts the rank on the `video_assets` canonical row, not
 per-event copies — eliminates the "rank drift across copies" failure
 mode). But the *bug as it shows today* is a today-bug worth fixing in

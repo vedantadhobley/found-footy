@@ -13,6 +13,6 @@
 // context-augmented queries and cross-references back to the Wikidata
 // QID via each article's `pageprops.wikibase_item`.
 //
-// Design ref: docs/rebuild/proposals/alias-entity-resolution.md § "The
+// Design ref: docs/design/proposals/alias-entity-resolution.md § "The
 // general recipe".
 package wikipedia

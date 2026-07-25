@@ -1,0 +1,40 @@
+# docs/design/ — the to-build layer
+
+Target architecture, design proposals, and audits for work **not yet
+shipped** in the Go rebuild. For **what's already built**, see the
+as-built ledgers in [`../`](../) (start at [`../README.md`](../README.md),
+the routing index + authority map). For the **legacy Python** system,
+see [`../../archive/docs/`](../../archive/docs/).
+
+## Contents
+
+- [`rebuild-plan.md`](./rebuild-plan.md) — the design bible for the TARGET
+  architecture (§1–§16: architecture, schema, adapters, workflows,
+  deployment, migration). Large; consult the relevant § before touching
+  code — don't read end-to-end.
+- [`design-audit.md`](./design-audit.md) — the 17-section analysis that
+  informed the rebuild plan (the "why" behind it).
+- [`python-functional-spec.md`](./python-functional-spec.md) — behavioral
+  spec of the CURRENT Python system (WHAT it does, not HOW). The build
+  reference; retires to `archive/` at cutover.
+- [`design-improvements-2026-07-23.md`](./design-improvements-2026-07-23.md)
+  — improvement backlog from the Miami smoke test + audit.
+- [`audit-2026-07-26.md`](./audit-2026-07-26.md) — point-in-time audit of
+  shipped Go vs the plan.
+- [`api-contract.md`](./api-contract.md) — public API surface contract
+  (Phase A, unbuilt).
+- [`proposals/`](./proposals/) — design-first drafts per phase. Signed off:
+  `discovery.md`, `twitter-port.md`, `video-dedup.md` (per-event dedup;
+  the cross-event sections are superseded — see
+  [`../decisions.md`](../decisions.md) 2026-07-25), `team-aliases.md`,
+  `completion-contract.md`. `monitor.md` is SUPERSEDED (historical only).
+  `workflow-audit-2026-07-09.md` + `api-football-audit-2026-07-09.md` are
+  cross-cutting audits, not phase proposals.
+
+## Convention
+
+A design doc describes **intent**. When the thing ships, the as-built
+truth moves to a `../` ledger + an entry in [`../decisions.md`](../decisions.md);
+the design doc stays as the historical rationale — mark superseded
+sections rather than deleting them (see `video-dedup.md`'s banner for the
+pattern).
