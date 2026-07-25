@@ -480,11 +480,11 @@ func TestFixtureRepo_PruneCompleted_WithShares_Retains(t *testing.T) {
 
 	assetID := uuid.New()
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO video_assets (id, fixture_id, s3_bucket, s3_key,
+		INSERT INTO video_assets (id, event_id, fixture_id, s3_bucket, s3_key,
 			perceptual_hash, perceptual_hash_prefix, md5,
 			width, height, duration_ms, file_size_bytes)
-		VALUES ($1, $2, 'test', $3, $4, $5, $6, 1920, 1080, 45000, 15000000)
-	`, assetID, f.ID, "test/asset.mp4", []byte{0xab, 0xcd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+		VALUES ($1, $2, $3, 'test', $4, $5, $6, $7, 1920, 1080, 45000, 15000000)
+	`, assetID, eventID, f.ID, "test/asset.mp4", []byte{0xab, 0xcd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
 		0xabcd, []byte("md5md5md5md5md5m")); err != nil {
 		t.Fatalf("insert asset: %v", err)
 	}

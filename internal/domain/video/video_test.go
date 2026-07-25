@@ -16,6 +16,7 @@ import (
 
 func makeAsset(popularity int, fileSize int64) *video.Asset {
 	a := video.NewAsset(
+		uuid.New(),
 		5000,
 		"found-footy", "5000/asset123.mp4",
 		[]byte{0xab, 0xcd, 0x12, 0x34, 0xef, 0x56, 0x78, 0x90}, // 8-byte dHash
