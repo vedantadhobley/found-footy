@@ -18,12 +18,12 @@ type AssetRepo interface {
 	Get(ctx context.Context, id uuid.UUID) (*Asset, error)
 
 	// GetByPerceptualHash looks up an existing asset with the exact
-	// perceptual hash inside a fixture. Used on the dedup path before
+	// perceptual hash inside an event. Used on the dedup path before
 	// attempting Insert.
-	GetByPerceptualHash(ctx context.Context, fixtureID int64, hash []byte) (*Asset, error)
+	GetByPerceptualHash(ctx context.Context, eventID uuid.UUID, hash []byte) (*Asset, error)
 
 	// UpsertWithHashDedup is the audit §4 atomic dedup pattern. Attempts
-	// INSERT; on unique_violation (fixture_id, perceptual_hash), fetches
+	// INSERT; on unique_violation (event_id, perceptual_hash), fetches
 	// the existing row and bumps its popularity. Returns:
 	//   asset — the winning row (either the freshly-inserted a OR the
 	//           existing one whose popularity got bumped)
@@ -36,10 +36,10 @@ type AssetRepo interface {
 	// should inspect deduped.
 	UpsertWithHashDedup(ctx context.Context, a *Asset) (result *Asset, deduped bool, err error)
 
-	// FindNearMatches returns assets in the same fixture whose
+	// FindNearMatches returns assets in the same event whose
 	// perceptual_hash_prefix matches a's, for the near-match backfill
 	// compactor (§3 Track 3 — deferred behind embedding decision).
-	FindNearMatches(ctx context.Context, fixtureID int64, prefix int) ([]*Asset, error)
+	FindNearMatches(ctx context.Context, eventID uuid.UUID, prefix int) ([]*Asset, error)
 }
 
 // ShareRepo is the storage port for video_shares.

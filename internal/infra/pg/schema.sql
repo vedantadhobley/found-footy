@@ -257,14 +257,23 @@ CREATE INDEX event_downstream_workflows_pending
     ON event_downstream_workflows (event_id)
     WHERE completed_at IS NULL;
 
--- 7. video_assets — canonical byte-store, one row per unique perceptual hash per fixture
+-- 7. video_assets — canonical byte-store, one row per unique perceptual hash per EVENT.
+--    Dedup is scoped to the event and NEVER across events. Cross-event / per-fixture
+--    dedup is dead: tried in Python, rejected — it collapsed genuinely-distinct goals
+--    (visually-similar broadcast clips: same stadium, camera, celebration) into one and
+--    dropped legitimate videos. Cross-event clip-bleed is instead handled by timestamp
+--    extraction (the clock check rejects a clip whose broadcast minute doesn't match the
+--    event's reported minute). See decisions.md 2026-07-25.
 CREATE TABLE video_assets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- event_id is the dedup scope; fixture_id is a denormalized convenience for the
+    -- s3 path + prune queries (an event never changes fixtures, so they can't disagree).
+    event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
     fixture_id BIGINT NOT NULL REFERENCES fixtures(id) ON DELETE RESTRICT,
 
     -- Storage
     s3_bucket TEXT NOT NULL,
-    s3_key TEXT NOT NULL,                                   -- computed from (fixture_id, id), not concatenated at write
+    s3_key TEXT NOT NULL,                                   -- computed from (fixture_id, id); the uuid id guarantees uniqueness
 
     -- Content identity
     perceptual_hash BYTEA NOT NULL,                         -- dHash as raw 8 bytes for fast Hamming
@@ -279,21 +288,21 @@ CREATE TABLE video_assets (
     bitrate INT,
     aspect_ratio REAL GENERATED ALWAYS AS (width::REAL / height::REAL) STORED,
 
-    -- Popularity (cross-event vote count)
+    -- Popularity (within-event vote count — how many of this event's candidates deduped onto this asset)
     popularity INT NOT NULL DEFAULT 1,
 
-    -- Supersession (dedup-merge / re-encode / higher-quality replacement)
+    -- Supersession (dedup-merge / re-encode / higher-quality replacement — within one event)
     superseded_by UUID REFERENCES video_assets(id) ON DELETE SET NULL,
 
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    UNIQUE (fixture_id, md5),                               -- exact-byte dedup within a fixture
-    UNIQUE (fixture_id, perceptual_hash)                    -- perceptual dedup — makes audit §4 atomic INSERT work
+    UNIQUE (event_id, md5),                                 -- exact-byte dedup within an event
+    UNIQUE (event_id, perceptual_hash)                      -- perceptual dedup within an event — enables the atomic INSERT
 );
 
-CREATE INDEX video_assets_hash_prefix ON video_assets (fixture_id, perceptual_hash_prefix)
+CREATE INDEX video_assets_hash_prefix ON video_assets (event_id, perceptual_hash_prefix)
     WHERE superseded_by IS NULL;
-CREATE INDEX video_assets_fixture_popularity ON video_assets (fixture_id, popularity DESC)
+CREATE INDEX video_assets_event_popularity ON video_assets (event_id, popularity DESC)
     WHERE superseded_by IS NULL;
 
 -- 7. video_shares — public share IDs, per-event ranked

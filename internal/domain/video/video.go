@@ -4,7 +4,10 @@
 //
 // Two related concepts:
 //   Asset — the canonical byte store. One row per unique perceptual
-//           hash per fixture. Carries popularity across events.
+//           hash per event. Dedup is scoped to the event, never across
+//           events (cross-event/per-fixture dedup is dead — see
+//           decisions.md 2026-07-25). Popularity counts within-event
+//           dedup hits.
 //   Share — a public link (id: "s_<12-hex>") that grants a browser
 //           access to one Asset in the context of one Event. Ranked
 //           within event.
@@ -65,13 +68,17 @@ func (r RemovalReason) Valid() bool {
 //
 // Load-bearing UNIQUE constraints (enforced at the storage layer,
 // mirrored here for domain reasoning):
-//   UNIQUE (fixture_id, md5)             — exact-byte dedup within fixture
-//   UNIQUE (fixture_id, perceptual_hash) — perceptual dedup; enables
+//   UNIQUE (event_id, md5)             — exact-byte dedup within event
+//   UNIQUE (event_id, perceptual_hash) — perceptual dedup; enables
 //     the atomic UPSERT pattern where two concurrent writers of the
 //     same perceptual content both try to INSERT, one wins, the other
 //     catches the unique_violation and bumps the winner's popularity.
+//
+// EventID is the dedup scope; FixtureID is a denormalized convenience
+// (s3 path + prune). Dedup is never cross-event — decisions.md 2026-07-25.
 type Asset struct {
 	ID        uuid.UUID
+	EventID   uuid.UUID
 	FixtureID int64
 
 	S3Bucket string
@@ -98,6 +105,7 @@ type Asset struct {
 // NewAsset constructs a fresh Asset with a new UUID.
 // Popularity starts at 1 (this is the first sighting).
 func NewAsset(
+	eventID uuid.UUID,
 	fixtureID int64,
 	s3Bucket, s3Key string,
 	perceptualHash, md5 []byte,
@@ -107,6 +115,7 @@ func NewAsset(
 ) *Asset {
 	return &Asset{
 		ID:                   uuid.New(),
+		EventID:              eventID,
 		FixtureID:            fixtureID,
 		S3Bucket:             s3Bucket,
 		S3Key:                s3Key,

@@ -147,6 +147,14 @@ there. Half-day for a first-pass analytics query.
 
 ### 6. Cross-event candidate dedup at video-asset level, not per-event
 
+> **REJECTED 2026-07-25.** Cross-event / per-fixture dedup is dead — see
+> [`decisions.md` 2026-07-25](../decisions.md). We tried it in Python and it
+> removed legitimate goals (visually-similar distinct goals collapsed into
+> one). The Miami case below is real, but the fix is **timestamp extraction**
+> — the clock-check rejects the mismatched-minute clip from the wrong event —
+> NOT cross-event dedup. This item's "Miami confirms the design is right"
+> conclusion was backwards. Retained for the reasoning trail.
+
 Miami smoke test: R. Rios own goal + L. Suarez penalty happened in the
 same match. Two Discovery workflows ran with overlapping team aliases
 (`chicago`, `fire`, `inter`, `miami`). One tweet (Polish-language own

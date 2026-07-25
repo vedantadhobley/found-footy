@@ -1,5 +1,17 @@
 # Video dedup redesign — design proposal (O4/O5)
 
+> **⚠ PARTIALLY SUPERSEDED 2026-07-25 — dedup is per-EVENT only.**
+> Cross-event / per-fixture dedup is **dead and not coming back** (see
+> [`../../decisions.md` 2026-07-25](../../decisions.md)). Everything in this
+> doc describing **S3-corpus / cross-event dedup, multi-share of one asset
+> across events, cross-event `popularity`, or cross-event race handling is
+> REJECTED.** Dedup runs only *within a single event's* candidate set (batch:
+> exact-byte + content + perceptual). Cross-event clip-bleed is handled by
+> **timestamp extraction** (the clock-check), not by dedup — it collapsed
+> genuinely-distinct goals when we tried it in Python. `video_assets` is now
+> `event_id`-scoped. The within-event pipeline below is still valid; ignore
+> the cross-event scope. Full body rewrite pending the docs reorg.
+
 **Status:** design-first draft, second pass 2026-07-16. Do not implement anything from this
 doc until it's reviewed + signed off.
 

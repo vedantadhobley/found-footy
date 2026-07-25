@@ -6,6 +6,49 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-25 — Video dedup is per-EVENT only; cross-event / per-fixture dedup is dead
+
+**Decision.** `video_assets` is scoped per **event**, not per fixture.
+Dedup (exact-byte, content, perceptual) runs only *within* a single
+tracked event's candidate set — goal, missed penalty, or red card. There
+is no cross-event dedup, no S3-corpus dedup across events, no multi-share
+of one asset across events. Schema: `UNIQUE (event_id, md5)` +
+`UNIQUE (event_id, perceptual_hash)`; `popularity` is a within-event vote
+count. `video_shares` is unchanged — it was already per-event.
+
+**Why.** We tried per-fixture (cross-event) perceptual dedup in Python
+while testing, and it **removed legitimate goal videos**: two distinct
+goals in one match often have visually-similar broadcast clips (same
+stadium, camera positions, celebration framing), so a fixture-scoped
+perceptual hash collapsed them and dropped one real goal as a "duplicate"
+of another. Per-event scoping makes that class of false-positive
+structurally impossible.
+
+The problem cross-event dedup was *trying* to solve — the same clip
+surfacing under two events (Miami smoke test: one Polish-language
+own-goal video landed as a candidate under both the R. Rios own goal and
+the L. Suarez penalty, via overlapping team aliases) — is solved far
+better by **timestamp extraction**: the vision clock-check rejects a clip
+whose broadcast minute doesn't match the event's reported minute, so the
+clip stays with the event it belongs to and is rejected from the other.
+That is the real fix, and it works better for our goals than dedup ever
+did. Cross-event dedup is **dead and not coming back.**
+
+**Consequences.**
+- Removal of an event is naive-delete of its own assets/shares (+ their
+  S3 blobs) — no ref-counting, no orphan-GC, no cross-event race handling.
+- `video_assets` gains `event_id` (`ON DELETE CASCADE`); keeps `fixture_id`
+  as a denormalized convenience for the s3 path + prune queries.
+- Touches the already-built `internal/domain/video` package (`Asset` gains
+  `EventID`; `AssetRepo` dedup methods key on `event_id`) — the pg adapter
+  for these repos is unbuilt, so no ripple beyond types + tests.
+- Supersedes [`rebuild/design-improvements-2026-07-23.md`](./rebuild/design-improvements-2026-07-23.md)
+  item #6 (now marked REJECTED) and the cross-event sections of
+  [`rebuild/proposals/video-dedup.md`](./rebuild/proposals/video-dedup.md)
+  (SUPERSEDED banner added; full body rewrite pending the docs reorg).
+
+---
+
 ## 2026-07-24 — Event primary key is synthesized (team_player_type_seq); the VAR slot-shift is a known, accepted tradeoff
 
 ### Why we synthesize a key at all
