@@ -137,6 +137,15 @@ scenarios under `test/scenarios/<suite>/<name>.yaml`. Design in
 - Activity clock injected from scenario's `manual_date` for
   determinism
 
+**Enforcement — git test gates** (installed via `make hooks`, which sets
+`core.hooksPath` → [`.githooks/`](../../.githooks/)): `pre-commit` runs
+`make test-short` (fast — compile + unit, no containers); `pre-push` runs
+the full `make test` (integration/testcontainers + this scenario suite,
+~2 min). The pre-push gate is what would have caught the enum-refactor
+scenario rot (red since `d123404`) the day it landed rather than weeks
+later. Host-agnostic (local git, not tied to any forge); each clone
+activates once with `make hooks`. Bypass only with `--no-verify`.
+
 **Suites** (each a subdirectory under `test/scenarios/`):
 - `basic/` — happy paths, sanity checks
 - `debounce/` — symmetric counter behavior (increment, decrement, cap,
