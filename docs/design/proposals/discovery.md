@@ -4,7 +4,7 @@
 doc until it's reviewed + signed off.
 
 **Cross-refs:**
-- Plan intent — [`../../rebuild-plan.md`](../../rebuild-plan.md) §5 W3, §8 SSE + NATS
+- Plan intent — [`../../rebuild-plan.md`](../rebuild-plan.md) §5 W3, §8 SSE + NATS
 - Prior decisions — [`../../decisions.md`](../../decisions.md):
   - 2026-07-16 Downstream workflow spawn via Temporal-direct + register-on-flip (this proposal's O3/b + O3/c now conform to it)
   - 2026-07-11 Fixture completion contract via pluggable per-event workflow checklist

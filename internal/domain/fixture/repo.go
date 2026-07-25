@@ -47,7 +47,7 @@ type Repo interface {
 
 	// FixtureReadyToComplete returns true iff the fixture at id
 	// satisfies the full completion contract per
-	// docs/rebuild/proposals/completion-contract.md:
+	// docs/design/proposals/completion-contract.md:
 	//
 	//   1. api_status_short is in the Terminal set
 	//      (ft, aet, pen, canc, abd, wo, awd)

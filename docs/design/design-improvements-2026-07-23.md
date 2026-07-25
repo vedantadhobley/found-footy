@@ -395,8 +395,8 @@ used yt-dlp per video, serially).
 Surfaced during the 2026-07-07 to 2026-07-11 workflow-design conversations
 that produced Monitor + Ingest as they exist today. Deferred at the time,
 still real, some are Aug-14 blocking or near-blocking. Sourced from
-[`docs/rebuild/proposals/monitor.md`](./proposals/monitor.md) §3-4 and
-[`docs/rebuild/proposals/workflow-audit-2026-07-09.md`](./proposals/workflow-audit-2026-07-09.md)
+[`docs/design/proposals/monitor.md`](./proposals/monitor.md) §3-4 and
+[`docs/design/proposals/workflow-audit-2026-07-09.md`](./proposals/workflow-audit-2026-07-09.md)
 P1/P2 items that never became tasks.
 
 ### 15. Adaptive staging poll tiering

@@ -5,13 +5,13 @@ observability substrate — vocabulary enums, structured logging,
 Prometheus metrics, tracing (stub), and the semantic event stream
 (pending).
 
-Cross-refs [`../rebuild-plan.md`](../rebuild-plan.md) §11 for the
+Cross-refs [`../rebuild-plan.md`](design/rebuild-plan.md) §11 for the
 full design intent. Divergences from §11 live in
-[`../decisions.md`](../decisions.md).
+[`../decisions.md`](decisions.md).
 
 **Update rule.** Any change to emission taxonomy, adapter
 instrumentation shape, or metric name updates this doc in the same
-commit. Per the [2026-07-07 working rule](../decisions.md).
+commit. Per the [2026-07-07 working rule](decisions.md).
 
 ## Four pillars — status
 
@@ -55,7 +55,7 @@ APIServer, TwitterService, Migration, Healthz, Deploy.
 (TwitterWorkflow → DiscoveryWorkflow, DownloadWorkflow →
 VideoValidationWorkflow, UploadWorkflow → AssetPersistenceWorkflow,
 RAGWorkflow folded into Ingest) — logged in
-[decisions.md 2026-07-05 workflow-rename entry](../decisions.md).
+[decisions.md 2026-07-05 workflow-rename entry](decisions.md).
 
 ### Action registry (shipped)
 
@@ -102,7 +102,7 @@ building `map[string]any` inline.
 `docs/generated/log-catalog.md` regenerates on every build via
 `go generate` — the complete (module, action) matrix as a discoverable
 markdown table. **NOT SHIPPED.** No generator, no catalog file.
-Logged in [decisions.md 2026-07-07](../decisions.md).
+Logged in [decisions.md 2026-07-07](decisions.md).
 
 ## TestEmitter (shipped)
 
@@ -164,8 +164,8 @@ as a design line; not registered yet.
 
 ## Cross-refs
 
-- Plan §11 — [rebuild-plan.md §11](../rebuild-plan.md#11-observability)
-- Vocabulary source — [`internal/observability/vocabulary/vocabulary.go`](../../internal/observability/vocabulary/vocabulary.go)
+- Plan §11 — [rebuild-plan.md §11](design/rebuild-plan.md#11-observability)
+- Vocabulary source — [`internal/observability/vocabulary/vocabulary.go`](../internal/observability/vocabulary/vocabulary.go)
 - Emission spec — [logging.md](./logging.md)
 - Metric names + labels — populated per adapter (see architecture.md)
 - Semantic events (when shipped) — [orchestration.md](./orchestration.md)

@@ -105,7 +105,7 @@ func main() {
 		// Wikipedia is the entity resolver — CirrusSearch full-text
 		// candidate generation, bridging back to Wikidata via each
 		// article's pageprops.wikibase_item. See
-		// docs/rebuild/proposals/alias-entity-resolution.md.
+		// docs/design/proposals/alias-entity-resolution.md.
 		wpIns := wikipedia.RegisterMetrics(deps.Metrics, deps.Log)
 		wpClient, err := wikipedia.NewClient(deps.Cfg.Wikipedia, wpIns)
 		if err != nil {

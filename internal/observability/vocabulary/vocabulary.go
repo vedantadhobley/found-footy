@@ -10,7 +10,7 @@
 // here (or in the appropriate actions_<family>.go file) and it's
 // available everywhere.
 //
-// See docs/rebuild-plan.md §11 for the full vocabulary spec.
+// See docs/design/rebuild-plan.md §11 for the full vocabulary spec.
 package vocabulary
 
 // Module identifies the emitting subsystem. Every log line and every

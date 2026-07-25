@@ -5,7 +5,7 @@
 **Cross-refs:**
 
 - [`team-aliases.md`](./team-aliases.md) — SHIPPED alias pipeline (lookup + selection). This proposal targets the LOOKUP step's entity-resolution recall, not the selection pipeline.
-- [`../architecture.md`](../architecture.md) § "Lookup pipeline" — as-shipped ledger of `internal/domain/alias/lookup*.go`.
+- [`../architecture.md`](../../architecture.md) § "Lookup pipeline" — as-shipped ledger of `internal/domain/alias/lookup*.go`.
 
 ## The problem
 

@@ -41,7 +41,7 @@ documentation here.
   endpoint (fixtures, events, videos, share-id redirects, admin ops)
 - **Auto-derived OpenAPI spec** — from Huma struct tags on request/
   response types; committed at `docs/generated/openapi.yaml` per
-  [`../rebuild-plan.md`](../rebuild-plan.md) §15.3
+  [`../rebuild-plan.md`](rebuild-plan.md) §15.3
 - **NATS subject catalog** — subject names for the events found-footy
   publishes for inter-project consumption (`event.detected` /
   `event.stable` / `event.video_ready` / etc.), JetStream retention
@@ -71,6 +71,6 @@ the split exists to keep found-footy pure infrastructure.
 
 ## Related
 
-- [`../rebuild-plan.md`](../rebuild-plan.md) §8 — public API surface (still lists SSE as an option; this doc supersedes that for the found-footy side)
+- [`../rebuild-plan.md`](rebuild-plan.md) §8 — public API surface (still lists SSE as an option; this doc supersedes that for the found-footy side)
 - [decisions.md 2026-07-21 NATS scope](../decisions.md)
 - vedanta-systems' own api-contract (external to this repo) — owns everything this doc excludes

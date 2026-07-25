@@ -4,9 +4,9 @@
 which tiers they cover, how each package's test file is structured,
 how to run them.
 
-Cross-refs [`../rebuild-plan.md`](../rebuild-plan.md) §12 for the
+Cross-refs [`../rebuild-plan.md`](design/rebuild-plan.md) §12 for the
 full testing intent. Divergences from §12 live in
-[`../decisions.md`](../decisions.md).
+[`../decisions.md`](decisions.md).
 
 **Update rule.** Every commit that adds a package/adapter/workflow
 updates this doc if it introduces a new test tier or pattern.
@@ -123,9 +123,9 @@ Slowest test: `~1.1s` (mtime-detection tests sleep to defeat
 
 ## Tier 3 — synthetic e2e — SHIPPED (Phase 1a)
 
-YAML scenario harness lives at [`test/`](../../test/) with
+YAML scenario harness lives at [`test/`](../test/) with
 scenarios under `test/scenarios/<suite>/<name>.yaml`. Design in
-[`proposals/test-corpus.md`](./proposals/test-corpus.md).
+[`proposals/test-corpus.md`](design/proposals/test-corpus.md).
 
 **How it works** (recap):
 - One testcontainer Postgres per test binary run (shared across
@@ -138,7 +138,7 @@ scenarios under `test/scenarios/<suite>/<name>.yaml`. Design in
   determinism
 
 **Enforcement — git test gates** (installed via `make hooks`, which sets
-`core.hooksPath` → [`.githooks/`](../../.githooks/)): `pre-commit` runs
+`core.hooksPath` → [`.githooks/`](../.githooks/)): `pre-commit` runs
 `make test-short` (fast — compile + unit, no containers); `pre-push` runs
 the full `make test` (integration/testcontainers + this scenario suite,
 ~2 min). The pre-push gate is what would have caught the enum-refactor
@@ -217,7 +217,7 @@ coverage in practice.**
 
 ## Cross-refs
 
-- Plan §12 — [rebuild-plan.md §12](../rebuild-plan.md#12-testing)
+- Plan §12 — [rebuild-plan.md §12](design/rebuild-plan.md#12-testing)
 - Adapter test template — [architecture.md § Adapters](./architecture.md#adapters--as-shipped-template)
 - Workflow test pattern — [orchestration.md § Testing shape](./orchestration.md#testing-shape)
-- Live smoke scripts — [`scripts/`](../../scripts/)
+- Live smoke scripts — [`scripts/`](../scripts/)

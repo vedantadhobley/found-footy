@@ -5,7 +5,7 @@ implementation deviated from this proposal in several places based
 on downstream design conversation. Do NOT read this doc as
 authoritative — use these instead:
 
-- `docs/rebuild/orchestration.md` — as-shipped ledger of workflow
+- `docs/orchestration.md` — as-shipped ledger of workflow
   + activity behavior
 - `docs/decisions.md`:
   - 2026-07-07 APIStatus bucketing (SUSP/INT/PST=active,
@@ -40,11 +40,11 @@ Original preamble follows for historical context.
 
 **Status (original):** design-first draft. Do not implement anything
 from this doc until it's reviewed + signed off. Once signed off, the
-ledger (`docs/rebuild/orchestration.md`) is updated per the same-
+ledger (`docs/orchestration.md`) is updated per the same-
 commit discipline and this proposal is superseded.
 
 **Cross-refs:**
-- Plan intent — [`../../rebuild-plan.md`](../../rebuild-plan.md) §5 W2
+- Plan intent — [`../../rebuild-plan.md`](../rebuild-plan.md) §5 W2
 - Prior decisions —
   [`../../decisions.md`](../../decisions.md) 2026-07-07 fixture-activation +
   workflow-rename entries
@@ -136,7 +136,7 @@ verify diff before push.
 - `event.Repo` interface additions + pg impl + tests
 - Verify `apifootball.ListFixturesByIDs` returns events (1 API call)
 - Update `apifootball/fixtures.go` `APIFixture.Events` comment + docs
-- Doc update: `docs/rebuild/architecture.md` — mark event repo as
+- Doc update: `docs/architecture.md` — mark event repo as
   shipped
 
 Rough size: ~800 lines including tests. One commit.

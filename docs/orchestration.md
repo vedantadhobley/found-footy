@@ -1,200 +1,253 @@
-# Orchestration — Event Lifecycle & State Machine
+# orchestration.md — Go rebuild ledger
 
-How Found Footy discovers, debounces, and processes football events.
+**Purpose.** This doc records what has actually shipped in the
+`internal/workflow/` and `internal/activity/` packages — the workflow
+inventory, the activities each workflow orchestrates, the state
+transitions each triggers, and any divergences from
+[`../rebuild-plan.md`](design/rebuild-plan.md) §5.
 
-## Fixture Lifecycle
+If code and plan diverge, the divergence is logged in
+[`../decisions.md`](decisions.md). This doc is the ledger; the plan
+is the intent.
 
-```mermaid
-stateDiagram-v2
-    [*] --> staging: Ingest (daily 00:05 UTC)
-    staging --> active: Kickoff ≤ now + 30min
-    active --> completed: Match finished +<br/>all events complete
-    completed --> [*]: 14-day retention
+**Update rule.** Every workflow/activity commit updates this doc in
+the same commit. Per the [2026-07-07 working rule](decisions.md).
 
-    note right of staging
-        Status: TBD, NS
-        Polled every 15 minutes
-    end note
+## Workflow inventory (2026-07-11, end of Phase O2 + workflow split)
 
-    note right of active
-        Status: 1H, HT, 2H, ET, BT, P,<br/>SUSP, INT, LIVE, PST
-        Polled every 30 seconds
-    end note
+| Workflow | Status | Trigger | Location |
+|---|---|---|---|
+| IngestWorkflow | ✓ O1c shipped + O1e scheduled daily 00:05 UTC | Temporal Schedule `ingest-scheduled-daily` (`5 0 * * *`) | `internal/workflow/ingest.go` |
+| ActivePollWorkflow | ✓ O2 shipped + scheduled 2026-07-11 | Temporal Schedule `active-poll-scheduled` (IntervalSpec 30s) | `internal/workflow/active_poll.go` |
+| StagingPollWorkflow | ✓ O2 shipped 2026-07-11 | Temporal Schedule `staging-poll-scheduled` (cron `*/15 * * * *`, runtime-tunable) | `internal/workflow/staging_poll.go` |
+| DiscoveryWorkflow | ✓ O3/d shipped 2026-07-23 | Spawned by Monitor's `ReconcileFixture` via `DownstreamSpawner` when `downstream_triggered` flag flips (2026-07-16 decision — Temporal-direct spawn, not NATS-triggered) | `internal/workflow/discovery.go` |
+| VideoValidationWorkflow | ⊘ O4 planned | Child of Discovery | — |
+| AssetPersistenceWorkflow | ⊘ O5 planned | SignalWithStart from Validation | — |
 
-    note right of completed
-        Status: FT, AET, PEN, CANC,<br/>ABD, AWD, WO
-    end note
+**Note on the ActivePoll + StagingPoll split** (2026-07-11): plan §5 W2
+speced a single `MonitorWorkflow` combining active + staging polling
+via bucket-suppression. During implementation the bucket math emerged
+as a workaround for cramming two cadences into one workflow. Split
+into two workflows on independent Temporal Schedules — see
+[`../decisions.md` 2026-07-11 workflow-split entry](decisions.md)
+for the full reasoning (failure isolation, runtime tunability, config
+honesty). `PreActivateUpcoming` renamed to `ActivateUpcoming` at the
+same time — the "Pre" prefix was misleading.
+
+## IngestWorkflow — as shipped
+
+Daily fixture ingest. Fetches a 3-day window from api-sports.io,
+categorizes each fixture by API state, upserts to Postgres, ensures
+alias placeholder rows exist for every team seen, prunes completed
+fixtures beyond retention.
+
+### Signature
+
+```go
+package workflow
+
+type IngestWorkflowInput struct {
+    ManualDate       *time.Time     // nil = today's anchor; set = re-ingest a specific day
+    ManualFixtureIDs []int64        // non-empty = fetch by IDs, bypass the 3-day window
+    FetchFuture      bool           // daily schedule sets true (today + N future days)
+    ActivationWindow time.Duration  // kickoff-lookahead auto-activation; zero → 30m
+    RetentionDays    int            // prune completed older than this; zero → skip
+}
+
+type IngestWorkflowOutput struct {
+    Fetched         int
+    Staging         int
+    Active          int
+    Completed       int
+    ExistingAliases int
+    InsertedAliases int
+    PrunedFixtures  int
+    Errors          []string  // aggregated per-fixture/per-team failure context
+}
 ```
 
-**Key**: PST (Postponed) is treated as **active**, not completed. Short delays (15–30 min) are common and the match may still happen.
+**Divergences from plan §5 W1 signature — see
+[decisions.md 2026-07-07 IngestWorkflow](decisions.md).**
 
-### Staging Polling Optimization
-
-Staging fixtures are polled on **15-minute intervals** (`:00`, `:15`, `:30`, `:45`). Each fixture stores a `_last_monitor` timestamp. If the current interval matches the fixture's last-polled interval, it's skipped → ~97% fewer staging API calls.
-
-### Completion Conditions
-
-A fixture moves to `fixtures_completed` when **both**:
-1. API status is in completed set (FT, AET, PEN, CANC, ABD, AWD, WO)
-2. **Every** event has `_download_complete = true`
-
----
-
-## Event State Machine
-
-```mermaid
-stateDiagram-v2
-    [*] --> detected: New event in API
-    detected --> debouncing: First poll (count=1)
-    debouncing --> debouncing: Subsequent polls (count++)
-    debouncing --> stable: count ≥ 3 + player known
-    stable --> twitter: Start TwitterWorkflow
-    twitter --> downloading: 10 search attempts
-    downloading --> complete: 10 download workflows registered
-    
-    detected --> removed: Event disappears (VAR)
-    debouncing --> removed: Event disappears (VAR)
-
-    note right of debouncing
-        3 polls = ~90 seconds
-        Prevents false positives
-    end note
-
-    note right of removed
-        MongoDB + S3 data deleted
-        Sequence ID freed
-    end note
-```
-
-### Event ID Format
+### Activity sequence
 
 ```
-{fixture_id}_{team_id}_{player_id}_{event_type}_{sequence}
+1. Fetch (branches on ManualFixtureIDs):
+     IF len(ManualFixtureIDs) > 0:
+       FetchFixturesByIDs(IDs) → []APIFixture
+     ELSE:
+       from := anchor - 1d;  to := anchor + 3d
+       FetchFixturesForWindow(from, to) → []APIFixture
+2. CategorizeAndUpsertFixtures(fixtures, ActivationWindow)
+     → {Staging, Active, Completed, TeamRefs, Errors}
+3. IF len(TeamRefs) > 0:
+     EnsureAliasPlaceholders(TeamRefs) → {Existing, Inserted, Errors}
+4. IF RetentionDays > 0:
+     threshold := anchor - RetentionDays days
+     PruneOldFixtures(threshold) → Deleted
 ```
 
-Example: `5000_40_234_Goal_1` — Fixture 5000, team 40 (Liverpool), player 234 (Szoboszlai), first Goal.
+Anchor: `ManualDate` if set, else `workflow.Now(ctx)` — deterministic
+across replays. Manual-date override propagates through the whole
+workflow (fetch window AND retention cutoff both computed from the
+anchor) so re-ingesting a past date behaves consistently.
 
-**Sequence numbering**: Per player, per type. If player 234 scores twice, the second goal is `5000_40_234_Goal_2`.
+All five activity methods live in
+`internal/activity/ingest/activities.go`. Registered on the worker
+as methods of `*ingest.Activities`.
 
-**VAR handling**: When an event disappears from the API, it's deleted from MongoDB and S3. The sequence number is freed. If the same player scores a new goal later, it reuses the freed sequence number without collision.
+### Reconcile logic — the load-bearing merge
 
----
+`CategorizeAndUpsertFixtures` calls `reconcileFixture` per API fixture:
 
-## Event Tracking Fields
+**Existing row present:** refresh only API-mutable fields (Status,
+Elapsed, Extra, Kickoff, Home, Away, League, Scores) + LastPolledAt
++ UpdatedAt. Preserve domain-managed fields (State, ActivatedAt,
+CompletedAt, LastActivityAt, CreatedAt). Rationale: a fixture already
+active in our DB (activated_at set) MUST NOT have its activated_at
+cleared by the daily 00:05 re-ingest. LastPolledAt DOES get updated
+because ingest is a poll — future MonitorWorkflow bucket logic will
+consult LastPolledAt to skip freshly-touched fixtures.
 
-These fields track an event's progress through the pipeline. All prefixed with `_` to indicate internal enrichment.
+**Fresh row (Get returns ErrNotFound):** construct via `fixture.New`,
+set `LastPolledAt = now` (before state transitions — Activate/Complete
+don't touch LastPolledAt so it survives), then apply initial state by
+API status:
 
-| Field | Type | Set By | When |
-|-------|------|--------|------|
-| `_event_id` | string | Monitor | Event first detected |
-| `_monitor_workflows` | string[] | Monitor | Each poll that sees the event (`$addToSet`) |
-| `_monitor_complete` | bool | TwitterWorkflow | At the **start** of TwitterWorkflow |
-| `_first_seen` | datetime | Monitor | First appearance |
-| `_twitter_aliases` | string[] | TwitterWorkflow | After alias resolution |
-| `_discovered_videos` | object[] | TwitterWorkflow | After each search attempt |
-| `_download_workflows` | string[] | DownloadWorkflow | Each completed download attempt |
-| `_download_complete` | bool | UploadWorkflow | When `len(_download_workflows) >= 10` |
-| `_removed` | bool | Monitor | Event disappeared from API (VAR) |
+- **Terminal** (`FT`, `AET`, `PEN`, `CANC`, `ABD`, `AWD`, `WO`) →
+  `Activate(kickoff)` + `Complete(now)`. Missed-the-match case;
+  ended before we noticed. Two-step transition maintains the
+  invariant that completed rows have both activated_at and
+  completed_at set.
+- **Live** (`1H`, `HT`, `2H`, `ET`, `BT`, `P`, `LIVE`, `SUSP`, `INT`,
+  `PST`) → `Activate(now)`. Emergency case: API says the match is
+  already playing (or paused mid-play, or postponed with maybe-same-
+  day resume) but our DB doesn't have it. Land as active so
+  MonitorWorkflow starts polling next cycle. See
+  [decisions.md 2026-07-07 status bucketing](decisions.md) for
+  why SUSP/INT/PST count as Live — matches Python.
+- **Not started** (`NS`, `TBD`, etc.) → check
+  `ShouldActivateNow(now, ActivationWindow)`. If true (kickoff within
+  30 min), Activate before first Upsert (avoids the "manual ingest at
+  14:55 for 15:00 kickoff sits in staging" Python bug — see
+  [decisions.md 2026-07-07 Fixture activation triggers](decisions.md#2026-07-07--fixture-activation-triggers--staging-poll-design)).
+  Otherwise stays staging.
 
-### Why `_monitor_complete` is set by TwitterWorkflow
+### Alias placeholder pattern (RAG deferral)
 
-If Monitor set the flag, a failed TwitterWorkflow spawn would leave the flag true — Monitor would never retry. By having TwitterWorkflow set it at its own start, retry semantics work naturally:
+`EnsureAliasPlaceholders` inserts blank-resolution placeholder rows;
+**Step 3.5 `ResolveAliasesForTeams`** (shipped) then resolves them via
+Wikipedia CirrusSearch + Wikidata for teams without a `wikidata_qid`
+(cache-hit skip; soft-fail per team so a Wikidata hiccup doesn't fail
+ingest; NULL-QID teams auto-retry next cycle).
 
-- Monitor sees `count >= 3 AND _monitor_complete = false` → spawn Twitter
-- Twitter starts → sets `_monitor_complete = true`
-- If Twitter fails to start → flag stays false → next Monitor cycle retries
+Rationale: keeps IngestWorkflow independent of joi + Wikidata
+availability. If joi is down or the daily LLM quota exhausted,
+ingest still succeeds; only the resolution job pauses.
 
-### Why workflow-ID arrays instead of counters
+This is a **deliberate departure** from plan §5 W1 which specified
+`PreCacheAliasesBatch(teams)` doing full RAG resolution inline. See
+[decisions.md 2026-07-07 RAG design deferral](decisions.md).
 
-`_monitor_workflows` and `_download_workflows` use `$addToSet` (idempotent). Benefits:
-- **Idempotent**: Temporal retries don't double-count
-- **Auditable**: Can see exactly which workflows processed the event
-- **Failure-resistant**: No race between increment and read
+### Timeouts + retry
 
----
+Default activity options per workflow:
+- StartToCloseTimeout: 60s
+- Retry: exponential backoff 2s → 4s → cap 30s, max 3 attempts
 
-## Debouncing Logic
+Override for CategorizeAndUpsertFixtures: 120s timeout (DB-bound
+over potentially 100s of fixtures per call).
 
-Events must appear in **3 consecutive monitor polls** (~90 seconds) before triggering:
+No workflow-level retry policy — an ingest failure surfaces to the
+Temporal UI; operator can manually re-run. Rationale: the workflow
+is idempotent (UPSERT semantics + reconcile-merge preserve state)
+so an aggressive retry adds no value, and hiding failures behind
+auto-retry masks real problems.
 
-```
-Poll 1: Goal detected → _monitor_workflows = ["monitor-T0:30"]     → count=1
-Poll 2: Goal still there → _monitor_workflows += ["monitor-T1:00"]  → count=2
-Poll 3: Goal still there → _monitor_workflows += ["monitor-T1:30"]  → count=3 → TRIGGER
-```
+### Wire-up (O1d)
 
-Additional requirement: **player must be identified**. The API sometimes reports goals with `player.name = null` or `"Unknown"` before identifying the scorer. We wait for identification because Twitter searches require a player name.
+`cmd/worker/main.go` constructs `*ingest.Activities` with real
+dependencies:
 
-When the player becomes identified, the `player_id` changes → new `_event_id`. The old unknown-player event is removed via VAR logic (set comparison).
-
----
-
-## Workflow Triggering Chain
-
-```
-MonitorWorkflow (every 30s)
-  │
-  ├─ Detects stable event (3 polls + player known)
-  │
-  └─ start_child_workflow(TwitterWorkflow, parent_close_policy=ABANDON)
-       │
-       ├─ Resolves team aliases (cache hit or RAG pipeline)
-       │
-       └─ 10× search attempts (1-min durable timers)
-            │
-            └─ start_child_workflow(DownloadWorkflow, BLOCKING)
-                 │
-                 ├─ Downloads + AI validates + hashes
-                 │
-                 └─ signal_with_start(UploadWorkflow, id="upload-{event_id}")
-                      │
-                      └─ Scoped dedup + S3 upload + rank
-```
-
-| Transition | Pattern | Why |
-|------------|---------|-----|
-| Monitor → Twitter | Fire-and-forget (ABANDON) | Monitor must not block on 10-min Twitter lifecycle |
-| Twitter → Download | BLOCKING child | Must track completion in `_download_workflows` |
-| Download → Upload | Signal-with-start | Many downloads → one serialized upload per event |
-
----
-
-## Parallel Fixture Processing
-
-The MonitorWorkflow processes **all active fixtures in parallel** using `asyncio.gather()`. Each fixture is independent:
-
-```python
-fixture_tasks = [process_fixture(f) for f in fixtures]
-fixture_results = await asyncio.gather(*fixture_tasks)
+```go
+ingestActs := &ingestactivity.Activities{
+    APIFootball: afClient,                 // *apifootball.Client
+    FixtureRepo: pg.NewFixtureRepo(pool),  // domain/fixture.Repo
+    AliasRepo:   pg.NewAliasRepo(pool),    // domain/alias.Repo
+}
+w.RegisterWorkflow(ffwf.IngestWorkflow)
+w.RegisterActivity(ingestActs)
 ```
 
-Each `process_fixture()` call runs `store_and_compare` → `process_fixture_events` → optionally `complete_fixture_if_ready` for that single fixture. Results are aggregated after all complete.
+Registration happens BEFORE `w.Start(ctx)` — Temporal's reflection
+walk runs on Start; anything registered after is silently ignored.
 
----
+**Wired (O1e):** the daily Temporal Schedule `ingest-scheduled-daily`
+(`5 0 * * *`) is registered by `ensureIngestSchedule` in
+`cmd/worker/main.go`; Create is idempotent (swallows AlreadyRunning).
+Manual trigger via `scripts/trigger_ingest/main.go` remains for ad-hoc
+re-ingests.
 
-## Timeline Example
+## ActivePollWorkflow — as shipped
 
-```
-00:05 UTC   IngestWorkflow fetches fixtures → staging collection
-14:30       Fixture 5000 (Liverpool vs Arsenal, 15:00 KO) pre-activated → active
-14:55       Monitor polls staging, activates remaining fixtures  
-15:00       Match kicks off — status changes 1H
-15:23:00    API shows goal (Szoboszlai, 23') — Poll 1
-15:23:30    Same goal still in API — Poll 2
-15:24:00    Same goal, 3rd poll → stable
-                Monitor starts TwitterWorkflow
-                Twitter sets _monitor_complete = true
-                Twitter resolves aliases: ["Liverpool", "LFC", "Reds"]
-15:24:30    Twitter search #1 → finds 2 videos
-                DownloadWorkflow: download → AI validate → hash
-                Signals UploadWorkflow (upload-5000_40_234_Goal_1)
-                Upload: scoped dedup → S3 → rank
-15:25:30    Twitter search #2 → finds 1 new video (HD this time)
-                Download → validate → hash → signal Upload
-                Upload: hash matches existing → larger file → REPLACE
-15:26:30    Twitter search #3–10 continue...
-15:34:30    All 10 attempts done → _download_complete = true
-16:50       Match ends (FT) + all events have _download_complete
-                Fixture moved to fixtures_completed
-                Temp directories cleaned up
-```
+30s poll of ACTIVE fixtures. Schedule `active-poll-scheduled` (IntervalSpec 30s).
+Per cycle: `GetMonitorConfig` → `ActivateUpcoming` (DB-only staging→active
+promotion) → `ListActiveFixtureIDs` → `FetchLiveFixtures` (batched
+/fixtures?ids=) → `ReconcileFixture` per fixture (the event set-diff +
+3-poll debounce + downstream spawn + completion check). Location:
+`internal/workflow/active_poll.go` + `internal/activity/monitor/`.
+
+## StagingPollWorkflow — as shipped
+
+15-min poll of STAGING fixtures. Schedule `staging-poll-scheduled` (cron
+`*/15 * * * *`, runtime-tunable). Fires `PollStagingFixtures`: polls all
+staging fixtures + handles vendor edge cases (kickoff-corrected activation,
+Live()-emergency activation). Location: `internal/workflow/staging_poll.go`.
+
+## DiscoveryWorkflow — as shipped
+
+Spawned Temporal-direct by Monitor's `ReconcileFixture` when
+`downstream_triggered` flips (NOT scheduled — 2026-07-16). Per event:
+N attempts × M spacing (config, default 15 × 60s). Each attempt:
+`GetDiscoveryConfig` → `FetchTeamAliases` → build query → `SearchTweets`
+(accumulated `exclude_urls`) → `StoreCandidate` per hit → finally
+`MarkDownstreamComplete`. Wall-clock `max_age_minutes` filter
+(decisions.md 2026-07-23). Location: `internal/workflow/discovery.go` +
+`internal/activity/discovery/`.
+
+## Testing shape
+
+Two-layer testing pattern matches plan §12:
+
+**Unit tests for activities** —
+`internal/activity/ingest/activities_test.go`. In-memory fake
+`fixture.Repo` + `alias.Repo` + `fixtureFetcher`. Fast (<10ms across
+11 tests). Tests state-transition edge cases (fresh terminal,
+existing preserves domain fields, empty input, mixed existing/new
+aliases, prune threshold).
+
+**Workflow-level tests** — `internal/workflow/ingest_test.go` using
+`testsuite.WorkflowTestSuite`. Mocks activities by name via testify
+`OnActivity`. Tests the workflow's control flow: activity call
+order, conditional-skip branches (empty TeamRefs skips alias step,
+zero RetentionThreshold skips prune step), error propagation +
+retry policy behavior.
+
+**Live end-to-end via scripts/trigger_ingest** — dev-only script
+that dials Temporal, fires a real IngestWorkflow with a tight
+window, waits for completion. Exercises the whole chain against
+real api-sports.io + dev pg. Used for O1d verification.
+
+## Cross-refs
+
+- Plan §5 (orchestration + workflow inventory) —
+  [rebuild-plan.md §5](design/rebuild-plan.md#5-orchestration-layer--temporal-workflows-and-activities)
+- Plan §5 W1 (IngestWorkflow spec — the intent) —
+  [rebuild-plan.md §5 W1](design/rebuild-plan.md#workflow-1-ingestworkflow)
+- Divergences from plan for IngestWorkflow —
+  [decisions.md](decisions.md)
+- Activity inventory (plan) —
+  [rebuild-plan.md activity inventory](design/rebuild-plan.md#activity-inventory-by-domain-package)
+- Architecture ledger (what packages exist) —
+  [architecture.md](./architecture.md)
+- Temporal specifics (client + worker shape) — [temporal.md](./temporal.md)

@@ -42,9 +42,9 @@ did. Cross-event dedup is **dead and not coming back.**
 - Touches the already-built `internal/domain/video` package (`Asset` gains
   `EventID`; `AssetRepo` dedup methods key on `event_id`) — the pg adapter
   for these repos is unbuilt, so no ripple beyond types + tests.
-- Supersedes [`rebuild/design-improvements-2026-07-23.md`](./rebuild/design-improvements-2026-07-23.md)
+- Supersedes [`rebuild/design-improvements-2026-07-23.md`](design/design-improvements-2026-07-23.md)
   item #6 (now marked REJECTED) and the cross-event sections of
-  [`rebuild/proposals/video-dedup.md`](./rebuild/proposals/video-dedup.md)
+  [`rebuild/proposals/video-dedup.md`](design/proposals/video-dedup.md)
   (SUPERSEDED banner added; full body rewrite pending the docs reorg).
 
 ---
@@ -132,7 +132,7 @@ without touching the key.
 - [`internal/activity/monitor/activities.go`](../internal/activity/monitor/activities.go) — `ReconcileFixture` (set-diff), `seqCounterKey`, `buildDomainEvent`
 - [`internal/domain/event/event.go`](../internal/domain/event/event.go) — `ComposeNaturalKey`
 - `archive/src/data/fixtures.py:108-140` — Python original (same seq method, misleading VAR comment)
-- [audit-2026-07-26.md](./audit-2026-07-26.md) — filed this as P1; downgraded here to documented known-limitation
+- [audit-2026-07-26.md](design/audit-2026-07-26.md) — filed this as P1; downgraded here to documented known-limitation
 
 ---
 
@@ -284,7 +284,7 @@ tokenizer brittleness is NOT normalization — it's `isCamelConcat`
 over-dropping Mc/Mac names (McTominay), the Wikidata entity-ranking bug
 (Sporting CP → reserve team), and generic-token survival (fire/foot/ball).
 Those are separate, tracked in
-[`design-improvements-2026-07-23.md`](./rebuild/design-improvements-2026-07-23.md).
+[`design-improvements-2026-07-23.md`](design/design-improvements-2026-07-23.md).
 
 ### Consequences
 
@@ -306,9 +306,9 @@ Those are separate, tracked in
 ### Related
 
 - [`internal/domain/alias/text.go`](../internal/domain/alias/text.go) — `tokenize`, `lowerASCII` (unidecode)
-- [audit-2026-07-26.md](./audit-2026-07-26.md) — P0 finding
-- [design-improvements-2026-07-23.md #25](./rebuild/design-improvements-2026-07-23.md) — the "why drop" discussion (now resolved) + isCamelConcat/entity-ranking follow-ups
-- [twitter-search-query.md](./rebuild/proposals/twitter-search-query.md) — D8 tokenizer rules
+- [audit-2026-07-26.md](design/audit-2026-07-26.md) — P0 finding
+- [design-improvements-2026-07-23.md #25](design/design-improvements-2026-07-23.md) — the "why drop" discussion (now resolved) + isCamelConcat/entity-ranking follow-ups
+- [twitter-search-query.md](design/proposals/twitter-search-query.md) — D8 tokenizer rules
 - gosimple/unidecode: <https://github.com/gosimple/unidecode>
 
 ---
@@ -322,7 +322,7 @@ fires a fixed sequence of Twitter searches (currently 10 attempts × 60 s
 spacing, moving to 15 × 60 s per #162) per detected event. Each attempt
 returns a set of tweet candidates; T/c's `/search` endpoint filters those
 candidates by tweet age using a client-side `max_age_minutes` cutoff (3 min
-per [twitter-search-query.md D4](../docs/rebuild/proposals/twitter-search-query.md#d4)),
+per [twitter-search-query.md D4](../docs/design/proposals/twitter-search-query.md#d4)),
 measured against **current wall clock**.
 
 An alternative was seriously proposed and tested during this session:
@@ -408,8 +408,8 @@ Full smoke-test log: task #159 (2026-07-22, completed).
 
 ### Related
 
-- [twitter-search-query.md](../docs/rebuild/proposals/twitter-search-query.md) — D4 (`max_age_minutes=3`), D1 (recall-first OR shape)
-- [discovery.md](../docs/rebuild/proposals/discovery.md) — signed-off Discovery design (2026-07-16)
+- [twitter-search-query.md](../docs/design/proposals/twitter-search-query.md) — D4 (`max_age_minutes=3`), D1 (recall-first OR shape)
+- [discovery.md](../docs/design/proposals/discovery.md) — signed-off Discovery design (2026-07-16)
 - [`internal/workflow/discovery.go`](../internal/workflow/discovery.go) — `discoveryMaxAttempts`, `discoveryAttemptSpacing`, `discoveryMaxAgeMinutes` constants (moving to config per #162)
 - [`internal/twitter/search.go`](../internal/twitter/search.go) — `max_age_minutes` client-side filter application
 
@@ -639,7 +639,7 @@ future refactors don't drop it thinking it's cosmetic.
 - `internal/domain/discovery/query_builder_test.go` — 18 tests
   covering D1/D4b/D4c/D4d/D7 + full D8 player-name table + own-goal
   invariant.
-- `docs/rebuild/architecture.md` — discovery/ flipped from ⊘ stub to
+- `docs/architecture.md` — discovery/ flipped from ⊘ stub to
   ✓ query builder shipped.
 
 ---
@@ -650,7 +650,7 @@ future refactors don't drop it thinking it's cosmetic.
 
 T/b landed with Playwright-Go non-headless as the login path in the
 twitter-vnc container — the "MVP first" call from the [T/b.3 phase
-proposal review](./rebuild/proposals/twitter-port.md). The bet was
+proposal review](design/proposals/twitter-port.md). The bet was
 that Playwright-instrumented Firefox might be acceptable to Twitter
 at login time, letting us skip Python's raw-Firefox-subprocess trick
 ([`archive/twitter/session.py`](../archive/twitter/session.py):313
@@ -695,7 +695,7 @@ moment cookies fail.
   existing cookies, verify succeeds against x.com/home. The failure
   is at login specifically.
 - **Python's archive documents the same failure mode.**
-  [`docs/audit.md`](./audit.md) notes the abandoned
+  [`docs/audit.md`](../archive/docs/audit.md) notes the abandoned
   `twitter/auth.py` module attempted automated login via Selenium
   and got accounts banned. Whether Playwright specifically has
   distinguishable fingerprints from Selenium at login time is
@@ -713,7 +713,7 @@ moment cookies fail.
 
 The experiment consumed a login-limit token against the shared
 account. Since dev and prod share cookies (per
-[twitter-port.md Q4 sign-off](./rebuild/proposals/twitter-port.md),
+[twitter-port.md Q4 sign-off](design/proposals/twitter-port.md),
 2026-07-16), dev experimentation can affect prod's ability to
 re-authenticate when its cookies eventually expire. Not urgent
 (cookies typically valid weeks-to-months; Twitter's login-limit
@@ -731,7 +731,7 @@ Deferred as a pre-launch decision. Not blocking T/c.
 
 ### Impact
 
-- `docs/rebuild/proposals/twitter-port.md` revision log gets an entry
+- `docs/design/proposals/twitter-port.md` revision log gets an entry
   noting today's experiment result.
 - T/b.5 raw-Firefox-subprocess item stays pending but moves from
   "maybe needed" to "definitely needed, timing deferred."
@@ -1003,10 +1003,10 @@ genuinely need it; it's just not needed here.
 
 ## 2026-07-21 — NATS scope: inter-project only; pg NOTIFY for intra-project pub/sub
 
-**Supersedes (partial):** T/b portion of `docs/rebuild/proposals/twitter-port.md`
+**Supersedes (partial):** T/b portion of `docs/design/proposals/twitter-port.md`
 that specified `twitter.auth_expired` / `twitter.reauthed` NATS events for
 Twitter fleet auth coordination. Also flags a follow-up revision to
-`docs/rebuild/proposals/api-contract.md`'s SSE-bridge section.
+`docs/design/proposals/api-contract.md`'s SSE-bridge section.
 
 ### Context
 
@@ -1088,7 +1088,7 @@ footy ever needs intra-project pub/sub for something that outgrows
 **Supersedes (partial):** the LOOKUP section of the 2026-07-19 decision
 below. Selection pipeline unchanged.
 
-**Design ref:** [`./rebuild/proposals/alias-entity-resolution.md`](./rebuild/proposals/alias-entity-resolution.md).
+**Design ref:** [`./rebuild/proposals/alias-entity-resolution.md`](design/proposals/alias-entity-resolution.md).
 
 ### Context
 
@@ -1178,7 +1178,7 @@ beats a vendor-blip outage.
   now includes `milan` as an alias (Wikipedia article title is "Inter
   Milan") — an alias the earlier pipeline was dropping.
 
-### Note on `docs/rebuild-plan.md` (the design bible)
+### Note on `docs/design/rebuild-plan.md` (the design bible)
 
 Plan §9 `internal/infra/wikidata` still describes a `SearchEntities`
 method on the client interface. That reflects the pre-2026-07-21
@@ -1196,7 +1196,7 @@ sweep.
 
 **Supersedes:** Python's `archive/src/activities/rag.py` full RAG pipeline (LLM in three roles).
 
-**Design ref:** [`./rebuild/proposals/team-aliases.md`](./rebuild/proposals/team-aliases.md) — full pipeline + empirical basis + implementation plan.
+**Design ref:** [`./rebuild/proposals/team-aliases.md`](design/proposals/team-aliases.md) — full pipeline + empirical basis + implementation plan.
 
 ### Context
 
@@ -1256,7 +1256,7 @@ Deterministic pipeline captures ~90-95% of legit tweet-relevant aliases. Missing
 
 ### Context
 
-Python stores a `rank` column on each video share and recalculates it inside `upload_workflow._process_batch` via `store.recalculate_video_ranks` (see [python-functional-spec.md upload spec §8](./rebuild/python-functional-spec.md)). The pattern has two known production issues:
+Python stores a `rank` column on each video share and recalculates it inside `upload_workflow._process_batch` via `store.recalculate_video_ranks` (see [python-functional-spec.md upload spec §8](design/python-functional-spec.md)). The pattern has two known production issues:
 
 1. **`rank=0` bug observed in prod.** `save_video_objects` writes the video record with default `rank=0`. `recalculate_video_ranks` is treated as non-fatal, max-2-retries, log-and-move-on (upload-spec §8). If both retries fail, ranks stay at default silently. User has confirmed seeing rank=0 videos in the current prod frontend.
 2. **Concurrent-batch race window.** Between a video insert in one batch and the rank recalc that follows, another batch's insert can land, showing rank=0 on the frontend until the next batch's recalc fires. On a Champions League night with 10+ concurrent event pipelines, this window is real.
@@ -1317,9 +1317,9 @@ Concretely:
 
 ## 2026-07-16 — Downstream workflow spawn via Temporal-direct + register-on-flip (chain, not NATS)
 
-**Supersedes:** the [O3/c NATS-triggered spawn design](./rebuild/proposals/discovery.md) inside `rebuild/proposals/discovery.md`. NATS-as-event-bus (2026-07-01) remains in force for external fan-out; it is no longer the trigger path for internal named workflows.
+**Supersedes:** the [O3/c NATS-triggered spawn design](design/proposals/discovery.md) inside `rebuild/proposals/discovery.md`. NATS-as-event-bus (2026-07-01) remains in force for external fan-out; it is no longer the trigger path for internal named workflows.
 
-**Design ref:** [`rebuild/proposals/discovery.md`](./rebuild/proposals/discovery.md), revised in the same commit.
+**Design ref:** [`rebuild/proposals/discovery.md`](design/proposals/discovery.md), revised in the same commit.
 
 ### Context
 
@@ -1428,7 +1428,7 @@ with pg replay for reconnecting subscribers.
 
 ### Consequences
 
-- **[`rebuild/proposals/discovery.md`](./rebuild/proposals/discovery.md)** revised:
+- **[`rebuild/proposals/discovery.md`](design/proposals/discovery.md)** revised:
   - O3/a — NATS event composer stays. Still needed for external emit + audit trail.
   - O3/b — Monitor emits to NATS for external consumers **and** inserts Discovery row + spawns Discovery via Temporal client in the same activity as the flag flip.
   - O3/c — DiscoveryWorkflow skeleton stays; the "NATS subscriber goroutine" section removed.
@@ -1446,7 +1446,7 @@ with pg replay for reconnecting subscribers.
 
 ## 2026-07-11 — Fixture completion contract via pluggable per-event workflow checklist
 
-**Design ref:** [`rebuild/proposals/completion-contract.md`](./rebuild/proposals/completion-contract.md)
+**Design ref:** [`rebuild/proposals/completion-contract.md`](design/proposals/completion-contract.md)
 
 ### Context
 
@@ -1839,7 +1839,7 @@ Prior state had three vendor-shaped fields as bare `string`:
 `APIFixtureStatus.Short` (19 documented values), `APIFixtureEvent.Type`
 (4 values), `APIFixtureEvent.Detail` (~11 values). Comparisons happened
 at each call site — mostly bare `switch { case "FT": ... }`. Downstream
-audits (docs/rebuild/proposals/api-football-audit-2026-07-09.md #1)
+audits (docs/design/proposals/api-football-audit-2026-07-09.md #1)
 caught the class of bug: `TrackableEventType`'s docstring claimed
 case-insensitive Type comparison but the switch was `case "Goal":`,
 case-sensitive. Works today because vendor sends title-case; silently
@@ -2270,7 +2270,7 @@ observation.
 ## 2026-07-08 — Test corpus harness Phase 1a shipped + activity clock injection pattern
 
 Ships the minimum viable scenario harness designed in
-[`proposals/test-corpus.md`](./rebuild/proposals/test-corpus.md). The
+[`proposals/test-corpus.md`](design/proposals/test-corpus.md). The
 "catch prod-class bugs before shipping" testing gap Python has had
 forever, and that we've been building against without.
 
@@ -2487,7 +2487,7 @@ exactly. Test updated to cover the new codes explicitly.
   docstring explaining the classification + Python source cite
 - `internal/domain/fixture/fixture_test.go` — test now covers all
   10 Live codes explicitly
-- `docs/rebuild/orchestration.md` — IngestWorkflow initial-state
+- `docs/orchestration.md` — IngestWorkflow initial-state
   paragraph updated to reflect the full Live() code set
 
 **Not decided in this entry** (queued for later O2 questions):
@@ -2546,9 +2546,9 @@ Verified live in dev:
 | 6 | ActivationWindow added | Kept — user-approved addition |
 
 **Doc updates in same commit** per working rule:
-- `docs/rebuild/deployment.md` — replaces "Workflow scheduling — NOT
+- `docs/deployment.md` — replaces "Workflow scheduling — NOT
   WIRED" section with the wired-and-verified pattern
-- `docs/rebuild/temporal.md` — replaces "Schedule registration —
+- `docs/temporal.md` — replaces "Schedule registration —
   NOT YET WIRED" with the actual pattern + load-bearing invariants
   (idempotency, no-overwrite, overlap SKIP)
 
@@ -2557,8 +2557,8 @@ Verified live in dev:
 - `internal/infra/temporal/client.go` — ScheduleClient accessor
 - `internal/observability/vocabulary/actions_infra_temporal.go` — 3
   new actions
-- `docs/rebuild/deployment.md` — schedule section
-- `docs/rebuild/temporal.md` — schedule section
+- `docs/deployment.md` — schedule section
+- `docs/temporal.md` — schedule section
 
 Phase O1 is now genuinely complete — including doc discipline,
 input/output realignment, and schedule wiring. Ready for O2
@@ -2620,7 +2620,7 @@ input; workflow self-configures with `workflow.Now` as anchor + skip
 prune (dev safety default).
 
 **Doc updates in same commit** per working rule:
-- `docs/rebuild/orchestration.md` — new input shape + branching
+- `docs/orchestration.md` — new input shape + branching
   activity sequence + anchor propagation notes.
 
 **Two divergences from the original 6 still open:** input reshape (this
@@ -2671,7 +2671,7 @@ registration) is still queued. This batch fixes the specific gaps
 the user surfaced without expanding scope.
 
 **Doc updates** (per the same-commit rule):
-- `docs/rebuild/orchestration.md` — new I/O shape + LastPolledAt
+- `docs/orchestration.md` — new I/O shape + LastPolledAt
   notes in the reconcile-logic section.
 
 **Files:**
@@ -2693,7 +2693,7 @@ state until today: a 5-line `doc.go` with no types, no functions, no
 imports from anywhere in the codebase.
 
 **Decision:** delete the file + directory. Reconsidered under the
-`docs/rebuild-plan.md` = intent / `docs/rebuild/*.md` = ledger
+`docs/design/rebuild-plan.md` = intent / `docs/rebuild/*.md` = ledger
 framing: an empty stub sends a **false signal** that "typed error
 taxonomy lives here" when it doesn't. Every adapter defines its own
 error types locally (LLM has typed errors, apifootball has HTTP
@@ -2730,9 +2730,9 @@ shipped without corresponding updates to `docs/rebuild/*.md`.
 
 **Rule.** Every implementation commit that adds/changes a package,
 adapter shape, workflow, or activity MUST update the relevant living
-doc (usually `docs/rebuild/architecture.md` or
-`docs/rebuild/orchestration.md`) in the SAME commit. If it diverges
-from `docs/rebuild-plan.md`, `docs/decisions.md` gets an entry.
+doc (usually `docs/architecture.md` or
+`docs/orchestration.md`) in the SAME commit. If it diverges
+from `docs/design/rebuild-plan.md`, `docs/decisions.md` gets an entry.
 
 **Why.** The plan is intent — 12k lines, written before implementation,
 not per-commit. The per-topic docs in `docs/rebuild/` were meant to be
@@ -2753,19 +2753,19 @@ after realizing S1–O1d shipped without living-doc updates.
 
 **What got done (6 commits over ~2 hours):**
 
-1. `docs/rebuild/architecture.md` — filled with as-shipped tree,
+1. `docs/architecture.md` — filled with as-shipped tree,
    per-package status, adapter template.
-2. `docs/rebuild/orchestration.md` — filled with workflow inventory
+2. `docs/orchestration.md` — filled with workflow inventory
    + IngestWorkflow ledger.
-3. `docs/rebuild/observability.md` + `logging.md` — filled with
+3. `docs/observability.md` + `logging.md` — filled with
    four-pillars status + vocabulary + Emit reference. (Note: first
    attempt at this had a broken commit — Write failed silently,
    commit message lied; caught + fixed in follow-up.)
-4. `docs/rebuild/temporal.md` — filled with Client/Worker shape +
+4. `docs/temporal.md` — filled with Client/Worker shape +
    registration flow.
-5. `docs/rebuild/testing.md` + touched-up `deployment.md` — filled
+5. `docs/testing.md` + touched-up `deployment.md` — filled
    test tier ledger.
-6. `CLAUDE.md` phase table + `docs/rebuild/README.md` status +
+6. `CLAUDE.md` phase table + `docs/design/README.md` status +
    this closure entry.
 
 **Divergences logged in this sweep (5 groups):**
@@ -2782,9 +2782,9 @@ after realizing S1–O1d shipped without living-doc updates.
   improvements, 1 sensible addition)
 
 **Stubs NOT filled** (deferred with rationale, not omissions):
-- `docs/rebuild/api-contract.md` — Phase A hasn't shipped; nothing
+- `docs/design/api-contract.md` — Phase A hasn't shipped; nothing
   to ledger yet.
-- `docs/rebuild/operations.md` — Phase M/C bring-up procedures
+- `docs/operations.md` — Phase M/C bring-up procedures
   aren't real yet.
 
 **What resumes:** Phase O2 planning (MonitorWorkflow) — but only
@@ -2934,7 +2934,7 @@ memory; extracting it to a separate activity means re-marshaling
 the full `[]APIFixture` across the Temporal activity boundary for
 what's effectively a pure map-reduce.
 **Decision:** keep. Defensible improvement over the plan.
-Documented in `docs/rebuild/orchestration.md`.
+Documented in `docs/orchestration.md`.
 
 **4. `PreCacheAliasesBatch` → `EnsureAliasPlaceholders`.** Plan
 had `PreCacheAliasesBatch` doing full RAG resolution (Wikidata
@@ -3053,7 +3053,7 @@ all routed through the same `Fixture.Activate(at)` primitive:
 Python-era 15-minute staging API poll, meaning postponements +
 kickoff changes on staging fixtures would go undetected until the
 fixture activated (which may never happen if the new kickoff is far
-out). This was already noted in [`docs/todo.md`](./todo.md) as a
+out). This was already noted in [`docs/todo.md`](../archive/docs/todo.md) as a
 deferred Go-rebuild item after the 2026-07-05 Mexico vs England
 postponement surfaced the gap.
 
@@ -3180,8 +3180,8 @@ Almost certainly one or more of:
 
 **Decision:** found-footy's async event stream (SSE fan-out, webhook delivery,
 cross-project events consumed by vedanta-systems) flows through workspace
-NATS at [`~/workspace/nats/`](../../nats/), NOT through Postgres LISTEN/NOTIFY
-as originally spec'd in earlier revisions of `docs/rebuild-plan.md` §8/§11.
+NATS at [`~/workspace/nats/`](../internal/infra/nats/), NOT through Postgres LISTEN/NOTIFY
+as originally spec'd in earlier revisions of `docs/design/rebuild-plan.md` §8/§11.
 
 **Why:** ecosystem-level decision — see workspace decisions at
 `~/workspace/vedanta-dhobley/docs/decisions.md` 2026-07-01 entry for the
@@ -3227,24 +3227,24 @@ prod stack**, not as an in-place refactor of the existing code. Legacy
 prod keeps serving traffic; new code stands up in parallel; cutover is
 endpoint-by-endpoint until legacy has zero callers.
 
-**Why**: [`design-audit.md`](./design-audit.md) surfaced structural
+**Why**: [`design-audit.md`](design/design-audit.md) surfaced structural
 gaps (data-layer god-class, embedded-arrays-vs-shared-primitive, no
 tests, no deploy gate, `_event_id` overloaded five ways) that are
 easier to fix by building fresh than by refactoring in place. The user
 built the current system while learning documentation-driven agentic
 development; the rebuild is the moment to apply everything learned
-since. See also [`design-audit.md`](./design-audit.md) §16
+since. See also [`design-audit.md`](design/design-audit.md) §16
 implementation order — the F-0..F-6 phases were incremental; this
 rebuild subsumes them.
 
-Codified in [`rebuild-plan.md`](./rebuild-plan.md).
+Codified in [`rebuild-plan.md`](design/rebuild-plan.md).
 
 ---
 
 ## 2026-07-01 — Postgres over Mongo (rebuild-context reversal)
 
 The rebuild uses Postgres for structured data. This **reverses**
-[`design-audit.md`](./design-audit.md) §3's verdict ("keep Mongo"),
+[`design-audit.md`](design/design-audit.md) §3's verdict ("keep Mongo"),
 because the audit assumed *incremental refactor* of prod Mongo data.
 
 **Why the framing change flipped it**: in a fresh-build context, the
@@ -3297,7 +3297,7 @@ and will replace joi as found-footy's LLM endpoint when ready. The
 switch must be a `.env` edit + container restart, not a code change.
 This decision codifies the abstraction as a load-bearing invariant.
 
-**Consequence for [`design-audit.md`](./design-audit.md) §6**: the
+**Consequence for [`design-audit.md`](design/design-audit.md) §6**: the
 Track-1 workspace LLM gateway proposal is deferred pending nexus's
 eventual API surface. If nexus provides concurrency/priority/routing
 built-in, the gateway is redundant. If nexus doesn't, a thin
@@ -3320,7 +3320,7 @@ docs, not the syntax — markdown achieves the same graph in Obsidian.
 
 Codified in global AGENTS.md § Cross-doc linking; project-side
 reminders in [AGENTS.md](../AGENTS.md) § Documentation and docstrings
-and [docs/README.md](./README.md) intake rules.
+and [docs/README.md](design/README.md) intake rules.
 
 ---
 

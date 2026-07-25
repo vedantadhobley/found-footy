@@ -207,7 +207,7 @@ func (r *FixtureRepo) ListStagingBeforeKickoff(ctx context.Context, threshold ti
 }
 
 // FixtureReadyToComplete evaluates the full completion contract per
-// docs/rebuild/proposals/completion-contract.md as a single SQL
+// docs/design/proposals/completion-contract.md as a single SQL
 // query. Returns fixture.ErrNotFound if id doesn't exist.
 //
 // Cheap-by-design: the partial index event_downstream_workflows_pending

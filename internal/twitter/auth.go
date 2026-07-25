@@ -318,7 +318,7 @@ func buildReauthMessage(vncURL, startCmd string) string {
 	case startCmd != "":
 		return fmt.Sprintf("Twitter session expired. Start the VNC container (`%s`) and log in.", startCmd)
 	default:
-		return "Twitter session expired. Start the VNC container and log in manually — see docs/rebuild/proposals/twitter-port.md."
+		return "Twitter session expired. Start the VNC container and log in manually — see docs/design/proposals/twitter-port.md."
 	}
 }
 

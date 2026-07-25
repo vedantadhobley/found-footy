@@ -19,7 +19,7 @@
 //
 // Both branches share `selectionLanguages` (11 Latin-script langs) and
 // the multilingual skip-list (skiplist.go). Design ref:
-// docs/rebuild/proposals/team-aliases.md § "Phase 2 — Selection".
+// docs/design/proposals/team-aliases.md § "Phase 2 — Selection".
 package alias
 
 import (

@@ -4,8 +4,8 @@
 bootstrap steps for adapters that require operational provisioning
 (NATS accounts, Garage cluster layout, etc.).
 
-Cross-refs [`../rebuild-plan.md`](../rebuild-plan.md) §10 for the full
-deployment design. Divergences live in [`../decisions.md`](../decisions.md).
+Cross-refs [`../rebuild-plan.md`](design/rebuild-plan.md) §10 for the full
+deployment design. Divergences live in [`../decisions.md`](decisions.md).
 
 **Update rule.** Any change to compose services, Caddy routes, first-time
 bootstrap steps, or workflow scheduling updates this doc in the same
@@ -35,7 +35,7 @@ Runtime branches on `TWITTER_VNC_MODE=true` env var —
 `docker/twitter/entrypoint.sh` boots Xvfb + fluxbox + x11vnc +
 websockify+noVNC before exec'ing the binary when set. Build-time
 `WITH_VNC=true` arg gates the ~150 MB of VNC binaries so the headless
-image stays lean. See [decisions.md](../decisions.md#2026-07-22)
+image stays lean. See [decisions.md](decisions.md#2026-07-22)
 for full rationale.
 
 **Twitter VNC one-command flow:**
@@ -178,6 +178,6 @@ This bypasses the schedule entirely and fires a one-off workflow run
 against the current worker.
 
 Cross-refs:
-- [Plan §10 (deployment)](../rebuild-plan.md#10-deployment) — full deployment spec
+- [Plan §10 (deployment)](design/rebuild-plan.md#10-deployment) — full deployment spec
 - [orchestration.md](./orchestration.md) — workflow inventory + wire-up
 - [temporal.md](./temporal.md) — Client/Worker adapter shape

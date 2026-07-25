@@ -54,7 +54,7 @@ UIs (replace `<base-domain>` with the value of `$BASE_DOMAIN`):
 - MinIO: `http://found-footy-{dev,prod}-minio.<base-domain>`
 - Twitter VNC: `http://found-footy-{dev,prod}-twitter[-vnc].<base-domain>`
 
-See [`deploy/INFRA-NOTES.md`](./deploy/INFRA-NOTES.md) for Caddy routes and
+See [`deploy/INFRA-NOTES.md`](./archive/deploy/INFRA-NOTES.md) for Caddy routes and
 the cross-project shared-network setup that lives outside this repo.
 
 ## Documentation
@@ -63,12 +63,12 @@ the cross-project shared-network setup that lives outside this repo.
 - [`docs/orchestration.md`](./docs/orchestration.md) — event lifecycle, debouncing, VAR handling
 - [`docs/temporal.md`](./docs/temporal.md) — per-activity timeouts, retries, heartbeats
 - [`docs/logging.md`](./docs/logging.md) — structured-logging reference
-- [`docs/rag.md`](./docs/rag.md) — Wikidata + LLM team-alias resolution
-- [`docs/twitter-auth.md`](./docs/twitter-auth.md) — browser auth and cookie management
+- [`docs/rag.md`](archive/docs/rag.md) — Wikidata + LLM team-alias resolution
+- [`docs/twitter-auth.md`](archive/docs/twitter-auth.md) — browser auth and cookie management
 - [`docs/operations.md`](./docs/operations.md) — runbook (bring-up, scaling, common issues)
 - [`docs/decisions.md`](./docs/decisions.md) — architectural decisions log
-- [`docs/todo.md`](./docs/todo.md) — active work + open bugs
-- [`docs/proposals/`](./docs/proposals/) — design docs for in-flight feature work
+- [`docs/todo.md`](archive/docs/todo.md) — active work + open bugs
+- [`docs/proposals/`](docs/design/proposals/) — design docs for in-flight feature work
 
 If you're an agent working on this repo, read [`AGENTS.md`](./AGENTS.md) first.
 

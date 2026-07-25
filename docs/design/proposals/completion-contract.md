@@ -6,7 +6,7 @@ as O3-O5 downstream workflows land and start registering with the
 `event_downstream_workflows` table.
 
 **Cross-refs:**
-- Plan intent — [`../../rebuild-plan.md`](../../rebuild-plan.md) §8 (fixture state machine), §5 (workflow coordination)
+- Plan intent — [`../../rebuild-plan.md`](../rebuild-plan.md) §8 (fixture state machine), §5 (workflow coordination)
 - Python behavior spec — [`../python-functional-spec.md`](../python-functional-spec.md) §8 (Fixture Completion Behavior)
 - Prior decisions — [`../../decisions.md`](../../decisions.md):
   - 2026-07-11 workflow split (ActivePoll + StagingPoll)

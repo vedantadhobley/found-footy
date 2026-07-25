@@ -3,7 +3,7 @@ package vocabulary
 
 // Postgres-adapter actions. Cover the pool lifecycle + per-query
 // outcomes. Query-level actions get emitted at DEBUG by default;
-// the pool actions at INFO. See docs/rebuild-plan.md §11 vocabulary.
+// the pool actions at INFO. See docs/design/rebuild-plan.md §11 vocabulary.
 const (
 	ActionPoolConnected     Action = "pool_connected"      // pgxpool built + Ping succeeded
 	ActionPoolConnectFailed Action = "pool_connect_failed" // pgxpool construction or Ping failed

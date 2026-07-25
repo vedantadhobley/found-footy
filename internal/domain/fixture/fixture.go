@@ -148,7 +148,7 @@ type Fixture struct {
 	// Increments (cap 3) each ActivePoll cycle where status is
 	// Terminal; resets to 0 on any non-Terminal observation.
 	// Fixture ready to complete when counter >= 3 OR HasDecidedWinner().
-	// See docs/rebuild/proposals/completion-contract.md.
+	// See docs/design/proposals/completion-contract.md.
 	CompletionCounter int
 
 	CreatedAt time.Time

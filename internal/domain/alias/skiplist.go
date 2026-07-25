@@ -2,7 +2,7 @@
 // to drop pure organizational/generic terms while preserving team-
 // identifying words that look generic but aren't.
 //
-// Design ref: docs/rebuild/proposals/team-aliases.md § "Word-
+// Design ref: docs/design/proposals/team-aliases.md § "Word-
 // processing pipeline". Corrected mid-design (2026-07-19) after
 // finding that an earlier draft would have wrongly skipped
 // "sporting" (Sporting CP) and — during the eval — validated via

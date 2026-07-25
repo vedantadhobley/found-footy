@@ -17,7 +17,7 @@
 // `pageprops.wikibase_item` which bridges results back to Wikidata for
 // the P31 type check + downstream alias extraction.
 //
-// Design ref: docs/rebuild/proposals/alias-entity-resolution.md.
+// Design ref: docs/design/proposals/alias-entity-resolution.md.
 package alias
 
 import (

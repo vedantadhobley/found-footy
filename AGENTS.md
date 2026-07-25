@@ -42,7 +42,7 @@ landed here:
 
 - **Working on the Go rebuild** (current active development on
   `rebuild/go` branch) → read [§ Go rebuild](#go-rebuild-current-active-work) first,
-  then [`docs/rebuild-plan.md`](./docs/rebuild-plan.md) is the design bible.
+  then [`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md) is the design bible.
 - **Working on legacy Python prod** (still live at vedanta.systems,
   every match day) → skip to [§ Python legacy stack](#python-legacy-stack-still-running-in-prod).
 
@@ -53,7 +53,7 @@ The two coexist — no cutover has happened yet.
 ## Go rebuild (current active work)
 
 Full ground-up rewrite from Python to Go 1.25, tracked in
-[`docs/rebuild-plan.md`](./docs/rebuild-plan.md) as the design bible.
+[`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md) as the design bible.
 Phased delivery — see §16 for the phase map. Where we are (2026-07-07):
 
 | Phase | Status | What it covers |
@@ -76,19 +76,19 @@ Phased delivery — see §16 for the phase map. Where we are (2026-07-07):
 
 **Where to look for Go rebuild work:**
 
-- [`docs/rebuild/proposals/workflow-audit-2026-07-09.md`](./docs/rebuild/proposals/workflow-audit-2026-07-09.md) — **THE CURRENT PUNCH LIST.** Cross-referenced audit of shipped Go vs Python + rebuild-plan, with severity buckets (P0/P1/P2), "What to do next" section, aggregate counts. Read this FIRST when picking up the rebuild. Don't re-derive an audit that already exists.
-- [`docs/rebuild/proposals/`](./docs/rebuild/proposals/) — **design-first drafts for phases before they're committed.** Look here before proposing designs — all current phase proposals SIGNED OFF: `discovery.md` (O3/a unblocked, 2026-07-16), `twitter-port.md` (T/a unblocked after O3/a-c ship, 2026-07-16), `video-dedup.md` (V/a unblocked after T ships, 2026-07-16), `team-aliases.md` (blocks team-alias domain package, 2026-07-19). `monitor.md` SUPERSEDED — historical only. `workflow-audit-2026-07-09.md` and `api-football-audit-2026-07-09.md` are cross-cutting audits, not phase proposals.
-- [`docs/rebuild-plan.md`](./docs/rebuild-plan.md) — **the design bible for the TARGET architecture**. §1-§16 covers architecture, schema, adapters, workflows, deployment, migration. Read the section relevant to what you're touching before starting.
-- [`docs/rebuild/python-functional-spec.md`](./docs/rebuild/python-functional-spec.md) — **behavioral spec of the CURRENT Python system** — WHAT it does, not HOW. Data schema, per-workflow contracts, cross-workflow coordination, failure modes, edge cases, config reference. Authoritative "does Python do X?" reference during Go implementation.
-- [`docs/rebuild/run-flow.md`](./docs/rebuild/run-flow.md) — narrative walkthrough of shipped Ingest + Monitor cycles with inline `[GAP]` markers. Reads as connective tissue between the ledgers.
-- [`docs/rebuild/README.md`](./docs/rebuild/README.md) — routing index for per-topic rebuild docs.
-- [`docs/rebuild/architecture.md`](./docs/rebuild/architecture.md) — **as-shipped ledger** of internal/ + cmd/ tree with per-package status.
-- [`docs/rebuild/orchestration.md`](./docs/rebuild/orchestration.md) — **as-shipped ledger** of workflows + activities (IngestWorkflow complete).
-- [`docs/rebuild/observability.md`](./docs/rebuild/observability.md) — **as-shipped ledger** of vocabulary + logging + metrics substrate.
-- [`docs/rebuild/logging.md`](./docs/rebuild/logging.md) — **emission reference** — how to call Emit + add new (Module, Action).
-- [`docs/rebuild/temporal.md`](./docs/rebuild/temporal.md) — **as-shipped ledger** of Client/Worker adapter + registration flow.
-- [`docs/rebuild/testing.md`](./docs/rebuild/testing.md) — **as-shipped ledger** of ~175 tests across the tiers.
-- [`docs/rebuild/deployment.md`](./docs/rebuild/deployment.md) — compose files + Caddy + first-time bootstrap steps.
+- [`docs/design/proposals/workflow-audit-2026-07-09.md`](./docs/design/proposals/workflow-audit-2026-07-09.md) — **THE CURRENT PUNCH LIST.** Cross-referenced audit of shipped Go vs Python + rebuild-plan, with severity buckets (P0/P1/P2), "What to do next" section, aggregate counts. Read this FIRST when picking up the rebuild. Don't re-derive an audit that already exists.
+- [`docs/design/proposals/`](./docs/design/proposals/) — **design-first drafts for phases before they're committed.** Look here before proposing designs — all current phase proposals SIGNED OFF: `discovery.md` (O3/a unblocked, 2026-07-16), `twitter-port.md` (T/a unblocked after O3/a-c ship, 2026-07-16), `video-dedup.md` (V/a unblocked after T ships, 2026-07-16), `team-aliases.md` (blocks team-alias domain package, 2026-07-19). `monitor.md` SUPERSEDED — historical only. `workflow-audit-2026-07-09.md` and `api-football-audit-2026-07-09.md` are cross-cutting audits, not phase proposals.
+- [`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md) — **the design bible for the TARGET architecture**. §1-§16 covers architecture, schema, adapters, workflows, deployment, migration. Read the section relevant to what you're touching before starting.
+- [`docs/design/python-functional-spec.md`](./docs/design/python-functional-spec.md) — **behavioral spec of the CURRENT Python system** — WHAT it does, not HOW. Data schema, per-workflow contracts, cross-workflow coordination, failure modes, edge cases, config reference. Authoritative "does Python do X?" reference during Go implementation.
+- [`docs/run-flow.md`](./docs/run-flow.md) — narrative walkthrough of shipped Ingest + Monitor cycles with inline `[GAP]` markers. Reads as connective tissue between the ledgers.
+- [`docs/design/README.md`](./docs/design/README.md) — routing index for per-topic rebuild docs.
+- [`docs/architecture.md`](./docs/architecture.md) — **as-shipped ledger** of internal/ + cmd/ tree with per-package status.
+- [`docs/orchestration.md`](./docs/orchestration.md) — **as-shipped ledger** of workflows + activities (IngestWorkflow complete).
+- [`docs/observability.md`](./docs/observability.md) — **as-shipped ledger** of vocabulary + logging + metrics substrate.
+- [`docs/logging.md`](./docs/logging.md) — **emission reference** — how to call Emit + add new (Module, Action).
+- [`docs/temporal.md`](./docs/temporal.md) — **as-shipped ledger** of Client/Worker adapter + registration flow.
+- [`docs/testing.md`](./docs/testing.md) — **as-shipped ledger** of ~175 tests across the tiers.
+- [`docs/deployment.md`](./docs/deployment.md) — compose files + Caddy + first-time bootstrap steps.
 - [`docs/decisions.md`](./docs/decisions.md) — append-only architectural decisions, including divergences from `rebuild-plan.md`.
 - [`internal/observability/vocabulary/vocabulary.go`](./internal/observability/vocabulary/vocabulary.go) — typed enum registry (Module, Action). Every log emission uses these. Adding a new Module or Action = one const declaration.
 - [`internal/infra/pg/`](./internal/infra/pg/) — the **template** all future adapters follow: `Instruments` bundle + `RegisterMetrics` constructor + framework-native tracer + prometheus.Collector for scrape-time stats.
@@ -96,18 +96,18 @@ Phased delivery — see §16 for the phase map. Where we are (2026-07-07):
 ## Working discipline (mandatory, since 2026-07-07 retro)
 
 Learned the hard way — Phases S1–O1d shipped without living-doc
-updates, and IngestWorkflow drifted from `docs/rebuild-plan.md` §5 W1
+updates, and IngestWorkflow drifted from `docs/design/rebuild-plan.md` §5 W1
 in six places before anyone noticed. The retro caught the damage;
 this section prevents recurrence.
 
 **Before writing code** for any workflow, activity, adapter, or
 domain change:
 
-1. **Read the plan §.** `docs/rebuild-plan.md` is the design bible.
+1. **Read the plan §.** `docs/design/rebuild-plan.md` is the design bible.
    Find the section relevant to what you're about to touch (§2 tree,
    §3 schema, §4 domain, §5 orchestration, §9 adapters, §11 obs,
    etc.). Read it before touching code. If you don't know which §,
-   see `docs/rebuild/README.md` for the mapping.
+   see `docs/design/README.md` for the mapping.
 2. **Read the archive/ Python** — as INPUT, not template. The
    Python code is the reference implementation for BEHAVIOR ("what
    was Python doing when X happened?"). It is NOT the template for
@@ -122,9 +122,9 @@ domain change:
 
 **When shipping the change:**
 
-4. **Update `docs/rebuild/<topic>.md` in the SAME commit.** The
-   ledger docs (architecture, orchestration, observability, temporal,
-   testing, etc.) get updated with what shipped in the same commit
+4. **Update `docs/<topic>.md` in the SAME commit.** The
+   as-built ledger docs (architecture, orchestration, observability,
+   temporal, testing, etc.) get updated with what shipped in the same commit
    that ships the code. A code-only commit is treated as incomplete —
    same status as missing tests.
 5. **Log divergences in `docs/decisions.md`.** If what shipped
@@ -213,7 +213,7 @@ Python.
 **Python stack summary:**
 
 - **Workers**: Python 3.10 (`python:3.10-slim`), Temporal Python SDK, asyncio. 6 workflows, 42 activities. `docker-compose.prod.yml`.
-- **Application database**: MongoDB 7, 5-collection design — `fixtures_staging` / `fixtures_live` / `fixtures_active` / `fixtures_completed` / `team_aliases`. The Go rebuild moves to Postgres per [`docs/rebuild-plan.md`](./docs/rebuild-plan.md) §3.
+- **Application database**: MongoDB 7, 5-collection design — `fixtures_staging` / `fixtures_live` / `fixtures_active` / `fixtures_completed` / `team_aliases`. The Go rebuild moves to Postgres per [`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md) §3.
 - **Object storage**: MinIO. The Go rebuild moves to Garage per rebuild-plan.md decisions.md 2026-07-01.
 - **Twitter scraping**: Firefox + Selenium in `twitter/`. Cookies persisted; shared between dev + prod (same account).
 - **External LLM**: Qwen3-VL-8B via llama.cpp on `joi` at `http://llama-small.joi`.
@@ -222,28 +222,30 @@ Python.
 **Where to look for Python legacy context:**
 
 - [`README.md`](./README.md) — public-facing project description (Python-oriented)
-- [`docs/architecture.md`](./docs/architecture.md) — 5-collection MongoDB design + workflow hierarchy
-- [`docs/orchestration.md`](./docs/orchestration.md) — event lifecycle state machine, debouncing
-- [`docs/temporal.md`](./docs/temporal.md) — per-activity timeouts, retries, heartbeats
-- [`docs/logging.md`](./docs/logging.md) — Python `footy_logging` reference (Grafana/Loki queries still apply)
-- [`docs/rag.md`](./docs/rag.md) — Wikidata + LLM team-alias pipeline
-- [`docs/twitter-auth.md`](./docs/twitter-auth.md) — browser automation, cookie lifecycle, VNC re-auth
-- [`docs/operations.md`](./docs/operations.md) — Python-era runbook
-- [`docs/decisions.md`](./docs/decisions.md) — append-only architectural decisions log (both eras)
-- [`docs/todo.md`](./docs/todo.md) — Python-era active work + open bugs (largely superseded by rebuild but bugs still real in prod)
-- [`docs/roadmap.md`](./docs/roadmap.md), [`docs/sprints.md`](./docs/sprints.md) — Python-era rewrite plan (partially superseded — Phases 1-4 shipped and are in prod)
-- [`docs/proposals/`](./docs/proposals/) — Python-era feature designs
-- [`deploy/INFRA-NOTES.md`](./deploy/INFRA-NOTES.md) — Caddyfile entries + cross-project network setup
+- [`archive/docs/architecture.md`](./archive/docs/architecture.md) — 5-collection MongoDB design + workflow hierarchy
+- [`archive/docs/orchestration.md`](./archive/docs/orchestration.md) — event lifecycle state machine, debouncing
+- [`archive/docs/temporal.md`](./archive/docs/temporal.md) — per-activity timeouts, retries, heartbeats
+- [`archive/docs/logging.md`](./archive/docs/logging.md) — Python `footy_logging` reference (Grafana/Loki queries still apply)
+- [`archive/docs/rag.md`](./archive/docs/rag.md) — Wikidata + LLM team-alias pipeline
+- [`archive/docs/twitter-auth.md`](./archive/docs/twitter-auth.md) — browser automation, cookie lifecycle, VNC re-auth
+- [`archive/docs/operations.md`](./archive/docs/operations.md) — Python-era runbook
+- [`docs/decisions.md`](./docs/decisions.md) — append-only architectural decisions log (both eras; stays at `docs/`)
+- [`archive/docs/todo.md`](./archive/docs/todo.md) — Python-era active work + open bugs (largely superseded by rebuild but bugs still real in prod)
+- [`archive/docs/roadmap.md`](./archive/docs/roadmap.md), [`archive/docs/sprints.md`](./archive/docs/sprints.md) — Python-era rewrite plan (partially superseded — Phases 1-4 shipped and are in prod)
+- [`archive/docs/proposals/`](./archive/docs/proposals/) — Python-era feature designs
+- [`archive/deploy/INFRA-NOTES.md`](./archive/deploy/INFRA-NOTES.md) — Caddyfile entries + cross-project network setup
 
 ## Documentation and docstrings (both eras)
 
 Three layers of persistence, each for a different knowledge type:
 
-1. **`docs/`** — frozen, project-wide knowledge (architecture, decisions,
-   roadmap, operational runbook, design proposals). See
-   [`docs/README.md`](./docs/README.md) for the Python-era routing
-   index. Go-rebuild-specific per-topic docs live under
-   [`docs/rebuild/`](./docs/rebuild/).
+1. **`docs/`** — project-wide knowledge in three layers: **`docs/`**
+   itself is the **as-built** ledger for the Go system (what shipped);
+   **[`docs/design/`](./docs/design/)** is the **target** design
+   (rebuild-plan, proposals, audits); **[`archive/docs/`](./archive/docs/)**
+   is the frozen **legacy Python** knowledge, next to the Python code in
+   `archive/`. Start at [`docs/README.md`](./docs/README.md) — the routing
+   index + authority map (which source of truth answers which question).
 2. **Code-level docstrings + per-file header comments** — every file
    gets a top-of-file comment describing what it is; every
    function/method/class gets a docstring. Doc-heavy by design.

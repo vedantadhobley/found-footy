@@ -11,7 +11,7 @@
 // Handler: log/slog with a JSON handler. Level and format are configured
 // via the ObservabilityConfig from internal/config.
 //
-// See docs/rebuild-plan.md §11 for the canonical schema (ts, level,
+// See docs/design/rebuild-plan.md §11 for the canonical schema (ts, level,
 // module, action, msg, plus per-emission fields).
 package logging
 

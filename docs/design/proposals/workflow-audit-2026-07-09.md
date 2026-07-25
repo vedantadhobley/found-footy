@@ -1,7 +1,7 @@
 # Ingest + Monitor Workflow Audit — 2026-07-09
 
 Cross-referenced current Go IngestWorkflow + MonitorWorkflow implementations
-against Python archive + `docs/rebuild-plan.md` §5 W1/W2 + decisions.md
+against Python archive + `docs/design/rebuild-plan.md` §5 W1/W2 + decisions.md
 entries. Punch list at top, per-workflow details below.
 
 **Method**: two parallel `Explore` subagents, one per workflow. Each

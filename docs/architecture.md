@@ -1,487 +1,407 @@
-# Found Footy - Architecture Guide
+# architecture.md — Go rebuild ledger
 
-**Temporal.io orchestration with 5-collection MongoDB architecture**
+**Purpose.** This doc records **what has actually shipped** in the
+Go rebuild — the concrete tree, which packages have real code vs
+which are stubs, which adapters are live, which domain packages have
+what. It's the ledger against which [`../rebuild-plan.md`](design/rebuild-plan.md)
+is the intent.
 
-## Core Concept
+If code and plan diverge, the divergence is logged in
+[`../decisions.md`](decisions.md) with a date and reason. If code
+and plan match, no entry — silence == alignment.
 
-**5-Collection Design with fixtures_live for Safe Comparison**
+**Update rule.** Every commit that adds/removes a package, changes
+an adapter shape, or lands a new domain type updates this doc in
+the SAME commit. Not the next commit. Same commit.
 
-Raw API data is stored in `fixtures_live` (temporary, overwritten each poll) for comparison, while `fixtures_active` contains enhanced events that are **never overwritten** — only updated in-place.
-
-| Collection | Purpose | Lifecycle |
-|------------|---------|-----------|
-| **fixtures_staging** | Upcoming matches (TBD, NS) | Hours to days |
-| **fixtures_live** | Raw API data for comparison | ~1 minute (overwritten) |
-| **fixtures_active** | Enhanced events with video tracking | ~90 minutes |
-| **fixtures_completed** | Permanent archive | 14 days (retention) |
-| **team_aliases** | Cached team aliases from RAG pipeline | Persistent |
-
-This prevents data loss — we compare fresh API data against enhanced data without destroying enhancements.
-
----
-
-## Auto-Scaling Worker Architecture
-
-Workers and Twitter instances are **auto-scaled** by the Scaler Service. Python's GIL limits each process to one CPU core, so multiple worker replicas are needed for parallelism.
-
-```mermaid
-flowchart TB
-    subgraph INFRA["docker compose up -d"]
-        TEMPORAL[Temporal Server]
-        POSTGRES[(PostgreSQL)]
-        MONGO[(MongoDB)]
-        MINIO[(MinIO S3)]
-        SCALER[Scaler Service]
-    end
-
-    subgraph MANAGED["Auto-Managed (2–8 instances)"]
-        WORKERS[Worker Pool]
-        TWITTER[Twitter Pool]
-    end
-
-    SCALER -->|Query task queue depth| TEMPORAL
-    SCALER -->|Query active goals| MONGO
-    SCALER -->|Scale up/down| MANAGED
-    WORKERS <--> TEMPORAL
-    WORKERS --> MONGO & MINIO
-    WORKERS --> TWITTER
-```
-
-`docker compose up -d` starts infrastructure + scaler only. Workers and Twitter instances are started and scaled automatically via `profiles: ["managed"]`.
-
-**Per-worker concurrency**: `max_concurrent_workflow_tasks=10`, `max_concurrent_activities=30`
-
-| Config | Value | Description |
-|--------|-------|-------------|
-| MIN_INSTANCES | 2 | Minimum workers/Twitter instances |
-| MAX_INSTANCES | 8 | Maximum workers/Twitter instances |
-| SCALE_UP_THRESHOLD | 5 | Scale up when > 5 pending tasks/worker |
-| SCALE_DOWN_THRESHOLD | 2 | Scale down when < 2 pending tasks/worker |
-| CHECK_INTERVAL | 30s | How often to check metrics |
-| SCALE_COOLDOWN | 60s | Minimum time between scaling actions |
-
-**Why different metrics per service?**
-- Workers scale on **Temporal queue depth** (pending tasks backlog)
-- Twitter scales on **active goals** (goals with `_monitor_complete=true` but `_download_complete=false`)
-
-**Concurrency guarantees** (all enforced by Temporal Server):
-
-| Guarantee | Scope |
-|-----------|-------|
-| Workflow ID uniqueness — only one running per ID | Namespace |
-| Task exclusivity — each task goes to ONE worker | Task queue |
-| Signal ordering — FIFO within a workflow | Per workflow |
-| Sticky queue — same workflow prefers same worker | Cache optimization |
-
----
-
-## Data Flow
-
-```mermaid
-flowchart TB
-    API[API-Football]
-
-    subgraph INGEST["Daily 00:05 UTC"]
-        FETCH[Fetch 3 days of fixtures]
-        CACHE[Pre-cache RAG aliases]
-    end
-
-    subgraph MONITOR["Every 30 seconds"]
-        POLL[Poll active fixtures]
-        DEBOUNCE[Debounce events<br/>3 polls = stable]
-    end
-
-    STAGING[(fixtures_staging)]
-    ACTIVE[(fixtures_active)]
-    LIVE[(fixtures_live)]
-    COMPLETED[(fixtures_completed)]
-
-    TWITTER[TwitterWorkflow<br/>10 search attempts]
-    DOWNLOAD[DownloadWorkflow<br/>Download + AI validate + hash]
-    UPLOAD[UploadWorkflow<br/>Scoped dedup + S3 upload]
-    S3[(MinIO S3)]
-
-    API --> FETCH --> STAGING
-    STAGING -->|Start time reached| ACTIVE
-    API --> POLL --> LIVE
-    LIVE <-->|Compare events| ACTIVE
-    DEBOUNCE -->|Stable event| TWITTER
-    TWITTER --> DOWNLOAD --> UPLOAD
-    UPLOAD --> S3 & ACTIVE
-    ACTIVE -->|Match finished +<br/>all events complete| COMPLETED
-```
-
----
-
-## Workflow Hierarchy
-
-```mermaid
-flowchart TB
-    subgraph SCHEDULED["Scheduled Workflows"]
-        INGEST[IngestWorkflow<br/>Daily 00:05 UTC]
-        MONITOR[MonitorWorkflow<br/>Every 30 seconds]
-    end
-
-    TWITTER[TwitterWorkflow<br/>~10 min per event<br/>Single OR-query search]
-    DOWNLOAD[DownloadWorkflow<br/>Per search attempt]
-    UPLOAD[UploadWorkflow<br/>upload-event_id<br/>Serialized per event]
-
-    MONITOR -->|"fire-and-forget<br/>(ABANDON)"| TWITTER
-    TWITTER -->|"fire-and-forget<br/>(ABANDON per attempt)"| DOWNLOAD
-    DOWNLOAD -->|"signal-with-start<br/>(deterministic ID)"| UPLOAD
-```
-
-**Key architecture points:**
-- **Monitor → Twitter**: Fire-and-forget with ABANDON parent close policy
-- **Twitter → Download**: Fire-and-forget with ABANDON (while-loop checks `_download_workflows` count)
-- **Download → Upload**: Signal-with-start with deterministic ID `upload-{event_id}`
-- **Single OR-query per search**: `"(Salah OR Mohamed) (Liverpool OR LFC OR Reds)"` — one search per attempt, not per-alias
-- **Multiple DownloadWorkflows → ONE UploadWorkflow** per event (FIFO queue via signals)
-
----
-
-## Video Pipeline
-
-### Download → Validate → Deduplicate → Upload
-
-```mermaid
-flowchart TB
-    subgraph DL["1. Download (parallel)"]
-        DOWNLOAD[Download via syndication API]
-        FILTER{Duration 3–60s?<br/>Aspect ≥ 1.33?}
-    end
-
-    subgraph MD5["2. MD5 Batch Dedup"]
-        EXACT[Remove exact duplicates<br/>within batch]
-    end
-
-    subgraph AI["3. AI Vision Validation (sequential)"]
-        VISION["Qwen3-VL-8B via llama.cpp<br/>5 questions per frame"]
-        SOCCER{Is this soccer?}
-        SCREEN{Phone-filming-TV?}
-        CLOCK[Extract broadcast clock<br/>CLOCK / ADDED / STOPPAGE_CLOCK]
-    end
-
-    subgraph TS["4. Timestamp Validation"]
-        VALIDATE["Compare extracted minute<br/>vs API minute (±3)"]
-        VERIFIED[timestamp_verified = true]
-        UNVERIFIED[timestamp_verified = false]
-        REJECTED[Rejected — wrong game minute]
-    end
-
-    subgraph HASH["5. Perceptual Hash (parallel)"]
-        PHASH[Dense 0.25s sampling<br/>dHash 64-bit per frame]
-    end
-
-    subgraph DEDUP["6. Scoped Dedup (parallel via asyncio.gather)"]
-        SPLIT["Split by timestamp_verified"]
-        VP["Verified pool<br/>vs verified S3"]
-        UP["Unverified pool<br/>vs unverified S3"]
-    end
-
-    subgraph S3UP["7. S3 Upload (parallel)"]
-        NEW[Upload new videos]
-        REPLACE[Replace inferior videos]
-        BUMP[Bump popularity]
-    end
-
-    RANK[Recalculate ranks<br/>verified → popularity → file_size]
-
-    DOWNLOAD --> FILTER -->|Pass| EXACT --> VISION
-    VISION --> SOCCER -->|Yes| SCREEN -->|No| CLOCK
-    CLOCK --> VALIDATE
-    VALIDATE --> VERIFIED & UNVERIFIED
-    VALIDATE -->|Wrong minute| REJECTED
-    VERIFIED & UNVERIFIED --> PHASH
-    PHASH --> SPLIT --> VP & UP
-    VP & UP --> NEW & REPLACE & BUMP --> RANK
-```
-
-### AI Clock Extraction
-
-The vision model (Qwen3-VL-8B via llama.cpp) answers 5 structured questions per video frame:
-
-| Field | Example | Purpose |
-|-------|---------|---------|
-| SOCCER | yes/no | Is this a soccer match? |
-| SCREEN | yes/no | Is someone filming a TV screen with a phone? |
-| CLOCK | "45:23" | Main broadcast timer text |
-| ADDED | "+4" | Added/stoppage time indicator |
-| STOPPAGE_CLOCK | "02:36" | Separate sub-timer during stoppage |
-
-**Smart 2–3 check strategy**: Frames extracted at 25% and 75% of video duration. If both agree on SOCCER/SCREEN → done (2 checks). Disagreement → 50% frame as tiebreaker (max 3 checks). Clock fields are extracted from both frames, parsed through field-specific parsers:
-
-- `parse_clock_field()` — handles running clocks, period indicators (2H, ET), frozen clocks (HT/FT)
-- `parse_added_field()` — parses "+N" indicators
-- `parse_stoppage_clock_field()` — parses "MM:SS" sub-timers
-- `compute_absolute_minute()` — combines clock + stoppage into absolute match minute
-
-**Timestamp validation** (`validate_timestamp()`): Compares the extracted absolute minute against `api_elapsed + api_extra` with ±3 tolerance. Includes smart OCR correction for stoppage time (e.g., vision reads "02:36" instead of "92:36" — tries `api_elapsed + parsed_minute`).
-
-### Verification-Scoped Deduplication
-
-Videos are split by `timestamp_verified` before perceptual dedup. Each pool runs as an independent Temporal activity via `asyncio.gather()` — **true parallel execution** with zero shared state:
+## As-shipped tree (2026-07-24, through O3/d + T/c + audit doc-sync)
 
 ```
-incoming videos ──split──┬── verified ──compare──► verified S3 pool    ─┐
-                         │                                               ├─ merge results
-                         └── unverified ─compare─► unverified S3 pool  ─┘
+found-footy/
+├── cmd/                                 4 binaries — each imports from internal/
+│   ├── api/main.go                      Phase 6 — FastAPI-shaped read surface + SSE
+│   ├── scaler/main.go                   scaffold; no scale logic yet (Phase A/M)
+│   ├── twitter/main.go                  ✓ T/a+T/b+T/c: real Playwright-Go service (ephemeral profile + idle-CPU prefs)
+│   └── worker/main.go                   Temporal worker; registers Ingest + ActivePoll + StagingPoll + Discovery
+├── internal/
+│   ├── domain/                          6 shipped, 3 stubbed
+│   │   ├── fixture/                     ✓ D1: model + State + Repo + tests
+│   │   ├── event/                       ✓ D2: model + State + Repo + tests
+│   │   ├── video/                       ✓ D3: model + Repo + rank + tests
+│   │   ├── alias/                       ✓ D4 (reshaped 2026-07-19): two-phase model + Repo + Normalize + Resolver (lookup pipeline) + tests
+│   │   ├── team/                        ✓ TrackedTeam set — tracked-teams-cache ingest filter (team.go + repo.go)
+│   │   ├── discovery/                   ✓ Query builder (2026-07-22) + real DiscoveryWorkflow (O3/d, 2026-07-23)
+│   │   │   ├── doc.go                   Package doc — query construction, URL extraction, source scoring
+│   │   │   ├── query_builder.go         BuildTwitterQuery, ErrEmptyQuery, ErrEmptyPlayerName (D1/D4b/D4c/D4d/D7 per twitter-search-query.md)
+│   │   │   └── query_builder_test.go    18 tests — D8 name table, particles, dedup, fallback, safeguards
+│   │   ├── vision/                      ⊘ doc.go stub — build when VideoValidationWorkflow lands (O4)
+│   │   ├── session/                     ⊘ doc.go stub — build when Twitter Go service ports (post-O)
+│   │   └── textanalysis/                ⊘ doc.go stub — extensibility hook per plan §4
+│   ├── infra/                           11 live, 1 stubbed (ffmpeg)
+│   │   ├── pg/                          ✓ S2: pool + instruments + schema.sql + FixtureRepo + AliasRepo
+│   │   ├── nats/                        ✓ S3: client + instruments
+│   │   ├── s3/                          ✓ S4: Garage client + instruments
+│   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
+│   │   ├── temporal/                    ✓ S5: Client (with workerShutdownTimeout) + Worker
+│   │   ├── apifootball/                 ✓ S7 + O1a: /status probe + /fixtures + /fixtures/{ids}
+│   │   ├── twitter/                     ✓ S7: HTTP client + tests against mock (real service is Python)
+│   │   ├── syndication/                 ✓ S7: Twitter syndication client + tests
+│   │   ├── wikidata/                    ✓ S7: SPARQL client + tests
+│   │   ├── wikipedia/                ✓ S7: CirrusSearch entity resolution (per 2026-07-21) + tests
+│   │   ├── event/                       ✓ O3/a: dual-write composer (pg event_log + NATS Publish, 6 kinds) + tests
+│   │   └── ffmpeg/                      ⊘ doc.go stub — subprocess wrapper (build for Phase A video pipeline)
+│   ├── workflow/                        4 shipped
+│   │   ├── ingest.go                    ✓ O1c: IngestWorkflow
+│   │   ├── active_poll.go               ✓ O2: ActivePollWorkflow (30s IntervalSpec)
+│   │   ├── staging_poll.go              ✓ O2: StagingPollWorkflow (*/15 cron)
+│   │   └── discovery.go                 ✓ O3/d: DiscoveryWorkflow (15-attempt search loop) + *_test.go
+│   ├── activity/                        3 packages shipped
+│   │   ├── ingest/                      ✓ O1b: 4 activities + in-memory fakes + 11 tests
+│   │   │   ├── activities.go
+│   │   │   └── activities_test.go
+│   │   ├── monitor/                     ✓ O2a: 6 activities (GetMonitorConfig, ActivateUpcoming, PollStagingFixtures, ListActiveFixtureIDs, FetchLiveFixtures, ReconcileFixture) + fakes + tests
+│   │   └── discovery/                   ✓ O3/d: GetDiscoveryConfig, FetchTeamAliases, SearchTweets, StoreCandidate, MarkDownstreamComplete (no _test.go yet — audit gap)
+│   ├── api/                             Phase 6 foundation only — SSE + read endpoints
+│   ├── bootstrap/                       ✓ S1 (NOT IN PLAN — see decisions.md 2026-07-07)
+│   │   └── bootstrap.go                 Deps + LIFO Closer registry; shared binary startup
+│   ├── config/                          ✓ S1: envconfig-based Config with per-adapter sub-structs
+│   ├── observability/
+│   │   ├── vocabulary/                  ✓ S1: typed Module + Action enums
+│   │   ├── logging/                     ✓ S1: slog Emit() + TestEmitter for unit tests
+│   │   ├── metrics/                     ✓ S1: Prometheus registry helper
+│   │   └── tracing/                     ⊘ empty (Phase 5+ per plan; deferred)
+│   ├── scaler/                          scaffold; no logic (Phase A/M)
+│   ├── testutil/                        ⊘ empty (build as testing needs surface)
+│   ├── twitter/                         Twitter *service* (browser + auth + scrape); imported by cmd/twitter
+│   │   ├── browser.go                   ✓ T/a: Playwright-Go + Firefox persistent context, GetCookies + ReplaceCookies + LoadCookies + VerifySession
+│   │   ├── browser_iface.go             ✓ T/b: sessionBrowser interface — auth flow testable without Playwright
+│   │   ├── stealth.go                   ✓ T/a: navigator.webdriver / plugins / permissions patches
+│   │   ├── service.go                   ✓ T/a + T/b: state machine (starting/loading/healthy/unauthenticated/failed), /health, /status
+│   │   ├── auth.go                      ✓ T/b: EnsureAuthenticated (mtime → warm-path → verify) + BackupCookies + /authenticate + /auth/verify
+│   │   ├── cookies_backup.go            ✓ T/b: Fingerprint, WriteBackup (atomic), ReadBackup, BackupFileMtime, auth_token guard
+│   │   ├── search.go                    ✓ T/c: POST /search + full DOM scrape + 4-condition scroll loop + BackupCookies hook + combined verify+search + stealth jitter
+│   │   └── *_test.go                    40 unit tests (10 cookie backup + 16 auth flow + 12 search + 2 more from T/b.5)
+│   └── usecases/                        ⊘ doc.go stub (build when cross-domain ops surface)
+├── docker/twitter/                      ✓ T/b: twitter service image + entrypoint (peer of internal/)
+│   ├── Dockerfile                       Playwright base + playwright-go driver + optional WITH_VNC layer (~150 MB xvfb+fluxbox+x11vnc+novnc+websockify)
+│   └── entrypoint.sh                    Conditionally boots VNC daemon stack when TWITTER_VNC_MODE=true, otherwise passthrough
+├── migrations/                          ⊘ EMPTY — schema.sql lives in internal/infra/pg/ instead
+│                                          (see decisions.md 2026-07-07)
+├── scripts/                             smoke + trigger scripts
+│   ├── smoke_repos/main.go              ✓ live pg + repo smoke test (dev only)
+│   └── trigger_ingest/main.go           ✓ live IngestWorkflow trigger (O1d verification)
+├── test/                                ✓ scenario harness (Phase T shipped early)
+│   ├── harness/                         ✓ testcontainer pg + mock apifootball + assertion engine
+│   ├── scenarios/                       ✓ YAML corpus organized by suite
+│   │   ├── basic/                       ✓ happy paths
+│   │   ├── debounce/                    ⊘ pending Monitor implementation
+│   │   ├── faults/                      ⊘ pending
+│   │   ├── edge_cases/                  ⊘ pending
+│   │   └── regression/                  ⊘ pending
+│   └── scenarios_test.go                ✓ corpus runner (iterates YAML files)
+├── caddy/found-footy.caddy              routing stubs; not yet copied into ~/workspace/proxy/caddy.d/
+├── docker-compose.dev.yml               ✓ dev stack; air hot-reload on all 4 Go binaries
+├── docker-compose.prod.yml              runs PYTHON codebase; unchanged (name reflects intent)
+├── Dockerfile / Dockerfile.dev          ✓ multi-stage prod + air-based dev
+├── go.mod / go.sum                      ✓ Go 1.25 (bumped from 1.23 for air compat)
+├── Makefile                             ✓ build/test/test-short via docker run
+└── docs/                                see docs/README.md for routing
 ```
 
-**Why scope dedup?** A verified goal clip and an unverified clip from a different match moment can have similar perceptual hashes (same broadcast, same camera angles). Without scoping, the verified clip could be replaced by the unverified one. In production, this correctly blocked a Goal 1 clip from replacing a Goal 2 clip (expected ~31', got 15' — same match, different moment).
+Legend:
+- `✓ <phase>` — shipped in that phase, has real code + tests
+- `⊘` — stubbed (usually a `doc.go` marker), waiting for its dependent phase
+- No marker — not part of the rebuild (Python-era or config)
 
-**Failure handling**: If either pool fails, the entire batch is skipped (no videos uploaded as new). This prevents the duplicate video bug that originally motivated serialized uploads.
+## Domain packages — as-shipped shape
 
-### Perceptual Hash Matching
+Each of the 4 shipped domain packages follows the same layout, matching
+[rebuild-plan.md §4](design/rebuild-plan.md#4-domain-model):
 
-- Sample frames every **0.25 seconds**, apply **histogram equalization**, compute **dHash** (64-bit)
-- Format: `dense:0.25:<ts>=<hash>,<ts>=<hash>,...`
-- **Offset-tolerant**: Tries all time offsets, requires **3 consecutive frames** at consistent offset
-- **Frame match**: Hamming distance ≤10 bits (of 64)
-
-**Quality comparison** (when hashes match):
-- Durations within **15%** → same clip → prefer **larger file** (higher resolution)
-- Durations differ **>15%** → different clips → prefer **longer duration**
-
-### Video Ranking
-
-Rank 1 = best video. Sort order (all descending):
-
-1. **`timestamp_verified`** — verified always above unverified
-2. **`popularity`** — how many times same content discovered
-3. **`file_size`** — proxy for resolution quality
-
----
-
-## Collection Schemas
-
-### fixtures_active (primary)
-
-```json
-{
-  "_id": 5000,
-  "activated_at": "2025-11-24T15:00:00Z",
-  "events": [
-    {
-      "player": {"id": 234, "name": "D. Szoboszlai"},
-      "team": {"id": 40, "name": "Liverpool"},
-      "type": "Goal", "detail": "Normal Goal",
-      "time": {"elapsed": 23},
-
-      "_event_id": "5000_40_234_Goal_1",
-      "_monitor_workflows": ["monitor-T0:30", "monitor-T1:00", "monitor-T1:30"],
-      "_monitor_complete": true,
-      "_twitter_aliases": ["Liverpool", "LFC", "Reds"],
-      "_download_workflows": ["download1-...", "..."],
-      "_download_complete": true,
-
-      "_s3_videos": [
-        {
-          "s3_url": "http://minio:9000/footy/...",
-          "_s3_key": "5000/5000_40_234_Goal_1/abc123.mp4",
-          "perceptual_hash": "dense:0.25:...",
-          "width": 1920, "height": 1080,
-          "file_size": 15000000, "duration": 45.2,
-          "popularity": 3, "rank": 1,
-          "timestamp_verified": true,
-          "extracted_minute": 23,
-          "timestamp_status": "verified"
-        }
-      ]
-    }
-  ]
-}
+```
+domain/<name>/
+├── <name>.go               model type + New() constructor
+├── state.go                state transitions with method receivers (mutate in place)
+├── repo.go                 Repo interface + ErrNotFound sentinel
+└── <name>_test.go          unit tests — pure Go, no adapters
 ```
 
-### Event Enhancement Fields
+**Cross-cutting rule (audit-verified):** domain packages import nothing
+from `internal/infra/*`. Repos are interfaces defined in domain;
+implementations live in `internal/infra/pg/` and satisfy them
+structurally.
 
-| Field | Type | Set By | Purpose |
-|-------|------|--------|---------|
-| `_event_id` | string | Monitor | `{fixture}_{team}_{player}_{type}_{seq}` |
-| `_monitor_workflows` | array | Monitor | Workflow IDs that saw this event (debounce) |
-| `_monitor_complete` | bool | TwitterWorkflow | Set at VERY START of TwitterWorkflow |
-| `_twitter_aliases` | array | TwitterWorkflow | Team search variations |
-| `_download_workflows` | array | DownloadWorkflow | Workflow IDs for completed attempts |
-| `_download_complete` | bool | UploadWorkflow | Set when `len(_download_workflows) >= 10` |
-| `_first_seen` | datetime | Monitor | When event first appeared |
-| `_removed` | bool | Monitor | Set when VAR disallows |
-| `_discovered_videos` | array | TwitterWorkflow | Video URLs from searches |
-| `_s3_videos` | array | UploadWorkflow | Uploaded videos with full metadata |
+### fixture domain (D1)
 
-### Video Object Fields
+Core type `fixture.Fixture` with `State` (staging/active/completed),
+API-mirror fields (`APIStatus`, `APIElapsed`, `APIExtra`, scores), and
+domain-managed timestamps (`ActivatedAt`, `CompletedAt`,
+`LastActivityAt`, `LastPolledAt`).
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `s3_url` | string | Public URL |
-| `_s3_key` | string | S3 object key |
-| `perceptual_hash` | string | Dense sampling hash |
-| `width`, `height` | int | Resolution |
-| `file_size` | int | Bytes |
-| `duration` | float | Seconds |
-| `bitrate` | int | Bits per second |
-| `aspect_ratio` | float | Width/height |
-| `resolution_score` | int | Width × height |
-| `popularity` | int | Duplicate discovery count |
-| `rank` | int | 1 = best |
-| `source_url` | string | Original tweet URL |
-| `hash_version` | string | Hash algorithm version |
-| `timestamp_verified` | bool | AI confirmed correct match minute |
-| `extracted_minute` | int/null | AI-extracted minute from broadcast clock |
-| `timestamp_status` | string | "verified", "unverified", or "rejected" |
+State transitions:
+- `Activate(at) → active` (sets ActivatedAt, LastActivityAt)
+- `Complete(at) → completed` (sets CompletedAt, LastActivityAt)
+- `Reschedule(newKickoff, at) → staging` (clears ActivatedAt; for PST/moved fixtures)
+- `UpdateFromPoll(status, elapsed, extra, scores, at)` — refreshes
+  API-mirror fields + LastPolledAt without changing state
 
----
+Predicates: `ShouldActivateNow(now, window)` — used by both the ingest
+activity (at-upsert-time activation for imminent kickoffs) and the
+ActivePollWorkflow's `ActivateUpcoming` step.
 
-## Workflow Activity Reference
+Repo methods shipped in `internal/infra/pg/fixture_repo.go`:
+`Get`, `Upsert`, `ListByState`, `ListActiveIDs` (cheap ID-only
+projection for ActivePollWorkflow's batched API call),
+`ListStagingBeforeKickoff`, `PruneCompleted`.
 
-### IngestWorkflow (Daily 00:05 UTC)
+### event domain (D2)
 
-Fetches 3 days of fixtures, routes by status, pre-caches RAG aliases, cleans up old data (14-day retention).
+Core type `event.Event` with `State` (detected/stable/removed) and
+per-event debounce counters. Model captures the 3-poll invariant
+Python enforced via monitor-cycle registration counts.
 
-| Activity | Timeout | Retries |
-|----------|---------|---------|
-| `fetch_todays_fixtures` | 30s | 3 (2.0× from 1s) |
-| `fetch_fixtures_by_ids` | 30s | 3 (2.0× from 1s) |
-| `categorize_and_store_fixtures` | 30s | 3 (2.0× from 1s) |
-| `cleanup_old_fixtures` | 120s | 2 |
+Repo methods shipped in `internal/infra/pg/event_repo.go`:
+`Get`, `GetByNaturalKey`, `Insert(ctx, e, workflowID)` — atomic seed
+with debounce_count=1 + first presence vote,
+`Upsert` (state updates), `ListPending`,
+`RegisterEventPresence` (symmetric-counter increment, cap 3, flips
+downstream_triggered on first hit), `RegisterEventAbsence`
+(decrement, floor 0, atomic soft-delete on hitZero with reason='var'),
+`RegisterVideoValidationWorkflow` (monotonic download attempt
+counter — unchanged by the debounce redesign). Debounce model per
+decisions.md 2026-07-07 symmetric-counter entry.
 
-### MonitorWorkflow (Every 30 seconds)
+### video domain (D3)
 
-Polls staging fixtures (interval-based, 15-min intervals for staging), activates fixtures, detects events, triggers Twitter when stable (3 polls).
+Core types `video.Asset` and `video.Share` — the split from Python's
+single `video` collection that supports the URL-stability + rank
+invariants documented in `rebuild-plan.md` §3 and §4.
 
-| Activity | Timeout | Retries |
-|----------|---------|---------|
-| `fetch_staging_fixtures` | 60s | 3 |
-| `process_staging_fixtures` | 30s | 3 |
-| `activate_pending_fixtures` | 30s | 2 |
-| `fetch_active_fixtures` | 60s | 3 |
-| `store_and_compare` | 10s | 3 (2.0× from 1s) |
-| `process_fixture_events` | 60s | 3 |
-| `complete_fixture_if_ready` | 10s | 3 (2.0× from 1s) |
-| `notify_frontend_refresh` | 5s | 1 |
+Ranking helpers in `rank.go` (`CompareShares` — the deterministic
+tie-break Python's frontend uses).
 
-### TwitterWorkflow (~10 min per event)
+### alias domain (D4)
 
-Resolves team aliases (cache or RAG), builds a single OR-query per attempt, searches Twitter up to 10 times with ~1-min durable timers.
+Reshaped 2026-07-19 for the deterministic (no-LLM) Wikidata pipeline;
+see [decisions.md 2026-07-19](decisions.md) and
+[proposals/team-aliases.md](design/proposals/team-aliases.md).
 
-| Activity | Timeout | Retries |
-|----------|---------|---------|
-| `get_cached_team_aliases` | 10s | 2 |
-| `get_team_aliases` | 60s | 2 |
-| `save_team_aliases` | 10s | 2 |
-| `check_event_exists` | 30s | 3 |
-| `get_twitter_search_data` | 30s | 3 |
-| `execute_twitter_search` | 60s | 3 (1.5× from 10s) |
-| `save_discovered_videos` | 30s | 3 (2.0× from 2s) |
+Core type `alias.TeamAlias`. Two-phase fields:
 
-### DownloadWorkflow (per search attempt)
+- Phase-1 (vendor, Ingest-populated): `team_id`, `canonical_name`,
+  `team_code`, `country`, `city`, `is_national`.
+- Phase-2 (resolution-populated): `wikidata_qid`, `aliases`, `resolved_at`.
 
-Downloads, AI validates (soccer + timestamp), hashes, delegates to UploadWorkflow. **7 activities.**
+Predicates: `IsResolved()`, `IsFresh(now, ttl)` — the 30-day TTL check
+runs at pipeline read-time before Discovery consumes aliases.
 
-| Activity | Timeout | Retries |
-|----------|---------|---------|
-| `register_download_workflow` | 30s | 5 |
-| `check_event_exists` | 30s | 1 |
-| `download_single_video` | 90s | 3 (2.0× from 2s) |
-| `validate_video_is_soccer` | 90s | 4 (2.0× from 3s, heartbeat between AI calls) |
-| `generate_video_hash` | heartbeat 60s | 2 (heartbeat every 5 frames) |
-| `cleanup_download_temp` | 30s | 2 |
-| `queue_videos_for_upload` | 60s | 3 |
+Setter: `SetResolution(qid, aliases, at)` writes all three phase-2
+fields atomically + copies the aliases slice defensively.
 
-**Pipeline**: register → download (parallel) → MD5 batch dedup → AI validation with clock extraction (sequential) → timestamp validation → hash generation (parallel) → signal UploadWorkflow
+Normalize helper: NFD Latin-diacritic strip, preserved case. Kept
+exported because both the pipeline and (future) Twitter search-query
+builder call it.
 
-### UploadWorkflow (serialized per event)
+Repo methods shipped: `Get`, `BulkGet`, `UpsertVendorFields`,
+`UpsertResolution`. The Upsert split enforces the invariant that
+Ingest's daily vendor-refresh CANNOT wipe an existing resolution —
+`UpsertVendorFields` writes only phase-1 columns via ON CONFLICT DO
+UPDATE. `UpsertResolution` writes both phases and is the only entry
+point for the (upcoming task #134) resolution activity.
 
-S3 dedup (scoped by verification status) and upload. ID: `upload-{event_id}`. **12 activities.**
+**Selection pipeline (2026-07-20, task #134):** The QID → `[]string`
+aliases step. `Resolver.Select` fetches the team entity, extracts
+multilingual aliases + labels (11 Latin-script langs: en/es/fr/it/pt/de/ca/gl/nl/pl/ro) + P1449 nicknames + canonical name tokens, runs
+the keep rule (≥2 langs OR P1449 OR canonical), rescues single-lang
+English aliases (LFC, CFC, MCFC), and — for clubs — drops the venue
+city token if it's not in the canonical name (Arsenal ≠ London;
+Liverpool ✓ Liverpool). Nationals additionally fetch the linked
+country entity (via P17) and inject English P1549 demonyms
+(Argentina → Argentine + Argentinian + Argentinean).
 
-| Activity | Timeout | Retries |
-|----------|---------|---------|
-| `fetch_event_data` | 30s | 3 |
-| `deduplicate_by_md5` | 30s | 2 |
-| `deduplicate_videos` | heartbeat 120s, STC 1h | 3 |
-| `upload_single_video` | 60s | 3 |
-| `update_video_in_place` | 30s | 3 |
-| `replace_s3_video` | 30s | 3 |
-| `bump_video_popularity` | 15s | 2 |
-| `save_video_objects` | 30s | 3 |
-| `recalculate_video_ranks` | 30s | 2 |
-| `cleanup_individual_files` | 30s | 2 |
-| `cleanup_upload_temp` | 30s | 2 |
-| `check_and_mark_download_complete` | 30s | 3 |
+Skip-list (`skiplist.go`) drops pure organizational descriptors +
+articles across 11 languages. Explicit "never skip" carve-outs for
+team-identifying words that look generic — `united, city, athletic,
+sporting, real, rangers, rovers, borussia, juventus, elftal,
+mannschaft, seleção, seleccion, oranje, azzurri` — so Python's LLM
+over-filtering behavior doesn't recur.
 
----
+Output is sorted for stable pg storage + human-diffable rows.
 
-## Race Condition Prevention
+**Ingest wiring (2026-07-20, task #134):** New activity
+`ResolveAliasesForTeams` runs after `EnsureAliasPlaceholders` in
+`IngestWorkflow`. Per-team loop: `BulkGet` existing rows → skip
+cache-hits (row has `wikidata_qid` set) → for each miss,
+`AliasResolver.Resolve` (fuzzy lookup) → `AliasResolver.Select`
+(entity fetch + selection) → `AliasRepo.UpsertResolution`. Sequential
+with 500ms throttle between teams (belt-and-braces against vendor
+rate limits — Wikipedia's CirrusSearch handles 200 req/s per IP,
+Wikidata SPARQL is friendlier, but the throttle keeps a runaway
+loop from ever tripping either). Soft-fail
+per team — a Wikidata hiccup leaves the placeholder row and gets
+retried on the next Ingest cycle. Mirrors Python's per-day-fixture-
+team pattern (workflow.execute_activity in a loop; not all tracked
+teams at once). Output counts: cache_hits, resolved, no_match, failed.
 
-| Problem | Solution | Guarantee |
-|---------|----------|-----------|
-| Two downloads upload same video | UploadWorkflow serialized per event | One upload at a time per event |
-| Fixture completes during downloads | `_download_complete` only set at 10 workflows | All attempts must register first |
-| Goal gets VAR'd mid-pipeline | Multi-layer `check_event_exists` | Workflows abort gracefully |
-| Verified clip replaced by unverified | Scoped dedup — separate pools | Verified only compared to verified |
+**Per-team API-Football enrichment (2026-07-20, task #142):** Each
+cache-miss team in `ResolveAliasesForTeams` first calls the new
+`apifootball.GetTeamProfile(teamID)` — one `GET /teams?id=X` per
+team. Returns `venue.city` (native-language, e.g. "Milano" not
+"Milan"), authoritative `team.country` (works for friendlies where
+`league.country == "World"`), `team.national` (source of truth), and
+`team.code` (3-letter FIFA/UEFA). Enriched vendor fields are upserted
+back to `team_aliases` immediately via `UpsertVendorFields` so the
+row is captured even when Wikidata resolution fails downstream. Then
+the enriched values (city especially — decisive for the club-branch
+scoring's short-circuit) get passed into `alias.LookupInput` for the
+Wikidata pipeline. Ports Python's `get_team_info` call in
+`archive/src/activities/rag.py:555`. Cost: 1 API-Football call per
+team lifetime (cache-hits skip both this call and Wikidata). Soft-fail
+per team — profile fetch error keeps the TeamRef fallback values.
 
----
+**Lookup pipeline (2026-07-21, task #147):** The name → Wikidata QID
+resolution step. `Resolver` composes a `WikipediaResolver` interface
+(CirrusSearch full-text candidate generation) with a
+`WikidataFetcher` interface (P31 verification + alias extraction) —
+both injected so the domain stays pure Go. Two branches on
+`LookupInput.IsNational`:
 
-## Key Design Decisions
+- Clubs (`lookup_club.go`): ONE Wikipedia CirrusSearch query with
+  template `{name} {country} football club` → hits with Wikidata
+  QIDs (extracted from `pageprops.wikibase_item`) → ONE SPARQL P31
+  batch verify against Wikidata's ontology (accept: Q476028
+  association football club, Q103229495 men's association football
+  team; reject: Q2412834 reserve team, Q51481377 women's football
+  club) → first Wikipedia-ranked survivor wins. 2 HTTP calls per
+  cache-miss team.
+- Nationals (`lookup_national.go`): same shape, query is `{country}
+  men's national football team` (Wikipedia's article-title convention
+  makes this near-deterministic). P31 accept set adds Q135408445
+  men's national football team and legacy Q6979593; reject Q6997908
+  women's national. USA substituted to "United States" per Wikipedia
+  article-title convention.
 
-| Decision | Rationale |
-|----------|-----------|
-| Signal-with-start for Upload | Multiple downloads → ONE serialized upload per event. Namespace-scoped IDs avoid "already started" errors |
-| BLOCKING downloads | `_download_workflows` array must track completed attempts reliably |
-| Alias resolution inside Twitter | Eliminates double fire-and-forget chain that caused duplicate workflows |
-| Workflow-ID arrays over counters | Idempotent (`$addToSet`), auditable, failure-resistant |
-| Scoped dedup by verification | Prevents verified clips from being replaced by unverified similar content |
-| Parallel scoped dedup | Verified and unverified pools have zero shared state — true `asyncio.gather` parallelism |
-| 10 Twitter attempts × 1-min spacing | Goal videos appear over 5–15 minutes — captures early SD through late HD |
-| Pre-caching aliases at ingest | By match time, aliases are cached. TwitterWorkflow just does fast lookup |
-| Fail-closed AI validation | If AI unavailable, skip video. Never upload unvalidated content |
-| Heartbeat-based timeouts | Proves activity is making progress — better than arbitrary execution timeouts |
+Fallback: on SPARQL failure the resolver takes Wikipedia's top hit
+unconditionally rather than cascading to NoMatch. CirrusSearch's
+BM25 + field-boosted ranking is generally good enough that even
+without type verification the top hit is right; graceful degradation
+beats a whole-roster miss during vendor blips.
 
----
+`ErrNoMatch` when Wikipedia returns zero hits (or zero with valid
+`wikibase_item`) — legitimate for obscure teams not on Wikipedia,
+not a bug. In practice 38 of 38 tracked-league teams resolve on the
+2026-04-26 dev roster.
 
-## Infrastructure
+**P31 batch verification (2026-07-20, task #143):** `wikidata.BatchGetP31([qids])`
+sends ONE SPARQL query (`SELECT ?item ?type WHERE { VALUES ?item { … } ?item wdt:P31 ?type }`)
+and returns QID → P31 type list. Structural type check replaces the
+earlier text heuristics — TV channels, stadiums, museums, disambiguation
+pages, supporters' associations, match instances all get dropped even
+when their descriptions happen to contain "football".
 
-### Port Allocation
+**Why Wikipedia + Wikidata split (design ref
+[`proposals/alias-entity-resolution.md`](design/proposals/alias-entity-resolution.md)):**
+Wikidata's `wbsearchentities` is a label + alias prefix index — misses
+entities whose mention doesn't share a prefix with the canonical label
+(Nice ≠ OGC Nice's prefix). Wikipedia's CirrusSearch (ElasticSearch
+BM25 over article body) finds them via context-augmented queries.
+Wikipedia articles carry `pageprops.wikibase_item` → the Wikidata QID
+bridges cleanly back to the structured KB for aliases, P31, and
+demonyms. **Wikipedia is the entity resolver; Wikidata is the alias
+source.**
 
-| Service | Port | Purpose |
-|---------|------|---------|
-| Temporal UI | 3200 | Workflow monitoring |
-| Mongo Express | 3201 | MongoDB GUI |
-| MinIO Console | 3202 | S3 management |
-| Twitter VNC | 3203 | Browser access (VNC instance only) |
+Adapter surface consumed by the Resolver:
+- `wikipedia.SearchAndResolve(query, opts)` — one HTTP round-trip
+  (`list=search` + `generator=search` + `prop=pageprops` composed)
+  returning `[]Hit{Title, WikidataQID, Index}`. `internal/infra/wikipedia/`.
+- `wikidata.BatchGetP31(qids)` — one SPARQL query per Resolve.
+- `wikidata.GetEntity(qid)` — used by the SELECT phase for alias
+  extraction (unchanged from earlier).
 
-### Environment Variables
+Shared word-processing in `text.go`: NFD normalize, strip diacritics,
+`ß→ss`, split on whitespace/dashes/slashes, strip periods/commas/
+apostrophes, lowercase, drop ≤2 char / all-digit / CamelCase-concat.
 
-```bash
-API_FOOTBALL_KEY=...          # API-Football
-MONGODB_URI=mongodb://...     # MongoDB connection
-S3_ENDPOINT=http://minio:9000 # MinIO S3
-TEMPORAL_ADDRESS=temporal:7233 # Temporal gRPC
-TWITTER_SERVICE_URL=http://twitter:8888
-LLAMA_URL=...                 # llama.cpp vision/LLM endpoint
+Integration test in `lookup_integration_test.go` verifies real
+Wikipedia + Wikidata resolutions for 4 teams (Liverpool, Man United,
+France, Brazil) — skipped in `-short`.
+
+## Adapters — as-shipped template
+
+Every live adapter under `internal/infra/*/` follows the pattern
+established by the pg adapter (S2):
+
+```
+infra/<name>/
+├── client.go               constructor: New(ctx, cfg, instruments)
+├── instruments.go          RegisterMetrics(reg, log) → *Instruments (bundle)
+├── <name>_test.go          testcontainers-go OR httptest-based test
+└── doc.go                  package-level docstring + "why this shape" notes
 ```
 
----
+The `Instruments` bundle carries labeled counters/histograms + a
+prometheus.Collector for scrape-time gauges + a framework-native
+tracer where the adapter's library supports one (pg has QueryTracer,
+NATS has connection callbacks, LLM has httptrace).
 
-## Debugging
+**Cross-cutting rule:** every adapter's `New(...)` returns
+`(client, error)`, does NOT panic, and does NOT log at info level from
+package init — all lifecycle logging goes through the
+`bootstrap.Deps.Log` + vocabulary Action enums.
 
-```bash
-# Start stack (scaler auto-manages workers + twitter)
-docker compose up -d
+Adapter-specific notes:
 
-# Worker logs
-docker compose logs -f worker
+- **pg**: pool via pgxpool; QueryTracer emits per-query duration histograms
+  + pool-stats collector. Schema in `schema.sql` mounted into dev postgres
+  via `/docker-entrypoint-initdb.d/` (fresh volume only) AND into
+  testcontainers via `WithInitScripts`.
+- **temporal**: Client wraps SDK client with `workerShutdownTimeout`
+  accessor; NewWorker seeds `Options.WorkerStopTimeout` from Client if zero.
+- **llm**: types.go owns domain-shaped `ChatRequest`/`ChatResponse`;
+  classifyError translates HTTP status codes to typed errors
+  (ErrRateLimited, ErrCapExceeded, etc.).
+- **apifootball**: getJSON helper handles auth (`x-apisports-key` per
+  doc) + rate-limit-header parsing (per-minute + daily distinct) +
+  error classification. `/fixtures` (single + by-IDs) landed in O1a.
+  `ListFixturesByIDs` accepts any-size input, chunks internally at
+  `IDsBatchLimit=20` (exported const, sourced from vendor doc), fires
+  per-chunk HTTP calls in parallel via `errgroup`, returns
+  `(fixtures, failedIDs, err)`. Partial failure surfaces as non-empty
+  `failedIDs`. See decisions.md 2026-07-09 refactor entry.
 
-# Check scaler decisions
-docker compose logs -f scaler
+**Twitter service note.** `internal/infra/twitter/` is the HTTP client;
+tests pass against a mock. The actual twitter container in dev runs
+the real Go Twitter search service (T/a+T/b+T/c shipped 2026-07-23; Python
+`twitter/` in prod). Wire-up deferred until the Go twitter service
+lands.
 
-# Run tests
-docker exec <worker> rm -rf /app/tests && docker cp tests <worker>:/app/tests
-docker exec <worker> python -m pytest tests/ --ignore=tests/test_rag_pipeline.py -v
+## Package dependency direction (audit-verified)
+
+```
+cmd/*
+  ↓
+internal/workflow/          (workflow definitions)
+  ↓
+internal/activity/*/        (activities — the boundary)
+  ↓                              ↓
+internal/domain/*/          internal/infra/*/  (adapters)
+                                   ↑
+                                   └── config, observability, bootstrap
 ```
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| Fixture stuck in active | Events missing `_download_complete` | Check TwitterWorkflow in Temporal UI |
-| Twitter search empty | Session expired | Re-login via VNC (port 3203) |
-| Videos not uploading | S3 connection | Check MinIO is running |
-| Low-rank verified video | Scoped dedup issue | Check dedup logs for pool split |
+**Never happens:**
+- `internal/domain/*` importing `internal/infra/*` — enforced by review
+- `internal/workflow/*` importing `internal/infra/*` — activities are the boundary
+- `internal/infra/<a>` importing `internal/infra/<b>` — one composer package
+  (`internal/infra/event/`, when built) is the sole exception
+
+## Cross-refs
+
+- Plan §2 (repo structure) — [rebuild-plan.md §2](design/rebuild-plan.md#2-repository-structure)
+- Plan §3 (schema) — [rebuild-plan.md §3](design/rebuild-plan.md#3-postgres-schema)
+- Plan §4 (domain model) — [rebuild-plan.md §4](design/rebuild-plan.md#4-domain-model)
+- Plan §9 (adapters) — [rebuild-plan.md §9](design/rebuild-plan.md#adapter-inventory)
+- Divergences from this baseline live in [decisions.md](decisions.md)
+- Orchestration + workflow ledger: [orchestration.md](./orchestration.md)
+- Observability substrate: [observability.md](./observability.md)
+- Testing patterns: [testing.md](./testing.md)
