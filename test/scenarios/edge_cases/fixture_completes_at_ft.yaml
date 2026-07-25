@@ -7,8 +7,10 @@ description: |
     - InPlay() gate prevents absence votes during FT cycles too
       (FT is Terminal, not InPlay). So if API returned empty events
       during FT, event wouldn't be falsely dropped.
-    - Fixture stays in `active` state (Monitor doesn't do fixture
-      completion — deferred to O3+).
+    - Fixture COMPLETES at FT once Terminal + completion_counter>=3
+      (completion is wired into the reconcile step per the completion
+      contract; the earlier "Monitor doesn't complete, deferred to O3+"
+      note is obsolete).
 
   Real-world risk: 89th-minute goal scored, match FT-whistles at
   cycle 3 of debounce. If we treated FT as "no more polling" the
@@ -23,7 +25,7 @@ setup:
       kickoff: 2026-07-08T15:00:00Z
       activated_at: 2026-07-08T14:45:00Z
       last_polled_at: 2026-07-08T16:34:30Z
-      api_status_short: "2H"
+      api_status_short: "2h"
       api_status_long: Second Half
       home_id: 40
       home_name: Liverpool
@@ -103,14 +105,14 @@ cycles:
 expected_final_state:
   fixtures:
     - id: 999012
-      state: active               # Monitor doesn't complete — deferred
-      api_status_short: FT         # refreshed
+      state: completed            # Terminal (ft) + completion_counter>=3 → completes (completion contract)
+      api_status_short: ft         # refreshed
       has_activated_at: true
-      has_completed_at: false      # never transitioned
+      has_completed_at: true       # completed at FT after 3 terminal polls
       has_last_polled_at: true
   events:
     - fixture_id: 999012
-      natural_key: "40_111_Goal_1"
+      natural_key: "40_111_goal_1"
       debounce_count: 3
       downstream_triggered: true
       removed: false

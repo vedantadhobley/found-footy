@@ -20,7 +20,7 @@ setup:
       kickoff: 2026-07-08T15:00:00Z
       activated_at: 2026-07-08T14:45:00Z    # activated 15 min before kickoff
       last_polled_at: 2026-07-08T14:55:00Z
-      api_status_short: NS
+      api_status_short: ns
       api_status_long: Not Started
       home_id: 40
       home_name: Liverpool
@@ -57,7 +57,7 @@ expected_final_state:
   fixtures:
     - id: 800003
       state: active                     # unchanged from setup
-      api_status_short: "1H"             # refreshed from API
+      api_status_short: "1h"             # refreshed from API
       has_activated_at: true            # PRESERVED — not overwritten
       has_completed_at: false
       has_last_polled_at: true          # updated during merge

@@ -15,7 +15,7 @@ setup:
       kickoff: 2026-07-08T15:00:00Z
       activated_at: 2026-07-08T14:45:00Z
       last_polled_at: 2026-07-08T15:29:30Z
-      api_status_short: "1H"
+      api_status_short: "1h"
       api_status_long: First Half
       home_id: 40
       home_name: Liverpool
@@ -99,13 +99,13 @@ expected_final_state:
   fixtures:
     - id: 999009
       state: active                # never changed state
-      api_status_short: "1H"        # cycle 7 refreshed to 1H
+      api_status_short: "1h"        # cycle 7 refreshed to 1H
       has_activated_at: true
       has_completed_at: false
       has_last_polled_at: true
   events:
     - fixture_id: 999009
-      natural_key: "40_111_Goal_1"
+      natural_key: "40_111_goal_1"
       debounce_count: 3            # optimistic: PST doesn't burn budget
       downstream_triggered: true
       removed: false               # goal preserved through pause

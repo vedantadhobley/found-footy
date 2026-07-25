@@ -42,13 +42,13 @@ expected_final_state:
   fixtures:
     - id: 900001
       state: staging
-      api_status_short: NS
+      api_status_short: ns
       has_activated_at: false
       has_completed_at: false
       has_last_polled_at: true
     - id: 900002
       state: staging
-      api_status_short: NS
+      api_status_short: ns
       has_activated_at: false
       has_completed_at: false
       has_last_polled_at: true
