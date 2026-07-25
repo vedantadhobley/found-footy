@@ -26,7 +26,7 @@ GOLANGCI_RUN := $(DOCKER_RUN) $(GOLANGCI_IMAGE)
 TEST_DOCKER_ARGS := -v /var/run/docker.sock:/var/run/docker.sock --network=host
 GO_TEST_RUN      := docker run --rm $(DOCKER_ENV) $(DOCKER_VOLS) $(TEST_DOCKER_ARGS) -w /src $(GO_IMAGE)
 
-.PHONY: help build test test-short test-race test-corpus lint fmt vet tidy clean cache-init \
+.PHONY: help build test test-short test-race test-corpus hooks lint fmt vet tidy clean cache-init \
         dev-up dev-down dev-logs dev-restart dev-shell dev-ps \
         twitter-vnc-up twitter-vnc-down twitter-vnc-logs
 
@@ -57,6 +57,10 @@ test-race: cache-init ## Run tests with the race detector
 
 test-corpus: cache-init ## Run the scenario harness (test/scenarios/*.yaml)
 	$(GO_TEST_RUN) go test -buildvcs=false -v -run TestScenarios ./test/
+
+hooks: ## Install git test gates (core.hooksPath → .githooks; pre-commit=test-short, pre-push=test)
+	git config core.hooksPath .githooks
+	@echo "git test gates active: pre-commit → make test-short, pre-push → make test"
 
 # ────── Lint + format ──────
 

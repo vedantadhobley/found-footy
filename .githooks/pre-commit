@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# pre-commit — fast test gate. Runs the compile + unit-test tier
+# (make test-short, no containers, seconds) so a broken build or failing
+# unit test can't be committed. The full integration/scenario suite runs
+# at pre-push. Emergency bypass: `git commit --no-verify` (discouraged —
+# see CLAUDE.md). Installed via `make hooks` (sets core.hooksPath).
+set -euo pipefail
+
+printf '\n[pre-commit] make test-short (compile + unit tests)…\n'
+make test-short
+printf '[pre-commit] ok — full suite still runs at pre-push\n'

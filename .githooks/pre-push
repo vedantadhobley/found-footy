@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# pre-push — full test gate. Runs the complete suite including the
+# integration/testcontainers tier (make test, ~2 min) so integration or
+# scenario-harness regressions can't leave this machine. This is the gate
+# that would have caught the enum-refactor scenario rot the day it landed.
+# Emergency bypass: `git push --no-verify` (discouraged — see CLAUDE.md).
+# Installed via `make hooks` (sets core.hooksPath).
+set -euo pipefail
+
+printf '\n[pre-push] make test (full suite incl. Postgres testcontainers, ~2 min)…\n'
+make test
+printf '[pre-push] ok\n'
