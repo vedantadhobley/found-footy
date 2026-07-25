@@ -21,7 +21,7 @@ setup:
       kickoff: 2026-07-08T15:00:00Z
       activated_at: 2026-07-08T14:45:00Z
       last_polled_at: 2026-07-08T15:29:30Z
-      api_status_short: "1H"
+      api_status_short: "1h"
       api_status_long: First Half
       home_id: 40
       home_name: Liverpool
@@ -148,17 +148,17 @@ cycles:
 expected_final_state:
   events:
     - fixture_id: 999010
-      natural_key: "40_111_Goal_1"    # min 30 goal
+      natural_key: "40_111_goal_1"    # min 30 goal
       debounce_count: 3
       downstream_triggered: true
       removed: false
     - fixture_id: 999010
-      natural_key: "40_111_Goal_2"    # min 60 goal
+      natural_key: "40_111_goal_2"    # min 60 goal
       debounce_count: 3
       downstream_triggered: true
       removed: false
     - fixture_id: 999010
-      natural_key: "40_111_Goal_3"    # min 85 goal
+      natural_key: "40_111_goal_3"    # min 85 goal
       debounce_count: 3
       downstream_triggered: true
       removed: false

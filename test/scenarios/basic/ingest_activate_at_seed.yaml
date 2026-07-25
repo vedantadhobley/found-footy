@@ -36,7 +36,7 @@ expected_final_state:
   fixtures:
     - id: 800002
       state: active                     # ShouldActivateNow → Activate(now)
-      api_status_short: NS
+      api_status_short: ns
       has_activated_at: true
       has_completed_at: false
       has_last_polled_at: true

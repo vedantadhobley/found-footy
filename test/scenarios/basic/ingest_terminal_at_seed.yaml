@@ -37,7 +37,7 @@ expected_final_state:
   fixtures:
     - id: 800001
       state: completed
-      api_status_short: FT
+      api_status_short: ft
       has_activated_at: true    # Activate(kickoff) fired
       has_completed_at: true    # Complete(now) fired
       has_last_polled_at: true
