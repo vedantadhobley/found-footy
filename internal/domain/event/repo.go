@@ -52,6 +52,15 @@ type Repo interface {
 	// discovery/download pipeline.
 	ListPending(ctx context.Context, fixtureID int64) ([]*Event, error)
 
+	// EventsAwaitingDiscovery returns events in the fixture that are
+	// confirmed (downstream_triggered) and NOT removed but whose
+	// discovery workflow has not completed — i.e. the spawn failed or is
+	// still in flight. ReconcileFixture's recovery pass re-attempts the
+	// (idempotent) spawn for each, so a transient spawn/register error
+	// self-heals on the next cycle instead of orphaning the event (silent
+	// video loss, or a fixture stuck 'active' forever).
+	EventsAwaitingDiscovery(ctx context.Context, fixtureID int64) ([]*Event, error)
+
 	// ────── Symmetric debounce ──────
 
 	// RegisterEventPresence records a presence vote by workflowID for

@@ -380,6 +380,20 @@ func (r *EventRepo) RegisterEventAbsence(ctx context.Context, eventID uuid.UUID,
 		hitZero = flipped && err == nil
 	}
 
+	// When the event just flipped to removed (VAR overturn), close out any
+	// still-pending downstream workflow rows in the SAME transaction, so
+	// fixture completion isn't blocked forever waiting on a discovery for
+	// an event that no longer exists. See audit-2026-07-26 P1 #1.
+	if hitZero {
+		if _, err := tx.Exec(ctx, `
+			UPDATE event_downstream_workflows
+			SET completed_at = NOW(), outcome_class = $2
+			WHERE event_id = $1 AND completed_at IS NULL
+		`, eventID, string(event.OutcomeEventRemoved)); err != nil {
+			return 0, false, fmt.Errorf("pg.EventRepo.RegisterEventAbsence: close downstream on removal: %w", err)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return 0, false, fmt.Errorf("pg.EventRepo.RegisterEventAbsence: commit: %w", err)
 	}
@@ -461,6 +475,42 @@ func (r *EventRepo) ListPending(ctx context.Context, fixtureID int64) ([]*event.
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("pg.EventRepo.ListPending: rows: %w", err)
+	}
+	return events, nil
+}
+
+// EventsAwaitingDiscovery returns confirmed, not-removed events whose
+// discovery workflow hasn't completed yet (spawn failed, or still in
+// flight). Drives ReconcileFixture's spawn-recovery pass. See event.Repo.
+func (r *EventRepo) EventsAwaitingDiscovery(ctx context.Context, fixtureID int64) ([]*event.Event, error) {
+	rows, err := r.pool.Query(ctx,
+		"SELECT "+eventColumns+` FROM events
+		 WHERE fixture_id = $1
+		   AND downstream_triggered
+		   AND NOT removed
+		   AND NOT EXISTS (
+		       SELECT 1 FROM event_downstream_workflows edw
+		       WHERE edw.event_id = events.id
+		         AND edw.workflow_type = 'discovery'
+		         AND edw.completed_at IS NOT NULL
+		   )
+		 ORDER BY first_seen_at`,
+		fixtureID)
+	if err != nil {
+		return nil, fmt.Errorf("pg.EventRepo.EventsAwaitingDiscovery: %w", err)
+	}
+	defer rows.Close()
+
+	var events []*event.Event
+	for rows.Next() {
+		e, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pg.EventRepo.EventsAwaitingDiscovery: rows: %w", err)
 	}
 	return events, nil
 }
