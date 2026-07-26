@@ -83,12 +83,25 @@ team field on Detail=`Own Goal`.
 
 ## Open questions the doc doesn't resolve
 
-1. **VAR overturn behavior.** If a goal is checked and cancelled by
-   VAR, does the ORIGINAL `Goal` element get removed from the
-   events array, OR does a separate `Var` / `Goal cancelled` element
-   appear alongside it, OR both? Our set-diff debounce handles case
-   #1 naturally; case #2 would need explicit handling. Capture a
-   real overturn into `examples/` when it happens live.
+1. **VAR overturn behavior — RESOLVED (empirically, from prior Python
+   work, 2026-07-26).** When VAR cancels a goal, the API **removes the
+   original `Goal` element from the events array.** *Sometimes* it also
+   adds a separate `Var` / `Goal cancelled` element; sometimes it does
+   not. Two consequences for us:
+   - Our set-diff debounce handles the removal naturally: the goal
+     disappears → absence votes → the event is soft-removed
+     (`removed_reason='var'`). This is our only VAR-detection mechanism
+     and it is sufficient.
+   - The occasional added `Var` element is **harmless** because we do
+     NOT track `Var`-type events (TrackableEventType whitelists only
+     Goal / Card=Red / Missed Penalty). We never launch a search for it.
+   - **Explicitly out of scope (maybe someday):** tracking VAR-cancelled
+     goals via *both* the removal *and* the added `Var` element, which
+     would require matching the two against each other to avoid
+     duplicate searches on the same cancelled goal. Explored in Python
+     and abandoned — the two-way matching adds substantial complexity
+     for marginal benefit, and the removal path alone already catches
+     the cancellation.
 2. **Second Yellow.** The doc lists only `Yellow Card` and
    `Red card` for the `Card` type — no `Second Yellow` or
    `Second yellow card` detail. Presumably a second yellow shows up
