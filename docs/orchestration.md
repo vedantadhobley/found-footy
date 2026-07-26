@@ -34,6 +34,43 @@ for the full reasoning (failure isolation, runtime tunability, config
 honesty). `PreActivateUpcoming` renamed to `ActivateUpcoming` at the
 same time — the "Pre" prefix was misleading.
 
+### Spawn + tracking map
+
+**There are no Temporal parent/child workflow links anywhere.** The three
+scheduled workflows are independent Temporal cron Schedules. The downstream
+chain (Discovery → Video → Asset) is spawned via the Temporal **client**
+(`StartWorkflow`) with deterministic IDs, and its lifecycle is tracked
+entirely in Postgres via `event_downstream_workflows` (one row per spawned
+workflow; a fixture is complete when it has no pending rows — the
+"completion contract"). "Child of Discovery" in the table above means a
+*logical* child that's pg-tracked, **not** a Temporal `ChildWorkflow`. See
+[`../decisions.md` 2026-07-16 Temporal-direct spawn](decisions.md).
+
+```mermaid
+flowchart TD
+    subgraph S["Scheduled · Temporal cron Schedules · always-on"]
+        direction LR
+        Ingest["IngestWorkflow<br/>daily 00:05 UTC"]
+        Staging["StagingPollWorkflow<br/>cron */15"]
+        Active["ActivePollWorkflow<br/>every ~30s"]
+    end
+
+    Ingest -->|"upsert fixtures → staging"| PG[("Postgres")]
+    Staging -->|"staging → active"| PG
+    Active -->|"poll live · 3-vote debounce"| PG
+
+    Active -.->|"goal confirmed →<br/>client StartWorkflow + tracking row"| Disc["DiscoveryWorkflow<br/>(per event)"]
+    Disc -.->|"per candidate URL →<br/>client StartWorkflow + tracking row"| Vid["VideoWorkflow<br/>(per candidate) · PLANNED"]
+    Vid -.->|"validation pass →<br/>signal-with-start"| Asset["AssetWorkflow<br/>(per event, FIFO) · PLANNED"]
+
+    Disc -.-> PG
+    Vid -.-> PG
+    Asset -.->|"video_assets + video_shares (what users see)"| PG
+
+    classDef planned stroke-dasharray:6 4;
+    class Vid,Asset planned;
+```
+
 ## IngestWorkflow — as shipped
 
 Daily fixture ingest. Fetches a 3-day window from api-sports.io,
