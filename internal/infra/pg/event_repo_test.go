@@ -550,3 +550,121 @@ func TestEventRepo_Absence_RemovedRowNoOp(t *testing.T) {
 		t.Error("hitZero=true should fire only ONCE, not on subsequent absences")
 	}
 }
+
+// insertAndTrigger inserts a goal event and climbs it to 3 presence votes
+// so downstream_triggered flips. Helper for the downstream tests below.
+func insertAndTrigger(t *testing.T, ctx context.Context, repo *pg.EventRepo, e *event.Event) {
+	t.Helper()
+	if err := repo.Insert(ctx, e, "c1"); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	_, _, _ = repo.RegisterEventPresence(ctx, e.ID, "c2")
+	if _, tr, _ := repo.RegisterEventPresence(ctx, e.ID, "c3"); !tr {
+		t.Fatalf("event %s should have triggered on 3rd presence", e.ID)
+	}
+}
+
+// TestEventRepo_Absence_RemovalClosesDownstream — a VAR-removed event's
+// still-pending downstream workflow row gets completed_at + outcome
+// 'event_removed' in the same transaction, so fixture completion isn't
+// blocked forever waiting on a discovery for an event that's gone.
+// Fix for audit-2026-07-26 P1 #1.
+func TestEventRepo_Absence_RemovalClosesDownstream(t *testing.T) {
+	ctx, pool, repo, fRepo := setupEventRepo(t)
+	seedFixture(t, ctx, fRepo, 8010)
+	e := makeGoalEvent(8010, 1)
+	insertAndTrigger(t, ctx, repo, e)
+	if err := repo.RegisterDownstreamWorkflow(ctx, e.ID, "discovery", "discovery-"+e.ID.String()); err != nil {
+		t.Fatalf("RegisterDownstreamWorkflow: %v", err)
+	}
+	// Count is 3 after trigger; three absences drive it to zero → removed.
+	for i, wf := range []string{"a1", "a2", "a3"} {
+		_, hitZero, err := repo.RegisterEventAbsence(ctx, e.ID, wf)
+		if err != nil {
+			t.Fatalf("absence %s: %v", wf, err)
+		}
+		if (i == 2) != hitZero {
+			t.Fatalf("absence %s: hitZero=%v, want %v", wf, hitZero, i == 2)
+		}
+	}
+	var completedAt *time.Time
+	var outcome *string
+	if err := pool.QueryRow(ctx, `
+		SELECT completed_at, outcome_class FROM event_downstream_workflows
+		WHERE event_id = $1 AND workflow_type = 'discovery'`, e.ID).Scan(&completedAt, &outcome); err != nil {
+		t.Fatalf("query downstream row: %v", err)
+	}
+	if completedAt == nil {
+		t.Error("downstream completed_at still NULL after removal — fixture would hang forever")
+	}
+	if outcome == nil || *outcome != string(event.OutcomeEventRemoved) {
+		t.Errorf("outcome_class = %v, want %q", outcome, event.OutcomeEventRemoved)
+	}
+}
+
+// TestEventRepo_EventsAwaitingDiscovery — returns triggered, not-removed
+// events whose discovery hasn't completed (spawn failed or in flight),
+// and excludes completed / untriggered / removed. Drives the spawn-
+// recovery pass for audit-2026-07-26 P1 #3.
+func TestEventRepo_EventsAwaitingDiscovery(t *testing.T) {
+	ctx, pool, repo, fRepo := setupEventRepo(t)
+	seedFixture(t, ctx, fRepo, 8011)
+
+	// (a) triggered, no discovery row → awaiting (register never landed).
+	ea := makeGoalEvent(8011, 1)
+	insertAndTrigger(t, ctx, repo, ea)
+
+	// (b) triggered, discovery completed → excluded.
+	eb := makeGoalEvent(8011, 2)
+	insertAndTrigger(t, ctx, repo, eb)
+	_ = repo.RegisterDownstreamWorkflow(ctx, eb.ID, "discovery", "d-b")
+	if _, err := pool.Exec(ctx, `UPDATE event_downstream_workflows
+		SET completed_at = NOW(), outcome_class = 'success' WHERE event_id = $1`, eb.ID); err != nil {
+		t.Fatalf("complete b: %v", err)
+	}
+
+	// (c) triggered, discovery pending (spawn failed or still running) → awaiting.
+	ec := makeGoalEvent(8011, 3)
+	insertAndTrigger(t, ctx, repo, ec)
+	_ = repo.RegisterDownstreamWorkflow(ctx, ec.ID, "discovery", "d-c")
+
+	// (d) not triggered → excluded.
+	ed := makeGoalEvent(8011, 4)
+	if err := repo.Insert(ctx, ed, "c1"); err != nil {
+		t.Fatalf("insert d: %v", err)
+	}
+
+	// (e) triggered then removed → excluded.
+	ee := makeGoalEvent(8011, 5)
+	insertAndTrigger(t, ctx, repo, ee)
+	for _, wf := range []string{"a1", "a2", "a3"} {
+		_, _, _ = repo.RegisterEventAbsence(ctx, ee.ID, wf)
+	}
+
+	got, err := repo.EventsAwaitingDiscovery(ctx, 8011)
+	if err != nil {
+		t.Fatalf("EventsAwaitingDiscovery: %v", err)
+	}
+	ids := map[uuid.UUID]bool{}
+	for _, e := range got {
+		ids[e.ID] = true
+	}
+	if !ids[ea.ID] {
+		t.Error("(a) triggered-no-row should be awaiting")
+	}
+	if !ids[ec.ID] {
+		t.Error("(c) triggered-pending should be awaiting")
+	}
+	if ids[eb.ID] {
+		t.Error("(b) triggered-completed must be excluded")
+	}
+	if ids[ed.ID] {
+		t.Error("(d) untriggered must be excluded")
+	}
+	if ids[ee.ID] {
+		t.Error("(e) removed must be excluded")
+	}
+	if len(got) != 2 {
+		t.Errorf("awaiting count = %d, want 2 (a + c)", len(got))
+	}
+}

@@ -482,15 +482,13 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			if justTriggered {
 				out.EventsBecameStable = append(out.EventsBecameStable, key)
 
-				// 2026-07-16 spawn rule: same activity that flips
-				// downstream_triggered=true inserts the
-				// event_downstream_workflows row AND spawns
-				// Discovery, so the completion check in the same or
-				// next cycle correctly sees "downstream pending."
-				// Errors are logged and swallowed per Option B —
-				// composer + spawner failures are non-fatal to
-				// fixture-state changes; the outbox catch-up worker
-				// (future) republishes NATS gaps.
+				// Fast path: spawn Discovery immediately on confirmation
+				// so the completion check sees "downstream pending" this
+				// cycle. A spawn/register error here is non-fatal because
+				// the recovery pass below (runs every cycle before the
+				// completion check) re-attempts any spawn this call
+				// dropped — so a transient Temporal/pg blip self-heals
+				// instead of orphaning the event. See audit-2026-07-26 P1 #3.
 				a.registerAndSpawnDiscovery(ctx, existing, domainEv, in.APIFixture.Fixture.ID)
 				a.emitEventStable(ctx, existing.ID, in.APIFixture.Fixture.ID, domainEv)
 			}
@@ -532,6 +530,22 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		if hitZero {
 			out.EventsRemoved = append(out.EventsRemoved, key)
 			a.emitEventRemoved(ctx, pgEv.ID, in.APIFixture.Fixture.ID, now)
+		}
+	}
+
+	// Step 5.5: discovery spawn-recovery. registerAndSpawnDiscovery is
+	// idempotent (RegisterDownstreamWorkflow is INSERT ON CONFLICT DO
+	// NOTHING; SpawnDiscovery swallows WorkflowExecutionAlreadyStarted),
+	// so re-running it every cycle is a no-op for healthy discoveries and
+	// re-attempts any that a transient error dropped. Running it BEFORE
+	// the completion check closes the silent-video-loss window: a failed
+	// spawn gets its checklist row inserted before the fixture can be
+	// judged complete. See audit-2026-07-26 P1 #3.
+	if awaiting, err := a.EventRepo.EventsAwaitingDiscovery(ctx, f.ID); err != nil {
+		out.Errors = append(out.Errors, fmt.Sprintf("awaiting-discovery: %v", err))
+	} else {
+		for _, ev := range awaiting {
+			a.registerAndSpawnDiscovery(ctx, ev, ev, f.ID)
 		}
 	}
 

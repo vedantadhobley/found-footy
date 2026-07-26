@@ -206,6 +206,18 @@ func (r *fakeEventRepo) ListPending(_ context.Context, fixtureID int64) ([]*even
 	}
 	return out, nil
 }
+func (r *fakeEventRepo) EventsAwaitingDiscovery(_ context.Context, fixtureID int64) ([]*event.Event, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*event.Event
+	for _, e := range r.events {
+		if e.FixtureID == fixtureID && e.DownstreamTriggered && !e.Removed {
+			dup := *e
+			out = append(out, &dup)
+		}
+	}
+	return out, nil
+}
 func (r *fakeEventRepo) RegisterEventPresence(_ context.Context, eventID uuid.UUID, workflowID string) (int, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
