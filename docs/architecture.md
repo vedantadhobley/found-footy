@@ -27,7 +27,7 @@ found-footy/
 │   ├── domain/                          6 shipped, 3 stubbed
 │   │   ├── fixture/                     ✓ D1: model + State + Repo + tests
 │   │   ├── event/                       ✓ D2: model + State + Repo + tests
-│   │   ├── video/                       ✓ D3 + V/2: model + Repo + rank + perceptual dHash + offset-tolerant Match + tests
+│   │   ├── video/                       ✓ D3 + V/2 + V/3a: model + Repo + rank + perceptual dHash + Match + hard-filter + tests
 │   │   ├── alias/                       ✓ D4 (reshaped 2026-07-19): two-phase model + Repo + Normalize + Resolver (lookup pipeline) + tests
 │   │   ├── team/                        ✓ TrackedTeam set — tracked-teams-cache ingest filter (team.go + repo.go)
 │   │   ├── discovery/                   ✓ Query builder (2026-07-22) + real DiscoveryWorkflow (O3/d, 2026-07-23)
