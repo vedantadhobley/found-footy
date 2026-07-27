@@ -21,10 +21,15 @@ import (
 // Client is the syndication HTTP wrapper.
 type Client struct {
 	http      *http.Client
+	dl        *http.Client // download client — video bytes need a longer ceiling than the JSON API's cfg.Timeout
 	ins       *Instruments
 	baseURL   string
 	userAgent string
 }
+
+// downloadTimeout backstops a single video byte-fetch. The activity's
+// ctx deadline governs normally; this just caps a runaway CDN stream.
+const downloadTimeout = 2 * time.Minute
 
 // NewClient — validates config; no probe (no lightweight health path
 // on the syndication host).
@@ -40,6 +45,7 @@ func NewClient(cfg config.SyndicationConfig, ins *Instruments) (*Client, error) 
 	}
 	return &Client{
 		http:      &http.Client{Timeout: cfg.Timeout},
+		dl:        &http.Client{Timeout: downloadTimeout},
 		ins:       ins,
 		baseURL:   strings.TrimRight(cfg.BaseURL, "/"),
 		userAgent: cfg.UserAgent,

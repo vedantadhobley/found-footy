@@ -6,6 +6,50 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-27 — T/f syndication video download: cookieless-first; geo-restricted broadcaster clips are terminal but redundant
+
+**Decision.** V-phase's per-candidate video download (T/f, task #161) ports
+Python's syndication path (`archive/src/activities/download.py`) to Go as
+`syndication.ResolveVideo` + `syndication.Download`: extract the tweet id,
+reject sub-18-digit snowflakes early (2026-05-25 Paderborn-Wolfsburg
+post-mortem), GET `cdn.syndication.twimg.com/tweet-result?id=<id>&token=x`,
+pick the highest-bitrate mp4 variant, then byte-fetch it from
+`video.twimg.com` with static browser headers (User-Agent + Referer +
+Origin). **Cookieless.** Every failure class is a typed, `errors.Is`-able
+error (`internal/infra/syndication/errors.go`).
+
+**Why cookieless-first — with the cookie question left explicitly open.**
+Live probe 2026-07-27 against the Dybala/Roma friendly (fixture 1567750;
+one search returned 18 candidates): 2 of 3 sampled clips downloaded as valid
+mp4 cookieless (one `ext_tw_video`, one `amplify_video`); the third — DAZN
+Italy's broadcaster clip (`amplify_video`) — returned 403 → `ErrGeoRestricted`.
+So `amplify_video` is *not* the discriminator; broadcaster geo/auth-walling
+is. Python DID pass cookies on every CDN fetch (full cookie string +
+`x-csrf-token: ct0`), yet its own 403 handler is labelled "geo-blocked or
+auth required" and logs `has_auth` — cookies did not reliably beat the 403
+there either. Whether cookies flip OUR observed 403 (an auth-wall) or not (a
+true IP-geo-block, which only a foreign egress IP can beat) is an open
+empirical question, tracked as a follow-up experiment.
+
+**Why it doesn't block V-phase.** A single goal yields ~18 candidates; the
+fan reposts download fine cookieless, so a geo-locked broadcaster *original*
+is redundant loss, not a coverage gap. `ErrGeoRestricted` is
+terminal-for-this-candidate by design — exactly what Python did. Chasing true
+geo-blocks (foreign egress IP, HLS-manifest mimic, yt-dlp) is explicitly
+last-resort, deferred until we observe an event where *all* candidates 403.
+
+**Tested.** 10 mock unit tests (`video_test.go`, in-gate) cover id extraction,
+snowflake reject, token + headers on the wire, best-variant selection, and the
+full status→typed-error taxonomy. A build-tagged live probe
+(`video_live_test.go`, `-tags live`, `LIVE_TWEET_URL=…`) validates the real
+CDN shape + cookieless headers against a supplied tweet URL — excluded from
+the normal suite.
+
+Diverges from `docs/design/proposals/twitter-port.md`'s browser-extract T/f
+sketch (superseded — the syndication path needs no browser).
+
+---
+
 ## 2026-07-27 — V-phase orchestration: a per-event workflow owns completion (Temporal), Postgres is a mirror
 
 **Decision.** V-phase is one **per-event orchestrator workflow** (the evolved
