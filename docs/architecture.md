@@ -45,7 +45,7 @@ found-footy/
 │   │   ├── temporal/                    ✓ S5: Client (with workerShutdownTimeout) + Worker
 │   │   ├── apifootball/                 ✓ S7 + O1a: /status probe + /fixtures + /fixtures/{ids}
 │   │   ├── twitter/                     ✓ S7: HTTP client + tests against mock (real service is Python)
-│   │   ├── syndication/                 ✓ S7: Twitter syndication client + tests
+│   │   ├── syndication/                 ✓ S7 + T/f: FetchJSON + ResolveVideo/Download (cookieless mp4) + typed taxonomy + tests
 │   │   ├── wikidata/                    ✓ S7: SPARQL client + tests
 │   │   ├── wikipedia/                ✓ S7: CirrusSearch entity resolution (per 2026-07-21) + tests
 │   │   ├── event/                       ✓ O3/a: dual-write composer (pg event_log + NATS Publish, 6 kinds) + tests
