@@ -6,6 +6,44 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-27 — V-phase rung 3a: hard-filter + the aspect band (1.75–1.82, hard gate)
+
+**Decision.** `domain/video.HardFilter` + `config.VideoConfig` /
+`HardFilterConfig` — the pre-hashing metadata gate (rung 3a). Short-circuit
+order: duration (3–90 s) → aspect (1.75–1.82) → framerate (≥ 20) → short-edge
+(≥ 600 px). A reject is a normal **outcome** (a greppable reason slug), not an
+error. All thresholds env-tunable.
+
+**Aspect max loosened 1.80 → 1.82, on real data.** Sampled the aspect
+distribution of two real goals' clips (cookieless resolve, no download):
+- **Dybala/Roma** (18 clips): landscape-dominant; the *biggest* cluster was
+  **1.817** (1170×644 — broadcast rips with the scorebug cropped, incl.
+  verified @CentralASRoma). The old 1.80 max kept 7/15 landscape; **1.82 keeps
+  13/15.**
+- **Chiesa/Liverpool** (15 clips): portrait-dominant (9/15 were 4:5 / 9:16 IG
+  reformats); all 5 landscape clips were clean 16:9 (1.778) — 1.80 vs 1.82
+  identical.
+
+So 1.82 nearly doubles recall on landscape-cropped goals and costs nothing on
+clean ones. Env override kept for retightening.
+
+**Portrait stays a HARD reject — three reasons.** (1) In the real-time window
+(tight `max_age`, minutes after the goal) people post straight broadcast
+*landscape*; the 4:5 / 9:16 flood is the *later* social-remix layer a live
+search never sees — our test only surfaced it because we bumped `max_age` to
+days. (2) It cheaply cuts portrait phone-of-TV recordings (the *landscape*
+phone-of-TV case is 16:9 and indistinguishable by aspect — that's the LLM's
+job, imperfect). (3) **dHash stretches the whole frame into a fixed 9×8 grid**,
+so different aspects yield different hashes → a 16:9 and a 4:5 crop of the same
+goal would NOT dedup; a tight band keeps framing consistent so dedup stays
+reliable (1.778 vs 1.817 is ~2% → hamming stays under 10 → still collapses).
+
+**Tested.** 13 table cases driven by the real Dybala/Chiesa dimensions
+(landscape passes incl. 1.817; portrait / square / ultrawide / short / long /
+low-fps / tiny / degenerate all reject with the right reason).
+
+---
+
 ## 2026-07-27 — V-phase rung 2: perceptual dHash + offset-tolerant matcher (algorithm parity, not bit parity)
 
 **Decision.** `internal/domain/video/hash.go` + `match.go` — the perceptual

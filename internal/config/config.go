@@ -51,6 +51,10 @@ type Config struct {
 	// domain's Match (hamming + consecutive). Env-tunable for retuning on
 	// real clusters without a rebuild.
 	Dedup DedupConfig
+
+	// V-phase per-candidate pipeline: local scratch root, Garage staging/
+	// assets prefixes, and the pre-hashing hard-filter thresholds.
+	Video VideoConfig
 }
 
 // Load parses the process environment into a Config.
