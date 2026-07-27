@@ -33,6 +33,7 @@ type Config struct {
 	Wikipedia     WikipediaConfig
 	Syndication   SyndicationConfig
 	Twitter       TwitterConfig
+	FFmpeg        FFmpegConfig
 
 	// Cross-workflow orchestration values (activation window, staging
 	// poll interval, retention). Consumed by both IngestWorkflow and
@@ -44,9 +45,6 @@ type Config struct {
 	// attempt timeout). Not folded into Workflows because these are
 	// Discovery-specific rather than cross-workflow orchestration.
 	Discovery DiscoveryConfig
-
-	// Sub-configs added in later S-phase commits:
-	//   FFmpeg       ffmpeg.Config
 }
 
 // Load parses the process environment into a Config.
