@@ -6,6 +6,50 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-27 — V-phase rung 1: ffmpeg adapter — single-pass dense extraction, semaphore-capped
+
+**Decision.** `internal/infra/ffmpeg` — the ffmpeg/ffprobe subprocess wrapper
+(rung 1 of the V-phase build): `ProbeMetadata`, `ExtractFrame` (single JPEG
+for the vision clock-check), `ExtractDenseFrames` (PNG frames for perceptual
+hashing), `Faststart` (moov-atom remux), `Ping`. Follows the pg-adapter
+template (Instruments + `RegisterMetrics` + typed errors + a `Retryable`
+classifier). Config is `config.FFmpegConfig`, all env-tunable.
+
+**Single-pass dense extraction (diverges from Python).** Python's `hashing.py`
+spawned a *separate* ffmpeg per frame (~46 processes for an 11.5 s clip,
+serial — the "takes forever" the user remembered). The Go adapter does ONE
+decode pass (`-vf fps=1/interval`, image2pipe PNG) and splits the concatenated
+PNG stream by walking chunk boundaries. Benchmarked 2026-07-27 on two real
+Dybala clips (ffmpeg 5.1.9, `ThreadsPerProc=2`):
+- 1170×644, 11.6 s: dense = 46 frames in **619 ms** (13.5 ms/frame)
+- 720×1280, 11.4 s: dense = 45 frames in **1076 ms** (23.9 ms/frame)
+plus ~50 ms probe + ~90 ms single-frame. That per-clip cost is what sizes the
+semaphore + activity timeouts.
+
+**Concurrency as a CPU governor.** A `MaxProcesses` semaphore
+(`FFMPEG_MAX_CONCURRENT`, default 4) + a per-process thread cap
+(`FFMPEG_THREADS_PER_PROC`, default 2) bound total ffmpeg thread load ≈
+`MaxProcesses × ThreadsPerProc` on this shared 32-thread host. Both env-tunable
+(no recompile); the knee-finding concurrency sweep on real clips tunes them
+once the rung-3 `ProcessCandidate` fan-out exists.
+
+**PNG for dense, JPEG for vision.** Dense frames are lossless PNG so rung-2
+dHash can reproduce Python's hash bit-for-bit; the single vision frame is JPEG
+(smaller — the model doesn't need lossless).
+
+**Tested.** White-box unit tests (probe-JSON parse, PNG-stream split, error
+taxonomy, seam-driven methods via a fake runner — no binary required) + a
+`ffmpeg_integration`-tagged real-binary benchmark. The dHash/md5 *algorithm*
+choice stays open for rung 2 — the adapter is agnostic (it only extracts +
+probes). Per rebuild-plan §9; `Config` lives in `internal/config` (project
+convention) rather than in-package as the plan sketch showed.
+
+**Follow-up.** The worker image already carries ffmpeg 5.1.9 (+ ffprobe);
+make that an explicit Dockerfile dependency when rung 3 wires the adapter into
+an activity.
+
+---
+
 ## 2026-07-27 — T/f syndication video download: cookieless-first; geo-restricted broadcaster clips are terminal but redundant
 
 **Decision.** V-phase's per-candidate video download (T/f, task #161) ports

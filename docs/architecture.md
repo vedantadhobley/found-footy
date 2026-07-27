@@ -37,7 +37,7 @@ found-footy/
 │   │   ├── vision/                      ⊘ doc.go stub — build when VideoValidationWorkflow lands (O4)
 │   │   ├── session/                     ⊘ doc.go stub — build when Twitter Go service ports (post-O)
 │   │   └── textanalysis/                ⊘ doc.go stub — extensibility hook per plan §4
-│   ├── infra/                           11 live, 1 stubbed (ffmpeg)
+│   ├── infra/                           12 live
 │   │   ├── pg/                          ✓ S2: pool + instruments + schema.sql + FixtureRepo + AliasRepo
 │   │   ├── nats/                        ✓ S3: client + instruments
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
@@ -49,7 +49,7 @@ found-footy/
 │   │   ├── wikidata/                    ✓ S7: SPARQL client + tests
 │   │   ├── wikipedia/                ✓ S7: CirrusSearch entity resolution (per 2026-07-21) + tests
 │   │   ├── event/                       ✓ O3/a: dual-write composer (pg event_log + NATS Publish, 6 kinds) + tests
-│   │   └── ffmpeg/                      ⊘ doc.go stub — subprocess wrapper (build for Phase A video pipeline)
+│   │   └── ffmpeg/                      ✓ V/1: probe + single/dense frame extract (single-pass fps) + faststart + semaphore + typed taxonomy + tests
 │   ├── workflow/                        4 shipped
 │   │   ├── ingest.go                    ✓ O1c: IngestWorkflow
 │   │   ├── active_poll.go               ✓ O2: ActivePollWorkflow (30s IntervalSpec)
