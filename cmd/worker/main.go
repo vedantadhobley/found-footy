@@ -21,10 +21,12 @@ import (
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	ingestactivity "github.com/vedantadhobley/found-footy/internal/activity/ingest"
 	monitoractivity "github.com/vedantadhobley/found-footy/internal/activity/monitor"
+	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
 	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	eventinfra "github.com/vedantadhobley/found-footy/internal/infra/event"
+	"github.com/vedantadhobley/found-footy/internal/infra/ffmpeg"
 	"github.com/vedantadhobley/found-footy/internal/infra/llm"
 	"github.com/vedantadhobley/found-footy/internal/infra/nats"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
@@ -215,6 +217,25 @@ func main() {
 			discoveryActs.Twitter = twitterClient
 		}
 
+		// Phase V/3b — per-candidate video activities (DownloadAndStage +
+		// HashVideo). The ffmpeg client (rung 1 adapter) is constructed here,
+		// now that an activity consumes it; the syndication + s3 clients from
+		// above are reused.
+		ffmpegIns := ffmpeg.RegisterMetrics(deps.Metrics, deps.Log)
+		ffmpegClient, err := ffmpeg.NewClient(deps.Cfg.FFmpeg, ffmpegIns)
+		if err != nil {
+			return err
+		}
+		videoActs := &videoactivity.Activities{
+			Syndication:       syndClient,
+			FFmpeg:            ffmpegClient,
+			S3:                s3c,
+			ScratchDir:        deps.Cfg.Video.ScratchDir,
+			StagingPrefix:     deps.Cfg.Video.StagingPrefix,
+			Thresholds:        videoactivity.ThresholdsFromConfig(deps.Cfg.Video.HardFilter),
+			FrameIntervalSecs: deps.Cfg.Dedup.FrameIntervalSecs,
+		}
+
 		// Phase O2 — the two poll workflows share one activities struct.
 		// Shares fixtureRepo + eventRepo with the rest of the worker.
 		// Now clock left nil → real wall clock in prod (per the
@@ -232,6 +253,7 @@ func main() {
 		w.RegisterWorkflow(ffwf.DiscoveryWorkflow)
 		w.RegisterActivity(monitorActs)
 		w.RegisterActivity(discoveryActs)
+		w.RegisterActivity(videoActs)
 
 		if err := w.Start(ctx); err != nil {
 			return err
