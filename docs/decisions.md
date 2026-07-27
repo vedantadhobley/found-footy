@@ -18,7 +18,7 @@ pick the highest-bitrate mp4 variant, then byte-fetch it from
 Origin). **Cookieless.** Every failure class is a typed, `errors.Is`-able
 error (`internal/infra/syndication/errors.go`).
 
-**Why cookieless-first — with the cookie question left explicitly open.**
+**Why cookieless-first — cookies don't help (proven by experiment).**
 Live probe 2026-07-27 against the Dybala/Roma friendly (fixture 1567750;
 one search returned 18 candidates): 2 of 3 sampled clips downloaded as valid
 mp4 cookieless (one `ext_tw_video`, one `amplify_video`); the third — DAZN
@@ -27,9 +27,15 @@ So `amplify_video` is *not* the discriminator; broadcaster geo/auth-walling
 is. Python DID pass cookies on every CDN fetch (full cookie string +
 `x-csrf-token: ct0`), yet its own 403 handler is labelled "geo-blocked or
 auth required" and logs `has_auth` — cookies did not reliably beat the 403
-there either. Whether cookies flip OUR observed 403 (an auth-wall) or not (a
-true IP-geo-block, which only a foreign egress IP can beat) is an open
-empirical question, tracked as a follow-up experiment.
+there either. **Resolved 2026-07-27 by live experiment:** re-fetching the DAZN
+clip authed (auth_token + ct0 + `x-csrf-token`, all present) still 403s, and so
+does its HLS manifest (`.m3u8` — the path the browser player streams),
+cookieless *and* authed. So this 403 is a **hard IP-geo-block on every path**
+(mp4 and HLS), enforced at the network edge before auth matters — not an
+auth-wall. Cookies can't beat it; neither can mimicking the player. The only
+lever is a foreign egress IP (regional proxy), out of scope. Conclusion:
+cookieless is not a compromise — cookies add nothing here — and the
+"workaround" for geo is candidate **redundancy**, not proxy infra (below).
 
 **Why it doesn't block V-phase.** A single goal yields ~18 candidates; the
 fan reposts download fine cookieless, so a geo-locked broadcaster *original*
