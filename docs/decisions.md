@@ -6,6 +6,47 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-27 — V-phase orchestration: a per-event workflow owns completion (Temporal), Postgres is a mirror
+
+**Decision.** V-phase is one **per-event orchestrator workflow** (the evolved
+`DiscoveryWorkflow`) that owns a goal's whole pipeline: search → download +
+validate (a **Video child workflow per candidate**) → per-event content dedup →
+**serialized** upload. **Temporal owns completion** — the parent `await`s its
+children; **Postgres is a queryable mirror**, not the completion authority. The
+only completion-load-bearing pg row is the `poll → event-workflow` hop (the poll
+is a short-lived scheduled workflow and can't parent a ~15-min child).
+
+**Supersedes** the three-workflow (Discovery/Video/Asset) + signal-with-start +
+queue-drain + cross-event-corpus design in
+[`design/proposals/video-dedup.md`](./design/proposals/video-dedup.md). That
+doc's dedup *algorithm* (dHash, offset-tolerant match, thresholds) is kept; its
+*orchestration* is replaced.
+
+**Why.**
+- Workflow code is single-threaded + deterministic → doing dedup + upload in the
+  parent is **race-free serialization for free** — deletes the AssetWorkflow +
+  signal-queue + queue-drain machinery that only existed to fake a join across
+  detached workflows.
+- A candidate is a multi-step unit (download → metadata → filter → hash →
+  clock-check) → **workflow-shaped**, so Video is a child workflow, not an
+  activity (independently retryable + visible in the Temporal UI).
+- A real parent-awaits-children gives **native completion**, which removes the
+  hand-built completion contract's edge cases (recovery sweep, started-then-died)
+  from the downstream chain.
+- Dedup is per-event + content-hashed (`UNIQUE(event_id, md5/perceptual_hash)`),
+  against *this event's* already-uploaded S3 assets (incremental upload). The
+  content/share identity split fixes Python's URL-as-identity flaw (N same-content
+  clips → 1 asset).
+- Python (3.5/3.7-era learning code) reached for this but hand-rolled it badly:
+  `start_child_workflow` + `ParentClosePolicy.ABANDON` + fire-and-forget (no real
+  parenting), per-attempt download batches, a 5-minute **idle-timeout** upload
+  completion, and URL-keyed dedup. This design is the un-shoddy version.
+
+**Full design + open build-path questions:**
+[`design/v-phase-orchestration.md`](./design/v-phase-orchestration.md).
+
+---
+
 ## 2026-07-25 — Video dedup is per-EVENT only; cross-event / per-fixture dedup is dead
 
 **Decision.** `video_assets` is scoped per **event**, not per fixture.
