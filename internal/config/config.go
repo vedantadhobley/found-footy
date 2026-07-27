@@ -45,6 +45,12 @@ type Config struct {
 	// attempt timeout). Not folded into Workflows because these are
 	// Discovery-specific rather than cross-workflow orchestration.
 	Discovery DiscoveryConfig
+
+	// Perceptual video-dedup tuning (dense-frame interval + dHash match
+	// thresholds). Consumed by the ffmpeg adapter (interval) + the video
+	// domain's Match (hamming + consecutive). Env-tunable for retuning on
+	// real clusters without a rebuild.
+	Dedup DedupConfig
 }
 
 // Load parses the process environment into a Config.

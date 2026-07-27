@@ -1,24 +1,27 @@
 //go:build ffmpeg_integration
 
-// Real-binary integration test + dense-extraction benchmark. Excluded from
+// Real-binary integration test + extract-and-hash benchmark. Excluded from
 // the normal suite (needs ffmpeg/ffprobe + real clips). Set FFMPEG_TEST_DIR
 // to a directory of *.mp4 files:
 //
 //	FFMPEG_TEST_DIR=/clips go test -tags ffmpeg_integration -v -count=1 \
 //	  ./internal/infra/ffmpeg/
 //
-// The logged per-clip probe/dense/frame timings are what set the semaphore
-// cap + activity timeouts.
+// Logs per-clip probe / dense-extract / dHash timings (the numbers that set
+// the semaphore cap + activity timeouts), asserts each clip perceptually
+// matches itself, and reports cross-clip matches for information.
 package ffmpeg
 
 import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
 	"github.com/vedantadhobley/found-footy/internal/config"
+	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 	"github.com/vedantadhobley/found-footy/internal/observability/logging"
 	"github.com/vedantadhobley/found-footy/internal/observability/metrics"
 )
@@ -43,11 +46,14 @@ func TestIntegration_RealClips(t *testing.T) {
 		t.Fatalf("Ping: %v (are ffmpeg + ffprobe installed?)", err)
 	}
 
+	seqs := map[string][]uint64{}
 	for _, clip := range clips {
+		name := filepath.Base(clip)
+
 		t0 := time.Now()
 		md, err := c.ProbeMetadata(ctx, clip)
 		if err != nil {
-			t.Errorf("%s probe: %v", filepath.Base(clip), err)
+			t.Errorf("%s probe: %v", name, err)
 			continue
 		}
 		probeMS := time.Since(t0).Milliseconds()
@@ -55,25 +61,43 @@ func TestIntegration_RealClips(t *testing.T) {
 		t1 := time.Now()
 		frames, err := c.ExtractDenseFrames(ctx, clip, 0.25, 0)
 		if err != nil {
-			t.Errorf("%s dense: %v", filepath.Base(clip), err)
+			t.Errorf("%s dense: %v", name, err)
 			continue
 		}
 		denseMS := time.Since(t1).Milliseconds()
 
 		t2 := time.Now()
-		jpg, err := c.ExtractFrame(ctx, clip, md.DurationSecs/2, 0)
-		if err != nil {
-			t.Errorf("%s frame: %v", filepath.Base(clip), err)
-			continue
+		hashes := make([]uint64, 0, len(frames))
+		for _, f := range frames {
+			h, err := dvideo.DHashPNG(f.Data)
+			if err != nil {
+				t.Errorf("%s hash frame @%.2fs: %v", name, f.PositionSecs, err)
+				continue
+			}
+			hashes = append(hashes, h)
 		}
-		frameMS := time.Since(t2).Milliseconds()
+		hashMS := time.Since(t2).Milliseconds()
+		seqs[name] = hashes
 
-		perFrame := 0.0
-		if len(frames) > 0 {
-			perFrame = float64(denseMS) / float64(len(frames))
+		if !dvideo.Match(hashes, hashes, 10, 3) {
+			t.Errorf("%s should perceptually match itself", name)
 		}
-		t.Logf("%s: %dx%d %.1fs %s | probe %dms | dense %d frames in %dms (%.1f ms/frame) | mid-frame %dB in %dms",
-			filepath.Base(clip), md.Width, md.Height, md.DurationSecs, md.Codec,
-			probeMS, len(frames), denseMS, perFrame, len(jpg), frameMS)
+
+		t.Logf("%s: %dx%d %.1fs %s | probe %dms | dense %d frames %dms | dHash %d %dms | self-match ok",
+			name, md.Width, md.Height, md.DurationSecs, md.Codec, probeMS, len(frames), denseMS, len(hashes), hashMS)
+	}
+
+	// Informational: do any two clips share footage? (all are Dybala/Roma —
+	// could be the same goal or the 34' vs 55'.)
+	names := make([]string, 0, len(seqs))
+	for n := range seqs {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for i := 0; i < len(names); i++ {
+		for j := i + 1; j < len(names); j++ {
+			m := dvideo.Match(seqs[names[i]], seqs[names[j]], 10, 3)
+			t.Logf("cross-match %s vs %s: %v", names[i], names[j], m)
+		}
 	}
 }

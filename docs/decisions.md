@@ -6,6 +6,51 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-27 — V-phase rung 2: perceptual dHash + offset-tolerant matcher (algorithm parity, not bit parity)
+
+**Decision.** `internal/domain/video/hash.go` + `match.go` — the perceptual
+dedup primitives (rung 2). `DHash`/`DHashPNG`: grayscale (ITU-R 601) →
+histogram equalize → 9×8 area-downscale → 64-bit difference hash. `Match`:
+offset-tolerant sliding window — at some integer frame offset, ≥
+`MinConsecutive` frames agree within `MaxHamming` bits. Thresholds live in
+`config.DedupConfig` (env `DEDUP_FRAME_INTERVAL_SECS=0.25`,
+`DEDUP_MAX_HAMMING=10`, `DEDUP_MIN_CONSECUTIVE=3`) — Python's tuned values,
+exposed for retuning without a rebuild.
+
+**Algorithm parity, not bit parity.** We reproduce Python's *algorithm*
+(grayscale → equalize → downscale → diff), not PIL's exact LANCZOS/equalize
+arithmetic. The rebuild starts on a fresh corpus (no Python-era hashes to
+compare against), so what matters is internal consistency — one Go pipeline
+hashes every clip — plus the thresholds fitting our hashes (validated on real
+clusters). This corrects the rung-1 entry's "reproduce Python bit-for-bit"
+wording: PNG-lossless dense frames are kept for *artifact-free input*, not for
+parity.
+
+**Integer-offset matcher (simplifies Python).** Python's `_dense_hashes_match`
+ran an O(N⁴) timestamp-tolerance search because its per-frame `-ss` extraction
+gave slightly non-uniform timestamps. Our single-pass fps extraction (rung 1)
+yields *uniform* frames, so matching collapses to a clean integer-offset array
+slide — behaviour-preserving, ~O((Na+Nb)·Na).
+
+**Validated on real clips 2026-07-27** (ffmpeg 5.1.9, two Dybala clips):
+- 1170×644, 11.6 s: dense 596 ms + dHash 46 frames 699 ms → **~1.3 s**
+- 720×1280, 11.4 s: dense 1065 ms + dHash 45 frames 1000 ms → **~2.1 s**
+- each clip self-matches; the two clips cross-match **false** (different
+  footage — no false positive at the 10/3 thresholds).
+
+dHash cost tracks pixel count (portrait ~22 ms/frame vs 15 ms) because
+grayscale+equalize run full-res. Optimisation lever if ever needed: push
+grayscale+downscale into the ffmpeg filter (emit small gray frames) — deferred;
+current cost (~18 candidates × ~1.7 s ÷ semaphore 4 ≈ 8 s/goal) is fine.
+
+**Tested.** 10 unit tests (dHash on solid/gradient/PNG-round-trip, Hamming,
+match identical/offset/no-match/too-short/threshold) + the real-clip
+extract+hash benchmark. Placement in `domain/video` (the `perceptual_hash` is
+a property of a `video_asset`). The per-frame hash **store** + retiring
+`UNIQUE(event_id, perceptual_hash)` stay for rung 6 (the schema revision).
+
+---
+
 ## 2026-07-27 — V-phase rung 1: ffmpeg adapter — single-pass dense extraction, semaphore-capped
 
 **Decision.** `internal/infra/ffmpeg` — the ffmpeg/ffprobe subprocess wrapper
