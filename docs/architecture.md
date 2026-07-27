@@ -55,12 +55,13 @@ found-footy/
 │   │   ├── active_poll.go               ✓ O2: ActivePollWorkflow (30s IntervalSpec)
 │   │   ├── staging_poll.go              ✓ O2: StagingPollWorkflow (*/15 cron)
 │   │   └── discovery.go                 ✓ O3/d: DiscoveryWorkflow (15-attempt search loop) + *_test.go
-│   ├── activity/                        3 packages shipped
+│   ├── activity/                        4 packages shipped
 │   │   ├── ingest/                      ✓ O1b: 4 activities + in-memory fakes + 11 tests
 │   │   │   ├── activities.go
 │   │   │   └── activities_test.go
 │   │   ├── monitor/                     ✓ O2a: 6 activities (GetMonitorConfig, ActivateUpcoming, PollStagingFixtures, ListActiveFixtureIDs, FetchLiveFixtures, ReconcileFixture) + fakes + tests
-│   │   └── discovery/                   ✓ O3/d: GetDiscoveryConfig, FetchTeamAliases, SearchTweets, StoreCandidate, MarkDownstreamComplete (no _test.go yet — audit gap)
+│   │   ├── discovery/                   ✓ O3/d: GetDiscoveryConfig, FetchTeamAliases, SearchTweets, StoreCandidate, MarkDownstreamComplete (no _test.go yet — audit gap)
+│   │   └── video/                       ✓ V/3b: DownloadAndStage + HashVideo (staging-split + pre-download filter) + fakes + 8 tests
 │   ├── api/                             Phase 6 foundation only — SSE + read endpoints
 │   ├── bootstrap/                       ✓ S1 (NOT IN PLAN — see decisions.md 2026-07-07)
 │   │   └── bootstrap.go                 Deps + LIFO Closer registry; shared binary startup

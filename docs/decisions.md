@@ -6,6 +6,51 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-27 — V-phase rung 3b: per-candidate activities (staging-split, pre-download filter)
+
+**Decision.** `internal/activity/video` — two activities:
+- **`DownloadAndStage`**: ResolveVideo → **pre-download filter** (aspect +
+  duration from the tweet-result, reject portrait/compilation with 0 bytes
+  fetched) → download to worker-local scratch with **md5 inline**
+  (`io.MultiWriter(file, md5)`) → ProbeMetadata → full `HardFilter` → stage raw
+  bytes to Garage `staging/<fixture>/<event>/<tweet>.mp4`. Returns
+  `{md5, stagingKey, metadata, outcome}`.
+- **`HashVideo`**: fetch from Garage staging → dense extract → `DHashPNG` each
+  → `[]uint64` sequence.
+
+**Split at the staging boundary** so a `HashVideo` retry re-fetches from Garage
+(internal, cheap) rather than re-hitting Twitter — the expensive external
+download happens exactly once (user's retry-granularity catch, see the
+discussion that produced this).
+
+**Outcome-vs-error, no NonRetryable machinery.** Terminal-but-normal verdicts
+(passed / hard-filter reject / geo-restricted / deleted / no-variant /
+malformed / corrupt) are **Outcomes** (nil error); only genuine transients
+(rate-limit / CDN-timeout / S3 blip / ffmpeg timeout) are errors the workflow's
+`RetryPolicy` bounds. Matches the codebase's plain-errors + RetryPolicy
+convention — the project uses no `NonRetryableApplicationError`.
+
+**Wiring.** The ffmpeg client (rung 1 adapter) is constructed in `cmd/worker`
+now that an activity consumes it; syndication + s3 clients reused. Deps are
+interface-shaped so the 8 unit tests inject fakes (covers every outcome/error
+branch + the pre-filter download-skip). Full download→stage→hash e2e against
+dev Garage is deferred to rung 5, where the child workflow runs it in Temporal
+naturally (the pieces are individually validated: T/f download, r1/r2 ffmpeg +
+dHash on real clips, S4 s3).
+
+**Forward-note — dHash → pHash (user-flagged 2026-07-27).** `HashVideo` is
+**algorithm-agnostic** — it emits a `[]uint64` frame-hash sequence regardless
+of which perceptual hash produces it. The user expects to move to **pHash**
+(DCT-based, robust to the watermarks/logos that goal clips will always carry;
+dHash's adjacent-pixel edges are perturbed by overlays). That's a planned
+focused **rung-2 revisit** (swap `DHashPNG`→`PHashPNG`, re-tune hamming +
+consecutive thresholds on real *watermarked* clips) — it does NOT touch rung 3b.
+Separately, the **LLM quality-ranking** step (pick the best clip *within* a
+matched cluster — distinct from matching) is already sketched as `video-dedup.md`
+Stage 8; it needs fleshing out in the dedup design pass (rung 6).
+
+---
+
 ## 2026-07-27 — V-phase rung 3a: hard-filter + the aspect band (1.75–1.82, hard gate)
 
 **Decision.** `domain/video.HardFilter` + `config.VideoConfig` /
