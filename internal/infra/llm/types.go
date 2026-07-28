@@ -5,6 +5,8 @@
 // a per-caller migration.
 package llm
 
+import "encoding/json"
+
 // Role is the speaker of a chat message. Matches OpenAI's role vocab
 // today; nexus may add a "tool" role — bounded string keeps that
 // forward-compatible.
@@ -58,8 +60,38 @@ type ChatRequest struct {
 	Temperature *float64 // 0.0 – 2.0; nil = server default
 	MaxTokens   *int     // nil = model default
 	Stop        []string // optional stop sequences
-	// Additional fields (tools, response_format, etc.) added when the
-	// first caller has a real need. Not preemptive.
+
+	// ResponseFormat, when non-nil with a JSONSchema, opts this request
+	// into structured output: the server constrains token sampling so the
+	// reply is guaranteed-valid JSON matching the schema (no ``` fences,
+	// no preamble). nil = free-form prose (the default). First caller:
+	// the vision activity (V/4).
+	ResponseFormat *ResponseFormat
+
+	// DisableThinking turns off the model's chain-of-thought where the
+	// backend supports it (llama.cpp/vLLM `enable_thinking`). The adapter
+	// maps it to chat_template_kwargs so the mechanism stays out of this
+	// domain type. For structured-output vision calls this cut latency ~3x
+	// on the gemma/Qwen bake-off (2026-07-28) with no accuracy loss — the
+	// schema leaves no room for reasoning tokens anyway.
+	DisableThinking bool
+}
+
+// ResponseFormat opts a Chat call into structured output. Only JSONSchema
+// is modelled today (the sole use case); a nil ResponseFormat means prose.
+type ResponseFormat struct {
+	JSONSchema *JSONSchema
+}
+
+// JSONSchema is the schema a structured-output call constrains against.
+// Schema is the raw JSON Schema document; Strict requests exact adherence
+// (all properties required, no extras) where the backend honours it. The
+// adapter passes Schema straight through — json.RawMessage satisfies the
+// SDK's json.Marshaler contract, so no re-encoding round-trip.
+type JSONSchema struct {
+	Name   string
+	Schema json.RawMessage
+	Strict bool
 }
 
 // ChatResponse is what Chat returns. Content is the assistant reply's

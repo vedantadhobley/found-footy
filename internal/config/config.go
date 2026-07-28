@@ -55,6 +55,10 @@ type Config struct {
 	// V-phase per-candidate pipeline: local scratch root, Garage staging/
 	// assets prefixes, and the pre-hashing hard-filter thresholds.
 	Video VideoConfig
+
+	// V-phase clip validation: vision-model soccer/screen gate + clock
+	// verification tuning. Endpoint/model come from LLM above.
+	Vision VisionConfig
 }
 
 // Load parses the process environment into a Config.

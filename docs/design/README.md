@@ -27,7 +27,9 @@ see [`../../archive/docs/`](../../archive/docs/).
   `discovery.md`, `twitter-port.md`, `video-dedup.md` (per-event dedup;
   the cross-event sections are superseded — see
   [`../decisions.md`](../decisions.md) 2026-07-25), `team-aliases.md`,
-  `completion-contract.md`. `monitor.md` is SUPERSEDED (historical only).
+  `completion-contract.md`, `vision.md` (multi-frame VL soccer/screen +
+  period-aware clock verification; *model behaviour* pending a gemma-on-nexus
+  bake-off). `monitor.md` is SUPERSEDED (historical only).
   `workflow-audit-2026-07-09.md` + `api-football-audit-2026-07-09.md` are
   cross-cutting audits, not phase proposals.
 

@@ -22,6 +22,7 @@ import (
 	ingestactivity "github.com/vedantadhobley/found-footy/internal/activity/ingest"
 	monitoractivity "github.com/vedantadhobley/found-footy/internal/activity/monitor"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
+	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
 	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
@@ -89,7 +90,6 @@ func main() {
 			llmClient.Close()
 			return nil
 		})
-		_ = llmClient // consumed by vision + RAG activities in Phase O
 
 		afIns := apifootball.RegisterMetrics(deps.Metrics, deps.Log)
 		afClient, err := apifootball.NewClient(ctx, deps.Cfg.APIFootball, afIns)
@@ -236,6 +236,17 @@ func main() {
 			FrameIntervalSecs: deps.Cfg.Dedup.FrameIntervalSecs,
 		}
 
+		// Phase V/4 — clip validation (soccer/screen gate + clock check).
+		// Reuses the ffmpeg + s3 clients and the shared LLM client (the LLM's
+		// only consumer today; point LLM_ENDPOINT_URL at the vision node).
+		visionActs := &visionactivity.Activities{
+			FFmpeg:     ffmpegClient,
+			S3:         s3c,
+			LLM:        llmClient,
+			ScratchDir: deps.Cfg.Video.ScratchDir,
+			Cfg:        deps.Cfg.Vision,
+		}
+
 		// Phase O2 — the two poll workflows share one activities struct.
 		// Shares fixtureRepo + eventRepo with the rest of the worker.
 		// Now clock left nil → real wall clock in prod (per the
@@ -254,6 +265,7 @@ func main() {
 		w.RegisterActivity(monitorActs)
 		w.RegisterActivity(discoveryActs)
 		w.RegisterActivity(videoActs)
+		w.RegisterActivity(visionActs)
 
 		if err := w.Start(ctx); err != nil {
 			return err
