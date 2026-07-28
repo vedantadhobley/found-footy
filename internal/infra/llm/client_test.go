@@ -50,6 +50,7 @@ type mockLLMServer struct {
 	chatResponse      openai.ChatCompletionResponse
 	concurrentPeak    int32
 	concurrentCurrent int32
+	lastChatBody      []byte // raw request body of the most recent /chat/completions call
 }
 
 func newMockLLMServer() *mockLLMServer {
@@ -73,6 +74,9 @@ func newMockLLMServer() *mockLLMServer {
 		_ = json.NewEncoder(w).Encode(m.modelsResponse)
 	})
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		if b, err := io.ReadAll(r.Body); err == nil {
+			m.lastChatBody = b
+		}
 		cur := atomic.AddInt32(&m.concurrentCurrent, 1)
 		defer atomic.AddInt32(&m.concurrentCurrent, -1)
 		for {
@@ -280,6 +284,81 @@ func TestChat_MultimodalRoundtrip(t *testing.T) {
 	}
 	if _, err := c.Chat(ctx, req); err != nil {
 		t.Fatalf("multimodal chat: %v", err)
+	}
+}
+
+// TestChat_StructuredOutputAndThinkingToggle — the V/4 plumb: a request
+// carrying ResponseFormat + DisableThinking must reach the wire as an
+// openai response_format=json_schema block and chat_template_kwargs with
+// enable_thinking:false. Asserted by inspecting the captured request body.
+func TestChat_StructuredOutputAndThinkingToggle(t *testing.T) {
+	ctx := context.Background()
+	m := newMockLLMServer()
+	defer m.Close()
+
+	fx := newTestFixture()
+	c := newClientAgainst(t, ctx, m.URL(), fx, 2)
+	defer c.Close()
+
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
+	req := llm.ChatRequest{
+		Messages:        []llm.ChatMessage{{Role: llm.RoleUser, Content: "hi"}},
+		DisableThinking: true,
+		ResponseFormat: &llm.ResponseFormat{
+			JSONSchema: &llm.JSONSchema{Name: "verdict", Schema: schema, Strict: true},
+		},
+	}
+	if _, err := c.Chat(ctx, req); err != nil {
+		t.Fatalf("structured chat: %v", err)
+	}
+
+	var sent map[string]any
+	if err := json.Unmarshal(m.lastChatBody, &sent); err != nil {
+		t.Fatalf("unmarshal captured body: %v (body=%s)", err, m.lastChatBody)
+	}
+
+	rf, ok := sent["response_format"].(map[string]any)
+	if !ok {
+		t.Fatalf("response_format missing/wrong type in %s", m.lastChatBody)
+	}
+	if rf["type"] != "json_schema" {
+		t.Errorf("response_format.type = %v, want json_schema", rf["type"])
+	}
+	js, ok := rf["json_schema"].(map[string]any)
+	if !ok || js["name"] != "verdict" || js["strict"] != true {
+		t.Errorf("json_schema block wrong: %v", rf["json_schema"])
+	}
+
+	ctk, ok := sent["chat_template_kwargs"].(map[string]any)
+	if !ok || ctk["enable_thinking"] != false {
+		t.Errorf("chat_template_kwargs = %v, want enable_thinking:false", sent["chat_template_kwargs"])
+	}
+}
+
+// TestChat_NoStructuredOutputByDefault — a plain request must NOT carry a
+// response_format or chat_template_kwargs (prose is the default; we don't
+// want to accidentally constrain every call).
+func TestChat_NoStructuredOutputByDefault(t *testing.T) {
+	ctx := context.Background()
+	m := newMockLLMServer()
+	defer m.Close()
+
+	fx := newTestFixture()
+	c := newClientAgainst(t, ctx, m.URL(), fx, 2)
+	defer c.Close()
+
+	if _, err := c.Chat(ctx, simpleChat("hi")); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(m.lastChatBody, &sent); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := sent["response_format"]; present {
+		t.Errorf("plain request leaked response_format: %s", m.lastChatBody)
+	}
+	if _, present := sent["chat_template_kwargs"]; present {
+		t.Errorf("plain request leaked chat_template_kwargs: %s", m.lastChatBody)
 	}
 }
 

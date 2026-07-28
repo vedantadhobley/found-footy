@@ -6,6 +6,70 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-28 — V/4 clip validation: vision-LLM soccer/screen gate + clock check (rungs 1–3 shipped)
+
+**Decision.** The V-phase clip-validation activity ships across three rungs,
+with the model config, prompt, and strictness rules **validated on real prod
+clips** (a gemma/Qwen bake-off, not asserted from the stale Python notes):
+
+- **Rung 1 — LLM adapter plumb.** `llm.ChatRequest` gains `ResponseFormat`
+  (structured output → `response_format:json_schema`, `json.RawMessage`
+  straight through) + `DisableThinking` (→ `chat_template_kwargs:{enable_thinking:false}`).
+  Domain-owned types; the mechanism stays out of `ChatRequest`. First (and
+  today only) LLM consumer.
+- **Rung 2 — `internal/domain/vision`.** Ported clock parsers
+  (`parseClockField`/`parseAddedField`/`parseStoppageClockField`, the last
+  stripping a leading `+`) + `periodOf` + `Evaluate` (soccer/screen majority
+  gates → period-aware clock check → verified/unverified/rejected). Pure,
+  table-tested incl. real-prod + WC-final boundary cases.
+- **Rung 3 — `internal/activity/vision`.** `ValidateClip`: fetch staged clip →
+  `ffmpeg.ExtractFrame` @25/50/75% → ONE multi-image structured-output call →
+  `Evaluate`. Verdict is a nil-error Outcome; only infra/model failures are
+  errors. Wired into `cmd/worker`.
+
+**Model config (locked by the bake-off).** Multi-frame **single** call
+(25/50/75% in one message) + **thinking off** (`chat_template_kwargs`) +
+`response_format:json_schema` + temp 0. Thinking-off cut latency ~3× (34s→~13s
+gemma) with no accuracy loss — the schema leaves no room for reasoning tokens.
+The **detailed prompt is load-bearing**: the careful `screen` definition and
+the frozen-clock/sub-timer description are what fix the false-accepts and
+capture the stoppage `+1:48` sub-timer (terse prompts dropped both).
+
+**Model choice.** `gemma-4-12b` on nexus is the production model (user's
+call); `Qwen3.5-9B` on joi matched it 4/4 and was *faster* (~9s vs ~13s), so
+we're **not model-locked** — the config is the lever, not the model. Vision is
+the LLM's only consumer, so `LLM_ENDPOINT_URL` is repointed at nexus/gemma
+(`.env.example`); no separate vision client / metrics split needed. A
+joi-RAG + nexus-vision split is a documented follow-up if RAG ever lands.
+
+**API period semantics — verified, not assumed.** Real API-Football data
+(WC-2022 final) confirms `(elapsed, extra)` is **consistent at every
+boundary**: stoppage caps `elapsed` at 45/90/105/120 with `extra=N`; running
+ET uses `elapsed` 91–120, `extra=null`. So period is cleanly derivable for
+**all** boundaries — my earlier "ET is inconsistent" claim was wrong (based on
+one mis-read spec example). The real ET difficulty is *broadcast clock
+rendering*, not the API.
+
+**Strictness (settled).** (1) **±1 minute** tolerance (`VISION_TOLERANCE_MINUTES`);
+not loosened — two goals can be a minute apart. (2) **Period guard: strict at
+halftime** (H1/H2 clean on both sides → hard-reject wrong-half), **lenient at
+extra time** (ET rendering varies → numeric-match-but-period-conflict is
+soft-kept as `unverified`, not dropped). Frozen-boundary stoppage with no
+sub-timer verifies on period alone (exact minute unpinnable; same-window goals
+~never confused). OCR leading-digit rebase kept.
+
+**Real-prod win.** On both linked prod goals (Lauberbach 90+2, Yeboah 71'),
+prod surfaces a clean broadcast *and* a phone-of-TV recording, and the
+shareable link defaults to the **screen recording**. gemma flags `screen=true`
+on both → our gate rejects them and keeps the clean broadcasts. Strictly
+better than what's live. 8/8 real clips correct end-to-end.
+
+**Not yet wired into a workflow** — `ValidateClip` runs once per perceptual
+cluster inside the (still-open) EventWorkflow orchestration; that's the next
+V-phase step, not this one.
+
+---
+
 ## 2026-07-28 — V-phase dedup: dHash + gap-tolerant window, params empirically validated (pHash rejected)
 
 **Decision.** Perceptual video dedup is **dHash + an offset-tolerant,

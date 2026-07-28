@@ -227,6 +227,24 @@ func toOpenAIRequest(req ChatRequest) (openai.ChatCompletionRequest, error) {
 	if req.MaxTokens != nil {
 		out.MaxTokens = *req.MaxTokens
 	}
+	// Structured output: constrain sampling to the caller's JSON schema.
+	if req.ResponseFormat != nil && req.ResponseFormat.JSONSchema != nil {
+		js := req.ResponseFormat.JSONSchema
+		out.ResponseFormat = &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
+			JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
+				Name:   js.Name,
+				Schema: js.Schema, // json.RawMessage satisfies json.Marshaler
+				Strict: js.Strict,
+			},
+		}
+	}
+	// Thinking toggle: llama.cpp/vLLM read enable_thinking from the
+	// template kwargs. Kept out of the domain ChatRequest (see DisableThinking).
+	if req.DisableThinking {
+		out.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
+	}
+
 	out.Messages = make([]openai.ChatCompletionMessage, 0, len(req.Messages))
 	for i, m := range req.Messages {
 		msg, err := toOpenAIMessage(m)

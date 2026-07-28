@@ -203,6 +203,27 @@ Normalize helper: NFD Latin-diacritic strip, preserved case. Kept
 exported because both the pipeline and (future) Twitter search-query
 builder call it.
 
+### vision domain (D5) — shipped 2026-07-28
+
+Clip-validation logic, pure + table-tested (no I/O, no model). Ports the
+Python clock parsers with a period-awareness fix.
+
+- `clock.go` — scorebug field parsers (`parseClockField`,
+  `parseAddedField`, `parseStoppageClockField` — the last strips a leading
+  `+`, since gemma returns `01:48` and Qwen `+1:48`) + `periodOf` (the
+  H1/H2/ET1/ET2 map, verified against real API-Football data).
+- `evaluate.go` — `Evaluate(frames, Expected, tol)`: soccer/screen majority
+  gates → period-aware clock check → `Outcome` (verified/unverified/rejected).
+  Strictness: ±1 minute, strict at halftime / lenient at ET (see decisions.md).
+- `schema.go` — `FrameObservation` (the model's per-frame JSON), `ResponseSchema`
+  (the `response_format` json-schema, exactly-3 positional frames), and the
+  validated `DefaultPrompt`.
+
+Consumed by `internal/activity/vision.ValidateClip` (V/4): fetch staged clip
+→ `ffmpeg.ExtractFrame` @25/50/75% → one multi-image structured-output vision
+call → `Evaluate`. The LLM adapter's `ResponseFormat` + `DisableThinking`
+fields (rung 1) exist for this call. Not yet wired into a workflow.
+
 Repo methods shipped: `Get`, `BulkGet`, `UpsertVendorFields`,
 `UpsertResolution`. The Upsert split enforces the invariant that
 Ingest's daily vendor-refresh CANNOT wipe an existing resolution —
