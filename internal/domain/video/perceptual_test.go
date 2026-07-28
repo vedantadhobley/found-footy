@@ -98,7 +98,7 @@ func TestHamming(t *testing.T) {
 
 func TestMatch_Identical(t *testing.T) {
 	a := []uint64{1, 2, 4, 8, 16}
-	if !Match(a, a, 0, 3) {
+	if !Match(a, a, 0, 3, 0) {
 		t.Error("identical sequences should match")
 	}
 }
@@ -106,7 +106,7 @@ func TestMatch_Identical(t *testing.T) {
 func TestMatch_Offset(t *testing.T) {
 	a := []uint64{1, 2, 4, 8, 16}
 	b := []uint64{99, 99, 1, 2, 4, 8, 16} // a shifted 2 frames into b
-	if !Match(a, b, 0, 3) {
+	if !Match(a, b, 0, 3, 0) {
 		t.Error("offset copy should match at the aligned offset")
 	}
 }
@@ -114,24 +114,35 @@ func TestMatch_Offset(t *testing.T) {
 func TestMatch_NoMatch(t *testing.T) {
 	a := []uint64{1, 2, 4}
 	b := []uint64{^uint64(1), ^uint64(2), ^uint64(4)} // ~64 bits off each
-	if Match(a, b, 10, 3) {
+	if Match(a, b, 10, 3, 0) {
 		t.Error("bit-inverted sequence should not match within hamming 10")
 	}
 }
 
 func TestMatch_TooShort(t *testing.T) {
-	if Match([]uint64{1, 2}, []uint64{1, 2}, 0, 3) {
-		t.Error("sequences shorter than minConsecutive can't match")
+	if Match([]uint64{1, 2}, []uint64{1, 2}, 0, 3, 0) {
+		t.Error("sequences shorter than minRun can't match")
 	}
 }
 
 func TestMatch_HammingThreshold(t *testing.T) {
 	a := []uint64{0, 0, 0}
 	b := []uint64{0x1F, 0x1F, 0x1F} // 5 bits set → hamming 5 vs 0
-	if !Match(a, b, 10, 3) {
+	if !Match(a, b, 10, 3, 0) {
 		t.Error("5-bit diff within maxHamming=10 should match")
 	}
-	if Match(a, b, 4, 3) {
+	if Match(a, b, 4, 3, 0) {
 		t.Error("5-bit diff over maxHamming=4 should not match")
+	}
+}
+
+func TestMatch_GapTolerance(t *testing.T) {
+	a := []uint64{1, 2, 4, 8, 16}
+	b := []uint64{1, 2, ^uint64(0), 8, 16} // frame 2 is far off — one bad frame
+	if Match(a, b, 0, 5, 0) {
+		t.Error("strict window (0 gaps) should not reach a 5-run across the miss")
+	}
+	if !Match(a, b, 0, 5, 1) {
+		t.Error("one tolerated gap should bridge into a 5-run")
 	}
 }

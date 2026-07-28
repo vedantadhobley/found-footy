@@ -30,7 +30,7 @@ type VideoConfig struct {
 // still rejects portrait phone-of-TV recordings + the social remix layer
 // AND keeps aspect consistent so dHash dedup stays reliable.
 type HardFilterConfig struct {
-	MinDurationSecs float64 `env:"HARDFILTER_MIN_DURATION_SECS" envDefault:"3"`
+	MinDurationSecs float64 `env:"HARDFILTER_MIN_DURATION_SECS" envDefault:"5"`
 	MaxDurationSecs float64 `env:"HARDFILTER_MAX_DURATION_SECS" envDefault:"90"`
 	MinAspectRatio  float64 `env:"HARDFILTER_MIN_ASPECT" envDefault:"1.75"`
 	MaxAspectRatio  float64 `env:"HARDFILTER_MAX_ASPECT" envDefault:"1.82"`

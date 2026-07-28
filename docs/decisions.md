@@ -6,6 +6,81 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-07-28 — V-phase dedup: dHash + gap-tolerant window, params empirically validated (pHash rejected)
+
+**Decision.** Perceptual video dedup is **dHash + an offset-tolerant,
+gap-tolerant sliding window**. Starting parameters (all env-tunable —
+`config.DedupConfig` / `HardFilterConfig`; *final* calibration is a live-data
+job, these are validated-safe starts):
+
+| knob | value | env |
+|---|---|---|
+| per-frame hamming | ≤ 10 | `DEDUP_MAX_HAMMING` |
+| match window | 30-frame run (3 s @ 0.1 s) | `DEDUP_MIN_RUN_FRAMES` |
+| gap tolerance | ≤ 3 missed frames in the window | `DEDUP_MAX_GAP_FRAMES` |
+| sampling interval | 0.1 s | `DEDUP_FRAME_INTERVAL_SECS` |
+| min clip length | 5 s | `HARDFILTER_MIN_DURATION_SECS` |
+
+**How we got here — a bake-off on real Dybala footage + ffmpeg-transformed
+variants, measuring the sliding-window match run:**
+
+- **pHash rejected — the premise was contradicted by data.** Across two
+  *different* watermarks over the same footage, **dHash matched perfectly
+  (46/46); pHash failed (0–5).** dHash's 9×8 downscale washes out a localized
+  overlay; pHash's low-frequency DCT is *sensitive* to a solid box. pHash also
+  doesn't fix the real gap (crops). So **keep dHash** — closes the earlier
+  "dHash→pHash rung-2 revisit," and it's the good outcome (no work, better
+  result).
+- **dHash is robust to layout-*preserving* transforms** (scale / compression /
+  watermark — matched) and **fragile to layout-*shifting* ones** (crop / zoom —
+  failed). **Crop-fragility is an accepted limitation:** the same goal at
+  different crops won't collapse → some near-duplicate assets surface
+  (mitigated, not eliminated, by ranking + the LLM quality-pick). Crops occupy a
+  distinct hamming band (15–19), between matches (≤10) and non-matches (≥23), so
+  a future crop-detector could target it without colliding with different
+  footage.
+- **Thresholds validated.** True matches (scale / compress / watermark /
+  temporal offset + their compound) sit at per-frame median hamming **1–10**;
+  different footage at **23–29** — a 13-bit gap, so 10 is well-centred.
+- **Temporal offset handled.** A worst-case half-interval (0.12 s) shift only
+  moved median hamming to 4; the realistic compound (shift + heavy recompress)
+  to 8 — still inside 10 (run 31 @ 0.1 s). **0.1 s** (finer than Python's
+  0.25 s; affordable now that hashing is single-pass + parallel and *vision*,
+  not hashing, is the bottleneck) gives comfortable alignment margin.
+- **Gap-tolerant window (new vs Python's strict run).** "≥ minRun frames with
+  ≤ maxGaps misses" bridges a single bad frame so it doesn't shatter a real
+  multi-second match. On both a 5.1 s and an 11.5 s clip under the realistic
+  compound the tolerant window hit **50–55** frames; different footage tops out
+  at exactly maxGaps (**3**) — huge separation, the 30 threshold safely between.
+
+**Non-matches never produce a run, so the 30-frame requirement costs no
+*measured* precision** on clearly-different footage — it's **insurance** against
+an unmeasured near-miss case (two genuinely-different-but-similar clips) whose
+real calibration needs live same-match data. We bias strict deliberately: the
+failure directions favour it — too-strict → an occasional *duplicate shown*
+(mild); too-loose → a genuinely different clip *wrongly merged and dropped*
+(lost content).
+
+**Clock/no-clock dedup pools emerge for free.** Because dHash is crop-fragile, a
+scorebug-cropped (no-clock) clip does NOT perceptually match its uncropped
+(clock) twin → they cluster separately automatically. So the clock-status
+segmentation the pipeline wants happens *via clustering* — which means
+**dedup-before-vision holds** (vision runs once per cluster → 1× joi, not 2×),
+and it resolves the scorebug-crop-vs-clock-check tension (cropped clips aren't
+dropped, they're a lower-ranked pool).
+
+**Caveat — synthetic.** All transforms were ffmpeg-generated on real clips, not
+two real reposts (the sampled real clips were all distinct footage). Mechanisms
+are clear and consistent, but final tuning is a **live-match-day** exercise:
+instrument dedup to log real run/hamming distributions for same-goal and
+different-goal pairs, then set the knobs from evidence.
+
+`Match` moved from strict-consecutive to the gap-tolerant window
+(`domain/video/match.go`); the pHash + probe experiment code was deleted after
+recording this.
+
+---
+
 ## 2026-07-27 — V-phase rung 3b: per-candidate activities (staging-split, pre-download filter)
 
 **Decision.** `internal/activity/video` — two activities:
