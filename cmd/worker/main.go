@@ -262,6 +262,7 @@ func main() {
 		w.RegisterWorkflow(ffwf.ActivePollWorkflow)
 		w.RegisterWorkflow(ffwf.StagingPollWorkflow)
 		w.RegisterWorkflow(ffwf.DiscoveryWorkflow)
+		w.RegisterWorkflow(ffwf.VideoWorkflow)
 		w.RegisterActivity(monitorActs)
 		w.RegisterActivity(discoveryActs)
 		w.RegisterActivity(videoActs)
