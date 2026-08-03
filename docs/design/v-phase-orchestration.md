@@ -282,18 +282,26 @@ staging is a noted, deferred option.)
   queue (dedup → vision → promote → rank); Temporal-owned completion
   (`searchDone && inFlight==0`); the `pending` race fix; vision fired async, once
   per unique clip.
-- **Still rung-6 design (the *internals* of the queue):**
-  - **Dedup algorithm** — the dHash→**pHash** swap (watermark robustness) +
-    re-tuned hamming/consecutive thresholds on real *watermarked* clips.
-  - **Vision** — the clock-check vs quality-comparison sub-steps + prompts
-    (needs gemma on joi).
+- **Resolved since:**
+  - ✅ **Dedup algorithm** — dHash **kept**, pHash **rejected** on data
+    (decisions.md 2026-07-28); gap-tolerant window params validated. The
+    LSH/prefix scheme is dead.
+  - ✅ **Vision** — shipped V/4 (`ValidateClip`), model config validated on real
+    prod clips (decisions.md 2026-07-28). gemma-4-12b on nexus.
+  - ✅ **Schema revision (#166, 2026-08-03)** — `video_assets` now stores
+    `frame_hashes BYTEA` (the per-frame sequence) + keeps only
+    `UNIQUE(event_id, md5)`; the single `perceptual_hash` + its `UNIQUE` + the
+    LSH prefix index are gone. `AssetRepo` swapped its DB-dedup methods for
+    `InsertAsset` (ON CONFLICT md5) + `BumpPopularity`. Dedup is decided in
+    workflow code before insert.
+- **Still open (queue internals, land with #164):**
   - **Which-to-keep / ranking** — keep-first vs quality-supersede; the LLM
-    "which looks best" call; `video_shares.rank` rewrite rule.
-  - **Schema revision** — add a **per-frame hash store** (the current
-    `video_assets.perceptual_hash` single value + `UNIQUE(event_id,
-    perceptual_hash)` can't express a sliding-window match) and **retire the
-    perceptual `UNIQUE`** (dedup is decided in workflow code before insert;
-    keep `UNIQUE(event_id, md5)` for the exact layer).
+    "which looks best" call; `video_shares.rank` rewrite rule. First cut:
+    `collapse()` = keep-first + `popularity++`.
+  - **Dedup determinism** — `Match` in workflow code needs thresholds passed as
+    workflow input + `GetVersion` guarding future algorithm changes.
+  - **Not-happy-path bundle** — inFlight-decrement on failure, promote/insert
+    idempotency, staging-orphan cleanup, VAR-mid-flight cancellation.
 
 ## Reference: how Python did it (grain of salt — 3.5/3.7-era learning code)
 

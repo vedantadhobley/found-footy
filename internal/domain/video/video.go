@@ -66,13 +66,12 @@ func (r RemovalReason) Valid() bool {
 
 // Asset is the canonical byte-store row (video_assets table).
 //
-// Load-bearing UNIQUE constraints (enforced at the storage layer,
-// mirrored here for domain reasoning):
-//   UNIQUE (event_id, md5)             — exact-byte dedup within event
-//   UNIQUE (event_id, perceptual_hash) — perceptual dedup; enables
-//     the atomic UPSERT pattern where two concurrent writers of the
-//     same perceptual content both try to INSERT, one wins, the other
-//     catches the unique_violation and bumps the winner's popularity.
+// Dedup model (2026-08-03, #166): the ONLY storage-enforced dedup is
+//   UNIQUE (event_id, md5) — exact-byte, and it doubles as insert
+// idempotency. Perceptual dedup is FUZZY (a sliding-window match over the
+// FrameHashes sequence) and lives in EventWorkflow code, decided in-memory
+// before insert — no SQL constraint can express it. FrameHashes is persisted
+// as a queryable record (debugging / re-dedup), not as a decision-maker.
 //
 // EventID is the dedup scope; FixtureID is a denormalized convenience
 // (s3 path + prune). Dedup is never cross-event — decisions.md 2026-07-25.
@@ -84,9 +83,8 @@ type Asset struct {
 	S3Bucket string
 	S3Key    string // computed by the S3 client from (fixture_id, id); NOT stored redundantly per §3 principle #3, but IS on the row for read speed
 
-	PerceptualHash       []byte // 8-byte dHash — kept opaque; algorithm is an activity concern
-	PerceptualHashPrefix int    // first 16 bits for LSH-style bucket lookup
-	MD5                  []byte // 16 bytes
+	MD5         []byte   // 16-byte whole-file digest — the exact-dup layer
+	FrameHashes []uint64 // per-frame dHash sequence (one per 0.1s frame); the perceptual-dedup signal, kept opaque
 
 	Width          int
 	Height         int
@@ -108,39 +106,28 @@ func NewAsset(
 	eventID uuid.UUID,
 	fixtureID int64,
 	s3Bucket, s3Key string,
-	perceptualHash, md5 []byte,
+	md5 []byte,
+	frameHashes []uint64,
 	width, height, durationMS int,
 	fileSize int64,
 	at time.Time,
 ) *Asset {
 	return &Asset{
-		ID:                   uuid.New(),
-		EventID:              eventID,
-		FixtureID:            fixtureID,
-		S3Bucket:             s3Bucket,
-		S3Key:                s3Key,
-		PerceptualHash:       perceptualHash,
-		PerceptualHashPrefix: hashPrefix16(perceptualHash),
-		MD5:                  md5,
-		Width:                width,
-		Height:               height,
-		DurationMS:           durationMS,
-		FileSizeBytes:        fileSize,
-		AspectRatio:          computeAspect(width, height),
-		Popularity:           1,
-		FirstSeenAt:          at.UTC(),
+		ID:            uuid.New(),
+		EventID:       eventID,
+		FixtureID:     fixtureID,
+		S3Bucket:      s3Bucket,
+		S3Key:         s3Key,
+		MD5:           md5,
+		FrameHashes:   frameHashes,
+		Width:         width,
+		Height:        height,
+		DurationMS:    durationMS,
+		FileSizeBytes: fileSize,
+		AspectRatio:   computeAspect(width, height),
+		Popularity:    1,
+		FirstSeenAt:   at.UTC(),
 	}
-}
-
-// hashPrefix16 extracts the first 16 bits of the perceptual hash as a
-// signed int (matches the schema's perceptual_hash_prefix INT column).
-// Empty / too-short hash → 0. Used for LSH-style candidate lookup on
-// the near-match backfill path (§3 audit Track 3).
-func hashPrefix16(h []byte) int {
-	if len(h) < 2 {
-		return 0
-	}
-	return int(uint16(h[0])<<8 | uint16(h[1]))
 }
 
 // computeAspect matches the schema's generated column formula.
@@ -152,8 +139,9 @@ func computeAspect(width, height int) float32 {
 }
 
 // BumpPopularity records that a dedup hit landed on this asset. Called
-// by the storage layer's UpsertWithHashDedup on the "loser" path where
-// a duplicate INSERT collided with this row.
+// in-memory by the EventWorkflow consumer when a candidate collapses onto
+// this asset (the AssetRepo.BumpPopularity port persists it when the asset
+// already has a DB row).
 func (a *Asset) BumpPopularity() {
 	a.Popularity++
 }

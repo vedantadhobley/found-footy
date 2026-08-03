@@ -6,6 +6,41 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-03 — #166 schema revision: dedup moves out of the DB into workflow code
+
+**Decision.** `video_assets` stops arbitrating perceptual dedup; the DB now
+enforces only what it honestly can (exact-byte uniqueness), and the fuzzy
+perceptual dedup lives in EventWorkflow code.
+
+- **Dropped:** the single `perceptual_hash BYTEA` column, `perceptual_hash_prefix`,
+  the `video_assets_hash_prefix` LSH index, and `UNIQUE (event_id, perceptual_hash)`.
+  A SQL `UNIQUE` can only test *exact* equality of one hash; real near-dupes
+  (re-encode / watermark / offset) never collide on a single hash, so the
+  constraint fired ~never on the dupes we care about — it was dedup-shaped but
+  didn't dedup.
+- **Added:** `frame_hashes BYTEA NOT NULL` — the per-frame dHash *sequence*
+  (8 bytes big-endian per 0.1 s frame; count = `octet_length/8`). Stored as a
+  queryable **record** (debugging / re-dedup / analysis), NOT a decision-maker.
+  The real dedup is the offset/gap-tolerant sliding-window `video.Match` over
+  this sequence, run **in workflow memory before insert**.
+- **Kept:** `UNIQUE (event_id, md5)` — honest exact-byte dedup, and it doubles
+  as insert idempotency.
+- **`AssetRepo` port redesign:** removed `GetByPerceptualHash`,
+  `UpsertWithHashDedup`, `FindNearMatches` (all assumed the DB was the dedup
+  engine); added `InsertAsset` (INSERT … ON CONFLICT (event_id, md5) DO NOTHING)
+  + `BumpPopularity`. Domain `Asset`: `PerceptualHash`/`Prefix` → `FrameHashes []uint64`.
+
+**Scope:** domain + schema only — the ports have no pg implementation yet
+(that lands with #164's InsertAsset). schema.sql is the fresh-launch source of
+truth (no migration file — launching fresh for La Liga). Validated: pg
+integration test re-applies the schema + inserts `frame_hashes` clean.
+
+**Why now:** unblocks #164 (EventWorkflow), whose promote step needs the new
+insert path. See [`design/v-phase-orchestration.md`](./design/v-phase-orchestration.md)
+"Resolved since".
+
+---
+
 ## 2026-07-28 — V/4 clip validation: vision-LLM soccer/screen gate + clock check (rungs 1–3 shipped)
 
 **Decision.** The V-phase clip-validation activity ships across three rungs,

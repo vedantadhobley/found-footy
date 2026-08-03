@@ -14,32 +14,27 @@ import (
 var ErrNotFound = errors.New("video: not found")
 
 // AssetRepo is the storage port for video_assets.
+//
+// The storage layer NO LONGER arbitrates perceptual dedup (#166): the
+// EventWorkflow consumer decides dedup in-memory (fuzzy sliding-window over
+// the frame-hash sequence) BEFORE calling InsertAsset, so the DB only sees
+// clips it has already judged unique. The old GetByPerceptualHash /
+// UpsertWithHashDedup / FindNearMatches methods — which assumed the DB was
+// the dedup engine — are gone.
 type AssetRepo interface {
 	Get(ctx context.Context, id uuid.UUID) (*Asset, error)
 
-	// GetByPerceptualHash looks up an existing asset with the exact
-	// perceptual hash inside an event. Used on the dedup path before
-	// attempting Insert.
-	GetByPerceptualHash(ctx context.Context, eventID uuid.UUID, hash []byte) (*Asset, error)
+	// InsertAsset writes a clip the workflow has already judged unique.
+	// Idempotent on the exact layer: a retry (or a genuine byte-identical
+	// dupe that slipped the in-memory md5 check) must NOT create a second
+	// row — implement as INSERT ... ON CONFLICT (event_id, md5) DO NOTHING.
+	// Returns inserted=false when the ON CONFLICT path was taken.
+	InsertAsset(ctx context.Context, a *Asset) (inserted bool, err error)
 
-	// UpsertWithHashDedup is the audit §4 atomic dedup pattern. Attempts
-	// INSERT; on unique_violation (event_id, perceptual_hash), fetches
-	// the existing row and bumps its popularity. Returns:
-	//   asset — the winning row (either the freshly-inserted a OR the
-	//           existing one whose popularity got bumped)
-	//   deduped — true if a duplicate was detected (a was NOT inserted)
-	//   err   — transport / DB errors
-	//
-	// The Asset value pointed to by a MAY have its Popularity mutated
-	// (bumped) by this method when deduped=true. Callers that need to
-	// distinguish "I inserted this" from "someone else already had this"
-	// should inspect deduped.
-	UpsertWithHashDedup(ctx context.Context, a *Asset) (result *Asset, deduped bool, err error)
-
-	// FindNearMatches returns assets in the same event whose
-	// perceptual_hash_prefix matches a's, for the near-match backfill
-	// compactor (§3 Track 3 — deferred behind embedding decision).
-	FindNearMatches(ctx context.Context, eventID uuid.UUID, prefix int) ([]*Asset, error)
+	// BumpPopularity increments popularity on an existing asset — the
+	// persist side of a collapse (a candidate deduped onto an asset that
+	// already has a DB row).
+	BumpPopularity(ctx context.Context, id uuid.UUID) error
 }
 
 // ShareRepo is the storage port for video_shares.

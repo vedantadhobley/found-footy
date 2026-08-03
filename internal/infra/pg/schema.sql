@@ -257,13 +257,21 @@ CREATE INDEX event_downstream_workflows_pending
     ON event_downstream_workflows (event_id)
     WHERE completed_at IS NULL;
 
--- 7. video_assets — canonical byte-store, one row per unique perceptual hash per EVENT.
+-- 7. video_assets — canonical byte-store, one row per unique CLIP per EVENT.
 --    Dedup is scoped to the event and NEVER across events. Cross-event / per-fixture
 --    dedup is dead: tried in Python, rejected — it collapsed genuinely-distinct goals
 --    (visually-similar broadcast clips: same stadium, camera, celebration) into one and
 --    dropped legitimate videos. Cross-event clip-bleed is instead handled by timestamp
 --    extraction (the clock check rejects a clip whose broadcast minute doesn't match the
 --    event's reported minute). See decisions.md 2026-07-25.
+--
+--    DEDUP LIVES IN WORKFLOW CODE, NOT HERE (2026-08-03, #166). Perceptual dedup is a
+--    FUZZY sliding-window match over the per-frame hash SEQUENCE (offset/gap-tolerant) —
+--    which no SQL constraint can express. The EventWorkflow consumer decides dedup
+--    in-memory BEFORE insert, so the DB only enforces what it honestly can: exact-byte
+--    uniqueness via UNIQUE (event_id, md5). frame_hashes is stored as a queryable RECORD
+--    (debugging / re-dedup / analysis), NOT as a decision-maker. The old single
+--    perceptual_hash + UNIQUE (event_id, perceptual_hash) + LSH prefix scheme is gone.
 CREATE TABLE video_assets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     -- event_id is the dedup scope; fixture_id is a denormalized convenience for the
@@ -276,9 +284,8 @@ CREATE TABLE video_assets (
     s3_key TEXT NOT NULL,                                   -- computed from (fixture_id, id); the uuid id guarantees uniqueness
 
     -- Content identity
-    perceptual_hash BYTEA NOT NULL,                         -- dHash as raw 8 bytes for fast Hamming
-    perceptual_hash_prefix INT NOT NULL,                    -- first 16 bits, indexable for LSH-style bucket lookup
-    md5 BYTEA NOT NULL,
+    md5 BYTEA NOT NULL,                                     -- 16-byte whole-file digest — the exact-dup layer
+    frame_hashes BYTEA NOT NULL,                            -- per-frame dHash sequence: 8 bytes (big-endian uint64) per 0.1s frame; count = octet_length/8. Record only — dedup is in workflow code.
 
     -- Metadata
     width INT NOT NULL,
@@ -296,12 +303,9 @@ CREATE TABLE video_assets (
 
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    UNIQUE (event_id, md5),                                 -- exact-byte dedup within an event
-    UNIQUE (event_id, perceptual_hash)                      -- perceptual dedup within an event — enables the atomic INSERT
+    UNIQUE (event_id, md5)                                  -- exact-byte dedup + insert idempotency within an event
 );
 
-CREATE INDEX video_assets_hash_prefix ON video_assets (event_id, perceptual_hash_prefix)
-    WHERE superseded_by IS NULL;
 CREATE INDEX video_assets_event_popularity ON video_assets (event_id, popularity DESC)
     WHERE superseded_by IS NULL;
 
