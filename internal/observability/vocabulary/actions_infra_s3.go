@@ -16,6 +16,8 @@ const (
 	ActionS3HeadFailed     Action = "s3_head_failed"     // HeadObject non-404 error
 	ActionS3Delete         Action = "s3_delete"          // DeleteObject succeeded
 	ActionS3DeleteFailed   Action = "s3_delete_failed"   // DeleteObject returned an error
+	ActionS3Copy           Action = "s3_copy"            // CopyObject succeeded (staging→assets promote)
+	ActionS3CopyFailed     Action = "s3_copy_failed"     // CopyObject returned an error
 	ActionS3Presign        Action = "s3_presign"         // PresignGetObject succeeded
 	ActionS3PresignFailed  Action = "s3_presign_failed"  // PresignGetObject returned an error
 )
@@ -33,6 +35,8 @@ func init() {
 		ActionS3HeadFailed,
 		ActionS3Delete,
 		ActionS3DeleteFailed,
+		ActionS3Copy,
+		ActionS3CopyFailed,
 		ActionS3Presign,
 		ActionS3PresignFailed,
 	)

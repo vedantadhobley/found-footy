@@ -71,8 +71,8 @@ flowchart TD
 | `EventWorkflow` | workflow | `client.StartWorkflow` from `ReconcileFixture` | a 30 s poll can't own a ~15-min run → client-spawn + pg mirror |
 | `VideoWorkflow` (×N) | **child workflow** (awaited) | `EventWorkflow` | per-candidate pipeline (download→hash) — workflow-shaped; the only real parent→child |
 | `SearchTweets`, `StoreCandidate` | activities | `EventWorkflow` (inline) | a search attempt is one service call — activity-shaped |
-| `DownloadAndStage`, `HashVideo` | activities | `VideoWorkflow` | the per-candidate steps |
-| `Vision`, `Promote`, `InsertAsset`, `Rank` | activities | `EventWorkflow` (the queue) | cross-candidate / serialized work |
+| `DownloadAndStage`, `HashVideo` | activities | `VideoWorkflow` | the per-candidate steps (✓ #165) |
+| `ValidateClip` (vision), `PromoteAndPersist`, `BumpAssetPopularity`, `DeleteStaging` | activities | `EventWorkflow` (the queue) | cross-candidate / serialized work (✓ V/4 + #164b). `PromoteAndPersist` combines the once-separate promote + insert-asset/share/rank — the asset UUID is minted activity-side (deterministic from event+md5) since workflow code can't. |
 
 ---
 

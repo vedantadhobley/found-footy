@@ -182,6 +182,50 @@ func TestClient_UploadHeadDownloadDelete(t *testing.T) {
 	}
 }
 
+// TestClient_Copy verifies the server-side staging→assets promote: the dest
+// exists with identical bytes and the source is left intact.
+func TestClient_Copy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in -short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	endpoint := runTestMinIO(ctx, t)
+	fx := newTestFixture()
+	c := newTestClient(t, ctx, endpoint, fx)
+
+	const src = "staging/9100/evt/tweet.mp4"
+	const dst = "assets/9100/evt/asset-uuid.mp4"
+	payload := []byte("goal clip bytes")
+	if err := c.Upload(ctx, src, bytes.NewReader(payload), int64(len(payload)), "video/mp4"); err != nil {
+		t.Fatalf("upload src: %v", err)
+	}
+
+	if err := c.Copy(ctx, src, dst); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if !fx.log.HasAction(vocabulary.ModuleInfraS3, vocabulary.ActionS3Copy) {
+		t.Errorf("expected ActionS3Copy; captured=%+v", fx.log.Snapshot())
+	}
+
+	// Dest has the bytes.
+	body, size, err := c.Download(ctx, dst)
+	if err != nil {
+		t.Fatalf("download dst: %v", err)
+	}
+	defer func() { _ = body.Close() }()
+	got, _ := io.ReadAll(body)
+	if !bytes.Equal(got, payload) || size != int64(len(payload)) {
+		t.Errorf("dst body/size = %q/%d, want %q/%d", got, size, payload, len(payload))
+	}
+
+	// Source is untouched (copy, not move).
+	if exists, _ := c.Head(ctx, src); !exists {
+		t.Error("source should still exist after copy")
+	}
+}
+
 // TestClient_MetricsCoverage verifies every operation contributes to
 // its expected counter + histogram + byte-transfer series.
 func TestClient_MetricsCoverage(t *testing.T) {
