@@ -20,9 +20,10 @@ the same commit. Per the [2026-07-07 working rule](decisions.md).
 | IngestWorkflow | ✓ O1c shipped + O1e scheduled daily 00:05 UTC | Temporal Schedule `ingest-scheduled-daily` (`5 0 * * *`) | `internal/workflow/ingest.go` |
 | ActivePollWorkflow | ✓ O2 shipped + scheduled 2026-07-11 | Temporal Schedule `active-poll-scheduled` (IntervalSpec 30s) | `internal/workflow/active_poll.go` |
 | StagingPollWorkflow | ✓ O2 shipped 2026-07-11 | Temporal Schedule `staging-poll-scheduled` (cron `*/15 * * * *`, runtime-tunable) | `internal/workflow/staging_poll.go` |
-| DiscoveryWorkflow | ✓ O3/d shipped 2026-07-23 | Spawned by Monitor's `ReconcileFixture` via `DownstreamSpawner` when `downstream_triggered` flag flips (2026-07-16 decision — Temporal-direct spawn, not NATS-triggered) | `internal/workflow/discovery.go` |
-| VideoValidationWorkflow | ⊘ O4 planned | Child of Discovery | — |
-| AssetPersistenceWorkflow | ⊘ O5 planned | SignalWithStart from Validation | — |
+| DiscoveryWorkflow | ✓ O3/d shipped 2026-07-23 | Spawned by Monitor's `ReconcileFixture` via `DownstreamSpawner` when `downstream_triggered` flag flips (2026-07-16 decision — Temporal-direct spawn, not NATS-triggered). **Evolving into `EventWorkflow`** — the search loop becomes the producer coroutine (#164). | `internal/workflow/discovery.go` |
+| VideoWorkflow | ✓ shipped 2026-08-03 (#165) | **Child** of `EventWorkflow` — one `ExecuteChildWorkflow` per candidate (awaited). Runs `DownloadAndStage → HashVideo`, returns fingerprints. | `internal/workflow/video.go` |
+| EventWorkflow | ⊘ #164 in build | `client.StartWorkflow` from the poll on goal-confirm. The V-phase spine: producer (inline search) + Selector consumer (dedup→vision→promote→rank). See [`design/v-phase-orchestration.md`](design/v-phase-orchestration.md). | — |
+| ~~VideoValidationWorkflow~~ / ~~AssetPersistenceWorkflow~~ | ⊘ **superseded** | The old O4/O5 separate-workflow split is dead — validation (`ValidateClip`) + persistence (`Promote`/`InsertAsset`/`Rank`) run as **activities inside EventWorkflow's serialized queue**, not standalone workflows (streaming redesign, 2026-07-27). | — |
 
 **Note on the ActivePoll + StagingPoll split** (2026-07-11): plan §5 W2
 speced a single `MonitorWorkflow` combining active + staging polling
@@ -59,16 +60,15 @@ flowchart TD
     Staging -->|"staging → active"| PG
     Active -->|"poll live · 3-vote debounce"| PG
 
-    Active -.->|"goal confirmed →<br/>client StartWorkflow + tracking row"| Disc["DiscoveryWorkflow<br/>(per event)"]
-    Disc -.->|"per candidate URL →<br/>client StartWorkflow + tracking row"| Vid["VideoWorkflow<br/>(per candidate) · PLANNED"]
-    Vid -.->|"validation pass →<br/>signal-with-start"| Asset["AssetWorkflow<br/>(per event, FIFO) · PLANNED"]
+    Active -.->|"goal confirmed →<br/>client StartWorkflow + tracking row"| Disc["EventWorkflow<br/>(per goal · #164 building)<br/>producer: inline search"]
+    Disc ==>|"ExecuteChildWorkflow<br/>per candidate (awaited)"| Vid["VideoWorkflow<br/>(per candidate) ✓<br/>download → hash"]
+    Vid ==>|"fingerprints → Selector queue"| Q["EventWorkflow consumer<br/>dedup → vision → promote → rank"]
 
     Disc -.-> PG
-    Vid -.-> PG
-    Asset -.->|"video_assets + video_shares (what users see)"| PG
+    Q -.->|"video_assets + video_shares (what users see)"| PG
 
     classDef planned stroke-dasharray:6 4;
-    class Vid,Asset planned;
+    class Disc,Q planned;
 ```
 
 ## IngestWorkflow — as shipped
