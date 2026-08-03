@@ -264,6 +264,42 @@ func (c *Client) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// Copy server-side-copies srcKey → dstKey within the bucket (no byte
+// round-trip through the worker). Used to promote a validated clip from the
+// staging/ prefix to the assets/ prefix. CopySource is "<bucket>/<srcKey>";
+// our keys are UUID/slash/hex only, so no URL-escaping is required.
+func (c *Client) Copy(ctx context.Context, srcKey, dstKey string) error {
+	start := time.Now()
+	source := c.bucket + "/" + srcKey
+	_, err := c.Client.CopyObject(ctx, &awss3.CopyObjectInput{
+		Bucket:     &c.bucket,
+		Key:        &dstKey,
+		CopySource: &source,
+	})
+	elapsed := time.Since(start)
+	c.ins.operationLatency.WithLabelValues("copy").Observe(elapsed.Seconds())
+
+	if err != nil {
+		c.ins.operations.WithLabelValues("copy", "failure").Inc()
+		c.ins.emitEvent(ctx, logging.LevelWarn, vocabulary.ActionS3CopyFailed,
+			"s3 copy failed",
+			logging.String("src", srcKey),
+			logging.String("dst", dstKey),
+			logging.Int64("elapsed_ms", elapsed.Milliseconds()),
+			logging.Err(err),
+		)
+		return err
+	}
+	c.ins.operations.WithLabelValues("copy", "success").Inc()
+	c.ins.emitEvent(ctx, logging.LevelDebug, vocabulary.ActionS3Copy,
+		"s3 copy ok",
+		logging.String("src", srcKey),
+		logging.String("dst", dstKey),
+		logging.Int64("elapsed_ms", elapsed.Milliseconds()),
+	)
+	return nil
+}
+
 // PresignGet returns a signed URL that grants temporary anonymous
 // read access to the object at key. Browsers fetch video bytes via
 // this URL directly from S3, bypassing the api binary. TTL is

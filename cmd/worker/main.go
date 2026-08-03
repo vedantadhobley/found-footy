@@ -166,6 +166,8 @@ func main() {
 		aliasRepo := pg.NewAliasRepo(pool)
 		eventRepo := pg.NewEventRepo(pool)
 		teamRepo := pg.NewTeamRepo(pool)
+		assetRepo := pg.NewAssetRepo(pool)
+		shareRepo := pg.NewShareRepo(pool)
 
 		ingestActs := &ingestactivity.Activities{
 			APIFootball:           afClient,
@@ -247,6 +249,16 @@ func main() {
 			Cfg:        deps.Cfg.Vision,
 		}
 
+		// Phase V/164b — EventWorkflow consumer-queue persistence: promote
+		// staging→assets + insert asset/share/rank, collapse-bump, staging cleanup.
+		persistActs := &videoactivity.PersistActivities{
+			S3:           s3c,
+			Assets:       assetRepo,
+			Shares:       shareRepo,
+			Bucket:       deps.Cfg.S3.Bucket,
+			AssetsPrefix: deps.Cfg.Video.AssetsPrefix,
+		}
+
 		// Phase O2 — the two poll workflows share one activities struct.
 		// Shares fixtureRepo + eventRepo with the rest of the worker.
 		// Now clock left nil → real wall clock in prod (per the
@@ -267,6 +279,7 @@ func main() {
 		w.RegisterActivity(discoveryActs)
 		w.RegisterActivity(videoActs)
 		w.RegisterActivity(visionActs)
+		w.RegisterActivity(persistActs)
 
 		if err := w.Start(ctx); err != nil {
 			return err

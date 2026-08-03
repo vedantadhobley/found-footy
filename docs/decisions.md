@@ -6,6 +6,31 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-03 — #164b: consumer-queue persist activities + a combine deviation
+
+**Decision.** The EventWorkflow consumer's post-dedup/vision steps ship as
+`PersistActivities` (`internal/activity/video/persist.go`): `PromoteAndPersist`,
+`BumpAssetPopularity`, `DeleteStaging`. Plus a server-side S3 `Copy` (CopyObject)
+on the adapter for the staging→assets promote.
+
+- **Deviation from v-phase-orchestration.md:** the doc listed "Promote" and
+  "Insert asset + share + rank" as *two* queue steps. They're **combined into
+  one `PromoteAndPersist` activity** because the asset UUID can't be minted in
+  workflow code (non-deterministic), and that UUID drives *both* the assets S3
+  key and the DB row — so copy + insert must share one activity where
+  non-determinism is allowed.
+- **Retry idempotency by design:** the asset UUID is **derived** from
+  `(event_id, md5)` via uuid v5, so a retried activity produces the same UUID →
+  the same assets key (copy is a no-op overwrite) and the same row (`InsertAsset`
+  is ON CONFLICT). The share mint is guarded by a "share already exists for this
+  asset?" check. `BumpAssetPopularity` is the one non-idempotent step (a retry
+  may over-count by 1) — benign for a soft vote signal, noted not fixed.
+
+**Scope:** activities + S3 Copy + tests (fakes for persist, testcontainers for
+Copy). Wired into `cmd/worker`. The EventWorkflow that *calls* these is 164c.
+
+---
+
 ## 2026-08-03 — #166 schema revision: dedup moves out of the DB into workflow code
 
 **Decision.** `video_assets` stops arbitrating perceptual dedup; the DB now
