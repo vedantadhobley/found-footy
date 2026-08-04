@@ -46,6 +46,14 @@ type Activities struct {
 	AttemptSpacing time.Duration
 	MaxAgeMinutes  int
 	QueryTimeout   time.Duration
+
+	// Dedup thresholds (config.DedupConfig), surfaced through this same
+	// start-of-workflow config read so EventWorkflow's in-code video.Match
+	// gets them deterministically (recorded in history → replay-safe) rather
+	// than reading env from workflow code.
+	MaxHamming   int
+	MinRunFrames int
+	MaxGapFrames int
 }
 
 // ── GetDiscoveryConfig ─────────────────────────────────────────
@@ -62,6 +70,11 @@ type GetDiscoveryConfigOutput struct {
 	AttemptSpacing time.Duration
 	MaxAgeMinutes  int
 	QueryTimeout   time.Duration
+
+	// Dedup thresholds for EventWorkflow's in-code video.Match.
+	MaxHamming   int
+	MinRunFrames int
+	MaxGapFrames int
 }
 
 // Fallbacks used when config isn't populated on Activities (test
@@ -74,6 +87,10 @@ const (
 	fallbackAttemptSpacing = 60 * time.Second
 	fallbackMaxAgeMinutes  = 3
 	fallbackQueryTimeout   = 2 * time.Minute
+	// Dedup fallbacks match config.DedupConfig defaults (decisions.md 2026-07-28).
+	fallbackMaxHamming   = 10
+	fallbackMinRunFrames = 30
+	fallbackMaxGapFrames = 3
 )
 
 // GetDiscoveryConfig — trivial config accessor for EventWorkflow.
@@ -87,6 +104,9 @@ func (a *Activities) GetDiscoveryConfig(
 		AttemptSpacing: a.AttemptSpacing,
 		MaxAgeMinutes:  a.MaxAgeMinutes,
 		QueryTimeout:   a.QueryTimeout,
+		MaxHamming:     a.MaxHamming,
+		MinRunFrames:   a.MinRunFrames,
+		MaxGapFrames:   a.MaxGapFrames,
 	}
 	if out.MaxAttempts == 0 {
 		out.MaxAttempts = fallbackMaxAttempts
@@ -99,6 +119,15 @@ func (a *Activities) GetDiscoveryConfig(
 	}
 	if out.QueryTimeout == 0 {
 		out.QueryTimeout = fallbackQueryTimeout
+	}
+	if out.MaxHamming == 0 {
+		out.MaxHamming = fallbackMaxHamming
+	}
+	if out.MinRunFrames == 0 {
+		out.MinRunFrames = fallbackMinRunFrames
+	}
+	if out.MaxGapFrames == 0 {
+		out.MaxGapFrames = fallbackMaxGapFrames
 	}
 	return out, nil
 }

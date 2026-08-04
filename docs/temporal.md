@@ -215,7 +215,7 @@ Load-bearing details:
 SDK's ScheduleClient. Not per-op instrumented; schedule ops are rare.
 If Monitor/Discovery add many schedules, wrap.
 
-**MonitorWorkflow, DiscoveryWorkflow, etc.** — future schedules
+**MonitorWorkflow, EventWorkflow, etc.** — future schedules
 follow the same pattern.
 
 ## Cross-refs

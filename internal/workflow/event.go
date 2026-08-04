@@ -52,6 +52,7 @@ type EventWorkflowOutput struct {
 	Completed       bool      `json:"completed"`
 	AttemptsRun     int       `json:"attempts_run"`
 	CandidatesFound int       `json:"candidates_found"`
+	AssetsKept      int       `json:"assets_kept"` // verified + unverified clips surfaced
 	OutcomeClass    string    `json:"outcome_class"`
 }
 
@@ -159,113 +160,95 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 	}
 	log.Info("query built", "query", query, "length", len(query))
 
-	// Step 3: 10-attempt search loop with accumulated exclude_urls.
-	//
-	// exclude_urls is a workflow-local []string so retries + replays
-	// deterministically rebuild the same accumulation. Each attempt's
-	// candidates that pass the "new to us" check get appended.
+	// Step 3: the pipeline — a PRODUCER coroutine (the discovery search loop,
+	// spawning a VideoWorkflow child per new candidate) running concurrently
+	// with the CONSUMER (the serialized Selector queue: dedup → vision →
+	// promote → rank). Temporal owns completion: the consumer returns when
+	// search is done AND nothing is in flight — no idle timeout.
+	p := newPipeline(ctx, in, pipelineConfig{
+		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
+	}, log)
+
+	// exclude_urls + seenTweetIDs are workflow-local so retries/replays
+	// deterministically rebuild the same accumulation.
 	excludeURLs := make([]string, 0, 64)
-	seenTweetIDs := make(map[string]struct{}, 64) // dedup within workflow state
+	seenTweetIDs := make(map[string]struct{}, 64)
 
-	searchOptions := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: cfgOut.QueryTimeout,
-		HeartbeatTimeout:    30 * time.Second,
-		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:    2 * time.Second,
-			BackoffCoefficient: 2,
-			MaximumAttempts:    3, // per-search transient failures only
-		},
-	})
-	storeOptions := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: discoveryPGShortActivityTTL,
-		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:    time.Second,
-			BackoffCoefficient: 2,
-			MaximumAttempts:    discoveryPGRetryAttempts,
-		},
-	})
+	workflow.Go(ctx, func(gctx workflow.Context) {
+		searchOptions := workflow.WithActivityOptions(gctx, workflow.ActivityOptions{
+			StartToCloseTimeout: cfgOut.QueryTimeout,
+			HeartbeatTimeout:    30 * time.Second,
+			RetryPolicy:         &temporal.RetryPolicy{InitialInterval: 2 * time.Second, BackoffCoefficient: 2, MaximumAttempts: 3},
+		})
+		storeOptions := workflow.WithActivityOptions(gctx, workflow.ActivityOptions{
+			StartToCloseTimeout: discoveryPGShortActivityTTL,
+			RetryPolicy:         &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumAttempts: discoveryPGRetryAttempts},
+		})
 
-	for attempt := 1; attempt <= cfgOut.MaxAttempts; attempt++ {
-		var searchOut discoveryactivity.SearchTweetsOutput
-		if err := workflow.ExecuteActivity(searchOptions,
-			(*discoveryactivity.Activities).SearchTweets,
-			discoveryactivity.SearchTweetsInput{
-				EventID:       in.EventID,
-				FixtureID:     in.FixtureID,
-				Query:         query,
-				ExcludeURLs:   excludeURLs,
-				MaxAgeMinutes: cfgOut.MaxAgeMinutes,
-			}).Get(searchOptions, &searchOut); err != nil {
-			// Transient search failure — log and move on to the next
-			// attempt after the spacing timer. Don't fail the whole
-			// workflow because one attempt didn't land.
-			log.Warn("SearchTweets attempt failed",
-				"attempt", attempt, "err", err)
-		} else {
-			// Persist newly-surfaced candidates.
-			for _, v := range searchOut.Videos {
-				if v.TweetURL == "" {
-					continue
-				}
-				if _, dup := seenTweetIDs[v.TweetURL]; dup {
-					continue
-				}
-				seenTweetIDs[v.TweetURL] = struct{}{}
-				excludeURLs = append(excludeURLs, v.TweetURL)
+		for attempt := 1; attempt <= cfgOut.MaxAttempts; attempt++ {
+			var searchOut discoveryactivity.SearchTweetsOutput
+			if err := workflow.ExecuteActivity(searchOptions,
+				(*discoveryactivity.Activities).SearchTweets,
+				discoveryactivity.SearchTweetsInput{
+					EventID: in.EventID, FixtureID: in.FixtureID, Query: query,
+					ExcludeURLs: excludeURLs, MaxAgeMinutes: cfgOut.MaxAgeMinutes,
+				}).Get(searchOptions, &searchOut); err != nil {
+				log.Warn("SearchTweets attempt failed", "attempt", attempt, "err", err)
+			} else {
+				for _, v := range searchOut.Videos {
+					if v.TweetURL == "" {
+						continue
+					}
+					if _, dup := seenTweetIDs[v.TweetURL]; dup {
+						continue
+					}
+					seenTweetIDs[v.TweetURL] = struct{}{}
+					excludeURLs = append(excludeURLs, v.TweetURL)
 
-				var storeOut discoveryactivity.StoreCandidateOutput
-				if err := workflow.ExecuteActivity(storeOptions,
-					(*discoveryactivity.Activities).StoreCandidate,
-					discoveryactivity.StoreCandidateInput{
-						EventID:               in.EventID,
-						FixtureID:             in.FixtureID,
-						SearchAttempt:         attempt,
-						Query:                 query,
-						TweetURL:              v.TweetURL,
-						TweetText:             v.TweetText,
-						VideoPageURL:          v.VideoPageURL,
-						DurationSeconds:       v.DurationSeconds,
-						Username:              v.Username,
-						AgeMinutesAtDiscovery: v.AgeMinutes,
-					}).Get(storeOptions, &storeOut); err != nil {
-					// Don't blow up the workflow on a per-candidate
-					// insert failure — log + continue. The candidate
-					// data is still in seenTweetIDs so retry-time
-					// re-discovery won't produce dupes.
-					log.Warn("StoreCandidate failed",
-						"tweet_url", v.TweetURL, "err", err)
-				} else if storeOut.Inserted {
-					out.CandidatesFound++
+					var storeOut discoveryactivity.StoreCandidateOutput
+					if err := workflow.ExecuteActivity(storeOptions,
+						(*discoveryactivity.Activities).StoreCandidate,
+						discoveryactivity.StoreCandidateInput{
+							EventID: in.EventID, FixtureID: in.FixtureID, SearchAttempt: attempt,
+							Query: query, TweetURL: v.TweetURL, TweetText: v.TweetText,
+							VideoPageURL: v.VideoPageURL, DurationSeconds: v.DurationSeconds,
+							Username: v.Username, AgeMinutesAtDiscovery: v.AgeMinutes,
+						}).Get(storeOptions, &storeOut); err != nil {
+						log.Warn("StoreCandidate failed", "tweet_url", v.TweetURL, "err", err)
+					} else if storeOut.Inserted {
+						out.CandidatesFound++
+					}
+					// Spawn the per-candidate Video child (candidate persistence
+					// is post-hoc learning; the pipeline processes the clip
+					// regardless of the StoreCandidate result).
+					p.spawnChild(gctx, v.TweetURL)
 				}
+				log.Info("attempt complete", "attempt", attempt, "videos_returned", searchOut.Count,
+					"cumulative_candidates", out.CandidatesFound, "stop_reason", searchOut.StopReason)
 			}
-			log.Info("attempt complete",
-				"attempt", attempt,
-				"videos_returned", searchOut.Count,
-				"cumulative_candidates", out.CandidatesFound,
-				"stop_reason", searchOut.StopReason,
-			)
+			out.AttemptsRun = attempt
+			if attempt < cfgOut.MaxAttempts {
+				_ = workflow.Sleep(gctx, cfgOut.AttemptSpacing)
+			}
 		}
-		out.AttemptsRun = attempt
+		p.searchDone = true
+	})
 
-		// Wait AttemptSpacing before the next attempt. Skip the timer
-		// after the last attempt — no point sleeping when we're about
-		// to finalize.
-		if attempt < cfgOut.MaxAttempts {
-			_ = workflow.Sleep(ctx, cfgOut.AttemptSpacing)
-		}
-	}
+	p.run() // consumer — blocks until searchDone && inFlight==0
 
-	// Classify the outcome for observability. tweets_found /
-	// no_tweets_found preserved from the earlier stub for continuity;
-	// added attempts_completed_no_candidates to distinguish "10
-	// attempts, zero results" (query miss) from "10 attempts, some
-	// results" (normal).
+	out.AssetsKept = p.verified + p.unverified
 	switch {
-	case out.CandidatesFound > 0:
-		out.OutcomeClass = "candidates_found"
+	case out.AssetsKept > 0:
+		out.OutcomeClass = "assets_surfaced"
+	case p.spawned > 0:
+		out.OutcomeClass = "candidates_no_assets"
 	default:
 		out.OutcomeClass = "no_candidates"
 	}
+	log.Info("event pipeline complete",
+		"spawned", p.spawned, "passed", p.passed, "duplicates", p.duplicates,
+		"verified", p.verified, "unverified", p.unverified,
+		"rejected", p.rejectedClips, "failed", p.failed)
 	return finalizeEvent(ctx, in, out, log)
 }
 
