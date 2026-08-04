@@ -35,13 +35,33 @@ vedanta-systems reaches found-footy two ways: NATS subscription for
 push, and REST for pull / on-demand queries. Both surfaces need
 documentation here.
 
-## Target content
+## Endpoint catalog (settled 2026-08-04 — see [decisions.md](../decisions.md))
 
-- **Endpoint catalog** — HTTP method / path / auth / purpose per REST
-  endpoint (fixtures, events, videos, share-id redirects, admin ops)
-- **Auto-derived OpenAPI spec** — from Huma struct tags on request/
-  response types; committed at `docs/generated/openapi.yaml` per
-  [`../rebuild-plan.md`](rebuild-plan.md) §15.3
+Built on **Chi**, not Chi+Huma (small read surface, one client we control — Huma's
+auto-OpenAPI/validation isn't worth its weight; hand-shaped JSON matching the frontend).
+The API is **timezone-agnostic** (no `date` param — the frontend buckets by local tz) and
+the **update unit is the fixture** (`GET /fixtures/{id}` is the surgical refetch the frontend
+hits per NATS push hint; replaces Python's coarse "refetch everything every 30s").
+
+| Method / path | Purpose |
+|---|---|
+| `GET /api/v1/fixtures/{id}` | one fixture + its events — **fixture-scope refetch** (activation/completion/ingestion hints) |
+| `GET /api/v1/events/{event_id}` | one event + its videos — **event-scope refetch** (goal/new-video/rank-change hints) |
+| `GET /api/v1/fixtures` | bounded/by-state window (UTC timestamps; frontend groups by day) |
+| `GET /api/v1/videos/{share_id}` | 302 → presigned S3 URL (browser fetches bytes from Garage directly) |
+| share lookup | for og-server OG cards + deep links |
+
+**Push→refetch rule:** every NATS hint carries `fixture_id` (always) + `event_id` (when the change
+is event-level). The frontend refetches the **smallest named scope** — `event_id` present → the
+event endpoint; else the fixture endpoint. One rule, two granularities. Subjects follow the dhobley
+standard `found_footy.<domain>.<event_type>` (IDs in the payload, not the subject).
+
+**No `GET /events?since=` backfill endpoint** — reconnect-replay is handled by the JetStream
+durable consumer (see the eventing decision), not a read-API endpoint.
+**No `POST /refresh`** — deprecated; found-footy publishes to NATS, the frontend refetches on hint.
+
+## Target content (remaining to spec here)
+
 - **NATS subject catalog** — subject names for the events found-footy
   publishes for inter-project consumption (`event.detected` /
   `event.stable` / `event.video_ready` / etc.), JetStream retention

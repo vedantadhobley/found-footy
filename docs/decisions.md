@@ -6,6 +6,61 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-04 — API + eventing shape for cutover (Chi; timezone-agnostic; fixture-level push via JetStream)
+
+Settled in a design pass while scoping #167 (read API) + the frontend eventing path.
+
+**Read API stack: Chi, NOT Chi+Huma.** rebuild-plan §8 penciled in Huma (auto-OpenAPI +
+struct validation), but the read surface is a handful of GETs consumed by one client we
+control (vedanta-systems). Huma's machinery isn't worth its weight — use plain Chi (router +
+middleware) and hand-shape JSON to match the frontend. Add Huma only if a documented public
+API for third parties ever materializes.
+
+**API is timezone-agnostic — no `date` param.** Date bucketing depends on the viewer's
+timezone (a frontend concern — vedanta-systems already does `getDayBounds` + `offsetMin`).
+The API returns fixtures with UTC kickoff timestamps over a bounded/state window; the frontend
+groups into its local days. A `date` param would smuggle a timezone assumption into the backend.
+
+**Update granularity: the hint names the smallest changed scope; the frontend refetches THAT.**
+Every event carries `fixture_id` (always) + `event_id` (nullable). **Event-level** changes (goal,
+new video, rank change) set `event_id` → frontend refetches `GET /api/v1/events/{event_id}`.
+**Fixture-level** changes (activation, completion, ingestion — no specific event) have no
+`event_id` → refetch `GET /api/v1/fixtures/{id}`. One uniform rule, two granularities —
+standardized AND surgical. Replaces Python's coarse "refetch EVERYTHING every ~30s"
+(`notify_frontend_refresh` fired every monitor cycle + every download workflow — massively
+unoptimized). NOTE: refetch granularity is **payload-driven** (the `event_id`), NOT a JetStream
+feature — JetStream's subject-level filtering is a separate consumer-side optimization the SSE
+bridge doesn't need (it forwards everything).
+
+**Subject scheme** — dhobley standard `<project>.<domain>.<event_type>` (topology.md). found-footy's
+current 2-part subjects (`event.detected`, `fixture.completed`, …) gain the **`found_footy.`**
+prefix → `found_footy.event.detected` etc. (`found_footy`, not `found-footy` — matches the existing
+`rank_recalculated` underscore-token style + is identifier-safe for stream/account names). IDs stay
+in the payload, not the subject (per-ID subject filtering deferred per "don't design speculatively").
+Folded into #169.
+
+**`POST /refresh` deprecated entirely.** found-footy no longer calls the frontend over HTTP; it
+publishes to the event bus and the frontend refetches on hint. The frontend needs no inbound API.
+
+**Eventing: JetStream for the durable event stream** (per [dhobley decisions 2026-08-04](../../../vedanta-dhobley/docs/decisions.md) — cross-project pattern):
+- Composer swaps `nats.Publish` → `js.Publish` onto a `FOUND_FOOTY` stream over `event.>`/`fixture.>`
+  (at-least-once). The vedanta-systems SSE bridge becomes a **durable JetStream consumer** that
+  auto-replays on reconnect. JetStream persists to NATS's own file store — **no Postgres**.
+- **`event_log` becomes audit-only** — its SSE-reconnect-backfill role moves to JetStream. Keep for
+  SQL-queryable history, or drop later.
+- **No `GET /events?since=` backfill endpoint** — JetStream handles reconnect-replay, so the read API
+  doesn't serve backfill. One fewer endpoint in #167.
+- The composer→JetStream swap is a **small fast-follow, NOT launch-blocking**: for launch the frontend
+  can poll `GET /fixtures/{id}`; the push upgrades latency and is best built once (during cutover),
+  not core-NATS-then-migrated.
+
+**Read API endpoint list (#167):** `GET /api/v1/fixtures/{id}` (fixture-scope refetch),
+`GET /api/v1/events/{event_id}` (event-scope refetch), `GET /api/v1/fixtures` (bounded/by-state
+window; frontend buckets by tz), `GET /api/v1/videos/{share_id}` (→ 302 presigned S3 URL),
++ share lookup for og-server. See [design/api-contract.md](./design/api-contract.md).
+
+---
+
 ## 2026-08-04 — #164c-b: EventWorkflow producer/consumer engine (the V-phase spine)
 
 **Decision.** `EventWorkflow` grows from a search-only workflow into the full
