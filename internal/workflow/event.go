@@ -1,4 +1,10 @@
-// DiscoveryWorkflow — production Twitter search + candidate collection.
+// EventWorkflow — the per-goal orchestrator. CURRENT STATE: it runs the
+// discovery phase (Twitter search + candidate collection). The video-processing
+// consumer (spawn VideoWorkflow children → dedup → vision → promote → rank)
+// lands in #164c; this file is the renamed DiscoveryWorkflow it grows from
+// (Option 2 rename, decisions.md 2026-08-03: the workflow became the event
+// orchestrator, so "Discovery" undersold it; the discovery *phase* — config +
+// activities — keeps its accurate name).
 //
 // Spawned by Monitor's ReconcileFixture via DownstreamSpawner when an
 // event's downstream_triggered flag is flipped (2026-07-16 decision:
@@ -12,9 +18,12 @@
 // event_search_candidates for downstream V-phase pickup + post-hoc
 // query-quality learning.
 //
-// Deterministic workflow ID convention: "discovery-{event_id}" so
+// Deterministic workflow ID convention: "event-{event_id}" so
 // the row inserted by Monitor pairs 1:1 with the Temporal WorkflowID
-// under RejectDuplicate policy. Activity retries after partial-
+// under RejectDuplicate policy. (The pg event_downstream_workflows
+// workflow_type value stays "discovery" — the internal label for the
+// event's downstream workflow, filtered by EventsAwaitingDiscovery.)
+// Activity retries after partial-
 // success crashes hit "WorkflowExecutionAlreadyStarted" which the
 // spawner swallows as success.
 package workflow
@@ -31,14 +40,14 @@ import (
 	querybuilder "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 )
 
-// DiscoveryWorkflowInput re-exports the shared type so callers that
+// EventWorkflowInput re-exports the shared type so callers that
 // only import internal/workflow don't need a second import for the
 // spawn payload. See internal/activity/discovery/types.go for the
 // canonical declaration.
-type DiscoveryWorkflowInput = discoveryactivity.DiscoveryWorkflowInput
+type EventWorkflowInput = discoveryactivity.EventWorkflowInput
 
-// DiscoveryWorkflowOutput reports the run outcome for observability.
-type DiscoveryWorkflowOutput struct {
+// EventWorkflowOutput reports the run outcome for observability.
+type EventWorkflowOutput struct {
 	EventID         uuid.UUID `json:"event_id"`
 	Completed       bool      `json:"completed"`
 	AttemptsRun     int       `json:"attempts_run"`
@@ -59,12 +68,12 @@ const (
 	discoveryPGRetryAttempts    = 5
 )
 
-// DiscoveryWorkflow orchestrates the full candidate collection cycle:
+// EventWorkflow orchestrates the full candidate collection cycle:
 // fetch team aliases → build query → run 10 attempts of /search with
 // accumulated exclude_urls → persist each candidate → mark row complete.
-func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (DiscoveryWorkflowOutput, error) {
+func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOutput, error) {
 	log := workflow.GetLogger(ctx)
-	log.Info("DiscoveryWorkflow started",
+	log.Info("EventWorkflow started",
 		"event_id", in.EventID,
 		"fixture_id", in.FixtureID,
 		"team_id", in.TeamID,
@@ -73,7 +82,7 @@ func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (Discove
 		"minute", in.Minute,
 	)
 
-	out := DiscoveryWorkflowOutput{EventID: in.EventID}
+	out := EventWorkflowOutput{EventID: in.EventID}
 
 	// Read tunable config once at workflow start via a config activity
 	// (Temporal determinism — workflows can't touch env directly).
@@ -111,7 +120,7 @@ func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (Discove
 	// outcome_class so we can grep Loki for pipeline bugs.
 	if in.PlayerName == "" {
 		out.OutcomeClass = "unknown_player"
-		return finalizeDiscovery(ctx, in, out, log)
+		return finalizeEvent(ctx, in, out, log)
 	}
 
 	// Step 1: fetch team aliases from pg.
@@ -146,7 +155,7 @@ func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (Discove
 			"player", in.PlayerName, "canonical", canonicalName,
 			"alias_count", len(aliasesOut.Aliases))
 		out.OutcomeClass = "empty_query"
-		return finalizeDiscovery(ctx, in, out, log)
+		return finalizeEvent(ctx, in, out, log)
 	}
 	log.Info("query built", "query", query, "length", len(query))
 
@@ -257,19 +266,19 @@ func DiscoveryWorkflow(ctx workflow.Context, in DiscoveryWorkflowInput) (Discove
 	default:
 		out.OutcomeClass = "no_candidates"
 	}
-	return finalizeDiscovery(ctx, in, out, log)
+	return finalizeEvent(ctx, in, out, log)
 }
 
-// finalizeDiscovery is the exit ramp — marks the
+// finalizeEvent is the exit ramp — marks the
 // event_downstream_workflows row completed with the outcome_class,
 // returns the workflow output. Called from every exit path so the
 // checklist row always transitions to completed.
-func finalizeDiscovery(
+func finalizeEvent(
 	ctx workflow.Context,
-	in DiscoveryWorkflowInput,
-	out DiscoveryWorkflowOutput,
+	in EventWorkflowInput,
+	out EventWorkflowOutput,
 	logger log.Logger,
-) (DiscoveryWorkflowOutput, error) {
+) (EventWorkflowOutput, error) {
 	actCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: discoveryPGShortActivityTTL,
 		RetryPolicy: &temporal.RetryPolicy{
@@ -292,7 +301,7 @@ func finalizeDiscovery(
 	}
 
 	out.Completed = true
-	logger.Info("DiscoveryWorkflow finished",
+	logger.Info("EventWorkflow finished",
 		"event_id", in.EventID,
 		"attempts_run", out.AttemptsRun,
 		"candidates_found", out.CandidatesFound,

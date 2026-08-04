@@ -19,7 +19,7 @@ var (
 // already-complete events. Errors on removed events (a VAR'd event
 // doesn't advance).
 //
-// Called at the START of DiscoveryWorkflow — proves the 3-poll debounce
+// Called at the START of EventWorkflow — proves the 3-poll debounce
 // was reached AND that discovery is now the owner of the event's video
 // search. Setting it here rather than in MonitorWorkflow means a failed
 // Discovery spawn leaves the flag false + the next monitor cycle

@@ -28,7 +28,7 @@ const (
 	// no separate module for it.
 	ModuleIngestWorkflow            Module = "ingest_workflow"
 	ModuleMonitorWorkflow           Module = "monitor_workflow"
-	ModuleDiscoveryWorkflow         Module = "discovery_workflow"
+	ModuleEventWorkflow         Module = "discovery_workflow"
 	ModuleVideoValidationWorkflow   Module = "video_validation_workflow"
 	ModuleAssetPersistenceWorkflow  Module = "asset_persistence_workflow"
 
@@ -73,7 +73,7 @@ const (
 // IsKnownModule (lazy-hydrates a set on first call) and by the
 // vocabulary catalog generator per §15.3.
 var ValidModules = []Module{
-	ModuleIngestWorkflow, ModuleMonitorWorkflow, ModuleDiscoveryWorkflow,
+	ModuleIngestWorkflow, ModuleMonitorWorkflow, ModuleEventWorkflow,
 	ModuleVideoValidationWorkflow, ModuleAssetPersistenceWorkflow,
 
 	ModuleFixture, ModuleEvent, ModuleVideo, ModuleAlias,

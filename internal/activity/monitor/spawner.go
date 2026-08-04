@@ -30,12 +30,12 @@ import (
 // after a partial-success crash sees WorkflowExecutionAlreadyStarted,
 // which the impl swallows so the activity finishes cleanly on retry.
 type DownstreamSpawner interface {
-	// SpawnDiscovery starts a DiscoveryWorkflow with the given
+	// SpawnEvent starts a EventWorkflow with the given
 	// deterministic workflow_id ("discovery-{event_id}") and input.
 	// Nil error means either the workflow was newly started OR was
 	// already running (RejectDuplicate + already-started swallowed);
 	// both count as success.
-	SpawnDiscovery(ctx context.Context, workflowID string, in discoveryactivity.DiscoveryWorkflowInput) error
+	SpawnEvent(ctx context.Context, workflowID string, in discoveryactivity.EventWorkflowInput) error
 }
 
 // TemporalSpawner is the production DownstreamSpawner backed by the
@@ -56,11 +56,11 @@ func NewTemporalSpawner(c *temporaladapter.Client, startTimeout time.Duration) *
 	return &TemporalSpawner{Client: c, StartTimeout: startTimeout}
 }
 
-// SpawnDiscovery calls the Temporal client's StartWorkflow with
+// SpawnEvent calls the Temporal client's StartWorkflow with
 // RejectDuplicate reuse policy so a retry-after-partial-success
 // crash surfaces WorkflowExecutionAlreadyStarted (swallowed) rather
 // than starting a second run. Uses the client's default task queue.
-func (s *TemporalSpawner) SpawnDiscovery(ctx context.Context, workflowID string, in discoveryactivity.DiscoveryWorkflowInput) error {
+func (s *TemporalSpawner) SpawnEvent(ctx context.Context, workflowID string, in discoveryactivity.EventWorkflowInput) error {
 	callCtx, cancel := context.WithTimeout(ctx, s.StartTimeout)
 	defer cancel()
 
@@ -71,7 +71,7 @@ func (s *TemporalSpawner) SpawnDiscovery(ctx context.Context, workflowID string,
 		WorkflowExecutionTimeout: 30 * time.Minute,
 	}
 
-	_, err := s.Client.StartWorkflow(callCtx, opts, "DiscoveryWorkflow", in)
+	_, err := s.Client.StartWorkflow(callCtx, opts, "EventWorkflow", in)
 	if err != nil {
 		// Retry-after-partial-success: previous attempt got past
 		// ExecuteWorkflow but not past activity-return. Swallow so the
@@ -80,7 +80,7 @@ func (s *TemporalSpawner) SpawnDiscovery(ctx context.Context, workflowID string,
 		if errors.As(err, &alreadyStarted) {
 			return nil
 		}
-		return fmt.Errorf("monitor.SpawnDiscovery: %w", err)
+		return fmt.Errorf("monitor.SpawnEvent: %w", err)
 	}
 	return nil
 }

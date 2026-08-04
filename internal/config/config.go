@@ -41,7 +41,7 @@ type Config struct {
 	// coupling invariant between ActivationWindow and StagingPollInterval.
 	Workflows WorkflowsConfig
 
-	// DiscoveryWorkflow tuning (attempts, spacing, age filter, per-
+	// EventWorkflow tuning (attempts, spacing, age filter, per-
 	// attempt timeout). Not folded into Workflows because these are
 	// Discovery-specific rather than cross-workflow orchestration.
 	Discovery DiscoveryConfig

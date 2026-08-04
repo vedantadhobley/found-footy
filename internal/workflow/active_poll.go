@@ -24,7 +24,7 @@
 //      workflow waits for all).
 //
 // Deferred to O3:
-//   • DiscoveryWorkflow spawn for stable events (currently just
+//   • EventWorkflow spawn for stable events (currently just
 //     logged via EventsBecameStable in the output).
 //   • Destroy pipeline (Temporal cancel + video_shares soft-delete)
 //     for removed events (currently just logged via EventsRemoved).
