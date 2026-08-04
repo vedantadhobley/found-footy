@@ -37,7 +37,7 @@ runtime "huh why isn't this indexed."
 
 Full list per `vocabulary.go`:
 
-**Workflows:** IngestWorkflow, MonitorWorkflow, DiscoveryWorkflow,
+**Workflows:** IngestWorkflow, MonitorWorkflow, EventWorkflow,
 VideoValidationWorkflow, AssetPersistenceWorkflow. (Only IngestWorkflow
 has emissions today; the rest are pre-declared for their upcoming phases.)
 
@@ -52,7 +52,7 @@ InfraFFmpeg, InfraWikidata.
 APIServer, TwitterService, Migration, Healthz, Deploy.
 
 **Divergence from plan §11 vocabulary block:** the workflow rename
-(TwitterWorkflow → DiscoveryWorkflow, DownloadWorkflow →
+(TwitterWorkflow → EventWorkflow, DownloadWorkflow →
 VideoValidationWorkflow, UploadWorkflow → AssetPersistenceWorkflow,
 RAGWorkflow folded into Ingest) — logged in
 [decisions.md 2026-07-05 workflow-rename entry](decisions.md).

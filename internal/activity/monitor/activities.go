@@ -706,6 +706,7 @@ func (a *Activities) registerAndSpawnEvent(ctx context.Context, existing *event.
 		TeamName:   domainEv.Team.Name,
 		TeamID:     int64(domainEv.Team.ID),
 		Minute:     domainEv.Minute,
+		Extra:      domainEv.Extra,
 	}
 	if err := a.Spawner.SpawnEvent(ctx, workflowID, in); err != nil {
 		// Non-fatal per Option B. The pending row exists; a follow-up

@@ -6,6 +6,47 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-04 — #164c-b: EventWorkflow producer/consumer engine (the V-phase spine)
+
+**Decision.** `EventWorkflow` grows from a search-only workflow into the full
+per-goal orchestrator, per [`design/v-phase-orchestration.md`](./design/v-phase-orchestration.md).
+
+- **Producer** (`workflow.Go` coroutine): the existing search loop, now spawning
+  one `VideoWorkflow` child per new candidate and registering its future on a
+  shared `workflow.Selector`. Sets `searchDone` after the last attempt.
+- **Consumer** (`event_pipeline.go`, the main coroutine): drains the Selector —
+  `onVideoDone` runs dedup (md5 exact → `video.Match` sliding-window over the
+  frame sequence, against `assets ∪ pending`), collapses dups (BumpPopularity +
+  DeleteStaging), and fires `ValidateClip` for a genuinely-new clip;
+  `onVisionDone` promotes verified/unverified clips (`PromoteAndPersist`) or
+  drops rejected ones (DeleteStaging). Single-threaded by the Selector → the
+  dedup step is race-free with no locks.
+- **Completion:** `searchDone && inFlight==0` — the `run()` loop uses
+  `HasPending()` + `workflow.Await` so it never blocks on Select when nothing is
+  ready but the producer is still working (and completes instantly for a
+  zero-candidate event). No idle timeout — Python's 5-minute tail is gone.
+
+**Implementation decisions:**
+- **Dedup thresholds** (`MaxHamming/MinRunFrames/MaxGapFrames`) surfaced through
+  the start-of-workflow `GetDiscoveryConfig` read → recorded in history →
+  replay-deterministic. `video.Match` is pure; a future *algorithm* change needs
+  a `GetVersion` guard (not added yet — fresh launch, no in-flight workflows).
+- **`Extra` plumbed** onto `EventWorkflowInput` (from `event.Extra`) so vision
+  validates stoppage-goal clocks (45+N / 90+N) correctly — without it the clock
+  check mis-validates. Populated in the spawner.
+- **inFlight decrements on EVERY callback path incl. failures** (child error,
+  vision error) — a skipped decrement would hang the workflow forever.
+- **`pending` set** holds deduped-new clips whose vision is in flight, so a
+  later dup deduping during that window still collapses (closes the async race).
+
+**Tested:** WorkflowTestSuite — search-loop behavior preserved (child mocked to
+"rejected"), plus a verify+dedup pipeline test (two same-md5 clips → one
+promoted, one collapsed, `PromoteAndPersist` called once, `assets_surfaced`).
+The V-phase is now an end-to-end pipeline in code (not yet run against a live
+goal — that's the deploy/cutover step #168).
+
+---
+
 ## 2026-08-03 — #164c-a: DiscoveryWorkflow → EventWorkflow rename (Option 2)
 
 **Decision.** The workflow that Monitor spawns per goal is renamed

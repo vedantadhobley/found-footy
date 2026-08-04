@@ -214,6 +214,10 @@ func main() {
 			AttemptSpacing: deps.Cfg.Discovery.AttemptSpacing,
 			MaxAgeMinutes:  deps.Cfg.Discovery.MaxAgeMinutes,
 			QueryTimeout:   deps.Cfg.Discovery.QueryTimeout,
+			// Dedup thresholds surfaced to EventWorkflow's in-code video.Match.
+			MaxHamming:   deps.Cfg.Dedup.MaxHamming,
+			MinRunFrames: deps.Cfg.Dedup.MinRunFrames,
+			MaxGapFrames: deps.Cfg.Dedup.MaxGapFrames,
 		}
 		if twitterClient != nil {
 			discoveryActs.Twitter = twitterClient

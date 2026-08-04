@@ -22,7 +22,7 @@ found-footy/
 │   ├── api/main.go                      Phase 6 — FastAPI-shaped read surface + SSE
 │   ├── scaler/main.go                   scaffold; no scale logic yet (Phase A/M)
 │   ├── twitter/main.go                  ✓ T/a+T/b+T/c: real Playwright-Go service (ephemeral profile + idle-CPU prefs)
-│   └── worker/main.go                   Temporal worker; registers Ingest + ActivePoll + StagingPoll + Discovery
+│   └── worker/main.go                   Temporal worker; registers Ingest + ActivePoll + StagingPoll + Event + Video workflows
 ├── internal/
 │   ├── domain/                          6 shipped, 3 stubbed
 │   │   ├── fixture/                     ✓ D1: model + State + Repo + tests
@@ -30,7 +30,7 @@ found-footy/
 │   │   ├── video/                       ✓ D3 + V/2 + V/3a: model + Repo + rank + perceptual dHash + Match + hard-filter + tests
 │   │   ├── alias/                       ✓ D4 (reshaped 2026-07-19): two-phase model + Repo + Normalize + Resolver (lookup pipeline) + tests
 │   │   ├── team/                        ✓ TrackedTeam set — tracked-teams-cache ingest filter (team.go + repo.go)
-│   │   ├── discovery/                   ✓ Query builder (2026-07-22) + real DiscoveryWorkflow (O3/d, 2026-07-23)
+│   │   ├── discovery/                   ✓ Query builder (2026-07-22) + real EventWorkflow (O3/d, 2026-07-23)
 │   │   │   ├── doc.go                   Package doc — query construction, URL extraction, source scoring
 │   │   │   ├── query_builder.go         BuildTwitterQuery, ErrEmptyQuery, ErrEmptyPlayerName (D1/D4b/D4c/D4d/D7 per twitter-search-query.md)
 │   │   │   └── query_builder_test.go    18 tests — D8 name table, particles, dedup, fallback, safeguards
@@ -50,11 +50,13 @@ found-footy/
 │   │   ├── wikipedia/                ✓ S7: CirrusSearch entity resolution (per 2026-07-21) + tests
 │   │   ├── event/                       ✓ O3/a: dual-write composer (pg event_log + NATS Publish, 6 kinds) + tests
 │   │   └── ffmpeg/                      ✓ V/1: probe + single/dense frame extract (single-pass fps) + faststart + semaphore + typed taxonomy + tests
-│   ├── workflow/                        4 shipped
+│   ├── workflow/                        6 shipped
 │   │   ├── ingest.go                    ✓ O1c: IngestWorkflow
 │   │   ├── active_poll.go               ✓ O2: ActivePollWorkflow (30s IntervalSpec)
 │   │   ├── staging_poll.go              ✓ O2: StagingPollWorkflow (*/15 cron)
-│   │   └── discovery.go                 ✓ O3/d: DiscoveryWorkflow (15-attempt search loop) + *_test.go
+│   │   ├── event.go                     ✓ #164c: EventWorkflow — per-goal orchestrator (producer: discovery search + spawn Video children; ex-DiscoveryWorkflow)
+│   │   ├── event_pipeline.go            ✓ #164c-b: Selector consumer (dedup → vision → promote → rank) + assets/pending/inFlight state + searchDone&&inFlight==0 completion
+│   │   └── video.go                     ✓ #165: VideoWorkflow child (download → hash)
 │   ├── activity/                        4 packages shipped
 │   │   ├── ingest/                      ✓ O1b: 4 activities + in-memory fakes + 11 tests
 │   │   │   ├── activities.go
