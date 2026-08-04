@@ -6,6 +6,42 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-03 — #164c-a: DiscoveryWorkflow → EventWorkflow rename (Option 2)
+
+**Decision.** The workflow that Monitor spawns per goal is renamed
+`DiscoveryWorkflow` → `EventWorkflow`. Its job grew from *just search* to
+orchestrating the **whole event** (search → video → dedup → vision → persist,
+plus future phases like sentiment), so "Discovery" undersold it. Behavior-
+neutral rename commit (full suite green proves it); the producer/consumer logic
+lands in #164c-b.
+
+**What renamed (→ event):** the workflow func + `EventWorkflowInput/Output`,
+`internal/workflow/discovery.go` → `event.go`, the spawner method
+`SpawnDiscovery` → `SpawnEvent`, the `StartWorkflow` type string, the
+deterministic workflow ID prefix `discovery-{id}` → `event-{id}`, registration.
+
+**What stayed `discovery` (the *phase*, not the workflow):** the
+`internal/activity/discovery` package (`SearchTweets`/`StoreCandidate`/…), the
+`internal/domain/discovery` query builder, `DiscoveryConfig` + `DISCOVERY_*`
+env, and — deliberately — the pg **`event_downstream_workflows.workflow_type`
+value `'discovery'`** (+ its `EventsAwaitingDiscovery` recovery query). That
+value is filtered by a live query and is a fine internal label for "the event's
+downstream workflow"; renaming it would spread into the event domain interface
+for no gain. Documented at the write site.
+
+**Why Option 2 (workflow=event, phase=discovery):** name a thing for what it
+*is*. The workflow is about the event; the search machinery is about discovery.
+A future *sentiment* phase reinforced this — EventWorkflow will orchestrate
+multiple phases (video-discovery, sentiment), so the event-orchestrator name is
+future-proof, and sentiment gets its own accurate name (not "discovery"). The
+`EventWorkflowInput` type stays in `activity/discovery` (cycle-free shared home
+— `workflow` imports `activity/monitor`, so the type can't live in `workflow`).
+
+*As-built ledgers besides orchestration.md still say DiscoveryWorkflow; they get
+reconciled in #164c-b when the full EventWorkflow behavior is documented.*
+
+---
+
 ## 2026-08-03 — #164b: consumer-queue persist activities + a combine deviation
 
 **Decision.** The EventWorkflow consumer's post-dedup/vision steps ship as

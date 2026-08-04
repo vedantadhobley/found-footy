@@ -1,16 +1,16 @@
-// DiscoveryConfig owns the DiscoveryWorkflow tuning knobs — the values
+// DiscoveryConfig owns the EventWorkflow tuning knobs — the values
 // that were consts in internal/workflow/discovery.go through 2026-07-22.
 // Moved here so operators can bump `DISCOVERY_MAX_ATTEMPTS=20` in prod
 // without a rebuild, and so the audit surface exposes what's tunable.
 //
-// Consumed by DiscoveryWorkflow via the GetDiscoveryConfig activity
+// Consumed by EventWorkflow via the GetDiscoveryConfig activity
 // (Temporal-determinism rule: workflows can't touch env directly).
 // See internal/activity/discovery/activities.go for the accessor.
 package config
 
 import "time"
 
-// DiscoveryConfig — env-driven settings for DiscoveryWorkflow's
+// DiscoveryConfig — env-driven settings for EventWorkflow's
 // per-event candidate collection cycle. Every field has an envDefault
 // matched to what was hardcoded on 2026-07-22, EXCEPT MaxAttempts which
 // bumps from 10 → 15 (decision 2026-07-23 user sign-off: multi-attempt
@@ -18,7 +18,7 @@ import "time"
 // after the initial burst — see decisions.md 2026-07-23 wall-clock
 // design entry for evidence).
 type DiscoveryConfig struct {
-	// MaxAttempts — how many /search calls DiscoveryWorkflow issues
+	// MaxAttempts — how many /search calls EventWorkflow issues
 	// per event. At AttemptSpacing=60s, this is the workflow's total
 	// lifetime in minutes. Default 15.
 	MaxAttempts int `env:"DISCOVERY_MAX_ATTEMPTS" envDefault:"15"`

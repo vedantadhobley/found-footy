@@ -24,7 +24,7 @@
 // decisions.md 2026-07-10 workflow-split entry.
 //
 // Debounce model per decisions.md 2026-07-07 symmetric-counter entry.
-// NATS emissions and DiscoveryWorkflow spawn are DEFERRED to O3;
+// NATS emissions and EventWorkflow spawn are DEFERRED to O3;
 // this file just LOGS the "would spawn" cases so we can inspect
 // behavior in Loki during live testing before real fan-out lands.
 package monitor
@@ -489,7 +489,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 				// completion check) re-attempts any spawn this call
 				// dropped — so a transient Temporal/pg blip self-heals
 				// instead of orphaning the event. See audit-2026-07-26 P1 #3.
-				a.registerAndSpawnDiscovery(ctx, existing, domainEv, in.APIFixture.Fixture.ID)
+				a.registerAndSpawnEvent(ctx, existing, domainEv, in.APIFixture.Fixture.ID)
 				a.emitEventStable(ctx, existing.ID, in.APIFixture.Fixture.ID, domainEv)
 			}
 		} else if _, removedAlready := allKeys[key]; removedAlready {
@@ -533,9 +533,9 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		}
 	}
 
-	// Step 5.5: discovery spawn-recovery. registerAndSpawnDiscovery is
+	// Step 5.5: discovery spawn-recovery. registerAndSpawnEvent is
 	// idempotent (RegisterDownstreamWorkflow is INSERT ON CONFLICT DO
-	// NOTHING; SpawnDiscovery swallows WorkflowExecutionAlreadyStarted),
+	// NOTHING; SpawnEvent swallows WorkflowExecutionAlreadyStarted),
 	// so re-running it every cycle is a no-op for healthy discoveries and
 	// re-attempts any that a transient error dropped. Running it BEFORE
 	// the completion check closes the silent-video-loss window: a failed
@@ -545,7 +545,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		out.Errors = append(out.Errors, fmt.Sprintf("awaiting-discovery: %v", err))
 	} else {
 		for _, ev := range awaiting {
-			a.registerAndSpawnDiscovery(ctx, ev, ev, f.ID)
+			a.registerAndSpawnEvent(ctx, ev, ev, f.ID)
 		}
 	}
 
@@ -680,16 +680,16 @@ func playerName(p event.Player) string {
 	return *p.Name
 }
 
-// registerAndSpawnDiscovery is the atomic register-on-flip step from
+// registerAndSpawnEvent is the atomic register-on-flip step from
 // the 2026-07-16 spawn rule. Both operations are idempotent (INSERT
 // ON CONFLICT DO NOTHING for the row; RejectDuplicate for the spawn)
 // so retry-after-partial-crash is safe. Nil-safe: no-op if either
 // EventRepo or Spawner is missing.
-func (a *Activities) registerAndSpawnDiscovery(ctx context.Context, existing *event.Event, domainEv *event.Event, fixtureID int64) {
+func (a *Activities) registerAndSpawnEvent(ctx context.Context, existing *event.Event, domainEv *event.Event, fixtureID int64) {
 	if a.Spawner == nil {
 		return
 	}
-	workflowID := fmt.Sprintf("discovery-%s", existing.ID)
+	workflowID := fmt.Sprintf("event-%s", existing.ID)
 
 	// Row insert first — must exist before the spawn returns so the
 	// completion check in the same/next cycle sees "downstream pending."
@@ -699,7 +699,7 @@ func (a *Activities) registerAndSpawnDiscovery(ctx context.Context, existing *ev
 		return
 	}
 
-	in := discoveryactivity.DiscoveryWorkflowInput{
+	in := discoveryactivity.EventWorkflowInput{
 		EventID:    existing.ID,
 		FixtureID:  fixtureID,
 		PlayerName: playerName(domainEv.Player),
@@ -707,7 +707,7 @@ func (a *Activities) registerAndSpawnDiscovery(ctx context.Context, existing *ev
 		TeamID:     int64(domainEv.Team.ID),
 		Minute:     domainEv.Minute,
 	}
-	if err := a.Spawner.SpawnDiscovery(ctx, workflowID, in); err != nil {
+	if err := a.Spawner.SpawnEvent(ctx, workflowID, in); err != nil {
 		// Non-fatal per Option B. The pending row exists; a follow-up
 		// pass or manual intervention can spawn later. Alternatively
 		// the row can be marked failed by a future recovery job.

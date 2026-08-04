@@ -1,4 +1,4 @@
-// discovery_test.go — WorkflowTestSuite tests for DiscoveryWorkflow.
+// discovery_test.go — WorkflowTestSuite tests for EventWorkflow.
 // Mirrors ingest_test.go pattern: activity mocks via testify/mock so
 // the workflow runs in-process (no worker, no Temporal server, no DB,
 // no Twitter service).
@@ -24,12 +24,12 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
 
-// newDiscoveryEnv sets up a test env with DiscoveryWorkflow +
+// newDiscoveryEnv sets up a test env with EventWorkflow +
 // discovery activities registered. Individual tests attach OnActivity
 // mocks before ExecuteWorkflow.
 func newDiscoveryEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvironment {
 	env := s.NewTestWorkflowEnvironment()
-	env.RegisterWorkflow(workflow.DiscoveryWorkflow)
+	env.RegisterWorkflow(workflow.EventWorkflow)
 	env.RegisterActivity(&discoveryactivity.Activities{})
 	// Default GetDiscoveryConfig stub. MaxAttempts=10 matches the
 	// pre-#162 hardcoded value that existing tests were written
@@ -58,8 +58,8 @@ func newDiscoveryEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvi
 }
 
 // stdDiscoveryInput — realistic Salah / Liverpool goal event input.
-func stdDiscoveryInput() workflow.DiscoveryWorkflowInput {
-	return workflow.DiscoveryWorkflowInput{
+func stdDiscoveryInput() workflow.EventWorkflowInput {
+	return workflow.EventWorkflowInput{
 		EventID:    uuid.New(),
 		FixtureID:  12345,
 		PlayerName: "M. Salah",
@@ -69,16 +69,16 @@ func stdDiscoveryInput() workflow.DiscoveryWorkflowInput {
 	}
 }
 
-// TestDiscoveryWorkflow_UnknownPlayer — D4b guard. Empty PlayerName
+// TestEventWorkflow_UnknownPlayer — D4b guard. Empty PlayerName
 // short-circuits before any activity except MarkDownstreamComplete.
-func TestDiscoveryWorkflow_UnknownPlayer(t *testing.T) {
+func TestEventWorkflow_UnknownPlayer(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newDiscoveryEnv(&s)
 
 	in := stdDiscoveryInput()
 	in.PlayerName = ""
 
-	env.ExecuteWorkflow(workflow.DiscoveryWorkflow, in)
+	env.ExecuteWorkflow(workflow.EventWorkflow, in)
 
 	if !env.IsWorkflowCompleted() {
 		t.Fatal("workflow didn't complete")
@@ -86,7 +86,7 @@ func TestDiscoveryWorkflow_UnknownPlayer(t *testing.T) {
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow errored: %v", err)
 	}
-	var out workflow.DiscoveryWorkflowOutput
+	var out workflow.EventWorkflowOutput
 	_ = env.GetWorkflowResult(&out)
 	if out.OutcomeClass != "unknown_player" {
 		t.Errorf("outcome_class = %q, want unknown_player", out.OutcomeClass)
@@ -99,10 +99,10 @@ func TestDiscoveryWorkflow_UnknownPlayer(t *testing.T) {
 	}
 }
 
-// TestDiscoveryWorkflow_TenAttempts_AccumulatesCandidates — happy
+// TestEventWorkflow_TenAttempts_AccumulatesCandidates — happy
 // path. Each attempt returns 2 distinct tweets; the workflow persists
 // them via StoreCandidate; final count reflects all 20.
-func TestDiscoveryWorkflow_TenAttempts_AccumulatesCandidates(t *testing.T) {
+func TestEventWorkflow_TenAttempts_AccumulatesCandidates(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newDiscoveryEnv(&s)
 
@@ -124,7 +124,7 @@ func TestDiscoveryWorkflow_TenAttempts_AccumulatesCandidates(t *testing.T) {
 	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
 		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil)
 
-	env.ExecuteWorkflow(workflow.DiscoveryWorkflow, stdDiscoveryInput())
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
 
 	if !env.IsWorkflowCompleted() {
 		t.Fatal("workflow didn't complete")
@@ -132,7 +132,7 @@ func TestDiscoveryWorkflow_TenAttempts_AccumulatesCandidates(t *testing.T) {
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow errored: %v", err)
 	}
-	var out workflow.DiscoveryWorkflowOutput
+	var out workflow.EventWorkflowOutput
 	_ = env.GetWorkflowResult(&out)
 	if out.AttemptsRun != 10 {
 		t.Errorf("attempts_run = %d, want 10", out.AttemptsRun)
@@ -145,10 +145,10 @@ func TestDiscoveryWorkflow_TenAttempts_AccumulatesCandidates(t *testing.T) {
 	}
 }
 
-// TestDiscoveryWorkflow_DedupSameTweetAcrossAttempts — if the same
+// TestEventWorkflow_DedupSameTweetAcrossAttempts — if the same
 // tweet appears in attempts 1, 2, 3, StoreCandidate fires once (the
 // workflow's seenTweetIDs map dedups before invoking the activity).
-func TestDiscoveryWorkflow_DedupSameTweetAcrossAttempts(t *testing.T) {
+func TestEventWorkflow_DedupSameTweetAcrossAttempts(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newDiscoveryEnv(&s)
 
@@ -168,12 +168,12 @@ func TestDiscoveryWorkflow_DedupSameTweetAcrossAttempts(t *testing.T) {
 			return discoveryactivity.StoreCandidateOutput{Inserted: true}, nil
 		})
 
-	env.ExecuteWorkflow(workflow.DiscoveryWorkflow, stdDiscoveryInput())
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
 
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow errored: %v", err)
 	}
-	var out workflow.DiscoveryWorkflowOutput
+	var out workflow.EventWorkflowOutput
 	_ = env.GetWorkflowResult(&out)
 	if out.CandidatesFound != 1 {
 		t.Errorf("candidates_found = %d, want 1 (dedup)", out.CandidatesFound)
@@ -186,9 +186,9 @@ func TestDiscoveryWorkflow_DedupSameTweetAcrossAttempts(t *testing.T) {
 	}
 }
 
-// TestDiscoveryWorkflow_NoResults — every attempt returns zero videos.
+// TestEventWorkflow_NoResults — every attempt returns zero videos.
 // Workflow runs all 10 attempts, marks outcome_class=no_candidates.
-func TestDiscoveryWorkflow_NoResults(t *testing.T) {
+func TestEventWorkflow_NoResults(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newDiscoveryEnv(&s)
 
@@ -197,12 +197,12 @@ func TestDiscoveryWorkflow_NoResults(t *testing.T) {
 			Videos: nil, Count: 0, StopReason: "empty",
 		}, nil)
 
-	env.ExecuteWorkflow(workflow.DiscoveryWorkflow, stdDiscoveryInput())
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
 
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow errored: %v", err)
 	}
-	var out workflow.DiscoveryWorkflowOutput
+	var out workflow.EventWorkflowOutput
 	_ = env.GetWorkflowResult(&out)
 	if out.CandidatesFound != 0 {
 		t.Errorf("candidates_found = %d, want 0", out.CandidatesFound)
@@ -215,10 +215,10 @@ func TestDiscoveryWorkflow_NoResults(t *testing.T) {
 	}
 }
 
-// TestDiscoveryWorkflow_FallbackToTeamName_WhenAliasesUnresolved —
+// TestEventWorkflow_FallbackToTeamName_WhenAliasesUnresolved —
 // FetchTeamAliases returns Found=false; workflow falls back to
 // in.TeamName as canonical for query building.
-func TestDiscoveryWorkflow_FallbackToTeamName_WhenAliasesUnresolved(t *testing.T) {
+func TestEventWorkflow_FallbackToTeamName_WhenAliasesUnresolved(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newDiscoveryEnv(&s)
 
@@ -230,12 +230,12 @@ func TestDiscoveryWorkflow_FallbackToTeamName_WhenAliasesUnresolved(t *testing.T
 	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
 		Return(discoveryactivity.SearchTweetsOutput{Videos: nil, Count: 0}, nil)
 
-	env.ExecuteWorkflow(workflow.DiscoveryWorkflow, stdDiscoveryInput())
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
 
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow errored: %v", err)
 	}
-	var out workflow.DiscoveryWorkflowOutput
+	var out workflow.EventWorkflowOutput
 	_ = env.GetWorkflowResult(&out)
 	if out.AttemptsRun != 10 {
 		t.Errorf("attempts_run = %d, want 10 (fallback path still runs full loop)", out.AttemptsRun)

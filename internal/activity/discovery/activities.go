@@ -1,4 +1,4 @@
-// Activities for DiscoveryWorkflow. Four activities cover the
+// Activities for EventWorkflow. Four activities cover the
 // production shape:
 //
 //   1. FetchTeamAliases — pull team_aliases row (canonical_name +
@@ -38,7 +38,7 @@ type Activities struct {
 	Pool    *pg.Pool
 	Twitter twitterClient
 
-	// DiscoveryWorkflow tuning knobs, mirrored from
+	// EventWorkflow tuning knobs, mirrored from
 	// config.DiscoveryConfig at worker init. Zero values are
 	// treated as "use hardcoded fallback" inside GetDiscoveryConfig
 	// so tests that leave these unset get a valid workflow run.
@@ -54,7 +54,7 @@ type Activities struct {
 type GetDiscoveryConfigInput struct{}
 
 // GetDiscoveryConfigOutput exposes env-driven config to
-// DiscoveryWorkflow. Workflows can't touch env / files directly
+// EventWorkflow. Workflows can't touch env / files directly
 // (Temporal determinism), so a trivial activity is the standard
 // idiom — matches the ingest.GetIngestConfig pattern.
 type GetDiscoveryConfigOutput struct {
@@ -76,7 +76,7 @@ const (
 	fallbackQueryTimeout   = 2 * time.Minute
 )
 
-// GetDiscoveryConfig — trivial config accessor for DiscoveryWorkflow.
+// GetDiscoveryConfig — trivial config accessor for EventWorkflow.
 // Returns values from the Activities struct with per-field fallbacks
 // so a zero-value Activities in tests still yields a runnable workflow.
 func (a *Activities) GetDiscoveryConfig(
@@ -120,7 +120,7 @@ type FetchTeamAliasesInput struct {
 // FetchTeamAliasesOutput carries the row shape Discovery needs for
 // query construction. Empty CanonicalName + nil Aliases means "team
 // not resolved yet" — Discovery falls back to what it has on the
-// DiscoveryWorkflowInput (TeamName from api-football) as a canonical
+// EventWorkflowInput (TeamName from api-football) as a canonical
 // stand-in.
 type FetchTeamAliasesOutput struct {
 	CanonicalName string
@@ -189,7 +189,7 @@ type SearchTweetsOutput struct {
 // twitter/ container via S7's HTTP client; will point at the Go
 // service once T ships) and returns the discovered video tweets.
 // Errors from the Twitter service surface here — Temporal retries
-// with backoff per the activity registration in DiscoveryWorkflow.
+// with backoff per the activity registration in EventWorkflow.
 func (a *Activities) SearchTweets(ctx context.Context, in SearchTweetsInput) (SearchTweetsOutput, error) {
 	if a.Twitter == nil {
 		return SearchTweetsOutput{}, fmt.Errorf("discovery.SearchTweets: Twitter client not wired")

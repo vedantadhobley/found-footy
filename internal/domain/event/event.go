@@ -125,7 +125,7 @@ type Player struct {
 }
 
 // Known returns true when both ID and Name are populated. Callers gate
-// on this before starting the DiscoveryWorkflow — no point searching
+// on this before starting the EventWorkflow — no point searching
 // Twitter for "goal by unknown player".
 func (p Player) Known() bool {
 	return p.ID != nil && p.Name != nil

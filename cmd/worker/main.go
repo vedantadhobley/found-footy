@@ -125,7 +125,7 @@ func main() {
 		}
 		_ = syndClient // consumed by tweet-content activities in Phase O
 
-		// Option 1 wire (2026-07-17): point Go DiscoveryWorkflow at a
+		// Option 1 wire (2026-07-17): point Go EventWorkflow at a
 		// running Twitter service via S7's HTTP client. The dev
 		// twitter container currently runs a Go stub (no HTTP surface)
 		// so this NewClient call FAILS in dev — we tolerate that so
@@ -193,7 +193,7 @@ func main() {
 			return err
 		}
 
-		// Phase O3/b — spawner for DiscoveryWorkflow, bundled with the
+		// Phase O3/b — spawner for EventWorkflow, bundled with the
 		// event_downstream_workflows row insert in the same activity.
 		spawner := monitoractivity.NewTemporalSpawner(tempClient, 10*time.Second)
 
@@ -273,7 +273,7 @@ func main() {
 		}
 		w.RegisterWorkflow(ffwf.ActivePollWorkflow)
 		w.RegisterWorkflow(ffwf.StagingPollWorkflow)
-		w.RegisterWorkflow(ffwf.DiscoveryWorkflow)
+		w.RegisterWorkflow(ffwf.EventWorkflow)
 		w.RegisterWorkflow(ffwf.VideoWorkflow)
 		w.RegisterActivity(monitorActs)
 		w.RegisterActivity(discoveryActs)

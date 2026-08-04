@@ -1,8 +1,8 @@
-// scripts/trigger_discovery/main.go — dev-only trigger for DiscoveryWorkflow.
+// scripts/trigger_discovery/main.go — dev-only trigger for EventWorkflow.
 //
 // End-to-end smoke test of the O3/d pipeline. Insert a placeholder row
 // into event_downstream_workflows (Monitor would normally do this in the
-// same activity as the flag flip), then spawn DiscoveryWorkflow with
+// same activity as the flag flip), then spawn EventWorkflow with
 // the deterministic ID for the given event.
 //
 // Env:
@@ -42,7 +42,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	// Read event context from pg to populate DiscoveryWorkflowInput.
+	// Read event context from pg to populate EventWorkflowInput.
 	pgURL := os.Getenv("PG_URL")
 	if pgURL == "" {
 		pgURL = "postgres://ffuser:ffpass@postgres:5432/found_footy"
@@ -104,7 +104,7 @@ func main() {
 		ID:                       workflowID,
 		TaskQueue:                taskQueue,
 		WorkflowExecutionTimeout: 15 * time.Minute,
-	}, ffwf.DiscoveryWorkflow, ffwf.DiscoveryWorkflowInput{
+	}, ffwf.EventWorkflow, ffwf.EventWorkflowInput{
 		EventID:    eventID,
 		FixtureID:  fixtureID,
 		PlayerName: playerName,
@@ -118,7 +118,7 @@ func main() {
 	fmt.Printf("workflow started: id=%s run=%s\n", workflowID, run.GetRunID())
 
 	// Wait for completion + print result.
-	var out ffwf.DiscoveryWorkflowOutput
+	var out ffwf.EventWorkflowOutput
 	if err := run.Get(ctx, &out); err != nil {
 		fatal("workflow errored", err)
 	}
