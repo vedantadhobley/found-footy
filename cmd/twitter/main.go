@@ -46,6 +46,14 @@ var idleCPUFirefoxPrefs = map[string]any{
 	// GIF animation — completely disabled. Static frame only. Tweet
 	// feeds have many GIFs; each one is a background CPU drain.
 	"image.animation_mode": "none",
+	// Suspend video in backgrounded/hidden tabs — releases decoded-frame
+	// buffers instead of letting off-screen tweet videos keep decoding.
+	// The third of Python's 2026-06-30 media-suppression prefs (archive
+	// docs/todo.md "Firefox idle-CPU bleed"); the Go rewrite had ported
+	// only the first two, which is a prime suspect for the dev browser
+	// ballooning to ~41 GB RSS over 13 days while prod (all three) held
+	// at 2-3 GB.
+	"media.suspend-bkgnd-video.enabled": true,
 	// Tab switching / notification animations — pure visual, no
 	// scrape value.
 	"browser.tabs.animate":                  false,
