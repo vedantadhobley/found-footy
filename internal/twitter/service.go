@@ -71,9 +71,12 @@ type ServiceOptions struct {
 	ConsecutiveSeenStop int
 
 	// ScrollJitterMin / ScrollJitterMax bound the random sleep between
-	// scroll actions. Default: 500ms / 3000ms (baseline stealth #4
-	// per twitter-port.md T/c). Jitter interval is
-	// [min, max) — set both to the same value to disable jitter for
+	// scroll actions — non-uniform cadence to blunt bot-velocity detection
+	// (baseline stealth #4 per twitter-port.md T/c). Default tightened to
+	// 250ms / 500ms (2026-08-05): the anti-detection value is the variance,
+	// not the pause length, so a tight range keeps the signal-blunting while
+	// cutting per-scroll latency ~2.5×. Watch auth-health if scraping ramps.
+	// Jitter interval is [min, max) — set both equal to disable for
 	// deterministic tests.
 	ScrollJitterMin time.Duration
 	ScrollJitterMax time.Duration
@@ -162,10 +165,10 @@ func NewService(b sessionBrowser, opts ServiceOptions) *Service {
 		opts.ConsecutiveSeenStop = 3
 	}
 	if opts.ScrollJitterMin == 0 {
-		opts.ScrollJitterMin = 500 * time.Millisecond
+		opts.ScrollJitterMin = 250 * time.Millisecond
 	}
 	if opts.ScrollJitterMax == 0 {
-		opts.ScrollJitterMax = 3000 * time.Millisecond
+		opts.ScrollJitterMax = 500 * time.Millisecond
 	}
 	return &Service{
 		browser:             b,
