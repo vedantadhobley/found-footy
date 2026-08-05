@@ -9,7 +9,10 @@ package main
 
 import (
 	"context"
+	"errors"
+	"net/http"
 
+	ffapi "github.com/vedantadhobley/found-footy/internal/api"
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
 	"github.com/vedantadhobley/found-footy/internal/infra/nats"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
@@ -65,9 +68,32 @@ func main() {
 		})
 		_ = tempClient // consumed by on-demand StartWorkflow endpoints in Phase A
 
-		// Public API surface lands here in Phase A. For now: hold the
-		// adapters open until the signal-handled context cancels.
-		<-ctx.Done()
-		return nil
+		// Public read-API surface (#167a). Chi router on cfg.API.ListenAddr
+		// (Caddy fronts it — container port only). Graceful drain is a closer
+		// so SIGTERM stops accepting + finishes in-flight requests before the
+		// pool/nats/temporal deps close (LIFO). A listen failure (e.g. port in
+		// use) fails the binary fast rather than running degraded.
+		srv := &http.Server{
+			Addr:         deps.Cfg.API.ListenAddr,
+			Handler:      ffapi.NewRouter(&ffapi.Handlers{}),
+			ReadTimeout:  deps.Cfg.API.ReadTimeout,
+			WriteTimeout: deps.Cfg.API.WriteTimeout,
+		}
+		serveErr := make(chan error, 1)
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serveErr <- err
+			}
+		}()
+		deps.RegisterCloser("api-http", func(shutdownCtx context.Context) error {
+			return srv.Shutdown(shutdownCtx)
+		})
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-serveErr:
+			return err
+		}
 	})
 }
