@@ -1,31 +1,26 @@
 name: edge-player-refinement
 description: |
-  Real behavior: API sometimes reports a goal without knowing the
-  scorer (player_id=null). Later cycles refine it once the scorer
-  is identified. What happens to our natural_key?
+  Real behavior: the API sometimes reports a goal without knowing the
+  scorer (player_id=null), then refines it once the scorer is
+  identified. ComposeNaturalKey uses "unknown" for a null player_id:
+    Unknown scorer → "40_unknown_goal_1"
+    Known scorer   → "40_111_goal_1"
 
-  Our ComposeNaturalKey uses "unknown" for null player_id:
-    Unknown scorer → "40_unknown_Goal_1"
-    Known scorer   → "40_111_Goal_1"
+  These are DIFFERENT natural_keys, so a refinement looks like: the
+  unknown-scorer key disappears and the known-scorer key appears.
 
-  These are DIFFERENT natural_keys. Consequence: when the API
-  refines the player, our reconcile sees an event that WAS
-  "40_unknown_Goal_1" become "40_111_Goal_1" in the API. We treat
-  it as absence for the unknown-scorer entry + a new event for the
-  known-scorer entry.
+  Behavior (Python parity — monitor.py initial_count=0 +
+  unknown_scorer_disappeared; see decisions.md unknown-scorer entry):
+  an unknown-scorer goal is "not a full event yet" — it lands as a
+  PLACEHOLDER pinned at debounce_count=0, casts no presence vote, and
+  never spawns a search (there's no player to query Twitter for). The
+  moment it disappears (replaced by the real scorer) it is
+  HARD-DELETED — no VAR soft-delete, no gradual decay. Only the
+  known-scorer event debounces up (0→…) and triggers.
 
-  This scenario documents the current behavior — the ORIGINAL
-  entry with unknown scorer will eventually get soft-deleted after
-  3 consecutive absence cycles once the API only shows the refined
-  version.
-
-  Realistic call: this is arguably fine because Discovery can't
-  usefully search Twitter for "unknown scorer" anyway. But if we
-  ever want cleaner behavior (in-place mutation of the natural_key),
-  it's a schema-level design decision.
-
-  Assertion: verify the CURRENT behavior — 2 events land (unknown
-  + known), unknown eventually removed.
+  Assertion: exactly ONE event survives — the known-scorer row,
+  debounced to 3 and triggered. The unknown placeholder leaves no
+  row (hard-deleted at the refinement cycle).
 
 workflow: MonitorWorkflow
 
@@ -92,22 +87,24 @@ _known_scorer: &known_scorer
           minute: 30
 
 cycles:
-  # Cycle 1: unknown scorer, natural_key=40_unknown_Goal_1 (INSERT)
+  # Cycle 1: unknown scorer → INSERT 40_unknown_goal_1 as a placeholder
+  # (debounce_count=0, no vote).
   - t: 2026-07-08T15:30:00Z
     api_responses: {fixtures_by_ids: *unknown_scorer}
 
-  # Cycle 2: unknown scorer still, count=2 on unknown row
+  # Cycle 2: unknown scorer still present → placeholder pinned at 0
+  # (matching branch skips the presence vote).
   - t: 2026-07-08T15:30:30Z
     api_responses: {fixtures_by_ids: *unknown_scorer}
 
-  # Cycle 3: player identified! natural_key becomes 40_111_Goal_1.
+  # Cycle 3: player identified! natural_key becomes 40_111_goal_1.
   # Reconcile sees:
-  #   - "40_unknown_Goal_1" NOT in API → absence vote (count=1)
-  #   - "40_111_Goal_1" NEW → INSERT (count=1)
+  #   - "40_unknown_goal_1" NOT in API → placeholder → HARD-DELETED
+  #   - "40_111_goal_1" NEW → INSERT known scorer (count=1)
   - t: 2026-07-08T15:31:00Z
     api_responses: {fixtures_by_ids: *known_scorer}
 
-  # Cycles 4-5: known scorer persists. Unknown decays.
+  # Cycles 4-5: known scorer persists → debounces 2, then 3 (TRIGGERS).
   - t: 2026-07-08T15:31:30Z
     api_responses: {fixtures_by_ids: *known_scorer}
   - t: 2026-07-08T15:32:00Z
@@ -115,14 +112,9 @@ cycles:
 
 expected_final_state:
   events:
-    # Unknown-scorer row: count went 1→2→1 (cycle 3 absent) →
-    # 0 (cycle 4 absent) → soft-deleted at cycle 4.
-    - fixture_id: 999013
-      natural_key: "40_unknown_goal_1"
-      debounce_count: 0
-      downstream_triggered: false   # never triggered — max was 2
-      removed: true                 # hit zero at cycle 4
-      removed_reason: var
+    # Only the known-scorer row survives. The unknown placeholder was
+    # pinned at 0 (never voted) and hard-deleted the cycle it disappeared
+    # (cycle 3), so it leaves no row at all.
     # Known-scorer row: cycle 3 INSERT (1) → cycle 4 (2) → cycle 5 (3, TRIGGERS)
     - fixture_id: 999013
       natural_key: "40_111_goal_1"
@@ -130,4 +122,4 @@ expected_final_state:
       downstream_triggered: true
       removed: false
   counts:
-    events: 2
+    events: 1

@@ -28,9 +28,13 @@ type Repo interface {
 	// too — callers filter based on their needs.
 	GetByNaturalKey(ctx context.Context, fixtureID int64, naturalKey string) (*Event, error)
 
-	// Insert creates a new event row and atomically records workflowID's
-	// initial presence vote. The event lands with debounce_count=1
-	// (seeded) and one row in event_monitor_workflows.
+	// Insert creates a new event row. A KNOWN-scorer event lands with
+	// debounce_count=1 and one seeded presence vote in
+	// event_monitor_workflows. An UNKNOWN-scorer event (Player.Known()
+	// false) lands as a placeholder with debounce_count=0 and NO vote —
+	// "not a full event yet" — pinned at 0 until the vendor attributes a
+	// scorer (a new player-keyed natural_key supersedes it) or it vanishes
+	// and is hard-deleted via DeleteUnknownEvent.
 	//
 	// Fails with a wrapped pgconn.PgError (23505 unique_violation) if
 	// (fixture_id, natural_key) collides — the concurrent-detection-race
@@ -39,6 +43,18 @@ type Repo interface {
 	// (which will be a no-op idempotent skip for the same workflowID
 	// because Insert's vote is already recorded).
 	Insert(ctx context.Context, e *Event, workflowID string) error
+
+	// DeleteUnknownEvent hard-deletes an unknown-scorer placeholder by
+	// UUID. Called from the reconcile absence loop when a placeholder
+	// (debounce_count 0, no scorer) disappears from the API — usually
+	// superseded by the real-scorer event once the vendor attributes it.
+	//
+	// Hard delete, distinct from RegisterEventAbsence's soft-delete/VAR
+	// path: a placeholder was never confirmed, so it must NOT be recorded
+	// as a VAR removal nor emit event.removed. Guarded on debounce_count=0
+	// so it can never touch a confirmed event. See decisions.md
+	// unknown-scorer debounce entry.
+	DeleteUnknownEvent(ctx context.Context, id uuid.UUID) error
 
 	// Upsert updates mutable state fields (monitor_complete,
 	// download_complete, removed*, telemetry) on an existing row.
@@ -81,6 +97,13 @@ type Repo interface {
 
 	// RegisterEventAbsence records an absence vote by workflowID for
 	// this event. Idempotent per (event_id, workflow_id).
+	//
+	// Only KNOWN-scorer (confirmed, count ≥1) events reach this path —
+	// unknown-scorer placeholders are diverted to DeleteUnknownEvent by
+	// the caller before they get here. So a decrement to 0 always means a
+	// genuine confirmed goal was withdrawn by the vendor, which makes the
+	// removed_reason='var' stamp below honest (VAR overturn / correction),
+	// not an overloaded catch-all.
 	//
 	// Atomic soft-delete on hit-zero: when the decrement brings
 	// debounce_count to 0, the same transaction also sets

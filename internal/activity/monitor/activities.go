@@ -371,7 +371,8 @@ type ReconcileFixtureOutput struct {
 	FixtureID          int64
 	NewEventsDetected  int
 	EventsBecameStable []string // natural_keys of events that just crossed count=3
-	EventsRemoved      []string // natural_keys of events that just hit count=0
+	EventsRemoved      []string // natural_keys of confirmed events that just hit count=0 (VAR)
+	UnknownDropped     int      // unknown-scorer placeholders hard-deleted on disappearance
 	// Completed — true if this reconcile pass transitioned the fixture
 	// from active → completed. See docs/design/proposals/completion-contract.md.
 	Completed bool
@@ -473,6 +474,16 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		apiKeys[key] = struct{}{}
 
 		if existing, ok := pgByKey[key]; ok {
+			// Unknown-scorer placeholder: pinned at debounce 0 — no presence
+			// vote, so it never climbs toward the trigger. It's superseded
+			// when the vendor attributes a scorer (a new player-keyed
+			// natural_key debounces up) or hard-deleted when it disappears
+			// (absence loop below). Python parity: initial_count=0, empty
+			// monitor_workflows. key is already in apiKeys, so absence won't
+			// touch it while it's still present.
+			if !domainEv.Player.Known() {
+				continue
+			}
 			// Event exists — register presence vote.
 			_, justTriggered, err := a.EventRepo.RegisterEventPresence(ctx, existing.ID, in.WorkflowID)
 			if err != nil {
@@ -497,7 +508,8 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			// soft-removed. See package docstring.
 			continue
 		} else {
-			// New event — insert (auto-seeds debounce_count=1).
+			// New event — Insert seeds debounce_count=1 for a known scorer,
+			// or 0 (placeholder, no vote) for an unknown scorer.
 			if err := a.EventRepo.Insert(ctx, domainEv, in.WorkflowID); err != nil {
 				out.Errors = append(out.Errors, fmt.Sprintf("insert event=%s: %v", key, err))
 				continue
@@ -505,9 +517,14 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			out.NewEventsDetected++
 			allKeys[key] = struct{}{}
 
-			// event.detected emit — external fan-out only, no
-			// workflow orchestration. Composer nil in tests → no-op.
-			a.emitEventDetected(ctx, domainEv.ID, in.APIFixture.Fixture.ID, domainEv)
+			// event.detected is a confirmed-detection signal for durable /
+			// external consumers — don't emit for an unknown-scorer
+			// placeholder (it may vanish and be replaced by the real scorer).
+			// The known-scorer insert that supersedes it emits detected then.
+			// External fan-out only; Composer nil in tests → no-op.
+			if domainEv.Player.Known() {
+				a.emitEventDetected(ctx, domainEv.ID, in.APIFixture.Fixture.ID, domainEv)
+			}
 		}
 	}
 
@@ -520,6 +537,20 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	// cycle's array" IS "removed" — no defensive gating needed.
 	for key, pgEv := range pgByKey {
 		if _, present := apiKeys[key]; present {
+			continue
+		}
+		// Unknown-scorer placeholder that disappeared → hard-delete
+		// immediately (Python's unknown_scorer_disappeared). It was never a
+		// confirmed event — usually the vendor just attributed the scorer and
+		// a new player-keyed natural_key superseded it. It must NOT run the
+		// soft-delete/VAR path: that would mis-stamp removed_reason='var',
+		// emit a misleading event.removed, and overload the count-0 state.
+		if !pgEv.Player.Known() {
+			if err := a.EventRepo.DeleteUnknownEvent(ctx, pgEv.ID); err != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("delete unknown event=%s: %v", key, err))
+				continue
+			}
+			out.UnknownDropped++
 			continue
 		}
 		_, hitZero, err := a.EventRepo.RegisterEventAbsence(ctx, pgEv.ID, in.WorkflowID)
@@ -687,6 +718,13 @@ func playerName(p event.Player) string {
 // EventRepo or Spawner is missing.
 func (a *Activities) registerAndSpawnEvent(ctx context.Context, existing *event.Event, domainEv *event.Event, fixtureID int64) {
 	if a.Spawner == nil {
+		return
+	}
+	// Never spawn a search for an unknown scorer — there's no player token to
+	// build a Twitter query from (Player.Known() contract). Placeholders are
+	// pinned at debounce 0 so they never reach here via the trigger flip, but
+	// the recovery pass also calls this, so guard explicitly.
+	if !domainEv.Player.Known() {
 		return
 	}
 	workflowID := fmt.Sprintf("event-%s", existing.ID)

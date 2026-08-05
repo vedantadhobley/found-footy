@@ -233,6 +233,18 @@ promotion) → `ListActiveFixtureIDs` → `FetchLiveFixtures` (batched
 3-poll debounce + downstream spawn + completion check). Location:
 `internal/workflow/active_poll.go` + `internal/activity/monitor/`.
 
+**Event debounce — scorer-aware 3-state (2026-08-05).** `natural_key` embeds
+`player_id`, so an unknown scorer (`player_id` null) and its later-attributed
+known scorer are *different* keys. A goal without a scorer is "not a full event
+yet": it lands as a **placeholder at `debounce_count=0`**, casts no presence
+vote, and never spawns a search (no player → no Twitter query). It's pinned at
+0 while present and **hard-deleted the cycle it disappears** (`DeleteUnknownEvent`)
+— normally because the vendor attributed the scorer and a fresh player-keyed
+event superseded it. Only known-scorer events vote, debounce 1→3, flip
+`downstream_triggered`, and (on absence to 0) soft-delete as `var`. Mirrors
+Python (`monitor.py` `initial_count` + `unknown_scorer_disappeared`); see
+[decisions.md](decisions.md) 2026-08-05. Surfaced per cycle as `unknown_dropped`.
+
 ## StagingPollWorkflow — as shipped
 
 15-min poll of STAGING fixtures. Schedule `staging-poll-scheduled` (cron
