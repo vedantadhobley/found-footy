@@ -6,6 +6,36 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-05 — Twitter search: uncap the worker's HTTP client (a 10s cap strangled every search)
+
+The Go video pipeline had produced ZERO clips in ~13 days of the dev stack
+running. Root-caused in a live run (Napoli / Augsburg / Celta friendlies):
+the worker's twitter `Client` shared one `http.Client{Timeout: 10s}` for the
+startup `/health` probe AND every `Search`/`Download`, with a comment
+claiming "per-method calls override." They don't — Go's `http.Client.Timeout`
+is a hard cap on the *whole* request and is NOT lifted by a per-request
+`context.WithTimeout`; the shorter of the two wins.
+
+A real search takes ~11–30s+. An isolated empty search measured **11.2s**:
+~2–3s nav + auth-verify, then ~8s waiting `tweetFeedTimeout` for a tweet that
+never renders (empty result); result-bearing searches add a 2s hydrate sleep
++ deliberate per-scroll stealth jitter × up to 10 scrolls. So every search
+exceeded the 10s cap and failed with "Client.Timeout exceeded while awaiting
+headers" — never once completing.
+
+**Fix:** the shared client is uncapped (`http.Client{}`); each method bounds
+itself via context as originally intended — `Search`=SearchTimeout (120s),
+`Download`=DownloadTimeout, and `probeHealth` gets its own 10s context so
+startup stays bounded. A direct `/search` curl confirmed the search path is
+otherwise healthy (HTTP 200, clean, 11.2s).
+
+This was the single blocker to a working pipeline. Secondary findings from
+the same run, tracked separately: Firefox memory leak (missing
+`suspend-bkgnd-video` pref — fixed; mem_limit + cycling in #160), worker
+one-shot twitter-client wiring (#170), single-browser throughput / no
+scaling (#160). Follow-up search-latency tuning (tighten scroll jitter to
+~0.25–0.5s, replace the 2s hydrate sleep with an event-driven wait) next.
+
 ## 2026-08-05 — Unknown-scorer goals: placeholder at debounce 0 + hard-delete (Python parity; corrects a Go divergence)
 
 Surfaced by the first live end-to-end run: the dev stack (already up) was

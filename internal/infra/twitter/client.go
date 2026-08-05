@@ -72,7 +72,14 @@ func NewClient(ctx context.Context, cfg config.TwitterConfig, ins *Instruments) 
 		return nil, fmt.Errorf("twitter.NewClient: TWITTER_SERVICE_URL not set")
 	}
 	c := &Client{
-		http:            &http.Client{Timeout: 10 * time.Second}, // probe only; per-method calls override
+		// No client-level Timeout. Go's http.Client.Timeout is a hard cap on
+		// the ENTIRE request and is NOT lifted by a per-request context — the
+		// shorter of the two wins. A 10s cap here strangled every Search: a
+		// real search takes 11–30s+ (empty-detection wait + stealth scroll
+		// jitter), so nothing ever completed. Each method bounds itself via
+		// context instead — Search=SearchTimeout, Download=DownloadTimeout,
+		// probeHealth=10s below. See decisions.md 2026-08-05.
+		http:            &http.Client{},
 		ins:             ins,
 		baseURL:         strings.TrimRight(cfg.BaseURL, "/"),
 		searchTimeout:   cfg.SearchTimeout,
@@ -94,6 +101,10 @@ func NewClient(ctx context.Context, cfg config.TwitterConfig, ins *Instruments) 
 }
 
 func (c *Client) probeHealth(ctx context.Context) error {
+	// Bound the startup probe explicitly — the shared client is uncapped now,
+	// so a hung twitter service would otherwise block startup on the parent ctx.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
 	if err != nil {
 		return err
