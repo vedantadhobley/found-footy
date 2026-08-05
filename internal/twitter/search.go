@@ -208,10 +208,16 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Give the SPA a moment to hydrate — initial paint shows tweet
-	// shells before text populates. 2s is empirical from the T/a
-	// stub's behavior across dozens of live matches.
-	time.Sleep(2 * time.Second)
+	// Wait for the first tweet to hydrate — the initial paint shows shells
+	// before the text populates. Event-driven: proceed the instant the tweet
+	// text renders, capped at 2s so a slow or text-less (bare-video) tweet
+	// still proceeds — never worse than the old blind 2s sleep. Error is
+	// intentionally ignored: a miss just falls through to extraction, and
+	// the per-scroll loop re-extracts anyway.
+	_, _ = page.WaitForSelector(
+		`article[data-testid='tweet'] [data-testid='tweetText']`,
+		playwright.PageWaitForSelectorOptions{Timeout: playwright.Float(2000)},
+	)
 
 	videos, stopReason, scrolls, extractErr := s.scrollAndExtract(r.Context(), page, excludeIDs, maxAgeMinutes)
 	if extractErr != nil {
