@@ -130,11 +130,23 @@ func (r *EventRepo) Insert(ctx context.Context, e *event.Event, workflowID strin
 		removedReason = &s
 	}
 
-	// Atomic: INSERT the event with debounce_count=1 AND INSERT the
-	// first presence vote. If the caller retries after a mid-transaction
-	// crash, the outer INSERT hits the natural_key UNIQUE and the caller
-	// falls through to RegisterEventPresence — which will find the
-	// workflow_id already recorded here and no-op cleanly.
+	// Unknown-scorer events land as placeholders: debounce_count=0 and NO
+	// presence vote — "not a full event yet" (Python parity, monitor.py
+	// initial_count=0). They stay pinned at 0 until the vendor attributes a
+	// scorer (a new player-keyed natural_key supersedes this row) or the
+	// placeholder vanishes and is hard-deleted (DeleteUnknownEvent). Known
+	// scorers seed 1 + the first vote and debounce normally. See
+	// decisions.md unknown-scorer debounce entry.
+	initialCount := 1
+	if !e.Player.Known() {
+		initialCount = 0
+	}
+
+	// Atomic: INSERT the event (debounce_count=initialCount) AND, for a known
+	// scorer, INSERT the first presence vote. If the caller retries after a
+	// mid-transaction crash, the outer INSERT hits the natural_key UNIQUE and
+	// the caller falls through to RegisterEventPresence — which finds the
+	// workflow_id already recorded here (known) and no-ops cleanly.
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("pg.EventRepo.Insert: begin tx: %w", err)
@@ -160,7 +172,7 @@ func (r *EventRepo) Insert(ctx context.Context, e *event.Event, workflowID strin
 			$8, $9,
 			$10, $11,
 			$12,
-			1, FALSE,
+			$19, FALSE,
 			$13, $14,
 			$15, $16, $17,
 			$18
@@ -176,16 +188,22 @@ func (r *EventRepo) Insert(ctx context.Context, e *event.Event, workflowID strin
 		e.MonitorComplete, e.DownloadComplete,
 		e.Removed, removedReason, e.RemovedAt,
 		telemetryBytes,
+		initialCount,
 	); err != nil {
 		return fmt.Errorf("pg.EventRepo.Insert: event: %w", err)
 	}
 
-	const insertVote = `
-		INSERT INTO event_monitor_workflows (event_id, workflow_id)
-		VALUES ($1, $2)
-	`
-	if _, err := tx.Exec(ctx, insertVote, e.ID, workflowID); err != nil {
-		return fmt.Errorf("pg.EventRepo.Insert: seed vote: %w", err)
+	// Seed the first presence vote only for a known scorer. An unknown
+	// placeholder holds 0 votes (mirrors Python's empty monitor_workflows)
+	// so it never counts toward the 3-vote downstream trigger.
+	if initialCount > 0 {
+		const insertVote = `
+			INSERT INTO event_monitor_workflows (event_id, workflow_id)
+			VALUES ($1, $2)
+		`
+		if _, err := tx.Exec(ctx, insertVote, e.ID, workflowID); err != nil {
+			return fmt.Errorf("pg.EventRepo.Insert: seed vote: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -193,8 +211,35 @@ func (r *EventRepo) Insert(ctx context.Context, e *event.Event, workflowID strin
 	}
 	// Reflect the seeded value on the caller's local struct so they
 	// don't need to re-read to know what state we ended in.
-	e.DebounceCount = 1
+	e.DebounceCount = initialCount
 	e.DownstreamTriggered = false
+	return nil
+}
+
+// DeleteUnknownEvent hard-deletes an unknown-scorer placeholder by UUID. It
+// is called only from the reconcile absence loop when a placeholder
+// (debounce_count 0, no scorer) disappears from the API — usually because
+// the vendor attributed the scorer and a new player-keyed natural_key
+// superseded it.
+//
+// Hard delete, NOT the soft-delete/VAR path (RegisterEventAbsence), because a
+// placeholder was never a confirmed event: it carries no audit weight, and
+// routing it through the VAR path would mis-stamp removed_reason='var', emit a
+// misleading event.removed, and overload the count-0 state. The
+// debounce_count=0 guard makes this a no-op for any confirmed event (a present
+// confirmed event is always ≥1), so a caller bug can't hard-delete a real
+// event. Child vote rows CASCADE; the ON DELETE RESTRICT on
+// video_shares.event_id can't fire (placeholders never mint shares) and stands
+// as a fail-loud guard if one ever did. See decisions.md unknown-scorer entry.
+func (r *EventRepo) DeleteUnknownEvent(ctx context.Context, id uuid.UUID) error {
+	tag, err := r.pool.Exec(ctx,
+		`DELETE FROM events WHERE id = $1 AND debounce_count = 0`, id)
+	if err != nil {
+		return fmt.Errorf("pg.EventRepo.DeleteUnknownEvent: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return event.ErrNotFound
+	}
 	return nil
 }
 

@@ -73,6 +73,7 @@ type ActivePollWorkflowOutput struct {
 	NewEvents          int
 	EventsBecameStable []string
 	EventsRemoved      []string
+	UnknownDropped     int // unknown-scorer placeholders hard-deleted this cycle
 	Errors             []string
 }
 
@@ -194,6 +195,7 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 		out.NewEvents += reconcileOut.NewEventsDetected
 		out.EventsBecameStable = append(out.EventsBecameStable, reconcileOut.EventsBecameStable...)
 		out.EventsRemoved = append(out.EventsRemoved, reconcileOut.EventsRemoved...)
+		out.UnknownDropped += reconcileOut.UnknownDropped
 		out.Errors = append(out.Errors, reconcileOut.Errors...)
 	}
 
@@ -205,6 +207,7 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 		"new_events", out.NewEvents,
 		"stable", len(out.EventsBecameStable),
 		"removed", len(out.EventsRemoved),
+		"unknown_dropped", out.UnknownDropped,
 		"errors", len(out.Errors),
 	)
 	return out, nil

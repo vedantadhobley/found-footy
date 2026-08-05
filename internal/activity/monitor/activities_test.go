@@ -179,12 +179,35 @@ func (r *fakeEventRepo) Insert(_ context.Context, e *event.Event, workflowID str
 	if _, dup := r.byKey[fk]; dup {
 		return errors.New("duplicate natural_key (fake)")
 	}
-	e.DebounceCount = 1
+	// Mirror the real repo: unknown-scorer events land as placeholders
+	// (count 0, no seed vote); known scorers seed 1 + the first vote.
+	initial := 1
+	if !e.Player.Known() {
+		initial = 0
+	}
+	e.DebounceCount = initial
 	e.DownstreamTriggered = false
 	dupE := *e
 	r.events[e.ID] = &dupE
 	r.byKey[fk] = e.ID
-	r.presence[vkey(e.ID, workflowID)] = struct{}{}
+	if initial > 0 {
+		r.presence[vkey(e.ID, workflowID)] = struct{}{}
+	}
+	return nil
+}
+
+// DeleteUnknownEvent hard-deletes a placeholder (debounce_count 0). Mirrors
+// the real repo's guard: a no-op ErrNotFound for anything at count ≥1 so a
+// confirmed event can never be removed here.
+func (r *fakeEventRepo) DeleteUnknownEvent(_ context.Context, id uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.events[id]
+	if !ok || e.DebounceCount != 0 {
+		return event.ErrNotFound
+	}
+	delete(r.byKey, fkey(e.FixtureID, e.NaturalKey))
+	delete(r.events, id)
 	return nil
 }
 func (r *fakeEventRepo) Upsert(_ context.Context, e *event.Event) error {

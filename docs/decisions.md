@@ -6,6 +6,67 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-05 — Unknown-scorer goals: placeholder at debounce 0 + hard-delete (Python parity; corrects a Go divergence)
+
+Surfaced by the first live end-to-end run: the dev stack (already up) was
+monitoring a live Napoli–Osasuna preseason friendly and detected a Napoli goal
+at minute 27 — but API-Football reported it with **no scorer** (`player=None`,
+confirmed via a direct `/fixtures/events` call; happens on some friendlies).
+The Go reconcile debounced that scorer-less goal to 3, flipped
+`downstream_triggered`, and **spawned a doomed EventWorkflow** that bailed
+`unknown_player` with 0 search attempts.
+
+That diverged from the Python system (`archive/src/activities/monitor.py`),
+which treats an unknown scorer as **"not a full event yet"**:
+`initial_count = 1 if player_known else 0` (unknown seeds 0, no
+`monitor_workflows` entry, no spawn), and — the `unknown_scorer_disappeared`
+exception — an unknown-scorer event is **deleted immediately** when it
+disappears, not routed through the 3-miss VAR decrement.
+
+**Decision — port Python's model exactly (three-state debounce):**
+
+- **Unknown scorer** (`Player.Known()` false) → placeholder at
+  `debounce_count = 0`, no presence vote, no `event.detected` emit, no spawn.
+  Pinned at 0 while present.
+- **Known scorer** → seeds 1 + first vote, debounces 1→3, flips
+  `downstream_triggered`, spawns.
+- **Placeholder disappears** (superseded once the vendor attributes a scorer —
+  a *new* player-keyed `natural_key` appears) → **hard-deleted**
+  (`EventRepo.DeleteUnknownEvent`), NOT the soft-delete/VAR path.
+
+**Why hard-delete, not soft-delete** (verified before implementing):
+
+- `removal_reason` is `var | policy | asset_gone` — all "a *confirmed* event
+  was revoked." A never-confirmed placeholder doesn't belong in that
+  vocabulary; a new `refined` value would just pollute it.
+- Routing placeholders through `RegisterEventAbsence` would mis-stamp
+  `removed_reason='var'`, emit a misleading `event.removed`, and overload the
+  count-0 state (placeholder vs VAR-decremented-to-0).
+- `debounce_count` already permits 0 (`CHECK BETWEEN 0 AND 3`), so no schema
+  change. Every `events` child FK is `ON DELETE CASCADE` except
+  `video_shares.event_id` (`RESTRICT`) — and a placeholder never mints a share,
+  so the RESTRICT can't fire and stands as a fail-loud guard. `DeleteUnknownEvent`
+  is guarded on `debounce_count = 0` so it can never touch a confirmed event.
+
+**Consequence for La Liga (launch target):** real competitions attribute
+scorers within a poll or two, so the placeholder window is brief; the fix just
+prevents the doomed spawn and the ~60s re-debounce noise. `unknown_player`
+remains the correct terminal state only for goals a competition never attributes
+(friendlies) — no team-only search fallback (noisy, low value).
+
+Deliberately deferred: `player_id` is *in* the `natural_key`, which is what
+forces the drop-and-re-debounce (the known event re-proves a goal the
+placeholder already saw, ~60s lag). A player-less `natural_key` (stable goal
+identity + in-place refinement) would remove that, but it's a schema/seq change
+with its own edge cases — out of scope this close to launch.
+
+Code: `internal/infra/pg/event_repo.go` (`Insert` count-gate + `DeleteUnknownEvent`),
+`internal/domain/event/repo.go` (interface), `internal/activity/monitor/activities.go`
+(`ReconcileFixture` matching-skip + absence-divert + spawn guard),
+`internal/workflow/active_poll.go` (`unknown_dropped` metric). Regression:
+`test/scenarios/edge_cases/player_refinement.yaml` rewritten to the new
+behavior (1 surviving event, not 2).
+
 ## 2026-08-04 — API + eventing shape for cutover (Chi; timezone-agnostic; fixture-level push via JetStream)
 
 Settled in a design pass while scoping #167 (read API) + the frontend eventing path.
