@@ -59,6 +59,9 @@ type Config struct {
 	// V-phase clip validation: vision-model soccer/screen gate + clock
 	// verification tuning. Endpoint/model come from LLM above.
 	Vision VisionConfig
+
+	// Public read-API HTTP surface (Phase A / #167) — bind addr + timeouts.
+	API APIConfig
 }
 
 // Load parses the process environment into a Config.
