@@ -6,6 +6,52 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-06 — Twitter scaling: one Firefox per event (supersedes pool + router)
+
+Full design in [`design/proposals/twitter-scaling.md`](design/proposals/twitter-scaling.md).
+Replaces the shared-pool + client-side-router + `docker --scale` reconcile-loop
+scaler (twitter-port.md T/d–T/e) with **one twitter/Firefox instance per active
+event**, provisioned and released by its own EventWorkflow (per-event checkout).
+
+Rationale: it removes the router entirely (each workflow holds its instance
+address), removes search contention (dedicated browser per event — the exact
+single-browser bottleneck that timed out every search on 08-05), and makes
+instances short-lived (lifetime = event lifetime ~15 min) so the Firefox memory
+leak never accumulates. **Zero warm**: the ~60–90s debounce window hides the
+~30s instance startup, so spinning up at debounce-start yields a ready instance
+by trigger — a persistent warm browser would only idle-leak + stale cookies.
+
+Guiding principle locked in: **the monitor is the only state-poller.**
+Everything downstream is event-driven off its detections (goal appears → spawn +
+provision; goal disappears → cancel + revoke). The only clock-driven things are
+timers, not state-polls: the daily ingest and the **cookie keep-alive** (a
+fixture-independent daily refresh so idle stretches don't stale the session —
+must NOT live on the monitor, which is idle when no fixtures play). VAR
+cancellation (#172) folds in as event-driven off the removal detection. Max cap
+~8; docker-socket provisioning; open decisions (cap, past-cap behavior, keep-
+alive cadence) in the doc.
+
+## 2026-08-06 — Stale dev DB was the *second* reason the pipeline never produced a clip
+
+Found during the first live end-to-end run (Inter Miami friendly). The dev
+postgres volume was **never re-provisioned after #166** (CLAUDE.md warns to wipe
+the volume on schema edits — it wasn't), so the running `video_assets` still had
+the pre-#166 schema (`perceptual_hash`, no `event_id`/`frame_hashes`) while the
+code wrote the current schema → **every `PromoteAndPersist` failed** on a missing
+`event_id` column. So the video pipeline had *never* saved a clip in this DB.
+
+Combined with the 10s twitter-client cap (2026-08-05 entry), **two independent
+bugs both blocked clips and masked each other** for weeks — the timeout hid the
+schema mismatch because searches never got far enough to promote. Fix: wiped +
+re-provisioned the app postgres volume (guarded to spare the Temporal volume),
+re-ingested the fixture; the monitor re-detected the goals (cumulative in the
+API) and they promoted cleanly. First clips ever landed — 7-goal match, real
+Messi goals → gemma-validated ranked shares, zero errors.
+
+Process lesson (motivates the as-built audit): the as-built docs described a
+schema the running DB didn't have, and nothing caught it. The audit's schema.sql
+↔ running-DB check exists to catch exactly this.
+
 ## 2026-08-05 — Twitter search: uncap the worker's HTTP client (a 10s cap strangled every search)
 
 The Go video pipeline had produced ZERO clips in ~13 days of the dev stack
