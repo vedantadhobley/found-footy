@@ -31,9 +31,9 @@ see [`../../archive/docs/`](../../archive/docs/).
   `discovery.md`, `twitter-port.md`,
   [`twitter-scaling.md`](./proposals/twitter-scaling.md) (per-event Firefox
   instance model — one browser per event, event-driven; **supersedes**
-  twitter-port.md's T/d–T/e pool + router + scaler), `video-dedup.md` (per-event dedup;
-  the cross-event sections are superseded — see
-  [`../decisions.md`](../decisions.md) 2026-07-25), `team-aliases.md`,
+  twitter-port.md's T/d–T/e pool + router + scaler), `video-dedup.md` (**historical** —
+  topology + schema largely diverged from the as-built; see its banner +
+  [`../orchestration.md`](../orchestration.md)), `team-aliases.md`,
   `completion-contract.md`, `vision.md` (multi-frame VL soccer/screen +
   period-aware clock verification; *model behaviour* pending a gemma-on-nexus
   bake-off). `monitor.md` is SUPERSEDED (historical only).

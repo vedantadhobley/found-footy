@@ -1,19 +1,53 @@
 # Video dedup redesign — design proposal (O4/O5)
 
-> **⚠ PARTIALLY SUPERSEDED 2026-07-25 — dedup is per-EVENT only.**
-> Cross-event / per-fixture dedup is **dead and not coming back** (see
-> [`../../decisions.md` 2026-07-25](../../decisions.md)). Everything in this
-> doc describing **S3-corpus / cross-event dedup, multi-share of one asset
-> across events, cross-event `popularity`, or cross-event race handling is
-> REJECTED.** Dedup runs only *within a single event's* candidate set (batch:
-> exact-byte + content + perceptual). Cross-event clip-bleed is handled by
-> **timestamp extraction** (the clock-check), not by dedup — it collapsed
-> genuinely-distinct goals when we tried it in Python. `video_assets` is now
-> `event_id`-scoped. The within-event pipeline below is still valid; ignore
-> the cross-event scope. Full body rewrite pending the docs reorg.
+> **⚠ AS-BUILT DIVERGES — HISTORICAL ONLY (updated 2026-08-06).**
+> This proposal's **topology and schema were largely not built as written.**
+> It's kept for the rationale (the cheap→expensive layering, the binary
+> category axis, the Python dedup archaeology); do **not** read it as the
+> current system. For what shipped, see
+> [`../../orchestration.md`](../../orchestration.md) (EventWorkflow
+> producer/consumer), [`v-phase-orchestration.md`](./v-phase-orchestration.md),
+> [`schema.sql`](../../../internal/infra/pg/schema.sql), and
+> [`../../decisions.md`](../../decisions.md).
+>
+> **REJECTED / never built:**
+> - **The 3-workflow Discovery→Video→Asset chain.** As-built is a single
+>   **EventWorkflow** running a producer (search loop) + a serialized consumer
+>   in-workflow, with a **VideoWorkflow child per candidate**. No standalone
+>   AssetWorkflow, no signal-with-start, no cross-workflow queue-drain
+>   container — completion is `searchDone && inFlight==0` inside EventWorkflow.
+> - **Cross-event / per-fixture dedup** (disclaimed 2026-07-25). Dedup is
+>   per-EVENT only; `video_assets` is `event_id`-scoped. Cross-event clip-bleed
+>   is handled by the vision clock-check, not dedup.
+> - **The schema.** No `content_hash` (SHA256), no `perceptual_hash BYTEA`, no
+>   `perceptual_hash_prefix` LSH column, no `event_tweets` table. As-built:
+>   16-byte **`md5`** exact-match + a per-frame **`frame_hashes`** dHash
+>   sequence, `UNIQUE(event_id, md5)`; candidates persist to
+>   **`event_search_candidates`**, not `event_tweets`.
+> - **Two-checkpoint vision + the LLM "Stage 8" quality-comparison call.**
+>   Vision is a single multi-frame `ValidateClip` per surviving clip;
+>   winner-selection is **metadata-only** (`video.IsUpgrade`/`ClipQuality` —
+>   duration → bits-per-pixel → resolution), and even that is **built but not
+>   yet wired** (#171).
+> - **`popularity` derived from `COUNT(video_shares)`.** As-built it's a stored
+>   `INT` counter bumped `+1` per collapse, with exactly **one share per
+>   promoted asset**.
+> - **Rank "derived at read time via a SQL window function."** As-built
+>   `video_shares.rank` is a **stored column** rewritten by `RebalanceRanks`
+>   (with the `+1,000,000` offset trick to dodge the partial-unique index).
+>
+> **SURVIVED (the one durable part):** the perceptual-match *algorithm* — dHash
+> + histogram equalization + dense frame sampling + offset-tolerant
+> sliding-window matching. But the params quoted throughout below are **stale**:
+> as-built is **0.1 s** sampling (not 0.25 s), per-frame hamming ≤ 10, a
+> **30-frame (~3 s) `min_run`** window tolerating **3 gap** frames (`max_gaps`)
+> — the gap-tolerant window replaced Python's strict `min_consecutive=3`. Source
+> of truth: `internal/domain/video/{hash,match}.go` + `config/dedup.go`.
 
-**Status:** design-first draft, second pass 2026-07-16. Do not implement anything from this
-doc until it's reviewed + signed off.
+**Status:** historical design proposal — superseded by the as-built (see
+banner). It informed the shipped V-phase (EventWorkflow/#164c,
+VideoWorkflow/#165) but the shipped shape diverged materially. Retained for
+rationale, not as a build spec.
 
 **Revision log:**
 - 2026-07-16 (first pass) — initial proposal, committed 71afc8e.
@@ -234,6 +268,16 @@ Code applies decisions from the combined output:
 - `soccer == true` AND `screen == false` AND some `clock` field mismatches API's minute for this event (accounting for the main + stoppage clock combination) → **discard** (wrong-clock rejection, provably a different match moment).
 - `soccer == true` AND `screen == false` AND clock reading matches → mark `verified = true`.
 - `soccer == true` AND `screen == false` AND no clock visible → mark `verified = false` (kept as unverified, lower confidence — no clock present is different from wrong-clock).
+
+> **AS-BUILT (Stages 6–8) — see banner.** The perceptual *algorithm* below is
+> right in spirit but the specifics diverged: as-built samples at **0.1 s** (not
+> 0.25 s) into a binary per-frame `frame_hashes` sequence (not the
+> `"dense:0.25:…"` text format); the match is a **30-frame `min_run` window
+> tolerating 3 `max_gaps`** (`internal/domain/video/match.go` `video.Match`),
+> which *replaces* Python's strict `min_consecutive=3`; dedup runs only over the
+> current event's candidates (**no S3-corpus / cross-event lookup**); and there
+> is **no LLM "Stage 8" quality call** — winner-selection is metadata-only
+> (`video.IsUpgrade`), built but unwired (#171).
 
 **Stage 6 — Perceptual frame hashing** (only for Stage-5 survivors). Preserve Python's algorithm verbatim (`archive/src/activities/hashing.py`):
 - Extract frames every 0.25s via ffmpeg.
