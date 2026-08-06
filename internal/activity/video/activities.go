@@ -41,7 +41,7 @@ type syndicationClient interface {
 
 type ffmpegClient interface {
 	ProbeMetadata(ctx context.Context, path string) (*ffmpeg.VideoMetadata, error)
-	ExtractDenseFrames(ctx context.Context, path string, intervalSecs float64, quality int) ([]ffmpeg.Frame, error)
+	ExtractDenseFrames(ctx context.Context, path string, intervalSecs float64, quality int, onFrame func(ffmpeg.Frame) error) error
 }
 
 type s3Client interface {
@@ -150,17 +150,20 @@ func (a *Activities) HashVideo(ctx context.Context, in HashVideoInput) (HashVide
 		return out, fmt.Errorf("video.HashVideo: fetch %s: %w", in.StagingKey, err)
 	}
 
-	frames, err := a.FFmpeg.ExtractDenseFrames(ctx, vidPath, a.FrameIntervalSecs, 0)
-	if err != nil {
-		return out, fmt.Errorf("video.HashVideo: extract: %w", err)
-	}
-	hashes := make([]uint64, 0, len(frames))
-	for _, fr := range frames {
+	// Stream frames: hash each PNG to an 8-byte dHash the moment it's parsed
+	// off ffmpeg's stdout, so peak memory is ~one frame, not the whole clip's
+	// worth of PNGs (~300 MB for a 90 s 1080p clip × the concurrency cap).
+	hashes := make([]uint64, 0, 256)
+	err = a.FFmpeg.ExtractDenseFrames(ctx, vidPath, a.FrameIntervalSecs, 0, func(fr ffmpeg.Frame) error {
 		h, herr := dvideo.DHashPNG(fr.Data)
 		if herr != nil {
-			continue // skip one unreadable frame rather than fail the clip
+			return nil // skip one unreadable frame rather than fail the clip
 		}
 		hashes = append(hashes, h)
+		return nil
+	})
+	if err != nil {
+		return out, fmt.Errorf("video.HashVideo: extract: %w", err)
 	}
 	out.FrameHashes = hashes
 	return out, nil

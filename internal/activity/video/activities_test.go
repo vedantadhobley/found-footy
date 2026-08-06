@@ -54,8 +54,16 @@ type fakeFFmpeg struct {
 func (f *fakeFFmpeg) ProbeMetadata(context.Context, string) (*ffmpeg.VideoMetadata, error) {
 	return f.md, f.mdErr
 }
-func (f *fakeFFmpeg) ExtractDenseFrames(context.Context, string, float64, int) ([]ffmpeg.Frame, error) {
-	return f.frames, f.framesErr
+func (f *fakeFFmpeg) ExtractDenseFrames(_ context.Context, _ string, _ float64, _ int, onFrame func(ffmpeg.Frame) error) error {
+	if f.framesErr != nil {
+		return f.framesErr
+	}
+	for _, fr := range f.frames {
+		if err := onFrame(fr); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type fakeS3 struct {

@@ -59,7 +59,11 @@ func TestIntegration_RealClips(t *testing.T) {
 		probeMS := time.Since(t0).Milliseconds()
 
 		t1 := time.Now()
-		frames, err := c.ExtractDenseFrames(ctx, clip, 0.25, 0)
+		var frames []Frame
+		err = c.ExtractDenseFrames(ctx, clip, 0.1, 0, func(f Frame) error {
+			frames = append(frames, f)
+			return nil
+		})
 		if err != nil {
 			t.Errorf("%s dense: %v", name, err)
 			continue
@@ -79,7 +83,8 @@ func TestIntegration_RealClips(t *testing.T) {
 		hashMS := time.Since(t2).Milliseconds()
 		seqs[name] = hashes
 
-		if !dvideo.Match(hashes, hashes, 10, 3) {
+		// Production dedup params: maxHamming 10, minRun 30 (@0.1s = 3s), maxGaps 3.
+		if !dvideo.Match(hashes, hashes, 10, 30, 3) {
 			t.Errorf("%s should perceptually match itself", name)
 		}
 
@@ -96,7 +101,7 @@ func TestIntegration_RealClips(t *testing.T) {
 	sort.Strings(names)
 	for i := 0; i < len(names); i++ {
 		for j := i + 1; j < len(names); j++ {
-			m := dvideo.Match(seqs[names[i]], seqs[names[j]], 10, 3)
+			m := dvideo.Match(seqs[names[i]], seqs[names[j]], 10, 30, 3)
 			t.Logf("cross-match %s vs %s: %v", names[i], names[j], m)
 		}
 	}

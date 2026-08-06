@@ -8,12 +8,14 @@
 package ffmpeg
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -46,8 +48,18 @@ type VideoMetadata struct {
 
 // runner runs a subprocess and returns its stdout + stderr. The seam lets
 // tests substitute a fake without the real binaries; execRun is the
-// production implementation.
+// production implementation. Used by the small-output ops (probe, single
+// frame, faststart) where buffering stdout is fine.
 type runner func(ctx context.Context, name string, args []string) (stdout, stderr []byte, err error)
+
+// streamRunner runs a subprocess and hands its LIVE stdout to consume as it
+// arrives, so a large output is never fully buffered. Dense frame extraction
+// uses this: a 90 s 1080p clip is ~300 MB of PNG, and holding it all (plus
+// N of them under the concurrency cap) is what forced the worker memory up —
+// see decisions.md 2026-08-06 (streamed dense extraction). execStreamRun is
+// the production implementation; consume must fully drain (or the runner
+// drains the rest) so the child never blocks on a full pipe.
+type streamRunner func(ctx context.Context, name string, args []string, consume func(stdout io.Reader) error) (stderr []byte, err error)
 
 // Client wraps the ffmpeg + ffprobe CLIs.
 type Client struct {
@@ -58,6 +70,7 @@ type Client struct {
 	threadsPerProc int
 	frameQuality   int
 	run            runner
+	runStream      streamRunner
 	sem            chan struct{} // caps concurrent ffmpeg/ffprobe processes
 }
 
@@ -91,6 +104,7 @@ func NewClient(cfg config.FFmpegConfig, ins *Instruments) (*Client, error) {
 		threadsPerProc: cfg.ThreadsPerProc, // 0 = ffmpeg auto-threads
 		frameQuality:   cfg.FrameQuality,
 		run:            execRun,
+		runStream:      execStreamRun,
 		sem:            make(chan struct{}, maxProc),
 	}, nil
 }
@@ -173,17 +187,25 @@ func (c *Client) ExtractFrame(ctx context.Context, videoPath string, positionSec
 // ffmpeg decode pass (fps filter), emitting lossless PNGs. Feeds rung-2
 // dHash. intervalSecs is a dedup-tuning param supplied by the caller (not
 // baked into the adapter). Position of frame i ≈ i*intervalSecs.
-func (c *Client) ExtractDenseFrames(ctx context.Context, videoPath string, intervalSecs float64, quality int) ([]Frame, error) {
+//
+// STREAMED: rather than buffer the whole PNG stream and return a []Frame,
+// each frame is handed to onFrame the instant it's parsed off ffmpeg's
+// stdout, then its bytes are free to GC. The caller (HashVideo) reduces each
+// frame to an 8-byte dHash on the spot, so peak memory is ~one PNG instead of
+// ~all of them (a 90 s 1080p clip is ~300 MB of PNG × the concurrency cap).
+// onFrame returning an error aborts extraction with that error. A truncated
+// trailing PNG is dropped silently (matches the old buffered splitPNGs).
+func (c *Client) ExtractDenseFrames(ctx context.Context, videoPath string, intervalSecs float64, quality int, onFrame func(Frame) error) error {
 	if err := statInput(videoPath); err != nil {
-		return nil, err
+		return err
 	}
 	if intervalSecs <= 0 {
-		return nil, fmt.Errorf("%w: intervalSecs must be > 0", ErrExtractionFailed)
+		return fmt.Errorf("%w: intervalSecs must be > 0", ErrExtractionFailed)
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	if err := c.acquire(ctx); err != nil {
-		return nil, err
+		return err
 	}
 	defer c.release()
 
@@ -192,17 +214,19 @@ func (c *Client) ExtractDenseFrames(ctx context.Context, videoPath string, inter
 	args := []string{"-i", videoPath, "-vf", "fps=" + fps, "-f", "image2pipe", "-vcodec", "png"}
 	args = append(args, c.threadArgs()...)
 	args = append(args, "-")
-	stdout, stderr, err := c.run(ctx, c.ffmpegPath, args)
+	idx := 0
+	stderr, err := c.runStream(ctx, c.ffmpegPath, args, func(stdout io.Reader) error {
+		return streamPNGs(stdout, func(png []byte) error {
+			fr := Frame{PositionSecs: float64(idx) * intervalSecs, Data: png}
+			idx++
+			return onFrame(fr)
+		})
+	})
 	c.observe(ctx, vocabulary.ActionFFmpegExtract, "extract_dense", start, err)
 	if err != nil {
-		return nil, classify(ctx, false, err, stderr)
+		return classify(ctx, false, err, stderr)
 	}
-	pngs := splitPNGs(stdout)
-	frames := make([]Frame, len(pngs))
-	for i, p := range pngs {
-		frames[i] = Frame{PositionSecs: float64(i) * intervalSecs, Data: p}
-	}
-	return frames, nil
+	return nil
 }
 
 // Faststart remuxes inPath→outPath moving the moov atom to the front
@@ -278,6 +302,34 @@ func execRun(ctx context.Context, name string, args []string) ([]byte, []byte, e
 	cmd.Stderr = errBuf
 	err := cmd.Run()
 	return out.Bytes(), errBuf.Bytes(), err
+}
+
+// execStreamRun is the production streamRunner: it starts the subprocess,
+// hands consume the live stdout pipe, then drains any stdout consume left
+// unread (so the child can exit instead of blocking on a full pipe) and
+// waits. A consume error takes precedence; otherwise the exit/ctx error is
+// returned — so a mid-stream ffmpeg failure or a ctx timeout still surfaces
+// via cmd.Wait() even though streamPNGs treats a short read as a clean tail.
+// stderr is bounded (capBuf) to guard against an OOM from a runaway error
+// stream, matching execRun.
+func execStreamRun(ctx context.Context, name string, args []string, consume func(io.Reader) error) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	errBuf := &capBuf{max: 16 << 10}
+	cmd.Stderr = errBuf
+	if err := cmd.Start(); err != nil {
+		return errBuf.Bytes(), err
+	}
+	consumeErr := consume(stdout)
+	_, _ = io.Copy(io.Discard, stdout) // drain leftover so the child can exit
+	waitErr := cmd.Wait()
+	if consumeErr != nil {
+		return errBuf.Bytes(), consumeErr
+	}
+	return errBuf.Bytes(), waitErr
 }
 
 // capBuf discards writes past max so a runaway ffmpeg stderr can't OOM the
@@ -369,29 +421,55 @@ func parseFrameRate(s string) float64 {
 
 var pngSig = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
 
-// splitPNGs splits a stream of concatenated PNGs (as ffmpeg image2pipe
-// emits) into individual encoded images by walking each PNG's chunk
-// structure to its IEND marker. A malformed/truncated tail is dropped.
-func splitPNGs(b []byte) [][]byte {
-	var out [][]byte
-	for len(b) >= len(pngSig) && bytes.Equal(b[:len(pngSig)], pngSig) {
-		p := len(pngSig)
-		for p+8 <= len(b) {
-			clen := int(binary.BigEndian.Uint32(b[p : p+4]))
-			ctype := string(b[p+4 : p+8])
-			next := p + 8 + clen + 4 // 4 len + 4 type + data + 4 crc
-			if next > len(b) || next < p {
-				return out // truncated / overflow — drop remainder
+// maxPNGChunk guards streamPNGs against a corrupt chunk-length field
+// requesting an absurd allocation; a real PNG frame chunk is far smaller.
+// Past it we treat the stream as corrupt and stop, dropping the remainder
+// (the old buffered parser was bounded by its finite input slice instead).
+const maxPNGChunk = 64 << 20
+
+// streamPNGs reads concatenated PNGs (as ffmpeg image2pipe emits) off r and
+// invokes onPNG once per complete image, walking each PNG's chunk structure
+// to its IEND marker. The bytes handed to onPNG are byte-identical to what
+// the old buffered splitPNGs returned, so dHash values are unchanged — the
+// only difference is that at most one PNG is resident at a time instead of
+// the whole stream. A malformed/truncated tail is dropped silently (prior
+// complete frames stand); onPNG returning an error aborts with that error.
+func streamPNGs(r io.Reader, onPNG func([]byte) error) error {
+	br := bufio.NewReaderSize(r, 64<<10)
+	sig := make([]byte, len(pngSig))
+	for {
+		if _, err := io.ReadFull(br, sig); err != nil {
+			return nil // clean EOF between images, or a truncated signature — done
+		}
+		if !bytes.Equal(sig, pngSig) {
+			return nil // not a PNG start — stop, drop remainder (matches splitPNGs)
+		}
+		var buf bytes.Buffer
+		buf.Write(sig)
+		var hdr [8]byte
+		for {
+			if _, err := io.ReadFull(br, hdr[:]); err != nil {
+				return nil // truncated chunk header — drop this partial frame
 			}
-			p = next
+			clen := binary.BigEndian.Uint32(hdr[:4])
+			if clen > maxPNGChunk {
+				return nil // corrupt length — stop
+			}
+			ctype := string(hdr[4:8])
+			buf.Write(hdr[:])
+			body := make([]byte, int(clen)+4) // chunk data + 4-byte CRC
+			if _, err := io.ReadFull(br, body); err != nil {
+				return nil // truncated chunk body — drop
+			}
+			buf.Write(body)
 			if ctype == "IEND" {
 				break
 			}
 		}
-		out = append(out, b[:p])
-		b = b[p:]
+		if err := onPNG(buf.Bytes()); err != nil {
+			return err
+		}
 	}
-	return out
 }
 
 // classify maps a subprocess failure to the typed taxonomy. isProbe picks
