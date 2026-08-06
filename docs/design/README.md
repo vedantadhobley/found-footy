@@ -21,6 +21,10 @@ see [`../../archive/docs/`](../../archive/docs/).
   — improvement backlog from the Miami smoke test + audit.
 - [`audit-2026-07-26.md`](./audit-2026-07-26.md) — point-in-time audit of
   shipped Go vs the plan.
+- [`audit-2026-08-05.md`](./audit-2026-08-05.md) — as-built audit: shipped Go
+  LOGIC vs Python LOGIC (code-to-code) + doc accuracy across all ten
+  subsystems. 63 improvements / 30 gaps; 24 high-severity doc inaccuracies +
+  a 4-phase doc-restructure plan. The current punch list for the doc pass.
 - [`api-contract.md`](./api-contract.md) — public API surface contract
   (Phase A, unbuilt).
 - [`proposals/`](./proposals/) — design-first drafts per phase. Signed off:

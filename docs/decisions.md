@@ -6,6 +6,47 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-06 — Worker memory: mem_limits, streamed frame extraction, ffmpeg↔mem coupling
+
+Coupled changes from a load test on real-worst-case clips (audit
+[2026-08-05](design/audit-2026-08-05.md) G5 + the Firefox-leak dig).
+
+**Container mem_limits (all found-footy dev services).** The dev compose declared
+none — a host mem-budget-rule violation. Added circuit-breaker ceilings (worker
+16g, twitter 8g, postgres 4g, temporal-ui 1g, rest 2g): well above real peak so
+nothing chokes, low enough that a leak/runaway can't eat luv's 125g shared with
+other stacks. Recorded in `vedanta-dhobley/docs/memory-budget.md`.
+
+**Rejected: a Temporal `MaxConcurrentActivities` cap** (G5's literal suggestion).
+Wrong tool — it never binds under real load and protects only Temporal's own
+scheduling, not the host. The real gaps were the missing mem_limit above + the
+unbounded per-clip memory below.
+
+**Streamed dense frame extraction.** `ExtractDenseFrames` buffered the whole PNG
+stream and returned `[]Frame` (~314 MB for a 90 s 1080p clip; the load test showed
+8 concurrent ≈ 7 g, dominated by held frames). Refactored to a callback that hashes
+each frame to an 8-byte dHash the instant it's parsed off ffmpeg's stdout, so peak
+Go heap is ~one frame. PNG bytes are byte-identical (`TestStreamPNGs` asserts it) →
+dHash values unchanged, no re-baseline needed. After this, ffmpeg RSS (~0.5 g
+worst-case) is the only per-clip cost.
+
+**ffmpeg concurrency ↔ worker memory coupling.** `FFMPEG_MAX_CONCURRENT` 4→32 (the
+semaphore already existed as `FFmpegConfig.MaxProcesses`) + `THREADS_PER_PROC` 2→1,
+so 32 procs × 1 thread = 32 = 1:1 with luv's 32 hardware threads (past that is
+oversubscription, not throughput — ffmpeg extraction is CPU-bound). Worker
+mem_limit 8g→16g = 32 × ~0.5 g worst-case; a rare all-worst-case flurry degrades
+gracefully (an OOM-killed ffmpeg child just fails its activity → Temporal retry).
+
+**Firefox memory leak (twitter).** A 7 h dev instance held 3.8 g RSS (95 % anon
+heap) vs a ~400 MB fresh floor — unbounded in-memory caches (disk cache off, no
+cap, Firefox sizing against the uncapped container's 125 g). Added cache-bounding
+prefs (`browser.cache.memory.capacity` 50 MB, image surface cache 100 MB, media
+cache 32 MB, bfcache off). The mem_limit is the hard backstop; [#160](design/proposals/twitter-scaling.md)'s
+short-lived per-event instances are the structural fix. NOTE: hitting the twitter
+mem_limit OOM-kills Firefox (not PID 1) with no relaunch watchdog → the service
+**wedges**, so it's a never-hit backstop, not graceful recovery (relaunch-on-death
+is #170-adjacent).
+
 ## 2026-08-06 — Twitter scaling: one Firefox per event (supersedes pool + router)
 
 Full design in [`design/proposals/twitter-scaling.md`](design/proposals/twitter-scaling.md).
