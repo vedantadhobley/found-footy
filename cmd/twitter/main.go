@@ -87,6 +87,28 @@ var idleCPUFirefoxPrefs = map[string]any{
 	// History tracking — we don't navigate back, don't need places.sqlite
 	// updates on every page load.
 	"places.history.enabled": false,
+
+	// ── Memory-cache bounds (leak fix, 2026-08-06) ──────────────
+	// Disk cache is OFF (above), so EVERY cache falls back to RAM. Without
+	// explicit caps, Firefox smart-sizes them against the RAM it detects —
+	// the container's full 125 GB before a mem_limit exists — so the
+	// network + decoded-image caches grow unbounded across a long-lived
+	// scraping session. Measured 2026-08-06: a 7-hour dev instance reached
+	// 3.8 GB RSS, 95 % anonymous private-dirty heap (i.e. these caches),
+	// vs a ~400 MB fresh floor. Bound them explicitly. (The container
+	// mem_limit is the hard backstop, and #160's short-lived per-event
+	// instances are the structural fix — they die before accumulating —
+	// but a bounded long-lived instance is correct regardless.)
+	//
+	// Values are generous for a scraper that re-fetches distinct search
+	// pages: it gains little from a large cache, so capping costs ~nothing.
+	"browser.cache.memory.capacity":       51200,  // network memory cache: 50 MB (KB)
+	"image.mem.surface_cache.max_size_kb": 102400, // decoded-image cache: 100 MB
+	"media.cache_size":                    32768,  // media cache: 32 MB (autoplay is blocked, so tiny)
+	// bfcache keeps whole rendered pages in memory for back/forward. We
+	// open→scrape→close each search page and never navigate back, so this
+	// is pure retained-page bloat. Disable it.
+	"browser.sessionhistory.max_total_viewers": 0,
 }
 
 func main() {
