@@ -10,6 +10,7 @@ import (
 	"errors"
 	"image"
 	"image/png"
+	"io"
 	"os"
 	"os/exec"
 	"testing"
@@ -98,20 +99,37 @@ func TestParseFrameRate(t *testing.T) {
 	}
 }
 
-func TestSplitPNGs(t *testing.T) {
+func TestStreamPNGs(t *testing.T) {
 	a, b := tinyPNG(t, 2, 2), tinyPNG(t, 3, 3)
 	stream := append(append([]byte{}, a...), b...)
-	got := splitPNGs(stream)
-	if len(got) != 2 {
-		t.Fatalf("split → %d images, want 2", len(got))
+	var got [][]byte
+	collect := func(r io.Reader) int {
+		got = got[:0]
+		_ = streamPNGs(r, func(p []byte) error {
+			got = append(got, append([]byte(nil), p...))
+			return nil
+		})
+		return len(got)
+	}
+	if n := collect(bytes.NewReader(stream)); n != 2 {
+		t.Fatalf("stream → %d images, want 2", n)
 	}
 	for i, p := range got {
 		if _, err := png.Decode(bytes.NewReader(p)); err != nil {
 			t.Errorf("image %d not a valid PNG: %v", i, err)
 		}
 	}
-	if len(splitPNGs(nil)) != 0 || len(splitPNGs([]byte("not-a-png"))) != 0 {
-		t.Error("nil / junk should split to 0 images")
+	// Byte-identical to the source PNGs — this is what keeps dHash values
+	// unchanged across the streaming refactor.
+	if !bytes.Equal(got[0], a) || !bytes.Equal(got[1], b) {
+		t.Error("streamPNGs output not byte-identical to source PNGs")
+	}
+	if collect(bytes.NewReader(nil)) != 0 || collect(bytes.NewReader([]byte("not-a-png"))) != 0 {
+		t.Error("nil / junk should stream to 0 images")
+	}
+	// A truncated trailing PNG is dropped; the complete leading one stands.
+	if n := collect(bytes.NewReader(append(append([]byte{}, a...), b[:len(b)-5]...))); n != 1 {
+		t.Errorf("truncated tail → %d images, want 1 (leading intact)", n)
 	}
 }
 
@@ -178,17 +196,22 @@ func TestProbeMetadata_InputNotFound(t *testing.T) {
 func TestExtractDenseFrames_FakeRunner(t *testing.T) {
 	c := mustClient(t, config.FFmpegConfig{})
 	stream := bytes.Join([][]byte{tinyPNG(t, 2, 2), tinyPNG(t, 2, 2), tinyPNG(t, 2, 2)}, nil)
-	c.run = func(_ context.Context, _ string, _ []string) ([]byte, []byte, error) {
-		return stream, nil, nil
+	c.runStream = func(_ context.Context, _ string, _ []string, consume func(io.Reader) error) ([]byte, error) {
+		return nil, consume(bytes.NewReader(stream))
 	}
-	frames, err := c.ExtractDenseFrames(context.Background(), tempFile(t), 0.25, 0)
+	var frames []Frame
+	err := c.ExtractDenseFrames(context.Background(), tempFile(t), 0.1, 0, func(fr Frame) error {
+		frames = append(frames, fr)
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("ExtractDenseFrames: %v", err)
 	}
 	if len(frames) != 3 {
 		t.Fatalf("want 3 frames, got %d", len(frames))
 	}
-	for i, want := range []float64{0, 0.25, 0.5} {
+	// 0.1 s = the production sampling interval (DEDUP_FRAME_INTERVAL_SECS).
+	for i, want := range []float64{0, 0.1, 0.2} {
 		if frames[i].PositionSecs != want {
 			t.Errorf("frame %d pos = %v, want %v", i, frames[i].PositionSecs, want)
 		}
