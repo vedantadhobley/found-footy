@@ -226,6 +226,15 @@ func (r *FixtureRepo) FixtureReadyToComplete(ctx context.Context, id int64) (boo
 		        WHERE e.fixture_id = f.id
 		          AND e.removed = false
 		          AND e.downstream_triggered = false
+		          -- Exclude unknown-scorer placeholders (debounce_count=0). They
+		          -- never trigger downstream, so without this a placeholder that
+		          -- survives to full-time (scorer never attributed) blocks
+		          -- completion forever and the fixture never prunes. Python's
+		          -- complete_fixture_if_ready filtered "None" event_ids out of the
+		          -- gate for the same reason. Known-scorer events always seed
+		          -- count>=1, so this only excludes placeholders, never a real goal
+		          -- mid-debounce. See docs/design/audit-2026-08-05.md Tier-1 #2.
+		          AND e.debounce_count > 0
 		    )
 		    AND NOT EXISTS (
 		        SELECT 1 FROM event_downstream_workflows edw
