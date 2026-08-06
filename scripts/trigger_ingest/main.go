@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/client"
@@ -53,6 +55,25 @@ func main() {
 			fatal("parse MANUAL_DATE", err)
 		}
 		in.ManualDate = &d
+		in.FetchFuture = false
+	}
+	// MANUAL_FIXTURE_IDS=comma,separated switches to the by-ID fetch path
+	// (bypasses the tracked-team window filter) — used to pull a specific
+	// untracked fixture into the pipeline for a live test, e.g. a Leagues
+	// Cup / MLS game whose teams aren't in the tracked leagues.
+	if raw := os.Getenv("MANUAL_FIXTURE_IDS"); raw != "" {
+		var ids []int64
+		for _, s := range strings.Split(raw, ",") {
+			if s = strings.TrimSpace(s); s == "" {
+				continue
+			}
+			n, err := strconv.ParseInt(s, 10, 64)
+			if err != nil {
+				fatal("parse MANUAL_FIXTURE_IDS", err)
+			}
+			ids = append(ids, n)
+		}
+		in.ManualFixtureIDs = ids
 		in.FetchFuture = false
 	}
 	inJSON, _ := json.MarshalIndent(in, "", "  ")
