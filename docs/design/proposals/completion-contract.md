@@ -1,9 +1,31 @@
 # Fixture Completion Contract — design proposal
 
-**Status:** design-first draft. Schema + minimum-viable machinery ships
-alongside this doc (2026-07-11). Full contract lights up automatically
-as O3-O5 downstream workflows land and start registering with the
-`event_downstream_workflows` table.
+**Status:** SHIPPED (2026-07-11 machinery; auto-widened once EventWorkflow/#164c
+began registering rows). The contract is live — see the **As-built notes** banner
+below for three deltas from this text.
+
+> **⚠ AS-BUILT NOTES (2026-08-06).** The machinery below shipped and is live —
+> `event_downstream_workflows`, `completion_counter`, the single-query check
+> (`FixtureReadyToComplete` in `internal/infra/pg/fixture_repo.go` /
+> [`schema.sql`](../../../internal/infra/pg/schema.sql)), and the
+> `ReconcileFixture` call (see [`../../orchestration.md`](../../orchestration.md)).
+> Three deltas from this text:
+> - **The winner-data fast-path is DEAD code.** The `home_winner`/`away_winner`
+>   columns and the query's `OR … IS NOT NULL` branch exist, but **nothing in
+>   production populates the winner fields** — the reconcile path
+>   (`Fixture.UpdateFromPoll`) doesn't set them, and `Fixture.UpdateWinners` is
+>   called only in tests. So completion is driven purely by
+>   `completion_counter >= 3`. TODO: either wire winner propagation from the poll
+>   (`teams.home/away.winner` → `UpdateWinners` inside `ReconcileFixture`) or
+>   delete the OR-branch + columns.
+> - **`RecordPollForCompletion` never existed under that name.** The 3-poll
+>   counter logic shipped as the unexported `updateCompletionCounter()`, called
+>   by `UpdateFromPoll`.
+> - **The completion gate now excludes unknown-scorer placeholders (G1,
+>   2026-08-06).** Contract item 3 / the events `NOT EXISTS` clause gained
+>   `AND e.debounce_count > 0`, so a placeholder that never attributes a scorer
+>   (debounce_count=0, never triggers downstream) no longer strands the fixture
+>   in `active` forever (audit-2026-08-05 G1).
 
 **Cross-refs:**
 - Plan intent — [`../../rebuild-plan.md`](../rebuild-plan.md) §8 (fixture state machine), §5 (workflow coordination)
@@ -60,10 +82,12 @@ A fixture is **ready to complete** when all of the following hold:
    observes Terminal AND `completion_counter >= 3` (or the fixture
    has winner data indicating truly-decided score; see fast-path
    below).
-3. **Every non-removed event has settled its debounce** —
-   `NOT EXISTS event WHERE fixture_id=$1 AND removed=false AND downstream_triggered=false`.
-   Equivalent: every event is either VAR'd (soft-removed) or
-   crossed to stable (downstream_triggered).
+3. **Every non-removed *known-scorer* event has settled its debounce** —
+   `NOT EXISTS event WHERE fixture_id=$1 AND removed=false AND downstream_triggered=false AND debounce_count>0`.
+   Equivalent: every real event is either VAR'd (soft-removed) or crossed to
+   stable (downstream_triggered). The `debounce_count>0` clause (G1, 2026-08-06)
+   excludes unknown-scorer placeholders, which never trigger downstream and
+   would otherwise strand the fixture in `active` forever.
 4. **No downstream workflows still in flight for any event** —
    `NOT EXISTS event_downstream_workflows edw JOIN events e ON edw.event_id=e.id WHERE e.fixture_id=$1 AND edw.completed_at IS NULL`.
 
@@ -127,7 +151,7 @@ Why 3? Same reason as event debounce — three consecutive polls give
 high confidence the vendor has truly finalized status, not just
 briefly flipped to FT then back.
 
-### Winner-data fast-path
+### Winner-data fast-path — ⚠ DEAD (never populated; see As-built banner)
 
 Python spec §8: fixture moves to completed when the counter reaches 3
 **OR winner data exists** (`teams.home.winner` or `teams.away.winner`
@@ -160,6 +184,7 @@ SELECT
         WHERE e.fixture_id = f.id
           AND e.removed = false
           AND e.downstream_triggered = false
+          AND e.debounce_count > 0          -- G1 (2026-08-06): exclude unknown-scorer placeholders
     )
     AND NOT EXISTS (
         SELECT 1 FROM event_downstream_workflows edw
@@ -197,8 +222,8 @@ same cycle.
 2. **Domain**:
    - `Fixture.CompletionCounter int` field
    - `Fixture.HomeWinner *bool`, `Fixture.AwayWinner *bool`
-   - `Fixture.RecordPollForCompletion(status)` — increments/resets
-     counter based on APIStatus.Terminal()
+   - `updateCompletionCounter()` (unexported, run by `UpdateFromPoll`) —
+     increments/resets the counter based on `APIStatus.Terminal()`
    - `Fixture.HasDecidedWinner() bool`
 3. **Repo**:
    - `FixtureRepo.FixtureReadyToComplete(ctx, id) (bool, error)` — the query above
