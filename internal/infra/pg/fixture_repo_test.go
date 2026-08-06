@@ -299,6 +299,9 @@ func TestFixtureRepo_ListStagingBeforeKickoff(t *testing.T) {
 //   - Terminal + winner fast-path → ready
 //   - Terminal + counter=3 + an event in mid-debounce → not ready
 //   - Terminal + counter=3 + an in-flight downstream workflow → not ready
+//   - Terminal + an unknown-scorer placeholder (debounce_count=0) → ready
+//     (the placeholder never triggers downstream, so it must not block —
+//     G1 / audit-2026-08-05 Tier-1 #2)
 func TestFixtureRepo_FixtureReadyToComplete_TruthTable(t *testing.T) {
 	ctx, pool, repo := setupRepo(t)
 	base := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
@@ -398,6 +401,30 @@ func TestFixtureRepo_FixtureReadyToComplete_TruthTable(t *testing.T) {
 	}
 	if ready, err := repo.FixtureReadyToComplete(ctx, 9101); err != nil || !ready {
 		t.Errorf("terminal+downstream-completed ready = %v (err=%v), want true", ready, err)
+	}
+
+	// Unknown-scorer placeholder that survived to full-time: debounce_count=0,
+	// removed=false, downstream_triggered=false, no player attributed. It never
+	// triggers downstream, so pre-G1 it matched the event-settled NOT EXISTS
+	// clause and blocked completion forever. It must NOT block — the fixture
+	// stays ready. (G1 / audit-2026-08-05 Tier-1 #2)
+	placeholderID := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO events (
+			id, fixture_id, natural_key, event_type, team_id, team_name,
+			player_id, player_name, detail, minute,
+			debounce_count, downstream_triggered, removed, first_seen_at
+		) VALUES (
+			$1, $2, '40_0_goal_1', 'goal', 40, 'Liverpool',
+			NULL, NULL, 'normal goal', 88,
+			0, false, false, $3
+		)
+	`, placeholderID, 9101, base.Add(88*time.Minute))
+	if err != nil {
+		t.Fatalf("insert unknown-scorer placeholder: %v", err)
+	}
+	if ready, err := repo.FixtureReadyToComplete(ctx, 9101); err != nil || !ready {
+		t.Errorf("terminal+unknown-placeholder ready = %v (err=%v), want true", ready, err)
 	}
 }
 
