@@ -13,7 +13,7 @@ is the intent.
 **Update rule.** Every workflow/activity commit updates this doc in
 the same commit. Per the [2026-07-07 working rule](decisions.md).
 
-## Workflow inventory (2026-07-11, end of Phase O2 + workflow split)
+## Workflow inventory (2026-08-06 — Ingest, Monitor split, EventWorkflow #164c, VideoWorkflow #165 all shipped)
 
 | Workflow | Status | Trigger | Location |
 |---|---|---|---|
@@ -36,15 +36,22 @@ same time — the "Pre" prefix was misleading.
 
 ### Spawn + tracking map
 
-**There are no Temporal parent/child workflow links anywhere.** The three
-scheduled workflows are independent Temporal cron Schedules. The downstream
-chain (Discovery → Video → Asset) is spawned via the Temporal **client**
-(`StartWorkflow`) with deterministic IDs, and its lifecycle is tracked
-entirely in Postgres via `event_downstream_workflows` (one row per spawned
-workflow; a fixture is complete when it has no pending rows — the
-"completion contract"). "Child of Discovery" in the table above means a
-*logical* child that's pg-tracked, **not** a Temporal `ChildWorkflow`. See
-[`../decisions.md` 2026-07-16 Temporal-direct spawn](decisions.md).
+Two distinct spawn mechanisms:
+
+- **Monitor → EventWorkflow — Temporal client `StartWorkflow`, pg-tracked.**
+  The three scheduled workflows are independent Temporal cron Schedules;
+  none is a Temporal parent of the others. When a goal's
+  `downstream_triggered` flips, `ReconcileFixture` spawns the EventWorkflow
+  via the Temporal **client** (`StartWorkflow`, deterministic ID
+  `event-{id}`, RejectDuplicate) — **not** a Temporal ChildWorkflow of the
+  poll. Its lifecycle is tracked in Postgres via `event_downstream_workflows`
+  (one row per spawned workflow; a fixture completes when it has no pending
+  rows — the "completion contract"). See
+  [`../decisions.md` 2026-07-16 Temporal-direct spawn](decisions.md).
+- **EventWorkflow → VideoWorkflow — a real Temporal `ExecuteChildWorkflow`.**
+  Each candidate spawns an *awaited* child (with `ParentClosePolicy`), so
+  cancelling the EventWorkflow tears its Video children down with it. This
+  is the one genuine Temporal parent/child link in the system.
 
 ```mermaid
 flowchart TD
@@ -59,23 +66,21 @@ flowchart TD
     Staging -->|"staging → active"| PG
     Active -->|"poll live · 3-vote debounce"| PG
 
-    Active -.->|"goal confirmed →<br/>client StartWorkflow + tracking row"| Disc["EventWorkflow<br/>(per goal · #164 building)<br/>producer: inline search"]
-    Disc ==>|"ExecuteChildWorkflow<br/>per candidate (awaited)"| Vid["VideoWorkflow<br/>(per candidate) ✓<br/>download → hash"]
-    Vid ==>|"fingerprints → Selector queue"| Q["EventWorkflow consumer<br/>dedup → vision → promote → rank"]
+    Active -->|"goal confirmed →<br/>client StartWorkflow + tracking row"| Disc["EventWorkflow ✓<br/>(per goal · #164c)<br/>producer: inline search"]
+    Disc ==>|"ExecuteChildWorkflow<br/>per candidate (awaited)"| Vid["VideoWorkflow ✓<br/>(per candidate)<br/>download → hash"]
+    Vid ==>|"fingerprints → Selector queue"| Q["EventWorkflow consumer ✓<br/>dedup → vision → promote → rank"]
 
     Disc -.-> PG
     Q -.->|"video_assets + video_shares (what users see)"| PG
-
-    classDef planned stroke-dasharray:6 4;
-    class Disc,Q planned;
 ```
 
 ## IngestWorkflow — as shipped
 
-Daily fixture ingest. Fetches a 3-day window from api-sports.io,
-categorizes each fixture by API state, upserts to Postgres, ensures
-alias placeholder rows exist for every team seen, prunes completed
-fixtures beyond retention.
+Daily fixture ingest. Refreshes the tracked-teams filter, fetches the
+relevant day(s) from api-sports.io with a smart timezone-lookahead,
+categorizes each fixture by API state, upserts to Postgres, ensures +
+resolves alias rows for every team seen, prunes completed fixtures
+beyond retention.
 
 ### Signature
 
@@ -83,22 +88,29 @@ fixtures beyond retention.
 package workflow
 
 type IngestWorkflowInput struct {
-    ManualDate       *time.Time     // nil = today's anchor; set = re-ingest a specific day
-    ManualFixtureIDs []int64        // non-empty = fetch by IDs, bypass the 3-day window
-    FetchFuture      bool           // daily schedule sets true (today + N future days)
-    ActivationWindow time.Duration  // kickoff-lookahead auto-activation; zero → 30m
-    RetentionDays    int            // prune completed older than this; zero → skip
+    ManualDate       *time.Time     // nil = today's anchor (scheduled path); set = re-ingest a specific day
+    ManualFixtureIDs []int64        // non-empty = fetch by IDs (bypasses the tracked-teams filter + date scan)
+    FetchFuture      bool           // daily schedule sets true → today + smart-lookahead future days
+    ActivationWindow time.Duration  // kickoff-lookahead auto-activation; zero → config (WORKFLOWS_ACTIVATION_WINDOW, default 5m)
+    RetentionDays    int            // prune completed older than this; zero → config, then skip
 }
 
 type IngestWorkflowOutput struct {
-    Fetched         int
-    Staging         int
-    Active          int
-    Completed       int
-    ExistingAliases int
-    InsertedAliases int
-    PrunedFixtures  int
-    Errors          []string  // aggregated per-fixture/per-team failure context
+    TrackedTeamsRefreshed bool // did RefreshTrackedTeamsIfStale re-fetch this run
+    TrackedTeamsCount     int  // cache size after a refresh; 0 on cache-hit runs
+    Fetched               int
+    FilteredOut           int  // fixtures the tracked-teams filter dropped
+    Staging               int
+    Active                int
+    Completed             int
+    ExistingAliases       int
+    InsertedAliases       int
+    AliasCacheHits        int  // Step 3.5 resolution outcomes ↓
+    AliasesResolved       int
+    AliasNoMatch          int
+    AliasFailed           int
+    PrunedFixtures        int
+    Errors                []string // aggregated per-fixture/per-team failure context
 }
 ```
 
@@ -107,20 +119,50 @@ type IngestWorkflowOutput struct {
 
 ### Activity sequence
 
+Sequential — each step feeds the next; no parallel branches (daily
+ingest isn't throughput-bound, and sequencing keeps failure attribution
+simple).
+
 ```
-1. Fetch (branches on ManualFixtureIDs):
-     IF len(ManualFixtureIDs) > 0:
-       FetchFixturesByIDs(IDs) → []APIFixture
-     ELSE:
-       from := anchor - 1d;  to := anchor + 3d
-       FetchFixturesForWindow(from, to) → []APIFixture
-2. CategorizeAndUpsertFixtures(fixtures, ActivationWindow)
-     → {Staging, Active, Completed, TeamRefs, Errors}
-3. IF len(TeamRefs) > 0:
-     EnsureAliasPlaceholders(TeamRefs) → {Existing, Inserted, Errors}
-4. IF RetentionDays > 0:
-     threshold := anchor - RetentionDays days
-     PruneOldFixtures(threshold) → Deleted
+0.  GetIngestConfig() → {ActivationWindow, RetentionDays, MaxLookaheadDays}
+      Read once at start (workflows can't touch env). Input overrides
+      (ActivationWindow, RetentionDays) win; zero falls back to config.
+0.5 IF NOT manual-IDs path:
+      RefreshTrackedTeamsIfStale()                         [120s timeout]
+        → {Refreshed, TotalTeams, PerLeagueCounts}
+      Re-fetches each tracked league's current-season roster into
+      tracked_teams_cache when stale. Non-fatal: on failure fetch proceeds
+      with whatever's cached (possibly empty → fail-open, audit G2/G6).
+1.  Fetch (branches on ManualFixtureIDs):
+      IF len(ManualFixtureIDs) > 0:
+        FetchFixturesByIDs(IDs) → {Fixtures, FailedIDs}
+          Targeted-retry loop: re-request only FailedIDs, up to 3 attempts,
+          linear backoff (in-cycle recovery beats waiting 24h). By-ID
+          bypasses the tracked-teams filter.
+      ELSE (by-date, smart timezone-lookahead):
+        FetchFixturesForDay(anchor)                          [always]
+        IF FetchFuture:
+          FetchFixturesForDay(anchor+1)                      [tomorrow]
+          IF tomorrow non-empty: FetchFixturesForDay(anchor+2)
+          ELSE: scan anchor+2 .. anchor+MaxLookaheadDays for the next
+                non-empty day, then also fetch that day + 1
+        Dedupe by fixture ID across days; each day's FilteredOut (dropped
+        by the tracked-teams filter) accumulates into the output.
+2.  CategorizeAndUpsertFixtures(fixtures, ActivationWindow) [120s timeout]
+      → {Staging, Active, Completed, TeamRefs, Errors}
+3.  IF len(TeamRefs) > 0:
+      EnsureAliasPlaceholders(TeamRefs) → {Existing, Inserted, Errors}
+3.5 IF len(TeamRefs) > 0:
+      ResolveAliasesForTeams(TeamRefs)                       [15m timeout]
+        → {CacheHits, Resolved, NoMatch, Failed, Errors}
+      Wikipedia CirrusSearch + Wikidata for teams without a wikidata_qid;
+      cache-hit skip, soft-fail per team (see § alias pattern below).
+4.  IF RetentionDays > 0:
+      PruneOldFixtures(anchor - RetentionDays days) → Deleted
+        PG-only DELETE of completed fixtures older than the threshold
+        (keyed on completed_at) that have NO surviving video_shares
+        (URL-stability guard). Does NOT reclaim Garage/S3 objects —
+        audit-2026-08-05 G4.
 ```
 
 Anchor: `ManualDate` if set, else `workflow.Now(ctx)` — deterministic
@@ -128,9 +170,12 @@ across replays. Manual-date override propagates through the whole
 workflow (fetch window AND retention cutoff both computed from the
 anchor) so re-ingesting a past date behaves consistently.
 
-All five activity methods live in
-`internal/activity/ingest/activities.go`. Registered on the worker
-as methods of `*ingest.Activities`.
+All eight activity methods — `GetIngestConfig`,
+`RefreshTrackedTeamsIfStale`, `FetchFixturesForDay`, `FetchFixturesByIDs`,
+`CategorizeAndUpsertFixtures`, `EnsureAliasPlaceholders`,
+`ResolveAliasesForTeams`, `PruneOldFixtures` — live in
+`internal/activity/ingest/activities.go`, registered on the worker as
+methods of `*ingest.Activities`.
 
 ### Reconcile logic — the load-bearing merge
 
@@ -142,8 +187,9 @@ Elapsed, Extra, Kickoff, Home, Away, League, Scores) + LastPolledAt
 CompletedAt, LastActivityAt, CreatedAt). Rationale: a fixture already
 active in our DB (activated_at set) MUST NOT have its activated_at
 cleared by the daily 00:05 re-ingest. LastPolledAt DOES get updated
-because ingest is a poll — future MonitorWorkflow bucket logic will
-consult LastPolledAt to skip freshly-touched fixtures.
+because ingest is itself a poll. (The planned bucket-suppression that
+would have consulted it was abandoned in the ActivePoll/StagingPoll
+split — see the note above.)
 
 **Fresh row (Get returns ErrNotFound):** construct via `fixture.New`,
 set `LastPolledAt = now` (before state transitions — Activate/Complete
@@ -164,7 +210,7 @@ API status:
   why SUSP/INT/PST count as Live — matches Python.
 - **Not started** (`NS`, `TBD`, etc.) → check
   `ShouldActivateNow(now, ActivationWindow)`. If true (kickoff within
-  30 min), Activate before first Upsert (avoids the "manual ingest at
+  the activation window), Activate before first Upsert (avoids the "manual ingest at
   14:55 for 15:00 kickoff sits in staging" Python bug — see
   [decisions.md 2026-07-07 Fixture activation triggers](decisions.md#2026-07-07--fixture-activation-triggers--staging-poll-design)).
   Otherwise stays staging.
@@ -187,12 +233,14 @@ This is a **deliberate departure** from plan §5 W1 which specified
 
 ### Timeouts + retry
 
-Default activity options per workflow:
+Default activity options:
 - StartToCloseTimeout: 60s
-- Retry: exponential backoff 2s → 4s → cap 30s, max 3 attempts
+- Retry: exponential backoff 2s → cap 30s (coefficient 2), max 3 attempts
 
-Override for CategorizeAndUpsertFixtures: 120s timeout (DB-bound
-over potentially 100s of fixtures per call).
+Per-activity timeout overrides (same retry policy):
+- `RefreshTrackedTeamsIfStale`: 120s (~6 leagues × 2 API calls each)
+- `CategorizeAndUpsertFixtures`: 120s (DB-bound over 100s of fixtures)
+- `ResolveAliasesForTeams`: 15m (~7s/team × up to 100 teams at tournament peak)
 
 No workflow-level retry policy — an ingest failure surfaces to the
 Temporal UI; operator can manually re-run. Rationale: the workflow
@@ -207,9 +255,17 @@ dependencies:
 
 ```go
 ingestActs := &ingestactivity.Activities{
-    APIFootball: afClient,                 // *apifootball.Client
-    FixtureRepo: pg.NewFixtureRepo(pool),  // domain/fixture.Repo
-    AliasRepo:   pg.NewAliasRepo(pool),    // domain/alias.Repo
+    APIFootball:           afClient,      // *apifootball.Client
+    FixtureRepo:           fixtureRepo,   // domain/fixture.Repo
+    AliasRepo:             aliasRepo,     // domain/alias.Repo
+    TeamRepo:              teamRepo,      // domain/team.Repo (tracked-teams cache)
+    TrackedLeagueIDs:      cfg.APIFootball.TrackedLeagueIDs,
+    TopFlightCacheHours:   cfg.APIFootball.TopFlightCacheHours,
+    FetchWindowFutureDays: cfg.APIFootball.FetchWindowFutureDays,
+    ActivationWindow:      cfg.Workflows.ActivationWindow,
+    RetentionDays:         cfg.Workflows.RetentionDays,
+    AliasResolver:         aliasResolver, // *alias.Resolver (nil = resolution skipped)
+    AliasThrottle:         500 * time.Millisecond,
 }
 w.RegisterWorkflow(ffwf.IngestWorkflow)
 w.RegisterActivity(ingestActs)
@@ -252,16 +308,48 @@ Python (`monitor.py` `initial_count` + `unknown_scorer_disappeared`); see
 staging fixtures + handles vendor edge cases (kickoff-corrected activation,
 Live()-emergency activation). Location: `internal/workflow/staging_poll.go`.
 
-## DiscoveryWorkflow — as shipped
+## EventWorkflow — as shipped (#164c + #165)
 
-Spawned Temporal-direct by Monitor's `ReconcileFixture` when
-`downstream_triggered` flips (NOT scheduled — 2026-07-16). Per event:
-N attempts × M spacing (config, default 15 × 60s). Each attempt:
-`GetDiscoveryConfig` → `FetchTeamAliases` → build query → `SearchTweets`
-(accumulated `exclude_urls`) → `StoreCandidate` per hit → finally
-`MarkDownstreamComplete`. Wall-clock `max_age_minutes` filter
-(decisions.md 2026-07-23). Location: `internal/workflow/discovery.go` +
-`internal/activity/discovery/`.
+The per-goal orchestrator (renamed from DiscoveryWorkflow, decisions.md
+2026-08-03 — the workflow became the event orchestrator, so "Discovery"
+undersold it; the discovery *phase* keeps its name). Spawned
+Temporal-direct by Monitor's `ReconcileFixture` via `DownstreamSpawner`
+when an event's `downstream_triggered` flips (workflow ID `event-{id}`,
+RejectDuplicate; NOT scheduled — 2026-07-16). Location:
+`internal/workflow/event.go` (orchestration) + `event_pipeline.go`
+(consumer) + `internal/activity/discovery/`.
+
+Runs a **producer + consumer concurrently** (`workflow.Go` + a
+`workflow.Selector` queue), with Temporal owning completion — the
+consumer returns when search is done AND nothing is in flight (no idle
+timeout):
+
+**Producer** (the discovery search loop). `GetDiscoveryConfig` →
+`FetchTeamAliases` → `querybuilder.Build(player, canonical, aliases)` →
+N attempts × M spacing (`config.DiscoveryConfig`, default 15 × 60s) of
+`SearchTweets` with per-event `exclude_urls` accumulating across attempts
+(so attempts 2+ stop early on consecutive-already-seen). Each new
+candidate is persisted via `StoreCandidate` (post-hoc query-quality
+learning) AND spawns a `VideoWorkflow` child (`ExecuteChildWorkflow`,
+awaited) that runs `DownloadAndStage → HashVideo` and returns
+md5 + frame-hash fingerprints. Wall-clock `max_age_minutes` filter
+(decisions.md 2026-07-23).
+
+**Consumer** (`event_pipeline.go`, serialized). Per finished child, in
+order: **dedup** (md5 exact-match, then perceptual `video.Match` sliding
+window against kept + pending clips) → **vision** (`ValidateClip` on joi
+— every surviving clip; screen-gate + period-aware clock) → **promote**
+(`PromoteAndPersist` copies staging→asset under a deterministic asset
+UUID + mints one `video_shares` row) → **rank** (`RebalanceRanks` by
+`CompareShares`: verified → popularity → file_size → oldest).
+
+On completion `finalizeEvent` marks the `event_downstream_workflows` row
+complete with an `outcome_class` (the pg `workflow_type` stays
+`'discovery'` — the internal downstream label). **Known gap (#171):** the
+dedup collapse is keep-first — `quality.go`'s `IsUpgrade` / `ClipQuality`
+supersede path is built + unit-tested but not yet wired, so a later
+higher-quality duplicate doesn't replace the incumbent. See
+[audit-2026-08-05](design/audit-2026-08-05.md) Tier-1 #1.
 
 ## Testing shape
 
