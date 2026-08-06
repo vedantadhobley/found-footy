@@ -51,6 +51,13 @@ services:
     # Postgres image; only pgvector needs the alternate base.
     image: pgvector/pgvector:pg16
     container_name: found-footy-dev-postgres
+    # mem_limit: hard host-protection ceiling per the ~/.claude/CLAUDE.md
+    # host memory-budget rule (this box runs several projects' stacks; no
+    # container may eat the 125 GB during a leak/runaway). These are
+    # circuit-breakers well above real peak, not efficiency targets — see
+    # the found-footy row in vedanta-dhobley/docs/memory-budget.md. Dev
+    # baseline for app Postgres.
+    mem_limit: 4g
     environment:
       POSTGRES_USER: ${PG_USER:-ffuser}
       POSTGRES_PASSWORD: ${PG_PASSWORD:-ffpass}
@@ -74,6 +81,7 @@ services:
   temporal-postgres:
     image: postgres:16-alpine
     container_name: found-footy-dev-temporal-postgres
+    mem_limit: 2g  # host-budget ceiling (see postgres note); low-traffic metadata store
     environment:
       POSTGRES_USER: ${TEMPORAL_PG_USER:-temporal}
       POSTGRES_PASSWORD: ${TEMPORAL_PG_PASSWORD:-temporal}
@@ -93,6 +101,7 @@ services:
   temporal:
     image: temporalio/auto-setup:1.24
     container_name: found-footy-dev-temporal
+    mem_limit: 2g  # host-budget ceiling (see postgres note)
     depends_on:
       temporal-postgres:
         condition: service_healthy
@@ -112,6 +121,7 @@ services:
   temporal-ui:
     image: temporalio/ui:2.30.3
     container_name: found-footy-dev-temporal-ui
+    mem_limit: 1g  # host-budget ceiling (see postgres note); tiny web UI
     depends_on:
       - temporal
     environment:
@@ -126,6 +136,7 @@ services:
   garage:
     image: dxflrs/garage:v1.0.1
     container_name: found-footy-dev-garage
+    mem_limit: 2g  # host-budget ceiling (see postgres note)
     volumes:
       - garage-data:/var/lib/garage/data
       - garage-meta:/var/lib/garage/meta
@@ -146,6 +157,15 @@ services:
         BINARY: worker
     image: found-footy-dev-worker:latest
     container_name: found-footy-dev-worker
+    # Largest app ceiling. The worker runs concurrent ffmpeg frame-extraction;
+    # streamed dense extraction (per-clip Go heap ~nil — hashes each frame as it
+    # arrives) leaves ffmpeg RSS (~0.5g worst-case 1080p) as the only per-clip
+    # cost. Concurrency is bounded by FFMPEG_MAX_CONCURRENT (.env, 32) → worst
+    # case 32 × ~0.5g ≈ 16g, so 16g is the coupled ceiling. A rare all-worst-case
+    # flurry degrades gracefully: an OOM-killed ffmpeg child just fails its
+    # activity and Temporal retries. Load test + coupling: decisions.md
+    # 2026-08-06. See postgres note.
+    mem_limit: 16g
     env_file: .env
     environment:
       NATS_CLIENT_NAME: found-footy-dev-worker
@@ -175,6 +195,7 @@ services:
         BINARY: api
     image: found-footy-dev-api:latest
     container_name: found-footy-dev-api
+    mem_limit: 2g  # host-budget ceiling (see postgres note); Go HTTP/SSE, tiny at rest
     env_file: .env
     environment:
       NATS_CLIENT_NAME: found-footy-dev-api
@@ -208,6 +229,14 @@ services:
     image: found-footy-dev-twitter:latest
     container_name: found-footy-dev-twitter
     env_file: .env
+    # Firefox is the one real memory consumer. With the cache-bounding prefs
+    # (cmd/twitter/main.go) a long-lived instance should stay well under 2g;
+    # 8g is generous headroom so normal work never chokes. NOTE: hitting
+    # this limit OOM-kills Firefox (not the Go PID 1), which WEDGES the
+    # service (no relaunch watchdog yet — #170-adjacent), so this is a
+    # never-hit backstop, not graceful recovery. #160's per-event instances
+    # set their own per-instance cap at provision time. See postgres note.
+    mem_limit: 8g
     # Firefox sandbox needs relaxed seccomp — its clone3()/unshare()
     # calls for user-namespace creation are blocked by Docker's default
     # seccomp profile, surfacing as "CanCreateUserNamespace clone()
@@ -259,6 +288,7 @@ services:
     image: found-footy-dev-twitter-vnc:latest
     container_name: found-footy-dev-twitter-vnc
     profiles: [vnc]
+    mem_limit: 8g  # host-budget ceiling (see twitter note); same Firefox shape + VNC stack
     env_file: .env
     security_opt:
       - seccomp:unconfined
