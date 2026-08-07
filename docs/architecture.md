@@ -72,7 +72,7 @@ found-footy/
 │   │   ├── vocabulary/                  ✓ S1: typed Module + Action enums
 │   │   ├── logging/                     ✓ S1: slog Emit() + TestEmitter for unit tests
 │   │   ├── metrics/                     ✓ S1: Prometheus registry helper
-│   │   └── tracing/                     ⊘ empty (Phase 5+ per plan; deferred)
+│   │   └── tracing/                     ⊘ stub (Noop tracer, ~22 lines; real OTLP Phase 5+)
 │   ├── scaler/                          scaffold; no logic (Phase A/M)
 │   ├── testutil/                        ⊘ empty (build as testing needs surface)
 │   ├── twitter/                         Twitter *service* (browser + auth + scrape); imported by cmd/twitter
@@ -118,13 +118,17 @@ Legend:
 
 ## Domain packages — as-shipped shape
 
-Each of the 4 shipped domain packages follows the same layout, matching
-[rebuild-plan.md §4](design/rebuild-plan.md#4-domain-model):
+Nine domain packages: **6 with substantial logic** — fixture, event, video,
+alias, vision, team — plus discovery (query builder) and session + textanalysis
+(stubs). The richer ones loosely follow the layout below (matching
+[rebuild-plan.md §4](design/rebuild-plan.md#4-domain-model)), but it isn't
+uniform — notably **only fixture + event have a `state.go`** (the rest aren't
+state machines):
 
 ```
 domain/<name>/
 ├── <name>.go               model type + New() constructor
-├── state.go                state transitions with method receivers (mutate in place)
+├── state.go                state transitions (fixture + event only; others omit it)
 ├── repo.go                 Repo interface + ErrNotFound sentinel
 └── <name>_test.go          unit tests — pure Go, no adapters
 ```
@@ -155,33 +159,44 @@ ActivePollWorkflow's `ActivateUpcoming` step.
 Repo methods shipped in `internal/infra/pg/fixture_repo.go`:
 `Get`, `Upsert`, `ListByState`, `ListActiveIDs` (cheap ID-only
 projection for ActivePollWorkflow's batched API call),
-`ListStagingBeforeKickoff`, `PruneCompleted`.
+`ListStagingBeforeKickoff`, `FixtureReadyToComplete` (the completion-contract
+evaluator, see [completion-contract.md](design/proposals/completion-contract.md)),
+`PruneCompleted`.
 
 ### event domain (D2)
 
-Core type `event.Event` with `State` (detected/stable/removed) and
-per-event debounce counters. Model captures the 3-poll invariant
-Python enforced via monitor-cycle registration counts.
+Core type `event.Event` — **no `State` enum**; the lifecycle lives in three
+fields: `DebounceCount` (0–3 symmetric counter), `DownstreamTriggered` (one-way
+FALSE→TRUE latch, flips the moment DebounceCount first reaches 3), and
+`Removed`/`RemovedReason`/`RemovedAt` (atomic soft-delete on hitZero). Captures
+the 3-poll invariant Python enforced via monitor-cycle registration counts.
 
 Repo methods shipped in `internal/infra/pg/event_repo.go`:
-`Get`, `GetByNaturalKey`, `Insert(ctx, e, workflowID)` — atomic seed
-with debounce_count=1 + first presence vote,
-`Upsert` (state updates), `ListPending`,
-`RegisterEventPresence` (symmetric-counter increment, cap 3, flips
-downstream_triggered on first hit), `RegisterEventAbsence`
-(decrement, floor 0, atomic soft-delete on hitZero with reason='var'),
-`RegisterVideoValidationWorkflow` (monotonic download attempt
-counter — unchanged by the debounce redesign). Debounce model per
-decisions.md 2026-07-07 symmetric-counter entry.
+`Get`, `GetByNaturalKey`, `Insert(ctx, e, workflowID)` (atomic seed —
+`debounce_count=1` + first presence vote for a **known** scorer, but
+`debounce_count=0` + **no** vote for an unknown-scorer placeholder, per G1),
+`DeleteUnknownEvent` (hard-delete a lingering `debounce_count=0` placeholder),
+`Upsert`, `ListPending`, `EventsAwaitingDiscovery` (the discovery spawn set),
+`RegisterEventPresence` (increment, cap 3, flips downstream_triggered on first
+hit), `RegisterEventAbsence` (decrement, floor 0, atomic soft-delete on hitZero
+with reason='var'), `RegisterDownstreamWorkflow` (inserts the
+`event_downstream_workflows` checklist row), `RegisterVideoValidationWorkflow`
+(monotonic download-attempt counter). Debounce model per decisions.md
+2026-07-07 symmetric-counter + 2026-08-05 unknown-scorer entries.
 
 ### video domain (D3)
 
-Core types `video.Asset` and `video.Share` — the split from Python's
-single `video` collection that supports the URL-stability + rank
-invariants documented in `rebuild-plan.md` §3 and §4.
+Core types `video.Asset` and `video.Share` — the split from Python's single
+`video` collection that supports the URL-stability + rank invariants
+(`rebuild-plan.md` §3/§4). Post-#166 `Asset` is `event_id`-scoped and carries a
+per-frame `frame_hashes` dHash sequence (md5 exact-match + `UNIQUE(event_id,
+md5)`; the old whole-clip `perceptual_hash` UNIQUE is retired).
 
-Ranking helpers in `rank.go` (`CompareShares` — the deterministic
-tie-break Python's frontend uses).
+Beyond the model, the package owns the dedup + quality logic (pure, table-
+tested): `hash.go` (`DHash`/`DHashPNG`), `match.go` (`Match` — the
+offset-tolerant sliding window), `filter.go` (`HardFilter` pre-download gate),
+`quality.go` (`IsUpgrade`/`ClipQuality` winner-selection — built, unwired #171),
+and `rank.go` (`CompareShares` — the deterministic frontend tie-break).
 
 ### alias domain (D4)
 
@@ -204,27 +219,6 @@ fields atomically + copies the aliases slice defensively.
 Normalize helper: NFD Latin-diacritic strip, preserved case. Kept
 exported because both the pipeline and (future) Twitter search-query
 builder call it.
-
-### vision domain (D5) — shipped 2026-07-28
-
-Clip-validation logic, pure + table-tested (no I/O, no model). Ports the
-Python clock parsers with a period-awareness fix.
-
-- `clock.go` — scorebug field parsers (`parseClockField`,
-  `parseAddedField`, `parseStoppageClockField` — the last strips a leading
-  `+`, since gemma returns `01:48` and Qwen `+1:48`) + `periodOf` (the
-  H1/H2/ET1/ET2 map, verified against real API-Football data).
-- `evaluate.go` — `Evaluate(frames, Expected, tol)`: soccer/screen majority
-  gates → period-aware clock check → `Outcome` (verified/unverified/rejected).
-  Strictness: ±1 minute, strict at halftime / lenient at ET (see decisions.md).
-- `schema.go` — `FrameObservation` (the model's per-frame JSON), `ResponseSchema`
-  (the `response_format` json-schema, exactly-3 positional frames), and the
-  validated `DefaultPrompt`.
-
-Consumed by `internal/activity/vision.ValidateClip` (V/4): fetch staged clip
-→ `ffmpeg.ExtractFrame` @25/50/75% → one multi-image structured-output vision
-call → `Evaluate`. The LLM adapter's `ResponseFormat` + `DisableThinking`
-fields (rung 1) exist for this call. Not yet wired into a workflow.
 
 Repo methods shipped: `Get`, `BulkGet`, `UpsertVendorFields`,
 `UpsertResolution`. The Upsert split enforces the invariant that
@@ -349,6 +343,38 @@ apostrophes, lowercase, drop ≤2 char / all-digit / CamelCase-concat.
 Integration test in `lookup_integration_test.go` verifies real
 Wikipedia + Wikidata resolutions for 4 teams (Liverpool, Man United,
 France, Brazil) — skipped in `-short`.
+
+### vision domain (D5) — shipped 2026-07-28
+
+Clip-validation logic, pure + table-tested (no I/O, no model). Ports the Python
+clock parsers with a period-awareness fix.
+
+- `clock.go` — scorebug field parsers (`parseClockField`, `parseAddedField`,
+  `parseStoppageClockField` — the last strips a leading `+`, since gemma returns
+  `01:48` and Qwen `+1:48`) + `periodOf` (the H1/H2/ET1/ET2 map, verified against
+  real API-Football data).
+- `evaluate.go` — `Evaluate(frames, Expected, tol)`: soccer/screen majority
+  gates → period-aware clock check → `Outcome` (verified/unverified/rejected).
+  Strictness: ±1 minute, strict at halftime / lenient at ET (see decisions.md).
+- `schema.go` — `FrameObservation` (per-frame JSON) + `VisionResponse`
+  (`{Frames}`, the `response_format` json-schema, exactly-3 positional frames) +
+  `DefaultPrompt`.
+
+Consumed by `internal/activity/vision.ValidateClip`: fetch staged clip →
+`ffmpeg.ExtractFrame` @25/50/75% → one multi-image structured-output vision call
+→ `Evaluate`. **Wired into EventWorkflow's consumer** (`event_pipeline.go`, fired
+async per unique clip); the LLM adapter's `ResponseFormat` + `DisableThinking`
+fields (rung 1) exist for this call.
+
+### team domain (D6)
+
+Core type `team.TrackedTeam` (id, name, league, season, refreshed_at) + a
+`team.Set` for O(1) membership. Backs the tracked-teams fixture filter:
+`RefreshTrackedTeamsIfStale` builds the cache from league rosters, `Replace`
+does an atomic truncate+COPY, and `FetchFixturesForDay` filters against it.
+Per-team provenance (one row/team with league+season) enables the
+promotion/relegation reasoning the Python single-doc `top_flight_cache`
+couldn't. Repo (`team_repo.go`): `List`, `Replace`, `OldestRefreshedAt`.
 
 ## Adapters — as-shipped template
 
