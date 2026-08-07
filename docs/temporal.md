@@ -30,7 +30,7 @@ temporal/
 └── client_test.go       unit tests (85 lines)
 ```
 
-### `Client` (198 lines, `client.go`)
+### `Client` (`client.go`)
 
 Wraps the Temporal SDK's `client.Client` behind our type so we can
 inject `*Instruments` at construction, own the `Close()` hook, and
@@ -39,8 +39,8 @@ graceful shutdown ordering.
 
 ```go
 type Client struct {
-    // wraps go.temporal.io/sdk/client.Client;
-    // fields not exported
+    client.Client // embedded — SDK methods promoted onto *Client
+    // + unexported: ins *Instruments, namespace, taskQueue, workerShutdownTimeout
 }
 
 func NewClient(ctx context.Context, cfg config.TemporalConfig, ins *Instruments) (*Client, error)
@@ -111,14 +111,21 @@ deps.RegisterCloser("temporal-client", func(_ context.Context) error {
 // 2. Worker construction.
 w := temporal.NewWorker(tempClient, tempIns, worker.Options{})
 
-// 3. Workflow + activity registration — BEFORE Start.
-ingestActs := &ingestactivity.Activities{
-    APIFootball: afClient,
-    FixtureRepo: pg.NewFixtureRepo(pool),
-    AliasRepo:   pg.NewAliasRepo(pool),
-}
+// 3. Workflow + activity registration — BEFORE Start. 5 workflows +
+//    6 activity sets (each Activities struct's exported methods become
+//    individually-dispatchable activities). Construction of each *Activities
+//    with its real deps is in orchestration.md's wire-up.
 w.RegisterWorkflow(ffwf.IngestWorkflow)
-w.RegisterActivity(ingestActs)
+w.RegisterWorkflow(ffwf.ActivePollWorkflow)
+w.RegisterWorkflow(ffwf.StagingPollWorkflow)
+w.RegisterWorkflow(ffwf.EventWorkflow)
+w.RegisterWorkflow(ffwf.VideoWorkflow)
+w.RegisterActivity(ingestActs)     // *ingest.Activities   (8 methods)
+w.RegisterActivity(monitorActs)    // *monitor.Activities
+w.RegisterActivity(discoveryActs)  // *discovery.Activities
+w.RegisterActivity(videoActs)      // *video.Activities
+w.RegisterActivity(visionActs)     // *vision.Activities
+w.RegisterActivity(persistActs)    // *video.PersistActivities
 
 // 4. Start.
 if err := w.Start(ctx); err != nil { return err }
@@ -154,8 +161,8 @@ Not codified as helper functions yet; observed patterns:
 `workflow.ExecuteActivity(ctx, "ActivityName", input)` with the
 activity's method name as a string. Tradeoff: no compile-time check
 on the string, but workflow tests can `env.OnActivity("Name", ...)`
-without depending on the activities package. Used across all four
-ingest activities.
+without depending on the activities package. Used across all the
+ingest activities (and the monitor/discovery/video/vision/persist sets).
 
 **Default activity options in each workflow.** No adapter-level
 `DefaultRetryPolicy()` helper (plan §9 called for one; not shipped).
@@ -187,9 +194,10 @@ _, err := tempClient.ScheduleClient().Create(ctx, client.ScheduleOptions{
         CronExpressions: []string{"5 0 * * *"},
     },
     Action: &client.ScheduleWorkflowAction{
+        ID:        "ingest-scheduled",
         Workflow:  ffwf.IngestWorkflow,
         TaskQueue: tempClient.TaskQueue(),
-        Args:      []any{ffwf.IngestWorkflowInput{RetentionDays: 14}},
+        Args:      []any{ffwf.IngestWorkflowInput{RetentionDays: 14, FetchFuture: true}},
     },
     Overlap: enums.SCHEDULE_OVERLAP_POLICY_SKIP,
 })
@@ -202,21 +210,33 @@ Load-bearing details:
 - **Idempotent by design.** ErrScheduleAlreadyRunning is caught +
   logged as `temporal_schedule_already_exists` (not an error). Every
   worker restart hits this after the first successful create.
-- **Doesn't overwrite manual updates.** If an operator runs
-  `temporal schedule update ingest-scheduled-daily ...` to tune the
-  cron or args, the startup code sees ErrScheduleAlreadyRunning and
-  leaves it alone.
+- **Doesn't overwrite manual updates — but also doesn't propagate CODE
+  changes.** Create-only means a changed cron / arg / overlap in this file is
+  **silently ignored on redeploy** until the schedule is manually deleted +
+  recreated. Python's `setup_schedules()` UPDATEd every startup specifically to
+  avoid this (a stale 25s timeout that persisted); reintroduced here — tracked
+  in the #178 / G6 obs cluster. (Upside: an operator's manual
+  `temporal schedule update` survives a redeploy.)
 - **Overlap = SKIP.** If a prior IngestWorkflow run is still
   executing (unusual — ingest is fast, but a Postgres stall could
   cause it), skip the next scheduled run rather than double-firing.
 
-**Adapter surface added for this:**
-`Client.ScheduleClient() client.ScheduleClient` — passthrough to the
-SDK's ScheduleClient. Not per-op instrumented; schedule ops are rare.
-If Monitor/Discovery add many schedules, wrap.
+**Three schedules ship** — all via this same idempotent `Create` pattern in
+`cmd/worker/main.go` (`ensureIngestSchedule` / `ensureActivePollSchedule` /
+`ensureStagingPollSchedule`):
 
-**MonitorWorkflow, EventWorkflow, etc.** — future schedules
-follow the same pattern.
+| Schedule ID | Spec | Workflow |
+|---|---|---|
+| `ingest-scheduled-daily` | cron `5 0 * * *` (00:05 UTC) | IngestWorkflow (`FetchFuture:true, RetentionDays:14`) |
+| `active-poll-scheduled` | IntervalSpec `Every: WORKFLOWS_ACTIVE_FIXTURE_POLL_INTERVAL` (30s) | ActivePollWorkflow |
+| `staging-poll-scheduled` | cron `WORKFLOWS_STAGING_POLL_CRON` (`*/15 * * * *`) | StagingPollWorkflow |
+
+EventWorkflow + VideoWorkflow are **spawned** (client `StartWorkflow` / child
+workflow), not scheduled — see [orchestration.md](./orchestration.md).
+
+**Adapter surface:** `Client.ScheduleClient() client.ScheduleClient` —
+passthrough to the SDK's ScheduleClient. Not per-op instrumented; schedule ops
+are rare.
 
 ## Cross-refs
 
