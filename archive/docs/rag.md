@@ -1,5 +1,12 @@
 # Team Alias Generation with RAG (Wikidata + LLM)
 
+> **⚠ SUPERSEDED — historical (Python-era), and inaccurate even for that.** The
+> shipped alias pipeline is **deterministic, no LLM**: Wikipedia CirrusSearch →
+> Wikidata QID → multilingual alias fetch. This doc describes an Ollama-based RAG
+> that never shipped. For the as-built see
+> [`../../docs/design/proposals/team-aliases.md`](../../docs/design/proposals/team-aliases.md)
+> + [`../../docs/architecture.md`](../../docs/architecture.md) (alias domain).
+
 ## Overview
 
 This document describes the RAG-based team alias generation system for improving Twitter search coverage.

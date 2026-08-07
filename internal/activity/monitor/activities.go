@@ -24,9 +24,8 @@
 // decisions.md 2026-07-10 workflow-split entry.
 //
 // Debounce model per decisions.md 2026-07-07 symmetric-counter entry.
-// NATS emissions and EventWorkflow spawn are DEFERRED to O3;
-// this file just LOGS the "would spawn" cases so we can inspect
-// behavior in Loki during live testing before real fan-out lands.
+// NATS emissions (via the event composer) and EventWorkflow spawn (via
+// DownstreamSpawner, on the downstream_triggered flip) both SHIPPED in O3.
 package monitor
 
 import (

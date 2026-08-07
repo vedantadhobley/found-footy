@@ -23,14 +23,14 @@
 //      workflow.ExecuteActivity in a loop (dispatched in parallel;
 //      workflow waits for all).
 //
-// Deferred to O3:
-//   • EventWorkflow spawn for stable events (currently just
-//     logged via EventsBecameStable in the output).
-//   • Destroy pipeline (Temporal cancel + video_shares soft-delete)
-//     for removed events (currently just logged via EventsRemoved).
-//   • Fixture completion transition (needs Discovery to define
-//     "fully done"). Partial completion (Terminal-status only)
-//     shipping in a follow-up commit.
+// As-built (O3+):
+//   • EventWorkflow spawn for stable events — SHIPPED (DownstreamSpawner
+//     on the downstream_triggered flip).
+//   • Fixture completion transition — SHIPPED (FixtureReadyToComplete; the
+//     completion contract).
+//   • Destroy pipeline (Temporal cancel + video_shares soft-delete) for
+//     VAR-removed events — STILL PENDING (#172); absence currently only
+//     soft-deletes the event.
 //
 // See decisions.md 2026-07-10 workflow-split entry for the rationale
 // behind splitting Monitor into ActivePoll + StagingPoll.

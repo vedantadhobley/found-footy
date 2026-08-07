@@ -110,8 +110,9 @@ func (t *TeamAlias) IsResolved() bool {
 }
 
 // IsFresh reports whether the resolution is fresh relative to a TTL.
-// Unresolved rows are never fresh. The reference now is passed in so
-// tests and workflow-time-aware callers can pass their own clock.
+// DEAD CODE (no non-test callers): resolution is resolve-once / permanent
+// — a set wikidata_qid is skipped forever — so the 30-day-TTL design this
+// supports was abandoned. Kept pending removal.
 func (t *TeamAlias) IsFresh(now time.Time, ttl time.Duration) bool {
 	if t.ResolvedAt == nil {
 		return false
