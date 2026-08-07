@@ -93,6 +93,23 @@ Process lesson (motivates the as-built audit): the as-built docs described a
 schema the running DB didn't have, and nothing caught it. The audit's schema.sql
 ↔ running-DB check exists to catch exactly this.
 
+## 2026-08-05 — Quality-aware dedup winner selection (metadata score; built, not yet wired)
+
+`internal/domain/video/quality.go` scores dedup-cluster members to pick the best
+clip to keep, from metadata captured at download time, in priority order: capped-
+relative **duration** (Python's 15% band, flattened past a 60 s cap so a padded
+clip earns no edge but is never dropped for length) → **bits-per-pixel**
+(bitrate / (w·h) — the deliberate improvement over Python's `file_size` proxy,
+which a blurry upscale games) → **resolution**. `IsUpgrade(challenger, incumbent)`
+is the guard; ties and marginal wins keep the incumbent (stability).
+
+**Status: built + unit-tested, but NOT wired.** The consumer's `collapse()` is
+still keep-first — `IsUpgrade`/`ClipQuality` and the `superseded_by` column are
+called nowhere in the persist path, so a later higher-quality duplicate does not
+replace the incumbent. Wiring it (supersede on win, popularity merge, share
+removal) is #171. See [`design/audit-2026-08-05.md`](design/audit-2026-08-05.md)
+Tier-1 #1. (This is the entry `quality.go`'s header cites.)
+
 ## 2026-08-05 — Twitter search: uncap the worker's HTTP client (a 10s cap strangled every search)
 
 The Go video pipeline had produced ZERO clips in ~13 days of the dev stack
