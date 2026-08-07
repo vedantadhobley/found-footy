@@ -1,7 +1,25 @@
 # Twitter service port — design proposal (Phase T)
 
-**Status:** design-first draft. Do not implement anything from this
-doc until it's reviewed + signed off.
+**Status:** T/a–T/c **SHIPPED + live** (Playwright-Go service: auth + cookie
+fleet + `/search`). Do NOT read the un-annotated body as current — several
+sections describe a planned shape that diverged.
+
+> **⚠ AS-BUILT (2026-08-06).** What shipped lives in `internal/twitter/` +
+> `internal/infra/twitter/client.go`; a proper as-built ledger lands as
+> `docs/twitter-service.md` (doc-restructure Phase 3). Corrections to this
+> proposal:
+> - **5 HTTP endpoints, not 8** (see the corrected § HTTP API contract).
+>   The `/extract_cdn_url` + `/download_video` split (T/f) was **never built** —
+>   the video pipeline downloads **off-browser via the cookieless syndication
+>   adapter**, and the Go twitter client exposes only `Search`.
+> - **Error classes** are `auth_expired` / `bad_request` / `empty_query` /
+>   `method_not_allowed` / `navigation_failed` / `internal` — not the
+>   rate_limited/browser_crashed/no_results/network_error set below.
+>   `rate_limited` (T/d) is unbuilt.
+> - **Fleet coordination** (T/e instance registry + the T/d scaler) is
+>   **superseded** by the per-event instance model —
+>   [`twitter-scaling.md`](./twitter-scaling.md) (#160).
+> - Scroll jitter tightened 0.5–3s → **250–500ms** (2026-08-05).
 
 **Revision log:**
 - 2026-07-23 (T/c shipped) — Full /search endpoint replacing the T/a stub. HTTP contract now matches the S7 client (POST + SearchRequest/SearchResponse/VideoRef shape). DOM extraction ported from `scrape.py` including video duration multi-selector walk with M:SS overlay parsing. Scroll loop with all four stop conditions (age / max_scrolls / empty / consecutive_already_seen). Combined verify+search — switcher button check moved inline with search navigation (saves 3-4s per warm-path-expired call). BackupCookies wired into search success path. Baseline stealth #4 (500-3000ms scroll jitter). Structured error_class taxonomy. Live smoke test against real Twitter returned 14 videos including a real @SpursOfficial tweet — full end-to-end verified. Empirically-validated 2026-07-23; see decisions.md for cross-refs.
@@ -218,16 +236,20 @@ Structured error responses replacing Python's `503 = auth, 500 = everything`:
 }
 ```
 
-Error classes:
+Error classes — **AS-BUILT** (`internal/twitter/`; the planned set this replaced
+is struck through by the banner above):
 
-| `error_class` | HTTP | When | Retry hint |
-|---|---|---|---|
-| `auth_expired` | 503 | Cookies expired / login required | Never auto-retry; user action required |
-| `rate_limited` | 429 | Twitter 429 or "Are you a robot?" interstitial detected | `retry_after_seconds` (30-300 depending on signal) |
-| `browser_crashed` | 502 | Playwright context lost, watchdog respawning | 5s |
-| `no_results` | 200 | Zero videos found within window (not an error but distinct signal) | N/A — Discovery retries as next attempt |
-| `network_error` | 502 | Playwright request failure / connection reset | 5s |
-| `internal_error` | 500 | Unexpected exception; log + rethrow | Retry once with backoff |
+| `error_class` | When |
+|---|---|
+| `auth_expired` | Cookies expired / login required — never auto-retry |
+| `bad_request` | Malformed request body |
+| `empty_query` | `/search` called with an empty query |
+| `method_not_allowed` | Wrong HTTP method for the endpoint |
+| `navigation_failed` | Playwright navigation / scrape failure |
+| `internal` | Unexpected error |
+
+`rate_limited` (T/d) is **unbuilt**; the rate-limit heuristics + backoff below
+are planned, not shipped.
 
 Rate-limit detection heuristics:
 - Direct 429 from twitter.com.
@@ -252,20 +274,21 @@ Improvements over Python:
 
 ## HTTP API contract
 
-Preserving Python's endpoint set, updating semantics:
+**AS-BUILT** — five endpoints ship (`service.go` `RegisterHandlers`); the
+planned 8-endpoint / download-split table this replaced is gone:
 
-| Endpoint | Method | Purpose | Change from Python |
-|---|---|---|---|
-| `/health` | GET | Health check — auth status + backoff state | Adds `backoff_until` field |
-| `/status` | GET | Detailed status — instance id, busy flag, backoff, cookie expiry | Adds `cookie_expires_at`, `error_class_last` |
-| `/search` | POST | Search for videos, return all within window | Response adds `error_class` + `retry_after_seconds` on error |
-| `/authenticate` | POST | Force re-auth (kicks manual mode) | Same |
-| `/auth/verify` | POST | Verify manual login succeeded → switch to Playwright | Same intent, Playwright not Selenium |
-| `/auth/launch-browser` | POST | Relaunch manual Firefox | Same |
-| `/extract_cdn_url` | POST | **NEW** — return CDN URL for a given tweet, no download | Splits Python's `/download_video` into extract + download |
-| `/download_video` | POST | Download bytes to a path, using authenticated session cookies | Now delegates to `/extract_cdn_url` + HTTP client; browser only used for extract |
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/health` | GET | Liveness — `{status:"healthy"}` |
+| `/status` | GET | `{state, reason, busy, cookie_fingerprint, last_auth_check, last_loaded_mtime, started_at}` (no `backoff_until` / `cookie_expires_at` / `error_class_last`) |
+| `/search` | POST | Search within the age window; `SearchRequest` → `SearchResponse` |
+| `/authenticate` | GET | **Read-only** auth status + the VNC re-auth pointer — does NOT force re-auth |
+| `/auth/verify` | POST | Verify a manual VNC login succeeded → resume Playwright |
 
-Existing S7 Go client at `internal/infra/twitter/client.go` needs additive changes to match — new methods for `ExtractCDNUrl` + auth endpoints. Existing `SearchRequest` / `SearchResponse` types stay compatible.
+The planned `/extract_cdn_url` + `/download_video` split (T/f) was **never
+built**: the video pipeline downloads off-browser via the **cookieless
+syndication adapter**, and `internal/infra/twitter/client.go` exposes only
+`Search` (`SearchRequest` / `SearchResponse` / `VideoRef`).
 
 ## Sequenced sub-commits
 
