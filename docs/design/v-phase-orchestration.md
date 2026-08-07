@@ -303,6 +303,49 @@ staging is a noted, deferred option.)
   - **Not-happy-path bundle** — inFlight-decrement on failure, promote/insert
     idempotency, staging-orphan cleanup, VAR-mid-flight cancellation.
 
+## Download + hard-filter — the VideoWorkflow child (as-built)
+
+Each candidate spawns a `VideoWorkflow` child (`ExecuteChildWorkflow`, awaited)
+running two activities: `DownloadAndStage` → `HashVideo`. Downloading is
+**off-browser and cookieless** — the twitter *service* only searches; the worker
+resolves + fetches media itself
+([twitter-service.md](../twitter-service.md)).
+
+### DownloadAndStage
+
+1. **Resolve** — `syndication.ResolveVideo(tweetPageURL)` hits Twitter's public
+   syndication API and picks the **highest-bitrate mp4 variant**.
+2. **Fetch** — a plain cookieless `GET` of the variant, streamed through
+   `io.MultiWriter(file, md5)` so the **md5 is computed inline** during download
+   (no second read). Staged to scratch disk.
+3. **Probe** — `ffmpeg.ProbeMetadata` (ffprobe): duration / resolution / bitrate
+   / framerate.
+4. **Hard-filter** — `video.HardFilter` (pure, `filter.go`) gates on metadata
+   *before* any hashing/vision. Short-circuits on the first failure, in order:
+   **dimensions → duration → aspect → framerate → short-edge**. Reject reasons are
+   stable greppable slugs: `invalid_dimensions`, `duration_too_short_<s>`,
+   `duration_too_long_<s>`, `aspect_too_narrow_<r>`, `aspect_too_wide_<r>`,
+   `framerate_too_low_<fps>`, `short_edge_too_small_<px>`. Thresholds from
+   `config.HardFilterConfig`.
+5. **Stage** — a survivor uploads to Garage staging; `HashVideo` then extracts its
+   per-frame dHash sequence (§ Dedup).
+
+### Terminal vs transient — the reject contract
+
+A **rejection is a normal OUTCOME, not an error.** The syndication adapter's typed
+errors split two ways:
+
+- **Terminal** (never retried — return a nil-error `Rejected` slug):
+  `geo_restricted`, `not_available`, `no_video_variant`, `malformed_url`,
+  truncated-snowflake, and `corrupt` (`ffmpeg.ErrInputCorrupted`) — plus any
+  HardFilter reject above. They can't succeed on retry, so they don't consume the
+  activity's retry budget.
+- **Transient** (returned as an error → Temporal retries): `ErrCDNTimeout`,
+  `ErrRateLimited`, generic network failures.
+
+The improvement over Python's undifferentiated retry: a geo-blocked or deleted
+clip fails fast instead of burning three attempts.
+
 ## Reference: how Python did it (grain of salt — 3.5/3.7-era learning code)
 
 - `start_child_workflow` + `ParentClosePolicy.ABANDON` + fire-and-forget —

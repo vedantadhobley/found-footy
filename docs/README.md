@@ -37,6 +37,7 @@ decision supersedes an older target design).
 - [`observability.md`](./observability.md) — vocabulary + logging + metrics substrate
 - [`logging.md`](./logging.md) — Emit reference (how to add a Module/Action)
 - [`temporal.md`](./temporal.md) — Client/Worker adapter + registration flow
+- [`twitter-service.md`](./twitter-service.md) — Playwright-Go scraping service: HTTP contract, state machine, cookie fleet model
 - [`testing.md`](./testing.md) — test tiers (~200 tests + 16 scenarios) + the git test gates
 - [`run-flow.md`](./run-flow.md) — narrative walkthrough of shipped Ingest/Monitor cycles
 - [`deployment.md`](./deployment.md) — compose files + Caddy + first-time bootstrap

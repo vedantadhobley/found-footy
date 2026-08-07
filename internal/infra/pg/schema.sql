@@ -9,7 +9,7 @@
 --   3. Future migration tooling: schema.go embeds this file via
 --      //go:embed so it can be applied programmatically.
 --
--- Derived from docs/rebuild-plan.md §3. This file is authoritative from
+-- Derived from docs/design/rebuild-plan.md §3. This file is authoritative from
 -- S2.2 onward; if the two diverge, this file wins and rebuild-plan.md
 -- gets updated.
 
@@ -120,7 +120,7 @@ CREATE TABLE fixtures (
     -- Completion counter — 3-poll debounce on APIStatus.Terminal().
     -- Increments (cap 3) each ActivePoll cycle where status is Terminal;
     -- resets to 0 on any non-Terminal observation. See
-    -- docs/rebuild/proposals/completion-contract.md.
+    -- docs/design/proposals/completion-contract.md.
     completion_counter INT NOT NULL DEFAULT 0
         CHECK (completion_counter >= 0 AND completion_counter <= 3),
 
@@ -234,7 +234,7 @@ CREATE TABLE event_drop_workflows (
 --
 -- Pluggability: adding a new downstream workflow type requires ZERO
 -- schema change — just pick a new workflow_type string. See
--- docs/rebuild/proposals/completion-contract.md.
+-- docs/design/proposals/completion-contract.md.
 --
 -- Coexistence note: event_download_workflows (above) tracks the 10-
 -- download registration threshold specifically. As of the 2026-07-11
@@ -257,7 +257,7 @@ CREATE INDEX event_downstream_workflows_pending
     ON event_downstream_workflows (event_id)
     WHERE completed_at IS NULL;
 
--- 7. video_assets — canonical byte-store, one row per unique CLIP per EVENT.
+-- 7a. video_assets — canonical byte-store, one row per unique CLIP per EVENT.
 --    Dedup is scoped to the event and NEVER across events. Cross-event / per-fixture
 --    dedup is dead: tried in Python, rejected — it collapsed genuinely-distinct goals
 --    (visually-similar broadcast clips: same stadium, camera, celebration) into one and
@@ -309,7 +309,7 @@ CREATE TABLE video_assets (
 CREATE INDEX video_assets_event_popularity ON video_assets (event_id, popularity DESC)
     WHERE superseded_by IS NULL;
 
--- 7. video_shares — public share IDs, per-event ranked
+-- 7b. video_shares — public share IDs, per-event ranked
 CREATE TABLE video_shares (
     id TEXT PRIMARY KEY,                                    -- 's_<12-hex>', public
     asset_id UUID NOT NULL REFERENCES video_assets(id) ON DELETE RESTRICT,
@@ -353,8 +353,10 @@ CREATE INDEX video_shares_asset ON video_shares (asset_id);
 -- decisions.md 2026-07-22).
 --
 -- Per twitter-search-query.md D5 + 2026-07-23 sign-off: Discovery
--- runs a fixed 10 attempts × 60 s spacing. search_attempt is the
--- 1-10 attempt number that produced this candidate — attempts 2+
+-- runs a fixed number of attempts (config DISCOVERY_MAX_ATTEMPTS,
+-- default 15) × 60 s spacing. search_attempt is the attempt number
+-- (1..N; the CHECK below bounds it at 20 as a sanity ceiling) that
+-- produced this candidate — attempts 2+
 -- typically insert very few new rows because our T/c consecutive-
 -- already-seen scroll stop terminates the search early once we hit
 -- the exclude_urls tail.
@@ -438,13 +440,14 @@ CREATE INDEX tweet_intent_embedding ON tweet_intent
 --
 --   Phase 2 (alias resolution): the deterministic Wikidata pipeline
 --   populates wikidata_qid + aliases + resolved_at. wikidata_qid is
---   cached permanently — QIDs are stable, so subsequent 30-day TTL
---   refreshes skip the expensive fuzzy wbsearchentities lookup and
---   just re-fetch entity JSON + re-run selection.
+--   cached permanently — QIDs are stable, so once resolved a team is a
+--   permanent cache-hit: the expensive Wikipedia CirrusSearch lookup +
+--   selection never re-run (resolve-once; there is NO 30-day TTL — the
+--   IsFresh check is dead code, see team-aliases.md).
 --
--- 30-day TTL: resolved_at + interval '30 days' > now() = fresh.
--- Placeholder rows have resolved_at IS NULL and are always eligible for
--- next-refresh. Design ref: docs/rebuild/proposals/team-aliases.md.
+-- Placeholder rows have resolved_at IS NULL (unresolved); a set
+-- wikidata_qid means resolved + skipped forever. Design ref:
+-- docs/design/proposals/team-aliases.md.
 CREATE TABLE team_aliases (
     team_id INT PRIMARY KEY,                                -- API-Football team ID
     canonical_name TEXT NOT NULL,                           -- API-Football team.name at ingest time
