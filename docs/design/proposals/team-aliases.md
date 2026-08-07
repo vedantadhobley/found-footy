@@ -10,12 +10,26 @@
 > [`./alias-entity-resolution.md`](./alias-entity-resolution.md) and
 > `docs/decisions.md` 2026-07-21 entry.
 >
-> The Phase 2 (Selection) section below remains accurate — Wikidata's
-> structured aliases + P1449 nicknames + P1549 demonyms are still the
-> source of the alias token set, and the selection rules (≥2-lang
-> threshold, English rescue, venue-city skip) are unchanged.
+> **Phase 2 (Selection) has ALSO drifted** — the shipped keep-rule adds
+> unidecode transliteration, an English single-lang rescue, cross-language
+> dedup, and an acronym rescue beyond the "≥2-lang + venue-city skip" described
+> below. For the as-built selection see
+> [`../../architecture.md`](../../architecture.md) (alias domain) +
+> `internal/domain/alias/`.
 
-**Status:** design-first draft. Signed off in principle 2026-07-19; implementation pending per tasks #134, #138. Do not deviate from this design without a new proposal or decisions.md entry.
+**Status:** **SHIPPED + wired** (2026-07-19..07-21; tasks #134 / #138 / #142 /
+#143 / #147) — the pipeline runs in Ingest's `ResolveAliasesForTeams`.
+
+> **⚠ AS-BUILT corrections** beyond the lookup supersede above:
+> - **Package** is `internal/domain/alias/`, not `internal/domain/team/` (as the
+>   Implementation plan below still says).
+> - **Schema:** the shipped `team_aliases` is a **10-column two-phase** table
+>   (`internal/infra/pg/schema.sql`) with **nullable** `wikidata_qid` /
+>   `resolved_at` — not the 5-column NOT-NULL DDL in § Data model below.
+> - **No 30-day TTL.** Resolution is **resolve-once / permanent**: `wikidata_qid`
+>   is set once and the fuzzy stack is skipped forever after (QIDs don't change).
+>   The `IsFresh(now, ttl)` method + every "30-day TTL" mention are **dead code**
+>   from an abandoned design (Phase 4 removal).
 
 **Cross-refs:**
 
@@ -128,23 +142,31 @@ Eval V3 (≥2) beat V4 (≥3) by 0.03 club F1. ≥3 drops legit acronyms present
 
 `team_aliases` pg table:
 
-```sql
-CREATE TABLE team_aliases (
-    team_id           BIGINT PRIMARY KEY,       -- API-Football team ID (one row per team)
-    canonical_name    TEXT NOT NULL,            -- API-Football team.name at time of resolution
-    aliases           TEXT[] NOT NULL,          -- normalized lowercase words for OR-query
-    wikidata_qid      TEXT NOT NULL,            -- cached lookup — QIDs are permanent
-    resolved_at       TIMESTAMPTZ NOT NULL      -- for 30-day TTL check
-);
+**AS-BUILT** — the shipped `team_aliases` is a **10-column two-phase** table;
+source of truth is [`schema.sql`](../../../internal/infra/pg/schema.sql). Summary
+(do not hand-copy the DDL — that's how this section drifted):
 
-CREATE INDEX ON team_aliases (resolved_at);
-```
+- **Phase 1 (vendor, Ingest-populated via `UpsertVendorFields`):** `team_id` (PK),
+  `canonical_name NOT NULL`, `team_code`, `country`, `city`,
+  `is_national NOT NULL`.
+- **Phase 2 (resolution via `UpsertResolution`):** `wikidata_qid` (**nullable** —
+  NULL until first resolution, permanent thereafter), `aliases TEXT[] NOT NULL
+  DEFAULT '{}'`, `resolved_at` (**nullable** — NULL = placeholder).
+- `created_at`, `updated_at`.
 
-One row per team (not one per alias — keeps refresh atomic). `wikidata_qid` cached means the expensive fuzzy-search lookup phase runs ONLY on genuinely-new teams (never seen before). On 30-day refresh, we already know the QID and skip straight to the entity-JSON fetch + selection.
+One row per team (not one per alias — keeps the write atomic). The two-phase
+split enforces the invariant that Ingest's daily vendor refresh
+(`UpsertVendorFields`, phase-1 columns only) **cannot wipe an existing
+resolution**.
 
-Reads: `SELECT aliases FROM team_aliases WHERE team_id = $1 AND resolved_at > now() - interval '30 days'`.
+**Resolve-once / permanent** (NOT a 30-day TTL): once `wikidata_qid` is set, the
+team is a permanent cache-hit — the expensive fuzzy lookup + selection never
+re-runs (QIDs don't change). The abandoned 30-day-TTL read filter
+(`resolved_at > now() - interval '30 days'`) and `IsFresh` are dead code.
 
-Refresh trigger: Ingest's team-cache-refresh activity iterates tracked teams. For cache miss on aliases, if a `wikidata_qid` exists from a prior lookup, re-run selection only. If no QID, run full lookup + selection.
+Refresh trigger: Ingest's `ResolveAliasesForTeams` iterates the day's fixture
+teams — a team with `wikidata_qid` set is skipped, a miss runs the full lookup +
+selection.
 
 ## Coverage expectations
 
