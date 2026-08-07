@@ -108,6 +108,15 @@ Which is exactly the QID we've been failing to reach via `wbsearchentities`.
 
 ### Proposed implementation
 
+> **Note (as-built):** this is the *experiment's* proposal — the shipped code
+> (`internal/domain/alias/lookup_club.go` / `lookup_national.go`; as-built
+> summary in [`../architecture.md`](../../architecture.md)) diverged in
+> specifics: the query templates differ (`{name} {country} football club` for
+> clubs, `{country} men's national football team` for nationals), the
+> native-language fallback + city-scoring sketched below were **not built**, and
+> the `Hit` struct shape differs. Treat this section as design rationale, not the
+> current contract.
+
 **New adapter — `internal/infra/wikipedia/`:**
 
 ```go
