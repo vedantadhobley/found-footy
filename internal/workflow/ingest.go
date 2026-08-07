@@ -54,9 +54,9 @@ type IngestWorkflowInput struct {
 	// day to re-ingest that day (e.g. after a data-source fix).
 	ManualDate *time.Time
 
-	// ManualFixtureIDs, when non-empty, switches the fetch path from
-	// FetchFixturesForWindow to FetchFixturesByIDs. Bypasses the
-	// 3-day window entirely. Any size — the adapter chunks internally
+	// ManualFixtureIDs, when non-empty, switches the fetch path from the
+	// by-date FetchFixturesForDay scan to FetchFixturesByIDs. Bypasses the
+	// tracked-teams filter + the date lookahead. Any size — the adapter chunks internally
 	// at apifootball.IDsBatchLimit; the workflow retries failed chunks
 	// via the ingestManualIDsFetchRetry loop below (targeted at only
 	// the IDs that didn't come back).

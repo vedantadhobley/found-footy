@@ -31,7 +31,7 @@ import (
 // which the impl swallows so the activity finishes cleanly on retry.
 type DownstreamSpawner interface {
 	// SpawnEvent starts a EventWorkflow with the given
-	// deterministic workflow_id ("discovery-{event_id}") and input.
+	// deterministic workflow_id ("event-{event_id}") and input.
 	// Nil error means either the workflow was newly started OR was
 	// already running (RejectDuplicate + already-started swallowed);
 	// both count as success.

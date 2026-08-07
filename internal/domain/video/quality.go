@@ -1,7 +1,10 @@
 // quality.go — dedup winner-selection scoring. When a new clip perceptually
 // matches one or more already-kept assets (a cluster — dHash Match isn't
 // transitive, so a new clip can bridge two assets that don't match each
-// other), we keep the single highest-quality member and supersede the rest.
+// other), this scores the cluster to pick the single highest-quality member.
+//
+// NOTE: BUILT BUT NOT WIRED (#171). The persist path's collapse() is still
+// keep-first, so IsUpgrade below decides nothing in production yet.
 //
 // "Quality" is judged from metadata we already capture at download time, in
 // this order:
@@ -13,7 +16,7 @@
 //     long clip is never DROPPED here — that's the hard filter's 90s max; it
 //     just stops benefiting from length).
 //  2. Bits-per-pixel — encoding density. This is the deliberate improvement
-//     over the Python system, which ranked on file_size / pixel-count: a blurry
+//     over the Python system, which ranked on raw file_size: a blurry
 //     source upscaled to 1080p has a high pixel count and a big file but few
 //     bits describing each pixel. Density catches that; raw size/resolution
 //     does not. See decisions.md 2026-08-05 (quality-aware dedup).

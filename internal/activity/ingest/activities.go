@@ -70,8 +70,8 @@ type Activities struct {
 	// config at worker startup.
 	TopFlightCacheHours int
 
-	// FetchWindowFutureDays — how many days beyond today
-	// FetchFixturesForWindow queries. Sourced from config at worker
+	// FetchWindowFutureDays — how many days beyond today the by-date
+	// FetchFixturesForDay lookahead scans. Sourced from config at worker
 	// startup.
 	FetchWindowFutureDays int
 

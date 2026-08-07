@@ -1,10 +1,10 @@
-// EventWorkflow — the per-goal orchestrator. CURRENT STATE: it runs the
-// discovery phase (Twitter search + candidate collection). The video-processing
-// consumer (spawn VideoWorkflow children → dedup → vision → promote → rank)
-// lands in #164c; this file is the renamed DiscoveryWorkflow it grows from
-// (Option 2 rename, decisions.md 2026-08-03: the workflow became the event
-// orchestrator, so "Discovery" undersold it; the discovery *phase* — config +
-// activities — keeps its accurate name).
+// EventWorkflow — the per-goal orchestrator. Runs a PRODUCER (the discovery
+// phase: Twitter search + candidate collection) concurrently with a CONSUMER
+// (spawn VideoWorkflow children → dedup → vision → promote → rank) —
+// #164c + #165, shipped. Renamed from DiscoveryWorkflow (Option 2 rename,
+// decisions.md 2026-08-03: the workflow became the event orchestrator, so
+// "Discovery" undersold it; the discovery *phase* — config + activities —
+// keeps its accurate name).
 //
 // Spawned by Monitor's ReconcileFixture via DownstreamSpawner when an
 // event's downstream_triggered flag is flipped (2026-07-16 decision:

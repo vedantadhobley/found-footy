@@ -6,6 +6,28 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-07 — Doc-restructure divergence backfill (audit-2026-08-05)
+
+Recording deliberate as-built divergences a future reader might otherwise
+"restore" as regressions (doc-restructure Phase 4):
+
+- **Video hard-filter retunes.** `MinDurationSecs` is 5 (not Python's 3); a
+  `MinFrameRate` gate was added (broadcast is 24/25/30/50/60); the pre-download
+  short-edge check moved into the post-probe `HardFilter`; download is cookieless
+  (syndication adapter, not the browser). All intentional — see
+  [`design/proposals/video-dedup.md`](design/proposals/video-dedup.md) +
+  [`design/v-phase-orchestration.md`](design/v-phase-orchestration.md).
+- **Ingest fail-open + national-team scope (G2/G3, parked).** `FetchFixturesForDay`
+  fails OPEN on an empty tracked set (returns every fixture) and the default
+  tracked set under-covers FIFA national teams vs the charter. Both are known
+  gaps (#174/#175), deliberately parked — do NOT assume the filter is complete.
+- **Popularity is a stored `+1` counter, not `COUNT(shares)`.** The `+1` on
+  collapse is non-idempotent (a retry over-counts) and a pending-clip collapse
+  skips the bump (#171-adjacent). A soft ranking signal — documented so it isn't
+  "fixed" into a different semantic by mistake.
+- **Alias resolution is resolve-once / permanent** (no 30-day TTL; `IsFresh` is
+  dead code) — see [`design/proposals/team-aliases.md`](design/proposals/team-aliases.md).
+
 ## 2026-08-06 — Worker memory: mem_limits, streamed frame extraction, ffmpeg↔mem coupling
 
 Coupled changes from a load test on real-worst-case clips (audit
