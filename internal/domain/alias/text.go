@@ -2,11 +2,11 @@
 // pipeline (description scoring, country variations) and the (soon-
 // to-land) selection pipeline. Same rules as the eval script:
 //
-//   1. NFD normalize + strip Unicode combining marks (diacritics)
-//   2. ß → ss preprocessing
-//   3. Split on whitespace + dashes; strip periods, commas, apostrophes
-//   4. Lowercase for filter + output
-//   5. Skip tokens ≤ 2 chars, pure-digit tokens, CamelCase concats
+//  1. NFD normalize + strip Unicode combining marks (diacritics)
+//  2. ß → ss preprocessing
+//  3. Split on whitespace + dashes; strip periods, commas, apostrophes
+//  4. Lowercase for filter + output
+//  5. Skip tokens ≤ 2 chars, pure-digit tokens, CamelCase concats
 //
 // The selection pipeline (#134) will layer a multilingual skip-list on
 // top of tokenize's output. Lookup does NOT apply the skip-list —
@@ -15,7 +15,6 @@
 package alias
 
 import (
-	"sort"
 	"strings"
 	"unicode"
 
@@ -127,7 +126,7 @@ func splitWords(s string) []string {
 
 // stripPunct removes period / comma / apostrophe (both straight and
 // typographic) from anywhere in the token — matches Python's rag.py
-// `_clean_wikidata_aliases` which does `.replace('.', '').replace(',', '')`.
+// `_clean_wikidata_aliases` which does `.replace('.', ”).replace(',', ”)`.
 // Handles cases like "F.C." → "FC", "L.F.C." → "LFC", "F. C." → "F  C"
 // (whitespace-split downstream cleans "F"/"C" via ≤2 filter).
 func stripPunct(w string) string {
@@ -241,30 +240,4 @@ func stripKnownOrgSuffix(tok string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// lowerASCII returns a lowercased, transliterated-to-ASCII version of s.
-// Used as a map key normalizer (e.g., country-name cache keys). Shares
-// the tokenizer's unidecode pass so key normalization matches token
-// normalization.
-func lowerASCII(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToLower(strings.TrimSpace(unidecode.Unidecode(s)))
-}
-
-// sortedKeys returns the keys of a set in stable sorted order. Used
-// by CountryVariations.fetchVariations for deterministic output that
-// makes test assertions easy.
-func sortedKeys(m map[string]struct{}) []string {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
