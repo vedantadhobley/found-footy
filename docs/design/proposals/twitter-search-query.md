@@ -208,45 +208,56 @@ The 1-minute cadence + 15-attempt cap + 3-min max-age combine to a total observa
 
 ### D6 — Twitter service `/search` endpoint contract
 
+> **AS-BUILT — corrected to the shipped contract** (`internal/twitter/search.go`
+> + `internal/infra/twitter/client.go`). `max_videos` + `sentiment_mode` (D7)
+> are **not** in the shipped request; `cdn_url` / `posted_at` / `tweets_seen` /
+> `total_scrolls` are **not** in the shipped response.
+
 **Request** (`POST /search`):
 
 ```json
 {
   "query": "Salah Liverpool filter:videos",
   "max_age_minutes": 3,
-  "max_videos": 5,
-  "exclude_urls": ["https://x.com/user1/status/12345", ...],
-  "sentiment_mode": false
+  "exclude_urls": ["https://x.com/user1/status/12345", "..."]
 }
 ```
 
 - `query` — the constructed query string (raw, unquoted; service URL-encodes)
 - `max_age_minutes` — client-side scroll-stop threshold; passed through from Discovery config
-- `max_videos` — soft cap on returned videos (matches `TWITTER_MAX_VIDEOS_PER_ATTEMPT`)
-- `exclude_urls` — tweet URLs Discovery has already seen (either from prior attempts in this event or from earlier events in this fixture). Twitter service uses these both to skip individual known tweets AND to short-circuit scroll (the consecutive-already-seen early-stop from twitter-port.md T/c). Normalized tweet-ID set on the service side per twitter-port.md §3.
-- `sentiment_mode` — see D7 below. Default `false` (video-search mode).
+- `exclude_urls` — tweet URLs Discovery has already seen (prior attempts this event, or earlier events this fixture). The service uses these to skip known tweets AND to short-circuit scroll (the consecutive-seen early-stop).
 
 **Response** (`200 OK`):
 
 ```json
 {
+  "status": "success",
   "videos": [
     {
       "tweet_url": "https://x.com/user1/status/12345",
-      "cdn_url": "https://video.twimg.com/...",
+      "tweet_text": "GOAL! Salah...",
+      "video_page_url": "https://x.com/user1/status/12345",
       "duration_seconds": 32.5,
-      "posted_at": "2026-08-15T14:23:15Z"
-    }, ...
+      "username": "user1",
+      "age_minutes": 1.4
+    }
   ],
-  "tweets_seen": [
-    // populated only when sentiment_mode=true (see D7); nil/absent otherwise
-  ],
-  "stop_reason": "consecutive_already_seen" | "age_cutoff" | "max_scrolls" | "empty" | "error",
-  "total_scrolls": 3
+  "count": 1,
+  "query": "Salah Liverpool filter:videos",
+  "stop_reason": "age | max_scrolls | empty | consecutive_seen",
+  "scrolls": 3,
+  "elapsed": "8.2s"
 }
 ```
 
-Error responses match the typed taxonomy from twitter-port.md T/c: `error_class` field with values `rate_limited`, `auth_expired`, `browser_dead`, `query_invalid`, `timeout`.
+`video_page_url` is the tweet page — the **cookieless syndication adapter**
+resolves it to the actual media URL off-browser at download time, so the service
+returns no `cdn_url`. No `tweets_seen` (that's the D7 sentiment hook, unbuilt).
+
+Error responses use the typed taxonomy from
+[twitter-port.md](./twitter-port.md#rate-limiting--error-taxonomy):
+`auth_expired`, `bad_request`, `empty_query`, `method_not_allowed`,
+`navigation_failed`, `internal` (NOT `rate_limited` / `browser_dead` / etc.).
 
 ### D7 — Sentiment-tracking hook (design-in, disabled by default)
 
