@@ -23,7 +23,7 @@ Shipped state:
 | Logs | ✓ shipped in S1 | `internal/observability/logging/` |
 | Metrics | ✓ shipped in S1 | `internal/observability/metrics/` |
 | Traces | ⊘ stub (Phase 5+ per plan) | `internal/observability/tracing/tracing.go` |
-| Semantic event stream | ⊘ deferred to O2 | `internal/infra/event/` (composer stub) |
+| Semantic event stream | ✓ shipped O3/a (composer dual-write) | `internal/infra/event/` (composer + subjects) |
 
 ## The vocabulary substrate
 
@@ -38,15 +38,15 @@ runtime "huh why isn't this indexed."
 Full list per `vocabulary.go`:
 
 **Workflows:** IngestWorkflow, MonitorWorkflow, EventWorkflow,
-VideoValidationWorkflow, AssetPersistenceWorkflow. (Only IngestWorkflow
-has emissions today; the rest are pre-declared for their upcoming phases.)
+VideoValidationWorkflow, AssetPersistenceWorkflow. (IngestWorkflow, the
+monitor poll workflows, and EventWorkflow emit today.)
 
 **Domain:** Fixture, Event, Video, Alias, Discovery, Vision, Session,
 TextAnalysis.
 
 **Adapters:** InfraPG, InfraNATS, InfraEvent, InfraS3, InfraLLM,
 InfraTemporal, InfraAPIFootball, InfraTwitter, InfraSyndication,
-InfraFFmpeg, InfraWikidata.
+InfraFFmpeg, InfraWikidata, InfraWikipedia.
 
 **Cross-cutting:** API, APISSE, WebhookDelivery, Scaler, Worker,
 APIServer, TwitterService, Migration, Healthz, Deploy.
@@ -62,8 +62,8 @@ RAGWorkflow folded into Ingest) — logged in
 Actions are per-family. `vocabulary.go` declares cross-cutting actions
 (startup, shutdown, config_loaded, healthz_ok, etc.). Per-adapter
 actions live in `actions_infra_<name>.go` — one file per adapter,
-one const block per family. Ten adapter files shipped, matching the
-ten adapter modules.
+one const block per family — one `actions_infra_<name>.go` per adapter
+module (the Adapters list above; source of truth is `vocabulary.go`).
 
 Each family's actions register via `registerActions(...)` in an
 `init()` so `IsKnownAction` catches strays that slip through the
@@ -78,8 +78,8 @@ a call site).
 type Field struct { Key string; Value any }
 
 type Emitter interface {
-    Emit(level Level, module vocabulary.Module, action vocabulary.Action,
-         msg string, fields ...Field)
+    Emit(ctx context.Context, level Level, module vocabulary.Module,
+         action vocabulary.Action, msg string, fields ...Field)
 }
 
 func New(cfg config.ObservabilityConfig, m *metrics.Registry) Emitter
@@ -95,8 +95,13 @@ building `map[string]any` inline.
 
 **Base fields on every log line** (per plan §11 canonical schema):
 `ts`, `level`, `module`, `action`, `msg`, plus (when applicable)
-`workflow_id`, `activity_id`, `duration_ms`, `error_class`,
-`error_message`.
+`workflow_id`, `activity_id`, `duration_ms`, and `error` (from
+`logging.Err`, holding `err.Error()`).
+
+> **Gap (#178 / G6):** `logging.Err` emits a single `error` field, not the
+> typed `error_class` the plan's schema names — so the `calls_total{error_class}`
+> metric label reads a key that's never set and is always empty. Tracked in the
+> G6 observability cluster.
 
 **Divergence from plan §11 log-catalog generator:** Plan §11.3 said
 `docs/generated/log-catalog.md` regenerates on every build via
@@ -110,7 +115,7 @@ Logged in [decisions.md 2026-07-07](decisions.md).
 used by every adapter's unit test.
 
 ```go
-type TestEmitter struct { Emissions []Emission }
+type TestEmitter struct { Captured []CapturedEntry }  // + HasAction/Snapshot/Reset helpers
 ```
 
 Captures all `Emit` calls into a slice for assertion. Every adapter
@@ -136,8 +141,8 @@ histograms + prometheus.Collector for scrape-time gauges + emits a
 Adapters that have shipped instruments:
 - `pg` — query duration histogram + pool-stats collector
 - `nats` — publish/subscribe counters + queue-depth collector
-- `s3` — request counter + bytes-transferred histogram
-- `llm` — request counter + concurrency-cap gauge + retry counter
+- `s3` — operations counter + operation-latency histogram + bytes-transferred counter
+- `llm` — call counter + call-duration histogram + token counter + concurrency & connection-state gauges (no retry counter)
 - `temporal` — worker task counter + workflow-start counter
 - `apifootball` — request counter labeled by endpoint + daily-quota gauge
 - `twitter`, `syndication`, `wikidata` — request counters + latency histograms
@@ -151,16 +156,19 @@ without a real OTLP pipeline attached.
 
 Real OTLP wiring lands in Phase 5+ per plan §11 four-pillars table.
 
-## Semantic event stream — pending
+## Semantic event stream (shipped O3/a)
 
-Plan §11 pillar 4 (semantic events published to NATS + written to
-Postgres `event_log`) requires the `internal/infra/event/` composer
-(the dual-write). Composer is stubbed; ships in Phase O2 alongside
-MonitorWorkflow's `event.detected` / `event.stable` / `event.removed`
-emissions.
+Plan §11 pillar 4 — semantic events dual-written to Postgres `event_log` AND
+published to NATS — shipped as the `internal/infra/event/` **Composer**
+(`Publish` INSERTs `event_log` via `RETURNING id`, then publishes an envelope
+carrying that id as the SSE cursor). Six `Kind`s: `fixture.activated`,
+`fixture.completed`, `event.detected`, `event.stable`, `event.removed`,
+`event.rank_recalculated` (`subjects.go`).
 
-The `dual_write_skew_total` metric mentioned in plan §11 exists only
-as a design line; not registered yet.
+Instruments (`found_footy_event_composer_*`): `publishes_total{kind,outcome}`,
+`publish_duration_seconds{kind}`, and `skew_total` — the last increments when
+the pg write succeeded but the NATS publish failed (truth stays in `event_log`;
+a durable outbox catch-up worker is future work, #169).
 
 ## Cross-refs
 

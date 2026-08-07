@@ -17,6 +17,7 @@ import (
 
 // somewhere in package code:
 log.Emit(
+    ctx,                              // context.Context (first arg — carries trace/run IDs)
     logging.LevelInfo,
     vocabulary.ModuleInfraPG,       // typed enum
     vocabulary.ActionPGPoolConnected, // typed enum
@@ -56,12 +57,17 @@ logging.Int(key string, value int) Field
 logging.Int64(key string, value int64) Field
 logging.Float64(key string, value float64) Field
 logging.Bool(key string, value bool) Field
-logging.Err(err error) Field    // sets error_class + error_message
+logging.Err(err error) Field    // sets a single "error" field (err.Error())
 ```
 
-`logging.Err(err)` produces both `error_class` (typed error class
-name via reflection) and `error_message` (the `err.Error()` string)
-in one call. Standard shape for adapter error paths.
+`logging.Err(err)` produces a single `error` field holding `err.Error()`
+(empty string when `err` is nil). Standard shape for adapter error paths.
+
+> **Gap (#178 / G6):** it does NOT emit a typed `error_class`, so the
+> `calls_total{error_class}` metric label reads a key that's never set and is
+> therefore always empty in production. Restoring a reflected type-name
+> `error_class` field (which also makes that metric dimension live) is tracked
+> in the G6 observability cluster.
 
 ## Testing (TestEmitter)
 
@@ -76,13 +82,14 @@ func TestPGPool_LogsRegistration(t *testing.T) {
     ins := pg.RegisterMetrics(reg, log)
     _, err := pg.New(ctx, cfg, ins)
     // assert err handling, then:
-    require.Contains(t, log.Actions(), vocabulary.ActionPGPoolConnected)
+    require.True(t, log.HasAction(vocabulary.ModuleInfraPG, vocabulary.ActionPGPoolConnected))
 }
 ```
 
-TestEmitter captures every emission into a slice; helper methods
-(`Actions()`, `Fields(action)`) make specific assertions ergonomic.
-No real slog output during tests.
+TestEmitter captures every emission into `Captured []CapturedEntry` (each with
+`Level, Module, Action, Msg, Fields`). Assertion helpers: `HasAction(module,
+action)` for presence, `Snapshot()` for a race-safe copy to walk, `Reset()`
+between cases sharing an emitter. No real slog output during tests.
 
 ## Log-catalog generation — NOT SHIPPED
 
