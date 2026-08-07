@@ -216,9 +216,9 @@ runs at pipeline read-time before Discovery consumes aliases.
 Setter: `SetResolution(qid, aliases, at)` writes all three phase-2
 fields atomically + copies the aliases slice defensively.
 
-Normalize helper: NFD Latin-diacritic strip, preserved case. Kept
-exported because both the pipeline and (future) Twitter search-query
-builder call it.
+Normalize helper: NFD Latin-diacritic strip, preserved case. Exported for
+the (future) Twitter search-query builder — **currently no production
+caller** (tests only).
 
 Repo methods shipped: `Get`, `BulkGet`, `UpsertVendorFields`,
 `UpsertResolution`. The Upsert split enforces the invariant that

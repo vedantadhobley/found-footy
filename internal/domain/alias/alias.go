@@ -109,17 +109,6 @@ func (t *TeamAlias) IsResolved() bool {
 	return t.ResolvedAt != nil
 }
 
-// IsFresh reports whether the resolution is fresh relative to a TTL.
-// DEAD CODE (no non-test callers): resolution is resolve-once / permanent
-// — a set wikidata_qid is skipped forever — so the 30-day-TTL design this
-// supports was abandoned. Kept pending removal.
-func (t *TeamAlias) IsFresh(now time.Time, ttl time.Duration) bool {
-	if t.ResolvedAt == nil {
-		return false
-	}
-	return now.UTC().Sub(*t.ResolvedAt) < ttl
-}
-
 // InvalidArgError is returned by domain methods that reject a caller's
 // input for reasons that aren't a proper enum violation.
 type InvalidArgError struct {

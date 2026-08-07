@@ -22,8 +22,8 @@ type Instruments struct {
 }
 
 // RegisterMetrics:
-//   - twitter_calls_total{op, outcome} — op ∈ search/download/health.
-//   - twitter_call_duration_seconds{op} — search/download can take
+//   - twitter_calls_total{op, outcome} — op ∈ search/health.
+//   - twitter_call_duration_seconds{op} — search can take
 //     30-60s+ (browser automation), so histogram spans wider.
 func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Instruments {
 	calls := prometheus.NewCounterVec(prometheus.CounterOpts{
