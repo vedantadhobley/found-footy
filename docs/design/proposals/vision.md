@@ -4,12 +4,14 @@
 plumb, `internal/domain/vision`, `internal/activity/vision`; see
 [`../../decisions.md`](../../decisions.md) "V/4 clip validation"). The
 model-dependent bits — previously OPEN — are now **RESOLVED by a real-clip
-bake-off** (findings folded in below). Not yet wired into a workflow; that's
-the EventWorkflow orchestration step. Ports the Python clock logic faithfully
-with a period-awareness fix; improves the frame/call strategy.
+bake-off** (findings folded in below). **Wired into EventWorkflow's consumer
+(#164c)** — `event_pipeline.go` fires it (`fireVision → ValidateClip →
+onVisionDone`). Ports the Python clock logic faithfully with a period-awareness
+fix; improves the frame/call strategy.
 
-Where it sits: the `Vision` activity runs **in the Event parent's serialized
-queue, per perceptual cluster** (once per unique clip, *after* dedup — see
+Where it sits: the `Vision` activity is fired **async** per unique clip, *after*
+dedup (**only dedup is serial** in the Event consumer's Selector queue; the
+vision call runs concurrently and its result rejoins via the Selector — see
 [`../v-phase-orchestration.md`](../v-phase-orchestration.md)), so it costs one
 joi call per unique clip, not per candidate. joi is the throughput bottleneck
 (2 concurrent), so minimizing calls is load-bearing.
@@ -43,7 +45,8 @@ from the 25% + 75% frames (the 50% frame was *not* used for the clock).
 **Improvement:** pass frames at **25% / 50% / 75% in ONE multi-image call**
 (modern VLMs accept several images per message). This:
 - **eliminates the tiebreaker round** — the model reasons over all three at once
-  and returns a single `{soccer, screen, clock}`;
+  and returns **3 per-frame observations** (`{frames: [{soccer, screen, clock,
+  added, stoppage_clock} × 3]}`) that `Evaluate` aggregates by 2/3 vote;
 - **improves clock recall** — the clock is now read from *three* frames, not two
   (the clock is hidden during replays / graphics / close-ups, so more frames =
   more chances it's visible);
@@ -52,9 +55,16 @@ from the 25% + 75% frames (the 50% frame was *not* used for the clock).
 Frames come from `ffmpeg.ExtractFrame(stagedClip, positionSecs)` (rung-1
 adapter) on the cluster's staged clip fetched from Garage.
 
-## The prompt (ported, to refine on nexus)
+## The prompt (Python baseline — superseded by schema.go)
 
-Python's JSON prompt (kept as the baseline):
+> **As-built:** the shipped wire contract is **per-frame** —
+> `VisionResponse{ Frames []FrameObservation }` with exactly 3
+> `FrameObservation{soccer, screen, clock, added, stoppage_clock}`
+> ([`internal/domain/vision/schema.go`](../../../internal/domain/vision/schema.go)),
+> driven by the detailed `DefaultPrompt` (not the terse Python one below). The
+> single-object JSON here is the historical Python baseline, kept for lineage.
+
+Python's JSON prompt (the baseline the schema grew from):
 
 ```json
 {"soccer": bool, "screen": bool, "clock": "MM:SS|null", "added": "+N|null", "stoppage_clock": "MM:SS|null"}
@@ -76,7 +86,9 @@ correctness fix** (period-awareness).
 (`90:00 … 02:17` → **92**).
 
 **±1 tolerance:** the API reports the minute *after* the goal, so expected =
-`elapsed + extra − 1`. A frame's clock counts as verified if it's within ±1.
+`elapsed + extra − 1`, **clamped to never fall below `elapsed`** (`evaluate.go`:
+`if expectedMinute < elapsed { expectedMinute = elapsed }`). A frame's clock
+counts as verified if it's within ±1 **and in the expected period**.
 
 **OCR-correction (keep):** in stoppage the model often drops the leading digit
 (reads `92:36` as `02:36`). Since `api_elapsed` *is* the dropped base, rebase:
