@@ -6,6 +6,67 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-09 — Category-scoped dedup is post-vision (shipped gate diverged; #171 rescoped)
+
+Re-reading Python + the signed-off [`video-dedup.md`](design/proposals/video-dedup.md)
+against the shipped `event_pipeline.go` surfaced that the EventWorkflow consumer
+silently diverged from the intended dedup methodology. This supersedes the narrow
+framing in the **2026-08-05** entry below (#171 was "wire `quality.go`") — the real
+fix reorders the pipeline. Flagged in [audit-2026-08-05](design/audit-2026-08-05.md)
+(Tier-1 #1 + line 80). The methodology itself was already fully specified —
+[`python-functional-spec.md`](design/python-functional-spec.md) §3 (verified/unverified
+pools) + §7 (vision-before-perceptual ordering: *"the rebuild should preserve this
+exact ordering"*), the **(pre-history) Scoped deduplication by `timestamp_verified`**
+entry below (with the real prod case: a Goal-1 clip wrongly replaced by a Goal-2
+clip, ~31′ vs 15′), and [`roadmap.md`](roadmap.md) — the shipped consumer just
+didn't follow it.
+
+**Methodology (already designed — `video-dedup.md:139`; Python `upload_workflow.py:321-331`):**
+
+- **Category-scoped perceptual dedup.** Verified (clock-matched) clips dedup ONLY
+  vs verified; unverified (no clock) ONLY vs unverified — never cross. *Why:* dHash
+  matches visual similarity, and one broadcast yields similar frames across
+  **different moments**, so an unverified different-moment clip can perceptually
+  "match" the verified clip of THIS goal. The clock is the only ground-truth
+  pinning a clip to this goal; the partition stops a different-moment clip
+  collapsing onto it.
+- **Verified always ranks above unverified** (any popularity); popularity/quality
+  sort within a pool (`CompareShares`).
+- **`IsUpgrade` quality winner-selection applies WITHIN a pool** — cross-pool there
+  is no comparison, only ranking.
+
+**Order (category is unknown until vision → perceptual dedup MUST be post-vision):**
+
+- gate (`onVideoDone`): **md5-exact dedup only** (byte-identical ⇒ same category ⇒
+  safe) → drop + bump popularity, else fire vision.
+- post-vision (`onVisionDone`): reject → drop; verified/unverified → perceptual
+  dedup within the SAME pool → `IsUpgrade` winner-select in the matched cluster →
+  promote / supersede / consolidate.
+
+**Shipped divergence (what #171 fixes):** `event_pipeline.go` ran perceptual
+`video.Match` at the GATE — pre-vision, category-blind, keep-first. Risks
+collapsing two different goals of one match (on a frame-hash false positive) and
+never upgrades a clip. #171: md5-only gate; perceptual + winner-select move to the
+serial post-vision path, pool-scoped.
+
+**Cost premise corrected.** `video-dedup.md` sequenced vision-before-hash because
+"perceptual hashing costs more than a vision call." In the as-built Go (streamed
+ffmpeg extraction + parallel `VideoWorkflow` children) hashing is cheap and
+parallel, so that argument does NOT hold — the reorder is a **correctness**
+requirement, not a cost win. Hashing stays in the child for every clip; only the
+dedup *decision* moves post-vision.
+
+**Tradeoff:** vision now runs on every md5-unique clip (Python parity) vs only
+perceptually-unique ones — more joi calls, bounded (not blocked) by joi's
+2-concurrent cap. A pre-vision "perceptual pre-cluster + deferred collapse" could
+reclaim them if launch load demands; parked. The A/B gate question (whether to
+vision an unverified incumbent's dups) is **dropped** — moot, since pools never
+cross.
+
+**Phase-1 groundwork shipped + still valid** (now pool-scoped): schema `superseded`
+share-state + widened CHECK; `Assets.MarkSuperseded` + `Assets.AddPopularity`;
+`Shares.MarkSuperseded`; test fakes.
+
 ## 2026-08-07 — Doc-restructure divergence backfill (audit-2026-08-05)
 
 Recording deliberate as-built divergences a future reader might otherwise

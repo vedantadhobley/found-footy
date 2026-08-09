@@ -162,6 +162,8 @@ For sequencing decisions later in this doc, the real cost order is:
 
 Perceptual frame hashing is more expensive than an LLM call in wall-clock terms — 120 frames for a 30s clip × per-frame hash work. This inverts the naive intuition that "local is always cheaper than network." Pipeline stage order reflects this: LLM validation happens BEFORE perceptual hashing so we don't hash a clip we're about to discard.
 
+> **Correction (2026-08-09, [decisions.md](../../decisions.md)).** This cost ordering does NOT hold in the as-built Go — streamed-ffmpeg extraction + parallel `VideoWorkflow` children make hashing cheap and parallelized. Vision-before-perceptual-dedup is still required, but for **correctness**: a clip's verified/unverified category is unknown until vision, and dedup is category-scoped (§ below). Hashing stays in the child for every clip; only the dedup *decision* is post-vision. Net effect vs the old premise: vision runs on every md5-unique clip, not just perceptually-unique ones.
+
 ### Hard-filter thresholds (fixed 2026-07-16, refined third pass)
 
 All values from ffprobe output. Configurable via env vars (with these defaults):

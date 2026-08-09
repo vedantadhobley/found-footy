@@ -20,7 +20,7 @@ the same commit. Per the [2026-07-07 working rule](decisions.md).
 | IngestWorkflow | ✓ O1c shipped + O1e scheduled daily 00:05 UTC | Temporal Schedule `ingest-scheduled-daily` (`5 0 * * *`) | `internal/workflow/ingest.go` |
 | ActivePollWorkflow | ✓ O2 shipped + scheduled 2026-07-11 | Temporal Schedule `active-poll-scheduled` (IntervalSpec 30s) | `internal/workflow/active_poll.go` |
 | StagingPollWorkflow | ✓ O2 shipped 2026-07-11 | Temporal Schedule `staging-poll-scheduled` (cron `*/15 * * * *`, runtime-tunable) | `internal/workflow/staging_poll.go` |
-| EventWorkflow | ✓ #164c shipped 2026-08-04 (ex-DiscoveryWorkflow) | Spawned by Monitor's `ReconcileFixture` via `DownstreamSpawner` (workflow ID `event-{id}`) when `downstream_triggered` flips (2026-07-16 — Temporal-direct spawn, not NATS). **Producer** (`workflow.Go`): discovery search loop, spawns a `VideoWorkflow` child per candidate. **Consumer** (`workflow.Selector`, `event_pipeline.go`): dedup (md5 → `video.Match`) → vision (`ValidateClip`) → promote (`PromoteAndPersist`) → rank, per unique clip. Temporal-owned completion (`searchDone && inFlight==0`). pg `workflow_type` value stays `'discovery'` (internal label). See [`design/v-phase-orchestration.md`](design/v-phase-orchestration.md). | `internal/workflow/event.go` + `event_pipeline.go` |
+| EventWorkflow | ✓ #164c shipped 2026-08-04 (ex-DiscoveryWorkflow) | Spawned by Monitor's `ReconcileFixture` via `DownstreamSpawner` (workflow ID `event-{id}`) when `downstream_triggered` flips (2026-07-16 — Temporal-direct spawn, not NATS). **Producer** (`workflow.Go`): discovery search loop, spawns a `VideoWorkflow` child per candidate. **Consumer** (`workflow.Selector`, `event_pipeline.go`): dedup (md5 gate; perceptual `video.Match` reworking post-vision + category-scoped, #171) → vision (`ValidateClip`) → promote (`PromoteAndPersist`) → rank, per unique clip. Temporal-owned completion (`searchDone && inFlight==0`). pg `workflow_type` value stays `'discovery'` (internal label). See [`design/v-phase-orchestration.md`](design/v-phase-orchestration.md). | `internal/workflow/event.go` + `event_pipeline.go` |
 | VideoWorkflow | ✓ shipped 2026-08-03 (#165) | **Child** of `EventWorkflow` — one `ExecuteChildWorkflow` per candidate (awaited). Runs `DownloadAndStage → HashVideo`, returns fingerprints. | `internal/workflow/video.go` |
 | ~~VideoValidationWorkflow~~ / ~~AssetPersistenceWorkflow~~ | ⊘ **superseded** | The old O4/O5 separate-workflow split is dead — validation (`ValidateClip`) + persistence (`Promote`/`InsertAsset`/`Rank`) run as **activities inside EventWorkflow's serialized queue**, not standalone workflows (streaming redesign, 2026-07-27). | — |
 
@@ -336,8 +336,9 @@ md5 + frame-hash fingerprints. Wall-clock `max_age_minutes` filter
 (decisions.md 2026-07-23).
 
 **Consumer** (`event_pipeline.go`, serialized). Per finished child, in
-order: **dedup** (md5 exact-match, then perceptual `video.Match` sliding
-window against kept + pending clips) → **vision** (`ValidateClip` on joi
+order **(as shipped; being reworked — see the #171 gap below)**: **dedup**
+(md5 exact-match, then perceptual `video.Match` sliding window against kept
++ pending clips) → **vision** (`ValidateClip` on joi
 — every surviving clip; screen-gate + period-aware clock) → **promote**
 (`PromoteAndPersist` copies staging→asset under a deterministic asset
 UUID + mints one `video_shares` row) → **rank** (`RebalanceRanks` by
@@ -345,10 +346,20 @@ UUID + mints one `video_shares` row) → **rank** (`RebalanceRanks` by
 
 On completion `finalizeEvent` marks the `event_downstream_workflows` row
 complete with an `outcome_class` (the pg `workflow_type` stays
-`'discovery'` — the internal downstream label). **Known gap (#171):** the
-dedup collapse is keep-first — `quality.go`'s `IsUpgrade` / `ClipQuality`
-supersede path is built + unit-tested but not yet wired, so a later
-higher-quality duplicate doesn't replace the incumbent. See
+`'discovery'` — the internal downstream label).
+
+**Known gap — #171 (rescoped 2026-08-09; see [decisions.md](decisions.md)).**
+The shipped order above diverges from the intended dedup methodology
+([`video-dedup.md`](design/proposals/video-dedup.md)) on three axes:
+perceptual `video.Match` runs **pre-vision** (must be post-vision — a clip's
+verified/unverified category is unknown until vision); it is **category-blind**
+(must be pool-scoped: verified dedups only vs verified, unverified only vs
+unverified — same broadcast ⇒ similar hashes across *different* moments, so a
+different-moment clip can perceptually match the real one); and collapse is
+**keep-first** (must be `IsUpgrade` quality winner-selection within a pool —
+`quality.go` is built + unit-tested but unwired). #171 reworks the consumer:
+md5-only gate; perceptual dedup + winner-selection move into the post-vision
+serial path, category-scoped. See
 [audit-2026-08-05](design/audit-2026-08-05.md) Tier-1 #1.
 
 ## Testing shape
