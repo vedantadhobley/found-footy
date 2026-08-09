@@ -310,10 +310,11 @@ func TestEventWorkflow_Pipeline_VerifyAndDedup(t *testing.T) {
 		}, nil)
 	env.OnActivity("ValidateClip", mock.Anything, mock.Anything).
 		Return(visionactivity.ValidateClipOutput{Outcome: "verified", MatchedMinute: pInt(71)}, nil)
-	promoteCalls := 0
+	promoteCalls, promotedPop := 0, 0
 	env.OnActivity("PromoteAndPersist", mock.Anything, mock.Anything).
-		Return(func(_ context.Context, _ videoactivity.PromoteAndPersistInput) (videoactivity.PromoteAndPersistOutput, error) {
+		Return(func(_ context.Context, in videoactivity.PromoteAndPersistInput) (videoactivity.PromoteAndPersistOutput, error) {
 			promoteCalls++
+			promotedPop = in.Popularity
 			return videoactivity.PromoteAndPersistOutput{AssetID: uuid.New(), ShareID: "s_x", Inserted: true}, nil
 		})
 
@@ -335,6 +336,9 @@ func TestEventWorkflow_Pipeline_VerifyAndDedup(t *testing.T) {
 	}
 	if promoteCalls != 1 {
 		t.Errorf("PromoteAndPersist called %d times, want 1 (dup collapsed, not promoted)", promoteCalls)
+	}
+	if promotedPop != 2 {
+		t.Errorf("promoted popularity = %d, want 2 (md5-dup counted while pending, #180)", promotedPop)
 	}
 }
 

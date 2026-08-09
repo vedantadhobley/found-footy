@@ -31,10 +31,11 @@ type AssetRepo interface {
 	// Returns inserted=false when the ON CONFLICT path was taken.
 	InsertAsset(ctx context.Context, a *Asset) (inserted bool, err error)
 
-	// BumpPopularity increments popularity on an existing asset — the
-	// persist side of a collapse (a candidate deduped onto an asset that
-	// already has a DB row).
-	BumpPopularity(ctx context.Context, id uuid.UUID) error
+	// AddPopularity adds n (treated as ≥1) to an existing asset's popularity —
+	// the persist side of a collapse. n is the loser's accumulated vote count,
+	// so a clip that itself absorbed gate md5-dups (#180) transfers all of them
+	// in one write.
+	AddPopularity(ctx context.Context, id uuid.UUID, n int) error
 
 	// Supersede retires loser onto winner atomically: sets loser.superseded_by
 	// = winner AND merges loser's popularity into winner in ONE statement, so a

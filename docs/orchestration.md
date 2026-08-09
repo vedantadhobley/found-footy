@@ -340,8 +340,10 @@ vision (#171 shipped 2026-08-09 — the pre-vision, category-blind, keep-first
 gate was replaced):
 
 - **Gate** (`onVideoDone`): **md5-exact dedup only**, against kept + pending
-  clips. An exact byte-dup is dropped (popularity bumped); otherwise the clip
-  fires **vision** (`ValidateClip` on joi — screen-gate + period-aware clock).
+  clips. An exact byte-dup is dropped, its vote credited to the winner — on the
+  asset row if promoted, or **accumulated in memory** on the winner if it's still
+  pending vision (#180); otherwise the clip fires **vision** (`ValidateClip` on
+  joi — screen-gate + period-aware clock).
   Perceptual dedup is deliberately NOT here: a clip's verified/unverified
   category is unknown until vision, and md5-identical bytes are trivially the
   same category.

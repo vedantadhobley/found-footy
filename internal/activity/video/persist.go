@@ -63,6 +63,10 @@ type PromoteAndPersistInput struct {
 	FileSizeBytes int64
 	Bitrate       *int
 
+	// Popularity the new asset starts at — its own sighting plus any gate
+	// md5-dups that collapsed onto it while it was pending (#180). 0/1 → 1.
+	Popularity int
+
 	// Vision verdict, snapshotted onto the share.
 	Verified        bool
 	ExtractedMinute *int
@@ -102,6 +106,9 @@ func (a *PersistActivities) PromoteAndPersist(ctx context.Context, in PromoteAnd
 		md5Bytes, in.FrameHashes, in.Width, in.Height, in.DurationMS, in.FileSizeBytes, time.Now().UTC())
 	asset.ID = assetID
 	asset.Bitrate = in.Bitrate
+	if in.Popularity > 1 {
+		asset.Popularity = in.Popularity // NewAsset defaults to 1; carry accumulated votes
+	}
 
 	inserted, err := a.Assets.InsertAsset(ctx, asset)
 	if err != nil {
@@ -137,13 +144,21 @@ func (a *PersistActivities) PromoteAndPersist(ctx context.Context, in PromoteAnd
 }
 
 // BumpAssetPopularityInput identifies the asset a candidate collapsed onto.
+// Count is the loser's accumulated vote total (a clip that absorbed gate
+// md5-dups while pending, #180, carries them all here); 0 means a single vote.
 type BumpAssetPopularityInput struct {
 	AssetID uuid.UUID
+	Count   int
 }
 
-// BumpAssetPopularity persists a collapse onto an already-inserted asset.
+// BumpAssetPopularity persists a collapse onto an already-inserted asset,
+// adding Count (min 1) votes.
 func (a *PersistActivities) BumpAssetPopularity(ctx context.Context, in BumpAssetPopularityInput) error {
-	if err := a.Assets.BumpPopularity(ctx, in.AssetID); err != nil {
+	n := in.Count
+	if n < 1 {
+		n = 1
+	}
+	if err := a.Assets.AddPopularity(ctx, in.AssetID, n); err != nil {
 		return fmt.Errorf("video.BumpAssetPopularity: %w", err)
 	}
 	return nil

@@ -141,7 +141,7 @@ func computeAspect(width, height int) float32 {
 
 // BumpPopularity records that a dedup hit landed on this asset. Called
 // in-memory by the EventWorkflow consumer when a candidate collapses onto
-// this asset (the AssetRepo.BumpPopularity port persists it when the asset
+// this asset (the AssetRepo.AddPopularity port persists it when the asset
 // already has a DB row).
 func (a *Asset) BumpPopularity() {
 	a.Popularity++

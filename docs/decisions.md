@@ -6,6 +6,31 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-09 — Pending-clip popularity: count md5-dups in memory (#180)
+
+Fixes the undercount flagged in the 2026-08-07 entry + the #171 commit: an
+md5-exact dup arriving while the original was still pending vision collapsed
+**without** a popularity bump, because popularity lives on the asset row and a
+pending clip has none yet.
+
+**Not a race** — the consumer is already serial; this was a "no row to write the
+vote to yet" gap, orthogonal to concurrency, so serializing more wouldn't help.
+
+**Fix (chosen): accumulate in memory on the pending clip, not an early DB row.**
+The `clip` carries a `popularity` (starts 1); a gate md5-dup of a *pending* clip
+does `p.pending[idx].popularity += loser.popularity` in memory instead of a DB
+bump, and the count rides into `PromoteAndPersist` when the clip promotes.
+Rejected the "write a draft asset row immediately" alternative — it would persist
+a row before vision validated the clip and before its category is known, needing
+a draft state that dedup/rank/read all special-case. The pending struct's
+lifetime already matches the vote's, so it's the right home.
+
+Two coordinated details: (1) the vision callback captured `c` by value, so
+`onVisionDone` re-reads the live count from `p.pending` (via `removePending`)
+before promoting; (2) the repo's `BumpPopularity` became `AddPopularity(id, n)`
+(one DB add) so a *losing* clip that itself absorbed dups transfers them all at
+once rather than one activity call per vote.
+
 ## 2026-08-09 — Category-scoped dedup is post-vision (shipped gate diverged; #171 rescoped)
 
 Re-reading Python + the signed-off [`video-dedup.md`](design/proposals/video-dedup.md)
