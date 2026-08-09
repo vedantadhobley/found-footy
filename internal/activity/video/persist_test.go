@@ -53,9 +53,12 @@ func (f *fakeAssetStore) InsertAsset(_ context.Context, a *dvideo.Asset) (bool, 
 	f.byEventMD5[key] = a.ID
 	return true, nil
 }
-func (f *fakeAssetStore) BumpPopularity(_ context.Context, id uuid.UUID) error {
+func (f *fakeAssetStore) AddPopularity(_ context.Context, id uuid.UUID, n int) error {
+	if n < 1 {
+		n = 1
+	}
 	if a, ok := f.byID[id]; ok {
-		a.Popularity++
+		a.Popularity += n
 		return nil
 	}
 	return dvideo.ErrNotFound
@@ -211,6 +214,13 @@ func TestBumpAndDelete(t *testing.T) {
 	}
 	if got := assets.byID[out.AssetID].Popularity; got != 2 {
 		t.Errorf("popularity = %d, want 2", got)
+	}
+	// Count>1 — a pending clip that absorbed gate md5-dups transfers them (#180).
+	if err := a.BumpAssetPopularity(context.Background(), BumpAssetPopularityInput{AssetID: out.AssetID, Count: 3}); err != nil {
+		t.Fatalf("BumpAssetPopularity Count=3: %v", err)
+	}
+	if got := assets.byID[out.AssetID].Popularity; got != 5 {
+		t.Errorf("popularity after +3 = %d, want 5", got)
 	}
 	if err := a.BumpAssetPopularity(context.Background(), BumpAssetPopularityInput{AssetID: uuid.New()}); err == nil {
 		t.Error("bump on missing asset should error")

@@ -94,16 +94,24 @@ func TestAssetRepo_InsertIdempotentAndBump(t *testing.T) {
 		t.Errorf("Popularity = %d, want 1", got.Popularity)
 	}
 
-	if err := assets.BumpPopularity(ctx, a.ID); err != nil {
-		t.Fatalf("BumpPopularity: %v", err)
+	if err := assets.AddPopularity(ctx, a.ID, 1); err != nil {
+		t.Fatalf("AddPopularity +1: %v", err)
 	}
 	got, _ = assets.Get(ctx, a.ID)
 	if got.Popularity != 2 {
-		t.Errorf("Popularity after bump = %d, want 2", got.Popularity)
+		t.Errorf("Popularity after +1 = %d, want 2", got.Popularity)
+	}
+	// add-N: a clip that absorbed gate md5-dups transfers them in one write (#180).
+	if err := assets.AddPopularity(ctx, a.ID, 3); err != nil {
+		t.Fatalf("AddPopularity +3: %v", err)
+	}
+	got, _ = assets.Get(ctx, a.ID)
+	if got.Popularity != 5 {
+		t.Errorf("Popularity after +3 = %d, want 5", got.Popularity)
 	}
 
-	if err := assets.BumpPopularity(ctx, uuid.New()); err != video.ErrNotFound {
-		t.Errorf("BumpPopularity on missing = %v, want ErrNotFound", err)
+	if err := assets.AddPopularity(ctx, uuid.New(), 1); err != video.ErrNotFound {
+		t.Errorf("AddPopularity on missing = %v, want ErrNotFound", err)
 	}
 }
 
@@ -178,8 +186,7 @@ func TestAssetRepo_Supersede(t *testing.T) {
 		t.Fatalf("insert loser: %v", err)
 	}
 	// Loser popularity → 3 so the merge is distinguishable from a +1 bump.
-	_ = assets.BumpPopularity(ctx, loser.ID)
-	_ = assets.BumpPopularity(ctx, loser.ID)
+	_ = assets.AddPopularity(ctx, loser.ID, 2)
 
 	if err := assets.Supersede(ctx, loser.ID, winner.ID); err != nil {
 		t.Fatalf("Supersede: %v", err)

@@ -41,6 +41,7 @@ type clip struct {
 	durationMS    int
 	fileSizeBytes int64
 	bitrate       *int
+	popularity    int       // accumulated sightings: own (1) + md5-dups collapsed while pending (#180)
 	verified      bool      // vision verdict; set at promote — the dedup category (verified↔verified only)
 	assetID       uuid.UUID // set once promoted
 }
@@ -148,7 +149,7 @@ func (p *pipeline) onVideoDone(f workflow.Future) {
 	c := clip{
 		tweetURL: out.TweetURL, md5: out.MD5, frameHashes: out.FrameHashes,
 		stagingKey: out.StagingKey, width: out.Width, height: out.Height,
-		durationMS: out.DurationMS, fileSizeBytes: out.SizeBytes,
+		durationMS: out.DurationMS, fileSizeBytes: out.SizeBytes, popularity: 1,
 	}
 	if out.Bitrate != 0 {
 		b := out.Bitrate
@@ -159,9 +160,9 @@ func (p *pipeline) onVideoDone(f workflow.Future) {
 	// POST-vision (a clip's verified/unverified category is unknown until vision;
 	// decisions.md 2026-08-09). md5-identical bytes are the same clip in every
 	// respect — same category — so collapsing them here is always safe.
-	if idx, matched := p.matchMD5(c); matched {
+	if idx, isAsset, matched := p.matchMD5(c); matched {
 		p.duplicates++
-		p.collapse(c, idx)
+		p.collapse(c, idx, isAsset)
 		return
 	}
 
@@ -173,20 +174,21 @@ func (p *pipeline) onVideoDone(f workflow.Future) {
 
 // matchMD5 reports whether c is byte-identical to a kept or in-flight clip.
 // md5-exact is the ONLY dedup safe before vision: identical bytes are the same
-// clip in every respect (same category, quality, frames). Returns the
-// assets-index of the match, or -1 when the match is a pending (in-flight) clip.
-func (p *pipeline) matchMD5(c clip) (assetIdx int, matched bool) {
+// clip in every respect (same category, quality, frames). Returns the matched
+// index into the relevant list and isAsset — true for a promoted asset (has a
+// DB row), false for a still-pending clip (votes accumulate in memory, #180).
+func (p *pipeline) matchMD5(c clip) (idx int, isAsset, matched bool) {
 	for i := range p.assets {
 		if p.assets[i].md5 == c.md5 {
-			return i, true
+			return i, true, true
 		}
 	}
 	for i := range p.pending {
 		if p.pending[i].md5 == c.md5 {
-			return -1, true // matched a not-yet-promoted clip
+			return i, false, true // matched a not-yet-promoted (pending) clip
 		}
 	}
-	return -1, false
+	return -1, false, false
 }
 
 // matchAssets returns the indices of ALL kept assets in c's OWN category
@@ -217,12 +219,16 @@ func (c clip) quality() dvideo.ClipQuality {
 	}
 }
 
-// collapse merges an md5-exact duplicate onto the winner: bump the winner's
-// popularity (only if it's an already-inserted asset — an md5-dup of a still-
-// pending clip has no row yet to bump) and drop the loser's staging object.
-func (p *pipeline) collapse(loser clip, assetIdx int) {
-	if assetIdx >= 0 {
-		p.bumpPopularity(p.assets[assetIdx].assetID)
+// collapse merges an md5-exact duplicate onto its winner. Against a promoted
+// asset the loser's votes go straight to the DB row; against a still-pending
+// clip (no row yet) they accumulate IN MEMORY on that pending clip and ride
+// into its popularity when it promotes (#180). Loser bytes are dropped either
+// way.
+func (p *pipeline) collapse(loser clip, idx int, isAsset bool) {
+	if isAsset {
+		p.bumpPopularity(p.assets[idx].assetID, loser.popularity)
+	} else {
+		p.pending[idx].popularity += loser.popularity
 	}
 	p.deleteStaging(loser.stagingKey)
 }
@@ -247,7 +253,11 @@ func (p *pipeline) fireVision(c clip) {
 func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 	return func(f workflow.Future) {
 		p.inFlight--
-		p.removePending(c.stagingKey)
+		// The closure captured `c` by value at fireVision; gate md5-dups may have
+		// bumped the LIVE pending entry's popularity since. Re-read it (#180).
+		if pc, ok := p.removePending(c.stagingKey); ok {
+			c.popularity = pc.popularity
+		}
 
 		var vout visionactivity.ValidateClipOutput
 		if err := f.Get(p.ctx, &vout); err != nil {
@@ -313,7 +323,7 @@ func (p *pipeline) dedupAndPromote(c clip, vout visionactivity.ValidateClipOutpu
 			losers = append(losers, p.assets[idx].assetID)
 		}
 	}
-	p.bumpPopularity(winnerID)
+	p.bumpPopularity(winnerID, c.popularity)
 	p.deleteStaging(c.stagingKey)
 	p.supersede(winnerID, losers)
 }
@@ -329,7 +339,8 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 			StagingKey: c.stagingKey, MD5: c.md5, FrameHashes: c.frameHashes,
 			Width: c.width, Height: c.height, DurationMS: c.durationMS,
 			FileSizeBytes: c.fileSizeBytes, Bitrate: c.bitrate,
-			Verified: c.verified, ExtractedMinute: vout.MatchedMinute,
+			Popularity: c.popularity,
+			Verified:   c.verified, ExtractedMinute: vout.MatchedMinute,
 		}).Get(p.persistCtx, &pout)
 	if err != nil {
 		p.failed++
@@ -380,13 +391,14 @@ func (p *pipeline) supersede(winnerID uuid.UUID, loserIDs []uuid.UUID) {
 }
 
 // bumpPopularity records a collapse onto an already-inserted asset (nil-safe).
-func (p *pipeline) bumpPopularity(assetID uuid.UUID) {
-	if assetID == uuid.Nil {
+// bumpPopularity adds n votes to an existing asset's popularity (nil/n<1 safe).
+func (p *pipeline) bumpPopularity(assetID uuid.UUID, n int) {
+	if assetID == uuid.Nil || n < 1 {
 		return
 	}
 	_ = workflow.ExecuteActivity(p.persistCtx,
 		(*videoactivity.PersistActivities).BumpAssetPopularity,
-		videoactivity.BumpAssetPopularityInput{AssetID: assetID}).Get(p.persistCtx, nil)
+		videoactivity.BumpAssetPopularityInput{AssetID: assetID, Count: n}).Get(p.persistCtx, nil)
 }
 
 // assetIDsAt collects the asset ids at the given p.assets indices.
@@ -407,11 +419,16 @@ func (p *pipeline) deleteStaging(key string) {
 		videoactivity.DeleteStagingInput{StagingKey: key}).Get(p.persistCtx, nil)
 }
 
-func (p *pipeline) removePending(stagingKey string) {
+// removePending drops and returns the pending entry for stagingKey. The
+// returned clip is the LIVE entry, whose popularity may have grown from gate
+// md5-dups while vision was in flight (#180). ok=false if it was already gone.
+func (p *pipeline) removePending(stagingKey string) (clip, bool) {
 	for i := range p.pending {
 		if p.pending[i].stagingKey == stagingKey {
+			pc := p.pending[i]
 			p.pending = append(p.pending[:i], p.pending[i+1:]...)
-			return
+			return pc, true
 		}
 	}
+	return clip{}, false
 }

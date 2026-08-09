@@ -114,11 +114,14 @@ func (r *AssetRepo) InsertAsset(ctx context.Context, a *video.Asset) (bool, erro
 }
 
 // BumpPopularity increments popularity on an existing asset (collapse persist).
-func (r *AssetRepo) BumpPopularity(ctx context.Context, id uuid.UUID) error {
+func (r *AssetRepo) AddPopularity(ctx context.Context, id uuid.UUID, n int) error {
+	if n < 1 {
+		n = 1
+	}
 	tag, err := r.pool.Exec(ctx,
-		"UPDATE video_assets SET popularity = popularity + 1 WHERE id = $1", id)
+		"UPDATE video_assets SET popularity = popularity + $2 WHERE id = $1", id, n)
 	if err != nil {
-		return fmt.Errorf("pg.AssetRepo.BumpPopularity: %w", err)
+		return fmt.Errorf("pg.AssetRepo.AddPopularity: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return video.ErrNotFound
