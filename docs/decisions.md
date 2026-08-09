@@ -63,9 +63,15 @@ reclaim them if launch load demands; parked. The A/B gate question (whether to
 vision an unverified incumbent's dups) is **dropped** — moot, since pools never
 cross.
 
-**Phase-1 groundwork shipped + still valid** (now pool-scoped): schema `superseded`
-share-state + widened CHECK; `Assets.MarkSuperseded` + `Assets.AddPopularity`;
-`Shares.MarkSuperseded`; test fakes.
+**Shipped 2026-08-09.** Consumer reworked (`event_pipeline.go`): md5-only gate
+(`matchMD5`), post-vision category-scoped perceptual dedup (`matchAssets`) +
+`IsUpgrade` winner-selection (`dedupAndPromote`), and a `SupersedeAssets` activity
+built on an atomic `Assets.Supersede` CTE (idempotent `superseded_by` + popularity
+merge, so a retry can't double-count) plus `Shares.MarkSuperseded` + best-effort
+byte reclaim. `AssetsKept` is now the live count (`len(p.assets)`). Schema add:
+`'superseded'` `share_state` + widened CHECK. Tests: category-scoped / same-pool
+keep-first / quality-supersede workflow tests, plus `Supersede` + `MarkSuperseded`
+(pg integration) and `SupersedeAssets` (activity) unit tests.
 
 ## 2026-08-07 — Doc-restructure divergence backfill (audit-2026-08-05)
 

@@ -55,7 +55,7 @@ found-footy/
 │   │   ├── active_poll.go               ✓ O2: ActivePollWorkflow (30s IntervalSpec)
 │   │   ├── staging_poll.go              ✓ O2: StagingPollWorkflow (*/15 cron)
 │   │   ├── event.go                     ✓ #164c: EventWorkflow — per-goal orchestrator (producer: discovery search + spawn Video children; ex-DiscoveryWorkflow)
-│   │   ├── event_pipeline.go            ✓ #164c-b: Selector consumer (dedup → vision → promote → rank) + assets/pending/inFlight state + searchDone&&inFlight==0 completion
+│   │   ├── event_pipeline.go            ✓ #164c-b + #171: Selector consumer — md5 gate → vision → category-scoped perceptual dedup + IsUpgrade winner-select → promote/supersede → rank; assets/pending/inFlight state; searchDone&&inFlight==0 completion
 │   │   └── video.go                     ✓ #165: VideoWorkflow child (download → hash)
 │   ├── activity/                        4 packages shipped
 │   │   ├── ingest/                      ✓ O1b: 4 activities + in-memory fakes + 11 tests
@@ -195,7 +195,7 @@ md5)`; the old whole-clip `perceptual_hash` UNIQUE is retired).
 Beyond the model, the package owns the dedup + quality logic (pure, table-
 tested): `hash.go` (`DHash`/`DHashPNG`), `match.go` (`Match` — the
 offset-tolerant sliding window), `filter.go` (`HardFilter` pre-download gate),
-`quality.go` (`IsUpgrade`/`ClipQuality` winner-selection — built, unwired #171),
+`quality.go` (`IsUpgrade`/`ClipQuality` winner-selection — wired post-vision #171),
 and `rank.go` (`CompareShares` — the deterministic frontend tie-break).
 
 ### alias domain (D4)

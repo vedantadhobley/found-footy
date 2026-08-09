@@ -36,14 +36,13 @@ type AssetRepo interface {
 	// already has a DB row).
 	BumpPopularity(ctx context.Context, id uuid.UUID) error
 
-	// MarkSuperseded points loser at winner via superseded_by, retiring
-	// loser from the live set (superseded_by IS NULL) while keeping its row
-	// so shares that FK it still resolve through the chain.
-	MarkSuperseded(ctx context.Context, loserID, winnerID uuid.UUID) error
-
-	// AddPopularity adds n (may be >1) to an asset's popularity — the
-	// popularity merge when clips consolidate onto a winner.
-	AddPopularity(ctx context.Context, id uuid.UUID, n int) error
+	// Supersede retires loser onto winner atomically: sets loser.superseded_by
+	// = winner AND merges loser's popularity into winner in ONE statement, so a
+	// retried activity can't double-count. Idempotent — a second call (loser
+	// already superseded) is a no-op; loser==winner is a no-op. The loser row
+	// stays (shares FK it) and resolves through the chain; it just drops out of
+	// the live set (partial index WHERE superseded_by IS NULL).
+	Supersede(ctx context.Context, loserID, winnerID uuid.UUID) error
 }
 
 // ShareRepo is the storage port for video_shares.

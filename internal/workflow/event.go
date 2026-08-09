@@ -236,7 +236,10 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 
 	p.run() // consumer — blocks until searchDone && inFlight==0
 
-	out.AssetsKept = p.verified + p.unverified
+	// Live assets only — supersede removes losers from p.assets, so this is the
+	// surviving count (verified+unverified are cumulative promote counts, which
+	// now over-count by the number superseded).
+	out.AssetsKept = len(p.assets)
 	switch {
 	case out.AssetsKept > 0:
 		out.OutcomeClass = "assets_surfaced"
@@ -247,8 +250,8 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 	}
 	log.Info("event pipeline complete",
 		"spawned", p.spawned, "passed", p.passed, "duplicates", p.duplicates,
-		"verified", p.verified, "unverified", p.unverified,
-		"rejected", p.rejectedClips, "failed", p.failed)
+		"verified", p.verified, "unverified", p.unverified, "superseded", p.superseded,
+		"assets_kept", out.AssetsKept, "rejected", p.rejectedClips, "failed", p.failed)
 	return finalizeEvent(ctx, in, out, log)
 }
 
