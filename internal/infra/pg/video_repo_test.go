@@ -162,3 +162,100 @@ func TestShareRepo_RebalanceRanks(t *testing.T) {
 		}
 	}
 }
+
+// TestAssetRepo_Supersede verifies the atomic superseded_by + popularity-merge
+// CTE (#171): the merge happens exactly once even on a retry, the loser leaves
+// the live set, and loser==winner is a no-op guard (no self-supersede cycle).
+func TestAssetRepo_Supersede(t *testing.T) {
+	ctx, assets, _, fixtureID, eventID := setupVideoRepos(t)
+
+	winner := newAsset(eventID, fixtureID, "md5-winnerxxxxx1", []uint64{1, 2, 3}, 2_000_000)
+	loser := newAsset(eventID, fixtureID, "md5-loserxxxxxx1", []uint64{4, 5, 6}, 1_000_000)
+	if _, err := assets.InsertAsset(ctx, winner); err != nil {
+		t.Fatalf("insert winner: %v", err)
+	}
+	if _, err := assets.InsertAsset(ctx, loser); err != nil {
+		t.Fatalf("insert loser: %v", err)
+	}
+	// Loser popularity → 3 so the merge is distinguishable from a +1 bump.
+	_ = assets.BumpPopularity(ctx, loser.ID)
+	_ = assets.BumpPopularity(ctx, loser.ID)
+
+	if err := assets.Supersede(ctx, loser.ID, winner.ID); err != nil {
+		t.Fatalf("Supersede: %v", err)
+	}
+	// Retry must be a no-op — the loser is already superseded, so popularity
+	// must NOT be merged a second time.
+	if err := assets.Supersede(ctx, loser.ID, winner.ID); err != nil {
+		t.Fatalf("Supersede retry: %v", err)
+	}
+
+	gotLoser, _ := assets.Get(ctx, loser.ID)
+	if gotLoser.SupersededBy == nil || *gotLoser.SupersededBy != winner.ID {
+		t.Errorf("loser.SupersededBy = %v, want %v", gotLoser.SupersededBy, winner.ID)
+	}
+	gotWinner, _ := assets.Get(ctx, winner.ID)
+	if gotWinner.Popularity != 4 { // 1 + merged 3, exactly once
+		t.Errorf("winner.Popularity = %d, want 4 (1 + 3 merged once)", gotWinner.Popularity)
+	}
+	if gotWinner.SupersededBy != nil {
+		t.Errorf("winner must stay live, SupersededBy = %v", gotWinner.SupersededBy)
+	}
+
+	// loser==winner is a guarded no-op (never set an asset as its own successor).
+	if err := assets.Supersede(ctx, winner.ID, winner.ID); err != nil {
+		t.Fatalf("self-supersede: %v", err)
+	}
+	gotWinner, _ = assets.Get(ctx, winner.ID)
+	if gotWinner.SupersededBy != nil || gotWinner.Popularity != 4 {
+		t.Errorf("self-supersede mutated winner: superseded_by=%v pop=%d", gotWinner.SupersededBy, gotWinner.Popularity)
+	}
+}
+
+// TestShareRepo_MarkSuperseded verifies the 'superseded' share state transition
+// (schema enum + widened CHECK, #171) and its guard: a 'removed' (VAR) share is
+// never clobbered to 'superseded'.
+func TestShareRepo_MarkSuperseded(t *testing.T) {
+	ctx, assets, shares, fixtureID, eventID := setupVideoRepos(t)
+
+	a := newAsset(eventID, fixtureID, "md5-sharexxxxxx1", []uint64{1, 2, 3}, 1_000_000)
+	if _, err := assets.InsertAsset(ctx, a); err != nil {
+		t.Fatalf("insert asset: %v", err)
+	}
+	now := time.Date(2026, 8, 3, 12, 15, 0, 0, time.UTC)
+
+	live, err := video.NewShare(a.ID, eventID, true, nil, 1, now)
+	if err != nil {
+		t.Fatalf("NewShare live: %v", err)
+	}
+	if err := shares.Insert(ctx, live); err != nil {
+		t.Fatalf("Insert live: %v", err)
+	}
+	if err := shares.MarkSuperseded(ctx, live.ID); err != nil {
+		t.Fatalf("MarkSuperseded: %v", err)
+	}
+	got, err := shares.Get(ctx, live.ID)
+	if err != nil {
+		t.Fatalf("Get live: %v", err)
+	}
+	if got.State != video.ShareStateSuperseded {
+		t.Errorf("state = %q, want superseded", got.State)
+	}
+
+	// A removed share must survive MarkSuperseded unchanged (guard on active).
+	rm, _ := video.NewShare(a.ID, eventID, true, nil, 2, now)
+	if err := shares.Insert(ctx, rm); err != nil {
+		t.Fatalf("Insert rm: %v", err)
+	}
+	_ = rm.Remove(video.RemovalVAR, now)
+	if err := shares.Upsert(ctx, rm); err != nil {
+		t.Fatalf("Upsert removed: %v", err)
+	}
+	if err := shares.MarkSuperseded(ctx, rm.ID); err != nil {
+		t.Fatalf("MarkSuperseded on removed: %v", err)
+	}
+	got, _ = shares.Get(ctx, rm.ID)
+	if got.State != video.ShareStateRemoved {
+		t.Errorf("removed share clobbered to %q, want removed (guard)", got.State)
+	}
+}

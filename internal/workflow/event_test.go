@@ -337,3 +337,192 @@ func TestEventWorkflow_Pipeline_VerifyAndDedup(t *testing.T) {
 		t.Errorf("PromoteAndPersist called %d times, want 1 (dup collapsed, not promoted)", promoteCalls)
 	}
 }
+
+// ─── #171: post-vision category-scoped dedup + quality winner-selection ──────
+//
+// These use two candidates with DIFFERENT md5 (so the gate's md5 check never
+// fires) but perceptually-matching frame hashes, and drive vision + quality per
+// candidate to exercise the post-vision path. With the test config's
+// MaxHamming=0 / MinRunFrames→1, identical frame slices match and the consumer
+// logic (not the Match algorithm, covered in match_test.go) is what's under test.
+
+// tweetIs / stagingIs route per-candidate mocks by the field the workflow sets.
+func tweetIs(url string) interface{} {
+	return mock.MatchedBy(func(in workflow.VideoWorkflowInput) bool { return in.TweetURL == url })
+}
+func stagingIs(key string) interface{} {
+	return mock.MatchedBy(func(in visionactivity.ValidateClipInput) bool { return in.StagingKey == key })
+}
+
+// passedChild builds a "passed" VideoWorkflow result for one candidate.
+func passedChild(url, md5, staging string, w, h, durMS int, size int64, frames []uint64) workflow.VideoWorkflowOutput {
+	return workflow.VideoWorkflowOutput{
+		Outcome: "passed", TweetURL: url, MD5: md5, StagingKey: staging,
+		FrameHashes: frames, Width: w, Height: h, DurationMS: durMS, SizeBytes: size,
+	}
+}
+
+func requireDone(t *testing.T, env *testsuite.TestWorkflowEnvironment) {
+	t.Helper()
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow didn't complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow errored: %v", err)
+	}
+}
+
+// twoCandidateEnv wires the search → two-child scaffolding shared by the
+// post-vision tests: SearchTweets returns t1+t2, StoreCandidate + the noise
+// activities are stubbed. Callers attach the per-candidate child/vision/promote
+// mocks. Returns the env plus the two tweet URLs.
+func twoCandidateEnv(s *testsuite.WorkflowTestSuite) (*testsuite.TestWorkflowEnvironment, string, string) {
+	env := baseEventEnv(s)
+	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnActivity("BumpAssetPopularity", mock.Anything, mock.Anything).Return(nil).Maybe()
+	t1 := "https://x.com/u/status/1111111111111111111"
+	t2 := "https://x.com/u/status/2222222222222222222"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{
+				{TweetURL: t1, VideoPageURL: "vp1", DurationSeconds: 7},
+				{TweetURL: t2, VideoPageURL: "vp2", DurationSeconds: 7},
+			}, Count: 2, StopReason: "age",
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil)
+	return env, t1, t2
+}
+
+// TestEventWorkflow_Pipeline_CategoryScopedDedup — the load-bearing #171 fix.
+// Two perceptually-identical clips (same frame hashes, different md5) land in
+// DIFFERENT vision pools: one verified, one unverified. They must NOT collapse
+// — pools never compare — so both are kept and nothing is superseded. Under the
+// old pre-vision, category-blind gate these would have collapsed to one.
+func TestEventWorkflow_Pipeline_CategoryScopedDedup(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env, t1, t2 := twoCandidateEnv(&s)
+	frames := []uint64{1, 2, 4, 8, 16, 32}
+
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(t1)).
+		Return(passedChild(t1, "md5a", "s1", 1280, 720, 7000, 900_000, frames), nil)
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(t2)).
+		Return(passedChild(t2, "md5b", "s2", 1280, 720, 7000, 900_000, frames), nil)
+	env.OnActivity("ValidateClip", mock.Anything, stagingIs("s1")).
+		Return(visionactivity.ValidateClipOutput{Outcome: "verified", MatchedMinute: pInt(71)}, nil)
+	env.OnActivity("ValidateClip", mock.Anything, stagingIs("s2")).
+		Return(visionactivity.ValidateClipOutput{Outcome: "unverified"}, nil)
+
+	promoteCalls, supersedeCalls := 0, 0
+	env.OnActivity("PromoteAndPersist", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, in videoactivity.PromoteAndPersistInput) (videoactivity.PromoteAndPersistOutput, error) {
+			promoteCalls++
+			return videoactivity.PromoteAndPersistOutput{AssetID: uuid.New(), ShareID: "s_" + in.MD5, Inserted: true}, nil
+		})
+	env.OnActivity("SupersedeAssets", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ videoactivity.SupersedeAssetsInput) error { supersedeCalls++; return nil }).Maybe()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	var out workflow.EventWorkflowOutput
+	_ = env.GetWorkflowResult(&out)
+	if out.AssetsKept != 2 {
+		t.Errorf("AssetsKept = %d, want 2 (verified + unverified never collapse)", out.AssetsKept)
+	}
+	if promoteCalls != 2 {
+		t.Errorf("PromoteAndPersist called %d times, want 2", promoteCalls)
+	}
+	if supersedeCalls != 0 {
+		t.Errorf("SupersedeAssets called %d times, want 0 (cross-pool never supersedes)", supersedeCalls)
+	}
+}
+
+// TestEventWorkflow_Pipeline_PerceptualDedupWithinPool — two perceptually-
+// identical VERIFIED clips, different md5 (gate md5 check misses them), equal
+// quality. Post-vision perceptual dedup collapses the second onto the first
+// (keep-first on a quality tie): one asset, one promote, no supersede.
+func TestEventWorkflow_Pipeline_PerceptualDedupWithinPool(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env, t1, t2 := twoCandidateEnv(&s)
+	frames := []uint64{1, 2, 4, 8, 16, 32}
+
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(t1)).
+		Return(passedChild(t1, "md5a", "s1", 1280, 720, 7000, 900_000, frames), nil)
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(t2)).
+		Return(passedChild(t2, "md5b", "s2", 1280, 720, 7000, 900_000, frames), nil)
+	env.OnActivity("ValidateClip", mock.Anything, mock.Anything).
+		Return(visionactivity.ValidateClipOutput{Outcome: "verified", MatchedMinute: pInt(71)}, nil)
+
+	promoteCalls, supersedeCalls := 0, 0
+	env.OnActivity("PromoteAndPersist", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, in videoactivity.PromoteAndPersistInput) (videoactivity.PromoteAndPersistOutput, error) {
+			promoteCalls++
+			return videoactivity.PromoteAndPersistOutput{AssetID: uuid.New(), ShareID: "s_" + in.MD5, Inserted: true}, nil
+		})
+	env.OnActivity("SupersedeAssets", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ videoactivity.SupersedeAssetsInput) error { supersedeCalls++; return nil }).Maybe()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	var out workflow.EventWorkflowOutput
+	_ = env.GetWorkflowResult(&out)
+	if out.AssetsKept != 1 {
+		t.Errorf("AssetsKept = %d, want 1 (same-pool perceptual dup collapses)", out.AssetsKept)
+	}
+	if promoteCalls != 1 {
+		t.Errorf("PromoteAndPersist called %d times, want 1 (second collapsed, not promoted)", promoteCalls)
+	}
+	if supersedeCalls != 0 {
+		t.Errorf("SupersedeAssets called %d times, want 0 (equal quality → keep-first)", supersedeCalls)
+	}
+}
+
+// TestEventWorkflow_Pipeline_QualitySupersede — two perceptually-identical
+// VERIFIED clips, different md5, DIFFERENT quality. The lower-res clip is
+// processed first (spawn order) and promoted; the higher-res clip then wins the
+// pool and supersedes it. Net: both promoted, one supersede, one asset kept.
+func TestEventWorkflow_Pipeline_QualitySupersede(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env, t1, t2 := twoCandidateEnv(&s)
+	frames := []uint64{1, 2, 4, 8, 16, 32}
+
+	// t1 low-res (processed first → incumbent), t2 high-res (upgrade → winner).
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(t1)).
+		Return(passedChild(t1, "md5low", "s1", 640, 360, 7000, 400_000, frames), nil)
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(t2)).
+		Return(passedChild(t2, "md5high", "s2", 1920, 1080, 7000, 2_500_000, frames), nil)
+	env.OnActivity("ValidateClip", mock.Anything, mock.Anything).
+		Return(visionactivity.ValidateClipOutput{Outcome: "verified", MatchedMinute: pInt(71)}, nil)
+
+	promoteCalls, supersedeCalls, loserCount := 0, 0, 0
+	env.OnActivity("PromoteAndPersist", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, in videoactivity.PromoteAndPersistInput) (videoactivity.PromoteAndPersistOutput, error) {
+			promoteCalls++
+			// Deterministic id per md5 so the winner supersedes the right loser.
+			id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.EventID.String()+":"+in.MD5))
+			return videoactivity.PromoteAndPersistOutput{AssetID: id, ShareID: "s_" + in.MD5, Inserted: true}, nil
+		})
+	env.OnActivity("SupersedeAssets", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, in videoactivity.SupersedeAssetsInput) error {
+			supersedeCalls++
+			loserCount += len(in.LoserAssetIDs)
+			return nil
+		})
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	var out workflow.EventWorkflowOutput
+	_ = env.GetWorkflowResult(&out)
+	if out.AssetsKept != 1 {
+		t.Errorf("AssetsKept = %d, want 1 (cluster collapses to the winner)", out.AssetsKept)
+	}
+	if promoteCalls != 2 {
+		t.Errorf("PromoteAndPersist called %d times, want 2 (both promoted; loser then superseded)", promoteCalls)
+	}
+	if supersedeCalls != 1 || loserCount != 1 {
+		t.Errorf("SupersedeAssets calls=%d losers=%d, want 1/1 (higher-res supersedes lower)", supersedeCalls, loserCount)
+	}
+}

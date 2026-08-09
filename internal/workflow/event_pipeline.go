@@ -41,6 +41,7 @@ type clip struct {
 	durationMS    int
 	fileSizeBytes int64
 	bitrate       *int
+	verified      bool      // vision verdict; set at promote — the dedup category (verified↔verified only)
 	assetID       uuid.UUID // set once promoted
 }
 
@@ -66,7 +67,7 @@ type pipeline struct {
 	childSeq   int
 
 	// outcome counters (for the workflow output / logs)
-	spawned, passed, rejectedClips, duplicates, verified, unverified, failed int
+	spawned, passed, rejectedClips, duplicates, verified, unverified, superseded, failed int
 }
 
 func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig, log log.Logger) *pipeline {
@@ -154,43 +155,74 @@ func (p *pipeline) onVideoDone(f workflow.Future) {
 		c.bitrate = &b
 	}
 
-	// DEDUP — the one serial step. Compare against everything kept OR
-	// pending-vision (the pending set closes the async-vision race).
-	if idx, matched := p.matchExisting(c); matched {
+	// GATE DEDUP — md5-exact ONLY. Perceptual dedup is category-scoped and runs
+	// POST-vision (a clip's verified/unverified category is unknown until vision;
+	// decisions.md 2026-08-09). md5-identical bytes are the same clip in every
+	// respect — same category — so collapsing them here is always safe.
+	if idx, matched := p.matchMD5(c); matched {
 		p.duplicates++
 		p.collapse(c, idx)
 		return
 	}
 
-	// New unique clip → reserve its slot in pending, then fire vision async.
+	// md5-unique → reserve its pending slot (so a later md5-dup collapses onto
+	// it) and fire vision. Perceptual dedup + which-to-keep run when vision lands.
 	p.pending = append(p.pending, c)
 	p.fireVision(c)
 }
 
-// matchExisting reports whether c perceptually matches an already-kept or
-// pending clip (md5 exact first, then the offset/gap-tolerant frame-window).
-// Returns the assets-index of the match (or -1 if the match is in pending).
-func (p *pipeline) matchExisting(c clip) (assetIdx int, matched bool) {
+// matchMD5 reports whether c is byte-identical to a kept or in-flight clip.
+// md5-exact is the ONLY dedup safe before vision: identical bytes are the same
+// clip in every respect (same category, quality, frames). Returns the
+// assets-index of the match, or -1 when the match is a pending (in-flight) clip.
+func (p *pipeline) matchMD5(c clip) (assetIdx int, matched bool) {
 	for i := range p.assets {
-		if p.assets[i].md5 == c.md5 || dvideo.Match(c.frameHashes, p.assets[i].frameHashes, p.maxHamming, p.minRun, p.maxGaps) {
+		if p.assets[i].md5 == c.md5 {
 			return i, true
 		}
 	}
 	for i := range p.pending {
-		if p.pending[i].md5 == c.md5 || dvideo.Match(c.frameHashes, p.pending[i].frameHashes, p.maxHamming, p.minRun, p.maxGaps) {
+		if p.pending[i].md5 == c.md5 {
 			return -1, true // matched a not-yet-promoted clip
 		}
 	}
 	return -1, false
 }
 
-// collapse merges a duplicate onto the winner: bump the winner's popularity
-// (only if it's an already-inserted asset) and drop the loser's staging object.
+// matchAssets returns the indices of ALL kept assets in c's OWN category
+// (verified↔verified, unverified↔unverified) that c perceptually matches.
+// Category scoping is load-bearing: one broadcast yields visually-similar frames
+// across DIFFERENT goals, so an unverified different-moment clip can dHash-match
+// the verified clip of THIS goal — the clock (category) is the only ground-truth
+// pinning a clip to this goal (decisions.md 2026-08-09). Never early-returns:
+// dHash isn't transitive, so a clip can bridge two assets that don't match each
+// other, and every bridged asset must consolidate.
+func (p *pipeline) matchAssets(c clip) []int {
+	var out []int
+	for i := range p.assets {
+		if p.assets[i].verified != c.verified {
+			continue // different pool — never compared
+		}
+		if dvideo.Match(c.frameHashes, p.assets[i].frameHashes, p.maxHamming, p.minRun, p.maxGaps) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// quality projects a clip's download-time metadata into the dedup comparator.
+func (c clip) quality() dvideo.ClipQuality {
+	return dvideo.ClipQuality{
+		DurationMS: c.durationMS, Bitrate: c.bitrate, Width: c.width, Height: c.height,
+	}
+}
+
+// collapse merges an md5-exact duplicate onto the winner: bump the winner's
+// popularity (only if it's an already-inserted asset — an md5-dup of a still-
+// pending clip has no row yet to bump) and drop the loser's staging object.
 func (p *pipeline) collapse(loser clip, assetIdx int) {
-	if assetIdx >= 0 && p.assets[assetIdx].assetID != uuid.Nil {
-		_ = workflow.ExecuteActivity(p.persistCtx,
-			(*videoactivity.PersistActivities).BumpAssetPopularity,
-			videoactivity.BumpAssetPopularityInput{AssetID: p.assets[assetIdx].assetID}).Get(p.persistCtx, nil)
+	if assetIdx >= 0 {
+		p.bumpPopularity(p.assets[assetIdx].assetID)
 	}
 	p.deleteStaging(loser.stagingKey)
 }
@@ -227,7 +259,8 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 
 		switch vout.Outcome {
 		case string(dvision.OutcomeVerified), string(dvision.OutcomeUnverified):
-			p.promote(c, vout)
+			c.verified = vout.Outcome == string(dvision.OutcomeVerified)
+			p.dedupAndPromote(c, vout)
 		default: // rejected — not soccer / screen recording / wrong clock
 			p.rejectedClips++
 			p.deleteStaging(c.stagingKey)
@@ -235,9 +268,59 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 	}
 }
 
-// promote copies the clip staging→assets and records asset+share+rank, then
-// adds it to the kept set so later candidates dedup against it.
-func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) {
+// dedupAndPromote is the POST-vision dedup + which-to-keep step (#171). It
+// perceptually dedups the vision-passed clip WITHIN its own category pool, then
+// either promotes it (unique, or the cluster's quality winner) or collapses it
+// (a better clip already exists). dHash isn't transitive, so a clip can match
+// several assets at once (a bridge) — all of them consolidate onto the single
+// winner, popularity merging. Verified vs unverified never mix (matchAssets
+// scopes by category); across pools it's pure ranking, verified always above.
+func (p *pipeline) dedupAndPromote(c clip, vout visionactivity.ValidateClipOutput) {
+	matched := p.matchAssets(c)
+	if len(matched) == 0 {
+		p.promote(c, vout) // unique in its pool
+		return
+	}
+
+	// Highest-quality existing asset in the cluster (ties keep the lower index →
+	// stable, no churn).
+	best := matched[0]
+	for _, idx := range matched[1:] {
+		if dvideo.IsUpgrade(p.assets[idx].quality(), p.assets[best].quality()) {
+			best = idx
+		}
+	}
+
+	if dvideo.IsUpgrade(c.quality(), p.assets[best].quality()) {
+		// c is a meaningful upgrade over the best incumbent → c wins the pool.
+		// Promote it, then supersede every matched asset onto it.
+		losers := p.assetIDsAt(matched)
+		winnerID, ok := p.promote(c, vout)
+		if !ok {
+			return
+		}
+		p.supersede(winnerID, losers)
+		return
+	}
+
+	// An existing asset wins. c collapses onto it (bump + drop); any OTHER
+	// matched assets (a bridge c revealed) also consolidate onto that winner.
+	p.duplicates++
+	winnerID := p.assets[best].assetID
+	var losers []uuid.UUID
+	for _, idx := range matched {
+		if idx != best {
+			losers = append(losers, p.assets[idx].assetID)
+		}
+	}
+	p.bumpPopularity(winnerID)
+	p.deleteStaging(c.stagingKey)
+	p.supersede(winnerID, losers)
+}
+
+// promote copies the clip staging→assets, records asset+share+rank, and adds it
+// to the kept set so later candidates dedup against it. Returns the new asset id.
+func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid.UUID, bool) {
 	var pout videoactivity.PromoteAndPersistOutput
 	err := workflow.ExecuteActivity(p.persistCtx,
 		(*videoactivity.PersistActivities).PromoteAndPersist,
@@ -246,20 +329,73 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) {
 			StagingKey: c.stagingKey, MD5: c.md5, FrameHashes: c.frameHashes,
 			Width: c.width, Height: c.height, DurationMS: c.durationMS,
 			FileSizeBytes: c.fileSizeBytes, Bitrate: c.bitrate,
-			Verified: vout.Outcome == string(dvision.OutcomeVerified), ExtractedMinute: vout.MatchedMinute,
+			Verified: c.verified, ExtractedMinute: vout.MatchedMinute,
 		}).Get(p.persistCtx, &pout)
 	if err != nil {
 		p.failed++
 		p.log.Warn("promote failed", "tweet_url", c.tweetURL, "err", err)
-		return
+		return uuid.Nil, false
 	}
 	c.assetID = pout.AssetID
 	p.assets = append(p.assets, c)
-	if vout.Outcome == string(dvision.OutcomeVerified) {
+	if c.verified {
 		p.verified++
 	} else {
 		p.unverified++
 	}
+	return pout.AssetID, true
+}
+
+// supersede consolidates loser assets onto winner via the SupersedeAssets
+// activity (superseded_by chain + popularity merge + retire loser shares +
+// reclaim bytes + rebalance), then drops the losers from the in-memory kept set
+// so they stop matching later clips. A failed activity leaves the losers in
+// place (a visible duplicate) rather than corrupting state — the DB is the
+// arbiter and the activity is retried.
+func (p *pipeline) supersede(winnerID uuid.UUID, loserIDs []uuid.UUID) {
+	if len(loserIDs) == 0 {
+		return
+	}
+	if err := workflow.ExecuteActivity(p.persistCtx,
+		(*videoactivity.PersistActivities).SupersedeAssets,
+		videoactivity.SupersedeAssetsInput{
+			EventID: p.in.EventID, WinnerAssetID: winnerID, LoserAssetIDs: loserIDs,
+		}).Get(p.persistCtx, nil); err != nil {
+		p.log.Warn("supersede failed", "winner", winnerID.String(), "losers", len(loserIDs), "err", err)
+		return
+	}
+	p.superseded += len(loserIDs)
+
+	lose := make(map[uuid.UUID]bool, len(loserIDs))
+	for _, id := range loserIDs {
+		lose[id] = true
+	}
+	kept := p.assets[:0]
+	for _, a := range p.assets {
+		if !lose[a.assetID] {
+			kept = append(kept, a)
+		}
+	}
+	p.assets = kept
+}
+
+// bumpPopularity records a collapse onto an already-inserted asset (nil-safe).
+func (p *pipeline) bumpPopularity(assetID uuid.UUID) {
+	if assetID == uuid.Nil {
+		return
+	}
+	_ = workflow.ExecuteActivity(p.persistCtx,
+		(*videoactivity.PersistActivities).BumpAssetPopularity,
+		videoactivity.BumpAssetPopularityInput{AssetID: assetID}).Get(p.persistCtx, nil)
+}
+
+// assetIDsAt collects the asset ids at the given p.assets indices.
+func (p *pipeline) assetIDsAt(idxs []int) []uuid.UUID {
+	ids := make([]uuid.UUID, 0, len(idxs))
+	for _, i := range idxs {
+		ids = append(ids, p.assets[i].assetID)
+	}
+	return ids
 }
 
 func (p *pipeline) deleteStaging(key string) {

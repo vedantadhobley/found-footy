@@ -10,6 +10,9 @@
 //	  code (non-deterministic), and it drives both the S3 key and the DB row.
 //	BumpAssetPopularity — persist a collapse onto an already-inserted asset.
 //	DeleteStaging — drop a staging object (rejected clip / dedup loser).
+//	SupersedeAssets — consolidate loser assets onto a winner (post-vision,
+//	  category-scoped dedup #171): superseded_by chain + popularity merge +
+//	  retire loser shares + reclaim loser bytes + one rank rebalance.
 //
 // Idempotency: the asset UUID is DERIVED from (event_id, md5) via uuid v5, so
 // a retried activity produces the same UUID → the same assets key (copy is a
@@ -22,11 +25,13 @@ package video
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"path"
 	"time"
 
 	"github.com/google/uuid"
+	"go.temporal.io/sdk/activity"
 
 	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 )
@@ -154,6 +159,79 @@ type DeleteStagingInput struct {
 func (a *PersistActivities) DeleteStaging(ctx context.Context, in DeleteStagingInput) error {
 	if err := a.S3.Delete(ctx, in.StagingKey); err != nil {
 		return fmt.Errorf("video.DeleteStaging: %w", err)
+	}
+	return nil
+}
+
+// SupersedeAssetsInput consolidates one or more loser assets onto a winner —
+// the write side of a post-vision dedup collapse (#171). Losers may be a
+// just-beaten incumbent (a higher-quality clip won the pool) AND/OR bridged
+// assets (a clip perceptually matched two assets that don't match each other;
+// dHash isn't transitive).
+type SupersedeAssetsInput struct {
+	EventID       uuid.UUID
+	WinnerAssetID uuid.UUID
+	LoserAssetIDs []uuid.UUID
+}
+
+// SupersedeAssets retires each loser onto the winner: atomic superseded_by +
+// popularity merge (Assets.Supersede), retire the loser's active share (still
+// resolves via the chain, but leaves the ranked list), and reclaim the loser's
+// Garage bytes. One RebalanceRanks at the end, after the active pool shrank.
+// Idempotent end-to-end — Supersede, MarkSuperseded, and the S3 delete all
+// no-op on a retry — so the whole activity is safe to replay.
+func (a *PersistActivities) SupersedeAssets(ctx context.Context, in SupersedeAssetsInput) error {
+	if len(in.LoserAssetIDs) == 0 {
+		return nil
+	}
+
+	// One share lookup for the event; index the active share per asset.
+	shares, err := a.Shares.GetByEvent(ctx, in.EventID)
+	if err != nil {
+		return fmt.Errorf("video.SupersedeAssets: get shares: %w", err)
+	}
+	activeShareByAsset := make(map[uuid.UUID]string, len(shares))
+	for _, s := range shares {
+		if s.State == dvideo.ShareStateActive {
+			activeShareByAsset[s.AssetID] = s.ID
+		}
+	}
+
+	for _, loserID := range in.LoserAssetIDs {
+		if loserID == in.WinnerAssetID {
+			continue
+		}
+
+		// Read the loser's S3 key first (the row survives supersede). Tolerate a
+		// missing loser — a retry may already have reclaimed it.
+		var loserKey string
+		if loser, err := a.Assets.Get(ctx, loserID); err == nil {
+			loserKey = loser.S3Key
+		} else if !errors.Is(err, dvideo.ErrNotFound) {
+			return fmt.Errorf("video.SupersedeAssets: get loser %s: %w", loserID, err)
+		}
+
+		if err := a.Assets.Supersede(ctx, loserID, in.WinnerAssetID); err != nil {
+			return fmt.Errorf("video.SupersedeAssets: supersede %s: %w", loserID, err)
+		}
+		if shareID, ok := activeShareByAsset[loserID]; ok {
+			if err := a.Shares.MarkSuperseded(ctx, shareID); err != nil {
+				return fmt.Errorf("video.SupersedeAssets: retire share %s: %w", shareID, err)
+			}
+		}
+		// Reclaim bytes best-effort: the chain resolves reads to the winner, so
+		// the loser's object is never served. A failed delete just leaves it for
+		// the retention prune (#176) — don't fail a DB-consistent supersede on it.
+		if loserKey != "" {
+			if err := a.S3.Delete(ctx, loserKey); err != nil {
+				activity.GetLogger(ctx).Warn("supersede: loser byte reclaim failed",
+					"key", loserKey, "err", err)
+			}
+		}
+	}
+
+	if _, err := a.Shares.RebalanceRanks(ctx, in.EventID); err != nil {
+		return fmt.Errorf("video.SupersedeAssets: rebalance: %w", err)
 	}
 	return nil
 }

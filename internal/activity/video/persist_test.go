@@ -60,23 +60,20 @@ func (f *fakeAssetStore) BumpPopularity(_ context.Context, id uuid.UUID) error {
 	}
 	return dvideo.ErrNotFound
 }
-func (f *fakeAssetStore) MarkSuperseded(_ context.Context, loserID, winnerID uuid.UUID) error {
-	if a, ok := f.byID[loserID]; ok {
-		w := winnerID
-		a.SupersededBy = &w
+func (f *fakeAssetStore) Supersede(_ context.Context, loserID, winnerID uuid.UUID) error {
+	if loserID == winnerID {
 		return nil
 	}
-	return dvideo.ErrNotFound
-}
-func (f *fakeAssetStore) AddPopularity(_ context.Context, id uuid.UUID, n int) error {
-	if n == 0 {
-		return nil
+	loser, ok := f.byID[loserID]
+	if !ok || loser.SupersededBy != nil {
+		return nil // missing or already superseded — idempotent no-op
 	}
-	if a, ok := f.byID[id]; ok {
-		a.Popularity += n
-		return nil
+	w := winnerID
+	loser.SupersededBy = &w
+	if winner, ok := f.byID[winnerID]; ok {
+		winner.Popularity += loser.Popularity
 	}
-	return dvideo.ErrNotFound
+	return nil
 }
 
 type fakeShareStore struct{ shares []*dvideo.Share }
@@ -224,5 +221,54 @@ func TestBumpAndDelete(t *testing.T) {
 	}
 	if len(s3.deletes) != 1 || s3.deletes[0] != "staging/x.mp4" {
 		t.Errorf("deletes = %v", s3.deletes)
+	}
+}
+
+// TestSupersedeAssets — the consolidate activity (#171): each loser gets
+// superseded_by=winner + popularity merged, its active share flips to
+// 'superseded', and its Garage bytes are reclaimed; the winner is untouched.
+// A retry must not double-merge popularity.
+func TestSupersedeAssets(t *testing.T) {
+	a, s3, assets, shares := newPersist()
+	ctx := context.Background()
+	eventID := uuid.New()
+	winnerID, loserID := uuid.New(), uuid.New()
+
+	assets.byID[winnerID] = &dvideo.Asset{ID: winnerID, EventID: eventID, Popularity: 2, S3Key: "assets/w.mp4"}
+	assets.byID[loserID] = &dvideo.Asset{ID: loserID, EventID: eventID, Popularity: 3, S3Key: "assets/l.mp4"}
+	winShare := &dvideo.Share{ID: "s_win", AssetID: winnerID, EventID: eventID, State: dvideo.ShareStateActive, Rank: 1}
+	loseShare := &dvideo.Share{ID: "s_lose", AssetID: loserID, EventID: eventID, State: dvideo.ShareStateActive, Rank: 2}
+	shares.shares = []*dvideo.Share{winShare, loseShare}
+
+	in := SupersedeAssetsInput{EventID: eventID, WinnerAssetID: winnerID, LoserAssetIDs: []uuid.UUID{loserID}}
+	if err := a.SupersedeAssets(ctx, in); err != nil {
+		t.Fatalf("SupersedeAssets: %v", err)
+	}
+
+	if sb := assets.byID[loserID].SupersededBy; sb == nil || *sb != winnerID {
+		t.Errorf("loser.SupersededBy = %v, want %v", sb, winnerID)
+	}
+	if got := assets.byID[winnerID].Popularity; got != 5 { // 2 + merged 3
+		t.Errorf("winner.Popularity = %d, want 5", got)
+	}
+	if assets.byID[winnerID].SupersededBy != nil {
+		t.Error("winner must stay live")
+	}
+	if loseShare.State != dvideo.ShareStateSuperseded {
+		t.Errorf("loser share = %q, want superseded", loseShare.State)
+	}
+	if winShare.State != dvideo.ShareStateActive {
+		t.Errorf("winner share = %q, want active (untouched)", winShare.State)
+	}
+	if len(s3.deletes) != 1 || s3.deletes[0] != "assets/l.mp4" {
+		t.Errorf("byte reclaim = %v, want [assets/l.mp4] (loser only)", s3.deletes)
+	}
+
+	// Retry: idempotent — popularity must not double-merge.
+	if err := a.SupersedeAssets(ctx, in); err != nil {
+		t.Fatalf("SupersedeAssets retry: %v", err)
+	}
+	if got := assets.byID[winnerID].Popularity; got != 5 {
+		t.Errorf("winner.Popularity after retry = %d, want 5 (no double-merge)", got)
 	}
 }

@@ -126,35 +126,30 @@ func (r *AssetRepo) BumpPopularity(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// MarkSuperseded points loser.superseded_by at winner. The loser row
-// stays (shares FK it ON DELETE RESTRICT) but drops out of the live set
-// — the partial index video_assets_event_popularity WHERE superseded_by
-// IS NULL no longer covers it, so the read path skips it.
-func (r *AssetRepo) MarkSuperseded(ctx context.Context, loserID, winnerID uuid.UUID) error {
-	tag, err := r.pool.Exec(ctx,
-		"UPDATE video_assets SET superseded_by = $2 WHERE id = $1", loserID, winnerID)
-	if err != nil {
-		return fmt.Errorf("pg.AssetRepo.MarkSuperseded: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return video.ErrNotFound
-	}
-	return nil
-}
-
-// AddPopularity adds n to an asset's popularity — the popularity merge
-// when losers consolidate onto a winner. n==0 is a no-op (skips the write).
-func (r *AssetRepo) AddPopularity(ctx context.Context, id uuid.UUID, n int) error {
-	if n == 0 {
+// Supersede atomically retires loser onto winner: sets loser.superseded_by
+// AND merges loser's popularity into winner, in a single statement. The loser
+// CTE only fires while the loser is still live (superseded_by IS NULL), so a
+// retry matches 0 rows → the outer merge's EXISTS is false → popularity is
+// never double-counted. The loser row stays (shares FK it ON DELETE RESTRICT)
+// but drops out of the live set — the partial index WHERE superseded_by IS NULL
+// stops covering it, so the read path skips it. loser==winner is a no-op guard
+// (never set an asset as its own successor).
+func (r *AssetRepo) Supersede(ctx context.Context, loserID, winnerID uuid.UUID) error {
+	if loserID == winnerID {
 		return nil
 	}
-	tag, err := r.pool.Exec(ctx,
-		"UPDATE video_assets SET popularity = popularity + $2 WHERE id = $1", id, n)
-	if err != nil {
-		return fmt.Errorf("pg.AssetRepo.AddPopularity: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return video.ErrNotFound
+	if _, err := r.pool.Exec(ctx, `
+		WITH loser AS (
+			UPDATE video_assets
+			SET superseded_by = $2
+			WHERE id = $1 AND superseded_by IS NULL
+			RETURNING popularity
+		)
+		UPDATE video_assets w
+		SET popularity = w.popularity + (SELECT popularity FROM loser)
+		WHERE w.id = $2 AND EXISTS (SELECT 1 FROM loser)
+	`, loserID, winnerID); err != nil {
+		return fmt.Errorf("pg.AssetRepo.Supersede: %w", err)
 	}
 	return nil
 }
