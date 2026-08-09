@@ -126,6 +126,39 @@ func (r *AssetRepo) BumpPopularity(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// MarkSuperseded points loser.superseded_by at winner. The loser row
+// stays (shares FK it ON DELETE RESTRICT) but drops out of the live set
+// — the partial index video_assets_event_popularity WHERE superseded_by
+// IS NULL no longer covers it, so the read path skips it.
+func (r *AssetRepo) MarkSuperseded(ctx context.Context, loserID, winnerID uuid.UUID) error {
+	tag, err := r.pool.Exec(ctx,
+		"UPDATE video_assets SET superseded_by = $2 WHERE id = $1", loserID, winnerID)
+	if err != nil {
+		return fmt.Errorf("pg.AssetRepo.MarkSuperseded: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return video.ErrNotFound
+	}
+	return nil
+}
+
+// AddPopularity adds n to an asset's popularity — the popularity merge
+// when losers consolidate onto a winner. n==0 is a no-op (skips the write).
+func (r *AssetRepo) AddPopularity(ctx context.Context, id uuid.UUID, n int) error {
+	if n == 0 {
+		return nil
+	}
+	tag, err := r.pool.Exec(ctx,
+		"UPDATE video_assets SET popularity = popularity + $2 WHERE id = $1", id, n)
+	if err != nil {
+		return fmt.Errorf("pg.AssetRepo.AddPopularity: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return video.ErrNotFound
+	}
+	return nil
+}
+
 // ─── ShareRepo ─────────────────────────────────────────────────────────────
 
 // ShareRepo backs video.ShareRepo.
@@ -226,6 +259,23 @@ func (r *ShareRepo) Upsert(ctx context.Context, s *video.Share) error {
 		string(s.State), removalReasonPtr(s.RemovedReason), s.RemovedAt, s.Rank, s.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("pg.ShareRepo.Upsert: %w", err)
+	}
+	return nil
+}
+
+// MarkSuperseded flips a share to state='superseded'. It leaves the active
+// pool (RebalanceRanks + the read list both filter WHERE state='active'),
+// freeing its rank slot, but its row and asset_id FK remain so a direct
+// s_<hex> URL still resolves through the asset chain. No-op-safe: a second
+// call on an already-superseded share affects 0 rows and returns nil.
+func (r *ShareRepo) MarkSuperseded(ctx context.Context, id string) error {
+	// Guard on state='active' so a 'removed' (VAR) share is never clobbered
+	// into 'superseded' — removal is terminal. 0 rows (missing / already
+	// superseded on retry / removed) is swallowed: the share is simply no
+	// longer active, which is the desired end state.
+	if _, err := r.pool.Exec(ctx,
+		"UPDATE video_shares SET state = 'superseded' WHERE id = $1 AND state = 'active'", id); err != nil {
+		return fmt.Errorf("pg.ShareRepo.MarkSuperseded: %w", err)
 	}
 	return nil
 }

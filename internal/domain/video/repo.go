@@ -35,6 +35,15 @@ type AssetRepo interface {
 	// persist side of a collapse (a candidate deduped onto an asset that
 	// already has a DB row).
 	BumpPopularity(ctx context.Context, id uuid.UUID) error
+
+	// MarkSuperseded points loser at winner via superseded_by, retiring
+	// loser from the live set (superseded_by IS NULL) while keeping its row
+	// so shares that FK it still resolve through the chain.
+	MarkSuperseded(ctx context.Context, loserID, winnerID uuid.UUID) error
+
+	// AddPopularity adds n (may be >1) to an asset's popularity — the
+	// popularity merge when clips consolidate onto a winner.
+	AddPopularity(ctx context.Context, id uuid.UUID, n int) error
 }
 
 // ShareRepo is the storage port for video_shares.
@@ -58,4 +67,9 @@ type ShareRepo interface {
 	// pool, so intermediate states during the rewrite must be atomic.
 	// Returns the count of shares repositioned (0 if no changes).
 	RebalanceRanks(ctx context.Context, eventID uuid.UUID) (int, error)
+
+	// MarkSuperseded flips a share to 'superseded' — it leaves the active/
+	// ranked list but still resolves (via its asset's chain) for direct-URL
+	// play. Distinct from Remove (VAR / event gone, which stops resolving).
+	MarkSuperseded(ctx context.Context, id string) error
 }

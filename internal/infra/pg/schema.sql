@@ -48,7 +48,7 @@ CREATE TYPE fixture_state AS ENUM ('staging', 'active', 'completed');
 CREATE TYPE event_type AS ENUM ('goal', 'card', 'subst', 'var', 'missed penalty');
 
 -- Video share state
-CREATE TYPE share_state AS ENUM ('active', 'removed');
+CREATE TYPE share_state AS ENUM ('active', 'removed', 'superseded');
 
 -- Tweet source classification (from semantic intent, §1 extensibility hook)
 CREATE TYPE source_type AS ENUM (
@@ -329,7 +329,9 @@ CREATE TABLE video_shares (
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CHECK ((state = 'active' AND removed_reason IS NULL) OR (state = 'removed' AND removed_reason IS NOT NULL))
+    -- 'superseded' = replaced by a higher-quality/consolidated clip; not a
+    -- removal (no reason), still resolvable for direct-URL play, just not listed.
+    CHECK ((state IN ('active', 'superseded') AND removed_reason IS NULL) OR (state = 'removed' AND removed_reason IS NOT NULL))
 );
 
 -- The partial UNIQUE INDEX on (event_id, rank) WHERE state='active' is the

@@ -191,6 +191,18 @@ supersede the worse (`video_assets.superseded_by`). **This quality step is
 rung-6 design, not yet built** — for the first cut, `collapse()` = keep-first +
 popularity++.
 
+> **Correction (2026-08-09, [decisions.md](../decisions.md); #171).** Two things
+> the "dedup → vision" framing in this doc got wrong, now being fixed:
+> 1. **Perceptual dedup is post-vision, not pre-vision.** Only **md5**-exact dedup
+>    runs at the gate. Perceptual `video.Match` + which-to-keep move into the
+>    post-vision path — a clip's verified/unverified category is unknown until
+>    vision.
+> 2. **Category-scoped:** verified clips dedup ONLY vs verified, unverified ONLY vs
+>    unverified (Python spec §3; `upload_workflow.py:321-331`). Same broadcast ⇒
+>    similar hashes across *different* moments, so a cross-category perceptual match
+>    would collapse two different goals. Verified always ranks above unverified;
+>    `IsUpgrade` quality-supersede applies **within** a pool.
+
 ---
 
 ## Where each operation lives

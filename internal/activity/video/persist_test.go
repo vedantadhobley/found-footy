@@ -60,6 +60,24 @@ func (f *fakeAssetStore) BumpPopularity(_ context.Context, id uuid.UUID) error {
 	}
 	return dvideo.ErrNotFound
 }
+func (f *fakeAssetStore) MarkSuperseded(_ context.Context, loserID, winnerID uuid.UUID) error {
+	if a, ok := f.byID[loserID]; ok {
+		w := winnerID
+		a.SupersededBy = &w
+		return nil
+	}
+	return dvideo.ErrNotFound
+}
+func (f *fakeAssetStore) AddPopularity(_ context.Context, id uuid.UUID, n int) error {
+	if n == 0 {
+		return nil
+	}
+	if a, ok := f.byID[id]; ok {
+		a.Popularity += n
+		return nil
+	}
+	return dvideo.ErrNotFound
+}
 
 type fakeShareStore struct{ shares []*dvideo.Share }
 
@@ -96,6 +114,14 @@ func (f *fakeShareStore) Upsert(_ context.Context, s *dvideo.Share) error {
 }
 func (f *fakeShareStore) RebalanceRanks(_ context.Context, _ uuid.UUID) (int, error) {
 	return 0, nil // ordering is covered by the pg RebalanceRanks test
+}
+func (f *fakeShareStore) MarkSuperseded(_ context.Context, id string) error {
+	for _, s := range f.shares {
+		if s.ID == id && s.State == dvideo.ShareStateActive {
+			s.State = dvideo.ShareStateSuperseded
+		}
+	}
+	return nil
 }
 
 func newPersist() (*PersistActivities, *fakePromoter, *fakeAssetStore, *fakeShareStore) {

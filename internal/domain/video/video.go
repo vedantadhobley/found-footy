@@ -31,14 +31,15 @@ import (
 type ShareState string
 
 const (
-	ShareStateActive  ShareState = "active"
-	ShareStateRemoved ShareState = "removed"
+	ShareStateActive     ShareState = "active"
+	ShareStateRemoved    ShareState = "removed"
+	ShareStateSuperseded ShareState = "superseded" // replaced by a better/consolidated clip; still resolvable, not listed
 )
 
 // Valid reports whether s is a known share state.
 func (s ShareState) Valid() bool {
 	switch s {
-	case ShareStateActive, ShareStateRemoved:
+	case ShareStateActive, ShareStateRemoved, ShareStateSuperseded:
 		return true
 	}
 	return false
