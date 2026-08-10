@@ -266,3 +266,83 @@ func TestShareRepo_MarkSuperseded(t *testing.T) {
 		t.Errorf("removed share clobbered to %q, want removed (guard)", got.State)
 	}
 }
+
+// TestShareRepo_ReadPath covers the #167 read model: ListLiveForEvent returns
+// only active shares of LIVE assets (rank-ordered), and ResolveShare follows
+// the superseded_by chain so an old share URL keeps resolving to the current
+// best clip (URL stability). A never-minted id is ErrNotFound (→ 404).
+func TestShareRepo_ReadPath(t *testing.T) {
+	ctx, assets, shares, fixtureID, eventID := setupVideoRepos(t)
+	when := time.Date(2026, 8, 3, 12, 20, 0, 0, time.UTC)
+	minute := 67
+
+	// Asset A (live) + its active share.
+	a := newAsset(eventID, fixtureID, "md5-read-aaaaaa1", []uint64{1, 2, 3}, 1_000_000)
+	a.Popularity = 2 // A.S3Key = newAsset's default "9100/asset.mp4"
+	if _, err := assets.InsertAsset(ctx, a); err != nil {
+		t.Fatalf("insert A: %v", err)
+	}
+	sA, err := video.NewShare(a.ID, eventID, true, &minute, 1, when)
+	if err != nil {
+		t.Fatalf("NewShare A: %v", err)
+	}
+	if err := shares.Insert(ctx, sA); err != nil {
+		t.Fatalf("insert share A: %v", err)
+	}
+
+	// Live list = [A]; resolve = active → A's key.
+	live, err := shares.ListLiveForEvent(ctx, eventID)
+	if err != nil {
+		t.Fatalf("ListLiveForEvent: %v", err)
+	}
+	if len(live) != 1 || live[0].ShareID != sA.ID || live[0].Popularity != 2 ||
+		live[0].Rank != 1 || !live[0].Verified || live[0].ExtractedMinute == nil || *live[0].ExtractedMinute != 67 {
+		t.Fatalf("live = %+v, want one clip (A, rank1, pop2, verified, min67)", live)
+	}
+	rs, err := shares.ResolveShare(ctx, sA.ID)
+	if err != nil {
+		t.Fatalf("ResolveShare A: %v", err)
+	}
+	if rs.State != video.ShareStateActive || rs.Key != a.S3Key {
+		t.Errorf("resolve A = %+v, want active + key %q", rs, a.S3Key)
+	}
+
+	// Higher-quality B supersedes A; A's share retired.
+	b := newAsset(eventID, fixtureID, "md5-read-bbbbbb1", []uint64{4, 5, 6}, 3_000_000)
+	b.S3Key = "9100/asset-b.mp4"
+	if _, err := assets.InsertAsset(ctx, b); err != nil {
+		t.Fatalf("insert B: %v", err)
+	}
+	sB, err := video.NewShare(b.ID, eventID, true, &minute, 2, when)
+	if err != nil {
+		t.Fatalf("NewShare B: %v", err)
+	}
+	if err := shares.Insert(ctx, sB); err != nil {
+		t.Fatalf("insert share B: %v", err)
+	}
+	if err := assets.Supersede(ctx, a.ID, b.ID); err != nil {
+		t.Fatalf("Supersede A→B: %v", err)
+	}
+	if err := shares.MarkSuperseded(ctx, sA.ID); err != nil {
+		t.Fatalf("retire share A: %v", err)
+	}
+
+	// Live list now = [B] only (A gone from the live set).
+	live, _ = shares.ListLiveForEvent(ctx, eventID)
+	if len(live) != 1 || live[0].ShareID != sB.ID {
+		t.Fatalf("live after supersede = %+v, want [B]", live)
+	}
+	// URL stability: the OLD share sA still resolves — through the chain to B's bytes.
+	rs, err = shares.ResolveShare(ctx, sA.ID)
+	if err != nil {
+		t.Fatalf("ResolveShare sA after supersede: %v", err)
+	}
+	if rs.State != video.ShareStateSuperseded || rs.Key != b.S3Key {
+		t.Errorf("resolve superseded sA = %+v, want superseded + B key %q", rs, b.S3Key)
+	}
+
+	// Never-minted id → ErrNotFound (handler maps to 404).
+	if _, err := shares.ResolveShare(ctx, "s_deadbeef0000"); err != video.ErrNotFound {
+		t.Errorf("resolve missing = %v, want ErrNotFound", err)
+	}
+}

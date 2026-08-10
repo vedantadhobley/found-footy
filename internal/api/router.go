@@ -12,14 +12,8 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-// Handlers bundles the read dependencies the resource handlers need. Fields
-// are added as endpoints land (#167a: fixtures/events; #167b: videos/share).
-type Handlers struct {
-	// repos + s3 presigner injected here as the handlers are built.
-}
-
-// NewRouter builds the API mux. Health is always present; resource routes
-// mount under /api/v1 as they're implemented.
+// NewRouter builds the API mux. Health is always present; the /api/v1 resource
+// routes (see handlers.go) mount under the versioned group.
 func NewRouter(h *Handlers) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -34,11 +28,11 @@ func NewRouter(h *Handlers) *chi.Mux {
 	})
 
 	r.Route("/api/v1", func(r chi.Router) {
-		// GET /fixtures/{id}         — fixture-scope refetch      (#167a)
-		// GET /events/{event_id}     — event-scope refetch        (#167a)
-		// GET /fixtures              — bounded/by-state window    (#167a)
-		// GET /videos/{share_id}     — 302 → presigned S3 URL     (#167b)
-		_ = h
+		r.Get("/fixtures", h.GetFixtures)            // flat window; ?ids= = batch refetch
+		r.Get("/fixtures/{id}", h.GetFixture)        // single fixture
+		r.Get("/events", h.GetEvents)                // batch: ?ids=uuid,uuid
+		r.Get("/events/{event_id}", h.GetEvent)      // single event
+		r.Get("/videos/{share_id}", h.RedirectVideo) // 302 → presigned Garage URL
 	})
 
 	return r

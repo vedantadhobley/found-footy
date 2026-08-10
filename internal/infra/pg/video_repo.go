@@ -222,6 +222,68 @@ func (r *ShareRepo) GetByEvent(ctx context.Context, eventID uuid.UUID) ([]*video
 	return out, rows.Err()
 }
 
+// ListLiveForEvent returns the event's displayable clips — active shares joined
+// to their LIVE assets (superseded_by IS NULL) — rank-ordered (#167). This is
+// the read model the API's videos array is built from; superseded/removed
+// shares are excluded (their old URLs still resolve via ResolveShare). Uses the
+// video_shares state='active' + video_assets superseded_by IS NULL indexes.
+func (r *ShareRepo) ListLiveForEvent(ctx context.Context, eventID uuid.UUID) ([]video.LiveClip, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT s.id, s.rank, s.timestamp_verified, s.extracted_minute,
+		       a.popularity, a.width, a.height, a.duration_ms
+		FROM video_shares s
+		JOIN video_assets a ON a.id = s.asset_id
+		WHERE s.event_id = $1 AND s.state = 'active' AND a.superseded_by IS NULL
+		ORDER BY s.rank`, eventID)
+	if err != nil {
+		return nil, fmt.Errorf("pg.ShareRepo.ListLiveForEvent: %w", err)
+	}
+	defer rows.Close()
+	var out []video.LiveClip
+	for rows.Next() {
+		var c video.LiveClip
+		if err := rows.Scan(&c.ShareID, &c.Rank, &c.Verified, &c.ExtractedMinute,
+			&c.Popularity, &c.Width, &c.Height, &c.DurationMS); err != nil {
+			return nil, fmt.Errorf("pg.ShareRepo.ListLiveForEvent: scan: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ResolveShare follows share_id → asset → superseded_by chain → live asset via
+// a recursive CTE, returning the share's State + the live asset's (bucket, key)
+// — the /videos/{share_id} redirect's 302 target (#167). ErrNotFound when the
+// share id was never minted (→ 404). A superseded share still resolves (URL
+// stability): the anchor asset is found via the share, then the chain walks
+// superseded_by to the single live asset. depth<64 guards a pathological cycle.
+func (r *ShareRepo) ResolveShare(ctx context.Context, id string) (video.ResolvedShare, error) {
+	var rs video.ResolvedShare
+	var state string
+	err := r.pool.QueryRow(ctx, `
+		WITH RECURSIVE chain AS (
+			SELECT a.id, a.superseded_by, a.s3_bucket, a.s3_key, 0 AS depth
+			FROM video_assets a
+			WHERE a.id = (SELECT asset_id FROM video_shares WHERE id = $1)
+			UNION ALL
+			SELECT a.id, a.superseded_by, a.s3_bucket, a.s3_key, c.depth + 1
+			FROM chain c JOIN video_assets a ON a.id = c.superseded_by
+			WHERE c.depth < 64
+		)
+		SELECT (SELECT state FROM video_shares WHERE id = $1), c.s3_bucket, c.s3_key
+		FROM chain c
+		WHERE c.superseded_by IS NULL
+		LIMIT 1`, id).Scan(&state, &rs.Bucket, &rs.Key)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return rs, video.ErrNotFound
+		}
+		return rs, fmt.Errorf("pg.ShareRepo.ResolveShare: %w", err)
+	}
+	rs.State = video.ShareState(state)
+	return rs, nil
+}
+
 // Insert creates a new share. A rank collision with an active share in the
 // same event violates the partial UNIQUE index and errors here.
 func (r *ShareRepo) Insert(ctx context.Context, s *video.Share) error {
