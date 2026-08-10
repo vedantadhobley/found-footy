@@ -1,5 +1,8 @@
-// Integration test — hits real Wikidata for a small curated roster.
-// Skipped in -short mode.
+//go:build live
+
+// Integration test — hits real Wikidata for a small curated roster. Behind the
+// `live` build tag: EXCLUDED from the default `make test` (the pre-push gate is
+// hermetic — no external network), run deliberately via `make test-live`.
 //
 // Purpose: verify the pipeline resolves real teams correctly against
 // live Wikidata. This is the empirical guarantee that eval-set F1

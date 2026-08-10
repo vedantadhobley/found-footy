@@ -8,11 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
 
 	"github.com/vedantadhobley/found-footy/internal/activity/ingest"
 	"github.com/vedantadhobley/found-footy/internal/activity/monitor"
+	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	"github.com/vedantadhobley/found-footy/internal/config"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
@@ -149,6 +151,15 @@ func runActivePoll(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *a
 		})
 		env.RegisterWorkflow(ffwf.ActivePollWorkflow)
 		env.RegisterActivity(acts)
+		// #172: the VAR-destroy step (Step 4.5) cancels a removed event's
+		// discovery + runs DestroyEvent. In a scenario neither needs to really
+		// execute — the removal itself is asserted via pg — so register
+		// PersistActivities for DestroyEvent + no-op the external cancel;
+		// otherwise a debounce-to-0 scenario panics on the unmocked
+		// RequestCancelExternalWorkflow.
+		env.RegisterActivity(&videoactivity.PersistActivities{})
+		env.OnActivity("DestroyEvent", mock.Anything, mock.Anything).Return(nil)
+		env.OnRequestCancelExternalWorkflow(mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 		env.ExecuteWorkflow(ffwf.ActivePollWorkflow, in)
 		if !env.IsWorkflowCompleted() {
