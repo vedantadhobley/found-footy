@@ -297,8 +297,11 @@ vote, and never spawns a search (no player → no Twitter query). It's pinned at
 0 while present and **hard-deleted the cycle it disappears** (`DeleteUnknownEvent`)
 — normally because the vendor attributed the scorer and a fresh player-keyed
 event superseded it. Only known-scorer events vote, debounce 1→3, flip
-`downstream_triggered`, and (on absence to 0) soft-delete as `var`. Mirrors
-Python (`monitor.py` `initial_count` + `unknown_scorer_disappeared`); see
+`downstream_triggered`, and (on absence to 0) soft-delete as `var` — which fires
+the **VAR destroy** (#172, decisions.md 2026-08-10): `ActivePollWorkflow` Step 4.5
+cancels the event's discovery, revokes its shares (→ the #167 redirect 410s the
+clips), and reclaims its Garage objects. Mirrors Python (`monitor.py`
+`initial_count` + `unknown_scorer_disappeared` + `mark_event_removed`); see
 [decisions.md](decisions.md) 2026-08-05. Surfaced per cycle as `unknown_dropped`.
 
 ## StagingPollWorkflow — as shipped

@@ -20,6 +20,13 @@ type LiveClip struct {
 	DurationMS      int
 }
 
+// ObjectRef is a Garage object location (bucket + key). Used by the destroy /
+// retention-reclaim paths to delete an event's asset bytes (#172/#176).
+type ObjectRef struct {
+	Bucket string
+	Key    string
+}
+
 // ResolvedShare is what the GET /videos/{share_id} redirect handler needs:
 // the share's State (drives 302 vs 410) and the LIVE asset's S3 location after
 // following the superseded_by chain (the 302 target). Resolution returns
