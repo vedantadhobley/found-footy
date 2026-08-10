@@ -4,14 +4,17 @@
 package workflow_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/testsuite"
 
 	"github.com/vedantadhobley/found-footy/internal/activity/monitor"
+	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
@@ -20,6 +23,9 @@ func newActivePollEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnv
 	env := s.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(workflow.ActivePollWorkflow)
 	env.RegisterActivity(&monitor.Activities{})
+	// DestroyEvent (#172) is a PersistActivities method; register so the
+	// VAR-destroy test can mock it by name. Empty deps — the mock overrides it.
+	env.RegisterActivity(&videoactivity.PersistActivities{})
 	// Default GetMonitorConfig — tests that don't override this get the
 	// same 5-min activation window as production. Tests that pass an
 	// explicit ActivePollWorkflowInput.ActivationWindow bypass this call
@@ -73,6 +79,57 @@ func TestActivePollWorkflow_HappyPath(t *testing.T) {
 	}
 	if out.NewEvents != 1 {
 		t.Errorf("NewEvents = %d, want 1", out.NewEvents)
+	}
+	env.AssertExpectations(t)
+}
+
+// TestActivePollWorkflow_VARDestroy — a confirmed event that just debounced to
+// 0 (VAR overturn) must be torn down: the workflow runs DestroyEvent for it
+// (#172). The external-workflow cancel is best-effort (the target isn't running
+// in the test env; our code ignores its error), so we assert on DestroyEvent.
+func TestActivePollWorkflow_VARDestroy(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newActivePollEnv(&s)
+
+	env.OnActivity("ActivateUpcoming", mock.Anything, mock.Anything).
+		Return(monitor.ActivateUpcomingOutput{}, nil).Once()
+	env.OnActivity("ListActiveFixtureIDs", mock.Anything).
+		Return(monitor.ListActiveFixtureIDsOutput{IDs: []int64{101}}, nil).Once()
+	env.OnActivity("FetchLiveFixtures", mock.Anything, mock.Anything).
+		Return(monitor.FetchLiveFixturesOutput{
+			Fixtures: []apifootball.APIFixture{{Fixture: apifootball.APIFixtureFixture{ID: 101}}},
+		}, nil).Once()
+
+	removed := uuid.New()
+	env.OnActivity("ReconcileFixture", mock.Anything, mock.Anything).
+		Return(monitor.ReconcileFixtureOutput{
+			FixtureID:        101,
+			EventsRemoved:    []string{"517_101_Goal_1"},
+			EventsRemovedIDs: []uuid.UUID{removed},
+		}, nil).Once()
+
+	// The best-effort external cancel targets a workflow not running in the env;
+	// mock it to a no-op so the env doesn't panic (our code ignores its result).
+	env.OnRequestCancelExternalWorkflow(mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	destroyed := 0
+	env.OnActivity("DestroyEvent", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, in videoactivity.DestroyEventInput) error {
+			if in.EventID == removed {
+				destroyed++
+			}
+			return nil
+		}).Once()
+
+	env.ExecuteWorkflow(workflow.ActivePollWorkflow, workflow.ActivePollWorkflowInput{})
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	if destroyed != 1 {
+		t.Errorf("DestroyEvent for the overturned event called %d times, want 1", destroyed)
 	}
 	env.AssertExpectations(t)
 }

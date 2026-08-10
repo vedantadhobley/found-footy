@@ -157,6 +157,26 @@ func (r *AssetRepo) Supersede(ctx context.Context, loserID, winnerID uuid.UUID) 
 	return nil
 }
 
+// ListObjectKeysByEvent returns the (bucket, key) of every asset for an event
+// (live + superseded) — the destroy/reclaim path (#172/#176).
+func (r *AssetRepo) ListObjectKeysByEvent(ctx context.Context, eventID uuid.UUID) ([]video.ObjectRef, error) {
+	rows, err := r.pool.Query(ctx,
+		"SELECT s3_bucket, s3_key FROM video_assets WHERE event_id = $1", eventID)
+	if err != nil {
+		return nil, fmt.Errorf("pg.AssetRepo.ListObjectKeysByEvent: %w", err)
+	}
+	defer rows.Close()
+	var out []video.ObjectRef
+	for rows.Next() {
+		var o video.ObjectRef
+		if err := rows.Scan(&o.Bucket, &o.Key); err != nil {
+			return nil, fmt.Errorf("pg.AssetRepo.ListObjectKeysByEvent: scan: %w", err)
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
 // ─── ShareRepo ─────────────────────────────────────────────────────────────
 
 // ShareRepo backs video.ShareRepo.
@@ -336,6 +356,20 @@ func (r *ShareRepo) MarkSuperseded(ctx context.Context, id string) error {
 	if _, err := r.pool.Exec(ctx,
 		"UPDATE video_shares SET state = 'superseded' WHERE id = $1 AND state = 'active'", id); err != nil {
 		return fmt.Errorf("pg.ShareRepo.MarkSuperseded: %w", err)
+	}
+	return nil
+}
+
+// RemoveByEvent revokes all of an event's non-removed shares (active +
+// superseded) to state='removed' with reason — the VAR/destroy path (#172).
+// Idempotent: already-removed shares are untouched. now() stamps removed_at,
+// satisfying the CHECK (removed ⇒ reason + removed_at present).
+func (r *ShareRepo) RemoveByEvent(ctx context.Context, eventID uuid.UUID, reason video.RemovalReason) error {
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE video_shares
+		SET state = 'removed', removed_reason = $2, removed_at = now()
+		WHERE event_id = $1 AND state <> 'removed'`, eventID, string(reason)); err != nil {
+		return fmt.Errorf("pg.ShareRepo.RemoveByEvent: %w", err)
 	}
 	return nil
 }

@@ -13,6 +13,8 @@
 //	SupersedeAssets — consolidate loser assets onto a winner (post-vision,
 //	  category-scoped dedup #171): superseded_by chain + popularity merge +
 //	  retire loser shares + reclaim loser bytes + one rank rebalance.
+//	DestroyEvent — tear down an overturned event's clips (#172): revoke all its
+//	  shares (→ 410) + reclaim its Garage objects. Caller cancels discovery first.
 //
 // Idempotency: the asset UUID is DERIVED from (event_id, md5) via uuid v5, so
 // a retried activity produces the same UUID → the same assets key (copy is a
@@ -247,6 +249,41 @@ func (a *PersistActivities) SupersedeAssets(ctx context.Context, in SupersedeAss
 
 	if _, err := a.Shares.RebalanceRanks(ctx, in.EventID); err != nil {
 		return fmt.Errorf("video.SupersedeAssets: rebalance: %w", err)
+	}
+	return nil
+}
+
+// DestroyEventInput identifies an event whose surfaced clips must be torn down.
+type DestroyEventInput struct {
+	EventID uuid.UUID
+	Reason  string // removal reason; empty → "var"
+}
+
+// DestroyEvent tears down an overturned event's clips (#172): revoke ALL its
+// shares to 'removed' (→ ResolveShare returns 'removed', the redirect 410s, so
+// the clips stop serving) then delete its asset objects from Garage (reclaim).
+// The caller (poll workflow) cancels the event's discovery FIRST, so nothing
+// mints new clips after this runs. Idempotent: RemoveByEvent skips already-
+// removed shares; S3 delete no-ops on missing keys. Revoke precedes reclaim so
+// serving stops even if a byte delete lags/fails.
+func (a *PersistActivities) DestroyEvent(ctx context.Context, in DestroyEventInput) error {
+	reason := dvideo.RemovalReason(in.Reason)
+	if reason == "" {
+		reason = dvideo.RemovalVAR
+	}
+	if err := a.Shares.RemoveByEvent(ctx, in.EventID, reason); err != nil {
+		return fmt.Errorf("video.DestroyEvent: revoke shares: %w", err)
+	}
+	keys, err := a.Assets.ListObjectKeysByEvent(ctx, in.EventID)
+	if err != nil {
+		return fmt.Errorf("video.DestroyEvent: list object keys: %w", err)
+	}
+	for _, k := range keys {
+		if err := a.S3.Delete(ctx, k.Key); err != nil {
+			// Best-effort byte reclaim: shares are already revoked (clips no longer
+			// serve), so a failed delete just leaves the object for the prune (#176).
+			activity.GetLogger(ctx).Warn("destroy: object reclaim failed", "key", k.Key, "err", err)
+		}
 	}
 	return nil
 }

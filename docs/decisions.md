@@ -6,6 +6,39 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-10 — VAR destroy pipeline: cancel + revoke + reclaim (#172); prune is clip-blind (#176)
+
+Closes the audit's Tier-1 #3 (a VAR-overturned goal kept serving already-minted
+clips: `RegisterEventAbsence` soft-deleted the event but left shares + Garage
+objects live). On `hitZero` for a CONFIRMED (previously-triggered) event,
+`ActivePollWorkflow` Step 4.5 now runs, per removed event:
+
+1. **Cancel** the discovery workflow — `RequestCancelExternalWorkflow("event-{id}")`,
+   FIRST, so a still-running EventWorkflow can't mint a new clip after teardown
+   (closes the revoke↔promote race). Best-effort (a completed workflow → not-found).
+2. **Revoke** all its shares → `state='removed', reason='var'` (`ShareRepo.RemoveByEvent`).
+   The #167 redirect already 410s removed shares, so clips stop serving at once.
+3. **Reclaim** its Garage objects (`AssetRepo.ListObjectKeysByEvent` + `S3.Delete`),
+   best-effort. Revoke precedes reclaim, so serving stops even if a delete lags.
+
+Steps 2–3 are one idempotent `DestroyEvent` activity (on `PersistActivities`).
+**Immediate byte-delete** (matches Python's `mark_event_removed`), NOT deferred to
+the prune — because the prune can't reclaim clip-bearing fixtures anyway (below).
+
+**#176 relationship — the prune is clip-blind.** `FixtureRepo.PruneCompleted` only
+deletes fixtures with `NOT EXISTS (video_shares)` (clipless ones) — because
+`video_shares.event_id → events` is `ON DELETE RESTRICT`, which would block the
+cascade for clip-bearing fixtures. So the fixtures that matter (clips + bytes) are
+NEVER pruned today; rows AND bytes leak forever. #176's fix IS #172's `DestroyEvent`:
+to prune an aged clip-bearing fixture, destroy each event's clips (revoke + reclaim)
+first, then the fixture delete cascades. `DestroyEvent` + `ListObjectKeysByEvent`
+are the reusable primitives, so #176 becomes small.
+
+Tests: `DestroyEvent` (fakes — revoke-all + reclaim-all + other-event-untouched +
+idempotent), `RemoveByEvent`/`ListObjectKeysByEvent` pg integration (revoke →
+ResolveShare 'removed' → 410), and an ActivePollWorkflow test asserting the destroy
+fires for a just-removed event.
+
 ## 2026-08-09 — Pending-clip popularity: count md5-dups in memory (#180)
 
 Fixes the undercount flagged in the 2026-08-07 entry + the #171 commit: an

@@ -44,6 +44,12 @@ type AssetRepo interface {
 	// stays (shares FK it) and resolves through the chain; it just drops out of
 	// the live set (partial index WHERE superseded_by IS NULL).
 	Supersede(ctx context.Context, loserID, winnerID uuid.UUID) error
+
+	// ListObjectKeysByEvent returns the Garage object refs for ALL of an event's
+	// assets (live + superseded) — the destroy/reclaim path (#172/#176). Some
+	// superseded objects may already be gone (SupersedeAssets deletes them); the
+	// S3 delete is idempotent, so returning all is safe.
+	ListObjectKeysByEvent(ctx context.Context, eventID uuid.UUID) ([]ObjectRef, error)
 }
 
 // ShareRepo is the storage port for video_shares.
@@ -72,4 +78,11 @@ type ShareRepo interface {
 	// ranked list but still resolves (via its asset's chain) for direct-URL
 	// play. Distinct from Remove (VAR / event gone, which stops resolving).
 	MarkSuperseded(ctx context.Context, id string) error
+
+	// RemoveByEvent revokes ALL of an event's non-removed shares (active +
+	// superseded) to state='removed' with reason — the VAR/destroy path (#172).
+	// After this, ResolveShare returns 'removed' → the redirect 410s, so an
+	// overturned goal's clips stop serving. Idempotent: already-removed shares
+	// are untouched.
+	RemoveByEvent(ctx context.Context, eventID uuid.UUID, reason RemovalReason) error
 }

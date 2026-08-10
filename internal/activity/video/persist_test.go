@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/hex"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -78,6 +79,15 @@ func (f *fakeAssetStore) Supersede(_ context.Context, loserID, winnerID uuid.UUI
 	}
 	return nil
 }
+func (f *fakeAssetStore) ListObjectKeysByEvent(_ context.Context, eventID uuid.UUID) ([]dvideo.ObjectRef, error) {
+	var out []dvideo.ObjectRef
+	for _, a := range f.byID {
+		if a.EventID == eventID {
+			out = append(out, dvideo.ObjectRef{Bucket: a.S3Bucket, Key: a.S3Key})
+		}
+	}
+	return out, nil
+}
 
 type fakeShareStore struct{ shares []*dvideo.Share }
 
@@ -119,6 +129,18 @@ func (f *fakeShareStore) MarkSuperseded(_ context.Context, id string) error {
 	for _, s := range f.shares {
 		if s.ID == id && s.State == dvideo.ShareStateActive {
 			s.State = dvideo.ShareStateSuperseded
+		}
+	}
+	return nil
+}
+func (f *fakeShareStore) RemoveByEvent(_ context.Context, eventID uuid.UUID, reason dvideo.RemovalReason) error {
+	for _, s := range f.shares {
+		if s.EventID == eventID && s.State != dvideo.ShareStateRemoved {
+			s.State = dvideo.ShareStateRemoved
+			r := reason
+			s.RemovedReason = &r
+			now := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+			s.RemovedAt = &now
 		}
 	}
 	return nil
@@ -280,5 +302,51 @@ func TestSupersedeAssets(t *testing.T) {
 	}
 	if got := assets.byID[winnerID].Popularity; got != 5 {
 		t.Errorf("winner.Popularity after retry = %d, want 5 (no double-merge)", got)
+	}
+}
+
+// TestDestroyEvent — the VAR teardown activity (#172): every share of the event
+// (active + superseded) → 'removed' with reason var, every asset object
+// reclaimed; a share from ANOTHER event is untouched; retry is a no-op.
+func TestDestroyEvent(t *testing.T) {
+	a, s3, assets, shares := newPersist()
+	ctx := context.Background()
+	eventID, otherID := uuid.New(), uuid.New()
+
+	liveID, supID := uuid.New(), uuid.New()
+	assets.byID[liveID] = &dvideo.Asset{ID: liveID, EventID: eventID, S3Key: "assets/live.mp4"}
+	sup := &dvideo.Asset{ID: supID, EventID: eventID, S3Key: "assets/sup.mp4"}
+	w := liveID
+	sup.SupersededBy = &w
+	assets.byID[supID] = sup
+
+	liveShare := &dvideo.Share{ID: "s_live", AssetID: liveID, EventID: eventID, State: dvideo.ShareStateActive, Rank: 1}
+	supShare := &dvideo.Share{ID: "s_sup", AssetID: supID, EventID: eventID, State: dvideo.ShareStateSuperseded, Rank: 2}
+	otherShare := &dvideo.Share{ID: "s_other", AssetID: uuid.New(), EventID: otherID, State: dvideo.ShareStateActive, Rank: 1}
+	shares.shares = []*dvideo.Share{liveShare, supShare, otherShare}
+
+	if err := a.DestroyEvent(ctx, DestroyEventInput{EventID: eventID}); err != nil {
+		t.Fatalf("DestroyEvent: %v", err)
+	}
+
+	if liveShare.State != dvideo.ShareStateRemoved || supShare.State != dvideo.ShareStateRemoved {
+		t.Errorf("shares not removed: live=%q sup=%q", liveShare.State, supShare.State)
+	}
+	if liveShare.RemovedReason == nil || *liveShare.RemovedReason != dvideo.RemovalVAR {
+		t.Errorf("live share reason = %v, want var", liveShare.RemovedReason)
+	}
+	if otherShare.State != dvideo.ShareStateActive {
+		t.Errorf("other-event share clobbered to %q", otherShare.State)
+	}
+	if len(s3.deletes) != 2 {
+		t.Errorf("byte reclaim = %v, want 2 (live + sup)", s3.deletes)
+	}
+
+	// Idempotent: a retry leaves the already-removed shares as-is.
+	if err := a.DestroyEvent(ctx, DestroyEventInput{EventID: eventID}); err != nil {
+		t.Fatalf("DestroyEvent retry: %v", err)
+	}
+	if liveShare.State != dvideo.ShareStateRemoved {
+		t.Errorf("retry mutated a removed share")
 	}
 }

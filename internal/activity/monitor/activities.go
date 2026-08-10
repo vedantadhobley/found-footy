@@ -363,14 +363,15 @@ type ReconcileFixtureInput struct {
 }
 
 // ReconcileFixtureOutput reports what happened for this fixture.
-// StableEventIDs + RemovedEventIDs are the events whose state
-// transitions the caller wants to know about (Discovery spawn +
-// destroy pipeline in later phases).
+// EventsBecameStable + EventsRemovedIDs are the events whose state
+// transitions the caller acts on (Discovery spawn + the #172 VAR-destroy
+// pipeline the poll workflow runs for each just-removed event).
 type ReconcileFixtureOutput struct {
 	FixtureID          int64
 	NewEventsDetected  int
 	EventsBecameStable []string // natural_keys of events that just crossed count=3
-	EventsRemoved      []string // natural_keys of confirmed events that just hit count=0 (VAR)
+	EventsRemoved      []string    // natural_keys of confirmed events that just hit count=0 (VAR)
+	EventsRemovedIDs   []uuid.UUID // #172: their UUIDs — the poll workflow cancels discovery + runs DestroyEvent for each
 	UnknownDropped     int      // unknown-scorer placeholders hard-deleted on disappearance
 	// Completed — true if this reconcile pass transitioned the fixture
 	// from active → completed. See docs/design/proposals/completion-contract.md.
@@ -559,6 +560,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		}
 		if hitZero {
 			out.EventsRemoved = append(out.EventsRemoved, key)
+			out.EventsRemovedIDs = append(out.EventsRemovedIDs, pgEv.ID)
 			a.emitEventRemoved(ctx, pgEv.ID, in.APIFixture.Fixture.ID, now)
 		}
 	}

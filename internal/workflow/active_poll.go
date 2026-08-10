@@ -28,9 +28,9 @@
 //     on the downstream_triggered flip).
 //   • Fixture completion transition — SHIPPED (FixtureReadyToComplete; the
 //     completion contract).
-//   • Destroy pipeline (Temporal cancel + video_shares soft-delete) for
-//     VAR-removed events — STILL PENDING (#172); absence currently only
-//     soft-deletes the event.
+//   • VAR destroy pipeline (Temporal cancel + revoke shares + reclaim Garage
+//     objects) for overturned events — SHIPPED (#172; Step 4.5 runs it for each
+//     event that just debounced to 0).
 //
 // See decisions.md 2026-07-10 workflow-split entry for the rationale
 // behind splitting Monitor into ActivePoll + StagingPoll.
@@ -40,10 +40,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/vedantadhobley/found-footy/internal/activity/monitor"
+	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 )
 
 // ActivePollWorkflowInput carries per-cycle overrides. All fields
@@ -185,6 +187,7 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 					WorkflowID: workflowID,
 				}))
 	}
+	var removedEventIDs []uuid.UUID
 	for _, f := range reconcileFutures {
 		var reconcileOut monitor.ReconcileFixtureOutput
 		if err := f.Get(ctx, &reconcileOut); err != nil {
@@ -195,8 +198,31 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 		out.NewEvents += reconcileOut.NewEventsDetected
 		out.EventsBecameStable = append(out.EventsBecameStable, reconcileOut.EventsBecameStable...)
 		out.EventsRemoved = append(out.EventsRemoved, reconcileOut.EventsRemoved...)
+		removedEventIDs = append(removedEventIDs, reconcileOut.EventsRemovedIDs...)
 		out.UnknownDropped += reconcileOut.UnknownDropped
 		out.Errors = append(out.Errors, reconcileOut.Errors...)
+	}
+
+	// ── Step 4.5: VAR destroy (#172) ──
+	// A confirmed event that just debounced to 0 was overturned. Cancel its
+	// in-flight discovery FIRST — so nothing mints a new clip after the teardown
+	// (closes the revoke↔promote race) — then DestroyEvent revokes its shares
+	// (→ the redirect 410s, clips stop serving) + reclaims its Garage objects.
+	// Idempotent + best-effort: a completed event workflow cancels to not-found
+	// (fine), and a failed DestroyEvent is retried by the activity retry policy.
+	if len(removedEventIDs) > 0 {
+		destroyCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 2 * time.Minute,
+			RetryPolicy:         baseAO.RetryPolicy,
+		})
+		for _, evID := range removedEventIDs {
+			_ = workflow.RequestCancelExternalWorkflow(ctx, "event-"+evID.String(), "").Get(ctx, nil)
+			if err := workflow.ExecuteActivity(destroyCtx, "DestroyEvent",
+				videoactivity.DestroyEventInput{EventID: evID}).Get(destroyCtx, nil); err != nil {
+				logger.Warn("DestroyEvent failed", "event_id", evID.String(), "error", err)
+				out.Errors = append(out.Errors, "DestroyEvent: "+err.Error())
+			}
+		}
 	}
 
 	logger.Info("ActivePollWorkflow cycle complete",

@@ -346,3 +346,68 @@ func TestShareRepo_ReadPath(t *testing.T) {
 		t.Errorf("resolve missing = %v, want ErrNotFound", err)
 	}
 }
+
+// TestShareRepo_RemoveByEvent covers the VAR destroy repo primitives (#172):
+// ListObjectKeysByEvent returns every asset object (live + superseded), and
+// RemoveByEvent revokes ALL the event's shares → 'removed'/var, after which
+// ResolveShare returns 'removed' (the redirect 410s).
+func TestShareRepo_RemoveByEvent(t *testing.T) {
+	ctx, assets, shares, fixtureID, eventID := setupVideoRepos(t)
+	when := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+
+	a1 := newAsset(eventID, fixtureID, "md5-destroy-aaa1", []uint64{1, 2, 3}, 1_000_000)
+	a2 := newAsset(eventID, fixtureID, "md5-destroy-bbb1", []uint64{4, 5, 6}, 2_000_000)
+	a2.S3Key = "9100/asset-2.mp4"
+	if _, err := assets.InsertAsset(ctx, a1); err != nil {
+		t.Fatalf("insert a1: %v", err)
+	}
+	if _, err := assets.InsertAsset(ctx, a2); err != nil {
+		t.Fatalf("insert a2: %v", err)
+	}
+	if err := assets.Supersede(ctx, a2.ID, a1.ID); err != nil { // a2 → superseded
+		t.Fatalf("supersede: %v", err)
+	}
+
+	s1, _ := video.NewShare(a1.ID, eventID, true, nil, 1, when)
+	s2, _ := video.NewShare(a2.ID, eventID, true, nil, 2, when)
+	if err := shares.Insert(ctx, s1); err != nil {
+		t.Fatalf("insert s1: %v", err)
+	}
+	if err := shares.Insert(ctx, s2); err != nil {
+		t.Fatalf("insert s2: %v", err)
+	}
+	if err := shares.MarkSuperseded(ctx, s2.ID); err != nil {
+		t.Fatalf("mark s2 superseded: %v", err)
+	}
+
+	// Both assets' objects are returned (live + superseded).
+	keys, err := assets.ListObjectKeysByEvent(ctx, eventID)
+	if err != nil {
+		t.Fatalf("ListObjectKeysByEvent: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("object keys = %d, want 2 (live + superseded)", len(keys))
+	}
+
+	// Revoke everything for the event.
+	if err := shares.RemoveByEvent(ctx, eventID, video.RemovalVAR); err != nil {
+		t.Fatalf("RemoveByEvent: %v", err)
+	}
+	for _, id := range []string{s1.ID, s2.ID} {
+		got, err := shares.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get %s: %v", id, err)
+		}
+		if got.State != video.ShareStateRemoved || got.RemovedReason == nil || *got.RemovedReason != video.RemovalVAR {
+			t.Errorf("share %s = %q/%v, want removed/var", id, got.State, got.RemovedReason)
+		}
+	}
+	// The redirect now 410s.
+	rs, err := shares.ResolveShare(ctx, s1.ID)
+	if err != nil {
+		t.Fatalf("ResolveShare: %v", err)
+	}
+	if rs.State != video.ShareStateRemoved {
+		t.Errorf("resolve after remove = %q, want removed (→ 410)", rs.State)
+	}
+}
