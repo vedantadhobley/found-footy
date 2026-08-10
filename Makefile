@@ -52,6 +52,9 @@ test: cache-init ## Run all tests (integration tests spawn containers via docker
 test-short: cache-init ## Run unit tests only (skips integration tests that require Docker)
 	$(GO_RUN) go test -buildvcs=false -short ./...
 
+test-live: cache-init ## Run live-network tests (real Wikidata/Wikipedia) — deliberate, NOT in the push gate
+	$(GO_TEST_RUN) go test -buildvcs=false -tags live ./...
+
 test-race: cache-init ## Run tests with the race detector
 	$(GO_TEST_RUN) go test -buildvcs=false -race ./...
 
