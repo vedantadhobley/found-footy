@@ -54,8 +54,8 @@ func main() {
 		if err != nil {
 			return err
 		}
-		_ = s3c // consumed by the /videos/{share_id} presign path in Phase A
-		// s3 client has no explicit Close (no persistent connection).
+		// s3 client has no explicit Close (no persistent connection); the
+		// share-redirect handler presigns GETs through it.
 
 		tempIns := temporal.RegisterMetrics(deps.Metrics, deps.Log)
 		tempClient, err := temporal.NewClient(ctx, deps.Cfg.Temporal, tempIns)
@@ -73,9 +73,17 @@ func main() {
 		// so SIGTERM stops accepting + finishes in-flight requests before the
 		// pool/nats/temporal deps close (LIFO). A listen failure (e.g. port in
 		// use) fails the binary fast rather than running degraded.
+		handlers := &ffapi.Handlers{
+			Fixtures: pg.NewFixtureRepo(pool),
+			Events:   pg.NewEventRepo(pool),
+			Videos:   pg.NewShareRepo(pool),
+			Presign:  s3c,
+			Bucket:   s3c.Bucket(),
+			Log:      deps.Log,
+		}
 		srv := &http.Server{
 			Addr:         deps.Cfg.API.ListenAddr,
-			Handler:      ffapi.NewRouter(&ffapi.Handlers{}),
+			Handler:      ffapi.NewRouter(handlers),
 			ReadTimeout:  deps.Cfg.API.ReadTimeout,
 			WriteTimeout: deps.Cfg.API.WriteTimeout,
 		}

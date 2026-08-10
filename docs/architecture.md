@@ -64,7 +64,7 @@ found-footy/
 │   │   ├── monitor/                     ✓ O2a: 6 activities (GetMonitorConfig, ActivateUpcoming, PollStagingFixtures, ListActiveFixtureIDs, FetchLiveFixtures, ReconcileFixture) + fakes + tests
 │   │   ├── discovery/                   ✓ O3/d: GetDiscoveryConfig, FetchTeamAliases, SearchTweets, StoreCandidate, MarkDownstreamComplete (no _test.go yet — audit gap)
 │   │   └── video/                       ✓ V/3b: DownloadAndStage + HashVideo (staging-split + pre-download filter) + fakes + 8 tests
-│   ├── api/                             Phase 6 foundation only — SSE + read endpoints
+│   ├── api/                             ✓ #167: Chi read API — GET /fixtures(+?ids batch) /fixtures/{id} /events?ids /events/{id} /videos/{share_id}(302→presign chain); dto.go + handlers.go + router.go + tests; SSE is vedanta-systems'
 │   ├── bootstrap/                       ✓ S1 (NOT IN PLAN — see decisions.md 2026-07-07)
 │   │   └── bootstrap.go                 Deps + LIFO Closer registry; shared binary startup
 │   ├── config/                          ✓ S1: envconfig-based Config with per-adapter sub-structs

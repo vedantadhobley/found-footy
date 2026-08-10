@@ -6,7 +6,7 @@
 # garage) share the same dev network and speak service-name DNS.
 #
 # HTTP services fronted by workspace Caddy at:
-#   found-footy-dev-api.luv           → api:8080
+#   found-footy-dev-api.luv           → api:8081  (Chi read surface; :8080 is internal metrics)
 #   found-footy-dev-temporal-ui.luv   → temporal-ui:8080
 #   found-footy-dev-garage-web.luv    → garage-web:3902 (if enabled)
 #   found-footy-dev-twitter-vnc.luv   → twitter-vnc:6080  (opt-in via `vnc` profile)

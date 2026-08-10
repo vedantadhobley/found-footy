@@ -57,7 +57,11 @@ docker network create proxy
 ```
 
 Caddy routes live centrally at `~/workspace/proxy/caddy/caddy.d/found-footy.caddy`
-until the glob-import migration lands per workspace TODO.
+until the glob-import migration lands per workspace TODO. The Go read API (#167)
+is fronted at `found-footy-<env>-api.<BASE_DOMAIN>` → `reverse_proxy
+found-footy-<env>-api:8081` — the Chi read surface; `:8080` is internal
+metrics/healthz, never exposed. The in-repo `caddy/found-footy.caddy` is the
+documentation copy (not read by Caddy).
 
 ## First-time dev bootstrap
 

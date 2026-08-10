@@ -288,7 +288,16 @@ func pInt(i int) *int { return &i }
 func TestEventWorkflow_Pipeline_VerifyAndDedup(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := baseEventEnv(&s)
-	env.OnActivity("BumpAssetPopularity", mock.Anything, mock.Anything).Return(nil).Maybe()
+	bumpTotal := 0
+	env.OnActivity("BumpAssetPopularity", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, in videoactivity.BumpAssetPopularityInput) error {
+			n := in.Count
+			if n < 1 {
+				n = 1
+			}
+			bumpTotal += n
+			return nil
+		}).Maybe()
 	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
@@ -337,8 +346,13 @@ func TestEventWorkflow_Pipeline_VerifyAndDedup(t *testing.T) {
 	if promoteCalls != 1 {
 		t.Errorf("PromoteAndPersist called %d times, want 1 (dup collapsed, not promoted)", promoteCalls)
 	}
-	if promotedPop != 2 {
-		t.Errorf("promoted popularity = %d, want 2 (md5-dup counted while pending, #180)", promotedPop)
+	// #180: the two md5-identical clips must count as 2 total — regardless of
+	// interleaving. If the dup collapsed onto the still-pending clip it promotes
+	// with popularity 2 (no bump); if it collapsed onto the already-promoted
+	// asset it promotes with 1 + a bump. Either way the total is 2, no undercount.
+	if promotedPop+bumpTotal != 2 {
+		t.Errorf("total popularity = %d (promote %d + bumps %d), want 2 (#180)",
+			promotedPop+bumpTotal, promotedPop, bumpTotal)
 	}
 }
 

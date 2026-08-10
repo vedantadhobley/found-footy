@@ -23,10 +23,11 @@
 
 # ────── prod (post-cutover) ───────────────────────────────────────────────
 
-## Go API — SSE + typed HTTP surface, share-id redirect. Uncomment in
-## Phase C cutover (§16.10) once the api container is verified in prod.
+## Go API — typed HTTP read surface + share-id redirect (SSE is
+## vedanta-systems'). Port :8081 = Chi read API; :8080 is internal metrics.
+## Uncomment in Phase C cutover (§16.10) once verified in prod.
 # http://found-footy-prod-api.{$BASE_DOMAIN} {
-#     reverse_proxy found-footy-prod-api:8080
+#     reverse_proxy found-footy-prod-api:8081
 # }
 
 ## Temporal UI — swaps in for the existing Python-era fragment at
@@ -52,9 +53,10 @@
 # ────── dev (used during Phase S onward) ──────────────────────────────────
 
 ## Go API dev — target for vedanta-systems dev to point at during the
-## rebuild. Uncomment when the api adapter lands (Phase S / A1).
+## rebuild. Read API on :8081 (#167 shipped). The ACTIVE dev entry lives in
+## the proxy stack's found-footy.caddy; this is the documentation copy.
 # http://found-footy-dev-api.{$BASE_DOMAIN} {
-#     reverse_proxy found-footy-dev-api:8080
+#     reverse_proxy found-footy-dev-api:8081
 # }
 
 ## Temporal UI dev — uncomment as soon as the dev stack goes up

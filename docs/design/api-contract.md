@@ -45,20 +45,116 @@ hits per NATS push hint; replaces Python's coarse "refetch everything every 30s"
 
 | Method / path | Purpose |
 |---|---|
-| `GET /api/v1/fixtures/{id}` | one fixture + its events — **fixture-scope refetch** (activation/completion/ingestion hints) |
-| `GET /api/v1/events/{event_id}` | one event + its videos — **event-scope refetch** (goal/new-video/rank-change hints) |
-| `GET /api/v1/fixtures` | bounded/by-state window (UTC timestamps; frontend groups by day) |
-| `GET /api/v1/videos/{share_id}` | 302 → presigned S3 URL (browser fetches bytes from Garage directly) |
-| share lookup | for og-server OG cards + deep links |
+| `GET /api/v1/fixtures` | flat `[Fixture]`. No arg = full window (initial load, UTC timestamps; frontend buckets by state + day). `?ids=a,b,c` = **batch refetch** — the monitor cycle's delta in ONE call; fixtures come full, so it covers new goals AND minute/status/score bumps across every changed match |
+| `GET /api/v1/fixtures/{id}` | one `Fixture` — single fixture-scope refetch |
+| `GET /api/v1/events?ids=a,b` | flat `[Event]` — **batch** (between-cycle single-event updates coalesced) |
+| `GET /api/v1/events/{event_id}` | one `Event` — single event-scope refetch |
+| `GET /api/v1/videos/{share_id}` | 302 → presigned Garage URL (browser fetches bytes directly) |
 
-**Push→refetch rule:** every NATS hint carries `fixture_id` (always) + `event_id` (when the change
-is event-level). The frontend refetches the **smallest named scope** — `event_id` present → the
-event endpoint; else the fixture endpoint. One rule, two granularities. Subjects follow the dhobley
-standard `found_footy.<domain>.<event_type>` (IDs in the payload, not the subject).
+Passing a list works exactly like passing one — same DTO, just an array. Batch is capped at 200 ids;
+unknown ids are silently omitted (a fixture may have aged out of retention since the hint).
+
+**Push→refetch rule (granular publish, BFF coalesces).** found-footy publishes **granular per-event**
+hints — one message per domain fact (`goal.detected` / `goal.removed` / `fixture.status` /
+`clip.ready`), ids in the payload, subjects `found_footy.<domain>.<event_type>`. The **batching lives
+in vedanta-systems' BFF, not here** (SSE + coalescing are its job per the boundary rule): it debounces
+a short *time* window (~200ms; cycle-agnostic), dedups the `fixture_id`s, fires **one**
+`GET /fixtures?ids=…` (fixtures come full, events nested — no per-fixture fan-out), and pushes the
+result to the stupid browser over SSE. The browser knows nothing of monitor cycles, NATS, or
+coalescing — it just refetches the id-set the BFF hands it. A between-cycle `clip.ready` drives a
+`GET /events/{id}` (or `?ids=` batch). Publishing granular (NOT per-cycle blobs) keeps the stream a
+durable, replayable log of facts — right for JetStream + webhooks — and lets each consumer batch to
+its own needs (browser BFF coalesces; a webhook delivers each event). Emitting the stream is the
+composer's job (the eventing task); this contract just guarantees the batch reads it leans on exist.
 
 **No `GET /events?since=` backfill endpoint** — reconnect-replay is handled by the JetStream
 durable consumer (see the eventing decision), not a read-API endpoint.
 **No `POST /refresh`** — deprecated; found-footy publishes to NATS, the frontend refetches on hint.
+
+## Response shapes (settled 2026-08-09)
+
+Hand-shaped JSON from the Go domain models — **not** the Python Mongo passthrough
+(field redesign explicitly greenlit; vedanta-systems' in-progress redesign consumes
+this). **One schema per resource, composed:** `Fixture` contains `[]Event`, `Event`
+contains `[]Video`. Each is defined once and reused — the `Event` from
+`/events/{id}` is identical to the one nested in a `Fixture`. There is **no**
+separate "event-level" vs "fixture-level" schema.
+
+**`Event.fixture_id` is the one field that makes event-scope work.** It's on every
+`Event` (redundant when nested, load-bearing at the top level) so the frontend can
+splice an event-scope refetch into the fixture it already has cached, without
+special-casing where the event came from.
+
+**Fixtures are full, and the shape is flat.** Every fixtures response — the full
+window, a `?ids=` batch, or a single `/fixtures/{id}` — carries each fixture WITH
+its events+videos (not summaries), so one call renders/reconciles whole matches and
+the frontend only surgical-refetches on hints. `GET /fixtures` returns a flat
+`[Fixture]` (the frontend buckets by `state`), NOT a `{staging,active,completed}`
+object — so "pass a list" is identical to "pass one", just an array. The window is
+bounded (completed capped to recent); a `?summary` variant is a later addition if a
+busy day's payload gets heavy.
+
+### Fixture
+
+```json
+{
+  "id": 1234567,
+  "state": "staging|active|completed",
+  "kickoff": "2026-08-14T19:00:00Z",
+  "league": { "id": 140, "name": "La Liga", "season": 2026 },
+  "home": { "id": 529, "name": "Barcelona", "score": 2, "winner": true },
+  "away": { "id": 541, "name": "Real Madrid", "score": 1, "winner": false },
+  "status": { "short": "2H", "long": "Second Half", "elapsed": 67, "extra": null },
+  "last_activity_at": "2026-08-14T19:52:00Z",
+  "events": [ /* Event, … */ ]
+}
+```
+
+### Event
+
+```json
+{
+  "id": "…uuid…",
+  "fixture_id": 1234567,
+  "type": "goal",
+  "detail": "Normal Goal",
+  "minute": 67,
+  "extra": null,
+  "team": { "id": 529, "name": "Barcelona" },
+  "player": { "id": 152, "name": "Lewandowski" },
+  "videos": [ /* Video, … */ ]
+}
+```
+
+### Video (one LIVE clip = active share + its live asset)
+
+```json
+{
+  "share_id": "s_a1b2c3d4e5f6",
+  "url": "/api/v1/videos/s_a1b2c3d4e5f6",
+  "rank": 1,
+  "verified": true,
+  "extracted_minute": 67,
+  "popularity": 3,
+  "width": 1920, "height": 1080, "duration_ms": 8000
+}
+```
+
+`videos` is the #171 read model realized: **live assets only** (`superseded_by IS
+NULL`), active shares, ordered by `CompareShares` (`rank: 1` = primary).
+Superseded/removed clips never appear here, but their `s_…` URLs still resolve via
+the 302 handler. `url` is the share-id endpoint; the browser follows the 302 to the
+presigned Garage URL.
+
+### Endpoint → DTO
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v1/fixtures` (± `?ids=`) | flat `[Fixture]` — frontend buckets by `state` |
+| `GET /api/v1/fixtures/{id}` | `Fixture` |
+| `GET /api/v1/events?ids=` | flat `[Event]` |
+| `GET /api/v1/events/{event_id}` | `Event` |
+| `GET /api/v1/videos/{share_id}` | 302 → presigned URL (see redirect contract below) |
 
 ## Target content (remaining to spec here)
 

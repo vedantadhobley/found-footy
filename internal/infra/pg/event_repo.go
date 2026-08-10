@@ -524,6 +524,36 @@ func (r *EventRepo) ListPending(ctx context.Context, fixtureID int64) ([]*event.
 	return events, nil
 }
 
+// ListByFixture returns all NON-removed events for a fixture, ordered by
+// minute then first-seen — the display read backing the read API's fixture +
+// event endpoints (#167). Distinct from ListPending, which filters to
+// pipeline-work-remaining; this returns every event the frontend should show
+// (removed/VAR events are excluded). Served by the events_fixture index.
+func (r *EventRepo) ListByFixture(ctx context.Context, fixtureID int64) ([]*event.Event, error) {
+	rows, err := r.pool.Query(ctx,
+		"SELECT "+eventColumns+` FROM events
+		 WHERE fixture_id = $1 AND NOT removed
+		 ORDER BY minute, first_seen_at`,
+		fixtureID)
+	if err != nil {
+		return nil, fmt.Errorf("pg.EventRepo.ListByFixture: %w", err)
+	}
+	defer rows.Close()
+
+	var events []*event.Event
+	for rows.Next() {
+		e, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pg.EventRepo.ListByFixture: rows: %w", err)
+	}
+	return events, nil
+}
+
 // EventsAwaitingDiscovery returns confirmed, not-removed events whose
 // discovery workflow hasn't completed yet (spawn failed, or still in
 // flight). Drives ReconcileFixture's spawn-recovery pass. See event.Repo.
