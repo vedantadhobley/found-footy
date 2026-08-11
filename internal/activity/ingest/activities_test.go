@@ -348,6 +348,13 @@ func TestFetchFixturesForWindow_HappyPath(t *testing.T) {
 		},
 	}}
 	a := newActivities(fetcher, newFakeFixtureRepo(), newFakeAliasRepo(), kickoff.Add(-3*time.Hour))
+	// Seed tracked teams so the filter KEEPS the day's fixtures — the
+	// empty cache now fails closed (#174), so the happy path must track.
+	if err := a.TeamRepo.Replace(context.Background(), []team.TrackedTeam{
+		{ID: 40}, {ID: 42}, {ID: 33}, {ID: 50},
+	}, kickoff); err != nil {
+		t.Fatalf("seed tracked teams: %v", err)
+	}
 
 	out, err := a.FetchFixturesForDay(context.Background(), FetchFixturesForDayInput{Date: kickoff})
 	if err != nil {
@@ -356,9 +363,9 @@ func TestFetchFixturesForWindow_HappyPath(t *testing.T) {
 	if out.Count != 2 || len(out.Fixtures) != 2 {
 		t.Errorf("out = %+v, want 2 fixtures", out)
 	}
-	// Empty tracked-teams cache → fail-open (no filter). Verify.
+	// All 4 teams tracked → both fixtures kept, none dropped.
 	if out.FilteredOut != 0 {
-		t.Errorf("FilteredOut = %d; want 0 (empty tracked cache)", out.FilteredOut)
+		t.Errorf("FilteredOut = %d; want 0 (all teams tracked)", out.FilteredOut)
 	}
 	if fetcher.listFixturesCalls != 1 {
 		t.Errorf("listFixturesCalls = %d; want 1 (single day)", fetcher.listFixturesCalls)
@@ -366,6 +373,32 @@ func TestFetchFixturesForWindow_HappyPath(t *testing.T) {
 	// Date param normalized to midnight UTC.
 	if got := fetcher.lastCall.Date.Format("2006-01-02"); got != "2026-07-08" {
 		t.Errorf("last call Date = %s; want 2026-07-08", got)
+	}
+}
+
+// TestFetchFixturesForDay_EmptyCache_FailsClosed — #174: an empty
+// tracked-teams cache must fetch NOTHING (not the whole world) and set
+// TrackedCacheEmpty so the workflow logs loudly.
+func TestFetchFixturesForDay_EmptyCache_FailsClosed(t *testing.T) {
+	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	fetcher := &fakeFetcher{responseByDate: map[string][]apifootball.APIFixture{
+		"2026-07-08": {mkAPIFixture(1, "ns", kickoff, 40, 42), mkAPIFixture(2, "ns", kickoff, 33, 50)},
+	}}
+	// newActivities seeds an EMPTY TeamRepo — exactly the fail-closed trigger.
+	a := newActivities(fetcher, newFakeFixtureRepo(), newFakeAliasRepo(), kickoff.Add(-3*time.Hour))
+
+	out, err := a.FetchFixturesForDay(context.Background(), FetchFixturesForDayInput{Date: kickoff})
+	if err != nil {
+		t.Fatalf("FetchFixturesForDay: %v", err)
+	}
+	if out.Count != 0 || len(out.Fixtures) != 0 {
+		t.Errorf("empty cache should fetch nothing; got Count=%d fixtures=%d", out.Count, len(out.Fixtures))
+	}
+	if !out.TrackedCacheEmpty {
+		t.Error("TrackedCacheEmpty = false; want true (empty cache → fail closed)")
+	}
+	if out.FilteredOut != 2 {
+		t.Errorf("FilteredOut = %d; want 2 (all vendor fixtures dropped)", out.FilteredOut)
 	}
 }
 

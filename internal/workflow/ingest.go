@@ -314,6 +314,13 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 			return out, err
 		}
 		appendUnique(anchorOut)
+		if anchorOut.TrackedCacheEmpty {
+			// #174 (audit Tier-2 #6): the tracked-teams cache was empty, so
+			// the fetch failed closed (ingested nothing) instead of flooding
+			// the world. Loud ERROR so the refresh gap doesn't pass silently.
+			logger.Error("tracked-teams cache EMPTY — fetch failed closed, ingesting nothing; check RefreshTrackedTeamsIfStale")
+			out.Errors = append(out.Errors, "tracked-teams cache empty — fetch failed closed, ingested nothing")
+		}
 
 		if in.FetchFuture {
 			// cfgOut was already loaded at workflow start; use its

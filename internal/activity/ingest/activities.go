@@ -279,6 +279,10 @@ type FetchFixturesForDayOutput struct {
 	Fixtures    []apifootball.APIFixture
 	Count       int
 	FilteredOut int // dropped because neither team is tracked
+	// TrackedCacheEmpty flags the fail-CLOSED path (#174): the
+	// tracked-teams cache was empty, so this day fetched nothing rather
+	// than flooding the world. The workflow logs an ERROR when set.
+	TrackedCacheEmpty bool
 }
 
 // FetchFixturesForDay queries /fixtures?date=X for a single UTC day
@@ -293,9 +297,8 @@ type FetchFixturesForDayOutput struct {
 // orchestration means retry policies + timeouts scope to the day,
 // not to a whole window.
 //
-// Empty tracked-teams cache = fail-open (return everything). Matches
-// the "if refresh failed, still ingest something" safety net; better
-// than silent zero.
+// Empty tracked-teams cache = fail CLOSED (#174): fetch nothing rather
+// than return the whole world. See the guarded branch below.
 func (a *Activities) FetchFixturesForDay(ctx context.Context, in FetchFixturesForDayInput) (FetchFixturesForDayOutput, error) {
 	// Build tracked-teams filter set on each call. Small overhead
 	// (~250 rows, PK-indexed SELECT) preferable to threading the set
@@ -316,10 +319,15 @@ func (a *Activities) FetchFixturesForDay(ctx context.Context, in FetchFixturesFo
 			"ingest.FetchFixturesForDay: date=%s: %w", day.Format("2006-01-02"), err)
 	}
 
-	// Fail-open: empty cache → no filter. Ingest still works, downstream
-	// categorize sees more fixtures than expected but doesn't break.
+	// Fail CLOSED (#174, audit Tier-2 #6): an empty cache means the
+	// Step-0 refresh failed AND the cache was cold. Returning every
+	// fixture the vendor has would flood Postgres with the whole world
+	// and hammer Wikidata for hundreds of unknown teams. Ingest nothing
+	// this cycle and flag it (TrackedCacheEmpty → the workflow logs an
+	// ERROR); the next refresh repopulates. A bounded static-team seed
+	// like Python's 15-team list is the follow-up (#175).
 	if trackedSet.Len() == 0 {
-		return FetchFixturesForDayOutput{Fixtures: dayFixtures, Count: len(dayFixtures)}, nil
+		return FetchFixturesForDayOutput{Count: 0, FilteredOut: len(dayFixtures), TrackedCacheEmpty: true}, nil
 	}
 
 	kept := make([]apifootball.APIFixture, 0, len(dayFixtures))
