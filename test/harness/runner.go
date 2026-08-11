@@ -55,6 +55,15 @@ func RunScenario(ctx context.Context, t *testing.T, pool *pg.Pool, mockAPI *Mock
 		t.Fatalf("harness.RunScenario: applySetup: %v", err)
 	}
 
+	// 3b. Seed tracked_teams_cache from the scenario's fixtures. Scenarios
+	// model the normal "cache populated" state; without this the empty
+	// cache now fails CLOSED (#174) and FetchFixturesForDay ingests
+	// nothing. The failing RefreshTrackedTeamsIfStale in these scenarios
+	// leaves the seeded rows intact (it only Replaces on success).
+	if err := seedTrackedTeams(ctx, pool, s); err != nil {
+		t.Fatalf("harness.RunScenario: seedTrackedTeams: %v", err)
+	}
+
 	// 4. Build the real apifootball client pointed at the mock.
 	fx := harnessInstruments()
 	afClient, err := apifootball.NewClient(ctx, config.APIFootballConfig{
@@ -257,6 +266,55 @@ func applySetup(ctx context.Context, pool *pg.Pool, setup Setup) error {
 			VALUES ($1, $2, $3, '{}')
 		`, sa.TeamID, sa.TeamName, sa.IsNational)
 		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// seedTrackedTeams populates tracked_teams_cache with every team ID that
+// appears in the scenario's fixtures — API responses (window + by-IDs),
+// per-cycle responses, and setup rows — so FetchFixturesForDay's
+// tracked-teams filter keeps them. Scenarios exercise the pipeline with a
+// populated cache; the empty-cache fail-closed path (#174) is covered by a
+// dedicated unit test, not the harness.
+func seedTrackedTeams(ctx context.Context, pool *pg.Pool, s *Scenario) error {
+	type tt struct {
+		name   string
+		league int
+	}
+	seen := map[int]tt{}
+	note := func(id int, name string, league int) {
+		if id != 0 {
+			seen[id] = tt{name: name, league: league}
+		}
+	}
+	collect := func(r APIResponses) {
+		for _, resp := range []*FixturesResponse{r.FixturesWindow, r.FixturesByIDs} {
+			if resp == nil {
+				continue
+			}
+			for _, f := range resp.Fixtures {
+				note(f.HomeID, f.HomeName, f.LeagueID)
+				note(f.AwayID, f.AwayName, f.LeagueID)
+			}
+		}
+	}
+	collect(s.APIResponses)
+	for i := range s.Cycles {
+		collect(s.Cycles[i].APIResponses)
+	}
+	for _, sf := range s.Setup.Fixtures {
+		note(sf.HomeID, sf.HomeName, sf.LeagueID)
+		note(sf.AwayID, sf.AwayName, sf.LeagueID)
+	}
+
+	for id, t := range seen {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO tracked_teams_cache (team_id, team_name, league_id, league_name, season, refreshed_at)
+			VALUES ($1, $2, $3, '', 2026, NOW())
+			ON CONFLICT (team_id) DO NOTHING
+		`, id, t.name, t.league); err != nil {
 			return err
 		}
 	}
