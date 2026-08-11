@@ -1103,6 +1103,17 @@ are never lifecycle-expired). This is the price of the URL-stability
 invariant: storage grows monotonically for anything anyone has ever
 shared publicly, but no share URL ever 404s.
 
+> **REVISED 2026-08-11 (#176 option B) — see [decisions.md](../decisions.md).**
+> Monotonic byte growth was judged too expensive. Retention now reclaims
+> the Garage **bytes** for clip-bearing fixtures older than `RetentionDays`
+> and revokes their shares → `410`, but **keeps the rows as tombstones**.
+> So two clauses above no longer hold: S3 objects ARE lifecycle-expired at
+> retention, and there IS now a retention-driven "expired 410 path". The
+> load-bearing half — *no share URL ever 404s* — still holds (the share
+> row/tombstone stays; the RESTRICT chain is intact). The clipless prune
+> below is unchanged; clip-bearing fixtures are reclaimed via a
+> `DestroyEvent` loop in `IngestWorkflow` Step 4, not deleted.
+
 Consequences for downstream sections:
 - §4's `PruneCompleted` implements the conditional DELETE above.
 - §13 migration: legacy MinIO objects that map to migrated `video_shares`

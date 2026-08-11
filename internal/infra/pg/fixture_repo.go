@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
@@ -282,6 +283,41 @@ func (r *FixtureRepo) PruneCompleted(ctx context.Context, threshold time.Time) (
 		return 0, fmt.Errorf("pg.FixtureRepo.PruneCompleted: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// ListReclaimableEventIDs returns event IDs of completed fixtures older
+// than threshold that still carry a non-removed share — the byte-reclaim
+// worklist for retention's clip-bearing half (#176). DISTINCT because an
+// event can hold several shares (the superseded chain). See the
+// fixture.Repo interface doc for the URL-stability rationale: the caller
+// DestroyEvents each (Garage bytes reclaimed, rows kept as 410 tombstones).
+func (r *FixtureRepo) ListReclaimableEventIDs(ctx context.Context, threshold time.Time) ([]uuid.UUID, error) {
+	const query = `
+		SELECT DISTINCT e.id
+		FROM fixtures f
+		JOIN events e ON e.fixture_id = f.id
+		JOIN video_shares s ON s.event_id = e.id
+		WHERE f.state = 'completed'
+		  AND f.completed_at < $1
+		  AND s.state <> 'removed'
+	`
+	rows, err := r.pool.Query(ctx, query, threshold.UTC())
+	if err != nil {
+		return nil, fmt.Errorf("pg.FixtureRepo.ListReclaimableEventIDs: %w", err)
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("pg.FixtureRepo.ListReclaimableEventIDs: scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pg.FixtureRepo.ListReclaimableEventIDs: rows: %w", err)
+	}
+	return ids, nil
 }
 
 // collectFixtures walks a pgx.Rows iterator and scans each into a

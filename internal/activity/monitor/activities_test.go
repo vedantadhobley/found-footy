@@ -102,6 +102,10 @@ func (r *fakeFixtureRepo) PruneCompleted(context.Context, time.Time) (int, error
 	panic("fakeFixtureRepo.PruneCompleted: not implemented (test scope drift)")
 }
 
+func (r *fakeFixtureRepo) ListReclaimableEventIDs(context.Context, time.Time) ([]uuid.UUID, error) {
+	panic("fakeFixtureRepo.ListReclaimableEventIDs: not implemented (test scope drift)")
+}
+
 // FixtureReadyToComplete — in-memory version of the completion check.
 // Mirrors the pg query semantics so completion tests see the same
 // truth-table shape as production.

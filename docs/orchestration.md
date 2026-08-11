@@ -79,8 +79,9 @@ flowchart TD
 Daily fixture ingest. Refreshes the tracked-teams filter, fetches the
 relevant day(s) from api-sports.io with a smart timezone-lookahead,
 categorizes each fixture by API state, upserts to Postgres, ensures +
-resolves alias rows for every team seen, prunes completed fixtures
-beyond retention.
+resolves alias rows for every team seen, then runs two-part retention
+(hard-delete clipless completed fixtures + reclaim Garage bytes for
+clip-bearing ones) beyond the retention window.
 
 ### Signature
 
@@ -109,7 +110,8 @@ type IngestWorkflowOutput struct {
     AliasesResolved       int
     AliasNoMatch          int
     AliasFailed           int
-    PrunedFixtures        int
+    PrunedFixtures        int  // clipless completed fixtures hard-deleted (Step 4a)
+    ReclaimedEvents       int  // clip-bearing events byte-reclaimed via DestroyEvent (Step 4b)
     Errors                []string // aggregated per-fixture/per-team failure context
 }
 ```
@@ -157,12 +159,20 @@ simple).
         → {CacheHits, Resolved, NoMatch, Failed, Errors}
       Wikipedia CirrusSearch + Wikidata for teams without a wikidata_qid;
       cache-hit skip, soft-fail per team (see § alias pattern below).
-4.  IF RetentionDays > 0:
-      PruneOldFixtures(anchor - RetentionDays days) → Deleted
-        PG-only DELETE of completed fixtures older than the threshold
-        (keyed on completed_at) that have NO surviving video_shares
-        (URL-stability guard). Does NOT reclaim Garage/S3 objects —
-        audit-2026-08-05 G4.
+4.  IF RetentionDays > 0 — two-part retention (#176, decisions.md 2026-08-11):
+    4a. PruneOldFixtures(anchor - RetentionDays days)
+          → {Deleted, ReclaimEventIDs}
+        PG-only. Hard-deletes completed fixtures older than the threshold
+        (keyed on completed_at) that have NO surviving video_shares — the
+        clipless half (deleting share-less rows 404s nothing). ALSO returns
+        the events of clip-BEARING aged fixtures that still have a live share
+        (ListReclaimableEventIDs), for 4b.
+    4b. FOR each ReclaimEventID: DestroyEvent(id, reason='policy') [2m timeout]
+        Revoke the event's shares → 410 + delete its Garage bytes (the #172
+        primitive), KEEPING all rows as tombstones so no shared URL ever
+        404s. Best-effort per event (failures → out.Errors), never aborts
+        ingest; idempotent (reclaimed events drop off tomorrow's list). This
+        is where Garage bytes finally get reclaimed — closes audit G4.
 ```
 
 Anchor: `ManualDate` if set, else `workflow.Now(ctx)` — deterministic
@@ -175,7 +185,9 @@ All eight activity methods — `GetIngestConfig`,
 `CategorizeAndUpsertFixtures`, `EnsureAliasPlaceholders`,
 `ResolveAliasesForTeams`, `PruneOldFixtures` — live in
 `internal/activity/ingest/activities.go`, registered on the worker as
-methods of `*ingest.Activities`.
+methods of `*ingest.Activities`. Step 4b's `DestroyEvent` is the
+video-package `PersistActivities` activity (shared with #172's VAR
+teardown), not an ingest activity — the workflow calls it by string name.
 
 ### Reconcile logic — the load-bearing merge
 

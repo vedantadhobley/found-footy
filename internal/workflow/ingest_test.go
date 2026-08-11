@@ -14,10 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/testsuite"
 
 	"github.com/vedantadhobley/found-footy/internal/activity/ingest"
+	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
+	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
@@ -118,6 +121,67 @@ func TestIngestWorkflow_HappyPath(t *testing.T) {
 	}
 	if out.PrunedFixtures != 3 {
 		t.Errorf("PrunedFixtures = %d, want 3", out.PrunedFixtures)
+	}
+	env.AssertExpectations(t)
+}
+
+// TestIngestWorkflow_Retention_ReclaimsClipBearingEvents — the two-part
+// retention step (#176 option B): PruneOldFixtures hard-deletes clipless
+// fixtures (Deleted) AND returns clip-bearing aged events
+// (ReclaimEventIDs); the workflow then DestroyEvents each with reason
+// 'policy' — reclaiming Garage bytes while keeping rows as 410 tombstones.
+func TestIngestWorkflow_Retention_ReclaimsClipBearingEvents(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newEnv(&s)
+	// DestroyEvent lives on PersistActivities — register so the env knows
+	// its typed signature, then stub it and capture the reasons passed.
+	env.RegisterActivity(&videoactivity.PersistActivities{})
+
+	env.OnActivity("FetchFixturesForDay", mock.Anything, mock.Anything).
+		Return(ingest.FetchFixturesForDayOutput{Fixtures: mkFixtures(2), Count: 2}, nil).Once()
+	// No TeamRefs → alias steps skip; keeps the test focused on retention.
+	env.OnActivity("CategorizeAndUpsertFixtures", mock.Anything, mock.Anything).
+		Return(ingest.CategorizeOutput{Completed: 2}, nil).Once()
+
+	e1, e2 := uuid.New(), uuid.New()
+	env.OnActivity("PruneOldFixtures", mock.Anything, mock.Anything).
+		Return(ingest.PruneOldFixturesOutput{
+			Deleted:         1,
+			ReclaimEventIDs: []uuid.UUID{e1, e2},
+		}, nil).Once()
+
+	var reasons []string
+	env.OnActivity("DestroyEvent", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			in := args.Get(1).(videoactivity.DestroyEventInput)
+			reasons = append(reasons, in.Reason)
+		}).Return(nil).Times(2)
+
+	env.ExecuteWorkflow(workflow.IngestWorkflow, stdInput(time.Date(2026, 7, 8, 0, 5, 0, 0, time.UTC)))
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	var out workflow.IngestWorkflowOutput
+	if err := env.GetWorkflowResult(&out); err != nil {
+		t.Fatalf("GetWorkflowResult: %v", err)
+	}
+	if out.PrunedFixtures != 1 {
+		t.Errorf("PrunedFixtures = %d, want 1 (clipless hard-delete)", out.PrunedFixtures)
+	}
+	if out.ReclaimedEvents != 2 {
+		t.Errorf("ReclaimedEvents = %d, want 2 (clip-bearing byte reclaim)", out.ReclaimedEvents)
+	}
+	if len(reasons) != 2 {
+		t.Fatalf("DestroyEvent called %d times, want 2", len(reasons))
+	}
+	for i, r := range reasons {
+		if r != string(dvideo.RemovalPolicy) {
+			t.Errorf("DestroyEvent[%d] reason = %q, want %q (retention, not var)", i, r, dvideo.RemovalPolicy)
+		}
 	}
 	env.AssertExpectations(t)
 }
