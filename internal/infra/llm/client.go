@@ -131,9 +131,14 @@ func (c *Client) ChatModel() string { return c.chatModel }
 // semaphore + adapter-imposed timeout, and returns the response
 // translated into domain types.
 //
-// The semaphore matches joi's llama.cpp max_parallel=2 — going past
-// that collapses throughput per AGENTS.md. Semaphore acquisition is
-// ctx-bounded (caller cancellation releases the wait).
+// The semaphore tracks the joi.luv gateway's per-node capacity (gemma
+// runs --parallel 4, gateway max_slots=4); fanning out wider just queues
+// on the gateway. Semaphore acquisition is ctx-bounded (caller
+// cancellation releases the wait). STOPGAP: the gateway currently
+// blocks-until-free, so this client-side bound is what stops a busy
+// goal's vision fan-out from timing out + retry-storming; once the
+// control plane owns request queueing it can go away (decisions.md
+// 2026-08-11).
 //
 // Errors are classified via classifyError before returning: callers
 // use errors.Is(err, ErrRateLimited) / ErrCapExceeded / ErrUnavailable

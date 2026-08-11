@@ -45,10 +45,13 @@ type LLMConfig struct {
 	EmbeddingModel string `env:"LLM_EMBEDDING_MODEL"`
 
 	// ChatConcurrencyCap bounds the number of in-flight chat calls this
-	// process may have open at once. Load-bearing: joi's llama.cpp
-	// server enforces max_parallel=2 and throughput collapses past that.
-	// Client-side semaphore keeps us within the cap.
-	ChatConcurrencyCap int `env:"LLM_CHAT_CONCURRENCY_CAP" envDefault:"2"`
+	// process may have open at once, via a client-side semaphore that
+	// tracks the joi.luv gateway's per-node capacity — gemma runs
+	// --parallel 4 (gateway max_slots=4), so 4 is the default; wider just
+	// queues on the gateway. STOPGAP pending control-plane request
+	// queueing, after which apps stop managing this — see decisions.md
+	// 2026-08-11.
+	ChatConcurrencyCap int `env:"LLM_CHAT_CONCURRENCY_CAP" envDefault:"4"`
 
 	// ConnectTimeout bounds the initial /v1/models probe done by the
 	// constructor.

@@ -6,6 +6,37 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-11 — LLM path: joi.luv gateway + gemma pin; concurrency cap 2→4 (stopgap)
+
+joi's NixOS rebuild moved found-footy's LLM path behind a per-node gateway:
+`LLM_ENDPOINT_URL=http://joi.luv`, which routes OpenAI `/v1/*` by the request's
+model field. `LLM_CHAT_MODEL` is **pinned** to `gemma-4-12b` and must stay pinned —
+the gateway is multi-model (`gemma-4-12b`, `gpt-oss-120b` text-only, `bge-m3`
+embeddings), so auto-discover (empty model) could mis-route vision/OCR to a
+text-only model. Old `llama-small.joi` (Caddy/`.joi` DNS) is dead; `nexus.luv` is
+the future rack-cutover swap (one env change). Prod is separate + untouched — the
+Python stack still uses the dead `LLAMA_URL=http://llama-small.joi`; repointing it
+is a deliberate, separate decision.
+
+Gemma capacity grew to `--parallel 4` (gateway `max_slots=4`), so
+`LLM_CHAT_CONCURRENCY_CAP` went **2→4** — dev `.env`, the `envDefault`, and the
+stale "max_parallel=2" comments in `config/llm.go` + `infra/llm/client.go`.
+
+**The client semaphore stays — for now.** It's *backpressure*, not a duplicate of
+the gateway's slot cap. found-footy's vision fan-out isn't naturally bounded (one
+goal → many candidate clips, each a vision call; Temporal runs them as wide as
+allowed), so without a client bound a busy goal fires 20+ calls that queue/block
+past the 60s request timeout → fail → Temporal retry → pile-up. It also gives
+fairness vs the other joi consumers (legal-tender, long-exposure), which the
+router-only gateway does not enforce per-consumer.
+
+**Direction:** Vedanta is building request queueing into the control plane (the
+gateway) so apps stop managing semaphores at all — it currently just
+blocks-until-free. Once queueing lands (possibly plus `429` + `Retry-After`),
+found-footy drops the client-side semaphore and fires freely. Cross-project (every
+joi consumer benefits) → belongs in **dhobley** when designed; this entry records
+the found-footy side's readiness to shed the cap.
+
 ## 2026-08-11 — Retention revises URL-stability: reclaim bytes, keep 410 tombstones (#176)
 
 Closes G4 (#176: "retention prune reclaims no object storage — Garage leak"). But
