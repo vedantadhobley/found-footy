@@ -161,7 +161,10 @@ Repo methods shipped in `internal/infra/pg/fixture_repo.go`:
 projection for ActivePollWorkflow's batched API call),
 `ListStagingBeforeKickoff`, `FixtureReadyToComplete` (the completion-contract
 evaluator, see [completion-contract.md](design/proposals/completion-contract.md)),
-`PruneCompleted`.
+and the two-part retention pair (#176): `PruneCompleted` (hard-delete clipless
+aged fixtures) + `ListReclaimableEventIDs` (events of clip-bearing aged fixtures
+with live shares → the workflow's `DestroyEvent` byte-reclaim loop; keeps rows as
+410 tombstones per [decisions.md 2026-08-11](decisions.md)).
 
 ### event domain (D2)
 

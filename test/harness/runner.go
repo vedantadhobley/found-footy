@@ -200,6 +200,14 @@ func runIngest(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apifo
 	env := ts.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(ffwf.IngestWorkflow)
 	env.RegisterActivity(acts)
+	// #176: retention Step 4 reclaims clip-bearing aged events via
+	// DestroyEvent. Scenarios assert the SQL-side outcome (clipless prune +
+	// which fixtures survive) against real pg; the byte reclaim itself is a
+	// no-op here — register PersistActivities for DestroyEvent + stub it so
+	// an ingest scenario with aged clip-bearing fixtures doesn't panic on
+	// the unregistered activity. Mirrors runActivePoll's #172 stub.
+	env.RegisterActivity(&videoactivity.PersistActivities{})
+	env.OnActivity("DestroyEvent", mock.Anything, mock.Anything).Return(nil)
 
 	// Translate scenario input → workflow input.
 	in := ffwf.IngestWorkflowInput{}

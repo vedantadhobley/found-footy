@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ErrNotFound is returned by Repo.Get when the fixture ID doesn't exist.
@@ -65,10 +67,32 @@ type Repo interface {
 	// ReconcileFixture at the end of each per-fixture ActivePoll pass.
 	FixtureReadyToComplete(ctx context.Context, id int64) (bool, error)
 
-	// PruneCompleted deletes completed fixtures older than threshold
-	// that have NO surviving video_shares. The RESTRICT chain
-	// (video_shares → events → fixtures) enforces this at the DB layer;
-	// this method is the retention job's entry point.
-	// Returns count of rows deleted.
+	// PruneCompleted hard-deletes completed fixtures older than threshold
+	// that have NO surviving video_shares — the CLIPLESS half of the
+	// two-part retention rule (#176). A share-less fixture never minted a
+	// public URL, so deleting its rows 404s nothing; the RESTRICT chain
+	// (video_shares → events → fixtures) also enforces "no share ⇒
+	// deletable" at the DB layer. Returns count of rows deleted.
+	//
+	// The clip-BEARING half — reclaiming Garage bytes for aged fixtures
+	// that DO have shares, while keeping their rows as 410 tombstones — is
+	// ListReclaimableEventIDs + video.DestroyEvent, NOT this method. See
+	// decisions.md 2026-08-11 (URL-stability vs retention, revised).
 	PruneCompleted(ctx context.Context, threshold time.Time) (int, error)
+
+	// ListReclaimableEventIDs returns the IDs of events belonging to
+	// completed fixtures older than threshold that still have at least one
+	// non-removed video_share — the byte-reclaim worklist for the
+	// clip-BEARING half of retention (#176 option B). The caller runs
+	// video.DestroyEvent on each: revoke its shares to state='removed'
+	// (→ the #167 redirect 410s) and delete its Garage objects, WITHOUT
+	// deleting any rows. The KB-sized rows persist as tombstones so no
+	// shared URL ever 404s (rebuild-plan §3 URL-stability, revised
+	// 2026-08-11); the GB-sized video bytes are the real reclaimable cost.
+	//
+	// Filtering on state <> 'removed' makes the daily job idempotent: once
+	// an event's shares are revoked it drops off this list, so DestroyEvent
+	// never re-runs against it. Returns event IDs (uuid) — DestroyEvent is
+	// event-scoped — not fixture IDs.
+	ListReclaimableEventIDs(ctx context.Context, threshold time.Time) ([]uuid.UUID, error)
 }

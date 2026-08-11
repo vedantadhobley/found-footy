@@ -6,6 +6,71 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-11 — Retention revises URL-stability: reclaim bytes, keep 410 tombstones (#176)
+
+Closes G4 (#176: "retention prune reclaims no object storage — Garage leak"). But
+the "leak" is really a **deliberate architected tradeoff** we chose to revise, not
+a plain bug — so this entry records a revision to a load-bearing invariant, not a
+fix within the existing design.
+
+**The tension.** `rebuild-plan.md` §3 ("URL stability vs retention", lines ~1080-1114)
+and §0 make URL-stability a load-bearing invariant, *enforced* by the
+`video_shares → events → fixtures` `ON DELETE RESTRICT` chain: *"Fixtures with videos
+live forever … S3 objects live forever too … never lifecycle-expired. This is the
+price of the URL-stability invariant: storage grows monotonically … but no share URL
+ever 404s"* and *"There is no 'expired' 410 path."* So the shipped clipless-only
+`PruneCompleted` is **correct per that design** — it is §4's intended conditional
+prune, not a dodge. G4 therefore asks a design question: *is monotonic storage growth
+still an acceptable price?* We decided no.
+
+**Options weighed.**
+- **A — uphold the invariant** (status quo): clips live forever, storage grows
+  unbounded. Rejected — the whole point of G4 is to bound it.
+- **B — reclaim bytes, keep 410 tombstones** (CHOSEN): at retention, delete the
+  Garage **bytes** + revoke shares to `state='removed'` (→ 410), but keep the
+  KB-sized rows. Fixes the real cost (GB of video), and **no URL ever 404s** — it
+  only softens *"clip plays forever"* → *"clip URL resolves forever, to 410 after
+  the retention window."*
+- **C — full-ephemeral** (Python parity): delete everything → old URLs 404.
+  Rejected. "Python parity" is a **false guide here** — the rebuild deliberately
+  diverged from Python precisely to stop old goal URLs from 404ing; the entire
+  chain/share-indirection exists for that. C would abandon the invariant we built.
+
+**What B revises in the plan:** §3's *"no expired 410 path"* and *"S3 objects live
+forever"* no longer hold — there is now a retention-driven 410 path, and bytes are
+lifecycle-expired at `RetentionDays` (14). *"No share URL ever 404s"* is **preserved**
+(the row/tombstone stays; RESTRICT chain intact). See the revision note added at
+`rebuild-plan.md` §3.
+
+**Mechanism — two-part retention in `IngestWorkflow` Step 4** (was one clipless prune):
+1. **Clip-LESS** aged fixtures → `PruneCompleted` hard-deletes them (unchanged; they
+   never minted a URL, so deleting rows 404s nothing).
+2. **Clip-BEARING** aged fixtures → `FixtureRepo.ListReclaimableEventIDs` returns their
+   events with live shares; the workflow runs `DestroyEvent` (the #172 primitive) on
+   each — revoke shares → 410 + delete Garage bytes, **rows stay as tombstones**.
+   Reason is `RemovalPolicy` ("policy"); no schema change. (A dedicated
+   `retention`/`expired` removal_reason could be split out later if per-reason
+   reclaim metrics are wanted.)
+
+This **refines the 2026-08-10 entry**, which said "then the fixture delete cascades" —
+it does NOT: B keeps the fixture/event/asset/share rows (only bytes + share-state
+change). Idempotency: `ListReclaimableEventIDs` filters `state <> 'removed'`, so a
+reclaimed event drops off the next daily list; `DestroyEvent` is itself idempotent.
+The reclaim loop is best-effort per event (logged to `out.Errors`, `out.ReclaimedEvents`),
+never aborts ingest — a failed event simply reappears tomorrow.
+
+Tests: `ListReclaimableEventIDs` pg integration (aged+live-share included; recent,
+already-removed, and clipless excluded); `IngestWorkflow` unit test asserting the
+Step-4 `DestroyEvent` loop fires once per reclaimable event with reason `policy`;
+scenario harness stubs `DestroyEvent` in `runIngest` (mirrors the #172 `runActivePoll`
+stub).
+
+**Sibling finding (different repo, logged not fixed):** auditing the tz/retention
+contract surfaced a real `vedanta-systems` frontend bug — the "one future day"
+`navigableDates` rule splits a tz-straddling match day for eastern users, and
+`found-footy-timezone.md` is stale (describes a UTC-only `/dates` since made
+tz-aware). Logged in `vedanta-systems/docs/todo.md` to fold into the frontend rewrite.
+
 ## 2026-08-10 — VAR destroy pipeline: cancel + revoke + reclaim (#172); prune is clip-blind (#176)
 
 Closes the audit's Tier-1 #3 (a VAR-overturned goal kept serving already-minted

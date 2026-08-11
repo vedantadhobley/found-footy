@@ -21,6 +21,8 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/vedantadhobley/found-footy/internal/activity/ingest"
+	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
+	"github.com/vedantadhobley/found-footy/internal/domain/video"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
@@ -120,8 +122,9 @@ type IngestWorkflowOutput struct {
 	AliasNoMatch    int
 	AliasFailed     int
 
-	PrunedFixtures int
-	Errors         []string
+	PrunedFixtures  int
+	ReclaimedEvents int
+	Errors          []string
 }
 
 // IngestWorkflow — the workflow function. Registered at worker
@@ -473,11 +476,18 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		)
 	}
 
-	// ── Step 4: prune old completed fixtures ──
-	// RetentionDays == 0 → skip. Threshold computed from the anchor
-	// so manual-date-override runs prune relative to the anchor,
-	// not workflow.Now — matters for re-ingest scenarios where you
-	// want the retention math consistent with the fetch math.
+	// ── Step 4: retention (two-part, #176) ──
+	// RetentionDays == 0 → skip. Threshold from the anchor (not
+	// workflow.Now) so manual-date re-ingests keep the retention math
+	// consistent with the fetch math.
+	//
+	// Part 1 (PruneOldFixtures activity): hard-delete clip-LESS aged
+	// fixtures + return the clip-BEARING aged events needing reclaim.
+	// Part 2 (DestroyEvent loop): revoke each such event's shares (→ the
+	// #167 redirect 410s) + delete its Garage bytes, KEEPING the rows as
+	// tombstones so no shared URL ever 404s (rebuild-plan §3 URL-stability,
+	// revised — see decisions.md 2026-08-11). The GB video bytes are the
+	// real leak; the KB rows are the price of URL-stability.
 	if retentionDays > 0 {
 		threshold := anchor.AddDate(0, 0, -retentionDays)
 		var pruneOut ingest.PruneOldFixturesOutput
@@ -488,7 +498,34 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 			return out, err
 		}
 		out.PrunedFixtures = pruneOut.Deleted
-		logger.Info("pruned", "count", out.PrunedFixtures, "threshold_days", retentionDays)
+		logger.Info("pruned clipless", "count", out.PrunedFixtures, "threshold_days", retentionDays)
+
+		// Reclaim Garage bytes for clip-bearing aged events. Sequential:
+		// a daily job over a bounded worklist, and DestroyEvent is
+		// idempotent (revoke skips already-removed shares; S3 delete no-ops
+		// on missing keys), so a mid-loop failure is safe to retry on the
+		// next daily run. A failed reclaim is logged + recorded but does
+		// NOT abort ingest — the event simply reappears on tomorrow's list.
+		if len(pruneOut.ReclaimEventIDs) > 0 {
+			reclaimCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+				StartToCloseTimeout: 2 * time.Minute,
+				RetryPolicy:         ao.RetryPolicy,
+			})
+			for _, evID := range pruneOut.ReclaimEventIDs {
+				if err := workflow.ExecuteActivity(reclaimCtx, "DestroyEvent",
+					videoactivity.DestroyEventInput{
+						EventID: evID,
+						Reason:  string(video.RemovalPolicy),
+					}).Get(reclaimCtx, nil); err != nil {
+					logger.Warn("retention reclaim failed", "event_id", evID.String(), "error", err)
+					out.Errors = append(out.Errors, "DestroyEvent(retention): "+err.Error())
+					continue
+				}
+				out.ReclaimedEvents++
+			}
+			logger.Info("reclaimed clip bytes",
+				"events", out.ReclaimedEvents, "candidates", len(pruneOut.ReclaimEventIDs))
+		}
 	}
 
 	logger.Info("IngestWorkflow complete", "output", out)

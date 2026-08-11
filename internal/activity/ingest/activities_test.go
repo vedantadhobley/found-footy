@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/domain/team"
@@ -195,6 +197,13 @@ func (r *fakeFixtureRepo) PruneCompleted(_ context.Context, threshold time.Time)
 		}
 	}
 	return deleted, nil
+}
+
+// ListReclaimableEventIDs — the fake models no events or shares, so a
+// clip-bearing event to reclaim never exists here. Returns empty; the
+// PruneOldFixtures test asserts only the clipless Deleted count.
+func (r *fakeFixtureRepo) ListReclaimableEventIDs(context.Context, time.Time) ([]uuid.UUID, error) {
+	return nil, nil
 }
 
 // fakeAliasRepo — in-memory alias.Repo.
