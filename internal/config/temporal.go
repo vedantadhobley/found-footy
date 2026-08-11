@@ -35,4 +35,16 @@ type TemporalConfig struct {
 	// activities). Bootstrap's closer for the worker uses a bounded
 	// context based on this value.
 	WorkerShutdownTimeout time.Duration `env:"TEMPORAL_WORKER_SHUTDOWN_TIMEOUT" envDefault:"60s"`
+
+	// MaxConcurrentActivities caps in-flight activity executions on the
+	// worker. The zero-value worker.Options defaults to ~1000, which on
+	// this memory-budgeted host risks OOM when many video-download/ffmpeg
+	// activities run at once — especially across simultaneous matches
+	// (audit-2026-08-05 Tier-2 #8). Mirrors Python's
+	// max_concurrent_activities=30.
+	MaxConcurrentActivities int `env:"TEMPORAL_MAX_CONCURRENT_ACTIVITIES" envDefault:"30"`
+
+	// MaxConcurrentWorkflowTasks caps in-flight workflow-task executions.
+	// Mirrors Python's max_concurrent_workflow_tasks=10.
+	MaxConcurrentWorkflowTasks int `env:"TEMPORAL_MAX_CONCURRENT_WORKFLOW_TASKS" envDefault:"10"`
 }

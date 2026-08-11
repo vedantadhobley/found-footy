@@ -156,7 +156,14 @@ func main() {
 			return nil
 		})
 
-		w := temporal.NewWorker(tempClient, tempIns, worker.Options{})
+		// Concurrency caps (audit-2026-08-05 Tier-2 #8): zero-value
+		// Options defaults to ~1000 concurrent activities, an OOM risk on
+		// this memory-budgeted host under multi-match load. Bound both
+		// from config (defaults mirror Python's 30 / 10).
+		w := temporal.NewWorker(tempClient, tempIns, worker.Options{
+			MaxConcurrentActivityExecutionSize:     deps.Cfg.Temporal.MaxConcurrentActivities,
+			MaxConcurrentWorkflowTaskExecutionSize: deps.Cfg.Temporal.MaxConcurrentWorkflowTasks,
+		})
 
 		// Phase O1d — IngestWorkflow + its four activities.
 		// Repos + adapters constructed above are injected into the
