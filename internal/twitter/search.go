@@ -176,18 +176,13 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// same page load. Timeout is short (5s) — the SPA shell renders
 	// quickly if the session is valid; a longer wait means we're either
 	// dealing with a slow page or an auth redirect.
-	authed, err := verifyOnSearchPage(page)
-	if err != nil {
-		writeSearchError(w, http.StatusInternalServerError, errClassInternal, "verify probe: "+err.Error())
-		return
-	}
-	if !authed {
-		s.SetState(StateUnauthenticated, "search navigation surfaced login/flow redirect")
+	if !verifyOnSearchPage(page) {
+		s.SetState(StateUnauthenticated, "search navigation redirected to login/flow")
 		writeSearchError(w, http.StatusServiceUnavailable, errClassAuthExpired, "session unauthenticated")
 		return
 	}
-	// Update state to healthy since verify just succeeded on this page.
-	// Bypasses the separate /home hop that EnsureAuthenticated does.
+	// Verify passed inline on this page load — mark healthy. Bypasses the
+	// separate /home hop that EnsureAuthenticated does.
 	s.SetState(StateHealthy, "verified inline with search")
 
 	// Wait for at least one tweet to render. Absent = legitimate empty
@@ -251,32 +246,47 @@ func buildSearchURL(query string) string {
 	)
 }
 
-// verifyOnSearchPage checks for the SideNav_AccountSwitcher_Button on
-// the loaded search page. Returns (true, nil) if authed, (false, nil)
-// if the page shows unauth (URL redirected to login/flow), or
-// (false, err) on infrastructure issues (browser wedged, timeout on
-// both the switcher AND the redirect check).
-func verifyOnSearchPage(page playwright.Page) (bool, error) {
-	// Short timeout — SPA shell renders quickly. If neither the
-	// switcher NOR a redirect appears within 5s, something's wrong.
-	_, err := page.WaitForSelector(
-		`[data-testid='SideNav_AccountSwitcher_Button']`,
+// verifyOnSearchPage decides whether the loaded search page is an
+// authenticated session, leaning on the RELIABLE signal (the login
+// redirect) rather than the presence of a specific decorative element.
+//
+// X always redirects logged-out users to /login or /i/flow/…, so a
+// redirect is the authoritative "unauthenticated". A logged-in page is
+// confirmed by any app-shell element — primaryColumn (the main content
+// column, present on every authed page incl. search and painted early),
+// with the sidebar AccountSwitcher kept as a fallback. If NEITHER positive
+// element appears but there is ALSO no login redirect, the session is
+// almost certainly valid (X would have redirected), so we proceed rather
+// than fail: a genuinely broken page then yields an empty result via the
+// tweet-feed wait instead of a spurious 500.
+//
+// The old code required the AccountSwitcher button specifically, which
+// does not reliably render on the search page under headless — ~17% of
+// searches false-failed to HTTP 500 with a perfectly valid session
+// (decisions.md 2026-08-12).
+func verifyOnSearchPage(page playwright.Page) bool {
+	// Authoritative negative: a login/flow redirect (may already have
+	// happened during Navigate).
+	if u := page.URL(); strings.Contains(u, "/login") || strings.Contains(u, "/flow/") {
+		return false
+	}
+	// Positive: any logged-in app-shell element. Short timeout — the shell
+	// paints quickly when the session is valid.
+	if _, err := page.WaitForSelector(
+		`[data-testid='primaryColumn'], [data-testid='SideNav_AccountSwitcher_Button']`,
 		playwright.PageWaitForSelectorOptions{Timeout: playwright.Float(5000)},
-	)
-	if err == nil {
-		return true, nil
+	); err == nil {
+		return true
 	}
-
-	// Switcher missing — check URL for auth-failure redirect. Twitter
-	// redirects unauth'd users to /i/flow/login (or /login).
-	currentURL := page.URL()
-	if strings.Contains(currentURL, "/login") || strings.Contains(currentURL, "/flow/") {
-		return false, nil
+	// Re-check the URL — the redirect may have landed during the wait.
+	if u := page.URL(); strings.Contains(u, "/login") || strings.Contains(u, "/flow/") {
+		return false
 	}
-
-	// Switcher missing AND no login redirect — page might be broken,
-	// rate-limited, or Twitter's markup changed. Surface as infra error.
-	return false, fmt.Errorf("page did not surface logged-in indicator (url=%s): %w", currentURL, err)
+	// No shell element AND no login redirect: logged-out users always get
+	// redirected, so the session is valid — proceed. A broken page falls
+	// through to the tweet-feed wait, which returns an empty result rather
+	// than a spurious 500.
+	return true
 }
 
 // scrollAndExtract implements the scroll loop with four stop conditions

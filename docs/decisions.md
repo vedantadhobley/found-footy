@@ -6,6 +6,32 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-12 — Twitter search auth-verify trusts the login redirect, not a UI element (#185)
+
+Surfaced by the #160 live test. The per-search inline auth check
+(`verifyOnSearchPage`) required the sidebar `SideNav_AccountSwitcher_Button`
+to render within 5s as proof of login; if it didn't appear and the URL wasn't
+a login redirect, it returned an **HTTP 500**. That button does not reliably
+paint on the **search** page under headless, so **~17% of searches (21/121)
+false-failed to 500 with a perfectly valid session** — the URL stayed on
+`/search` (never redirected), and there were **zero 503s / reauth events**:
+login never actually failed, the code just couldn't *confirm* it via that one
+flaky element and threw away a good search.
+
+Fix: trust the **reliable** signal. X always redirects logged-out users to
+`/login` or `/i/flow/…`, so a redirect is the authoritative "unauthenticated"
+(→ 503, which triggers reauth). A logged-in page is confirmed by any app-shell
+element — `primaryColumn` (main content column, painted early), with the
+`AccountSwitcher` kept as a fallback. When **neither** positive element appears
+**and** there's no login redirect, `verifyOnSearchPage` now **proceeds** rather
+than 500: a genuinely broken page falls through to the tweet-feed wait and
+returns an empty result instead of a spurious error. Signature simplified to
+`bool` (the error return only ever fed the 500 path). Genuine expiry still
+503s. Fix rebuilt into `found-footy-dev-twitter:latest`; false-500 drop being
+confirmed live as new fleet instances take over. This is browser-integration
+code (operates on a live `playwright.Page`), so it's validated live rather than
+by unit test.
+
 ## 2026-08-12 — Twitter scaling: per-event Firefox fleet replaces the scaler-pool (#160, ship-dark)
 
 **Divergence from [rebuild-plan.md §2](design/rebuild-plan.md#2-repository-structure)
