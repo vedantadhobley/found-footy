@@ -85,6 +85,23 @@ follow-up). The `scaler` binary stays a scaffold — the auto-scale-pool concept
 was built for is superseded here; whether it earns a different role or gets
 removed is a cutover-cleanup question.
 
+**Live-validated 2026-08-12** (same day, later): enabled in dev
+(`FIREFOXFLEET_ENABLED=true`, worker recreated with the socket mount) and run
+against live pre-season friendlies + the UEFA Super Cup. Full lifecycle
+confirmed on real goals under concurrent load — **6 per-event instances at
+peak** (Arsenal/Como, Forest/Leverkusen, PSG/Villa, Napoli): provision-on-
+trigger (create+start ~300ms observed) → per-event isolation → search →
+vision → dedup/rank → `assets_surfaced` → **clean release (stop+rm) exactly at
+workflow completion** — the teardown half the offline smoke couldn't prove.
+Arsenal/Lewis-Skelly surfaced 6 ranked clips (top popularity 16, one 1080p).
+Note on the residual download-miss (#182): per-event isolation fixes *search*
+contention (each goal got 100–150 candidates on its own browser), but the
+~1.3% per-candidate download failure (e.g. 2/150 on the Baturina event) is
+syndication-side and unaffected by fleet size — search volume absorbs it, but
+the fix stays #182. Scraped `duration_seconds=0` is common (~65% of
+candidates) and remains harmless: the pipeline gates on the ffmpeg-probed
+duration, and zero length-0 clips survived. Fleet left ENABLED in dev.
+
 ## 2026-08-11 — LLM path: joi.luv gateway + gemma pin; concurrency cap 2→4 (stopgap)
 
 joi's NixOS rebuild moved found-footy's LLM path behind a per-node gateway:
