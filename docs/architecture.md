@@ -94,7 +94,8 @@ found-footy/
 │                                          (see decisions.md 2026-07-07)
 ├── scripts/                             smoke + trigger scripts
 │   ├── smoke_repos/main.go              ✓ live pg + repo smoke test (dev only)
-│   └── trigger_ingest/main.go           ✓ live IngestWorkflow trigger (O1d verification)
+│   ├── trigger_ingest/main.go           ✓ live IngestWorkflow trigger (O1d verification)
+│   └── smoke_fleet/main.go              ✓ #160: live per-event fleet smoke — provision→healthy→release one instance (dev only; needs docker.sock + dev network)
 ├── test/                                ✓ scenario harness (Phase T shipped early)
 │   ├── harness/                         ✓ testcontainer pg + mock apifootball + assertion engine
 │   ├── scenarios/                       ✓ YAML corpus organized by suite
