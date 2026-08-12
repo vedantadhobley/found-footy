@@ -96,7 +96,7 @@ func TestSearch_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	res, err := c.Search(context.Background(), twitter.SearchRequest{Query: "goal salah"})
+	res, err := c.Search(context.Background(), "", twitter.SearchRequest{Query: "goal salah"})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}

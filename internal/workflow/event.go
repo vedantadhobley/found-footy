@@ -37,6 +37,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
+	fleetactivity "github.com/vedantadhobley/found-footy/internal/activity/fleet"
 	querybuilder "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 )
 
@@ -116,12 +117,21 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		"query_timeout", cfgOut.QueryTimeout,
 	)
 
+	// #160: when the Firefox fleet is enabled, the monitor provisioned a
+	// dedicated per-event instance at debounce count=1 (warm by now).
+	// Derive its deterministic address (no registry) and target searches
+	// at it. Empty (fleet off) → SearchTweets uses the shared service.
+	instanceAddr := ""
+	if cfgOut.FleetEnabled {
+		instanceAddr = fleetactivity.InstanceAddr(in.EventID)
+	}
+
 	// D4b guard — Monitor's debounce should hold events until player
 	// is known. If it fires empty, log + mark complete with a distinct
 	// outcome_class so we can grep Loki for pipeline bugs.
 	if in.PlayerName == "" {
 		out.OutcomeClass = "unknown_player"
-		return finalizeEvent(ctx, in, out, log)
+		return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled)
 	}
 
 	// Step 1: fetch team aliases from pg.
@@ -156,7 +166,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 			"player", in.PlayerName, "canonical", canonicalName,
 			"alias_count", len(aliasesOut.Aliases))
 		out.OutcomeClass = "empty_query"
-		return finalizeEvent(ctx, in, out, log)
+		return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled)
 	}
 	log.Info("query built", "query", query, "length", len(query))
 
@@ -192,6 +202,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 				discoveryactivity.SearchTweetsInput{
 					EventID: in.EventID, FixtureID: in.FixtureID, Query: query,
 					ExcludeURLs: excludeURLs, MaxAgeMinutes: cfgOut.MaxAgeMinutes,
+					InstanceAddr: instanceAddr,
 				}).Get(searchOptions, &searchOut); err != nil {
 				log.Warn("SearchTweets attempt failed", "attempt", attempt, "err", err)
 			} else {
@@ -252,7 +263,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		"spawned", p.spawned, "passed", p.passed, "duplicates", p.duplicates,
 		"verified", p.verified, "unverified", p.unverified, "superseded", p.superseded,
 		"assets_kept", out.AssetsKept, "rejected", p.rejectedClips, "failed", p.failed)
-	return finalizeEvent(ctx, in, out, log)
+	return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled)
 }
 
 // finalizeEvent is the exit ramp — marks the
@@ -264,6 +275,7 @@ func finalizeEvent(
 	in EventWorkflowInput,
 	out EventWorkflowOutput,
 	logger log.Logger,
+	fleetEnabled bool,
 ) (EventWorkflowOutput, error) {
 	actCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: discoveryPGShortActivityTTL,
@@ -284,6 +296,27 @@ func finalizeEvent(
 		}).Get(actCtx, &completeOut); err != nil {
 		logger.Warn("MarkDownstreamComplete failed", "err", err)
 		return out, err
+	}
+
+	// #160: release this event's Firefox instance on normal completion.
+	// Best-effort — the row is already marked complete, and the reaper
+	// sweeps an orphan, so a failed release must not fail the event.
+	// No-op when the fleet is disabled (ReleaseFirefox short-circuits on a
+	// nil Fleet). The VAR-cancel + pre-trigger-decay releases live on the
+	// monitor side (a cancelled workflow never reaches here).
+	if fleetEnabled {
+		relCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: discoveryPGShortActivityTTL,
+			RetryPolicy: &temporal.RetryPolicy{
+				InitialInterval:    time.Second,
+				BackoffCoefficient: 2,
+				MaximumAttempts:    discoveryPGRetryAttempts,
+			},
+		})
+		if err := workflow.ExecuteActivity(relCtx, "ReleaseFirefox",
+			fleetactivity.ReleaseFirefoxInput{EventID: in.EventID}).Get(relCtx, nil); err != nil {
+			logger.Warn("ReleaseFirefox failed (reaper will sweep)", "event_id", in.EventID, "err", err)
+		}
 	}
 
 	out.Completed = true

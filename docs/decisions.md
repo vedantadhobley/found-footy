@@ -6,6 +6,85 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-12 — Twitter scaling: per-event Firefox fleet replaces the scaler-pool (#160, ship-dark)
+
+**Divergence from [rebuild-plan.md §2](design/rebuild-plan.md#2-repository-structure)
+service table** (lines 193–195): the plan specified a fixed `twitter` pool of
+2–8 Firefox replicas auto-scaled by a `scaler` sidecar watching Temporal queue
+depth. #160 replaces that model with **one dedicated Firefox per active event**,
+provisioned on demand and torn down when the event ends — no warm pool, no
+queue-depth controller.
+
+**Why per-event over pooled + auto-scaled:**
+- **Isolation.** A shared pool means every in-flight goal contends for the same
+  handful of browser sessions — head-of-line blocking, and one event's search
+  load or failure degrades every other event. A dedicated instance per event
+  removes the contention entirely.
+- **Lifecycle is already known.** The debounce state machine knows *exactly*
+  when an event needs a browser (a known scorer attaches → `debounce_count=1`)
+  and when it stops (completion, or decay/VAR to 0). That is a precise, bounded
+  window (~15 min) — strictly better information than a scaler inferring demand
+  from queue depth after the fact. So we provision/release on the state machine's
+  own transitions instead of running a separate controller.
+- **No bloat.** Per-instance lifetime = event lifetime, so the memory creep that
+  wedged the old always-on shared container (#170-adjacent) can't accumulate;
+  each instance is ephemeral and capped (2 GiB) at provision.
+
+**Zero-warm — the load-bearing insight.** `Provision` is create+start **only**
+(~1–2 s), NOT a blocking health wait. It fires at `debounce_count=1`; the ~30 s
+Firefox warm-up (launch + cookie load + auth-verify) hides behind the debounce
+window (1→2→3 is ~90 s at 30 s/poll), so the instance is warm by the time the
+event *triggers* at count=3 and the EventWorkflow starts searching. A blocking
+health wait in Provision would instead stall the 30 s poll cycle — the opposite
+of the goal.
+
+**No registry / no router.** The container name and address are a pure function
+of the event ID — `ff-firefox-ev-<first-8-hex>` / `http://<name>:8888`. The
+provisioner (monitor, at count=1) and the consumer (EventWorkflow, at count=3)
+independently compute the *same* address, so there is nothing to look up and no
+routing table to keep consistent. `twitter.Client.Search` grew a per-call `addr`
+param: empty → shared service (pre-#160), non-empty → the event's instance.
+
+**Lifecycle wiring** (all gated on `FleetEnabled`, so it ships dark):
+`ReconcileFixture` returns `NewNamedEventIDs` (events that first acquired a
+scorer this cycle) → ActivePoll Step 4.4 `ProvisionFirefox`. Teardown is
+double-covered and idempotent: `EventWorkflow.finalizeEvent` releases on the
+happy path (all three exit paths); ActivePoll Step 4.5 releases every
+`EventsRemovedIDs` member, covering the event that decays before finalize (VAR
+after trigger, or pre-trigger decay from count 1). Idempotency makes the overlap
+safe.
+
+**Cap = 16, soft, label-counted.** The count source of truth is *live containers
+carrying the fleet label*, not an in-process counter — robust across worker
+restarts. The binding constraint is not host memory (16 × 2 GiB is fine here) but
+Twitter's tolerance for concurrent sessions on the single shared account (Python
+tested ~8); >8 risks auth flapping, so the number is a knob to watch, not a
+capacity target. Provision blocks-and-waits for a slot at the cap.
+
+**Shared cookies, RW.** Every instance bind-mounts the one cookie file
+read-write; atomic-write + fingerprint-dedupe + filesystem-mtime coordination
+(`internal/twitter/cookies_backup.go`, decisions.md 2026-07-21) already makes
+concurrent writers safe, so per-event instances keep the fleet's cookies fresh
+during active periods rather than going stale.
+
+**Two operational notes for the flip:**
+- The worker mounts `/var/run/docker.sock` (root-equivalent, scoped to the dev
+  worker) so it can drive the Docker API. The `firefoxfleet.Fleet` is constructed
+  *only* when `FIREFOXFLEET_ENABLED=true`, so the mount sits unused while dark.
+- Instances attach to the **Compose-prefixed** network name
+  `found-footy-dev_found-footy-dev` (verified: that is what the worker/twitter
+  containers are on), NOT the bare `found-footy-dev` key — a stale bare network
+  of that name also exists and would leave instances unreachable. The config
+  default reflects the prefixed name; overridable per-env.
+
+**Deferred (not blocking ship-dark):** (1) a cookie keep-alive schedule so idle
+instances don't let cookies age out; (2) an orphan reaper that sweeps instances
+left behind if the worker crashes mid-event (the Release paths cover happy +
+decay, and dev worker restarts are rare, so the reaper is a robustness
+follow-up). The `scaler` binary stays a scaffold — the auto-scale-pool concept it
+was built for is superseded here; whether it earns a different role or gets
+removed is a cutover-cleanup question.
+
 ## 2026-08-11 — LLM path: joi.luv gateway + gemma pin; concurrency cap 2→4 (stopgap)
 
 joi's NixOS rebuild moved found-footy's LLM path behind a per-node gateway:

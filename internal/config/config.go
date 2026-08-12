@@ -33,6 +33,7 @@ type Config struct {
 	Wikipedia     WikipediaConfig
 	Syndication   SyndicationConfig
 	Twitter       TwitterConfig
+	FirefoxFleet  FirefoxFleetConfig
 	FFmpeg        FFmpegConfig
 
 	// Cross-workflow orchestration values (activation window, staging

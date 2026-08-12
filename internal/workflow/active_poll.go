@@ -44,6 +44,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
+	fleetactivity "github.com/vedantadhobley/found-footy/internal/activity/fleet"
 	"github.com/vedantadhobley/found-footy/internal/activity/monitor"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 )
@@ -100,15 +101,19 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 	// Resolve activation window: caller override wins, else read from
 	// config via GetMonitorConfig (workflows can't touch env directly
 	// per Temporal determinism).
+	// Read monitor config once at cycle start (trivial in-process activity).
+	// Caller override for ActivationWindow still wins; FleetEnabled (#160)
+	// always comes from config and is needed later at the provision/release
+	// steps, so cfgOut is function-scoped rather than block-local.
+	var cfgOut monitor.GetMonitorConfigOutput
+	if err := workflow.ExecuteActivity(ctx,
+		"GetMonitorConfig",
+		monitor.GetMonitorConfigInput{},
+	).Get(ctx, &cfgOut); err != nil {
+		return out, fmt.Errorf("read monitor config: %w", err)
+	}
 	activationWindow := in.ActivationWindow
 	if activationWindow == 0 {
-		var cfgOut monitor.GetMonitorConfigOutput
-		if err := workflow.ExecuteActivity(ctx,
-			"GetMonitorConfig",
-			monitor.GetMonitorConfigInput{},
-		).Get(ctx, &cfgOut); err != nil {
-			return out, fmt.Errorf("read monitor config: %w", err)
-		}
 		activationWindow = cfgOut.ActivationWindow
 	}
 
@@ -188,6 +193,7 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 				}))
 	}
 	var removedEventIDs []uuid.UUID
+	var newNamedEventIDs []uuid.UUID
 	for _, f := range reconcileFutures {
 		var reconcileOut monitor.ReconcileFixtureOutput
 		if err := f.Get(ctx, &reconcileOut); err != nil {
@@ -199,8 +205,30 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 		out.EventsBecameStable = append(out.EventsBecameStable, reconcileOut.EventsBecameStable...)
 		out.EventsRemoved = append(out.EventsRemoved, reconcileOut.EventsRemoved...)
 		removedEventIDs = append(removedEventIDs, reconcileOut.EventsRemovedIDs...)
+		newNamedEventIDs = append(newNamedEventIDs, reconcileOut.NewNamedEventIDs...)
 		out.UnknownDropped += reconcileOut.UnknownDropped
 		out.Errors = append(out.Errors, reconcileOut.Errors...)
+	}
+
+	// ── Step 4.4: warm a Firefox instance per newly-detected named event
+	// (#160). Provision is create+start only (fast); the container warms in
+	// the background during the ~60-90s debounce window so it is ready when
+	// the event triggers at count=3 and the EventWorkflow begins searching.
+	// No-op when the fleet is disabled (nil Fleet). Best-effort — a failed
+	// provision just means the EventWorkflow's searches fall back to the
+	// shared service (its InstanceAddr resolves to nothing → retry there).
+	if cfgOut.FleetEnabled && len(newNamedEventIDs) > 0 {
+		provCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 30 * time.Second,
+			RetryPolicy:         baseAO.RetryPolicy,
+		})
+		for _, evID := range newNamedEventIDs {
+			if err := workflow.ExecuteActivity(provCtx, "ProvisionFirefox",
+				fleetactivity.ProvisionFirefoxInput{EventID: evID}).Get(provCtx, nil); err != nil {
+				logger.Warn("ProvisionFirefox failed", "event_id", evID.String(), "error", err)
+				out.Errors = append(out.Errors, "ProvisionFirefox: "+err.Error())
+			}
+		}
 	}
 
 	// ── Step 4.5: VAR destroy (#172) ──
@@ -221,6 +249,18 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 				videoactivity.DestroyEventInput{EventID: evID}).Get(destroyCtx, nil); err != nil {
 				logger.Warn("DestroyEvent failed", "event_id", evID.String(), "error", err)
 				out.Errors = append(out.Errors, "DestroyEvent: "+err.Error())
+			}
+			// #160: release the event's Firefox instance. Covers both the
+			// pre-trigger decay (provisioned at count=1, never spawned an
+			// EventWorkflow) and the post-trigger VAR (its EventWorkflow was
+			// cancelled above, so finalizeEvent won't run to self-release).
+			// Idempotent. Guarded so nothing fires when the fleet is off.
+			if cfgOut.FleetEnabled {
+				if err := workflow.ExecuteActivity(destroyCtx, "ReleaseFirefox",
+					fleetactivity.ReleaseFirefoxInput{EventID: evID}).Get(destroyCtx, nil); err != nil {
+					logger.Warn("ReleaseFirefox failed (reaper will sweep)", "event_id", evID.String(), "error", err)
+					out.Errors = append(out.Errors, "ReleaseFirefox: "+err.Error())
+				}
 			}
 		}
 	}

@@ -121,9 +121,16 @@ func (c *Client) probeHealth(ctx context.Context) error {
 	return nil
 }
 
-// Search sends a search request to the twitter container and returns
-// discovered video refs. Bounded by cfg.SearchTimeout.
-func (c *Client) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
+// Search sends a search request to a twitter instance and returns
+// discovered video refs. addr targets a specific per-event instance
+// (#160 Firefox fleet, e.g. http://ff-firefox-ev-<id>:8888); an empty
+// addr uses the shared service (c.baseURL) — the pre-#160 path and the
+// fallback when the fleet is disabled. Bounded by cfg.SearchTimeout.
+func (c *Client) Search(ctx context.Context, addr string, req SearchRequest) (*SearchResponse, error) {
+	base := c.baseURL
+	if addr != "" {
+		base = addr
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("twitter.Search: marshal request: %w", err)
@@ -132,7 +139,7 @@ func (c *Client) Search(ctx context.Context, req SearchRequest) (*SearchResponse
 	defer cancel()
 
 	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost,
-		c.baseURL+"/search", bytes.NewReader(body))
+		base+"/search", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("twitter.Search: build request: %w", err)
 	}
