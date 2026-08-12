@@ -6,6 +6,35 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-12 — ffmpeg dense-extract: wire the heartbeat + give it a dedicated timeout (#184)
+
+Surfaced by the #160 live test: dense frame extraction (`extract_dense`) was
+killed 6× at ~30s under concurrent match load → 2 clips lost after retries. Two
+30s deadlines were racing, both misconfigured:
+- The video activities set `HeartbeatTimeout=30s` but **never emitted a
+  heartbeat** (zero `RecordHeartbeat` calls repo-wide) — so Temporal killed any
+  attempt running >30s despite its 2-min (HashVideo) / 3-min (DownloadAndStage)
+  StartToClose budget. A configured-but-unsatisfied heartbeat timeout is
+  strictly *worse* than none: it imposes a 30s ceiling nothing can satisfy.
+- `FFMPEG_TIMEOUT=30s` was uniform across all ffmpeg ops; dense extraction (a
+  ~90s clip at 0.1s sampling = ~900 frames in one streamed decode pass) can
+  legitimately need longer under load.
+
+NOT memory (worker at 5%/16g) and NOT a concurrency problem — single-threaded
+procs (`FFMPEG_THREADS_PER_PROC=1`) on a 32-thread box aren't oversubscribed, so
+cutting `FFMPEG_MAX_CONCURRENT` was explicitly rejected (it would only cost
+match-time throughput).
+
+Fix, three parts: (1) **HashVideo heartbeats on frame progress** via the streamed
+`onFrame` callback — the hook the streaming design (#177) always implied but
+never wired; (2) **DownloadAndStage heartbeats on byte progress** via an
+`io.Writer` wrap around the download; (3) a dedicated **`FFMPEG_DENSE_TIMEOUT`
+(100s**, just under HashVideo's 2-min StartToClose) for `extract_dense`, leaving
+probe/single-frame/faststart at the tight 30s so genuine hangs there still
+surface fast. Heartbeats are **progress-tied** (a stalled op stops heartbeating
+→ Temporal fails it fast; a slow-but-progressing op runs to StartToClose) and
+guarded by `activity.IsActivity` so they no-op in the direct-call unit tests.
+
 ## 2026-08-12 — Twitter search auth-verify trusts the login redirect, not a UI element (#185)
 
 Surfaced by the #160 live test. The per-search inline auth check
