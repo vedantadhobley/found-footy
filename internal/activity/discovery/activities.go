@@ -54,6 +54,12 @@ type Activities struct {
 	MaxHamming   int
 	MinRunFrames int
 	MaxGapFrames int
+
+	// FleetEnabled mirrors config.FirefoxFleetConfig.Enabled (#160). Set
+	// at worker init; surfaced to EventWorkflow via GetDiscoveryConfig so
+	// the workflow decides deterministically whether to use a per-event
+	// instance address.
+	FleetEnabled bool
 }
 
 // ── GetDiscoveryConfig ─────────────────────────────────────────
@@ -75,6 +81,12 @@ type GetDiscoveryConfigOutput struct {
 	MaxHamming   int
 	MinRunFrames int
 	MaxGapFrames int
+
+	// FleetEnabled mirrors FirefoxFleetConfig.Enabled (#160). When true,
+	// the EventWorkflow derives its per-event instance address and passes
+	// it to SearchTweets; when false it leaves InstanceAddr empty and
+	// SearchTweets uses the shared twitter service.
+	FleetEnabled bool
 }
 
 // Fallbacks used when config isn't populated on Activities (test
@@ -107,6 +119,7 @@ func (a *Activities) GetDiscoveryConfig(
 		MaxHamming:     a.MaxHamming,
 		MinRunFrames:   a.MinRunFrames,
 		MaxGapFrames:   a.MaxGapFrames,
+		FleetEnabled:   a.FleetEnabled,
 	}
 	if out.MaxAttempts == 0 {
 		out.MaxAttempts = fallbackMaxAttempts
@@ -136,7 +149,7 @@ func (a *Activities) GetDiscoveryConfig(
 // exactly the verbs SearchTweets needs. Tests inject fakes; prod
 // wires the concrete *twitter.Client from S7.
 type twitterClient interface {
-	Search(ctx context.Context, req twitter.SearchRequest) (*twitter.SearchResponse, error)
+	Search(ctx context.Context, addr string, req twitter.SearchRequest) (*twitter.SearchResponse, error)
 }
 
 // FetchTeamAliasesInput identifies the team whose alias set we need.
@@ -199,6 +212,11 @@ type SearchTweetsInput struct {
 	// MaxAgeMinutes bounds how far back Twitter scrolls. Default 5
 	// (Python's default) if zero.
 	MaxAgeMinutes int
+	// InstanceAddr targets a per-event Firefox instance (#160), e.g.
+	// http://ff-firefox-ev-<id>:8888. Empty → the shared twitter service
+	// (fleet disabled, or pre-#160). The EventWorkflow derives it from
+	// the event ID when the fleet is enabled.
+	InstanceAddr string
 }
 
 // SearchTweetsOutput reports what came back. Videos is the list of
@@ -230,7 +248,7 @@ func (a *Activities) SearchTweets(ctx context.Context, in SearchTweetsInput) (Se
 	if maxAge == 0 {
 		maxAge = 5
 	}
-	resp, err := a.Twitter.Search(ctx, twitter.SearchRequest{
+	resp, err := a.Twitter.Search(ctx, in.InstanceAddr, twitter.SearchRequest{
 		Query:         in.Query,
 		ExcludeURLs:   in.ExcludeURLs,
 		MaxAgeMinutes: maxAge,

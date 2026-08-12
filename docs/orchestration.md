@@ -316,6 +316,22 @@ clips), and reclaims its Garage objects. Mirrors Python (`monitor.py`
 `initial_count` + `unknown_scorer_disappeared` + `mark_event_removed`); see
 [decisions.md](decisions.md) 2026-08-05. Surfaced per cycle as `unknown_dropped`.
 
+**Per-event Firefox fleet lifecycle (#160, ship-dark behind `FleetEnabled`).**
+Two hooks straddle the debounce, both gated on the monitor config's
+`FleetEnabled` (default false → both inert):
+- **Step 4.4 provision.** `ReconcileFixture` returns `NewNamedEventIDs` — the
+  events that *this cycle* first acquired a known scorer (debounce_count went to
+  1, so all data needed for a Twitter query now exists). ActivePoll fires
+  `ProvisionFirefox` per ID: create+start a dedicated `ff-firefox-ev-<8hex>`
+  container (no blocking health wait — the ~30s warm-up hides behind the debounce
+  window). Warming at count=1 means the instance is ready when the event
+  *triggers* at count=3.
+- **Step 4.5 release.** The same step that runs the VAR destroy also calls
+  `ReleaseFirefox` for every `EventsRemovedIDs` member — covering both a
+  triggered event decaying to 0 (VAR) and a pre-trigger event that provisioned
+  at count=1 but decayed before reaching 3. Release is idempotent, so the
+  overlap with EventWorkflow's own finalize-release (the happy path) is harmless.
+
 ## StagingPollWorkflow — as shipped
 
 15-min poll of STAGING fixtures. Schedule `staging-poll-scheduled` (cron
@@ -380,6 +396,17 @@ the internal downstream label). `AssetsKept` is the LIVE count (`len(p.assets)`
 — supersede removes losers), not cumulative promotes. Methodology + rationale:
 [decisions.md 2026-08-09](decisions.md) + [`video-dedup.md`](design/proposals/video-dedup.md);
 history in [audit-2026-08-05](design/audit-2026-08-05.md) Tier-1 #1.
+
+**Per-event Firefox fleet binding (#160, ship-dark behind `FleetEnabled`).**
+When `GetDiscoveryConfig` returns `FleetEnabled=true`, the producer derives
+`instanceAddr := fleetactivity.InstanceAddr(EventID)` — a pure function of the
+event ID, no registry lookup — and threads it through every
+`SearchTweetsInput.InstanceAddr`, so this event's searches hit its own dedicated
+Firefox (provisioned back at debounce count=1). Empty when disabled → searches
+fall back to the shared twitter service. `finalizeEvent` (all three exit paths:
+success, search-empty, error) calls `ReleaseFirefox(EventID)` when
+`FleetEnabled`, the happy-path teardown; the monitor's Step 4.5 release covers
+the event that never reaches finalize (decay/VAR). Both are idempotent.
 
 ## Testing shape
 

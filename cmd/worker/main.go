@@ -19,6 +19,7 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
+	fleetactivity "github.com/vedantadhobley/found-footy/internal/activity/fleet"
 	ingestactivity "github.com/vedantadhobley/found-footy/internal/activity/ingest"
 	monitoractivity "github.com/vedantadhobley/found-footy/internal/activity/monitor"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
@@ -28,6 +29,7 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	eventinfra "github.com/vedantadhobley/found-footy/internal/infra/event"
 	"github.com/vedantadhobley/found-footy/internal/infra/ffmpeg"
+	"github.com/vedantadhobley/found-footy/internal/infra/firefoxfleet"
 	"github.com/vedantadhobley/found-footy/internal/infra/llm"
 	"github.com/vedantadhobley/found-footy/internal/infra/nats"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
@@ -225,6 +227,7 @@ func main() {
 			MaxHamming:   deps.Cfg.Dedup.MaxHamming,
 			MinRunFrames: deps.Cfg.Dedup.MinRunFrames,
 			MaxGapFrames: deps.Cfg.Dedup.MaxGapFrames,
+			FleetEnabled: deps.Cfg.FirefoxFleet.Enabled,
 		}
 		if twitterClient != nil {
 			discoveryActs.Twitter = twitterClient
@@ -281,7 +284,25 @@ func main() {
 			Composer:         composer,
 			Spawner:          spawner,
 			ActivationWindow: deps.Cfg.Workflows.ActivationWindow,
+			FleetEnabled:     deps.Cfg.FirefoxFleet.Enabled,
 		}
+
+		// #160 — per-event Firefox fleet. Constructed only when enabled;
+		// disabled → nil Fleet → Provision/ReleaseFirefox no-op and the
+		// workflows' FleetEnabled guards keep the path dark. Requires the
+		// Docker socket mounted into the worker (compose).
+		var firefoxFleet *firefoxfleet.Fleet
+		if deps.Cfg.FirefoxFleet.Enabled {
+			firefoxFleet, err = firefoxfleet.New(deps.Cfg.FirefoxFleet)
+			if err != nil {
+				return fmt.Errorf("firefox fleet: %w", err)
+			}
+			deps.RegisterCloser("firefox-fleet", func(_ context.Context) error {
+				return firefoxFleet.Close()
+			})
+		}
+		fleetActs := &fleetactivity.Activities{Fleet: firefoxFleet}
+
 		w.RegisterWorkflow(ffwf.ActivePollWorkflow)
 		w.RegisterWorkflow(ffwf.StagingPollWorkflow)
 		w.RegisterWorkflow(ffwf.EventWorkflow)
@@ -291,6 +312,7 @@ func main() {
 		w.RegisterActivity(videoActs)
 		w.RegisterActivity(visionActs)
 		w.RegisterActivity(persistActs)
+		w.RegisterActivity(fleetActs)
 
 		if err := w.Start(ctx); err != nil {
 			return err

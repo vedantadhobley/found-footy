@@ -178,6 +178,14 @@ services:
       - .:/src                                     # bind mount for air hot-reload
       - go-cache:/gocache
       - go-mod-cache:/gomodcache
+      # #160 per-event Firefox fleet — Docker socket so the worker can
+      # provision/release one twitter/Firefox container per active event
+      # via the Docker API (internal/infra/firefoxfleet). Root-equivalent
+      # access, scoped to this dev worker; the fleet is constructed only
+      # when FIREFOXFLEET_ENABLED=true (default false → this mount sits
+      # unused). Bind sources for provisioned instances resolve on the
+      # host, which is why FIREFOXFLEET_COOKIE_HOST_PATH is a host path.
+      - /var/run/docker.sock:/var/run/docker.sock
       # NATS creds mount removed 2026-07-07: workspace NATS runs no-auth
       # (accounts section commented in ~/workspace/nats/nats.conf). Re-add
       # when nsc-generated creds land + accounts are wired.

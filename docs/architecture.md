@@ -14,7 +14,7 @@ and plan match, no entry — silence == alignment.
 an adapter shape, or lands a new domain type updates this doc in
 the SAME commit. Not the next commit. Same commit.
 
-## As-shipped tree (2026-07-24, through O3/d + T/c + audit doc-sync)
+## As-shipped tree (2026-08-12, through O3/d + T/c + #160 fleet ship-dark)
 
 ```
 found-footy/
@@ -37,7 +37,7 @@ found-footy/
 │   │   ├── vision/                      ⊘ doc.go stub — build when VideoValidationWorkflow lands (O4)
 │   │   ├── session/                     ⊘ doc.go stub — build when Twitter Go service ports (post-O)
 │   │   └── textanalysis/                ⊘ doc.go stub — extensibility hook per plan §4
-│   ├── infra/                           12 live
+│   ├── infra/                           13 live
 │   │   ├── pg/                          ✓ S2: pool + instruments + schema.sql + FixtureRepo + EventRepo + AliasRepo + TeamRepo + AssetRepo/ShareRepo (#164a)
 │   │   ├── nats/                        ✓ S3: client + instruments
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
@@ -49,7 +49,8 @@ found-footy/
 │   │   ├── wikidata/                    ✓ S7: SPARQL client + tests
 │   │   ├── wikipedia/                ✓ S7: CirrusSearch entity resolution (per 2026-07-21) + tests
 │   │   ├── event/                       ✓ O3/a: dual-write composer (pg event_log + NATS Publish, 6 kinds) + tests
-│   │   └── ffmpeg/                      ✓ V/1: probe + single/dense frame extract (single-pass fps) + faststart + semaphore + typed taxonomy + tests
+│   │   ├── ffmpeg/                      ✓ V/1: probe + single/dense frame extract (single-pass fps) + faststart + semaphore + typed taxonomy + tests
+│   │   └── firefoxfleet/                ✓ #160 (ship-dark, FIREFOXFLEET_ENABLED=false): per-event Firefox provisioner via Docker API — deterministic name/addr (no registry), idempotent Provision/Release, label-counted cap + tests
 │   ├── workflow/                        6 shipped
 │   │   ├── ingest.go                    ✓ O1c: IngestWorkflow
 │   │   ├── active_poll.go               ✓ O2: ActivePollWorkflow (30s IntervalSpec)
@@ -57,13 +58,14 @@ found-footy/
 │   │   ├── event.go                     ✓ #164c: EventWorkflow — per-goal orchestrator (producer: discovery search + spawn Video children; ex-DiscoveryWorkflow)
 │   │   ├── event_pipeline.go            ✓ #164c-b + #171: Selector consumer — md5 gate → vision → category-scoped perceptual dedup + IsUpgrade winner-select → promote/supersede → rank; assets/pending/inFlight state; searchDone&&inFlight==0 completion
 │   │   └── video.go                     ✓ #165: VideoWorkflow child (download → hash)
-│   ├── activity/                        4 packages shipped
+│   ├── activity/                        5 packages shipped
 │   │   ├── ingest/                      ✓ O1b: 4 activities + in-memory fakes + 11 tests
 │   │   │   ├── activities.go
 │   │   │   └── activities_test.go
 │   │   ├── monitor/                     ✓ O2a: 6 activities (GetMonitorConfig, ActivateUpcoming, PollStagingFixtures, ListActiveFixtureIDs, FetchLiveFixtures, ReconcileFixture) + fakes + tests
 │   │   ├── discovery/                   ✓ O3/d: GetDiscoveryConfig, FetchTeamAliases, SearchTweets, StoreCandidate, MarkDownstreamComplete (no _test.go yet — audit gap)
-│   │   └── video/                       ✓ V/3b: DownloadAndStage + HashVideo (staging-split + pre-download filter) + fakes + 8 tests
+│   │   ├── video/                       ✓ V/3b: DownloadAndStage + HashVideo (staging-split + pre-download filter) + fakes + 8 tests
+│   │   └── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when ship-dark
 │   ├── api/                             ✓ #167: Chi read API — GET /fixtures(+?ids batch) /fixtures/{id} /events?ids /events/{id} /videos/{share_id}(302→presign chain); dto.go + handlers.go + router.go + tests; SSE is vedanta-systems'
 │   ├── bootstrap/                       ✓ S1 (NOT IN PLAN — see decisions.md 2026-07-07)
 │   │   └── bootstrap.go                 Deps + LIFO Closer registry; shared binary startup
@@ -427,6 +429,15 @@ tests pass against a mock. The actual twitter container in dev runs
 the real Go Twitter search service (T/a+T/b+T/c shipped 2026-07-23; Python
 `twitter/` in prod). Wire-up deferred until the Go twitter service
 lands.
+
+`twitter.Client.Search(ctx, addr, req)` takes a **per-call base address**
+(#160): empty `addr` → the shared `TwitterConfig.BaseURL` (pre-#160
+behavior); a non-empty `addr` → that event's dedicated fleet instance,
+derived by `firefoxfleet.InstanceAddr(eventID)`. The EventWorkflow decides
+which by `FleetEnabled` and threads it through `SearchTweetsInput.InstanceAddr`.
+This is how one HTTP client fans searches across N per-event Firefox
+containers without a router or registry — the address is a pure function
+of the event ID.
 
 ## Package dependency direction (audit-verified)
 

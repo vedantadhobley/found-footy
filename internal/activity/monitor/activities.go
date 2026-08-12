@@ -83,6 +83,11 @@ type Activities struct {
 	// from config.Workflows.ActivationWindow at worker startup.
 	ActivationWindow time.Duration
 
+	// FleetEnabled mirrors config.FirefoxFleetConfig.Enabled (#160). Set
+	// at worker init; surfaced to ActivePollWorkflow via GetMonitorConfig
+	// so it provisions/releases Firefox instances only when the fleet is on.
+	FleetEnabled bool
+
 	Now func() time.Time
 }
 
@@ -110,6 +115,7 @@ type GetMonitorConfigInput struct{}
 // (workflows can't touch env directly per Temporal determinism).
 type GetMonitorConfigOutput struct {
 	ActivationWindow time.Duration
+	FleetEnabled     bool // #160 — gate per-event Firefox provisioning/release
 }
 
 // GetMonitorConfig — trivial config accessor for the poll workflows.
@@ -121,6 +127,7 @@ func (a *Activities) GetMonitorConfig(
 ) (GetMonitorConfigOutput, error) {
 	return GetMonitorConfigOutput{
 		ActivationWindow: a.ActivationWindow,
+		FleetEnabled:     a.FleetEnabled,
 	}, nil
 }
 
@@ -370,8 +377,13 @@ type ReconcileFixtureOutput struct {
 	FixtureID          int64
 	NewEventsDetected  int
 	EventsBecameStable []string // natural_keys of events that just crossed count=3
-	EventsRemoved      []string    // natural_keys of confirmed events that just hit count=0 (VAR)
-	EventsRemovedIDs   []uuid.UUID // #172: their UUIDs — the poll workflow cancels discovery + runs DestroyEvent for each
+	// NewNamedEventIDs — UUIDs of known-scorer events just Inserted at
+	// debounce_count=1 (#160). The poll workflow provisions a Firefox
+	// instance for each so it is warm by the time the event triggers at
+	// count=3. Same predicate as the event.detected emit (Player.Known()).
+	NewNamedEventIDs []uuid.UUID
+	EventsRemoved    []string    // natural_keys of confirmed events that just hit count=0 (VAR)
+	EventsRemovedIDs []uuid.UUID // #172: their UUIDs — the poll workflow cancels discovery + runs DestroyEvent for each
 	UnknownDropped     int      // unknown-scorer placeholders hard-deleted on disappearance
 	// Completed — true if this reconcile pass transitioned the fixture
 	// from active → completed. See docs/design/proposals/completion-contract.md.
@@ -524,6 +536,10 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			// External fan-out only; Composer nil in tests → no-op.
 			if domainEv.Player.Known() {
 				a.emitEventDetected(ctx, domainEv.ID, in.APIFixture.Fixture.ID, domainEv)
+				// #160: known scorer at count=1 → we have all the data we
+				// need; warm this event's Firefox instance now so it is ready
+				// by the time debounce settles and search begins at count=3.
+				out.NewNamedEventIDs = append(out.NewNamedEventIDs, domainEv.ID)
 			}
 		}
 	}
