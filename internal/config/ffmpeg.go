@@ -16,7 +16,17 @@ type FFmpegConfig struct {
 
 	// Timeout ceilings a single ffmpeg/ffprobe invocation (SIGKILL on
 	// expiry). The activity ctx normally governs; this backstops a runaway.
+	// Applies to the fast ops (probe, single-frame extract, faststart) — kept
+	// tight so a genuine hang there surfaces quickly.
 	Timeout time.Duration `env:"FFMPEG_TIMEOUT" envDefault:"30s"`
+
+	// DenseTimeout ceilings dense frame extraction (ExtractDenseFrames) — the
+	// one CPU-heavy, potentially-long op: a ~90s clip at 0.1s sampling is ~900
+	// frames in a single decode pass, which under concurrent match load can
+	// exceed the tight Timeout above. Kept just under HashVideo's 2-min
+	// StartToClose so ffmpeg trips its own clean timeout before Temporal fires
+	// a blunter activity timeout (#184, decisions.md 2026-08-12).
+	DenseTimeout time.Duration `env:"FFMPEG_DENSE_TIMEOUT" envDefault:"100s"`
 
 	// MaxProcesses caps concurrent ffmpeg/ffprobe processes (semaphore).
 	// Conservative default for the shared box; tune up from the benchmark.

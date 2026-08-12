@@ -67,6 +67,7 @@ type Client struct {
 	ffmpegPath     string
 	ffprobePath    string
 	timeout        time.Duration
+	denseTimeout   time.Duration // dense extract only — longer than timeout (#184)
 	threadsPerProc int
 	frameQuality   int
 	run            runner
@@ -96,11 +97,16 @@ func NewClient(cfg config.FFmpegConfig, ins *Instruments) (*Client, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	denseTimeout := cfg.DenseTimeout
+	if denseTimeout <= 0 {
+		denseTimeout = 100 * time.Second
+	}
 	return &Client{
 		ins:            ins,
 		ffmpegPath:     ffmpegPath,
 		ffprobePath:    ffprobePath,
 		timeout:        timeout,
+		denseTimeout:   denseTimeout,
 		threadsPerProc: cfg.ThreadsPerProc, // 0 = ffmpeg auto-threads
 		frameQuality:   cfg.FrameQuality,
 		run:            execRun,
@@ -202,7 +208,10 @@ func (c *Client) ExtractDenseFrames(ctx context.Context, videoPath string, inter
 	if intervalSecs <= 0 {
 		return fmt.Errorf("%w: intervalSecs must be > 0", ErrExtractionFailed)
 	}
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	// Dense extraction gets its own (longer) ceiling — the caller (HashVideo)
+	// heartbeats on frame progress, so Temporal keeps it alive up to the 2-min
+	// StartToClose; this deadline just backstops a genuinely stuck decode (#184).
+	ctx, cancel := context.WithTimeout(ctx, c.denseTimeout)
 	defer cancel()
 	if err := c.acquire(ctx); err != nil {
 		return err
