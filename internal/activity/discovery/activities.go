@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/vedantadhobley/found-footy/internal/activity/heartbeat"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
 )
@@ -238,6 +239,9 @@ type SearchTweetsOutput struct {
 // Errors from the Twitter service surface here — Temporal retries
 // with backoff per the activity registration in EventWorkflow.
 func (a *Activities) SearchTweets(ctx context.Context, in SearchTweetsInput) (SearchTweetsOutput, error) {
+	// A cold/contended per-event Firefox scroll+scrape legitimately exceeds the
+	// 30s HeartbeatTimeout; keep the attempt alive (#184 audit P0-2).
+	defer heartbeat.Keepalive(ctx, heartbeat.Interval)()
 	if a.Twitter == nil {
 		return SearchTweetsOutput{}, fmt.Errorf("discovery.SearchTweets: Twitter client not wired")
 	}

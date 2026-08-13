@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/vedantadhobley/found-footy/internal/activity/heartbeat"
 	"github.com/vedantadhobley/found-footy/internal/config"
 	dvision "github.com/vedantadhobley/found-footy/internal/domain/vision"
 	"github.com/vedantadhobley/found-footy/internal/infra/ffmpeg"
@@ -62,6 +63,9 @@ type Activities struct {
 // error (retryable); the verdict itself is always a nil-error Outcome.
 func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (ValidateClipOutput, error) {
 	var out ValidateClipOutput
+	// One opaque VLM request that can queue behind the joi cap-4 semaphore past
+	// the HeartbeatTimeout; keep the attempt alive (#184 audit P0-1).
+	defer heartbeat.Keepalive(ctx, heartbeat.Interval)()
 
 	dir, err := os.MkdirTemp(a.ScratchDir, "vision-*")
 	if err != nil {

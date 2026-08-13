@@ -23,11 +23,10 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"time"
 
 	"github.com/google/uuid"
-	"go.temporal.io/sdk/activity"
 
+	"github.com/vedantadhobley/found-footy/internal/activity/heartbeat"
 	"github.com/vedantadhobley/found-footy/internal/config"
 	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 	"github.com/vedantadhobley/found-footy/internal/infra/ffmpeg"
@@ -81,6 +80,9 @@ func ThresholdsFromConfig(c config.HardFilterConfig) dvideo.FilterThresholds {
 // verdict (passed / rejected) comes back as a nil-error Outcome.
 func (a *Activities) DownloadAndStage(ctx context.Context, in DownloadAndStageInput) (DownloadAndStageOutput, error) {
 	var out DownloadAndStageOutput
+	// Covers the CDN fetch (up to ~100MB) + probe + upload — any can exceed the
+	// 30s HeartbeatTimeout (#184).
+	defer heartbeat.Keepalive(ctx, heartbeat.Interval)()
 
 	rv, err := a.Syndication.ResolveVideo(ctx, in.TweetURL)
 	if err != nil {
@@ -138,6 +140,10 @@ func (a *Activities) DownloadAndStage(ctx context.Context, in DownloadAndStageIn
 // each frame. Retries re-fetch from Garage (internal) — never Twitter.
 func (a *Activities) HashVideo(ctx context.Context, in HashVideoInput) (HashVideoOutput, error) {
 	var out HashVideoOutput
+	// Covers the pre-decode Garage fetch + ffmpeg-semaphore wait + the extract;
+	// the old frame-only heartbeat missed the pre-decode waits (#184 audit
+	// P1-3). ffmpeg DenseTimeout + StartToClose remain the real bounds.
+	defer heartbeat.Keepalive(ctx, heartbeat.Interval)()
 	if err := os.MkdirAll(a.ScratchDir, 0o755); err != nil {
 		return out, fmt.Errorf("video.HashVideo: scratch: %w", err)
 	}
@@ -156,11 +162,7 @@ func (a *Activities) HashVideo(ctx context.Context, in HashVideoInput) (HashVide
 	// off ffmpeg's stdout, so peak memory is ~one frame, not the whole clip's
 	// worth of PNGs (~300 MB for a 90 s 1080p clip × the concurrency cap).
 	hashes := make([]uint64, 0, 256)
-	hb := newHeartbeater(ctx, 5*time.Second)
 	err = a.FFmpeg.ExtractDenseFrames(ctx, vidPath, a.FrameIntervalSecs, 0, func(fr ffmpeg.Frame) error {
-		// Heartbeat on frame progress so a long extraction runs to its
-		// StartToClose budget instead of being killed at 30s (#184).
-		hb.tick()
 		h, herr := dvideo.DHashPNG(fr.Data)
 		if herr != nil {
 			return nil // skip one unreadable frame rather than fail the clip
@@ -177,47 +179,6 @@ func (a *Activities) HashVideo(ctx context.Context, in HashVideoInput) (HashVide
 
 // --- internal helpers ---
 
-// heartbeater emits an activity heartbeat at most once per interval, driven by
-// real progress (a frame parsed, a chunk written). This makes the activity's
-// HeartbeatTimeout track genuine liveness: a stalled op (no frames / no bytes)
-// stops heartbeating and Temporal fails it fast, while a slow-but-progressing
-// op runs to its full StartToClose budget instead of being killed at 30s
-// (#184). No-op outside an activity context — the unit tests call the
-// activities directly with context.Background(), where RecordHeartbeat panics;
-// activity.IsActivity gates that at construction.
-type heartbeater struct {
-	ctx   context.Context
-	every time.Duration
-	last  time.Time
-	on    bool
-}
-
-func newHeartbeater(ctx context.Context, every time.Duration) *heartbeater {
-	return &heartbeater{ctx: ctx, every: every, on: activity.IsActivity(ctx)}
-}
-
-// tick heartbeats if we're in an activity and at least `every` has elapsed
-// since the last one. Cheap to call on every unit of progress.
-func (h *heartbeater) tick() {
-	if !h.on || time.Since(h.last) < h.every {
-		return
-	}
-	h.last = time.Now()
-	activity.RecordHeartbeat(h.ctx)
-}
-
-// hbWriter ticks a heartbeater as bytes flow through it, so a long-but-
-// progressing download keeps the activity alive (#184).
-type hbWriter struct {
-	w  io.Writer
-	hb *heartbeater
-}
-
-func (hw hbWriter) Write(p []byte) (int, error) {
-	hw.hb.tick()
-	return hw.w.Write(p)
-}
-
 // downloadTo streams the variant into dstPath, computing md5 inline.
 func (a *Activities) downloadTo(ctx context.Context, variantURL, dstPath string) (md5hex string, size int64, err error) {
 	f, err := os.Create(dstPath)
@@ -225,10 +186,7 @@ func (a *Activities) downloadTo(ctx context.Context, variantURL, dstPath string)
 		return "", 0, err
 	}
 	h := md5.New()
-	// Heartbeat on byte progress so a large/slow CDN fetch (>30s) isn't killed
-	// by the activity's HeartbeatTimeout mid-download (#184).
-	hb := newHeartbeater(ctx, 5*time.Second)
-	n, derr := a.Syndication.Download(ctx, variantURL, hbWriter{w: io.MultiWriter(f, h), hb: hb})
+	n, derr := a.Syndication.Download(ctx, variantURL, io.MultiWriter(f, h))
 	cerr := f.Close()
 	if derr != nil {
 		return "", 0, derr
