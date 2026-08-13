@@ -28,6 +28,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
+	fleetactivity "github.com/vedantadhobley/found-footy/internal/activity/fleet"
 	"github.com/vedantadhobley/found-footy/internal/activity/monitor"
 )
 
@@ -109,6 +110,28 @@ func StagingPollWorkflow(ctx workflow.Context, in StagingPollWorkflowInput) (Sta
 	out.EmergencyActivated = pollOut.EmergencyActivated
 	out.KickoffActivated = pollOut.KickoffActivated
 	out.Errors = append(out.Errors, pollOut.Errors...)
+
+	// Periodic fleet orphan reap (#183 / audit P0-5). StagingPoll is the
+	// always-on */15 cron, so it is the natural home for fleet reconciliation:
+	// it sweeps crash-orphans (worker died between Provision and Release) and
+	// failed-release strays that no EventWorkflow will ever clean up. The
+	// activity no-ops when the fleet is disabled, so this runs unconditionally.
+	// Best-effort — a sweep failure is recorded, never fatal (next tick
+	// retries). Own options: modest timeout, no in-cycle retry.
+	reapCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 60 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	var reapOut fleetactivity.ReapOrphanedFirefoxOutput
+	if err := workflow.ExecuteActivity(reapCtx, "ReapOrphanedFirefox",
+		fleetactivity.ReapOrphanedFirefoxInput{MinAgeSecs: 120},
+	).Get(reapCtx, &reapOut); err != nil {
+		logger.Warn("ReapOrphanedFirefox failed", "error", err)
+		out.Errors = append(out.Errors, "ReapOrphanedFirefox: "+err.Error())
+	} else if len(reapOut.Reaped) > 0 {
+		logger.Info("reaped orphaned firefox instances",
+			"count", len(reapOut.Reaped), "names", reapOut.Reaped)
+	}
 
 	logger.Info("StagingPollWorkflow cycle complete",
 		"considered", out.Considered,

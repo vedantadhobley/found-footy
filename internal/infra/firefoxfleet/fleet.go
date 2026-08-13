@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -176,14 +177,75 @@ func (f *Fleet) find(ctx context.Context, name string) (string, bool, error) {
 // source of truth — robust across worker restarts (no in-process counter
 // to desync from reality).
 func (f *Fleet) count(ctx context.Context) (int, error) {
+	// Running-only (default All:false): a stopped/exited orphan holds no
+	// browser + no real slot, so it must NOT count against the cap. The reaper
+	// (ListInstances/ReapOrphans) sweeps stopped orphans by label. audit P0-5.
 	list, err := f.cli.ContainerList(ctx, container.ListOptions{
-		All:     true,
 		Filters: filters.NewArgs(filters.Arg("label", labelFleet+"=firefox")),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("firefoxfleet.count: %w", err)
 	}
 	return len(list), nil
+}
+
+// Instance is a live fleet member: its container name, the event it belongs to
+// (from the found-footy.fleet.event label), and when it was created.
+type Instance struct {
+	Name      string
+	EventID   uuid.UUID
+	CreatedAt time.Time
+}
+
+// ListInstances returns every labeled fleet container, running OR stopped
+// (All:true — the reaper needs the exited orphans too). Members whose event
+// label is missing or unparseable are skipped.
+func (f *Fleet) ListInstances(ctx context.Context) ([]Instance, error) {
+	list, err := f.cli.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filters.NewArgs(filters.Arg("label", labelFleet+"=firefox")),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("firefoxfleet.ListInstances: %w", err)
+	}
+	out := make([]Instance, 0, len(list))
+	for _, c := range list {
+		evID, perr := uuid.Parse(c.Labels[labelEvent])
+		if perr != nil {
+			continue
+		}
+		name := ""
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+		out = append(out, Instance{Name: name, EventID: evID, CreatedAt: time.Unix(c.Created, 0)})
+	}
+	return out, nil
+}
+
+// ReapOrphans stop+rms every fleet instance whose event is NOT in `live` and
+// which is older than minAge (the grace — so a just-provisioned instance whose
+// event has not hit the DB yet is never reaped). Best-effort + idempotent: a
+// failed Release is skipped and retried next sweep. Returns the names reaped.
+// Runs in an activity / at startup, never a workflow, so time.Now() is fine.
+// audit P0-5 / #183.
+func (f *Fleet) ReapOrphans(ctx context.Context, live map[uuid.UUID]bool, minAge time.Duration) ([]string, error) {
+	insts, err := f.ListInstances(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cutoff := time.Now().Add(-minAge)
+	var reaped []string
+	for _, in := range insts {
+		if live[in.EventID] || in.CreatedAt.After(cutoff) {
+			continue
+		}
+		if err := f.Release(ctx, in.EventID); err != nil {
+			continue // best-effort; next sweep retries
+		}
+		reaped = append(reaped, in.Name)
+	}
+	return reaped, nil
 }
 
 // waitForSlot blocks until the fleet is below MaxInstances or ctx expires.

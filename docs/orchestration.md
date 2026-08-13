@@ -331,6 +331,12 @@ Two hooks straddle the debounce, both gated on the monitor config's
   triggered event decaying to 0 (VAR) and a pre-trigger event that provisioned
   at count=1 but decayed before reaching 3. Release is idempotent, so the
   overlap with EventWorkflow's own finalize-release (the happy path) is harmless.
+- **Reaper backstop** (StagingPoll, audit P0-5). The provision/release hooks only
+  fire while the worker is alive; a crash between provision and release, or a
+  failed release, strands a container. `ReapOrphanedFirefox` (below) reconciles
+  the labeled container set against the DB every 15 min. See
+  [decisions.md](decisions.md) 2026-08-13 (audit P0-5) for the KEEP predicate and
+  why the reaper lives in StagingPoll rather than at worker startup.
 
 ## StagingPollWorkflow — as shipped
 
@@ -338,6 +344,15 @@ Two hooks straddle the debounce, both gated on the monitor config's
 `*/15 * * * *`, runtime-tunable). Fires `PollStagingFixtures`: polls all
 staging fixtures + handles vendor edge cases (kickoff-corrected activation,
 Live()-emergency activation). Location: `internal/workflow/staging_poll.go`.
+
+Also the home of the **fleet orphan reaper** (audit P0-5): each cycle ends with a
+best-effort `ReapOrphanedFirefox` — it diffs the labeled Firefox containers
+against `EventRepo.ListLiveFleetEventIDs` (the KEEP set: not-removed events whose
+fixture is still active OR whose downstream is still in flight) and releases the
+strays past a 120s min-age grace. No-op when the fleet is disabled, so the call
+is unconditional. A sweep failure is recorded, never fatal — the next tick
+retries. This is the only thing that cleans up a container the live-path
+provision/release hooks stranded (worker crash, failed release).
 
 ## EventWorkflow — as shipped (#164c + #165)
 

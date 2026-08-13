@@ -215,8 +215,10 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 	// the background during the ~60-90s debounce window so it is ready when
 	// the event triggers at count=3 and the EventWorkflow begins searching.
 	// No-op when the fleet is disabled (nil Fleet). Best-effort — a failed
-	// provision just means the EventWorkflow's searches fall back to the
-	// shared service (its InstanceAddr resolves to nothing → retry there).
+	// provision is survivable: when the EventWorkflow later searches the
+	// (absent) per-event instance, the twitter client's transport-error
+	// fallback retries the shared service once (twitter/client.go, audit
+	// P0-5), so the goal still gets its search.
 	if cfgOut.FleetEnabled && len(newNamedEventIDs) > 0 {
 		provCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 			StartToCloseTimeout: 30 * time.Second,

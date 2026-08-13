@@ -147,6 +147,23 @@ func (c *Client) Search(ctx context.Context, addr string, req SearchRequest) (*S
 
 	start := time.Now()
 	resp, err := c.http.Do(httpReq)
+	// Per-event instance unreachable (down / DNS / conn refused) — fall back to
+	// the shared service ONCE so a wedged instance does not cost the goal its
+	// clips. Only on a transport error (a non-2xx means the instance responded;
+	// let the caller's 15-attempt loop handle that), and only when we were
+	// dialing an instance (base != baseURL). audit P0-5.
+	if err != nil && base != c.baseURL {
+		c.ins.emitEvent(ctx, logging.LevelWarn, vocabulary.ActionTwitterSearchFailed,
+			"per-event instance unreachable; falling back to shared service",
+			logging.String("addr", base),
+			logging.Err(err),
+		)
+		if fbReq, ferr := http.NewRequestWithContext(callCtx, http.MethodPost,
+			c.baseURL+"/search", bytes.NewReader(body)); ferr == nil {
+			fbReq.Header.Set("Content-Type", "application/json")
+			resp, err = c.http.Do(fbReq)
+		}
+	}
 	elapsed := time.Since(start)
 	c.ins.callDuration.WithLabelValues("search").Observe(elapsed.Seconds())
 
