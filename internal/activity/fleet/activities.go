@@ -14,16 +14,25 @@ package fleet
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/vedantadhobley/found-footy/internal/infra/firefoxfleet"
 )
 
+// liveEventsLister returns the events that should currently hold a fleet
+// instance — the reaper's "keep" set. Satisfied by *pg.EventRepo.
+type liveEventsLister interface {
+	ListLiveFleetEventIDs(ctx context.Context) ([]uuid.UUID, error)
+}
+
 // Activities bundles the fleet dependency. Constructed at worker startup;
-// Fleet is nil when the fleet is disabled.
+// Fleet is nil when the fleet is disabled. LiveEvents backs the reaper (nil
+// when the fleet is off → ReapOrphanedFirefox no-ops).
 type Activities struct {
-	Fleet *firefoxfleet.Fleet
+	Fleet      *firefoxfleet.Fleet
+	LiveEvents liveEventsLister
 }
 
 // InstanceAddr re-exports firefoxfleet.InstanceAddr — the deterministic,
@@ -77,4 +86,40 @@ func (a *Activities) ReleaseFirefox(ctx context.Context, in ReleaseFirefoxInput)
 		return fmt.Errorf("fleet.ReleaseFirefox: %w", err)
 	}
 	return nil
+}
+
+// ReapOrphanedFirefoxInput bounds the sweep. MinAgeSecs is the grace so a
+// just-provisioned instance whose event has not yet landed in the DB is never
+// reaped.
+type ReapOrphanedFirefoxInput struct {
+	MinAgeSecs int
+}
+
+// ReapOrphanedFirefoxOutput reports the instances swept this pass.
+type ReapOrphanedFirefoxOutput struct {
+	Reaped []string
+}
+
+// ReapOrphanedFirefox stop+rms fleet instances whose event is no longer live —
+// crash-orphans (provisioned, worker died before release) and failed releases
+// (exited-but-not-removed). Queries the live-event set, diffs it against the
+// labeled containers, releases the strays. No-op when the fleet is disabled or
+// no lister is wired. audit P0-5 / #183.
+func (a *Activities) ReapOrphanedFirefox(ctx context.Context, in ReapOrphanedFirefoxInput) (ReapOrphanedFirefoxOutput, error) {
+	if a.Fleet == nil || a.LiveEvents == nil {
+		return ReapOrphanedFirefoxOutput{}, nil
+	}
+	ids, err := a.LiveEvents.ListLiveFleetEventIDs(ctx)
+	if err != nil {
+		return ReapOrphanedFirefoxOutput{}, fmt.Errorf("fleet.ReapOrphanedFirefox: live events: %w", err)
+	}
+	live := make(map[uuid.UUID]bool, len(ids))
+	for _, id := range ids {
+		live[id] = true
+	}
+	reaped, err := a.Fleet.ReapOrphans(ctx, live, time.Duration(in.MinAgeSecs)*time.Second)
+	if err != nil {
+		return ReapOrphanedFirefoxOutput{}, fmt.Errorf("fleet.ReapOrphanedFirefox: %w", err)
+	}
+	return ReapOrphanedFirefoxOutput{Reaped: reaped}, nil
 }

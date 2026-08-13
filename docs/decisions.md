@@ -6,6 +6,51 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-13 — Fleet orphan reaper + running-only cap + shared-service fallback (audit P0-5)
+
+Three fixes to the #160 Firefox fleet's failure handling. Together they close
+the orphan-leak and the wedged-instance clip-loss the audit flagged (#183).
+
+1. **The cap counts running instances only.** `firefoxfleet.count` — the cap
+   source of truth — listed ALL labeled containers (`All: true`), so one
+   stopped/exited orphan consumed a slot forever. The fleet could wedge at
+   `MaxInstances` with zero live browsers. `ContainerList` now defaults to
+   running-only: a stopped orphan holds no browser, so it must not hold a slot.
+   The reaper removes it.
+
+2. **An orphan reaper, wired to the StagingPoll `*/15` cron.** Nothing
+   reconciled the container set against reality: a worker crash between Provision
+   (count=1) and Release, or a failed Release, stranded a container no
+   EventWorkflow would ever clean up. `ReapOrphanedFirefox` diffs the labeled
+   containers against a DB-derived KEEP set (`EventRepo.ListLiveFleetEventIDs`)
+   and releases the strays, with a 120s min-age grace so a just-provisioned
+   instance whose event has not yet hit the DB is never swept. Home is
+   StagingPoll, not worker startup: a Temporal-native reconciler is durable,
+   observable, and retried, and the running-only fix already removes orphans'
+   cap-harm so immediacy buys nothing. On a worker crash mid-match the live
+   instances are NOT orphans (their events are still live → kept); the true
+   orphans (event completed while the worker was down; a pre-trigger provision)
+   get swept within one 15-min tick.
+
+   The KEEP predicate is load-bearing — reaping a live instance loses a goal's
+   clips. "Live" = not-removed AND (fixture still active OR any downstream still
+   in flight, `completed_at IS NULL`). The second branch protects a LATE goal:
+   its fixture has already flipped active→completed while its EventWorkflow is
+   still searching. A first-draft `f.state = 'active'`-only predicate would have
+   reaped exactly that instance mid-discovery. Pinned by
+   `TestEventRepo_ListLiveFleetEventIDs` case (b).
+
+3. **A shared-service fallback on a dead per-event instance.** If the fleet
+   instance is unreachable (down / DNS / conn refused), `twitter.Search` retries
+   the shared service ONCE — but only on a transport error (a non-2xx means the
+   instance answered; the caller's 15-attempt loop handles that) and only when
+   dialing an instance. A wedged instance no longer costs the goal its clips.
+   This also makes the ActivePoll Step 4.4 "falls back to the shared service"
+   comment true — it had described a mechanism that did not exist.
+
+Diverges from nothing in `rebuild-plan.md` — the fleet is a post-plan #160
+addition.
+
 ## 2026-08-13 — Drop the dead tweet_intent / vector / source_type surface (audit P0-4)
 
 `schema.sql` created `tweet_intent` (+ an hnsw index), the `source_type` enum, and

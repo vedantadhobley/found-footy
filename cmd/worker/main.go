@@ -301,7 +301,11 @@ func main() {
 				return firefoxFleet.Close()
 			})
 		}
-		fleetActs := &fleetactivity.Activities{Fleet: firefoxFleet}
+		// LiveEvents backs ReapOrphanedFirefox — the StagingPoll periodic sweep
+		// diffs the labeled containers against this live-event set. eventRepo is
+		// non-nil regardless of FleetEnabled; the activity's own nil-Fleet guard
+		// keeps the reaper dark when the fleet is off.
+		fleetActs := &fleetactivity.Activities{Fleet: firefoxFleet, LiveEvents: eventRepo}
 
 		w.RegisterWorkflow(ffwf.ActivePollWorkflow)
 		w.RegisterWorkflow(ffwf.StagingPollWorkflow)

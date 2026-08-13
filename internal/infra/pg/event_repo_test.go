@@ -668,3 +668,98 @@ func TestEventRepo_EventsAwaitingDiscovery(t *testing.T) {
 		t.Errorf("awaiting count = %d, want 2 (a + c)", len(got))
 	}
 }
+
+// seedCompletedFixture inserts a fixture that already reached FT — the state a
+// LATE-match goal's fixture is in while its EventWorkflow is still searching.
+func seedCompletedFixture(t *testing.T, ctx context.Context, repo *pg.FixtureRepo, id int64) {
+	t.Helper()
+	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	f := makeStaging(id, kickoff)
+	if err := f.Activate(kickoff); err != nil {
+		t.Fatalf("seedCompleted Activate: %v", err)
+	}
+	if err := f.Complete(kickoff.Add(100 * time.Minute)); err != nil {
+		t.Fatalf("seedCompleted Complete: %v", err)
+	}
+	if err := repo.Upsert(ctx, f); err != nil {
+		t.Fatalf("seedCompleted Upsert: %v", err)
+	}
+}
+
+// TestEventRepo_ListLiveFleetEventIDs — the fleet reaper's KEEP set (audit
+// P0-5). The load-bearing case is (b): a late goal whose fixture already
+// flipped active→completed while its EventWorkflow is STILL searching — its
+// Firefox instance must survive the reaper. A fixture-active-only filter would
+// reap it mid-discovery and lose the goal's clips. Also covers the pre-trigger
+// active window (live) and the three reapable shapes.
+func TestEventRepo_ListLiveFleetEventIDs(t *testing.T) {
+	ctx, pool, repo, fRepo := setupEventRepo(t)
+
+	// ── active fixture 8020 ──
+	seedFixture(t, ctx, fRepo, 8020)
+
+	// (a) active fixture, no downstream row (pre-trigger debounce window) → live.
+	ea := makeGoalEvent(8020, 1)
+	if err := repo.Insert(ctx, ea, "c1"); err != nil {
+		t.Fatalf("insert a: %v", err)
+	}
+
+	// (f) active fixture, event removed (VAR) → NOT live: Step 4.5 releases it,
+	//     the reaper is the backstop.
+	ef := makeGoalEvent(8020, 2)
+	insertAndTrigger(t, ctx, repo, ef)
+	for _, wf := range []string{"a1", "a2", "a3"} {
+		_, _, _ = repo.RegisterEventAbsence(ctx, ef.ID, wf)
+	}
+
+	// ── completed fixture 8021 (match over — late-goal territory) ──
+	seedCompletedFixture(t, ctx, fRepo, 8021)
+
+	// (b) completed fixture, downstream still in flight → LIVE. THE fix: the
+	//     OR-branch on completed_at IS NULL keeps this instance alive.
+	eb := makeGoalEvent(8021, 1)
+	insertAndTrigger(t, ctx, repo, eb)
+	if err := repo.RegisterDownstreamWorkflow(ctx, eb.ID, "discovery", "d-b"); err != nil {
+		t.Fatalf("register b: %v", err)
+	}
+
+	// (c) completed fixture, downstream completed → NOT live (reapable).
+	ec := makeGoalEvent(8021, 2)
+	insertAndTrigger(t, ctx, repo, ec)
+	_ = repo.RegisterDownstreamWorkflow(ctx, ec.ID, "discovery", "d-c")
+	if _, err := pool.Exec(ctx, `UPDATE event_downstream_workflows
+		SET completed_at = NOW(), outcome_class = 'success' WHERE event_id = $1`, ec.ID); err != nil {
+		t.Fatalf("complete c: %v", err)
+	}
+
+	// (d) completed fixture, no downstream row (crash-orphan: provisioned at
+	//     count=1, worker died before spawn) → NOT live (reapable).
+	ed := makeGoalEvent(8021, 3)
+	if err := repo.Insert(ctx, ed, "c1"); err != nil {
+		t.Fatalf("insert d: %v", err)
+	}
+
+	got, err := repo.ListLiveFleetEventIDs(ctx)
+	if err != nil {
+		t.Fatalf("ListLiveFleetEventIDs: %v", err)
+	}
+	live := map[uuid.UUID]bool{}
+	for _, id := range got {
+		live[id] = true
+	}
+	if !live[ea.ID] {
+		t.Error("(a) active fixture, pre-trigger → should be live")
+	}
+	if !live[eb.ID] {
+		t.Error("(b) completed fixture, downstream in flight → should be live (late-goal protection)")
+	}
+	if live[ec.ID] {
+		t.Error("(c) completed fixture, downstream done → should NOT be live (reapable)")
+	}
+	if live[ed.ID] {
+		t.Error("(d) completed fixture, no downstream row → should NOT be live (crash-orphan)")
+	}
+	if live[ef.ID] {
+		t.Error("(f) removed event → should NOT be live")
+	}
+}

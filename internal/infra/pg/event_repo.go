@@ -102,6 +102,51 @@ func (r *EventRepo) Get(ctx context.Context, id uuid.UUID) (*event.Event, error)
 	return scanEvent(row)
 }
 
+// ListLiveFleetEventIDs returns the events that should currently hold a
+// per-event Firefox instance — the reaper's KEEP set (#160 fleet reaper,
+// audit P0-5). An instance is legitimately alive from provision (count=1,
+// during the active window) until the EventWorkflow releases it, so an event
+// is "live" when it is not removed AND either:
+//
+//   - its fixture is still active (covers the pre-trigger debounce window,
+//     where no downstream row exists yet), OR
+//   - a downstream workflow is still in flight (completed_at IS NULL) — this
+//     is what keeps a LATE-MATCH goal's instance safe: the fixture has
+//     already flipped active→completed but discovery is still searching.
+//
+// Only the fixture-active branch would keep it otherwise, and that branch is
+// false post-whistle → the OR is load-bearing, not redundant. A labeled
+// container whose event is NOT in this set is an orphan to reap. Bias broad:
+// no player_id / trigger filters, since excluding a still-live instance loses
+// a goal's clips whereas an extra keep-id is harmless.
+func (r *EventRepo) ListLiveFleetEventIDs(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT e.id
+		FROM events e
+		JOIN fixtures f ON f.id = e.fixture_id
+		WHERE e.removed = false
+		  AND (
+		      f.state = 'active'
+		      OR EXISTS (
+		          SELECT 1 FROM event_downstream_workflows edw
+		          WHERE edw.event_id = e.id AND edw.completed_at IS NULL
+		      )
+		  )`)
+	if err != nil {
+		return nil, fmt.Errorf("pg.EventRepo.ListLiveFleetEventIDs: %w", err)
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("pg.EventRepo.ListLiveFleetEventIDs: scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GetByNaturalKey returns the event for (fixture_id, natural_key) or
 // event.ErrNotFound. Called by MonitorWorkflow when it sees an API
 // event and wants to know if we already track it.
