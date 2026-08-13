@@ -6,6 +6,47 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-13 — Track MLS (league 253); tracked-leagues consolidated to the code default
+
+Charter expands to MLS. `API_FOOTBALL_TRACKED_LEAGUES` default → `39,140,78,135,61,1,253`.
+Consolidated to a **single source**: the code `envDefault` in `config/apifootball.go`
+is authoritative; the redundant `.env` override (which duplicated the default
+verbatim) was removed. Deployments override only to *differ* from the charter.
+
+Two mechanics recorded:
+- Staleness is **time-only** (`RefreshTrackedTeamsIfStale`: `OldestRefreshedAt` vs
+  24h), **not league-set-aware** — so adding a league does not auto-trigger a
+  refresh. To apply now, backdated `tracked_teams_cache.refreshed_at` + ran an
+  ingest → cache 144→174 (+30 MLS). Small follow-up: refresh when the configured
+  league set differs from the cached set.
+- The worker reads env at container start; air reloads code, not env — so the
+  worker was recreated to pick up the new default.
+
+Tonight's live Leagues Cup slate was ingested separately via `MANUAL_FIXTURE_IDS`
+(before this change); going forward MLS matches are caught by the normal
+date-based ingest (the team-filter now includes MLS teams).
+
+## 2026-08-12 — Stale dev-DB enum silently disabled the share-state half of dedup consolidation
+
+The dev DB's `share_state` enum was `{active, removed}` — missing `superseded`
+(added to schema.sql with #171 on 2026-08-09) because the dev postgres volume
+predates that change and was never re-provisioned. So `MarkSuperseded` threw
+`22P02` on every perceptual-dedup consolidation (99× during the #160 live test).
+
+Impact was **cosmetic, not a surfacing bug** — initially over-called "dedup
+broken" and walked back. `AssetRepo.Supersede` sets `superseded_by` AND merges
+popularity in a single CTE (no enum), which always succeeded, and the event
+video list filters on `a.superseded_by IS NULL` — so losers were correctly
+excluded from what users see; only the *separate* `ShareRepo.MarkSuperseded`
+share-state flip failed, leaving a handful of already-excluded shares in a stale
+`active` state.
+
+Fixed live with `ALTER TYPE share_state ADD VALUE 'superseded'` (non-destructive;
+no enum errors after 20:02). A fresh cutover DB is unaffected — schema.sql is
+correct. Same stale-dev-DB gotcha as [2026-08-06](#2026-08-06--stale-dev-db-was-the-second-reason-the-pipeline-never-produced-a-clip);
+the standing rule holds — wipe/re-provision the dev postgres volume after editing
+schema.sql, or enum/schema drift silently rots behavior.
+
 ## 2026-08-12 — ffmpeg dense-extract: wire the heartbeat + give it a dedicated timeout (#184)
 
 Surfaced by the #160 live test: dense frame extraction (`extract_dense`) was
