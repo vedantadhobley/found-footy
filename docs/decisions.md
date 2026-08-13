@@ -6,6 +6,49 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-13 — Schema drift guard, not migration files (audit P0-3)
+
+The footgun: `schema.sql` applies only on a fresh volume (dev initdb) or an
+ephemeral testcontainer, so an edit silently no-ops against an already-
+provisioned DB. It bit twice — 2026-08-06 stale DB, and 2026-08-12 the missing
+`superseded` enum + the stale `video_shares_check` constraint that stranded 18
+shares and skipped rank numbers on 17 events. Fix — a boot-time drift GUARD,
+not an ordered-migration system:
+
+- **`schema.sql` stays the single flat source of truth. Zero migration files.**
+  Pre-cutover the DB is disposable (edit + wipe + reprovision) and cutover is a
+  fresh La Liga start, so accumulating migration files now is pure overhead. The
+  standing rule is "flatten frequently": edit `schema.sql` directly; a live prod
+  DB that can't be wiped gets ONE migration file for the in-place change, folded
+  back into `schema.sql` and deleted once applied everywhere. Files never pile
+  up. The `migrations/` dir stays empty until the first post-cutover in-place
+  change.
+- **`pg.VerifySchema` (`schema.go`).** First boot on a DB stamps the embedded
+  `schema.sql` SHA-256 into a singleton `schema_version` row; every later boot
+  compares. Match → proceed. Mismatch → the worker/api refuses to boot with a
+  loud error instead of running against a DB that never received the change.
+  Runs in one tx under a transaction-scoped advisory lock — session locks don't
+  survive pgxpool's per-statement connection hand-off, so a concurrent
+  worker+api stamps exactly once. Wired into both bootstraps after the pool,
+  before serving. The guard owns `schema_version` (not in `schema.sql`), so it
+  works against a DB provisioned before the guard existed.
+- **Fingerprint-level, by design.** Catches "schema.sql edited, DB not
+  re-provisioned" — the actual footgun — not manual DB tampering. An intentional
+  schema change re-stamps: auto on a fresh provision; a one-line
+  `UPDATE schema_version` after an in-place migration. Chosen over a heavier
+  structural-diff guard: small, ships in the cutover window, kills the exact
+  thing that bit twice.
+
+Also reconciled the live dev DB **in place, keeping all data** (the frontend
+needs the corpus for redirect testing — and redirects were never affected: they
+resolve via the asset `superseded_by` chain, which works; only the share
+ranking-flip was blocked). Brought `video_shares_check` up to `schema.sql`,
+flipped the 18 stranded shares to `superseded`, compacted ranks (17 events now
+contiguous from 1), and dropped the P0-4 dead objects (`tweet_intent`,
+`source_type`, `vector`) the live DB still carried. Then stamped the baseline —
+live-validated: the dev worker booted through the guard (`schema_stamped`,
+hash `33a79a6…`) and resumed processing.
+
 ## 2026-08-13 — Fleet orphan reaper + running-only cap + shared-service fallback (audit P0-5)
 
 Three fixes to the #160 Firefox fleet's failure handling. Together they close
