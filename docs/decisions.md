@@ -6,6 +6,36 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-13 — Heartbeat, unified: shared time-based Keepalive across all four long activities (audit P0-1/2, P1-3; corrects #184)
+
+The 2026-08-13 audit caught that #184 fixed only the two *video* activities and
+used the wrong shape. Two corrections:
+
+1. **#184 left two activities carrying the exact same unsatisfiable-heartbeat
+   bug.** `vision.ValidateClip` (`HeartbeatTimeout=1m`) and `discovery.SearchTweets`
+   (`HeartbeatTimeout=30s`) set a heartbeat timeout and emitted zero heartbeats →
+   Temporal killed each attempt at start+timeout. Under the #160 fleet's
+   multi-match load, queued vision calls waited past 60s on the cap-4 joi
+   semaphore → killed → retried → a **retry storm on the exact bottleneck**,
+   dropping already-verified clips. (audit P0-1 / P0-2)
+2. **The progress-tied heartbeat #184 shipped was the wrong shape.** It ticked
+   only on frame/byte progress, so HashVideo's pre-decode Garage fetch +
+   ffmpeg-semaphore wait still tripped the 30s ceiling. (audit P1-3)
+
+Fix (replaces the #184 heartbeater): one shared **time-based** keepalive —
+`internal/activity/heartbeat.Keepalive(ctx, interval)`, a background ticker (10s,
+guarded by `activity.IsActivity`) started at the entry of all four activities via
+`defer heartbeat.Keepalive(...)()`. It covers *every* wait — semaphore queue,
+Garage fetch, opaque call, extract. The per-op timeouts (ffmpeg DenseTimeout,
+LLM/HTTP timeouts) + StartToClose stay the real bounds; the ticker only proves
+liveness and stops the instant the worker dies (so Temporal re-dispatches fast).
+Deleted the progress-tied `heartbeater` + `hbWriter`.
+
+**Convention, now carried by one helper:** every activity that sets
+`HeartbeatTimeout` calls `Keepalive` at entry. Cross-project candidate — spin-cycle
+is also Temporal, so promote to a shared temporal-go lib later (cf. the shared
+NATS client decision).
+
 ## 2026-08-13 — Track MLS (league 253); tracked-leagues consolidated to the code default
 
 Charter expands to MLS. `API_FOOTBALL_TRACKED_LEAGUES` default → `39,140,78,135,61,1,253`.
