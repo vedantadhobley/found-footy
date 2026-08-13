@@ -68,13 +68,16 @@ func (r *TeamRepo) OldestRefreshedAt(ctx context.Context) (time.Time, bool, erro
 	return *oldest, true, nil
 }
 
-// Replace atomically wipes the cache and writes the given rows, all
-// stamped with the same refreshed_at. Uses a single transaction so
-// concurrent Ingest cycles never see a partially-refreshed cache.
+// Replace atomically wipes the cache and writes the given rows in a
+// single transaction, so concurrent Ingest cycles never see a
+// partially-refreshed cache. Each row is stamped with its own
+// t.RefreshedAt — freshly-fetched leagues carry `now`, while leagues
+// preserved across a partial refresh keep their prior timestamp (audit
+// P1-1), so OldestRefreshedAt reflects the stalest preserved league.
 //
 // Empty teams slice is legal — clears the cache. Callers that don't
 // want that should guard on len(teams) == 0.
-func (r *TeamRepo) Replace(ctx context.Context, teams []team.TrackedTeam, refreshedAt time.Time) error {
+func (r *TeamRepo) Replace(ctx context.Context, teams []team.TrackedTeam) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("pg.TeamRepo.Replace: begin: %w", err)
@@ -92,7 +95,7 @@ func (r *TeamRepo) Replace(ctx context.Context, teams []team.TrackedTeam, refres
 	rows := make([][]any, 0, len(teams))
 	for _, t := range teams {
 		rows = append(rows, []any{
-			t.ID, t.Name, t.LeagueID, t.LeagueName, t.Season, refreshedAt.UTC(),
+			t.ID, t.Name, t.LeagueID, t.LeagueName, t.Season, t.RefreshedAt.UTC(),
 		})
 	}
 

@@ -220,6 +220,15 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 					"total", refreshOut.TotalTeams,
 					"per_league", refreshOut.PerLeagueCounts,
 				)
+				// A partial refresh preserved prior rows for leagues that
+				// failed/emptied (audit P1-1) — surface it loudly rather than
+				// letting a silently-degraded refresh pass as a clean one.
+				if len(refreshOut.PreservedLeagues) > 0 {
+					logger.Warn("tracked teams: partial refresh — preserved prior rows for unreachable leagues",
+						"preserved_per_league", refreshOut.PreservedLeagues,
+						"errors", refreshOut.Errors,
+					)
+				}
 			}
 		}
 	}

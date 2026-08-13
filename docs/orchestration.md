@@ -131,10 +131,15 @@ simple).
       (ActivationWindow, RetentionDays) win; zero falls back to config.
 0.5 IF NOT manual-IDs path:
       RefreshTrackedTeamsIfStale()                         [120s timeout]
-        → {Refreshed, TotalTeams, PerLeagueCounts}
+        → {Refreshed, TotalTeams, PerLeagueCounts, PreservedLeagues}
       Re-fetches each tracked league's current-season roster into
       tracked_teams_cache when stale. Non-fatal: on failure fetch proceeds
       with whatever's cached (possibly empty → fail-open, audit G2/G6).
+      Partial-refresh-safe (audit P1-1): a league that errors OR returns an
+      empty roster (season rollover) keeps its PRIOR rows + original
+      refreshed_at (so it's retried next run) instead of being wiped; only an
+      all-league failure aborts without touching the cache. Preserved leagues
+      surface in PreservedLeagues + a WARN log.
 1.  Fetch (branches on ManualFixtureIDs):
       IF len(ManualFixtureIDs) > 0:
         FetchFixturesByIDs(IDs) → {Fixtures, FailedIDs}

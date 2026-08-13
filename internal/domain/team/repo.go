@@ -21,10 +21,13 @@ type Repo interface {
 	// refresh-vs-cache-hit.
 	OldestRefreshedAt(ctx context.Context) (t time.Time, ok bool, err error)
 
-	// Replace atomically wipes the cache and writes the given rows.
-	// Used by the refresh path so a mid-refresh crash never leaves a
-	// partially-refreshed cache visible. `refreshedAt` stamps every
-	// row with the same instant so OldestRefreshedAt returns a
-	// consistent value across the batch.
-	Replace(ctx context.Context, teams []TrackedTeam, refreshedAt time.Time) error
+	// Replace atomically wipes the cache and writes the given rows in a
+	// single transaction, so a mid-refresh crash never leaves a
+	// partially-refreshed cache visible. Each row carries its own
+	// RefreshedAt (not one instant for the batch): the refresh path
+	// carries forward prior rows for leagues it couldn't refresh this run,
+	// and those must keep their ORIGINAL timestamp so OldestRefreshedAt
+	// stays stale and they get retried. See ingest.RefreshTrackedTeamsIfStale
+	// + decisions.md 2026-08-13 (audit P1-1).
+	Replace(ctx context.Context, teams []TrackedTeam) error
 }
