@@ -6,6 +6,33 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-13 — Ingest partial-refresh no longer wipes unreachable leagues (audit P1-1)
+
+The daily tracked-teams refresh rebuilt the whole `tracked_teams_cache` with a
+TRUNCATE + copy of whatever leagues succeeded that run, stamping every row
+`refreshed_at = now`. The only guard was "ALL leagues failed → don't wipe" — a
+PARTIAL failure sailed straight through. So one league's transient API error,
+or an EMPTY new-season roster during summer rollover, silently dropped that
+league from the cache for 24h (the staleness gate saw the fresh survivors and
+skipped the retry). Fixtures are filtered by the tracked-team set, so the
+dropped league's matches went unwatched for a full day. Latent — it never fired
+in dev because every run happened to get all leagues — but maximally likely
+exactly at the La Liga cutover (rollover + launch-day load).
+
+Fix (preserve-per-league, `RefreshTrackedTeamsIfStale`): a league counts as
+"refreshed" only if it returned ≥1 team (covers both API error and empty
+roster). For any *configured* league that didn't refresh this run, its prior
+rows are carried forward with their ORIGINAL `refreshed_at` — the cache never
+loses a league we couldn't reach, and the stale timestamp drives a retry next
+run. Only when NO league returns teams do we abort without touching the cache.
+This also fixes the cutover-bootstrap case: on a fresh empty cache, a league
+that isn't ready yet is simply absent (not wiped) and comes online when its
+roster fills. `TeamRepo.Replace` now stamps each row from its own
+`t.RefreshedAt` (was one batch instant) so preserved rows keep their timestamp;
+de-configured leagues are intentionally dropped. Partial refreshes log at WARN
+— never a silent degrade. New tests: partial-preserve, all-empty-untouched,
+full-replace.
+
 ## 2026-08-13 — Schema drift guard, not migration files (audit P0-3)
 
 The footgun: `schema.sql` applies only on a fresh volume (dev initdb) or an

@@ -161,10 +161,11 @@ type RefreshTrackedTeamsIfStaleInput struct{}
 // observability: whether a refresh actually fired, how many teams
 // landed in the cache, per-league counts for debug.
 type RefreshTrackedTeamsIfStaleOutput struct {
-	Refreshed       bool
-	TotalTeams      int
-	PerLeagueCounts map[int]int // league_id → team count
-	Errors          []string    // per-league fetch failures — non-fatal
+	Refreshed        bool
+	TotalTeams       int
+	PerLeagueCounts  map[int]int // league_id → freshly-fetched team count
+	PreservedLeagues map[int]int // league_id → prior rows carried forward (audit P1-1)
+	Errors           []string    // per-league fetch failures — non-fatal
 }
 
 // RefreshTrackedTeamsIfStale checks whether tracked_teams_cache is
@@ -176,20 +177,24 @@ type RefreshTrackedTeamsIfStaleOutput struct {
 //  2. ListTeamsForLeague(leagueID, season) via /teams?league=X&season=Y
 //  3. Append to accumulator
 //
-// After looping every league, call TeamRepo.Replace(teams, now) — a
-// single transaction that truncates + copies the new set. Concurrent
-// Ingest cycles never see a partial cache.
-//
-// Non-fatal per-league failures are aggregated into Errors so a bad
-// league ID (or a single failed API call) doesn't nuke the whole
-// refresh — we still populate the cache with the leagues that did
-// return.
+// Partial-failure safety (audit P1-1): a league that errors OR returns
+// an empty roster (season rollover) is NOT dropped. Its prior cached
+// rows are carried forward with their ORIGINAL refreshed_at, so the
+// cache never loses a league we simply couldn't reach this run, and the
+// stale timestamp makes the next run retry it. Only when EVERY league
+// fails/empties do we abort without touching the cache. The final set
+// (fresh survivors + preserved prior rows for configured leagues) goes
+// to TeamRepo.Replace in one transaction, so a mid-refresh crash never
+// leaves a partial cache visible.
 //
 // Mirrors Python's `get_top_flight_team_ids` shape.
 func (a *Activities) RefreshTrackedTeamsIfStale(
 	ctx context.Context, _ RefreshTrackedTeamsIfStaleInput,
 ) (RefreshTrackedTeamsIfStaleOutput, error) {
-	out := RefreshTrackedTeamsIfStaleOutput{PerLeagueCounts: map[int]int{}}
+	out := RefreshTrackedTeamsIfStaleOutput{
+		PerLeagueCounts:  map[int]int{},
+		PreservedLeagues: map[int]int{},
+	}
 
 	// Cache-freshness check.
 	oldest, hasCache, err := a.TeamRepo.OldestRefreshedAt(ctx)
@@ -242,15 +247,50 @@ func (a *Activities) RefreshTrackedTeamsIfStale(
 		}
 	}
 
-	if len(accumulated) == 0 {
-		// Every league failed. Don't nuke the existing cache — return
-		// error so the workflow can decide.
+	// A league counts as "refreshed" only if it returned ≥1 team. A league
+	// that errored OR came back empty (season rollover, before new-season
+	// rosters are entered) contributes nothing and must NOT be allowed to
+	// wipe its prior rows. audit P1-1.
+	refreshed := make(map[int]bool, len(out.PerLeagueCounts))
+	for lg, n := range out.PerLeagueCounts {
+		if n > 0 {
+			refreshed[lg] = true
+		}
+	}
+
+	if len(refreshed) == 0 {
+		// Nothing fresh at all — every league failed or was empty. Leave the
+		// existing cache untouched (return error → the workflow keeps the
+		// prior cache and the next run retries). The safe total-failure case.
 		return out, fmt.Errorf(
-			"ingest.RefreshTrackedTeamsIfStale: all %d leagues failed to refresh",
+			"ingest.RefreshTrackedTeamsIfStale: no league returned teams (%d configured)",
 			len(a.TrackedLeagueIDs))
 	}
 
-	if err := a.TeamRepo.Replace(ctx, accumulated, now); err != nil {
+	// Partial refresh: carry forward the prior rows of any CONFIGURED league
+	// that did NOT refresh this run, with their ORIGINAL RefreshedAt. This is
+	// the fix for the wipe: Replace rebuilds the whole cache, so anything not
+	// in `accumulated` would be lost. Preserving keeps the league tracked and
+	// its stale timestamp makes the next cycle retry it. Leagues no longer in
+	// TrackedLeagueIDs are intentionally NOT preserved (they drop out).
+	if len(refreshed) < len(a.TrackedLeagueIDs) {
+		configured := make(map[int]bool, len(a.TrackedLeagueIDs))
+		for _, lg := range a.TrackedLeagueIDs {
+			configured[lg] = true
+		}
+		existing, err := a.TeamRepo.List(ctx)
+		if err != nil {
+			return out, fmt.Errorf("ingest.RefreshTrackedTeamsIfStale: load prior cache for preserve: %w", err)
+		}
+		for _, t := range existing {
+			if configured[t.LeagueID] && !refreshed[t.LeagueID] {
+				accumulated = append(accumulated, t) // keeps t.RefreshedAt
+				out.PreservedLeagues[t.LeagueID]++
+			}
+		}
+	}
+
+	if err := a.TeamRepo.Replace(ctx, accumulated); err != nil {
 		return out, fmt.Errorf("ingest.RefreshTrackedTeamsIfStale: replace cache: %w", err)
 	}
 	out.Refreshed = true
