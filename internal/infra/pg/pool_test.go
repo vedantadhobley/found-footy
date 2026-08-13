@@ -171,7 +171,6 @@ func TestSchemaLoaded_CoreTables(t *testing.T) {
 		"event_drop_workflows",
 		"video_assets",
 		"video_shares",
-		"tweet_intent",
 		"team_aliases",
 		"twitter_sessions",
 		"event_log",
@@ -193,9 +192,11 @@ func TestSchemaLoaded_CoreTables(t *testing.T) {
 		}
 	}
 
-	// pg_trgm removed 2026-07-19 alongside the team_name trigram index
-	// (deterministic alias pipeline looks up by exact team_id).
-	expectedExtensions := []string{"pgcrypto", "vector"}
+	// pg_trgm removed 2026-07-19 (deterministic alias pipeline looks up by
+	// exact team_id); vector + tweet_intent removed 2026-08-13 (dead
+	// semantic-intent feature that aborted a fresh apply on stock Postgres —
+	// audit P0-4).
+	expectedExtensions := []string{"pgcrypto"}
 	for _, ext := range expectedExtensions {
 		var exists bool
 		err := pool.QueryRow(ctx,

@@ -6,6 +6,19 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-13 — Drop the dead tweet_intent / vector / source_type surface (audit P0-4)
+
+`schema.sql` created `tweet_intent` (+ an hnsw index), the `source_type` enum, and
+`CREATE EXTENSION vector` for a semantic-intent feature with **zero code refs**.
+Worse, `CREATE EXTENSION vector` **aborts a fresh schema apply on stock Postgres**
+(`postgres:16-alpine`, what the prod compose uses) — only the `pgvector/pgvector`
+dev image carries it, so the footgun was invisible in dev and would have surfaced
+at cutover. Dropped all three; the schema now provisions on any image. The
+deferred *embedding LLM path* (`config.EmbeddingModel`, `ActionLLMEmbed*`, the
+`textanalysis` stub) is a separate concern and stays. Re-add the table with the
+feature when it's actually scheduled. Updated `pool_test.go`'s expected-schema
+assertions to match.
+
 ## 2026-08-13 — Heartbeat, unified: shared time-based Keepalive across all four long activities (audit P0-1/2, P1-3; corrects #184)
 
 The 2026-08-13 audit caught that #184 fixed only the two *video* activities and

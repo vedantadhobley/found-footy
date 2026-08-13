@@ -18,7 +18,6 @@
 -- ────────────────────────────────────────────────────────────────
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;                    -- gen_random_uuid()
-CREATE EXTENSION IF NOT EXISTS vector;                      -- pgvector for embeddings
 -- Note: pg_trgm was declared for a team_name fuzzy-match GIN index in
 -- an earlier team_aliases shape. The new deterministic pipeline looks
 -- up teams by exact team_id (API-Football), so trigram matching isn't
@@ -49,14 +48,6 @@ CREATE TYPE event_type AS ENUM ('goal', 'card', 'subst', 'var', 'missed penalty'
 
 -- Video share state
 CREATE TYPE share_state AS ENUM ('active', 'removed', 'superseded');
-
--- Tweet source classification (from semantic intent, §1 extensibility hook)
-CREATE TYPE source_type AS ENUM (
-    'broadcaster',      -- official broadcaster account (BBC Sport, ESPN, etc.)
-    'media_outlet',     -- media / journalist account
-    'verified_fan',     -- verified account, fan-oriented
-    'unverified'        -- random user
-);
 
 -- Removal reason for shares / events (why did we mark this removed)
 CREATE TYPE removal_reason AS ENUM (
@@ -396,40 +387,6 @@ CREATE INDEX event_search_candidates_fixture
     ON event_search_candidates (fixture_id);
 CREATE INDEX event_search_candidates_discovered_at
     ON event_search_candidates (discovered_at);
-
--- 8. tweet_intent — semantic intent extraction (§1 extensibility hook, wired from day one)
-CREATE TABLE tweet_intent (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    video_asset_id UUID NOT NULL REFERENCES video_assets(id) ON DELETE CASCADE,
-
-    -- Source metadata (extracted from Twitter response, not LLM-classified)
-    tweet_url TEXT NOT NULL,
-    author_handle TEXT NOT NULL,
-    author_verified BOOLEAN NOT NULL DEFAULT FALSE,
-
-    -- LLM classification
-    source_type source_type NOT NULL,
-    event_type_mentioned event_type,
-    confidence REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1),
-    urgency REAL CHECK (urgency BETWEEN 0 AND 1),
-
-    -- Embedding for similarity clustering.
-    -- 768 assumes current Qwen3-Embedding-8B on joi; migration + backfill
-    -- needed if the deployed embedding model changes.
-    embedding vector(768),
-
-    -- Raw text for auditing
-    tweet_text TEXT NOT NULL,
-
-    llm_model TEXT NOT NULL,                                -- which model classified
-    analyzed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    UNIQUE (video_asset_id)                                 -- one intent per asset; re-analysis updates
-);
-
-CREATE INDEX tweet_intent_source ON tweet_intent (source_type);
-CREATE INDEX tweet_intent_embedding ON tweet_intent
-    USING hnsw (embedding vector_cosine_ops);
 
 -- 9. team_aliases — deterministic Wikidata alias cache.
 --
