@@ -38,7 +38,7 @@ found-footy/
 │   │   ├── session/                     ⊘ doc.go stub — build when Twitter Go service ports (post-O)
 │   │   └── textanalysis/                ⊘ doc.go stub — extensibility hook per plan §4
 │   ├── infra/                           13 live
-│   │   ├── pg/                          ✓ S2: pool + instruments + schema.sql + FixtureRepo + EventRepo + AliasRepo + TeamRepo + AssetRepo/ShareRepo (#164a)
+│   │   ├── pg/                          ✓ S2: pool + instruments + schema.sql + VerifySchema drift guard (audit P0-3) + FixtureRepo + EventRepo + AliasRepo + TeamRepo + AssetRepo/ShareRepo (#164a)
 │   │   ├── nats/                        ✓ S3: client + instruments
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
 │   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
@@ -90,7 +90,7 @@ found-footy/
 ├── docker/twitter/                      ✓ T/b: twitter service image + entrypoint (peer of internal/)
 │   ├── Dockerfile                       Playwright base + playwright-go driver + optional WITH_VNC layer (~150 MB xvfb+fluxbox+x11vnc+novnc+websockify)
 │   └── entrypoint.sh                    Conditionally boots VNC daemon stack when TWITTER_VNC_MODE=true, otherwise passthrough
-├── migrations/                          ⊘ EMPTY — schema.sql lives in internal/infra/pg/ instead
+├── migrations/                          ⊘ EMPTY BY DESIGN (audit P0-3) — flat schema.sql + VerifySchema drift guard, no migration files; first post-cutover in-place change adds one file, squashed back into schema.sql once applied
 │                                          (see decisions.md 2026-07-07)
 ├── scripts/                             smoke + trigger scripts
 │   ├── smoke_repos/main.go              ✓ live pg + repo smoke test (dev only)

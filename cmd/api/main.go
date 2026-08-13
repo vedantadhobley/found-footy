@@ -38,6 +38,11 @@ func main() {
 			pool.Close()
 			return nil
 		})
+		// Refuse to boot against a DB that never received a schema.sql change
+		// (audit P0-3). First run stamps the baseline; a mismatch fails loud.
+		if err := pool.VerifySchema(ctx); err != nil {
+			return err
+		}
 
 		natsIns := nats.RegisterMetrics(deps.Metrics, deps.Log)
 		nc, err := nats.New(ctx, deps.Cfg.NATS, natsIns)

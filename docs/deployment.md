@@ -77,6 +77,16 @@ Automatic. `internal/infra/pg/schema.sql` is bind-mounted into
 startup with an empty volume. Re-provision: `docker volume rm
 found-footy-dev_postgres-data` then `docker compose up -d postgres`.
 
+**Drift guard (audit P0-3).** `pg.VerifySchema` runs at worker/api startup:
+first boot on a DB stamps the embedded `schema.sql` SHA-256 into a
+`schema_version` row; later boots compare and **refuse to start on a
+mismatch**. So an edit to `schema.sql` that never reached this DB fails loud
+instead of silently no-opping. After an *intentional* in-place schema change
+(rare — the norm is edit + re-provision), re-stamp:
+`UPDATE schema_version SET schema_hash = '<new sha256 of schema.sql>'`, or just
+wipe + reprovision (a fresh volume auto-stamps). No migration files — see
+[decisions.md](decisions.md) 2026-08-13 (audit P0-3) for why.
+
 ### NATS
 
 Currently runs no-auth (workspace NATS's `nats.conf` has the accounts
