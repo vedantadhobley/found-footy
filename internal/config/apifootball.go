@@ -35,7 +35,7 @@ type APIFootballConfig struct {
 	// /teams call for a tournament league returns the participating
 	// national teams for that season, which is exactly what we need.
 	// See decisions.md 2026-07-09 Ingest-regression-fix entry.
-	TrackedLeagueIDs []int `env:"API_FOOTBALL_TRACKED_LEAGUES" envDefault:"39,140,78,135,61,1"`
+	TrackedLeagueIDs []int `env:"API_FOOTBALL_TRACKED_LEAGUES" envDefault:"39,140,78,135,61,1,253"`
 
 	// TopFlightCacheHours bounds staleness of `tracked_teams_cache`.
 	// Ingest's step-0 refresh checks the OLDEST row's refreshed_at
