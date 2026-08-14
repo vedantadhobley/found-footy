@@ -27,6 +27,11 @@ see [`../../archive/docs/`](../../archive/docs/).
   a 4-phase doc-restructure plan. The current punch list for the doc pass.
 - [`api-contract.md`](./api-contract.md) — public API surface contract
   (Phase A, unbuilt).
+- [`frontend-bridge-handoff.md`](./frontend-bridge-handoff.md) — **cross-project
+  handoff** to the vedanta-systems frontend/BFF: how to consume the live feed —
+  the 3 NATS subjects + envelope, the 2 REST data endpoints + video redirect,
+  the DTO shapes, and the refetch-on-connect model. Self-contained; the producer
+  side is shipped (N1–N8).
 - [`proposals/`](./proposals/) — design-first drafts per phase. Signed off:
   `discovery.md`, `twitter-port.md`,
   [`twitter-scaling.md`](./proposals/twitter-scaling.md) (per-event Firefox
