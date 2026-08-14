@@ -6,6 +6,24 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-14 — Read API no longer hard-depends on Temporal at boot
+
+`cmd/api` constructed a Temporal client at startup — with a FATAL health probe —
+but never used it (`_ = tempClient`, a placeholder for future Phase-A on-demand
+StartWorkflow endpoints). When Temporal was transiently unreachable during an
+air rebuild (00:19 UTC), the probe's ~8s deadline elapsed and the ENTIRE public
+read API exited (code 1). air won't retry without a file change, so it stayed
+dark and the frontend went blank — while the worker (which legitimately needs
+Temporal) and all the match data were fine. The read API serves
+fixtures/events/videos from Postgres + S3 and has zero runtime Temporal need.
+
+A read surface must not die on a service it doesn't use. Removed the Temporal
+client from `cmd/api` entirely. When the Phase-A StartWorkflow endpoints
+actually land, re-add it **lazily / non-fatally** (same anti-pattern as #170):
+construct on first use, retry, degrade rather than crash the binary. The worker
+keeps its Temporal boot dependency — it is a Temporal worker and genuinely
+cannot run without it.
+
 ## 2026-08-13 — Event `phase` on the read API: the layer-2 semantic contract (frontend handoff)
 
 The `eventDTO` exposed player + videos but no lifecycle signal, so the frontend
