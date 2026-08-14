@@ -306,6 +306,15 @@ promotion) → `ListActiveFixtureIDs` → `FetchLiveFixtures` (batched
 3-poll debounce + downstream spawn + completion check). Location:
 `internal/workflow/active_poll.go` + `internal/activity/monitor/`.
 
+**Live-feed classification (N4, decisions.md 2026-08-14).** `ReconcileFixture`
+snapshots the fixture's API-mutable fields before the `Update*` calls and diffs
+after, so `ReconcileFixtureOutput` carries `Minute`/`Extra` + two disjoint
+signals per cycle: **`ClockChanged`** (the minute/extra advanced and nothing
+else) and **`Structural`** (a new/removed/stabilised event, an unknown-scorer
+drop, a score/penalty/winner/status change, or completion — set incrementally so
+it holds at every return path). N5's ActivePoll partition turns these into the
+`fixture.clock` / `fixture.update` batch emits; N4 itself emits nothing.
+
 **Event debounce — scorer-aware 3-state (2026-08-05).** `natural_key` embeds
 `player_id`, so an unknown scorer (`player_id` null) and its later-attributed
 known scorer are *different* keys. A goal without a scorer is "not a full event
