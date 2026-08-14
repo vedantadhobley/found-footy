@@ -21,6 +21,7 @@ import (
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	fleetactivity "github.com/vedantadhobley/found-footy/internal/activity/fleet"
 	ingestactivity "github.com/vedantadhobley/found-footy/internal/activity/ingest"
+	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
 	monitoractivity "github.com/vedantadhobley/found-footy/internal/activity/monitor"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
@@ -312,6 +313,14 @@ func main() {
 		// keeps the reaper dark when the fleet is off.
 		fleetActs := &fleetactivity.Activities{Fleet: firefoxFleet, LiveEvents: eventRepo}
 
+		// N3 — live-feed NATS producer + its publish-activity boundary. Same
+		// nc as the composer; source stamps dev/prod onto the envelope.
+		natsPub, err := eventinfra.NewPublisher(nc, deps.Cfg.Event.Source)
+		if err != nil {
+			return fmt.Errorf("nats publisher: %w", err)
+		}
+		livefeedActs := &livefeedactivity.Activities{Pub: natsPub}
+
 		w.RegisterWorkflow(ffwf.ActivePollWorkflow)
 		w.RegisterWorkflow(ffwf.StagingPollWorkflow)
 		w.RegisterWorkflow(ffwf.EventWorkflow)
@@ -322,6 +331,7 @@ func main() {
 		w.RegisterActivity(visionActs)
 		w.RegisterActivity(persistActs)
 		w.RegisterActivity(fleetActs)
+		w.RegisterActivity(livefeedActs)
 
 		if err := w.Start(ctx); err != nil {
 			return err

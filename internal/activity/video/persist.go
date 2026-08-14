@@ -81,6 +81,10 @@ type PromoteAndPersistOutput struct {
 	ShareID  string
 	S3Key    string
 	Inserted bool
+	// Minted is true when a NEW share was minted this call (vs an
+	// idempotent-retry no-op that found an existing share). The pipeline
+	// pings event.video only when Minted, so a retry never re-announces.
+	Minted bool
 }
 
 // PromoteAndPersist copies the clip into the assets prefix and records the
@@ -142,6 +146,7 @@ func (a *PersistActivities) PromoteAndPersist(ctx context.Context, in PromoteAnd
 		return out, fmt.Errorf("video.PromoteAndPersist: rebalance: %w", err)
 	}
 	out.ShareID = share.ID
+	out.Minted = true
 	return out, nil
 }
 
