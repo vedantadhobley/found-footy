@@ -147,6 +147,41 @@ func (r *EventRepo) ListLiveFleetEventIDs(ctx context.Context) ([]uuid.UUID, err
 	return ids, rows.Err()
 }
 
+// DiscoveryComplete returns the subset of eventIDs whose 'discovery' downstream
+// workflow has finished (edw.completed_at set) — the read-side signal the API
+// derives event.Phase from (separating `searching` from `complete`). Batched
+// to avoid an N+1 across a fixture's events; absent IDs (no discovery row, or
+// still in flight) are simply not in the returned set. IDs are passed as text
+// with an ::uuid[] cast so the array encoding never depends on a uuid codec.
+func (r *EventRepo) DiscoveryComplete(ctx context.Context, eventIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	out := make(map[uuid.UUID]bool, len(eventIDs))
+	if len(eventIDs) == 0 {
+		return out, nil
+	}
+	ids := make([]string, len(eventIDs))
+	for i, id := range eventIDs {
+		ids[i] = id.String()
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT DISTINCT event_id
+		FROM event_downstream_workflows
+		WHERE workflow_type = 'discovery'
+		  AND completed_at IS NOT NULL
+		  AND event_id = ANY($1::uuid[])`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("pg.EventRepo.DiscoveryComplete: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("pg.EventRepo.DiscoveryComplete: scan: %w", err)
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
 // GetByNaturalKey returns the event for (fixture_id, natural_key) or
 // event.ErrNotFound. Called by MonitorWorkflow when it sees an API
 // event and wants to know if we already track it.

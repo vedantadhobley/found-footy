@@ -39,8 +39,9 @@ func (f *fakeFixtures) ListByState(_ context.Context, s fixture.State) ([]*fixtu
 }
 
 type fakeEvents struct {
-	byID      map[uuid.UUID]*event.Event
-	byFixture map[int64][]*event.Event
+	byID          map[uuid.UUID]*event.Event
+	byFixture     map[int64][]*event.Event
+	discoveryDone map[uuid.UUID]bool // event IDs whose discovery has completed
 }
 
 func (f *fakeEvents) Get(_ context.Context, id uuid.UUID) (*event.Event, error) {
@@ -51,6 +52,15 @@ func (f *fakeEvents) Get(_ context.Context, id uuid.UUID) (*event.Event, error) 
 }
 func (f *fakeEvents) ListByFixture(_ context.Context, fixtureID int64) ([]*event.Event, error) {
 	return f.byFixture[fixtureID], nil
+}
+func (f *fakeEvents) DiscoveryComplete(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
+	out := make(map[uuid.UUID]bool, len(ids))
+	for _, id := range ids {
+		if f.discoveryDone[id] {
+			out[id] = true
+		}
+	}
+	return out, nil
 }
 
 type fakeVideos struct {
