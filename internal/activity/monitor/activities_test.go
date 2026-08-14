@@ -700,12 +700,6 @@ func TestReconcileFixture_ClockAdvance_ClockOnly(t *testing.T) {
 	if out.Minute != 46 {
 		t.Errorf("Minute = %d, want 46", out.Minute)
 	}
-	// last_activity_at must NOT move on a plain clock poll — it's event-based,
-	// not poll-based (the seed's activation time is kickoff).
-	got, _ := fRepo.Get(context.Background(), 999)
-	if got.LastActivityAt == nil || !got.LastActivityAt.Equal(kickoff) {
-		t.Errorf("LastActivityAt = %v, want %v (a clock poll is not activity)", got.LastActivityAt, kickoff)
-	}
 }
 
 // TestReconcileFixture_FrozenPoll_NeitherSignal — an identical re-poll (stalled
@@ -775,11 +769,6 @@ func TestReconcileFixture_ScoreChange_Structural(t *testing.T) {
 	}
 	if !out.Structural {
 		t.Error("Structural = false, want true (score 0→1)")
-	}
-	// A structural change IS activity → last_activity_at bumps to now.
-	got, _ := fRepo.Get(context.Background(), 999)
-	if got.LastActivityAt == nil || !got.LastActivityAt.Equal(now) {
-		t.Errorf("LastActivityAt = %v, want %v (a score change is activity)", got.LastActivityAt, now)
 	}
 }
 

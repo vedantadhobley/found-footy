@@ -100,7 +100,7 @@ func (h *Handlers) fixtureToDTO(ctx context.Context, f *fixture.Fixture) (fixtur
 		}
 		dtos = append(dtos, toEventDTO(e, vids, done[e.ID]))
 	}
-	return toFixtureDTO(f, dtos), nil
+	return toFixtureDTO(f, dtos, deriveLastActivity(f, events)), nil
 }
 
 // discoveryComplete batches the discovery-complete lookup for a set of events
@@ -192,7 +192,7 @@ func (h *Handlers) loadState(ctx context.Context, state fixture.State, withEvent
 	out := make([]fixtureDTO, 0, len(fx))
 	for _, f := range fx {
 		if !withEvents {
-			out = append(out, toFixtureDTO(f, nil))
+			out = append(out, toFixtureDTO(f, nil, deriveLastActivity(f, nil)))
 			continue
 		}
 		d, err := h.fixtureToDTO(ctx, f)
