@@ -66,7 +66,7 @@ found-footy/
 │   │   ├── discovery/                   ✓ O3/d: GetDiscoveryConfig, FetchTeamAliases, SearchTweets, StoreCandidate, MarkDownstreamComplete (no _test.go yet — audit gap)
 │   │   ├── video/                       ✓ V/3b: DownloadAndStage + HashVideo (staging-split + pre-download filter) + fakes + 8 tests
 │   │   └── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when ship-dark
-│   ├── api/                             ✓ #167: Chi read API — GET /fixtures(+?ids batch) /fixtures/{id} /events?ids /events/{id} /videos/{share_id}(302→presign chain); eventDTO carries derived `phase`+`debounce_count` (layer-2 contract, event.DerivePhase); dto.go + handlers.go + router.go + tests; SSE is vedanta-systems'
+│   ├── api/                             ✓ #167: Chi read API — GET /fixtures(+?ids batch) /fixtures/{id} /events?ids /events/{id} /videos/{share_id}(302→presign chain); eventDTO carries derived `phase`+`debounce_count` (layer-2 contract, event.DerivePhase); fixtureDTO carries league country/round + penalty{home,away}|null + winner (P2-2); dto.go + handlers.go + router.go + tests; SSE is vedanta-systems'
 │   ├── bootstrap/                       ✓ S1 (NOT IN PLAN — see decisions.md 2026-07-07)
 │   │   └── bootstrap.go                 Deps + LIFO Closer registry; shared binary startup
 │   ├── config/                          ✓ S1: envconfig-based Config with per-adapter sub-structs

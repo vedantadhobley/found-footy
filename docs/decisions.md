@@ -6,6 +6,38 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-14 — Fixture DTO round-2: league country/round + penalty, and the winner P2-2 fix
+
+The portal's competition line rendered " - Leagues Cup" (empty country) and
+knockouts couldn't show "who won on pens" — the vendor provides
+`league.country`/`round` and `score.penalty`, but the reconcile dropped them,
+building `fixture.League{ID,Name,Season}` and taking only `Goals` for the score
+(same class as the assist gap). Threaded through every layer (schema +4 cols →
+domain → reconcile → repo → DTO):
+
+- `leagueDTO` gains `country` + `round`.
+- `fixtureDTO` gains `penalty: {home, away} | null` — the shootout result. The
+  rest of the score breakdown (HT/FT/ET) stays dropped; only penalty is
+  load-bearing (knockout "who won on pens"). Null unless both sides scored.
+
+Penalty is captured on BOTH paths: the ingest reconcile (a game already
+complete at ingest) AND the monitor's live poll — a shootout happens
+*mid-match*, so the live monitor is the only path that watches it decide — via a
+new nil-guarded `fixture.UpdatePenalty` (parallel to `UpdateWinners`).
+
+**Also fixed audit P2-2 in the same spot.** `teams.winner` was parsed but had
+zero prod callers → the DTO's `winner` was *always null* and the completion
+fast-path (`HasDecidedWinner`) never fired. Wired `UpdateWinners` into the
+monitor + ingest reconcile. Now `winner` populates and a decided result
+completes the moment the vendor commits, not after the 3-poll counter. (The
+frontend agent had assumed winner worked; it didn't.)
+
+The schema change was the **first real in-place migration under the P0-3 guard**:
+`ALTER` the live dev DB (additive, non-destructive — kept tonight's live games),
+then re-stamp the guard hash. Live-validated on a real shootout tonight —
+**Club América 1 (5) – (6) 1 Austin**: the DTO renders country/round, both
+winners (home=false/away=true), and `penalty {5,6}`.
+
 ## 2026-08-14 — Read API no longer hard-depends on Temporal at boot
 
 `cmd/api` constructed a Temporal client at startup — with a FATAL health probe —

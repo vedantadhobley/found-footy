@@ -71,6 +71,12 @@ func TestFixtureRepo_Get_NotFound(t *testing.T) {
 func TestFixtureRepo_UpsertThenGet(t *testing.T) {
 	ctx, _, repo := setupRepo(t)
 	original := makeStaging(1001, time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC))
+	// Vendor display + shootout fields (round-2 DTO gaps): must roundtrip.
+	original.League.Country = "World"
+	original.League.Round = "Group Stage"
+	ph, pa, wh := 5, 6, false
+	original.HomePenalty, original.AwayPenalty = &ph, &pa
+	original.HomeWinner = &wh
 
 	if err := repo.Upsert(ctx, original); err != nil {
 		t.Fatalf("Upsert: %v", err)
@@ -90,6 +96,15 @@ func TestFixtureRepo_UpsertThenGet(t *testing.T) {
 	}
 	if got.League.Season != 2026 {
 		t.Errorf("League.Season = %d, want 2026", got.League.Season)
+	}
+	if got.League.Country != "World" || got.League.Round != "Group Stage" {
+		t.Errorf("League country/round roundtrip = %q/%q", got.League.Country, got.League.Round)
+	}
+	if got.HomePenalty == nil || *got.HomePenalty != 5 || got.AwayPenalty == nil || *got.AwayPenalty != 6 {
+		t.Errorf("penalty roundtrip = %v/%v, want 5/6", got.HomePenalty, got.AwayPenalty)
+	}
+	if got.HomeWinner == nil || *got.HomeWinner != false {
+		t.Errorf("HomeWinner roundtrip = %v, want false", got.HomeWinner)
 	}
 	if !got.Kickoff.Equal(original.Kickoff) {
 		t.Errorf("Kickoff = %v, want %v", got.Kickoff, original.Kickoff)

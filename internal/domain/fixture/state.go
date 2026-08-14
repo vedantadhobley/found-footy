@@ -109,6 +109,20 @@ func (f *Fixture) UpdateWinners(home, away *bool) {
 	}
 }
 
+// UpdatePenalty records the shootout result (api score.penalty) from a poll.
+// Separate from UpdateFromPoll (like UpdateWinners) because a shootout appears
+// only at the end of a knockout that's level — the live-monitor path is the
+// only one that sees it happen. nil-guarded so an ordinary poll never clears a
+// captured result.
+func (f *Fixture) UpdatePenalty(home, away *int) {
+	if home != nil {
+		f.HomePenalty = home
+	}
+	if away != nil {
+		f.AwayPenalty = away
+	}
+}
+
 // updateCompletionCounter runs the 3-poll debounce on Terminal status.
 // Called from UpdateFromPoll (active-fixture path) and
 // RecordStagingPoll (staging-fixture path — a staging fixture that

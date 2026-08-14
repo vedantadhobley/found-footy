@@ -25,9 +25,19 @@ type sideDTO struct {
 }
 
 type leagueDTO struct {
-	ID     int    `json:"id"`
-	Name   string `json:"name"`
-	Season int    `json:"season"`
+	ID      int    `json:"id"`
+	Name    string `json:"name"`
+	Season  int    `json:"season"`
+	Country string `json:"country"` // "World", "USA", "England" — the competition line
+	Round   string `json:"round"`   // "Regular Season - 12", "Group Stage - 1"
+}
+
+// penaltyDTO is the shootout result (home (4) — (3) away). Present on the
+// fixture only when a shootout happened; null otherwise. The rest of the score
+// breakdown (halftime/fulltime/extratime) is intentionally not surfaced.
+type penaltyDTO struct {
+	Home int `json:"home"`
+	Away int `json:"away"`
 }
 
 // statusDTO is the API-reported match status. Elapsed/extra are the live clock.
@@ -83,15 +93,16 @@ type eventDTO struct {
 }
 
 type fixtureDTO struct {
-	ID             int64      `json:"id"`
-	State          string     `json:"state"`
-	Kickoff        time.Time  `json:"kickoff"`
-	League         leagueDTO  `json:"league"`
-	Home           sideDTO    `json:"home"`
-	Away           sideDTO    `json:"away"`
-	Status         statusDTO  `json:"status"`
-	LastActivityAt *time.Time `json:"last_activity_at"`
-	Events         []eventDTO `json:"events"`
+	ID             int64       `json:"id"`
+	State          string      `json:"state"`
+	Kickoff        time.Time   `json:"kickoff"`
+	League         leagueDTO   `json:"league"`
+	Home           sideDTO     `json:"home"`
+	Away           sideDTO     `json:"away"`
+	Penalty        *penaltyDTO `json:"penalty"` // shootout result; null when no shootout
+	Status         statusDTO   `json:"status"`
+	LastActivityAt *time.Time  `json:"last_activity_at"`
+	Events         []eventDTO  `json:"events"`
 }
 
 // GET /fixtures and /fixtures?ids=… both return a flat []fixtureDTO — one shape
@@ -136,9 +147,13 @@ func toEventDTO(e *event.Event, videos []videoDTO, discoveryComplete bool) event
 func toFixtureDTO(f *fixture.Fixture, events []eventDTO) fixtureDTO {
 	return fixtureDTO{
 		ID: f.ID, State: string(f.State), Kickoff: f.Kickoff,
-		League: leagueDTO{ID: f.League.ID, Name: f.League.Name, Season: f.League.Season},
-		Home:   sideDTO{ID: f.Home.ID, Name: f.Home.Name, Score: f.HomeScore, Winner: f.HomeWinner},
-		Away:   sideDTO{ID: f.Away.ID, Name: f.Away.Name, Score: f.AwayScore, Winner: f.AwayWinner},
+		League: leagueDTO{
+			ID: f.League.ID, Name: f.League.Name, Season: f.League.Season,
+			Country: f.League.Country, Round: f.League.Round,
+		},
+		Home:    sideDTO{ID: f.Home.ID, Name: f.Home.Name, Score: f.HomeScore, Winner: f.HomeWinner},
+		Away:    sideDTO{ID: f.Away.ID, Name: f.Away.Name, Score: f.AwayScore, Winner: f.AwayWinner},
+		Penalty: toPenaltyDTO(f.HomePenalty, f.AwayPenalty),
 		Status: statusDTO{
 			Short: string(f.APIStatus.Short), Long: f.APIStatus.Long,
 			Elapsed: f.APIElapsed, Extra: f.APIExtra,
@@ -146,6 +161,15 @@ func toFixtureDTO(f *fixture.Fixture, events []eventDTO) fixtureDTO {
 		LastActivityAt: f.LastActivityAt,
 		Events:         ensureEvents(events),
 	}
+}
+
+// toPenaltyDTO returns the shootout result only when one occurred — both sides
+// have a penalty score. A partial/absent shootout maps to null.
+func toPenaltyDTO(home, away *int) *penaltyDTO {
+	if home == nil || away == nil {
+		return nil
+	}
+	return &penaltyDTO{Home: *home, Away: *away}
 }
 
 // ensureVideos / ensureEvents turn a nil slice into an empty one so JSON emits

@@ -428,3 +428,23 @@ func TestValidateInvariants_CatchesInconsistentTimestamps(t *testing.T) {
 		t.Errorf("expected ErrStateTimestampMismatch on completed_at-during-active, got %v", err)
 	}
 }
+
+// TestUpdatePenalty — the shootout result is captured when the vendor reports
+// it, and a later nil poll never clears an already-captured result (nil-guard,
+// mirroring UpdateWinners).
+func TestUpdatePenalty(t *testing.T) {
+	f := makeStaging()
+	if f.HomePenalty != nil || f.AwayPenalty != nil {
+		t.Fatalf("penalty should start nil")
+	}
+	h, a := 5, 6
+	f.UpdatePenalty(&h, &a)
+	if f.HomePenalty == nil || *f.HomePenalty != 5 || f.AwayPenalty == nil || *f.AwayPenalty != 6 {
+		t.Fatalf("after capture = %v/%v, want 5/6", f.HomePenalty, f.AwayPenalty)
+	}
+	// A subsequent nil/nil poll must NOT clear the captured shootout.
+	f.UpdatePenalty(nil, nil)
+	if f.HomePenalty == nil || *f.HomePenalty != 5 || f.AwayPenalty == nil || *f.AwayPenalty != 6 {
+		t.Errorf("nil poll cleared penalty: %v/%v", f.HomePenalty, f.AwayPenalty)
+	}
+}

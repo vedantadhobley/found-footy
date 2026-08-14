@@ -92,8 +92,15 @@ CREATE TABLE fixtures (
     league_id INT NOT NULL,
     league_name TEXT NOT NULL,
     league_season INT NOT NULL,
+    -- Vendor display facts for the portal's competition line (api league.*).
+    league_country TEXT NOT NULL DEFAULT '',                -- 'World', 'USA', 'England'
+    league_round TEXT NOT NULL DEFAULT '',                  -- 'Group Stage - 1', 'Regular Season - 12'
     home_score INT,
     away_score INT,
+    -- Penalty shootout result (api score.penalty). Nullable — non-null only on
+    -- a shootout; the rest of the score breakdown (HT/FT/ET) stays dropped.
+    home_penalty INT,
+    away_penalty INT,
     -- Winner data (populated from api teams.home.winner / away.winner).
     -- Nullable BOOLEAN — vendor sets true/false when result is decided
     -- (usually simultaneously with terminal status, sometimes slightly

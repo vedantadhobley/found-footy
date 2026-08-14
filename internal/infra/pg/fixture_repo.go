@@ -38,6 +38,7 @@ const fixtureColumns = `
 	home_score, away_score, home_winner, away_winner,
 	activated_at, completed_at, last_activity_at, last_polled_at,
 	completion_counter,
+	league_country, league_round, home_penalty, away_penalty,
 	created_at, updated_at
 `
 
@@ -63,6 +64,7 @@ func scanFixture(row rowScanner) (*fixture.Fixture, error) {
 		&f.HomeScore, &f.AwayScore, &f.HomeWinner, &f.AwayWinner,
 		&f.ActivatedAt, &f.CompletedAt, &f.LastActivityAt, &f.LastPolledAt,
 		&f.CompletionCounter,
+		&f.League.Country, &f.League.Round, &f.HomePenalty, &f.AwayPenalty,
 		&f.CreatedAt, &f.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -99,7 +101,8 @@ func (r *FixtureRepo) Upsert(ctx context.Context, f *fixture.Fixture) error {
 			league_id, league_name, league_season,
 			home_score, away_score, home_winner, away_winner,
 			activated_at, completed_at, last_activity_at, last_polled_at,
-			completion_counter
+			completion_counter,
+			league_country, league_round, home_penalty, away_penalty
 		) VALUES (
 			$1, $2,
 			$3, $4, $5, $6,
@@ -108,7 +111,8 @@ func (r *FixtureRepo) Upsert(ctx context.Context, f *fixture.Fixture) error {
 			$12, $13, $14,
 			$15, $16, $17, $18,
 			$19, $20, $21, $22,
-			$23
+			$23,
+			$24, $25, $26, $27
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			state = EXCLUDED.state,
@@ -132,7 +136,11 @@ func (r *FixtureRepo) Upsert(ctx context.Context, f *fixture.Fixture) error {
 			completed_at = EXCLUDED.completed_at,
 			last_activity_at = EXCLUDED.last_activity_at,
 			last_polled_at = EXCLUDED.last_polled_at,
-			completion_counter = EXCLUDED.completion_counter
+			completion_counter = EXCLUDED.completion_counter,
+			league_country = EXCLUDED.league_country,
+			league_round = EXCLUDED.league_round,
+			home_penalty = EXCLUDED.home_penalty,
+			away_penalty = EXCLUDED.away_penalty
 	`
 	_, err := r.pool.Exec(ctx, query,
 		f.ID, string(f.State),
@@ -143,6 +151,7 @@ func (r *FixtureRepo) Upsert(ctx context.Context, f *fixture.Fixture) error {
 		f.HomeScore, f.AwayScore, f.HomeWinner, f.AwayWinner,
 		f.ActivatedAt, f.CompletedAt, f.LastActivityAt, f.LastPolledAt,
 		f.CompletionCounter,
+		f.League.Country, f.League.Round, f.HomePenalty, f.AwayPenalty,
 	)
 	if err != nil {
 		return fmt.Errorf("pg.FixtureRepo.Upsert: %w", err)
