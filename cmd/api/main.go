@@ -17,7 +17,6 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/infra/nats"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 	"github.com/vedantadhobley/found-footy/internal/infra/s3"
-	"github.com/vedantadhobley/found-footy/internal/infra/temporal"
 )
 
 // gitSHA, builtAt are baked in at build time via -ldflags per §11
@@ -62,21 +61,19 @@ func main() {
 		// s3 client has no explicit Close (no persistent connection); the
 		// share-redirect handler presigns GETs through it.
 
-		tempIns := temporal.RegisterMetrics(deps.Metrics, deps.Log)
-		tempClient, err := temporal.NewClient(ctx, deps.Cfg.Temporal, tempIns)
-		if err != nil {
-			return err
-		}
-		deps.RegisterCloser("temporal-client", func(_ context.Context) error {
-			tempClient.Close()
-			return nil
-		})
-		_ = tempClient // consumed by on-demand StartWorkflow endpoints in Phase A
+		// No Temporal client here. The read API serves fixtures/events/videos
+		// from Postgres + S3 and does not use Temporal. A prior placeholder
+		// (`_ = tempClient`, for future Phase-A on-demand StartWorkflow
+		// endpoints) constructed a client whose FATAL health probe took the
+		// whole public API down when Temporal briefly blinked during an air
+		// rebuild (2026-08-14) — a read surface must not die on a service it
+		// doesn't use. Re-add it lazily / non-fatally (cf. #170) when the
+		// StartWorkflow endpoints actually exist. See decisions.md 2026-08-14.
 
 		// Public read-API surface (#167a). Chi router on cfg.API.ListenAddr
 		// (Caddy fronts it — container port only). Graceful drain is a closer
 		// so SIGTERM stops accepting + finishes in-flight requests before the
-		// pool/nats/temporal deps close (LIFO). A listen failure (e.g. port in
+		// pool/nats deps close (LIFO). A listen failure (e.g. port in
 		// use) fails the binary fast rather than running degraded.
 		handlers := &ffapi.Handlers{
 			Fixtures: pg.NewFixtureRepo(pool),
