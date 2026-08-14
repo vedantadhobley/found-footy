@@ -203,7 +203,7 @@ func main() {
 		// Phase O3/a — event composer for dual-write to pg event_log +
 		// NATS. See decisions.md 2026-07-16 for the NATS-scope narrowing.
 		composerIns := eventinfra.RegisterMetrics(deps.Metrics, deps.Log)
-		composer, err := eventinfra.New(pool, nc, composerIns)
+		composer, err := eventinfra.New(pool, composerIns)
 		if err != nil {
 			return err
 		}

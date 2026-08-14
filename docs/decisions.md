@@ -6,6 +6,27 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-14 — Composer decoupled to event_log-only (N2/N8); Kind→LogType rename deferred
+
+N2 + N8 shipped the composer/NATS split from the producer-rebuild entry below.
+`Composer.Publish` now writes **only** `event_log` (the audit plane) — the
+envelope + `nats.Publish` + skew accounting are gone, and `event.New` drops its
+`nats.Conn` arg (the worker keeps `nc` for the NatsPublisher). The 6 old NATS
+subjects stop being emitted — unilateral + safe, since nothing subscribed to
+them (confirmed 2026-08-14). `AllKinds()` removed (it existed for NATS consumer
+registration that never materialised). The composer integration test drops its
+NATS container + skew/envelope assertions; it now verifies the event_log row.
+
+**Divergence from the plan's naming:** the producer-rebuild entry said rename
+`Kind`→`LogType` + `Publish`→`Log` to disambiguate from the new `Subject` /
+`NatsPublisher`. **Kept the `Kind` + `Publish` names for now** — the rename
+ripples into the monitor's 5 emit helpers + the `eventComposer` interface for
+purely cosmetic gain, and the functional decouple doesn't need it. `Kind` is
+re-documented as the `event_log.event_type` vocabulary. The rename is deferred
+cosmetic polish, not a blocker; `event_log` stays the audit plane as designed.
+
+---
+
 ## 2026-08-14 — NATS producer rebuild: the 3-subject live-feed model (supersedes the 2026-08-04 eventing shape)
 
 Settled scoping the found-footy → frontend live path. Replaces the 6 transition-subjects
