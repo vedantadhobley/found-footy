@@ -143,6 +143,7 @@ services:
       - ./garage.dev.toml:/etc/garage.toml:ro
     networks:
       - found-footy-dev
+      - luv-dev  # shared door: cross-project consumers (vs-api) re-proxy presigned video URLs (host 'garage:3900')
     restart: unless-stopped
     # NB: garage.dev.toml doesn't exist yet — will be created in Phase S
     # when the s3 adapter needs a real Garage cluster. For Phase F this
