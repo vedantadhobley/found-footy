@@ -653,6 +653,123 @@ func TestReconcileFixture_NewGoalInserted_CountIs1(t *testing.T) {
 	if len(out.EventsBecameStable) != 0 {
 		t.Errorf("EventsBecameStable = %v, want empty (count is 1, not 3)", out.EventsBecameStable)
 	}
+	// A goal is a structural change (new event + a score move).
+	if !out.Structural {
+		t.Error("Structural = false, want true (a goal was inserted)")
+	}
+}
+
+// ── N4 classification signals ──────────────────────────────────
+//
+// mkActiveN4Fixture seeds an active fixture with a known prior clock/score so
+// the snapshot-diff has a concrete baseline (mkActiveFixture leaves elapsed +
+// scores nil, which any poll would count as "changed").
+func mkActiveN4Fixture(id int64, kickoff time.Time, elapsed, home, away int) *fixture.Fixture {
+	f := mkActiveFixture(id, kickoff)
+	e, h, a := elapsed, home, away
+	f.APIElapsed = &e
+	f.HomeScore, f.AwayScore = &h, &a
+	return f
+}
+
+func pi(n int) *int { return &n }
+
+// TestReconcileFixture_ClockAdvance_ClockOnly — the minute advances and nothing
+// else: ClockChanged, NOT Structural. This is the fixture.clock tick case.
+func TestReconcileFixture_ClockAdvance_ClockOnly(t *testing.T) {
+	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	now := kickoff.Add(46 * time.Minute)
+	fRepo := newFakeFixtureRepo()
+	_ = fRepo.Upsert(context.Background(), mkActiveN4Fixture(999, kickoff, 45, 0, 0))
+
+	apiFix := apifootball.APIFixture{
+		Fixture: apifootball.APIFixtureFixture{ID: 999, Status: apifootball.APIFixtureStatus{Short: "1h", Long: "First Half", Elapsed: pi(46)}},
+		Goals:   apifootball.APIFixtureGoals{Home: pi(0), Away: pi(0)},
+	}
+	acts := newActs(&fakeFetcher{}, fRepo, newFakeEventRepo(), now)
+	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{APIFixture: apiFix, WorkflowID: "w1"})
+	if err != nil {
+		t.Fatalf("ReconcileFixture: %v", err)
+	}
+	if !out.ClockChanged {
+		t.Error("ClockChanged = false, want true (45→46)")
+	}
+	if out.Structural {
+		t.Error("Structural = true, want false (only the clock moved)")
+	}
+	if out.Minute != 46 {
+		t.Errorf("Minute = %d, want 46", out.Minute)
+	}
+}
+
+// TestReconcileFixture_FrozenPoll_NeitherSignal — an identical re-poll (stalled
+// minute, no changes): neither signal fires → no message that cycle.
+func TestReconcileFixture_FrozenPoll_NeitherSignal(t *testing.T) {
+	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	now := kickoff.Add(45 * time.Minute)
+	fRepo := newFakeFixtureRepo()
+	_ = fRepo.Upsert(context.Background(), mkActiveN4Fixture(999, kickoff, 45, 0, 0))
+
+	apiFix := apifootball.APIFixture{
+		Fixture: apifootball.APIFixtureFixture{ID: 999, Status: apifootball.APIFixtureStatus{Short: "1h", Long: "First Half", Elapsed: pi(45)}},
+		Goals:   apifootball.APIFixtureGoals{Home: pi(0), Away: pi(0)},
+	}
+	acts := newActs(&fakeFetcher{}, fRepo, newFakeEventRepo(), now)
+	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{APIFixture: apiFix, WorkflowID: "w1"})
+	if err != nil {
+		t.Fatalf("ReconcileFixture: %v", err)
+	}
+	if out.ClockChanged || out.Structural {
+		t.Errorf("ClockChanged=%v Structural=%v, want both false (nothing changed)", out.ClockChanged, out.Structural)
+	}
+}
+
+// TestReconcileFixture_Halftime_StructuralNotClock — the status flips 1H→HT with
+// the clock frozen: Structural (a full-refetch change), NOT ClockChanged. Proves
+// a status change rides fixture.update even when the minute doesn't move.
+func TestReconcileFixture_Halftime_StructuralNotClock(t *testing.T) {
+	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	now := kickoff.Add(45 * time.Minute)
+	fRepo := newFakeFixtureRepo()
+	_ = fRepo.Upsert(context.Background(), mkActiveN4Fixture(999, kickoff, 45, 0, 0))
+
+	apiFix := apifootball.APIFixture{
+		Fixture: apifootball.APIFixtureFixture{ID: 999, Status: apifootball.APIFixtureStatus{Short: "ht", Long: "Halftime", Elapsed: pi(45)}},
+		Goals:   apifootball.APIFixtureGoals{Home: pi(0), Away: pi(0)},
+	}
+	acts := newActs(&fakeFetcher{}, fRepo, newFakeEventRepo(), now)
+	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{APIFixture: apiFix, WorkflowID: "w1"})
+	if err != nil {
+		t.Fatalf("ReconcileFixture: %v", err)
+	}
+	if !out.Structural {
+		t.Error("Structural = false, want true (status 1H→HT)")
+	}
+	if out.ClockChanged {
+		t.Error("ClockChanged = true, want false (clock frozen at HT)")
+	}
+}
+
+// TestReconcileFixture_ScoreChange_Structural — a score move with no event in the
+// same poll (vendor eventual consistency) still classifies as Structural.
+func TestReconcileFixture_ScoreChange_Structural(t *testing.T) {
+	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	now := kickoff.Add(46 * time.Minute)
+	fRepo := newFakeFixtureRepo()
+	_ = fRepo.Upsert(context.Background(), mkActiveN4Fixture(999, kickoff, 45, 0, 0))
+
+	apiFix := apifootball.APIFixture{
+		Fixture: apifootball.APIFixtureFixture{ID: 999, Status: apifootball.APIFixtureStatus{Short: "1h", Long: "First Half", Elapsed: pi(46)}},
+		Goals:   apifootball.APIFixtureGoals{Home: pi(1), Away: pi(0)},
+	}
+	acts := newActs(&fakeFetcher{}, fRepo, newFakeEventRepo(), now)
+	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{APIFixture: apiFix, WorkflowID: "w1"})
+	if err != nil {
+		t.Fatalf("ReconcileFixture: %v", err)
+	}
+	if !out.Structural {
+		t.Error("Structural = false, want true (score 0→1)")
+	}
 }
 
 func TestReconcileFixture_ThreeCyclesTriggersDownstream(t *testing.T) {

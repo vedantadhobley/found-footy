@@ -389,6 +389,21 @@ type ReconcileFixtureOutput struct {
 	// from active → completed. See docs/design/proposals/completion-contract.md.
 	Completed bool
 	Errors    []string
+
+	// ── N4 live-feed classification signals (decisions.md 2026-08-14) ──
+	// Populated every cycle; the poll workflow partitions each fixture into
+	// fixture.clock (ClockChanged, minute-only) vs fixture.update (Structural)
+	// — disjoint, structural wins.
+	Minute int  // current match minute (api elapsed) — for the clock tick payload
+	Extra  *int // stoppage minutes on top of Minute, or nil
+	// ClockChanged — minute/extra advanced vs the prior poll. A frozen clock
+	// (HT, pre-kickoff, stalled) leaves it false → no tick that cycle.
+	ClockChanged bool
+	// Structural — something a consumer must full-refetch changed this cycle:
+	// a new/removed/stabilised event, an unknown-scorer drop, a score/penalty/
+	// winner/status change, or completion. Drives fixture.update. Set
+	// incrementally (below), so it is correct at every return path.
+	Structural bool
 }
 
 // ReconcileFixture is the per-fixture per-cycle work:
@@ -415,6 +430,14 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	if err != nil {
 		return out, fmt.Errorf("monitor.ReconcileFixture: get fixture: %w", err)
 	}
+	// N4: snapshot the API-mutable fields before the Update* calls so we can
+	// classify this cycle as clock-only vs structural once they mutate f.
+	prevStatus := f.APIStatus.Short
+	prevElapsed, prevExtra := f.APIElapsed, f.APIExtra
+	prevHomeScore, prevAwayScore := f.HomeScore, f.AwayScore
+	prevHomeWinner, prevAwayWinner := f.HomeWinner, f.AwayWinner
+	prevHomePen, prevAwayPen := f.HomePenalty, f.AwayPenalty
+
 	f.UpdateFromPoll(
 		fixture.APIStatus{Short: in.APIFixture.Fixture.Status.Short, Long: in.APIFixture.Fixture.Status.Long},
 		in.APIFixture.Fixture.Status.Elapsed,
@@ -431,6 +454,20 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	// knockout "who won on pens".
 	f.UpdateWinners(in.APIFixture.Teams.Home.Winner, in.APIFixture.Teams.Away.Winner)
 	f.UpdatePenalty(in.APIFixture.Score.Penalty.Home, in.APIFixture.Score.Penalty.Away)
+
+	// N4: classify the non-event changes now (event-driven structural signals +
+	// completion set out.Structural incrementally below). ClockChanged/Minute/
+	// Extra are set here so every return path carries them.
+	out.Minute = derefInt(f.APIElapsed)
+	out.Extra = f.APIExtra
+	out.ClockChanged = intPtrChanged(prevElapsed, f.APIElapsed) || intPtrChanged(prevExtra, f.APIExtra)
+	if prevStatus != f.APIStatus.Short ||
+		intPtrChanged(prevHomeScore, f.HomeScore) || intPtrChanged(prevAwayScore, f.AwayScore) ||
+		intPtrChanged(prevHomePen, f.HomePenalty) || intPtrChanged(prevAwayPen, f.AwayPenalty) ||
+		boolPtrChanged(prevHomeWinner, f.HomeWinner) || boolPtrChanged(prevAwayWinner, f.AwayWinner) {
+		out.Structural = true
+	}
+
 	if err := a.FixtureRepo.Upsert(ctx, f); err != nil {
 		return out, fmt.Errorf("monitor.ReconcileFixture: upsert fixture: %w", err)
 	}
@@ -512,6 +549,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			}
 			if justTriggered {
 				out.EventsBecameStable = append(out.EventsBecameStable, key)
+				out.Structural = true
 
 				// Fast path: spawn Discovery immediately on confirmation
 				// so the completion check sees "downstream pending" this
@@ -535,6 +573,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 				continue
 			}
 			out.NewEventsDetected++
+			out.Structural = true
 			allKeys[key] = struct{}{}
 
 			// event.detected is a confirmed-detection signal for durable /
@@ -575,6 +614,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 				continue
 			}
 			out.UnknownDropped++
+			out.Structural = true
 			continue
 		}
 		_, hitZero, err := a.EventRepo.RegisterEventAbsence(ctx, pgEv.ID, in.WorkflowID)
@@ -585,6 +625,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		if hitZero {
 			out.EventsRemoved = append(out.EventsRemoved, key)
 			out.EventsRemovedIDs = append(out.EventsRemovedIDs, pgEv.ID)
+			out.Structural = true
 			a.emitEventRemoved(ctx, pgEv.ID, in.APIFixture.Fixture.ID, now)
 		}
 	}
@@ -630,6 +671,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		return out, nil
 	}
 	out.Completed = true
+	out.Structural = true
 	a.emitFixtureCompleted(ctx, f.ID, now)
 	return out, nil
 }
