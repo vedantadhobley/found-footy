@@ -48,7 +48,7 @@ found-footy/
 │   │   ├── syndication/                 ✓ S7 + T/f: FetchJSON + ResolveVideo/Download (cookieless mp4) + typed taxonomy + tests
 │   │   ├── wikidata/                    ✓ S7: SPARQL client + tests
 │   │   ├── wikipedia/                ✓ S7: CirrusSearch entity resolution (per 2026-07-21) + tests
-│   │   ├── event/                       ✓ O3/a composer (pg event_log + NATS, 6 kinds; NATS half decoupling in N2) · N1 NatsPublisher — 3-subject live-feed (fixture.clock/update, event.video) + Envelope + source config + golden round-trip tests
+│   │   ├── event/                       ✓ composer (pg event_log audit ONLY — N2 removed its NATS half; Kind = 6 event_log types) · N1+N5 NatsPublisher — 3-subject live-feed (fixture.clock/update, event.video) + Envelope + source config + golden tests
 │   │   ├── ffmpeg/                      ✓ V/1: probe + single/dense frame extract (single-pass fps) + faststart + semaphore + typed taxonomy + tests
 │   │   └── firefoxfleet/                ✓ #160 (ship-dark, FIREFOXFLEET_ENABLED=false): per-event Firefox provisioner via Docker API — deterministic name/addr (no registry), idempotent Provision/Release, running-only label-counted cap, ListInstances/ReapOrphans reaper (audit P0-5) + tests
 │   ├── workflow/                        6 shipped
