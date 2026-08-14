@@ -76,9 +76,14 @@ func (f *Fixture) Reschedule(newKickoff time.Time, at time.Time) error {
 
 // UpdateFromPoll captures a fresh API poll result on an active fixture.
 // Refreshes api_status_*, api_elapsed, api_extra, home/away score,
-// winner flags, last_polled_at, and the completion counter without
-// changing state. State transitions happen through the dedicated
-// methods above.
+// last_polled_at, and the completion counter without changing state.
+// State transitions happen through the dedicated methods above.
+//
+// It deliberately does NOT touch last_activity_at: that is the wall-clock of the
+// most recent MEANINGFUL change (goal/card, status transition, activation,
+// completion) — the frontend's recency sort key — not "when we last polled." A
+// plain poll is not activity; the monitor reconcile bumps last_activity_at only
+// on a structural change. See decisions.md 2026-08-14.
 func (f *Fixture) UpdateFromPoll(status APIStatus, elapsed, extra *int, homeScore, awayScore *int, at time.Time) {
 	utc := at.UTC()
 	f.APIStatus = status
@@ -91,7 +96,6 @@ func (f *Fixture) UpdateFromPoll(status APIStatus, elapsed, extra *int, homeScor
 		f.AwayScore = awayScore
 	}
 	f.LastPolledAt = &utc
-	f.LastActivityAt = &utc
 	f.UpdatedAt = utc
 	f.updateCompletionCounter()
 }

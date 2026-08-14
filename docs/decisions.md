@@ -6,6 +6,30 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-14 — last_activity_at is event-based, not poll-based (frontend recency sort)
+
+The frontend sorts live fixtures by `last_activity_at`, but it was useless for
+that: `fixture.UpdateFromPoll` bumped it on every 30s active poll, so two live
+fixtures both read ~now and jittered each cycle. That contradicted the documented
+intent (the sibling `RecordStagingPoll`: *"a passive poll doesn't count as
+activity … only Activate/Complete set that field"* — Python `_last_activity`
+parity). Active-path drift, caught by the vedanta-systems agent (who was about to
+paper over it with a kickoff+minute proxy — declined in favour of fixing it here).
+
+**Fix:** `UpdateFromPoll` no longer touches `last_activity_at`. The monitor
+reconcile bumps it (= now) only on a **structural** change — the N4 signal: a
+new/removed/stabilised event, or a status/score/penalty/winner change (activation
++ completion already bump it via `Activate`/`Complete`). Monotonic, event-anchored
+recency — correct through HT / stoppage / ET / delayed kickoff, no inference. The
+reconcile fixture upsert moved to after the event loop (before the completion
+check) so a new-event bump lands in the single write; upsert count unchanged.
+
+No internal consumer sorts/filters by `last_activity_at` (only the read DTO
+surfaces it), so this is a pure semantics improvement. The frontend drops its
+proxy shim and sorts by `last_activity_at desc`.
+
+---
+
 ## 2026-08-14 — Composer decoupled to event_log-only (N2/N8); Kind→LogType rename deferred
 
 N2 + N8 shipped the composer/NATS split from the producer-rebuild entry below.
