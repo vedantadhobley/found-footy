@@ -134,66 +134,6 @@ func get(h *Handlers, path string) *httptest.ResponseRecorder {
 
 // ─── tests ──────────────────────────────────────────────────────────────────
 
-func TestGetFixture_AssemblesEventsAndVideos(t *testing.T) {
-	h, _, evID := scaffold()
-	rec := get(h, "/api/v1/fixtures/100")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var f fixtureDTO
-	if err := json.Unmarshal(rec.Body.Bytes(), &f); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if f.ID != 100 || f.State != "active" || f.Home.Name != "Alpha" || *f.Home.Score != 2 {
-		t.Errorf("fixture = %+v", f)
-	}
-	if len(f.Events) != 1 {
-		t.Fatalf("events = %d, want 1", len(f.Events))
-	}
-	e := f.Events[0]
-	if e.ID != evID.String() || e.FixtureID != 100 || e.Minute != 23 || e.Player == nil || e.Player.Name != "Scorer" {
-		t.Errorf("event = %+v", e)
-	}
-	if len(e.Videos) != 1 {
-		t.Fatalf("videos = %d, want 1", len(e.Videos))
-	}
-	v := e.Videos[0]
-	if v.ShareID != "s_abc123" || v.URL != "/api/v1/videos/s_abc123" || v.Rank != 1 || !v.Verified || v.Popularity != 3 {
-		t.Errorf("video = %+v", v)
-	}
-}
-
-func TestGetFixture_NotFoundAndBadID(t *testing.T) {
-	h, _, _ := scaffold()
-	if rec := get(h, "/api/v1/fixtures/999"); rec.Code != http.StatusNotFound {
-		t.Errorf("missing fixture = %d, want 404", rec.Code)
-	}
-	if rec := get(h, "/api/v1/fixtures/notanumber"); rec.Code != http.StatusBadRequest {
-		t.Errorf("bad id = %d, want 400", rec.Code)
-	}
-}
-
-func TestGetEvent(t *testing.T) {
-	h, _, evID := scaffold()
-	rec := get(h, "/api/v1/events/"+evID.String())
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var e eventDTO
-	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if e.FixtureID != 100 || len(e.Videos) != 1 {
-		t.Errorf("event = %+v", e)
-	}
-	if rec := get(h, "/api/v1/events/"+uuid.NewString()); rec.Code != http.StatusNotFound {
-		t.Errorf("missing event = %d, want 404", rec.Code)
-	}
-	if rec := get(h, "/api/v1/events/not-a-uuid"); rec.Code != http.StatusBadRequest {
-		t.Errorf("bad event id = %d, want 400", rec.Code)
-	}
-}
-
 func TestGetFixtures_Window(t *testing.T) {
 	h, _, _ := scaffold()
 	rec := get(h, "/api/v1/fixtures")

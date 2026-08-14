@@ -204,61 +204,6 @@ func (h *Handlers) loadState(ctx context.Context, state fixture.State, withEvent
 	return out, nil
 }
 
-// GetFixture serves one fixture (with events + videos) — the fixture-scope refetch.
-func (h *Handlers) GetFixture(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid fixture id")
-		return
-	}
-	ctx := r.Context()
-	f, err := h.Fixtures.Get(ctx, id)
-	if errors.Is(err, fixture.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "fixture not found")
-		return
-	}
-	if err != nil {
-		h.serverError(ctx, w, "get fixture", err)
-		return
-	}
-	d, err := h.fixtureToDTO(ctx, f)
-	if err != nil {
-		h.serverError(ctx, w, "assemble fixture", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, d)
-}
-
-// GetEvent serves one event (with videos) — the event-scope refetch.
-func (h *Handlers) GetEvent(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "event_id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid event id")
-		return
-	}
-	ctx := r.Context()
-	e, err := h.Events.Get(ctx, id)
-	if errors.Is(err, event.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "event not found")
-		return
-	}
-	if err != nil {
-		h.serverError(ctx, w, "get event", err)
-		return
-	}
-	vids, err := h.eventVideos(ctx, e.ID)
-	if err != nil {
-		h.serverError(ctx, w, "event videos", err)
-		return
-	}
-	done, err := h.discoveryComplete(ctx, []*event.Event{e})
-	if err != nil {
-		h.serverError(ctx, w, "event phase", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, toEventDTO(e, vids, done[e.ID]))
-}
-
 // GetEvents is the batch events endpoint (?ids=uuid,uuid): several real-time
 // single-event updates coalesced into one call. Returns a flat []eventDTO;
 // unknown ids are omitted. Fixture-level changes go through GetFixtures instead
