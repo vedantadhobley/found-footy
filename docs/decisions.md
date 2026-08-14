@@ -6,6 +6,46 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-14 — last_activity_at is DERIVED at read time (supersedes the event-based-bump entry below)
+
+Refines the entry below into its final form: instead of storing-and-bumping the
+column, `last_activity_at` is **derived at read time**:
+
+```
+last_activity_at = max( activated_at,
+                        completed_at,
+                        latest first_seen_at among surviving known-scorer events )
+```
+
+Computed in `internal/api` `deriveLastActivity` from the events the read API
+already loads (`ListByFixture`, which excludes removed). Why derived beats
+bump-on-structural:
+
+- **VAR overturn reverts for free** — a removed event drops out of the set, so
+  the max recomputes to the prior goal / activation. No history, no bookkeeping.
+- **Unknown-scorer placeholders (no player) never count** — not searchable, not
+  watchable.
+- **Status transitions (HT/2H/ET/FT), clock ticks, bare score changes, and plain
+  polls don't move it** — only known goals/cards, plus the two lifecycle anchors.
+- **Completion (`completed_at`) DOES count** — surfaces a just-finished match by
+  finish time, including a shootout final (which has no in-play event to anchor).
+  Keyed on completion, **not winner**: a draw completes with no winner (via the
+  3-poll terminal counter), so winner-keying would miss draws. `completed_at` is
+  set at the terminal status (`ft`/`aet`/`pen`/…), by which point everything's
+  final; the in-progress shootout status `p` is live, not terminal.
+
+**Detection-gated:** a known goal counts from its `first_seen_at` (debounce start),
+not confirmation — more responsive, and the free revert covers a transient one.
+
+**Removals:** the reconcile `last_activity_at` bump (from the entry below) is
+reverted; the `Activate`/`Complete`/`Reschedule` writes are dropped. Nothing
+writes the column now, and no internal consumer reads it (only the derived DTO
+field). The stored `fixtures.last_activity_at` column is **retained-unused** —
+dropping it changes the schema hash (a P0-3 re-stamp), deferred to the next
+schema flatten. Tests: `api.TestDeriveLastActivity`.
+
+---
+
 ## 2026-08-14 — last_activity_at is event-based, not poll-based (frontend recency sort)
 
 The frontend sorts live fixtures by `last_activity_at`, but it was useless for

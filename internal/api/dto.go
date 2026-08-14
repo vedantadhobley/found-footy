@@ -143,8 +143,10 @@ func toEventDTO(e *event.Event, videos []videoDTO, discoveryComplete bool) event
 	return d
 }
 
-// toFixtureDTO maps a fixture plus its already-loaded events.
-func toFixtureDTO(f *fixture.Fixture, events []eventDTO) fixtureDTO {
+// toFixtureDTO maps a fixture plus its already-loaded events. lastActivityAt is
+// the derived recency key (see deriveLastActivity) — the caller computes it from
+// the domain events, since eventDTO doesn't carry first_seen_at.
+func toFixtureDTO(f *fixture.Fixture, events []eventDTO, lastActivityAt *time.Time) fixtureDTO {
 	return fixtureDTO{
 		ID: f.ID, State: string(f.State), Kickoff: f.Kickoff,
 		League: leagueDTO{
@@ -158,9 +160,43 @@ func toFixtureDTO(f *fixture.Fixture, events []eventDTO) fixtureDTO {
 			Short: string(f.APIStatus.Short), Long: f.APIStatus.Long,
 			Elapsed: f.APIElapsed, Extra: f.APIExtra,
 		},
-		LastActivityAt: f.LastActivityAt,
+		LastActivityAt: lastActivityAt,
 		Events:         ensureEvents(events),
 	}
+}
+
+// deriveLastActivity computes last_activity_at at read time — the recency sort
+// key. It is the wall-clock of the fixture's most recent NOTEWORTHY moment: the
+// max of activation, completion, and the first-seen time of any surviving
+// known-scorer goal/card. NOT poll time, clock ticks, or status transitions.
+//
+// events must be the fixture's non-removed events (ListByFixture already excludes
+// removed) — so a VAR overturn reverts the value for free, and unknown-scorer
+// placeholders (no player) never count. Nil for a not-yet-activated (staging)
+// fixture. See decisions.md 2026-08-14.
+func deriveLastActivity(f *fixture.Fixture, events []*event.Event) *time.Time {
+	var latest time.Time
+	var set bool
+	consider := func(t time.Time) {
+		if !set || t.After(latest) {
+			latest, set = t, true
+		}
+	}
+	if f.ActivatedAt != nil {
+		consider(*f.ActivatedAt)
+	}
+	if f.CompletedAt != nil {
+		consider(*f.CompletedAt)
+	}
+	for _, e := range events {
+		if e.Player.Known() {
+			consider(e.FirstSeenAt)
+		}
+	}
+	if !set {
+		return nil
+	}
+	return &latest
 }
 
 // toPenaltyDTO returns the shootout result only when one occurred — both sides

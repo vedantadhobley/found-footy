@@ -468,6 +468,10 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		out.Structural = true
 	}
 
+	if err := a.FixtureRepo.Upsert(ctx, f); err != nil {
+		return out, fmt.Errorf("monitor.ReconcileFixture: upsert fixture: %w", err)
+	}
+
 	// Step 2-5: diff events.
 	// Read pending events (NOT removed AND not fully done) so the
 	// collision handler for previously-removed events is transparent —
@@ -640,20 +644,6 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		for _, ev := range awaiting {
 			a.registerAndSpawnEvent(ctx, ev, ev, f.ID)
 		}
-	}
-
-	// Persist the fixture once, after the event loop, so last_activity_at can
-	// reflect this cycle's structural activity (a new/removed/stabilised event, or
-	// a status/score/penalty/winner change) — NOT a plain poll. Must precede the
-	// completion check, which reads the fresh completion_counter + status. On a
-	// rare event-read error above we return before this; the next 30s poll
-	// re-applies (the poll is the retry).
-	if out.Structural {
-		activityAt := now.UTC()
-		f.LastActivityAt = &activityAt
-	}
-	if err := a.FixtureRepo.Upsert(ctx, f); err != nil {
-		return out, fmt.Errorf("monitor.ReconcileFixture: upsert fixture: %w", err)
 	}
 
 	// Step 6: fixture completion check. See

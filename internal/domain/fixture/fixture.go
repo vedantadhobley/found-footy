@@ -149,8 +149,12 @@ type Fixture struct {
 	HomeWinner *bool
 	AwayWinner *bool
 
-	ActivatedAt    *time.Time
-	CompletedAt    *time.Time
+	ActivatedAt *time.Time
+	CompletedAt *time.Time
+	// LastActivityAt — DEPRECATED/unused. The frontend recency key is now DERIVED
+	// at read time (internal/api deriveLastActivity: max of activation, completion,
+	// latest known-scorer event first_seen); nothing writes this field anymore. The
+	// column is retained-unused — drop at the next schema flatten. decisions.md 2026-08-14.
 	LastActivityAt *time.Time
 	LastPolledAt   *time.Time
 

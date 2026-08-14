@@ -22,7 +22,6 @@ func (f *Fixture) Activate(at time.Time) error {
 		f.State = StateActive
 		utc := at.UTC()
 		f.ActivatedAt = &utc
-		f.LastActivityAt = &utc
 		f.UpdatedAt = utc
 		return nil
 	default:
@@ -43,7 +42,6 @@ func (f *Fixture) Complete(at time.Time) error {
 		f.State = StateCompleted
 		utc := at.UTC()
 		f.CompletedAt = &utc
-		f.LastActivityAt = &utc
 		f.UpdatedAt = utc
 		return nil
 	default:
@@ -69,7 +67,6 @@ func (f *Fixture) Reschedule(newKickoff time.Time, at time.Time) error {
 	f.ActivatedAt = nil
 	f.Kickoff = newKickoff.UTC()
 	utc := at.UTC()
-	f.LastActivityAt = &utc
 	f.UpdatedAt = utc
 	return nil
 }
