@@ -45,6 +45,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	fleetactivity "github.com/vedantadhobley/found-footy/internal/activity/fleet"
+	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
 	"github.com/vedantadhobley/found-footy/internal/activity/monitor"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 )
@@ -194,6 +195,11 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 	}
 	var removedEventIDs []uuid.UUID
 	var newNamedEventIDs []uuid.UUID
+	// N5: partition this cycle's reconciles into the two disjoint fixture
+	// subjects — structural wins (a structural fixture rides its fresh clock in
+	// its full refetch), so a fixture is never in both.
+	var clockEntries []livefeedactivity.FixtureClockEntry
+	var updateIDs []int64
 	for _, f := range reconcileFutures {
 		var reconcileOut monitor.ReconcileFixtureOutput
 		if err := f.Get(ctx, &reconcileOut); err != nil {
@@ -208,6 +214,17 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 		newNamedEventIDs = append(newNamedEventIDs, reconcileOut.NewNamedEventIDs...)
 		out.UnknownDropped += reconcileOut.UnknownDropped
 		out.Errors = append(out.Errors, reconcileOut.Errors...)
+
+		switch {
+		case reconcileOut.Structural:
+			updateIDs = append(updateIDs, reconcileOut.FixtureID)
+		case reconcileOut.ClockChanged:
+			clockEntries = append(clockEntries, livefeedactivity.FixtureClockEntry{
+				FixtureID: reconcileOut.FixtureID,
+				Minute:    reconcileOut.Minute,
+				Extra:     reconcileOut.Extra,
+			})
+		}
 	}
 
 	// ── Step 4.4: warm a Firefox instance per newly-detected named event
@@ -264,6 +281,24 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 					out.Errors = append(out.Errors, "ReleaseFirefox: "+err.Error())
 				}
 			}
+		}
+	}
+
+	// ── Step 5: live-feed batch emit (N5) ──
+	// One PublishFixtureBatch per cycle: fixture.clock (inline ticks) +
+	// fixture.update (ids to bulk-refetch). Best-effort — a lost batch heals on
+	// the consumer's next window refetch. Activation (staging→active) is not
+	// emitted here: the kickoff status-flip is captured as Structural on the
+	// fixture's first live reconcile, and it rides the window fetch meanwhile.
+	if len(clockEntries) > 0 || len(updateIDs) > 0 {
+		emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 15 * time.Second,
+			RetryPolicy:         baseAO.RetryPolicy,
+		})
+		if err := workflow.ExecuteActivity(emitCtx, "PublishFixtureBatch",
+			livefeedactivity.FixtureBatchInput{Clock: clockEntries, UpdateIDs: updateIDs}).Get(emitCtx, nil); err != nil {
+			logger.Warn("PublishFixtureBatch failed (heals on refetch)", "error", err)
+			out.Errors = append(out.Errors, "PublishFixtureBatch: "+err.Error())
 		}
 	}
 

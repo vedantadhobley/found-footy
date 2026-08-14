@@ -312,8 +312,12 @@ after, so `ReconcileFixtureOutput` carries `Minute`/`Extra` + two disjoint
 signals per cycle: **`ClockChanged`** (the minute/extra advanced and nothing
 else) and **`Structural`** (a new/removed/stabilised event, an unknown-scorer
 drop, a score/penalty/winner/status change, or completion — set incrementally so
-it holds at every return path). N5's ActivePoll partition turns these into the
-`fixture.clock` / `fixture.update` batch emits; N4 itself emits nothing.
+it holds at every return path). **Step 5 (N5, shipped)** partitions the cycle's
+reconciles — structural wins, so a fixture is never in both — and fires one
+`PublishFixtureBatch` activity → `fixture.clock` (inline ticks) + `fixture.update`
+(ids to bulk-refetch). Best-effort (a lost batch heals on the consumer's next
+window refetch). Activation (staging→active) is not emitted; the kickoff
+status-flip is captured as Structural on the fixture's first live reconcile.
 
 **Event debounce — scorer-aware 3-state (2026-08-05).** `natural_key` embeds
 `player_id`, so an unknown scorer (`player_id` null) and its later-attributed
