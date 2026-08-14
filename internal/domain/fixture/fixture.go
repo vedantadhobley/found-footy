@@ -111,6 +111,11 @@ type League struct {
 	ID     int
 	Name   string
 	Season int
+	// Country + Round are vendor display facts (e.g. "USA" / "World",
+	// "Group Stage - 1") the portal renders on the competition line. Parsed
+	// from the API-Football league object; empty until the vendor reports them.
+	Country string
+	Round   string
 }
 
 // Fixture is the domain type. Field order + shape kept aligned with
@@ -131,6 +136,11 @@ type Fixture struct {
 
 	HomeScore *int
 	AwayScore *int
+	// Penalty shootout result (api score.penalty). nil = no shootout; the
+	// rest of the score breakdown (halftime/fulltime/extratime) stays dropped
+	// — only the shootout number is load-bearing (knockout "who won on pens").
+	HomePenalty *int
+	AwayPenalty *int
 	// Winner data from api teams.home.winner / teams.away.winner.
 	// Vendor sets these to true/false when the result is decided —
 	// usually simultaneously with terminal status, sometimes slightly

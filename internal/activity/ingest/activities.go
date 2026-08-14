@@ -559,9 +559,16 @@ func (a *Activities) reconcileFixture(
 		existing.Kickoff = apiFix.Fixture.Date.UTC()
 		existing.Home = fixture.Team{ID: apiFix.Teams.Home.ID, Name: apiFix.Teams.Home.Name}
 		existing.Away = fixture.Team{ID: apiFix.Teams.Away.ID, Name: apiFix.Teams.Away.Name}
-		existing.League = fixture.League{ID: apiFix.League.ID, Name: apiFix.League.Name, Season: apiFix.League.Season}
+		existing.League = fixture.League{
+			ID: apiFix.League.ID, Name: apiFix.League.Name, Season: apiFix.League.Season,
+			Country: apiFix.League.Country, Round: apiFix.League.Round,
+		}
 		existing.HomeScore = apiFix.Goals.Home
 		existing.AwayScore = apiFix.Goals.Away
+		existing.HomePenalty = apiFix.Score.Penalty.Home
+		existing.AwayPenalty = apiFix.Score.Penalty.Away
+		existing.HomeWinner = apiFix.Teams.Home.Winner
+		existing.AwayWinner = apiFix.Teams.Away.Winner
 		existing.LastPolledAt = &now
 		existing.UpdatedAt = now
 		return existing, nil
@@ -578,12 +585,20 @@ func (a *Activities) reconcileFixture(
 		fixture.APIStatus{Short: apiFix.Fixture.Status.Short, Long: apiFix.Fixture.Status.Long},
 		apiFix.Fixture.Date.UTC(),
 		fixture.Team{ID: apiFix.Teams.Home.ID, Name: apiFix.Teams.Home.Name},
-		fixture.Team{ID: apiFix.Teams.Away.ID, Name: apiFix.Teams.Away.Name}, fixture.League{ID: apiFix.League.ID, Name: apiFix.League.Name, Season: apiFix.League.Season},
+		fixture.Team{ID: apiFix.Teams.Away.ID, Name: apiFix.Teams.Away.Name},
+		fixture.League{
+			ID: apiFix.League.ID, Name: apiFix.League.Name, Season: apiFix.League.Season,
+			Country: apiFix.League.Country, Round: apiFix.League.Round,
+		},
 	)
 	f.APIElapsed = apiFix.Fixture.Status.Elapsed
 	f.APIExtra = apiFix.Fixture.Status.Extra
 	f.HomeScore = apiFix.Goals.Home
 	f.AwayScore = apiFix.Goals.Away
+	f.HomePenalty = apiFix.Score.Penalty.Home
+	f.AwayPenalty = apiFix.Score.Penalty.Away
+	f.HomeWinner = apiFix.Teams.Home.Winner
+	f.AwayWinner = apiFix.Teams.Away.Winner
 	// LastPolledAt — ingest just polled api-sports.io; record that.
 	// Set on the fresh Fixture BEFORE state transitions (Activate/
 	// Complete don't touch LastPolledAt so this survives).

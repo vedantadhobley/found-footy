@@ -423,6 +423,14 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		in.APIFixture.Goals.Away,
 		now,
 	)
+	// Decision-time vendor flags — present only once the result is settled, so
+	// they ride alongside the poll rather than inside UpdateFromPoll. The live
+	// monitor is the only path that watches a match decide. Winner captures the
+	// long-null teams.winner (audit P2-2) — which also arms the completion
+	// fast-path (HasDecidedWinner); penalty captures the shootout result for
+	// knockout "who won on pens".
+	f.UpdateWinners(in.APIFixture.Teams.Home.Winner, in.APIFixture.Teams.Away.Winner)
+	f.UpdatePenalty(in.APIFixture.Score.Penalty.Home, in.APIFixture.Score.Penalty.Away)
 	if err := a.FixtureRepo.Upsert(ctx, f); err != nil {
 		return out, fmt.Errorf("monitor.ReconcileFixture: upsert fixture: %w", err)
 	}
