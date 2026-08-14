@@ -208,6 +208,14 @@ because ingest is itself a poll. (The planned bucket-suppression that
 would have consulted it was abandoned in the ActivePoll/StagingPoll
 split — see the note above.)
 
+**Live-feed emit (N6, decisions.md 2026-08-14).** `reconcileFixture` also reports
+a `changed` bool — true for a fresh row, or for an existing row whose
+frontend-meaningful fields moved (status / kickoff / score / penalty / winner; a
+bare LastPolledAt/UpdatedAt bump does NOT count). `CategorizeAndUpsertFixtures`
+collects the changed ids into `ChangedIDs`, and IngestWorkflow fires one
+`PublishFixtureBatch` (update-only) for them → `fixture.update`. Best-effort; a
+lost batch heals on the consumer's next window refetch.
+
 **Fresh row (Get returns ErrNotFound):** construct via `fixture.New`,
 set `LastPolledAt = now` (before state transitions — Activate/Complete
 don't touch LastPolledAt so it survives), then apply initial state by

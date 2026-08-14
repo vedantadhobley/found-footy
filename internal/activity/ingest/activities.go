@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/google/uuid"
@@ -435,6 +436,10 @@ type CategorizeOutput struct {
 	Completed int
 	Errors    []string
 	TeamRefs  []TeamRef
+	// ChangedIDs — fixtures newly inserted or with a frontend-meaningful field
+	// change (status/kickoff/score/penalty/winner) this ingest. The workflow
+	// emits one fixture.update for them (N6).
+	ChangedIDs []int64
 }
 
 // TeamRef is the input the alias-placeholder step needs to insert a
@@ -464,7 +469,7 @@ func (a *Activities) CategorizeAndUpsertFixtures(ctx context.Context, in Categor
 	now := a.now()
 
 	for _, apiFix := range in.Fixtures {
-		final, err := a.reconcileFixture(ctx, apiFix, in.ActivationWindow, now)
+		final, changed, err := a.reconcileFixture(ctx, apiFix, in.ActivationWindow, now)
 		if err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("reconcile fixture=%d: %v", apiFix.Fixture.ID, err))
 			continue
@@ -472,6 +477,9 @@ func (a *Activities) CategorizeAndUpsertFixtures(ctx context.Context, in Categor
 		if err := a.FixtureRepo.Upsert(ctx, final); err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("upsert fixture=%d: %v", apiFix.Fixture.ID, err))
 			continue
+		}
+		if changed {
+			out.ChangedIDs = append(out.ChangedIDs, final.ID)
 		}
 		switch final.State {
 		case fixture.StateStaging:
@@ -539,13 +547,22 @@ func (a *Activities) reconcileFixture(
 	apiFix apifootball.APIFixture,
 	activationWindow time.Duration,
 	now time.Time,
-) (*fixture.Fixture, error) {
+) (*fixture.Fixture, bool, error) {
 	existing, err := a.FixtureRepo.Get(ctx, apiFix.Fixture.ID)
 	if err != nil && !errors.Is(err, fixture.ErrNotFound) {
-		return nil, fmt.Errorf("Get: %w", err)
+		return nil, false, fmt.Errorf("Get: %w", err)
 	}
 
 	if existing != nil {
+		// N6: snapshot the frontend-meaningful fields before overwriting so we
+		// can tell whether this refresh actually changed anything worth pushing
+		// as fixture.update (a bare LastPolledAt/UpdatedAt bump is not).
+		prevStatus := existing.APIStatus.Short
+		prevKickoff := existing.Kickoff
+		prevHS, prevAS := existing.HomeScore, existing.AwayScore
+		prevHP, prevAP := existing.HomePenalty, existing.AwayPenalty
+		prevHW, prevAW := existing.HomeWinner, existing.AwayWinner
+
 		// Refresh API fields in place; leave state + timestamps alone.
 		// LastPolledAt DOES get updated — ingest is a poll against
 		// api-sports.io, and the monitor's future bucket-aware logic
@@ -571,7 +588,16 @@ func (a *Activities) reconcileFixture(
 		existing.AwayWinner = apiFix.Teams.Away.Winner
 		existing.LastPolledAt = &now
 		existing.UpdatedAt = now
-		return existing, nil
+
+		changed := string(prevStatus) != string(existing.APIStatus.Short) ||
+			!prevKickoff.Equal(existing.Kickoff) ||
+			!reflect.DeepEqual(prevHS, existing.HomeScore) ||
+			!reflect.DeepEqual(prevAS, existing.AwayScore) ||
+			!reflect.DeepEqual(prevHP, existing.HomePenalty) ||
+			!reflect.DeepEqual(prevAP, existing.AwayPenalty) ||
+			!reflect.DeepEqual(prevHW, existing.HomeWinner) ||
+			!reflect.DeepEqual(prevAW, existing.AwayWinner)
+		return existing, changed, nil
 	}
 
 	// Fresh — construct + apply initial state.
@@ -613,23 +639,24 @@ func (a *Activities) reconcileFixture(
 	switch {
 	case f.APIStatus.Terminal():
 		if err := f.Activate(f.Kickoff); err != nil {
-			return nil, fmt.Errorf("initial Activate for terminal: %w", err)
+			return nil, false, fmt.Errorf("initial Activate for terminal: %w", err)
 		}
 		if err := f.Complete(now); err != nil {
-			return nil, fmt.Errorf("initial Complete for terminal: %w", err)
+			return nil, false, fmt.Errorf("initial Complete for terminal: %w", err)
 		}
 	case f.APIStatus.Live():
 		if err := f.Activate(now); err != nil {
-			return nil, fmt.Errorf("initial Activate for live: %w", err)
+			return nil, false, fmt.Errorf("initial Activate for live: %w", err)
 		}
 	default:
 		if f.ShouldActivateNow(now, activationWindow) {
 			if err := f.Activate(now); err != nil {
-				return nil, fmt.Errorf("initial Activate for imminent: %w", err)
+				return nil, false, fmt.Errorf("initial Activate for imminent: %w", err)
 			}
 		}
 	}
-	return f, nil
+	// A fresh fixture is a change by definition → fixture.update.
+	return f, true, nil
 }
 
 // ── EnsureAliasPlaceholders ────────────────────────────────────

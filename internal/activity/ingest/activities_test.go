@@ -344,6 +344,48 @@ func newActivities(fetcher fixtureFetcher, fRepo fixture.Repo, aRepo alias.Repo,
 	}
 }
 
+// ── CategorizeAndUpsertFixtures — N6 change detection ──────────
+
+// TestCategorizeAndUpsertFixtures_ChangedIDs — new fixtures always count as
+// changed; a re-ingest reports only the ones whose meaningful fields moved (an
+// identical row is NOT a fixture.update; a kickoff reschedule is).
+func TestCategorizeAndUpsertFixtures_ChangedIDs(t *testing.T) {
+	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	now := kickoff.Add(-3 * time.Hour)
+	a := newActivities(&fakeFetcher{}, newFakeFixtureRepo(), newFakeAliasRepo(), now)
+
+	// Cycle 1: two brand-new fixtures → both changed (inserted).
+	out1, err := a.CategorizeAndUpsertFixtures(context.Background(), CategorizeInput{
+		Fixtures: []apifootball.APIFixture{
+			mkAPIFixture(1, "ns", kickoff, 40, 42),
+			mkAPIFixture(2, "ns", kickoff, 33, 50),
+		},
+		ActivationWindow: 5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("cycle 1: %v", err)
+	}
+	if len(out1.ChangedIDs) != 2 {
+		t.Errorf("cycle 1 ChangedIDs = %v, want 2 (both new)", out1.ChangedIDs)
+	}
+
+	// Cycle 2: fixture 1 identical (→ not changed), fixture 2's kickoff moved
+	// a day (→ changed).
+	out2, err := a.CategorizeAndUpsertFixtures(context.Background(), CategorizeInput{
+		Fixtures: []apifootball.APIFixture{
+			mkAPIFixture(1, "ns", kickoff, 40, 42),
+			mkAPIFixture(2, "ns", kickoff.Add(24*time.Hour), 33, 50),
+		},
+		ActivationWindow: 5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("cycle 2: %v", err)
+	}
+	if len(out2.ChangedIDs) != 1 || out2.ChangedIDs[0] != 2 {
+		t.Errorf("cycle 2 ChangedIDs = %v, want [2] (kickoff moved; fixture 1 unchanged)", out2.ChangedIDs)
+	}
+}
+
 // ── FetchFixturesForWindow ─────────────────────────────────────
 
 func TestFetchFixturesForWindow_HappyPath(t *testing.T) {

@@ -21,6 +21,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/vedantadhobley/found-footy/internal/activity/ingest"
+	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	"github.com/vedantadhobley/found-footy/internal/domain/video"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
@@ -435,6 +436,20 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		"completed", out.Completed,
 		"errors", len(catOut.Errors),
 	)
+
+	// ── Step 2.5: fixture.update for new/changed fixtures (N6) ──
+	// Best-effort — a lost batch heals on the consumer's next window refetch.
+	if len(catOut.ChangedIDs) > 0 {
+		emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 15 * time.Second,
+			RetryPolicy:         ao.RetryPolicy,
+		})
+		if err := workflow.ExecuteActivity(emitCtx, "PublishFixtureBatch",
+			livefeedactivity.FixtureBatchInput{UpdateIDs: catOut.ChangedIDs}).Get(emitCtx, nil); err != nil {
+			logger.Warn("PublishFixtureBatch failed (heals on refetch)", "error", err)
+			out.Errors = append(out.Errors, "PublishFixtureBatch: "+err.Error())
+		}
+	}
 
 	// ── Step 3: alias placeholders ──
 	// Only if the categorize step surfaced team refs.
