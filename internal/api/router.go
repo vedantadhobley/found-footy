@@ -28,10 +28,8 @@ func NewRouter(h *Handlers) *chi.Mux {
 	})
 
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Get("/fixtures", h.GetFixtures)            // flat window; ?ids= = batch refetch
-		r.Get("/fixtures/{id}", h.GetFixture)        // single fixture
+		r.Get("/fixtures", h.GetFixtures)            // window (no params) OR ?ids= batch refetch
 		r.Get("/events", h.GetEvents)                // batch: ?ids=uuid,uuid
-		r.Get("/events/{event_id}", h.GetEvent)      // single event
 		r.Get("/videos/{share_id}", h.RedirectVideo) // 302 → presigned Garage URL
 	})
 
