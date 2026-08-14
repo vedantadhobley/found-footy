@@ -106,22 +106,24 @@ func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Instruments {
 	}
 }
 
-// classifySubject buckets a NATS subject by its first token. Keeps
-// prometheus cardinality bounded — one series per event family, not
-// one per (fixture_id, event_id, share_id) combination.
+// classifySubject buckets a NATS subject by its domain token — the token
+// after the found-footy project prefix. Keeps prometheus cardinality
+// bounded — one series per domain family, not one per
+// (fixture_id, event_id, share_id) combination.
 //
-// Subjects the found-footy account uses (per rebuild-plan.md §11):
-//   event.detected, event.stable, event.video_ready, event.rank_recalculated,
-//   event.removed, event.download_complete → "event"
-//   fixture.activated, fixture.completed  → "fixture"
-//   anything else                          → "other"
+// Subjects the found-footy producer uses (per decisions.md 2026-08-14):
+//   found-footy.event.video                               → "event"
+//   found-footy.fixture.clock, found-footy.fixture.update → "fixture"
+// Legacy unprefixed subjects (event.*, fixture.*) still classify during
+// the transition; anything else → "other".
 func classifySubject(subject string) string {
-	dot := strings.IndexByte(subject, '.')
+	// Strip the project prefix so the domain token drives the label.
+	s := strings.TrimPrefix(subject, "found-footy.")
+	dot := strings.IndexByte(s, '.')
 	if dot <= 0 {
 		return "other"
 	}
-	head := subject[:dot]
-	switch head {
+	switch s[:dot] {
 	case "event":
 		return "event"
 	case "fixture":

@@ -63,6 +63,11 @@ type Config struct {
 
 	// Public read-API HTTP surface (Phase A / #167) — bind addr + timeouts.
 	API APIConfig
+
+	// Eventing/producer layer: the NATS envelope `source` identity
+	// (found-footy-dev / -prod), stamped on every live-feed message.
+	// See decisions.md 2026-08-14.
+	Event EventConfig
 }
 
 // Load parses the process environment into a Config.

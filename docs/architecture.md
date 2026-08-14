@@ -48,7 +48,7 @@ found-footy/
 │   │   ├── syndication/                 ✓ S7 + T/f: FetchJSON + ResolveVideo/Download (cookieless mp4) + typed taxonomy + tests
 │   │   ├── wikidata/                    ✓ S7: SPARQL client + tests
 │   │   ├── wikipedia/                ✓ S7: CirrusSearch entity resolution (per 2026-07-21) + tests
-│   │   ├── event/                       ✓ O3/a: dual-write composer (pg event_log + NATS Publish, 6 kinds) + tests
+│   │   ├── event/                       ✓ O3/a composer (pg event_log + NATS, 6 kinds; NATS half decoupling in N2) · N1 NatsPublisher — 3-subject live-feed (fixture.clock/update, event.video) + Envelope + source config + golden round-trip tests
 │   │   ├── ffmpeg/                      ✓ V/1: probe + single/dense frame extract (single-pass fps) + faststart + semaphore + typed taxonomy + tests
 │   │   └── firefoxfleet/                ✓ #160 (ship-dark, FIREFOXFLEET_ENABLED=false): per-event Firefox provisioner via Docker API — deterministic name/addr (no registry), idempotent Provision/Release, running-only label-counted cap, ListInstances/ReapOrphans reaper (audit P0-5) + tests
 │   ├── workflow/                        6 shipped
@@ -457,8 +457,9 @@ internal/domain/*/          internal/infra/*/  (adapters)
 **Never happens:**
 - `internal/domain/*` importing `internal/infra/*` — enforced by review
 - `internal/workflow/*` importing `internal/infra/*` — activities are the boundary
-- `internal/infra/<a>` importing `internal/infra/<b>` — one composer package
-  (`internal/infra/event/`, when built) is the sole exception
+- `internal/infra/<a>` importing `internal/infra/<b>` — the eventing package
+  (`internal/infra/event/`) is the sole exception: its composer + NatsPublisher
+  import `internal/infra/nats`
 
 ## Cross-refs
 

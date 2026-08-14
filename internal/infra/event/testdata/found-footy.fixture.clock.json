@@ -1,0 +1,13 @@
+{
+  "id": "0198f3a0-1c2d-7e3f-8a4b-5c6d7e8f9a0b",
+  "ts": "2026-08-14T16:47:30Z",
+  "source": "found-footy-prod",
+  "version": 1,
+  "subject": "found-footy.fixture.clock",
+  "payload": {
+    "fixtures": [
+      { "fixture_id": 1530158, "minute": 62, "extra": null },
+      { "fixture_id": 1530162, "minute": 45, "extra": 2 }
+    ]
+  }
+}
