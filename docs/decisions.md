@@ -6,6 +6,75 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-14 — NATS producer rebuild: the 3-subject live-feed model (supersedes the 2026-08-04 eventing shape)
+
+Settled scoping the found-footy → frontend live path. Replaces the 6 transition-subjects
+(`event.detected` / `event.stable` / `event.removed` / `fixture.activated` / `fixture.completed` /
+`event.rank_recalculated`) with a **consumer-driven 3-subject model**. Full execution spec:
+[design/proposals/nats-producer-rebuild.md](./design/proposals/nats-producer-rebuild.md). This
+supersedes the diverged parts of the **2026-08-04 — API + eventing shape** entry (below), called out inline.
+
+**The 3 subjects (batch fixture + async event):**
+- `found-footy.fixture.clock` — monitor, per active-poll cycle, **only** when the match minute
+  advanced (frozen clock ⇒ silent). Inline payload `[{fixture_id, minute, extra}]`. Consumer ticks, no fetch.
+- `found-footy.fixture.update` — ingest **+** monitor, on anything structural (new/removed event,
+  kickoff, FT, score, penalty, winner, status). Payload `{fixture_ids}`. Consumer bulk-refetches `GET /fixtures?ids=`.
+- `found-footy.event.video` — downstream persist/rank, when one event's clip set/rank changed.
+  Payload `{event_id, fixture_id}`. Consumer fetches that event.
+
+Per cycle `clock` and `update` are **disjoint** (a structural fixture rides its fresh clock inside the
+full refetch). Standard envelope `{id, ts, source, version, subject, payload}`.
+
+**Prefix `found-footy.` (hyphen) — supersedes the 2026-08-04 `found_footy` (underscore) choice.** The
+underscore was picked for "identifier-safe stream/account names," but hyphens are valid in NATS subject
+tokens AND stream names (only `.` / `*` / `>` / whitespace / slashes are forbidden), and the
+`rank_recalculated`-style token that motivated it retires with the old subjects. Hyphen matches the
+workspace `found-footy` identifier everywhere (repo, `found-footy-dev` network, containers, `source`).
+Zero rework — the committed schemas are already hyphen.
+
+**Transport: core NATS + refetch-on-reconnect — the *correct* model, not an MVP compromise.** Supersedes
+2026-08-04's "the SSE bridge becomes a durable JetStream consumer that auto-replays on reconnect." A
+consumer that re-snapshots the full REST window on every (re)connect makes JetStream replay **redundant** —
+the refetch already reflects the gap. Two seams: **browser↔BFF** blips heal via the browser's SSE-reconnect
+→ window refetch; the **BFF↔NATS** seam (infra blip, invisible to users) heals via the BFF refetching +
+resyncing its clients on NATS-reconnect — the one spot a durable JetStream consumer would later automate.
+
+**JetStream deferred (#169) on principle, not difficulty.** (1) Its shape — retention, replay semantics,
+durable-consumer lifecycle — is consumer-driven, and the consumers that need durable replay (nexus
+event-sourcing, durable webhooks; the BFF↔NATS seam) aren't built; standing a stream up now means guessing
+those blind. (2) Purely additive — a stream over `found-footy.>` later captures from that point, the producer
+swaps `nats.Publish`→`js.Publish` (one line), nothing is torn out. (3) Off the Coppa critical path. Dev
+JetStream is **not** blocked by the prod accounts work — it'd just be dormant with no consumer. #169 narrows
+to the durability swap only; the subject rename moves into this producer rebuild (no longer "folded into #169").
+
+**Endpoint consolidation — supersedes the 2026-08-04 single-resource-per-hint list.** The batch model
+refetches via bulk/window, so:
+- **Drop** `GET /fixtures/{id}` (`GetFixture`) + `GET /events/{event_id}` (`GetEvent`).
+- **Keep** `GET /fixtures` (no-params = window = initial load **and** reconnect snapshot; `?ids=` = update
+  batch), `GET /events?ids=` (bulk; a single is just `?ids=X`), `GET /videos/{share_id}` (302 → presigned).
+
+Initial load and reconnect are the *same* call. This overrides 2026-08-04's "event_id → `GET /events/{event_id}`,
+fixture-level → `GET /fixtures/{id}`" rule — the hint is now a batch id-list, not a single resource. #167 shipped
+the singles; they're removed in this pass.
+
+**The rip is unilateral, one-pass.** The frontend does not subscribe to NATS today, so deleting the 6 old
+subjects breaks no live consumer. All producer work (the proposal's sequencing) lands in one found-footy pass;
+the frontend *newly* subscribes to the new subjects on its own schedule — that IS the "cutover," and it's frontend-side.
+
+**`event_log` stays the audit plane** (reinforces 2026-08-04's "event_log becomes audit-only"). The Composer's
+dual-write splits: `event_log` keeps its per-transition semantic rows (fine grain + the #181 forensic substrate);
+only its NATS half is removed. NATS ≠ audit — the 3 subjects are thin dirty-signals (ids only), so a durable
+stream of them can't reconstruct "detected→stable→removed for player Y at 62'." That history lives in `event_log`
+or nowhere.
+
+**`source` = envelope provenance stamp** (`found-footy-dev` / `found-footy-prod`). The subject namespaces the
+project; `source` carries the environment, disambiguating publishers on a shared/bridged bus. One config field, read at startup.
+
+**Still valid from 2026-08-04** (not superseded): Chi-not-Huma, timezone-agnostic API, `POST /refresh` deprecated,
+the `<project>.<domain>.<event_type>` subject shape.
+
+---
+
 ## 2026-08-14 — Fixture DTO round-2: league country/round + penalty, and the winner P2-2 fix
 
 The portal's competition line rendered " - Leagues Cup" (empty country) and

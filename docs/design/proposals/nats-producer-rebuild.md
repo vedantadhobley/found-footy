@@ -127,24 +127,30 @@ The gate needs signals neither reconcile reports today:
 3. `ReconcileFixtureOutput` + reconcile classification (additive fields).
 4. `PublishFixtureBatch` activity + ActivePoll partition/emit.
 5. Ingest change-detect + emit.
-6. Rip the old Composer NATS publish + the 6 Kinds. **← coordinate with the frontend
-   bridge cutover (see below).**
+6. Rip the old Composer NATS publish + the 6 Kinds. **Safe unilateral edit —
+   nothing subscribes to the old subjects today (confirmed 2026-08-14), so this
+   breaks no live consumer; the frontend subscribes to the *new* subjects on its
+   own schedule.**
 
 ## Open decisions + what's easy to miss
 
 These aren't yet nailed — they're the traps:
 
 1. **Catch-up on (re)connect is mandatory, and separate from all of this.** Core
-   NATS is fire-and-forget: if the SSE bridge is down for 5s, every message in
-   that gap is *gone*. So the frontend MUST do a **full REST window refetch on
-   every SSE (re)connect**, then apply live messages — a missed goal heals on
-   reconnect. This is true regardless of transport; JetStream (durable replay from
-   a cursor) is the upgrade that makes gaps replayable instead of refetched. **Decide:
-   MVP = core NATS + refetch-on-connect; prod = JetStream.**
-2. **The rip is a coordinated cutover, not a unilateral edit.** The current
-   vedanta-systems bridge (if it subscribes at all) is on the *old* subjects.
-   Deleting them found-footy-side breaks any live subscriber until the bridge moves
-   to the new subjects. Step 6 lands *with* the frontend bridge switch, not before.
+   NATS is fire-and-forget: if a subscriber is down for 5s, every message in that
+   gap is *gone* for it. So the consumer MUST do a **full REST window refetch on
+   every (re)connect**, then apply live messages — a missed goal heals on reconnect.
+   **DECIDED 2026-08-14: core NATS + refetch-on-reconnect is the transport, and it is
+   the *correct* model — not an MVP compromise.** A consumer that re-snapshots the
+   window on reconnect makes JetStream replay redundant (the refetch already reflects
+   the gap). JetStream (#169) earns its keep only for consumers that do NOT refetch
+   (nexus event-sourcing, durable webhooks) and to make the BFF↔NATS seam lossless.
+   See decisions.md 2026-08-14.
+2. **The rip is a *unilateral* one-pass edit — confirmed 2026-08-14.** The frontend
+   does not subscribe to NATS at all today, so deleting the 6 old subjects
+   found-footy-side breaks no live consumer. All of N1–N8 land in one found-footy
+   pass; the frontend *newly* subscribes to the *new* subjects on its own schedule —
+   that IS the cutover, and it is frontend-side work, not a found-footy coordination gate.
 3. **VAR revocation happens by *absence*.** A removed event drops out of
    `ListByFixture` (removed filter), so on the `fixture.update` refetch the event
    is simply *gone* from the DTO's events. The frontend must treat "event vanished
