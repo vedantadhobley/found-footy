@@ -95,7 +95,7 @@ omitempty) so `null` is meaningful — e.g. `score: null` (not started) ≠
   "away": { "id": 489, "name": "Milan", "score": 1, "winner": null },
   "penalty": null,                          // { "home": 4, "away": 3 } only on a shootout, else null
   "status": { "short": "2H", "long": "Second Half", "elapsed": 62, "extra": null }, // live clock
-  "last_activity_at": "2026-08-14T16:47:30Z",
+  "last_activity_at": "2026-08-14T16:47:30Z",  // recency sort key — event-anchored (goal/card/status/activation), NOT poll time. Sort live fixtures by this desc.
   "events": [ /* eventDTO... — present on active/completed; empty on staging */ ]
 }
 
