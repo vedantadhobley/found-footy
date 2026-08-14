@@ -66,7 +66,7 @@ found-footy/
 │   │   ├── discovery/                   ✓ O3/d: GetDiscoveryConfig, FetchTeamAliases, SearchTweets, StoreCandidate, MarkDownstreamComplete (no _test.go yet — audit gap)
 │   │   ├── video/                       ✓ V/3b: DownloadAndStage + HashVideo (staging-split + pre-download filter) + fakes + 8 tests
 │   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when ship-dark
-│   │   └── livefeed/                     ✓ N3: PublishEventVideo — the single publish-activity boundary all NATS live-feed emits pass through (event.video now; PublishFixtureBatch lands N5); thin wrapper over event.NatsPublisher + passthrough test
+│   │   └── livefeed/                     ✓ N3+N5: the single publish-activity boundary for all NATS live-feed emits — PublishEventVideo (event.video) + PublishFixtureBatch (fixture.clock + fixture.update); thin wrapper over event.NatsPublisher + tests
 │   ├── api/                             ✓ #167: Chi read API — GET /fixtures(+?ids batch) /fixtures/{id} /events?ids /events/{id} /videos/{share_id}(302→presign chain); eventDTO carries derived `phase`+`debounce_count` (layer-2 contract, event.DerivePhase); fixtureDTO carries league country/round + penalty{home,away}|null + winner (P2-2); dto.go + handlers.go + router.go + tests; SSE is vedanta-systems'
 │   ├── bootstrap/                       ✓ S1 (NOT IN PLAN — see decisions.md 2026-07-07)
 │   │   └── bootstrap.go                 Deps + LIFO Closer registry; shared binary startup
