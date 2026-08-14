@@ -409,6 +409,13 @@ gate was replaced):
   reclaim Garage bytes). **Rank** = `RebalanceRanks` by `CompareShares`
   (verified → popularity → file_size → oldest); verified always outranks
   unverified, and pools never cross-compare for dedup.
+- **Emit** (N3): after a promote that mints a new share (`Minted=true`) or a
+  supersede that collapsed losers, the pipeline fires the `event.video`
+  dirty-signal via the `livefeed.PublishEventVideo` activity — best-effort, and
+  only after the change has durably committed (the workflow blocks on the persist
+  activity first), so a consumer that refetches on the signal sees the new state.
+  A popularity-only bump and a VAR `DestroyEvent` do **not** emit (the latter
+  surfaces as the event's absence in the parent's `fixture.update` refetch).
 
 On completion `finalizeEvent` marks the `event_downstream_workflows` row
 complete with an `outcome_class` (the pg `workflow_type` stays `'discovery'` —

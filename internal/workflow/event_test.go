@@ -20,6 +20,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
+	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
@@ -40,6 +41,7 @@ func baseEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnviron
 	env.RegisterActivity(&discoveryactivity.Activities{})
 	env.RegisterActivity(&visionactivity.Activities{})
 	env.RegisterActivity(&videoactivity.PersistActivities{})
+	env.RegisterActivity(&livefeedactivity.Activities{})
 	// Default GetDiscoveryConfig stub. MaxAttempts=10 matches the
 	// pre-#162 hardcoded value that existing tests were written
 	// against (`want 10` assertions in AttemptsRun tests). Tests
@@ -63,6 +65,10 @@ func baseEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnviron
 			Aliases:       []string{"liverpool", "reds", "lfc"},
 			Found:         true,
 		}, nil).Maybe()
+	// Default event.video publish stub — the pipeline fires it after a
+	// promote/supersede changes the clip set; .Maybe() so tests that never
+	// promote don't need it. Tests asserting the ping override explicitly.
+	env.OnActivity("PublishEventVideo", mock.Anything, mock.Anything).Return(nil).Maybe()
 	return env
 }
 
@@ -354,6 +360,39 @@ func TestEventWorkflow_Pipeline_VerifyAndDedup(t *testing.T) {
 		t.Errorf("total popularity = %d (promote %d + bumps %d), want 2 (#180)",
 			promotedPop+bumpTotal, promotedPop, bumpTotal)
 	}
+}
+
+// TestEventWorkflow_Pipeline_PromotePingsEventVideo — N3: a newly-minted clip
+// (PromoteAndPersist → Minted=true) fires the event.video dirty-signal exactly
+// once. The other pipeline tests promote with Minted unset (a retry-style no-op)
+// and never ping — that's the Minted guard doing its job.
+func TestEventWorkflow_Pipeline_PromotePingsEventVideo(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := baseEventEnv(&s)
+	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnActivity("BumpAssetPopularity", mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{
+				{TweetURL: "https://x.com/u/status/1111111111111111111", VideoPageURL: "vp1", DurationSeconds: 7},
+			}, Count: 1, StopReason: "age",
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil)
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, mock.Anything).
+		Return(workflow.VideoWorkflowOutput{
+			Outcome: "passed", MD5: "md5a", StagingKey: "staging/a.mp4",
+			FrameHashes: []uint64{1, 2, 4, 8, 16, 32}, Width: 1280, Height: 720,
+			DurationMS: 7000, SizeBytes: 900_000,
+		}, nil)
+	env.OnActivity("ValidateClip", mock.Anything, mock.Anything).
+		Return(visionactivity.ValidateClipOutput{Outcome: "verified", MatchedMinute: pInt(71)}, nil)
+	env.OnActivity("PromoteAndPersist", mock.Anything, mock.Anything).
+		Return(videoactivity.PromoteAndPersistOutput{AssetID: uuid.New(), ShareID: "s_x", Inserted: true, Minted: true}, nil)
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+	env.AssertNumberOfCalls(t, "PublishEventVideo", 1)
 }
 
 // ─── #171: post-vision category-scoped dedup + quality winner-selection ──────

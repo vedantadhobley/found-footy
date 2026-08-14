@@ -23,6 +23,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
+	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
 	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
@@ -354,6 +355,11 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 	} else {
 		p.unverified++
 	}
+	// A newly-minted clip changed this event's surfaced set → announce it.
+	// A retry that found an existing share sets Minted=false → no re-ping.
+	if pout.Minted {
+		p.publishEventVideo()
+	}
 	return pout.AssetID, true
 }
 
@@ -376,6 +382,8 @@ func (p *pipeline) supersede(winnerID uuid.UUID, loserIDs []uuid.UUID) {
 		return
 	}
 	p.superseded += len(loserIDs)
+	// The winner-select collapse changed this event's surfaced set → announce.
+	p.publishEventVideo()
 
 	lose := make(map[uuid.UUID]bool, len(loserIDs))
 	for _, id := range loserIDs {
@@ -417,6 +425,18 @@ func (p *pipeline) deleteStaging(key string) {
 	_ = workflow.ExecuteActivity(p.persistCtx,
 		(*videoactivity.PersistActivities).DeleteStaging,
 		videoactivity.DeleteStagingInput{StagingKey: key}).Get(p.persistCtx, nil)
+}
+
+// publishEventVideo fires the event.video dirty-signal for this event
+// (best-effort: a lost ping heals on the frontend's next refetch, so failure
+// is swallowed, never propagated). Called only AFTER a promote/supersede has
+// durably committed a clip-set change — the workflow blocks on that activity
+// before reaching here — so a consumer that refetches on the signal always
+// sees the new state. See decisions.md 2026-08-14 (N3).
+func (p *pipeline) publishEventVideo() {
+	_ = workflow.ExecuteActivity(p.persistCtx,
+		(*livefeedactivity.Activities).PublishEventVideo,
+		livefeedactivity.EventVideoInput{EventID: p.in.EventID, FixtureID: p.in.FixtureID}).Get(p.persistCtx, nil)
 }
 
 // removePending drops and returns the pending entry for stagingKey. The

@@ -58,14 +58,15 @@ found-footy/
 │   │   ├── event.go                     ✓ #164c: EventWorkflow — per-goal orchestrator (producer: discovery search + spawn Video children; ex-DiscoveryWorkflow)
 │   │   ├── event_pipeline.go            ✓ #164c-b + #171: Selector consumer — md5 gate → vision → category-scoped perceptual dedup + IsUpgrade winner-select → promote/supersede → rank; assets/pending/inFlight state; searchDone&&inFlight==0 completion
 │   │   └── video.go                     ✓ #165: VideoWorkflow child (download → hash)
-│   ├── activity/                        5 packages shipped
+│   ├── activity/                        6 packages shipped
 │   │   ├── ingest/                      ✓ O1b: 4 activities + in-memory fakes + 11 tests
 │   │   │   ├── activities.go
 │   │   │   └── activities_test.go
 │   │   ├── monitor/                     ✓ O2a: 6 activities (GetMonitorConfig, ActivateUpcoming, PollStagingFixtures, ListActiveFixtureIDs, FetchLiveFixtures, ReconcileFixture) + fakes + tests
 │   │   ├── discovery/                   ✓ O3/d: GetDiscoveryConfig, FetchTeamAliases, SearchTweets, StoreCandidate, MarkDownstreamComplete (no _test.go yet — audit gap)
 │   │   ├── video/                       ✓ V/3b: DownloadAndStage + HashVideo (staging-split + pre-download filter) + fakes + 8 tests
-│   │   └── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when ship-dark
+│   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when ship-dark
+│   │   └── livefeed/                     ✓ N3: PublishEventVideo — the single publish-activity boundary all NATS live-feed emits pass through (event.video now; PublishFixtureBatch lands N5); thin wrapper over event.NatsPublisher + passthrough test
 │   ├── api/                             ✓ #167: Chi read API — GET /fixtures(+?ids batch) /fixtures/{id} /events?ids /events/{id} /videos/{share_id}(302→presign chain); eventDTO carries derived `phase`+`debounce_count` (layer-2 contract, event.DerivePhase); fixtureDTO carries league country/round + penalty{home,away}|null + winner (P2-2); dto.go + handlers.go + router.go + tests; SSE is vedanta-systems'
 │   ├── bootstrap/                       ✓ S1 (NOT IN PLAN — see decisions.md 2026-07-07)
 │   │   └── bootstrap.go                 Deps + LIFO Closer registry; shared binary startup
