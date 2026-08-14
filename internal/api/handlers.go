@@ -36,6 +36,10 @@ type FixtureReader interface {
 type EventReader interface {
 	Get(ctx context.Context, id uuid.UUID) (*event.Event, error)
 	ListByFixture(ctx context.Context, fixtureID int64) ([]*event.Event, error)
+	// DiscoveryComplete returns the subset of eventIDs whose discovery workflow
+	// has finished — the signal event.DerivePhase uses to separate `searching`
+	// from `complete`. Batched to avoid an N+1 across a fixture's events.
+	DiscoveryComplete(ctx context.Context, eventIDs []uuid.UUID) (map[uuid.UUID]bool, error)
 }
 
 // VideoReader is the video read surface: the live-clip list + share resolution.
@@ -84,15 +88,33 @@ func (h *Handlers) fixtureToDTO(ctx context.Context, f *fixture.Fixture) (fixtur
 	if err != nil {
 		return fixtureDTO{}, err
 	}
+	done, err := h.discoveryComplete(ctx, events)
+	if err != nil {
+		return fixtureDTO{}, err
+	}
 	dtos := make([]eventDTO, 0, len(events))
 	for _, e := range events {
 		vids, err := h.eventVideos(ctx, e.ID)
 		if err != nil {
 			return fixtureDTO{}, err
 		}
-		dtos = append(dtos, toEventDTO(e, vids))
+		dtos = append(dtos, toEventDTO(e, vids, done[e.ID]))
 	}
 	return toFixtureDTO(f, dtos), nil
+}
+
+// discoveryComplete batches the discovery-complete lookup for a set of events
+// (the phase signal). Returns the set of event IDs whose discovery has
+// finished; a nil/empty input yields an empty set.
+func (h *Handlers) discoveryComplete(ctx context.Context, events []*event.Event) (map[uuid.UUID]bool, error) {
+	if len(events) == 0 {
+		return map[uuid.UUID]bool{}, nil
+	}
+	ids := make([]uuid.UUID, len(events))
+	for i, e := range events {
+		ids[i] = e.ID
+	}
+	return h.Events.DiscoveryComplete(ctx, ids)
 }
 
 // ─── handlers ───────────────────────────────────────────────────────────────
@@ -229,7 +251,12 @@ func (h *Handlers) GetEvent(w http.ResponseWriter, r *http.Request) {
 		h.serverError(ctx, w, "event videos", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toEventDTO(e, vids))
+	done, err := h.discoveryComplete(ctx, []*event.Event{e})
+	if err != nil {
+		h.serverError(ctx, w, "event phase", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toEventDTO(e, vids, done[e.ID]))
 }
 
 // GetEvents is the batch events endpoint (?ids=uuid,uuid): several real-time
@@ -248,7 +275,7 @@ func (h *Handlers) GetEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid ids")
 		return
 	}
-	out := make([]eventDTO, 0, len(ids))
+	evs := make([]*event.Event, 0, len(ids))
 	for _, id := range ids {
 		e, err := h.Events.Get(ctx, id)
 		if errors.Is(err, event.ErrNotFound) {
@@ -258,12 +285,21 @@ func (h *Handlers) GetEvents(w http.ResponseWriter, r *http.Request) {
 			h.serverError(ctx, w, "batch get event", err)
 			return
 		}
+		evs = append(evs, e)
+	}
+	done, err := h.discoveryComplete(ctx, evs)
+	if err != nil {
+		h.serverError(ctx, w, "batch event phase", err)
+		return
+	}
+	out := make([]eventDTO, 0, len(evs))
+	for _, e := range evs {
 		vids, err := h.eventVideos(ctx, e.ID)
 		if err != nil {
 			h.serverError(ctx, w, "event videos", err)
 			return
 		}
-		out = append(out, toEventDTO(e, vids))
+		out = append(out, toEventDTO(e, vids, done[e.ID]))
 	}
 	writeJSON(w, http.StatusOK, out)
 }

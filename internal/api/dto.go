@@ -71,7 +71,15 @@ type eventDTO struct {
 	Extra     *int       `json:"extra"`
 	Team      teamRefDTO `json:"team"`
 	Player    *playerDTO `json:"player"` // null for an unknown scorer
-	Videos    []videoDTO `json:"videos"`
+	// Phase — the derived semantic lifecycle: detected / searching / complete /
+	// removed (see internal/domain/event/phase.go). The layer-2 contract: the
+	// frontend renders this + Videos (orthogonal) without re-deriving pipeline
+	// state. No layer-1 fields (edw.completed_at, outcome_class, the legacy
+	// monitor/download flags) cross this boundary.
+	Phase string `json:"phase"`
+	// DebounceCount (0–3) — raw, for "confirming N/3" during the detected phase.
+	DebounceCount int        `json:"debounce_count"`
+	Videos        []videoDTO `json:"videos"`
 }
 
 type fixtureDTO struct {
@@ -103,15 +111,20 @@ func toVideoDTO(c video.LiveClip) videoDTO {
 	}
 }
 
-// toEventDTO maps an event plus its already-loaded live videos. videos may be
-// nil (no clips yet) → serialized as an empty array by ensureVideos.
-func toEventDTO(e *event.Event, videos []videoDTO) eventDTO {
+// toEventDTO maps an event plus its already-loaded live videos and the
+// discovery-complete signal (whether the event's discovery workflow has
+// finished) — the third input, alongside Removed + DownstreamTriggered, that
+// event.DerivePhase needs. videos may be nil (no clips yet) → serialized as an
+// empty array by ensureVideos.
+func toEventDTO(e *event.Event, videos []videoDTO, discoveryComplete bool) eventDTO {
 	d := eventDTO{
 		ID: e.ID.String(), FixtureID: e.FixtureID,
 		Type: string(e.Type), Detail: string(e.Detail),
 		Minute: e.Minute, Extra: e.Extra,
-		Team:   teamRefDTO{ID: e.Team.ID, Name: e.Team.Name},
-		Videos: ensureVideos(videos),
+		Team:          teamRefDTO{ID: e.Team.ID, Name: e.Team.Name},
+		Phase:         string(event.DerivePhase(e.Removed, e.DownstreamTriggered, discoveryComplete)),
+		DebounceCount: e.DebounceCount,
+		Videos:        ensureVideos(videos),
 	}
 	if e.Player.Known() {
 		d.Player = &playerDTO{ID: *e.Player.ID, Name: *e.Player.Name}

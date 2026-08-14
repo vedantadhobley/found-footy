@@ -6,6 +6,42 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-13 — Event `phase` on the read API: the layer-2 semantic contract (frontend handoff)
+
+The `eventDTO` exposed player + videos but no lifecycle signal, so the frontend
+faked "searching" from `videos.length` — a layer-1 leak that mislabels a
+live-game event (empty videos = "still extracting" OR "extracted nothing",
+indistinguishable without pipeline state). Added a derived `phase` +
+`debounce_count`, per the contract in vedanta-systems' `docs/design.md` "Data
+contracts" seam: the owning service derives the stable *meaning* (layer 2); the
+frontend renders it (layer 3) with zero truth-derivation; internal mechanism
+(layer 1) never crosses the API.
+
+`event.DerivePhase(removed, downstreamTriggered, discoveryComplete)`,
+first-match-wins: `removed` (terminal — wins even after complete, VAR) →
+`complete` (discovery `edw.completed_at` set) → `searching` (triggered, in
+flight) → `detected` (otherwise). **Key design point: "has clips" is NOT a
+phase** — clips surface incrementally *during* searching (the 15-attempt
+producer promotes each candidate the moment it lands) and persist into complete,
+so the video count is an ORTHOGONAL axis `phase` never consults. `player=null`
+distinguishes "won't be searched" *within* `detected` — no separate
+`unsearched` phase. The derivation needs no `outcome_class` at all (that only
+mattered when has-clips was wrongly modeled as a phase), which decoupled it from
+the outcome-vocabulary cleanup below.
+
+Read path: `EventRepo.DiscoveryComplete(eventIDs) → set` (batched, `::uuid[]`
+cast) feeds the DTO mapper. Layer-1 fields (`edw.completed_at`, `outcome_class`,
+`downstream_triggered`, `monitor_complete`/`download_complete`) stay off the
+DTO, as does all display copy. `removed` events are excluded from the fixture
+list but returned by `GetEvent(id)`, so `phase=removed` surfaces on the
+event-refetch path — consistent with the doc's "SSE hints, REST is truth."
+
+Follow-up (not a phase blocker — phase ignores outcome_class): the
+`outcome_class` vocabulary has diverged. `event/outcome.go` declares typed
+constants (`success`/`no_candidates`/…) but the EventWorkflow writes inline
+literals (`assets_surfaced`/`candidates_no_assets`/…). A real trap — reading
+`outcome.go` gives values the DB never contains. Tracked separately.
+
 ## 2026-08-13 — Ingest partial-refresh no longer wipes unreachable leagues (audit P1-1)
 
 The daily tracked-teams refresh rebuilt the whole `tracked_teams_cache` with a

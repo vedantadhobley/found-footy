@@ -763,3 +763,52 @@ func TestEventRepo_ListLiveFleetEventIDs(t *testing.T) {
 		t.Error("(f) removed event → should NOT be live")
 	}
 }
+
+// TestEventRepo_DiscoveryComplete — the read-API phase signal: only events
+// whose discovery workflow finished (completed_at set) are in the returned
+// set; in-flight and no-row events are excluded. Also exercises the ::uuid[]
+// array cast against real Postgres.
+func TestEventRepo_DiscoveryComplete(t *testing.T) {
+	ctx, pool, repo, fRepo := setupEventRepo(t)
+	seedFixture(t, ctx, fRepo, 8030)
+
+	// A: triggered, discovery completed → in the set.
+	ea := makeGoalEvent(8030, 1)
+	insertAndTrigger(t, ctx, repo, ea)
+	_ = repo.RegisterDownstreamWorkflow(ctx, ea.ID, "discovery", "d-a")
+	if _, err := pool.Exec(ctx, `UPDATE event_downstream_workflows
+		SET completed_at = NOW(), outcome_class = 'assets_surfaced' WHERE event_id = $1`, ea.ID); err != nil {
+		t.Fatalf("complete a: %v", err)
+	}
+
+	// B: triggered, discovery in flight (completed_at NULL) → NOT in the set.
+	eb := makeGoalEvent(8030, 2)
+	insertAndTrigger(t, ctx, repo, eb)
+	_ = repo.RegisterDownstreamWorkflow(ctx, eb.ID, "discovery", "d-b")
+
+	// C: no discovery row at all → NOT in the set.
+	ec := makeGoalEvent(8030, 3)
+	if err := repo.Insert(ctx, ec, "c1"); err != nil {
+		t.Fatalf("insert c: %v", err)
+	}
+
+	got, err := repo.DiscoveryComplete(ctx, []uuid.UUID{ea.ID, eb.ID, ec.ID})
+	if err != nil {
+		t.Fatalf("DiscoveryComplete: %v", err)
+	}
+	if !got[ea.ID] {
+		t.Error("A (completed discovery) should be in the set")
+	}
+	if got[eb.ID] {
+		t.Error("B (in-flight discovery) should NOT be in the set")
+	}
+	if got[ec.ID] {
+		t.Error("C (no discovery row) should NOT be in the set")
+	}
+
+	// Empty input → empty set, no error (guards the ANY([]) edge).
+	empty, err := repo.DiscoveryComplete(ctx, nil)
+	if err != nil || len(empty) != 0 {
+		t.Errorf("DiscoveryComplete(nil) = %v, %v; want empty set, nil", empty, err)
+	}
+}
