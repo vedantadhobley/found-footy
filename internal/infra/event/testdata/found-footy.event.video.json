@@ -1,0 +1,11 @@
+{
+  "id": "0198f3a0-7a8b-7c9d-ae1f-2a3b4c5d6e7f",
+  "ts": "2026-08-14T16:51:12Z",
+  "source": "found-footy-prod",
+  "version": 1,
+  "subject": "found-footy.event.video",
+  "payload": {
+    "event_id": "a4dbb584-bda7-4495-8eea-0736d252bcf0",
+    "fixture_id": 1530158
+  }
+}
