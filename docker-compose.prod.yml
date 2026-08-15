@@ -131,6 +131,7 @@ services:
       - ./garage.toml:/etc/garage.toml:ro
     networks:
       - found-footy-prod
+      - luv-prod  # shared door: vs-prod-api re-proxies presigned video URLs (host 'garage:3900')
     restart: unless-stopped
 
   # ────── Go binaries ──────
