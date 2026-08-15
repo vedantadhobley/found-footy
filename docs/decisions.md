@@ -6,6 +6,26 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-15 — #199 event mutable-field refresh on reconcile (late assists, VAR minute)
+
+Event `assist_id/assist_name` (and `minute/extra/detail`) were captured ONCE at
+first detection (`EventRepo.Insert`) and never refreshed — the re-poll path
+`RegisterEventPresence` only bumps the debounce counter, discarding the fresh
+provider values already in hand. API-Football fills the assister in with a delay
+(often post-goal / post-match), so a live-detected goal froze at `assist: null`
+forever. Prod tell: La Liga 0/5 + Coppa 0/5 assists while friendlies (the *worse*
+upstream source) had some — inverted from provider quality = capture bug, not a
+data gap (surfaced by the vedanta-systems frontend agent).
+
+Fix: `ReconcileFixture`, for an existing known-scorer event, diffs the provider's
+mutable NON-identity fields (`Event.MutableFieldsChanged` — assist, minute, extra,
+detail) against the stored row and, on a real delta, `EventRepo.UpdateMutableFields`
++ sets `out.Structural = true`, so the fixture rides `fixture.update` and the
+consumer refetches. Identity (team/player/type = the `natural_key`) is never touched:
+a scorer change is a different event, handled by the unknown-scorer path. Fires only
+on a delta, never per-cycle. Active-fixture only — a completed-fixture assist backfill
+is the remaining half of #199.
+
 ## 2026-08-15 — #181 per-candidate discovery outcomes persisted (surfacing forensics)
 
 The EventWorkflow consumer computed a rich verdict for every candidate — download

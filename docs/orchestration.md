@@ -327,6 +327,15 @@ reconciles — structural wins, so a fixture is never in both — and fires one
 window refetch). Activation (staging→active) is not emitted; the kickoff
 status-flip is captured as Structural on the fixture's first live reconcile.
 
+**Event mutable-field refresh (#199, decisions.md 2026-08-15).** For an existing
+known-scorer event, `ReconcileFixture` also diffs the provider's mutable
+NON-identity fields (`Event.MutableFieldsChanged` — assist, minute, extra, detail)
+against the stored row and, on a real delta, calls `UpdateMutableFields` + sets
+`Structural` so the late value rides `fixture.update`. Assists arrive after the goal
+(API-Football fills the assister post-match); minute/extra get VAR-corrected.
+Identity (the `natural_key`) is never touched. Active-fixture only — the
+completed-fixture backfill is the open half of #199.
+
 **Event debounce — scorer-aware 3-state (2026-08-05).** `natural_key` embeds
 `player_id`, so an unknown scorer (`player_id` null) and its later-attributed
 known scorer are *different* keys. A goal without a scorer is "not a full event

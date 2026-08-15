@@ -301,6 +301,28 @@ func (r *EventRepo) Insert(ctx context.Context, e *event.Event, workflowID strin
 	return nil
 }
 
+// UpdateMutableFields re-persists the provider-mutable, non-identity fields of
+// an existing event onto row id — assist (arrives late), minute + extra
+// (VAR-corrected), detail (reclassified). Identity (team/player/type/
+// natural_key) and lifecycle (debounce, downstream, removal) are untouched.
+// ReconcileFixture calls this only when the values actually changed, so it is
+// not a per-cycle write. See #199.
+func (r *EventRepo) UpdateMutableFields(ctx context.Context, id uuid.UUID, fresh *event.Event) error {
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE events SET
+			assist_id   = $2,
+			assist_name = $3,
+			minute      = $4,
+			extra       = $5,
+			detail      = $6,
+			updated_at  = now()
+		WHERE id = $1
+	`, id, fresh.Assist.ID, fresh.Assist.Name, fresh.Minute, fresh.Extra, fresh.Detail); err != nil {
+		return fmt.Errorf("pg.EventRepo.UpdateMutableFields: %w", err)
+	}
+	return nil
+}
+
 // DeleteUnknownEvent hard-deletes an unknown-scorer placeholder by UUID. It
 // is called only from the reconcile absence loop when a placeholder
 // (debounce_count 0, no scorer) disappears from the API — usually because

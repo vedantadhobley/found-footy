@@ -113,6 +113,43 @@ func TestPlayer_Known(t *testing.T) {
 	}
 }
 
+// MutableFieldsChanged (#199) ------------------------------------
+
+func TestEvent_MutableFieldsChanged(t *testing.T) {
+	x2 := 2
+	// A fully-populated stored event: assist present, 45+2', normal goal.
+	stored := func() *event.Event {
+		return &event.Event{
+			Minute: 45,
+			Extra:  &x2,
+			Detail: "Normal Goal",
+			Assist: player(10, "A. Assister"),
+		}
+	}
+	x3 := 3
+	tests := []struct {
+		name  string
+		fresh *event.Event
+		want  bool
+	}{
+		{"identical (same values, different pointers)", stored(), false},
+		{"assist cleared", &event.Event{Minute: 45, Extra: &x2, Detail: "Normal Goal", Assist: unknownPlayer()}, true},
+		{"assist id differs", &event.Event{Minute: 45, Extra: &x2, Detail: "Normal Goal", Assist: player(20, "A. Assister")}, true},
+		{"assist name differs", &event.Event{Minute: 45, Extra: &x2, Detail: "Normal Goal", Assist: player(10, "B. Other")}, true},
+		{"minute differs (VAR)", &event.Event{Minute: 47, Extra: &x2, Detail: "Normal Goal", Assist: player(10, "A. Assister")}, true},
+		{"extra differs", &event.Event{Minute: 45, Extra: &x3, Detail: "Normal Goal", Assist: player(10, "A. Assister")}, true},
+		{"extra nil vs set", &event.Event{Minute: 45, Extra: nil, Detail: "Normal Goal", Assist: player(10, "A. Assister")}, true},
+		{"detail reclassified", &event.Event{Minute: 45, Extra: &x2, Detail: "Penalty", Assist: player(10, "A. Assister")}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stored().MutableFieldsChanged(tc.fresh); got != tc.want {
+				t.Errorf("MutableFieldsChanged = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // ComposeNaturalKey ----------------------------------------------
 
 func TestComposeNaturalKey(t *testing.T) {

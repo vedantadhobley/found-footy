@@ -124,6 +124,55 @@ func TestEventRepo_Insert_Assist(t *testing.T) {
 	}
 }
 
+// UpdateMutableFields must refresh assist/minute/extra/detail onto an existing
+// row (late-arriving assist, VAR minute correction, detail reclassification)
+// WITHOUT changing identity (id, natural_key, scorer). #199.
+func TestEventRepo_UpdateMutableFields(t *testing.T) {
+	ctx, _, repo, fRepo := setupEventRepo(t)
+	seedFixture(t, ctx, fRepo, 7301)
+
+	// Insert a goal with no assist, 30', no extra, "Normal Goal".
+	e := makeGoalEvent(7301, 1)
+	if err := repo.Insert(ctx, e, "wf-mut-1"); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	// Fresh observation of the SAME event: assist now populated, minute bumped
+	// to 45+2 (VAR), detail reclassified to Penalty.
+	fresh := makeGoalEvent(7301, 1)
+	aid, aname, x := 777, "Late Assister", 2
+	fresh.Assist = event.Player{ID: &aid, Name: &aname}
+	fresh.Minute = 45
+	fresh.Extra = &x
+	fresh.Detail = "Penalty"
+
+	if err := repo.UpdateMutableFields(ctx, e.ID, fresh); err != nil {
+		t.Fatalf("UpdateMutableFields: %v", err)
+	}
+
+	got, err := repo.Get(ctx, e.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// Mutable fields refreshed.
+	if got.Assist.ID == nil || *got.Assist.ID != 777 || got.Assist.Name == nil || *got.Assist.Name != "Late Assister" {
+		t.Errorf("assist = %+v, want {777, Late Assister}", got.Assist)
+	}
+	if got.Minute != 45 || got.Extra == nil || *got.Extra != 2 {
+		t.Errorf("minute/extra = %d/%v, want 45/2", got.Minute, got.Extra)
+	}
+	if got.Detail != "Penalty" {
+		t.Errorf("detail = %q, want Penalty", got.Detail)
+	}
+	// Identity untouched.
+	if got.ID != e.ID || got.NaturalKey != e.NaturalKey {
+		t.Errorf("identity changed: %s/%s want %s/%s", got.ID, got.NaturalKey, e.ID, e.NaturalKey)
+	}
+	if got.Player.ID == nil || *got.Player.ID != 999 {
+		t.Errorf("scorer changed: %+v, want player 999", got.Player)
+	}
+}
+
 func TestEventRepo_InsertThenGet(t *testing.T) {
 	ctx, _, repo, fRepo := setupEventRepo(t)
 	seedFixture(t, ctx, fRepo, 7001)
