@@ -7,10 +7,10 @@
 > `docker restart`, `docker stop`, `docker compose down`, `docker rm`,
 > `docker compose up` (recreates containers), edits to prod compose
 > files, edits to any prod-loaded `.env`, prod database mutations
-> (dropping/altering tables, delete/update DML on prod Mongo or
-> Postgres), prod S3 (MinIO) mutations, and any change to prod's Caddy
+> (dropping/altering tables, delete/update DML on prod
+> Postgres), prod S3 (Garage) mutations, and any change to prod's Caddy
 > config. Any action against a container, file, or endpoint whose name
-> or path contains `-prod` (or, for shared infra like `mongo`, whose
+> or path contains `-prod` (or, for shared infra whose
 > data is prod's) is prod-touching and requires an explicit "yes, do X
 > on prod" from the user before you take it. Ask; wait; then act. A
 > single approval covers the single action described, not adjacent or
@@ -18,13 +18,13 @@
 > ask.
 
 Real-time football goal video discovery and curation. Polls API-Football
-every 30 s for live matches across the top-5 European leagues + ~15 FIFA
-national teams, debounces detected goals over 3 polls, then fires off a
-10-attempt Twitter video search for each one. Downloads candidate clips,
-AI-validates the broadcast clock against the API's reported match minute
-(Qwen3-VL-8B on `joi`), perceptually deduplicates against the existing
-S3 corpus, and surfaces the surviving clips through the `vedanta-systems`
-portal via SSE.
+every 30 s for live matches across the top-5 European leagues + MLS, plus
+national-team fixtures during international windows, debounces detected
+goals over 3 polls, then fires off a 15-attempt Twitter video search for
+each one. Downloads candidate clips, AI-validates the broadcast clock
+against the API's reported match minute (`gemma-4-12b` on `joi`),
+perceptually deduplicates against the existing S3 corpus, and surfaces
+the surviving clips through the `vedanta-systems` portal via SSE.
 
 ## Cross-cutting context
 
@@ -40,39 +40,33 @@ Workspace-wide rules, node topology, and cross-project decisions live in [`~/wor
 This file is your front door. Which section applies depends on why you
 landed here:
 
-- **Working on the Go rebuild** (current active development on
-  `rebuild/go` branch) → read [§ Go rebuild](#go-rebuild-current-active-work) first,
-  then [`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md) is the design bible.
-- **Working on legacy Python prod** (still live at vedanta.systems,
-  every match day) → skip to [§ Python legacy stack](#python-legacy-stack-still-running-in-prod).
+- **Working on the Go system** (what prod runs now) → read [§ Go system](#go-system-current-active-work) first,
+  then [`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md) is the architecture reference.
+- **Consulting the legacy Python reference** (archived at cutover; the
+  pre-cutover system-of-record) → skip to [§ Python legacy stack](#python-legacy-stack-archived).
 
-**Current branch context**: `rebuild/go` is the active work branch. `main`
-still runs the Python codebase; prod containers are built from that.
-The two coexist — no cutover has happened yet.
+**Current branch context**: `rebuild/go` is the active branch AND what
+prod runs. The Python→Go cutover happened **2026-08-15** (see
+[`docs/decisions.md`](./docs/decisions.md)); prod containers build from
+this branch's `Dockerfile`. `main` still holds the Python codebase as the
+preserved rollback (its data volumes are kept, not wiped). A merge of
+`rebuild/go` → `main` is deliberately held until the Go stack proves a
+clean match-day.
 
-## Go rebuild (current active work)
+## Go system (current active work)
 
-Full ground-up rewrite from Python to Go 1.25, tracked in
-[`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md) as the design bible.
-Phased delivery — see §16 for the phase map. Where we are (2026-07-07):
+Full ground-up rewrite from Python to Go 1.25, **in prod since the
+2026-08-15 cutover**. [`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md)
+is the architecture reference (§1–§16: architecture, schema, adapters,
+workflows, deployment, migration).
 
-| Phase | Status | What it covers |
-|---|---|---|
-| F | ✅ shipped | Scaffold: `cmd/`, `internal/`, docker-compose, air, Caddy stubs, Makefile |
-| S1 | ✅ shipped | Observability substrate: `config`, `logging` (slog + typed Field), `vocabulary` (typed Module/Action enums), `metrics` (Prometheus), `bootstrap` (shared binary startup with Closer registry) |
-| S2 | ✅ shipped | Postgres adapter: `pool.go` (pgxpool wrapper), `instruments.go` (query tracer + pool-stats collector), full §3 schema in `schema.sql`, wired into `cmd/worker` + `cmd/api` |
-| S3 | ✅ shipped | NATS adapter (workspace NATS bus for events + SSE fan-out + JetStream webhook delivery) |
-| S4 | ✅ shipped | Garage / S3 adapter (aws-sdk-go-v2 client wrapper + tests) |
-| S5 | ✅ shipped | Temporal adapter (Client + Worker wrappers with Instruments) |
-| S6 | ✅ shipped | LLM adapter (OpenAI-compatible client + typed errors + Chat) |
-| S7 | ✅ shipped | External HTTP adapters (apifootball, twitter, syndication, wikidata) |
-| D | ✅ shipped | Domain layer — 4 of 8 packages complete (fixture, event, video, alias); discovery/vision/session/textanalysis stubbed for build-when-needed |
-| O1 | ✅ shipped | IngestWorkflow + 4 activities + wire-up + live e2e verification + daily 00:05 UTC Temporal Schedule (O1e complete) |
-| O2 | ✅ shipped | ActivePollWorkflow (30s) + StagingPollWorkflow (*/15 cron) — split from single MonitorWorkflow (2026-07-11) |
-| O3 | ✅ shipped | DiscoveryWorkflow (event compose + spawn + 15-attempt search + candidate persistence, O3/a–d) |
-| O4–O5 | 📅 planned | VideoValidation, AssetPersistence workflows |
-| T (twitter svc) | ✅ T/a–c shipped | Playwright-Go search service (auth + scrape + backup); T/d scaler planned |
-| V, A, M, C | 📅 planned | Video pipeline, API surface, migration, cutover |
+The phased-delivery table that used to live here drifted badly (it was
+frozen at 2026-07-07), so this file no longer tracks phase status. For
+current state, use the live sources: the **`TaskList`** is the punch
+list, and the as-built ledgers below describe what actually shipped per
+package / workflow. The rebuild is complete through cutover; remaining
+work is hardening + features (Reddit source, observability backfill, the
+stale-fixture reaper, dev/prod parity) — all tracked in `TaskList`.
 
 **Where to look for Go rebuild work:**
 
@@ -83,11 +77,11 @@ Phased delivery — see §16 for the phase map. Where we are (2026-07-07):
 - [`docs/run-flow.md`](./docs/run-flow.md) — narrative walkthrough of shipped Ingest + Monitor cycles with inline `[GAP]` markers. Reads as connective tissue between the ledgers.
 - [`docs/design/README.md`](./docs/design/README.md) — routing index for per-topic rebuild docs.
 - [`docs/architecture.md`](./docs/architecture.md) — **as-shipped ledger** of internal/ + cmd/ tree with per-package status.
-- [`docs/orchestration.md`](./docs/orchestration.md) — **as-shipped ledger** of workflows + activities (IngestWorkflow complete).
+- [`docs/orchestration.md`](./docs/orchestration.md) — **as-shipped ledger** of workflows + activities.
 - [`docs/observability.md`](./docs/observability.md) — **as-shipped ledger** of vocabulary + logging + metrics substrate.
 - [`docs/logging.md`](./docs/logging.md) — **emission reference** — how to call Emit + add new (Module, Action).
 - [`docs/temporal.md`](./docs/temporal.md) — **as-shipped ledger** of Client/Worker adapter + registration flow.
-- [`docs/testing.md`](./docs/testing.md) — **as-shipped ledger** of ~175 tests across the tiers.
+- [`docs/testing.md`](./docs/testing.md) — **as-shipped ledger** of the test tiers (unit + integration + scenarios).
 - [`docs/deployment.md`](./docs/deployment.md) — compose files + Caddy + first-time bootstrap steps.
 - [`docs/decisions.md`](./docs/decisions.md) — append-only architectural decisions, including divergences from `rebuild-plan.md`.
 - [`internal/observability/vocabulary/vocabulary.go`](./internal/observability/vocabulary/vocabulary.go) — typed enum registry (Module, Action). Every log emission uses these. Adding a new Module or Action = one const declaration.
@@ -185,8 +179,8 @@ with `env_file`.
 
 - Go 1.25 (bumped from 1.23 for air compatibility). Toolchain via container — nothing installed on host.
 - Everything runs in Docker. `make build`, `make test`, `make test-short` all spin `golang:1.25-bookworm` throwaway containers with the source bind-mounted.
-- Dev stack: `docker compose -f docker-compose.dev.yml up -d` — air hot-reload on all four Go binaries.
-- Prod stack: `docker compose -f docker-compose.prod.yml` — **still runs the Python codebase**. Files intentionally renamed from bare `docker-compose.yml` so a stray `docker compose <cmd>` from this directory refuses to resolve.
+- Dev stack: `docker compose -f docker-compose.dev.yml up -d` — air hot-reload on the three Go binaries (worker/api/twitter).
+- Prod stack: `docker compose -f docker-compose.prod.yml` — **runs the Go stack** (worker/api/twitter on Postgres + Garage) since the 2026-08-15 cutover. Files intentionally renamed from bare `docker-compose.yml` so a stray `docker compose <cmd>` from this directory refuses to resolve.
 - Tests: unit + integration in the same package; integration tests spin real Postgres via testcontainers-go (`/var/run/docker.sock` mounted + `--network=host` in the `test` make target). Skip with `-short`.
 
 **Things to check before doing X (Go rebuild):**
@@ -196,21 +190,20 @@ with `env_file`.
 - **Adding a new adapter with cleanup**: use `deps.RegisterCloser("name", closeFn)` at construction, not `defer`. Bootstrap drains closers in reverse-registration order (LIFO), which is what Temporal needs (worker drains before its downstream deps close).
 - **Adding a new config surface**: put it on its own `config.<Adapter>Config` struct in `internal/config/<adapter>.go`, then reference it from the top-level `Config` in `config.go`. Envconfig via `caarlos0/env/v11`.
 - **Touching the pg schema**: authoritative source is [`internal/infra/pg/schema.sql`](./internal/infra/pg/schema.sql). Mounted into dev postgres via `/docker-entrypoint-initdb.d/` (fresh volume only) AND applied in testcontainers via `WithInitScripts`. If you edit it, wipe the dev postgres volume (`docker volume rm found-footy-dev_postgres-data`) to re-provision, and re-run `make test` to catch tests that hit the change.
-- **Ports**: metrics/healthz on `:8080` per binary. Public API surface (api) will move to a different port in Phase A. Twitter's :6080 VNC + :8888 API surfaces are Python-era; the Go rewrite lands in Phase S7.
+- **Ports**: metrics/healthz on `:8080` per binary. The api read surface is on `:8081` (routes under `/api/v1`). The twitter service exposes `:8888` (API) + `:6080` (VNC, opt-in via the `vnc` compose profile).
 
-## Python legacy stack (still running in prod)
+## Python legacy stack (archived)
 
-**Prod at vedanta.systems runs the Python codebase, unchanged.** Every
-match day, the Python worker + twitter pools + scaler are what actually
-process live matches. The Go rebuild will replace this incrementally
-per §13-§14 migration plan; until then, the Python code is the
-system-of-record and its docs describe the running system.
+**Until the 2026-08-15 cutover, prod ran this Python codebase.** The Go
+cutover retired it — prod no longer runs Python. The code stays in the
+tree (under `archive/`), and `main`'s data volumes are preserved, as the
+**rollback path** if the Go stack has to be reverted.
 
-Do NOT delete or refactor the Python code from this branch. The
-`rebuild/go` branch adds new Go code alongside; it doesn't remove
-Python.
+Do NOT delete or refactor the Python code from this branch — it's the
+rollback. Its docs below remain the reference for how the pre-cutover
+system behaved (Grafana/Loki queries, edge cases, the RAG pipeline).
 
-**Python stack summary:**
+**Python stack summary (as it ran pre-cutover — historical):**
 
 - **Workers**: Python 3.10 (`python:3.10-slim`), Temporal Python SDK, asyncio. 6 workflows, 42 activities. `docker-compose.prod.yml`.
 - **Application database**: MongoDB 7, 5-collection design — `fixtures_staging` / `fixtures_live` / `fixtures_active` / `fixtures_completed` / `team_aliases`. The Go rebuild moves to Postgres per [`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md) §3.
@@ -280,7 +273,7 @@ Three layers of persistence, each for a different knowledge type:
 
 ## Reference material
 
-- llama.cpp on joi: live model IDs via `curl http://llama-small.joi/v1/models`
+- llama.cpp on joi: live model IDs via `curl http://joi.luv/v1/models` (current vision model: `gemma-4-12b`)
 - API-Football: <https://www.api-football.com/documentation-v3> (key in `.env`)
 - Temporal Python SDK: <https://docs.temporal.io/develop/python>
 - Temporal Go SDK: <https://docs.temporal.io/develop/go>
@@ -292,7 +285,7 @@ Three layers of persistence, each for a different knowledge type:
 
 - **Prod is untouchable without explicit per-action user approval.** See the top-of-file callout. It is the single most important rule in this repo and overrides every other instruction.
 - **Do NOT `ssh vedanta@joi` from this repo's tooling.** joi is a separate node. HTTP queries over the tailnet are fine; shell commands need explicit user approval.
-- **LLM concurrency cap**: joi enforces 2 concurrent calls; throughput drops sharply past that. Any code that fans out LLM calls needs a semaphore or gateway.
+- **LLM concurrency cap**: the vision model is `gemma-4-12b` on `joi.luv` (`LLM_CHAT_CONCURRENCY_CAP=4`); throughput drops sharply past the cap. Any code that fans out LLM calls needs a semaphore or gateway. (nexus is the planned future inference target — WIP, hardware-bound — not yet live.)
 
 ---
 
