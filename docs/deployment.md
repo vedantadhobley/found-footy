@@ -135,6 +135,35 @@ Restart worker + api (`docker compose up -d --force-recreate worker api`)
 — you should see `s3_connected` on both. Re-provision the whole cluster:
 `docker volume rm found-footy-dev_garage-{data,meta}`.
 
+#### Garage (prod)
+
+Same procedure against `found-footy-prod-garage`, with two prod deltas:
+
+1. Config is the shared `garage.toml` (committed, secret-free) — the same file
+   dev uses. The 3 garage secrets are injected from `GARAGE_*` in the gitignored
+   `.env`; there is no per-env garage config file.
+2. **Import** dev's S3 key rather than minting a fresh one, so the shared
+   `.env` `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` authenticate against
+   prod too. Each Garage is a separate instance — sharing the key *value*
+   grants no cross-instance access; both are internal, single-node.
+
+```bash
+NODE=$(docker exec found-footy-prod-garage /garage status \
+  | grep -oE '^[0-9a-f]{16}' | head -1)
+docker exec found-footy-prod-garage /garage layout assign "$NODE" -z dc1 -c 50GB -t prod
+docker exec found-footy-prod-garage /garage layout apply --version 1
+docker exec found-footy-prod-garage /garage bucket create found-footy
+# Import dev's key (values sourced from .env) instead of `key create`:
+docker exec found-footy-prod-garage /garage key import --yes -n found-footy-key \
+  "$S3_ACCESS_KEY_ID" "$S3_SECRET_ACCESS_KEY"
+docker exec found-footy-prod-garage /garage bucket allow \
+  --read --write --owner found-footy --key found-footy-key
+```
+
+No `.env` change — the imported key matches what's already there. Worker +
+api should log `s3_connected`. Reprovision:
+`docker volume rm found-footy-prod_garage-{data,meta}`.
+
 ## Deploy tracking
 
 - Every binary bakes `gitSHA` + `builtAt` via `-ldflags "-X main.gitSHA=... -X main.builtAt=..."` at container build time.

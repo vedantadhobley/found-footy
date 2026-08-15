@@ -1,14 +1,16 @@
-# Prod stack — Go rebuild.
+# Prod stack — Go rebuild. LIVE deployment target (La Liga cutover).
 #
-# NOT actually deployed during Phase F. This file exists so the compose
-# spec is versioned alongside the dev spec and so `docker compose config`
-# validates cleanly. Actual prod bring-up waits for Phase C cutover.
+# Bring up with:
+#   docker compose -f docker-compose.prod.yml up --build -d
 #
-# Phase F caveat: the Go binaries currently just print "hello from
-# <binary>" and exit. `restart: "no"` is set on all four Go services
-# below so that starting this stack during Phase F doesn't crashloop.
-# Flip to `restart: unless-stopped` in Phase S once real code runs a
-# blocking event loop.
+# Runs the real Go binaries (worker/api built from ./Dockerfile). The
+# #160 per-event Firefox fleet is on (FIREFOXFLEET_ENABLED=true in .env):
+# the worker provisions one twitter instance per goal via the Docker API,
+# so it mounts docker.sock and the static `twitter` service below is just
+# the fleet's image-builder + nominal fallback (single instance).
+#
+# Opt-in service, excluded from a plain `up`:
+#   twitter-vnc — profiles: [vnc]; cookie re-auth via noVNC
 
 name: found-footy-prod
 
@@ -26,6 +28,7 @@ volumes:
 
 networks:
   found-footy-prod:
+    name: found-footy-prod     # explicit — matches Python prod; else Compose derives found-footy-prod_found-footy-prod
     driver: bridge
   proxy:
     external: true
@@ -36,14 +39,24 @@ services:
   # ────── Infrastructure ──────
 
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector:pg16 = Postgres 16 + pgvector, matching dev + the
+    # testcontainer base (pool_test.go). The live schema only needs pgcrypto
+    # (bundled everywhere); pgvector is currently unused but kept for
+    # dev/prod/test parity — see the vestigial-pgvector cleanup note.
+    image: pgvector/pgvector:pg16
     container_name: found-footy-prod-postgres
+    mem_limit: 4g  # host-budget ceiling per ~/.claude/CLAUDE.md — hard host-protection cap
     environment:
       POSTGRES_USER: ${PG_USER}
       POSTGRES_PASSWORD: ${PG_PASSWORD}
       POSTGRES_DB: found_footy
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      # Schema bootstrap: Postgres applies /docker-entrypoint-initdb.d/*.sql
+      # once on a fresh data dir (mirrors dev). The Go app only VERIFIES the
+      # schema-hash at boot — it never creates the schema — so this mount is
+      # REQUIRED or worker/api refuse to start. Reprovision = wipe the volume.
+      - ./internal/infra/pg/schema.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
     networks:
       - found-footy-prod
     healthcheck:
@@ -56,6 +69,7 @@ services:
   temporal-postgres:
     image: postgres:16-alpine
     container_name: found-footy-prod-temporal-postgres
+    mem_limit: 2g  # host-budget ceiling (see postgres note); low-traffic metadata store
     environment:
       POSTGRES_USER: ${TEMPORAL_PG_USER}
       POSTGRES_PASSWORD: ${TEMPORAL_PG_PASSWORD}
@@ -74,6 +88,7 @@ services:
   temporal:
     image: temporalio/auto-setup:1.24
     container_name: found-footy-prod-temporal
+    mem_limit: 2g  # host-budget ceiling (see postgres note)
     depends_on:
       temporal-postgres:
         condition: service_healthy
@@ -90,6 +105,7 @@ services:
   temporal-ui:
     image: temporalio/ui:2.30.3
     container_name: found-footy-prod-temporal-ui
+    mem_limit: 1g  # host-budget ceiling (see postgres note); tiny web UI
     depends_on:
       - temporal
     environment:
@@ -102,18 +118,25 @@ services:
   garage:
     image: dxflrs/garage:v1.0.1
     container_name: found-footy-prod-garage
+    mem_limit: 2g  # host-budget ceiling (see postgres note)
+    # Secrets injected from .env — one secret-free garage.toml serves dev + prod
+    # (no per-env file). Garage reads GARAGE_* when the TOML keys are absent.
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
+      GARAGE_METRICS_TOKEN: ${GARAGE_METRICS_TOKEN}
     volumes:
       - garage-data:/var/lib/garage/data
       - garage-meta:/var/lib/garage/meta
-      - ./garage.prod.toml:/etc/garage.toml:ro
+      - ./garage.toml:/etc/garage.toml:ro
     networks:
       - found-footy-prod
     restart: unless-stopped
 
   # ────── Go binaries ──────
-  # container_name deliberately omitted on scaled services (worker,
-  # twitter) — compose rejects container_name + deploy.replicas.
-  # Auto-naming: found-footy-prod-worker-1, -worker-2, etc.
+  # container_name deliberately omitted on `worker` — compose rejects
+  # container_name + deploy.replicas. Auto-naming: found-footy-prod-worker-1,
+  # -worker-2. (twitter is single now — the #160 fleet handles per-event load.)
 
   worker:
     build:
@@ -122,9 +145,13 @@ services:
       args:
         BINARY: worker
     image: found-footy-worker:latest
+    mem_limit: 16g  # host-budget ceiling; ffmpeg dense-extract is memory-heavy (per-replica cap, not reservation)
     env_file: .env
     environment:
       NATS_CLIENT_NAME: found-footy-prod-worker
+      EVENT_ENV: prod                                     # NATS subject token (found-footy.prod.*) + envelope source stamp
+      FIREFOXFLEET_IMAGE: found-footy-prod-twitter:latest # prod image the fleet spawns (code default is the dev tag)
+      FIREFOXFLEET_NETWORK: found-footy-prod              # prod network the fleet attaches to (code default is dev's)
     depends_on:
       postgres:
         condition: service_healthy
@@ -133,13 +160,17 @@ services:
       garage:
         condition: service_started
     volumes:
-      - ~/workspace/nats/creds/found-footy-prod.creds:/etc/nats/found-footy.creds:ro
+      # #160 per-event Firefox fleet — the worker provisions/releases one
+      # twitter instance per event via the Docker API (FIREFOXFLEET_ENABLED
+      # =true in .env). This is NOT a NATS creds mount: the bus is
+      # unauthenticated (NATS_CREDS_FILE empty); account auth is a later add.
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - found-footy-prod
       - luv-prod
     deploy:
-      replicas: 2  # scaler adjusts between 2 and 8 at runtime
-    restart: "no"  # Phase F only — flip to unless-stopped in Phase S
+      replicas: 2  # HA — Temporal distributes tasks across both; workers are stateless
+    restart: unless-stopped
 
   api:
     build:
@@ -149,43 +180,30 @@ services:
         BINARY: api
     image: found-footy-api:latest
     container_name: found-footy-prod-api
+    mem_limit: 2g  # host-budget ceiling (see postgres note); Go HTTP/SSE, tiny at rest
     env_file: .env
     environment:
       NATS_CLIENT_NAME: found-footy-prod-api
     depends_on:
       postgres:
         condition: service_healthy
-    volumes:
-      - ~/workspace/nats/creds/found-footy-prod.creds:/etc/nats/found-footy.creds:ro
     networks:
       - found-footy-prod
       - proxy
       - luv-prod
-    restart: "no"  # Phase F only — flip to unless-stopped in Phase S
+    restart: unless-stopped
 
-  scaler:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        BINARY: scaler
-    image: found-footy-scaler:latest
-    container_name: found-footy-prod-scaler
-    env_file: .env
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - found-footy-prod
-    restart: "no"  # Phase F only — flip to unless-stopped in Phase S
-
-  # Headless twitter scrapers. Multi-instance — scaler adjusts replicas
-  # between 2 and 8 at runtime based on active-goal count. Cookies
-  # shared with twitter-vnc via the twitter-cookies bind mount.
+  # Static headless twitter — SINGLE instance (matches dev). In the #160
+  # per-event fleet model this is the image the fleet spawns from + the
+  # nominal fallback; per-event instances carry the real search load.
+  # Cookies shared with twitter-vnc via the twitter-cookies bind mount.
   twitter:
     build:
       context: .
       dockerfile: docker/twitter/Dockerfile
     image: found-footy-prod-twitter:latest
+    container_name: found-footy-prod-twitter
+    mem_limit: 8g  # host-budget ceiling; Firefox is memory-heavy
     env_file: .env
     environment:
       # /authenticate response points operators at the VNC container.
@@ -208,9 +226,7 @@ services:
       - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
     networks:
       - found-footy-prod
-    deploy:
-      replicas: 2  # scaler adjusts between 2 and 8 at runtime
-    restart: "no"  # Phase F only — flip to unless-stopped in Phase S
+    restart: unless-stopped
 
   # Cookie re-auth container — opt-in via the `vnc` profile:
   #   docker compose --profile vnc up -d twitter-vnc
@@ -232,6 +248,7 @@ services:
         WITH_VNC: "true"
     image: found-footy-prod-twitter-vnc:latest
     container_name: found-footy-prod-twitter-vnc
+    mem_limit: 8g  # host-budget ceiling (see twitter note); same Firefox shape + VNC stack
     profiles: [vnc]
     env_file: .env
     environment:

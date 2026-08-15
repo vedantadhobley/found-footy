@@ -21,12 +21,12 @@ type FirefoxFleetConfig struct {
 
 	// Network is the docker network instances attach to so the worker
 	// reaches them by container-name DNS. MUST be a network the worker is
-	// also on. This is the *actual* Docker network name, which Compose
-	// prefixes with the project name — the network keyed `found-footy-dev`
-	// in docker-compose.dev.yml materializes as `found-footy-dev_found-footy-dev`
-	// (verified: the worker/twitter containers attach to that, not the bare
-	// name). Override per-env via the env var.
-	Network string `env:"FIREFOXFLEET_NETWORK" envDefault:"found-footy-dev_found-footy-dev"`
+	// also on. This is the *actual* Docker network name. Both compose files
+	// set an explicit `name:` on their network (docker-compose.dev.yml →
+	// `found-footy-dev`), matching Python prod's convention, so the name is
+	// clean rather than Compose's `<project>_<key>` default. Override per-env
+	// via the env var (prod sets `found-footy-prod`).
+	Network string `env:"FIREFOXFLEET_NETWORK" envDefault:"found-footy-dev"`
 
 	// CookieHostPath is the HOST path to the shared cookie file, bind-
 	// mounted read-write into each instance at /config/twitter_cookies.json.

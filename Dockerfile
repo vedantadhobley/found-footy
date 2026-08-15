@@ -1,13 +1,12 @@
-# Prod image for worker + api + scaler binaries. Parameterized on BINARY.
+# Prod image for the worker + api binaries. Parameterized on BINARY.
 #
 # Build with:
 #   docker build --build-arg BINARY=worker -t found-footy-worker .
 #   docker build --build-arg BINARY=api    -t found-footy-api    .
-#   docker build --build-arg BINARY=scaler -t found-footy-scaler .
 #
 # The twitter binary has its own Dockerfile (docker/twitter/Dockerfile)
 # because it needs the Playwright base image + Firefox + optional VNC
-# stack — a substantial delta from what worker/api/scaler need.
+# stack — a substantial delta from what worker/api need.
 
 # ────── build stage ──────
 # bookworm (not alpine) because we want glibc for CGO-agnostic
@@ -16,7 +15,7 @@
 FROM golang:1.25-bookworm AS build
 
 ARG BINARY
-RUN test -n "$BINARY" || (echo "ERROR: BINARY build arg is required (worker|api|scaler)" && exit 1)
+RUN test -n "$BINARY" || (echo "ERROR: BINARY build arg is required (worker|api)" && exit 1)
 RUN test "$BINARY" != "twitter" || (echo "ERROR: use docker/twitter/Dockerfile for the twitter binary" && exit 1)
 
 WORKDIR /src

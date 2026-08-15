@@ -60,7 +60,6 @@ const (
 	ModuleAPI             Module = "api"
 	ModuleAPISSE          Module = "api_sse"
 	ModuleWebhookDelivery Module = "webhook_delivery"
-	ModuleScaler          Module = "scaler"
 	ModuleWorker          Module = "worker"          // binary lifecycle
 	ModuleAPIServer       Module = "api_server"      // binary lifecycle
 	ModuleTwitterService  Module = "twitter_service" // binary lifecycle
@@ -84,7 +83,7 @@ var ValidModules = []Module{
 	ModuleInfraTwitter, ModuleInfraSyndication, ModuleInfraFFmpeg,
 	ModuleInfraWikidata, ModuleInfraWikipedia,
 
-	ModuleAPI, ModuleAPISSE, ModuleWebhookDelivery, ModuleScaler,
+	ModuleAPI, ModuleAPISSE, ModuleWebhookDelivery,
 	ModuleWorker, ModuleAPIServer, ModuleTwitterService,
 	ModuleMigration, ModuleHealthz, ModuleDeploy,
 }
