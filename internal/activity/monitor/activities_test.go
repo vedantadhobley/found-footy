@@ -203,6 +203,20 @@ func (r *fakeEventRepo) Insert(_ context.Context, e *event.Event, workflowID str
 // DeleteUnknownEvent hard-deletes a placeholder (debounce_count 0). Mirrors
 // the real repo's guard: a no-op ErrNotFound for anything at count ≥1 so a
 // confirmed event can never be removed here.
+func (r *fakeEventRepo) UpdateMutableFields(_ context.Context, id uuid.UUID, fresh *event.Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.events[id]
+	if !ok {
+		return event.ErrNotFound
+	}
+	e.Assist = fresh.Assist
+	e.Minute = fresh.Minute
+	e.Extra = fresh.Extra
+	e.Detail = fresh.Detail
+	return nil
+}
+
 func (r *fakeEventRepo) DeleteUnknownEvent(_ context.Context, id uuid.UUID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

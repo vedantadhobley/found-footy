@@ -228,3 +228,36 @@ func New(
 		UpdatedAt:   utc,
 	}
 }
+
+// MutableFieldsChanged reports whether any provider-mutable, non-identity field
+// differs between this stored event and a fresh observation of the SAME event
+// (same natural_key): assist, minute, extra, detail. API-Football fills the
+// assister in after the goal, and VAR shifts the minute/extra or reclassifies
+// the detail — all AFTER first detection. The monitor re-persists these without
+// touching identity: team/player/type live in the natural_key and are never
+// refreshed here (a scorer change is a different event, handled as a new key).
+// Guards the reconcile so it only writes + flags a fixture.update on a real
+// delta, never per-cycle. See #199.
+func (e *Event) MutableFieldsChanged(fresh *Event) bool {
+	return !eqIntPtr(e.Assist.ID, fresh.Assist.ID) ||
+		!eqStrPtr(e.Assist.Name, fresh.Assist.Name) ||
+		e.Minute != fresh.Minute ||
+		!eqIntPtr(e.Extra, fresh.Extra) ||
+		e.Detail != fresh.Detail
+}
+
+// eqIntPtr / eqStrPtr — nil-safe pointer equality (both nil = equal; one nil =
+// not equal; else compare pointees).
+func eqIntPtr(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func eqStrPtr(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}

@@ -44,6 +44,15 @@ type Repo interface {
 	// because Insert's vote is already recorded).
 	Insert(ctx context.Context, e *Event, workflowID string) error
 
+	// UpdateMutableFields re-persists an existing event's provider-mutable,
+	// non-identity fields (assist, minute, extra, detail) onto row id — data
+	// that arrives or changes AFTER first detection: late assists (API-Football
+	// fills the assister post-goal), VAR minute/extra corrections, detail
+	// reclassification. Identity (team/player/type/natural_key) and lifecycle
+	// (debounce, downstream, removal) are untouched. The reconcile calls this
+	// only on a real delta (Event.MutableFieldsChanged). See #199.
+	UpdateMutableFields(ctx context.Context, id uuid.UUID, fresh *Event) error
+
 	// DeleteUnknownEvent hard-deletes an unknown-scorer placeholder by
 	// UUID. Called from the reconcile absence loop when a placeholder
 	// (debounce_count 0, no scorer) disappears from the API — usually

@@ -561,6 +561,20 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 				a.registerAndSpawnEvent(ctx, existing, domainEv, in.APIFixture.Fixture.ID)
 				a.emitEventStable(ctx, existing.ID, in.APIFixture.Fixture.ID, domainEv)
 			}
+
+			// #199: re-persist provider-mutable fields that arrive/change AFTER
+			// first detection — assist (API-Football fills the assister in late,
+			// often post-match), minute/extra (VAR corrections), detail
+			// (reclassification). Only on a real delta → UPDATE + flag Structural
+			// so the fixture rides fixture.update and the consumer refetches.
+			// Identity (team/player/type, the natural_key) is never touched here.
+			if existing.MutableFieldsChanged(domainEv) {
+				if err := a.EventRepo.UpdateMutableFields(ctx, existing.ID, domainEv); err != nil {
+					out.Errors = append(out.Errors, fmt.Sprintf("update mutable event=%s: %v", key, err))
+				} else {
+					out.Structural = true
+				}
+			}
 		} else if _, removedAlready := allKeys[key]; removedAlready {
 			// Terminal — skip. Prior instance of this natural_key was
 			// soft-removed. See package docstring.
