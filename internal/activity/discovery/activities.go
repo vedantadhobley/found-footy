@@ -16,6 +16,7 @@ package discovery
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -327,6 +328,57 @@ func (a *Activities) StoreCandidate(ctx context.Context, in StoreCandidateInput)
 		return StoreCandidateOutput{}, fmt.Errorf("discovery.StoreCandidate: event=%s tweet=%s: %w", in.EventID, in.TweetURL, err)
 	}
 	return StoreCandidateOutput{Inserted: tag.RowsAffected() == 1}, nil
+}
+
+// CandidateOutcome is the terminal per-candidate class recorded on
+// event_search_candidates.outcome_class (#181). Coarse by design — the
+// fine-grained "why" rides reject_reason + outcome_detail. Values mirror the
+// schema CHECK constraint.
+type CandidateOutcome string
+
+const (
+	OutcomePromoted   CandidateOutcome = "promoted"   // surfaced as an asset/share
+	OutcomeDuplicate  CandidateOutcome = "duplicate"  // md5/perceptual dup, collapsed onto a winner
+	OutcomeSuperseded CandidateOutcome = "superseded" // promoted, then replaced by a better clip
+	OutcomeRejected   CandidateOutcome = "rejected"   // download-stage or vision reject (reject_reason says which)
+	OutcomeFailed     CandidateOutcome = "failed"     // child/infra error — never got a clean verdict
+)
+
+// RecordCandidateOutcomeInput carries a candidate's terminal fate. Detail is a
+// pre-marshalled JSON object (nil = SQL NULL); RejectReason is a stable slug
+// when Outcome is rejected/failed, empty otherwise.
+type RecordCandidateOutcomeInput struct {
+	EventID      uuid.UUID
+	TweetURL     string
+	Outcome      CandidateOutcome
+	RejectReason string
+	Detail       json.RawMessage
+}
+
+// RecordCandidateOutcome stamps a candidate's terminal outcome onto its
+// event_search_candidates row (#181 forensics). Keyed by (event_id, tweet_url);
+// a row not yet present (a race with StoreCandidate) updates zero rows — a
+// no-op, not an error. Idempotent: last write wins, so a retry is safe.
+func (a *Activities) RecordCandidateOutcome(ctx context.Context, in RecordCandidateOutcomeInput) error {
+	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var reason *string
+	if in.RejectReason != "" {
+		reason = &in.RejectReason
+	}
+	var detail []byte
+	if len(in.Detail) > 0 {
+		detail = in.Detail
+	}
+	if _, err := a.Pool.Exec(callCtx, `
+		UPDATE event_search_candidates
+		   SET outcome_class = $3, reject_reason = $4, outcome_detail = $5, outcome_at = NOW()
+		 WHERE event_id = $1 AND tweet_url = $2
+	`, in.EventID, in.TweetURL, string(in.Outcome), reason, detail); err != nil {
+		return fmt.Errorf("discovery.RecordCandidateOutcome: event=%s tweet=%s: %w", in.EventID, in.TweetURL, err)
+	}
+	return nil
 }
 
 // MarkDownstreamCompleteInput identifies which row to mark complete.

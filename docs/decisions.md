@@ -6,6 +6,32 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-15 — #181 per-candidate discovery outcomes persisted (surfacing forensics)
+
+The EventWorkflow consumer computed a rich verdict for every candidate — download
+reject reason, vision reason + soccer/screen votes, dedup/promote — then DROPPED it
+(a `counter++` and `return`). So "why didn't this goal surface?" was unanswerable
+from the DB; the #182 investigation had to grep ephemeral logs + re-run vision. Now
+the consumer stamps each candidate's terminal fate onto its `event_search_candidates`
+row at the branch where it's decided:
+
+    outcome_class ∈ {pending, promoted, duplicate, superseded, rejected, failed}
+    reject_reason  — stable slug (geo_restricted, aspect_too_narrow_*, a vision reason)
+    outcome_detail — JSONB {aspect} / {soccer_votes, screen_votes, frame_count} / {asset_id}
+    outcome_at     — set at the terminal branch → outcome_at − discovered_at = availability-decay clock
+
+Write path: a new `discovery.RecordCandidateOutcome` activity (UPDATE by
+`event_id + tweet_url`; idempotent, a no-op on a not-yet-stored row) — reusing the
+discovery Activities that already own `event_search_candidates` and are
+worker-registered, so the consumer calls it via Temporal with **zero new wiring**.
+Best-effort (swallowed like `publishEventVideo`): forensic loss never fails a
+pipeline.
+
+This is the prerequisite the #182 investigation flagged: with per-candidate outcomes
+in pg, the next Coppa/La-Liga miss is a `GROUP BY outcome_class, reject_reason`
+query, not log spelunking. Structured logs + Prom counters stay a later
+observability pass; the DB persistence subsumes the aggregate need for now.
+
 ## 2026-08-15 — NATS subject scheme: environment is a subject token (`found-footy.<env>.<topic>`)
 
 Supersedes the flat `found-footy.<topic>` + env-only-in-`source`-field scheme

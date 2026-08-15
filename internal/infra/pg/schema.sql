@@ -364,10 +364,10 @@ CREATE INDEX video_shares_asset ON video_shares (asset_id);
 -- the exclude_urls tail.
 --
 -- Uniqueness: (event_id, tweet_url) — the same tweet can't be
--- re-inserted for the same event across attempts. Downstream V-phase
--- adds decision fields (rejection_reason, decision_class) via ALTER
--- when it ships; kept out of the initial DDL to avoid speculating on
--- shape before we have empirical rejection cases.
+-- re-inserted for the same event across attempts. The V-phase decision
+-- fields (outcome_class / reject_reason / outcome_detail / outcome_at)
+-- anticipated here SHIPPED 2026-08-15 (#181); the EventWorkflow consumer
+-- stamps them at each candidate's terminal branch.
 CREATE TABLE event_search_candidates (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -386,6 +386,17 @@ CREATE TABLE event_search_candidates (
     age_minutes_at_discovery DOUBLE PRECISION,              -- extracted from time[datetime] at scrape time; NULL if Twitter didn't render it
 
     discovered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Per-candidate terminal outcome (#181) — the V-phase decision fields the
+    -- table comment above anticipated. The EventWorkflow consumer stamps these
+    -- as each candidate reaches a terminal branch (previously dropped). Answers
+    -- "why did this goal's candidates fail?" as a query; outcome_at minus
+    -- discovered_at is the availability-decay clock.
+    outcome_class TEXT NOT NULL DEFAULT 'pending'
+        CHECK (outcome_class IN ('pending', 'promoted', 'duplicate', 'superseded', 'rejected', 'failed')),
+    reject_reason TEXT,                                     -- stable slug when rejected/failed (geo_restricted, aspect_too_narrow_*, a vision reason); NULL otherwise
+    outcome_detail JSONB,                                   -- specifics: {aspect} / {soccer_votes, screen_votes, frame_count} / {asset_id, verified}
+    outcome_at TIMESTAMPTZ,                                 -- when the terminal outcome was recorded; NULL while pending
 
     UNIQUE (event_id, tweet_url)                            -- same tweet can't re-insert across attempts
 );
