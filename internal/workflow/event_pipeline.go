@@ -15,6 +15,7 @@
 package workflow
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
+	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
@@ -143,6 +145,7 @@ func (p *pipeline) onVideoDone(f workflow.Future) {
 	}
 	if out.Outcome != "passed" {
 		p.rejectedClips++ // hard-filter / geo / deleted — nothing was staged
+		p.recordOutcome(out.TweetURL, discoveryactivity.OutcomeRejected, out.RejectReason, nil)
 		return
 	}
 	p.passed++
@@ -164,6 +167,7 @@ func (p *pipeline) onVideoDone(f workflow.Future) {
 	if idx, isAsset, matched := p.matchMD5(c); matched {
 		p.duplicates++
 		p.collapse(c, idx, isAsset)
+		p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeDuplicate, "", nil)
 		return
 	}
 
@@ -264,6 +268,7 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 		if err := f.Get(p.ctx, &vout); err != nil {
 			// Vision infra-fail after retries — drop the clip + its staging.
 			p.failed++
+			p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeFailed, "vision_error", nil)
 			p.deleteStaging(c.stagingKey)
 			return
 		}
@@ -274,6 +279,8 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 			p.dedupAndPromote(c, vout)
 		default: // rejected — not soccer / screen recording / wrong clock
 			p.rejectedClips++
+			p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeRejected, vout.Reason,
+				jsonDetail(map[string]any{"soccer_votes": vout.SoccerVotes, "screen_votes": vout.ScreenVotes, "frame_count": len(vout.Frames)}))
 			p.deleteStaging(c.stagingKey)
 		}
 	}
@@ -317,6 +324,7 @@ func (p *pipeline) dedupAndPromote(c clip, vout visionactivity.ValidateClipOutpu
 	// An existing asset wins. c collapses onto it (bump + drop); any OTHER
 	// matched assets (a bridge c revealed) also consolidate onto that winner.
 	p.duplicates++
+	p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeDuplicate, "", nil)
 	winnerID := p.assets[best].assetID
 	var losers []uuid.UUID
 	for _, idx := range matched {
@@ -345,6 +353,7 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 		}).Get(p.persistCtx, &pout)
 	if err != nil {
 		p.failed++
+		p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeFailed, "promote_error", nil)
 		p.log.Warn("promote failed", "tweet_url", c.tweetURL, "err", err)
 		return uuid.Nil, false
 	}
@@ -355,6 +364,8 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 	} else {
 		p.unverified++
 	}
+	p.recordOutcome(c.tweetURL, discoveryactivity.OutcomePromoted, "",
+		jsonDetail(map[string]any{"asset_id": pout.AssetID.String(), "verified": c.verified}))
 	// A newly-minted clip changed this event's surfaced set → announce it.
 	// A retry that found an existing share sets Minted=false → no re-ping.
 	if pout.Minted {
@@ -388,6 +399,15 @@ func (p *pipeline) supersede(winnerID uuid.UUID, loserIDs []uuid.UUID) {
 	lose := make(map[uuid.UUID]bool, len(loserIDs))
 	for _, id := range loserIDs {
 		lose[id] = true
+	}
+	// #181: each loser was promoted earlier, now retired → superseded. Map its
+	// asset id back to the candidate tweet_url from the still-intact kept set.
+	winner := winnerID.String()
+	for _, a := range p.assets {
+		if lose[a.assetID] {
+			p.recordOutcome(a.tweetURL, discoveryactivity.OutcomeSuperseded, "",
+				jsonDetail(map[string]any{"winner_asset_id": winner}))
+		}
 	}
 	kept := p.assets[:0]
 	for _, a := range p.assets {
@@ -437,6 +457,32 @@ func (p *pipeline) publishEventVideo() {
 	_ = workflow.ExecuteActivity(p.persistCtx,
 		(*livefeedactivity.Activities).PublishEventVideo,
 		livefeedactivity.EventVideoInput{EventID: p.in.EventID, FixtureID: p.in.FixtureID}).Get(p.persistCtx, nil)
+}
+
+// recordOutcome stamps a candidate's terminal fate on its event_search_candidates
+// row (#181 forensics). Best-effort — a lost record is only forensic loss, never
+// a pipeline failure — so the error is swallowed, like publishEventVideo. An
+// empty tweetURL (a child that died before returning one) is skipped.
+func (p *pipeline) recordOutcome(tweetURL string, outcome discoveryactivity.CandidateOutcome, reason string, detail json.RawMessage) {
+	if tweetURL == "" {
+		return
+	}
+	_ = workflow.ExecuteActivity(p.persistCtx,
+		(*discoveryactivity.Activities).RecordCandidateOutcome,
+		discoveryactivity.RecordCandidateOutcomeInput{
+			EventID: p.in.EventID, TweetURL: tweetURL,
+			Outcome: outcome, RejectReason: reason, Detail: detail,
+		}).Get(p.persistCtx, nil)
+}
+
+// jsonDetail marshals a small map for outcome_detail; a marshal failure (not
+// possible for these shapes) yields a nil detail rather than a panic.
+func jsonDetail(m map[string]any) json.RawMessage {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // removePending drops and returns the pending entry for stagingKey. The

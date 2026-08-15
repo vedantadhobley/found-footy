@@ -86,6 +86,7 @@ func newDiscoveryEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvi
 		Return(videoactivity.PromoteAndPersistOutput{AssetID: uuid.New(), ShareID: "s_test", Inserted: true}, nil).Maybe()
 	env.OnActivity("BumpAssetPopularity", mock.Anything, mock.Anything).Return(nil).Maybe()
 	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
 	return env
 }
 
@@ -305,6 +306,7 @@ func TestEventWorkflow_Pipeline_VerifyAndDedup(t *testing.T) {
 			return nil
 		}).Maybe()
 	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
 		Return(discoveryactivity.SearchTweetsOutput{
@@ -370,6 +372,7 @@ func TestEventWorkflow_Pipeline_PromotePingsEventVideo(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := baseEventEnv(&s)
 	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
 	env.OnActivity("BumpAssetPopularity", mock.Anything, mock.Anything).Return(nil).Maybe()
 	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
 		Return(discoveryactivity.SearchTweetsOutput{
@@ -436,6 +439,7 @@ func requireDone(t *testing.T, env *testsuite.TestWorkflowEnvironment) {
 func twoCandidateEnv(s *testsuite.WorkflowTestSuite) (*testsuite.TestWorkflowEnvironment, string, string) {
 	env := baseEventEnv(s)
 	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
 	env.OnActivity("BumpAssetPopularity", mock.Anything, mock.Anything).Return(nil).Maybe()
 	t1 := "https://x.com/u/status/1111111111111111111"
 	t2 := "https://x.com/u/status/2222222222222222222"
