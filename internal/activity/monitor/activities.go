@@ -891,6 +891,9 @@ func (a *Activities) buildDomainEvent(f *fixture.Fixture, apiEv apifootball.APIF
 		seq,
 		now,
 	)
+	// Assist is non-identity metadata (not part of NaturalKey), so it's set
+	// after construction. nil/nil when the vendor reports no assister.
+	e.Assist = event.Player{ID: apiEv.Assist.ID, Name: apiEv.Assist.Name}
 	return e, e.NaturalKey, nil
 }
 

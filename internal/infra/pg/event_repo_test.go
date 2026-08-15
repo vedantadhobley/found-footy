@@ -89,6 +89,41 @@ func TestEventRepo_Get_NotFound(t *testing.T) {
 	}
 }
 
+// Insert then Get must roundtrip the assist player — populated when the vendor
+// reports an assister, nil/nil otherwise. Assist rides alongside player_id/
+// player_name (the search-by-assist backing); this covers the Insert $20/$21 +
+// scanEvent column mapping.
+func TestEventRepo_Insert_Assist(t *testing.T) {
+	ctx, _, repo, fRepo := setupEventRepo(t)
+	seedFixture(t, ctx, fRepo, 7101)
+
+	withAssist := makeGoalEvent(7101, 1)
+	aid, aname := 555, "Assister"
+	withAssist.Assist = event.Player{ID: &aid, Name: &aname}
+	if err := repo.Insert(ctx, withAssist, "wf-assist-1"); err != nil {
+		t.Fatalf("Insert (with assist): %v", err)
+	}
+	got, err := repo.Get(ctx, withAssist.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Assist.ID == nil || *got.Assist.ID != 555 || got.Assist.Name == nil || *got.Assist.Name != "Assister" {
+		t.Errorf("Assist roundtrip = %+v, want {555, Assister}", got.Assist)
+	}
+
+	noAssist := makeGoalEvent(7101, 2)
+	if err := repo.Insert(ctx, noAssist, "wf-assist-2"); err != nil {
+		t.Fatalf("Insert (no assist): %v", err)
+	}
+	got2, err := repo.Get(ctx, noAssist.ID)
+	if err != nil {
+		t.Fatalf("Get (no assist): %v", err)
+	}
+	if got2.Assist.ID != nil || got2.Assist.Name != nil {
+		t.Errorf("no-assist event should have nil Assist, got %+v", got2.Assist)
+	}
+}
+
 func TestEventRepo_InsertThenGet(t *testing.T) {
 	ctx, _, repo, fRepo := setupEventRepo(t)
 	seedFixture(t, ctx, fRepo, 7001)

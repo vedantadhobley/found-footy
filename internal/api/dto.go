@@ -81,6 +81,7 @@ type eventDTO struct {
 	Extra     *int       `json:"extra"`
 	Team      teamRefDTO `json:"team"`
 	Player    *playerDTO `json:"player"` // null for an unknown scorer
+	Assist    *playerDTO `json:"assist"` // the assisting player; null when none
 	// Phase — the derived semantic lifecycle: detected / searching / complete /
 	// removed (see internal/domain/event/phase.go). The layer-2 contract: the
 	// frontend renders this + Videos (orthogonal) without re-deriving pipeline
@@ -139,6 +140,9 @@ func toEventDTO(e *event.Event, videos []videoDTO, discoveryComplete bool) event
 	}
 	if e.Player.Known() {
 		d.Player = &playerDTO{ID: *e.Player.ID, Name: *e.Player.Name}
+	}
+	if e.Assist.Known() {
+		d.Assist = &playerDTO{ID: *e.Assist.ID, Name: *e.Assist.Name}
 	}
 	return d
 }

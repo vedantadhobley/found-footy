@@ -69,3 +69,25 @@ func TestToPenaltyDTO(t *testing.T) {
 		t.Errorf("shootout → {5,6}, got %+v", got)
 	}
 }
+
+// TestToEventDTO_Assist — the assister surfaces on the event DTO when present,
+// null when the vendor reported none (independent of the scorer).
+func TestToEventDTO_Assist(t *testing.T) {
+	id, name := 7, "Scorer"
+	aid, aname := 8, "Assister"
+	base := func(assist event.Player) *event.Event {
+		return &event.Event{
+			FixtureID: 1, Type: event.Type("goal"),
+			Player: event.Player{ID: &id, Name: &name}, Assist: assist,
+		}
+	}
+	// with an assister → populated
+	d := toEventDTO(base(event.Player{ID: &aid, Name: &aname}), nil, false)
+	if d.Assist == nil || d.Assist.ID != 8 || d.Assist.Name != "Assister" {
+		t.Errorf("with assist: got %+v, want {8, Assister}", d.Assist)
+	}
+	// no assister → nil
+	if d := toEventDTO(base(event.Player{}), nil, false); d.Assist != nil {
+		t.Errorf("no assist: got %+v, want nil", d.Assist)
+	}
+}

@@ -43,6 +43,7 @@ const eventColumns = `
 	event_type, detail,
 	team_id, team_name,
 	player_id, player_name,
+	assist_id, assist_name,
 	minute, extra,
 	first_seen_at,
 	debounce_count, downstream_triggered,
@@ -69,6 +70,7 @@ func scanEvent(row rowScanner) (*event.Event, error) {
 		&eventType, &e.Detail,
 		&e.Team.ID, &e.Team.Name,
 		&e.Player.ID, &e.Player.Name,
+		&e.Assist.ID, &e.Assist.Name,
 		&e.Minute, &e.Extra,
 		&e.FirstSeenAt,
 		&e.DebounceCount, &e.DownstreamTriggered,
@@ -239,6 +241,7 @@ func (r *EventRepo) Insert(ctx context.Context, e *event.Event, workflowID strin
 			event_type, detail,
 			team_id, team_name,
 			player_id, player_name,
+			assist_id, assist_name,
 			minute, extra,
 			first_seen_at,
 			debounce_count, downstream_triggered,
@@ -250,6 +253,7 @@ func (r *EventRepo) Insert(ctx context.Context, e *event.Event, workflowID strin
 			$4, $5,
 			$6, $7,
 			$8, $9,
+			$20, $21,
 			$10, $11,
 			$12,
 			$19, FALSE,
@@ -269,6 +273,7 @@ func (r *EventRepo) Insert(ctx context.Context, e *event.Event, workflowID strin
 		e.Removed, removedReason, e.RemovedAt,
 		telemetryBytes,
 		initialCount,
+		e.Assist.ID, e.Assist.Name,
 	); err != nil {
 		return fmt.Errorf("pg.EventRepo.Insert: event: %w", err)
 	}

@@ -71,6 +71,17 @@ network / via Caddy — deployment config, not part of this contract).
 - Use it for `event.video` — refetch the one event and splice it into the fixture
   you already hold (via `eventDTO.fixture_id` + `event.id`).
 
+### `GET /api/v1/search?q=<query>` — free-text fixture search
+
+- Case-insensitive substring match across **competition (league) name, either team
+  name, event scorer name, and event assist name** — one `q` box hits all four
+  (`?q=la liga`, `?q=barcelona`, `?q=lewandowski`, `?q=yamal`).
+- Returns the **same flat `[]fixtureDTO`** as `/fixtures` (fixtures carry their events
+  + live clips), so render results with the component you already use.
+- Scope: the retained window (staging + active + recently-completed), kickoff-newest
+  first, capped at 100. No date-range param — deeper history isn't retained.
+- Empty/whitespace `q` → **400**; no matches → **200 + `[]`**.
+
 ### `GET /api/v1/videos/{share_id}` — clip playback
 
 - **302 redirect** to a presigned Garage URL. This is a *playback* endpoint, not a
@@ -106,7 +117,8 @@ omitempty) so `null` is meaningful — e.g. `score: null` (not started) ≠
   "type": "goal", "detail": "normal goal",
   "minute": 62, "extra": null,
   "team": { "id": 505, "name": "Inter" },
-  "player": { "id": 1234, "name": "Lautaro" },  // null = unknown scorer (never searched)
+  "player": { "id": 1234, "name": "Lautaro" },  // null = unknown scorer (never video-searched)
+  "assist": { "id": 5678, "name": "Barella" },  // the assister; null when none
   "phase": "searching",                     // detected | searching | complete | removed
   "debounce_count": 3,                      // 0–3; "confirming N/3" while phase=detected
   "videos": [ /* videoDTO... — empty [] until clips surface */ ]

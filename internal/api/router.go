@@ -29,6 +29,7 @@ func NewRouter(h *Handlers) *chi.Mux {
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/fixtures", h.GetFixtures)            // window (no params) OR ?ids= batch refetch
+		r.Get("/search", h.Search)                   // free-text: competition / team / scorer / assist names
 		r.Get("/events", h.GetEvents)                // batch: ?ids=uuid,uuid
 		r.Get("/videos/{share_id}", h.RedirectVideo) // 302 → presigned Garage URL
 	})

@@ -143,6 +143,11 @@ type Event struct {
 	Detail apifootball.APIEventDetail // canonical enum value from the vendor
 	Team   Team
 	Player Player
+	// Assist — the assisting player (API-Football 'assist' field) when the
+	// vendor reports one; zero-value Player (both nil) = no assist. Non-identity
+	// metadata: deliberately NOT part of NaturalKey. Surfaced in the event DTO
+	// and searchable via GET /api/v1/search alongside scorer/team/league.
+	Assist Player
 	Minute int
 	Extra  *int
 

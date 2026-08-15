@@ -6,6 +6,44 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-15 — Free-text `/search` endpoint + assist capture (competition / team / scorer / assist)
+
+The vedanta-systems UI needs fixture search (Python searched Mongo on team /
+player / assist names); the Go read API had none (`/api/v1/search` 404'd). Added
+`GET /api/v1/search?q=<query>` returning the same `[]fixtureDTO` shape as
+`/fixtures` (fixtures carry their events + live clips), matched **case-insensitively
+across four fields: competition (league) name, either team name, event scorer name,
+and event assist name.**
+
+Assist was the one field with no data behind it — API-Football's `assist` object was
+parsed (`apifootball.APIFixtureEvent.Assist`) then dropped. So this also **captures
+assists end-to-end**: nullable `events.assist_id`/`assist_name` columns,
+`event.Event.Assist Player` (non-identity metadata — deliberately NOT part of
+`NaturalKey`), set in `buildDomainEvent` from the parsed API event, threaded through
+`EventRepo` Insert/scan + `eventColumns`, and surfaced as `eventDTO.assist`
+(`{id,name}` | null). New events carry assists going forward; older completed
+fixtures stay assist-less (they age out of retention — no backfill).
+
+Design choices:
+- **Search covers the retained window, any state** (staging/active/completed),
+  kickoff-newest first, capped at 100 (`searchLimit`). No date-range param — deeper
+  history isn't retained, so search covers exactly what `/fixtures` already serves.
+- **Scorer/assist arm is an `EXISTS` subquery** over the fixture's non-removed events
+  (indexed by `fixture_id`); a seq scan across the bounded window is cheap.
+- **ILIKE metacharacters escaped** (`escapeLike`) so a literal `%`/`_` in the query
+  matches verbatim, not as a wildcard.
+- **Assist set after `event.New`**, not added to its signature — non-identity metadata
+  kept out of the constructor so `NaturalKey` construction stays identity-only.
+
+The schema change (`events.assist_id`/`assist_name`) re-fingerprints `schema.sql` →
+the P0-3 guard requires the dev DB be re-provisioned (wipe) or ALTER'd + re-stamped;
+the testcontainer path stamps fresh and is unaffected.
+
+Files: `schema.sql`, `internal/domain/event/event.go`, `internal/activity/monitor/activities.go`
+(`buildDomainEvent`), `internal/infra/pg/event_repo.go`, `internal/api/{dto,handlers,router}.go`,
+`internal/infra/pg/fixture_repo.go` (`SearchFixtures` + `escapeLike`) + tests. Frontend
+contract updated in `docs/design/frontend-bridge-handoff.md`.
+
 ## 2026-08-14 — last_activity_at is DERIVED at read time (supersedes the event-based-bump entry below)
 
 Refines the entry below into its final form: instead of storing-and-bumping the

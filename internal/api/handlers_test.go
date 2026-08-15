@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +37,21 @@ func (f *fakeFixtures) Get(_ context.Context, id int64) (*fixture.Fixture, error
 }
 func (f *fakeFixtures) ListByState(_ context.Context, s fixture.State) ([]*fixture.Fixture, error) {
 	return f.byState[s], nil
+}
+func (f *fakeFixtures) SearchFixtures(_ context.Context, q string, _ int) ([]*fixture.Fixture, error) {
+	// A lightweight league/team substring match — enough to exercise the
+	// handler's wire-through + assembly. The full 4-arm SQL (incl. scorer/
+	// assist) is covered by TestFixtureRepo_SearchFixtures.
+	var out []*fixture.Fixture
+	ql := strings.ToLower(q)
+	for _, fx := range f.byID {
+		if strings.Contains(strings.ToLower(fx.League.Name), ql) ||
+			strings.Contains(strings.ToLower(fx.Home.Name), ql) ||
+			strings.Contains(strings.ToLower(fx.Away.Name), ql) {
+			out = append(out, fx)
+		}
+	}
+	return out, nil
 }
 
 type fakeEvents struct {
@@ -166,6 +182,41 @@ func TestGetFixtures_Batch(t *testing.T) {
 	}
 	if rec := get(h, "/api/v1/fixtures?ids=100,notanumber"); rec.Code != http.StatusBadRequest {
 		t.Errorf("bad batch id = %d, want 400", rec.Code)
+	}
+}
+
+func TestSearch(t *testing.T) {
+	h, fxID, _ := scaffold() // fixture 100: La Liga · Alpha vs Beta · one goal event w/ clip
+
+	// competition match → the fixture assembled with its event + live clip
+	rec := get(h, "/api/v1/search?q=la+liga")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var list []fixtureDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != fxID || len(list[0].Events) != 1 || len(list[0].Events[0].Videos) != 1 {
+		t.Fatalf("search = %+v, want fixture %d assembled with its event+clip", list, fxID)
+	}
+
+	// team match, case-insensitive
+	if rec := get(h, "/api/v1/search?q=ALPHA"); rec.Code != http.StatusOK {
+		t.Errorf("team match status = %d, want 200", rec.Code)
+	}
+
+	// no match → 200 + empty array (not 404)
+	rec = get(h, "/api/v1/search?q=zzznope")
+	var empty []fixtureDTO
+	_ = json.Unmarshal(rec.Body.Bytes(), &empty)
+	if rec.Code != http.StatusOK || len(empty) != 0 {
+		t.Errorf("no-match = %d / %+v, want 200 / empty", rec.Code, empty)
+	}
+
+	// empty/whitespace q → 400
+	if rec := get(h, "/api/v1/search?q="); rec.Code != http.StatusBadRequest {
+		t.Errorf("empty q = %d, want 400", rec.Code)
 	}
 }
 
