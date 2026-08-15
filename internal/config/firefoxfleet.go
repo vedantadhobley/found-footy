@@ -28,10 +28,12 @@ type FirefoxFleetConfig struct {
 	// via the env var (prod sets `found-footy-prod`).
 	Network string `env:"FIREFOXFLEET_NETWORK" envDefault:"found-footy-dev"`
 
-	// CookieHostPath is the HOST path to the shared cookie file, bind-
-	// mounted read-write into each instance at /config/twitter_cookies.json.
-	// It is a host path (not a worker-container path) because the Docker
-	// daemon resolves binds against the host filesystem. All instances
+	// CookieHostPath is the HOST path to the shared cookie file. fleet.go
+	// bind-mounts its PARENT DIR read-write at /config in each instance (so
+	// the file lands at /config/twitter_cookies.json) — the dir, not the file,
+	// because the backup's atomic temp+rename would EBUSY on a single-file
+	// mountpoint. It is a host path (not a worker-container path) because the
+	// Docker daemon resolves binds against the host filesystem. All instances
 	// share it; atomic writes + fingerprint dedupe + filesystem-mtime
 	// coordination (internal/twitter/cookies_backup.go, decisions.md
 	// 2026-07-21) make concurrent writers safe, so per-event instances

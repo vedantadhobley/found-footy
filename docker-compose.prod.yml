@@ -190,6 +190,7 @@ services:
     env_file: .env
     environment:
       NATS_CLIENT_NAME: found-footy-prod-api
+      EVENT_ENV: prod  # must match the worker, else the api's live-feed subject diverges to found-footy.dev.*
     depends_on:
       postgres:
         condition: service_healthy
@@ -229,7 +230,7 @@ services:
       # NOTE (decisions.md 2026-07-23): headless Firefox profile lives
       # in the container's writable layer, NOT a shared volume — no
       # cross-replica SQLite locking.
-      - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
+      - ~/.config/found-footy:/config  # mount the DIR, not the file — atomic cookie rename() EBUSYs on a single-file mountpoint
     networks:
       - found-footy-prod
     restart: unless-stopped
@@ -265,7 +266,7 @@ services:
     shm_size: 1gb
     volumes:
       - twitter-vnc-profile:/data
-      - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
+      - ~/.config/found-footy:/config  # mount the DIR, not the file — atomic cookie rename() EBUSYs on a single-file mountpoint
     networks:
       - found-footy-prod
       - proxy                        # Caddy fronts noVNC:6080
