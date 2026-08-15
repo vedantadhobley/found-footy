@@ -37,6 +37,7 @@ volumes:
 
 networks:
   found-footy-dev:
+    name: found-footy-dev      # explicit — else Compose derives found-footy-dev_found-footy-dev
     driver: bridge
   proxy:
     external: true
@@ -137,17 +138,20 @@ services:
     image: dxflrs/garage:v1.0.1
     container_name: found-footy-dev-garage
     mem_limit: 2g  # host-budget ceiling (see postgres note)
+    # Secrets injected from .env — one secret-free garage.toml serves dev + prod
+    # (no per-env file). Garage reads GARAGE_* when the TOML keys are absent.
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
+      GARAGE_METRICS_TOKEN: ${GARAGE_METRICS_TOKEN}
     volumes:
       - garage-data:/var/lib/garage/data
       - garage-meta:/var/lib/garage/meta
-      - ./garage.dev.toml:/etc/garage.toml:ro
+      - ./garage.toml:/etc/garage.toml:ro
     networks:
       - found-footy-dev
       - luv-dev  # shared door: cross-project consumers (vs-api) re-proxy presigned video URLs (host 'garage:3900')
     restart: unless-stopped
-    # NB: garage.dev.toml doesn't exist yet — will be created in Phase S
-    # when the s3 adapter needs a real Garage cluster. For Phase F this
-    # service is declared but won't start cleanly until that config lands.
 
   # ────── Go: worker (Temporal worker) ──────
   worker:
