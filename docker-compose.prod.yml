@@ -158,7 +158,6 @@ services:
       EVENT_ENV: prod                                     # NATS subject token (found-footy.prod.*) + envelope source stamp
       FIREFOXFLEET_IMAGE: found-footy-prod-twitter:latest # prod image the fleet spawns (code default is the dev tag)
       FIREFOXFLEET_NETWORK: found-footy-prod              # prod network the fleet attaches to (code default is dev's)
-      VIDEO_SCRATCH_DIR: /tmp/ff-scratch                  # app-writable; default /scratch is root-owned (non-root app can't mkdir at /)
     depends_on:
       postgres:
         condition: service_healthy

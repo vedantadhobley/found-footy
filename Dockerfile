@@ -54,6 +54,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN adduser --disabled-password --gecos "" --uid 1000 app
+
+# Pre-create + own the dirs the non-root `app` user writes at runtime. It can't
+# mkdir at / (root-owned), so without this the video scratch dir
+# (VIDEO_SCRATCH_DIR, default /scratch) fails "permission denied" the first time
+# a clip downloads. Baking it in keeps this a COMPLETE non-root image — no
+# runtime chown / env-redirect hacks. (docker.sock access is granted separately
+# via the compose `group_add` — the host docker gid isn't bakeable here.)
+RUN mkdir -p /scratch && chown app:app /scratch
+
 USER app
 
 COPY --from=build /out/app /usr/local/bin/app
