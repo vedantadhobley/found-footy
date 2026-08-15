@@ -147,12 +147,18 @@ services:
         BINARY: worker
     image: found-footy-worker:latest
     mem_limit: 16g  # host-budget ceiling; ffmpeg dense-extract is memory-heavy (per-replica cap, not reservation)
+    # #160 fleet: the prod image runs as non-root `app`, so grant the host
+    # docker group (gid 984 on luv) to reach /var/run/docker.sock. Without this
+    # every Provision/Release/ReapFirefox fails "permission denied" and no clip
+    # is ever searched. (luv-specific gid — parameterize if prod ever moves host.)
+    group_add: ["984"]
     env_file: .env
     environment:
       NATS_CLIENT_NAME: found-footy-prod-worker
       EVENT_ENV: prod                                     # NATS subject token (found-footy.prod.*) + envelope source stamp
       FIREFOXFLEET_IMAGE: found-footy-prod-twitter:latest # prod image the fleet spawns (code default is the dev tag)
       FIREFOXFLEET_NETWORK: found-footy-prod              # prod network the fleet attaches to (code default is dev's)
+      VIDEO_SCRATCH_DIR: /tmp/ff-scratch                  # app-writable; default /scratch is root-owned (non-root app can't mkdir at /)
     depends_on:
       postgres:
         condition: service_healthy
