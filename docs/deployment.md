@@ -47,6 +47,23 @@ make twitter-vnc-up     # brings up twitter-vnc via `docker compose --profile vn
 make twitter-vnc-down   # stops + removes the container when done
 ```
 
+**Cookie storage + host perms (load-bearing — host state, NOT in the repo).**
+The shared Twitter cookie file lives on the host at `FIREFOXFLEET_COOKIE_HOST_PATH`
+(default `~/.config/found-footy/twitter_cookies.json`), bind-mounted into `twitter`,
+`twitter-vnc`, and the per-event fleet containers. Two requirements — get either
+wrong and the cookie write-back / VNC re-auth silently fails to persist (the write
+error is swallowed; see [decisions.md](decisions.md) 2026-08-15):
+
+1. **Mount the parent DIR, not the file:** `~/.config/found-footy:/config`. `rename(2)`
+   onto a single-file bind mountpoint returns EBUSY, and the backup writes atomically
+   (temp + rename).
+2. **The dir must be group-writable by the container user.** Playwright runs as
+   `pwuser` (uid 1001), a member of group `users` (gid 100):
+   ```bash
+   chgrp users ~/.config/found-footy && chmod 775 ~/.config/found-footy
+   ```
+   A host re-provision MUST redo this, or refreshes + re-auths never persist.
+
 Cross-project external networks that must exist before either stack
 comes up (created once at workspace bootstrap):
 

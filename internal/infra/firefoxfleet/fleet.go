@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -108,7 +109,13 @@ func (f *Fleet) Provision(ctx context.Context, eventID uuid.UUID) (string, error
 	host := &container.HostConfig{
 		// Shared cookie file, RW — the fleet self-refreshes cookies via
 		// atomic-write + fingerprint + mtime coordination (cookies_backup.go).
-		Binds: []string{f.cfg.CookieHostPath + ":/config/twitter_cookies.json"},
+		// Mount the cookie file's PARENT DIR (not the file) at /config: the
+		// cookie backup does an atomic temp-file+rename onto
+		// /config/twitter_cookies.json, and rename(2) onto a single-file
+		// bind MOUNTPOINT returns EBUSY — so a file mount silently drops every
+		// cookie write-back and re-auth. A dir mount keeps the rename inside
+		// the mount. Container path (/config/twitter_cookies.json) is unchanged.
+		Binds: []string{filepath.Dir(f.cfg.CookieHostPath) + ":/config"},
 		// Firefox's user-namespace clone3()/unshare() is blocked by the
 		// default seccomp profile (mirrors the compose twitter service).
 		SecurityOpt: []string{"seccomp=unconfined"},

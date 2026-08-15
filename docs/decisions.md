@@ -6,6 +6,54 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-15 — Twitter cookie write-back: dir mount + group perms (two silent layers)
+
+The cookie backup write-back (`internal/twitter/cookies_backup.go`) had never
+persisted in prod — the file mtime was frozen at its seed date despite firing after
+every search. Two stacked, silent bugs (both call sites swallow the error):
+
+1. **EBUSY.** `WriteBackup` does `os.CreateTemp(dir)` + `os.Rename(tmp, cookiefile)`,
+   but the cookie file was a SINGLE-FILE bind mount (`/config/twitter_cookies.json`),
+   and `rename(2)` onto a bind MOUNTPOINT returns EBUSY. Green in tests (they write a
+   real temp dir). Fix: bind-mount the parent DIR at `/config` (compose ×2 +
+   `fleet.go` `filepath.Dir(CookieHostPath)`); the container path is unchanged.
+2. **EPERM (exposed once #1 was fixed).** Playwright containers run as `pwuser`
+   (uid 1001); the host cookie dir was owned by uid 1000 mode 755, so `pwuser` can't
+   create the temp file. Fix (HOST state, not in the repo): `chgrp users` (gid 100,
+   which `pwuser` is a member of) + `chmod g+w` on `~/.config/found-footy`. No sudo;
+   not world-writable. See deployment.md.
+
+Latent while cookies are valid (reads are mode-644, unaffected), but on expiry a VNC
+re-auth would also silently fail to persist → eventual fleet auth death. Verified by
+running the real CreateTemp+rename as `pwuser` inside the container. Same
+dev/prod-divergence class as the non-root `/scratch` + `docker.sock` perms fixed at
+the cutover. Surfaced by the pre-MLS audit.
+
+---
+
+## 2026-08-15 — LLM_CHAT_CONCURRENCY_CAP=2 (per-process cap × worker replicas)
+
+`LLM_CHAT_CONCURRENCY_CAP` is a per-worker-PROCESS semaphore (`internal/infra/llm/
+client.go`), acquired per `Chat` call. Prod runs the worker at `replicas: 2`, so the
+aggregate reaching joi is `cap × replicas`. At cap=4 that's 8 concurrent on a joi
+whose gemma is `--parallel 4` / `max_slots=4` — a 2× overshoot. Past 4 slots joi
+queues (bandwidth-bound: ~104 tok/s @ N=4 ≈ 78% of the ~134 tok/s N≈6 ceiling, and
+per-request latency degrades), and our ~60s request timeout + Temporal retries turn a
+deep queue into a retry-storm. So cap = joi_slots / replicas = 2 pins the fleet
+aggregate at exactly joi's 4.
+
+Caveat (recorded so the next audit doesn't re-derive it): this couples the cap to the
+replica count — raise `replicas` and you must lower `cap`. The semaphore is a
+self-protection STOPGAP, not global concurrency management: a per-project cap can't
+govern cross-project contention on the shared joi gateway (found-footy + legal-tender
++ … each capping at 4 still sum to 4×N). Real admission control belongs at joi
+(bounded queue + backpressure) and is a joi-repo / dhobley cross-cutting item — the
+client cap stays until joi owns request queueing. (`replicas: 2` itself is marginal
+HA over Temporal's durability; `replicas: 1` + `cap=4` is the simpler alternative if
+the coupling ever bites.)
+
+---
+
 ## 2026-08-15 — #199 event mutable-field refresh on reconcile (late assists, VAR minute)
 
 Event `assist_id/assist_name` (and `minute/extra/detail`) were captured ONCE at
