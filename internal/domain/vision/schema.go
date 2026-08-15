@@ -61,7 +61,7 @@ var ResponseSchema = json.RawMessage(`{
 // description are load-bearing: terse versions caused screen false-positives
 // and dropped the stoppage sub-timer in the bake-off. Overridable via config.
 const DefaultPrompt = `You are validating a short football (soccer) video clip. Below are 3 still frames from the SAME clip, in chronological order (early, middle, late). For EACH frame, independently report:
-- soccer: true if it shows live match footage (players on a pitch, gameplay, a goal, replay, celebration, VAR). false for studio/desk, pundits, ads, graphics-only, or anything not live match action.
+- soccer: true ONLY for live ASSOCIATION football (soccer) — players on a pitch, gameplay, a soccer goal, replay, celebration, or VAR. Set false for: any OTHER sport (American football, rugby, futsal, basketball, hockey, etc.); studio/desk, pundits, ads, graphics-only, or anything that isn't live soccer action; AND any NSFW, sexual, gory, graphically violent, or otherwise explicit/disturbing content — such a clip must NEVER pass, so set soccer=false regardless of what else it shows.
 - screen: true ONLY if this is a phone/camera pointed at a TV or monitor (moire/scanlines, screen bezel, glare, off-axis tilt, surrounding room). false for a clean broadcast, an app overlay, a scoreboard graphic, or a fan filming the real pitch directly. When in doubt, false.
 - clock: the MAIN on-screen match timer as "MM:SS"; null if no timer is visible in that frame.
 - stoppage_clock: during stoppage time the broadcast often FREEZES the main clock at 45:00 or 90:00 and shows a SECOND smaller timer counting the stoppage, e.g. "+1:48"; put that smaller timer here as "MM:SS", or null if there is no second timer.
