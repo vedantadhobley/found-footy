@@ -315,7 +315,7 @@ func main() {
 
 		// N3 — live-feed NATS producer + its publish-activity boundary. Same
 		// nc as the composer; source stamps dev/prod onto the envelope.
-		natsPub, err := eventinfra.NewPublisher(nc, deps.Cfg.Event.Source)
+		natsPub, err := eventinfra.NewPublisher(nc, deps.Cfg.Event.Environment)
 		if err != nil {
 			return fmt.Errorf("nats publisher: %w", err)
 		}

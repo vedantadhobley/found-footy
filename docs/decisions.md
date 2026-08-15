@@ -6,6 +6,36 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-15 — NATS subject scheme: environment is a subject token (`found-footy.<env>.<topic>`)
+
+Supersedes the flat `found-footy.<topic>` + env-only-in-`source`-field scheme
+(2026-08-14, N1). Environment (`dev`/`prod`) moves INTO the subject:
+
+    found-footy.<env>.<domain>.<action>    e.g. found-footy.prod.fixture.update
+
+so a consumer filters by env at **subscription** time — the prod BFF subscribes
+`found-footy.prod.>` and NATS never delivers dev messages. The old scheme put env
+only in the envelope `source` field, forcing every consumer on the one shared bus
+to app-filter; env-in-subject does it at the routing layer.
+
+Why not the alternatives:
+- **Separate NATS per env** (a truly independent bus): rejected — NATS is a *single
+  always-on infra stack* per the workspace convention (`~/workspace/<infra>/`), not
+  a dev/prod-split product. Two instances make infra masquerade as a product.
+- **NATS accounts** (nsc/JWT — the `nats/` convention's env-isolation): deferred.
+  Accounts *authenticate* (a security boundary a solo/private homelab doesn't need)
+  and require the unbuilt nsc infra. They're an orthogonal later add on the SAME
+  bus (auth, not routing); env stays in the subject regardless. See
+  `nats/docs/todo.md` ("first real account setup").
+
+Producer: `Topic` (env-agnostic kind) + `Topic.Wire(env)` → the wire subject;
+`EventConfig.Environment` (`EVENT_ENV`, default `dev`) drives BOTH the subject
+token AND the derived `source` stamp (`found-footy-<env>`). Prod compose sets
+`EVENT_ENV=prod`. The `nats/` README + dhobley `topology.md` are updated to the
+4-token convention (found-footy is the first real producer, so this sets it).
+
+Frontend: the BFF subscribes `found-footy.prod.>` (was `found-footy.>`).
+
 ## 2026-08-15 — Free-text `/search` endpoint + assist capture (competition / team / scorer / assist)
 
 The vedanta-systems UI needs fixture search (Python searched Mongo on team /

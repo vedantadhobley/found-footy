@@ -15,38 +15,40 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/infra/nats"
 )
 
-// NatsPublisher wraps a nats.Conn + the producer's source identity.
-// Concurrent-safe: nats.Conn is safe for concurrent use and source is
-// immutable after construction.
+// NatsPublisher wraps a nats.Conn + the deployment environment, from which both
+// the wire subject (found-footy.<env>.<topic>) and the envelope source stamp
+// (found-footy-<env>) derive. Concurrent-safe: nats.Conn is safe for concurrent
+// use and env/source are immutable after construction.
 type NatsPublisher struct {
 	conn   *nats.Conn
-	source string
+	source string // envelope stamp: found-footy-<env>
+	env    string // wire subject token: found-footy.<env>.<topic>
 }
 
-// NewPublisher constructs a NatsPublisher. Both arguments are required:
-// conn is the live bus connection; source is this deployment's envelope
-// identity (found-footy-dev / found-footy-prod), from EventConfig.
-func NewPublisher(conn *nats.Conn, source string) (*NatsPublisher, error) {
+// NewPublisher constructs a NatsPublisher. conn is the live bus connection; env
+// is the deployment environment ("dev" / "prod", from EventConfig.Environment)
+// — it drives both the subject token and the source stamp.
+func NewPublisher(conn *nats.Conn, env string) (*NatsPublisher, error) {
 	if conn == nil {
 		return nil, fmt.Errorf("event.NewPublisher: nats.Conn is required")
 	}
-	if source == "" {
-		return nil, fmt.Errorf("event.NewPublisher: source is required (EVENT_SOURCE)")
+	if env == "" {
+		return nil, fmt.Errorf("event.NewPublisher: env is required (EVENT_ENV)")
 	}
-	return &NatsPublisher{conn: conn, source: source}, nil
+	return &NatsPublisher{conn: conn, source: projectPrefix + "-" + env, env: env}, nil
 }
 
-// PublishFixtureClock emits SubjectFixtureClock for the fixtures whose
+// PublishFixtureClock emits TopicFixtureClock for the fixtures whose
 // minute advanced this cycle. An empty batch is a no-op (a frozen clock —
 // half-time / pre-kickoff — emits nothing), NOT an error.
 func (p *NatsPublisher) PublishFixtureClock(fixtures []FixtureClock) error {
 	if len(fixtures) == 0 {
 		return nil
 	}
-	return p.publish(SubjectFixtureClock, FixtureClockPayload{Fixtures: fixtures})
+	return p.publish(TopicFixtureClock, FixtureClockPayload{Fixtures: fixtures})
 }
 
-// PublishFixtureUpdate emits SubjectFixtureUpdate for the fixtures that
+// PublishFixtureUpdate emits TopicFixtureUpdate for the fixtures that
 // changed structurally this cycle. Ids are deduped to satisfy the
 // contract's uniqueItems; an empty batch is a no-op.
 func (p *NatsPublisher) PublishFixtureUpdate(fixtureIDs []int64) error {
@@ -54,38 +56,39 @@ func (p *NatsPublisher) PublishFixtureUpdate(fixtureIDs []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	return p.publish(SubjectFixtureUpdate, FixtureUpdatePayload{FixtureIDs: ids})
+	return p.publish(TopicFixtureUpdate, FixtureUpdatePayload{FixtureIDs: ids})
 }
 
-// PublishEventVideo emits SubjectEventVideo for one event whose clip set
+// PublishEventVideo emits TopicEventVideo for one event whose clip set
 // / rank changed. fixtureID routes the consumer to the parent fixture.
 func (p *NatsPublisher) PublishEventVideo(eventID uuid.UUID, fixtureID int64) error {
-	return p.publish(SubjectEventVideo, EventVideoPayload{EventID: eventID, FixtureID: fixtureID})
+	return p.publish(TopicEventVideo, EventVideoPayload{EventID: eventID, FixtureID: fixtureID})
 }
 
 // publish stamps the envelope, marshals it, and ships it on the bus.
 // Marshal failure returns before touching the bus (nothing published); a
 // bus failure is surfaced by nats.Conn.Publish (which also meters + logs
 // it). A nil error means the message was handed to NATS.
-func (p *NatsPublisher) publish(subject Subject, payload any) error {
-	b, err := encodeEnvelope(p.source, subject, payload)
+func (p *NatsPublisher) publish(topic Topic, payload any) error {
+	if !topic.Valid() {
+		return fmt.Errorf("event: unknown topic %q", topic)
+	}
+	wire := topic.Wire(p.env)
+	b, err := encodeEnvelope(p.source, wire, payload)
 	if err != nil {
 		return err
 	}
-	return p.conn.Publish(subject.String(), b)
+	return p.conn.Publish(wire, b)
 }
 
-// encodeEnvelope builds + JSON-encodes an enveloped message. Free
-// function (not a method) so tests validate the wire bytes against the
-// committed schemas without a live bus. Guards against an unknown subject
-// (a typo that would otherwise ship to a dead subject).
-func encodeEnvelope(source string, subject Subject, payload any) ([]byte, error) {
-	if !subject.Valid() {
-		return nil, fmt.Errorf("event: unknown subject %q", subject)
-	}
-	b, err := json.Marshal(newEnvelope(source, subject, payload))
+// encodeEnvelope builds + JSON-encodes an enveloped message around the fully-
+// qualified wire subject. Free function (not a method) so tests validate the
+// wire bytes against the committed schemas without a live bus. The topic-typo
+// guard lives in publish (its only caller with an unvalidated topic).
+func encodeEnvelope(source, wireSubject string, payload any) ([]byte, error) {
+	b, err := json.Marshal(newEnvelope(source, wireSubject, payload))
 	if err != nil {
-		return nil, fmt.Errorf("event: marshal envelope for %s: %w", subject, err)
+		return nil, fmt.Errorf("event: marshal envelope for %s: %w", wireSubject, err)
 	}
 	return b, nil
 }

@@ -106,7 +106,7 @@ func TestPayloadStructsRoundTripGoldens(t *testing.T) {
 // envelope: a parseable uuid id, an RFC3339 ts, the configured source,
 // version 1, the right subject, and the payload nested under "payload".
 func TestEncodeEnvelope(t *testing.T) {
-	b, err := encodeEnvelope("found-footy-dev", SubjectEventVideo,
+	b, err := encodeEnvelope("found-footy-prod", TopicEventVideo.Wire("prod"),
 		EventVideoPayload{EventID: uuid.New(), FixtureID: 1530158})
 	if err != nil {
 		t.Fatalf("encodeEnvelope: %v", err)
@@ -119,42 +119,59 @@ func TestEncodeEnvelope(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339, m["ts"].(string)); err != nil {
 		t.Errorf("ts not RFC3339: %v", m["ts"])
 	}
-	if m["source"] != "found-footy-dev" {
-		t.Errorf("source = %v, want found-footy-dev", m["source"])
+	if m["source"] != "found-footy-prod" {
+		t.Errorf("source = %v, want found-footy-prod", m["source"])
 	}
 	if m["version"] != float64(1) {
 		t.Errorf("version = %v, want 1", m["version"])
 	}
-	if m["subject"] != "found-footy.event.video" {
-		t.Errorf("subject = %v, want found-footy.event.video", m["subject"])
+	if m["subject"] != "found-footy.prod.event.video" {
+		t.Errorf("subject = %v, want found-footy.prod.event.video", m["subject"])
 	}
 	if _, ok := m["payload"].(map[string]any); !ok {
 		t.Errorf("payload not an object: %v", m["payload"])
 	}
 }
 
-// TestEncodeEnvelopeRejectsUnknownSubject guards the typo path — an
-// unregistered subject must error before anything reaches the bus.
-func TestEncodeEnvelopeRejectsUnknownSubject(t *testing.T) {
-	if _, err := encodeEnvelope("found-footy-dev", Subject("found-footy.bogus"), struct{}{}); err == nil {
-		t.Error("expected error for unknown subject, got nil")
+// TestTopicWireAndValid — Wire renders found-footy.<env>.<topic>, and Valid
+// gates the 3 registered topics against a typo (the guard publish relies on).
+func TestTopicWireAndValid(t *testing.T) {
+	if got := TopicFixtureUpdate.Wire("prod"); got != "found-footy.prod.fixture.update" {
+		t.Errorf("Wire(prod) = %q, want found-footy.prod.fixture.update", got)
+	}
+	if got := TopicEventVideo.Wire("dev"); got != "found-footy.dev.event.video" {
+		t.Errorf("Wire(dev) = %q, want found-footy.dev.event.video", got)
+	}
+	if !TopicFixtureClock.Valid() || !TopicFixtureUpdate.Valid() || !TopicEventVideo.Valid() {
+		t.Error("registered topics must be Valid")
+	}
+	if Topic("bogus").Valid() {
+		t.Error("unregistered topic must be invalid")
 	}
 }
 
-// TestNewPublisherValidates requires both a connection and a source.
+// TestNewPublisherValidates requires a connection + a non-empty env, and
+// derives the source stamp (found-footy-<env>) from that env.
 func TestNewPublisherValidates(t *testing.T) {
-	if _, err := NewPublisher(nil, "found-footy-dev"); err == nil {
+	if _, err := NewPublisher(nil, "dev"); err == nil {
 		t.Error("want error on nil conn")
 	}
 	if _, err := NewPublisher(&nats.Conn{}, ""); err == nil {
-		t.Error("want error on empty source")
+		t.Error("want error on empty env")
+	}
+	p, err := NewPublisher(&nats.Conn{}, "prod")
+	if err != nil {
+		t.Fatalf("NewPublisher(prod): %v", err)
+	}
+	if p.source != "found-footy-prod" {
+		t.Errorf("derived source = %q, want found-footy-prod", p.source)
 	}
 }
 
 // TestPublishEmptyBatchIsNoOp verifies a frozen clock / no-op update
 // publishes nothing and returns nil (never dereferences the bus).
 func TestPublishEmptyBatchIsNoOp(t *testing.T) {
-	p, err := NewPublisher(&nats.Conn{}, "found-footy-dev")
+	p, err := NewPublisher(&nats.Conn{}, "dev")
 	if err != nil {
 		t.Fatalf("NewPublisher: %v", err)
 	}
