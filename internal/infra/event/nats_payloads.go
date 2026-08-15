@@ -8,7 +8,7 @@ package event
 
 import "github.com/google/uuid"
 
-// FixtureClockPayload — SubjectFixtureClock body. One entry per fixture
+// FixtureClockPayload — TopicFixtureClock body. One entry per fixture
 // whose match minute advanced this cycle. The schema requires minItems 1;
 // the publisher skips an empty batch rather than emit an invalid message.
 type FixtureClockPayload struct {
@@ -24,14 +24,14 @@ type FixtureClock struct {
 	Extra     *int  `json:"extra"`
 }
 
-// FixtureUpdatePayload — SubjectFixtureUpdate body. The ids to
+// FixtureUpdatePayload — TopicFixtureUpdate body. The ids to
 // bulk-refetch (GET /fixtures?ids=). The schema requires unique + min 1;
 // the publisher dedups + skips empty.
 type FixtureUpdatePayload struct {
 	FixtureIDs []int64 `json:"fixture_ids"`
 }
 
-// EventVideoPayload — SubjectEventVideo body. EventID is the event whose
+// EventVideoPayload — TopicEventVideo body. EventID is the event whose
 // clip set changed; FixtureID is routing so the consumer knows which
 // fixture to splice it into.
 type EventVideoPayload struct {

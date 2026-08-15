@@ -35,13 +35,13 @@ type Envelope struct {
 // contract version. RFC3339 (second precision) matches the schema's
 // date-time format + the committed goldens. Called from an activity, so
 // time.Now / uuid are safe (no workflow-determinism constraint).
-func newEnvelope(source string, subject Subject, payload any) Envelope {
+func newEnvelope(source, wireSubject string, payload any) Envelope {
 	return Envelope{
 		ID:      uuid.NewString(),
 		Ts:      time.Now().UTC().Format(time.RFC3339),
 		Source:  source,
 		Version: envelopeVersion,
-		Subject: subject.String(),
+		Subject: wireSubject,
 		Payload: payload,
 	}
 }
