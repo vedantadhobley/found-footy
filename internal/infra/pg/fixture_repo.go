@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -172,6 +173,45 @@ func (r *FixtureRepo) ListByState(ctx context.Context, state fixture.State) ([]*
 	}
 	defer rows.Close()
 	return collectFixtures(rows)
+}
+
+// SearchFixtures returns fixtures matching q (case-insensitive substring) across
+// competition (league) name, either team name, or any of the fixture's event
+// scorer/assist names — the free-text search backing GET /api/v1/search. Any
+// state (staging/active/completed), kickoff-newest first, capped at limit.
+//
+// q's ILIKE metacharacters are escaped so a literal "%"/"_" in the query is
+// matched verbatim, not as a wildcard. The scorer/assist arm is an EXISTS
+// subquery over the fixture's non-removed events (indexed by fixture_id); across
+// the bounded retained window a seq scan of the ~hundreds of fixtures is cheap.
+func (r *FixtureRepo) SearchFixtures(ctx context.Context, q string, limit int) ([]*fixture.Fixture, error) {
+	pattern := "%" + escapeLike(q) + "%"
+	rows, err := r.pool.Query(ctx,
+		"SELECT "+fixtureColumns+` FROM fixtures
+		 WHERE league_name ILIKE $1
+		    OR home_team_name ILIKE $1
+		    OR away_team_name ILIKE $1
+		    OR EXISTS (
+		        SELECT 1 FROM events e
+		        WHERE e.fixture_id = fixtures.id AND NOT e.removed
+		          AND (e.player_name ILIKE $1 OR e.assist_name ILIKE $1)
+		    )
+		 ORDER BY kickoff DESC
+		 LIMIT $2`,
+		pattern, limit)
+	if err != nil {
+		return nil, fmt.Errorf("pg.FixtureRepo.SearchFixtures: %w", err)
+	}
+	defer rows.Close()
+	return collectFixtures(rows)
+}
+
+// escapeLike escapes LIKE/ILIKE metacharacters (\ % _) so a user query matches
+// literally inside the %…% wrapper — searching "100%" or "a_b" hits those exact
+// strings rather than acting as wildcards. Backslash is Postgres's default LIKE
+// ESCAPE, so it must be escaped first.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
 // ListActiveIDs returns only the fixture IDs currently in state=active.

@@ -155,6 +155,8 @@ CREATE TABLE events (
     team_name TEXT NOT NULL,
     player_id INT,                                          -- nullable: API sometimes reports goals with unknown player
     player_name TEXT,
+    assist_id INT,                                          -- nullable: the assisting player (API-Football 'assist' field); NULL when none
+    assist_name TEXT,                                       -- searchable alongside scorer / team / league via GET /api/v1/search
     minute INT NOT NULL,
     extra INT,
 

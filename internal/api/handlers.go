@@ -30,6 +30,10 @@ import (
 type FixtureReader interface {
 	Get(ctx context.Context, id int64) (*fixture.Fixture, error)
 	ListByState(ctx context.Context, state fixture.State) ([]*fixture.Fixture, error)
+	// SearchFixtures returns fixtures whose competition, team, or event
+	// scorer/assist names match the free-text query — the /search backing,
+	// capped at limit.
+	SearchFixtures(ctx context.Context, q string, limit int) ([]*fixture.Fixture, error)
 }
 
 // EventReader is the event read surface the API needs.
@@ -202,6 +206,40 @@ func (h *Handlers) loadState(ctx context.Context, state fixture.State, withEvent
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+// searchLimit caps how many matched fixtures /search returns (kickoff-newest
+// first). Matches the bounded-window model — deeper history isn't retained.
+const searchLimit = 100
+
+// Search is the free-text fixture search (GET /api/v1/search?q=…). It matches
+// the query, case-insensitive substring, against competition (league) name,
+// either team name, and any event scorer or assist name, returning the same
+// []fixtureDTO shape as /fixtures (fixtures carry their events + live clips) so
+// the frontend renders results with the component it already uses. Empty /
+// whitespace-only q → 400.
+func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeError(w, http.StatusBadRequest, "q required")
+		return
+	}
+	fx, err := h.Fixtures.SearchFixtures(ctx, q, searchLimit)
+	if err != nil {
+		h.serverError(ctx, w, "search fixtures", err)
+		return
+	}
+	out := make([]fixtureDTO, 0, len(fx))
+	for _, f := range fx {
+		d, err := h.fixtureToDTO(ctx, f)
+		if err != nil {
+			h.serverError(ctx, w, "assemble search result", err)
+			return
+		}
+		out = append(out, d)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // GetEvents is the batch events endpoint (?ids=uuid,uuid): several real-time
