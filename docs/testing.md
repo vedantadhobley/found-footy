@@ -1,6 +1,6 @@
 # testing.md — Go rebuild ledger
 
-**Purpose.** As-shipped testing surface — where the ~175 tests live,
+**Purpose.** As-shipped testing surface — where the 494 tests live,
 which tiers they cover, how each package's test file is structured,
 how to run them.
 
@@ -11,18 +11,22 @@ full testing intent. Divergences from §12 live in
 **Update rule.** Every commit that adds a package/adapter/workflow
 updates this doc if it introduces a new test tier or pattern.
 
-## Test count by tier (2026-07-09, end of O2 + first-full-corpus)
+## Test count by tier (2026-08-15)
 
-~200 tests across the internal/ tree + 16 scenarios in test/scenarios/:
+494 tests across the internal/ tree + 19 scenarios in test/scenarios/:
 
-| Tier | Location | Count | Runtime |
+| Tier (directory) | Location | Count | Runtime |
 |---|---|---|---|
-| Unit (pure Go) | domain, activity, config, bootstrap, observability | ~120 | <100ms total |
-| Adapter unit (httptest-based) | infra/apifootball, twitter, syndication, wikidata, llm | ~35 (grew 2026-07-09 with chunk-parallel + partial-failure coverage) | <200ms total |
-| Adapter integration (testcontainers) | infra/pg, s3, nats, temporal | ~30 | ~30-60s total |
-| Workflow (testsuite.WorkflowTestSuite) | internal/workflow | ~5 (Ingest only, growing) | <100ms per workflow |
-| Twitter service unit (fake sessionBrowser) | internal/twitter | 40 (T/b — 10 cookie backup + 16 auth flow + 2 T/b.5 loose ends; T/c — 12 search helpers) | ~5s (mtime tests sleep 1.1s to detect fs granularity) |
-| Synthetic e2e | not shipped | 0 | — |
+| Domain (pure Go) | `internal/domain` — fixture, event, video, alias, discovery, vision | 142 | <100ms total |
+| Infra adapters | `internal/infra` — httptest units (apifootball, twitter, syndication, wikidata, llm, event, ffmpeg, firefoxfleet, wikipedia) + testcontainers integration (pg, s3, nats, temporal) | 182 | httptest <200ms; testcontainers ~30-60s |
+| Activity (pure Go) | `internal/activity` — ingest, livefeed, monitor, video, vision | 62 | <100ms total |
+| Twitter service unit (fake sessionBrowser) | `internal/twitter` | 46 | ~5s (mtime tests sleep 1.1s to detect fs granularity) |
+| Workflow (testsuite.WorkflowTestSuite) | `internal/workflow` | 31 | <100ms per workflow |
+| Observability | `internal/observability` — logging, metrics, vocabulary | 16 | <10ms |
+| API | `internal/api` — dto, handlers, router | 10 | <50ms |
+| Config | `internal/config` | 2 | <10ms |
+| Bootstrap | `internal/bootstrap` | 2 | <10ms |
+| Synthetic e2e | `test/scenarios` — basic 5, debounce 5, faults 3, edge_cases 6 | 19 scenarios | ~2.4s full corpus |
 
 Counts approximate; grep `grep -r "^func Test" internal/ --include="*_test.go" \| wc -l` for the live number.
 
@@ -92,9 +96,9 @@ the same schema file dev postgres mounts via
 docker-entrypoint-initdb.d. Provides confidence that dev + test + prod
 DDL are the same source.
 
-## Tier 1.7 — Twitter service unit tests (T/b, shipped 2026-07-21)
+## Tier 1.7 — Twitter service unit tests (`internal/twitter`)
 
-The Twitter service (`internal/twitter/`) is exercised by 26 unit
+The Twitter service (`internal/twitter/`) is exercised by 46 unit
 tests that run without Playwright / Firefox / a browser at all.
 Pattern: a `sessionBrowser` interface (`browser_iface.go`) abstracts
 the browser operations Service depends on (VerifySession,
@@ -102,13 +106,13 @@ ReplaceCookies, GetCookies, Navigate). Tests inject `fakeBrowser`
 from `auth_test.go` that lets each test set per-method behaviour +
 inspect call counts under a mutex.
 
-Two files:
+Four files:
 
-- `cookies_backup_test.go` (10 tests) — fingerprint stability,
+- `cookies_backup_test.go` (11 tests) — fingerprint stability,
   value-rotation detection, `auth_token` guard on write and read,
   domain filter, **atomic-write-no-torn-reads under 5×20×50
   concurrent writer/reader stress**, mtime advancement.
-- `auth_test.go` (16 tests) — first-boot no-cookies, happy path,
+- `auth_test.go` (22 tests) — first-boot no-cookies, happy path,
   warm-path skip, TTL expiry re-verifies, external reload
   (VNC-container-simulated), verify failure escalates to
   `StateUnauthenticated`, browser failure escalates to `StateFailed`,
@@ -117,6 +121,14 @@ Two files:
   cookies skip write), `BackupCookies` rewrite-on-rotation, all
   `/authenticate` + `/auth/verify` HTTP paths (POST-only guard,
   reauth config env-var passthrough, fallback message).
+- `browser_cookies_test.go` (3 tests) — Playwright→domain cookie
+  conversion: nil `SameSite` doesn't panic, `SameSite` preserved,
+  round-trip stability.
+- `search_test.go` (10 tests) — search helpers: tweet-ID + username
+  URL extraction, truncated-snowflake detection, exclude-ID
+  normalization, result age computation, `/search` HTTP guards
+  (method-not-allowed, empty query, malformed JSON), search-URL
+  builder, truncate.
 
 Slowest test: `~1.1s` (mtime-detection tests sleep to defeat
 1-second-granularity filesystems). Total package runtime ~5s.
@@ -151,11 +163,10 @@ activates once with `make hooks`. Bypass only with `--no-verify`.
 - `debounce/` — symmetric counter behavior (increment, decrement, cap,
   floor, threshold flip)
 - `faults/` — API 500, timeout, rate-limit
-- `edge_cases/` — postponed, own goals, late-game
-- `regression/` — scenarios born from prod bugs (link each YAML to
-  the git commit or Loki query that surfaced it)
+- `edge_cases/` — postponed, hat-trick, halftime, FT-completion,
+  scorer refinement, red card
 
-**Currently shipped scenarios (16, all passing in ~2.4s):**
+**Currently shipped scenarios (19, all passing in ~2.4s):**
 
 basic/ (5):
 - `ingest_happy_path` — daily ingest, 2 staging fixtures
@@ -176,10 +187,13 @@ faults/ (3):
 - `api_persistent_500` — sustained 500 outage doesn't burn debounce budget
 - `api_429_rate_limited` — 429 rate limit same protection as 500 outage
 
-edge_cases/ (3):
+edge_cases/ (6):
 - `postponed_mid_play` — PST mid-play doesn't false-delete goals (2026-07-09 pause fix)
 - `hat_trick` — same player scores 3 times; seq assignment (1, 2, 3) works
 - `halftime_pause` — 1H goal survives HT pause; every match hits this
+- `fixture_completes_at_ft` — goal mid-debounce when the match ends still reaches count=3 and triggers; FT is Terminal (not InPlay), so absence votes don't false-drop it
+- `player_refinement` — API reports a goal with null scorer then refines it; the "unknown" and known-scorer natural_keys differ, so a refinement looks like a new event
+- `red_card_detected` — red cards are first-class events with independent debounce; yellows ignored, second-yellow tracks like a red
 
 **Runtime:** ~3s per scenario (dominated by testcontainer boot).
 Amortized when running the full corpus: ~2s once, then ~40ms per

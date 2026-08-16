@@ -23,7 +23,7 @@ Shipped state:
 | Logs | ✓ shipped in S1 | `internal/observability/logging/` |
 | Metrics | ✓ shipped in S1 | `internal/observability/metrics/` |
 | Traces | ⊘ stub (Phase 5+ per plan) | `internal/observability/tracing/tracing.go` |
-| Semantic event stream | ✓ shipped O3/a (composer dual-write) | `internal/infra/event/` (composer + subjects) |
+| Semantic event stream | ✓ shipped O3/a (composer event_log-only) | `internal/infra/event/` (composer + subjects) |
 
 ## The vocabulary substrate
 
@@ -48,7 +48,7 @@ TextAnalysis.
 InfraTemporal, InfraAPIFootball, InfraTwitter, InfraSyndication,
 InfraFFmpeg, InfraWikidata, InfraWikipedia.
 
-**Cross-cutting:** API, APISSE, WebhookDelivery, Scaler, Worker,
+**Cross-cutting:** API, APISSE, WebhookDelivery, Worker,
 APIServer, TwitterService, Migration, Healthz, Deploy.
 
 **Divergence from plan §11 vocabulary block:** the workflow rename
@@ -158,17 +158,18 @@ Real OTLP wiring lands in Phase 5+ per plan §11 four-pillars table.
 
 ## Semantic event stream (shipped O3/a)
 
-Plan §11 pillar 4 — semantic events dual-written to Postgres `event_log` AND
-published to NATS — shipped as the `internal/infra/event/` **Composer**
-(`Publish` INSERTs `event_log` via `RETURNING id`, then publishes an envelope
-carrying that id as the SSE cursor). Six `Kind`s: `fixture.activated`,
-`fixture.completed`, `event.detected`, `event.stable`, `event.removed`,
-`event.rank_recalculated` (`subjects.go`).
+Plan §11 pillar 4 — the durable semantic-event plane — shipped as the
+`internal/infra/event/` **Composer**. `Publish` appends one row to Postgres
+`event_log` (`INSERT ... RETURNING id`) and returns that id; it touches only
+pg. The live-fanout half (the NATS envelope + SSE cursor) is no longer the
+composer's job — per [decisions.md 2026-08-14](decisions.md) it moved out to
+`event.NatsPublisher`. Six `Kind`s: `fixture.activated`, `fixture.completed`,
+`event.detected`, `event.stable`, `event.removed`, `event.rank_recalculated`
+(`subjects.go`).
 
-Instruments (`found_footy_event_composer_*`): `publishes_total{kind,outcome}`,
-`publish_duration_seconds{kind}`, and `skew_total` — the last increments when
-the pg write succeeded but the NATS publish failed (truth stays in `event_log`;
-a durable outbox catch-up worker is future work, #169).
+Instruments (`found_footy_event_composer_*`): `publishes_total{kind,outcome}`
+(outcome = `success` or `pg_write_failure`) and `publish_duration_seconds{kind}`
+(the `event_log` INSERT wall-clock).
 
 ## Cross-refs
 

@@ -69,9 +69,10 @@ func (c *Client) Close()
    shutdown, own the Close hook (with metric emission), later on we
    can add tracing without changing callers.
 
-3. **`SignalWorkflow` method added.** Not in plan §9. Needed for
-   AssetPersistenceWorkflow signals from downstream workflows.
-   Sensible addition; kept.
+3. **`SignalWorkflow` method added.** Not in plan §9. Originally for
+   AssetPersistenceWorkflow signals — that workflow was superseded
+   (collapsed into EventWorkflow), so the method currently has no caller.
+   Kept on the adapter (still metric-instrumented) for future signalling.
 
 ### `Worker` (99 lines, `worker.go`)
 
@@ -89,7 +90,7 @@ func (w *Worker) Stop()
 
 `NewWorker` accepts caller-provided `worker.Options` instead of
 hardcoding "sensible defaults" as plan §9 suggested. Rationale: cmd
-binaries know what they're running (worker vs api vs scaler);
+binaries know what they're running (worker vs api vs twitter);
 adapter shouldn't decide their concurrency. **Silent — kept.**
 
 `NewWorker` seeds `Options.WorkerStopTimeout` from
@@ -112,7 +113,7 @@ deps.RegisterCloser("temporal-client", func(_ context.Context) error {
 w := temporal.NewWorker(tempClient, tempIns, worker.Options{})
 
 // 3. Workflow + activity registration — BEFORE Start. 5 workflows +
-//    6 activity sets (each Activities struct's exported methods become
+//    8 activity sets (each Activities struct's exported methods become
 //    individually-dispatchable activities). Construction of each *Activities
 //    with its real deps is in orchestration.md's wire-up.
 w.RegisterWorkflow(ffwf.IngestWorkflow)
@@ -126,6 +127,8 @@ w.RegisterActivity(discoveryActs)  // *discovery.Activities
 w.RegisterActivity(videoActs)      // *video.Activities
 w.RegisterActivity(visionActs)     // *vision.Activities
 w.RegisterActivity(persistActs)    // *video.PersistActivities
+w.RegisterActivity(fleetActs)      // *fleet.Activities
+w.RegisterActivity(livefeedActs)   // *livefeed.Activities
 
 // 4. Start.
 if err := w.Start(ctx); err != nil { return err }

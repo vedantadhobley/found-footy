@@ -13,7 +13,7 @@ reconstruct from memory.
 | How the system behaves **as built today** | the as-built ledgers in this directory (below) |
 | **Why** a choice was made | [`decisions.md`](./decisions.md) — append-only, newest first |
 | **Target** design / what's planned but unbuilt | [`design/`](./design/) |
-| The legacy **Python** system (still in prod until cutover) | [`../archive/docs/`](../archive/docs/) |
+| The legacy **Python** system (retired at the 2026-08-15 cutover) | [`../archive/docs/`](../archive/docs/) |
 | External API-Football behavior | [`api-football/`](./api-football/) — frozen vendor reference |
 
 Precedence when sources disagree: **code > ledger** (if a ledger is
@@ -38,7 +38,7 @@ decision supersedes an older target design).
 - [`logging.md`](./logging.md) — Emit reference (how to add a Module/Action)
 - [`temporal.md`](./temporal.md) — Client/Worker adapter + registration flow
 - [`twitter-service.md`](./twitter-service.md) — Playwright-Go scraping service: HTTP contract, state machine, cookie fleet model
-- [`testing.md`](./testing.md) — test tiers (~200 tests + 16 scenarios) + the git test gates
+- [`testing.md`](./testing.md) — test tiers (494 tests + 19 scenarios) + the git test gates
 - [`run-flow.md`](./run-flow.md) — narrative walkthrough of shipped Ingest/Monitor cycles
 - [`deployment.md`](./deployment.md) — compose files + Caddy + first-time bootstrap
 - [`roadmap.md`](./roadmap.md) — roadmap to La Liga (2026-08-15)
