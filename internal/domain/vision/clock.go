@@ -50,6 +50,23 @@ func isExtraTime(p Period) bool {
 	return p == PeriodExtraFirst || p == PeriodExtraSecond
 }
 
+// String renders a Period as a short label for logs + candidate outcome
+// detail, so a clock-reject can record "detected 2H vs expected 1H" (#181).
+func (p Period) String() string {
+	switch p {
+	case PeriodFirstHalf:
+		return "1H"
+	case PeriodSecondHalf:
+		return "2H"
+	case PeriodExtraFirst:
+		return "ET1"
+	case PeriodExtraSecond:
+		return "ET2"
+	default:
+		return "unknown"
+	}
+}
+
 var (
 	reCompactStoppage = regexp.MustCompile(`^(\d+)\s*\+\s*(\d+)`)  // "45+2"
 	reMMSS            = regexp.MustCompile(`(\d{1,3}):(\d{2})`)    // "90:00"

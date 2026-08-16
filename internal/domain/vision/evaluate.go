@@ -43,6 +43,16 @@ type Evaluation struct {
 	SoccerVotes   int // frames voting soccer=true
 	ScreenVotes   int // frames voting screen=true
 	FrameCount    int
+	// DetectedMinute/Period is the clock the OCR actually read (the last
+	// legible reading), retained even on a clock-reject so the candidate record
+	// can show "detected X vs expected Y" (#181) — otherwise a genuine
+	// wrong-minute reject and an OCR-misread reject are indistinguishable
+	// post-hoc. nil when no clock was visible. ExpectedMinute/Period is what
+	// the clock was checked against.
+	DetectedMinute *int
+	DetectedPeriod string
+	ExpectedMinute int
+	ExpectedPeriod string
 }
 
 // Evaluate applies the gates + clock check to a clip's frames. tol is the
@@ -87,6 +97,8 @@ func Evaluate(frames []FrameObservation, exp Expected, tol int) Evaluation {
 	}
 	expectedPeriod := periodOf(exp.Elapsed)
 	expectedStoppage := exp.Extra > 0
+	ev.ExpectedMinute = expectedMinute
+	ev.ExpectedPeriod = expectedPeriod.String()
 
 	sawClock := false
 	softKeep := false // numeric-matched but period conflict at an ET boundary
@@ -119,6 +131,11 @@ func Evaluate(frames []FrameObservation, exp Expected, tol int) Evaluation {
 			absolute = base + stopMin
 		}
 		clipPeriod := periodOf(base)
+		// Retain the read clock (last legible one) so a clock-reject records
+		// what the OCR saw, not just that it mismatched (#181).
+		detectedMinute := absolute
+		ev.DetectedMinute = &detectedMinute
+		ev.DetectedPeriod = clipPeriod.String()
 
 		// Candidate 1 — direct: right period AND within ±tol.
 		if clipPeriod == expectedPeriod && abs(absolute-expectedMinute) <= tol {

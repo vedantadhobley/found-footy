@@ -279,8 +279,12 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 			p.dedupAndPromote(c, vout)
 		default: // rejected — not soccer / screen recording / wrong clock
 			p.rejectedClips++
-			p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeRejected, vout.Reason,
-				jsonDetail(map[string]any{"soccer_votes": vout.SoccerVotes, "screen_votes": vout.ScreenVotes, "frame_count": len(vout.Frames)}))
+			detail := map[string]any{"soccer_votes": vout.SoccerVotes, "screen_votes": vout.ScreenVotes, "frame_count": len(vout.Frames)}
+			if vout.DetectedMinute != nil { // clock was read but didn't match — record it so the reject is triageable (#181)
+				detail["detected_minute"], detail["detected_period"] = *vout.DetectedMinute, vout.DetectedPeriod
+				detail["expected_minute"], detail["expected_period"] = vout.ExpectedMinute, vout.ExpectedPeriod
+			}
+			p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeRejected, vout.Reason, jsonDetail(detail))
 			p.deleteStaging(c.stagingKey)
 		}
 	}

@@ -96,6 +96,40 @@ func TestEvaluate_RealProdClips(t *testing.T) {
 	}
 }
 
+// TestEvaluate_CapturesDetectedClock — the read clock is retained on the
+// Evaluation (even on a clock-reject) so a candidate's outcome_detail can show
+// detected-vs-expected for post-hoc triage (#181), not just "didn't match".
+func TestEvaluate_CapturesDetectedClock(t *testing.T) {
+	// Clock present but wrong: read 10:00 (1H) for a 71' (2H) goal → rejected,
+	// and the read clock is retained.
+	rej := Evaluate(rep(frame(true, false, "10:00", "", ""), 3), Expected{Elapsed: 71, Extra: 0}, tol)
+	if rej.Outcome != OutcomeRejected {
+		t.Fatalf("Outcome = %q (%s), want rejected", rej.Outcome, rej.Reason)
+	}
+	if rej.DetectedMinute == nil || *rej.DetectedMinute != 10 || rej.DetectedPeriod != "1H" {
+		t.Errorf("detected = %v/%q, want 10/1H", rej.DetectedMinute, rej.DetectedPeriod)
+	}
+	if rej.ExpectedMinute != 71 || rej.ExpectedPeriod != "2H" { // non-stoppage clamps to elapsed
+		t.Errorf("expected = %d/%q, want 71/2H", rej.ExpectedMinute, rej.ExpectedPeriod)
+	}
+
+	// No clock visible → DetectedMinute stays nil (distinguishes "no clock"
+	// from "clock read as some minute").
+	noClk := Evaluate(rep(frame(true, false, "", "", ""), 3), Expected{Elapsed: 71, Extra: 0}, tol)
+	if noClk.DetectedMinute != nil {
+		t.Errorf("no-clock DetectedMinute = %d, want nil", *noClk.DetectedMinute)
+	}
+
+	// Verified clip also carries the detected clock, not just MatchedMinute.
+	ver := Evaluate(rep(frame(true, false, "70:13", "", ""), 3), Expected{Elapsed: 71, Extra: 0}, tol)
+	if ver.Outcome != OutcomeVerified {
+		t.Fatalf("Outcome = %q (%s), want verified", ver.Outcome, ver.Reason)
+	}
+	if ver.DetectedMinute == nil || *ver.DetectedMinute != 70 {
+		t.Errorf("verified detected = %v, want 70", ver.DetectedMinute)
+	}
+}
+
 func TestEvaluate_PeriodGuard(t *testing.T) {
 	// The halftime boundary is clean on both sides → strict reject of the
 	// wrong half; the ET boundary is ambiguous → soft-keep (unverified).

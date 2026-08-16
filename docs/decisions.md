@@ -6,6 +6,28 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-15 — Vision clock-reject records the detected minute (#181)
+
+A clip rejected on clock-mismatch recorded only the reason string —
+`Evaluation.MatchedMinute` was set on VERIFY only, and the OCR-read clock was
+discarded on reject. So a genuine wrong-minute reject and an OCR misread were
+indistinguishable in `event_search_candidates.outcome_detail` (only soccer/screen
+votes were stored). Surfaced live during the first MLS test: an *official*
+CharlotteFC clip clock-rejected for a 1' goal — impossible to triage without
+watching it (and official clips are exactly the high-value ones the clock gate is
+fragile against, since edited posts often don't carry a legible live clock).
+
+Fix: `Evaluation` now carries `DetectedMinute`/`DetectedPeriod` (the last legible
+clock, retained on every path incl. reject) + `ExpectedMinute`/`ExpectedPeriod`;
+they flow through the ValidateClip activity into the reject's `outcome_detail` as
+`detected_minute`/`detected_period` + `expected_minute`/`expected_period`. A
+clock-reject is now a DB query — `detected 45 vs expected 1` (correct reject) vs
+`detected 1 vs expected 1` (OCR/logic bug) — instead of watching 90 clips per
+goal. Part of #181; unblocks evidence-based tuning of the clock tolerance and the
+open question of whether high-trust sources should get a lighter clock gate.
+
+---
+
 ## 2026-08-15 — Twitter cookie write-back: dir mount + group perms (two silent layers)
 
 The cookie backup write-back (`internal/twitter/cookies_backup.go`) had never

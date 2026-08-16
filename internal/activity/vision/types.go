@@ -28,5 +28,12 @@ type ValidateClipOutput struct {
 	Reason        string
 	SoccerVotes   int
 	ScreenVotes   int
+	// DetectedMinute/Period is the clock the OCR read (nil if none), carried
+	// through even on a clock-reject so the candidate record is triageable
+	// (#181); ExpectedMinute/Period is what it was checked against.
+	DetectedMinute *int
+	DetectedPeriod string
+	ExpectedMinute int
+	ExpectedPeriod string
 	Frames        []dvision.FrameObservation
 }
