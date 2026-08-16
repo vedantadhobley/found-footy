@@ -6,6 +6,38 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-15 — Twitter search query: distinctive-terms, not OR-everything
+
+The "OR-everything + all-tokens" query (signed off 2026-07-16) surfaced a
+WRONG-GAME clip for the Dorsch goal live during the first MLS test. Root cause,
+via the team_aliases table: **81 of 118 teams carry poisoned aliases** — the
+resolver emits bare generic words (`united`/`city`/`real`/`york`/`inter`, each
+shared across 6–7 teams) AND merges wrong entities (Toronto FC → York United's
+`y9fc`/`york9` + Inter Toronto; Man United → the women's team). `BuildTwitterQuery`
+OR'd every bare token, so `(dorsch OR toronto OR united OR york …)` matched K-pop,
+Ariana Grande, and political spam — the real clips (official @MLS "Niklas Dorsch!"
+clip, a TFC fan clip) were found AND then killed by the clock/aspect filters,
+leaving a wrong-game clip as the unverified fallback.
+
+Fix (query-time, works on the existing poisoned data — no re-resolution): build
+from DISTINCTIVE terms only —
+`(surname OR "Canonical Name" OR DERIVED_ABBREV OR distinctiveAlias) filter:videos`.
+Player = **surname only** (empirically live: bare `Messi` 16 > quoted `"Lionel
+Messi"` 14 — the surname catches surname-only + nickname "Leo Messi" tweets).
+Team = **quoted canonical name** (not tokenized to bare `toronto`) + a **derived
+abbreviation** (initials + club suffix: "Toronto FC" → `TFC`, "Orlando City SC"
+→ `OCSC`; ≥3 chars only, for wrong-entity teams whose aliases lack a real one) +
+aliases with **bare generics + canonical-duplicates dropped**. Validated live
+against our /search: the new query returns **17 all-relevant Toronto/MLS clips
+(incl. official @TorontoFC) vs the old query's 5 (4 political spam)**.
+
+Deeper follow-up (tracked separately): the alias RESOLVER quality — the
+wrong-entity merges (Toronto → York United, Man United → women's team) still
+poison the stored aliases; the query-builder fix *neutralizes* them, but the
+resolver should be fixed + the 118-team corpus re-resolved.
+
+---
+
 ## 2026-08-15 — Vision clock-reject records the detected minute (#181)
 
 A clip rejected on clock-mismatch recorded only the reason string —
