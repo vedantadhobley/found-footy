@@ -114,15 +114,6 @@ type IngestWorkflowOutput struct {
 	ExistingAliases int
 	InsertedAliases int
 
-	// Alias-resolution outcomes (Step 3.5). Cache-hit teams already
-	// had wikidata_qid; resolved teams got a fresh wikidata lookup +
-	// selection; no-match teams ran cleanly but Wikidata returned no
-	// candidate; failed teams hit transport / decode errors.
-	AliasCacheHits  int
-	AliasesResolved int
-	AliasNoMatch    int
-	AliasFailed     int
-
 	PrunedFixtures  int
 	ReclaimedEvents int
 	Errors          []string
@@ -469,42 +460,10 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 			"inserted", out.InsertedAliases,
 			"errors", len(aliasOut.Errors),
 		)
-
-		// Step 3.5: resolve aliases via Wikidata for teams that
-		// don't yet have a wikidata_qid. Cache-hit teams (QID
-		// already set) are skipped inside the activity — QIDs are
-		// permanent so we never re-run the expensive fuzzy stack.
-		// Soft-fail per team; a Wikidata hiccup doesn't fail Ingest.
-		//
-		// Longer timeout: per-team work is now ~7s (500ms throttle +
-		// 1 GetTeamProfile + up to 9 wbsearchentities calls + 1
-		// GetEntity in Select). At 38 teams that's ~4.5 min; at 100
-		// teams (major-tournament peak) ~12 min. 15 min covers both
-		// with headroom without masking a legitimately-stuck workflow.
-		// Retries stay idempotent — UpsertVendorFields + UpsertResolution
-		// are both UPSERTs and cache-hit skip in-flight teams cleanly.
-		resolveCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-			StartToCloseTimeout: 15 * time.Minute,
-			RetryPolicy:         ao.RetryPolicy,
-		})
-		var resolveOut ingest.ResolveAliasesForTeamsOutput
-		if err := workflow.ExecuteActivity(resolveCtx,
-			"ResolveAliasesForTeams",
-			ingest.ResolveAliasesForTeamsInput{Teams: catOut.TeamRefs},
-		).Get(ctx, &resolveOut); err != nil {
-			return out, err
-		}
-		out.AliasCacheHits = resolveOut.CacheHits
-		out.AliasesResolved = resolveOut.Resolved
-		out.AliasNoMatch = resolveOut.NoMatch
-		out.AliasFailed = resolveOut.Failed
-		out.Errors = append(out.Errors, resolveOut.Errors...)
-		logger.Info("alias resolution",
-			"cache_hits", out.AliasCacheHits,
-			"resolved", out.AliasesResolved,
-			"no_match", out.AliasNoMatch,
-			"failed", out.AliasFailed,
-		)
+		// Alias RESOLUTION (Wikipedia→Wikidata) was removed 2026-08-16 — the
+		// query builder now derives the team acronym deterministically at goal
+		// time from the canonical name (decisions.md). Only the canonical-name
+		// placeholder above (EnsureAliasPlaceholders) survives.
 	}
 
 	// ── Step 4: retention (two-part, #176) ──

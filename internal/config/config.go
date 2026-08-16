@@ -29,8 +29,6 @@ type Config struct {
 	Temporal      TemporalConfig
 	LLM           LLMConfig
 	APIFootball   APIFootballConfig
-	Wikidata      WikidataConfig
-	Wikipedia     WikipediaConfig
 	Syndication   SyndicationConfig
 	Twitter       TwitterConfig
 	FirefoxFleet  FirefoxFleetConfig
