@@ -1,6 +1,6 @@
 // Worker wrapper — registers workflows/activities and drives the
-// task-polling loop. Only the worker binary needs this; api and
-// scaler use only the Client.
+// task-polling loop. Only the worker binary needs this; api
+// uses only the Client.
 package temporal
 
 import (

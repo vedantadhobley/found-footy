@@ -145,7 +145,7 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	excludeIDs := normalizeExcludeIDs(req.ExcludeURLs)
 
-	// Mark busy for scaler visibility. Held for the whole search (nav +
+	// Mark busy for /status visibility. Held for the whole search (nav +
 	// scroll + backup). /status reflects this via `busy: true`.
 	s.setBusy(true)
 	defer s.setBusy(false)

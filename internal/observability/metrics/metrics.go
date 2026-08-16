@@ -84,7 +84,7 @@ func New() *Registry {
 
 // Handler returns the http.Handler serving /metrics for scraping.
 // Wire it into the binary's HTTP mux (or standalone listener for
-// binaries without a main HTTP surface, like worker + scaler).
+// binaries without a main HTTP surface, like the worker).
 func (r *Registry) Handler() http.Handler {
 	return promhttp.HandlerFor(r.reg, promhttp.HandlerOpts{
 		// Report errors in the response body — silent metric drops are

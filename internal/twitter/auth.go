@@ -58,7 +58,7 @@ var ErrUnauthenticated = errors.New("twitter: session unauthenticated")
 // On authentication failure (verify returned no logged-in indicator),
 // returns an error wrapping ErrUnauthenticated and transitions the
 // service to StateUnauthenticated. Callers should propagate the
-// signal so downstream orchestrators (scaler, operator alerts) know
+// signal so downstream orchestrators (operator alerts) know
 // the fleet is degraded.
 //
 // On infra failure (cookie file corrupt, browser dead), returns a

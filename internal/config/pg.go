@@ -19,8 +19,8 @@ type PGConfig struct {
 	// .env / .env.example.
 	DSN string `env:"PG_DSN"`
 
-	// MaxConns caps the pool per binary. 10 × 8 worker replicas + api +
-	// scaler stays under Postgres's default max_connections=100. Retune
+	// MaxConns caps the pool per binary. 10 × 8 worker replicas + api
+	// stays under Postgres's default max_connections=100. Retune
 	// after Phase O has real load data.
 	MaxConns int32 `env:"PG_MAX_CONNS" envDefault:"10"`
 

@@ -231,7 +231,7 @@ func (s *Service) State() (State, string) {
 // RegisterHandlers installs the service's HTTP surface on mux.
 //
 //	GET  /health        HTTP 200 iff state == healthy. Orchestrator probe.
-//	GET  /status        Always 200; JSON snapshot for scaler + dashboard.
+//	GET  /status        Always 200; JSON snapshot for the dashboard.
 //	POST /search        (T/c) fires a search against the current session.
 //	GET  /authenticate  Reports auth state; on unauthenticated returns
 //	                    503 + reauth instructions (VNC container URL,
