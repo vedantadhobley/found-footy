@@ -3,33 +3,35 @@
 // card) to produce the query string that the twitter container's /search
 // endpoint navigates to.
 //
-// Design ref: docs/design/proposals/twitter-search-query.md. The original
-// "OR-everything + all-tokens" shape was REPLACED 2026-08-15 after the live
-// MLS test surfaced a wrong-game clip for the Dorsch goal: the team's aliases
-// had resolved to generic words + a different club ({inter,united,york,y9fc}),
-// and OR-ing those bare tokens matched K-pop, Ariana Grande, and political spam
-// — burying the real clips, which the aspect/clock filters then killed. See
-// docs/decisions.md 2026-08-15 (twitter-search-query rework).
+// Design ref: docs/design/proposals/twitter-search-query.md, then two live-MLS
+// reworks logged in docs/decisions.md:
+//   - 2026-08-15: replaced the original "OR-everything + all-tokens" shape after
+//     a wrong-game clip surfaced for the Dorsch goal — the team's resolved
+//     aliases were generic/wrong-entity words ({inter,united,york,y9fc}) that
+//     matched K-pop, Ariana Grande, and political spam.
+//   - 2026-08-16: DISCONNECTED the resolved aliases entirely (measured
+//     net-negative — the junk terms crowd official clips out of the live-search
+//     scroll budget), fixed the derived abbreviation, and moved the player slot
+//     to all-tokens.
 //
-// Shape now — an OR of DISTINCTIVE terms only, never a bare generic word:
+// Shape now — an OR of DISTINCTIVE terms, never a bare generic word:
 //
-//	(surname OR "Canonical Team Name" OR ABBREV OR distinctiveAlias ...) filter:videos
+//	(playerToken OR playerToken … OR "Canonical Team Name" OR ABBREV) filter:videos
 //
-// Empirically validated live (2026-08-15) against our own /search endpoint:
-//   - the fix returned 13 all-relevant Toronto/MLS clips vs the old query's 5
-//     (4 of them political spam);
-//   - bare surname "Messi" (16) beats quoted "Lionel Messi" (14) — the surname
-//     catches surname-only + nickname ("Leo Messi") tweets the phrase misses;
-//   - for the Dorsch goal the clips carried NO player name at all — only the
-//     team abbreviation "TFC" — so both the surname and the abbreviation must
-//     be present for cross-goal recall.
+// Player = ALL significant name tokens (minus a trailing generational suffix),
+// OR'd — reliable surname extraction isn't possible across name cultures
+// (Alexander-Arnold → the compound, Son Heung-min → family-name-first), so every
+// token is included and the quoted team name anchors the query. Team = the
+// quoted canonical name (from api-football, always correct) + a derived fan
+// abbreviation (initials + club suffix: "Toronto FC" → TFC). Resolved aliases
+// are no longer emitted.
 //
 // Trust `filter:videos` server-side + max_age_minutes client-side + V-phase
 // LLM validation to filter the residual false positives.
 //
 // Own goals are handled implicitly: api-football reports the beneficiary team
 // in event.team and the own-goal scorer in event.player. The query catches the
-// celebrating side (team terms) and the scorer's surname.
+// celebrating side (team terms) and the scorer's name tokens.
 package discovery
 
 import (
@@ -48,8 +50,10 @@ type QueryInput struct {
 	// PlayerName is event.player.name — the scoring player (goal, penalty
 	// goal), the player who missed (missed penalty), the player sent off
 	// (red card), or the own-goal scorer. Required; empty is caller error
-	// (upstream debounce holds events until player is known, per D4b). Only
-	// the SURNAME (last significant token) enters the query.
+	// (upstream debounce holds events until player is known, per D4b). ALL
+	// significant name tokens (minus a trailing generational suffix) enter the
+	// query, OR'd — extraction of "the surname" isn't consistent across name
+	// cultures, so inclusion is used instead (see decisions.md 2026-08-16).
 	PlayerName string
 
 	// TeamCanonicalName is the api-football team.name for the scoring team
@@ -208,16 +212,20 @@ func QueryTerms(in QueryInput) (player, team []string) {
 		return term
 	}
 
-	// Player slot: the SURNAME only — the last significant token AFTER stripping
-	// a trailing generational suffix, so "Vinícius Júnior" → vinicius, not junior
-	// (which matches every player named Junior). Empirically the surname subsumes
-	// the full name and catches surname-only + nickname tweets a quoted full name
-	// misses. (last-token vs all-tokens vs hyphen-compound is still unsettled —
-	// deferred, see decisions.md 2026-08-16; the suffix-strip is the unambiguous
-	// fix shipped now. A bare first name would match every namesake, and there's
-	// no team AND-gate here to filter that.)
-	if pt := stripGenSuffix(alias.TokenizePlayerName(in.PlayerName)); len(pt) > 0 {
-		if t := take(pt[len(pt)-1]); t != "" {
+	// Player slot: ALL significant name tokens (minus a trailing generational
+	// suffix), each OR'd into the query. Extracting "the one surname" can't be
+	// consistent across name cultures — last-token gives "arnold" for
+	// Alexander-Arnold and "min" for Son Heung-min (Korean family name is
+	// first). Including every token guarantees the meaningful one is present.
+	// The tokenizer already drops the API's abbreviated first initial ("M.
+	// Salah" → salah), so for the common case this IS just the surname; the
+	// residual cost is a common first name for the minority of un-abbreviated
+	// names ("Mohamed Salah" → mohamed OR salah), accepted as low-stakes (the
+	// player slot is a minor contributor — the quoted team name is the
+	// workhorse). Generational suffix stripped so "Vinícius Júnior" → vinicius,
+	// not junior. See decisions.md 2026-08-16.
+	for _, tok := range stripGenSuffix(alias.TokenizePlayerName(in.PlayerName)) {
+		if t := take(tok); t != "" {
 			player = append(player, t)
 		}
 	}

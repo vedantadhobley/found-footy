@@ -38,22 +38,27 @@ with AFC Ajax; `probe_search` caught `@AFCAjax` in the results). Now: initials o
 `strings.Fields` (all words, unidecoded) minus the trailing club suffix → `LAFC`.
 Recovers the one case where an alias was load-bearing (LAFC's `lafc`).
 
-**3. Strip trailing generational suffix from the surname.** Deployed last-token
-gave "Vinícius Júnior" → `junior` (matches every player named Junior) and
-"Son Heung-min" → `min` (wrong token — proven on the live tokenizer). Suffix-strip
-(`junior`/`jr`/`jnr` only — filho/neto/sr omitted as commonly-real surnames;
-guarded to never strip a mononym like "Neto") fixes the Júnior case. It does NOT
-fix hyphenated compounds (TAA → `arnold`) or name-order (Son → `min`).
+**3. Player slot = all name tokens (minus generational suffix), OR'd — not the
+extracted surname.** Deployed last-token was culturally fragile: "Vinícius
+Júnior" → `junior` (matches every Junior), "Son Heung-min" → `min` (Korean
+family name is first), "Alexander-Arnold" → `arnold` (the hyphen split loses the
+compound). Reliable surname extraction is impossible across name cultures, so
+INCLUDE every token — the meaningful one is then always present. The tokenizer
+already drops the API's abbreviated first initial ("M. Salah" → salah), so for
+the common case this equals the surname; the residual cost is a common first
+name for un-abbreviated names ("Mohamed Salah" → `mohamed OR salah`), accepted as
+low-stakes because the player slot is a MINOR contributor (the quoted canonical
+is the workhorse — `player_only` scored 0 official in probe_search). Generational
+suffix stripped (`junior`/`jr`/`jnr`; filho/neto/sr omitted as commonly-real
+surnames; guarded against a mononym like "Neto"). Player + team combine in ONE
+flat OR group — never AND (`player_AND_team` caught 0 officials; clubs caption a
+clip with the team OR the scorer, rarely both).
 
-**Deferred — surname ranking (last-token vs all-tokens vs hyphen-compound).**
-`probe_playerslot` was INCONCLUSIVE: player-only queries return uniform noise —
-including the Salah control (0 team-mentions everywhere) — because isolating the
-player slot removes the team context that disambiguates a common-word token, and
-it's early-season for the European hard-name players. What it confirmed: the
-player term only pays off when DISTINCTIVE (`mukhtar` surfaces football;
-`min`/`salah` don't), and it's a MINOR contributor (the quoted canonical is the
-workhorse — `player_only` scored 0 official). Re-test in full-query mode when a
-Son/TAA/Vinícius-shaped player actually scores.
+`probe_playerslot` couldn't *rank* the player-slot variants (player-only queries
+return uniform noise, incl. the Salah control — isolating the slot removes the
+disambiguating team context), so the all-tokens choice rides on the inclusion
+argument + the small blast radius (one extra token, only for un-abbreviated
+names), to be watched on the next hard-name goal.
 
 **Also deferred — vertical-clip admission (#182).** `probe_vertical` (33 vertical
 aspect-rejects through the real vision gate, aspect bypassed): only **15% (5/33)
