@@ -32,11 +32,21 @@ nickname map for the fixed ~120-team roster) is deferred until a match day
 confirms. `QueryTerms`/`Build` retain the alias param (tested capability) so the
 disconnect is a one-line caller change.
 
-**2. Fix `deriveAbbrev`.** It fed the canonical name through the PLAYER-name
-tokenizer, which skip-lists articles → "Los Angeles FC" became `AFC` (collided
-with AFC Ajax; `probe_search` caught `@AFCAjax` in the results). Now: initials of
-`strings.Fields` (all words, unidecoded) minus the trailing club suffix → `LAFC`.
-Recovers the one case where an alias was load-bearing (LAFC's `lafc`).
+**2. Rewrite `deriveAbbrev` — capitalization-based org tokens.** The old rule fed
+the canonical through the PLAYER-name tokenizer (skip-lists articles → "Los
+Angeles FC" became `AFC`, colliding with AFC Ajax). Rewritten to use
+CAPITALIZATION as the signal: an all-caps multi-letter token is a club-org
+abbreviation (`AS`/`AFC`/`FC`/`CP`/`SC`/`RB`…) kept **whole**, leading or
+trailing (`AS Roma`→`ASR`, `Sporting CP`→`SCP`, `Toronto FC`→`TFC`); title-case
+name words collapse to an initial (`Los Angeles FC`→`LAFC`); digit/punctuation
+tokens drop (`FC Schalke 04`→`FCS`, not garbage `FS0`). ≥3 chars or suppressed.
+Validated across all 118 real teams: **32 derive an acronym (up from 22, incl.
+`ASR`/`RBL`/`FCC`/`HSV`), numeric garbage eliminated, ZERO collisions** (even
+`FCB` is unique — Bayern/Barça suppress to nothing). We do NOT append an `FC`
+that isn't in the name (that produced the `RMFC`/`AFC`-collision junk — proven
+live: bare `AFC` returns Arsenal+Ajax+Swansea+non-league). Remaining gaps go to a
+small optional curated map: single-word clubs (`Liverpool`→`LFC`, `Chelsea`→
+`CFC`, `Dortmund`→`BVB`) + mixed-case org tokens (`VfB`).
 
 **3. Player slot = all name tokens (minus generational suffix), OR'd — not the
 extracted surname.** Deployed last-token was culturally fragile: "Vinícius

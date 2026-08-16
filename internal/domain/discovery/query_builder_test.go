@@ -129,6 +129,35 @@ func TestBuild_GenerationalSuffixStripped(t *testing.T) {
 	}
 }
 
+// TestDeriveAbbrev_OrgTokensAndDigits — the capitalization rule: all-caps
+// club-org tokens (AS/RB/FC/CP/SC) stay whole, leading or trailing; title-case
+// name words collapse to an initial; digit/punctuation tokens drop. Validated
+// collision-free across the whole real roster (decisions.md 2026-08-16).
+func TestDeriveAbbrev_OrgTokensAndDigits(t *testing.T) {
+	cases := []struct{ canonical, want string }{
+		{"AS Roma", "ASR"},          // leading org token kept whole
+		{"Sporting CP", "SCP"},      // trailing org token kept whole
+		{"RB Leipzig", "RBL"},       // was suppressed under the old first-initial rule
+		{"FC Cincinnati", "FCC"},    // FC-prefix now recovered
+		{"AC Milan", "ACM"},
+		{"Hamburger SV", "HSV"},
+		{"FC Schalke 04", "FCS"},    // trailing "04" dropped (was garbage FS0)
+		{"1. FC Heidenheim", "FCH"}, // "1." dropped
+		{"Stade Brestois 29", ""},   // "29" dropped → "SB" too short → suppressed
+		{"Toronto FC", "TFC"},       // regression guards ↓
+		{"Los Angeles FC", "LAFC"},
+		{"Orlando City SC", "OCSC"},
+		{"Manchester United", ""},   // two title-case words → MU → suppressed
+		{"Real Madrid", ""},
+		{"Paris Saint Germain", "PSG"},
+	}
+	for _, c := range cases {
+		if got := deriveAbbrev(c.canonical); got != c.want {
+			t.Errorf("deriveAbbrev(%q) = %q, want %q", c.canonical, got, c.want)
+		}
+	}
+}
+
 // TestBuild_ParticleAndInitial_Dropped — the skip-list + ≤2-char filter still
 // fire under all-tokens: "Robin Van Persie" → (robin OR persie) — "van" is a
 // skip-listed particle — and "M. Salah" → salah (the abbreviated initial "M."

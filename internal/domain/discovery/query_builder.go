@@ -37,6 +37,7 @@ package discovery
 import (
 	"errors"
 	"strings"
+	"unicode"
 
 	"github.com/gosimple/unidecode"
 
@@ -114,42 +115,68 @@ func isQueryGeneric(tok string) bool {
 	return g
 }
 
-// clubSuffixes — trailing club-type words used to build the fan abbreviation
-// ("Toronto FC" → TFC, "Orlando City SC" → OCSC).
-var clubSuffixes = map[string]string{"fc": "FC", "sc": "SC", "cf": "CF"}
-
-// deriveAbbrev builds the common fan abbreviation from the canonical name:
-// the initials of ALL its words (unidecoded — never skip-list filtered) plus a
-// trailing club suffix if present. "Los Angeles FC" → LAFC, "Toronto FC" → TFC,
-// "Orlando City SC" → OCSC. Returns only ≥3-char results — 2-char initials
-// ("Man City" → MC, "Real Madrid" → RM) are too generic to search.
+// deriveAbbrev builds the common fan abbreviation from the canonical name, using
+// CAPITALIZATION to tell club-org tokens from ordinary name words:
 //
-// This is a PRIMARY team term now that the resolved aliases are disconnected
-// (see decisions.md 2026-08-16). It must use strings.Fields, NOT the
-// player-name tokenizer: the tokenizer skip-lists articles, which turned "Los
-// Angeles FC" into "AFC" (colliding with AFC Ajax) — the exact bug this fix
-// removes. Where it returns "" (FC-PREFIXED names like "FC Cincinnati", whose
-// initials collapse below 3 chars), the quoted canonical name carries the team.
+//   - An all-caps multi-letter token is a club-org abbreviation (AS, AFC, FC,
+//     CP, SC, RB, UD, SS…) and is kept WHOLE, whether it LEADS ("AS Roma" → ASR)
+//     or TRAILS ("Sporting CP" → SCP, "Toronto FC" → TFC).
+//   - A title-case name word (Roma, Manchester, Las) collapses to its first
+//     letter ("Los Angeles FC" → L+A+FC = LAFC).
+//   - Digit / punctuation tokens are dropped entirely ("FC Schalke 04" → FCS,
+//     "1. FC Heidenheim" → FCH), matching the player tokenizer's digit filter.
+//
+// Returns only ≥3-char results — 2-char initials ("Man City" → MC, "Real
+// Madrid" → RM) are too generic to search; those teams rely on the quoted
+// canonical name. This is a PRIMARY team term now that the resolved aliases are
+// disconnected (see decisions.md 2026-08-16). We do NOT append an "FC" that
+// isn't in the name — only tokens actually present are emitted.
 func deriveAbbrev(canonical string) string {
-	fields := strings.Fields(unidecode.Unidecode(canonical))
-	if len(fields) == 0 {
-		return ""
+	var b strings.Builder
+	for _, f := range strings.Fields(unidecode.Unidecode(canonical)) {
+		letters := lettersOnly(f)
+		if letters == "" {
+			continue // year / ordinal / punctuation-only token
+		}
+		if isOrgToken(letters) {
+			b.WriteString(letters) // AS, AFC, FC, CP, SC… kept whole
+		} else {
+			b.WriteByte(letters[0]) // ordinary name word → first letter
+		}
 	}
-	suffix := ""
-	initialFields := fields
-	if s, ok := clubSuffixes[strings.ToLower(fields[len(fields)-1])]; ok {
-		suffix = s
-		initialFields = fields[:len(fields)-1]
-	}
-	var initials strings.Builder
-	for _, f := range initialFields {
-		initials.WriteByte(f[0]) // f is ASCII after unidecode; first byte = first letter
-	}
-	abbr := strings.ToUpper(initials.String()) + suffix
+	abbr := strings.ToUpper(b.String())
 	if len(abbr) < 3 {
 		return ""
 	}
 	return abbr
+}
+
+// isOrgToken reports whether a token is an all-uppercase multi-letter club-org
+// abbreviation (AS/AFC/FC/CP/RB/SC…) — the capitalization signal that it should
+// stay whole rather than collapse to one initial. Title-case name words (Roma,
+// München) and single letters are not org tokens.
+func isOrgToken(letters string) bool {
+	if len(letters) < 2 {
+		return false
+	}
+	for _, r := range letters {
+		if !unicode.IsUpper(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// lettersOnly strips non-letter runes (digits, punctuation) from a token, so
+// "1." / "04" / "&" vanish and "München" (post-unidecode "Munchen") stays.
+func lettersOnly(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // genSuffixes — trailing generational suffixes that are never the searched
