@@ -1,29 +1,35 @@
-// query_builder.go — Twitter search query construction for the
-// Discovery workflow. Called once per trackable event (goal / missed
-// penalty / red card) to produce the query string that the twitter
-// container's /search endpoint navigates to.
+// query_builder.go — Twitter search query construction for the Discovery
+// workflow. Called once per trackable event (goal / missed penalty / red
+// card) to produce the query string that the twitter container's /search
+// endpoint navigates to.
 //
-// Design ref: docs/design/proposals/twitter-search-query.md
-// (signed off 2026-07-16, empirically validated 2026-07-22 via the
-// Tottenham M. Fernandes goal end-to-end test). Deviations from the
-// signed spec live in docs/decisions.md.
+// Design ref: docs/design/proposals/twitter-search-query.md. The original
+// "OR-everything + all-tokens" shape was REPLACED 2026-08-15 after the live
+// MLS test surfaced a wrong-game clip for the Dorsch goal: the team's aliases
+// had resolved to generic words + a different club ({inter,united,york,y9fc}),
+// and OR-ing those bare tokens matched K-pop, Ariana Grande, and political spam
+// — burying the real clips, which the aspect/clock filters then killed. See
+// docs/decisions.md 2026-08-15 (twitter-search-query rework).
 //
-// Shape:
+// Shape now — an OR of DISTINCTIVE terms only, never a bare generic word:
 //
-//	(playerTok1 OR playerTok2 OR ... OR alias1 OR alias2 OR ...) filter:videos
+//	(surname OR "Canonical Team Name" OR ABBREV OR distinctiveAlias ...) filter:videos
 //
-// Recall-first — every player token AND every team alias enter the
-// OR chain. No event-type vocabulary (D3 confirmed by 2026-07-22
-// empirical test; adding tokens like `goal`/`scored` didn't rescue
-// any legitimate Tottenham-goal tweets that (player OR team) missed).
-// Trust `filter:videos` server-side + max_age_minutes client-side +
-// V-phase LLM validation to filter false positives.
+// Empirically validated live (2026-08-15) against our own /search endpoint:
+//   - the fix returned 13 all-relevant Toronto/MLS clips vs the old query's 5
+//     (4 of them political spam);
+//   - bare surname "Messi" (16) beats quoted "Lionel Messi" (14) — the surname
+//     catches surname-only + nickname ("Leo Messi") tweets the phrase misses;
+//   - for the Dorsch goal the clips carried NO player name at all — only the
+//     team abbreviation "TFC" — so both the surname and the abbreviation must
+//     be present for cross-goal recall.
 //
-// Own goals are handled implicitly: api-football reports the
-// beneficiary team (score-increased) in event.team and the defender
-// who scored into their own net in event.player. Query builder takes
-// both at face value — the resulting query catches both the celebrating
-// side (via team aliases) and the scorer's name.
+// Trust `filter:videos` server-side + max_age_minutes client-side + V-phase
+// LLM validation to filter the residual false positives.
+//
+// Own goals are handled implicitly: api-football reports the beneficiary team
+// in event.team and the own-goal scorer in event.player. The query catches the
+// celebrating side (team terms) and the scorer's surname.
 package discovery
 
 import (
@@ -33,142 +39,179 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 )
 
-// QueryInput is the per-event payload the Discovery workflow hands
-// to the query builder. Sourced from the fixture-event row + the
-// team_aliases row for the scoring team.
+// QueryInput is the per-event payload the Discovery workflow hands to the
+// query builder. Sourced from the fixture-event row + the team_aliases row
+// for the scoring team.
 type QueryInput struct {
-	// PlayerName is event.player.name — the scoring player (goal,
-	// penalty goal), the player who missed (missed penalty), the
-	// player sent off (red card), or the defender whose own-goal
-	// benefited the reported team. Required; empty is caller error
-	// (upstream debounce should hold events until player is known,
-	// per twitter-search-query.md D4b).
+	// PlayerName is event.player.name — the scoring player (goal, penalty
+	// goal), the player who missed (missed penalty), the player sent off
+	// (red card), or the own-goal scorer. Required; empty is caller error
+	// (upstream debounce holds events until player is known, per D4b). Only
+	// the SURNAME (last significant token) enters the query.
 	PlayerName string
 
-	// TeamCanonicalName is the api-football team.name for the
-	// scoring team (or beneficiary for own goals). ALWAYS tokenized
-	// and unioned with TeamAliases. Not just a fallback — the
-	// canonical name is the team's api-reported identity and needs
-	// to be in the query regardless of whether the alias pipeline
-	// happened to include it. Example: "Bayer Leverkusen" — if the
-	// ≥2-lang threshold dropped `bayer` (only present in the German
-	// Wikidata label), merging canonical here guarantees it's still
-	// in the query. Dedup collapses the common case where aliases
-	// already contain the canonical tokens.
+	// TeamCanonicalName is the api-football team.name for the scoring team
+	// (or beneficiary for own goals). Emitted as a QUOTED phrase ("Toronto
+	// FC") — never tokenized to bare words — plus a derived fan abbreviation.
+	// This is the clean, always-correct team identity from the API, so the
+	// query works even when the alias pipeline mis-resolved the team.
 	TeamCanonicalName string
 
-	// TeamAliases is the curated set produced by alias.Resolver.Select
-	// for the scoring team. Unioned with the canonical-name tokens
-	// (see TeamCanonicalName docstring). Empty is legal (Nice-class
-	// NoMatch teams) — canonical tokens carry the team slot in
-	// that case.
+	// TeamCode is the api-football 3-letter code (e.g. "TOR"). Reserved;
+	// not currently emitted — fans type the club abbreviation ("TFC"), which
+	// the derived abbreviation approximates better than the API code.
+	TeamCode string
+
+	// TeamAliases is the curated set produced by alias.Resolver.Select for the
+	// scoring team. Only DISTINCTIVE aliases are emitted: bare generic words
+	// (united/city/real/york/…) and tokens already in the canonical name are
+	// dropped; abbreviations (nyrb/mcfc) and nicknames are kept. Empty is legal
+	// — the canonical name + derived abbreviation carry the team slot.
 	TeamAliases []string
 
-	// VideoOnly toggles the `filter:videos` server-side restriction.
-	// True (default via the Build helper) — search is restricted to
-	// tweets carrying video, matching Python's current behavior.
-	// False — omit the filter, useful for future sentiment-analysis
-	// mode that fetches the same corpus for text + video (not yet
-	// implemented; renamed from SentimentMode per user note
-	// 2026-07-22).
+	// VideoOnly toggles the `filter:videos` server-side restriction (default
+	// true via Build). False omits it — for a future text+video sentiment mode.
 	VideoOnly bool
 }
 
-// QueryLengthWarnThreshold is the number of characters above which
-// a caller should log an observability warning. Runaway alias
-// generation would show up here — real queries in the 2026-07-22
-// empirical test topped out around 220 chars for the most-aliased
-// events, well below this bound. See twitter-search-query.md D1
-// length observation.
+// QueryLengthWarnThreshold — chars above which a caller should log a warning
+// (runaway alias generation). Real queries stay well under Twitter's ~500 cap.
 const QueryLengthWarnThreshold = 400
 
-// ErrEmptyQuery signals that BuildTwitterQuery couldn't produce
-// any tokens (both player-name tokenization and team aliases
-// yielded nothing, AND canonical-name fallback also produced no
-// tokens). Callers treat as "skip this attempt without calling
-// Twitter" per twitter-search-query.md D4d — a bare `filter:videos`
-// query would return every video tweet globally.
+// ErrEmptyQuery signals BuildTwitterQuery produced no tokens (player fully
+// skip-listed AND no canonical/aliases). Callers skip the attempt per D4d —
+// a bare `filter:videos` query would return every video tweet globally.
 var ErrEmptyQuery = errors.New("discovery: query has no tokens")
 
-// ErrEmptyPlayerName signals that BuildTwitterQuery was called with
-// PlayerName == "". Upstream (debounce) is supposed to hold events
-// until the scoring player is known, per D4b; hitting this in
-// practice indicates a pipeline bug.
+// ErrEmptyPlayerName signals BuildTwitterQuery was called with an empty
+// PlayerName. Upstream debounce holds events until the scorer is known (D4b);
+// hitting this indicates a pipeline bug.
 var ErrEmptyPlayerName = errors.New("discovery: player name is empty (D4b upstream invariant)")
 
-// BuildTwitterQuery composes the OR-everything query string per
-// twitter-search-query.md D1. Player tokens and team tokens are kept
-// as separate concerns — dedup happens WITHIN the team slot (canonical
-// name + curated aliases can produce overlapping tokens like `liverpool`
-// in both) but NOT across slots (a player name overlapping a team
-// alias is a data-pipeline anomaly, not the query builder's problem).
-// Emit order: player tokens first, then team tokens.
+// queryGenerics — team-name WORDS too generic to OR as a bare search token:
+// "united" matches every United, "york" matches New-York-anything, "real"
+// matches every Real. They stay valid ALIASES (team identity) but are never
+// emitted standalone — the quoted canonical name + abbreviations carry the
+// team. Seeded from the 2026-08-15 alias-contamination audit (tokens shared
+// across many teams). Abbreviations (nyrb/mcfc) are NOT here — they're
+// team-specific and stay.
+var queryGenerics = map[string]struct{}{
+	"united": {}, "city": {}, "real": {}, "red": {}, "new": {}, "york": {},
+	"inter": {}, "union": {}, "sporting": {}, "racing": {}, "athletic": {},
+	"blues": {}, "orange": {}, "county": {}, "town": {}, "rovers": {},
+	"olympique": {}, "foot": {}, "mls": {}, "afc": {}, "fcb": {},
+	"sportiva": {}, "societa": {}, "unione": {}, "verein": {}, "fussballclub": {},
+}
+
+func isQueryGeneric(tok string) bool {
+	_, g := queryGenerics[strings.ToLower(tok)]
+	return g
+}
+
+// clubSuffixes — trailing club-type words used to build the fan abbreviation
+// ("Toronto FC" → TFC, "Orlando City SC" → OCSC).
+var clubSuffixes = map[string]string{"fc": "FC", "sc": "SC", "cf": "CF"}
+
+// deriveAbbrev builds the common fan abbreviation from the canonical name:
+// initials of the significant (skiplist-filtered) tokens + a trailing club
+// suffix if present. Returns only ≥3-char results — 2-char initials ("Man
+// City" → MC, "Real Madrid" → RM) are too generic to search, and those teams'
+// real abbreviations come from their (correctly-resolved) aliases anyway. Its
+// job is to give WRONG-entity teams — Toronto FC resolved to York United's
+// aliases, no real "TFC" — a usable term without waiting on a resolver fix.
+func deriveAbbrev(canonical string) string {
+	fields := strings.Fields(canonical)
+	if len(fields) == 0 {
+		return ""
+	}
+	suffix := clubSuffixes[strings.ToLower(fields[len(fields)-1])]
+	var initials strings.Builder
+	for _, tok := range alias.TokenizePlayerName(canonical) {
+		if tok != "" {
+			initials.WriteByte(tok[0])
+		}
+	}
+	abbr := strings.ToUpper(initials.String()) + suffix
+	if len(abbr) < 3 {
+		return ""
+	}
+	return abbr
+}
+
+// BuildTwitterQuery composes the distinctive-terms OR query. Player slot is
+// the surname; team slot is the quoted canonical name + derived abbreviation +
+// distinctive aliases (bare generics and canonical-name duplicates dropped).
 //
 // Returns:
 //   - (query, nil) on success
-//   - ("", ErrEmptyPlayerName) if in.PlayerName is empty or whitespace
-//   - ("", ErrEmptyQuery) if both slots produce zero tokens (only fires
-//     when player fully skip-lists AND team has no canonical/aliases —
-//     a compound edge case)
+//   - ("", ErrEmptyPlayerName) if PlayerName is empty/whitespace
+//   - ("", ErrEmptyQuery) if no terms survive (player fully skip-listed AND no
+//     usable team terms)
 func BuildTwitterQuery(in QueryInput) (string, error) {
 	if strings.TrimSpace(in.PlayerName) == "" {
 		return "", ErrEmptyPlayerName
 	}
 
-	// Player slot — expand via the shared tokenizer. Independent of
-	// the team slot below; no cross-slot dedup (player name overlapping
-	// a team alias is a data-pipeline concern, not the query builder's).
-	playerTokens := alias.TokenizePlayerName(in.PlayerName)
-
-	// Team slot — union of canonical-name tokens + curated aliases,
-	// deduped WITHIN the team slot only. See TeamCanonicalName
-	// docstring for the "Bayer Leverkusen" rationale (always merge
-	// canonical, don't just fallback). One set for the team unit.
-	teamTokens := make([]string, 0, 16)
-	teamSeen := make(map[string]struct{}, 16)
-	for _, tok := range alias.TokenizePlayerName(in.TeamCanonicalName) {
-		if _, dup := teamSeen[tok]; dup {
-			continue
+	var terms []string
+	seen := make(map[string]struct{}, 16)
+	add := func(term string) {
+		if term == "" {
+			return
 		}
-		teamSeen[tok] = struct{}{}
-		teamTokens = append(teamTokens, tok)
+		key := strings.ToLower(strings.Trim(term, `"`))
+		if _, dup := seen[key]; dup {
+			return
+		}
+		seen[key] = struct{}{}
+		terms = append(terms, term)
 	}
-	for _, tok := range in.TeamAliases {
-		if _, dup := teamSeen[tok]; dup {
-			continue
+	// quote wraps a multi-word term as a Twitter phrase; single words pass bare.
+	quote := func(s string) string {
+		if strings.ContainsRune(s, ' ') {
+			return `"` + s + `"`
 		}
-		teamSeen[tok] = struct{}{}
-		teamTokens = append(teamTokens, tok)
+		return s
 	}
 
-	// Emit order: player tokens first, then team tokens. Human-
-	// readable debug logs lead with player identity.
-	if len(playerTokens) == 0 && len(teamTokens) == 0 {
+	// Player slot: the SURNAME only (last significant token). Empirically the
+	// best single player term — the surname subsumes the full name (any
+	// "Niklas Dorsch" tweet contains "Dorsch") and also catches surname-only +
+	// nickname tweets a quoted full name misses. A bare first name would match
+	// every namesake, and there's no team AND-gate here to filter that.
+	if pt := alias.TokenizePlayerName(in.PlayerName); len(pt) > 0 {
+		add(pt[len(pt)-1])
+	}
+
+	// Team slot: DISTINCTIVE terms only. Quoted canonical name + derived
+	// abbreviation carry it even when the alias pipeline mis-resolved the team.
+	canonTokens := make(map[string]struct{})
+	if canon := strings.TrimSpace(in.TeamCanonicalName); canon != "" {
+		add(quote(canon))
+		add(deriveAbbrev(canon))
+		for _, t := range alias.TokenizePlayerName(canon) {
+			canonTokens[strings.ToLower(t)] = struct{}{}
+		}
+	}
+	// Aliases: keep the distinctive ones (abbreviations, nicknames); drop bare
+	// generics and any token already covered by the quoted canonical name.
+	for _, a := range in.TeamAliases {
+		if isQueryGeneric(a) {
+			continue
+		}
+		if _, dup := canonTokens[strings.ToLower(a)]; dup {
+			continue
+		}
+		add(quote(a))
+	}
+
+	if len(terms) == 0 {
 		return "", ErrEmptyQuery
 	}
 
-	// Compose: (tok1 OR tok2 OR ... OR tokN) [filter:videos]
-	// Player tokens lead, then team tokens. Parens wrap the OR group
-	// so `filter:videos` ANDs against the whole disjunction, not just
-	// the last term. filter:videos is appended based on VideoOnly;
-	// omitted otherwise for future sentiment mode.
 	var b strings.Builder
-	b.Grow(64 + (len(playerTokens)+len(teamTokens))*10)
+	b.Grow(64 + len(terms)*12)
 	b.WriteByte('(')
-	first := true
-	writeTok := func(tok string) {
-		if !first {
-			b.WriteString(" OR ")
-		}
-		b.WriteString(tok)
-		first = false
-	}
-	for _, tok := range playerTokens {
-		writeTok(tok)
-	}
-	for _, tok := range teamTokens {
-		writeTok(tok)
-	}
+	b.WriteString(strings.Join(terms, " OR "))
 	b.WriteByte(')')
 	if in.VideoOnly {
 		b.WriteString(" filter:videos")
@@ -176,11 +219,8 @@ func BuildTwitterQuery(in QueryInput) (string, error) {
 	return b.String(), nil
 }
 
-// Build is the ergonomic wrapper that applies the "video only by
-// default" default for callers that don't explicitly set VideoOnly.
-// Matches Python's current behavior (searches always include
-// filter:videos). Post-sentiment-mode-implementation callers can
-// use BuildTwitterQuery directly with VideoOnly=false.
+// Build applies the "video only by default" default. Matches Python (searches
+// always include filter:videos).
 func Build(playerName, teamCanonicalName string, teamAliases []string) (string, error) {
 	return BuildTwitterQuery(QueryInput{
 		PlayerName:        playerName,
@@ -190,11 +230,7 @@ func Build(playerName, teamCanonicalName string, teamAliases []string) (string, 
 	})
 }
 
-// LengthWarn reports whether the query exceeds the warn threshold
-// (400 chars per twitter-search-query.md D1). Callers should log an
-// observability event when this returns true — signal that alias
-// generation produced an unusually long OR chain that might blow
-// past Twitter's ~500 char query limit.
+// LengthWarn reports whether the query exceeds the warn threshold (400 chars).
 func LengthWarn(query string) bool {
 	return len(query) > QueryLengthWarnThreshold
 }
