@@ -111,6 +111,8 @@ func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (Va
 	out.MatchedMinute = ev.MatchedMinute
 	out.Reason = ev.Reason
 	out.SoccerVotes, out.ScreenVotes = ev.SoccerVotes, ev.ScreenVotes
+	out.DetectedMinute, out.DetectedPeriod = ev.DetectedMinute, ev.DetectedPeriod
+	out.ExpectedMinute, out.ExpectedPeriod = ev.ExpectedMinute, ev.ExpectedPeriod
 	out.Frames = vr.Frames
 	return out, nil
 }
