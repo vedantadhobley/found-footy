@@ -6,6 +6,66 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-16 — Twitter query: disconnect resolved aliases, fix abbrev, strip generational suffix
+
+Supersedes the ALIAS half of the 2026-08-15 distinctive-terms entry below. Three
+match-day experiments (`scripts/probe_vertical`, `probe_search`, `probe_playerslot`,
+fired at the dev twitter service) drove this — data over reasoning:
+
+**1. Disconnect the resolved aliases from the query.** The Wikipedia→Wikidata
+alias set isn't just generic-word-poisoned — it's junk-poisoned: FC Cincinnati
+carries `holdings/llc/knifey` (the corporate entity leaked in), Houston Dynamo
+`men/naranja/oranje`, Toronto FC York-United's `york9/y9fc`. `probe_search`
+measured it **net-negative**: dropping aliases MORE THAN DOUBLED official-clip
+recall (**4 → 9** official hits across 3 teams). Mechanism: the junk OR terms
+flood Twitter's live-search scroll budget and crowd the official clips OUT of the
+collected window — Cincinnati went from **0 official WITH aliases → 6 WITHOUT**.
+The same run settled OR-vs-AND: `player_AND_team` caught **0** officials across
+all cases and collapsed recall (clubs caption a clip with the team OR the scorer,
+rarely both), so OR-everything stays. Query is now
+`(surname OR "Canonical Name" OR DERIVED_ABBREV) filter:videos`.
+
+Implementation: `event.go` passes `nil` aliases to `Build`. The resolver +
+`team_aliases.aliases` column stay in place but UNUSED — reversible; a Phase-2
+teardown (rip the Wikipedia/Wikidata resolver, or replace with a curated
+nickname map for the fixed ~120-team roster) is deferred until a match day
+confirms. `QueryTerms`/`Build` retain the alias param (tested capability) so the
+disconnect is a one-line caller change.
+
+**2. Fix `deriveAbbrev`.** It fed the canonical name through the PLAYER-name
+tokenizer, which skip-lists articles → "Los Angeles FC" became `AFC` (collided
+with AFC Ajax; `probe_search` caught `@AFCAjax` in the results). Now: initials of
+`strings.Fields` (all words, unidecoded) minus the trailing club suffix → `LAFC`.
+Recovers the one case where an alias was load-bearing (LAFC's `lafc`).
+
+**3. Strip trailing generational suffix from the surname.** Deployed last-token
+gave "Vinícius Júnior" → `junior` (matches every player named Junior) and
+"Son Heung-min" → `min` (wrong token — proven on the live tokenizer). Suffix-strip
+(`junior`/`jr`/`jnr` only — filho/neto/sr omitted as commonly-real surnames;
+guarded to never strip a mononym like "Neto") fixes the Júnior case. It does NOT
+fix hyphenated compounds (TAA → `arnold`) or name-order (Son → `min`).
+
+**Deferred — surname ranking (last-token vs all-tokens vs hyphen-compound).**
+`probe_playerslot` was INCONCLUSIVE: player-only queries return uniform noise —
+including the Salah control (0 team-mentions everywhere) — because isolating the
+player slot removes the team context that disambiguates a common-word token, and
+it's early-season for the European hard-name players. What it confirmed: the
+player term only pays off when DISTINCTIVE (`mukhtar` surfaces football;
+`min`/`salah` don't), and it's a MINOR contributor (the quoted canonical is the
+workhorse — `player_only` scored 0 official). Re-test in full-query mode when a
+Son/TAA/Vinícius-shaped player actually scores.
+
+**Also deferred — vertical-clip admission (#182).** `probe_vertical` (33 vertical
+aspect-rejects through the real vision gate, aspect bypassed): only **15% (5/33)
+would surface**, all `unverified` (the vertical reframe hides the broadcast
+clock), mostly OFFICIAL accounts (@LAFC, @NashvilleSC) — and mostly duplicates of
+the landscape clip already surfaced for the same goal. 85% correctly rejected as
+not-soccer (the vision gate is a competent content backstop even with aspect
+off). So the aspect gate costs far less recall than the raw 48%-reject stat
+implied; admitting vertical is a low-priority, fallback-only design call.
+
+---
+
 ## 2026-08-15 — Twitter search query: distinctive-terms, not OR-everything
 
 The "OR-everything + all-tokens" query (signed off 2026-07-16) surfaced a

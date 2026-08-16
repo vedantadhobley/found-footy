@@ -36,6 +36,8 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/gosimple/unidecode"
+
 	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 )
 
@@ -113,23 +115,31 @@ func isQueryGeneric(tok string) bool {
 var clubSuffixes = map[string]string{"fc": "FC", "sc": "SC", "cf": "CF"}
 
 // deriveAbbrev builds the common fan abbreviation from the canonical name:
-// initials of the significant (skiplist-filtered) tokens + a trailing club
-// suffix if present. Returns only ≥3-char results — 2-char initials ("Man
-// City" → MC, "Real Madrid" → RM) are too generic to search, and those teams'
-// real abbreviations come from their (correctly-resolved) aliases anyway. Its
-// job is to give WRONG-entity teams — Toronto FC resolved to York United's
-// aliases, no real "TFC" — a usable term without waiting on a resolver fix.
+// the initials of ALL its words (unidecoded — never skip-list filtered) plus a
+// trailing club suffix if present. "Los Angeles FC" → LAFC, "Toronto FC" → TFC,
+// "Orlando City SC" → OCSC. Returns only ≥3-char results — 2-char initials
+// ("Man City" → MC, "Real Madrid" → RM) are too generic to search.
+//
+// This is a PRIMARY team term now that the resolved aliases are disconnected
+// (see decisions.md 2026-08-16). It must use strings.Fields, NOT the
+// player-name tokenizer: the tokenizer skip-lists articles, which turned "Los
+// Angeles FC" into "AFC" (colliding with AFC Ajax) — the exact bug this fix
+// removes. Where it returns "" (FC-PREFIXED names like "FC Cincinnati", whose
+// initials collapse below 3 chars), the quoted canonical name carries the team.
 func deriveAbbrev(canonical string) string {
-	fields := strings.Fields(canonical)
+	fields := strings.Fields(unidecode.Unidecode(canonical))
 	if len(fields) == 0 {
 		return ""
 	}
-	suffix := clubSuffixes[strings.ToLower(fields[len(fields)-1])]
+	suffix := ""
+	initialFields := fields
+	if s, ok := clubSuffixes[strings.ToLower(fields[len(fields)-1])]; ok {
+		suffix = s
+		initialFields = fields[:len(fields)-1]
+	}
 	var initials strings.Builder
-	for _, tok := range alias.TokenizePlayerName(canonical) {
-		if tok != "" {
-			initials.WriteByte(tok[0])
-		}
+	for _, f := range initialFields {
+		initials.WriteByte(f[0]) // f is ASCII after unidecode; first byte = first letter
 	}
 	abbr := strings.ToUpper(initials.String()) + suffix
 	if len(abbr) < 3 {
@@ -138,58 +148,92 @@ func deriveAbbrev(canonical string) string {
 	return abbr
 }
 
-// BuildTwitterQuery composes the distinctive-terms OR query. Player slot is
-// the surname; team slot is the quoted canonical name + derived abbreviation +
-// distinctive aliases (bare generics and canonical-name duplicates dropped).
-//
-// Returns:
-//   - (query, nil) on success
-//   - ("", ErrEmptyPlayerName) if PlayerName is empty/whitespace
-//   - ("", ErrEmptyQuery) if no terms survive (player fully skip-listed AND no
-//     usable team terms)
-func BuildTwitterQuery(in QueryInput) (string, error) {
-	if strings.TrimSpace(in.PlayerName) == "" {
-		return "", ErrEmptyPlayerName
-	}
+// genSuffixes — trailing generational suffixes that are never the searched
+// surname. "Vinícius Júnior" → the surname is "vinicius", not "junior" (which
+// matches every player named Junior). Deliberately narrow: filho/neto/sr are
+// omitted because they're commonly real surnames (e.g. the keeper Neto), and a
+// bare "jr"/"sr" is already dropped by the tokenizer's ≤2-char filter. See
+// decisions.md 2026-08-16.
+var genSuffixes = map[string]struct{}{
+	"junior": {}, "jr": {}, "jnr": {},
+}
 
-	var terms []string
+// stripGenSuffix drops trailing generational-suffix tokens so the surname is
+// the significant name. Never strips to empty — a mononym that IS a suffix word
+// ("Neto", "Junior") keeps its single token.
+func stripGenSuffix(toks []string) []string {
+	for len(toks) > 1 {
+		if _, ok := genSuffixes[toks[len(toks)-1]]; ok {
+			toks = toks[:len(toks)-1]
+			continue
+		}
+		break
+	}
+	return toks
+}
+
+// quoteTerm wraps a multi-word term as a Twitter phrase ("Toronto FC"); single
+// words pass bare. Shared by QueryTerms so canonical names + multi-word aliases
+// phrase-match instead of OR-ing their loose words.
+func quoteTerm(s string) string {
+	if strings.ContainsRune(s, ' ') {
+		return `"` + s + `"`
+	}
+	return s
+}
+
+// QueryTerms returns the distinct player terms and team terms the query is
+// built from — deduped (case-insensitive, ignoring surrounding quotes), in
+// emission order. player is the surname (last significant token); team is the
+// quoted canonical name + derived abbreviation + distinctive aliases (bare
+// generics and canonical-name duplicates dropped).
+//
+// Exposed so experiments can recombine the SAME terms under different query
+// STRUCTURES (OR-of-all vs player-AND-team) without re-implementing — and
+// drifting from — the extraction logic. See scripts/probe_search.
+// BuildTwitterQuery is exactly the OR of player ∪ team.
+func QueryTerms(in QueryInput) (player, team []string) {
 	seen := make(map[string]struct{}, 16)
-	add := func(term string) {
+	// take returns the term if it's new (dedup key = lowercased, de-quoted),
+	// else "" so the caller skips it.
+	take := func(term string) string {
 		if term == "" {
-			return
+			return ""
 		}
 		key := strings.ToLower(strings.Trim(term, `"`))
 		if _, dup := seen[key]; dup {
-			return
+			return ""
 		}
 		seen[key] = struct{}{}
-		terms = append(terms, term)
-	}
-	// quote wraps a multi-word term as a Twitter phrase; single words pass bare.
-	quote := func(s string) string {
-		if strings.ContainsRune(s, ' ') {
-			return `"` + s + `"`
-		}
-		return s
+		return term
 	}
 
-	// Player slot: the SURNAME only (last significant token). Empirically the
-	// best single player term — the surname subsumes the full name (any
-	// "Niklas Dorsch" tweet contains "Dorsch") and also catches surname-only +
-	// nickname tweets a quoted full name misses. A bare first name would match
-	// every namesake, and there's no team AND-gate here to filter that.
-	if pt := alias.TokenizePlayerName(in.PlayerName); len(pt) > 0 {
-		add(pt[len(pt)-1])
+	// Player slot: the SURNAME only — the last significant token AFTER stripping
+	// a trailing generational suffix, so "Vinícius Júnior" → vinicius, not junior
+	// (which matches every player named Junior). Empirically the surname subsumes
+	// the full name and catches surname-only + nickname tweets a quoted full name
+	// misses. (last-token vs all-tokens vs hyphen-compound is still unsettled —
+	// deferred, see decisions.md 2026-08-16; the suffix-strip is the unambiguous
+	// fix shipped now. A bare first name would match every namesake, and there's
+	// no team AND-gate here to filter that.)
+	if pt := stripGenSuffix(alias.TokenizePlayerName(in.PlayerName)); len(pt) > 0 {
+		if t := take(pt[len(pt)-1]); t != "" {
+			player = append(player, t)
+		}
 	}
 
 	// Team slot: DISTINCTIVE terms only. Quoted canonical name + derived
 	// abbreviation carry it even when the alias pipeline mis-resolved the team.
 	canonTokens := make(map[string]struct{})
 	if canon := strings.TrimSpace(in.TeamCanonicalName); canon != "" {
-		add(quote(canon))
-		add(deriveAbbrev(canon))
-		for _, t := range alias.TokenizePlayerName(canon) {
-			canonTokens[strings.ToLower(t)] = struct{}{}
+		if t := take(quoteTerm(canon)); t != "" {
+			team = append(team, t)
+		}
+		if t := take(deriveAbbrev(canon)); t != "" {
+			team = append(team, t)
+		}
+		for _, tok := range alias.TokenizePlayerName(canon) {
+			canonTokens[strings.ToLower(tok)] = struct{}{}
 		}
 	}
 	// Aliases: keep the distinctive ones (abbreviations, nicknames); drop bare
@@ -201,9 +245,30 @@ func BuildTwitterQuery(in QueryInput) (string, error) {
 		if _, dup := canonTokens[strings.ToLower(a)]; dup {
 			continue
 		}
-		add(quote(a))
+		if t := take(quoteTerm(a)); t != "" {
+			team = append(team, t)
+		}
 	}
+	return player, team
+}
 
+// BuildTwitterQuery composes the distinctive-terms OR query — the OR of the
+// player and team terms from QueryTerms. Player slot is the surname; team slot
+// is the quoted canonical name + derived abbreviation (+ distinctive aliases
+// when the caller supplies them; prod now passes nil — see decisions.md
+// 2026-08-16).
+//
+// Returns:
+//   - (query, nil) on success
+//   - ("", ErrEmptyPlayerName) if PlayerName is empty/whitespace
+//   - ("", ErrEmptyQuery) if no terms survive (player fully skip-listed AND no
+//     usable team terms)
+func BuildTwitterQuery(in QueryInput) (string, error) {
+	if strings.TrimSpace(in.PlayerName) == "" {
+		return "", ErrEmptyPlayerName
+	}
+	player, team := QueryTerms(in)
+	terms := append(append(make([]string, 0, len(player)+len(team)), player...), team...)
 	if len(terms) == 0 {
 		return "", ErrEmptyQuery
 	}

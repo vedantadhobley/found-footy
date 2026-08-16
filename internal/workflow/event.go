@@ -154,13 +154,21 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 
 	// Step 2: build the query. Canonical name falls back to
 	// in.TeamName (api-football team.name) if team_aliases row is
-	// unresolved — the query builder always tokenizes canonical, so
-	// even with empty aliases we get something to search on.
+	// unresolved — the builder always emits the quoted canonical + a
+	// derived abbreviation, so we always have something to search on.
 	canonicalName := aliasesOut.CanonicalName
 	if canonicalName == "" {
 		canonicalName = in.TeamName
 	}
-	query, err := querybuilder.Build(in.PlayerName, canonicalName, aliasesOut.Aliases)
+	// Resolved aliases are DISCONNECTED (nil). The Wikipedia→Wikidata alias set
+	// is contaminated (generic/junk/wrong-entity tokens: FC Cincinnati →
+	// holdings/llc/knifey, Toronto FC → York-United york9) and measured
+	// net-negative on a live match day — the junk OR terms crowd official clips
+	// out of the live-search scroll budget (0 official WITH aliases → 6 WITHOUT
+	// for Cincinnati). Canonical name + derived abbrev carry the team. The
+	// resolver + team_aliases.aliases column stay in place but unused, pending a
+	// Phase-2 teardown. See decisions.md 2026-08-16.
+	query, err := querybuilder.Build(in.PlayerName, canonicalName, nil)
 	if err != nil {
 		log.Warn("query builder rejected input", "err", err,
 			"player", in.PlayerName, "canonical", canonicalName,
