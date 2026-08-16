@@ -6,6 +6,35 @@ add a new one above it pointing at the change.
 
 ---
 
+## 2026-08-16 — Alias resolver TORN OUT (Wikipedia→Wikidata pipeline deleted)
+
+Completes the Phase-2 teardown the entry below deferred. The acronym now derives
+deterministically at goal time from the canonical name, so the Wikipedia→Wikidata
+alias resolver had zero consumers — it's gone:
+
+- **Deleted:** `internal/infra/wikidata` + `internal/infra/wikipedia` adapters;
+  `internal/domain/alias/{lookup*,select*}.go` (the resolver + selection
+  pipeline); the `ResolveAliasesForTeams` activity + **IngestWorkflow Step 3.5**;
+  the `AliasResolver` wiring in `cmd/worker/main.go`; `config.Wikidata`/`Wikipedia`;
+  and the now-dead resolver-audit scripts (probe_aliases / probe_lookup /
+  probe_query / resolver_roster_test).
+- **Kept:** `alias/{alias.go, text.go, skiplist.go, repo.go}` — the player-name
+  tokenizer (`TokenizePlayerName`, still called by the query builder) + the
+  canonical-name placeholder builder — and the `team_aliases` table with its
+  `canonical_name`/`team_code` columns (written at ingest by
+  `EnsureAliasPlaceholders`). The `aliases` + `wikidata_qid` + `resolved_at`
+  columns stay in the schema (no migration) but are dead; the `aliases` data is
+  cleared post-deploy so nothing re-reads stale terms.
+- Clean seam, not a tangle: `ResolveAliasesForTeams` (resolution) and
+  `EnsureAliasPlaceholders` (canonical placeholder) were already separate ingest
+  activities, so this was an excision. Build + full `-short` suite green.
+
+Doc-sweep owed: the as-built ledgers (architecture / orchestration / observability
+/ testing) and the design proposals (team-aliases, alias-entity-resolution) still
+describe the resolver as live.
+
+---
+
 ## 2026-08-16 — Twitter query: disconnect resolved aliases, fix abbrev, strip generational suffix
 
 Supersedes the ALIAS half of the 2026-08-15 distinctive-terms entry below. Three

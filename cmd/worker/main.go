@@ -26,7 +26,6 @@ import (
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
-	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	eventinfra "github.com/vedantadhobley/found-footy/internal/infra/event"
 	"github.com/vedantadhobley/found-footy/internal/infra/ffmpeg"
@@ -38,8 +37,6 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/infra/syndication"
 	"github.com/vedantadhobley/found-footy/internal/infra/temporal"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
-	"github.com/vedantadhobley/found-footy/internal/infra/wikidata"
-	"github.com/vedantadhobley/found-footy/internal/infra/wikipedia"
 	"github.com/vedantadhobley/found-footy/internal/observability/logging"
 	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 	ffwf "github.com/vedantadhobley/found-footy/internal/workflow"
@@ -105,26 +102,6 @@ func main() {
 			return err
 		}
 		// No closer — http.Client has no persistent state to drain.
-
-		wdIns := wikidata.RegisterMetrics(deps.Metrics, deps.Log)
-		wdClient, err := wikidata.NewClient(deps.Cfg.Wikidata, wdIns)
-		if err != nil {
-			return err
-		}
-
-		// Wikipedia is the entity resolver — CirrusSearch full-text
-		// candidate generation, bridging back to Wikidata via each
-		// article's pageprops.wikibase_item. See
-		// docs/design/proposals/alias-entity-resolution.md.
-		wpIns := wikipedia.RegisterMetrics(deps.Metrics, deps.Log)
-		wpClient, err := wikipedia.NewClient(deps.Cfg.Wikipedia, wpIns)
-		if err != nil {
-			return err
-		}
-
-		// The resolver consumes Wikipedia for lookup + Wikidata for
-		// P31 type verification and downstream alias extraction.
-		aliasResolver := alias.NewResolver(wdClient, wpClient)
 
 		syndIns := syndication.RegisterMetrics(deps.Metrics, deps.Log)
 		syndClient, err := syndication.NewClient(deps.Cfg.Syndication, syndIns)
@@ -194,8 +171,6 @@ func main() {
 			FetchWindowFutureDays: deps.Cfg.APIFootball.FetchWindowFutureDays,
 			ActivationWindow:      deps.Cfg.Workflows.ActivationWindow,
 			RetentionDays:         deps.Cfg.Workflows.RetentionDays,
-			AliasResolver:         aliasResolver,
-			AliasThrottle:         500 * time.Millisecond,
 		}
 		w.RegisterWorkflow(ffwf.IngestWorkflow)
 		w.RegisterActivity(ingestActs)

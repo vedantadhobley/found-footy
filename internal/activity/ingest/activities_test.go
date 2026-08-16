@@ -17,35 +17,7 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/domain/team"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
-	"github.com/vedantadhobley/found-footy/internal/infra/wikidata"
-	"github.com/vedantadhobley/found-footy/internal/infra/wikipedia"
 )
-
-// stubWD is a minimal alias.WikidataFetcher — always empty. Combined
-// with stubWP (below), lets us exercise ResolveAliasesForTeams
-// end-to-end (including the GetTeamProfile enrichment call and the
-// vendor-field upsert path) without depending on live Wikidata or
-// Wikipedia. Wikidata-side outcomes end up as NoMatch, which is fine —
-// this test asserts on the enrichment side.
-type stubWD struct{}
-
-func (stubWD) GetEntity(_ context.Context, qid string) (*wikidata.Entity, error) {
-	return nil, fmt.Errorf("stubWD.GetEntity(%s): no entity", qid)
-}
-
-func (stubWD) BatchGetP31(_ context.Context, _ []string) (map[string][]string, error) {
-	return map[string][]string{}, nil
-}
-
-// stubWP is a minimal alias.WikipediaResolver — always empty. Same
-// role as stubWD for the Wikipedia side of the lookup pipeline. Every
-// Resolve call ends in NoMatch, exercising the enrichment path without
-// depending on live vendor endpoints.
-type stubWP struct{}
-
-func (stubWP) SearchAndResolve(_ context.Context, _ string, _ wikipedia.SearchOpts) ([]wikipedia.Hit, error) {
-	return nil, nil
-}
 
 // ── fakes ──────────────────────────────────────────────────────
 
@@ -76,12 +48,6 @@ type fakeFetcher struct {
 	// set, returns nil (empty).
 	teamsByLeague map[int][]apifootball.APITeam
 	teamsErr      error
-
-	// GetTeamProfile behavior — per-team profile map. If not set,
-	// returns (nil, error), which the activity soft-fails on.
-	profileByID  map[int64]*apifootball.APITeamEnvelope
-	profileErr   error
-	profileCalls []int64
 }
 
 func (f *fakeFetcher) ListFixtures(_ context.Context, params apifootball.FixtureListParams) ([]apifootball.APIFixture, error) {
@@ -123,18 +89,6 @@ func (f *fakeFetcher) ListTeamsForLeague(_ context.Context, leagueID, _ int) ([]
 		return nil, f.teamsErr
 	}
 	return f.teamsByLeague[leagueID], nil
-}
-
-func (f *fakeFetcher) GetTeamProfile(_ context.Context, teamID int64) (*apifootball.APITeamEnvelope, error) {
-	f.profileCalls = append(f.profileCalls, teamID)
-	if f.profileErr != nil {
-		return nil, f.profileErr
-	}
-	p, ok := f.profileByID[teamID]
-	if !ok {
-		return nil, fmt.Errorf("fakeFetcher.GetTeamProfile: no canned profile for team %d", teamID)
-	}
-	return p, nil
 }
 
 // fakeFixtureRepo — in-memory Repo satisfying fixture.Repo.
@@ -861,202 +815,6 @@ func TestCategorize_ErrorsCarryFixtureContext(t *testing.T) {
 	}
 	if !strings.Contains(out.Errors[0]+out.Errors[1], "pool exhausted") {
 		t.Errorf("errors missing underlying error text: %+v", out.Errors)
-	}
-}
-
-// ── ResolveAliasesForTeams: enrichment path ──────────────────────
-
-// strPtr — local pointer-lifter for compact test setup.
-func strPtr(s string) *string { return &s }
-
-// TestResolveAliasesForTeams_EnrichesFromTeamProfile — cache-miss teams
-// must have GetTeamProfile called; the returned venue.city, team.country,
-// team.national, team.code must be persisted to team_aliases via
-// UpsertVendorFields even when Wikidata resolution yields no match. This
-// is the Python-parity behavior: enrichment is captured independently of
-// alias resolution success.
-func TestResolveAliasesForTeams_EnrichesFromTeamProfile(t *testing.T) {
-	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
-	fetcher := &fakeFetcher{
-		profileByID: map[int64]*apifootball.APITeamEnvelope{
-			// AC Milan — venue.city "Milano" (native), country "Italy",
-			// team.code "MIL", not national.
-			489: {
-				Team: apifootball.APITeam{
-					ID:       489,
-					Name:     "AC Milan",
-					Code:     strPtr("MIL"),
-					Country:  "Italy",
-					National: false,
-				},
-				Venue: apifootball.APITeamVenue{
-					Name: strPtr("Stadio Giuseppe Meazza"),
-					City: strPtr("Milano"),
-				},
-			},
-			// Japan national — team.national=true, venue.city "Saitama".
-			12: {
-				Team: apifootball.APITeam{
-					ID:       12,
-					Name:     "Japan",
-					Code:     strPtr("JPN"),
-					Country:  "Japan",
-					National: true,
-				},
-				Venue: apifootball.APITeamVenue{
-					Name: strPtr("Saitama Stadium 2002"),
-					City: strPtr("Saitama"),
-				},
-			},
-		},
-	}
-	aRepo := newFakeAliasRepo()
-	a := newActivities(fetcher, newFakeFixtureRepo(), aRepo, now)
-	a.AliasResolver = alias.NewResolver(stubWD{}, stubWP{})
-	// Zero throttle keeps the test fast.
-	a.AliasThrottle = 0
-
-	// Pre-seed placeholders WITHOUT enrichment (like EnsureAliasPlaceholders
-	// does today with just league.country as the country hint).
-	seedCountry := strPtr("EnglandFromLeague") // wrong on purpose — enrichment MUST overwrite
-	seedTeams := []TeamRef{
-		{TeamID: 489, TeamName: "AC Milan", Country: seedCountry},
-		{TeamID: 12, TeamName: "Japan", Country: seedCountry, IsNational: false /* wrong; will be flipped */},
-	}
-	for _, tr := range seedTeams {
-		placeholder := alias.New(tr.TeamID, tr.TeamName, tr.IsNational, nil, tr.Country, nil, now)
-		if err := aRepo.UpsertVendorFields(context.Background(), placeholder); err != nil {
-			t.Fatalf("seed: %v", err)
-		}
-	}
-
-	out, err := a.ResolveAliasesForTeams(context.Background(), ResolveAliasesForTeamsInput{Teams: seedTeams})
-	if err != nil {
-		t.Fatalf("ResolveAliasesForTeams: %v", err)
-	}
-	// Stub WD returns nothing → both teams register as NoMatch. We're
-	// asserting on enrichment side, not resolution.
-	if out.NoMatch != 2 {
-		t.Errorf("NoMatch = %d; want 2 (stub WD returns nothing)", out.NoMatch)
-	}
-	if out.Resolved != 0 {
-		t.Errorf("Resolved = %d; want 0", out.Resolved)
-	}
-
-	// GetTeamProfile MUST have been called once per cache-miss team.
-	if len(fetcher.profileCalls) != 2 {
-		t.Fatalf("profile calls = %v; want [489, 12]", fetcher.profileCalls)
-	}
-
-	// AC Milan row: enrichment overwrote league.country ("EnglandFromLeague"
-	// → "Italy") and populated city ("Milano") + team_code ("MIL").
-	milan, err := aRepo.Get(context.Background(), 489)
-	if err != nil {
-		t.Fatalf("Get AC Milan: %v", err)
-	}
-	if milan.Country == nil || *milan.Country != "Italy" {
-		t.Errorf("AC Milan country = %v; want Italy (enriched from profile)", milan.Country)
-	}
-	if milan.City == nil || *milan.City != "Milano" {
-		t.Errorf("AC Milan city = %v; want Milano (from profile.venue.city)", milan.City)
-	}
-	if milan.TeamCode == nil || *milan.TeamCode != "MIL" {
-		t.Errorf("AC Milan team_code = %v; want MIL (from profile.team.code)", milan.TeamCode)
-	}
-	if milan.IsNational != false {
-		t.Errorf("AC Milan is_national = %v; want false", milan.IsNational)
-	}
-
-	// Japan row: is_national flipped false→true from profile.
-	japan, err := aRepo.Get(context.Background(), 12)
-	if err != nil {
-		t.Fatalf("Get Japan: %v", err)
-	}
-	if japan.IsNational != true {
-		t.Errorf("Japan is_national = %v; want true (from profile.team.national)", japan.IsNational)
-	}
-	if japan.Country == nil || *japan.Country != "Japan" {
-		t.Errorf("Japan country = %v; want Japan", japan.Country)
-	}
-	if japan.City == nil || *japan.City != "Saitama" {
-		t.Errorf("Japan city = %v; want Saitama", japan.City)
-	}
-	if japan.TeamCode == nil || *japan.TeamCode != "JPN" {
-		t.Errorf("Japan team_code = %v; want JPN", japan.TeamCode)
-	}
-}
-
-// TestResolveAliasesForTeams_ProfileFetchSoftFails — if GetTeamProfile
-// returns an error, the activity keeps going with the TeamRef values it
-// already had (city/country/is_national from Ingest's fixture snapshot).
-// The failure is recorded in Errors but doesn't stop the loop.
-func TestResolveAliasesForTeams_ProfileFetchSoftFails(t *testing.T) {
-	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
-	fetcher := &fakeFetcher{
-		// No profileByID entries → every call returns an error.
-	}
-	aRepo := newFakeAliasRepo()
-	a := newActivities(fetcher, newFakeFixtureRepo(), aRepo, now)
-	a.AliasResolver = alias.NewResolver(stubWD{}, stubWP{})
-	a.AliasThrottle = 0
-
-	teams := []TeamRef{
-		{TeamID: 999, TeamName: "Nowhere FC", Country: strPtr("Nowhere")},
-	}
-	out, err := a.ResolveAliasesForTeams(context.Background(), ResolveAliasesForTeamsInput{Teams: teams})
-	if err != nil {
-		t.Fatalf("ResolveAliasesForTeams: %v", err)
-	}
-	if len(out.Errors) == 0 {
-		t.Fatal("expected GetTeamProfile failure to surface in Errors")
-	}
-	if !strings.Contains(strings.Join(out.Errors, "\n"), "GetTeamProfile team=999") {
-		t.Errorf("Errors missing GetTeamProfile team=999 context: %+v", out.Errors)
-	}
-	// The vendor row should still exist with the fallback (TeamRef) values.
-	row, err := aRepo.Get(context.Background(), 999)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if row.Country == nil || *row.Country != "Nowhere" {
-		t.Errorf("Country = %v; want fallback 'Nowhere' from TeamRef", row.Country)
-	}
-	// Wikidata stub returns no match → NoMatch=1, Resolved=0.
-	if out.NoMatch != 1 || out.Resolved != 0 {
-		t.Errorf("counts = NoMatch=%d Resolved=%d; want NoMatch=1 Resolved=0", out.NoMatch, out.Resolved)
-	}
-}
-
-// TestResolveAliasesForTeams_CacheHitSkipsProfileFetch — teams that
-// already have wikidata_qid set must NOT get GetTeamProfile called.
-// The whole point of the cache is to avoid the vendor round-trip.
-func TestResolveAliasesForTeams_CacheHitSkipsProfileFetch(t *testing.T) {
-	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
-	fetcher := &fakeFetcher{}
-	aRepo := newFakeAliasRepo()
-
-	// Seed a fully-resolved row for team 489.
-	resolved := alias.New(489, "AC Milan", false, strPtr("MIL"), strPtr("Italy"), strPtr("Milano"), now.Add(-24*time.Hour))
-	resolved.SetResolution("Q1543", []string{"milan", "rossoneri"}, now.Add(-24*time.Hour))
-	if err := aRepo.UpsertResolution(context.Background(), resolved); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	a := newActivities(fetcher, newFakeFixtureRepo(), aRepo, now)
-	a.AliasResolver = alias.NewResolver(stubWD{}, stubWP{})
-	a.AliasThrottle = 0
-
-	out, err := a.ResolveAliasesForTeams(context.Background(), ResolveAliasesForTeamsInput{
-		Teams: []TeamRef{{TeamID: 489, TeamName: "AC Milan"}},
-	})
-	if err != nil {
-		t.Fatalf("ResolveAliasesForTeams: %v", err)
-	}
-	if out.CacheHits != 1 {
-		t.Errorf("CacheHits = %d; want 1", out.CacheHits)
-	}
-	if len(fetcher.profileCalls) != 0 {
-		t.Errorf("GetTeamProfile called %v times on cache-hit; want 0", len(fetcher.profileCalls))
 	}
 }
 
