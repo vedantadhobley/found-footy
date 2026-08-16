@@ -87,6 +87,49 @@ func TestBuild_DerivedAbbrev_SuffixForms(t *testing.T) {
 	}
 }
 
+// TestBuild_DerivedAbbrev_LAFC — the article-skip bug fix (decisions.md
+// 2026-08-16). "Los Angeles FC" must derive LAFC (initials of ALL words +
+// suffix), not "AFC" — which the old player-name tokenizer produced by skipping
+// "Los" as an article, colliding with AFC Ajax. With aliases disconnected the
+// derived abbrev is what carries the fan shorthand.
+func TestBuild_DerivedAbbrev_LAFC(t *testing.T) {
+	if a := deriveAbbrev("Los Angeles FC"); a != "LAFC" {
+		t.Errorf("deriveAbbrev(Los Angeles FC) = %q, want LAFC", a)
+	}
+	got, err := Build("D. Bouanga", "Los Angeles FC", nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	want := `(bouanga OR "Los Angeles FC" OR LAFC) filter:videos`
+	if got != want {
+		t.Errorf("query = %q\n want = %q", got, want)
+	}
+}
+
+// TestBuild_GenerationalSuffixStripped — "Vinícius Júnior" → surname vinicius,
+// never junior (which matches every player named Junior). The mononym guard
+// keeps a player literally named "Neto" from stripping to an empty surname.
+func TestBuild_GenerationalSuffixStripped(t *testing.T) {
+	got, err := Build("Vinícius Júnior", "Real Madrid", nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !strings.HasPrefix(got, "(vinicius OR") {
+		t.Errorf("surname should lead with vinicius (junior stripped); got %q", got)
+	}
+	if strings.Contains(got, "junior") {
+		t.Errorf("generational suffix should be gone; got %q", got)
+	}
+	// Mononym guard: "Neto" is the whole name — must survive, not strip to empty.
+	n, err := Build("Neto", "Bournemouth", nil)
+	if err != nil {
+		t.Fatalf("Build(Neto): %v", err)
+	}
+	if !strings.HasPrefix(n, "(neto OR") {
+		t.Errorf("mononym Neto must not be stripped; got %q", n)
+	}
+}
+
 // TestBuild_ParticleAndInitial_Dropped — surname extraction still rides the
 // tokenizer's skip-list: "Robin Van Persie" → persie (van dropped, robin is
 // not the surname), "M. Salah" → salah.
