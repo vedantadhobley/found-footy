@@ -10,20 +10,18 @@ import (
 	"testing"
 )
 
-// TestBuild_SurnameOnly — the player slot is the SURNAME, not the full name.
-// "Mohamed Salah" → salah (mohamed dropped). Canonical single word stays bare;
-// aliases that duplicate it (liverpool) drop.
-func TestBuild_SurnameOnly(t *testing.T) {
+// TestBuild_AllPlayerTokens — the player slot is ALL name tokens OR'd, not just
+// the surname. "Mohamed Salah" → mohamed OR salah (extraction can't reliably
+// pick the surname across name cultures; inclusion never misses it). Canonical
+// single word stays bare; aliases that duplicate it (liverpool) drop.
+func TestBuild_AllPlayerTokens(t *testing.T) {
 	got, err := Build("Mohamed Salah", "Liverpool", []string{"liverpool", "reds", "lfc"})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	want := "(salah OR Liverpool OR reds OR lfc) filter:videos"
+	want := "(mohamed OR salah OR Liverpool OR reds OR lfc) filter:videos"
 	if got != want {
 		t.Errorf("query = %q\n want = %q", got, want)
-	}
-	if strings.Contains(got, "mohamed") {
-		t.Errorf("first name should be dropped (surname only); got %q", got)
 	}
 }
 
@@ -36,15 +34,16 @@ func TestBuild_CanonicalQuoted_GenericsDropped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	want := `(bruyne OR "Manchester City" OR citizens OR mcfc) filter:videos`
+	want := `(kevin OR bruyne OR "Manchester City" OR citizens OR mcfc) filter:videos`
 	if got != want {
 		t.Errorf("query = %q\n want = %q", got, want)
 	}
 	if strings.Contains(got, "OR city") || strings.Contains(got, "OR blues") {
 		t.Errorf("bare generic tokens should be dropped; got %q", got)
 	}
-	if strings.Contains(got, "kevin") || strings.Contains(got, " de ") {
-		t.Errorf("first name + particle should be gone; got %q", got)
+	// "kevin" is now KEPT (all-tokens); the particle "de" is still skip-listed.
+	if strings.Contains(got, " de ") || strings.Contains(got, "(de ") {
+		t.Errorf("particle 'de' should be dropped; got %q", got)
 	}
 }
 
@@ -130,24 +129,25 @@ func TestBuild_GenerationalSuffixStripped(t *testing.T) {
 	}
 }
 
-// TestBuild_ParticleAndInitial_Dropped — surname extraction still rides the
-// tokenizer's skip-list: "Robin Van Persie" → persie (van dropped, robin is
-// not the surname), "M. Salah" → salah.
+// TestBuild_ParticleAndInitial_Dropped — the skip-list + ≤2-char filter still
+// fire under all-tokens: "Robin Van Persie" → (robin OR persie) — "van" is a
+// skip-listed particle — and "M. Salah" → salah (the abbreviated initial "M."
+// drops, leaving just the surname).
 func TestBuild_ParticleAndInitial_Dropped(t *testing.T) {
 	got, err := Build("Robin Van Persie", "Netherlands", []string{"oranje"})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if !strings.HasPrefix(got, "(persie OR") {
-		t.Errorf("surname should be `persie`; got %q", got)
+	if !strings.HasPrefix(got, "(robin OR persie OR") {
+		t.Errorf("expected (robin OR persie ...); got %q", got)
 	}
-	if strings.Contains(got, "van") || strings.Contains(got, "robin") {
-		t.Errorf("particle + first name should be gone; got %q", got)
+	if strings.Contains(got, "van") {
+		t.Errorf("particle 'van' should be dropped; got %q", got)
 	}
 
 	got2, _ := Build("M. Salah", "Liverpool", nil)
 	if !strings.HasPrefix(got2, "(salah OR") {
-		t.Errorf("initial should drop, surname `salah` lead; got %q", got2)
+		t.Errorf("abbreviated initial should drop, surname salah leads; got %q", got2)
 	}
 }
 
