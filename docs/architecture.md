@@ -14,17 +14,16 @@ and plan match, no entry — silence == alignment.
 an adapter shape, or lands a new domain type updates this doc in
 the SAME commit. Not the next commit. Same commit.
 
-## As-shipped tree (2026-08-12, through O3/d + T/c + #160 fleet ship-dark)
+## As-shipped tree (2026-08-15, post Python→Go cutover — video pipeline, Chi api, N1–N8 eventing, retention + VAR all shipped since O3/d + T/c)
 
 ```
 found-footy/
-├── cmd/                                 4 binaries — each imports from internal/
-│   ├── api/main.go                      Phase 6 — FastAPI-shaped read surface + SSE
-│   ├── scaler/main.go                   scaffold; no scale logic yet (Phase A/M)
+├── cmd/                                 3 binaries — each imports from internal/
+│   ├── api/main.go                      Phase 6 — FastAPI-shaped read surface (SSE is vedanta-systems')
 │   ├── twitter/main.go                  ✓ T/a+T/b+T/c: real Playwright-Go service (ephemeral profile + idle-CPU prefs)
 │   └── worker/main.go                   Temporal worker; registers Ingest + ActivePoll + StagingPoll + Event + Video workflows
 ├── internal/
-│   ├── domain/                          6 shipped, 3 stubbed
+│   ├── domain/                          7 shipped, 2 stubbed
 │   │   ├── fixture/                     ✓ D1: model + State + Repo + tests
 │   │   ├── event/                       ✓ D2: model + State + Repo + tests
 │   │   ├── video/                       ✓ D3 + V/2 + V/3a: model + Repo + rank + perceptual dHash + Match + hard-filter + tests
@@ -34,7 +33,7 @@ found-footy/
 │   │   │   ├── doc.go                   Package doc — query construction, URL extraction, source scoring
 │   │   │   ├── query_builder.go         BuildTwitterQuery, ErrEmptyQuery, ErrEmptyPlayerName (D1/D4b/D4c/D4d/D7 per twitter-search-query.md)
 │   │   │   └── query_builder_test.go    18 tests — D8 name table, particles, dedup, fallback, safeguards
-│   │   ├── vision/                      ⊘ doc.go stub — build when VideoValidationWorkflow lands (O4)
+│   │   ├── vision/                      ✓ D5 (2026-07-28): clock.go + evaluate.go + schema.go + tests — clip-clock validation, wired into EventWorkflow consumer
 │   │   ├── session/                     ⊘ doc.go stub — build when Twitter Go service ports (post-O)
 │   │   └── textanalysis/                ⊘ doc.go stub — extensibility hook per plan §4
 │   ├── infra/                           13 live
@@ -50,7 +49,7 @@ found-footy/
 │   │   ├── wikipedia/                ✓ S7: CirrusSearch entity resolution (per 2026-07-21) + tests
 │   │   ├── event/                       ✓ composer (pg event_log audit ONLY — N2 removed its NATS half; Kind = 6 event_log types) · N1+N5 NatsPublisher — 3-subject live-feed (fixture.clock/update, event.video) + Envelope + source config + golden tests
 │   │   ├── ffmpeg/                      ✓ V/1: probe + single/dense frame extract (single-pass fps) + faststart + semaphore + typed taxonomy + tests
-│   │   └── firefoxfleet/                ✓ #160 (ship-dark, FIREFOXFLEET_ENABLED=false): per-event Firefox provisioner via Docker API — deterministic name/addr (no registry), idempotent Provision/Release, running-only label-counted cap, ListInstances/ReapOrphans reaper (audit P0-5) + tests
+│   │   └── firefoxfleet/                ✓ #160 (LIVE in prod — FIREFOXFLEET_ENABLED=true in prod .env; envDefault false): per-event Firefox provisioner via Docker API — deterministic name/addr (no registry), idempotent Provision/Release, running-only label-counted cap, ListInstances/ReapOrphans reaper (audit P0-5) + tests
 │   ├── workflow/                        6 shipped
 │   │   ├── ingest.go                    ✓ O1c: IngestWorkflow
 │   │   ├── active_poll.go               ✓ O2: ActivePollWorkflow (30s IntervalSpec)
@@ -65,7 +64,7 @@ found-footy/
 │   │   ├── monitor/                     ✓ O2a: 6 activities (GetMonitorConfig, ActivateUpcoming, PollStagingFixtures, ListActiveFixtureIDs, FetchLiveFixtures, ReconcileFixture) + fakes + tests
 │   │   ├── discovery/                   ✓ O3/d: GetDiscoveryConfig, FetchTeamAliases, SearchTweets, StoreCandidate, MarkDownstreamComplete (no _test.go yet — audit gap)
 │   │   ├── video/                       ✓ V/3b: DownloadAndStage + HashVideo (staging-split + pre-download filter) + fakes + 8 tests
-│   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when ship-dark
+│   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when fleet disabled (FIREFOXFLEET_ENABLED=false)
 │   │   └── livefeed/                     ✓ N3+N5: the single publish-activity boundary for all NATS live-feed emits — PublishEventVideo (event.video) + PublishFixtureBatch (fixture.clock + fixture.update); thin wrapper over event.NatsPublisher + tests
 │   ├── api/                             ✓ #167 + N7: Chi read API — 3 data endpoints + a redirect: GET /fixtures(window, no params, OR ?ids= batch) /search?q=(free-text: competition/team/scorer/assist names) /events?ids= (bulk) /videos/{share_id}(302→presign chain). N7 dropped the redundant /fixtures/{id} + /events/{event_id} singles (window/bulk cover them). eventDTO carries derived `phase`+`debounce_count` (layer-2 contract, event.DerivePhase) + `assist`{id,name}|null; fixtureDTO carries league country/round + penalty{home,away}|null + winner (P2-2); dto.go + handlers.go + router.go + tests; SSE is vedanta-systems'
 │   ├── bootstrap/                       ✓ S1 (NOT IN PLAN — see decisions.md 2026-07-07)
@@ -76,7 +75,6 @@ found-footy/
 │   │   ├── logging/                     ✓ S1: slog Emit() + TestEmitter for unit tests
 │   │   ├── metrics/                     ✓ S1: Prometheus registry helper
 │   │   └── tracing/                     ⊘ stub (Noop tracer, ~22 lines; real OTLP Phase 5+)
-│   ├── scaler/                          scaffold; no logic (Phase A/M)
 │   ├── testutil/                        ⊘ empty (build as testing needs surface)
 │   ├── twitter/                         Twitter *service* (browser + auth + scrape); imported by cmd/twitter
 │   │   ├── browser.go                   ✓ T/a: Playwright-Go + Firefox persistent context, GetCookies + ReplaceCookies + LoadCookies + VerifySession
@@ -93,22 +91,22 @@ found-footy/
 │   └── entrypoint.sh                    Conditionally boots VNC daemon stack when TWITTER_VNC_MODE=true, otherwise passthrough
 ├── migrations/                          ⊘ EMPTY BY DESIGN (audit P0-3) — flat schema.sql + VerifySchema drift guard, no migration files; first post-cutover in-place change adds one file, squashed back into schema.sql once applied
 │                                          (see decisions.md 2026-07-07)
-├── scripts/                             smoke + trigger scripts
+├── scripts/                             smoke + trigger scripts (+ probe_* dev one-shots: probe_aliases/query/lookup/vision/cookie_download, trigger_discovery, garage-bootstrap.sh)
 │   ├── smoke_repos/main.go              ✓ live pg + repo smoke test (dev only)
 │   ├── trigger_ingest/main.go           ✓ live IngestWorkflow trigger (O1d verification)
-│   └── smoke_fleet/main.go              ✓ #160: live per-event fleet smoke — provision→healthy→release one instance (dev only; needs docker.sock + dev network)
+│   ├── smoke_fleet/main.go              ✓ #160: live per-event fleet smoke — provision→healthy→release one instance (dev only; needs docker.sock + dev network)
+│   └── smoke_prod_perms.sh              ✓ non-root prod image perm smoke (fleet + video scratch write paths)
 ├── test/                                ✓ scenario harness (Phase T shipped early)
 │   ├── harness/                         ✓ testcontainer pg + mock apifootball + assertion engine
 │   ├── scenarios/                       ✓ YAML corpus organized by suite
 │   │   ├── basic/                       ✓ happy paths
-│   │   ├── debounce/                    ⊘ pending Monitor implementation
-│   │   ├── faults/                      ⊘ pending
-│   │   ├── edge_cases/                  ⊘ pending
-│   │   └── regression/                  ⊘ pending
+│   │   ├── debounce/                    ✓ 5 scenarios
+│   │   ├── faults/                      ✓ 3 scenarios
+│   │   └── edge_cases/                  ✓ 6 scenarios
 │   └── scenarios_test.go                ✓ corpus runner (iterates YAML files)
 ├── caddy/found-footy.caddy              routing stubs; not yet copied into ~/workspace/proxy/caddy.d/
-├── docker-compose.dev.yml               ✓ dev stack; air hot-reload on all 4 Go binaries
-├── docker-compose.prod.yml              runs PYTHON codebase; unchanged (name reflects intent)
+├── docker-compose.dev.yml               ✓ dev stack; air hot-reload on all 3 Go binaries
+├── docker-compose.prod.yml              ✓ runs the GO codebase — LIVE prod as of the 2026-08-15 Python→Go cutover
 ├── Dockerfile / Dockerfile.dev          ✓ multi-stage prod + air-based dev
 ├── go.mod / go.sum                      ✓ Go 1.25 (bumped from 1.23 for air compat)
 ├── Makefile                             ✓ build/test/test-short via docker run

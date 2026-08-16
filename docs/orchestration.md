@@ -13,7 +13,7 @@ is the intent.
 **Update rule.** Every workflow/activity commit updates this doc in
 the same commit. Per the [2026-07-07 working rule](decisions.md).
 
-## Workflow inventory (2026-08-06 — Ingest, Monitor split, EventWorkflow #164c, VideoWorkflow #165 all shipped)
+## Workflow inventory (2026-08-15 — Ingest, Monitor split, EventWorkflow #164c, VideoWorkflow #165 all shipped; #160 fleet live in prod)
 
 | Workflow | Status | Trigger | Location |
 |---|---|---|---|
@@ -351,7 +351,7 @@ clips), and reclaims its Garage objects. Mirrors Python (`monitor.py`
 `initial_count` + `unknown_scorer_disappeared` + `mark_event_removed`); see
 [decisions.md](decisions.md) 2026-08-05. Surfaced per cycle as `unknown_dropped`.
 
-**Per-event Firefox fleet lifecycle (#160, ship-dark behind `FleetEnabled`).**
+**Per-event Firefox fleet lifecycle (#160, gated on `FleetEnabled`; live in prod).**
 Two hooks straddle the debounce, both gated on the monitor config's
 `FleetEnabled` (default false → both inert):
 - **Step 4.4 provision.** `ReconcileFixture` returns `NewNamedEventIDs` — the
@@ -454,7 +454,7 @@ the internal downstream label). `AssetsKept` is the LIVE count (`len(p.assets)`
 [decisions.md 2026-08-09](decisions.md) + [`video-dedup.md`](design/proposals/video-dedup.md);
 history in [audit-2026-08-05](design/audit-2026-08-05.md) Tier-1 #1.
 
-**Per-event Firefox fleet binding (#160, ship-dark behind `FleetEnabled`).**
+**Per-event Firefox fleet binding (#160, gated on `FleetEnabled`; live in prod).**
 When `GetDiscoveryConfig` returns `FleetEnabled=true`, the producer derives
 `instanceAddr := fleetactivity.InstanceAddr(EventID)` — a pure function of the
 event ID, no registry lookup — and threads it through every

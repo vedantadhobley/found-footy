@@ -24,7 +24,10 @@ see [`../../archive/docs/`](../../archive/docs/).
 - [`audit-2026-08-05.md`](./audit-2026-08-05.md) — as-built audit: shipped Go
   LOGIC vs Python LOGIC (code-to-code) + doc accuracy across all ten
   subsystems. 63 improvements / 30 gaps; 24 high-severity doc inaccuracies +
-  a 4-phase doc-restructure plan. The current punch list for the doc pass.
+  a 4-phase doc-restructure plan (since executed).
+- [`audit-2026-08-15.md`](./audit-2026-08-15.md) — **pre-MLS-reset audit** (cutover
+  evening): 7 code dimensions + a doc-staleness review. The cookie write-back +
+  LLM-cap fixes and the live follow-up list live here. The latest audit.
 - [`api-contract.md`](./api-contract.md) — public API surface contract
   (Phase A, unbuilt).
 - [`frontend-bridge-handoff.md`](./frontend-bridge-handoff.md) — **cross-project

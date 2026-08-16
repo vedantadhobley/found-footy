@@ -17,17 +17,20 @@ Both files are explicitly named — bare `docker compose` from this
 directory has no default file and errors out, preventing a typo from
 targeting prod. Every command must pass `-f docker-compose.{prod,dev}.yml`.
 
-- `docker-compose.dev.yml` — hot-reload dev stack. worker/api/scaler
+- `docker-compose.dev.yml` — hot-reload dev stack. The worker/api
   binaries run via `air` with source bind-mounted; twitter uses the
   reconciled `docker/twitter/Dockerfile` (Playwright base + driver
   install) without air — iterate via `docker compose build twitter`.
-  Includes opt-in `twitter-vnc` service under `profiles: [vnc]` for
-  manual cookie re-auth.
-- `docker-compose.prod.yml` — currently still runs the Python codebase.
-  Will migrate to Go binaries during Phase M/C cutover per rebuild-plan.md
-  §13. Twitter + twitter-vnc services already wired to the reconciled
-  Dockerfile as of 2026-07-22 (previously referenced a broken top-level
-  Dockerfile that would have crashed on `playwright.Run()`).
+  Three binaries total (worker/api/twitter); there is no scaler. Includes
+  opt-in `twitter-vnc` service under `profiles: [vnc]` for manual cookie
+  re-auth.
+- `docker-compose.prod.yml` — **LIVE.** Runs the Go binaries — worker
+  (`replicas: 2`) + api, both built from `./Dockerfile` — on Postgres +
+  Garage. The cutover from the Python stack completed 2026-08-15 (La Liga
+  match day). Twitter + twitter-vnc build from the reconciled
+  `docker/twitter/Dockerfile`; the static `twitter` service is now the #160
+  fleet's image-builder + single fallback, with per-event instances carrying
+  the search load.
 
 **Twitter image shape** (per decisions.md 2026-07-22): one Dockerfile
 serves both `twitter` (headless) and `twitter-vnc` (visible display).
@@ -79,6 +82,31 @@ is fronted at `found-footy-<env>-api.<BASE_DOMAIN>` → `reverse_proxy
 found-footy-<env>-api:8081` — the Chi read surface; `:8080` is internal
 metrics/healthz, never exposed. The in-repo `caddy/found-footy.caddy` is the
 documentation copy (not read by Caddy).
+
+## Prod image hardening (non-root)
+
+The prod image (`./Dockerfile`, worker + api) runs **non-root** — `adduser
+--uid 1000 app` + `USER app`. Two runtime writes that dev (root) got for free
+then need explicit grants; both bit the 2026-08-15 cutover before they were
+added:
+
+- **docker.sock for the #160 fleet.** The worker provisions/releases per-event
+  Firefox via the Docker API, so it must write `/var/run/docker.sock`
+  (root:docker on the host). The host docker gid can't be baked into the image,
+  so the prod compose grants it at runtime: `group_add: ["984"]` (luv's docker
+  gid). Missing → every Provision/Release/Reap is "permission denied" and no
+  clip is ever searched. luv-specific; reparameterize if prod moves host.
+- **`/scratch` for video staging.** `app` can't `mkdir` under root-owned `/`,
+  so the image bakes the dir it needs: `mkdir -p /scratch && chown app:app
+  /scratch` (`VIDEO_SCRATCH_DIR` default). Keeps it a COMPLETE non-root image —
+  no runtime chown / env-redirect hack.
+
+**Deploy gate:** `scripts/smoke_prod_perms.sh [image]` (default
+`found-footy-worker:latest`) runs the real prod worker image as `--user app
+--group-add <host-docker-gid>` and asserts both — docker.sock writable +
+`/scratch` writable — failing loud so a half-configured non-root image can't
+ship. Run it before a prod deploy; it's the check that would have caught the
+cutover perm bugs.
 
 ## First-time dev bootstrap
 
@@ -188,21 +216,34 @@ api should log `s3_connected`. Reprovision:
 
 ## Workflow scheduling
 
-**MonitorWorkflow** — every 30 seconds. Registered on worker startup
-via `ensureActivePollSchedule` + `ensureStagingPollSchedule` in `cmd/worker/main.go` (O2).
+MonitorWorkflow was split into two independent Schedules on 2026-07-11
+(decisions.md); the combined poll no longer exists. Both are registered on
+worker startup via `ensureActivePollSchedule` + `ensureStagingPollSchedule`
+in `cmd/worker/main.go` (O2), idempotently — Create swallows
+`ErrScheduleAlreadyRunning`.
 
-- Schedule IDs: `active-poll-scheduled` (30s IntervalSpec) + `staging-poll-scheduled` (cron `*/15 * * * *`)
-- Interval: 30 seconds (via `ScheduleIntervalSpec` — cron doesn't
-  support sub-minute resolution)
-- Overlap: `SCHEDULE_OVERLAP_POLICY_SKIP` — if the prior cycle is
-  still running when the next tick fires, skip. Better than
-  double-fanning-out reconcile activities.
-- Args: empty `MonitorWorkflowInput{}` — workflow self-configures
-  with 30-min default ActivationWindow.
+**ActivePollWorkflow** — every 30 seconds. Schedule `active-poll-scheduled`.
 
-Verified live: cycles firing every 30s exactly. When no active
-fixtures exist (e.g. before today's ingest ran), workflow completes
-early after `ListActiveFixtureIDs → []`.
+- Interval: 30 seconds (via `ScheduleIntervalSpec` from
+  `WORKFLOWS_ACTIVE_FIXTURE_POLL_INTERVAL`, default `30s` — cron can't do
+  sub-minute resolution)
+- Overlap: `SCHEDULE_OVERLAP_POLICY_SKIP` — if the prior cycle is still
+  running when the next tick fires, skip. Better than double-fanning-out
+  reconcile activities.
+- Args: empty `ActivePollWorkflowInput{}` — a zero `ActivationWindow` falls
+  back to config (`WORKFLOWS_ACTIVATION_WINDOW`, default 5m).
+
+**StagingPollWorkflow** — every 15 minutes. Schedule `staging-poll-scheduled`.
+
+- Cron: `*/15 * * * *` (`WORKFLOWS_STAGING_POLL_CRON`, runtime-tunable via
+  `temporal schedule update staging-poll-scheduled --cron ...`)
+- Overlap: `SCHEDULE_OVERLAP_POLICY_SKIP`
+- Args: empty `StagingPollWorkflowInput{}` — same zero-`ActivationWindow`→
+  config fallback (default 5m).
+
+Verified live: ActivePoll cycles firing every 30s exactly. When no active
+fixtures exist (e.g. before today's ingest ran), the cycle completes early
+after `ListActiveFixtureIDs → []`.
 
 **IngestWorkflow** — daily at 00:05 UTC. Registered on worker startup
 via `ensureIngestSchedule` in `cmd/worker/main.go` (O1e/b).
@@ -224,8 +265,10 @@ temporal:7233 schedule list` shows the schedule with its next run
 time. Schedules survive worker restarts (state lives in Temporal
 server, not on the worker).
 
-**ActivePollWorkflow + StagingPollWorkflow** — schedules registered (EventWorkflow is Temporal-direct spawn by Monitor, NOT scheduled — 2026-07-16)
-as their workflows land in O2+.
+**EventWorkflow** — NOT scheduled. Monitor's `ReconcileFixture` spawns it
+Temporal-direct (client `StartWorkflow`, deterministic ID `event-{id}`) when a
+goal's `downstream_triggered` flips (2026-07-16). See
+[orchestration.md](./orchestration.md) for the spawn + completion contract.
 
 **Manual trigger** for ad-hoc re-ingest (e.g. testing after a code
 change) still works:
