@@ -161,7 +161,7 @@ func main() {
 	// Kick off first auth check. EnsureAuthenticated handles the full
 	// sequence: mtime check → reload from shared file if newer →
 	// verify. Best-effort in the background — /health reports the
-	// outcome so the orchestrator + scaler see it. Missing cookie
+	// outcome so the orchestrator sees it. Missing cookie
 	// file → StateUnauthenticated, VNC operator needs to log in.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)

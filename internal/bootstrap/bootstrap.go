@@ -77,7 +77,7 @@ type Work func(ctx context.Context, deps *Deps) error
 // scaffolding, emit startup, run Work under a signal-handled context,
 // emit shutdown. Exit code is 0 on clean shutdown, 1 on failure.
 //
-// binary is the short name ("worker", "api", "scaler", "twitter") used
+// binary is the short name ("worker", "api", "twitter") used
 // in the deploy_info gauge label and the startup/shutdown log lines.
 // gitSHA + builtAt are injected via -ldflags at build time.
 func Run(binary, gitSHA, builtAt string, work Work) {
