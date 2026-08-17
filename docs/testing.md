@@ -48,6 +48,12 @@ three `SearchTweets` activity tries, and requires the fourth to surface a
 candidate after the restart window. Its default-version companion requires the
 historical three-try policy for pre-FF-017 replay.
 
+FF-026 bootstrap tests reserve a real ephemeral TCP address and require an
+occupied metrics socket to reject startup before `Work` runs. A companion test
+executes the public `Run` boundary in a subprocess and requires exit status 1.
+A third binds an OS-assigned port, runs `Work`, and proves the shared lifecycle
+drains the listener cleanly.
+
 ## Tier 1.5 — workflow tests
 
 `internal/workflow/ingest_test.go` uses

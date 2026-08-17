@@ -123,6 +123,12 @@ found-footy-<env>-api:8081` — the Chi read surface; `:8080` is internal
 metrics/healthz, never exposed. The in-repo `caddy/found-footy.caddy` is the
 documentation copy (not read by Caddy).
 
+Every Go binary must bind its configured internal metrics/health address
+before it starts application work (FF-026). Port conflicts fail the container
+non-zero, and a later listener failure cancels and drains the binary so the
+Compose restart policy can replace it. A running container without its
+`/metrics` and `/healthz` listener is not a supported degraded state.
+
 ## Prod image hardening (non-root)
 
 The prod image (`./Dockerfile`, worker + api) runs **non-root** — `adduser

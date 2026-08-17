@@ -589,6 +589,36 @@ against the current branch.
   live endpoint and use the explicit production form documented in
   [`operations.md`](./operations.md#twitter-authentication-and-cookie-re-auth).
 
+### FF-026 — metrics listener failure does not fail the binary
+
+- **Status:** `implemented`; not deployed
+- **Severity:** P1
+- **Source:** Audit 2026-08-13 P1-4, revalidated against current bootstrap.
+- **Invariant:** Application work must not run unless the binary owns its
+  configured `/metrics` and `/healthz` socket. Losing that listener after
+  startup must terminate the process as a failure.
+- **Evidence:** Bootstrap launched `ListenAndServe` in a goroutine and buffered
+  its error while calling `Work` synchronously. A bind error could therefore
+  leave the worker running indefinitely without health or metrics. When
+  `Work` later returned nil, bootstrap logged the listener error but ignored it
+  when selecting the process exit status.
+- **Implemented locally; not deployed:** Bootstrap now binds with `net.Listen`
+  before it emits startup or calls `Work`. A bind error returns through the
+  process exit boundary immediately. `Work` and the serving goroutine then run
+  under one lifecycle select; a later listener failure cancels `Work`, drains
+  registered adapters in LIFO order, and remains the returned fatal error.
+  The public `Run` wrapper is the only `os.Exit(1)` boundary, while the internal
+  lifecycle returns an error and is directly testable.
+- **Regression:** One test occupies an ephemeral address and proves `Work` is
+  never called. A subprocess test requires the public `Run` boundary to exit 1.
+  A third test binds an OS-assigned port, runs `Work`, and proves the metrics
+  listener shuts down without deadlock. The uncached bootstrap and binary
+  package tests, targeted race detector, `make test-short`, `make test`, and
+  `make vet` pass.
+- **Source relation:** This closes `AUD-0813-P1-4`. Its suggested non-blocking
+  channel check was not used because it can race the listener's bind attempt;
+  synchronous socket ownership provides a deterministic startup boundary.
+
 ## Confirmed lower-priority backlog
 
 | ID | Severity | Source | Summary | Completion condition |
@@ -616,7 +646,6 @@ implementation time.
 | `AUD-0815-SHARE-TOCTOU` | persist | Share mint has a check-then-write race under concurrent promotion. | `triage` |
 | `AUD-0815-ROT` | code/docs | Dormant compatibility vocabulary and zero-caller functions remain after cutover cleanup. | `triage` |
 | `AUD-0813-P1-2` | monitor | Positional natural-key sequence can misidentify a same-player brace after removal or API reorder. | `triage` |
-| `AUD-0813-P1-4` | bootstrap | Metrics/health listener bind failure may let a binary exit cleanly or run without its listener. | `triage` |
 | `AUD-0813-P2-1` | API | Fixture reads use N+1 event/video queries and the completed bucket is unbounded at the query layer. | `triage` |
 | `AUD-0813-P2-3` | video | CDN-download HTTP 403 may be classified as terminal geo-restriction when retry could recover it. | `triage` |
 | `AUD-0813-P2-5` | workflow | Serialized selector consumer blocks on persistence I/O that may not require serialization. | `triage` |
