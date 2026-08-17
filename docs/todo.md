@@ -41,7 +41,7 @@ against the current branch.
 
 | ID | Severity | Status | Summary |
 |---|---|---|---|
-| FF-018 | P2 | `confirmed` | Correct the production Twitter reauthentication command so it names the explicit production Compose file. |
+| FF-018 | P2 | `implemented` | Correct the production Twitter reauthentication command so it names the explicit production Compose file; rollout remains. |
 
 ## Confirmed issues
 
@@ -369,6 +369,26 @@ against the current branch.
   but it modeled readiness as immutable construction state. The shipped
   per-event fleet and retrying activity boundary require live per-call state.
 
+### FF-018 — production reauthentication command cannot resolve Compose
+
+- **Status:** `implemented`; not deployed
+- **Severity:** P2
+- **Source:** Current production Compose and repository layout.
+- **Invariant:** Operator instructions returned by `/authenticate` must be
+  directly executable from the repository and must identify their environment.
+- **Evidence:** Production set `TWITTER_VNC_START_CMD` to `docker compose
+  --profile vnc up -d twitter-vnc`, but the repository deliberately has no
+  default Compose file. The command therefore fails before it can resolve a
+  service.
+- **Implemented locally; not deployed:** Production now advertises `docker
+  compose -f docker-compose.prod.yml --profile vnc up -d twitter-vnc`. Dev
+  already named its explicit Compose file and is unchanged.
+- **Regression:** The release-contract test parses the production Compose model
+  and requires the exact environment-explicit command on the Twitter service.
+- **Production note:** Until the rollout, ignore the command returned by the
+  live endpoint and use the explicit production form documented in
+  [`operations.md`](./operations.md#twitter-authentication-and-cookie-re-auth).
+
 ## Confirmed lower-priority backlog
 
 | ID | Severity | Source | Summary | Completion condition |
@@ -380,7 +400,6 @@ against the current branch.
 | FF-012 | P2 | Audit 2026-08-15 | Permanent LLM failures such as 401/404/bad JSON are retried. | Typed non-retryable classification and Temporal retry test. |
 | FF-013 | P2 | Audit 2026-08-15 | Schema guard verifies one fingerprint, not the existence of every object after interrupted initialization. | Verify required objects or adopt ordered migrations; test partial schema. |
 | FF-017 | P2 | Current code; legacy #170-adjacent finding | Firefox can die while the Go Twitter service remains alive and unusable because no browser watchdog or fatal-exit path exists. | Make browser death restart or terminate the service, expose correct health, and cover the process-loss transition. |
-| FF-018 | P2 | Current production Compose and repository layout | `/authenticate.reauth_command` advertises `docker compose --profile vnc up -d twitter-vnc`, but the repository deliberately has no default Compose file, so the command fails without `-f docker-compose.prod.yml`. | Set the production value to the explicit Compose-file command, cover the operator response in configuration tests, update the as-built ledger, and deploy with approval. |
 
 ## Audit intake requiring current-code validation
 

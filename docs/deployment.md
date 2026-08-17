@@ -77,6 +77,11 @@ make twitter-vnc-up     # brings up twitter-vnc via `docker compose --profile vn
 make twitter-vnc-down   # stops + removes the container when done
 ```
 
+The production `/authenticate` response advertises the explicit repository
+command `docker compose -f docker-compose.prod.yml --profile vnc up -d
+twitter-vnc`. A bare `docker compose` command is invalid here because the
+repository deliberately has no default Compose file (FF-018).
+
 **Cookie storage + host perms (load-bearing — host state, NOT in the repo).**
 The shared Twitter cookie file lives on the host at `FIREFOXFLEET_COOKIE_HOST_PATH`
 (default `~/.config/found-footy/twitter_cookies.json`), bind-mounted into `twitter`,
