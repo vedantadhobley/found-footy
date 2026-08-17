@@ -20,7 +20,7 @@ updates this doc if it introduces a new test tier or pattern.
 | Workflow tests | `internal/workflow` | Temporal `testsuite.WorkflowTestSuite` with named activity mocks. |
 | Adapter integration | `internal/infra` | Real Postgres, S3-compatible storage, NATS, and Temporal through testcontainers where required. |
 | Scenario corpus | `test/scenarios` | YAML-driven fixture lifecycles against real workflow/activity code and test Postgres. |
-| Release contract | `test/release_contract_test.go` | Parses production Compose without Docker operations and requires immutable identity propagation through every application image and the Firefox fleet image. |
+| Release contract | `test/release_contract_test.go` | Parses production Compose without Docker operations and requires immutable identity propagation plus the stack-wide ffmpeg CPU budget. |
 
 For a live inventory, use `rg -n '^func Test' --glob '*_test.go' internal test`
 and `rg --files test/scenarios -g '*.yaml'`.
@@ -213,8 +213,12 @@ payload consumed by the production release verifier.
 `test/release_contract_test.go` parses `docker-compose.prod.yml` as data. It
 requires worker, API, Twitter, and Twitter VNC to receive `GIT_SHA`, `BUILT_AT`,
 and `IMAGE_TAG`; it also requires the worker's `FIREFOXFLEET_IMAGE` to carry the
-same immutable tag. This test is in `make test-short` and performs no Docker or
-production operation. Shell syntax is checked separately with
+same immutable tag. It also multiplies fixed worker replicas, per-worker
+ffmpeg slots, and per-process threads, requiring the result to equal the
+declared 32-thread stack budget. The test requires explicit worker environment
+overrides, so `.env` defaults cannot silently multiply across replicas. This
+test is in `make test-short` and performs no Docker or production operation.
+Shell syntax is checked separately with
 `bash -n scripts/deploy-prod.sh`, and Compose interpolation is validated with
 synthetic identity values plus `docker compose ... config --quiet`.
 

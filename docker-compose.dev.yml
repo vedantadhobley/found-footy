@@ -165,11 +165,11 @@ services:
     # Largest app ceiling. The worker runs concurrent ffmpeg frame-extraction;
     # streamed dense extraction (per-clip Go heap ~nil — hashes each frame as it
     # arrives) leaves ffmpeg RSS (~0.5g worst-case 1080p) as the only per-clip
-    # cost. Concurrency is bounded by FFMPEG_MAX_CONCURRENT (.env, 32) → worst
-    # case 32 × ~0.5g ≈ 16g, so 16g is the coupled ceiling. A rare all-worst-case
-    # flurry degrades gracefully: an OOM-killed ffmpeg child just fails its
-    # activity and Temporal retries. Load test + coupling: decisions.md
-    # 2026-08-06. See postgres note.
+    # cost. Dev runs one worker; FFMPEG_MAX_CONCURRENT (.env, 32) therefore
+    # gives a worst case of 32 × ~0.5g ≈ 16g, so 16g is the coupled ceiling. A
+    # rare all-worst-case flurry degrades gracefully: an OOM-killed ffmpeg child
+    # just fails its activity and Temporal retries. Load test + coupling:
+    # decisions.md 2026-08-06. See postgres note.
     mem_limit: 16g
     env_file: .env
     environment:

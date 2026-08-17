@@ -227,7 +227,7 @@ against the current branch.
 
 ### FF-021 — per-replica ffmpeg caps overcommit the host
 
-- **Status:** `confirmed`
+- **Status:** `implemented locally`; not deployed
 - **Severity:** P1
 - **Observed:** 2026-08-16 production topology during the Huijsen workflow.
 - **Invariant:** A documented host CPU budget must remain a host budget when a
@@ -247,8 +247,18 @@ against the current branch.
   Longer term, move dense work to a dedicated Temporal queue or shared
   admission controller if worker count becomes elastic; a process-local
   semaphore cannot enforce a host-wide invariant.
+- **Implementation:** Production Compose now declares a fixed 32-thread stack
+  budget, pins two worker replicas, and explicitly overrides the per-worker
+  process semaphore to 16 with one thread per ffmpeg process. The application
+  remains environment-agnostic; Compose owns the deployment partition and its
+  environment entries take precedence over the single-worker `.env` defaults.
+- **Regression:** The inert production-Compose contract test requires positive
+  explicit worker overrides, ties them to the declared budget and replica
+  count, and proves `2 × 16 × 1 = 32` without loading `.env`, contacting Docker,
+  or touching production.
 - **Rollout:** Correcting a prod-loaded limit is a separate production config
-  action. Measure current peak concurrency before selecting the new budget.
+  action. This repository change does not alter the running stack; deployment
+  still requires explicit approval.
 - **Source relation:** Audit 2026-08-13 P2-9 found the shared fast/dense lane,
   but neither that audit nor the 2026-08-06 decision accounted for replicas.
 

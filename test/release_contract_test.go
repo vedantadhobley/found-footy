@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -13,6 +14,12 @@ import (
 )
 
 type releaseCompose struct {
+	FFmpegStackBudget struct {
+		HardwareThreads       int `yaml:"hardware_threads"`
+		WorkerReplicas        int `yaml:"worker_replicas"`
+		MaxProcessesPerWorker int `yaml:"max_processes_per_worker"`
+		ThreadsPerProcess     int `yaml:"threads_per_process"`
+	} `yaml:"x-ffmpeg-stack-budget"`
 	Services map[string]releaseService `yaml:"services"`
 }
 
@@ -61,11 +68,16 @@ type releaseService struct {
 	} `yaml:"build"`
 	Image       string            `yaml:"image"`
 	Environment map[string]string `yaml:"environment"`
+	Deploy      struct {
+		Replicas int `yaml:"replicas"`
+	} `yaml:"deploy"`
 }
 
-// TestProductionComposePropagatesReleaseIdentity prevents any application
-// image from silently falling back to unknown build metadata or a mutable tag.
-func TestProductionComposePropagatesReleaseIdentity(t *testing.T) {
+// loadProductionCompose parses the release model as inert YAML. It does not
+// interpolate the production dotenv file or contact Docker.
+func loadProductionCompose(t *testing.T) releaseCompose {
+	t.Helper()
+
 	_, filename, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("resolve test source path")
@@ -80,6 +92,13 @@ func TestProductionComposePropagatesReleaseIdentity(t *testing.T) {
 	if err := yaml.Unmarshal(contents, &compose); err != nil {
 		t.Fatalf("parse production Compose file: %v", err)
 	}
+	return compose
+}
+
+// TestProductionComposePropagatesReleaseIdentity prevents any application
+// image from silently falling back to unknown build metadata or a mutable tag.
+func TestProductionComposePropagatesReleaseIdentity(t *testing.T) {
+	compose := loadProductionCompose(t)
 
 	const (
 		gitSHAArg  = "${GIT_SHA:-unknown}"
@@ -124,4 +143,56 @@ func TestProductionComposePropagatesReleaseIdentity(t *testing.T) {
 	if got := twitter.Environment["TWITTER_VNC_START_CMD"]; got != wantReauthCommand {
 		t.Errorf("twitter TWITTER_VNC_START_CMD = %q, want %q", got, wantReauthCommand)
 	}
+}
+
+// TestProductionComposeEnforcesStackWideFFmpegBudget prevents a process-local
+// semaphore from silently multiplying past luv's host budget when workers are
+// replicated. The explicit service environment must override .env defaults.
+func TestProductionComposeEnforcesStackWideFFmpegBudget(t *testing.T) {
+	compose := loadProductionCompose(t)
+	budget := compose.FFmpegStackBudget
+	worker, ok := compose.Services["worker"]
+	if !ok {
+		t.Fatal("worker service is missing")
+	}
+
+	if budget.HardwareThreads != 32 {
+		t.Errorf("ffmpeg hardware_threads = %d, want 32", budget.HardwareThreads)
+	}
+	if budget.WorkerReplicas != 2 {
+		t.Errorf("ffmpeg worker_replicas = %d, want 2", budget.WorkerReplicas)
+	}
+	if worker.Deploy.Replicas != budget.WorkerReplicas {
+		t.Errorf("worker replicas = %d, budget declares %d", worker.Deploy.Replicas, budget.WorkerReplicas)
+	}
+
+	maxProcesses := parsePositiveComposeInt(t, worker.Environment, "FFMPEG_MAX_CONCURRENT")
+	threadsPerProcess := parsePositiveComposeInt(t, worker.Environment, "FFMPEG_THREADS_PER_PROC")
+	if maxProcesses != budget.MaxProcessesPerWorker {
+		t.Errorf("worker FFMPEG_MAX_CONCURRENT = %d, budget declares %d", maxProcesses, budget.MaxProcessesPerWorker)
+	}
+	if threadsPerProcess != budget.ThreadsPerProcess {
+		t.Errorf("worker FFMPEG_THREADS_PER_PROC = %d, budget declares %d", threadsPerProcess, budget.ThreadsPerProcess)
+	}
+
+	gotThreads := worker.Deploy.Replicas * maxProcesses * threadsPerProcess
+	if gotThreads != budget.HardwareThreads {
+		t.Errorf("ffmpeg stack threads = %d (%d replicas × %d processes × %d threads), want %d", gotThreads, worker.Deploy.Replicas, maxProcesses, threadsPerProcess, budget.HardwareThreads)
+	}
+}
+
+// parsePositiveComposeInt requires an explicit positive integer environment
+// override on a Compose service and returns it for contract arithmetic.
+func parsePositiveComposeInt(t *testing.T, environment map[string]string, key string) int {
+	t.Helper()
+
+	raw, ok := environment[key]
+	if !ok {
+		t.Fatalf("worker environment does not explicitly override %s", key)
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		t.Fatalf("worker %s = %q, want a positive integer", key, raw)
+	}
+	return value
 }
