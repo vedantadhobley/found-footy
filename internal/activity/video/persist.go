@@ -9,6 +9,8 @@
 //	  activity (vs the design's two steps) because the asset UUID can't be
 //	  minted in workflow code (non-deterministic), and it drives both the S3
 //	  key and the DB row.
+//	LoadEventAssets — restore live persisted assets into a replacement
+//	  EventWorkflow execution so dedup and ranking retain prior progress.
 //	BumpAssetPopularity — persist a collapse onto an already-inserted asset.
 //	DeleteStaging — drop a staging object (rejected clip / dedup loser).
 //	SupersedeAssets — consolidate loser assets onto a winner (post-vision,
@@ -76,6 +78,62 @@ type PromoteAndPersistInput struct {
 	// Vision verdict, snapshotted onto the share.
 	Verified        bool
 	ExtractedMinute *int
+}
+
+// LoadEventAssetsInput identifies the event whose live dedup state is needed.
+type LoadEventAssetsInput struct {
+	EventID uuid.UUID
+}
+
+// RestoredEventAsset is the workflow-safe projection of one active share and
+// its live asset. It contains exactly the fields the in-memory dedup/ranking
+// pipeline needs after an abnormal EventWorkflow restart.
+type RestoredEventAsset struct {
+	AssetID       uuid.UUID
+	MD5           string
+	FrameHashes   []uint64
+	Width         int
+	Height        int
+	DurationMS    int
+	FileSizeBytes int64
+	Bitrate       *int
+	Popularity    int
+	Verified      bool
+}
+
+// LoadEventAssetsOutput returns rank-ordered live assets for one event.
+type LoadEventAssetsOutput struct {
+	Assets []RestoredEventAsset
+}
+
+// LoadEventAssets restores the durable portion of EventWorkflow's in-memory
+// state. Active shares are rank ordered by the repo; removed and superseded
+// shares, plus assets already superseded by another asset, are excluded.
+func (a *PersistActivities) LoadEventAssets(ctx context.Context, in LoadEventAssetsInput) (LoadEventAssetsOutput, error) {
+	var out LoadEventAssetsOutput
+	shares, err := a.Shares.GetByEvent(ctx, in.EventID)
+	if err != nil {
+		return out, fmt.Errorf("video.LoadEventAssets: get shares: %w", err)
+	}
+	for _, share := range shares {
+		if share.State != dvideo.ShareStateActive {
+			continue
+		}
+		asset, err := a.Assets.Get(ctx, share.AssetID)
+		if err != nil {
+			return out, fmt.Errorf("video.LoadEventAssets: get asset %s: %w", share.AssetID, err)
+		}
+		if asset.SupersededBy != nil {
+			continue
+		}
+		out.Assets = append(out.Assets, RestoredEventAsset{
+			AssetID: asset.ID, MD5: hex.EncodeToString(asset.MD5), FrameHashes: asset.FrameHashes,
+			Width: asset.Width, Height: asset.Height, DurationMS: asset.DurationMS,
+			FileSizeBytes: asset.FileSizeBytes, Bitrate: asset.Bitrate,
+			Popularity: asset.Popularity, Verified: share.TimestampVerified,
+		})
+	}
+	return out, nil
 }
 
 // PromoteAndPersistOutput reports what got persisted. Inserted=false means

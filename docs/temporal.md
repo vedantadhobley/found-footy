@@ -235,7 +235,13 @@ Load-bearing details:
 | `staging-poll-scheduled` | cron `WORKFLOWS_STAGING_POLL_CRON` (`*/15 * * * *`) | StagingPollWorkflow |
 
 EventWorkflow + VideoWorkflow are **spawned** (client `StartWorkflow` / child
-workflow), not scheduled — see [orchestration.md](./orchestration.md).
+workflow), not scheduled. EventWorkflow uses its deterministic ID with
+`ALLOW_DUPLICATE_FAILED_ONLY`, so running and successful executions remain
+singletons while failed, timed-out, canceled, or terminated executions can
+resume from Postgres checkpoints. Its client start RPC is bounded, but the
+workflow has no arbitrary outer execution timeout; the finite search loop and
+per-operation timeouts own the runtime bound. See
+[orchestration.md](./orchestration.md).
 
 **Adapter surface:** `Client.ScheduleClient() client.ScheduleClient` —
 passthrough to the SDK's ScheduleClient. Not per-op instrumented; schedule ops

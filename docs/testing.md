@@ -65,6 +65,16 @@ error and assert that neither a later search nor `MarkDownstreamComplete`
 occurs; the vision case also rejects post-cancel pipeline activities. This
 guards FF-015's producer/consumer yield points without wall-clock sleeps.
 
+FF-007 recovery tests cover both start policy and replacement execution.
+Spawner unit tests require typed `ALLOW_DUPLICATE_FAILED_ONLY`, no workflow
+execution/run timeout, duplicate-start idempotency, and propagation of real
+start errors. Workflow tests restore nine completed attempts, terminal and
+pending candidate ownership, and a live asset; they require only attempt ten
+to search, only the pending and new candidates to run, and the prior asset to
+remain in the final dedup/output pool. A default-version test proves histories
+created before FF-007 do not gain recovery activities or progress writes on
+replay.
+
 FF-002 workflow tests cover both sides of the child boundary. VideoWorkflow
 tests exhaust all configured download and hash retries and require typed failed
 outputs; the hash result must retain its staging key, while cancellation must
@@ -85,6 +95,10 @@ deterministic asset with mismatched immutable storage identity fails closed.
 
 Integration coverage currently includes `pg`, `s3`, `nats`, and `temporal`.
 Each covered adapter spins its real container in the test process.
+
+The pg recovery test verifies that `attempts_completed` advances monotonically
+inside downstream metadata and that terminal versus pending candidate state is
+loaded in stable discovery order.
 
 Enablement mechanics:
 - `--network=host` on the `test` make target — testcontainers-go

@@ -17,58 +17,69 @@ import (
 	"fmt"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
-	temporaladapter "github.com/vedantadhobley/found-footy/internal/infra/temporal"
 )
 
 // DownstreamSpawner spawns downstream workflows for events that have
 // crossed to downstream_triggered=true. Every method is idempotent
-// under Temporal's RejectDuplicate reuse policy — an activity retry
-// after a partial-success crash sees WorkflowExecutionAlreadyStarted,
-// which the impl swallows so the activity finishes cleanly on retry.
+// under Temporal's failed-only reuse policy — an activity retry while
+// an execution is running or after success sees
+// WorkflowExecutionAlreadyStarted, which the impl swallows so the
+// activity finishes cleanly. A closed unsuccessful execution may restart.
 type DownstreamSpawner interface {
 	// SpawnEvent starts a EventWorkflow with the given
 	// deterministic workflow_id ("event-{event_id}") and input.
 	// Nil error means either the workflow was newly started OR was
-	// already running (RejectDuplicate + already-started swallowed);
+	// already running or successfully completed (duplicate-start swallowed);
 	// both count as success.
 	SpawnEvent(ctx context.Context, workflowID string, in discoveryactivity.EventWorkflowInput) error
 }
 
 // TemporalSpawner is the production DownstreamSpawner backed by the
-// Temporal client wrapper. Bundles the per-spawn timeout so callers
-// don't need to reason about it at the call site.
+// Temporal client wrapper. It bounds only the client RPC that requests a
+// start; EventWorkflow execution time is governed by its finite search loop
+// and activity timeouts.
 type TemporalSpawner struct {
-	Client       *temporaladapter.Client
+	Client       workflowStarter
 	StartTimeout time.Duration
+}
+
+// workflowStarter is the Temporal client subset event spawning needs. The
+// production adapter satisfies it; the narrow port lets tests inspect the
+// exact reuse and timeout contract without a Temporal server.
+type workflowStarter interface {
+	TaskQueue() string
+	StartWorkflow(context.Context, client.StartWorkflowOptions, string, ...interface{}) (client.WorkflowRun, error)
 }
 
 // NewTemporalSpawner constructs a TemporalSpawner. StartTimeout
 // defaults to 10s if zero — enough for a healthy Temporal round trip,
 // short enough that a wedged server surfaces quickly.
-func NewTemporalSpawner(c *temporaladapter.Client, startTimeout time.Duration) *TemporalSpawner {
+func NewTemporalSpawner(c workflowStarter, startTimeout time.Duration) *TemporalSpawner {
 	if startTimeout == 0 {
 		startTimeout = 10 * time.Second
 	}
 	return &TemporalSpawner{Client: c, StartTimeout: startTimeout}
 }
 
-// SpawnEvent calls the Temporal client's StartWorkflow with
-// RejectDuplicate reuse policy so a retry-after-partial-success
-// crash surfaces WorkflowExecutionAlreadyStarted (swallowed) rather
-// than starting a second run. Uses the client's default task queue.
+// SpawnEvent calls the Temporal client's StartWorkflow with failed-only reuse.
+// A running or successfully completed execution is still duplicate-rejected,
+// while a failed, timed-out, canceled, or terminated execution can restart and
+// finish the existing downstream checklist row. EventWorkflow owns its own
+// bounded attempt loop and activity timeouts, so no arbitrary execution timeout
+// truncates legitimate queued video work.
 func (s *TemporalSpawner) SpawnEvent(ctx context.Context, workflowID string, in discoveryactivity.EventWorkflowInput) error {
 	callCtx, cancel := context.WithTimeout(ctx, s.StartTimeout)
 	defer cancel()
 
 	opts := client.StartWorkflowOptions{
-		ID:                       workflowID,
-		TaskQueue:                s.Client.TaskQueue(),
-		WorkflowIDReusePolicy:    3, // enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE
-		WorkflowExecutionTimeout: 30 * time.Minute,
+		ID:                    workflowID,
+		TaskQueue:             s.Client.TaskQueue(),
+		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
 	}
 
 	_, err := s.Client.StartWorkflow(callCtx, opts, "EventWorkflow", in)

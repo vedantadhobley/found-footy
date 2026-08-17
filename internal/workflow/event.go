@@ -20,12 +20,12 @@
 //
 // Deterministic workflow ID convention: "event-{event_id}" so
 // the row inserted by Monitor pairs 1:1 with the Temporal WorkflowID
-// under RejectDuplicate policy. (The pg event_downstream_workflows
+// under failed-only reuse. (The pg event_downstream_workflows
 // workflow_type value stays "discovery" — the internal label for the
 // event's downstream workflow, filtered by EventsAwaitingDiscovery.)
-// Activity retries after partial-
-// success crashes hit "WorkflowExecutionAlreadyStarted" which the
-// spawner swallows as success.
+// Activity retries while the execution remains running or has succeeded hit
+// "WorkflowExecutionAlreadyStarted", which the spawner swallows as success;
+// a closed unsuccessful execution restores durable progress and resumes.
 package workflow
 
 import (
@@ -38,6 +38,7 @@ import (
 
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	fleetactivity "github.com/vedantadhobley/found-footy/internal/activity/fleet"
+	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	querybuilder "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 )
 
@@ -68,11 +69,15 @@ type EventWorkflowOutput struct {
 const (
 	discoveryPGShortActivityTTL = 30 * time.Second
 	discoveryPGRetryAttempts    = 5
+
+	ff007FailedRunRecoveryChangeID = "ff-007-failed-run-recovery"
+	ff007FailedRunRecoveryVersion  = workflow.Version(1)
 )
 
 // EventWorkflow orchestrates the full candidate collection cycle:
-// fetch team aliases → build query → run 10 attempts of /search with
-// accumulated exclude_urls → persist each candidate → mark row complete.
+// fetch team aliases → build query → restore durable progress → run
+// configured /search attempts with accumulated exclude_urls → persist each
+// candidate → mark the downstream row complete.
 func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOutput, error) {
 	log := workflow.GetLogger(ctx)
 	log.Info("EventWorkflow started",
@@ -196,10 +201,64 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		terminalVideoFailures: terminalVideoFailures,
 	}, log)
 
-	// exclude_urls + seenTweetIDs are workflow-local so retries/replays
-	// deterministically rebuild the same accumulation.
-	excludeURLs := make([]string, 0, 64)
-	seenTweetIDs := make(map[string]struct{}, 64)
+	// FF-007 recovery: a new execution after failed-only Workflow ID reuse
+	// starts with empty workflow memory. Restore the live asset pool before any
+	// candidate can reach dedup, then restore search/candidate ownership from
+	// Postgres. Both activity results are recorded in this execution's history,
+	// so replay remains deterministic. The version marker keeps histories that
+	// started before FF-007 on their original command sequence; a replacement
+	// execution has a fresh history and therefore takes the recovery branch.
+	recoveryEnabled := workflow.GetVersion(ctx,
+		ff007FailedRunRecoveryChangeID,
+		workflow.DefaultVersion,
+		ff007FailedRunRecoveryVersion,
+	) != workflow.DefaultVersion
+	workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
+	var recoveryOut discoveryactivity.LoadEventRecoveryStateOutput
+	if recoveryEnabled {
+		var assetsOut videoactivity.LoadEventAssetsOutput
+		if err := workflow.ExecuteActivity(p.persistCtx,
+			(*videoactivity.PersistActivities).LoadEventAssets,
+			videoactivity.LoadEventAssetsInput{EventID: in.EventID},
+		).Get(p.persistCtx, &assetsOut); err != nil {
+			return out, err
+		}
+		p.restoreAssets(assetsOut.Assets)
+
+		recoveryCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: discoveryPGShortActivityTTL,
+			RetryPolicy: &temporal.RetryPolicy{
+				InitialInterval: time.Second, BackoffCoefficient: 2,
+				MaximumAttempts: discoveryPGRetryAttempts,
+			},
+		})
+		if err := workflow.ExecuteActivity(recoveryCtx,
+			(*discoveryactivity.Activities).LoadEventRecoveryState,
+			discoveryactivity.LoadEventRecoveryStateInput{
+				EventID: in.EventID, WorkflowType: "discovery", WorkflowID: workflowID,
+			},
+		).Get(recoveryCtx, &recoveryOut); err != nil {
+			return out, err
+		}
+	}
+
+	// Exclusions are now durable across failed executions, not only replay of
+	// one execution. Pending candidates are the crash window between Store and
+	// terminal outcome; re-drive them once. Terminal candidates only exclude.
+	excludeURLs := make([]string, 0, len(recoveryOut.Candidates)+64)
+	seenTweetIDs := make(map[string]struct{}, len(recoveryOut.Candidates)+64)
+	for _, candidate := range recoveryOut.Candidates {
+		if candidate.TweetURL == "" {
+			continue
+		}
+		seenTweetIDs[candidate.TweetURL] = struct{}{}
+		excludeURLs = append(excludeURLs, candidate.TweetURL)
+		if candidate.Pending {
+			p.spawnChild(ctx, candidate.TweetURL)
+		}
+	}
+	out.CandidatesFound = len(recoveryOut.Candidates)
+	out.AttemptsRun = recoveryOut.AttemptsCompleted
 
 	workflow.Go(ctx, func(gctx workflow.Context) {
 		var producerErr error
@@ -217,7 +276,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 			RetryPolicy:         &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumAttempts: discoveryPGRetryAttempts},
 		})
 
-		for attempt := 1; attempt <= cfgOut.MaxAttempts; attempt++ {
+		for attempt := recoveryOut.AttemptsCompleted + 1; attempt <= cfgOut.MaxAttempts; attempt++ {
 			var searchOut discoveryactivity.SearchTweetsOutput
 			if err := workflow.ExecuteActivity(searchOptions,
 				(*discoveryactivity.Activities).SearchTweets,
@@ -266,6 +325,17 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 				}
 				log.Info("attempt complete", "attempt", attempt, "videos_returned", searchOut.Count,
 					"cumulative_candidates", out.CandidatesFound, "stop_reason", searchOut.StopReason)
+			}
+			if recoveryEnabled {
+				if err := workflow.ExecuteActivity(storeOptions,
+					(*discoveryactivity.Activities).RecordDiscoveryProgress,
+					discoveryactivity.RecordDiscoveryProgressInput{
+						EventID: in.EventID, WorkflowType: "discovery", WorkflowID: workflowID, Attempt: attempt,
+					},
+				).Get(storeOptions, nil); err != nil {
+					producerErr = err
+					return
+				}
 			}
 			out.AttemptsRun = attempt
 			if attempt < cfgOut.MaxAttempts {

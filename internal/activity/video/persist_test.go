@@ -220,6 +220,43 @@ func TestPromoteAndPersist_HappyPath(t *testing.T) {
 	}
 }
 
+func TestLoadEventAssets_RestoresOnlyActiveLiveAssets(t *testing.T) {
+	a, _, assets, shares := newPersist()
+	eventID := uuid.New()
+	liveID, supersededID, removedID := uuid.New(), uuid.New(), uuid.New()
+	winnerID := uuid.New()
+	bitrate := 4_000_000
+	assets.byID[liveID] = &dvideo.Asset{
+		ID: liveID, EventID: eventID, MD5: []byte("0123456789abcdef"),
+		FrameHashes: []uint64{1, 2, 3}, Width: 1280, Height: 720,
+		DurationMS: 8_000, FileSizeBytes: 900_000, Bitrate: &bitrate, Popularity: 4,
+	}
+	assets.byID[supersededID] = &dvideo.Asset{
+		ID: supersededID, EventID: eventID, MD5: []byte("fedcba9876543210"), SupersededBy: &winnerID,
+	}
+	assets.byID[removedID] = &dvideo.Asset{
+		ID: removedID, EventID: eventID, MD5: []byte("aaaaaaaaaaaaaaaa"),
+	}
+	shares.shares = []*dvideo.Share{
+		{ID: "s_live", AssetID: liveID, EventID: eventID, State: dvideo.ShareStateActive, TimestampVerified: true, Rank: 1},
+		{ID: "s_superseded_asset", AssetID: supersededID, EventID: eventID, State: dvideo.ShareStateActive, Rank: 2},
+		{ID: "s_removed", AssetID: removedID, EventID: eventID, State: dvideo.ShareStateRemoved, Rank: 3},
+	}
+
+	out, err := a.LoadEventAssets(context.Background(), LoadEventAssetsInput{EventID: eventID})
+	if err != nil {
+		t.Fatalf("LoadEventAssets: %v", err)
+	}
+	if len(out.Assets) != 1 {
+		t.Fatalf("restored assets = %d, want 1", len(out.Assets))
+	}
+	got := out.Assets[0]
+	if got.AssetID != liveID || got.MD5 != hex.EncodeToString([]byte("0123456789abcdef")) ||
+		!got.Verified || got.Popularity != 4 || got.Bitrate == nil || *got.Bitrate != bitrate {
+		t.Errorf("restored asset = %+v, want live verified asset", got)
+	}
+}
+
 func TestPromoteAndPersist_Idempotent(t *testing.T) {
 	a, s3, assets, shares := newPersist()
 	eventID := uuid.New()

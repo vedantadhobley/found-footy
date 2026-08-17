@@ -101,6 +101,26 @@ type pipelineConfig struct {
 	terminalVideoFailures       bool
 }
 
+// restoreAssets seeds the serialized consumer with durable live assets from a
+// prior failed EventWorkflow execution. Without this, a replacement run would
+// forget its exact/perceptual dedup set and could treat an already-surfaced
+// clip as new. The activity projection is rank ordered, which preserves the
+// existing winner order until a later promotion rebalances it.
+func (p *pipeline) restoreAssets(restored []videoactivity.RestoredEventAsset) {
+	for _, asset := range restored {
+		popularity := asset.Popularity
+		if popularity < 1 {
+			popularity = 1
+		}
+		p.assets = append(p.assets, clip{
+			md5: asset.MD5, frameHashes: asset.FrameHashes,
+			width: asset.Width, height: asset.Height, durationMS: asset.DurationMS,
+			fileSizeBytes: asset.FileSizeBytes, bitrate: asset.Bitrate,
+			popularity: popularity, verified: asset.Verified, assetID: asset.AssetID,
+		})
+	}
+}
+
 // spawnChild launches a VideoWorkflow child for one candidate and registers
 // its future on the Selector. Called from the producer coroutine.
 func (p *pipeline) spawnChild(gctx workflow.Context, tweetURL string) {
