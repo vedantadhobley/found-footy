@@ -46,11 +46,11 @@ the current branch.
 | `P2` | Bounded failure-state bug, operability gap, or performance debt. |
 | `P3` | Cleanup or improvement without a current correctness failure. |
 
-## Implemented pending rollout
+## Deployed pending live validation
 
 | ID | Severity | Status | Summary |
 |---|---|---|---|
-| FF-034 | P1 | `implemented` | Candidate evidence and terminal outcome are one durable invariant; rollout remains. |
+| FF-034 | P1 | `implemented` | Candidate evidence and terminal outcome are one durable invariant; the first post-release event remains to validate. |
 
 ## Confirmed issues
 
@@ -189,9 +189,18 @@ the current branch.
   observed rows, while terminal rows only seed search exclusions. Temporal
   change ID `ff-034-candidate-durability` preserves older histories' command
   sequence.
-- **Rollout:** Commit and deploy the release, then verify that one completed
-  EventWorkflow has no `pending` candidate rows and that an injected terminal
-  persistence failure cannot mark its checklist complete.
+- **Rollout:** Commit `f70cfea` deployed successfully on 2026-08-17 at
+  13:42 UTC. Both workers, the API, and Twitter reported the exact release
+  identity; workers registered all schedules, Twitter was authenticated and
+  healthy, and no fleet container was active or stranded. The regression test
+  proves an injected terminal persistence failure cannot mark its checklist
+  complete. Production still needs one natural post-release EventWorkflow to
+  prove it completes with no `pending` candidate rows.
+- **Existing data:** The post-release read-only check found 38 candidate rows
+  still `pending` under already-completed workflows, all from before this
+  release. FF-034 prevents new rows in that state; it does not rewrite
+  historical evidence. Any backfill or terminal classification is a separate
+  production-data mutation and requires its own design and approval.
 - **Relation:** This is the durable-state half of the observed “pending after
   parent workflow” defect and the evidence boundary required for FF-003's
   semantic validation. It also absorbs `AUD-0813-P2-8`; independently
