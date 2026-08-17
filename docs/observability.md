@@ -145,6 +145,13 @@ Instrument bundles currently ship for `pg`, `nats`, `s3`, `llm`, `temporal`,
 `instruments.go` files are the metric-name and label authority; this ledger
 does not duplicate the full mutable catalog.
 
+The shared bootstrap binds each binary's metrics/health socket synchronously
+before application work starts (FF-026). A bind error is a startup failure,
+not a degraded mode. If the listener fails after startup, bootstrap cancels
+the application context, drains registered adapters, and returns a failing
+process status. `/metrics` and `/healthz` therefore have the same process
+lifecycle as the binary they describe.
+
 ## Tracing (stub)
 
 `internal/observability/tracing/tracing.go` returns a `Noop() *Tracer{}`

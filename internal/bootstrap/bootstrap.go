@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -77,11 +78,20 @@ type Work func(ctx context.Context, deps *Deps) error
 // in the deploy_info gauge label and the startup/shutdown log lines.
 // gitSHA + builtAt are injected via -ldflags at build time.
 func Run(binary, gitSHA, builtAt string, work Work) {
+	if err := run(binary, gitSHA, builtAt, work); err != nil {
+		os.Exit(1)
+	}
+}
+
+// run owns the testable process lifecycle below Run's exit-code boundary.
+// It returns only after every registered adapter and the metrics listener have
+// drained, or before Work starts when the metrics socket cannot be bound.
+func run(binary, gitSHA, builtAt string, work Work) error {
 	// Config load — before logger so we can pick up LogLevel/LogFormat.
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config load failed: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
 	// Metrics registry FIRST — the logger depends on it so baseline
@@ -103,21 +113,33 @@ func Run(binary, gitSHA, builtAt string, work Work) {
 		logging.String("log_format", cfg.Observability.LogFormat),
 	)
 
-	// Metrics HTTP listener. Runs on a goroutine so signal handling
-	// stays on the main goroutine; ListenAndServe errors are logged
-	// and forwarded to shutdown.
-	metricsErrCh := make(chan error, 1)
+	// Bind synchronously before Work starts. ListenAndServe hides the bind
+	// inside its goroutine, which previously allowed a binary to run without
+	// /metrics or /healthz and eventually exit zero.
 	metricsSrv := &http.Server{
 		Addr:              cfg.Observability.MetricsAddr,
 		Handler:           newMetricsMux(m),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	metricsListener, err := net.Listen("tcp", metricsSrv.Addr)
+	if err != nil {
+		bindErr := fmt.Errorf("metrics listener bind %q: %w", metricsSrv.Addr, err)
+		log.Emit(ctx, logging.LevelError, vocabulary.ModuleDeploy, vocabulary.ActionShutdown,
+			"metrics listener bind failed",
+			logging.String("binary", binary),
+			logging.String("metrics_addr", metricsSrv.Addr),
+			logging.Err(bindErr),
+		)
+		return bindErr
+	}
+
+	metricsErrCh := make(chan error, 1)
 	go func() {
-		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			metricsErrCh <- err
-			return
+		err := metricsSrv.Serve(metricsListener)
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
 		}
-		metricsErrCh <- nil
+		metricsErrCh <- err
 	}()
 
 	log.Emit(ctx, logging.LevelInfo, vocabulary.ModuleDeploy, vocabulary.ActionStartup,
@@ -129,12 +151,30 @@ func Run(binary, gitSHA, builtAt string, work Work) {
 		logging.String("metrics_addr", cfg.Observability.MetricsAddr),
 	)
 
-	// Signal-handled context. Work returns when ctx.Done() fires.
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	// Signal-handled context. A post-bind listener failure cancels the same
+	// context so Work drains rather than continuing without health/metrics.
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
 
 	deps := &Deps{Cfg: cfg, Log: log, Metrics: m}
-	workErr := work(ctx, deps)
+	workErrCh := make(chan error, 1)
+	go func() { workErrCh <- work(ctx, deps) }()
+
+	var workErr error
+	var metricsErr error
+	metricsResultConsumed := false
+	select {
+	case workErr = <-workErrCh:
+	case metricsErr = <-metricsErrCh:
+		metricsResultConsumed = true
+		if metricsErr == nil {
+			metricsErr = errors.New("metrics listener stopped unexpectedly")
+		}
+		cancel()
+		workErr = errors.Join(fmt.Errorf("metrics listener: %w", metricsErr), <-workErrCh)
+	}
 
 	// Drain adapters in reverse-registration order. Runs whether Work
 	// returned an error or not — a partial-startup failure still needs
@@ -164,14 +204,19 @@ func Run(binary, gitSHA, builtAt string, work Work) {
 		)
 	}
 
-	// Drain the listener error the goroutine posts. Shutdown blocks
-	// until the listener returns per net/http contract, so the channel
-	// read completes promptly — no default branch needed (which would
-	// have orphaned a real error on the fast path).
-	if err := <-metricsErrCh; err != nil {
+	// Drain the listener result when the Work completion path won the select.
+	// Shutdown closes the listener before it waits for active handlers, so the
+	// channel read completes even when the shutdown context expires.
+	if !metricsResultConsumed {
+		metricsErr = <-metricsErrCh
+		if metricsErr != nil {
+			workErr = errors.Join(workErr, fmt.Errorf("metrics listener: %w", metricsErr))
+		}
+	}
+	if metricsErr != nil {
 		log.Emit(ctx, logging.LevelError, vocabulary.ModuleDeploy, vocabulary.ActionShutdown,
 			"metrics listener error",
-			logging.Err(err),
+			logging.Err(metricsErr),
 		)
 	}
 
@@ -181,13 +226,14 @@ func Run(binary, gitSHA, builtAt string, work Work) {
 			logging.String("binary", binary),
 			logging.Err(workErr),
 		)
-		os.Exit(1)
+		return workErr
 	}
 
 	log.Emit(ctx, logging.LevelInfo, vocabulary.ModuleDeploy, vocabulary.ActionShutdown,
 		"binary shut down cleanly",
 		logging.String("binary", binary),
 	)
+	return nil
 }
 
 // newMetricsMux wires the /metrics endpoint. Kept tiny — real HTTP

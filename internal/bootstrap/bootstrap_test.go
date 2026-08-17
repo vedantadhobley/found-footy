@@ -5,8 +5,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -79,5 +82,81 @@ func TestNewMetricsMux_MetricsAndHealth(t *testing.T) {
 	body, _ = io.ReadAll(w.Result().Body)
 	if strings.TrimSpace(string(body)) != "ok" {
 		t.Errorf("/healthz body = %q, want ok", body)
+	}
+}
+
+// TestRun_RefusesToStartWithoutMetricsListener locks FF-026's startup
+// invariant: application work must not begin when /metrics and /healthz cannot
+// own their configured socket.
+func TestRun_RefusesToStartWithoutMetricsListener(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve metrics address: %v", err)
+	}
+	defer occupied.Close()
+	t.Setenv("METRICS_ADDR", occupied.Addr().String())
+	t.Setenv("LOG_FORMAT", "text")
+
+	workCalled := false
+	err = run("test", "sha", "now", func(context.Context, *Deps) error {
+		workCalled = true
+		return nil
+	})
+	if err == nil {
+		t.Fatal("run returned nil with an occupied metrics address")
+	}
+	if workCalled {
+		t.Fatal("Work started without a metrics/health listener")
+	}
+}
+
+// TestRun_OccupiedMetricsAddressExitsOne covers the public process boundary,
+// not only run's returned error. The child re-enters this test and calls Run,
+// which must translate the deterministic bind failure into exit status 1.
+func TestRun_OccupiedMetricsAddressExitsOne(t *testing.T) {
+	if os.Getenv("FF_BOOTSTRAP_EXIT_HELPER") == "1" {
+		Run("test", "sha", "now", func(context.Context, *Deps) error {
+			return errors.New("Work must not start")
+		})
+		return
+	}
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve metrics address: %v", err)
+	}
+	defer occupied.Close()
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRun_OccupiedMetricsAddressExitsOne$")
+	cmd.Env = append(os.Environ(),
+		"FF_BOOTSTRAP_EXIT_HELPER=1",
+		"METRICS_ADDR="+occupied.Addr().String(),
+		"LOG_FORMAT=text",
+	)
+	err = cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("child error = %v, want exit error", err)
+	}
+	if exitErr.ExitCode() != 1 {
+		t.Fatalf("child exit code = %d, want 1", exitErr.ExitCode())
+	}
+}
+
+// TestRun_DrainsEphemeralMetricsListener proves the testable lifecycle can
+// bind an OS-assigned port, run application work, and shut the listener down.
+func TestRun_DrainsEphemeralMetricsListener(t *testing.T) {
+	t.Setenv("METRICS_ADDR", "127.0.0.1:0")
+	t.Setenv("LOG_FORMAT", "text")
+
+	workCalled := false
+	if err := run("test", "sha", "now", func(context.Context, *Deps) error {
+		workCalled = true
+		return nil
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !workCalled {
+		t.Fatal("Work was not called after the metrics listener bound")
 	}
 }
