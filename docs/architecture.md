@@ -204,7 +204,8 @@ Beyond the model, the package owns the dedup + quality logic (pure, table-
 tested): `hash.go` (`DHash`/`DHashPNG`), `match.go` (`Match` — the
 offset-tolerant sliding window), `filter.go` (`HardFilter` pre-download gate),
 `quality.go` (`IsUpgrade`/`ClipQuality` winner-selection — wired post-vision #171),
-and `rank.go` (`CompareShares` — the deterministic frontend tie-break).
+and `rank.go` (`CompareShares` — verified, popularity, size, age, then share-ID
+total order for deterministic frontend ranks; FF-030).
 
 ### alias domain (D4)
 

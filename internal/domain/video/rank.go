@@ -3,13 +3,15 @@
 package video
 
 // CompareShares returns:
-//   -1 if a ranks BETTER than b (should come first)
-//    0 if they're equivalent for ranking purposes
-//   +1 if a ranks WORSE than b
+//
+//	-1 if a ranks BETTER than b (should come first)
+//	 0 if they're equivalent for ranking purposes
+//	+1 if a ranks WORSE than b
 //
 // The rebuild-plan §3 ranking rule: verified > unverified,
 // higher popularity > lower, larger file_size > smaller. Ties broken
-// by CreatedAt (older = better; established shares stay stable).
+// by CreatedAt (older = better; established shares stay stable), then public
+// share ID so an unordered database read still produces a total order.
 //
 // Callers use it via sort.Slice / sort.SliceStable and then rewrite
 // ranks 1..N atomically. The (event_id, rank) UNIQUE partial index
@@ -46,6 +48,15 @@ func CompareShares(a, b *Share, aAsset, bAsset *Asset) int {
 		return -1
 	}
 	if a.CreatedAt.After(b.CreatedAt) {
+		return +1
+	}
+	// 5. Final total-order key. Rebalance's source query is deliberately not
+	// ordered; equal timestamps must not make rank assignment depend on the
+	// database's current row-return order.
+	if a.ID < b.ID {
+		return -1
+	}
+	if a.ID > b.ID {
 		return +1
 	}
 	return 0
