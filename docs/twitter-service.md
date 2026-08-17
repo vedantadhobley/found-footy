@@ -40,7 +40,7 @@ real Twitter.
 
 The active search path uses the per-event instance model
 ([twitter-scaling.md](./design/proposals/twitter-scaling.md), #160): one
-short-lived Firefox per active event, zero warm. The worker creates each
+short-lived Firefox per searchable event, zero warm. The worker creates each
 instance through the Docker API. Compose selects the instance image and network;
 the network becomes the opaque ownership scope for names, labels, capacity, and
 cleanup (FF-001). The event-only network alias remains deterministic, so
@@ -51,6 +51,12 @@ configuration; construction does not probe the shared browser. Twitter and the
 workers can therefore start in either order. Each `/search` call observes live
 readiness, and Temporal retries transient startup or connectivity failures
 (FF-016).
+
+Fleet provisioning returns after Docker create+start, without waiting for
+browser health; Firefox warms behind the event debounce. Temporal retries are
+idempotent by scoped event name. An existing running container is reused, while
+a stopped container must restart successfully—Docker start failure is returned
+to Temporal rather than exposing a dead event address (FF-033).
 
 Firefox is a critical child of the Go service (FF-017). Playwright context
 closure or browser disconnection immediately changes service state to

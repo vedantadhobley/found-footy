@@ -56,9 +56,10 @@ type ProvisionFirefoxOutput struct {
 	Address string
 }
 
-// ProvisionFirefox ensures a warm, healthy instance for the event and
-// returns its address. Idempotent (safe under Temporal retry): a
-// re-provision of a live instance returns the same address.
+// ProvisionFirefox ensures a running instance for the event and returns its
+// address. Browser readiness warms asynchronously behind debounce. Idempotent
+// (safe under Temporal retry): a live instance returns the same address, while
+// a stopped instance must restart successfully.
 func (a *Activities) ProvisionFirefox(ctx context.Context, in ProvisionFirefoxInput) (ProvisionFirefoxOutput, error) {
 	if a.Fleet == nil {
 		return ProvisionFirefoxOutput{}, nil

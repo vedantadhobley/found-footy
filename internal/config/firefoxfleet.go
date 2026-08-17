@@ -1,11 +1,9 @@
 // FirefoxFleetConfig — env-driven settings for the per-event Firefox
 // fleet (#160). The worker provisions one twitter/Firefox container per
-// active event via the Docker API (socket mounted into the worker); each
+// searchable event via the Docker API (socket mounted into the worker); each
 // is named deterministically from the event ID, reached by container-name
 // DNS on the shared network, and released on event completion / decay.
 package config
-
-import "time"
 
 // FirefoxFleetConfig configures internal/infra/firefoxfleet.
 type FirefoxFleetConfig struct {
@@ -54,9 +52,4 @@ type FirefoxFleetConfig struct {
 	// Python tested ~8; >8 is beyond that range, so watch for auth
 	// flapping if this is raised. Provision blocks-and-waits at cap.
 	MaxInstances int `env:"FIREFOXFLEET_MAX_INSTANCES" envDefault:"16"`
-
-	// HealthTimeout bounds the post-start wait for /health before
-	// Provision returns the instance address. Covers container start +
-	// browser launch + cookie load + auth-verify (~30s typical).
-	HealthTimeout time.Duration `env:"FIREFOXFLEET_HEALTH_TIMEOUT" envDefault:"45s"`
 }

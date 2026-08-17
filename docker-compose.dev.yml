@@ -187,7 +187,7 @@ services:
       - go-cache:/gocache
       - go-mod-cache:/gomodcache
       # #160 per-event Firefox fleet — Docker socket so the worker can
-      # provision/release one twitter/Firefox container per active event
+      # provision/release one twitter/Firefox container per searchable event
       # via the Docker API (internal/infra/firefoxfleet). Root-equivalent
       # access, scoped to this dev worker; the fleet is constructed only
       # when FIREFOXFLEET_ENABLED=true (default false → this mount sits
@@ -248,10 +248,11 @@ services:
     # Firefox is the one real memory consumer. With the cache-bounding prefs
     # (cmd/twitter/main.go) a long-lived instance should stay well under 2g;
     # 8g is generous headroom so normal work never chokes. NOTE: hitting
-    # this limit OOM-kills Firefox (not the Go PID 1), which WEDGES the
-    # service (no relaunch watchdog yet — #170-adjacent), so this is a
-    # never-hit backstop, not graceful recovery. #160's per-event instances
-    # set their own per-instance cap at provision time. See postgres note.
+    # this limit can OOM-kill Firefox below Go PID 1. FF-017 makes Firefox a
+    # critical child: the service reports failed health, exits non-zero, and
+    # Compose restarts the complete Playwright unit. This remains a circuit
+    # breaker, not routine memory management. #160's per-event instances set
+    # their own per-instance cap at provision time. See postgres note.
     mem_limit: 8g
     # Firefox sandbox needs relaxed seccomp — its clone3()/unshare()
     # calls for user-namespace creation are blocked by Docker's default
