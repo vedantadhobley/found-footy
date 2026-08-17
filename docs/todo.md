@@ -238,7 +238,7 @@ against the current branch.
 
 ### FF-015 — canceled EventWorkflow spins into Temporal deadlock detection
 
-- **Status:** `confirmed`
+- **Status:** `implemented`; not deployed
 - **Severity:** P1
 - **Observed:** The false-removal in FF-014 canceled workflow
   `event-ce3eb72e-4964-4410-85d9-5a2d6628ce7a`, run
@@ -254,12 +254,18 @@ against the current branch.
   the pipeline consumer discards the error from `workflow.Await`. Once the
   workflow context is canceled, `Await` returns immediately while
   `searchDone` can remain false, creating a tight loop.
-- **Required fix:** Propagate cancellation through the producer/consumer
-  boundary, make the consumer loop return the blocking error, and ensure
-  producer completion state is set on every exit. Add workflow tests for
-  cancellation during attempt spacing, during a child workflow, and with no
-  selector future pending. A legitimate VAR cancellation must complete without
-  `TMPRL1101`.
+- **Resolution:** Producer activity and timer cancellation now propagate across
+  the producer/consumer boundary; a deferred close sets producer completion on
+  every exit. The consumer returns the blocking `workflow.Await` error instead
+  of re-entering Await on an already-canceled context. Cancellation bypasses
+  normal finalization because the monitor removal transaction and destroy path
+  own checklist closure and resource cleanup.
+- **Regression coverage:** Workflow tests cancel during attempt spacing, while
+  `SearchTweets` is pending with no selector future, and while a
+  `VideoWorkflow` child or vision activity is pending. Each completes as
+  canceled after one search attempt, schedules no later attempt, and does not
+  call `MarkDownstreamComplete`; the vision case also proves that no forensic,
+  persistence, or staging-cleanup activity is scheduled after cancellation.
 - **Source relation:** New live finding. It is independent of the false-removal
   policy: a genuine VAR follows the same cancellation path and can trigger it.
 

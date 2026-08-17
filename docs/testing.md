@@ -57,6 +57,13 @@ sharing surfaces" rule; see [architecture.md](./architecture.md#as-shipped-tree)
 conditional-skip branches (empty TeamRefs skips alias step; zero
 RetentionThreshold skips prune step) in IngestWorkflow.
 
+EventWorkflow cancellation tests use `RegisterDelayedCallback` with the
+workflow clock and `CancelWorkflow` while the producer is in attempt spacing,
+an activity, an awaited child, or vision. They require a canceled workflow
+error and assert that neither a later search nor `MarkDownstreamComplete`
+occurs; the vision case also rejects post-cancel pipeline activities. This
+guards FF-015's producer/consumer yield points without wall-clock sleeps.
+
 ## Tier 2 — adapter integration (testcontainers)
 
 Integration coverage currently includes `pg`, `s3`, `nats`, and `temporal`.

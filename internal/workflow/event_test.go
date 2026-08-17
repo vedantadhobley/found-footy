@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
@@ -277,6 +278,113 @@ func TestEventWorkflow_FallbackToTeamName_WhenAliasesUnresolved(t *testing.T) {
 	}
 }
 
+// TestEventWorkflow_CancelDuringAttemptSpacing reproduces FF-015's production
+// failure point. Canceling the durable timer after attempt 1 must terminate the
+// workflow; it must not enter another attempt or finalize a removed event.
+func TestEventWorkflow_CancelDuringAttemptSpacing(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newDiscoveryEnv(&s)
+
+	searchCalls := 0
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ discoveryactivity.SearchTweetsInput) (discoveryactivity.SearchTweetsOutput, error) {
+			searchCalls++
+			return discoveryactivity.SearchTweetsOutput{StopReason: "empty"}, nil
+		})
+	env.RegisterDelayedCallback(env.CancelWorkflow, 30*time.Second)
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+
+	requireCanceled(t, env)
+	if searchCalls != 1 {
+		t.Fatalf("SearchTweets called %d times, want 1 before spacing cancellation", searchCalls)
+	}
+	env.AssertNotCalled(t, "MarkDownstreamComplete", mock.Anything, mock.Anything)
+}
+
+// TestEventWorkflow_CancelDuringSearch covers the consumer's no-future state:
+// while the producer is blocked in SearchTweets, the selector has no child or
+// activity future. A canceled Await must return once, not spin.
+func TestEventWorkflow_CancelDuringSearch(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newDiscoveryEnv(&s)
+
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		After(10*time.Minute).
+		Return(discoveryactivity.SearchTweetsOutput{}, nil).
+		Once()
+	env.RegisterDelayedCallback(env.CancelWorkflow, 30*time.Second)
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+
+	requireCanceled(t, env)
+	env.AssertNumberOfCalls(t, "SearchTweets", 1)
+	env.AssertNotCalled(t, "MarkDownstreamComplete", mock.Anything, mock.Anything)
+}
+
+// TestEventWorkflow_CancelWithChildPending proves cancellation also terminates
+// while the consumer is waiting for a VideoWorkflow future. The child inherits
+// cancellation; the parent must neither start another search nor finalize.
+func TestEventWorkflow_CancelWithChildPending(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := baseEventEnv(&s)
+
+	tweetURL := "https://x.com/u/status/1111111111111111111"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{{TweetURL: tweetURL, VideoPageURL: "vp", DurationSeconds: 7}},
+			Count:  1,
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil)
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, mock.Anything).
+		After(10*time.Minute).
+		Return(workflow.VideoWorkflowOutput{Outcome: "rejected"}, nil).
+		Once()
+	env.RegisterDelayedCallback(env.CancelWorkflow, 30*time.Second)
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+
+	requireCanceled(t, env)
+	env.AssertNumberOfCalls(t, "SearchTweets", 1)
+	env.AssertNumberOfCalls(t, "VideoWorkflow", 1)
+	env.AssertNotCalled(t, "MarkDownstreamComplete", mock.Anything, mock.Anything)
+}
+
+// TestEventWorkflow_CancelWithVisionPending verifies the pipeline does not
+// schedule forensic or cleanup activities after its root context is canceled.
+// The monitor's destroy path owns cleanup for a removed event.
+func TestEventWorkflow_CancelWithVisionPending(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := baseEventEnv(&s)
+
+	tweetURL := "https://x.com/u/status/1111111111111111111"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{{TweetURL: tweetURL, VideoPageURL: "vp", DurationSeconds: 7}},
+			Count:  1,
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil)
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, mock.Anything).
+		Return(passedChild(tweetURL, "md5", "staging/clip.mp4", 1280, 720, 7000, 900_000, []uint64{1}), nil).
+		Once()
+	env.OnActivity("ValidateClip", mock.Anything, mock.Anything).
+		After(10*time.Minute).
+		Return(visionactivity.ValidateClipOutput{Outcome: "verified"}, nil).
+		Once()
+	env.RegisterDelayedCallback(env.CancelWorkflow, 30*time.Second)
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+
+	requireCanceled(t, env)
+	env.AssertNumberOfCalls(t, "ValidateClip", 1)
+	env.AssertNotCalled(t, "PromoteAndPersist", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "RecordCandidateOutcome", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "DeleteStaging", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "MarkDownstreamComplete", mock.Anything, mock.Anything)
+}
+
 // strAttempt builds a synthetic 19-digit snowflake ID (valid per
 // MinSnowflakeLen) encoding (attempt, index). Just used to keep
 // per-attempt URLs distinct in the accumulator test.
@@ -287,6 +395,16 @@ func strAttempt(attempt, index int) string {
 }
 
 func pInt(i int) *int { return &i }
+
+func requireCanceled(t *testing.T, env *testsuite.TestWorkflowEnvironment) {
+	t.Helper()
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete after cancellation")
+	}
+	if err := env.GetWorkflowError(); !temporal.IsCanceledError(err) {
+		t.Fatalf("workflow error = %v, want canceled", err)
+	}
+}
 
 // TestEventWorkflow_Pipeline_VerifyAndDedup — the #164c-b consumer path: two
 // candidates, both children pass with the SAME md5 (exact dup). The first is
