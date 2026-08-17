@@ -503,7 +503,10 @@ gate was replaced):
   Validation retries transient rate-limit, capacity, unavailable, and
   infrastructure failures up to three attempts. Invalid request/auth/model and
   malformed-response classes are non-retryable; after one attempt the existing
-  failure callback records `vision_error` and deletes staging (FF-012).
+  failure callback records `vision_error` and deletes staging (FF-012). When
+  API-Football supplied no event minute, soccer footage that passes the content
+  gates remains unverified rather than becoming a false wrong-clock reject
+  (FF-031).
   Perceptual dedup is deliberately NOT here: a clip's verified/unverified
   category is unknown until vision, and md5-identical bytes are trivially the
   same category.

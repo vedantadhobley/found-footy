@@ -231,7 +231,9 @@ derived team abbreviation. The retired resolver design remains in
 ### vision domain (D5) — shipped 2026-07-28
 
 Clip-validation logic, pure + table-tested (no I/O, no model). Ports the Python
-clock parsers with a period-awareness fix.
+clock parsers with a period-awareness fix. Missing API time is absence of
+verification evidence, so soccer footage that passes the content gates enters
+the unverified pool instead of being compared against minute zero (FF-031).
 
 - `clock.go` — scorebug field parsers (`parseClockField`, `parseAddedField`,
   `parseStoppageClockField` — the last accepts both `01:48` and `+1:48` model

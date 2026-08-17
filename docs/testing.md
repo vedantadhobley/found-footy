@@ -261,6 +261,10 @@ FF-030 has a pure domain regression for the rank comparator's final share-ID
 tiebreaker. It asserts both directions and preserves equality for one identical
 share, so an unordered repository read cannot change a complete tie.
 
+FF-031's domain regression supplies an unknown API minute with both visible and
+absent broadcast clocks. Both valid soccer cases remain unverified with no
+matched minute, while non-soccer and screen-recording gates still reject.
+
 **Run:** `make test-corpus` — runs just the harness. `make test`
 includes it. `make test-short` excludes it (no docker).
 

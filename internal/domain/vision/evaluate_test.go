@@ -187,22 +187,22 @@ func TestEvaluate_ClockCorrections(t *testing.T) {
 		{
 			// OCR dropped the leading 9: "02:36" for a 90+2 stoppage goal.
 			// rebase = elapsed(90) + 2 = 92; expected = 91 → within ±1.
-			name:    "ocr-leading-digit-rebase",
-			frames:  rep(frame(true, false, "02:36", "+2", ""), 3),
-			exp:     Expected{Elapsed: 90, Extra: 2}, want: OutcomeVerified, wantMin: 92,
+			name:   "ocr-leading-digit-rebase",
+			frames: rep(frame(true, false, "02:36", "+2", ""), 3),
+			exp:    Expected{Elapsed: 90, Extra: 2}, want: OutcomeVerified, wantMin: 92,
 		},
 		{
 			// Frozen 90:00 + added +5 but NO sub-timer: exact minute unpinned,
 			// right period's stoppage → verify on period (candidate 2).
-			name:    "frozen-boundary-no-subtimer-verified",
-			frames:  rep(frame(true, false, "90:00", "+5", ""), 3),
-			exp:     Expected{Elapsed: 90, Extra: 5}, want: OutcomeVerified, wantMin: 90,
+			name:   "frozen-boundary-no-subtimer-verified",
+			frames: rep(frame(true, false, "90:00", "+5", ""), 3),
+			exp:    Expected{Elapsed: 90, Extra: 5}, want: OutcomeVerified, wantMin: 90,
 		},
 		{
 			// Clock clearly wrong minute (30:00 for a 90' goal) → reject.
-			name:    "clock-wrong-minute-rejected",
-			frames:  rep(frame(true, false, "30:00", "", ""), 3),
-			exp:     Expected{Elapsed: 90, Extra: 0}, want: OutcomeRejected, wantMin: -1,
+			name:   "clock-wrong-minute-rejected",
+			frames: rep(frame(true, false, "30:00", "", ""), 3),
+			exp:    Expected{Elapsed: 90, Extra: 0}, want: OutcomeRejected, wantMin: -1,
 		},
 	}
 	for _, c := range cases {
@@ -234,5 +234,28 @@ func TestEvaluate_Gates(t *testing.T) {
 	}
 	if ev := Evaluate(nil, Expected{Elapsed: 45}, tol); ev.Outcome != OutcomeRejected {
 		t.Errorf("empty: got %q, want rejected", ev.Outcome)
+	}
+}
+
+func TestEvaluate_UnknownAPIMinuteKeepsSoccerUnverified(t *testing.T) {
+	for _, frames := range [][]FrameObservation{
+		rep(frame(true, false, "71:30", "", ""), 3),
+		rep(frame(true, false, "", "", ""), 3),
+	} {
+		ev := Evaluate(frames, Expected{Elapsed: 0}, tol)
+		if ev.Outcome != OutcomeUnverified || ev.Reason != "API minute unavailable" {
+			t.Fatalf("unknown API minute outcome/reason = %q/%q, want unverified/API minute unavailable", ev.Outcome, ev.Reason)
+		}
+		if ev.MatchedMinute != nil {
+			t.Fatalf("unknown API minute must not claim a match: %v", ev.MatchedMinute)
+		}
+	}
+
+	// Missing timestamp evidence does not bypass the content gates.
+	if ev := Evaluate(rep(frame(false, false, "71:30", "", ""), 3), Expected{}, tol); ev.Outcome != OutcomeRejected {
+		t.Fatalf("non-soccer with unknown minute = %q, want rejected", ev.Outcome)
+	}
+	if ev := Evaluate(rep(frame(true, true, "71:30", "", ""), 3), Expected{}, tol); ev.Outcome != OutcomeRejected {
+		t.Fatalf("screen recording with unknown minute = %q, want rejected", ev.Outcome)
 	}
 }
