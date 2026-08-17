@@ -567,7 +567,9 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 				// completion check) re-attempts any spawn this call
 				// dropped — so a transient Temporal/pg blip self-heals
 				// instead of orphaning the event. See audit-2026-07-26 P1 #3.
-				a.registerAndSpawnEvent(ctx, existing, domainEv, in.APIFixture.Fixture.ID)
+				if err := a.registerAndSpawnEvent(ctx, existing, domainEv, in.APIFixture.Fixture.ID); err != nil {
+					out.Errors = append(out.Errors, fmt.Sprintf("spawn event=%s: %v", key, err))
+				}
 				a.emitEventStable(ctx, existing.ID, in.APIFixture.Fixture.ID, domainEv)
 			}
 
@@ -661,7 +663,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 
 	// Step 5.5: discovery spawn-recovery. registerAndSpawnEvent is
 	// idempotent (RegisterDownstreamWorkflow is INSERT ON CONFLICT DO
-	// NOTHING; SpawnEvent swallows WorkflowExecutionAlreadyStarted),
+	// NOTHING; SpawnEvent classifies WorkflowExecutionAlreadyStarted),
 	// so re-running it every cycle is a no-op for healthy discoveries and
 	// re-attempts any that a transient error dropped. Running it BEFORE
 	// the completion check closes the silent-video-loss window: a failed
@@ -671,7 +673,9 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		out.Errors = append(out.Errors, fmt.Sprintf("awaiting-discovery: %v", err))
 	} else {
 		for _, ev := range awaiting {
-			a.registerAndSpawnEvent(ctx, ev, ev, f.ID)
+			if err := a.registerAndSpawnEvent(ctx, ev, ev, f.ID); err != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("recover event=%s: %v", ev.ID, err))
+			}
 		}
 	}
 
@@ -808,29 +812,30 @@ func playerName(p event.Player) string {
 }
 
 // registerAndSpawnEvent is the atomic register-on-flip step from
-// the 2026-07-16 spawn rule. Both operations are idempotent (INSERT
-// ON CONFLICT DO NOTHING for the row; RejectDuplicate for the spawn)
-// so retry-after-partial-crash is safe. Nil-safe: no-op if either
-// EventRepo or Spawner is missing.
-func (a *Activities) registerAndSpawnEvent(ctx context.Context, existing *event.Event, domainEv *event.Event, fixtureID int64) {
-	if a.Spawner == nil {
-		return
+// the 2026-07-16 spawn rule. Both operations are idempotent (INSERT ON
+// CONFLICT DO NOTHING for the row; failed-only deterministic identity for the
+// spawn), so retry-after-partial-crash is safe. The spawner also owns FF-025's
+// conservative stale-running recovery. Nil-safe: no-op if either EventRepo or
+// Spawner is missing.
+func (a *Activities) registerAndSpawnEvent(ctx context.Context, existing *event.Event, domainEv *event.Event, fixtureID int64) error {
+	if a.EventRepo == nil || a.Spawner == nil {
+		return nil
 	}
 	// Never spawn a search for an unknown player — there's no player token to
 	// build a Twitter query from (Player.Known() contract). Placeholders are
 	// pinned at debounce 0 so they never reach here via the trigger flip, but
 	// the recovery pass also calls this, so guard explicitly.
 	if !domainEv.Player.Known() {
-		return
+		return nil
 	}
 	workflowID := fmt.Sprintf("event-%s", existing.ID)
 
 	// Row insert first — must exist before the spawn returns so the
 	// completion check in the same/next cycle sees "downstream pending."
 	if err := a.EventRepo.RegisterDownstreamWorkflow(ctx, existing.ID, "discovery", workflowID); err != nil {
-		// Non-fatal per Option B — log + continue. Skip the spawn to
-		// avoid an untracked workflow; retry next cycle will re-attempt.
-		return
+		// Skip the spawn to avoid an untracked workflow. The caller records
+		// the error without failing reconciliation; next cycle re-attempts.
+		return fmt.Errorf("register downstream: %w", err)
 	}
 
 	in := discoveryactivity.EventWorkflowInput{
@@ -843,11 +848,11 @@ func (a *Activities) registerAndSpawnEvent(ctx context.Context, existing *event.
 		Extra:      domainEv.Extra,
 	}
 	if err := a.Spawner.SpawnEvent(ctx, workflowID, in); err != nil {
-		// Non-fatal per Option B. The pending row exists; a follow-up
-		// pass or manual intervention can spawn later. Alternatively
-		// the row can be marked failed by a future recovery job.
-		_ = err
+		// The pending row exists. Surface the failure in Reconcile output;
+		// the next recovery pass retries without completing the checklist.
+		return fmt.Errorf("spawn downstream: %w", err)
 	}
+	return nil
 }
 
 // buildDomainEvent constructs an event.Event from the API payload

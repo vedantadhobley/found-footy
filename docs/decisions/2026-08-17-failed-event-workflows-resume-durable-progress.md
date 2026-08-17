@@ -49,11 +49,12 @@ forgetting prior candidates, or treating already surfaced assets as a fresh
 dedup universe. Recovery reads are bounded by the candidates and shares for
 one event; the share-to-asset lookup is deliberately simple at this scale.
 
-This does not recover an execution Temporal still classifies as `RUNNING`.
-FF-025 tracks a status-aware, conservative stale-run detector that can
-terminate and re-drive proven wedged executions without force-completing their
-fixtures. FF-011 continues to own retry-safe popularity accounting; recovery
-does not broaden that existing soft-vote guarantee.
+This decision alone does not recover an execution Temporal still classifies as
+`RUNNING`. That boundary is now closed by the
+[FF-025 progress-proof decision](./2026-08-17-stale-event-recovery-requires-progress-proof.md),
+which terminates and re-drives only an exact run with two conservatively spaced
+unchanged Temporal snapshots. FF-011 continues to own retry-safe popularity
+accounting; recovery does not broaden that existing soft-vote guarantee.
 
 ## Superseded contract
 

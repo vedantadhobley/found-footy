@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Stale EventWorkflow recovery requires Temporal progress proof](./2026-08-17-stale-event-recovery-requires-progress-proof.md) — FF-025 exact-run, two-snapshot termination and FF-007 re-drive contract.
 - [Exact-byte ownership precedes dense video hashing](./2026-08-17-exact-md5-ownership-precedes-dense-hashing.md) — FF-022 single-claim hashing, claimant failover, and replay-compatible child retirement.
 - [CDN download denial is transient](./2026-08-17-cdn-download-denial-is-transient.md) — FF-029 separates retryable variant-fetch 403 from terminal metadata 403.
 - [Video redirect cache stays inside the presigned URL lifetime](./2026-08-17-video-redirect-cache-stays-inside-presign.md) — FF-028 derives safe redirect caching from the live S3 TTL.

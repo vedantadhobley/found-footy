@@ -176,7 +176,10 @@ Interpret these records together:
   current score/event consistency hole.
 - `completed_at IS NULL` in `event_downstream_workflows` means the fixture is
   still waiting on that workflow. It can also indicate abnormal workflow
-  closure; see FF-007 and FF-015 before attempting recovery.
+  closure; see FF-007 and FF-015 before attempting recovery. A still-running
+  EventWorkflow is recovered automatically only after FF-025 observes the same
+  run with no Temporal counter or heartbeat progress for its full conservative
+  window. Do not terminate it or stamp the checklist by hand based on age.
 - Candidate outcomes are `promoted`, `duplicate`, `superseded`, `rejected`,
   `failed`, or `pending`. A parent EventWorkflow that has completed while one
   of its candidates remains `pending` is not normal propagation delay. Capture

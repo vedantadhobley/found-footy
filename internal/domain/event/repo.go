@@ -173,7 +173,7 @@ type Repo interface {
 	// workflowType is a short identifier ("discovery", "video",
 	// "asset", …) matching the enum values on
 	// event_downstream_workflows.workflow_type. workflowID is the
-	// deterministic Temporal workflow_id (e.g. "discovery-{event_id}")
-	// so Temporal's RejectDuplicate policy pairs 1:1 with a row.
+	// deterministic Temporal workflow_id (e.g. "event-{event_id}") so
+	// Temporal's failed-only reuse and stale-run recovery pair 1:1 with a row.
 	RegisterDownstreamWorkflow(ctx context.Context, eventID uuid.UUID, workflowType, workflowID string) error
 }
