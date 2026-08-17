@@ -74,4 +74,4 @@ and archived Python monitor. It extends the historical
 It also supersedes that proposal's winner-data completion bypass.
 Current behavior is recorded in the
 [`orchestration ledger`](../orchestration.md) and tracked under
-[`FF-014`](../todo.md#ff-014--score-consistent-goal-is-false-removed-on-event-array-omission).
+[`FF-014`](../history/issue-register-2026-08-17.md#ff-014--score-consistent-goal-is-false-removed-on-event-array-omission).

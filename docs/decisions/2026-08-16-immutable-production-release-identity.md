@@ -61,4 +61,4 @@ sketch in the historical
 is recorded in the [`deployment ledger`](../deployment.md#deploy-tracking) and
 [`operations runbook`](../operations.md#production-rollout-and-rollback-gates).
 The defect and local implementation state are tracked as
-[`FF-019`](../todo.md#ff-019--production-images-do-not-carry-verifiable-build-identity).
+[`FF-019`](../history/issue-register-2026-08-17.md#ff-019--production-images-do-not-carry-verifiable-build-identity).

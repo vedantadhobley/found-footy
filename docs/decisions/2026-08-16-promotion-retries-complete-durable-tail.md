@@ -60,5 +60,6 @@ This refines the frozen
 which described retry copy as a harmless overwrite and an existing share as a
 terminal idempotent no-op. Current behavior is recorded in the
 [`orchestration ledger`](../orchestration.md#eventworkflow) and tracked as
-[`FF-006`](../todo.md#ff-006--promoted-clips-retain-staging-objects) and
-[`FF-023`](../todo.md#ff-023--promotion-retry-can-skip-rank-rebalance).
+[`FF-006`](../history/issue-register-2026-08-17.md#ff-006--promoted-clips-retain-staging-objects)
+and
+[`FF-023`](../history/issue-register-2026-08-17.md#ff-023--promotion-retry-can-skip-rank-rebalance).

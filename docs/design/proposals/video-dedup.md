@@ -10,6 +10,13 @@
 > [`schema.sql`](../../../internal/infra/pg/schema.sql), and
 > [`../../decisions.md`](../../decisions.md).
 >
+> **Post-release correction:** FF-022 retired the per-candidate
+> `VideoWorkflow` child for new histories. `EventWorkflow` now owns the exact-MD5
+> claim between download and dense hashing; the child remains registered only
+> for replay. See the
+> [current orchestration ledger](../../orchestration.md#eventworkflow) and
+> [decision record](../../decisions/2026-08-17-exact-md5-ownership-precedes-dense-hashing.md).
+>
 > **REJECTED / never built:**
 > - **The 3-workflow Discovery→Video→Asset chain.** As-built is a single
 >   **EventWorkflow** running a producer (search loop) + a serialized consumer

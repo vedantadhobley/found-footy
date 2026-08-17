@@ -28,8 +28,8 @@ targeting prod. Every command must pass `-f docker-compose.{prod,dev}.yml`.
   (`replicas: 2`) + api, both built from `./Dockerfile` — on Postgres +
   Garage. The cutover from the Python stack completed 2026-08-15 (La Liga
   match day). Twitter + twitter-vnc build from the reconciled
-  `docker/twitter/Dockerfile`; the static `twitter` service is now the fleet
-  fleet's image-builder + single fallback, with per-event instances carrying
+  `docker/twitter/Dockerfile`; the static `twitter` service is now the fleet's
+  image-builder + single fallback, with per-event instances carrying
   the search load.
 
 Production Compose also owns FF-021's fixed host-wide ffmpeg CPU contract. Its
@@ -69,12 +69,12 @@ not trigger the restart policy. Compose-managed headless Twitter retains
 `restart: unless-stopped`; the opt-in VNC service intentionally retains
 `restart: no` because the operator owns that session.
 
-Before the first deployment of FF-001, list legacy
-`ff-firefox-ev-*` containers. Deploy only when none are active on the target
-network. The scoped provisioner intentionally ignores legacy unscoped
-containers because it cannot prove which stack owns them; running old and new
-containers together could also duplicate the preserved network alias. Any
-legacy removal remains a separate, explicitly approved production action.
+If a legacy `ff-firefox-ev-*` container appears, stop before deployment and
+identify its workflow and network ownership. The scoped provisioner
+intentionally ignores legacy unscoped containers because it cannot prove which
+stack owns them; running old and new containers together could also duplicate
+the preserved network alias. Any legacy removal remains a separate, explicitly
+approved production action.
 
 **Twitter image shape** (per decisions.md 2026-07-22): one Dockerfile
 serves both `twitter` (headless) and `twitter-vnc` (visible display).
@@ -90,7 +90,6 @@ for full rationale.
 ```bash
 make twitter-vnc-up     # brings up twitter-vnc via `docker compose --profile vnc up`
 # operator logs in at http://found-footy-dev-twitter-vnc.luv (dev)
-# or http://found-footy-prod-twitter-vnc.luv (prod)
 make twitter-vnc-down   # stops + removes the container when done
 ```
 

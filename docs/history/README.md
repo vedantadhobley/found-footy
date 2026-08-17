@@ -7,3 +7,6 @@ Use the [`docs` routing index](../README.md) for current ledgers and
 
 - [`roadmap-2026-08-15.md`](./roadmap-2026-08-15.md) — four-week Go rebuild
   delivery plan that ended with the 2026-08-15 production cutover.
+- [`issue-register-2026-08-17.md`](./issue-register-2026-08-17.md) — frozen
+  release-day issue register with closed defect narratives, audit dispositions,
+  and the DOC-001 through DOC-007 normalization record.
