@@ -438,8 +438,9 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 	}
 	p.recordOutcome(c.tweetURL, discoveryactivity.OutcomePromoted, "",
 		jsonDetail(map[string]any{"asset_id": pout.AssetID.String(), "verified": c.verified}))
-	// A newly-minted clip changed this event's surfaced set → announce it.
-	// A retry that found an existing share sets Minted=false → no re-ping.
+	// A completed promotion with a durable share is ready to announce. This
+	// includes a retry that found the share created by its failed prior attempt:
+	// the workflow never observed that attempt and still owes the dirty signal.
 	if pout.Minted {
 		p.publishEventVideo()
 	}

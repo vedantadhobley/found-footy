@@ -74,6 +74,13 @@ failure. Explicit `OnGetVersion(...).Return(DefaultVersion)` cases preserve the
 old child-error command sequence for replay of histories created before the
 fix.
 
+`PersistActivities` promotion tests inject failures into the durable tail.
+They prove that a rank failure after share insertion is repaired on retry, an
+uncertain staging-delete response does not require a second source copy, and
+ordinary retries retain exactly one asset and share while still completing
+rank repair, cleanup, and the workflow dirty-signal contract. A pre-existing
+deterministic asset with mismatched immutable storage identity fails closed.
+
 ## Tier 2 — adapter integration (testcontainers)
 
 Integration coverage currently includes `pg`, `s3`, `nats`, and `temporal`.

@@ -280,7 +280,7 @@ against the current branch.
 
 ### FF-023 — promotion retry can skip rank rebalance
 
-- **Status:** `confirmed`
+- **Status:** `implemented`; not deployed
 - **Severity:** P2
 - **Source:** Promotes audit 2026-08-13 P3-3 after current-code validation.
 - **Invariant:** A retry must complete every durable step after a partially
@@ -290,17 +290,21 @@ against the current branch.
   inserted by the first attempt, and returns immediately without calling
   rebalance again. The retry therefore converts a transient error into a
   permanently stale rank order.
-- **Required fix:** Treat an existing share as idempotent progress, not activity
-  completion. Populate the output from it, always run rank rebalance, then
-  perform FF-006 staging cleanup. Add a regression that fails the first
-  rebalance after share insert and proves the retry repairs ranks without a
-  second share.
+- **Resolution:** An existing share is now idempotent progress, not activity
+  completion. `PromoteAndPersist` populates its output from that share, always
+  rebalances ranks, then performs FF-006 staging cleanup. The final successful
+  activity completion returns `Minted=true` because the workflow never
+  observed the share created by the failed attempt and still owes its one
+  dirty signal.
+- **Regression:** The activity fake fails the first rebalance after share
+  insert. The retry must skip a second copy and share mint, run rebalance
+  again, delete staging, and report the durable share to the workflow.
 - **Rollout:** Couple with FF-006 because both change the same promotion commit
   tail and retry boundary.
 
 ### FF-006 — promoted clips retain staging objects
 
-- **Status:** `confirmed`
+- **Status:** `implemented`; not deployed
 - **Severity:** P1
 - **Source:** 2026-08-13 P2-4, elevated to P1 by the 2026-08-15 audit.
 - **Evidence:** Promote copies `staging/` to `assets/`; the success path never
@@ -309,13 +313,23 @@ against the current branch.
   If deletion succeeds but the activity completion acknowledgement is lost, a
   retry starts with `Copy(staging, assets)` and fails because its source is
   gone, even though the deterministic asset and share are already durable.
-- **Required fix:** Derive the asset ID first and query it before copy. A retry
+- **Resolution:** Derive the asset ID first and query it before copy. A retry
   that finds the deterministic asset skips copy, ensures the share exists,
   always rebalances ranks per FF-023, and idempotently deletes staging last.
   A first attempt still copies before inserting the asset, so an asset row
-  continues to prove that destination bytes were written. Add a bounded stale-
-  staging sweep as a backstop and coordinate with FF-002 so every terminal path
-  has an owner.
+  continues to prove that destination bytes were written. A mismatched
+  deterministic row fails closed instead of authorizing a retry against the
+  wrong object.
+- **Regression:** Activity tests cover happy-path cleanup, ordinary retry after
+  cleanup, an uncertain delete response with a now-missing staging source, and
+  immutable-identity mismatch. Each successful retry retains one asset and one
+  share without a second copy.
+- **Remaining resilience:** FF-024 owns a bounded orphan sweep for abnormal
+  process or workflow termination. Normal successful promotion no longer
+  depends on that sweep for cleanup.
+- **Production follow-up:** Existing leaked staging objects predate this fix.
+  Inspecting or deleting them remains a separate explicitly approved
+  production action.
 
 ### FF-007 — abnormal EventWorkflow closure can strand a fixture
 
@@ -529,6 +543,7 @@ against the current branch.
 | FF-012 | P2 | Audit 2026-08-15 | Permanent LLM failures such as 401/404/bad JSON are retried. | Typed non-retryable classification and Temporal retry test. |
 | FF-013 | P2 | Audit 2026-08-15 | Schema guard verifies one fingerprint, not the existence of every object after interrupted initialization. | Verify required objects or adopt ordered migrations; test partial schema. |
 | FF-017 | P2 | Current code; legacy #170-adjacent finding | Firefox can die while the Go Twitter service remains alive and unusable because no browser watchdog or fatal-exit path exists. | Make browser death restart or terminate the service, expose correct health, and cover the process-loss transition. |
+| FF-024 | P2 | FF-006 follow-up; current code | The `staging/` prefix has no bounded orphan sweep after abnormal workflow or process termination. | List by prefix with an age floor, protect keys owned by active work, delete only proven orphans, and test both exclusions and bounded cleanup. |
 
 ## Audit intake requiring current-code validation
 

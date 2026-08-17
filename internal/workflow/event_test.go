@@ -589,8 +589,8 @@ func TestEventWorkflow_Pipeline_VerifyAndDedup(t *testing.T) {
 
 // TestEventWorkflow_Pipeline_PromotePingsEventVideo — N3: a newly-minted clip
 // (PromoteAndPersist → Minted=true) fires the event.video dirty-signal exactly
-// once. The other pipeline tests promote with Minted unset (a retry-style no-op)
-// and never ping — that's the Minted guard doing its job.
+// once. Other pipeline tests deliberately leave Minted unset because their
+// assertions do not exercise publication; this test owns the guard contract.
 func TestEventWorkflow_Pipeline_PromotePingsEventVideo(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := baseEventEnv(&s)

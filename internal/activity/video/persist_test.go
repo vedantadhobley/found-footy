@@ -1,13 +1,14 @@
 // persist_test.go — unit tests for the consumer-queue persist activities
 // with in-memory fakes for S3 + the asset/share repos. Focus: the
-// promote→insert→share flow, the deterministic-UUID retry idempotency
-// (double PromoteAndPersist mints exactly one asset + one share), and the
-// thin bump/delete activities.
+// promote→insert→share→rank→cleanup flow, deterministic-UUID retry
+// idempotency (double PromoteAndPersist mints exactly one asset + one share),
+// failure repair across the durable tail, and the thin bump/delete activities.
 package video
 
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"testing"
 	"time"
 
@@ -17,16 +18,22 @@ import (
 )
 
 type fakePromoter struct {
-	copies  [][2]string
-	deletes []string
+	copies         [][2]string
+	deletes        []string
+	copyErr        error
+	deleteFailures int
 }
 
 func (f *fakePromoter) Copy(_ context.Context, src, dst string) error {
 	f.copies = append(f.copies, [2]string{src, dst})
-	return nil
+	return f.copyErr
 }
 func (f *fakePromoter) Delete(_ context.Context, key string) error {
 	f.deletes = append(f.deletes, key)
+	if f.deleteFailures > 0 {
+		f.deleteFailures--
+		return errors.New("injected delete failure")
+	}
 	return nil
 }
 
@@ -89,7 +96,11 @@ func (f *fakeAssetStore) ListObjectKeysByEvent(_ context.Context, eventID uuid.U
 	return out, nil
 }
 
-type fakeShareStore struct{ shares []*dvideo.Share }
+type fakeShareStore struct {
+	shares            []*dvideo.Share
+	rebalanceCalls    int
+	rebalanceFailures int
+}
 
 func (f *fakeShareStore) Get(_ context.Context, id string) (*dvideo.Share, error) {
 	for _, s := range f.shares {
@@ -123,6 +134,11 @@ func (f *fakeShareStore) Upsert(_ context.Context, s *dvideo.Share) error {
 	return nil
 }
 func (f *fakeShareStore) RebalanceRanks(_ context.Context, _ uuid.UUID) (int, error) {
+	f.rebalanceCalls++
+	if f.rebalanceFailures > 0 {
+		f.rebalanceFailures--
+		return 0, errors.New("injected rebalance failure")
+	}
 	return 0, nil // ordering is covered by the pg RebalanceRanks test
 }
 func (f *fakeShareStore) MarkSuperseded(_ context.Context, id string) error {
@@ -157,8 +173,8 @@ func newPersist() (*PersistActivities, *fakePromoter, *fakeAssetStore, *fakeShar
 func stdPromoteInput(eventID uuid.UUID) PromoteAndPersistInput {
 	return PromoteAndPersistInput{
 		EventID: eventID, FixtureID: 1583467,
-		StagingKey: "staging/1583467/e/t.mp4",
-		MD5:        hex.EncodeToString([]byte("md5md5md5md5md5m")),
+		StagingKey:  "staging/1583467/e/t.mp4",
+		MD5:         hex.EncodeToString([]byte("md5md5md5md5md5m")),
 		FrameHashes: []uint64{1, 2, 4, 8}, Width: 1280, Height: 720,
 		DurationMS: 6677, FileSizeBytes: 1_000_000,
 		Verified: true, ExtractedMinute: intp(91),
@@ -170,8 +186,9 @@ func intp(i int) *int { return &i }
 func TestPromoteAndPersist_HappyPath(t *testing.T) {
 	a, s3, assets, shares := newPersist()
 	eventID := uuid.New()
+	in := stdPromoteInput(eventID)
 
-	out, err := a.PromoteAndPersist(context.Background(), stdPromoteInput(eventID))
+	out, err := a.PromoteAndPersist(context.Background(), in)
 	if err != nil {
 		t.Fatalf("PromoteAndPersist: %v", err)
 	}
@@ -192,10 +209,19 @@ func TestPromoteAndPersist_HappyPath(t *testing.T) {
 	if len(shares.shares) != 1 || out.ShareID == "" {
 		t.Errorf("shares = %d, shareID = %q; want 1 share + non-empty id", len(shares.shares), out.ShareID)
 	}
+	if !out.Minted {
+		t.Error("Minted = false, want true (workflow still owes the dirty signal)")
+	}
+	if shares.rebalanceCalls != 1 {
+		t.Errorf("rebalance calls = %d, want 1", shares.rebalanceCalls)
+	}
+	if len(s3.deletes) != 1 || s3.deletes[0] != in.StagingKey {
+		t.Errorf("staging deletes = %v, want [%s]", s3.deletes, in.StagingKey)
+	}
 }
 
 func TestPromoteAndPersist_Idempotent(t *testing.T) {
-	a, _, assets, shares := newPersist()
+	a, s3, assets, shares := newPersist()
 	eventID := uuid.New()
 	in := stdPromoteInput(eventID)
 
@@ -203,6 +229,9 @@ func TestPromoteAndPersist_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
+	// The first completion deleted staging. If a retry attempts Copy again,
+	// model the missing source as a hard failure.
+	s3.copyErr = errors.New("staging source is gone")
 	second, err := a.PromoteAndPersist(context.Background(), in) // retry
 	if err != nil {
 		t.Fatalf("second: %v", err)
@@ -223,6 +252,117 @@ func TestPromoteAndPersist_Idempotent(t *testing.T) {
 	}
 	if len(shares.shares) != 1 {
 		t.Errorf("shares = %d, want 1 (no double-mint on retry)", len(shares.shares))
+	}
+	if len(s3.copies) != 1 {
+		t.Errorf("copies = %v, want one (retry must trust durable asset)", s3.copies)
+	}
+	if len(s3.deletes) != 2 {
+		t.Errorf("staging deletes = %v, want two idempotent attempts", s3.deletes)
+	}
+	if shares.rebalanceCalls != 2 {
+		t.Errorf("rebalance calls = %d, want 2 (existing share still repairs ranks)", shares.rebalanceCalls)
+	}
+	if !first.Minted || !second.Minted {
+		t.Errorf("Minted = %v/%v, want true/true so final activity success announces", first.Minted, second.Minted)
+	}
+}
+
+func TestPromoteAndPersist_RejectsMismatchedDeterministicAsset(t *testing.T) {
+	a, s3, assets, shares := newPersist()
+	eventID := uuid.New()
+	in := stdPromoteInput(eventID)
+	assetID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(eventID.String()+":"+in.MD5))
+	assets.byID[assetID] = &dvideo.Asset{
+		ID: assetID, EventID: eventID, FixtureID: in.FixtureID,
+		S3Bucket: a.Bucket, S3Key: "assets/wrong.mp4",
+		MD5: []byte("md5md5md5md5md5m"),
+	}
+
+	if _, err := a.PromoteAndPersist(context.Background(), in); err == nil {
+		t.Fatal("mismatched deterministic asset should fail closed")
+	}
+	if len(s3.copies) != 0 || len(s3.deletes) != 0 || len(shares.shares) != 0 {
+		t.Errorf("side effects after identity mismatch: copies=%v deletes=%v shares=%d",
+			s3.copies, s3.deletes, len(shares.shares))
+	}
+}
+
+// A delete may succeed remotely while its response is lost. The retry must
+// not need the now-missing staging source: the deterministic asset row proves
+// destination bytes were copied before persistence.
+func TestPromoteAndPersist_DeleteFailureRetrySkipsCopy(t *testing.T) {
+	a, s3, assets, shares := newPersist()
+	eventID := uuid.New()
+	in := stdPromoteInput(eventID)
+	s3.deleteFailures = 1
+
+	if _, err := a.PromoteAndPersist(context.Background(), in); err == nil {
+		t.Fatal("first attempt should fail at staging delete")
+	}
+	if len(assets.byID) != 1 || len(shares.shares) != 1 {
+		t.Fatalf("durable progress = %d assets/%d shares, want 1/1", len(assets.byID), len(shares.shares))
+	}
+	if shares.rebalanceCalls != 1 {
+		t.Fatalf("rebalance calls = %d, want 1 before delete failure", shares.rebalanceCalls)
+	}
+
+	s3.copyErr = errors.New("staging source is gone")
+	out, err := a.PromoteAndPersist(context.Background(), in)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if out.Inserted {
+		t.Error("retry Inserted = true, want false")
+	}
+	if !out.Minted {
+		t.Error("retry Minted = false, want true")
+	}
+	if len(s3.copies) != 1 {
+		t.Errorf("copies = %v, want one (no retry copy after uncertain delete)", s3.copies)
+	}
+	if len(s3.deletes) != 2 {
+		t.Errorf("deletes = %v, want failed attempt + retry", s3.deletes)
+	}
+	if shares.rebalanceCalls != 2 {
+		t.Errorf("rebalance calls = %d, want 2", shares.rebalanceCalls)
+	}
+}
+
+// FF-023: once Insert has committed, a transient rank failure leaves a share
+// for the retry to find. Finding it must not short-circuit rank repair or
+// staging cleanup, and it must not mint a second share.
+func TestPromoteAndPersist_RebalanceFailureRetryRepairs(t *testing.T) {
+	a, s3, _, shares := newPersist()
+	eventID := uuid.New()
+	in := stdPromoteInput(eventID)
+	shares.rebalanceFailures = 1
+
+	if _, err := a.PromoteAndPersist(context.Background(), in); err == nil {
+		t.Fatal("first attempt should fail at rank rebalance")
+	}
+	if len(shares.shares) != 1 {
+		t.Fatalf("shares after failed rebalance = %d, want 1", len(shares.shares))
+	}
+	if len(s3.deletes) != 0 {
+		t.Fatalf("staging deleted before durable tail completed: %v", s3.deletes)
+	}
+
+	s3.copyErr = errors.New("retry must not copy")
+	out, err := a.PromoteAndPersist(context.Background(), in)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if len(shares.shares) != 1 {
+		t.Errorf("shares after retry = %d, want 1", len(shares.shares))
+	}
+	if shares.rebalanceCalls != 2 {
+		t.Errorf("rebalance calls = %d, want failed call + repair", shares.rebalanceCalls)
+	}
+	if len(s3.copies) != 1 || len(s3.deletes) != 1 {
+		t.Errorf("S3 operations copies=%v deletes=%v, want one copy + one cleanup", s3.copies, s3.deletes)
+	}
+	if !out.Minted {
+		t.Error("retry Minted = false, want final success to announce durable share")
 	}
 }
 
@@ -248,6 +388,7 @@ func TestBumpAndDelete(t *testing.T) {
 		t.Error("bump on missing asset should error")
 	}
 
+	s3.deletes = nil // isolate this activity from PromoteAndPersist's cleanup
 	if err := a.DeleteStaging(context.Background(), DeleteStagingInput{StagingKey: "staging/x.mp4"}); err != nil {
 		t.Fatalf("DeleteStaging: %v", err)
 	}
