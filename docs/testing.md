@@ -247,6 +247,11 @@ score containing a goal that was never observed. The former completes from the
 retained stored inventory; the latter remains active because the completion
 parity gate fails.
 
+FF-029 is covered below the scenario layer because it is an HTTP-adapter and
+activity-retry contract: adapter tests distinguish syndication metadata 403
+from CDN byte-download 403, the activity test preserves the terminal/transient
+split, and the workflow test requires all four transient download attempts.
+
 **Run:** `make test-corpus` — runs just the harness. `make test`
 includes it. `make test-short` excludes it (no docker).
 

@@ -442,6 +442,14 @@ staging key instead of failing without correlation data. Wall-clock
 `max_age_minutes` filter
 (decisions.md 2026-07-23).
 
+`DownloadAndStage` resolves the tweet and downloads its selected CDN variant
+inside one retryable activity. A 403 from the metadata endpoint is terminal
+`geo_restricted`; a 403 from the subsequent CDN byte request is transient
+`ErrCDNForbidden`. The latter consumes the normal four activity attempts,
+rerunning resolution before every download so an expired or edge-rejected
+variant URL can refresh (FF-029). Exhaustion still follows FF-002's correlated
+`download_error` path.
+
 Each `SearchTweets` activity has four transient-infrastructure attempts at
 roughly 0/10/30/60 seconds. This spans FF-017's measured Firefox cold restart,
 including on the final outer discovery attempt; the minute between successful

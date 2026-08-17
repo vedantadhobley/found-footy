@@ -204,6 +204,9 @@ func (c *Client) Download(ctx context.Context, variantURL string, w io.Writer) (
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusForbidden {
+		return 0, fmt.Errorf("%w: host=%s", ErrCDNForbidden, req.URL.Host)
+	}
 	if err := statusToErr(resp.StatusCode, ""); err != nil {
 		return 0, err
 	}

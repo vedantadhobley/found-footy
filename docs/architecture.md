@@ -293,6 +293,10 @@ Adapter-specific notes:
 - **llm**: types.go owns domain-shaped `ChatRequest`/`ChatResponse`;
   classifyError translates HTTP status codes to typed errors
   (ErrRateLimited, ErrCapExceeded, etc.).
+- **syndication**: metadata resolution and CDN byte download use separate 403
+  classes. Metadata 403 is terminal `ErrGeoRestricted`; CDN 403 is transient
+  `ErrCDNForbidden`, allowing the enclosing activity retry to resolve a fresh
+  variant URL without exposing the signed URL in errors (FF-029).
 - **apifootball**: getJSON helper handles auth (`x-apisports-key` per
   doc) + rate-limit-header parsing (per-minute + daily distinct) +
   error classification. `/fixtures` (single + by-IDs) landed in O1a.

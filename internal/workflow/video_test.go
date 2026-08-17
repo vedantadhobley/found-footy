@@ -18,6 +18,7 @@ import (
 	sdkworkflow "go.temporal.io/sdk/workflow"
 
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
+	"github.com/vedantadhobley/found-footy/internal/infra/syndication"
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
 
@@ -104,13 +105,13 @@ func TestVideoWorkflow_RejectedSkipsHash(t *testing.T) {
 	}
 }
 
-// TestVideoWorkflow_DownloadErrorReturnsFailed verifies that all four activity
-// attempts resolve to a correlated terminal result instead of a failed child.
-func TestVideoWorkflow_DownloadErrorReturnsFailed(t *testing.T) {
+// TestVideoWorkflow_CDNForbiddenRetriesThenReturnsFailed verifies that a CDN
+// 403 consumes all four activity attempts before becoming a correlated result.
+func TestVideoWorkflow_CDNForbiddenRetriesThenReturnsFailed(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newVideoEnv(&s)
 	env.OnActivity("DownloadAndStage", mock.Anything, mock.Anything).Return(
-		videoactivity.DownloadAndStageOutput{}, errors.New("cdn timeout"))
+		videoactivity.DownloadAndStageOutput{}, syndication.ErrCDNForbidden)
 
 	env.ExecuteWorkflow(workflow.VideoWorkflow, stdVideoInput())
 

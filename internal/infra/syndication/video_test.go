@@ -144,10 +144,14 @@ func TestDownload_SuccessSetsHeaders(t *testing.T) {
 	}
 }
 
-func TestDownload_CDN403(t *testing.T) {
+func TestDownload_CDN403IsTransientForbidden(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }))
 	defer srv.Close()
-	if _, err := newClient(t, "http://unused").Download(context.Background(), srv.URL+"/hi.mp4", &bytes.Buffer{}); !errors.Is(err, syndication.ErrGeoRestricted) {
-		t.Fatalf("want ErrGeoRestricted on CDN 403, got %v", err)
+	_, err := newClient(t, "http://unused").Download(context.Background(), srv.URL+"/hi.mp4", &bytes.Buffer{})
+	if !errors.Is(err, syndication.ErrCDNForbidden) {
+		t.Fatalf("want ErrCDNForbidden on CDN 403, got %v", err)
+	}
+	if errors.Is(err, syndication.ErrGeoRestricted) {
+		t.Fatalf("CDN 403 must not be terminal ErrGeoRestricted: %v", err)
 	}
 }
