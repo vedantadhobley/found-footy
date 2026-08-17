@@ -1,0 +1,74 @@
+name: edge-unobserved-goal-blocks-completion
+description: |
+  The provider reports a 2-0 played result but supplies only one goal event.
+  Even after the event and terminal status both satisfy their three-poll
+  debounces, the fixture must remain active because its surviving goal
+  inventory cannot explain the score. This is the safe state until FF-014's
+  bounded terminal-reconciliation policy is designed.
+
+workflow: MonitorWorkflow
+
+setup:
+  fixtures:
+    - id: 1564803
+      state: active
+      kickoff: 2026-08-16T19:30:00Z
+      activated_at: 2026-08-16T19:25:00Z
+      last_polled_at: 2026-08-16T21:12:30Z
+      api_status_short: "2h"
+      api_status_long: Second Half
+      home_id: 487
+      home_name: Lazio
+      away_id: 1744
+      away_name: Mantova
+      league_id: 137
+      league_name: Coppa Italia
+      league_season: 2026
+
+_incomplete_result: &incomplete_result
+  fixtures:
+    - id: 1564803
+      kickoff: 2026-08-16T19:30:00Z
+      status_short: FT
+      status_long: Match Finished
+      status_elapsed: 90
+      home_id: 487
+      home_name: Lazio
+      away_id: 1744
+      away_name: Mantova
+      league_id: 137
+      league_name: Coppa Italia
+      league_season: 2026
+      goals_home: 2
+      goals_away: 0
+      events:
+        - type: Goal
+          detail: Own Goal
+          team_id: 487
+          team_name: Lazio
+          player_id: 8001
+          player_name: Away Defender
+          minute: 6
+
+cycles:
+  - t: 2026-08-16T21:13:00Z
+    api_responses: {fixtures_by_ids: *incomplete_result}
+  - t: 2026-08-16T21:13:30Z
+    api_responses: {fixtures_by_ids: *incomplete_result}
+  - t: 2026-08-16T21:14:00Z
+    api_responses: {fixtures_by_ids: *incomplete_result}
+
+expected_final_state:
+  fixtures:
+    - id: 1564803
+      state: active
+      api_status_short: ft
+      has_completed_at: false
+  events:
+    - fixture_id: 1564803
+      natural_key: "487_8001_goal_1"
+      debounce_count: 3
+      downstream_triggered: true
+      removed: false
+  counts:
+    events: 1

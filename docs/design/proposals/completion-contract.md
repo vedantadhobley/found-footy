@@ -2,22 +2,24 @@
 
 **Status:** SHIPPED (2026-07-11 machinery; auto-widened once EventWorkflow/#164c
 began registering rows). The contract is live — see the **As-built notes** banner
-below for three deltas from this text.
+below for the current deltas from this text.
+
+> **FF-014 correction implemented locally; not deployed:** played terminal
+> responses now advance completion only when their current scoring-event array
+> exactly matches the reported score. The removal path holds an omitted stored
+> goal while the score still requires it, and the final gate independently
+> requires reported-score/surviving-goal parity.
 
 > **⚠ AS-BUILT NOTES (2026-08-06).** The machinery below shipped and is live —
 > `event_downstream_workflows`, `completion_counter`, the single-query check
 > (`FixtureReadyToComplete` in `internal/infra/pg/fixture_repo.go` /
 > [`schema.sql`](../../../internal/infra/pg/schema.sql)), and the
 > `ReconcileFixture` call (see [`../../orchestration.md`](../../orchestration.md)).
-> Three deltas from this text:
-> - **The winner-data fast-path is DEAD code.** The `home_winner`/`away_winner`
->   columns and the query's `OR … IS NOT NULL` branch exist, but **nothing in
->   production populates the winner fields** — the reconcile path
->   (`Fixture.UpdateFromPoll`) doesn't set them, and `Fixture.UpdateWinners` is
->   called only in tests. So completion is driven purely by
->   `completion_counter >= 3`. TODO: either wire winner propagation from the poll
->   (`teams.home/away.winner` → `UpdateWinners` inside `ReconcileFixture`) or
->   delete the OR-branch + columns.
+> Current deltas from the original proposal:
+> - **Winner data is wired for result display, not completion.**
+>   `ReconcileFixture` calls `Fixture.UpdateWinners` from every active poll, but
+>   FF-014 removes the winner-data bypass: every fixture requires three
+>   coherent terminal votes.
 > - **`RecordPollForCompletion` never existed under that name.** The 3-poll
 >   counter logic shipped as the unexported `updateCompletionCounter()`, called
 >   by `UpdateFromPoll`.
@@ -26,6 +28,11 @@ below for three deltas from this text.
 >   `AND e.debounce_count > 0`, so a placeholder that never attributes a scorer
 >   (debounce_count=0, never triggers downstream) no longer strands the fixture
 >   in `active` forever (audit-2026-08-05 G1).
+> - **Played terminal results require two score/event checks (FF-014).** `FT`,
+>   `AET`, and `PEN` advance the counter only on same-response parity, then the
+>   final gate requires exact per-team equality between the reported score and
+>   surviving stored goals. Exceptional terminal statuses vote on terminal
+>   status alone.
 
 **Cross-refs:**
 - Plan intent — [`../../rebuild-plan.md`](../rebuild-plan.md) §8 (fixture state machine), §5 (workflow coordination)
@@ -78,10 +85,11 @@ A fixture is **ready to complete** when all of the following hold:
 
 1. **API status is Terminal** — `FT`, `AET`, `PEN`, `CANC`, `ABD`,
    `WO`, or `AWD` (per `fixture.APIStatus.Terminal()`).
-2. **Completion counter debounce satisfied** — this monitor cycle
-   observes Terminal AND `completion_counter >= 3` (or the fixture
-   has winner data indicating truly-decided score; see fast-path
-   below).
+2. **Completion counter debounce satisfied** — `completion_counter >= 3` after
+   three consecutive coherent Terminal observations. For `FT`, `AET`, and
+   `PEN`, coherent means exact same-response score/scoring-event parity;
+   exceptional terminal statuses vote on terminal status alone. Winner data
+   does not bypass the counter.
 3. **Every non-removed *known-scorer* event has settled its debounce** —
    `NOT EXISTS event WHERE fixture_id=$1 AND removed=false AND downstream_triggered=false AND debounce_count>0`.
    Equivalent: every real event is either VAR'd (soft-removed) or crossed to
@@ -90,6 +98,10 @@ A fixture is **ready to complete** when all of the following hold:
    would otherwise strand the fixture in `active` forever.
 4. **No downstream workflows still in flight for any event** —
    `NOT EXISTS event_downstream_workflows edw JOIN events e ON edw.event_id=e.id WHERE e.fixture_id=$1 AND edw.completed_at IS NULL`.
+5. **Played-result score parity** — for `FT`, `AET`, and `PEN`, each team's
+   reported score equals its count of surviving stored goal events. `CANC`,
+   `ABD`, `WO`, and `AWD` bypass parity because they may not represent a played
+   result.
 
 ### The pluggable checklist — `event_downstream_workflows`
 
@@ -142,16 +154,17 @@ ALTER TABLE fixtures ADD COLUMN completion_counter INT NOT NULL DEFAULT 0;
 ```
 
 Symmetric to the debounce counter on events:
-- Reset to 0 when API status is NOT Terminal.
-- Increment (capped at 3) when API status IS Terminal.
-- Fixture eligible for state transition only when counter >= 3
-  (or the winner-data fast-path below fires).
+- Reset to 0 when API status is not Terminal.
+- For played results, reset to 0 when the terminal response's score and
+  scoring-event array disagree or either score is nil.
+- Increment (capped at 3) on a coherent Terminal response.
+- Fixture is eligible for state transition only when the counter reaches 3.
 
 Why 3? Same reason as event debounce — three consecutive polls give
 high confidence the vendor has truly finalized status, not just
 briefly flipped to FT then back.
 
-### Winner-data fast-path — ⚠ DEAD (never populated; see As-built banner)
+### Winner-data fast-path — superseded by FF-014
 
 Python spec §8: fixture moves to completed when the counter reaches 3
 **OR winner data exists** (`teams.home.winner` or `teams.away.winner`
@@ -169,16 +182,38 @@ func (f *Fixture) HasDecidedWinner() bool {
 (New nullable-bool fields on the fixture row, populated from the API
 poll's `teams.home.winner` / `teams.away.winner`.)
 
-Completion eligibility becomes: `completion_counter >= 3 OR HasDecidedWinner()`.
+This was implemented after the original proposal, then removed by FF-014. The
+winner fields remain populated for consumers, but completion eligibility is
+always `completion_counter >= 3`.
 
 ### The full completion check as one query
 
 ```sql
 SELECT
     f.api_status_short IN ('ft','aet','pen','canc','abd','wo','awd')
-    AND (f.completion_counter >= 3
-         OR f.home_winner IS NOT NULL
-         OR f.away_winner IS NOT NULL)
+    AND f.completion_counter >= 3
+    AND (
+        f.api_status_short IN ('canc','abd','wo','awd')
+        OR (
+            f.api_status_short IN ('ft','aet','pen')
+            AND f.home_score IS NOT NULL
+            AND f.away_score IS NOT NULL
+            AND f.home_score = (
+                SELECT COUNT(*) FROM events score_home
+                WHERE score_home.fixture_id = f.id
+                  AND score_home.event_type = 'goal'
+                  AND score_home.team_id = f.home_team_id
+                  AND score_home.removed = false
+            )
+            AND f.away_score = (
+                SELECT COUNT(*) FROM events score_away
+                WHERE score_away.fixture_id = f.id
+                  AND score_away.event_type = 'goal'
+                  AND score_away.team_id = f.away_team_id
+                  AND score_away.removed = false
+            )
+        )
+    )
     AND NOT EXISTS (
         SELECT 1 FROM events e
         WHERE e.fixture_id = f.id

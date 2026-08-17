@@ -351,6 +351,33 @@ clips), and reclaims its Garage objects. Mirrors Python (`monitor.py`
 `initial_count` + `unknown_scorer_disappeared` + `mark_event_removed`); see
 [decisions.md](decisions.md) 2026-08-05. Surfaced per cycle as `unknown_dropped`.
 
+**Score-backed goal removal and coherent fixture completion (FF-014).** A
+missing goal no longer receives an absence vote when the aggregate score in
+that same provider response exceeds the current API goal count for its
+beneficiary team. `ReconcileFixture` returns the protected natural keys as
+`GoalAbsencesHeld`, and `ActivePollWorkflow` records them without running VAR
+destroy. A true VAR drops the score and resumes normal absence debounce; a
+replacement scorer/own-goal identity accounts for the unchanged score and lets
+the old identity decay. Missing red cards and missed penalties retain ordinary
+absence behavior because they do not affect the score.
+
+The fixture completion counter now measures coherent terminal snapshots, not
+terminal status alone. For `FT`, `AET`, and `PEN`, a poll advances the counter
+only when the current response contains exact per-team scoring-event parity
+with its reported score; any non-terminal, nil-score, or inconsistent played
+response resets it to zero. `CANC`, `ABD`, `WO`, and `AWD` advance on terminal
+status alone because they do not promise a played-match event inventory.
+Winner flags remain stored result/display facts and cannot bypass the three
+votes.
+
+After the counter reaches three, `FixtureReadyToComplete` independently
+requires exact parity with surviving stored goals, no known event still below
+its trigger, and no incomplete `event_downstream_workflows` row. Unknown-scorer
+goal placeholders count for score parity but do not block the event-settled
+predicate; red cards, missed penalties, and shootout events do not count toward
+the match score. See the
+[decision record](./decisions/2026-08-16-score-backed-goal-removal.md).
+
 **Per-event Firefox fleet lifecycle (#160, gated on `FleetEnabled`; live in prod).**
 Two hooks straddle the debounce, both gated on the monitor config's
 `FleetEnabled` (default false → both inert):

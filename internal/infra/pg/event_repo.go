@@ -185,7 +185,7 @@ func (r *EventRepo) DiscoveryComplete(ctx context.Context, eventIDs []uuid.UUID)
 }
 
 // GetByNaturalKey returns the event for (fixture_id, natural_key) or
-// event.ErrNotFound. Called by MonitorWorkflow when it sees an API
+// event.ErrNotFound. Called during active-fixture reconciliation when it sees an API
 // event and wants to know if we already track it.
 func (r *EventRepo) GetByNaturalKey(ctx context.Context, fixtureID int64, naturalKey string) (*event.Event, error) {
 	row := r.pool.QueryRow(ctx,
@@ -476,7 +476,8 @@ func (r *EventRepo) RegisterEventPresence(ctx context.Context, eventID uuid.UUID
 // Soft-delete details when hitZero: sets removed=TRUE,
 // removed_reason='var', removed_at=NOW(). The row is preserved for
 // audit; downstream cleanup (Temporal cancel + video_shares soft-delete)
-// is the caller's responsibility on hitZero=true.
+// is the caller's responsibility on hitZero=true. The monitor caller guards
+// goal votes with same-response score consistency before invoking this method.
 func (r *EventRepo) RegisterEventAbsence(ctx context.Context, eventID uuid.UUID, workflowID string) (int, bool, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {

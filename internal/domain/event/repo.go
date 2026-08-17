@@ -14,7 +14,7 @@ var ErrNotFound = errors.New("event: not found")
 
 // Repo is the storage port. The debounce methods (RegisterEventPresence,
 // RegisterEventAbsence) implement the symmetric-counter model designed
-// in the O2 planning session — see docs/decisions.md 2026-07-07 debounce
+// in the historical workflow design — see docs/decisions.md 2026-07-07 debounce
 // entry. The counter increments on presence (cap 3), decrements on
 // absence (floor 0), triggers downstream once when it first hits 3,
 // and soft-deletes the event when it hits 0.
@@ -23,7 +23,7 @@ type Repo interface {
 	Get(ctx context.Context, id uuid.UUID) (*Event, error)
 
 	// GetByNaturalKey returns the event for (fixture_id, natural_key) or
-	// ErrNotFound. Called by MonitorWorkflow when it sees an API event
+	// ErrNotFound. Called during active-fixture reconciliation when it sees an API event
 	// and wants to know if we already track it. Returns removed events
 	// too — callers filter based on their needs.
 	GetByNaturalKey(ctx context.Context, fixtureID int64, naturalKey string) (*Event, error)
@@ -38,7 +38,7 @@ type Repo interface {
 	//
 	// Fails with a wrapped pgconn.PgError (23505 unique_violation) if
 	// (fixture_id, natural_key) collides — the concurrent-detection-race
-	// case where two monitor workflows both saw the event first. The
+	// case where two reconcile attempts both saw the event first. The
 	// caller catches, GetByNaturalKey, then calls RegisterEventPresence
 	// (which will be a no-op idempotent skip for the same workflowID
 	// because Insert's vote is already recorded).
@@ -73,9 +73,14 @@ type Repo interface {
 
 	// ListPending returns events in the fixture that need more work
 	// (NOT removed AND (NOT monitor_complete OR NOT download_complete)).
-	// The MonitorWorkflow uses this to find events still in the
-	// discovery/download pipeline.
+	// Compatibility callers use this to find rows whose legacy completion
+	// flags still indicate discovery/download work.
 	ListPending(ctx context.Context, fixtureID int64) ([]*Event, error)
+
+	// ListByFixture returns every non-removed event for a fixture. Active
+	// reconciliation must use this complete set for presence/absence voting;
+	// removal correctness cannot depend on legacy pipeline-completion flags.
+	ListByFixture(ctx context.Context, fixtureID int64) ([]*Event, error)
 
 	// EventsAwaitingDiscovery returns events in the fixture that are
 	// confirmed (downstream_triggered) and NOT removed but whose
@@ -107,12 +112,13 @@ type Repo interface {
 	// RegisterEventAbsence records an absence vote by workflowID for
 	// this event. Idempotent per (event_id, workflow_id).
 	//
-	// Only KNOWN-scorer (confirmed, count ≥1) events reach this path —
-	// unknown-scorer placeholders are diverted to DeleteUnknownEvent by
-	// the caller before they get here. So a decrement to 0 always means a
-	// genuine confirmed goal was withdrawn by the vendor, which makes the
-	// removed_reason='var' stamp below honest (VAR overturn / correction),
-	// not an overloaded catch-all.
+	// Only KNOWN-player (confirmed, count ≥1) events reach this path —
+	// unknown-player placeholders are diverted to DeleteUnknownEvent by
+	// the caller before they get here. The monitor also withholds goal
+	// absence votes when the provider's aggregate score proves its event
+	// array is incomplete. Those caller-side guards make a decrement to 0
+	// sufficient evidence for removed_reason='var' (overturn / correction)
+	// rather than an overloaded catch-all.
 	//
 	// Atomic soft-delete on hit-zero: when the decrement brings
 	// debounce_count to 0, the same transaction also sets

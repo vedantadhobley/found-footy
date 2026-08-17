@@ -6,29 +6,29 @@
 // this one stays lean.
 //
 // Steps (all in internal/activity/monitor):
-//   1. ActivateUpcoming — DB-only. Staging fixtures with STORED
-//      kickoff inside the activation window (default 5 min) get
-//      promoted to active. Runs here at 30s cadence for failure
-//      isolation: activation is P0 and inherits the resilient hot-path
-//      cadence rather than being tied to the slower StagingPoll.
-//   2. ListActiveFixtureIDs — cheap ID pull. Includes anything step
-//      1 just activated.
-//   3. FetchLiveFixtures — one activity call regardless of ID count;
-//      the apifootball client chunks internally at IDsBatchLimit and
-//      fires per-chunk HTTP calls in parallel via goroutines. Partial
-//      failures surface as FailedIDs — we log them and let the next
-//      30s cycle naturally re-request (the poll IS the retry).
-//   4. ReconcileFixture — per fixture, refresh row + diff events +
-//      vote presence/absence. Concurrent across fixtures via
-//      workflow.ExecuteActivity in a loop (dispatched in parallel;
-//      workflow waits for all).
+//  1. ActivateUpcoming — DB-only. Staging fixtures with STORED
+//     kickoff inside the activation window (default 5 min) get
+//     promoted to active. Runs here at 30s cadence for failure
+//     isolation: activation is P0 and inherits the resilient hot-path
+//     cadence rather than being tied to the slower StagingPoll.
+//  2. ListActiveFixtureIDs — cheap ID pull. Includes anything step
+//     1 just activated.
+//  3. FetchLiveFixtures — one activity call regardless of ID count;
+//     the apifootball client chunks internally at IDsBatchLimit and
+//     fires per-chunk HTTP calls in parallel via goroutines. Partial
+//     failures surface as FailedIDs — we log them and let the next
+//     30s cycle naturally re-request (the poll IS the retry).
+//  4. ReconcileFixture — per fixture, refresh row + diff events +
+//     vote presence/absence. Concurrent across fixtures via
+//     workflow.ExecuteActivity in a loop (dispatched in parallel;
+//     workflow waits for all).
 //
 // As-built (O3+):
-//   • EventWorkflow spawn for stable events — SHIPPED (DownstreamSpawner
+//   - EventWorkflow spawn for stable events — SHIPPED (DownstreamSpawner
 //     on the downstream_triggered flip).
-//   • Fixture completion transition — SHIPPED (FixtureReadyToComplete; the
+//   - Fixture completion transition — SHIPPED (FixtureReadyToComplete; the
 //     completion contract).
-//   • VAR destroy pipeline (Temporal cancel + revoke shares + reclaim Garage
+//   - VAR destroy pipeline (Temporal cancel + revoke shares + reclaim Garage
 //     objects) for overturned events — SHIPPED (#172; Step 4.5 runs it for each
 //     event that just debounced to 0).
 //
@@ -77,8 +77,11 @@ type ActivePollWorkflowOutput struct {
 	NewEvents          int
 	EventsBecameStable []string
 	EventsRemoved      []string
-	UnknownDropped     int // unknown-scorer placeholders hard-deleted this cycle
-	Errors             []string
+	// GoalAbsencesHeld are provider-array omissions protected from VAR
+	// classification because the score still requires those goals.
+	GoalAbsencesHeld []string
+	UnknownDropped   int // unknown-scorer placeholders hard-deleted this cycle
+	Errors           []string
 }
 
 // ActivePollWorkflow — the coordinator for the 30s hot path. Called
@@ -210,10 +213,16 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 		out.NewEvents += reconcileOut.NewEventsDetected
 		out.EventsBecameStable = append(out.EventsBecameStable, reconcileOut.EventsBecameStable...)
 		out.EventsRemoved = append(out.EventsRemoved, reconcileOut.EventsRemoved...)
+		out.GoalAbsencesHeld = append(out.GoalAbsencesHeld, reconcileOut.GoalAbsencesHeld...)
 		removedEventIDs = append(removedEventIDs, reconcileOut.EventsRemovedIDs...)
 		newNamedEventIDs = append(newNamedEventIDs, reconcileOut.NewNamedEventIDs...)
 		out.UnknownDropped += reconcileOut.UnknownDropped
 		out.Errors = append(out.Errors, reconcileOut.Errors...)
+		if len(reconcileOut.GoalAbsencesHeld) > 0 {
+			logger.Warn("goal absence held: aggregate score requires omitted event",
+				"fixture_id", reconcileOut.FixtureID,
+				"natural_keys", reconcileOut.GoalAbsencesHeld)
+		}
 
 		switch {
 		case reconcileOut.Structural:

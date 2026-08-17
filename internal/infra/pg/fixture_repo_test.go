@@ -311,8 +311,7 @@ func TestFixtureRepo_ListStagingBeforeKickoff(t *testing.T) {
 //   - Terminal status + counter=3 + no events + no in-flight
 //     downstream workflows → ready
 //   - Non-Terminal status → not ready (regardless of counter)
-//   - Terminal + counter=0 + no winner → not ready
-//   - Terminal + winner fast-path → ready
+//   - Terminal + counter=0 → not ready, even with winner data
 //   - Terminal + counter=3 + an event in mid-debounce → not ready
 //   - Terminal + counter=3 + an in-flight downstream workflow → not ready
 //   - Terminal + an unknown-scorer placeholder (debounce_count=0) → ready
@@ -336,11 +335,13 @@ func TestFixtureRepo_FixtureReadyToComplete_TruthTable(t *testing.T) {
 	if err := f.Activate(base); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
+	zero := 0
+	f.HomeScore, f.AwayScore = &zero, &zero
 	// Simulate 3 Terminal polls to prime the counter.
 	for i := 0; i < 3; i++ {
 		f.UpdateFromPoll(
 			fixture.APIStatus{Short: "ft", Long: "Match Finished"},
-			nil, nil, nil, nil, base.Add(time.Duration(i)*30*time.Second),
+			nil, nil, nil, nil, true, base.Add(time.Duration(i)*30*time.Second),
 		)
 	}
 	if err := repo.Upsert(ctx, f); err != nil {
@@ -350,19 +351,25 @@ func TestFixtureRepo_FixtureReadyToComplete_TruthTable(t *testing.T) {
 		t.Errorf("terminal+counter=3+no-events ready = %v (err=%v), want true", ready, err)
 	}
 
-	// Winner fast-path: reset counter, set winner. Should still be ready.
+	// Winner data cannot bypass the coherent three-poll counter.
 	f.CompletionCounter = 0
 	trueBool := true
 	f.HomeWinner = &trueBool
 	if err := repo.Upsert(ctx, f); err != nil {
 		t.Fatalf("upsert winner: %v", err)
 	}
-	if ready, err := repo.FixtureReadyToComplete(ctx, 9101); err != nil || !ready {
-		t.Errorf("terminal+winner+counter=0 ready = %v (err=%v), want true", ready, err)
+	if ready, err := repo.FixtureReadyToComplete(ctx, 9101); err != nil || ready {
+		t.Errorf("terminal+winner+counter=0 ready = %v (err=%v), want false", ready, err)
 	}
+	f.CompletionCounter = 3
 
 	// Add an event in mid-debounce (removed=false, downstream_triggered=false).
 	// Directly INSERT bypassing repo since we need to control debounce_count.
+	one := 1
+	f.HomeScore = &one
+	if err := repo.Upsert(ctx, f); err != nil {
+		t.Fatalf("upsert 1-0 score: %v", err)
+	}
 	eventID := uuid.New()
 	_, err := pool.Exec(ctx, `
 		INSERT INTO events (
@@ -422,8 +429,14 @@ func TestFixtureRepo_FixtureReadyToComplete_TruthTable(t *testing.T) {
 	// Unknown-scorer placeholder that survived to full-time: debounce_count=0,
 	// removed=false, downstream_triggered=false, no player attributed. It never
 	// triggers downstream, so pre-G1 it matched the event-settled NOT EXISTS
-	// clause and blocked completion forever. It must NOT block — the fixture
-	// stays ready. (G1 / audit-2026-08-05 Tier-1 #2)
+	// clause and blocked completion forever. It still counts as a scoring event
+	// for score parity, so make it the second goal in a 2-0 result. It must NOT
+	// block once inventory and score agree. (G1 / audit-2026-08-05 Tier-1 #2)
+	two := 2
+	f.HomeScore = &two
+	if err := repo.Upsert(ctx, f); err != nil {
+		t.Fatalf("upsert 2-0 score: %v", err)
+	}
 	placeholderID := uuid.New()
 	_, err = pool.Exec(ctx, `
 		INSERT INTO events (
@@ -441,6 +454,28 @@ func TestFixtureRepo_FixtureReadyToComplete_TruthTable(t *testing.T) {
 	}
 	if ready, err := repo.FixtureReadyToComplete(ctx, 9101); err != nil || !ready {
 		t.Errorf("terminal+unknown-placeholder ready = %v (err=%v), want true", ready, err)
+	}
+
+	// Played terminal result with more goals in the score than in surviving
+	// storage must remain active. Winner data cannot bypass this parity gate.
+	three := 3
+	f.HomeScore = &three
+	if err := repo.Upsert(ctx, f); err != nil {
+		t.Fatalf("upsert mismatched 3-0 score: %v", err)
+	}
+	if ready, err := repo.FixtureReadyToComplete(ctx, 9101); err != nil || ready {
+		t.Errorf("terminal+score/event mismatch ready = %v (err=%v), want false", ready, err)
+	}
+
+	// Exceptional terminal statuses do not promise a played-match event/score
+	// inventory (walkovers and abandoned fixtures are common), so they bypass
+	// score parity while retaining every other completion predicate.
+	f.APIStatus = fixture.APIStatus{Short: "canc", Long: "Match Cancelled"}
+	if err := repo.Upsert(ctx, f); err != nil {
+		t.Fatalf("upsert cancelled status: %v", err)
+	}
+	if ready, err := repo.FixtureReadyToComplete(ctx, 9101); err != nil || !ready {
+		t.Errorf("cancelled+score/event mismatch ready = %v (err=%v), want true", ready, err)
 	}
 }
 
