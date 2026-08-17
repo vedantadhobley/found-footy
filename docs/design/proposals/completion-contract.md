@@ -4,7 +4,7 @@
 began registering rows). The contract is live — see the **As-built notes** banner
 below for the current deltas from this text.
 
-> **FF-014 correction implemented locally; not deployed:** played terminal
+> **FF-014 correction deployed 2026-08-17:** played terminal
 > responses now advance completion only when their current scoring-event array
 > exactly matches the reported score. The removal path holds an omitted stored
 > goal while the score still requires it, and the final gate independently

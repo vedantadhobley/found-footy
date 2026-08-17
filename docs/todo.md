@@ -31,6 +31,7 @@ against the current branch.
 | `triage` | Preserved from an audit but not yet re-verified against current code. |
 | `mitigated` | Still present in code, with an operational guard reducing current impact. |
 | `implemented` | Code, regression tests, and docs are complete locally; rollout or commit still remains. |
+| `closed` | Fix is committed and its production release completed successfully. |
 | `blocked` | Requires a decision or external dependency before implementation. |
 | `P0` | Active outage, corruption, or broad clip loss. |
 | `P1` | User-visible correctness failure or material resource/lifecycle leak. |
@@ -41,13 +42,17 @@ against the current branch.
 
 | ID | Severity | Status | Summary |
 |---|---|---|---|
-| FF-018 | P2 | `implemented` | Correct the production Twitter reauthentication command so it names the explicit production Compose file; rollout remains. |
+| — | — | — | No issue selected after the 2026-08-17 production release. |
 
-## Confirmed issues
+## Closed in production on 2026-08-17 — initial fixes
+
+Release `4413a5fe8e0a8edd2457d207c91eb1de5ae9c15b` passed the guarded
+Compose rollout and immutable identity verification for both workers, the API,
+and Twitter.
 
 ### FF-001 — Firefox fleet is not environment-scoped
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P1
 - **Observed:** 2026-08-16, shared Docker daemon on luv.
 - **Invariant:** A dev worker must never count, release, or reap a prod browser,
@@ -80,7 +85,7 @@ against the current branch.
 
 ### FF-002 — failed video child leaves candidate pending
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P1
 - **Observed:** 2026-08-16, Huijsen goal in Schalke–Real Madrid, event
   `b7fe0d77-832d-4664-8aba-0f78b1ca3c7e`.
@@ -96,7 +101,7 @@ against the current branch.
   `Future.Get` fails. The failed future does not populate the output's tweet
   URL, so `RecordCandidateOutcome` is never called. The parent also lacks the
   staged key needed for cleanup.
-- **Implemented locally; not deployed:** Exhausted download and hash activities
+- **Resolution:** Exhausted download and hash activities
   now return typed child output with `failed`, a stable stage reason, the tweet
   URL, and any staging key. The parent stamps the candidate and deletes
   hash-failure staging. Its callback captures the input URL for an unexpected
@@ -113,6 +118,8 @@ against the current branch.
   explicitly approved production actions.
 - **Source relation:** New finding. Prior audits discussed `HashVideo`
   heartbeats and promoted-object staging leaks, not this terminal-state path.
+
+## Confirmed issues
 
 ### FF-003 — unverified candidate can be attributed to the wrong event
 
@@ -147,8 +154,8 @@ against the current branch.
   event assignments must remain valid when evidence supports them; ambiguous
   candidates need an explicit confidence/fallback policy rather than forced
   exclusive ownership. Preserve this Lens sample as a two-event regression.
-- **Rollout:** Design work only; this does not block the pending correctness and
-  lifecycle rollout.
+- **Rollout:** Design work only; this did not block the 2026-08-17 correctness
+  and lifecycle release.
 - **Source relation:** Cross-event dedup was discussed and rejected on
   2026-07-25. The audits did not identify this team-only search plus
   no-clock-validation path.
@@ -188,7 +195,7 @@ against the current branch.
   calibration places different footage around 23. Preserve category safety and
   treat cross-category consolidation as a separate evidence-policy decision.
 - **Rollout:** Calibration work only; the safe current failure mode is an extra
-  clip, so this does not block the pending rollout.
+  clip, so this did not block the 2026-08-17 release.
 - **Source relation:** New live calibration finding; no prior audit contained
   this sample or failure measurement.
 
@@ -220,14 +227,16 @@ against the current branch.
   timeout retries for genuinely transient failures; do not label all dense
   timeouts non-retryable when host contention can still cause them.
 - **Rollout:** FF-002 makes exhaustion terminal and cleans staging, so this
-  throughput fix does not block the pending rollout.
+  throughput fix did not block the 2026-08-17 release.
 - **Source relation:** The 2026-08-13 audit identified heartbeat coverage and
   shared-semaphore contention. It did not demonstrate this post-heartbeat 4K
   failure or invalidate the full-resolution hashing cost assumption.
 
+## Closed in production on 2026-08-17 — release slice
+
 ### FF-021 — per-replica ffmpeg caps overcommit the host
 
-- **Status:** `implemented locally`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P1
 - **Observed:** 2026-08-16 production topology during the Huijsen workflow.
 - **Invariant:** A documented host CPU budget must remain a host budget when a
@@ -256,15 +265,15 @@ against the current branch.
   explicit worker overrides, ties them to the declared budget and replica
   count, and proves `2 × 16 × 1 = 32` without loading `.env`, contacting Docker,
   or touching production.
-- **Rollout:** Correcting a prod-loaded limit is a separate production config
-  action. This repository change does not alter the running stack; deployment
-  still requires explicit approval.
+- **Rollout:** Production release
+  `4413a5fe8e0a8edd2457d207c91eb1de5ae9c15b` applied the two-replica
+  partition and verified both worker identities.
 - **Source relation:** Audit 2026-08-13 P2-9 found the shared fast/dense lane,
   but neither that audit nor the 2026-08-06 decision accounted for replicas.
 
 ### FF-022 — byte-identical candidates hash before the MD5 gate
 
-- **Status:** `implemented locally`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P2
 - **Observed:** Same Huijsen candidates as FF-002 and FF-005.
 - **Invariant:** Once download has produced an exact content hash, only one
@@ -295,14 +304,14 @@ against the current branch.
   downloads, a three-failure claimant followed by a successful waiter, no
   follow-on commands after hash cancellation, and the unchanged child command
   sequence for pre-FF-022 histories.
-- **Rollout:** Optimization and failure-amplification fix; FF-002 contains its
-  terminal-state consequences, so it does not block the pending rollout.
+- **Rollout:** Deployed in the 2026-08-17 release. FF-002 contains its
+  terminal-state consequences.
 - **Source relation:** Not found by the audits. The as-built proposal documents
   that every child hashes, but production disproved its cost premise.
 
 ### FF-023 — promotion retry can skip rank rebalance
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P2
 - **Source:** Promotes audit 2026-08-13 P3-3 after current-code validation.
 - **Invariant:** A retry must complete every durable step after a partially
@@ -321,12 +330,12 @@ against the current branch.
 - **Regression:** The activity fake fails the first rebalance after share
   insert. The retry must skip a second copy and share mint, run rebalance
   again, delete staging, and report the durable share to the workflow.
-- **Rollout:** Couple with FF-006 because both change the same promotion commit
-  tail and retry boundary.
+- **Rollout:** Deployed with FF-006 in the 2026-08-17 release because both
+  change the same promotion commit tail and retry boundary.
 
 ### FF-006 — promoted clips retain staging objects
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P1
 - **Source:** 2026-08-13 P2-4, elevated to P1 by the 2026-08-15 audit.
 - **Evidence:** Promote copies `staging/` to `assets/`; the success path never
@@ -355,7 +364,7 @@ against the current branch.
 
 ### FF-007 — abnormal EventWorkflow closure can strand a fixture
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P1
 - **Source:** 2026-08-15 audit, finding #196.
 - **Evidence:** A workflow that closes before `MarkDownstreamComplete` leaves
@@ -363,7 +372,7 @@ against the current branch.
   execution timeout, so the same deterministic ID could never re-drive. Even
   if reuse were enabled alone, search progress, candidate ownership, and the
   live dedup pool existed only in workflow memory.
-- **Implemented locally; not deployed:** Event starts now use typed
+- **Resolution:** Event starts now use typed
   `ALLOW_DUPLICATE_FAILED_ONLY` and no arbitrary workflow execution timeout.
   Each fully scheduled search attempt advances a monotonic checkpoint in the
   downstream row. A replacement run restores that checkpoint, all candidate
@@ -382,7 +391,7 @@ against the current branch.
 
 ### FF-014 — score-consistent goal is false-removed on event-array omission
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P1
 - **Observed:** 2026-08-16, Lazio–Mantova fixture `1564801`, final score
   0–2. The second goal was I. Cajazzo at 90+6, event
@@ -403,7 +412,7 @@ against the current branch.
   transaction closes pending downstream rows, so the false removal erases both
   completion blockers. `FixtureReadyToComplete` checks terminal debounce,
   event debounce, and pending workflows, but not score/event consistency.
-- **Implemented locally; not deployed:** The same-response score/event
+- **Resolution:** The same-response score/event
   inventory now guards goal absence votes. A score that still requires an
   omitted goal holds the stored event without decrementing it. For played
   terminal statuses (`FT`, `AET`, `PEN`), the fixture completion counter only
@@ -430,7 +439,7 @@ against the current branch.
 
 ### FF-015 — canceled EventWorkflow spins into Temporal deadlock detection
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P1
 - **Observed:** The false-removal in FF-014 canceled workflow
   `event-ce3eb72e-4964-4410-85d9-5a2d6628ce7a`, run
@@ -463,7 +472,7 @@ against the current branch.
 
 ### FF-019 — production images do not carry verifiable build identity
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P2
 - **Observed:** 2026-08-16, live production worker metrics and the current
   production build configuration.
@@ -478,7 +487,7 @@ against the current branch.
   `docker-compose.prod.yml` passes only `BINARY`/`WITH_VNC`. No release command
   supplies the identity arguments or `IMAGE_TAG`. The Twitter command also
   discards its injected identity instead of exposing any verification surface.
-- **Implemented locally; not deployed:** `make deploy-prod` resolves the full
+- **Resolution:** `make deploy-prod` resolves the full
   SHA of the clean checkout and one UTC build time, rechecks the tree before
   mutation, and uses that SHA as the image tag across worker, API, Twitter,
   Twitter VNC, and `FIREFOXFLEET_IMAGE`. It refuses active production event
@@ -497,7 +506,7 @@ against the current branch.
 
 ### FF-020 — production release gate can miss active event browsers
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P1
 - **Observed:** 2026-08-16, local review of the FF-019 release command before
   its first production use.
@@ -510,7 +519,7 @@ against the current branch.
   The single check also ran before image construction and the permission smoke;
   an event browser provisioned during that interval could survive the worker
   recreation on the old image.
-- **Implemented locally; not deployed:** The release command now selects
+- **Resolution:** The release command now selects
   running browsers by `found-footy.fleet=firefox` plus membership in the
   production network, independent of name generation. It checks once before
   build work and again immediately before the first mutation. The dynamic
@@ -526,7 +535,7 @@ against the current branch.
 
 ### FF-016 — worker can permanently lose Twitter after a startup race
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P2
 - **Source:** Current code; legacy issue #170.
 - **Invariant:** A transient browser outage during worker startup must not
@@ -536,7 +545,7 @@ against the current branch.
   degradation and left `discovery.Activities.Twitter` nil permanently. The
   production release recreates Twitter and both workers together, while the
   browser's initial authentication can outlast the client's ten-second probe.
-- **Implemented locally; not deployed:** Client construction now validates only
+- **Resolution:** Client construction now validates only
   static configuration and performs no network I/O. Invalid configuration is a
   worker-startup error; remote readiness is evaluated by each search. The
   client is always injected into discovery, so later Temporal attempts recover
@@ -551,7 +560,7 @@ against the current branch.
 
 ### FF-017 — Firefox death leaves the Go service alive and unusable
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P2
 - **Source:** Current code; archived Python recovery behavior; the superseded
   T/g assumption in the per-event scaling proposal.
@@ -568,7 +577,7 @@ against the current branch.
   assumption that a per-event browser crash would fail its container. The Go
   process did not actually exit, and raw Docker API children do not inherit the
   static Compose service's restart policy.
-- **Implemented locally; not deployed:** Browser context close and browser
+- **Resolution:** Browser context close and browser
   disconnect converge on a one-shot critical-child signal. The service enters
   `failed`, `/health` returns 503, and `twitter.browser_failed` emits once. The
   command then exits PID 1 non-zero. Static headless Twitter retains Compose
@@ -592,7 +601,7 @@ against the current branch.
 
 ### FF-018 — production reauthentication command cannot resolve Compose
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P2
 - **Source:** Current production Compose and repository layout.
 - **Invariant:** Operator instructions returned by `/authenticate` must be
@@ -601,7 +610,7 @@ against the current branch.
   --profile vnc up -d twitter-vnc`, but the repository deliberately has no
   default Compose file. The command therefore fails before it can resolve a
   service.
-- **Implemented locally; not deployed:** Production now advertises `docker
+- **Resolution:** Production now advertises `docker
   compose -f docker-compose.prod.yml --profile vnc up -d twitter-vnc`. Dev
   already named its explicit Compose file and is unchanged.
 - **Regression:** The release-contract test parses the production Compose model
@@ -612,7 +621,7 @@ against the current branch.
 
 ### FF-026 — metrics listener failure does not fail the binary
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P1
 - **Source:** Audit 2026-08-13 P1-4, revalidated against current bootstrap.
 - **Invariant:** Application work must not run unless the binary owns its
@@ -623,7 +632,7 @@ against the current branch.
   leave the worker running indefinitely without health or metrics. When
   `Work` later returned nil, bootstrap logged the listener error but ignored it
   when selecting the process exit status.
-- **Implemented locally; not deployed:** Bootstrap now binds with `net.Listen`
+- **Resolution:** Bootstrap now binds with `net.Listen`
   before it emits startup or calls `Work`. A bind error returns through the
   process exit boundary immediately. `Work` and the serving goroutine then run
   under one lifecycle select; a later listener failure cancels `Work`, drains
@@ -642,7 +651,7 @@ against the current branch.
 
 ### FF-027 — positional event sequence misidentifies a same-player brace
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P1
 - **Source:** Audit 2026-08-13 P1-2 and P3-8, revalidated against current
   monitor reconciliation; related P2-16 and P3-5 paths validated in the same
@@ -656,7 +665,7 @@ against the current branch.
   an absence vote while the removed key blocked or absorbed the survivor. The
   helper claiming to collect every natural key actually called `ListPending`,
   which excludes removed rows.
-- **Implemented locally; not deployed:** `ListAllByFixture` returns the complete
+- **Resolution:** `ListAllByFixture` returns the complete
   active and removed identity history. Within each scorer/type group, an
   order-preserving dynamic-programming match reuses active sequences by nearest
   effective match clock and detail; unmatched events allocate above the full
@@ -680,7 +689,7 @@ against the current branch.
 
 ### FF-028 — cached video redirect can outlive its presigned target
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P2
 - **Source:** Audit 2026-08-13 P2-11, revalidated against current API and S3
   defaults.
@@ -689,7 +698,7 @@ against the current branch.
 - **Evidence:** `RedirectVideo` fixed `Cache-Control` at `max-age=300`, while
   `S3_PRESIGNED_URL_TTL` defaults to the same five minutes. A cache hit near the
   boundary could return an already expired playback URL.
-- **Implemented locally; not deployed:** API assembly passes the configured
+- **Resolution:** API assembly passes the configured
   presign lifetime to the handler. Redirect caching subtracts a one-minute
   safety margin and caps at five minutes; the current default emits
   `public, max-age=240`. A lifetime that cannot supply the margin emits
@@ -706,7 +715,7 @@ against the current branch.
 
 ### FF-029 — CDN download 403 is mistaken for terminal geo-restriction
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P2
 - **Source:** Audit 2026-08-13 P2-3, revalidated against the current
   syndication adapter and video activity.
@@ -720,7 +729,7 @@ against the current branch.
   transient download attempts. The archived Python implementation made the
   same conflation even though its CDN message admitted that authentication,
   rather than geography, could be the cause.
-- **Implemented locally; not deployed:** `Download` now returns the distinct
+- **Resolution:** `Download` now returns the distinct
   transient `ErrCDNForbidden` without logging the signed variant URL.
   `DownloadAndStage` propagates it as an activity error. Each Temporal retry
   reruns `ResolveVideo` before downloading, so it can obtain a refreshed
@@ -737,7 +746,7 @@ against the current branch.
 
 ### FF-012 — permanent LLM failures consume transient retries
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P2
 - **Source:** Audit 2026-08-15, revalidated against `llm.classifyError`,
   `vision.ValidateClip`, and the EventWorkflow vision activity policy.
@@ -749,7 +758,7 @@ against the current branch.
   as an untyped JSON error. EventWorkflow consequently ran all three activity
   attempts for invalid requests, bad credentials, missing models, and malformed
   model responses.
-- **Implemented locally; not deployed:** The adapter now types invalid JSON in
+- **Resolution:** The adapter now types invalid JSON in
   a successful OpenAI-compatible wire response as `ErrInvalidJSON`.
   `ValidateClip` converts that class, malformed structured content,
   `ErrModelNotFound`, `ErrInvalidRequest`, and `ErrAuthFailed` into a
@@ -768,7 +777,7 @@ against the current branch.
 
 ### FF-030 — complete rank ties depend on database row order
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P3
 - **Source:** Audit 2026-08-13 P3-15, revalidated against `RebalanceRanks` and
   `video.CompareShares`.
@@ -778,7 +787,7 @@ against the current branch.
   `ORDER BY`, then uses a stable in-memory sort. `CompareShares` returned equal
   when verification, popularity, size, and `created_at` all tied, leaving that
   stable sort dependent on PostgreSQL's unspecified input order.
-- **Implemented locally; not deployed:** Public share ID is the final lexical
+- **Resolution:** Public share ID is the final lexical
   tiebreaker after `created_at`. It changes only a complete tie and gives the
   comparator a total order while preserving every established ranking rule.
 - **Regression:** Domain tests require both comparison directions and retain
@@ -788,7 +797,7 @@ against the current branch.
 
 ### FF-031 — missing API minute rejects clock-bearing soccer clips
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P3
 - **Source:** Audit 2026-08-13 P3-1, revalidated against the Go evaluator and
   archived Python timestamp guard.
@@ -799,7 +808,7 @@ against the current branch.
   clock then failed the minute/period comparison and was rejected. The retired
   Python `validate_timestamp` explicitly returned `unverified` when
   `api_elapsed` was zero.
-- **Implemented locally; not deployed:** After the soccer and screen-recording
+- **Resolution:** After the soccer and screen-recording
   gates pass, `Elapsed <= 0` now routes the clip to the unverified pool with
   reason `API minute unavailable`. The content gates still reject non-soccer
   and phone-of-TV footage; no matched minute is claimed without API evidence.
@@ -811,7 +820,7 @@ against the current branch.
 
 ### FF-032 — LLM concurrency test races on captured request state
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P3
 - **Source:** Pre-build `make test-race` on 2026-08-17.
 - **Invariant:** A concurrency regression test must be race-free itself so a
@@ -820,7 +829,7 @@ against the current branch.
   OpenAI-compatible server. Each handler wrote `lastChatBody` without
   synchronization, and the full race gate reported concurrent writes at that
   assignment.
-- **Implemented locally; not deployed:** The mock protects captured request
+- **Resolution:** The mock protects captured request
   state with an RW mutex and exposes a copy-returning accessor. Structured and
   plain request-shape assertions use the accessor instead of reading the shared
   slice directly.
@@ -831,7 +840,7 @@ against the current branch.
 
 ### FF-033 — stopped Firefox container can masquerade as provisioned
 
-- **Status:** `implemented`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P2
 - **Source:** Pre-build review of the per-event search-instance lifecycle on
   2026-08-17.
@@ -843,7 +852,7 @@ against the current branch.
   container, called `ContainerStart`, discarded its error, and returned the
   address as success. The EventWorkflow then targeted a dead hostname and
   degraded to the shared Twitter fallback instead of retrying provisioning.
-- **Implemented locally; not deployed:** Fleet inspection now carries the
+- **Resolution:** Fleet inspection now carries the
   container's running state. A running instance remains an idempotent no-op; a
   stopped instance must restart successfully, and a restart error propagates
   to Temporal. Provisioning still performs no blocking browser-health wait.
@@ -855,7 +864,7 @@ against the current branch.
 
 ### FF-025 — stale-running EventWorkflow blocks failed-only recovery
 
-- **Status:** `implemented locally`; not deployed
+- **Status:** `closed`; deployed 2026-08-17
 - **Severity:** P2
 - **Source:** FF-007 recovery boundary.
 - **Invariant:** Recovery may terminate only one exact EventWorkflow run proven
