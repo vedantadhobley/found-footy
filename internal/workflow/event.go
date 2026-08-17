@@ -369,8 +369,13 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 				"outcome", searchOutcome,
 				"duration_ms", elapsedMilliseconds(searchStartedAt, searchFinishedAt),
 				"event_elapsed_ms", elapsedMilliseconds(startedAt, searchFinishedAt),
+				"max_age_minutes", cfgOut.MaxAgeMinutes,
 				"videos_returned", searchOut.Count,
-				"stop_reason", searchOut.StopReason)
+				"stop_reason", searchOut.StopReason,
+				"scrolls", searchOut.Scrolls,
+				"initial_articles", searchOut.InitialArticles,
+				"tweets_parsed", searchOut.TweetsParsed,
+				"video_tweets", searchOut.VideoTweets)
 			if searchErr != nil {
 				if temporal.IsCanceledError(searchErr) {
 					producerErr = searchErr

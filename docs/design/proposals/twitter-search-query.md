@@ -251,8 +251,11 @@ The 1-minute cadence + 15-attempt cap + 3-min max-age combine to a total observa
   ],
   "count": 1,
   "query": "Salah Liverpool filter:videos",
-  "stop_reason": "age | max_scrolls | empty | consecutive_seen",
+  "stop_reason": "age | max_scrolls | feed_timeout | feed_exhausted | consecutive_seen",
   "scrolls": 3,
+  "initial_articles": 4,
+  "tweets_parsed": 12,
+  "video_tweets": 7,
   "elapsed": "8.2s"
 }
 ```

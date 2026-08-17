@@ -40,11 +40,14 @@ type SearchRequest struct {
 // observability fields (StopReason, Scrolls) are omitempty for
 // backward compatibility — older service versions leave them zero.
 type SearchResponse struct {
-	Status     string     `json:"status"`
-	Videos     []VideoRef `json:"videos"`
-	Count      int        `json:"count"`
-	StopReason string     `json:"stop_reason,omitempty"`
-	Scrolls    int        `json:"scrolls,omitempty"`
+	Status          string     `json:"status"`
+	Videos          []VideoRef `json:"videos"`
+	Count           int        `json:"count"`
+	StopReason      string     `json:"stop_reason,omitempty"`
+	Scrolls         int        `json:"scrolls,omitempty"`
+	InitialArticles int        `json:"initial_articles,omitempty"`
+	TweetsParsed    int        `json:"tweets_parsed,omitempty"`
+	VideoTweets     int        `json:"video_tweets,omitempty"`
 }
 
 // VideoRef is one discovered video from a Twitter search. Extra
@@ -165,6 +168,11 @@ func (c *Client) Search(ctx context.Context, addr string, req SearchRequest) (*S
 		"twitter search ok",
 		logging.String("query", req.Query),
 		logging.Int("videos_found", out.Count),
+		logging.String("stop_reason", out.StopReason),
+		logging.Int("scrolls", out.Scrolls),
+		logging.Int("initial_articles", out.InitialArticles),
+		logging.Int("tweets_parsed", out.TweetsParsed),
+		logging.Int("video_tweets", out.VideoTweets),
 		logging.Int64("elapsed_ms", elapsed.Milliseconds()),
 	)
 	return &out, nil

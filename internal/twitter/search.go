@@ -22,16 +22,16 @@
 //     load. Present → session valid; absent + URL redirected to /login
 //     → transition to StateUnauthenticated. Saves ~3-4s vs a separate
 //     /home verify per the 2026-07-22 design note.
-//  5. Wait for tweet feed — up to 10s. If absent, treat as legitimate
-//     empty result (0 videos), not an error.
-//  6. Scroll loop with four stop conditions (age / max_scrolls / empty /
-//     consecutive_already_seen). DOM extraction via a single JS
+//  5. Wait for the first tweet — up to 10s. Only a real timeout is a
+//     legitimate empty result; other Playwright failures are errors.
+//  6. Scroll loop with four stop conditions (age / max_scrolls /
+//     feed_exhausted / consecutive_already_seen). DOM extraction via a single JS
 //     evaluate per scroll for IPC efficiency.
 //  7. BackupCookies on success — persists Twitter's rotated csrf
 //     tokens to the shared file. Fingerprint dedupe skips no-op writes.
-//  8. Return SearchResponse with videos + stop_reason + scroll count.
+//  8. Return SearchResponse with videos and feed/extraction diagnostics.
 //
-// Stealth: random 0.5–3s jitter between scroll actions (baseline #4
+// Stealth: random 250–500ms jitter between scroll actions (baseline #4
 // per twitter-port.md T/c). User-Agent + Accept-Language rotation is
 // deferred to T/b.5 hardening.
 package twitter
@@ -39,6 +39,7 @@ package twitter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
@@ -76,16 +77,19 @@ type SearchRequest struct {
 }
 
 // SearchResponse is the payload returned on a successful search. Extra
-// telemetry fields (StopReason, Scrolls, Elapsed) are omitempty so the
+// telemetry fields are omitempty so the
 // S7 client can ignore them without decode errors.
 type SearchResponse struct {
-	Status     string     `json:"status"` // "success"
-	Videos     []VideoRef `json:"videos"`
-	Count      int        `json:"count"`
-	Query      string     `json:"query,omitempty"`
-	StopReason string     `json:"stop_reason,omitempty"` // age / max_scrolls / empty / consecutive_seen
-	Scrolls    int        `json:"scrolls,omitempty"`
-	Elapsed    string     `json:"elapsed,omitempty"`
+	Status          string     `json:"status"` // "success"
+	Videos          []VideoRef `json:"videos"`
+	Count           int        `json:"count"`
+	Query           string     `json:"query,omitempty"`
+	StopReason      string     `json:"stop_reason,omitempty"`
+	Scrolls         int        `json:"scrolls,omitempty"`
+	InitialArticles int        `json:"initial_articles,omitempty"`
+	TweetsParsed    int        `json:"tweets_parsed,omitempty"`
+	VideoTweets     int        `json:"video_tweets,omitempty"`
+	Elapsed         string     `json:"elapsed,omitempty"`
 }
 
 // SearchErrorBody is the structured error payload. error_class is a
@@ -104,7 +108,8 @@ type SearchErrorBody struct {
 const (
 	stopAge             = "age"
 	stopMaxScrolls      = "max_scrolls"
-	stopEmpty           = "empty"
+	stopFeedTimeout     = "feed_timeout"
+	stopFeedExhausted   = "feed_exhausted"
 	stopConsecutiveSeen = "consecutive_seen"
 )
 
@@ -184,34 +189,43 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// separate /home hop that EnsureAuthenticated does.
 	s.SetState(StateHealthy, "verified inline with search")
 
-	// Wait for at least one tweet to render. Absent = legitimate empty
-	// result (query matched nothing in the age window), NOT an error.
-	if err := page.Locator(`article[data-testid='tweet']`).WaitFor(
+	articles := page.Locator(`article[data-testid='tweet']`)
+	// Wait for at least one tweet to render. Absent remains a successful empty
+	// result, but gets its own stop class so it cannot be confused with a feed
+	// that rendered and later exhausted.
+	if err := articles.First().WaitFor(
 		playwright.LocatorWaitForOptions{Timeout: playwright.Float(float64(s.tweetFeedTimeout / time.Millisecond))},
 	); err != nil {
+		// Only a real timeout means "no feed rendered." Locator contract
+		// failures, page closure, and other Playwright errors must retry through
+		// Temporal instead of being laundered into a successful empty result.
+		if !errors.Is(err, playwright.ErrTimeout) {
+			writeSearchError(w, http.StatusInternalServerError, errClassInternal, "wait for tweet feed: "+err.Error())
+			return
+		}
 		writeSearchOK(w, SearchResponse{
 			Status:     "success",
 			Videos:     nil,
 			Count:      0,
 			Query:      req.Query,
-			StopReason: stopEmpty,
+			StopReason: stopFeedTimeout,
 			Scrolls:    0,
 			Elapsed:    time.Since(start).String(),
 		})
 		return
 	}
+	initialArticles, _ := articles.Count()
 
-	// Wait for the first tweet to hydrate — the initial paint shows shells
-	// before the text populates. Event-driven: proceed the instant the tweet
-	// text renders, capped at 2s so a slow or text-less (bare-video) tweet
-	// still proceeds — never worse than the old blind 2s sleep. Error is
-	// intentionally ignored: a miss just falls through to extraction, and
-	// the per-scroll loop re-extracts anyway.
-	_ = page.Locator(`article[data-testid='tweet'] [data-testid='tweetText']`).WaitFor(
-		playwright.LocatorWaitForOptions{Timeout: playwright.Float(2000)},
-	)
+	// Let the first rendered tweet finish painting before extraction. The feed
+	// itself is already proven present above; this short, best-effort wait only
+	// reduces partial-DOM reads and must not redefine what counts as a result.
+	_ = page.Locator(
+		`article[data-testid='tweet'] [data-testid='tweetText']`,
+	).First().WaitFor(playwright.LocatorWaitForOptions{
+		Timeout: playwright.Float(2000),
+	})
 
-	videos, stopReason, scrolls, extractErr := s.scrollAndExtract(r.Context(), page, excludeIDs, maxAgeMinutes)
+	videos, stopReason, scrolls, stats, extractErr := s.scrollAndExtract(r.Context(), page, excludeIDs, maxAgeMinutes)
 	if extractErr != nil {
 		writeSearchError(w, http.StatusInternalServerError, errClassInternal, "extract: "+extractErr.Error())
 		return
@@ -222,13 +236,16 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 	_ = s.BackupCookies(r.Context())
 
 	writeSearchOK(w, SearchResponse{
-		Status:     "success",
-		Videos:     videos,
-		Count:      len(videos),
-		Query:      req.Query,
-		StopReason: stopReason,
-		Scrolls:    scrolls,
-		Elapsed:    time.Since(start).String(),
+		Status:          "success",
+		Videos:          videos,
+		Count:           len(videos),
+		Query:           req.Query,
+		StopReason:      stopReason,
+		Scrolls:         scrolls,
+		InitialArticles: initialArticles,
+		TweetsParsed:    stats.tweetsParsed,
+		VideoTweets:     stats.videoTweets,
+		Elapsed:         time.Since(start).String(),
 	})
 }
 
@@ -271,7 +288,7 @@ func verifyOnSearchPage(page playwright.Page) bool {
 	// paints quickly when the session is valid.
 	if err := page.Locator(
 		`[data-testid='primaryColumn'], [data-testid='SideNav_AccountSwitcher_Button']`,
-	).WaitFor(playwright.LocatorWaitForOptions{Timeout: playwright.Float(5000)}); err == nil {
+	).First().WaitFor(playwright.LocatorWaitForOptions{Timeout: playwright.Float(5000)}); err == nil {
 		return true
 	}
 	// Re-check the URL — the redirect may have landed during the wait.
@@ -286,34 +303,39 @@ func verifyOnSearchPage(page playwright.Page) bool {
 }
 
 // scrollAndExtract implements the scroll loop with four stop conditions
-// (age / max_scrolls / empty / consecutive_already_seen). Returns the
+// (age / max_scrolls / feed_exhausted / consecutive_already_seen). Returns the
 // videos collected, the stop reason that terminated the loop, and the
 // scroll count actually performed.
 //
 // DOM extraction happens in a single JS block per scroll (see
 // extractTweetsJS) rather than per-tweet Playwright locators to
 // minimize IPC round-trips.
+type searchStats struct {
+	tweetsParsed int
+	videoTweets  int
+}
+
 func (s *Service) scrollAndExtract(
 	ctx context.Context,
 	page playwright.Page,
 	excludeIDs map[string]struct{},
 	maxAgeMinutes int,
-) (videos []VideoRef, stopReason string, scrolls int, err error) {
+) (videos []VideoRef, stopReason string, scrolls int, stats searchStats, err error) {
 	processed := make(map[string]struct{}) // tweet IDs seen in this scroll session
 	consecutiveSeen := 0
 
 	for scrollCount := 0; scrollCount < s.maxScrolls; scrollCount++ {
 		if err := ctx.Err(); err != nil {
-			return videos, stopReason, scrollCount, err
+			return videos, stopReason, scrollCount, stats, err
 		}
 
 		raw, extractErr := page.Evaluate(extractTweetsJS)
 		if extractErr != nil {
-			return videos, stopReason, scrollCount, fmt.Errorf("evaluate: %w", extractErr)
+			return videos, stopReason, scrollCount, stats, fmt.Errorf("evaluate: %w", extractErr)
 		}
 		tweets, parseErr := decodeExtractResult(raw)
 		if parseErr != nil {
-			return videos, stopReason, scrollCount, fmt.Errorf("decode extract: %w", parseErr)
+			return videos, stopReason, scrollCount, stats, fmt.Errorf("decode extract: %w", parseErr)
 		}
 
 		for _, t := range tweets {
@@ -325,13 +347,17 @@ func (s *Service) scrollAndExtract(
 				continue
 			}
 			processed[tid] = struct{}{}
+			stats.tweetsParsed++
+			if t.HasVideo {
+				stats.videoTweets++
+			}
 
 			// Stop #1: tweet older than max_age_minutes → stop scroll.
 			// Only meaningful if we have an age (t.AgeMinutes > 0);
 			// missing age falls through (rare — Twitter usually renders
 			// the <time datetime> attribute).
 			if t.AgeMinutes > 0 && t.AgeMinutes > float64(maxAgeMinutes) {
-				return videos, stopAge, scrollCount, nil
+				return videos, stopAge, scrollCount, stats, nil
 			}
 
 			// Filters (silent skips — not stop conditions).
@@ -352,7 +378,7 @@ func (s *Service) scrollAndExtract(
 			if _, excluded := excludeIDs[tid]; excluded {
 				consecutiveSeen++
 				if consecutiveSeen >= s.consecutiveSeenStop {
-					return videos, stopConsecutiveSeen, scrollCount, nil
+					return videos, stopConsecutiveSeen, scrollCount, stats, nil
 				}
 				continue
 			}
@@ -373,16 +399,16 @@ func (s *Service) scrollAndExtract(
 		// loop starts), so an empty page here means the feed has
 		// exhausted mid-scroll.
 		if len(tweets) == 0 && scrollCount >= 1 {
-			return videos, stopEmpty, scrollCount, nil
+			return videos, stopFeedExhausted, scrollCount, stats, nil
 		}
 
 		// Scroll one viewport height. Playwright's evaluate is fire-
 		// and-forget for the scroll effect — return value ignored.
 		if _, err := page.Evaluate(`() => window.scrollBy(0, window.innerHeight)`); err != nil {
-			return videos, stopReason, scrollCount, fmt.Errorf("scroll: %w", err)
+			return videos, stopReason, scrollCount, stats, fmt.Errorf("scroll: %w", err)
 		}
 
-		// Timing jitter — random 500-3000ms sleep between scrolls.
+		// Timing jitter — random 250-500ms sleep between scrolls by default.
 		// Baseline stealth #4 per twitter-port.md T/c.
 		// This jitter varies UI cadence; it does not generate a secret or token.
 		jitter := s.scrollJitterMin + time.Duration(rand.IntN(int(s.scrollJitterMax-s.scrollJitterMin))) //nolint:gosec
@@ -390,7 +416,7 @@ func (s *Service) scrollAndExtract(
 	}
 
 	// Stop #2: max_scrolls exhausted (loop counter fell off the top).
-	return videos, stopMaxScrolls, s.maxScrolls, nil
+	return videos, stopMaxScrolls, s.maxScrolls, stats, nil
 }
 
 // extractTweetsJS is the single JS evaluate that pulls every visible

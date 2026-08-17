@@ -500,6 +500,15 @@ not add activities, alter retry policies, gate decisions, or change the
 Selector's serialized ownership rules. Activity-stage duration therefore
 includes task-queue admission and retry backoff by design.
 
+**Twitter feed-classification contract (FF-051).** Every discovery attempt
+sends the same broad Latest query and the configured local age cutoff; the
+workflow does not add server-side time operators or grow the age window across
+attempts. Search measurement lines record `max_age_minutes`, `stop_reason`,
+`scrolls`, `initial_articles`, `tweets_parsed`, and `video_tweets`. A real feed
+timeout is a successful empty observation. Other Playwright wait failures are
+activity errors and follow Temporal's retry policy instead of advancing the
+attempt as an empty success.
+
 **Cancellation contract (FF-015).** Producer cancellation from an activity or
 the between-attempt `workflow.Sleep` terminates the producer and records its
 error while a deferred close always marks the search side done. The consumer

@@ -75,8 +75,8 @@ type ServiceOptions struct {
 	PageLoadTimeout time.Duration
 
 	// TweetFeedTimeout bounds the wait for the first article to appear
-	// after navigation. Default: 10s. Absent-tweet timeout ≠ error —
-	// treated as legitimate "no results in the age window".
+	// after navigation. Default: 10s. Only an actual timeout is a legitimate
+	// no-feed result; locator, page, and browser failures remain errors.
 	TweetFeedTimeout time.Duration
 
 	// MaxScrolls caps the scroll loop. Default: 10 (matches Python).
