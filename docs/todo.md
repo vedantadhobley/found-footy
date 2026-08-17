@@ -234,6 +234,40 @@ the current branch.
 | FF-049 | P3 | `confirmed` | Documentation routing is clean, but several current/reference documents still exceed the shared size standard. | Split the 618-line orchestration ledger and route the 2,869-line Python functional spec plus 604-line video-dedup proposal by topic without rewriting historical claims. |
 | FF-050 | P2 | `investigate` | Correlated replay-safe stage timings and a read-only match-day status view are implemented; representative live evidence is pending. | Capture phase and queue latency under representative concurrency, then simplify or parallelize only the demonstrated bottleneck without weakening correctness or resource caps. |
 | FF-051 | P1 | `implemented` | A strict Playwright locator failure was converted to a successful empty Twitter result whenever multiple tweets rendered before the feed wait resolved. The fix is deployed and passed a known-positive production search. | Confirm the next natural three-minute EventWorkflow reports rendered-feed diagnostics and either candidates or a genuine timeout. |
+| FF-052 | P1 | `confirmed` | Vision accepted a phone filming a display as a clean Elche broadcast with `screen=false` on all three sampled frames. | Preserve the clip as a regression sample, calibrate the prompt/model against varied display recordings, and prove rejection without increasing clean-broadcast false positives. |
+| FF-053 | P1 | `implemented` | The 1.75 minimum aspect gate discarded four 1.739 Elche candidates before download even though at least three contained legitimate goal footage; the minimum is now 1.73. | Roll out the change and prove a natural 1.73–1.749 candidate reaches download while the known ≤1.72 letterbox band remains rejected. |
+
+### FF-053 — legitimate 1.739 landscape clips failed the metadata gate
+
+- **Observed:** Elche's 76′ goal in Deportivo La Coruna–Elche, fixture
+  `1570337`, event `a80e663d-178a-4b65-99f5-734f724ccf67`, on 2026-08-17.
+- **Evidence:** Four candidates from `imov_31`, `FoudeLiga`, `ci3xii`, and
+  `tikitakafut_` were rejected as `aspect_too_narrow_1.739`. Manual review
+  confirmed legitimate goal footage in at least three. Because `PreFilter`
+  rejects from syndication metadata, none reached download, dHash, or vision.
+- **Decision:** Admit 1.73–1.82. The lower boundary sits below the observed
+  legitimate 1.739 cluster but above the prior 1.60–1.72 letterbox/social
+  band. This changes admission only; dHash Hamming and run thresholds remain
+  unchanged. See the [decision record](./decisions/2026-08-17-live-evidence-sets-landscape-aspect-admission.md).
+- **Verification:** Domain tests pin 1.739 and exactly 1.730 as accepted,
+  1.729 as rejected, and 16:10 as rejected in both pre- and post-download
+  gates. Production rollout remains a separate approved operation.
+
+### FF-052 — phone-of-display clip passed vision validation
+
+- **Observed:** The sole surfaced asset for the same Elche event came from
+  the [XimoSantanaaa source tweet](https://x.com/XimoSantanaaa/status/2089451963997933625)
+  and is a phone recording of a display.
+- **Evidence:** The durable Temporal result classified all three frames as
+  `soccer=true, screen=false` (`ScreenVotes=0`) and read clocks `42:28`,
+  `75:39`, and `75:42`; two clocks supported the 76′ event, so the candidate
+  was promoted as verified. The intended majority screen gate exists and
+  works when the model supplies positive votes; this is a classifier false
+  negative, not a missing workflow branch.
+- **Constraint:** Do not remove or bypass vision, and do not reject all
+  fan-shot footage. Calibrate with positive phone/TV examples plus clean
+  broadcasts so a tighter rubric does not trade this false accept for broad
+  clip loss.
 
 ### FF-051 — rendered Twitter feeds were reported as empty
 

@@ -11,7 +11,7 @@ import (
 func defaultThresholds() FilterThresholds {
 	return FilterThresholds{
 		MinDurationSecs: 3, MaxDurationSecs: 90,
-		MinAspectRatio: 1.75, MaxAspectRatio: 1.82,
+		MinAspectRatio: 1.73, MaxAspectRatio: 1.82,
 		MinShortEdge: 600, MinFrameRate: 20,
 	}
 }
@@ -25,11 +25,16 @@ func TestHardFilter(t *testing.T) {
 		wantOK         bool
 		reasonContains string
 	}{
-		// Real landscape goal clips — must pass (the 1.817 pass is why we
-		// loosened the max from 1.80).
+		// Real landscape goal clips — must pass. The 1.817 pass is why we
+		// loosened the max from 1.80; the Elche 1.739 observation is why we
+		// loosened the min from 1.75.
 		{"dybala_1.817", 1170, 644, 11.5, 25, true, ""},
 		{"dybala_1.800", 1170, 650, 5.1, 25, true, ""},
 		{"clean_16:9", 1280, 720, 6.2, 25, true, ""},
+		{"elche_observed_1.739", 1739, 1000, 15.3, 25, true, ""},
+		{"min_boundary_1.730", 1730, 1000, 6.2, 25, true, ""},
+		{"below_min_1.729", 1729, 1000, 6.2, 25, false, "aspect_too_narrow"},
+		{"letterboxed_16:10", 1600, 1000, 6.2, 25, false, "aspect_too_narrow"},
 		// Portrait / social — reject (narrow).
 		{"vertical_9:16", 720, 1280, 24.8, 30, false, "aspect_too_narrow"},
 		{"instagram_4:5", 1080, 1350, 23.3, 30, false, "aspect_too_narrow"},
