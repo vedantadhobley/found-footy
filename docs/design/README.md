@@ -13,8 +13,8 @@ see [`../../archive/docs/`](../../archive/docs/).
 - [`rebuild-plan.md`](./rebuild-plan.md) — original 12,000-line target design.
   It contains substantial superseded topology, naming, schema, deployment, and
   cutover material. Use it as historical intent, never as current behavior.
-  DOC-006 tracks removing the remaining project instruction that treats it as
-  mandatory implementation authority.
+  Project instructions and the docs authority map now classify it as historical
+  evidence rather than mandatory implementation authority.
 - [`python-functional-spec.md`](./python-functional-spec.md) — behavioral spec
   of the retired Python system. Use it with `archive/` as parity evidence, not
   as the Go architecture.
@@ -37,5 +37,5 @@ shipped rationale, superseded topology, or a retired subsystem.
 
 A design doc describes intent. When the thing ships, truth moves to a focused
 as-built ledger and the decision log. Keep historical rationale only while it
-remains unique and clearly labeled. DOC-007 will move or delete documents only
-after their unique content and inbound links have been checked.
+remains unique and clearly labeled. Move or delete a historical document only
+after checking its unique content and inbound links.

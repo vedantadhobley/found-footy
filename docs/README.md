@@ -12,6 +12,7 @@ reconstruct from memory.
 | Data model — tables, columns, constraints | [`../internal/infra/pg/schema.sql`](../internal/infra/pg/schema.sql) |
 | How the system behaves **as built today** | the as-built ledgers in this directory (below) |
 | Active bugs and deferred project work | [`todo.md`](./todo.md) |
+| Closed issue and release evidence | [`history/issue-register-2026-08-17.md`](./history/issue-register-2026-08-17.md) |
 | **Why** a choice was made | [`decisions/README.md`](./decisions/) — current index plus frozen archive |
 | Target designs and point-in-time audit evidence | [`design/`](./design/) |
 | The legacy **Python** system (retired at the 2026-08-15 cutover) | [`../archive/docs/`](../archive/docs/) |
@@ -49,6 +50,9 @@ decision supersedes an older target design).
 ## Historical evidence
 
 - [`history/`](./history/) — completed project roadmaps and delivery snapshots.
+- [`history/issue-register-2026-08-17.md`](./history/issue-register-2026-08-17.md)
+  — closed issue narratives and the completed documentation-normalization
+  register from the 2026-08-17 release.
 - [`design/`](./design/) — target designs, proposals, and point-in-time audit
   evidence, classified by [`design/README.md`](./design/README.md).
 

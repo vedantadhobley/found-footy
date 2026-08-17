@@ -50,12 +50,12 @@ $EDITOR .env
 make dev-up
 ```
 
-Do not start dev while
-[`FF-001`](./docs/todo.md#ff-001--firefox-fleet-is-not-environment-scoped)
-is open: dev and prod currently share an unscoped Firefox fleet on one Docker
-daemon. Production is live and every production mutation requires explicit
-per-action approval. Use the [deployment ledger](./docs/deployment.md) instead
-of inferring production commands from this README.
+Firefox lifecycle ownership is scoped by the Compose-selected environment
+network, so dev and production can share one Docker daemon without counting or
+reaping each other's browsers. Production is live and every production mutation
+still requires explicit per-action approval. Use the
+[deployment ledger](./docs/deployment.md) instead of inferring production
+commands from this README.
 
 Useful local checks:
 
@@ -74,7 +74,7 @@ make test-corpus
 - [`docs/orchestration.md`](./docs/orchestration.md) — workflow and activity contracts
 - [`docs/deployment.md`](./docs/deployment.md) — Compose, routing, and bootstrap
 - [`docs/operations.md`](./docs/operations.md) — current safety boundary and runbook status
-- [`docs/decisions.md`](./docs/decisions.md) — append-only architectural decisions
+- [`docs/decisions/README.md`](./docs/decisions/) — architectural decision index
 - [`docs/design/README.md`](./docs/design/README.md) — design history and audit evidence
 
 Agents working in this repository must read [`AGENTS.md`](./AGENTS.md) first.

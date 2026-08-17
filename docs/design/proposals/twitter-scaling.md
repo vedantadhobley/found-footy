@@ -3,7 +3,7 @@
 > **Status:** shipped historical rationale. The per-event fleet replaced the
 > pool/router/scaler model. FF-001 subsequently added Compose-network-scoped
 > ownership locally after dev and prod reaped each other's browsers; that
-> revision is implemented but not yet deployed. Use
+> correction is deployed. Use
 > [`../../twitter-service.md`](../../twitter-service.md),
 > [`../../deployment.md`](../../deployment.md), and
 > [`../../todo.md`](../../todo.md) for current state. This design **supersedes**

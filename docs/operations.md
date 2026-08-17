@@ -53,12 +53,12 @@ Do not use a dev target as shorthand for production. `make deploy-prod` is the
 single production application release target; it is covered by the explicit
 approval boundary and is not a general lifecycle command.
 
-The dev stack remains down until the locally implemented Firefox scope fix in
-[`FF-001`](./todo.md#ff-001--firefox-fleet-is-not-environment-scoped) is
-deployed and verified, or Vedanta explicitly changes the mitigation. The live
-production workers still run the old unscoped implementation. Starting dev
-before that gate can let one environment act on the other environment's
-Firefox containers.
+The deployed Firefox provisioner scopes names, labels, capacity, release, and
+reaping by the Compose-selected network. Dev and production may share the
+Docker daemon without acting on each other's browsers. This isolation does not
+change the explicit approval boundary for any production mutation. The
+[FF-001 release evidence](./history/issue-register-2026-08-17.md#ff-001--firefox-fleet-is-not-environment-scoped)
+records the original failure and rollout.
 
 The shared cookie file is `~/.config/found-footy/twitter_cookies.json`. Both
 environments use the same Twitter account and cookie channel. Environment
@@ -172,8 +172,9 @@ ORDER BY s.state, s.rank;
 Interpret these records together:
 
 - A fixture is not settled merely because API status is terminal. Its event
-  inventory and downstream checklist must also agree. FF-014 tracks the
-  current score/event consistency hole.
+  inventory and downstream checklist must also agree. FF-014's deployed
+  score-consistency gate withholds terminal votes until the reported score and
+  stored goal inventory match.
 - `completed_at IS NULL` in `event_downstream_workflows` means the fixture is
   still waiting on that workflow. It can also indicate abnormal workflow
   closure; see FF-007 and FF-015 before attempting recovery. A still-running
@@ -183,8 +184,8 @@ Interpret these records together:
 - Candidate outcomes are `promoted`, `duplicate`, `superseded`, `rejected`,
   `failed`, or `pending`. A parent EventWorkflow that has completed while one
   of its candidates remains `pending` is not normal propagation delay. Capture
-  the workflow and candidate evidence under FF-002. Do not stamp the row by
-  hand.
+  the workflow and candidate evidence as a regression of the deployed FF-002
+  terminal-outcome contract. Do not stamp the row by hand.
 - Zero promoted clips after all configured attempts can be legitimate. Confirm
   the search count and terminal candidate reasons before classifying it as a
   discovery failure.
@@ -218,9 +219,11 @@ consume fleet capacity until it is reaped. The staging poll reaper is the
 normal crash backstop.
 
 Do not manually remove an instance because its parent workflow appears closed.
-FF-002, FF-007, and FF-015 can leave contradictory records, and the production
-workers are not yet scope-aware. If cleanup is required, list the exact
-container names and request approval for those removals only.
+Correlate the workflow, downstream row, event, and ownership labels first; a
+closed historical execution can still coexist with current recovery state.
+Production workers are scope-aware, but that ownership proof does not authorize
+manual deletion. If cleanup is required, list the exact container names and
+request approval for those removals only.
 
 ## Twitter authentication and cookie re-auth
 
@@ -231,9 +234,9 @@ cookie fingerprint, last authentication check, and last loaded cookie mtime.
 writes a successful cookie refresh.
 
 The repository's production `/authenticate.reauth_command` explicitly names
-`docker-compose.prod.yml` (FF-018). Running production retains the older broken
-value until the pending application rollout. Until that rollout, use the
-explicit command below after approval rather than copying the live response.
+`docker-compose.prod.yml` (FF-018), and the deployed service advertises that
+explicit command. Starting or removing the VNC service remains a production
+mutation that requires separate approval.
 
 Production re-auth procedure:
 
@@ -288,13 +291,16 @@ does not create a concurrent copy. Schedule registration is create-only.
 caps. A total chunk failure leaves that cycle unchanged; the next cycle is the
 first recovery mechanism.
 
-`EventWorkflow` and its `VideoWorkflow` children are durable Temporal work.
-Canceling the event cancels its children. Normal finalization closes the
-Postgres downstream checklist and releases the event's Firefox instance. The
-staging poll reaper handles a worker crash or failed release. Known violations
-are tracked as [`FF-002`](./todo.md#ff-002--failed-video-child-leaves-candidate-pending),
-[`FF-007`](./todo.md#ff-007--abnormal-eventworkflow-closure-can-strand-a-fixture),
-and [`FF-015`](./todo.md#ff-015--canceled-eventworkflow-spins-into-temporal-deadlock-detection).
+`EventWorkflow` is durable Temporal work. New executions run download and hash
+activities directly around the exact-MD5 claim; pre-FF-022 histories can still
+contain the registered `VideoWorkflow` child. Cancellation stops downstream
+work. Normal finalization closes the Postgres checklist and releases the
+event's Firefox instance; the staging-poll reaper handles a worker crash or
+failed release. The deployed recovery contracts and their original violations
+are preserved under
+[`FF-002`](./history/issue-register-2026-08-17.md#ff-002--failed-video-child-leaves-candidate-pending),
+[`FF-007`](./history/issue-register-2026-08-17.md#ff-007--abnormal-eventworkflow-closure-can-strand-a-fixture),
+and [`FF-015`](./history/issue-register-2026-08-17.md#ff-015--canceled-eventworkflow-spins-into-temporal-deadlock-detection).
 
 The ingest team cache is replaced transactionally only after at least one
 configured league refreshes. Failed or empty leagues retain their prior rows
@@ -329,9 +335,10 @@ every recreated process. It does not update source, change schema, restart
 infrastructure, clean fleet containers, or roll back on failure. See the
 [deployment contract](./deployment.md#deploy-tracking).
 
-For the first FF-001 rollout, list any legacy unscoped `ff-firefox-ev-*`
-containers immediately before deployment. Legacy cleanup and the production
-rollout require separate explicit approvals.
+If a legacy unscoped `ff-firefox-ev-*` container appears, stop the rollout and
+identify its workflow and network ownership. The scoped provisioner cannot
+safely adopt or remove it. Legacy cleanup and the production rollout require
+separate explicit approvals.
 
 After an approved rollout, verify the built commit identity, worker
 registration, stored schedules, browser scope labels, API health, and one
