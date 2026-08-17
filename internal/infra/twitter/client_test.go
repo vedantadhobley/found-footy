@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,17 +22,10 @@ func newFixture() (*twitter.Instruments, *logging.TestEmitter) {
 	return twitter.RegisterMetrics(metrics.New(), log), log
 }
 
-// mockTwitter stands up a minimal /health + /search server.
-func mockTwitter(t *testing.T, searchResp twitter.SearchResponse, health200 bool) *httptest.Server {
+// mockTwitter stands up a minimal /search server.
+func mockTwitter(t *testing.T, searchResp twitter.SearchResponse) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		if !health200 {
-			http.Error(w, `{"status":"down"}`, http.StatusServiceUnavailable)
-			return
-		}
-		_, _ = w.Write([]byte(`{"status":"ok","authenticated":true}`))
-	})
 	mux.HandleFunc("/search", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -43,38 +37,16 @@ func mockTwitter(t *testing.T, searchResp twitter.SearchResponse, health200 bool
 	return httptest.NewServer(mux)
 }
 
-func TestNewClient_HealthProbePasses(t *testing.T) {
-	srv := mockTwitter(t, twitter.SearchResponse{}, true)
-	defer srv.Close()
-
-	ins, log := newFixture()
-	c, err := twitter.NewClient(context.Background(), config.TwitterConfig{
-		BaseURL: srv.URL, SearchTimeout: 5 * time.Second, DownloadTimeout: 30 * time.Second,
+func TestNewClient_DoesNotRequireLiveService(t *testing.T) {
+	ins, _ := newFixture()
+	c, err := twitter.NewClient(config.TwitterConfig{
+		BaseURL: "http://127.0.0.1:1", SearchTimeout: 50 * time.Millisecond, DownloadTimeout: 30 * time.Second,
 	}, ins)
 	if err != nil {
-		t.Fatalf("NewClient: %v", err)
+		t.Fatalf("NewClient with unavailable service: %v", err)
 	}
 	if c == nil {
 		t.Fatal("expected non-nil client")
-	}
-	if !log.HasAction(vocabulary.ModuleInfraTwitter, vocabulary.ActionTwitterConnected) {
-		t.Errorf("expected ActionTwitterConnected; got %+v", log.Snapshot())
-	}
-}
-
-func TestNewClient_HealthProbeFails(t *testing.T) {
-	srv := mockTwitter(t, twitter.SearchResponse{}, false)
-	defer srv.Close()
-
-	ins, log := newFixture()
-	_, err := twitter.NewClient(context.Background(), config.TwitterConfig{
-		BaseURL: srv.URL, SearchTimeout: 5 * time.Second, DownloadTimeout: 30 * time.Second,
-	}, ins)
-	if err == nil {
-		t.Fatal("expected error from failing /health probe")
-	}
-	if !log.HasAction(vocabulary.ModuleInfraTwitter, vocabulary.ActionTwitterConnectFailed) {
-		t.Errorf("expected ActionTwitterConnectFailed; got %+v", log.Snapshot())
 	}
 }
 
@@ -86,11 +58,11 @@ func TestSearch_HappyPath(t *testing.T) {
 			{TweetURL: "https://x.com/a/status/1", VideoPageURL: "http://v1", DurationSeconds: 15.5},
 			{TweetURL: "https://x.com/b/status/2", VideoPageURL: "http://v2", DurationSeconds: 22.0},
 		},
-	}, true)
+	})
 	defer srv.Close()
 
 	ins, log := newFixture()
-	c, err := twitter.NewClient(context.Background(), config.TwitterConfig{
+	c, err := twitter.NewClient(config.TwitterConfig{
 		BaseURL: srv.URL, SearchTimeout: 5 * time.Second, DownloadTimeout: 30 * time.Second,
 	}, ins)
 	if err != nil {
@@ -108,13 +80,48 @@ func TestSearch_HappyPath(t *testing.T) {
 	}
 }
 
+func TestSearch_RecoversAfterServiceBecomesReady(t *testing.T) {
+	var ready atomic.Bool
+	var calls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search", func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		if !ready.Load() {
+			http.Error(w, `{"status":"starting"}`, http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(twitter.SearchResponse{Status: "success"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ins, _ := newFixture()
+	c, err := twitter.NewClient(config.TwitterConfig{
+		BaseURL: srv.URL, SearchTimeout: time.Second, DownloadTimeout: 30 * time.Second,
+	}, ins)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("construction made %d remote calls, want 0", got)
+	}
+
+	if _, err := c.Search(context.Background(), "", twitter.SearchRequest{Query: "goal"}); err == nil {
+		t.Fatal("Search while service is starting = nil error")
+	}
+	ready.Store(true)
+	if _, err := c.Search(context.Background(), "", twitter.SearchRequest{Query: "goal"}); err != nil {
+		t.Fatalf("Search after service recovery: %v", err)
+	}
+}
+
 func TestNewClient_FastFailGuards(t *testing.T) {
 	ins, _ := newFixture()
-	if _, err := twitter.NewClient(context.Background(),
+	if _, err := twitter.NewClient(
 		config.TwitterConfig{BaseURL: "http://x"}, nil); err == nil {
 		t.Fatal("nil ins should error")
 	}
-	if _, err := twitter.NewClient(context.Background(),
+	if _, err := twitter.NewClient(
 		config.TwitterConfig{BaseURL: ""}, ins); err == nil {
 		t.Fatal("empty base URL should error")
 	}

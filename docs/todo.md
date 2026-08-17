@@ -41,7 +41,7 @@ against the current branch.
 
 | ID | Severity | Status | Summary |
 |---|---|---|---|
-| FF-016 | P2 | `confirmed` | Make Twitter discovery recover when the scraper is unavailable during worker startup instead of leaving that worker unwired for its lifetime. |
+| FF-018 | P2 | `confirmed` | Correct the production Twitter reauthentication command so it names the explicit production Compose file. |
 
 ## Confirmed issues
 
@@ -344,6 +344,31 @@ against the current branch.
 - **Source relation:** New finding in the not-yet-deployed FF-019 release path;
   no production release used the faulty gate.
 
+### FF-016 — worker can permanently lose Twitter after a startup race
+
+- **Status:** `implemented`; not deployed
+- **Severity:** P2
+- **Source:** Current code; legacy issue #170.
+- **Invariant:** A transient browser outage during worker startup must not
+  disable discovery on that worker for its lifetime.
+- **Evidence:** `twitter.NewClient` synchronously probed the shared service's
+  `/health` endpoint. `cmd/worker` treated probe failure as optional startup
+  degradation and left `discovery.Activities.Twitter` nil permanently. The
+  production release recreates Twitter and both workers together, while the
+  browser's initial authentication can outlast the client's ten-second probe.
+- **Implemented locally; not deployed:** Client construction now validates only
+  static configuration and performs no network I/O. Invalid configuration is a
+  worker-startup error; remote readiness is evaluated by each search. The
+  client is always injected into discovery, so later Temporal attempts recover
+  automatically when Twitter or an event browser becomes ready.
+- **Regression:** Construction succeeds against an unavailable address without
+  making a remote call. A second test returns 503 for the first search, changes
+  the same service to ready, and proves the next search succeeds through the
+  original client.
+- **Source relation:** The eager health-probe idea came from the rebuild design,
+  but it modeled readiness as immutable construction state. The shipped
+  per-event fleet and retrying activity boundary require live per-call state.
+
 ## Confirmed lower-priority backlog
 
 | ID | Severity | Source | Summary | Completion condition |
@@ -354,7 +379,6 @@ against the current branch.
 | FF-011 | P2 | Audit 2026-08-15 | Popularity increments are not idempotent under activity retry. | Retry-safe vote accounting with an invariant test. |
 | FF-012 | P2 | Audit 2026-08-15 | Permanent LLM failures such as 401/404/bad JSON are retried. | Typed non-retryable classification and Temporal retry test. |
 | FF-013 | P2 | Audit 2026-08-15 | Schema guard verifies one fingerprint, not the existence of every object after interrupted initialization. | Verify required objects or adopt ordered migrations; test partial schema. |
-| FF-016 | P2 | Current code; legacy issue #170 | Worker constructs the Twitter client only when the startup health probe passes; a failed probe leaves discovery with a nil client for that worker's lifetime. | Construct a recoverable client or retry discovery connectivity without restarting the worker; cover unavailable-at-boot recovery. |
 | FF-017 | P2 | Current code; legacy #170-adjacent finding | Firefox can die while the Go Twitter service remains alive and unusable because no browser watchdog or fatal-exit path exists. | Make browser death restart or terminate the service, expose correct health, and cover the process-loss transition. |
 | FF-018 | P2 | Current production Compose and repository layout | `/authenticate.reauth_command` advertises `docker compose --profile vnc up -d twitter-vnc`, but the repository deliberately has no default Compose file, so the command fails without `-f docker-compose.prod.yml`. | Set the production value to the explicit Compose-file command, cover the operator response in configuration tests, update the as-built ledger, and deploy with approval. |
 

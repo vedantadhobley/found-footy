@@ -46,6 +46,12 @@ the network becomes the opaque ownership scope for names, labels, capacity, and
 cleanup (FF-001). The event-only network alias remains deterministic, so
 workflows need no registry.
 
+The worker always constructs and injects the HTTP client from static
+configuration; construction does not probe the shared browser. Twitter and the
+workers can therefore start in either order. Each `/search` call observes live
+readiness, and Temporal retries transient startup or connectivity failures
+(FF-016).
+
 ## HTTP contract
 
 Registered in `service.go RegisterHandlers`:
@@ -129,9 +135,6 @@ own rate-limit class (`rate_limited`, T/d) is **not built**.
 - **`AUD-TWITTER-RATE-LIMIT` — rate-limit detection and backoff** are unbuilt
   feature scope. See
   [`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
-- **FF-016 — worker Twitter client construction is one-shot at boot.** If the
-  startup health probe fails, discovery retains a nil client until the worker
-  restarts. See [`todo.md`](./todo.md#confirmed-lower-priority-backlog).
 
 ## Cross-refs
 

@@ -311,7 +311,10 @@ derived by `firefoxfleet.InstanceAddr(eventID)`. The EventWorkflow decides
 which by `FleetEnabled` and threads it through `SearchTweetsInput.InstanceAddr`.
 This is how one HTTP client fans searches across N per-event Firefox
 containers without a router or registry — the address is a pure function
-of the event ID.
+of the event ID. Client construction validates only static configuration and
+performs no readiness probe. A browser service that is starting or temporarily
+unreachable fails the current activity attempt; a later Temporal retry uses the
+same client and observes the recovered service (FF-016).
 
 ## Package dependency direction (audit-verified)
 

@@ -62,63 +62,30 @@ type VideoRef struct {
 	AgeMinutes      float64 `json:"age_minutes,omitempty"`
 }
 
-// NewClient — validates config + probes /health so a dead twitter
-// container fails startup rather than surfacing on first Search.
-func NewClient(ctx context.Context, cfg config.TwitterConfig, ins *Instruments) (*Client, error) {
+// NewClient validates static configuration and constructs a recoverable HTTP
+// client. It deliberately performs no network I/O: browser readiness can
+// change independently of the worker, and every Search observes current state.
+func NewClient(cfg config.TwitterConfig, ins *Instruments) (*Client, error) {
 	if ins == nil {
 		return nil, fmt.Errorf("twitter.NewClient: Instruments is required")
 	}
 	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("twitter.NewClient: TWITTER_SERVICE_URL not set")
 	}
-	c := &Client{
+	return &Client{
 		// No client-level Timeout. Go's http.Client.Timeout is a hard cap on
 		// the ENTIRE request and is NOT lifted by a per-request context — the
 		// shorter of the two wins. A 10s cap here strangled every Search: a
 		// real search takes 11–30s+ (empty-detection wait + stealth scroll
 		// jitter), so nothing ever completed. Each method bounds itself via
-		// context instead — Search=SearchTimeout, Download=DownloadTimeout,
-		// probeHealth=10s below. See decisions.md 2026-08-05.
+		// context instead — Search=SearchTimeout, Download=DownloadTimeout.
+		// See decisions.md 2026-08-05.
 		http:            &http.Client{},
 		ins:             ins,
 		baseURL:         strings.TrimRight(cfg.BaseURL, "/"),
 		searchTimeout:   cfg.SearchTimeout,
 		downloadTimeout: cfg.DownloadTimeout,
-	}
-	if err := c.probeHealth(ctx); err != nil {
-		ins.emitEvent(ctx, logging.LevelError, vocabulary.ActionTwitterConnectFailed,
-			"twitter service /health probe failed",
-			logging.String("base_url", c.baseURL),
-			logging.Err(err),
-		)
-		return nil, fmt.Errorf("twitter.NewClient: /health probe: %w", err)
-	}
-	ins.emitEvent(ctx, logging.LevelInfo, vocabulary.ActionTwitterConnected,
-		"twitter service ready",
-		logging.String("base_url", c.baseURL),
-	)
-	return c, nil
-}
-
-func (c *Client) probeHealth(ctx context.Context) error {
-	// Bound the startup probe explicitly — the shared client is uncapped now,
-	// so a hung twitter service would otherwise block startup on the parent ctx.
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
-	if err != nil {
-		return err
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("health probe: %d %s: %s", resp.StatusCode, http.StatusText(resp.StatusCode), body)
-	}
-	return nil
+	}, nil
 }
 
 // Search sends a search request to a twitter instance and returns
