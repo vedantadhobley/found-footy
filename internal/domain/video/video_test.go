@@ -19,7 +19,7 @@ func makeAsset(popularity int, fileSize int64) *video.Asset {
 		uuid.New(),
 		5000,
 		"found-footy", "5000/asset123.mp4",
-		[]byte("md5md5md5md5md5m"),                         // 16-byte md5
+		[]byte("md5md5md5md5md5m"),                           // 16-byte md5
 		[]uint64{0xabcd1234ef567890, 0x1111, 0x2222, 0x3333}, // per-frame dHash sequence
 		1920, 1080, 45_000,
 		fileSize,
@@ -244,6 +244,25 @@ func TestCompareShares_CreatedAtTiebreak(t *testing.T) {
 	}
 	if video.CompareShares(a, a, aAsset, aAsset) != 0 {
 		t.Error("identical shares must compare as equal")
+	}
+}
+
+func TestCompareShares_IDBreaksCompleteTie(t *testing.T) {
+	aAsset := makeAsset(1, 10_000_000)
+	bAsset := makeAsset(1, 10_000_000)
+	at := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	a, _ := video.NewShare(aAsset.ID, uuid.New(), true, nil, 1, at)
+	b, _ := video.NewShare(bAsset.ID, uuid.New(), true, nil, 2, at)
+	a.ID, b.ID = "s_000000000001", "s_000000000002"
+
+	if video.CompareShares(a, b, aAsset, bAsset) != -1 {
+		t.Error("lexically smaller share ID must rank better on a complete tie")
+	}
+	if video.CompareShares(b, a, bAsset, aAsset) != +1 {
+		t.Error("lexically larger share ID must rank worse on a complete tie")
+	}
+	if video.CompareShares(a, a, aAsset, aAsset) != 0 {
+		t.Error("the same share must still compare as equal")
 	}
 }
 

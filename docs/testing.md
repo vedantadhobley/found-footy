@@ -257,6 +257,10 @@ JSON, `ValidateClip` marks all permanent model/config/response sentinels
 non-retryable, and WorkflowTestSuite proves permanent vision failure runs once
 while transient failure runs the configured three attempts.
 
+FF-030 has a pure domain regression for the rank comparator's final share-ID
+tiebreaker. It asserts both directions and preserves equality for one identical
+share, so an unordered repository read cannot change a complete tie.
+
 **Run:** `make test-corpus` — runs just the harness. `make test`
 includes it. `make test-short` excludes it (no docker).
 

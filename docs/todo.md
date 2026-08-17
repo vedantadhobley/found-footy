@@ -745,6 +745,26 @@ against the current branch.
   already specified in the [rebuild plan](./design/rebuild-plan.md#4-domain-model);
   no architectural divergence.
 
+### FF-030 — complete rank ties depend on database row order
+
+- **Status:** `implemented`; not deployed
+- **Severity:** P3
+- **Source:** Audit 2026-08-13 P3-15, revalidated against `RebalanceRanks` and
+  `video.CompareShares`.
+- **Invariant:** Rebalancing the same active shares with unchanged ranking
+  evidence must produce the same order regardless of database row-return order.
+- **Evidence:** `RebalanceRanks` intentionally reads active shares without an
+  `ORDER BY`, then uses a stable in-memory sort. `CompareShares` returned equal
+  when verification, popularity, size, and `created_at` all tied, leaving that
+  stable sort dependent on PostgreSQL's unspecified input order.
+- **Implemented locally; not deployed:** Public share ID is the final lexical
+  tiebreaker after `created_at`. It changes only a complete tie and gives the
+  comparator a total order while preserving every established ranking rule.
+- **Regression:** Domain tests require both comparison directions and retain
+  equality only when comparing the same share. Focused uncached tests pass.
+- **Source relation:** Closes `AUD-0813-P3-15`. It extends the rebuild plan's
+  final `created_at` rule only for values the plan left indistinguishable.
+
 ## Confirmed lower-priority backlog
 
 | ID | Severity | Source | Summary | Completion condition |
@@ -787,7 +807,6 @@ implementation time.
 | `AUD-0813-P3-12` | discovery | `max_age_minutes` has inconsistent fallback defaults. | `triage` |
 | `AUD-0813-P3-13` | dedup | Workflow-replayed perceptual matching allocates per offset and lacks a cheap prefilter. | `triage` |
 | `AUD-0813-P3-14` | ranking | Full rank rebalance runs after every promote and supersede rather than once per settled batch/event. | `triage` |
-| `AUD-0813-P3-15` | ranking | Fully tied rank comparisons may lack a deterministic final tiebreaker. | `triage` |
 | `AUD-0813-P3-16` | observability | S3 download byte accounting occurs on response creation rather than consumed/closed bytes. | `triage` |
 | `AUD-0813-P3-17` | config/docs | Worker shutdown timeout documentation attributes the setting to the wrong mechanism. | `triage` |
 | `AUD-0813-CF-153` | twitter ops | Full cookie expiry still requires an operator-capable raw-browser re-auth and verified fleet propagation path. | `triage` |

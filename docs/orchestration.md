@@ -520,8 +520,9 @@ gate was replaced):
   onto the winner (`SupersedeAssets` — `superseded_by` chain + atomic
   popularity merge + retire loser shares to `'superseded'` + reclaim Garage
   bytes). **Rank** = `RebalanceRanks` by `CompareShares` (verified → popularity
-  → file_size → oldest); verified always outranks unverified, and pools never
-  cross-compare for dedup.
+  → file_size → oldest → lexical share ID); the final ID key makes complete
+  ties independent of PostgreSQL row order (FF-030). Verified always outranks
+  unverified, and pools never cross-compare for dedup.
 - **Emit** (N3): after a successful promotion completion with a durable share
   (`Minted=true`) or a supersede that collapsed losers, the pipeline fires the
   `event.video` dirty-signal via the `livefeed.PublishEventVideo` activity —
