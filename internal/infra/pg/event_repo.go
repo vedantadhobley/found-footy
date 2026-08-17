@@ -662,6 +662,34 @@ func (r *EventRepo) ListByFixture(ctx context.Context, fixtureID int64) ([]*even
 	return events, nil
 }
 
+// ListAllByFixture returns active and soft-removed events in detection order.
+// It is an identity-history query for monitor reconciliation, not a display
+// query; callers decide which rows are eligible for presence/absence votes.
+func (r *EventRepo) ListAllByFixture(ctx context.Context, fixtureID int64) ([]*event.Event, error) {
+	rows, err := r.pool.Query(ctx,
+		"SELECT "+eventColumns+` FROM events
+		 WHERE fixture_id = $1
+		 ORDER BY first_seen_at, id`,
+		fixtureID)
+	if err != nil {
+		return nil, fmt.Errorf("pg.EventRepo.ListAllByFixture: %w", err)
+	}
+	defer rows.Close()
+
+	var events []*event.Event
+	for rows.Next() {
+		e, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pg.EventRepo.ListAllByFixture: rows: %w", err)
+	}
+	return events, nil
+}
+
 // EventsAwaitingDiscovery returns confirmed, not-removed events whose
 // discovery workflow hasn't completed yet (spawn failed, or still in
 // flight). Drives ReconcileFixture's spawn-recovery pass. See event.Repo.

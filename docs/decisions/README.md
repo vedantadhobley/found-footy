@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Event sequences match stored identity instead of provider array position](./2026-08-17-event-sequences-match-stored-identity.md) — FF-027 brace, reorder, and removed-tombstone identity contract.
 - [Browser death restarts the complete container unit](./2026-08-17-browser-death-restarts-container-unit.md) — FF-017 critical-child health, process exit, and Docker restart ownership.
 - [Failed EventWorkflow executions resume durable progress](./2026-08-17-failed-event-workflows-resume-durable-progress.md) — FF-007 Workflow ID reuse, checkpoint, and recovery boundary.
 - [Promotion retries complete ranking and staging cleanup](./2026-08-16-promotion-retries-complete-durable-tail.md) — FF-006/FF-023 durable-tail and dirty-signal contract.

@@ -409,6 +409,43 @@ func TestEventRepo_ListPending_Empty(t *testing.T) {
 	}
 }
 
+func TestEventRepo_ListAllByFixture_IncludesRemovedIdentityHistory(t *testing.T) {
+	ctx, _, repo, fRepo := setupEventRepo(t)
+	seedFixture(t, ctx, fRepo, 7009)
+
+	removed := makeGoalEvent(7009, 1)
+	active := makeGoalEvent(7009, 2)
+	if err := repo.Insert(ctx, removed, "cycle-1-removed"); err != nil {
+		t.Fatalf("Insert removed candidate: %v", err)
+	}
+	if err := repo.Insert(ctx, active, "cycle-1-active"); err != nil {
+		t.Fatalf("Insert active: %v", err)
+	}
+	if _, hitZero, err := repo.RegisterEventAbsence(ctx, removed.ID, "cycle-2"); err != nil || !hitZero {
+		t.Fatalf("soft-remove first event: hitZero=%v err=%v", hitZero, err)
+	}
+
+	visible, err := repo.ListByFixture(ctx, 7009)
+	if err != nil {
+		t.Fatalf("ListByFixture: %v", err)
+	}
+	if len(visible) != 1 || visible[0].ID != active.ID {
+		t.Fatalf("visible events = %+v, want only active row", visible)
+	}
+	history, err := repo.ListAllByFixture(ctx, 7009)
+	if err != nil {
+		t.Fatalf("ListAllByFixture: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("identity history length = %d, want 2", len(history))
+	}
+	byID := map[uuid.UUID]*event.Event{history[0].ID: history[0], history[1].ID: history[1]}
+	if !byID[removed.ID].Removed || byID[active.ID].Removed {
+		t.Fatalf("identity history removal flags = removed:%v active:%v",
+			byID[removed.ID].Removed, byID[active.ID].Removed)
+	}
+}
+
 // ── Symmetric debounce ─────────────────────────────────────────
 
 // TestEventRepo_Presence_ClimbTo3TriggersDownstream — three distinct
@@ -597,7 +634,7 @@ func TestEventRepo_Absence_Idempotent(t *testing.T) {
 	_ = repo.Insert(ctx, e, "c1")
 	_, _, _ = repo.RegisterEventPresence(ctx, e.ID, "c2") // count=2
 
-	c1, _, _ := repo.RegisterEventAbsence(ctx, e.ID, "c3") // count=1
+	c1, _, _ := repo.RegisterEventAbsence(ctx, e.ID, "c3")    // count=1
 	c2, hz, err := repo.RegisterEventAbsence(ctx, e.ID, "c3") // idempotent
 	if err != nil {
 		t.Fatalf("absence idempotent retry: %v", err)

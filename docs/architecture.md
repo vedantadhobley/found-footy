@@ -59,7 +59,7 @@ found-footy/
 │   │   ├── ingest/                      ✓ config, roster, fixture fetch/upsert, canonical-team placeholder, and retention activities
 │   │   │   ├── activities.go
 │   │   │   └── activities_test.go
-│   │   ├── monitor/                     ✓ config, activation, staging/live fetch, reconcile, and signal/spawn support
+│   │   ├── monitor/                     ✓ config, activation, staging/live fetch, stable event-identity reconcile (FF-027), and signal/spawn support
 │   │   ├── discovery/                   ✓ config/aliases/search/candidates, durable recovery checkpoints, and downstream completion
 │   │   ├── video/                       ✓ DownloadAndStage, HashVideo, live-asset recovery, persistence, teardown, and ranking activities
 │   │   ├── vision/                      ✓ staged-clip frame extraction + model-backed validation
@@ -182,7 +182,9 @@ Repo methods shipped in `internal/infra/pg/event_repo.go`:
 `debounce_count=1` + first presence vote for a **known** scorer, but
 `debounce_count=0` + **no** vote for an unknown-scorer placeholder, per G1),
 `DeleteUnknownEvent` (hard-delete a lingering `debounce_count=0` placeholder),
-`Upsert`, `ListPending`, `EventsAwaitingDiscovery` (the discovery spawn set),
+`UpdateMutableFields`, `Upsert`, `ListPending`, `ListByFixture` (visible rows),
+`ListAllByFixture` (FF-027 active + removed identity history),
+`EventsAwaitingDiscovery` (the discovery spawn set),
 `RegisterEventPresence` (increment, cap 3, flips downstream_triggered on first
 hit), `RegisterEventAbsence` (decrement, floor 0, atomic soft-delete on hitZero
 with reason='var'), `RegisterDownstreamWorkflow` (inserts the

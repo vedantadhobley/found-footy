@@ -334,6 +334,17 @@ clips), and reclaims its Garage objects. Mirrors Python (`monitor.py`
 `initial_count` + `unknown_scorer_disappeared` + `mark_event_removed`); see
 [decisions.md](decisions.md) 2026-08-05. Surfaced per cycle as `unknown_dropped`.
 
+**Stable event sequence identity (FF-027).** Sequence is no longer recomputed
+from each provider array's position. Reconcile reads active and removed rows,
+matches each scorer/type group to active stored events by ordered nearest match
+clock, and allocates unmatched events above the complete historical maximum.
+An incomplete score-backed goal inventory requires exact clock matching so a
+nearby new goal cannot consume an omitted goal's identity. Exact removed-row
+reappearances map to their terminal tombstone. Existing natural keys remain
+unchanged; a late insertion may receive a higher sequence than a chronologically
+later stored event because sequence is durable allocation identity, not display
+order.
+
 **Score-backed goal removal and coherent fixture completion (FF-014).** A
 missing goal no longer receives an absence vote when the aggregate score in
 that same provider response exceeds the current API goal count for its
