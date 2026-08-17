@@ -118,4 +118,10 @@ func TestProductionComposePropagatesReleaseIdentity(t *testing.T) {
 	if got := worker.Environment["FIREFOXFLEET_IMAGE"]; got != wantFleetImage {
 		t.Errorf("worker FIREFOXFLEET_IMAGE = %q, want %q", got, wantFleetImage)
 	}
+
+	twitter := compose.Services["twitter"]
+	const wantReauthCommand = "docker compose -f docker-compose.prod.yml --profile vnc up -d twitter-vnc"
+	if got := twitter.Environment["TWITTER_VNC_START_CMD"]; got != wantReauthCommand {
+		t.Errorf("twitter TWITTER_VNC_START_CMD = %q, want %q", got, wantReauthCommand)
+	}
 }

@@ -227,11 +227,10 @@ cookie fingerprint, last authentication check, and last loaded cookie mtime.
 /auth/verify` is intentionally stateful: it forces session verification and
 writes a successful cookie refresh.
 
-The current production Compose value for `/authenticate.reauth_command` omits
-`-f docker-compose.prod.yml`, so the advertised command cannot resolve a
-Compose model in this repository. [`FF-018`](./todo.md#confirmed-lower-priority-backlog)
-tracks the loaded configuration fix. Until it is deployed, use the explicit
-command below after approval.
+The repository's production `/authenticate.reauth_command` explicitly names
+`docker-compose.prod.yml` (FF-018). Running production retains the older broken
+value until the pending application rollout. Until that rollout, use the
+explicit command below after approval rather than copying the live response.
 
 Production re-auth procedure:
 

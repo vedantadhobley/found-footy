@@ -229,7 +229,7 @@ services:
       # These get baked into the reauth message so operators see the
       # exact command + URL to click.
       TWITTER_VNC_URL: http://found-footy-prod-twitter-vnc.luv
-      TWITTER_VNC_START_CMD: "docker compose --profile vnc up -d twitter-vnc"
+      TWITTER_VNC_START_CMD: "docker compose -f docker-compose.prod.yml --profile vnc up -d twitter-vnc"
       # Not the VNC container — leave headless-mode default (true) alone.
     # Playwright headless in Docker: Firefox sandbox needs relaxed
     # seccomp for its clone3()/unshare() user-namespace calls, plus
@@ -248,7 +248,7 @@ services:
     restart: unless-stopped
 
   # Cookie re-auth container — opt-in via the `vnc` profile:
-  #   docker compose --profile vnc up -d twitter-vnc
+  #   docker compose -f docker-compose.prod.yml --profile vnc up -d twitter-vnc
   # Runs the same twitter binary but with Playwright non-headless
   # (TWITTER_VNC_MODE=true triggers entrypoint.sh to start Xvfb +
   # fluxbox + x11vnc + websockify+noVNC). Operator opens noVNC in a
