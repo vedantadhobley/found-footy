@@ -51,8 +51,8 @@ type APILeagueSeason struct {
 // nests each team under a "team" key alongside "venue" info we don't
 // currently consume.
 type APITeamEnvelope struct {
-	Team  APITeam       `json:"team"`
-	Venue APITeamVenue  `json:"venue"`
+	Team  APITeam      `json:"team"`
+	Venue APITeamVenue `json:"venue"`
 }
 
 // APITeam is the team identity. `National` distinguishes club teams
@@ -148,21 +148,13 @@ func (c *Client) ListTeamsForLeague(ctx context.Context, leagueID, season int) (
 	return teams, nil
 }
 
-// GetTeamProfile returns the full team + venue envelope for a specific
-// team ID. Backs the alias-resolution enrichment path (ports Python's
-// `get_team_info` in archive/src/api/api_client.py): before running the
-// Wikidata lookup, we call this to surface venue.city + authoritative
-// team.country + team.national + team.code — signals the fixture-side
-// data alone doesn't carry.
-//
-// One HTTP call per team on first resolution. Cached permanently in
-// team_aliases once the row is written, so subsequent ingest cycles
-// short-circuit on cache-hit and never re-fetch.
+// GetTeamProfile returns the full team + venue envelope for one team ID. It is
+// retained as an adapter capability from the retired alias resolver and has no
+// production caller.
 //
 // Returns (nil, error) on transport/decode failure. Returns (nil, err)
 // with a "not found" error if the vendor's response is empty for the
-// given ID — activity code soft-fails rather than aborting the whole
-// resolution loop.
+// given ID.
 func (c *Client) GetTeamProfile(ctx context.Context, teamID int64) (*APITeamEnvelope, error) {
 	q := url.Values{"id": {strconv.FormatInt(teamID, 10)}}
 

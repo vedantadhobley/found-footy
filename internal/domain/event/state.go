@@ -9,21 +9,16 @@ import (
 
 // State transition errors.
 var (
-	ErrRemovedEvent            = errors.New("event: transition not valid on removed event")
-	ErrAlreadyRemoved          = errors.New("event: already removed")
-	ErrInvalidRemovalReason    = errors.New("event: unknown removal reason")
-	ErrStateTimestampMismatch  = errors.New("event: state and timestamp fields inconsistent")
+	ErrRemovedEvent           = errors.New("event: transition not valid on removed event")
+	ErrAlreadyRemoved         = errors.New("event: already removed")
+	ErrInvalidRemovalReason   = errors.New("event: unknown removal reason")
+	ErrStateTimestampMismatch = errors.New("event: state and timestamp fields inconsistent")
 )
 
-// MarkMonitorComplete flips MonitorComplete to true. Idempotent for
-// already-complete events. Errors on removed events (a VAR'd event
-// doesn't advance).
-//
-// Called at the START of EventWorkflow — proves the 3-poll debounce
-// was reached AND that discovery is now the owner of the event's video
-// search. Setting it here rather than in MonitorWorkflow means a failed
-// Discovery spawn leaves the flag false + the next monitor cycle
-// retries cleanly. This is the Python-era pattern carried over.
+// MarkMonitorComplete flips the legacy MonitorComplete field to true.
+// Idempotent for already-complete events and invalid on removed events.
+// Current production orchestration uses the downstream-workflow checklist;
+// this compatibility helper has no production caller.
 func (e *Event) MarkMonitorComplete(at time.Time) error {
 	if e.Removed {
 		return fmt.Errorf("%w: MarkMonitorComplete", ErrRemovedEvent)
@@ -36,13 +31,10 @@ func (e *Event) MarkMonitorComplete(at time.Time) error {
 	return nil
 }
 
-// MarkDownloadComplete flips DownloadComplete to true. Idempotent for
-// already-complete events. Errors on removed events.
-//
-// Set when the 10-download threshold is reached (all discovery attempts
-// have registered + finished). The count check happens at the storage
-// layer (SELECT count(*) FROM event_download_workflows WHERE event_id
-// = ? >= 10); this domain method only records the fact.
+// MarkDownloadComplete flips the legacy DownloadComplete field to true.
+// Idempotent for already-complete events and invalid on removed events.
+// Current production orchestration uses the downstream-workflow checklist;
+// this compatibility helper has no production caller.
 func (e *Event) MarkDownloadComplete(at time.Time) error {
 	if e.Removed {
 		return fmt.Errorf("%w: MarkDownloadComplete", ErrRemovedEvent)
@@ -60,9 +52,8 @@ func (e *Event) MarkDownloadComplete(at time.Time) error {
 // was previously removed with a DIFFERENT reason (indicates a bug —
 // something is trying to reclassify a removal).
 //
-// The typical caller is the MonitorWorkflow when it detects VAR
-// cancellation via the event dropping out of the API poll for 3
-// consecutive cycles.
+// The active-poll reconciler calls this after the configured absence votes
+// classify an event as removed.
 func (e *Event) Remove(reason RemovalReason, at time.Time) error {
 	if !reason.Valid() {
 		return fmt.Errorf("%w: %q", ErrInvalidRemovalReason, reason)
@@ -101,8 +92,10 @@ func (e *Event) UpdateMinute(minute int, extra *int, at time.Time) {
 }
 
 // ValidateInvariants mirrors the schema's CHECK constraint:
-//   removed=false  → removed_reason=nil, removed_at=nil
-//   removed=true   → removed_reason!=nil, removed_at!=nil
+//
+//	removed=false  → removed_reason=nil, removed_at=nil
+//	removed=true   → removed_reason!=nil, removed_at!=nil
+//
 // Defense in depth vs Postgres.
 func (e *Event) ValidateInvariants() error {
 	if e.Removed {

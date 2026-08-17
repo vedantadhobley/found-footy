@@ -2,8 +2,8 @@
 // tweet-result endpoint, then download the bytes directly from Twitter's
 // CDN. Cookieless (no auth, no session): works for regular public goal
 // clips; amplify/promoted content may 403 (revisit with cookies if it
-// surfaces in the live probe). This is V-phase's per-candidate download
-// leaf. See docs/design/v-phase-orchestration.md + task #161.
+// surfaces in production). This is the per-candidate download leaf. See
+// docs/orchestration.md.
 package syndication
 
 import (

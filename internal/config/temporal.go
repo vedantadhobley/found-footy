@@ -6,10 +6,8 @@ import "time"
 // TemporalConfig covers the Temporal client + worker adapter. Every
 // binary that starts or executes workflows needs this.
 //
-// HostPort is not tagged required at the env layer because Phase S1/S2
-// binaries don't need Temporal yet; the temporal package's constructor
-// returns a descriptive error when a binary that DOES need it starts
-// without the env var set.
+// HostPort is not tagged required at the env layer; the adapter constructor
+// returns a descriptive error when a consuming binary starts without it.
 type TemporalConfig struct {
 	// HostPort is the gRPC address of the Temporal frontend. Example:
 	//   temporal:7233

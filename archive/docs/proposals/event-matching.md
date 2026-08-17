@@ -54,7 +54,7 @@ Two events represent the same goal if:
 
 `_score_after` is a dict like `{"home": 1, "away": 0}` representing the score after this goal. It's a **unique fingerprint per goal** within a fixture — no two goals produce the same score transition.
 
-When a goal is re-attributed (scorer correction, goal→own goal, assist change), the **score doesn't change** — the same ball went in the same net. `_score_after` is computed by `calculate_score_context()` in [event_enhancement.py](src/utils/event_enhancement.py) and is stable across all re-attribution types:
+When a goal is re-attributed (scorer correction, goal→own goal, assist change), the **score doesn't change** — the same ball went in the same net. `_score_after` is computed by `calculate_score_context()` in [event_enhancement.py](../../src/utils/event_enhancement.py) and is stable across all re-attribution types:
 
 | Re-Attribution Type | What Changes | `_score_after` | Matches? |
 |---------------------|-------------|----------------|----------|

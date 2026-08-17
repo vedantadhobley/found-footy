@@ -1,4 +1,4 @@
-// activities.go — the V-phase clip-validation activity (rung V/4).
+// activities.go — model-backed clip validation.
 //
 //	ValidateClip — fetch the cluster's staged clip from Garage → extract
 //	  frames at 25/50/75% → ONE multi-image structured-output vision call

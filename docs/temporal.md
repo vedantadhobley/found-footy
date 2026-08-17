@@ -17,7 +17,7 @@ either live in [`../decisions.md`](decisions.md).
 policies, or workflow-registration conventions updates this doc in
 the same commit.
 
-## Adapter shape (shipped in S5)
+## Adapter shape
 
 `internal/infra/temporal/` follows the standard adapter template:
 
@@ -27,7 +27,7 @@ temporal/
 ├── worker.go            Worker struct + NewWorker + Start + Stop
 ├── instruments.go       RegisterMetrics(reg, log) → *Instruments (counters + histograms)
 ├── doc.go               package docstring
-└── client_test.go       unit tests (85 lines)
+└── client_test.go       unit tests
 ```
 
 ### `Client` (`client.go`)
@@ -74,7 +74,7 @@ func (c *Client) Close()
    (collapsed into EventWorkflow), so the method currently has no caller.
    Kept on the adapter (still metric-instrumented) for future signalling.
 
-### `Worker` (99 lines, `worker.go`)
+### `Worker` (`worker.go`)
 
 ```go
 type Worker struct {
@@ -112,8 +112,8 @@ deps.RegisterCloser("temporal-client", func(_ context.Context) error {
 // 2. Worker construction.
 w := temporal.NewWorker(tempClient, tempIns, worker.Options{})
 
-// 3. Workflow + activity registration — BEFORE Start. 5 workflows +
-//    8 activity sets (each Activities struct's exported methods become
+// 3. Workflow + activity registration — BEFORE Start. Each Activities
+//    struct's exported methods become
 //    individually-dispatchable activities). Construction of each *Activities
 //    with its real deps is in orchestration.md's wire-up.
 w.RegisterWorkflow(ffwf.IngestWorkflow)
@@ -150,7 +150,7 @@ deps.RegisterCloser("temporal-worker", func(_ context.Context) error {
 - **`WorkerShutdownTimeout` from Client, not baked in.** Env-driven so
   ops can tune drain time without a rebuild.
 
-## Workflow-level conventions (established in O1c)
+## Workflow-level conventions
 
 Not codified as helper functions yet; observed patterns:
 
@@ -177,7 +177,7 @@ audit. Divergence from plan; logged in
 ## Testing shape
 
 Client-level: unit tests exercise `NewClient` connection retries +
-`Close` behavior against a stub server (85 lines). No testcontainers
+`Close` behavior against a stub server. No testcontainers
 for Temporal itself (heavy; workspace `temporal` dev container serves
 smoke + trigger scripts).
 
@@ -218,7 +218,7 @@ Load-bearing details:
   **silently ignored on redeploy** until the schedule is manually deleted +
   recreated. Python's `setup_schedules()` UPDATEd every startup specifically to
   avoid this (a stale 25s timeout that persisted); reintroduced here — tracked
-  in the #178 / G6 obs cluster. (Upside: an operator's manual
+  as [`FF-009`](./todo.md#confirmed-lower-priority-backlog). (Upside: an operator's manual
   `temporal schedule update` survives a redeploy.)
 - **Overlap = SKIP.** If a prior IngestWorkflow run is still
   executing (unusual — ingest is fast, but a Postgres stall could

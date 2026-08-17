@@ -15,7 +15,7 @@
 // exclude_urls accumulate across attempts so the Twitter service's
 // consecutive-already-seen scroll stop terminates attempts 2+ quickly.
 // Every candidate the search surfaces gets persisted to
-// event_search_candidates for downstream V-phase pickup + post-hoc
+// event_search_candidates for downstream video processing and post-hoc
 // query-quality learning.
 //
 // Deterministic workflow ID convention: "event-{event_id}" so

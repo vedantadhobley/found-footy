@@ -5,7 +5,7 @@
 (`internal/infra/twitter/`). This is the **as-built ledger**; the design intent
 + the sub-commit history live in
 [`design/proposals/twitter-port.md`](./design/proposals/twitter-port.md) (T/a–T/c
-shipped) and the future scaling model in
+shipped) and the signed-off scaling model in
 [`design/proposals/twitter-scaling.md`](./design/proposals/twitter-scaling.md)
 (#160).
 
@@ -19,28 +19,34 @@ does **search only** — given a query, it navigates X's live-search results,
 scrolls, and returns the video-bearing tweets within an age window. It never
 downloads video bytes (that's the worker's off-browser cookieless syndication
 path) and its browser is never used to *log in* (Twitter blocks login through a
-Playwright-instrumented Firefox — see #153 / decisions.md 2026-07-22).
+Playwright-instrumented Firefox — see `AUD-0813-CF-153` in
+[`todo.md`](./todo.md#audit-intake-requiring-current-code-validation)).
 
-Shipped in Phase S7 (Go client) + T/a–T/c (the service). Live and verified
-end-to-end against real Twitter.
+The Go client and service are live and have been verified end-to-end against
+real Twitter.
 
 ## Deployment shape
 
-- **`found-footy-{dev}-twitter`** — headless: Playwright launches Firefox
+- **`found-footy-{env}-twitter`** — static fallback + fleet image builder:
+  Playwright launches Firefox
   headless; the Go service exposes the HTTP surface on `:8888`. Firefox profile
   lives in the container writable layer (regenerated each start).
-- **`found-footy-{dev}-twitter-vnc`** — opt-in (`--profile vnc`): same binary +
+- **`found-footy-{env}-twitter-vnc`** — opt-in (`--profile vnc`): same binary +
   Xvfb + x11vnc + noVNC, for the **operator to log in manually** (the only way
   to mint fresh cookies) and for debugging.
 - Both mount the **shared cookie backup file** (`~/.config/found-footy/
   twitter_cookies.json` → `/config/twitter_cookies.json`) — a host bind mount, so
   it survives `docker compose down` + container recreation.
 
-The current one-long-lived-container model is **superseded on paper** by the
-per-event instance model ([twitter-scaling.md](./design/proposals/twitter-scaling.md),
-#160): one short-lived Firefox per active event, zero warm. Not yet built.
+The active search path uses the per-event instance model
+([twitter-scaling.md](./design/proposals/twitter-scaling.md), #160): one
+short-lived Firefox per active event, zero warm. The worker creates each
+instance through the Docker API. Compose selects the instance image and network;
+the network becomes the opaque ownership scope for names, labels, capacity, and
+cleanup (FF-001). The event-only network alias remains deterministic, so
+workflows need no registry.
 
-## HTTP contract (5 endpoints)
+## HTTP contract
 
 Registered in `service.go RegisterHandlers`:
 
@@ -110,26 +116,27 @@ own rate-limit class (`rate_limited`, T/d) is **not built**.
 
 ## Known gaps
 
-- **#153 — no self-recovery from full cookie expiry.** If the shared cookies
+- **`AUD-0813-CF-153` — no self-recovery from full cookie expiry.** If the shared cookies
   fully expire, the service can only report `unauthenticated` and wait for fresh
   cookies to arrive via the backup file (an operator VNC login). The Python
   raw-Firefox manual-login subprocess (`_launch_manual_firefox`) is not ported.
-  Mitigated only by cookies currently being healthy.
-- **Firefox death wedges the service.** Hitting the container `mem_limit`
+  See [`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
+- **FF-017 — Firefox death wedges the service.** Hitting the container `mem_limit`
   OOM-kills Firefox (the biggest process), **not** the Go PID 1, so the container
   stays "up" but the browser is gone and there is no relaunch watchdog → every
-  search fails until a manual recreate. Making browser-death fatal (exit → docker
-  restart) or adding a watchdog is #170-adjacent. See decisions.md 2026-08-06.
-- **T/d rate-limit detection + backoff** — unbuilt.
-- **#160 per-event instances** — the shipped one-long-lived-container model is
-  superseded on paper; not yet built.
-- **#170 — worker's twitter client wiring** is one-shot at boot; a twitter
-  restart can leave the worker's client nil until the worker restarts.
+  search fails until a manual recreate. See
+  [`todo.md`](./todo.md#confirmed-lower-priority-backlog).
+- **`AUD-TWITTER-RATE-LIMIT` — rate-limit detection and backoff** are unbuilt
+  feature scope. See
+  [`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
+- **FF-016 — worker Twitter client construction is one-shot at boot.** If the
+  startup health probe fails, discovery retains a nil client until the worker
+  restarts. See [`todo.md`](./todo.md#confirmed-lower-priority-backlog).
 
 ## Cross-refs
 
 - Design proposal + sub-commit history — [twitter-port.md](./design/proposals/twitter-port.md)
 - Search query construction — [twitter-search-query.md](./design/proposals/twitter-search-query.md)
-- Per-event scaling (future) — [twitter-scaling.md](./design/proposals/twitter-scaling.md) (#160)
+- Per-event scaling — [twitter-scaling.md](./design/proposals/twitter-scaling.md) (#160)
 - Cookie-model + login-block decisions — [decisions.md](./decisions.md) 2026-07-21, 2026-07-22
 - Go client + adapter — `internal/infra/twitter/client.go`

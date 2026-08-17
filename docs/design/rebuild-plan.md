@@ -1,14 +1,22 @@
 # Rebuild Plan — 2026-07-01
 
+> **Historical target architecture.** This plan drove the Go rebuild but is not
+> the current implementation contract. Production diverged substantially in
+> workflow topology, schemas, API/eventing, Twitter fleet ownership, aliases,
+> deployment, migration, and naming. Start at [`../README.md`](../README.md)
+> for current authority and use [`README.md`](./README.md) to locate historical
+> rationale. Do not implement code directly from this document without
+> verifying current code, decisions, ledgers, and the issue register.
+
 Prescriptive from-scratch build of found-footy, informed by the lived
-knowledge in the existing prod system and by [`design-audit.md`](./design-audit.md)'s
+knowledge in the existing prod system and by [`design-audit.md`](./audits/design-audit.md)'s
 17-section analysis. This document says **what to build**; the audit says
 *why* and gives full context. Read this to know what ships; consult the
 audit for the reasoning behind each choice.
 
 ## How this differs from the audit
 
-| Aspect | [`design-audit.md`](./design-audit.md) | This document |
+| Aspect | [`design-audit.md`](./audits/design-audit.md) | This document |
 | ------ | ---------------------------------- | ------------- |
 | Framing | Incremental refactor of existing substrate | Fresh build with legacy running in parallel until cutover |
 | Language | Python (Python-idiomatic refactor) | **Go, full-stack** — worker, API, scaler, Twitter service |
@@ -67,11 +75,11 @@ Rationale + ecosystem-level context in
 
 ## How this relates to the roadmap and audit
 
-- [`roadmap.md`](../roadmap.md) F-0..F-6 phases described *incremental*
+- [`roadmap.md`](../history/roadmap-2026-08-15.md) F-0..F-6 phases described *incremental*
   work. This rebuild plan supersedes those phases for the *build side*
   — the fresh-build subsumes what the incremental phases would have
   done and lets us skip the "refactor in place" tax.
-- [`design-audit.md`](./design-audit.md) sections are still referenced
+- [`design-audit.md`](./audits/design-audit.md) sections are still referenced
   throughout this document for the *why* on each decision. When this
   plan says "share-id indirection for URL stability," it's pointing
   at audit §4 for the full rationale, not repeating it.
@@ -223,12 +231,12 @@ External endpoints:
 - **Single-binary deployment.** `go build` produces one file.
   Containers become ~20 MB base + binary instead of Python's
   100+ MB. Restarts take milliseconds. The deploy story from audit
-  [§1](./design-audit.md#1-the-builddeploy-gap-prod--main) becomes
+  [§1](./audits/design-audit.md#1-the-builddeploy-gap-prod--main) becomes
   "copy-and-restart" instead of "rebuild-image-and-pray."
 - **Native concurrency via goroutines.** No async/await coloring, no
   GIL. Workers use goroutines directly for I/O parallelism; frame
   hashing uses worker pools with real parallelism (per audit
-  [§5](./design-audit.md#5-parallelism-and-concurrency)).
+  [§5](./audits/design-audit.md#5-parallelism-and-concurrency)).
 - **Compile-time errors replace runtime NameErrors.** The May 2026
   `download.py:819` NameError and `ingest.py:342` NameError would
   have been build failures in Go. For enterprise-grade, this matters.
@@ -250,7 +258,7 @@ around it:
 - **Boilerplate on error handling.** `if err != nil { return nil, err }`
   is verbose. Go 1.22+ improvements help; wrapping errors with
   `fmt.Errorf("...%w", err)` gives typed-error semantics comparable
-  to the audit's Phase 1 taxonomy from [§7](./design-audit.md#7-error-taxonomy-and-recovery).
+  to the audit's Phase 1 taxonomy from [§7](./audits/design-audit.md#7-error-taxonomy-and-recovery).
 
 ### Why Postgres for structured data
 
@@ -263,9 +271,9 @@ wins on
 features and ecosystem momentum.
 
 Extensions to enable at day one:
-- `pgcrypto` — for share-id UUIDs (see §3 + audit [§4](./design-audit.md#4-dedup-strategy-end-to-end))
+- `pgcrypto` — for share-id UUIDs (see §3 + audit [§4](./audits/design-audit.md#4-dedup-strategy-end-to-end))
 - `pg_trgm` — fuzzy team-name matching in RAG
-- `pgvector` — embedding-based dedup (audit [§4](./design-audit.md#4-dedup-strategy-end-to-end) Track 3) AND semantic-intent embedding storage (see extensibility hooks below)
+- `pgvector` — embedding-based dedup (audit [§4](./audits/design-audit.md#4-dedup-strategy-end-to-end) Track 3) AND semantic-intent embedding storage (see extensibility hooks below)
 
 TimescaleDB and `pg_partman` deferred until telemetry volume warrants.
 
@@ -275,7 +283,7 @@ Rationale in [`decisions.md`](../decisions.md) 2026-07-01 entry
 ("Garage over MinIO"). Go S3 client: **`aws-sdk-go-v2/service/s3`**.
 Fully S3-compatible, works against any endpoint. Presigned URL
 generation for the share-id endpoint (audit
-[§4](./design-audit.md#4-dedup-strategy-end-to-end)) is a two-line
+[§4](./audits/design-audit.md#4-dedup-strategy-end-to-end)) is a two-line
 call.
 
 Per-project isolation: found-footy runs its own Garage container.
@@ -286,7 +294,7 @@ of that directory.
 
 ### Why Temporal stays
 
-The load-bearing patterns from audit [§0](./design-audit.md#0-whats-already-working--dont-touch-yet)
+The load-bearing patterns from audit [§0](./audits/design-audit.md#0-whats-already-working--dont-touch-yet)
 persist: signal-with-start for serialized per-event operations,
 ABANDON parent-close for outliving parents, idempotent counters via
 Postgres unique-index + `INSERT ... ON CONFLICT DO NOTHING`
@@ -339,7 +347,7 @@ huma.Register(api, huma.Operation{
 ```
 
 OpenAPI JSON served at `/api/v1/openapi.json` for vedanta-systems'
-TS type generation (per audit [§11](./design-audit.md#11-cross-project-boundary--vedanta-systems-api)).
+TS type generation (per audit [§11](./audits/design-audit.md#11-cross-project-boundary--vedanta-systems-api)).
 Middleware for Caddy-forwarded auth, request logging, tracing. SSE
 via stdlib `http.Flusher` — no library needed, ~40 lines per stream
 endpoint.
@@ -351,7 +359,7 @@ compatibility for raw throughput we don't need.
 ### Why Playwright-Go for the Twitter service
 
 Firefox + persistent cookies + audit
-[§8](./design-audit.md#8-twitter-fleet-management)'s fleet
+[§8](./audits/design-audit.md#8-twitter-fleet-management)'s fleet
 methodology (Postgres-backed session state, rich `/health` protocol,
 graceful drain) all stay. The engine underneath swaps from
 Python + Selenium to **[Playwright-Go](https://github.com/playwright-community/playwright-go)**:
@@ -395,7 +403,7 @@ The activities are stateless; Temporal owns the state machine.
 
 The rebuild takes seriously that new capabilities will land beyond
 today's feature set. The domain-driven code layout (see
-audit [§13](./design-audit.md#13-code-organization--domain-driven-structure-post-phase-3),
+audit [§13](./audits/design-audit.md#13-code-organization--domain-driven-structure-post-phase-3),
 adapted for Go packages in §2) means adding a new capability = adding
 a new package + wiring it to the workflows that need it, not
 rewriting cross-cutting code.
@@ -418,12 +426,12 @@ rebuild:
   video record via `video_id` FK.
 - Downstream consumers, all pre-wired but disabled until the domain
   ships:
-  - Audit [§10](./design-audit.md#10-filter-pushdown-and-pipeline-ordering)
+  - Audit [§10](./audits/design-audit.md#10-filter-pushdown-and-pipeline-ordering)
     source-quality filter scores broadcaster clips higher.
-  - Audit [§9](./design-audit.md#9-observability-alerting-deploy-visibility)
+  - Audit [§9](./audits/design-audit.md#9-observability-alerting-deploy-visibility)
     surfaces "% of ingested videos from verified accounts" as a
     coverage-quality metric alongside coverage-rate.
-  - Audit [§11](./design-audit.md#11-cross-project-boundary--vedanta-systems-api)
+  - Audit [§11](./audits/design-audit.md#11-cross-project-boundary--vedanta-systems-api)
     API exposes intent as optional metadata on event/video responses;
     vedanta-systems can render "from @BBCSport" badges.
   - `pgvector` similarity queries surface "other tweets talking
@@ -648,12 +656,12 @@ convention.
 ### `scripts/` for one-shot tooling
 
 - `bin/deploy` — the deploy hook from audit
-  [§1](./design-audit.md#1-the-builddeploy-gap-prod--main); Bash
+  [§1](./audits/design-audit.md#1-the-builddeploy-gap-prod--main); Bash
   script wrapping `git pull` + `docker compose build` +
   `docker compose up -d --no-deps --no-build`.
 - `capture_scenario.sh` — records real HTTP traffic for the
   synthetic test harness from audit
-  [§12](./design-audit.md#12-testing-strategy).
+  [§12](./audits/design-audit.md#12-testing-strategy).
 - `pg_migrate.sh` — wraps `migrate` CLI for manual migration ops.
 
 ### `.claude/` for skills and memory
@@ -748,7 +756,7 @@ state-scoped queries; views (`CREATE VIEW fixtures_active AS SELECT
 ergonomics if code reads more naturally that way.
 
 **2. UUIDs for internal IDs, natural keys as sidecars for humans.**
-Per audit [§3](./design-audit.md#3-data-model-mongo-discipline-typing-identity):
+Per audit [§3](./audits/design-audit.md#3-data-model-mongo-discipline-typing-identity):
 `_event_id` in the current Python system is a string-concat
 (`"{fixture}_{team}_{player}_{type}_{seq}"`) that's simultaneously a
 Mongo key, a workflow ID, a log key, a telemetry partition key, and
@@ -978,7 +986,7 @@ CREATE TABLE event_drop_workflows (
 ```
 
 **`video_assets`** — canonical byte-store per audit
-[§4](./design-audit.md#4-dedup-strategy-end-to-end):
+[§4](./audits/design-audit.md#4-dedup-strategy-end-to-end):
 
 ```sql
 CREATE TABLE video_assets (
@@ -1369,16 +1377,16 @@ the schema:
 
 ### Relationship to audit's schemas
 
-- Audit [§3](./design-audit.md#3-data-model-mongo-discipline-typing-identity) proposed
+- Audit [§3](./audits/design-audit.md#3-data-model-mongo-discipline-typing-identity) proposed
   JSON Schema validators on Mongo collections + UUID `_event_id` + Pydantic write layer. The rebuild
   achieves all three via native Postgres schema + Go struct tags for pgx (equivalent role to Pydantic).
-- Audit [§4](./design-audit.md#4-dedup-strategy-end-to-end) proposed the `video_assets` + `video_shares`
+- Audit [§4](./audits/design-audit.md#4-dedup-strategy-end-to-end) proposed the `video_assets` + `video_shares`
   two-collection Mongo design with share-id indirection. This §3 delivers the Postgres equivalent with
   atomic dedup via `UNIQUE (fixture_id, perceptual_hash)`.
-- Audit [§8](./design-audit.md#8-twitter-fleet-management) proposed the `twitter_sessions` Mongo collection
+- Audit [§8](./audits/design-audit.md#8-twitter-fleet-management) proposed the `twitter_sessions` Mongo collection
   for cookie coordination. This §3 delivers it as a Postgres table with the same single-row-canonical
   pattern.
-- Audit [§9](./design-audit.md#9-observability-alerting-deploy-visibility) proposed structured event logging
+- Audit [§9](./audits/design-audit.md#9-observability-alerting-deploy-visibility) proposed structured event logging
   for SSE fan-out. This §3 delivers it as `event_log` (durable audit +
   reconnect-backfill source) paired with workspace NATS publishes for
   realtime fan-out (dual-write pattern per §9's `internal/infra/event`).
@@ -1419,7 +1427,7 @@ Workflow  ─►  Activity  ─►  Service  ─►  Store  ─►  Postgres/S3
 
 Consequences:
 - **Services are unit-testable with mocked stores** (Tier 1 from audit
-  [§12](./design-audit.md#12-testing-strategy)). Business logic gets
+  [§12](./audits/design-audit.md#12-testing-strategy)). Business logic gets
   tested without spinning up a database.
 - **Stores are integration-testable against real Postgres** via
   testcontainers-go (Tier 2). Schema constraints and SQL behavior get
@@ -3185,7 +3193,7 @@ layering does the isolating.
 
 Five workflows, ~40 activities. Full spec below: signatures, retry policies,
 timeout configs, signal patterns, workflow ID conventions per audit
-[§2](./design-audit.md#2-workflow-id-conventions-and-identity),
+[§2](./audits/design-audit.md#2-workflow-id-conventions-and-identity),
 error handling classification. Activities are grouped by domain
 (matching §4's package layout).
 
@@ -8514,7 +8522,7 @@ header in devtools + CI type-gen picks it up as `@deprecated` in TS.
 
 Per-project docker-compose owns its full data plane. Shared workspace
 infra (Caddy proxy, monitor stack, Tailscale) sits outside. Everything
-follows [`~/workspace/proxy/CONVENTIONS.md`](../../proxy/CONVENTIONS.md)
+follows `~/workspace/proxy/CONVENTIONS.md`
 as the canonical naming + networking authority — this section applies
 those conventions to found-footy and only surfaces choices where the
 convention leaves room.
@@ -11396,7 +11404,7 @@ collide across projects.
 **Link text:**
 
 - Descriptive. "See [the dedup design doc](../../archive/docs/proposals/dedup-unification.md)"
-  beats "See [this doc](...)" or bare `./proposals/dedup-unification.md`.
+  beats "See this doc" or bare `./proposals/dedup-unification.md`.
 - Read out of context: if a reader clicks the link and the surrounding
   sentence is invisible, the link text should still tell them where they're
   going.
@@ -11534,7 +11542,7 @@ health" section of the internal monitoring dashboard.
 
 ### 15.7 The rebuild plan and design audit as historical artifacts
 
-The `docs/design/rebuild-plan.md` (this document) and `docs/design/design-audit.md`
+The `docs/design/rebuild-plan.md` (this document) and `docs/design/audits/design-audit.md`
 are **historical artifacts**. They stay in the repo because they
 explain *why* the current architecture is what it is, but they don't
 get maintained after cutover.

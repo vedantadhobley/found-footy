@@ -199,6 +199,8 @@ Rough size: ~200 lines + verification session.
 
 Beyond the delete-on-presence + soft-delete already covered:
 
+<a id="1-adaptive-staging-tiering"></a>
+
 ### 1. Adaptive staging poll frequency
 
 Python: on every 15-min boundary, poll ALL staging fixtures whose bucket

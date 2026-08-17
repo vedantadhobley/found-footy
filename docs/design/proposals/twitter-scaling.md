@@ -1,9 +1,14 @@
 # Twitter scaling — per-event instance model
 
-> **Status:** design, signed off 2026-08-06. **Supersedes** the pool +
-> client-side-router + reconcile-loop scaler in
+> **Status:** shipped historical rationale. The per-event fleet replaced the
+> pool/router/scaler model. FF-001 subsequently added Compose-network-scoped
+> ownership locally after dev and prod reaped each other's browsers; that
+> revision is implemented but not yet deployed. Use
+> [`../../twitter-service.md`](../../twitter-service.md),
+> [`../../deployment.md`](../../deployment.md), and
+> [`../../todo.md`](../../todo.md) for current state. This design **supersedes**
+> the pool + client-side-router + reconcile-loop scaler in
 > [`twitter-port.md`](./twitter-port.md) T/d–T/e (see [Supersedes](#supersedes)).
-> Not yet built — `cmd/scaler` is still a stub. Tracked by #160 (+ #172 folds in).
 
 ## Guiding principle: the monitor is the only poller
 
@@ -86,6 +91,8 @@ dedicated keep-alive schedule. **NOT the monitor loop**: the monitor only runs
 when there are active/staging fixtures, i.e. it is idle during exactly the
 periods where cookies would stale. A timer, not a state-poll, so it respects the
 guiding principle.
+
+<a id="event-driven-cancellation-var-destroy"></a>
 
 ## Event-driven cancellation (VAR destroy) — folds in #172
 

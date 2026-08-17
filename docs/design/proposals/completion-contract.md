@@ -40,7 +40,7 @@ below for the current deltas from this text.
 - Prior decisions — [`../../decisions.md`](../../decisions.md):
   - 2026-07-11 workflow split (ActivePoll + StagingPoll)
   - 2026-07-07 symmetric-counter debounce
-- Related workflow-audit item — [`workflow-audit-2026-07-09.md`](./workflow-audit-2026-07-09.md) P0 #2 (fixture completion detection)
+- Related workflow-audit item — [`workflow-audit-2026-07-09.md`](../audits/workflow-audit-2026-07-09.md) P0 #2 (fixture completion detection)
 - Working discipline — [`../../../AGENTS.md § Working discipline`](../../../AGENTS.md#working-discipline-mandatory-since-2026-07-07-retro)
 
 ## Purpose
@@ -249,7 +249,10 @@ Runs once per fixture per 30s cycle. If the fixture is not ready, the
 check is cheap (returns fast). If it IS ready, the transition happens
 same cycle.
 
-## What ships in the first commit (2026-07-11)
+## Historical first-commit snapshot (2026-07-11)
+
+> This section preserves rollout history. It is not the current contract; use
+> the as-built notes and contract above.
 
 1. **Schema**: `event_downstream_workflows` table (unused for now —
    no downstream workflows exist), `completion_counter` column on
@@ -268,7 +271,7 @@ same cycle.
 5. **Tests**: unit tests for each transition condition. pg integration
    tests for the query.
 
-**What this delivers today, before O3-O5:**
+**What the first commit delivered before O3-O5:**
 
 The `event_downstream_workflows` table is empty (no downstream
 workflows to register). So the completion check reduces to:
@@ -303,7 +306,7 @@ When true, refuse to complete any fixture where any event has
 config when O5 ships. Skipping this in the first commit — the pre-
 cutover safety window doesn't need it.
 
-## What lights up automatically as O3-O5 land
+## Historical O3-O5 rollout expectation
 
 As soon as each downstream workflow follows the register/complete
 protocol above:

@@ -4,14 +4,14 @@ package config
 import "time"
 
 // APIFootballConfig covers the api-sports.io REST client used by ingest
-// + monitor workflows. Auth is via the x-apisports-key header on the
+// and the active/staging poll workflows. Auth is via the x-apisports-key header on the
 // direct API-Sports endpoint. Remote enforces two rate-limit windows
 // (per-minute burst + daily quota) via response headers; we track them
 // but don't enforce client-side. See docs/api-football/rate-limits.md.
 //
-// BaseURL + APIKey are not tagged required at env layer because Phase
-// S1-S6 binaries don't need API-Football yet; the constructor returns a
-// descriptive error when a binary that DOES need it starts without them.
+// BaseURL + APIKey are not tagged required at the env layer; the adapter
+// constructor returns a descriptive error when a consuming binary starts
+// without them.
 type APIFootballConfig struct {
 	// BaseURL is the API root. Defaults to the api-sports.io v3 host.
 	BaseURL string `env:"API_FOOTBALL_BASE_URL" envDefault:"https://v3.football.api-sports.io"`

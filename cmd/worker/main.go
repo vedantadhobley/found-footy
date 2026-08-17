@@ -1,10 +1,6 @@
-// Command worker is the Temporal worker binary — registers workflows and
-// activities and processes tasks from the found-footy task queue. See §5
-// orchestration + §16.5 Phase O for the workflows this binary hosts.
-//
-// Phase S2.4: opens the pg pool at startup, blocks until SIGINT/SIGTERM,
-// closes the pool cleanly on shutdown. Workflow/activity registration
-// lands in Phase O when the domain layer is ready to be plugged in.
+// Command worker registers the production workflows and activities, constructs
+// their adapters, reconciles schedules, and drains dependencies after Temporal
+// stops accepting work. See docs/orchestration.md and docs/temporal.md.
 package main
 
 import (
@@ -81,7 +77,7 @@ func main() {
 		if err != nil {
 			return err
 		}
-		_ = s3c // consumed by the video pipeline in Phase O
+		_ = s3c // consumed by the video pipeline wired below
 		// s3 client has no explicit Close (no persistent connection); no
 		// closer needed — leaving it out is intentional and symmetric
 		// with the aws-sdk-go-v2 client's lifecycle.
@@ -108,17 +104,12 @@ func main() {
 		if err != nil {
 			return err
 		}
-		_ = syndClient // consumed by tweet-content activities in Phase O
+		_ = syndClient // consumed by video activities wired below
 
-		// Option 1 wire (2026-07-17): point Go EventWorkflow at a
-		// running Twitter service via S7's HTTP client. The dev
-		// twitter container currently runs a Go stub (no HTTP surface)
-		// so this NewClient call FAILS in dev — we tolerate that so
-		// the worker still boots. When someone stands up the Python
-		// twitter service in dev (or when T ships a real Go
-		// implementation), the client goes live automatically.
-		// Discovery activities check for nil and surface a clear
-		// "twitter client not wired" error via Temporal retries.
+		// Twitter is optional at worker startup so database and polling work can
+		// continue during a scraper outage. Client construction is currently
+		// one-shot: a failed startup probe leaves discovery unwired until this
+		// worker restarts (FF-016).
 		twitterIns := twitter.RegisterMetrics(deps.Metrics, deps.Log)
 		var twitterClient *twitter.Client
 		if c, err := twitter.NewClient(ctx, deps.Cfg.Twitter, twitterIns); err == nil {
@@ -150,7 +141,6 @@ func main() {
 			MaxConcurrentWorkflowTaskExecutionSize: deps.Cfg.Temporal.MaxConcurrentWorkflowTasks,
 		})
 
-		// Phase O1d — IngestWorkflow + its four activities.
 		// Repos + adapters constructed above are injected into the
 		// Activities struct; workflow + activities registered under
 		// their default (short function name) identifiers.
@@ -175,20 +165,19 @@ func main() {
 		w.RegisterWorkflow(ffwf.IngestWorkflow)
 		w.RegisterActivity(ingestActs)
 
-		// Phase O3/a — event composer for dual-write to pg event_log +
-		// NATS. See decisions.md 2026-07-16 for the NATS-scope narrowing.
+		// The composer writes the Postgres audit plane. Live NATS publishing is
+		// wired separately below.
 		composerIns := eventinfra.RegisterMetrics(deps.Metrics, deps.Log)
 		composer, err := eventinfra.New(pool, composerIns)
 		if err != nil {
 			return err
 		}
 
-		// Phase O3/b — spawner for EventWorkflow, bundled with the
+		// The spawner starts EventWorkflow and registers its downstream
 		// event_downstream_workflows row insert in the same activity.
 		spawner := monitoractivity.NewTemporalSpawner(tempClient, 10*time.Second)
 
-		// Phase O3/c + 2026-07-17 Option-1 wire: Discovery activities
-		// call the Twitter service for real search, then mark the
+		// Discovery activities call the Twitter service for real search, then mark the
 		// event_downstream_workflows row complete. Only assign
 		// Twitter when the concrete pointer is non-nil — assigning a
 		// nil *twitter.Client to an interface field makes the field
@@ -214,8 +203,8 @@ func main() {
 			discoveryActs.Twitter = twitterClient
 		}
 
-		// Phase V/3b — per-candidate video activities (DownloadAndStage +
-		// HashVideo). The ffmpeg client (rung 1 adapter) is constructed here,
+		// Per-candidate video activities run DownloadAndStage and
+		// HashVideo. The ffmpeg client is constructed here,
 		// now that an activity consumes it; the syndication + s3 clients from
 		// above are reused.
 		ffmpegIns := ffmpeg.RegisterMetrics(deps.Metrics, deps.Log)
@@ -233,7 +222,7 @@ func main() {
 			FrameIntervalSecs: deps.Cfg.Dedup.FrameIntervalSecs,
 		}
 
-		// Phase V/4 — clip validation (soccer/screen gate + clock check).
+		// Clip validation applies the soccer/screen gate and clock check.
 		// Reuses the ffmpeg + s3 clients and the shared LLM client (the LLM's
 		// only consumer today; point LLM_ENDPOINT_URL at the vision node).
 		visionActs := &visionactivity.Activities{
@@ -244,7 +233,7 @@ func main() {
 			Cfg:        deps.Cfg.Vision,
 		}
 
-		// Phase V/164b — EventWorkflow consumer-queue persistence: promote
+		// EventWorkflow consumer-queue persistence promotes
 		// staging→assets + insert asset/share/rank, collapse-bump, staging cleanup.
 		persistActs := &videoactivity.PersistActivities{
 			S3:           s3c,
@@ -254,7 +243,7 @@ func main() {
 			AssetsPrefix: deps.Cfg.Video.AssetsPrefix,
 		}
 
-		// Phase O2 — the two poll workflows share one activities struct.
+		// The two poll workflows share one activities struct.
 		// Shares fixtureRepo + eventRepo with the rest of the worker.
 		// Now clock left nil → real wall clock in prod (per the
 		// injectable-clock discipline for scenario testing).
@@ -319,7 +308,7 @@ func main() {
 			return nil
 		})
 
-		// Phase O1e/b — register the daily IngestWorkflow schedule.
+		// Register the daily IngestWorkflow schedule.
 		// Idempotent: subsequent worker restarts hit ErrScheduleAlreadyRunning
 		// and treat it as success. Manual updates via `temporal schedule
 		// update` are safe; this code will not overwrite them.
@@ -327,7 +316,7 @@ func main() {
 			return err
 		}
 
-		// Phase O2 — register the two poll workflow schedules. Both
+		// Register the two poll workflow schedules. Both are
 		// idempotent (ErrScheduleAlreadyRunning → success). Independent
 		// Temporal Schedules so ops can `temporal schedule update`
 		// either cadence at runtime without a redeploy.
@@ -346,9 +335,8 @@ func main() {
 // ensureIngestSchedule registers the daily IngestWorkflow Temporal
 // Schedule if it doesn't exist. Empty input means the workflow
 // self-configures its anchor + defaults (see internal/workflow/ingest.go
-// IngestWorkflowInput docstring). RetentionDays=14 is the plan §5 W1
-// default — sent explicitly so the workflow prunes 14-day-old
-// completed fixtures each daily run.
+// IngestWorkflowInput docstring). RetentionDays is still hardcoded here rather
+// than reconciled from config; FF-009 owns that defect.
 func ensureIngestSchedule(ctx context.Context, tempClient *temporal.Client, deps *bootstrap.Deps) error {
 	const scheduleID = "ingest-scheduled-daily"
 
@@ -362,7 +350,7 @@ func ensureIngestSchedule(ctx context.Context, tempClient *temporal.Client, deps
 			Workflow:  ffwf.IngestWorkflow,
 			TaskQueue: tempClient.TaskQueue(),
 			Args: []any{ffwf.IngestWorkflowInput{
-				RetentionDays: 14,   // plan §5 W1 default retention
+				RetentionDays: 14,   // FF-009: schedule argument is not config-reconciled
 				FetchFuture:   true, // scheduled runs get the full future-days window
 			}},
 		},
@@ -404,8 +392,7 @@ func ensureIngestSchedule(ctx context.Context, tempClient *temporal.Client, deps
 // (default 30s). The schedule ID is intentionally NOT interval-
 // dependent — if config changes, the existing schedule keeps running
 // under its Temporal-state settings until an operator deletes + recreates
-// or runs `temporal schedule update`. That's intentional (schedule
-// config lives in Temporal state, not code).
+// or runs `temporal schedule update`. FF-009 tracks startup reconciliation.
 func ensureActivePollSchedule(ctx context.Context, tempClient *temporal.Client, deps *bootstrap.Deps) error {
 	const scheduleID = "active-poll-scheduled"
 

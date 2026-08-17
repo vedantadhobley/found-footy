@@ -1,5 +1,13 @@
 # Team aliases pipeline — design proposal
 
+> **Retired implementation history.** The Wikipedia→Wikidata resolver and its
+> selection pipeline were removed on 2026-08-16 after live searches showed the
+> resolved alias OR-set reduced recall. Current discovery uses canonical team
+> names plus deterministic text-derived abbreviations and passes no resolved
+> aliases. See the 2026-08-16 decisions and
+> [`../../twitter-service.md`](../../twitter-service.md). The material below is
+> retained only to explain the discarded approach.
+
 > **⚠ LOOKUP SECTION SUPERSEDED 2026-07-21.** The Phase 1 (Lookup) design
 > described below uses Wikidata's `wbsearchentities` as the candidate
 > retriever, which was replaced by Wikipedia's CirrusSearch full-text

@@ -1,7 +1,11 @@
 # DiscoveryWorkflow + NATS composer — design proposal (O3)
 
-**Status:** design-first draft. Do not implement anything from this
-doc until it's reviewed + signed off.
+> **Historical and superseded.** O3 shipped, then `DiscoveryWorkflow` was
+> replaced by the current per-event `EventWorkflow` producer/consumer design.
+> Do not implement this topology. Use
+> [`../../orchestration.md`](../../orchestration.md) for current behavior and
+> [`../v-phase-orchestration.md`](../v-phase-orchestration.md) plus the decision
+> log for rationale.
 
 **Cross-refs:**
 - Plan intent — [`../../rebuild-plan.md`](../rebuild-plan.md) §5 W3, §8 SSE + NATS

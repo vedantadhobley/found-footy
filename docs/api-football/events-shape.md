@@ -74,12 +74,12 @@ Per `internal/domain/event/event.go` `TrackableEventType`:
 
 ## Own goal attribution quirk
 
-**Unverified — doc doesn't say either way.** Python's Twitter search
-compensated for a rumored behavior where own goals get reported
-against the SCORING team's ID rather than the CONCEDING team. Needs
-verification against captured live samples before we bake anything
-into Go. If confirmed, `event.NaturalKey` would want to swap the
-team field on Detail=`Own Goal`.
+**Verified from captured API data.** For fixture `1520391`
+(Atletico Madrid–Barcelona, 2026-02-12), E. Garcia's own-goal event carried
+Atletico's team ID: the beneficiary, not the player's team. Normal counting by
+`event.team` therefore assigns own goals to the correct side; Go must not swap
+the team. The preserved sample and original analysis live in the archived
+[event-matching proposal](../../archive/docs/proposals/event-matching.md#api-verification-own-goal-attribution).
 
 ## Open questions the doc doesn't resolve
 
@@ -88,10 +88,10 @@ team field on Detail=`Own Goal`.
    original `Goal` element from the events array.** *Sometimes* it also
    adds a separate `Var` / `Goal cancelled` element; sometimes it does
    not. Two consequences for us:
-   - Our set-diff debounce handles the removal naturally: the goal
-     disappears → absence votes → the event is soft-removed
-     (`removed_reason='var'`). This is our only VAR-detection mechanism
-     and it is sufficient.
+   - Our set-diff debounce handles the removal when the aggregate score also
+    supports it: the goal disappears and the score drops → absence votes → the
+    event is soft-removed (`removed_reason='var'`). If the score still requires
+    the omitted goal, FF-014's consistency guard withholds the vote.
    - The occasional added `Var` element is **harmless** because we do
      NOT track `Var`-type events (TrackableEventType whitelists only
      Goal / Card=Red / Missed Penalty). We never launch a search for it.

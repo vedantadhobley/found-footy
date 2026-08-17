@@ -74,8 +74,7 @@ type Activities struct {
 
 	// ActivationWindow — kickoff-lookahead for pre-activation at
 	// Ingest categorize time. Sourced from config.Workflows at worker
-	// startup. See internal/config/workflows.go for the 2× invariant
-	// against StagingPollInterval.
+	// startup. See internal/config/workflows.go.
 	ActivationWindow time.Duration
 
 	// RetentionDays — completed fixtures older than this get pruned
@@ -114,7 +113,7 @@ type GetIngestConfigOutput struct {
 	// ActivationWindow — the kickoff-lookahead used at Ingest categorize
 	// time to promote imminent fixtures straight to `active`. Sourced
 	// from config.Workflows.ActivationWindow; MUST match what
-	// MonitorWorkflow uses for its PreActivateUpcoming lookahead.
+	// ActivePollWorkflow uses for its ActivateUpcoming lookahead.
 	ActivationWindow time.Duration
 
 	// RetentionDays — completed fixtures older than this get pruned.
@@ -345,8 +344,8 @@ func (a *Activities) FetchFixturesForDay(ctx context.Context, in FetchFixturesFo
 
 	// Fail CLOSED (#174, audit Tier-2 #6): an empty cache means the
 	// Step-0 refresh failed AND the cache was cold. Returning every
-	// fixture the vendor has would flood Postgres with the whole world
-	// and hammer Wikidata for hundreds of unknown teams. Ingest nothing
+	// fixture the vendor has would flood Postgres and the canonical-team
+	// cache with the whole world. Ingest nothing
 	// this cycle and flag it (TrackedCacheEmpty → the workflow logs an
 	// ERROR); the next refresh repopulates. A bounded static-team seed
 	// like Python's 15-team list is the follow-up (#175).
@@ -521,10 +520,11 @@ func (a *Activities) CategorizeAndUpsertFixtures(ctx context.Context, in Categor
 
 // reconcileFixture is the load-bearing merge step. Returns the
 // Fixture that should be Upserted:
-//   existing == nil    → fresh row constructed from API, initial
-//                        state applied (staging / active / completed)
-//   existing != nil    → API-mutable fields refreshed, domain fields
-//                        (state timestamps, created_at) preserved
+//
+//	existing == nil    → fresh row constructed from API, initial
+//	                     state applied (staging / active / completed)
+//	existing != nil    → API-mutable fields refreshed, domain fields
+//	                     (state timestamps, created_at) preserved
 func (a *Activities) reconcileFixture(
 	ctx context.Context,
 	apiFix apifootball.APIFixture,
@@ -662,16 +662,11 @@ type EnsureAliasPlaceholdersOutput struct {
 
 // EnsureAliasPlaceholders BulkGets existing alias rows for each
 // team ID; for teams without a cached row, inserts a placeholder
-// (phase-1 vendor fields only, phase-2 resolution fields nil). The
-// deterministic Wikidata resolution activity (task #134) fills in
-// wikidata_qid + aliases + resolved_at asynchronously.
-//
-// This decoupling keeps IngestWorkflow independent of Wikidata
-// availability. If Wikidata is down or rate-limiting, ingest still
-// succeeds; only the resolution job pauses.
+// (canonical vendor fields only). The retired resolution columns remain nil;
+// there is no production alias-resolution job.
 //
 // TeamCode isn't in TeamRef yet — passed as nil for the placeholder
-// (the resolution activity can fetch it fresh if needed). Add it to
+// (no active consumer needs it). Add it to
 // TeamRef when a future consumer needs it at Ingest time.
 func (a *Activities) EnsureAliasPlaceholders(ctx context.Context, in EnsureAliasPlaceholdersInput) (EnsureAliasPlaceholdersOutput, error) {
 	out := EnsureAliasPlaceholdersOutput{}

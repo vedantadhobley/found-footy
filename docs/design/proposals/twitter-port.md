@@ -39,7 +39,7 @@ sections describe a planned shape that diverged.
 - 2026-07-21 (T/b partially shipped) — cookie backup file management
   + auth flow (mtime → warm-path → verify) + service state machine +
   `/authenticate` + `/auth/verify` endpoints all shipped and unit-
-  tested (26 tests). See [`../roadmap.md`](../../roadmap.md) T/b.1 +
+  tested (26 tests). See [`../roadmap.md`](../../history/roadmap-2026-08-15.md) T/b.1 +
   T/b.2 entries for what's in the tree. Remaining T/b work: VNC
   container image, docker-compose splits, instance-scoped profile
   dir, idle-CPU Firefox prefs, `BackupCookies` invocation from

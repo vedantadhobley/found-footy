@@ -1,5 +1,10 @@
 # Python Functional Specification — found-footy
 
+> **Frozen legacy behavior reference.** This describes the retired Python
+> system, not production and not the Go architecture. Use it with `archive/`
+> only when prior behavior or parity is relevant. Current authority starts at
+> [`../README.md`](../README.md).
+
 ## Preamble
 
 This document describes **WHAT the Python found-footy system DOES**

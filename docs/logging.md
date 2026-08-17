@@ -63,11 +63,10 @@ logging.Err(err error) Field    // sets a single "error" field (err.Error())
 `logging.Err(err)` produces a single `error` field holding `err.Error()`
 (empty string when `err` is nil). Standard shape for adapter error paths.
 
-> **Gap (#178 / G6):** it does NOT emit a typed `error_class`, so the
+> **Tracked gap (`AUD-0813-P2-13`):** it does not emit a typed `error_class`, so the
 > `calls_total{error_class}` metric label reads a key that's never set and is
-> therefore always empty in production. Restoring a reflected type-name
-> `error_class` field (which also makes that metric dimension live) is tracked
-> in the G6 observability cluster.
+> therefore always empty in production. Validate the metric path before
+> promoting the candidate in [`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
 
 ## Testing (TestEmitter)
 
@@ -97,8 +96,9 @@ Plan §11.3 called for a `docs/generated/log-catalog.md` regenerated
 on every build via `go generate`, listing every (module, action) pair
 with expected fields and level guidance. **Not implemented.** Not
 blocking anything today; useful when the emission surface grows
-enough to make "grep the codebase" ergonomically painful. See
-[decisions.md 2026-07-07](decisions.md).
+enough to make "grep the codebase" ergonomically painful. It remains
+feature-scope candidate `AUD-DESIGN-LOG-CATALOG` in
+[`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
 
 ## Cross-refs
 

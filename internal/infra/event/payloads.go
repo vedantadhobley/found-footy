@@ -1,8 +1,6 @@
 // Typed payload structs — one per Kind. Payloads are JSON-serialized
-// straight into event_log.payload (JSONB) and included inside the NATS
-// envelope wrapped by Composer.Publish. Field names use snake_case per
-// the SSE-consumer contract (SSE clients are browser JavaScript, JSON
-// stays snake_case for consistency with pg output).
+// straight into event_log.payload (JSONB) by Composer.Publish. The separate
+// NatsPublisher live-feed contract is defined in docs/api.md.
 //
 // Every payload here is intentionally minimal. If a consumer needs
 // richer state, it should fetch from pg by (event_id / fixture_id /
@@ -49,9 +47,8 @@ type EventDetectedPayload struct {
 
 // EventStablePayload — event just crossed downstream_triggered=true.
 // Same shape as detected minus the counter (which is always at
-// threshold when this fires). Discovery spawn (once O3 ships) is
-// atomic with the pg flag flip; this emission is for external
-// consumers only.
+// threshold when this fires). EventWorkflow spawn is registered atomically
+// with the downstream checklist row; this payload is audit-plane evidence.
 type EventStablePayload struct {
 	EventID    uuid.UUID `json:"event_id"`
 	FixtureID  int64     `json:"fixture_id"`
@@ -66,9 +63,8 @@ type EventStablePayload struct {
 
 // EventRemovedPayload — event's counter hit 0 and the row was
 // soft-deleted (removed=true). Consumers should treat as "revoke
-// everything you knew about this event." The destroy pipeline (cancel
-// in-flight Discovery/Video/Asset workflows, mark video_shares
-// removed) is a follow-up phase after V.
+// everything you knew about this event." ActivePollWorkflow also cancels the
+// EventWorkflow, releases Firefox, revokes shares, and reclaims asset bytes.
 type EventRemovedPayload struct {
 	EventID   uuid.UUID `json:"event_id"`
 	FixtureID int64     `json:"fixture_id"`
@@ -84,6 +80,6 @@ type EventRemovedPayload struct {
 type EventRankRecalculatedPayload struct {
 	EventID    uuid.UUID `json:"event_id"`
 	FixtureID  int64     `json:"fixture_id"`
-	TopShareID string    `json:"top_share_id"`  // video_shares.id of the new rank-1 share
-	ShareCount int       `json:"share_count"`   // total non-removed video_shares for this event
+	TopShareID string    `json:"top_share_id"` // video_shares.id of the new rank-1 share
+	ShareCount int       `json:"share_count"`  // total non-removed video_shares for this event
 }

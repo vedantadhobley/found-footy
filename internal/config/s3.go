@@ -9,13 +9,11 @@ import "time"
 // filesystem-backed) instead of MinIO; the adapter code doesn't care —
 // both speak the S3 API.
 //
-// Endpoint is not tagged required at the env layer because Phase S1/S2
-// binaries don't need S3 yet; the s3 package's constructor returns a
-// descriptive error when a binary that DOES need it starts without the
-// env var set.
+// Endpoint is not tagged required at the env layer; the adapter constructor
+// returns a descriptive error when a consuming binary starts without it.
 type S3Config struct {
-	// Endpoint is the S3 API URL. Example: http://garage:3900 (prod) or
-	// http://minio:9000 (legacy MinIO stack; testcontainers picks its own).
+	// Endpoint is the S3 API URL. Example: http://garage:3900. Tests use a
+	// testcontainers-managed S3-compatible endpoint.
 	Endpoint string `env:"S3_ENDPOINT"`
 
 	// Bucket is the single logical bucket name used for all video-asset

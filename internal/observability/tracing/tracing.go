@@ -1,9 +1,7 @@
 // Package tracing is the stub OpenTelemetry SDK integration.
 //
-// Real distributed-tracing wiring is deferred to Phase 5+ per
-// rebuild-plan.md §11 four-pillars table — for Phase F/S/D we just need
-// a place for adapter code to obtain a Tracer without importing
-// OpenTelemetry directly.
+// Real distributed-tracing wiring is deferred. This package gives adapters a
+// stable import path without making them configure OpenTelemetry directly.
 //
 // Today: Noop returns a noop tracer that satisfies whatever interface
 // future adapter code needs. When real tracing lands, this package

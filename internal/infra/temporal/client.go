@@ -1,9 +1,8 @@
 // Package temporal is the Temporal workflow-orchestration adapter.
 // Wraps go.temporal.io/sdk/client + go.temporal.io/sdk/worker.
 //
-// Phase S5.1: Client wrapper with StartWorkflow / SignalWorkflow
-// instrumentation. Worker wrapper lands in S5.2. Actual workflow +
-// activity registration comes in Phase O when domain code is ready.
+// Client and Worker wrap the SDK with lifecycle and operation instrumentation;
+// cmd/worker owns concrete workflow and activity registration.
 package temporal
 
 import (

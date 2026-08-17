@@ -1,6 +1,5 @@
-// text.go — shared word-processing helpers used by both the lookup
-// pipeline (description scoring, country variations) and the (soon-
-// to-land) selection pipeline. Same rules as the eval script:
+// text.go — deterministic word-processing helpers retained from the former
+// alias pipeline and used by current player-name query construction:
 //
 //  1. NFD normalize + strip Unicode combining marks (diacritics)
 //  2. ß → ss preprocessing
@@ -8,10 +7,8 @@
 //  4. Lowercase for filter + output
 //  5. Skip tokens ≤ 2 chars, pure-digit tokens, CamelCase concats
 //
-// The selection pipeline (#134) will layer a multilingual skip-list on
-// top of tokenize's output. Lookup does NOT apply the skip-list —
-// scoring wants raw tokens because "argentine" (a demonym) is exactly
-// what we want to match on.
+// Higher-level helpers decide which normalized tokens are useful for a
+// specific search surface.
 package alias
 
 import (

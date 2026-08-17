@@ -1,5 +1,5 @@
 // video_repo.go — Postgres implementations of video.AssetRepo +
-// video.ShareRepo (#164a). Backs the V-phase promote/insert/rank step:
+// video.ShareRepo. Backs the video pipeline's promote/insert/rank step:
 // InsertAsset writes a clip the EventWorkflow already judged unique
 // (ON CONFLICT (event_id, md5) for exact-dupe/retry idempotency), and
 // RebalanceRanks rewrites the per-event share order atomically via

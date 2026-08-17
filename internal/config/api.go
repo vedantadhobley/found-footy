@@ -1,4 +1,4 @@
-// api.go — APIConfig: the public read-API HTTP surface (Phase A / #167).
+// api.go — APIConfig for the public read-only HTTP surface.
 // Separate from the :8080 bootstrap metrics/healthz — the api binary serves
 // both. Bound to a container port only; Caddy fronts it per the workspace
 // host-port rule.
@@ -9,8 +9,7 @@ import "time"
 // APIConfig configures the internal/api HTTP surface (cmd/api).
 type APIConfig struct {
 	// ListenAddr is the public API bind address. Distinct from the bootstrap
-	// metrics/healthz :8080 (see CLAUDE.md — the api surface moves to its own
-	// port in Phase A).
+	// metrics/healthz :8080.
 	ListenAddr string `env:"API_LISTEN_ADDR" envDefault:":8081"`
 
 	// ReadTimeout / WriteTimeout bound a single request so a slow client

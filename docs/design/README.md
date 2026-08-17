@@ -1,57 +1,41 @@
-# docs/design/ — the to-build layer
+# docs/design/ — design history and audit evidence
 
-Target architecture, design proposals, and audits for work **not yet
-shipped** in the Go rebuild. For **what's already built**, see the
+Target architecture, design proposals, and point-in-time audits from the Go
+rebuild. This directory is not the active backlog; use
+[`../todo.md`](../todo.md) for current issues and deferred work. For
+**what's already built**, see the
 as-built ledgers in [`../`](../) (start at [`../README.md`](../README.md),
 the routing index + authority map). For the **legacy Python** system,
 see [`../../archive/docs/`](../../archive/docs/).
 
-## Contents
+## Foundational history
 
-- [`rebuild-plan.md`](./rebuild-plan.md) — the design bible for the TARGET
-  architecture (§1–§16: architecture, schema, adapters, workflows,
-  deployment, migration). Large; consult the relevant § before touching
-  code — don't read end-to-end.
-- [`design-audit.md`](./design-audit.md) — the 17-section analysis that
-  informed the rebuild plan (the "why" behind it).
-- [`python-functional-spec.md`](./python-functional-spec.md) — behavioral
-  spec of the CURRENT Python system (WHAT it does, not HOW). The build
-  reference; retires to `archive/` at cutover.
-- [`design-improvements-2026-07-23.md`](./design-improvements-2026-07-23.md)
-  — improvement backlog from the Miami smoke test + audit.
-- [`audit-2026-07-26.md`](./audit-2026-07-26.md) — point-in-time audit of
-  shipped Go vs the plan.
-- [`audit-2026-08-05.md`](./audit-2026-08-05.md) — as-built audit: shipped Go
-  LOGIC vs Python LOGIC (code-to-code) + doc accuracy across all ten
-  subsystems. 63 improvements / 30 gaps; 24 high-severity doc inaccuracies +
-  a 4-phase doc-restructure plan (since executed).
-- [`audit-2026-08-15.md`](./audit-2026-08-15.md) — **pre-MLS-reset audit** (cutover
-  evening): 7 code dimensions + a doc-staleness review. The cookie write-back +
-  LLM-cap fixes and the live follow-up list live here. The latest audit.
-- [`api-contract.md`](./api-contract.md) — public API surface contract
-  (Phase A, unbuilt).
-- [`frontend-bridge-handoff.md`](./frontend-bridge-handoff.md) — **cross-project
-  handoff** to the vedanta-systems frontend/BFF: how to consume the live feed —
-  the 3 NATS subjects + envelope, the 2 REST data endpoints + video redirect,
-  the DTO shapes, and the refetch-on-connect model. Self-contained; the producer
-  side is shipped (N1–N8).
-- [`proposals/`](./proposals/) — design-first drafts per phase. Signed off:
-  `discovery.md`, `twitter-port.md`,
-  [`twitter-scaling.md`](./proposals/twitter-scaling.md) (per-event Firefox
-  instance model — one browser per event, event-driven; **supersedes**
-  twitter-port.md's T/d–T/e pool + router + scaler), `video-dedup.md` (**historical** —
-  topology + schema largely diverged from the as-built; see its banner +
-  [`../orchestration.md`](../orchestration.md)), `team-aliases.md`,
-  `completion-contract.md`, `vision.md` (multi-frame VL soccer/screen +
-  period-aware clock verification; *model behaviour* pending a gemma-on-nexus
-  bake-off). `monitor.md` is SUPERSEDED (historical only).
-  `workflow-audit-2026-07-09.md` + `api-football-audit-2026-07-09.md` are
-  cross-cutting audits, not phase proposals.
+- [`rebuild-plan.md`](./rebuild-plan.md) — original 12,000-line target design.
+  It contains substantial superseded topology, naming, schema, deployment, and
+  cutover material. Use it as historical intent, never as current behavior.
+  DOC-006 tracks removing the remaining project instruction that treats it as
+  mandatory implementation authority.
+- [`python-functional-spec.md`](./python-functional-spec.md) — behavioral spec
+  of the retired Python system. Use it with `archive/` as parity evidence, not
+  as the Go architecture.
+- [`v-phase-orchestration.md`](./v-phase-orchestration.md) — rationale for the
+  shipped `EventWorkflow`/`VideoWorkflow` shape. Current workflow behavior lives
+  in [`../orchestration.md`](../orchestration.md).
+
+## Point-in-time audits
+
+[`audits/`](./audits/) contains the routed archive from the pre-rebuild analysis
+through the 2026-08-15 cutover audit. Audits preserve evidence; they are not
+backlogs. Surviving findings resolve through [`../todo.md`](../todo.md).
+
+## Proposal disposition
+
+[`proposals/README.md`](./proposals/README.md) classifies every proposal as
+shipped rationale, superseded topology, or a retired subsystem.
 
 ## Convention
 
-A design doc describes **intent**. When the thing ships, the as-built
-truth moves to a `../` ledger + an entry in [`../decisions.md`](../decisions.md);
-the design doc stays as the historical rationale — mark superseded
-sections rather than deleting them (see `video-dedup.md`'s banner for the
-pattern).
+A design doc describes intent. When the thing ships, truth moves to a focused
+as-built ledger and the decision log. Keep historical rationale only while it
+remains unique and clearly labeled. DOC-007 will move or delete documents only
+after their unique content and inbound links have been checked.

@@ -6,7 +6,7 @@
 //   - Each adapter package owns its own Config struct with env tags.
 //   - This package composes them into a single top-level Config the
 //     binaries call Load() on at startup.
-//   - Sub-configs are added to Config as each adapter lands in Phase S.
+//   - Config composes one focused struct per adapter or runtime boundary.
 package config
 
 import (
@@ -19,8 +19,7 @@ import (
 // sub-configs. Populated by Load(); binaries pass the relevant slice
 // into each adapter's constructor.
 //
-// New sub-configs get added as each adapter lands in Phase S. Order
-// here matches the adapter inventory in rebuild-plan.md §9.
+// Add new sub-configs when a new runtime boundary needs configuration.
 type Config struct {
 	Observability ObservabilityConfig
 	Postgres      PGConfig
@@ -34,10 +33,8 @@ type Config struct {
 	FirefoxFleet  FirefoxFleetConfig
 	FFmpeg        FFmpegConfig
 
-	// Cross-workflow orchestration values (activation window, staging
-	// poll interval, retention). Consumed by both IngestWorkflow and
-	// MonitorWorkflow — kept centralized to preserve the 2×
-	// coupling invariant between ActivationWindow and StagingPollInterval.
+	// Cross-workflow orchestration values (activation window, polling
+	// schedules, retention). Shared by ingest and the two poll workflows.
 	Workflows WorkflowsConfig
 
 	// EventWorkflow tuning (attempts, spacing, age filter, per-
@@ -51,15 +48,15 @@ type Config struct {
 	// real clusters without a rebuild.
 	Dedup DedupConfig
 
-	// V-phase per-candidate pipeline: local scratch root, Garage staging/
+	// Per-candidate video pipeline: local scratch root, Garage staging/
 	// assets prefixes, and the pre-hashing hard-filter thresholds.
 	Video VideoConfig
 
-	// V-phase clip validation: vision-model soccer/screen gate + clock
+	// Clip validation: vision-model soccer/screen gate + clock
 	// verification tuning. Endpoint/model come from LLM above.
 	Vision VisionConfig
 
-	// Public read-API HTTP surface (Phase A / #167) — bind addr + timeouts.
+	// Public read-API HTTP surface — bind address and timeouts.
 	API APIConfig
 
 	// Eventing/producer layer: the NATS envelope `source` identity

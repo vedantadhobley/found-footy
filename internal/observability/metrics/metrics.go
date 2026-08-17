@@ -2,9 +2,8 @@
 // every found-footy binary exposes.
 //
 // The Registry struct wraps *prometheus.Registry with the standard
-// collectors + a small set of baseline metrics from rebuild-plan.md
-// §11 (calls_total, log_lines_total, deploy_info_gauge). Adapter- and
-// domain-specific metrics get added in later S-phase commits.
+// collectors + shared calls, log-line, and deploy-info metrics. Adapters
+// register their own instruments against the same registry.
 //
 // Callers get an http.Handler for /metrics via Handler(), which they
 // wire into their binary's HTTP mux.
@@ -24,8 +23,7 @@ import (
 type Registry struct {
 	reg *prometheus.Registry
 
-	// Baseline metrics from §11 that ship in Phase S1. More get added
-	// as adapters land.
+	// Shared metrics populated by logging and bootstrap.
 
 	// CallsTotal counts every logged event (derived from logging.Emit)
 	// labeled by (module, action, outcome, error_class). Populated by

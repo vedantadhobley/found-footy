@@ -1,4 +1,4 @@
-// types.go — activity I/O for the V-phase clip-validation activity.
+// types.go — activity I/O for clip validation.
 package vision
 
 import (
@@ -35,5 +35,5 @@ type ValidateClipOutput struct {
 	DetectedPeriod string
 	ExpectedMinute int
 	ExpectedPeriod string
-	Frames        []dvision.FrameObservation
+	Frames         []dvision.FrameObservation
 }

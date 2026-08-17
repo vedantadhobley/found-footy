@@ -89,9 +89,8 @@ func (r *AliasRepo) BulkGet(ctx context.Context, ids []int) (map[int]*alias.Team
 	return out, nil
 }
 
-// UpsertVendorFields writes phase-1 vendor fields only. If the row
-// exists, phase-2 fields (wikidata_qid / aliases / resolved_at) are
-// preserved via COALESCE / conditional update.
+// UpsertVendorFields writes active vendor fields only. If the row exists,
+// dormant resolver fields are preserved.
 //
 // created_at is set on INSERT via table default; updated_at is
 // refreshed by the trg_team_aliases_updated_at trigger.
@@ -121,9 +120,8 @@ func (r *AliasRepo) UpsertVendorFields(ctx context.Context, ta *alias.TeamAlias)
 	return nil
 }
 
-// UpsertResolution writes a full row including phase-2 fields. Used
-// by the alias resolution activity after SetResolution has populated
-// wikidata_qid + aliases + resolved_at.
+// UpsertResolution writes a full row including dormant resolver fields.
+// Retained for compatibility; production has no caller.
 //
 // nil-slice discipline: schema has NOT NULL DEFAULT '{}' on aliases,
 // so a nil []string would fail the constraint on INSERT. Normalize
