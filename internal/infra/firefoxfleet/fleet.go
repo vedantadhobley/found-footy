@@ -1,6 +1,6 @@
 // fleet.go — the per-event Firefox fleet provisioner (#160). Drives the
 // Docker API (socket mounted into the worker) to create/start one
-// twitter/Firefox container per active event and stop/rm it on release.
+// twitter/Firefox container per searchable event and stop/rm it on release.
 //
 // Compose selects an explicit Docker network for each stack. The provisioner
 // uses that network as an opaque ownership scope for daemon-global names,
@@ -15,7 +15,6 @@ package firefoxfleet
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -121,22 +120,26 @@ func InstanceAddr(eventID uuid.UUID) string {
 	return "http://" + InstanceAlias(eventID) + ":" + instancePort
 }
 
-// Provision ensures a running, healthy instance for eventID and returns
-// its address. Idempotent: an already-running instance returns its
-// address without a second create. Blocks-and-waits (bounded by ctx /
-// the activity timeout) when the fleet is at MaxInstances.
+// Provision ensures a running instance for eventID and returns its address.
+// Browser readiness warms asynchronously behind debounce. Idempotent: an
+// already-running instance returns its address without a second create, while
+// a stopped instance must restart successfully. Blocks-and-waits (bounded by
+// ctx / the activity timeout) when the fleet is at MaxInstances.
 func (f *Fleet) Provision(ctx context.Context, eventID uuid.UUID) (string, error) {
 	name := InstanceName(f.cfg.Network, eventID)
 	addr := InstanceAddr(eventID)
 
-	// Idempotent fast path: already exists → ensure started + healthy.
-	if id, ok, err := f.find(ctx, eventID); err != nil {
+	// Idempotent fast path: already exists → return it if running, otherwise
+	// restart it. A create-success/start-failure retry lands here, so swallowing
+	// this start error would falsely report a dead instance as provisioned.
+	if inst, ok, err := f.find(ctx, eventID); err != nil {
 		return "", err
 	} else if ok {
-		// Already provisioned — ensure started (create-without-start edge)
-		// and return. Readiness is covered by the debounce window, not a
-		// blocking health wait (which would stall the 30s poll cycle).
-		_ = f.cli.ContainerStart(ctx, id, container.StartOptions{})
+		if !inst.Running {
+			if err := f.cli.ContainerStart(ctx, inst.ID, container.StartOptions{}); err != nil {
+				return "", fmt.Errorf("firefoxfleet.Provision: restart %s: %w", name, err)
+			}
+		}
 		return addr, nil
 	}
 
@@ -194,8 +197,7 @@ func (f *Fleet) Provision(ctx context.Context, eventID uuid.UUID) (string, error
 	// Return as soon as it is started — the container warms in the
 	// background (~30s: Firefox launch + cookie load + auth-verify), which
 	// hides behind the event's debounce window. Searches at count=3 hit a
-	// warm instance (and retry if slightly early). waitHealthy stays as a
-	// helper for a future explicit readiness gate.
+	// warm instance and retry if startup runs slightly long.
 	return addr, nil
 }
 
@@ -204,7 +206,7 @@ func (f *Fleet) Provision(ctx context.Context, eventID uuid.UUID) (string, error
 // the monitor decay path may all attempt release.
 func (f *Fleet) Release(ctx context.Context, eventID uuid.UUID) error {
 	name := InstanceName(f.cfg.Network, eventID)
-	id, ok, err := f.find(ctx, eventID)
+	inst, ok, err := f.find(ctx, eventID)
 	if err != nil {
 		return err
 	}
@@ -212,36 +214,45 @@ func (f *Fleet) Release(ctx context.Context, eventID uuid.UUID) error {
 		return nil
 	}
 	timeout := 5
-	_ = f.cli.ContainerStop(ctx, id, container.StopOptions{Timeout: &timeout})
-	if err := f.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true}); err != nil {
+	_ = f.cli.ContainerStop(ctx, inst.ID, container.StopOptions{Timeout: &timeout})
+	if err := f.cli.ContainerRemove(ctx, inst.ID, container.RemoveOptions{Force: true}); err != nil {
 		return fmt.Errorf("firefoxfleet.Release: rm %s: %w", name, err)
 	}
 	return nil
+}
+
+// instanceRef is the inspected identity and process state of one owned fleet
+// container. Provision needs Running to distinguish its no-op idempotent path
+// from a prior create-success/start-failure retry.
+type instanceRef struct {
+	ID      string
+	Running bool
 }
 
 // find inspects the scope-qualified container name and verifies its ownership
 // labels plus network before any lifecycle mutation. A not-found daemon error
 // is (·, false, nil), not an error. A same-named foreign container is an error,
 // never something this fleet adopts or removes.
-func (f *Fleet) find(ctx context.Context, eventID uuid.UUID) (string, bool, error) {
+func (f *Fleet) find(ctx context.Context, eventID uuid.UUID) (instanceRef, bool, error) {
 	name := InstanceName(f.cfg.Network, eventID)
 	insp, err := f.cli.ContainerInspect(ctx, name)
 	if err != nil {
 		if client.IsErrNotFound(err) {
-			return "", false, nil
+			return instanceRef{}, false, nil
 		}
-		return "", false, fmt.Errorf("firefoxfleet.find %s: %w", name, err)
+		return instanceRef{}, false, fmt.Errorf("firefoxfleet.find %s: %w", name, err)
 	}
 	if insp.Config == nil ||
 		insp.Config.Labels[labelFleet] != "firefox" ||
 		insp.Config.Labels[labelScope] != f.cfg.Network ||
 		insp.Config.Labels[labelEvent] != eventID.String() {
-		return "", false, fmt.Errorf("firefoxfleet.find %s: ownership labels do not match scope %q and event %s", name, f.cfg.Network, eventID)
+		return instanceRef{}, false, fmt.Errorf("firefoxfleet.find %s: ownership labels do not match scope %q and event %s", name, f.cfg.Network, eventID)
 	}
 	if insp.NetworkSettings == nil || insp.NetworkSettings.Networks[f.cfg.Network] == nil {
-		return "", false, fmt.Errorf("firefoxfleet.find %s: container is not attached to scope network %q", name, f.cfg.Network)
+		return instanceRef{}, false, fmt.Errorf("firefoxfleet.find %s: container is not attached to scope network %q", name, f.cfg.Network)
 	}
-	return insp.ID, true, nil
+	running := insp.State != nil && insp.State.Running
+	return instanceRef{ID: insp.ID, Running: running}, true, nil
 }
 
 // listFilters selects only fleet containers owned by this Compose network.
@@ -345,31 +356,6 @@ func (f *Fleet) waitForSlot(ctx context.Context) error {
 		case <-ctx.Done():
 			return fmt.Errorf("firefoxfleet: at cap %d, no slot before deadline: %w", f.cfg.MaxInstances, ctx.Err())
 		case <-time.After(2 * time.Second):
-		}
-	}
-}
-
-// waitHealthy polls the instance's /health (200) until healthy or the
-// HealthTimeout elapses. The startup latency is meant to hide behind the
-// event's debounce window (the zero-warm insight).
-func (f *Fleet) waitHealthy(ctx context.Context, addr string) error {
-	deadline := time.Now().Add(f.cfg.HealthTimeout)
-	hc := &http.Client{Timeout: 5 * time.Second}
-	for {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, addr+"/health", nil)
-		if resp, err := hc.Do(req); err == nil {
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return nil
-			}
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("firefoxfleet.waitHealthy: %s not healthy within %s", addr, f.cfg.HealthTimeout)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(1 * time.Second):
 		}
 	}
 }

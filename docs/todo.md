@@ -808,6 +808,30 @@ against the current branch.
 - **Source relation:** New test-infrastructure finding; no production behavior
   changes.
 
+### FF-033 — stopped Firefox container can masquerade as provisioned
+
+- **Status:** `implemented`; not deployed
+- **Severity:** P2
+- **Source:** Pre-build review of the per-event search-instance lifecycle on
+  2026-08-17.
+- **Invariant:** `ProvisionFirefox` may return an event address only after its
+  Docker container is running. Browser readiness may continue asynchronously,
+  but a known Docker start failure must remain an activity failure.
+- **Evidence:** A successful create followed by a failed start left a stopped,
+  deterministically named container. On Temporal retry, `Provision` found that
+  container, called `ContainerStart`, discarded its error, and returned the
+  address as success. The EventWorkflow then targeted a dead hostname and
+  degraded to the shared Twitter fallback instead of retrying provisioning.
+- **Implemented locally; not deployed:** Fleet inspection now carries the
+  container's running state. A running instance remains an idempotent no-op; a
+  stopped instance must restart successfully, and a restart error propagates
+  to Temporal. Provisioning still performs no blocking browser-health wait.
+- **Regression:** The in-memory daemon reproduces create-success/start-failure,
+  retries the same event against the stopped container, and requires both
+  attempts to return the daemon start error.
+- **Source relation:** New bounded failure-state bug. It does not change #160's
+  zero-warm lifecycle or FF-017's container-level browser recovery.
+
 ## Confirmed lower-priority backlog
 
 | ID | Severity | Source | Summary | Completion condition |

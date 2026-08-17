@@ -112,6 +112,7 @@ type fakeDocker struct {
 	mu         sync.Mutex
 	containers map[string]*fakeContainer
 	nextID     int
+	startErr   error
 }
 
 func newFakeDocker() *fakeDocker {
@@ -168,9 +169,12 @@ func (d *fakeDocker) ContainerInspect(_ context.Context, ref string) (types.Cont
 		labels[k] = v
 	}
 	return types.ContainerJSON{
-		ContainerJSONBase: &types.ContainerJSONBase{ID: c.id, Name: "/" + c.name},
-		Config:            &container.Config{Labels: labels},
-		NetworkSettings:   &types.NetworkSettings{Networks: c.networks},
+		ContainerJSONBase: &types.ContainerJSONBase{
+			ID: c.id, Name: "/" + c.name,
+			State: &types.ContainerState{Running: c.running},
+		},
+		Config:          &container.Config{Labels: labels},
+		NetworkSettings: &types.NetworkSettings{Networks: c.networks},
 	}, nil
 }
 
@@ -215,6 +219,9 @@ func (d *fakeDocker) ContainerStart(_ context.Context, ref string, _ container.S
 	if !ok {
 		return errdefs.NotFound(errors.New("container not found"))
 	}
+	if d.startErr != nil {
+		return d.startErr
+	}
 	c.running = true
 	return nil
 }
@@ -250,7 +257,6 @@ func fleetConfig(scope string) config.FirefoxFleetConfig {
 		CookieHostPath:   "/home/vedanta/.config/found-footy/twitter_cookies.json",
 		InstanceMemLimit: 2 << 30,
 		MaxInstances:     16,
-		HealthTimeout:    45 * time.Second,
 	}
 }
 
@@ -340,6 +346,30 @@ func TestFleet_RefusesForeignOwnership(t *testing.T) {
 	}
 	if daemon.containers[name] == nil {
 		t.Fatal("Release removed a same-named foreign container")
+	}
+}
+
+// TestFleet_ProvisionPropagatesRestartFailure covers a create-success,
+// start-failure retry. The stopped container remains discoverable by name;
+// provisioning must keep failing instead of returning its dead address.
+func TestFleet_ProvisionPropagatesRestartFailure(t *testing.T) {
+	ctx := context.Background()
+	daemon := newFakeDocker()
+	f, err := newWithClient(fleetConfig(devScope), daemon)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startErr := errors.New("daemon refused container start")
+	daemon.startErr = startErr
+	if _, err := f.Provision(ctx, evA); !errors.Is(err, startErr) {
+		t.Fatalf("first Provision error = %v, want %v", err, startErr)
+	}
+	if _, err := f.Provision(ctx, evA); !errors.Is(err, startErr) {
+		t.Fatalf("retry Provision error = %v, want %v", err, startErr)
+	}
+	if daemon.containers[InstanceName(devScope, evA)].running {
+		t.Fatal("failed start marked the event container running")
 	}
 }
 

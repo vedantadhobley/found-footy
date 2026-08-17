@@ -376,8 +376,9 @@ the match score. See the
 Two hooks straddle the debounce, both gated on the monitor config's
 `FleetEnabled` (default false → both inert):
 - **Step 4.4 provision.** `ReconcileFixture` returns `NewNamedEventIDs` — the
-  events that *this cycle* first acquired a known scorer (debounce_count went to
-  1, so all data needed for a Twitter query now exists). ActivePoll fires
+  events that *this cycle* first arrived with a known player (goals, red cards,
+  and missed penalties; debounce_count went to 1, so all data needed for a
+  Twitter query now exists). ActivePoll fires
   `ProvisionFirefox` per ID: create+start a dedicated
   `<compose-network>-firefox-ev-<full-event-uuid>` container with the
   history-compatible `ff-firefox-ev-<8hex>` network alias (no blocking health

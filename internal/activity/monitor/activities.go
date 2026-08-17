@@ -377,10 +377,10 @@ type ReconcileFixtureOutput struct {
 	FixtureID          int64
 	NewEventsDetected  int
 	EventsBecameStable []string // natural_keys of events that just crossed count=3
-	// NewNamedEventIDs — UUIDs of known-scorer events just Inserted at
-	// debounce_count=1 (#160). The poll workflow provisions a Firefox
-	// instance for each so it is warm by the time the event triggers at
-	// count=3. Same predicate as the event.detected emit (Player.Known()).
+	// NewNamedEventIDs — UUIDs of known-player events just inserted at
+	// debounce_count=1 (#160). This includes goals, red cards, and missed
+	// penalties. The poll workflow provisions a Firefox instance for each so
+	// it is warm by count=3. Same predicate as event.detected (Player.Known()).
 	NewNamedEventIDs []uuid.UUID
 	EventsRemoved    []string    // natural_keys of confirmed events that just hit count=0 (VAR)
 	EventsRemovedIDs []uuid.UUID // #172: their UUIDs — the poll workflow cancels discovery + runs DestroyEvent for each
@@ -589,8 +589,8 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			// soft-removed. See package docstring.
 			continue
 		} else {
-			// New event — Insert seeds debounce_count=1 for a known scorer,
-			// or 0 (placeholder, no vote) for an unknown scorer.
+			// New event — Insert seeds debounce_count=1 when the player is
+			// known, or 0 (placeholder, no vote) when the player is unknown.
 			if err := a.EventRepo.Insert(ctx, domainEv, in.WorkflowID); err != nil {
 				out.Errors = append(out.Errors, fmt.Sprintf("insert event=%s: %v", key, err))
 				continue
@@ -600,15 +600,15 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			allKeys[key] = struct{}{}
 
 			// event.detected is a confirmed-detection signal for durable /
-			// external consumers — don't emit for an unknown-scorer
-			// placeholder (it may vanish and be replaced by the real scorer).
-			// The known-scorer insert that supersedes it emits detected then.
+			// external consumers — don't emit for an unknown-player placeholder
+			// (it may vanish and be replaced by an attributed event). The
+			// known-player insert that supersedes it emits detected then.
 			// External fan-out only; Composer nil in tests → no-op.
 			if domainEv.Player.Known() {
 				a.emitEventDetected(ctx, domainEv.ID, in.APIFixture.Fixture.ID, domainEv)
-				// #160: known scorer at count=1 → we have all the data we
-				// need; warm this event's Firefox instance now so it is ready
-				// by the time debounce settles and search begins at count=3.
+				// #160: known player at count=1 → we have all the data needed for
+				// any searchable event type; warm this event's Firefox now so it
+				// is ready when debounce settles and search begins at count=3.
 				out.NewNamedEventIDs = append(out.NewNamedEventIDs, domainEv.ID)
 			}
 		}
@@ -816,7 +816,7 @@ func (a *Activities) registerAndSpawnEvent(ctx context.Context, existing *event.
 	if a.Spawner == nil {
 		return
 	}
-	// Never spawn a search for an unknown scorer — there's no player token to
+	// Never spawn a search for an unknown player — there's no player token to
 	// build a Twitter query from (Player.Known() contract). Placeholders are
 	// pinned at debounce 0 so they never reach here via the trigger flip, but
 	// the recovery pass also calls this, so guard explicitly.
