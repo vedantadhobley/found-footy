@@ -22,7 +22,7 @@
 //	  -v /home/vedanta/workspace/dev/found-footy:/src \
 //	  -v /var/run/docker.sock:/var/run/docker.sock \
 //	  --network=found-footy-dev_found-footy-dev \
-//	  -w /src golang:1.25-bookworm go run ./scripts/smoke_fleet
+//	  -w /src golang:1.25.11-bookworm go run ./scripts/smoke_fleet
 //
 // Opt into the live search step (fires real activity on the shared Twitter
 // account — off by default to avoid concurrent-session pressure during a

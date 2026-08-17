@@ -20,10 +20,10 @@ import (
 )
 
 // fakeBrowser is a test double for the sessionBrowser interface.
-// Behaviour is controlled via public fields set per-test; each method
+// Behavior is controlled via public fields set per-test; each method
 // increments its call counter so assertions can inspect the flow.
 type fakeBrowser struct {
-	// Behaviour knobs — set per test.
+	// Behavior knobs — set per test.
 	verifyErr        error
 	replaceErr       error
 	getCookiesResult []Cookie

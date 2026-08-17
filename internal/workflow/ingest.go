@@ -4,10 +4,10 @@
 // internal/activity/ingest.
 //
 // Determinism rules for workflows (do not violate):
-//   • Never call time.Now() — use workflow.Now(ctx)
-//   • Never call log.Print / fmt.Println — use workflow.GetLogger(ctx)
-//   • Never spawn goroutines directly — use workflow.Go
-//   • Never read env / files / random — do all I/O in activities
+//   - Never call time.Now() — use workflow.Now(ctx)
+//   - Never call log.Print / fmt.Println — use workflow.GetLogger(ctx)
+//   - Never spawn goroutines directly — use workflow.Go
+//   - Never read env / files / random — do all I/O in activities
 //
 // Every side effect lives in an activity; this file is pure
 // orchestration + branching.
@@ -102,11 +102,11 @@ type IngestWorkflowOutput struct {
 	// observability when it didn't touch it).
 	TrackedTeamsCount int
 
-	Fetched         int
+	Fetched int
 	// FilteredOut is the count of fixtures the API returned but the
 	// tracked-teams filter dropped. Load-bearing signal: 0 usually
 	// means the filter is empty (bug) or the vendor returned nothing.
-	FilteredOut     int
+	FilteredOut int
 
 	Staging         int
 	Active          int
@@ -255,7 +255,9 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 				"got", len(byIDsOut.Fixtures),
 				"remaining", len(remaining),
 			)
-			workflow.Sleep(ctx, time.Duration(attempt)*ingestManualIDsBackoffInitial)
+			if err := workflow.Sleep(ctx, time.Duration(attempt)*ingestManualIDsBackoffInitial); err != nil {
+				return out, err
+			}
 		}
 		if len(remaining) > 0 {
 			// Exhausted attempts; log the persistent misses but proceed

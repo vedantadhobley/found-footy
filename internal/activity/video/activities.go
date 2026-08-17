@@ -15,7 +15,7 @@ package video
 
 import (
 	"context"
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec // MD5 is a content fingerprint, never a security primitive.
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -185,7 +185,7 @@ func (a *Activities) downloadTo(ctx context.Context, variantURL, dstPath string)
 	if err != nil {
 		return "", 0, err
 	}
-	h := md5.New()
+	h := md5.New() //nolint:gosec // Existing storage identity is intentionally MD5-based.
 	n, derr := a.Syndication.Download(ctx, variantURL, io.MultiWriter(f, h))
 	cerr := f.Close()
 	if derr != nil {

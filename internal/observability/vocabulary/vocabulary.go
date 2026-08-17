@@ -26,11 +26,11 @@ const (
 	// Names per docs/decisions.md 2026-07-07 workflow-rename entry.
 	// RAGWorkflow was folded into IngestWorkflow as a sub-activity;
 	// no separate module for it.
-	ModuleIngestWorkflow            Module = "ingest_workflow"
-	ModuleMonitorWorkflow           Module = "monitor_workflow"
-	ModuleEventWorkflow         Module = "discovery_workflow"
-	ModuleVideoValidationWorkflow   Module = "video_validation_workflow"
-	ModuleAssetPersistenceWorkflow  Module = "asset_persistence_workflow"
+	ModuleIngestWorkflow           Module = "ingest_workflow"
+	ModuleMonitorWorkflow          Module = "monitor_workflow"
+	ModuleEventWorkflow            Module = "discovery_workflow"
+	ModuleVideoValidationWorkflow  Module = "video_validation_workflow"
+	ModuleAssetPersistenceWorkflow Module = "asset_persistence_workflow"
 
 	// ── Domain packages (internal/domain/...) ──
 	ModuleFixture      Module = "fixture"

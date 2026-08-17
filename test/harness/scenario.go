@@ -120,29 +120,29 @@ type MonitorInput struct {
 // Setup pre-seeds rows before the workflow runs. Any of these blocks
 // may be omitted; empty means "no setup needed."
 type Setup struct {
-	Fixtures    []SetupFixture    `yaml:"fixtures"`
-	TeamAliases []SetupTeamAlias  `yaml:"team_aliases"`
+	Fixtures    []SetupFixture   `yaml:"fixtures"`
+	TeamAliases []SetupTeamAlias `yaml:"team_aliases"`
 }
 
 // SetupFixture is a fixture row to insert before the workflow runs.
 // State determines which fields are required (staging: kickoff only;
 // active: kickoff + activated_at; completed: all three).
 type SetupFixture struct {
-	ID              int64      `yaml:"id"`
-	State           string     `yaml:"state"` // staging | active | completed
-	Kickoff         time.Time  `yaml:"kickoff"`
-	ActivatedAt     *time.Time `yaml:"activated_at,omitempty"`
-	CompletedAt     *time.Time `yaml:"completed_at,omitempty"`
-	LastPolledAt    *time.Time `yaml:"last_polled_at,omitempty"`
-	APIStatusShort  string     `yaml:"api_status_short"`
-	APIStatusLong   string     `yaml:"api_status_long"`
-	HomeID          int        `yaml:"home_id"`
-	HomeName        string     `yaml:"home_name"`
-	AwayID          int        `yaml:"away_id"`
-	AwayName        string     `yaml:"away_name"`
-	LeagueID        int        `yaml:"league_id"`
-	LeagueName      string     `yaml:"league_name"`
-	LeagueSeason    int        `yaml:"league_season"`
+	ID             int64      `yaml:"id"`
+	State          string     `yaml:"state"` // staging | active | completed
+	Kickoff        time.Time  `yaml:"kickoff"`
+	ActivatedAt    *time.Time `yaml:"activated_at,omitempty"`
+	CompletedAt    *time.Time `yaml:"completed_at,omitempty"`
+	LastPolledAt   *time.Time `yaml:"last_polled_at,omitempty"`
+	APIStatusShort string     `yaml:"api_status_short"`
+	APIStatusLong  string     `yaml:"api_status_long"`
+	HomeID         int        `yaml:"home_id"`
+	HomeName       string     `yaml:"home_name"`
+	AwayID         int        `yaml:"away_id"`
+	AwayName       string     `yaml:"away_name"`
+	LeagueID       int        `yaml:"league_id"`
+	LeagueName     string     `yaml:"league_name"`
+	LeagueSeason   int        `yaml:"league_season"`
 }
 
 // SetupTeamAlias pre-seeds a team_aliases row (rarely needed — Ingest
@@ -179,35 +179,35 @@ type FixturesResponse struct {
 // mock server translates these into the JSON envelope
 // production code expects.
 type APIFixture struct {
-	ID              int64      `yaml:"id"`
-	Kickoff         time.Time  `yaml:"kickoff"`
-	StatusShort     string     `yaml:"status_short"`
-	StatusLong      string     `yaml:"status_long"`
-	StatusElapsed   *int       `yaml:"status_elapsed,omitempty"`
-	StatusExtra     *int       `yaml:"status_extra,omitempty"`
-	HomeID          int        `yaml:"home_id"`
-	HomeName        string     `yaml:"home_name"`
-	AwayID          int        `yaml:"away_id"`
-	AwayName        string     `yaml:"away_name"`
-	LeagueID        int        `yaml:"league_id"`
-	LeagueName      string     `yaml:"league_name"`
-	LeagueSeason    int        `yaml:"league_season"`
-	GoalsHome       *int       `yaml:"goals_home,omitempty"`
-	GoalsAway       *int       `yaml:"goals_away,omitempty"`
+	ID            int64     `yaml:"id"`
+	Kickoff       time.Time `yaml:"kickoff"`
+	StatusShort   string    `yaml:"status_short"`
+	StatusLong    string    `yaml:"status_long"`
+	StatusElapsed *int      `yaml:"status_elapsed,omitempty"`
+	StatusExtra   *int      `yaml:"status_extra,omitempty"`
+	HomeID        int       `yaml:"home_id"`
+	HomeName      string    `yaml:"home_name"`
+	AwayID        int       `yaml:"away_id"`
+	AwayName      string    `yaml:"away_name"`
+	LeagueID      int       `yaml:"league_id"`
+	LeagueName    string    `yaml:"league_name"`
+	LeagueSeason  int       `yaml:"league_season"`
+	GoalsHome     *int      `yaml:"goals_home,omitempty"`
+	GoalsAway     *int      `yaml:"goals_away,omitempty"`
 	// Events populate the API response's events array — the field
 	// Monitor's ReconcileFixture reads to detect goals + debounce.
-	Events          []APIEvent `yaml:"events,omitempty"`
+	Events []APIEvent `yaml:"events,omitempty"`
 }
 
 // APIEvent is one entry in an APIFixture's Events array. Currently
 // only Goal events matter for Monitor's downstream work; Cards/
 // Subst/Var are ignored at the reconcile layer.
 type APIEvent struct {
-	Type       string `yaml:"type"`                  // "Goal"
-	Detail     string `yaml:"detail,omitempty"`      // "Normal Goal", "Penalty", etc.
+	Type       string `yaml:"type"`             // "Goal"
+	Detail     string `yaml:"detail,omitempty"` // "Normal Goal", "Penalty", etc.
 	TeamID     int    `yaml:"team_id"`
 	TeamName   string `yaml:"team_name,omitempty"`
-	PlayerID   *int   `yaml:"player_id,omitempty"`   // nullable — API sometimes reports unknown scorer
+	PlayerID   *int   `yaml:"player_id,omitempty"` // nullable — API sometimes reports unknown scorer
 	PlayerName string `yaml:"player_name,omitempty"`
 	Minute     int    `yaml:"minute"`
 	Extra      *int   `yaml:"extra,omitempty"`
@@ -248,11 +248,11 @@ type ExpectedFinalState struct {
 // engine checks. All fields optional; only declared fields are
 // verified (unset fields not checked).
 type ExpectedFixture struct {
-	ID             int64   `yaml:"id"`
-	State          string  `yaml:"state,omitempty"`
-	APIStatusShort string  `yaml:"api_status_short,omitempty"`
-	HasActivatedAt *bool   `yaml:"has_activated_at,omitempty"` // true = must be non-null, false = must be null
-	HasCompletedAt *bool   `yaml:"has_completed_at,omitempty"`
+	ID              int64  `yaml:"id"`
+	State           string `yaml:"state,omitempty"`
+	APIStatusShort  string `yaml:"api_status_short,omitempty"`
+	HasActivatedAt  *bool  `yaml:"has_activated_at,omitempty"` // true = must be non-null, false = must be null
+	HasCompletedAt  *bool  `yaml:"has_completed_at,omitempty"`
 	HasLastPolledAt *bool  `yaml:"has_last_polled_at,omitempty"`
 }
 

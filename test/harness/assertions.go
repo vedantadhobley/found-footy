@@ -83,11 +83,11 @@ func assertEvents(ctx context.Context, t *testing.T, pool *pg.Pool, expected []E
 	t.Helper()
 	for _, ee := range expected {
 		var (
-			gotDebounce           int
+			gotDebounce            int
 			gotDownstreamTriggered bool
-			gotRemoved            bool
-			gotRemovedReason      *string
-			gotMonitorComplete    bool
+			gotRemoved             bool
+			gotRemovedReason       *string
+			gotMonitorComplete     bool
 		)
 		err := pool.QueryRow(ctx, `
 			SELECT debounce_count, downstream_triggered, removed,

@@ -21,6 +21,7 @@ updates this doc if it introduces a new test tier or pattern.
 | Adapter integration | `internal/infra` | Real Postgres, S3-compatible storage, NATS, and Temporal through testcontainers where required. |
 | Scenario corpus | `test/scenarios` | YAML-driven fixture lifecycles against real workflow/activity code and test Postgres. |
 | Release contract | `test/release_contract_test.go` | Parses production Compose without Docker operations and requires immutable identity propagation plus the stack-wide ffmpeg CPU budget. |
+| Tooling contract | `test/tooling_contract_test.go` | Requires exact Go, golangci-lint, and Air versions across build files plus the intended commit/push hook targets. |
 
 For a live inventory, use `rg -n '^func Test' --glob '*_test.go' internal test`
 and `rg --files test/scenarios -g '*.yaml'`.
@@ -208,7 +209,7 @@ granularity and dominate this package's unit-test runtime.
 `TestStatusExposesBuildIdentity` also guards the Twitter `/status.build`
 payload consumed by the production release verifier.
 
-## Release contract test
+## Release and tooling contract tests
 
 `test/release_contract_test.go` parses `docker-compose.prod.yml` as data. It
 requires worker, API, Twitter, and Twitter VNC to receive `GIT_SHA`, `BUILT_AT`,
@@ -221,6 +222,12 @@ test is in `make test-short` and performs no Docker or production operation.
 Shell syntax is checked separately with
 `bash -n scripts/deploy-prod.sh`, and Compose interpolation is validated with
 synthetic identity values plus `docker compose ... config --quiet`.
+
+`test/tooling_contract_test.go` derives the declared Go and golangci-lint
+versions from the Makefile, requires exact semantic versions, and checks every
+Go build stage against that declaration. It also prevents `air@latest` and
+golangci-lint `latest` from returning and requires the fast/full hook targets.
+The contract is part of `make test-short` and does not invoke Docker.
 
 ## Tier 3 — synthetic end-to-end scenarios
 
@@ -238,11 +245,11 @@ scenarios under `test/scenarios/<suite>/<name>.yaml`. Design in
 - Activity clock injected from scenario's `manual_date` for
   determinism
 
-**Enforcement — git test gates** (installed via `make hooks`, which sets
+**Enforcement — git engineering gates** (installed via `make hooks`, which sets
 `core.hooksPath` → [`.githooks/`](../.githooks/)): `pre-commit` runs
-`make test-short` (fast — compile + unit, no containers); `pre-push` runs
-the full `make test` (integration/testcontainers + this scenario suite).
-The pre-push gate is what would have caught the enum-refactor
+`make check-short` (format, tidy, vet, lint, compile, and unit tests);
+`pre-push` runs the full `make check`, adding integration/testcontainers and
+this scenario suite. The pre-push gate is what would have caught the enum-refactor
 scenario rot (red since `d123404`) the day it landed rather than weeks
 later. Host-agnostic (local git, not tied to any forge); each clone
 activates once with `make hooks`. Bypass only with `--no-verify`.
@@ -302,22 +309,24 @@ Docker daemon.
 The main make targets are Docker-mounted; no host Go installation is required:
 
 ```
+make check-short  # every fast commit gate; no testcontainers
+make check        # every gate, including integrations and scenarios
 make test-short   # pure-Go + httptest tiers; no testcontainers
 make test         # full suite including testcontainers and scenarios
 make test <pkg>   # selected package
 ```
 
-The `test-short` target is the pre-commit gate (fast, catches most
-regressions). The `test` target is the pre-push gate (slow, exercises
-real integrations).
+`test-short` and `test` remain focused test runners. `check-short` and `check`
+are the authoritative engineering gates used by Git hooks.
 
 ## Coverage floors
 
-Plan §12 called for per-package coverage floors as part of the CI
-gate. The current gates require compilation and passing tests but do not
-enforce coverage floors. This remains feature-scope candidate
-[`AUD-DESIGN-COVERAGE`](./todo.md#audit-intake-requiring-current-code-validation),
-not an implicit implementation commitment.
+Plan §12 called for per-package coverage floors. The
+[2026-08-17 independent audit](./design/audits/audit-2026-08-17-codex.md#prior-audit-disposition)
+rejected a global percentage as an implementation target: integration-only
+adapters make package percentages misleading, and a number does not prove the
+changed invariant. Each issue adds boundary-specific regression coverage while
+the gates continue to require all tests to pass.
 
 ## Cross-refs
 

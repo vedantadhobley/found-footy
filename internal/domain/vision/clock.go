@@ -68,10 +68,10 @@ func (p Period) String() string {
 }
 
 var (
-	reCompactStoppage = regexp.MustCompile(`^(\d+)\s*\+\s*(\d+)`)  // "45+2"
-	reMMSS            = regexp.MustCompile(`(\d{1,3}):(\d{2})`)    // "90:00"
-	reBareMinutes     = regexp.MustCompile(`^(\d{1,3})$`)          // "90"
-	reAdded           = regexp.MustCompile(`\+\s*(\d+)`)           // "+4"
+	reCompactStoppage = regexp.MustCompile(`^(\d+)\s*\+\s*(\d+)`) // "45+2"
+	reMMSS            = regexp.MustCompile(`(\d{1,3}):(\d{2})`)   // "90:00"
+	reBareMinutes     = regexp.MustCompile(`^(\d{1,3})$`)         // "90"
+	reAdded           = regexp.MustCompile(`\+\s*(\d+)`)          // "+4"
 	rePeriodHints     = regexp.MustCompile(`\b(ET|AET|EXTRA\s*TIME|2H|2ND\s*HALF|1H|1ST\s*HALF)\b`)
 )
 

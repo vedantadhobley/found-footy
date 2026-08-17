@@ -1,18 +1,18 @@
 // scripts/verify_apifootball/main.go — live smoke test of the
 // api-sports.io adapter. Exercises every code path we care about:
 //
-//   1. /status probe via NewClient — proves x-apisports-key auth
-//      works. Header was regressed to x-rapidapi-key at some point;
-//      this catches regressions.
-//   2. /fixtures?date=... — bulk fixture list. Also gives us real
-//      fixture IDs for step 3.
-//   3. ListFixturesByIDs with a small (≤ IDsBatchLimit) slice —
-//      single-chunk path. One HTTP call.
-//   4. ListFixturesByIDs with a large (> IDsBatchLimit) slice —
-//      multi-chunk parallel path. N HTTP calls concurrent via
-//      goroutines. Verifies the 2026-07-09 refactor.
-//   5. Rate-limit gauges — scrape the metrics registry after all
-//      calls, confirm both PER-MINUTE and DAILY headers populated.
+//  1. /status probe via NewClient — proves x-apisports-key auth
+//     works. Header was regressed to x-rapidapi-key at some point;
+//     this catches regressions.
+//  2. /fixtures?date=... — bulk fixture list. Also gives us real
+//     fixture IDs for step 3.
+//  3. ListFixturesByIDs with a small (≤ IDsBatchLimit) slice —
+//     single-chunk path. One HTTP call.
+//  4. ListFixturesByIDs with a large (> IDsBatchLimit) slice —
+//     multi-chunk parallel path. N HTTP calls concurrent via
+//     goroutines. Verifies the 2026-07-09 refactor.
+//  5. Rate-limit gauges — scrape the metrics registry after all
+//     calls, confirm both PER-MINUTE and DAILY headers populated.
 //
 // Run (from host, targeting the dev-worker container so env is loaded):
 //

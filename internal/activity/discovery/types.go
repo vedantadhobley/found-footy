@@ -17,6 +17,6 @@ type EventWorkflowInput struct {
 	PlayerName string    `json:"player_name"`
 	TeamName   string    `json:"team_name"`
 	TeamID     int64     `json:"team_id"`
-	Minute     int       `json:"minute"`     // API elapsed at the goal
-	Extra      *int      `json:"extra"`      // API stoppage extra (nil outside stoppage) — needed for vision clock validation of 45+N / 90+N goals
+	Minute     int       `json:"minute"` // API elapsed at the goal
+	Extra      *int      `json:"extra"`  // API stoppage extra (nil outside stoppage) — needed for vision clock validation of 45+N / 90+N goals
 }

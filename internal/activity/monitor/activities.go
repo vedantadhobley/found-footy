@@ -404,7 +404,7 @@ type ReconcileFixtureOutput struct {
 	// (HT, pre-kickoff, stalled) leaves it false → no tick that cycle.
 	ClockChanged bool
 	// Structural — something a consumer must full-refetch changed this cycle:
-	// a new/removed/stabilised event, an unknown-scorer drop, a score/penalty/
+	// a new/removed/stabilized event, an unknown-scorer drop, a score/penalty/
 	// winner/status change, or completion. Drives fixture.update. Set
 	// incrementally (below), so it is correct at every return path.
 	Structural bool

@@ -12,7 +12,7 @@
 # bookworm (not alpine) because we want glibc for CGO-agnostic
 # consistency with the twitter Dockerfile's builder — future CGO deps
 # (if any) don't ambush us with musl-vs-glibc drift.
-FROM golang:1.25-bookworm AS build
+FROM golang:1.25.11-bookworm AS build
 
 ARG BINARY
 RUN test -n "$BINARY" || (echo "ERROR: BINARY build arg is required (worker|api)" && exit 1)

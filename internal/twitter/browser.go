@@ -359,9 +359,8 @@ func (b *Browser) VerifySession(ctx context.Context, timeout time.Duration) erro
 	defer func() { _ = page.Close() }()
 
 	// Give the SPA a moment to render logged-in-vs-logged-out state.
-	if _, err := page.WaitForSelector(
-		`[data-testid='SideNav_AccountSwitcher_Button']`,
-		playwright.PageWaitForSelectorOptions{Timeout: playwright.Float(float64(timeout / time.Millisecond))},
+	if err := page.Locator(`[data-testid='SideNav_AccountSwitcher_Button']`).WaitFor(
+		playwright.LocatorWaitForOptions{Timeout: playwright.Float(float64(timeout / time.Millisecond))},
 	); err != nil {
 		return fmt.Errorf("twitter.Browser.VerifySession: logged-in indicator missing (cookies likely expired): %w", err)
 	}

@@ -31,9 +31,9 @@ var skipList = map[string]struct{}{
 	"soccer":   {},
 	"club":     {}, "clube": {}, "klub": {},
 	"association": {}, "associazione": {}, "sociedade": {}, "society": {},
-	"sad":         {}, // Sociedad Anónima Deportiva (Spanish corporate suffix)
-	"sport":       {}, "sports": {},
-	"deportivo":   {},
+	"sad":   {}, // Sociedad Anónima Deportiva (Spanish corporate suffix)
+	"sport": {}, "sports": {},
+	"deportivo": {},
 
 	// Team-shape generics — apply carefully. "nazionale" alone is
 	// generic ("national team" in Italian) but appears standalone on
@@ -51,18 +51,18 @@ var skipList = map[string]struct{}{
 	"reprezentacije":     {},
 	"reprezentacji":      {},
 	"nogometna":          {}, "nogometne": {},
-	"futbolowa":  {}, "futbolista": {},
-	"voetbal":    {}, "voetbalelftal": {},
-	"nacional":   {}, // Portuguese/Spanish generic "national"
-	"seleccion":  {}, // Spanish generic "selection/team" — appears across many teams
-	"seleccio":   {}, // Catalan
-	"selecc":     {}, // truncation artifact
+	"futbolowa": {}, "futbolista": {},
+	"voetbal": {}, "voetbalelftal": {},
+	"nacional":  {}, // Portuguese/Spanish generic "national"
+	"seleccion": {}, // Spanish generic "selection/team" — appears across many teams
+	"seleccio":  {}, // Catalan
+	"selecc":    {}, // truncation artifact
 
 	// Articles + connectives across languages.
-	"the":  {}, "los": {}, "las": {}, "la": {}, "le": {}, "les": {},
-	"el":   {}, "il": {}, "das": {}, "der": {}, "die": {}, "den": {},
-	"de":   {}, "del": {}, "du": {}, "di": {}, "da": {}, "do": {}, "dos": {},
-	"and":  {}, "of": {}, "van": {}, "en": {}, "y": {},
+	"the": {}, "los": {}, "las": {}, "la": {}, "le": {}, "les": {},
+	"el": {}, "il": {}, "das": {}, "der": {}, "die": {}, "den": {},
+	"de": {}, "del": {}, "du": {}, "di": {}, "da": {}, "do": {}, "dos": {},
+	"and": {}, "of": {}, "van": {}, "en": {}, "y": {},
 
 	// Genuinely-multi-language generic words observed leaking the
 	// ≥2-lang threshold in the 2026-07-23 real-pipeline audit. These
@@ -83,17 +83,17 @@ var skipList = map[string]struct{}{
 	// name and don't match English tweets (identified by extension test,
 	// 2026-07-19). Only include forms that are clearly cross-team noise
 	// — team-specific nicknames stay out of this list.
-	"holanda":     {}, "holandesa": {},
-	"croacia":     {}, "croata": {},
-	"alemana":     {}, "alemania": {}, "germania": {},
-	"inglaterra":  {}, "inglesa": {},
-	"belga":       {}, "belgica": {}, "belgische": {}, "belghe": {},
-	"espanola":    {},
-	"francesa":    {}, "francia": {},
-	"mexic":       {}, "mexicana": {},
-	"estados":     {}, "unidos": {},
-	"baixos":      {}, "paises": {},
-	"occidental":  {}, // "West Germany" artifact
+	"holanda": {}, "holandesa": {},
+	"croacia": {}, "croata": {},
+	"alemana": {}, "alemania": {}, "germania": {},
+	"inglaterra": {}, "inglesa": {},
+	"belga": {}, "belgica": {}, "belgische": {}, "belghe": {},
+	"espanola": {},
+	"francesa": {}, "francia": {},
+	"mexic": {}, "mexicana": {},
+	"estados": {}, "unidos": {},
+	"baixos": {}, "paises": {},
+	"occidental": {}, // "West Germany" artifact
 }
 
 // isSkipped reports whether tok is in the multilingual skip-list.

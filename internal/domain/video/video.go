@@ -3,14 +3,15 @@
 // video_shares tables (see internal/infra/pg/schema.sql).
 //
 // Two related concepts:
-//   Asset — the canonical byte store. One row per unique perceptual
-//           hash per event. Dedup is scoped to the event, never across
-//           events (cross-event/per-fixture dedup is dead — see
-//           decisions.md 2026-07-25). Popularity counts within-event
-//           dedup hits.
-//   Share — a public link (id: "s_<12-hex>") that grants a browser
-//           access to one Asset in the context of one Event. Ranked
-//           within event.
+//
+//	Asset — the canonical byte store. One row per unique perceptual
+//	        hash per event. Dedup is scoped to the event, never across
+//	        events (cross-event/per-fixture dedup is dead — see
+//	        decisions.md 2026-07-25). Popularity counts within-event
+//	        dedup hits.
+//	Share — a public link (id: "s_<12-hex>") that grants a browser
+//	        access to one Asset in the context of one Event. Ranked
+//	        within event.
 //
 // The Asset ↔ Share split is what enables URL stability: even if we
 // dedup two shares' underlying assets or supersede one asset with a
@@ -68,7 +69,9 @@ func (r RemovalReason) Valid() bool {
 // Asset is the canonical byte-store row (video_assets table).
 //
 // Dedup model (2026-08-03, #166): the ONLY storage-enforced dedup is
-//   UNIQUE (event_id, md5) — exact-byte, and it doubles as insert
+//
+//	UNIQUE (event_id, md5) — exact-byte, and it doubles as insert
+//
 // idempotency. Perceptual dedup is FUZZY (a sliding-window match over the
 // FrameHashes sequence) and lives in EventWorkflow code, decided in-memory
 // before insert — no SQL constraint can express it. FrameHashes is persisted
@@ -87,12 +90,12 @@ type Asset struct {
 	MD5         []byte   // 16-byte whole-file digest — the exact-dup layer
 	FrameHashes []uint64 // per-frame dHash sequence (one per 0.1s frame); the perceptual-dedup signal, kept opaque
 
-	Width          int
-	Height         int
-	DurationMS     int
-	FileSizeBytes  int64
-	Bitrate        *int
-	AspectRatio    float32 // schema-generated column; carried in domain for read-only use
+	Width         int
+	Height        int
+	DurationMS    int
+	FileSizeBytes int64
+	Bitrate       *int
+	AspectRatio   float32 // schema-generated column; carried in domain for read-only use
 
 	Popularity int // starts at 1; bumped on each dedup hit
 
@@ -233,9 +236,10 @@ func (s *Share) Remove(reason RemovalReason, at time.Time) error {
 }
 
 // ValidateInvariants mirrors the schema CHECK:
-//   state=active  → RemovedReason=nil, RemovedAt=nil
-//   state=removed → RemovedReason!=nil, RemovedAt!=nil
-//   rank >= 1
+//
+//	state=active  → RemovedReason=nil, RemovedAt=nil
+//	state=removed → RemovedReason!=nil, RemovedAt!=nil
+//	rank >= 1
 func (s *Share) ValidateInvariants() error {
 	if s.Rank < 1 {
 		return fmt.Errorf("video.Share.ValidateInvariants: rank=%d, must be >= 1", s.Rank)

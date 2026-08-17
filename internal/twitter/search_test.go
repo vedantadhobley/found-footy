@@ -91,8 +91,8 @@ func TestNormalizeExcludeIDs(t *testing.T) {
 		"https://x.com/user1/status/111111111111111111",
 		"https://x.com/i/status/222222222222222222",
 		"https://twitter.com/user3/status/333333333333333333?ref_src=twsrc",
-		"",             // empty — dropped
-		"not-a-url",    // malformed — dropped (unknown sentinel)
+		"",          // empty — dropped
+		"not-a-url", // malformed — dropped (unknown sentinel)
 	}
 	got := normalizeExcludeIDs(urls)
 	want := map[string]struct{}{

@@ -6,13 +6,15 @@
 // docs/decisions.md 2026-08-15 (twitter search query) + the search lock-in note.
 //
 // Variants per case (all end in filter:videos):
-//   current_OR       (surname OR "Team" OR ABBREV OR alias)        — deployed
-//   player_AND_team  (surname) ("Team" OR ABBREV OR alias)         — Python-style
-//   team_only        ("Team" OR ABBREV OR alias)                   — team recall
-//   player_only      (surname)                                     — player recall
+//
+//	current_OR       (surname OR "Team" OR ABBREV OR alias)        — deployed
+//	player_AND_team  (surname) ("Team" OR ABBREV OR alias)         — Python-style
+//	team_only        ("Team" OR ABBREV OR alias)                   — team recall
+//	player_only      (surname)                                     — player recall
 //
 // Reads cases from stdin (TSV):
-//   player <TAB> teamCanonical <TAB> alias1,alias2,... <TAB> officialUser1,... [<TAB> maxAgeMin]
+//
+//	player <TAB> teamCanonical <TAB> alias1,alias2,... <TAB> officialUser1,... [<TAB> maxAgeMin]
 //
 // Targets the DEV twitter service (shares cookies with prod but a SEPARATE
 // Firefox fleet) so it never competes with prod's live per-event searches.
@@ -20,7 +22,8 @@
 // Firefox per call).
 //
 // Run:
-//   docker exec -i found-footy-dev-worker sh -c 'cd /src && go run -buildvcs=false ./scripts/probe_search' < cases.tsv
+//
+//	docker exec -i found-footy-dev-worker sh -c 'cd /src && go run -buildvcs=false ./scripts/probe_search' < cases.tsv
 package main
 
 import (

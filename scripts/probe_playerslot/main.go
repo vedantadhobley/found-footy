@@ -12,10 +12,11 @@
 // volume.
 //
 // Variants per name (all filter:videos):
-//   last_token     deployed — TokenizePlayerName's last token
-//   nosuffix_last  strip generational suffix, then last token (heuristic surname)
-//   all_tokens     every significant token OR'd (original design)
-//   all_nosuffix   every token minus generational suffix, OR'd
+//
+//	last_token     deployed — TokenizePlayerName's last token
+//	nosuffix_last  strip generational suffix, then last token (heuristic surname)
+//	all_tokens     every significant token OR'd (original design)
+//	all_nosuffix   every token minus generational suffix, OR'd
 //
 // Run: docker exec found-footy-dev-worker sh -c 'cd /src && go run -buildvcs=false ./scripts/probe_playerslot'
 package main

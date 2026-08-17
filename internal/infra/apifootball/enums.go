@@ -10,12 +10,12 @@
 // vendor writes it that way and we mirror.
 //
 // Parse functions:
-//   1. Accept ANY casing (trim + case-insensitive match to known
-//      constants; return canonical form on success).
-//   2. Preserve unknown values as-is + return them wrapped so the
-//      caller can log + skip rather than fail-hard. Vendor may add
-//      new values without notice; ingest continuing is more important
-//      than strict validation.
+//  1. Accept ANY casing (trim + case-insensitive match to known
+//     constants; return canonical form on success).
+//  2. Preserve unknown values as-is + return them wrapped so the
+//     caller can log + skip rather than fail-hard. Vendor may add
+//     new values without notice; ingest continuing is more important
+//     than strict validation.
 //
 // UnmarshalJSON on the wire types (in fixtures.go / teams.go) calls
 // these Parse functions so every value hitting domain code is either

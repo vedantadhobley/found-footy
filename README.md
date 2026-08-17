@@ -60,6 +60,8 @@ commands from this README.
 Useful local checks:
 
 ```bash
+make check-short
+make check
 make test-short
 make test
 make test-race

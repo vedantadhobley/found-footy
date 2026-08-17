@@ -82,10 +82,11 @@ func (m *MockAPI) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // handleFixtures dispatches on query string to the right APIResponses
 // field. Recognizes:
-//   ?ids=1-2-3 → FixturesByIDs
-//   ?from=&to= → FixturesWindow
-//   ?live=all  → FixturesWindow (same data, different endpoint call
-//                for Monitor's live-batch path)
+//
+//	?ids=1-2-3 → FixturesByIDs
+//	?from=&to= → FixturesWindow
+//	?live=all  → FixturesWindow (same data, different endpoint call
+//	             for Monitor's live-batch path)
 func (m *MockAPI) handleFixtures(w http.ResponseWriter, r *http.Request) {
 	if m.applyFault(w) {
 		return
