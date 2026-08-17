@@ -10,10 +10,8 @@ import (
 // ActivatedAt to at. Idempotent: calling Activate on an already-active
 // fixture is a no-op (returns nil). Errors on any other from-state.
 //
-// This mirrors the "pre-activate + activate" logic in the Python
-// MonitorWorkflow — a staging fixture whose kickoff has passed (or is
-// within the lookahead window) becomes active so the monitor loop
-// starts polling it every 30s.
+// A staging fixture whose kickoff has passed (or is within the lookahead
+// window) becomes active so ActivePollWorkflow refreshes it at active cadence.
 func (f *Fixture) Activate(at time.Time) error {
 	switch f.State {
 	case StateActive:
@@ -51,8 +49,7 @@ func (f *Fixture) Complete(at time.Time) error {
 
 // Reschedule moves an active fixture back to staging when the API
 // publishes a new kickoff far in the future (typical case: a match is
-// postponed and the new kickoff is > 24h away, per docs/todo.md
-// deferred PST handling item).
+// postponed and the vendor publishes a new future kickoff).
 //
 // Clears ActivatedAt because completed_at CHECK requires the state ↔
 // timestamp invariant to hold at every write. Sets a new kickoff.
@@ -73,7 +70,9 @@ func (f *Fixture) Reschedule(newKickoff time.Time, at time.Time) error {
 
 // UpdateFromPoll captures a fresh API poll result on an active fixture.
 // Refreshes api_status_*, api_elapsed, api_extra, home/away score,
-// last_polled_at, and the completion counter without changing state.
+// last_polled_at, and the coherent-terminal completion counter without
+// changing state. completionVote is derived by the monitor from the score and
+// event inventory in this same provider response.
 // State transitions happen through the dedicated methods above.
 //
 // It deliberately does NOT touch last_activity_at: that is the wall-clock of the
@@ -81,7 +80,13 @@ func (f *Fixture) Reschedule(newKickoff time.Time, at time.Time) error {
 // completion) — the frontend's recency sort key — not "when we last polled." A
 // plain poll is not activity; the monitor reconcile bumps last_activity_at only
 // on a structural change. See decisions.md 2026-08-14.
-func (f *Fixture) UpdateFromPoll(status APIStatus, elapsed, extra *int, homeScore, awayScore *int, at time.Time) {
+func (f *Fixture) UpdateFromPoll(
+	status APIStatus,
+	elapsed, extra *int,
+	homeScore, awayScore *int,
+	completionVote bool,
+	at time.Time,
+) {
 	utc := at.UTC()
 	f.APIStatus = status
 	f.APIElapsed = elapsed
@@ -94,7 +99,7 @@ func (f *Fixture) UpdateFromPoll(status APIStatus, elapsed, extra *int, homeScor
 	}
 	f.LastPolledAt = &utc
 	f.UpdatedAt = utc
-	f.updateCompletionCounter()
+	f.updateCompletionCounter(completionVote)
 }
 
 // UpdateWinners records vendor-side winner flags from the API poll.
@@ -124,21 +129,19 @@ func (f *Fixture) UpdatePenalty(home, away *int) {
 	}
 }
 
-// updateCompletionCounter runs the 3-poll debounce on Terminal status.
-// Called from UpdateFromPoll (active-fixture path) and
-// RecordStagingPoll (staging-fixture path — a staging fixture that
-// mysteriously goes Terminal via vendor edge case still needs to
-// track its counter for later completion).
+// updateCompletionCounter runs the 3-poll debounce on coherent terminal
+// snapshots. Called from UpdateFromPoll after the monitor compares the score
+// with the scoring events in that same provider response.
 //
-// Terminal observation → increment (cap 3).
-// Non-Terminal observation → reset to 0.
+// Coherent Terminal observation → increment (cap 3).
+// Non-Terminal or incoherent Terminal observation → reset to 0.
 //
 // Design intentionally symmetric with the debounce_count on events
 // but without the absence-vote path (Terminal is a positive signal,
 // not-Terminal is its absence and resets outright rather than
 // decrementing).
-func (f *Fixture) updateCompletionCounter() {
-	if f.APIStatus.Terminal() {
+func (f *Fixture) updateCompletionCounter(completionVote bool) {
+	if f.APIStatus.Terminal() && completionVote {
 		if f.CompletionCounter < 3 {
 			f.CompletionCounter++
 		}

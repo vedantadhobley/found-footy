@@ -26,7 +26,7 @@ type Repo interface {
 
 	// Upsert inserts or updates the fixture. Uses id as the primary key.
 	// Called at ingest time (fresh fixtures land in staging) and at
-	// monitor poll (existing fixtures get UpdateFromPoll'd).
+	// active/staging poll (existing fixtures get UpdateFromPoll'd).
 	Upsert(ctx context.Context, f *Fixture) error
 
 	// ListByState returns all fixtures currently in the given state,
@@ -35,7 +35,7 @@ type Repo interface {
 	ListByState(ctx context.Context, state State) ([]*Fixture, error)
 
 	// ListActiveIDs returns only the IDs of active fixtures. Called by
-	// MonitorWorkflow every 30s to build the batched
+	// ActivePollWorkflow at active cadence to build the batched
 	// `apifootball.ListFixturesByIDs` call. Distinct from ListByState
 	// because the monitor doesn't need the whole row — hitting the DB
 	// for just the ID column keeps the per-cycle overhead near-zero.
@@ -53,13 +53,16 @@ type Repo interface {
 	//
 	//   1. api_status_short is in the Terminal set
 	//      (ft, aet, pen, canc, abd, wo, awd)
-	//   2. completion_counter >= 3 OR HasDecidedWinner
-	//      (home_winner or away_winner is non-null)
+	//   2. completion_counter >= 3 (three consecutive terminal provider
+	//      responses whose scoring-event inventory matches the score for played
+	//      results; exceptional terminal statuses vote on status alone)
 	//   3. Every non-removed event has downstream_triggered=true
 	//      (debounce settled — no events in flight)
 	//   4. No rows in event_downstream_workflows where
 	//      completed_at IS NULL for any event in this fixture
 	//      (no downstream workflows still writing)
+	//   5. For played terminal statuses, the stored surviving goal inventory
+	//      still matches the reported score exactly per team
 	//
 	// Returns ErrNotFound if the fixture id doesn't exist. Cheap by
 	// design (partial index on event_downstream_workflows_pending +

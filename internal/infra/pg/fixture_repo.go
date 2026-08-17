@@ -215,7 +215,7 @@ func escapeLike(s string) string {
 }
 
 // ListActiveIDs returns only the fixture IDs currently in state=active.
-// The MonitorWorkflow calls this every 30s to build its batched
+// ActivePollWorkflow calls this at active cadence to build its batched
 // /fixtures?ids= API call, and needs just the ID column — hitting the
 // full row set (ListByState) would waste pgx unmarshaling on ~2KB
 // of fields we throw away. The index on (state) makes this a cheap
@@ -242,9 +242,8 @@ func (r *FixtureRepo) ListActiveIDs(ctx context.Context) ([]int64, error) {
 }
 
 // ListStagingBeforeKickoff returns staging fixtures whose kickoff is
-// at or before threshold. The MonitorWorkflow's PreActivateUpcoming
-// step calls this every 30s with threshold = now + activation window
-// (default 30 min) — see decisions.md 2026-07-07 activation triggers.
+// at or before threshold. ActivePollWorkflow's ActivateUpcoming step calls
+// this with threshold = now + activation window (5 minutes by default).
 func (r *FixtureRepo) ListStagingBeforeKickoff(ctx context.Context, threshold time.Time) ([]*fixture.Fixture, error) {
 	rows, err := r.pool.Query(ctx,
 		"SELECT "+fixtureColumns+" FROM fixtures WHERE state = 'staging' AND kickoff <= $1 ORDER BY kickoff",
@@ -268,9 +267,34 @@ func (r *FixtureRepo) FixtureReadyToComplete(ctx context.Context, id int64) (boo
 	const query = `
 		SELECT
 		    f.api_status_short IN ('ft','aet','pen','canc','abd','wo','awd')
-		    AND (f.completion_counter >= 3
-		         OR f.home_winner IS NOT NULL
-		         OR f.away_winner IS NOT NULL)
+		    AND f.completion_counter >= 3
+		    -- A played result must agree exactly with the surviving stored goal
+		    -- inventory. This prevents a transient provider event-array omission
+		    -- from completing an impossible fixture after the removal path closes
+		    -- its own downstream blocker. Exceptional terminal statuses have no
+		    -- reliable event/score parity contract and retain their existing path.
+		    AND (
+		        f.api_status_short IN ('canc','abd','wo','awd')
+		        OR (
+		            f.api_status_short IN ('ft','aet','pen')
+		            AND f.home_score IS NOT NULL
+		            AND f.away_score IS NOT NULL
+		            AND f.home_score = (
+		                SELECT COUNT(*) FROM events score_home
+		                WHERE score_home.fixture_id = f.id
+		                  AND score_home.event_type = 'goal'
+		                  AND score_home.team_id = f.home_team_id
+		                  AND score_home.removed = false
+		            )
+		            AND f.away_score = (
+		                SELECT COUNT(*) FROM events score_away
+		                WHERE score_away.fixture_id = f.id
+		                  AND score_away.event_type = 'goal'
+		                  AND score_away.team_id = f.away_team_id
+		                  AND score_away.removed = false
+		            )
+		        )
+		    )
 		    AND NOT EXISTS (
 		        SELECT 1 FROM events e
 		        WHERE e.fixture_id = f.id
@@ -283,7 +307,7 @@ func (r *FixtureRepo) FixtureReadyToComplete(ctx context.Context, id int64) (boo
 		          -- complete_fixture_if_ready filtered "None" event_ids out of the
 		          -- gate for the same reason. Known-scorer events always seed
 		          -- count>=1, so this only excludes placeholders, never a real goal
-		          -- mid-debounce. See docs/design/audit-2026-08-05.md Tier-1 #2.
+		          -- mid-debounce. See docs/design/audits/audit-2026-08-05.md Tier-1 #2.
 		          AND e.debounce_count > 0
 		    )
 		    AND NOT EXISTS (

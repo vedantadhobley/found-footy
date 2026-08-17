@@ -225,7 +225,7 @@ func TestUpdateFromPoll_PopulatesLiveFieldsWithoutStateChange(t *testing.T) {
 	pollAt := at.Add(23 * time.Minute)
 	f.UpdateFromPoll(
 		fixture.APIStatus{Short: "1H", Long: "First Half"},
-		&elapsed, &extra, &hs, &as, pollAt,
+		&elapsed, &extra, &hs, &as, false, pollAt,
 	)
 
 	if f.State != fixture.StateActive {
@@ -253,12 +253,12 @@ func TestUpdateFromPoll_NilScore_LeavesExistingScore(t *testing.T) {
 	first := 1
 	f.UpdateFromPoll(
 		fixture.APIStatus{Short: "1H"},
-		nil, nil, &first, &first, at.Add(20*time.Minute),
+		nil, nil, &first, &first, false, at.Add(20*time.Minute),
 	)
 	// Poll where API drops score field; must not clear the existing score.
 	f.UpdateFromPoll(
 		fixture.APIStatus{Short: "HT"},
-		nil, nil, nil, nil, at.Add(45*time.Minute),
+		nil, nil, nil, nil, false, at.Add(45*time.Minute),
 	)
 	if f.HomeScore == nil || *f.HomeScore != 1 {
 		t.Errorf("HomeScore cleared by nil poll; got %v want 1", f.HomeScore)
@@ -268,7 +268,7 @@ func TestUpdateFromPoll_NilScore_LeavesExistingScore(t *testing.T) {
 // ShouldActivateNow ------------------------------------------------
 
 func TestShouldActivateNow_KickoffFarAway_False(t *testing.T) {
-	f := makeStaging() // kickoff is 2026-07-08 15:00 UTC
+	f := makeStaging()                                  // kickoff is 2026-07-08 15:00 UTC
 	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC) // 5h before kickoff
 	if f.ShouldActivateNow(now, 30*time.Minute) {
 		t.Error("kickoff 5h out with 30min window should not activate")
@@ -276,32 +276,32 @@ func TestShouldActivateNow_KickoffFarAway_False(t *testing.T) {
 }
 
 func TestShouldActivateNow_KickoffWithinWindow_True(t *testing.T) {
-	f := makeStaging()                                     // kickoff at 15:00
-	now := time.Date(2026, 7, 8, 14, 45, 0, 0, time.UTC)   // 15 min before
+	f := makeStaging()                                   // kickoff at 15:00
+	now := time.Date(2026, 7, 8, 14, 45, 0, 0, time.UTC) // 15 min before
 	if !f.ShouldActivateNow(now, 30*time.Minute) {
 		t.Error("kickoff 15min out with 30min window should activate")
 	}
 }
 
 func TestShouldActivateNow_KickoffAtBoundary_True(t *testing.T) {
-	f := makeStaging()                                     // kickoff at 15:00
-	now := time.Date(2026, 7, 8, 14, 30, 0, 0, time.UTC)   // exactly 30min before
+	f := makeStaging()                                   // kickoff at 15:00
+	now := time.Date(2026, 7, 8, 14, 30, 0, 0, time.UTC) // exactly 30min before
 	if !f.ShouldActivateNow(now, 30*time.Minute) {
 		t.Error("kickoff at exact window boundary should activate (inclusive)")
 	}
 }
 
 func TestShouldActivateNow_KickoffJustOutsideBoundary_False(t *testing.T) {
-	f := makeStaging()                                                    // kickoff at 15:00
-	now := time.Date(2026, 7, 8, 14, 29, 59, 999_999_999, time.UTC)       // 30min + 1ns out
+	f := makeStaging()                                              // kickoff at 15:00
+	now := time.Date(2026, 7, 8, 14, 29, 59, 999_999_999, time.UTC) // 30min + 1ns out
 	if f.ShouldActivateNow(now, 30*time.Minute) {
 		t.Error("kickoff 1ns outside boundary should not activate")
 	}
 }
 
 func TestShouldActivateNow_KickoffInPast_True(t *testing.T) {
-	f := makeStaging()                                     // kickoff at 15:00
-	now := time.Date(2026, 7, 8, 15, 5, 0, 0, time.UTC)    // 5min AFTER kickoff (delayed ingest)
+	f := makeStaging()                                  // kickoff at 15:00
+	now := time.Date(2026, 7, 8, 15, 5, 0, 0, time.UTC) // 5min AFTER kickoff (delayed ingest)
 	if !f.ShouldActivateNow(now, 30*time.Minute) {
 		t.Error("kickoff already past should activate (delayed manual ingest catches up)")
 	}
@@ -331,7 +331,7 @@ func TestShouldActivateNow_Completed_False(t *testing.T) {
 
 // Completion counter + winner data --------------------------------
 
-func TestUpdateFromPoll_Terminal_IncrementsCompletionCounter(t *testing.T) {
+func TestUpdateFromPoll_CoherentTerminal_IncrementsCompletionCounter(t *testing.T) {
 	f := makeStaging()
 	at := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	mustActivate(t, f, at)
@@ -343,7 +343,7 @@ func TestUpdateFromPoll_Terminal_IncrementsCompletionCounter(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		f.UpdateFromPoll(
 			fixture.APIStatus{Short: "ft", Long: "Match Finished"},
-			nil, nil, nil, nil, at.Add(time.Duration(i)*30*time.Second),
+			nil, nil, nil, nil, true, at.Add(time.Duration(i)*30*time.Second),
 		)
 	}
 	if f.CompletionCounter != 3 {
@@ -360,7 +360,7 @@ func TestUpdateFromPoll_NonTerminal_ResetsCompletionCounter(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		f.UpdateFromPoll(
 			fixture.APIStatus{Short: "ft"},
-			nil, nil, nil, nil, at.Add(time.Duration(i)*30*time.Second),
+			nil, nil, nil, nil, true, at.Add(time.Duration(i)*30*time.Second),
 		)
 	}
 	if f.CompletionCounter != 2 {
@@ -371,30 +371,30 @@ func TestUpdateFromPoll_NonTerminal_ResetsCompletionCounter(t *testing.T) {
 	// should reset the counter.
 	f.UpdateFromPoll(
 		fixture.APIStatus{Short: "2h"},
-		nil, nil, nil, nil, at.Add(3*30*time.Second),
+		nil, nil, nil, nil, false, at.Add(3*30*time.Second),
 	)
 	if f.CompletionCounter != 0 {
 		t.Errorf("counter after non-Terminal poll = %d, want 0 (reset)", f.CompletionCounter)
 	}
 }
 
-func TestHasDecidedWinner_TruthTable(t *testing.T) {
+func TestUpdateFromPoll_IncoherentTerminal_ResetsCompletionCounter(t *testing.T) {
 	f := makeStaging()
-	if f.HasDecidedWinner() {
-		t.Error("fresh fixture must not have decided winner")
-	}
+	at := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	mustActivate(t, f, at)
 
-	trueBool := true
-	f.HomeWinner = &trueBool
-	if !f.HasDecidedWinner() {
-		t.Error("HomeWinner set → HasDecidedWinner should be true")
+	for i := 0; i < 2; i++ {
+		f.UpdateFromPoll(
+			fixture.APIStatus{Short: "ft"},
+			nil, nil, nil, nil, true, at.Add(time.Duration(i)*30*time.Second),
+		)
 	}
-
-	f.HomeWinner = nil
-	falseBool := false
-	f.AwayWinner = &falseBool
-	if !f.HasDecidedWinner() {
-		t.Error("AwayWinner set to false (loser flag) → HasDecidedWinner should still be true")
+	f.UpdateFromPoll(
+		fixture.APIStatus{Short: "ft"},
+		nil, nil, nil, nil, false, at.Add(60*time.Second),
+	)
+	if f.CompletionCounter != 0 {
+		t.Errorf("counter after incoherent Terminal poll = %d, want 0", f.CompletionCounter)
 	}
 }
 

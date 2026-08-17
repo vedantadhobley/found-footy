@@ -4,9 +4,8 @@ description: |
   API returns FT status starting cycle 3. Verify:
     - Goal that's mid-debounce when match ends can still reach
       count=3 and trigger (API keeps returning FT events)
-    - InPlay() gate prevents absence votes during FT cycles too
-      (FT is Terminal, not InPlay). So if API returned empty events
-      during FT, event wouldn't be falsely dropped.
+    - A score-consistent event omission during FT is protected before any
+      absence vote; terminal status alone does not imply VAR.
     - Fixture COMPLETES at FT once Terminal + completion_counter>=3
       (completion is wired into the reconcile step per the completion
       contract; the earlier "Monitor doesn't complete, deferred to O3+"

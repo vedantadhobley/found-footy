@@ -2,21 +2,21 @@
 // workflows orchestrate.
 //
 // ActivePollWorkflow (fires every 30s) uses:
-//   1. ActivateUpcoming — DB-only check; promotes staging fixtures
-//      whose stored kickoff is within the activation window.
-//   2. ListActiveFixtureIDs — cheap ID pull.
-//   3. FetchLiveFixtures — one batched /fixtures?ids= call.
-//   4. ReconcileFixture — per fixture, refresh row + diff events +
-//      vote presence/absence for each event. Concurrent via
-//      workflow.Go in the coordinator.
+//  1. ActivateUpcoming — DB-only check; promotes staging fixtures
+//     whose stored kickoff is within the activation window.
+//  2. ListActiveFixtureIDs — cheap ID pull.
+//  3. FetchLiveFixtures — one batched /fixtures?ids= call.
+//  4. ReconcileFixture — per fixture, refresh row + diff events +
+//     vote presence/absence for each event. Concurrent via
+//     workflow.Go in the coordinator.
 //
 // StagingPollWorkflow (fires per cron schedule, default 15 min) uses:
-//   1. PollStagingFixtures — API poll of ALL staging fixtures.
-//      Catches vendor-side postponements, kickoff corrections, and
-//      early starts (Live() status → emergency activation). Also
-//      re-checks ShouldActivateNow after applying any vendor kickoff
-//      correction so a corrected kickoff inside the activation window
-//      triggers activation the same tick.
+//  1. PollStagingFixtures — API poll of ALL staging fixtures.
+//     Catches vendor-side postponements, kickoff corrections, and
+//     early starts (Live() status → emergency activation). Also
+//     re-checks ShouldActivateNow after applying any vendor kickoff
+//     correction so a corrected kickoff inside the activation window
+//     triggers activation the same tick.
 //
 // The two workflows run on independent Temporal Schedules — the
 // staging cadence can be tuned at runtime with `temporal schedule
@@ -212,11 +212,11 @@ type PollStagingFixturesOutput struct {
 // Temporal Schedule decides when to fire, not us), then reconciles
 // each response. Two activation paths:
 //
-//   • Live() emergency: the API says the match is already playing
+//   - Live() emergency: the API says the match is already playing
 //     (or paused mid-play) while we still have it in staging. Ingest
 //     had the wrong kickoff, or the vendor published a corrected one,
 //     or the match started early. Activate immediately.
-//   • Kickoff-corrected: the vendor pushed a new kickoff time that
+//   - Kickoff-corrected: the vendor pushed a new kickoff time that
 //     brings the fixture inside our activation window. Same fix as
 //     ActivePollWorkflow's ActivateUpcoming DB-only check but
 //     works on API-side mutations ingest hasn't caught yet.
@@ -384,7 +384,11 @@ type ReconcileFixtureOutput struct {
 	NewNamedEventIDs []uuid.UUID
 	EventsRemoved    []string    // natural_keys of confirmed events that just hit count=0 (VAR)
 	EventsRemovedIDs []uuid.UUID // #172: their UUIDs — the poll workflow cancels discovery + runs DestroyEvent for each
-	UnknownDropped     int      // unknown-scorer placeholders hard-deleted on disappearance
+	// GoalAbsencesHeld lists stored goals that were absent from this response
+	// but still required by its aggregate score. They receive no absence vote:
+	// classifying them as VAR would contradict stronger provider evidence.
+	GoalAbsencesHeld []string
+	UnknownDropped   int // unknown-scorer placeholders hard-deleted on disappearance
 	// Completed — true if this reconcile pass transitioned the fixture
 	// from active → completed. See docs/design/proposals/completion-contract.md.
 	Completed bool
@@ -407,16 +411,17 @@ type ReconcileFixtureOutput struct {
 }
 
 // ReconcileFixture is the per-fixture per-cycle work:
-//   1. Refresh the fixture row (API-mutable fields + LastPolledAt).
-//   2. Diff API events against pg events (including removed — for
-//      collision-handling of previously-removed natural_keys).
-//   3. For each API event that doesn't exist in pg AND isn't a
-//      previously-removed natural_key: Insert (seeds debounce_count=1
-//      + records this workflow's presence vote).
-//   4. For each pg event ALSO in API: RegisterEventPresence
-//      (increments count, may flip downstream_triggered).
-//   5. For each pg event NOT in API: RegisterEventAbsence
-//      (decrements count, may hit zero + soft-delete).
+//  1. Refresh the fixture row (API-mutable fields + LastPolledAt).
+//  2. Diff API events against pg events (including removed — for
+//     collision-handling of previously-removed natural_keys).
+//  3. For each API event that doesn't exist in pg AND isn't a
+//     previously-removed natural_key: Insert (seeds debounce_count=1
+//     + records this workflow's presence vote).
+//  4. For each pg event ALSO in API: RegisterEventPresence
+//     (increments count, may flip downstream_triggered).
+//  5. For each pg event NOT in API: hold a goal when the aggregate score
+//     proves the response omitted one; otherwise RegisterEventAbsence
+//     (decrements count, may hit zero + soft-delete).
 //
 // Removed events are NOT voted against — they're terminal. If the
 // same natural_key appears in the API for a removed event, we skip
@@ -437,6 +442,10 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	prevHomeScore, prevAwayScore := f.HomeScore, f.AwayScore
 	prevHomeWinner, prevAwayWinner := f.HomeWinner, f.AwayWinner
 	prevHomePen, prevAwayPen := f.HomePenalty, f.AwayPenalty
+	// Score and event-array facts must come from the same provider response.
+	// The immutable view both guards destructive goal-absence votes below and
+	// decides whether this cycle is coherent enough to advance completion.
+	scoreInventory := newScoreEventInventory(in.APIFixture)
 
 	f.UpdateFromPoll(
 		fixture.APIStatus{Short: in.APIFixture.Fixture.Status.Short, Long: in.APIFixture.Fixture.Status.Long},
@@ -444,14 +453,18 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		in.APIFixture.Fixture.Status.Extra,
 		in.APIFixture.Goals.Home,
 		in.APIFixture.Goals.Away,
+		scoreInventory.completionVote(
+			in.APIFixture.Fixture.Status.Short,
+			in.APIFixture.Teams.Home.ID,
+			in.APIFixture.Teams.Away.ID,
+		),
 		now,
 	)
 	// Decision-time vendor flags — present only once the result is settled, so
 	// they ride alongside the poll rather than inside UpdateFromPoll. The live
-	// monitor is the only path that watches a match decide. Winner captures the
-	// long-null teams.winner (audit P2-2) — which also arms the completion
-	// fast-path (HasDecidedWinner); penalty captures the shootout result for
-	// knockout "who won on pens".
+	// monitor is the only path that watches a match decide. Winner is display
+	// data; it cannot bypass the coherent three-poll completion debounce.
+	// Penalty captures the shootout result for knockout "who won on pens".
 	f.UpdateWinners(in.APIFixture.Teams.Home.Winner, in.APIFixture.Teams.Away.Winner)
 	f.UpdatePenalty(in.APIFixture.Score.Penalty.Home, in.APIFixture.Score.Penalty.Away)
 
@@ -473,14 +486,14 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	}
 
 	// Step 2-5: diff events.
-	// Read pending events (NOT removed AND not fully done) so the
-	// collision handler for previously-removed events is transparent —
-	// we simply don't consider them here. Insert for a removed
-	// natural_key would fail the UNIQUE constraint; we skip before
-	// then via keySeen tracking below.
-	pending, err := a.EventRepo.ListPending(ctx, f.ID)
+	// Read every non-removed event. Presence/absence and score consistency
+	// apply for the fixture's full active lifetime; they must not silently stop
+	// if the dormant monitor_complete/download_complete compatibility flags are
+	// set. A removed natural_key remains protected by the UNIQUE constraint and
+	// the key collection below.
+	storedEvents, err := a.EventRepo.ListByFixture(ctx, f.ID)
 	if err != nil {
-		return out, fmt.Errorf("monitor.ReconcileFixture: list pending: %w", err)
+		return out, fmt.Errorf("monitor.ReconcileFixture: list fixture events: %w", err)
 	}
 	// Also read ALL events for the fixture to know which natural_keys
 	// are taken (including removed). We skip re-inserting keys that
@@ -491,15 +504,14 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	}
 
 	// Group pending pg events by natural_key for O(1) lookup.
-	pgByKey := make(map[string]*event.Event, len(pending))
-	for _, e := range pending {
+	pgByKey := make(map[string]*event.Event, len(storedEvents))
+	for _, e := range storedEvents {
 		pgByKey[e.NaturalKey] = e
 	}
 
 	// Build a set of API event natural_keys we've seen this cycle,
 	// so absence votes for pg events NOT in the set are correct.
 	apiKeys := make(map[string]struct{}, len(in.APIFixture.Events))
-
 	// Per-cycle counter for seq assignment. Keyed by (team_id,
 	// player_id_or_unknown, type). As we iterate API events in
 	// order, this counter increments per (team, player, type) group
@@ -607,11 +619,13 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 
 	// Absence votes: pg events NOT in the API this cycle.
 	//
-	// Trusts the API to keep events cumulative across all statuses
-	// (matches Python's behavior + real-world API-Football behavior).
-	// A VAR overturn genuinely removes the event from the array; a
-	// pause (HT/PST/SUSP/INT) leaves it in place. So "not in this
-	// cycle's array" IS "removed" — no defensive gating needed.
+	// A missing non-goal event still follows the ordinary absence debounce.
+	// A missing goal first passes a stronger consistency check: when the
+	// aggregate score exceeds the current API goal inventory for that team,
+	// the response itself proves at least one goal element is omitted. In that
+	// state we conservatively retain every missing stored goal for the team;
+	// choosing one would invent identity evidence the provider did not supply.
+	// A true VAR drops the aggregate score, so normal absence voting resumes.
 	for key, pgEv := range pgByKey {
 		if _, present := apiKeys[key]; present {
 			continue
@@ -629,6 +643,10 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			}
 			out.UnknownDropped++
 			out.Structural = true
+			continue
+		}
+		if pgEv.Type == event.TypeGoal && scoreInventory.scoreRequiresMissingGoal(pgEv.Team.ID) {
+			out.GoalAbsencesHeld = append(out.GoalAbsencesHeld, key)
 			continue
 		}
 		_, hitZero, err := a.EventRepo.RegisterEventAbsence(ctx, pgEv.ID, in.WorkflowID)

@@ -71,13 +71,14 @@ func (a APIStatus) Terminal() bool {
 //
 // Matches Python's classification per archive/src/utils/fixture_status.py:
 // "PST is treated as ACTIVE, not completed! Short delays (15-30 min)
-//  are common and the match may still happen the same day."
+//
+//	are common and the match may still happen the same day."
 //
 // Consequences downstream:
-//   • MonitorWorkflow polls Live()==true fixtures every 30s via the
+//   - ActivePollWorkflow polls Live()==true fixtures at active cadence via the
 //     batched /fixtures?ids= call. Cost of adding SUSP/INT/PST to
 //     that batch is zero — one API call carries them all.
-//   • A fresh fixture whose API returns any Live() code gets
+//   - A fresh fixture whose API returns any Live() code gets
 //     emergency-activated by the ingest activity (already implemented
 //     that way, this just widens the set of statuses that trigger it).
 func (a APIStatus) Live() bool {
@@ -125,7 +126,7 @@ type Fixture struct {
 	ID    int64
 	State State
 
-	APIStatus APIStatus
+	APIStatus  APIStatus
 	APIElapsed *int // match minute; nil pre-kickoff
 	APIExtra   *int // stoppage time
 
@@ -144,8 +145,8 @@ type Fixture struct {
 	// Winner data from api teams.home.winner / teams.away.winner.
 	// Vendor sets these to true/false when the result is decided —
 	// usually simultaneously with terminal status, sometimes slightly
-	// earlier. Fixture completion has a fast-path when either is
-	// non-nil (skips the 3-poll completion counter).
+	// earlier. These are result/display facts; they do not bypass the
+	// coherent 3-poll completion counter.
 	HomeWinner *bool
 	AwayWinner *bool
 
@@ -158,22 +159,15 @@ type Fixture struct {
 	LastActivityAt *time.Time
 	LastPolledAt   *time.Time
 
-	// CompletionCounter — 3-poll debounce on APIStatus.Terminal().
-	// Increments (cap 3) each ActivePoll cycle where status is
-	// Terminal; resets to 0 on any non-Terminal observation.
-	// Fixture ready to complete when counter >= 3 OR HasDecidedWinner().
+	// CompletionCounter — 3-poll debounce on coherent terminal snapshots.
+	// Increments (cap 3) when status is Terminal and the same provider
+	// response's scoring-event inventory matches its reported score; resets to
+	// 0 on any non-Terminal or incoherent Terminal observation.
 	// See docs/design/proposals/completion-contract.md.
 	CompletionCounter int
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
-}
-
-// HasDecidedWinner reports whether the vendor has flagged either
-// team as the winner. Used as the fast-path in the completion check
-// alongside the 3-poll counter.
-func (f *Fixture) HasDecidedWinner() bool {
-	return f.HomeWinner != nil || f.AwayWinner != nil
 }
 
 // New constructs a fresh Fixture in the staging state. Callers set only
@@ -217,18 +211,18 @@ var (
 //     calls Activate before the first Upsert, so the fixture never
 //     lands in the staging bucket in the DB.
 //
-//  2. Monitor workflow's PreActivateUpcoming step — every cycle, scan
+//  2. ActivePollWorkflow's ActivateUpcoming step — every cycle, scan
 //     staging fixtures and promote any whose kickoff has crossed into
 //     the window since the last check.
 //
 // Fixtures NOT in staging (already active or completed) return false —
 // only staging is eligible for this transition. The window arg comes
 // from workflow-level config; both callers should pass the same value
-// (typically 30 min).
+// (5 minutes by default).
 //
 // A fixture whose kickoff is in the past also returns true: a delayed
 // manual ingest still needs to be caught up. If the API meanwhile
-// reports the match as already live, the monitor's separate
+// reports the match as already live, the poller's separate
 // "emergency activation" trigger (APIStatus.Live() on a staging row)
 // catches that case.
 func (f *Fixture) ShouldActivateNow(now time.Time, window time.Duration) bool {
@@ -243,9 +237,10 @@ func (f *Fixture) ShouldActivateNow(now time.Time, window time.Duration) bool {
 // fixture is consistent.
 //
 // The rules (from schema.sql):
-//   staging   → activated_at == nil AND completed_at == nil
-//   active    → activated_at != nil AND completed_at == nil
-//   completed → activated_at != nil AND completed_at != nil
+//
+//	staging   → activated_at == nil AND completed_at == nil
+//	active    → activated_at != nil AND completed_at == nil
+//	completed → activated_at != nil AND completed_at != nil
 func (f *Fixture) ValidateInvariants() error {
 	switch f.State {
 	case StateStaging:

@@ -119,7 +119,7 @@ func (r *fakeFixtureRepo) FixtureReadyToComplete(_ context.Context, id int64) (b
 	if !f.APIStatus.Terminal() {
 		return false, nil
 	}
-	if f.CompletionCounter < 3 && !f.HasDecidedWinner() {
+	if f.CompletionCounter < 3 {
 		return false, nil
 	}
 	// Fake has no events map — the completion check for events
@@ -241,6 +241,18 @@ func (r *fakeEventRepo) ListPending(_ context.Context, fixtureID int64) ([]*even
 	var out []*event.Event
 	for _, e := range r.events {
 		if e.FixtureID == fixtureID && !e.Removed && (!e.MonitorComplete || !e.DownloadComplete) {
+			dup := *e
+			out = append(out, &dup)
+		}
+	}
+	return out, nil
+}
+func (r *fakeEventRepo) ListByFixture(_ context.Context, fixtureID int64) ([]*event.Event, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*event.Event
+	for _, e := range r.events {
+		if e.FixtureID == fixtureID && !e.Removed {
 			dup := *e
 			out = append(out, &dup)
 		}
@@ -822,40 +834,46 @@ func TestReconcileFixture_ThreeCyclesTriggersDownstream(t *testing.T) {
 	}
 }
 
-// TestReconcileFixture_TerminalWithWinner_Completes exercises the
-// full completion contract: fixture in active with FT status +
-// winner data → completion check passes → state transitions to
-// completed in the same reconcile pass. Fake repo's
-// FixtureReadyToComplete mirrors the pg query's truth table for the
-// no-events case; per-event completion checks land in the pg
-// integration tests.
-func TestReconcileFixture_TerminalWithWinner_Completes(t *testing.T) {
+// TestReconcileFixture_TerminalWithWinnerRequiresCoherentDebounce proves that
+// vendor winner data remains display/result data and cannot bypass three
+// coherent terminal responses.
+func TestReconcileFixture_TerminalWithWinnerRequiresCoherentDebounce(t *testing.T) {
 	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	now := kickoff.Add(105 * time.Minute) // post-FT
 	fRepo := newFakeFixtureRepo()
 
-	// Fixture in active state, ready for completion via winner fast-path.
+	// Fixture in active state with winner data already present.
 	f := mkActiveFixture(999, kickoff)
 	trueBool := true
 	f.HomeWinner = &trueBool
 	_ = fRepo.Upsert(context.Background(), f)
 
-	// API response: FT status, no events.
+	// API response: coherent 0-0 FT snapshot with no events.
 	apiFix := apifootball.APIFixture{
 		Fixture: apifootball.APIFixtureFixture{
 			ID:     999,
 			Status: apifootball.APIFixtureStatus{Short: "ft", Long: "Match Finished"},
 		},
+		Teams: apifootball.APIFixtureTeams{
+			Home: apifootball.APIFixtureTeam{ID: 40},
+			Away: apifootball.APIFixtureTeam{ID: 42},
+		},
+		Goals: apifootball.APIFixtureGoals{Home: pi(0), Away: pi(0)},
 	}
 	acts := newActs(&fakeFetcher{}, fRepo, newFakeEventRepo(), now)
-	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{
-		APIFixture: apiFix, WorkflowID: "monitor-w1",
-	})
-	if err != nil {
-		t.Fatalf("ReconcileFixture: %v", err)
-	}
-	if !out.Completed {
-		t.Errorf("out.Completed = false, want true (winner fast-path)")
+	for cycle := 1; cycle <= 3; cycle++ {
+		out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{
+			APIFixture: apiFix, WorkflowID: fmt.Sprintf("monitor-w%d", cycle),
+		})
+		if err != nil {
+			t.Fatalf("ReconcileFixture cycle %d: %v", cycle, err)
+		}
+		if cycle < 3 && out.Completed {
+			t.Fatalf("cycle %d completed despite counter below 3", cycle)
+		}
+		if cycle == 3 && !out.Completed {
+			t.Fatal("cycle 3 did not complete after three coherent terminal snapshots")
+		}
 	}
 	got, _ := fRepo.Get(context.Background(), 999)
 	if got.State != fixture.StateCompleted {
@@ -882,6 +900,11 @@ func TestReconcileFixture_TerminalCounterBelowThreshold_DoesNotComplete(t *testi
 			ID:     888,
 			Status: apifootball.APIFixtureStatus{Short: "ft"},
 		},
+		Teams: apifootball.APIFixtureTeams{
+			Home: apifootball.APIFixtureTeam{ID: 40},
+			Away: apifootball.APIFixtureTeam{ID: 42},
+		},
+		Goals: apifootball.APIFixtureGoals{Home: pi(0), Away: pi(0)},
 	}
 	acts := newActs(&fakeFetcher{}, fRepo, newFakeEventRepo(), now)
 	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{
@@ -910,7 +933,12 @@ func TestReconcileFixture_AbsenceHitZeroSoftDeletes(t *testing.T) {
 	eRepo := newFakeEventRepo()
 	apiFix := apifootball.APIFixture{
 		Fixture: apifootball.APIFixtureFixture{ID: 999, Status: apifootball.APIFixtureStatus{Short: "1h"}},
-		Events:  []apifootball.APIFixtureEvent{mkAPIGoal(40, 111, 30)},
+		Teams: apifootball.APIFixtureTeams{
+			Home: apifootball.APIFixtureTeam{ID: 40},
+			Away: apifootball.APIFixtureTeam{ID: 42},
+		},
+		Goals:  apifootball.APIFixtureGoals{Home: pi(1), Away: pi(0)},
+		Events: []apifootball.APIFixtureEvent{mkAPIGoal(40, 111, 30)},
 	}
 
 	acts := newActs(&fakeFetcher{}, fRepo, eRepo, now)
@@ -920,11 +948,100 @@ func TestReconcileFixture_AbsenceHitZeroSoftDeletes(t *testing.T) {
 	// Now the event vanishes from the API — one absence brings count 1→0
 	empty := apiFix
 	empty.Events = nil
+	empty.Goals.Home = pi(0) // aggregate score correction is the VAR evidence
 	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{APIFixture: empty, WorkflowID: "w2"})
 	if err != nil {
 		t.Fatalf("absence cycle: %v", err)
 	}
 	if len(out.EventsRemoved) != 1 {
 		t.Errorf("EventsRemoved = %v, want 1", out.EventsRemoved)
+	}
+}
+
+// TestReconcileFixture_GoalAbsenceHeldWhenScoreRequiresIt reproduces the
+// Lazio-Mantova failure shape: the provider drops the event-array element but
+// retains the aggregate score. The stored goal must receive no absence vote.
+func TestReconcileFixture_GoalAbsenceHeldWhenScoreRequiresIt(t *testing.T) {
+	kickoff := time.Date(2026, 8, 16, 19, 0, 0, 0, time.UTC)
+	fRepo := newFakeFixtureRepo()
+	_ = fRepo.Upsert(context.Background(), mkActiveFixture(1564801, kickoff))
+	eRepo := newFakeEventRepo()
+
+	apiFix := apifootball.APIFixture{
+		Fixture: apifootball.APIFixtureFixture{ID: 1564801, Status: apifootball.APIFixtureStatus{Short: "2h"}},
+		Teams: apifootball.APIFixtureTeams{
+			Home: apifootball.APIFixtureTeam{ID: 40},
+			Away: apifootball.APIFixtureTeam{ID: 42},
+		},
+		Goals: apifootball.APIFixtureGoals{Home: pi(0), Away: pi(1)},
+		Events: []apifootball.APIFixtureEvent{
+			mkAPIGoal(42, 222, 90),
+		},
+	}
+	acts := newActs(&fakeFetcher{}, fRepo, eRepo, kickoff.Add(96*time.Minute))
+	_, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{APIFixture: apiFix, WorkflowID: "w1"})
+	if err != nil {
+		t.Fatalf("insert cycle: %v", err)
+	}
+
+	omitted := apiFix
+	omitted.Events = nil
+	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{APIFixture: omitted, WorkflowID: "w2"})
+	if err != nil {
+		t.Fatalf("omission cycle: %v", err)
+	}
+	if len(out.GoalAbsencesHeld) != 1 {
+		t.Fatalf("GoalAbsencesHeld = %v, want one protected goal", out.GoalAbsencesHeld)
+	}
+	if len(out.EventsRemoved) != 0 {
+		t.Fatalf("EventsRemoved = %v, want none", out.EventsRemoved)
+	}
+
+	stored, err := eRepo.GetByNaturalKey(context.Background(), 1564801, "42_222_goal_1")
+	if err != nil {
+		t.Fatalf("get protected event: %v", err)
+	}
+	if stored.DebounceCount != 1 || stored.Removed {
+		t.Fatalf("protected event = count %d removed %v, want count 1 removed false", stored.DebounceCount, stored.Removed)
+	}
+}
+
+// TestReconcileFixture_ReplacementGoalAllowsOldIdentityToDecay proves that a
+// same-team replacement event accounts for the unchanged score. The old
+// player-keyed identity may then follow the absence path instead of being held.
+func TestReconcileFixture_ReplacementGoalAllowsOldIdentityToDecay(t *testing.T) {
+	kickoff := time.Date(2026, 8, 16, 19, 0, 0, 0, time.UTC)
+	fRepo := newFakeFixtureRepo()
+	_ = fRepo.Upsert(context.Background(), mkActiveFixture(1564802, kickoff))
+	eRepo := newFakeEventRepo()
+
+	apiFix := apifootball.APIFixture{
+		Fixture: apifootball.APIFixtureFixture{ID: 1564802, Status: apifootball.APIFixtureStatus{Short: "2h"}},
+		Teams: apifootball.APIFixtureTeams{
+			Home: apifootball.APIFixtureTeam{ID: 40},
+			Away: apifootball.APIFixtureTeam{ID: 42},
+		},
+		Goals: apifootball.APIFixtureGoals{Home: pi(1), Away: pi(0)},
+		Events: []apifootball.APIFixtureEvent{
+			mkAPIGoal(40, 111, 30),
+		},
+	}
+	acts := newActs(&fakeFetcher{}, fRepo, eRepo, kickoff.Add(31*time.Minute))
+	_, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{APIFixture: apiFix, WorkflowID: "w1"})
+	if err != nil {
+		t.Fatalf("original cycle: %v", err)
+	}
+
+	replacement := apiFix
+	replacement.Events = []apifootball.APIFixtureEvent{mkAPIGoal(40, 222, 30)}
+	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{APIFixture: replacement, WorkflowID: "w2"})
+	if err != nil {
+		t.Fatalf("replacement cycle: %v", err)
+	}
+	if len(out.GoalAbsencesHeld) != 0 {
+		t.Fatalf("GoalAbsencesHeld = %v, want none", out.GoalAbsencesHeld)
+	}
+	if len(out.EventsRemoved) != 1 || out.NewEventsDetected != 1 {
+		t.Fatalf("removed=%v new=%d, want one old removal and one replacement", out.EventsRemoved, out.NewEventsDetected)
 	}
 }
