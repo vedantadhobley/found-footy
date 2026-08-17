@@ -59,7 +59,7 @@ found-footy/
 │   │   ├── ingest/                      ✓ config, roster, fixture fetch/upsert, canonical-team placeholder, and retention activities
 │   │   │   ├── activities.go
 │   │   │   └── activities_test.go
-│   │   ├── monitor/                     ✓ config, activation, staging/live fetch, stable event-identity reconcile (FF-027), and signal/spawn support
+│   │   ├── monitor/                     ✓ config, activation, staging/live fetch, stable event-identity reconcile (FF-027), and failed-only spawn + stale-running progress-proof recovery (FF-007/FF-025)
 │   │   ├── discovery/                   ✓ config/aliases/search/candidates, durable recovery checkpoints, and downstream completion
 │   │   ├── video/                       ✓ DownloadAndStage, HashVideo, live-asset recovery, persistence, teardown, and ranking activities
 │   │   ├── vision/                      ✓ staged-clip frame extraction + model-backed validation

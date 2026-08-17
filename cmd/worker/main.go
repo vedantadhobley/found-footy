@@ -168,7 +168,14 @@ func main() {
 
 		// The spawner starts EventWorkflow and registers its downstream
 		// event_downstream_workflows row insert in the same activity.
-		spawner := monitoractivity.NewTemporalSpawner(tempClient, 10*time.Second)
+		spawner := monitoractivity.NewTemporalSpawner(
+			tempClient,
+			10*time.Second,
+			monitoractivity.ConservativeEventStaleAfter(
+				deps.Cfg.Discovery.AttemptSpacing,
+				deps.Cfg.Discovery.QueryTimeout,
+			),
+		)
 
 		// Discovery activities call the Twitter service for real search, then mark the
 		// event_downstream_workflows row complete. Only assign

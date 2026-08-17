@@ -494,8 +494,22 @@ checklist remains open until the replacement run reaches normal finalization.
 A Temporal change marker keeps executions started before FF-007 on their old
 command sequence; every new or replacement execution records version 1 and
 uses recovery.
-A genuinely stale `RUNNING` execution needs the separate FF-025 backstop; age
-alone never authorizes fixture completion.
+
+**Stale-running recovery contract (FF-025).** Each duplicate start describes
+the current Temporal execution. The process records the exact run ID plus its
+history-length and state-transition counters. Termination is permitted only
+after the same run remains `RUNNING`, both counters remain unchanged for the
+entire quiet bound, total run age also exceeds that bound, and no newer
+activity heartbeat exists. The default 30-minute bound grows to twice the
+configured attempt spacing or four configured query timeouts plus five
+minutes, whichever is larger. A changed run/status/counter, recent heartbeat,
+malformed response, RPC failure, or exact-run termination race fails closed.
+After a successful termination, the same failed-only ID starts a replacement
+that restores FF-007's Postgres checkpoint. This path never marks the
+checklist or fixture complete; only normal EventWorkflow finalization can do
+that. Inspection and termination errors are included in ReconcileFixture's
+error output while the next poll retains ownership and retries. See the
+[stale-run recovery decision](./decisions/2026-08-17-stale-event-recovery-requires-progress-proof.md).
 
 **Consumer** (`event_pipeline.go`, serialized). Exact-byte ownership precedes
 dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):

@@ -249,7 +249,12 @@ its deterministic ID with
 singletons while failed, timed-out, canceled, or terminated executions can
 resume from Postgres checkpoints. Its client start RPC is bounded, but the
 workflow has no arbitrary outer execution timeout; the finite search loop and
-per-operation timeouts own the runtime bound. See
+per-operation timeouts own the runtime bound. Duplicate starts describe the
+current run for FF-025: only two observations proving unchanged history and
+state-transition counters for a derived 30-minute-or-greater quiet window may
+terminate that exact run. Activity heartbeats reset the window, and all
+uncertainty fails closed. The replacement then uses the same failed-only ID;
+no recovery path force-completes Postgres state. See
 [orchestration.md](./orchestration.md).
 
 **Adapter surface:** `Client.ScheduleClient() client.ScheduleClient` —

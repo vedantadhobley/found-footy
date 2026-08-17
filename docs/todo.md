@@ -365,11 +365,10 @@ against the current branch.
   Postgres integration test covers monotonic metadata and pending-state load.
   A Temporal version marker plus default-version test preserve the command
   sequence of executions started before the fix.
-- **Remaining boundary:** This fixes closed unsuccessful executions. Temporal
-  still reports a wedged execution as `RUNNING`, where failed-only reuse must
-  reject a duplicate. FF-025 owns status-aware stale-run recovery. A blind
-  fixture maximum-age force-complete is rejected because it can bypass score
-  consistency and unfinished downstream work.
+- **Resolved follow-up:** FF-025 now handles executions that remain `RUNNING`
+  through a two-snapshot Temporal progress proof. A blind fixture maximum-age
+  force-complete remains rejected because it can bypass score consistency and
+  unfinished downstream work.
 
 ### FF-014 — score-consistent goal is false-removed on event-array omission
 
@@ -844,6 +843,36 @@ against the current branch.
 - **Source relation:** New bounded failure-state bug. It does not change #160's
   zero-warm lifecycle or FF-017's container-level browser recovery.
 
+### FF-025 — stale-running EventWorkflow blocks failed-only recovery
+
+- **Status:** `implemented locally`; not deployed
+- **Severity:** P2
+- **Source:** FF-007 recovery boundary.
+- **Invariant:** Recovery may terminate only one exact EventWorkflow run proven
+  unable to make progress. It must never complete the downstream checklist or
+  fixture on age alone.
+- **Evidence:** FF-007 can replace a closed unsuccessful run, but Temporal
+  correctly rejects the deterministic ID while a wedged execution remains
+  `RUNNING`. Its open checklist row also keeps the per-event Firefox container
+  live and blocks fixture completion.
+- **Implementation:** A duplicate start now describes the current execution
+  and records its exact run ID, history length, and state-transition count.
+  Only the same run with unchanged counters for the entire conservative quiet
+  window can be terminated. A newer activity heartbeat resets the window.
+  The window has a 30-minute floor and grows to cover configured attempt
+  spacing or the full four-attempt search timeout. Termination names the exact
+  run; success reuses FF-007's failed-only ID and Postgres recovery checkpoint.
+  Status changes, run changes, counter movement, heartbeat movement, malformed
+  descriptions, RPC failures, and termination races all fail closed.
+- **Regression:** Unit tests lock the derived quiet bound, first-observation
+  safety, exact-run termination and replacement, history-progress reset,
+  heartbeat reset, describe failure, and terminate-before-restart race.
+- **Completion safety:** Neither the checklist row nor fixture state is changed
+  by the detector. Only a normally completed replacement execution may run
+  `MarkDownstreamComplete`; FF-014 remains the score-inventory gate.
+- **Source relation:** This supersedes the 2026-08-15 audit's proposed fixture
+  max-age force-complete with status-and-progress-aware recovery.
+
 ## Confirmed lower-priority backlog
 
 | ID | Severity | Source | Summary | Completion condition |
@@ -854,7 +883,6 @@ against the current branch.
 | FF-011 | P2 | Audit 2026-08-15 | Popularity increments are not idempotent under activity retry. | Retry-safe vote accounting with an invariant test. |
 | FF-013 | P2 | Audit 2026-08-15 | Schema guard verifies one fingerprint, not the existence of every object after interrupted initialization. | Verify required objects or adopt ordered migrations; test partial schema. |
 | FF-024 | P2 | FF-006 follow-up; current code | The `staging/` prefix has no bounded orphan sweep after abnormal workflow or process termination. | List by prefix with an age floor, protect keys owned by active work, delete only proven orphans, and test both exclusions and bounded cleanup. |
-| FF-025 | P2 | FF-007 recovery boundary | A wedged EventWorkflow can remain `RUNNING`, so failed-only Workflow ID reuse correctly refuses to replace it while the downstream row and Firefox stay pinned. | Inspect Temporal status and age, recover only executions proven stale under a conservative bound, safely terminate/re-drive them, and never bypass score or downstream-completion invariants. |
 
 ## Audit intake requiring current-code validation
 

@@ -103,6 +103,13 @@ remain in the final dedup/output pool. A default-version test proves histories
 created before FF-007 do not gain recovery activities or progress writes on
 replay.
 
+FF-025 spawner tests require two unchanged snapshots before an exact-run
+termination and failed-only replacement. Separate cases prove that history or
+state-transition movement resets the quiet clock, a recent activity heartbeat
+also resets it, and describe or termination errors never start a replacement.
+The derived bound tests cover its 30-minute floor plus long attempt-spacing and
+query-timeout configurations.
+
 FF-002 workflow tests cover both sides of the child boundary. VideoWorkflow
 tests exhaust all configured download and hash retries and require typed failed
 outputs; the hash result must retain its staging key, while cancellation must
