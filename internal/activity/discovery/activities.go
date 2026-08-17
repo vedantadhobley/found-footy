@@ -1,4 +1,4 @@
-// Activities for EventWorkflow. Four activities cover the
+// Activities for EventWorkflow. Six activities cover the
 // production shape:
 //
 //  1. FetchTeamAliases — pull team_aliases row (canonical_name +
@@ -9,7 +9,10 @@
 //  3. StoreCandidate — persist one candidate tweet to
 //     event_search_candidates. Idempotent via
 //     ON CONFLICT DO NOTHING on (event_id, tweet_url).
-//  4. MarkDownstreamComplete — updates event_downstream_workflows
+//  4. LoadEventRecoveryState — restore durable search progress and candidate
+//     ownership when a failed EventWorkflow execution restarts.
+//  5. RecordDiscoveryProgress — monotonically checkpoint completed searches.
+//  6. MarkDownstreamComplete — updates event_downstream_workflows
 //     so FixtureReadyToComplete stops treating this workflow as
 //     pending.
 package discovery
@@ -324,6 +327,107 @@ func (a *Activities) StoreCandidate(ctx context.Context, in StoreCandidateInput)
 		return StoreCandidateOutput{}, fmt.Errorf("discovery.StoreCandidate: event=%s tweet=%s: %w", in.EventID, in.TweetURL, err)
 	}
 	return StoreCandidateOutput{Inserted: tag.RowsAffected() == 1}, nil
+}
+
+// RecoveryCandidate is one candidate already owned by the event. Pending
+// candidates must be re-driven after an abnormal workflow close; terminal
+// candidates only seed the search exclusion set.
+type RecoveryCandidate struct {
+	TweetURL string
+	Pending  bool
+}
+
+// LoadEventRecoveryStateInput identifies the EventWorkflow checklist row.
+type LoadEventRecoveryStateInput struct {
+	EventID      uuid.UUID
+	WorkflowType string
+	WorkflowID   string
+}
+
+// LoadEventRecoveryStateOutput is the durable progress a replacement
+// EventWorkflow execution restores before it starts children or searches.
+type LoadEventRecoveryStateOutput struct {
+	AttemptsCompleted int
+	Candidates        []RecoveryCandidate
+}
+
+// LoadEventRecoveryState reads the monotonic attempt checkpoint and every
+// candidate URL already owned by the event. The checklist row must exist before
+// spawn; failing closed here prevents an untracked recovery run from repeating
+// side effects without durable ownership state.
+func (a *Activities) LoadEventRecoveryState(
+	ctx context.Context,
+	in LoadEventRecoveryStateInput,
+) (LoadEventRecoveryStateOutput, error) {
+	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var out LoadEventRecoveryStateOutput
+	if err := a.Pool.QueryRow(callCtx, `
+		SELECT COALESCE((metadata->>'attempts_completed')::int, 0)
+		FROM event_downstream_workflows
+		WHERE event_id = $1 AND workflow_type = $2 AND workflow_id = $3
+	`, in.EventID, in.WorkflowType, in.WorkflowID).Scan(&out.AttemptsCompleted); err != nil {
+		return out, fmt.Errorf("discovery.LoadEventRecoveryState: checklist event=%s workflow=%s: %w",
+			in.EventID, in.WorkflowID, err)
+	}
+
+	rows, err := a.Pool.Query(callCtx, `
+		SELECT tweet_url, outcome_class = 'pending'
+		FROM event_search_candidates
+		WHERE event_id = $1
+		ORDER BY discovered_at, tweet_url
+	`, in.EventID)
+	if err != nil {
+		return out, fmt.Errorf("discovery.LoadEventRecoveryState: candidates event=%s: %w", in.EventID, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var candidate RecoveryCandidate
+		if err := rows.Scan(&candidate.TweetURL, &candidate.Pending); err != nil {
+			return out, fmt.Errorf("discovery.LoadEventRecoveryState: scan event=%s: %w", in.EventID, err)
+		}
+		out.Candidates = append(out.Candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("discovery.LoadEventRecoveryState: rows event=%s: %w", in.EventID, err)
+	}
+	return out, nil
+}
+
+// RecordDiscoveryProgressInput checkpoints one fully scheduled search attempt.
+type RecordDiscoveryProgressInput struct {
+	EventID      uuid.UUID
+	WorkflowType string
+	WorkflowID   string
+	Attempt      int
+}
+
+// RecordDiscoveryProgress monotonically advances attempts_completed in the
+// checklist metadata. A lower replayed value is a no-op; a missing row is an
+// invariant failure because monitor must register before spawning.
+func (a *Activities) RecordDiscoveryProgress(ctx context.Context, in RecordDiscoveryProgressInput) error {
+	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	tag, err := a.Pool.Exec(callCtx, `
+		UPDATE event_downstream_workflows
+		SET metadata = jsonb_set(
+			COALESCE(metadata, '{}'::jsonb),
+			'{attempts_completed}',
+			to_jsonb(GREATEST(COALESCE((metadata->>'attempts_completed')::int, 0), $4::int)),
+			true
+		)
+		WHERE event_id = $1 AND workflow_type = $2 AND workflow_id = $3
+	`, in.EventID, in.WorkflowType, in.WorkflowID, in.Attempt)
+	if err != nil {
+		return fmt.Errorf("discovery.RecordDiscoveryProgress: event=%s attempt=%d: %w", in.EventID, in.Attempt, err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("discovery.RecordDiscoveryProgress: checklist missing for event=%s workflow=%s",
+			in.EventID, in.WorkflowID)
+	}
+	return nil
 }
 
 // CandidateOutcome is the terminal per-candidate class recorded on

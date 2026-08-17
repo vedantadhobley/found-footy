@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Failed EventWorkflow executions resume durable progress](./2026-08-17-failed-event-workflows-resume-durable-progress.md) — FF-007 Workflow ID reuse, checkpoint, and recovery boundary.
 - [Promotion retries complete ranking and staging cleanup](./2026-08-16-promotion-retries-complete-durable-tail.md) — FF-006/FF-023 durable-tail and dirty-signal contract.
 - [Twitter client construction is independent of browser readiness](./2026-08-16-twitter-client-construction-is-readiness-independent.md) — FF-016 recovery from worker/Twitter startup races.
 - [Event-browser names follow workspace order while labels authorize lifecycle](./2026-08-16-event-browser-names-follow-workspace-order.md) — FF-020 naming and release-selection correction to FF-001.

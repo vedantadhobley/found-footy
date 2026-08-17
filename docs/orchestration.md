@@ -43,11 +43,13 @@ Two distinct spawn mechanisms:
   none is a Temporal parent of the others. When a goal's
   `downstream_triggered` flips, `ReconcileFixture` spawns the EventWorkflow
   via the Temporal **client** (`StartWorkflow`, deterministic ID
-  `event-{id}`, RejectDuplicate) — **not** a Temporal ChildWorkflow of the
+  `event-{id}`, failed-only reuse) — **not** a Temporal ChildWorkflow of the
   poll. Its lifecycle is tracked in Postgres via `event_downstream_workflows`
   (one row per spawned workflow; a fixture completes when it has no pending
-  rows — the "completion contract"). See
-  [`../decisions.md` 2026-07-16 Temporal-direct spawn](decisions.md).
+  rows — the "completion contract"). Running and successful executions reject
+  duplicate starts; a closed unsuccessful execution may reuse the ID and
+  restore its durable progress. See the
+  [failed-run recovery decision](./decisions/2026-08-17-failed-event-workflows-resume-durable-progress.md).
 - **EventWorkflow → VideoWorkflow — a real Temporal `ExecuteChildWorkflow`.**
   Each candidate spawns an *awaited* child (with `ParentClosePolicy`), so
   cancelling the EventWorkflow tears its Video children down with it. This
@@ -405,7 +407,7 @@ The per-goal orchestrator (renamed from DiscoveryWorkflow, decisions.md
 undersold it; the discovery *phase* keeps its name). Spawned
 Temporal-direct by Monitor's `ReconcileFixture` via `DownstreamSpawner`
 when an event's `downstream_triggered` flips (workflow ID `event-{id}`,
-RejectDuplicate; NOT scheduled — 2026-07-16). Location:
+failed-only reuse; NOT scheduled — 2026-07-16, revised by FF-007). Location:
 `internal/workflow/event.go` (orchestration) + `event_pipeline.go`
 (consumer) + `internal/activity/discovery/`.
 
@@ -447,6 +449,22 @@ again. Cancellation therefore closes the workflow without another search,
 another child spawn, or `finalizeEvent`. The monitor's event-removal
 transaction owns downstream-checklist closure, and its destroy/release path
 owns cleanup for this case.
+
+**Failed-execution recovery contract (FF-007).** The monitor may start a new
+run under the same deterministic Workflow ID only when the prior run closed
+unsuccessfully. EventWorkflow has no outer execution timeout: its attempt loop
+is finite, while each activity and Video child retains its own timeout. Before
+new work starts, the replacement run loads active persisted assets, the
+monotonic `attempts_completed` checkpoint from downstream metadata, and every
+persisted candidate. Terminal candidates seed exclusions; candidates still
+marked `pending` are re-driven. Search resumes at the first uncompleted
+attempt, and each fully scheduled attempt advances the checkpoint. The
+checklist remains open until the replacement run reaches normal finalization.
+A Temporal change marker keeps executions started before FF-007 on their old
+command sequence; every new or replacement execution records version 1 and
+uses recovery.
+A genuinely stale `RUNNING` execution needs the separate FF-025 backstop; age
+alone never authorizes fixture completion.
 
 **Consumer** (`event_pipeline.go`, serialized). Two dedup stages straddle
 vision (#171 shipped 2026-08-09 — the pre-vision, category-blind, keep-first

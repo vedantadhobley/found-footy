@@ -60,8 +60,8 @@ found-footy/
 │   │   │   ├── activities.go
 │   │   │   └── activities_test.go
 │   │   ├── monitor/                     ✓ config, activation, staging/live fetch, reconcile, and signal/spawn support
-│   │   ├── discovery/                   ✓ GetDiscoveryConfig, FetchTeamAliases, SearchTweets, StoreCandidate, MarkDownstreamComplete
-│   │   ├── video/                       ✓ DownloadAndStage, HashVideo, persistence, teardown, and ranking activities
+│   │   ├── discovery/                   ✓ config/aliases/search/candidates, durable recovery checkpoints, and downstream completion
+│   │   ├── video/                       ✓ DownloadAndStage, HashVideo, live-asset recovery, persistence, teardown, and ranking activities
 │   │   ├── vision/                      ✓ staged-clip frame extraction + model-backed validation
 │   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when fleet disabled (FIREFOXFLEET_ENABLED=false)
 │   │   ├── livefeed/                     ✓ publish-activity boundary for all NATS live-feed emits

@@ -30,6 +30,8 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
 
+const ff007RecoveryChangeIDForTest = "ff-007-failed-run-recovery"
+
 // newDiscoveryEnv sets up a test env with EventWorkflow +
 // discovery activities registered. Individual tests attach OnActivity
 // mocks before ExecuteWorkflow.
@@ -38,6 +40,20 @@ import (
 // test is free to set the child outcome it wants (testify picks the
 // first-registered matching mock, so defaults can't be overridden).
 func baseEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvironment {
+	return baseEventEnvWithRecovery(s,
+		discoveryactivity.LoadEventRecoveryStateOutput{},
+		videoactivity.LoadEventAssetsOutput{},
+	)
+}
+
+// baseEventEnvWithRecovery lets restart tests seed the durable state a new
+// EventWorkflow execution restores. Ordinary tests use baseEventEnv's empty
+// projections and retain their original first-run shape.
+func baseEventEnvWithRecovery(
+	s *testsuite.WorkflowTestSuite,
+	recovery discoveryactivity.LoadEventRecoveryStateOutput,
+	assets videoactivity.LoadEventAssetsOutput,
+) *testsuite.TestWorkflowEnvironment {
 	env := s.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(workflow.EventWorkflow)
 	env.RegisterWorkflow(workflow.VideoWorkflow)
@@ -68,6 +84,12 @@ func baseEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnviron
 			Aliases:       []string{"liverpool", "reds", "lfc"},
 			Found:         true,
 		}, nil).Maybe()
+	env.OnActivity("LoadEventRecoveryState", mock.Anything, mock.Anything).
+		Return(recovery, nil).Maybe()
+	env.OnActivity("RecordDiscoveryProgress", mock.Anything, mock.Anything).
+		Return(nil).Maybe()
+	env.OnActivity("LoadEventAssets", mock.Anything, mock.Anything).
+		Return(assets, nil).Maybe()
 	// Default event.video publish stub — the pipeline fires it after a
 	// promote/supersede changes the clip set; .Maybe() so tests that never
 	// promote don't need it. Tests asserting the ping override explicitly.
@@ -222,6 +244,85 @@ func TestEventWorkflow_DedupSameTweetAcrossAttempts(t *testing.T) {
 	if out.AttemptsRun != 10 {
 		t.Errorf("attempts_run = %d, want 10", out.AttemptsRun)
 	}
+}
+
+// TestEventWorkflow_FailedRunRestoresDurableProgress covers FF-007's
+// replacement-execution boundary. Nine completed searches resume at ten; a
+// pending candidate is re-driven, a terminal candidate is excluded, and the
+// existing live asset remains in the dedup/output pool.
+func TestEventWorkflow_FailedRunRestoresDurableProgress(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	const (
+		terminalURL = "https://x.com/u/status/1111111111111111111"
+		pendingURL  = "https://x.com/u/status/2222222222222222222"
+		newURL      = "https://x.com/u/status/3333333333333333333"
+	)
+	env := baseEventEnvWithRecovery(&s,
+		discoveryactivity.LoadEventRecoveryStateOutput{
+			AttemptsCompleted: 9,
+			Candidates: []discoveryactivity.RecoveryCandidate{
+				{TweetURL: terminalURL, Pending: false},
+				{TweetURL: pendingURL, Pending: true},
+			},
+		},
+		videoactivity.LoadEventAssetsOutput{Assets: []videoactivity.RestoredEventAsset{{
+			AssetID: uuid.New(), MD5: "existing-md5", FrameHashes: []uint64{1, 2, 3},
+			Width: 1280, Height: 720, DurationMS: 10_000, FileSizeBytes: 1_000_000,
+			Popularity: 2, Verified: true,
+		}}},
+	)
+
+	env.OnActivity("SearchTweets", mock.Anything, mock.MatchedBy(func(in discoveryactivity.SearchTweetsInput) bool {
+		return len(in.ExcludeURLs) == 2 && in.ExcludeURLs[0] == terminalURL && in.ExcludeURLs[1] == pendingURL
+	})).Return(discoveryactivity.SearchTweetsOutput{
+		// The service may still echo excluded rows. Workflow ownership must
+		// suppress both and process only the genuinely new URL.
+		Videos: []twitter.VideoRef{
+			{TweetURL: terminalURL}, {TweetURL: pendingURL}, {TweetURL: newURL},
+		},
+		Count: 3,
+	}, nil).Once()
+	env.OnActivity("StoreCandidate", mock.Anything, mock.MatchedBy(func(in discoveryactivity.StoreCandidateInput) bool {
+		return in.SearchAttempt == 10 && in.TweetURL == newURL
+	})).Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil).Once()
+	for _, url := range []string{pendingURL, newURL} {
+		env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(url)).
+			Return(workflow.VideoWorkflowOutput{Outcome: workflow.VideoOutcomeRejected, RejectReason: "test"}, nil).Once()
+	}
+	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	var out workflow.EventWorkflowOutput
+	if err := env.GetWorkflowResult(&out); err != nil {
+		t.Fatalf("GetWorkflowResult: %v", err)
+	}
+	if out.AttemptsRun != 10 || out.CandidatesFound != 3 || out.AssetsKept != 1 {
+		t.Errorf("recovered output = attempts %d/candidates %d/assets %d, want 10/3/1",
+			out.AttemptsRun, out.CandidatesFound, out.AssetsKept)
+	}
+	env.AssertNumberOfCalls(t, "VideoWorkflow", 2)
+}
+
+// TestEventWorkflow_DefaultVersionPreservesPreRecoveryCommandSequence proves
+// a workflow started before FF-007 does not insert recovery activities or
+// progress writes into its existing Temporal history during replay.
+func TestEventWorkflow_DefaultVersionPreservesPreRecoveryCommandSequence(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newDiscoveryEnv(&s)
+	env.OnGetVersion(ff007RecoveryChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(sdkworkflow.DefaultVersion).
+		Once()
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{}, nil)
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	env.AssertNotCalled(t, "LoadEventAssets", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "LoadEventRecoveryState", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "RecordDiscoveryProgress", mock.Anything, mock.Anything)
 }
 
 // TestEventWorkflow_NoResults — every attempt returns zero videos.

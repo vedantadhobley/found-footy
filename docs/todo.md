@@ -333,15 +333,31 @@ against the current branch.
 
 ### FF-007 — abnormal EventWorkflow closure can strand a fixture
 
-- **Status:** `confirmed`
+- **Status:** `implemented`; not deployed
 - **Severity:** P1
 - **Source:** 2026-08-15 audit, finding #196.
 - **Evidence:** A workflow that closes before `MarkDownstreamComplete` leaves
-  its checklist row open. Spawn recovery uses duplicate rejection and cannot
-  re-drive the same workflow ID; fixture completion can remain blocked and
-  the Firefox instance can remain pinned.
-- **Required work:** Define recovery policy for failed/timed-out executions,
-  make re-drive idempotent, and add an active-fixture maximum-age backstop.
+  its checklist row open. The spawner used `RejectDuplicate` and a 30-minute
+  execution timeout, so the same deterministic ID could never re-drive. Even
+  if reuse were enabled alone, search progress, candidate ownership, and the
+  live dedup pool existed only in workflow memory.
+- **Implemented locally; not deployed:** Event starts now use typed
+  `ALLOW_DUPLICATE_FAILED_ONLY` and no arbitrary workflow execution timeout.
+  Each fully scheduled search attempt advances a monotonic checkpoint in the
+  downstream row. A replacement run restores that checkpoint, all candidate
+  URLs and their pending/terminal state, and active persisted assets. It
+  re-drives pending candidates, excludes terminal candidates, and resumes at
+  the first unfinished search attempt before it may close the checklist.
+- **Regression:** Spawner unit tests lock the reuse/timeout/error contract;
+  WorkflowTestSuite covers recovered attempts, candidates, and assets; a real
+  Postgres integration test covers monotonic metadata and pending-state load.
+  A Temporal version marker plus default-version test preserve the command
+  sequence of executions started before the fix.
+- **Remaining boundary:** This fixes closed unsuccessful executions. Temporal
+  still reports a wedged execution as `RUNNING`, where failed-only reuse must
+  reject a duplicate. FF-025 owns status-aware stale-run recovery. A blind
+  fixture maximum-age force-complete is rejected because it can bypass score
+  consistency and unfinished downstream work.
 
 ### FF-014 — score-consistent goal is false-removed on event-array omission
 
@@ -544,6 +560,7 @@ against the current branch.
 | FF-013 | P2 | Audit 2026-08-15 | Schema guard verifies one fingerprint, not the existence of every object after interrupted initialization. | Verify required objects or adopt ordered migrations; test partial schema. |
 | FF-017 | P2 | Current code; legacy #170-adjacent finding | Firefox can die while the Go Twitter service remains alive and unusable because no browser watchdog or fatal-exit path exists. | Make browser death restart or terminate the service, expose correct health, and cover the process-loss transition. |
 | FF-024 | P2 | FF-006 follow-up; current code | The `staging/` prefix has no bounded orphan sweep after abnormal workflow or process termination. | List by prefix with an age floor, protect keys owned by active work, delete only proven orphans, and test both exclusions and bounded cleanup. |
+| FF-025 | P2 | FF-007 recovery boundary | A wedged EventWorkflow can remain `RUNNING`, so failed-only Workflow ID reuse correctly refuses to replace it while the downstream row and Firefox stay pinned. | Inspect Temporal status and age, recover only executions proven stale under a conservative bound, safely terminate/re-drive them, and never bypass score or downstream-completion invariants. |
 
 ## Audit intake requiring current-code validation
 
