@@ -500,6 +500,10 @@ gate was replaced):
   asset row if promoted, or **accumulated in memory** on the winner if it's still
   pending vision (#180); otherwise the clip fires **vision** (`ValidateClip` on
   joi — screen-gate + period-aware clock).
+  Validation retries transient rate-limit, capacity, unavailable, and
+  infrastructure failures up to three attempts. Invalid request/auth/model and
+  malformed-response classes are non-retryable; after one attempt the existing
+  failure callback records `vision_error` and deletes staging (FF-012).
   Perceptual dedup is deliberately NOT here: a clip's verified/unverified
   category is unknown until vision, and md5-identical bytes are trivially the
   same category.

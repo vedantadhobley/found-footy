@@ -714,6 +714,37 @@ against the current branch.
 - **Source relation:** Closes `AUD-0813-P2-3` and narrows, rather than removes,
   the historical non-retryable geo-restriction contract.
 
+### FF-012 — permanent LLM failures consume transient retries
+
+- **Status:** `implemented`; not deployed
+- **Severity:** P2
+- **Source:** Audit 2026-08-15, revalidated against `llm.classifyError`,
+  `vision.ValidateClip`, and the EventWorkflow vision activity policy.
+- **Invariant:** Only a failure that can change without code or configuration
+  changes may consume the vision activity's retry budget.
+- **Evidence:** The LLM adapter already typed HTTP 400, 401/403, and 404 as
+  permanent sentinels, but `ValidateClip` returned every model error as an
+  ordinary retryable Go error. It also returned malformed structured content
+  as an untyped JSON error. EventWorkflow consequently ran all three activity
+  attempts for invalid requests, bad credentials, missing models, and malformed
+  model responses.
+- **Implemented locally; not deployed:** The adapter now types invalid JSON in
+  a successful OpenAI-compatible wire response as `ErrInvalidJSON`.
+  `ValidateClip` converts that class, malformed structured content,
+  `ErrModelNotFound`, `ErrInvalidRequest`, and `ErrAuthFailed` into a
+  non-retryable Temporal ApplicationError while preserving the sentinel cause.
+  Rate limit, capacity, unavailable, and unclassified infrastructure errors
+  remain retryable. A failed validation still records `vision_error` and
+  reclaims staging through the existing pipeline callback.
+- **Regression:** Adapter tests cover invalid 2xx JSON. Activity table tests
+  require every permanent sentinel and malformed model content to become a
+  non-retryable ApplicationError while rate limiting remains retryable.
+  Workflow tests require one attempt for permanent failure and three for
+  transient failure. Focused uncached tests pass.
+- **Source relation:** Implements the non-retryable model-response contract
+  already specified in the [rebuild plan](./design/rebuild-plan.md#4-domain-model);
+  no architectural divergence.
+
 ## Confirmed lower-priority backlog
 
 | ID | Severity | Source | Summary | Completion condition |
@@ -722,7 +753,6 @@ against the current branch.
 | FF-009 | P2 | Audits 2026-08-13 P2-12 and 2026-08-15 | Temporal schedules are create-only and retention still passes a hardcoded 14 days. | Config value wired; Describe→Update reconciliation tested and documented. |
 | FF-010 | P2 | Audit 2026-08-15 | Completed fixtures are not revisited for late assist backfill. | Bounded completed-fixture refresh policy with vendor-call budget and tests. |
 | FF-011 | P2 | Audit 2026-08-15 | Popularity increments are not idempotent under activity retry. | Retry-safe vote accounting with an invariant test. |
-| FF-012 | P2 | Audit 2026-08-15 | Permanent LLM failures such as 401/404/bad JSON are retried. | Typed non-retryable classification and Temporal retry test. |
 | FF-013 | P2 | Audit 2026-08-15 | Schema guard verifies one fingerprint, not the existence of every object after interrupted initialization. | Verify required objects or adopt ordered migrations; test partial schema. |
 | FF-024 | P2 | FF-006 follow-up; current code | The `staging/` prefix has no bounded orphan sweep after abnormal workflow or process termination. | List by prefix with an age floor, protect keys owned by active work, delete only proven orphans, and test both exclusions and bounded cleanup. |
 | FF-025 | P2 | FF-007 recovery boundary | A wedged EventWorkflow can remain `RUNNING`, so failed-only Workflow ID reuse correctly refuses to replace it while the downstream row and Firefox stay pinned. | Inspect Temporal status and age, recover only executions proven stale under a conservative bound, safely terminate/re-drive them, and never bypass score or downstream-completion invariants. |

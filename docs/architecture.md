@@ -247,7 +247,10 @@ Consumed by `internal/activity/vision.ValidateClip`: fetch staged clip →
 `ffmpeg.ExtractFrame` @25/50/75% → one multi-image structured-output vision call
 → `Evaluate`. **Wired into EventWorkflow's consumer** (`event_pipeline.go`, fired
 async per unique clip); the LLM adapter's `ResponseFormat` + `DisableThinking`
-fields (rung 1) exist for this call.
+fields (rung 1) exist for this call. At the activity boundary, typed permanent
+LLM failures (invalid response/request, missing model, or auth) become
+non-retryable Temporal ApplicationErrors; transient model and infrastructure
+classes retain the workflow's bounded retry policy (FF-012).
 
 ### team domain (D6)
 
@@ -292,7 +295,8 @@ Adapter-specific notes:
   accessor; NewWorker seeds `Options.WorkerStopTimeout` from Client if zero.
 - **llm**: types.go owns domain-shaped `ChatRequest`/`ChatResponse`;
   classifyError translates HTTP status codes to typed errors
-  (ErrRateLimited, ErrCapExceeded, etc.).
+  (ErrRateLimited, ErrCapExceeded, etc.) and maps malformed successful wire
+  responses to `ErrInvalidJSON`.
 - **syndication**: metadata resolution and CDN byte download use separate 403
   classes. Metadata 403 is terminal `ErrGeoRestricted`; CDN 403 is transient
   `ErrCDNForbidden`, allowing the enclosing activity retry to resolve a fresh

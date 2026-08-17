@@ -47,6 +47,7 @@ type mockLLMServer struct {
 	modelsResponse    openai.ModelsList
 	chatDelay         time.Duration
 	chatStatusCode    int // 0 = 200 with chatResponse; anything else = that status + JSON error body
+	chatRawResponse   []byte
 	chatResponse      openai.ChatCompletionResponse
 	concurrentPeak    int32
 	concurrentCurrent int32
@@ -95,16 +96,20 @@ func newMockLLMServer() *mockLLMServer {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if m.chatRawResponse != nil {
+			_, _ = w.Write(m.chatRawResponse)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(m.chatResponse)
 	})
 	m.srv = httptest.NewServer(mux)
 	return m
 }
 
-func (m *mockLLMServer) URL() string  { return m.srv.URL }
-func (m *mockLLMServer) Close()       { m.srv.Close() }
-func (m *mockLLMServer) Peak() int    { return int(atomic.LoadInt32(&m.concurrentPeak)) }
-func (m *mockLLMServer) ResetPeak()   { atomic.StoreInt32(&m.concurrentPeak, 0) }
+func (m *mockLLMServer) URL() string { return m.srv.URL }
+func (m *mockLLMServer) Close()      { m.srv.Close() }
+func (m *mockLLMServer) Peak() int   { return int(atomic.LoadInt32(&m.concurrentPeak)) }
+func (m *mockLLMServer) ResetPeak()  { atomic.StoreInt32(&m.concurrentPeak, 0) }
 
 func newClientAgainst(t *testing.T, ctx context.Context, endpoint string, fx *testFixture, cap int) *llm.Client {
 	t.Helper()
@@ -226,9 +231,9 @@ func TestChat_HappyPath(t *testing.T) {
 // via errors.Is.
 func TestChat_ClassifiesErrors(t *testing.T) {
 	cases := []struct {
-		name           string
-		serverStatus   int
-		wantSentinel   error
+		name         string
+		serverStatus int
+		wantSentinel error
 	}{
 		{"429 → ErrRateLimited", http.StatusTooManyRequests, llm.ErrRateLimited},
 		{"503 → ErrCapExceeded (llama.cpp max_parallel)", http.StatusServiceUnavailable, llm.ErrCapExceeded},
@@ -259,6 +264,22 @@ func TestChat_ClassifiesErrors(t *testing.T) {
 				t.Errorf("errors.Is(err, %v) = false; err = %v", tc.wantSentinel, err)
 			}
 		})
+	}
+}
+
+func TestChat_ClassifiesInvalidJSONResponse(t *testing.T) {
+	ctx := context.Background()
+	m := newMockLLMServer()
+	m.chatRawResponse = []byte(`{"choices":`)
+	defer m.Close()
+
+	fx := newTestFixture()
+	c := newClientAgainst(t, ctx, m.URL(), fx, 2)
+	defer c.Close()
+
+	_, err := c.Chat(ctx, simpleChat("hi"))
+	if !errors.Is(err, llm.ErrInvalidJSON) {
+		t.Fatalf("invalid 2xx JSON error = %v, want ErrInvalidJSON", err)
 	}
 }
 
