@@ -42,6 +42,7 @@ type S3Config struct {
 	// PresignedURLTTL controls how long presigned GET URLs stay valid.
 	// Browsers receive these to fetch video bytes directly from S3
 	// bypassing the api binary; 5 minutes is plenty for a click →
-	// browser fetch, short enough to bound share-URL leak damage.
+	// browser fetch, short enough to bound share-URL leak damage. The API's 302
+	// cache derives from this value with a one-minute safety margin (FF-028).
 	PresignedURLTTL time.Duration `env:"S3_PRESIGNED_URL_TTL" envDefault:"5m"`
 }

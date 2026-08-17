@@ -657,6 +657,32 @@ against the current branch.
   `AUD-0813-P2-16`, and `AUD-0813-P3-5`. The natural-key format and terminal
   removal policy remain unchanged.
 
+### FF-028 — cached video redirect can outlive its presigned target
+
+- **Status:** `implemented`; not deployed
+- **Severity:** P2
+- **Source:** Audit 2026-08-13 P2-11, revalidated against current API and S3
+  defaults.
+- **Invariant:** The cache lifetime of a 302 must be strictly shorter than the
+  presigned Garage URL embedded in it.
+- **Evidence:** `RedirectVideo` fixed `Cache-Control` at `max-age=300`, while
+  `S3_PRESIGNED_URL_TTL` defaults to the same five minutes. A cache hit near the
+  boundary could return an already expired playback URL.
+- **Implemented locally; not deployed:** API assembly passes the configured
+  presign lifetime to the handler. Redirect caching subtracts a one-minute
+  safety margin and caps at five minutes; the current default emits
+  `public, max-age=240`. A lifetime that cannot supply the margin emits
+  `no-store`. This remains correct under environment overrides without changing
+  the presign default.
+- **Regression:** Table tests cover the default, long, short, and unset
+  lifetimes. The redirect handler test requires the derived header on an active
+  share response. Focused uncached tests, `make test-short`, and `make vet`
+  pass.
+- **Decision:** [Video redirect cache stays inside the presigned URL
+  lifetime](./decisions/2026-08-17-video-redirect-cache-stays-inside-presign.md).
+- **Source relation:** Closes `AUD-0813-P2-11` while preserving the historical
+  repeated-play cache benefit.
+
 ## Confirmed lower-priority backlog
 
 | ID | Severity | Source | Summary | Completion condition |
@@ -690,7 +716,6 @@ implementation time.
 | `AUD-0813-P2-7` | fleet | Firefox provisioning runs sequentially inside the 30-second active-poll path. | `triage` |
 | `AUD-0813-P2-8` | discovery | Forensic candidate persistence blocks child workflow spawn on the speed-to-clip path. | `triage` |
 | `AUD-0813-P2-9` | ffmpeg | Dense hashing and latency-sensitive probe/frame work share one process lane. | `triage` |
-| `AUD-0813-P2-11` | API/S3 | Redirect cache lifetime can equal the presign lifetime, creating boundary-expired playback URLs. | `triage` |
 | `AUD-0813-P2-13` | observability | `calls_total{error_class}` can remain empty because emitted error fields do not populate that label. | `triage` |
 | `AUD-0813-P3-1` | vision | Unknown API minute (`0`) may reject a clock-bearing clip instead of retaining it unverified. | `triage` |
 | `AUD-0813-P3-2` | video | A hash shorter than the configured dedup window can pass while being structurally unable to deduplicate. | `triage` |

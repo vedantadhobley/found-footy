@@ -136,8 +136,9 @@ func scaffold() (*Handlers, int64, uuid.UUID) {
 			byEvent: map[uuid.UUID][]video.LiveClip{evID: {clip}},
 			resolve: map[string]video.ResolvedShare{},
 		},
-		Presign: &fakePresign{url: "https://garage.example/presigned"},
-		Bucket:  "found-footy",
+		Presign:    &fakePresign{url: "https://garage.example/presigned"},
+		Bucket:     "found-footy",
+		PresignTTL: 5 * time.Minute,
 	}
 	return h, fxID, evID
 }
@@ -245,7 +246,8 @@ func TestRedirectVideo(t *testing.T) {
 	fv.resolve["s_superseded"] = video.ResolvedShare{State: video.ShareStateSuperseded, Bucket: "found-footy", Key: "b.mp4"}
 	fv.resolve["s_removed"] = video.ResolvedShare{State: video.ShareStateRemoved}
 
-	// Active → 302 to the presigned URL, with the 5-min cache header.
+	// Active → 302 to the presigned URL, with one minute held back from the
+	// five-minute signature lifetime.
 	rec := get(h, "/api/v1/videos/s_active")
 	if rec.Code != http.StatusFound {
 		t.Fatalf("active status = %d, want 302", rec.Code)
@@ -253,8 +255,8 @@ func TestRedirectVideo(t *testing.T) {
 	if loc := rec.Header().Get("Location"); loc != "https://garage.example/presigned" {
 		t.Errorf("Location = %q", loc)
 	}
-	if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=300" {
-		t.Errorf("Cache-Control = %q, want public, max-age=300", cc)
+	if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=240" {
+		t.Errorf("Cache-Control = %q, want public, max-age=240", cc)
 	}
 	// Superseded still 302s (URL stability — resolves through the chain).
 	if rec := get(h, "/api/v1/videos/s_superseded"); rec.Code != http.StatusFound {
@@ -266,5 +268,25 @@ func TestRedirectVideo(t *testing.T) {
 	}
 	if rec := get(h, "/api/v1/videos/s_nope"); rec.Code != http.StatusNotFound {
 		t.Errorf("missing status = %d, want 404", rec.Code)
+	}
+}
+
+func TestVideoRedirectCacheControl(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		presignTTL time.Duration
+		want       string
+	}{
+		{name: "default keeps one minute", presignTTL: 5 * time.Minute, want: "public, max-age=240"},
+		{name: "long lifetime caps at five minutes", presignTTL: 10 * time.Minute, want: "public, max-age=300"},
+		{name: "margin consumes short lifetime", presignTTL: 30 * time.Second, want: "no-store"},
+		{name: "subsecond remainder is not cached", presignTTL: time.Minute + 500*time.Millisecond, want: "no-store"},
+		{name: "unset lifetime cannot be cached", presignTTL: 0, want: "no-store"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := videoRedirectCacheControl(tc.presignTTL); got != tc.want {
+				t.Fatalf("cache control = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
