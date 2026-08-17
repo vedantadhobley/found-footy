@@ -18,9 +18,9 @@ type Instruments struct {
 	log logging.Emitter
 	reg *metrics.Registry
 
-	calls           *prometheus.CounterVec
-	callDuration    *prometheus.HistogramVec
-	rateLimitRemain prometheus.Gauge
+	calls            *prometheus.CounterVec
+	callDuration     *prometheus.HistogramVec
+	rateLimitRemain  prometheus.Gauge
 	dailyQuotaRemain prometheus.Gauge
 }
 

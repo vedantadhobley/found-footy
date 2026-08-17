@@ -35,12 +35,12 @@ func newTestFixture() *testFixture {
 // mockAPIServer stands up an httptest server that responds like
 // api-sports.io. Individual tests tweak the response via handlers set on the mux.
 type mockAPIServer struct {
-	srv                  *httptest.Server
-	statusStatusCode     int
-	statusResponseBody   map[string]interface{}
+	srv                   *httptest.Server
+	statusStatusCode      int
+	statusResponseBody    map[string]interface{}
 	statusRatelimitRemain string
-	statusQuotaRemain    string
-	receivedKey          string
+	statusQuotaRemain     string
+	receivedKey           string
 }
 
 func newMockAPIServer() *mockAPIServer {

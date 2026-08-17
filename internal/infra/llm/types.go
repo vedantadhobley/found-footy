@@ -78,14 +78,14 @@ type ChatRequest struct {
 }
 
 // ResponseFormat opts a Chat call into structured output. Only JSONSchema
-// is modelled today (the sole use case); a nil ResponseFormat means prose.
+// is modeled today (the sole use case); a nil ResponseFormat means prose.
 type ResponseFormat struct {
 	JSONSchema *JSONSchema
 }
 
 // JSONSchema is the schema a structured-output call constrains against.
 // Schema is the raw JSON Schema document; Strict requests exact adherence
-// (all properties required, no extras) where the backend honours it. The
+// (all properties required, no extras) where the backend honors it. The
 // adapter passes Schema straight through — json.RawMessage satisfies the
 // SDK's json.Marshaler contract, so no re-encoding round-trip.
 type JSONSchema struct {

@@ -135,10 +135,10 @@ func TestBuild_GenerationalSuffixStripped(t *testing.T) {
 // collision-free across the whole real roster (decisions.md 2026-08-16).
 func TestDeriveAbbrev_OrgTokensAndDigits(t *testing.T) {
 	cases := []struct{ canonical, want string }{
-		{"AS Roma", "ASR"},          // leading org token kept whole
-		{"Sporting CP", "SCP"},      // trailing org token kept whole
-		{"RB Leipzig", "RBL"},       // was suppressed under the old first-initial rule
-		{"FC Cincinnati", "FCC"},    // FC-prefix now recovered
+		{"AS Roma", "ASR"},       // leading org token kept whole
+		{"Sporting CP", "SCP"},   // trailing org token kept whole
+		{"RB Leipzig", "RBL"},    // was suppressed under the old first-initial rule
+		{"FC Cincinnati", "FCC"}, // FC-prefix now recovered
 		{"AC Milan", "ACM"},
 		{"Hamburger SV", "HSV"},
 		{"FC Schalke 04", "FCS"},    // trailing "04" dropped (was garbage FS0)
@@ -147,7 +147,7 @@ func TestDeriveAbbrev_OrgTokensAndDigits(t *testing.T) {
 		{"Toronto FC", "TFC"},       // regression guards ↓
 		{"Los Angeles FC", "LAFC"},
 		{"Orlando City SC", "OCSC"},
-		{"Manchester United", ""},   // two title-case words → MU → suppressed
+		{"Manchester United", ""}, // two title-case words → MU → suppressed
 		{"Real Madrid", ""},
 		{"Paris Saint Germain", "PSG"},
 	}

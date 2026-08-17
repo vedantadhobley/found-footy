@@ -56,7 +56,9 @@ func TestDHash_Gradients(t *testing.T) {
 
 func TestDHash_Deterministic(t *testing.T) {
 	g := gradient(true)
-	if DHash(g) != DHash(g) {
+	first := DHash(g)
+	second := DHash(g)
+	if first != second {
 		t.Error("dHash is not deterministic")
 	}
 }

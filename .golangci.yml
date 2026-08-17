@@ -1,50 +1,58 @@
+# golangci-lint v2 policy for the active Go tree; archive/ is frozen Python.
+version: "2"
+
 run:
-  timeout: 5m
   tests: true
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck      # unchecked error returns
-    - govet         # stdlib go vet
-    - ineffassign   # useless assignments
-    - staticcheck   # comprehensive correctness checks
-    - unused        # unused code
-    - gofmt         # standard formatting
-    - goimports     # import ordering + unused
-    - misspell      # typos in comments + strings
-    - revive        # replacement for the deprecated golint
-    - unconvert     # unnecessary type conversions
     - gosec         # security-oriented checks
-
-linters-settings:
-  revive:
+    - govet         # standard-library static analysis
+    - ineffassign   # useless assignments
+    - misspell      # typos in comments and strings
+    - staticcheck   # broad correctness checks
+    - unconvert     # unnecessary type conversions
+    - unused        # unreachable declarations
+  settings:
+    gosec:
+      excludes:
+        - G104  # errcheck owns ignored-error reporting
+    misspell:
+      locale: US
+      # API-Football's provider vocabulary uses the British wire spelling.
+      ignore-rules:
+        - cancelled
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      - name: exported
-        arguments: ["checkPrivateReceivers", "disableStutteringCheck"]
-      - name: package-comments
-      - name: var-naming
-  misspell:
-    locale: US
-  gosec:
-    excludes:
-      # These fire aggressively during scaffolding; revisit when real code lands.
-      - G104  # unhandled errors — errcheck covers this more precisely
+      # Tests may intentionally ignore cleanup errors and use fixture secrets.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+    paths:
+      - archive
+      - vendor
+      - migrations
 
 issues:
-  exclude-dirs:
-    - archive
-    - vendor
-    - migrations
-  exclude-rules:
-    # Test files can skip some strict checks.
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gosec
-    # doc.go files are empty by design during Phase F.
-    - path: doc\.go
-      linters:
-        - unused
   max-issues-per-linter: 0
   max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - archive
+      - vendor
+      - migrations

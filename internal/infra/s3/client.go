@@ -126,7 +126,7 @@ func (c *Client) Upload(ctx context.Context, key string, body io.Reader, size in
 		input.ContentType = &contentType
 	}
 
-	_, err := c.Client.PutObject(ctx, input)
+	_, err := c.PutObject(ctx, input)
 	elapsed := time.Since(start)
 	c.ins.operationLatency.WithLabelValues("upload").Observe(elapsed.Seconds())
 
@@ -159,7 +159,7 @@ func (c *Client) Upload(ctx context.Context, key string, body io.Reader, size in
 // actually be read.
 func (c *Client) Download(ctx context.Context, key string) (io.ReadCloser, int64, error) {
 	start := time.Now()
-	out, err := c.Client.GetObject(ctx, &awss3.GetObjectInput{
+	out, err := c.GetObject(ctx, &awss3.GetObjectInput{
 		Bucket: &c.bucket,
 		Key:    &key,
 	})
@@ -198,7 +198,7 @@ func (c *Client) Download(ctx context.Context, key string) (io.ReadCloser, int64
 // not a failure.
 func (c *Client) Head(ctx context.Context, key string) (bool, error) {
 	start := time.Now()
-	_, err := c.Client.HeadObject(ctx, &awss3.HeadObjectInput{
+	_, err := c.HeadObject(ctx, &awss3.HeadObjectInput{
 		Bucket: &c.bucket,
 		Key:    &key,
 	})
@@ -237,7 +237,7 @@ func (c *Client) Head(ctx context.Context, key string) (bool, error) {
 // idempotent DELETE semantic).
 func (c *Client) Delete(ctx context.Context, key string) error {
 	start := time.Now()
-	_, err := c.Client.DeleteObject(ctx, &awss3.DeleteObjectInput{
+	_, err := c.DeleteObject(ctx, &awss3.DeleteObjectInput{
 		Bucket: &c.bucket,
 		Key:    &key,
 	})
@@ -270,7 +270,7 @@ func (c *Client) Delete(ctx context.Context, key string) error {
 func (c *Client) Copy(ctx context.Context, srcKey, dstKey string) error {
 	start := time.Now()
 	source := c.bucket + "/" + srcKey
-	_, err := c.Client.CopyObject(ctx, &awss3.CopyObjectInput{
+	_, err := c.CopyObject(ctx, &awss3.CopyObjectInput{
 		Bucket:     &c.bucket,
 		Key:        &dstKey,
 		CopySource: &source,

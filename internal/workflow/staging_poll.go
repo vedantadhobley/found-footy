@@ -2,9 +2,9 @@
 // (default `*/15 * * * *` = every 15 min at :00 :15 :30 :45). Owns
 // the vendor-side edge-case handling for staging fixtures:
 //
-//   • Kickoff-corrected activation (Path 3a): vendor pushed a new
+//   - Kickoff-corrected activation (Path 3a): vendor pushed a new
 //     kickoff time that puts the fixture inside our activation window.
-//   • Live() emergency activation (Path 3b): vendor status is already
+//   - Live() emergency activation (Path 3b): vendor status is already
 //     Live() (1H, 2H, HT, ET, BT, P, SUSP, INT, PST) while we still
 //     have the fixture in staging. Something went wrong upstream —
 //     either the vendor's original kickoff was off enough that a match

@@ -158,7 +158,7 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 	// let the next 30s poll pick them up.
 	var fetchOut monitor.FetchLiveFixturesOutput
 	if err := workflow.ExecuteActivity(ctx, "FetchLiveFixtures",
-		monitor.FetchLiveFixturesInput{IDs: listOut.IDs},
+		monitor.FetchLiveFixturesInput(listOut),
 	).Get(ctx, &fetchOut); err != nil {
 		// Catastrophic (all chunks failed / ctx cancelled) — log and
 		// exit. Next cycle retries the whole set.

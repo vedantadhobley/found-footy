@@ -1,6 +1,6 @@
 // errors.go — the typed error taxonomy for ffmpeg/ffprobe operations.
 // Activities errors.Is against these to classify a failure (environment
-// vs input vs transient) and pick the right Temporal retry behaviour, and
+// vs input vs transient) and pick the right Temporal retry behavior, and
 // the video pipeline uses Retryable to decide non-retryable vs retryable.
 package ffmpeg
 

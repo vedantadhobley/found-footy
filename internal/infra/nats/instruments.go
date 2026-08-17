@@ -112,8 +112,10 @@ func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Instruments {
 // (fixture_id, event_id, share_id) combination.
 //
 // Subjects the found-footy producer uses (per decisions.md 2026-08-14):
-//   found-footy.event.video                               → "event"
-//   found-footy.fixture.clock, found-footy.fixture.update → "fixture"
+//
+//	found-footy.event.video                               → "event"
+//	found-footy.fixture.clock, found-footy.fixture.update → "fixture"
+//
 // Legacy unprefixed subjects (event.*, fixture.*) still classify during
 // the transition; anything else → "other".
 func classifySubject(subject string) string {

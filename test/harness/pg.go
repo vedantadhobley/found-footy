@@ -68,7 +68,7 @@ func SetupPG(ctx context.Context, t *testing.T) (*pg.Pool, testcontainers.Contai
 func TruncateAll(ctx context.Context, t *testing.T, pool *pg.Pool) {
 	t.Helper()
 	tables := []string{
-		"fixtures",    // cascades to events + event_*_workflows (FK ON DELETE CASCADE)
+		"fixtures", // cascades to events + event_*_workflows (FK ON DELETE CASCADE)
 		"team_aliases",
 		// video_assets + video_shares don't cascade from fixtures;
 		// add here when scenarios write them.

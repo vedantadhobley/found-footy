@@ -5,11 +5,10 @@
 # builds share a module + build cache at ~/.cache/found-footy so we
 # don't re-download deps on every invocation.
 #
-# Dev-stack targets (dev-up, dev-down, dev-logs, dev-restart) land in
-# commit 5 when docker-compose.dev.yml exists.
-
-GO_IMAGE       := golang:1.25-bookworm
-GOLANGCI_IMAGE := golangci/golangci-lint:latest-alpine
+GO_VERSION             := 1.25.11
+GOLANGCI_LINT_VERSION  := 2.12.2
+GO_IMAGE               := golang:$(GO_VERSION)-bookworm
+GOLANGCI_IMAGE         := golangci/golangci-lint:v$(GOLANGCI_LINT_VERSION)-alpine
 
 CACHE_DIR   := $(HOME)/.cache/found-footy
 DOCKER_ENV  := -e GOCACHE=/gocache -e GOMODCACHE=/gomodcache
@@ -26,7 +25,8 @@ GOLANGCI_RUN := $(DOCKER_RUN) $(GOLANGCI_IMAGE)
 TEST_DOCKER_ARGS := -v /var/run/docker.sock:/var/run/docker.sock --network=host
 GO_TEST_RUN      := docker run --rm $(DOCKER_ENV) $(DOCKER_VOLS) $(TEST_DOCKER_ARGS) -w /src $(GO_IMAGE)
 
-.PHONY: help build test test-short test-race test-corpus hooks lint fmt vet tidy clean cache-init \
+.PHONY: help build check check-short test test-short test-race test-corpus hooks \
+        lint fmt fmt-check vet tidy tidy-check clean cache-init \
         dev-up dev-down dev-logs dev-restart dev-shell dev-ps \
         twitter-vnc-up twitter-vnc-down twitter-vnc-logs deploy-prod
 
@@ -61,9 +61,13 @@ test-race: cache-init ## Run tests with the race detector
 test-corpus: cache-init ## Run the scenario harness (test/scenarios/*.yaml)
 	$(GO_TEST_RUN) go test -buildvcs=false -v -run TestScenarios ./test/
 
-hooks: ## Install git test gates (core.hooksPath → .githooks; pre-commit=test-short, pre-push=test)
+check-short: fmt-check tidy-check vet lint test-short ## Run every fast, non-integration gate
+
+check: fmt-check tidy-check vet lint test ## Run every gate, including integration tests
+
+hooks: ## Install git gates (core.hooksPath → .githooks)
 	git config core.hooksPath .githooks
-	@echo "git test gates active: pre-commit → make test-short, pre-push → make test"
+	@echo "git gates active: pre-commit → make check-short, pre-push → make check"
 
 # ────── Lint + format ──────
 
@@ -73,6 +77,13 @@ lint: cache-init ## Run golangci-lint against the full tree
 fmt: cache-init ## Run gofmt on every .go file (mutates in place)
 	$(GO_RUN) gofmt -w -s .
 
+fmt-check: cache-init ## Fail if any Go file needs gofmt; never mutates source
+	@unformatted="$$( $(GO_RUN) gofmt -l . )"; \
+	if [ -n "$$unformatted" ]; then \
+		printf 'gofmt required:\n%s\n' "$$unformatted"; \
+		exit 1; \
+	fi
+
 vet: cache-init ## Run go vet
 	$(GO_RUN) go vet ./...
 
@@ -81,11 +92,14 @@ vet: cache-init ## Run go vet
 tidy: cache-init ## Run go mod tidy
 	$(GO_RUN) go mod tidy
 
+tidy-check: cache-init ## Fail if go.mod/go.sum need tidying; never mutates source
+	$(GO_RUN) go mod tidy -diff
+
 # ────── Dev stack ──────
 
 DEV_COMPOSE := docker-compose.dev.yml
 
-dev-up: ## Bring up the dev stack (postgres, temporal, garage, all four Go services with air)
+dev-up: ## Bring up the dev stack (infrastructure plus three Go services)
 	docker compose -f $(DEV_COMPOSE) up -d --build
 
 dev-down: ## Stop and remove the dev stack containers

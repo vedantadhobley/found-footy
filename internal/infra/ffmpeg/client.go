@@ -264,7 +264,7 @@ func (c *Client) Faststart(ctx context.Context, inPath, outPath string) error {
 	return nil
 }
 
-// acquire blocks for a semaphore slot, honouring ctx. If the ctx expires
+// acquire blocks for a semaphore slot, honoring ctx. If the ctx expires
 // first, we were saturated → ErrConcurrencyExhausted (retryable).
 func (c *Client) acquire(ctx context.Context) error {
 	select {

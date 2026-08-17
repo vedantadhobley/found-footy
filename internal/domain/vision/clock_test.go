@@ -17,9 +17,9 @@ func TestParseClockField(t *testing.T) {
 		{"34:39", 34, true},
 		{"45+2", 47, true},
 		{"90", 90, true},
-		{"2H 15:00", 60, true},   // relative 2nd-half clock → 45+15
-		{"ET 5:00", 95, true},    // extra time 5' → 90+5
-		{"1H 30:00", 30, true},   // 1st-half absolute
+		{"2H 15:00", 60, true}, // relative 2nd-half clock → 45+15
+		{"ET 5:00", 95, true},  // extra time 5' → 90+5
+		{"1H 30:00", 30, true}, // 1st-half absolute
 		{"", 0, false},
 		{"NONE", 0, false},
 		{"HT", 0, false},
@@ -85,7 +85,7 @@ func TestPeriodOf(t *testing.T) {
 		want   Period
 	}{
 		{30, PeriodFirstHalf},
-		{45, PeriodFirstHalf},  // 45+N stoppage frozen at 45 → H1
+		{45, PeriodFirstHalf}, // 45+N stoppage frozen at 45 → H1
 		{46, PeriodSecondHalf},
 		{48, PeriodSecondHalf}, // 3' into H2
 		{90, PeriodSecondHalf}, // 90+N stoppage frozen at 90 → H2

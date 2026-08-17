@@ -57,7 +57,7 @@ func TestProductionDeployGuardsFleetByOwnership(t *testing.T) {
 	finalGuard := strings.LastIndex(script, guardCall)
 	build := strings.Index(script, `"${compose[@]}" build`)
 	mutation := strings.Index(script, `"${compose[@]}" up -d`)
-	if build < 0 || mutation < 0 || !(build < finalGuard && finalGuard < mutation) {
+	if build < 0 || mutation < 0 || build >= finalGuard || finalGuard >= mutation {
 		t.Fatalf("final fleet guard must run after build and before mutation (build=%d guard=%d mutation=%d)", build, finalGuard, mutation)
 	}
 }

@@ -16,7 +16,7 @@ type VisionConfig struct {
 
 	// ToleranceMinutes is the ± window for the clock↔API-minute match.
 	// 1 validated on real clips; do NOT loosen to 2 (two goals can be a
-	// minute apart, and ±2 starts matching the neighbouring goal).
+	// minute apart, and ±2 starts matching the neighboring goal).
 	ToleranceMinutes int `env:"VISION_TOLERANCE_MINUTES" envDefault:"1"`
 
 	// FrameQuality is the ffmpeg JPEG quality (-q:v) for the extracted

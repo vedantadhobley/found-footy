@@ -6,13 +6,16 @@
 // the deterministic ID for the given event.
 //
 // Env:
-//   EVENT_ID   — required. UUID of the event to run Discovery against.
-//   ATTEMPTS   — optional. Override discoveryMaxAttempts for shorter smoke tests.
-//                Reads via a workflow-input override — kept simple for now.
+//
+//	EVENT_ID   — required. UUID of the event to run Discovery against.
+//	PG_DSN     — required. Postgres connection string (provided by dev Compose).
+//	ATTEMPTS   — optional. Override discoveryMaxAttempts for shorter smoke tests.
+//	             Reads via a workflow-input override — kept simple for now.
 //
 // Run:
-//   docker exec -e EVENT_ID=<uuid> found-footy-dev-worker \
-//     sh -c 'cd /src && go run ./scripts/trigger_discovery'
+//
+//	docker exec -e EVENT_ID=<uuid> found-footy-dev-worker \
+//	  sh -c 'cd /src && go run ./scripts/trigger_discovery'
 package main
 
 import (
@@ -43,9 +46,9 @@ func main() {
 	defer cancel()
 
 	// Read event context from pg to populate EventWorkflowInput.
-	pgURL := os.Getenv("PG_URL")
+	pgURL := os.Getenv("PG_DSN")
 	if pgURL == "" {
-		pgURL = "postgres://ffuser:ffpass@postgres:5432/found_footy"
+		fatal("missing", fmt.Errorf("PG_DSN env var required"))
 	}
 	conn, err := pgx.Connect(ctx, pgURL)
 	if err != nil {

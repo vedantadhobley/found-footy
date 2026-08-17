@@ -75,7 +75,7 @@ func TestInstanceAddr(t *testing.T) {
 		t.Errorf("InstanceAddr = %q, want %q", addr, want)
 	}
 	// Same purity guarantee as the name.
-	if InstanceAddr(evA) != InstanceAddr(evA) {
+	if again := InstanceAddr(evA); addr != again {
 		t.Error("InstanceAddr not deterministic")
 	}
 }

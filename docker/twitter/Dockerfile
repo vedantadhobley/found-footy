@@ -23,7 +23,7 @@
 # Same as top-level Dockerfile's build stage — parameterizable on
 # BINARY so the twitter-vnc build path can reuse the same builder
 # even though only BINARY=twitter makes sense here.
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.25.11-bookworm AS builder
 
 ARG BINARY=twitter
 WORKDIR /src

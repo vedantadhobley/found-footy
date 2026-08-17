@@ -180,7 +180,7 @@ with `env_file`.
 **Go rebuild conventions:**
 
 - Go 1.25 (bumped from 1.23 for air compatibility). Toolchain via container — nothing installed on host.
-- Everything runs in Docker. `make build`, `make test`, `make test-short` all spin `golang:1.25-bookworm` throwaway containers with the source bind-mounted.
+- Everything runs in Docker. `make build`, `make test`, `make test-short`, and the check targets all spin pinned `golang:1.25.11-bookworm` throwaway containers with the source bind-mounted.
 - Dev stack: `docker compose -f docker-compose.dev.yml up -d` — air hot-reload on the three Go binaries (worker/api/twitter).
 - Prod stack: `docker compose -f docker-compose.prod.yml` — **runs the Go stack** (worker/api/twitter on Postgres + Garage) since the 2026-08-15 cutover. Files intentionally renamed from bare `docker-compose.yml` so a stray `docker compose <cmd>` from this directory refuses to resolve.
 - Tests: unit + integration in the same package; integration tests spin real Postgres via testcontainers-go (`/var/run/docker.sock` mounted + `--network=host` in the `test` make target). Skip with `-short`.

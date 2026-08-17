@@ -302,13 +302,13 @@ func TestHasPenaltyShootoutComment(t *testing.T) {
 		comments string
 		want     bool
 	}{
-		{"Penalty Shootout", true},          // exact match, canonical
-		{"penalty shootout", true},          // lowercased
-		{"PENALTY SHOOTOUT", true},          // upper
+		{"Penalty Shootout", true},               // exact match, canonical
+		{"penalty shootout", true},               // lowercased
+		{"PENALTY SHOOTOUT", true},               // upper
 		{"contains Penalty Shootout text", true}, // substring — future-proof
-		{"", false},                         // empty
-		{"Foul", false},                     // wrong marker
-		{"Normal Goal", false},              // detail leaking in
+		{"", false},                              // empty
+		{"Foul", false},                          // wrong marker
+		{"Normal Goal", false},                   // detail leaking in
 	}
 	for _, tc := range cases {
 		got := apifootball.HasPenaltyShootoutComment(tc.comments)

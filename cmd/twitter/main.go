@@ -249,25 +249,11 @@ func envOrDefault(k, def string) string {
 func printJSON(action string, fields map[string]string) {
 	fields["action"] = action
 	fields["ts"] = time.Now().UTC().Format(time.RFC3339)
-	buf := []byte("{")
-	first := true
-	for k, v := range fields {
-		if !first {
-			buf = append(buf, ',')
-		}
-		first = false
-		buf = append(buf, '"')
-		buf = append(buf, k...)
-		buf = append(buf, `":"`...)
-		for _, r := range v {
-			if r == '"' || r == '\\' {
-				buf = append(buf, '\\')
-			}
-			buf = append(buf, byte(r))
-		}
-		buf = append(buf, '"')
+	buf, err := json.Marshal(fields)
+	if err != nil {
+		return // map[string]string cannot contain an unsupported JSON value
 	}
-	buf = append(buf, "}\n"...)
+	buf = append(buf, '\n')
 	_, _ = os.Stdout.Write(buf)
 }
 

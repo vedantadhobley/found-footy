@@ -157,10 +157,9 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	lastLoadedMtime := s.lastLoadedMtime
 	s.mu.RUnlock()
-	if _, err := s.maybeReloadCookies(lastLoadedMtime); err != nil {
-		// Reload failed (corrupt file, browser wedged). Continue anyway —
-		// verify against current context will decide the real outcome.
-	}
+	// Reload failure is deliberately non-terminal: verification against the
+	// current browser context below decides the real outcome.
+	_, _ = s.maybeReloadCookies(lastLoadedMtime)
 
 	start := time.Now()
 	searchURL := buildSearchURL(req.Query)
@@ -187,9 +186,8 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	// Wait for at least one tweet to render. Absent = legitimate empty
 	// result (query matched nothing in the age window), NOT an error.
-	if _, err := page.WaitForSelector(
-		`article[data-testid='tweet']`,
-		playwright.PageWaitForSelectorOptions{Timeout: playwright.Float(float64(s.tweetFeedTimeout / time.Millisecond))},
+	if err := page.Locator(`article[data-testid='tweet']`).WaitFor(
+		playwright.LocatorWaitForOptions{Timeout: playwright.Float(float64(s.tweetFeedTimeout / time.Millisecond))},
 	); err != nil {
 		writeSearchOK(w, SearchResponse{
 			Status:     "success",
@@ -209,9 +207,8 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// still proceeds — never worse than the old blind 2s sleep. Error is
 	// intentionally ignored: a miss just falls through to extraction, and
 	// the per-scroll loop re-extracts anyway.
-	_, _ = page.WaitForSelector(
-		`article[data-testid='tweet'] [data-testid='tweetText']`,
-		playwright.PageWaitForSelectorOptions{Timeout: playwright.Float(2000)},
+	_ = page.Locator(`article[data-testid='tweet'] [data-testid='tweetText']`).WaitFor(
+		playwright.LocatorWaitForOptions{Timeout: playwright.Float(2000)},
 	)
 
 	videos, stopReason, scrolls, extractErr := s.scrollAndExtract(r.Context(), page, excludeIDs, maxAgeMinutes)
@@ -272,10 +269,9 @@ func verifyOnSearchPage(page playwright.Page) bool {
 	}
 	// Positive: any logged-in app-shell element. Short timeout — the shell
 	// paints quickly when the session is valid.
-	if _, err := page.WaitForSelector(
+	if err := page.Locator(
 		`[data-testid='primaryColumn'], [data-testid='SideNav_AccountSwitcher_Button']`,
-		playwright.PageWaitForSelectorOptions{Timeout: playwright.Float(5000)},
-	); err == nil {
+	).WaitFor(playwright.LocatorWaitForOptions{Timeout: playwright.Float(5000)}); err == nil {
 		return true
 	}
 	// Re-check the URL — the redirect may have landed during the wait.
@@ -388,7 +384,8 @@ func (s *Service) scrollAndExtract(
 
 		// Timing jitter — random 500-3000ms sleep between scrolls.
 		// Baseline stealth #4 per twitter-port.md T/c.
-		jitter := s.scrollJitterMin + time.Duration(rand.IntN(int(s.scrollJitterMax-s.scrollJitterMin)))
+		// This jitter varies UI cadence; it does not generate a secret or token.
+		jitter := s.scrollJitterMin + time.Duration(rand.IntN(int(s.scrollJitterMax-s.scrollJitterMin))) //nolint:gosec
 		time.Sleep(jitter)
 	}
 

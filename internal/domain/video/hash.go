@@ -34,7 +34,7 @@ func DHashPNG(data []byte) (uint64, error) {
 
 // DHash computes the difference hash of img: full-res grayscale → in-place
 // histogram equalization → area-average downscale to 9×8 → compare each
-// cell to its right neighbour (1 bit each, MSB-first).
+// cell to its right neighbor (1 bit each, MSB-first).
 func DHash(img image.Image) uint64 {
 	g := toGray(img)
 	equalize(g)
@@ -71,7 +71,8 @@ func toGray(img image.Image) *grayImg {
 		for x := b.Min.X; x < b.Max.X; x++ {
 			r, gg, bb, _ := img.At(x, y).RGBA() // 16-bit per channel
 			l := (299*(r>>8) + 587*(gg>>8) + 114*(bb>>8)) / 1000
-			g.pix[i] = uint8(l)
+			// The weighted average of three 8-bit channels is always in [0,255].
+			g.pix[i] = uint8(l) //nolint:gosec // Proven by the luma bounds above.
 			i++
 		}
 	}
@@ -143,7 +144,8 @@ func downscale(g *grayImg, tw, th int) []uint8 {
 			if n == 0 {
 				n = 1
 			}
-			out[ty*tw+tx] = uint8(sum / n)
+			// sum/n is an average of uint8 pixels and therefore stays in [0,255].
+			out[ty*tw+tx] = uint8(sum / n) //nolint:gosec // Proven by the pixel bounds.
 		}
 	}
 	return out

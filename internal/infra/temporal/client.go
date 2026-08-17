@@ -130,7 +130,7 @@ func (c *Client) StartWorkflow(
 	args ...interface{},
 ) (client.WorkflowRun, error) {
 	start := time.Now()
-	run, err := c.Client.ExecuteWorkflow(ctx, options, workflowType, args...)
+	run, err := c.ExecuteWorkflow(ctx, options, workflowType, args...)
 	elapsed := time.Since(start)
 	c.ins.workflowStartTime.WithLabelValues(workflowType).Observe(elapsed.Seconds())
 

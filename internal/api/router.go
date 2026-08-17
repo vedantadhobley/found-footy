@@ -17,7 +17,6 @@ import (
 func NewRouter(h *Handlers) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 
 	// Liveness/readiness for Caddy's upstream check on the public port

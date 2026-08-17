@@ -2,12 +2,14 @@
 # host in docker-compose.dev.yml; air watches for .go changes and
 # rebuilds + restarts on save.
 #
-# One image for all four binaries; docker-compose.dev.yml sets
-# BINARY per service and picks the matching .air.<binary>.toml.
+# One image for the worker and API binaries; docker-compose.dev.yml sets
+# BINARY per service. Twitter uses docker/twitter/Dockerfile because its
+# Playwright and Firefox runtime is a separate build boundary.
 
-FROM golang:1.25-bookworm
+FROM golang:1.25.11-bookworm
 
 ARG BINARY
+ARG AIR_VERSION=1.65.3
 ENV BINARY=${BINARY}
 
 # Base runtime deps + build tools for CGO if we ever need it later.
@@ -17,20 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Twitter dev target: Firefox + Xvfb + noVNC (dev always includes VNC
-# for cookie re-auth without stopping the container).
-RUN if [ "$BINARY" = "twitter" ]; then \
-        apt-get update && apt-get install -y --no-install-recommends \
-            firefox-esr \
-            xvfb \
-            x11vnc \
-            novnc \
-            websockify \
-        && rm -rf /var/lib/apt/lists/*; \
-    fi
-
-# air handles the watch/rebuild/restart loop.
-RUN go install github.com/air-verse/air@latest
+# Air handles the watch/rebuild/restart loop. Pin it so a clean dev rebuild
+# cannot silently change the watcher or build behavior.
+RUN go install github.com/air-verse/air@v${AIR_VERSION}
 
 WORKDIR /src
 

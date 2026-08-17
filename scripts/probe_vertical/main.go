@@ -15,14 +15,17 @@
 // while a live match is validating.
 //
 // Verdict buckets (internal/domain/vision):
-//   verified   — soccer, not a screen-recording, clock matches the API minute
-//   unverified — soccer, not a screen-recording, clock NOT readable (exactly
-//                what a vertical reframe with a graphic header produces)
-//   rejected   — not soccer / phone-of-TV screen recording / clock contradicts
+//
+//	verified   — soccer, not a screen-recording, clock matches the API minute
+//	unverified — soccer, not a screen-recording, clock NOT readable (exactly
+//	             what a vertical reframe with a graphic header produces)
+//	rejected   — not soccer / phone-of-TV screen recording / clock contradicts
+//
 // verified+unverified = "would surface" = real footage the aspect gate killed.
 //
 // Run (dev-worker has .env for LLM + syndication; source bind-mounted at /src):
-//   docker exec -i found-footy-dev-worker sh -c 'cd /src && go run ./scripts/probe_vertical' < sample.tsv
+//
+//	docker exec -i found-footy-dev-worker sh -c 'cd /src && go run ./scripts/probe_vertical' < sample.tsv
 package main
 
 import (

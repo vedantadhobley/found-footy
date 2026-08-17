@@ -40,13 +40,13 @@ func TestTokenize_LatinWithDiacriticsPreserved(t *testing.T) {
 	}{
 		{"Bayern München", []string{"bayern", "munchen"}},
 		{"Atlético Madrid", []string{"atletico", "madrid"}},
-		{"São Paulo FC", []string{"sao", "paulo"}},                     // fc dropped by ≤2 later? no, fc has 2 chars so ≤2 filter drops it
-		{"Fußball-Club", []string{"fussball", "club"}},                  // ß→ss, dash split, both >2 chars — skip-list is downstream
+		{"São Paulo FC", []string{"sao", "paulo"}},     // fc dropped by ≤2 later? no, fc has 2 chars so ≤2 filter drops it
+		{"Fußball-Club", []string{"fussball", "club"}}, // ß→ss, dash split, both >2 chars — skip-list is downstream
 		{"España", []string{"espana"}},
-		{"Sevilla FC", []string{"sevilla"}},                             // fc dropped by len ≤2
+		{"Sevilla FC", []string{"sevilla"}}, // fc dropped by len ≤2
 		{"Nîmes Olympique", []string{"nimes", "olympique"}},
-		{"L'Olympique", []string{"lolympique"}},                         // apostrophe stripped, kept as one token
-		{"Bayer 04 Leverkusen", []string{"bayer", "leverkusen"}},        // "04" dropped as all-digit
+		{"L'Olympique", []string{"lolympique"}},                  // apostrophe stripped, kept as one token
+		{"Bayer 04 Leverkusen", []string{"bayer", "leverkusen"}}, // "04" dropped as all-digit
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -71,11 +71,11 @@ func TestTokenize_NonLatinScriptRomanized(t *testing.T) {
 		in   string
 		want []string
 	}{
-		{"Спартак", []string{"spartak"}},                    // Cyrillic → real token (was dropped pre-fix)
-		{"Спартак Москва", []string{"spartak", "moskva"}},   // Cyrillic multi-word
-		{"γαλαζιοι", []string{"galazioi"}},                  // Greek → romanized
-		{"οι", nil},                                          // Greek "the" → "oi", dropped by ≤2 filter
-		{"红魔", []string{"hong"}},                            // Chinese → "hong mo"; "mo" dropped ≤2; "hong" is noise the threshold drops downstream
+		{"Спартак", []string{"spartak"}},                  // Cyrillic → real token (was dropped pre-fix)
+		{"Спартак Москва", []string{"spartak", "moskva"}}, // Cyrillic multi-word
+		{"γαλαζιοι", []string{"galazioi"}},                // Greek → romanized
+		{"οι", nil},              // Greek "the" → "oi", dropped by ≤2 filter
+		{"红魔", []string{"hong"}}, // Chinese → "hong mo"; "mo" dropped ≤2; "hong" is noise the threshold drops downstream
 		{"Manchester 红魔 United", []string{"manchester", "hong", "united"}}, // mixed — Latin kept, CJK romanized (threshold drops "hong")
 	}
 	for _, tc := range cases {
@@ -101,8 +101,8 @@ func TestTokenizePlayerName_ExtendedLatinFolded(t *testing.T) {
 		in   string
 		want []string
 	}{
-		{"S. Ødegaard", []string{"odegaard"}},                     // Arsenal captain — was []
-		{"R. Højlund", []string{"hojlund"}},                       // Man Utd striker — was []
+		{"S. Ødegaard", []string{"odegaard"}}, // Arsenal captain — was []
+		{"R. Højlund", []string{"hojlund"}},   // Man Utd striker — was []
 		{"Rasmus Højlund", []string{"rasmus", "hojlund"}},
 		{"Albert Guðmundsson", []string{"albert", "gudmundsson"}}, // Fiorentina, Icelandic ð
 		{"Łukasz Fabiański", []string{"lukasz", "fabianski"}},     // Polish Ł + ń
@@ -129,7 +129,7 @@ func TestTokenize_ShortAndDigitFiltered(t *testing.T) {
 	}{
 		{"F.C. Barcelona", []string{"barcelona"}},   // "fc" ≤2 (also skip-listed but that's downstream)
 		{"1899 Hoffenheim", []string{"hoffenheim"}}, // "1899" all-digit
-		{"AC Milan", []string{"milan"}},              // "ac" ≤2
+		{"AC Milan", []string{"milan"}},             // "ac" ≤2
 		{"", nil},
 	}
 	for _, tc := range cases {
@@ -156,13 +156,13 @@ func TestTokenize_ConcatFormsDropped(t *testing.T) {
 		in   string
 		want []string
 	}{
-		{"A.C.F.Fiorentina", nil},   // dot-concat → ACFFiorentina → upper→lower pattern → drop
-		{"S.S.C.Napoli", nil},        // same pattern
-		{"LiverpoolFC", nil},         // classic camelCase → drop
-		{"FCBarcelona", nil},         // acronym+word already tested elsewhere; assert drop
-		{"AtléticoMadrid", nil},      // NFD strip runs BEFORE camel check on the tokenizer path,
-		                              // but this specific test drives tokenize() directly and
-		                              // the diacritic stripping still applies via norm.NFD
+		{"A.C.F.Fiorentina", nil}, // dot-concat → ACFFiorentina → upper→lower pattern → drop
+		{"S.S.C.Napoli", nil},     // same pattern
+		{"LiverpoolFC", nil},      // classic camelCase → drop
+		{"FCBarcelona", nil},      // acronym+word already tested elsewhere; assert drop
+		{"AtléticoMadrid", nil},   // NFD strip runs BEFORE camel check on the tokenizer path,
+		// but this specific test drives tokenize() directly and
+		// the diacritic stripping still applies via norm.NFD
 		{"ACF Fiorentina", []string{"acf", "fiorentina"}}, // space-separated: both survive
 		{"F.C. Barcelona", []string{"barcelona"}},         // fc drops via ≤2
 	}
@@ -183,16 +183,16 @@ func TestStripKnownOrgSuffix(t *testing.T) {
 		wantPrefix string
 		wantOK     bool
 	}{
-		{"psgfc", "psg", true},       // 5 chars, prefix 3 chars, fires
-		{"nycfc", "nyc", true},        // 5 chars, prefix 3 chars, fires
-		{"mufc", "", false},           // 4 chars, prefix "mu" only 2 chars — guard
-		{"nufc", "", false},           // same
-		{"avfc", "", false},           // same
-		{"rmcf", "", false},           // 4 chars, prefix "rm" 2 chars
-		{"cfc", "", false},            // 3 chars, len < 5 minimum
-		{"barcelona", "", false},      // doesn't end in known suffix
-		{"scp", "", false},            // 3 chars total, doesn't hit minimum
-		{"fcbm", "", false},           // 4 chars, ends in "bm" — not in suffix list
+		{"psgfc", "psg", true},   // 5 chars, prefix 3 chars, fires
+		{"nycfc", "nyc", true},   // 5 chars, prefix 3 chars, fires
+		{"mufc", "", false},      // 4 chars, prefix "mu" only 2 chars — guard
+		{"nufc", "", false},      // same
+		{"avfc", "", false},      // same
+		{"rmcf", "", false},      // 4 chars, prefix "rm" 2 chars
+		{"cfc", "", false},       // 3 chars, len < 5 minimum
+		{"barcelona", "", false}, // doesn't end in known suffix
+		{"scp", "", false},       // 3 chars total, doesn't hit minimum
+		{"fcbm", "", false},      // 4 chars, ends in "bm" — not in suffix list
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {

@@ -445,7 +445,7 @@ const (
 )
 
 // RecordCandidateOutcomeInput carries a candidate's terminal fate. Detail is a
-// pre-marshalled JSON object (nil = SQL NULL); RejectReason is a stable slug
+// pre-marshaled JSON object (nil = SQL NULL); RejectReason is a stable slug
 // when Outcome is rejected/failed, empty otherwise.
 type RecordCandidateOutcomeInput struct {
 	EventID      uuid.UUID

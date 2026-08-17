@@ -50,7 +50,7 @@ the current branch.
 
 | ID | Severity | Status | Summary |
 |---|---|---|---|
-| FF-042 | P2 | `next` | Restore a pinned, reproducible format/tidy/lint/vet gate before structural refactors. |
+| FF-035 | P2 | `next` | Validate each binary's configuration and enforce `.env.example`/Compose parity. |
 
 ## Confirmed issues
 
@@ -197,14 +197,14 @@ the current branch.
 | FF-011 | P2 | `confirmed` | Popularity increments are not idempotent under activity retry. | Retry-safe vote accounting with an invariant test. |
 | FF-013 | P2 | `confirmed` | Schema guard can accept an incomplete schema and evolution is init-file/manual-ALTER based. | Establish ordered migrations and test interrupted/partial state before new constraints. |
 | FF-024 | P2 | `confirmed` | The Garage `staging/` prefix has no bounded orphan sweep after abnormal termination. | Protect active keys and delete only proven age-bounded orphans. |
-| FF-035 | P2 | `confirmed` | Parsed configuration is not semantically validated and `.env.example` does not match the consumed contract. | Per-binary and cross-field validation; generated or tested env/Compose parity. |
+| FF-035 | P2 | `next` | Parsed configuration is not semantically validated and `.env.example` does not match the consumed contract. | Per-binary and cross-field validation; generated or tested env/Compose parity. |
 | FF-036 | P2 | `confirmed` | API completed-fixture reads are unbounded and assembled with N+1 queries. | Separate the public read window from durable URL tombstones and batch assembly. |
 | FF-037 | P2 | `mitigated` | LLM, Temporal, and ffmpeg admission are process-local and share work lanes. | Dedicated task/ffmpeg lanes; checked aggregate limits; shared inference owns global admission. |
 | FF-038 | P2 | `mitigated` | Firefox capacity, leases, and Docker access are not one atomic controller boundary. | HTTP fleet controller with atomic admission, scoped labels, reaping, and no worker socket. |
 | FF-039 | P2 | `confirmed` | API/worker/Twitter lifecycle, readiness, metrics identity, and error classification diverge. | Shared lifecycle contract, real readiness, correct error classes, standard identity labels. |
 | FF-040 | P2 | `confirmed` | Live reconciliation omits mutable fixture metadata and activation is not atomic across pollers. | Explicit ownership of mutable fields plus one atomic state transition. |
 | FF-041 | P2 | `confirmed` | Perceptual hash bytes have no algorithm version or minimum viable sequence invariant. | Version hashes and reject too-short streams before FF-005 preprocessing changes. |
-| FF-042 | P2 | `next` | Lint/tool versions, formatting, and module state are not reproducible. | Pin tools; migrate lint config; format/tidy once; enforce non-mutating gates. |
+| FF-042 | P2 | `implemented` | Lint/tool versions, formatting, and module state were not reproducible. | Go 1.25.11, golangci-lint 2.12.2, and Air 1.65.3 are pinned; format, tidy, vet, lint, short, full, and race gates pass. |
 | FF-043 | P2 | `confirmed` | The public API connects to unused NATS and fails startup when that dependency is unavailable. | Remove NATS from API startup until the API publishes or subscribes. |
 | FF-044 | P3 | `confirmed` | Recovery repeats start/describe work every 30 seconds for healthy discovery workflows. | Durable next-check lease or scheduled supervisor with bounded checks. |
 | FF-045 | P3 | `confirmed` | Dormant code/schema surfaces and oversized composition files obscure ownership. | Caller-proven deletion and in-package splits after related behavior fixes. |

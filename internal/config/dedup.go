@@ -21,7 +21,7 @@ type DedupConfig struct {
 
 	// MinRunFrames is the required length of the matching window. 30 @ 0.1 s
 	// = a 3-second match — a strong "same clip" signal that different footage
-	// never reaches. A precision-favouring choice; the safe failure direction
+	// never reaches. A precision-favoring choice; the safe failure direction
 	// (too strict → an occasional duplicate shown, not a real clip lost).
 	MinRunFrames int `env:"DEDUP_MIN_RUN_FRAMES" envDefault:"30"`
 
