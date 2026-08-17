@@ -39,15 +39,18 @@ an opaque scope; it has no dev/prod branch. Dynamic browsers are raw Docker API
 children rather than Compose service replicas, so the provisioner must stamp
 and enforce their ownership itself:
 
-- daemon-global name: `ff-firefox-<network>-ev-<full-event-uuid>`;
+- daemon-global name: `<network>-firefox-ev-<full-event-uuid>` (for example,
+  `found-footy-prod-firefox-ev-<uuid>`), matching the workspace
+  `<project>-<env>-<role>` convention;
 - ownership label: `found-footy.fleet.scope=<network>`;
 - network-local workflow alias: `ff-firefox-ev-<event-uuid-prefix>`.
 
-Capacity, listing, reaping, and release require the fleet label, scope label,
-and configured network. Lifecycle operations also inspect ownership before
-starting or deleting a named container. This lets dev and prod share one
-Docker daemon without either stack seeing or removing the other's browsers,
-while preserving existing Temporal workflow addresses.
+The deterministic name locates a specific event container. Capacity, listing,
+reaping, and release still require the fleet label, scope label, and configured
+network; a matching name alone is not deletion authority. Lifecycle operations
+inspect that ownership before starting or deleting the container. This lets dev
+and prod share one Docker daemon without either stack seeing or removing the
+other's browsers, while preserving existing Temporal workflow addresses.
 
 Before the first deployment of FF-001, list legacy
 `ff-firefox-ev-*` containers. Deploy only when none are active on the target
@@ -242,8 +245,9 @@ a production mutation and requires explicit approval for that invocation. It:
    build time; it does not fetch, pull, or switch branches;
 2. refuses uncommitted or untracked files, then rechecks HEAD and tree
    cleanliness immediately before recreation;
-3. refuses rollout while an `ff-firefox-ev-*` container is active on the
-   production network;
+3. selects running event browsers by the fleet label plus production-network
+   membership, and refuses rollout both before the build and immediately
+   before application recreation;
 4. builds worker, API, Twitter, and Twitter VNC with that `GIT_SHA`, `BUILT_AT`,
    and full-SHA `IMAGE_TAG`, then runs the non-root worker permission smoke;
 5. recreates worker, API, and static Twitter without touching durable

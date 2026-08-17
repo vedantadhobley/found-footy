@@ -104,7 +104,7 @@ func (f *Fleet) Close() error { return f.cli.Close() }
 // network comes from Compose, so two stacks can safely hold the same event ID
 // on one Docker daemon.
 func InstanceName(scope string, eventID uuid.UUID) string {
-	return "ff-firefox-" + scope + "-ev-" + eventID.String()
+	return scope + "-firefox-ev-" + eventID.String()
 }
 
 // InstanceAlias is the network-local deterministic hostname workflows use.

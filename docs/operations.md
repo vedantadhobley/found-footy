@@ -196,7 +196,7 @@ each instance with:
 - `found-footy.fleet.event=<event-uuid>`.
 
 Its daemon name is
-`ff-firefox-<scope>-ev-<event-uuid>`. The network-local alias remains
+`<scope>-firefox-ev-<event-uuid>`. The network-local alias remains
 `ff-firefox-ev-<first-eight-event-uuid-characters>` for Temporal history
 compatibility.
 
@@ -319,11 +319,13 @@ extension of a read-only investigation. Before requesting rollout approval:
    rollback volumes.
 
 The approved application rollout is `make deploy-prod`. It builds the exact
-clean checked-out commit, refuses active production event browsers, runs the
-worker permission smoke, recreates only the application services, and verifies
-the expected identity on every recreated process. It does not update source,
-change schema, restart infrastructure, clean fleet containers, or roll back on
-failure. See the [deployment contract](./deployment.md#deploy-tracking).
+clean checked-out commit, selects active production event browsers by their
+fleet label plus production-network membership, and checks for them both before
+the build and immediately before mutation. It runs the worker permission smoke,
+recreates only the application services, and verifies the expected identity on
+every recreated process. It does not update source, change schema, restart
+infrastructure, clean fleet containers, or roll back on failure. See the
+[deployment contract](./deployment.md#deploy-tracking).
 
 For the first FF-001 rollout, list any legacy unscoped `ff-firefox-ev-*`
 containers immediately before deployment. Legacy cleanup and the production
