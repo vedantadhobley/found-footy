@@ -186,8 +186,14 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 	// with the CONSUMER (the serialized Selector queue: dedup → vision →
 	// promote → rank). Temporal owns completion: the consumer returns when
 	// search is done AND nothing is in flight — no idle timeout.
+	terminalVideoFailures := workflow.GetVersion(ctx,
+		ff002TerminalVideoFailuresChangeID,
+		workflow.DefaultVersion,
+		ff002TerminalVideoFailuresVersion,
+	) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
+		terminalVideoFailures: terminalVideoFailures,
 	}, log)
 
 	// exclude_urls + seenTweetIDs are workflow-local so retries/replays

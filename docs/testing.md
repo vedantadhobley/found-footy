@@ -65,6 +65,15 @@ error and assert that neither a later search nor `MarkDownstreamComplete`
 occurs; the vision case also rejects post-cancel pipeline activities. This
 guards FF-015's producer/consumer yield points without wall-clock sleeps.
 
+FF-002 workflow tests cover both sides of the child boundary. VideoWorkflow
+tests exhaust all configured download and hash retries and require typed failed
+outputs; the hash result must retain its staging key, while cancellation must
+remain an error. EventWorkflow tests require `failed` candidate persistence,
+hash-staging deletion, and captured-URL fallback for an unexpected child
+failure. Explicit `OnGetVersion(...).Return(DefaultVersion)` cases preserve the
+old child-error command sequence for replay of histories created before the
+fix.
+
 ## Tier 2 — adapter integration (testcontainers)
 
 Integration coverage currently includes `pg`, `s3`, `nats`, and `temporal`.
