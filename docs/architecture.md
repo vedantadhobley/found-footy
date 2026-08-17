@@ -66,7 +66,7 @@ found-footy/
 │   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when fleet disabled (FIREFOXFLEET_ENABLED=false)
 │   │   ├── livefeed/                     ✓ publish-activity boundary for all NATS live-feed emits
 │   │   └── heartbeat/                    shared time-based activity heartbeat loop
-│   ├── api/                             ✓ Chi read API, DTOs, search, and share redirect; exact contract in docs/api.md; SSE is vedanta-systems'
+│   ├── api/                             ✓ Chi read API over Postgres + S3; no NATS/Temporal dependency; SSE is vedanta-systems'
 │   ├── bootstrap/                       ✓ S1 + FF-026 (NOT IN PLAN — see decisions.md 2026-07-07)
 │   │   └── bootstrap.go                 Deps + LIFO closer registry; fail-fast metrics/health listener; shared binary lifecycle
 │   ├── config/                          ✓ S1 + FF-035: per-binary envconfig profiles, semantic/cross-field validation, and env/Compose contract tests

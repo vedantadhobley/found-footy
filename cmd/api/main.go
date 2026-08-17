@@ -10,7 +10,6 @@ import (
 
 	ffapi "github.com/vedantadhobley/found-footy/internal/api"
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
-	"github.com/vedantadhobley/found-footy/internal/infra/nats"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 	"github.com/vedantadhobley/found-footy/internal/infra/s3"
 )
@@ -39,16 +38,6 @@ func main() {
 			return err
 		}
 
-		natsIns := nats.RegisterMetrics(deps.Metrics, deps.Log)
-		nc, err := nats.New(ctx, deps.Cfg.NATS, natsIns)
-		if err != nil {
-			return err
-		}
-		deps.RegisterCloser("nats", func(_ context.Context) error {
-			nc.Close()
-			return nil
-		})
-
 		s3Ins := s3.RegisterMetrics(deps.Metrics, deps.Log)
 		s3c, err := s3.New(ctx, deps.Cfg.S3, s3Ins)
 		if err != nil {
@@ -69,7 +58,7 @@ func main() {
 		// Public read-API surface. Chi router on cfg.API.ListenAddr
 		// (Caddy fronts it — container port only). Graceful drain is a closer
 		// so SIGTERM stops accepting + finishes in-flight requests before the
-		// pool/nats deps close (LIFO). A listen failure (e.g. port in
+		// Postgres closes after HTTP drains (LIFO). A listen failure (e.g. port in
 		// use) fails the binary fast rather than running degraded.
 		handlers := &ffapi.Handlers{
 			Fixtures:   pg.NewFixtureRepo(pool),

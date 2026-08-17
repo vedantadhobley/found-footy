@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [The read API does not connect to NATS](./2026-08-17-read-api-does-not-connect-to-nats.md) — FF-043 keeps event publication in workers and direct subscription in the BFF without coupling REST startup to the broker.
 - [Configuration is binary-owned and fails before external work](./2026-08-17-configuration-is-binary-owned-and-fail-fast.md) — FF-035 typed profiles, semantic validation, and derived env/Compose contract.
 - [Engineering gates use pinned tool versions](./2026-08-17-engineering-gates-use-pinned-tools.md) — FF-042 exact Go, golangci-lint, and Air versions plus commit/push check contracts.
 - [Compose partitions the fixed ffmpeg host budget](./2026-08-17-compose-partitions-ffmpeg-host-budget.md) — FF-021 stack-wide CPU arithmetic and fixed production replica contract.

@@ -34,7 +34,7 @@ var binarySections = map[Binary][]string{
 		"APIFootball", "Syndication", "Twitter", "FirefoxFleet", "FFmpeg",
 		"Workflows", "Discovery", "Dedup", "Video", "Vision", "Event",
 	},
-	BinaryAPI:     {"Observability", "Postgres", "NATS", "S3", "API"},
+	BinaryAPI:     {"Observability", "Postgres", "S3", "API"},
 	BinaryTwitter: {"TwitterService"},
 }
 

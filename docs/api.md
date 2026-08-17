@@ -124,6 +124,11 @@ public, max-age=240`; a lifetime too short to provide the margin sends
 
 ## NATS live feed
 
+The read API binary does not connect to NATS. Workers publish these live-feed
+hints through `internal/activity/livefeed`; the `vedanta-systems` BFF subscribes
+to the environment-scoped subjects and converts them to browser SSE. REST
+remains the recovery and snapshot authority if NATS is unavailable.
+
 `EVENT_ENV` supplies the environment token. A consumer must subscribe to one
 environment, such as `found-footy.prod.>`, rather than mixing dev and prod.
 

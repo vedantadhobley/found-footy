@@ -167,8 +167,6 @@ func TestRun_DrainsEphemeralMetricsListener(t *testing.T) {
 func setValidBootstrapEnvironment(t *testing.T) {
 	t.Helper()
 	t.Setenv("PG_DSN", "postgres://user:pass@postgres:5432/found_footy")
-	t.Setenv("NATS_URL", "nats://nats:4222")
-	t.Setenv("NATS_CLIENT_NAME", "found-footy-test-api")
 	t.Setenv("S3_ENDPOINT", "http://garage:3900")
 	t.Setenv("S3_BUCKET", "found-footy")
 	t.Setenv("S3_ACCESS_KEY_ID", "test-access")

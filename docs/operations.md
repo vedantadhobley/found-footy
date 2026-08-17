@@ -352,7 +352,7 @@ a routine rollback.
 
 - [`deployment.md`](./deployment.md) owns Compose topology, bootstrap, and
   routing.
-- [`api.md`](./api.md) owns the current HTTP, SSE, and NATS contracts.
+- [`api.md`](./api.md) owns the current HTTP and NATS live-feed consumer contracts.
 - [`twitter-service.md`](./twitter-service.md) owns the scraper HTTP contract,
   browser state machine, and cookie model.
 - [`temporal.md`](./temporal.md) and

@@ -218,7 +218,9 @@ every non-defaulted Go variable in `.env.example`, rejects stale template keys,
 checks required Compose interpolation, and verifies that application services
 route only owned explicit overrides. It also preserves the environment-scoped
 Firefox network, worker-only `EVENT_ENV`, and parent-directory cookie mount.
-The test parses repository files only and is part of `make test-short`.
+The API profile test also supplies a malformed NATS setting and proves the API
+ignores it while the worker rejects it. These tests parse repository files and
+process-local environment only and are part of `make test-short`.
 
 `test/release_contract_test.go` parses `docker-compose.prod.yml` as data. It
 requires worker, API, Twitter, and Twitter VNC to receive `GIT_SHA`, `BUILT_AT`,

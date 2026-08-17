@@ -53,7 +53,6 @@ func (c *Config) ValidateFor(binary Binary) error {
 	case BinaryAPI:
 		validateObservability(v, c.Observability)
 		validatePostgres(v, c.Postgres)
-		validateNATS(v, c.NATS)
 		validateS3(v, c.S3)
 		validateAPI(v, c.API)
 		v.check(c.API.ListenAddr != c.Observability.MetricsAddr,
