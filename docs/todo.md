@@ -233,7 +233,7 @@ the current branch.
 | FF-048 | P2 | `confirmed` | Share minting uses check-then-insert without `(event_id, asset_id)` uniqueness. | Database constraint plus atomic idempotent insert after FF-013. |
 | FF-049 | P3 | `confirmed` | Documentation routing is clean, but several current/reference documents still exceed the shared size standard. | Split the 618-line orchestration ledger and route the 2,869-line Python functional spec plus 604-line video-dedup proposal by topic without rewriting historical claims. |
 | FF-050 | P2 | `investigate` | Correlated replay-safe stage timings and a read-only match-day status view are implemented; representative live evidence is pending. | Capture phase and queue latency under representative concurrency, then simplify or parallelize only the demonstrated bottleneck without weakening correctness or resource caps. |
-| FF-051 | P1 | `implemented` | A strict Playwright locator failure was converted to a successful empty Twitter result whenever multiple tweets rendered before the feed wait resolved. | Roll out the fix, verify a representative production search, and confirm non-timeout feed failures reach Temporal retry instead of completing empty. |
+| FF-051 | P1 | `implemented` | A strict Playwright locator failure was converted to a successful empty Twitter result whenever multiple tweets rendered before the feed wait resolved. The fix is deployed and passed a known-positive production search. | Confirm the next natural three-minute EventWorkflow reports rendered-feed diagnostics and either candidates or a genuine timeout. |
 
 ### FF-051 — rendered Twitter feeds were reported as empty
 
@@ -264,7 +264,16 @@ the current branch.
   already rendered at the initial wait. The same broad query with the normal
   three-minute window stopped locally on `age`. A distinctive no-result query
   waited 10.67 seconds and returned `feed_timeout`.
-- **Rollout:** Pending explicit production approval.
+- **Rollout:** Commit `f2da9a6` deployed successfully on 2026-08-17 at
+  19:51 UTC after the release gate waited for the Aubameyang and Vavassori
+  workflows to release their old-image browsers. Both workers, the API, and
+  Twitter exposed the exact release identity; Twitter was authenticated and
+  healthy, and the event fleet was empty. A post-rollout production query with
+  the diagnostic 180-minute local window returned 11 videos, including the
+  supplied Telemundo Lipani clip, from four initially rendered articles. It
+  parsed 15 tweets, classified all 15 as video tweets, and stopped on local
+  `age` after 5.17 seconds. The next natural event remains the production proof
+  of the normal three-minute path.
 
 ### FF-050 — measure and shorten event-to-surface latency
 
