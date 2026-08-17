@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Video redirect cache stays inside the presigned URL lifetime](./2026-08-17-video-redirect-cache-stays-inside-presign.md) — FF-028 derives safe redirect caching from the live S3 TTL.
 - [Event sequences match stored identity instead of provider array position](./2026-08-17-event-sequences-match-stored-identity.md) — FF-027 brace, reorder, and removed-tombstone identity contract.
 - [Browser death restarts the complete container unit](./2026-08-17-browser-death-restarts-container-unit.md) — FF-017 critical-child health, process exit, and Docker restart ownership.
 - [Failed EventWorkflow executions resume durable progress](./2026-08-17-failed-event-workflows-resume-durable-progress.md) — FF-007 Workflow ID reuse, checkpoint, and recovery boundary.

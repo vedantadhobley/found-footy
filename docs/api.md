@@ -116,9 +116,11 @@ arrive while search is still running, and a complete search may have no clips.
 
 The video URL resolves an active or superseded share through its asset chain
 and returns `302` to a presigned Garage URL. A removed share returns `410`; a
-never-minted share returns `404`. The redirect currently sends
-`Cache-Control: public, max-age=300`; the default presign lifetime is also five
-minutes. The expiry-boundary risk is `AUD-0813-P2-11` in the issue register.
+never-minted share returns `404`. Redirect cache lifetime is the configured
+presign lifetime minus a one-minute safety margin, capped at five minutes
+(FF-028). The default five-minute presign therefore sends `Cache-Control:
+public, max-age=240`; a lifetime too short to provide the margin sends
+`no-store`.
 
 ## NATS live feed
 

@@ -62,6 +62,11 @@ stored goal remains held, while a coherent one-minute correction must update
 the original key. The Postgres integration test requires the identity-history
 query to return both active and removed rows.
 
+FF-028 API tests require the default five-minute presign to produce a
+four-minute redirect cache, longer presigns to retain the five-minute cap, and
+short or unset lifetimes to disable redirect caching. The handler-level test
+also verifies the derived header on a real 302 response.
+
 ## Tier 1.5 — workflow tests
 
 `internal/workflow/ingest_test.go` uses

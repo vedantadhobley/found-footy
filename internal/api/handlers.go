@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -60,13 +61,19 @@ type Presigner interface {
 // Handlers bundles the read dependencies. Constructed once in cmd/api and
 // handed to NewRouter.
 type Handlers struct {
-	Fixtures FixtureReader
-	Events   EventReader
-	Videos   VideoReader
-	Presign  Presigner
-	Bucket   string // the API's configured S3 bucket — for the presign-bucket guard
-	Log      logging.Emitter
+	Fixtures   FixtureReader
+	Events     EventReader
+	Videos     VideoReader
+	Presign    Presigner
+	Bucket     string        // the API's configured S3 bucket — for the presign-bucket guard
+	PresignTTL time.Duration // configured lifetime of URLs minted by Presign
+	Log        logging.Emitter
 }
+
+const (
+	videoRedirectCacheCap    = 5 * time.Minute
+	videoRedirectCacheMargin = time.Minute
+)
 
 // ─── assembly ───────────────────────────────────────────────────────────────
 
@@ -321,13 +328,29 @@ func (h *Handlers) RedirectVideo(w http.ResponseWriter, r *http.Request) {
 			h.serverError(ctx, w, "presign", err)
 			return
 		}
-		// Cache the 302 for 5 min so playback doesn't re-resolve every seek
-		// (decisions.md 2026-07-02 play-latency fix). Presign TTL must exceed this.
-		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.Header().Set("Cache-Control", videoRedirectCacheControl(h.PresignTTL))
 		http.Redirect(w, r, url, http.StatusFound) // 302
 	default:
 		h.serverError(ctx, w, "share state", fmt.Errorf("unknown share state %q", rs.State))
 	}
+}
+
+// videoRedirectCacheControl keeps a cached 302 strictly inside the lifetime of
+// the presigned target it contains. The cap preserves the play-latency benefit;
+// the margin prevents a cache hit near expiry from returning a dead URL.
+func videoRedirectCacheControl(presignTTL time.Duration) string {
+	cacheAge := presignTTL - videoRedirectCacheMargin
+	if cacheAge <= 0 {
+		return "no-store"
+	}
+	if cacheAge > videoRedirectCacheCap {
+		cacheAge = videoRedirectCacheCap
+	}
+	seconds := int64(cacheAge / time.Second)
+	if seconds < 1 {
+		return "no-store"
+	}
+	return fmt.Sprintf("public, max-age=%d", seconds)
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
