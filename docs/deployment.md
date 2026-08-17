@@ -235,8 +235,32 @@ api should log `s3_connected`. Reprovision:
 
 ## Deploy tracking
 
-- Every binary bakes `gitSHA` + `builtAt` via `-ldflags "-X main.gitSHA=... -X main.builtAt=..."` at container build time.
-- Values surface in the `found_footy_deploy_git_sha_info{binary,git_sha,image_tag,built_at}` gauge + the `startup` log line.
+`make deploy-prod` is the repository-owned application release command. It is
+a production mutation and requires explicit approval for that invocation. It:
+
+1. resolves the full SHA of the clean commit already checked out and one UTC
+   build time; it does not fetch, pull, or switch branches;
+2. refuses uncommitted or untracked files, then rechecks HEAD and tree
+   cleanliness immediately before recreation;
+3. refuses rollout while an `ff-firefox-ev-*` container is active on the
+   production network;
+4. builds worker, API, Twitter, and Twitter VNC with that `GIT_SHA`, `BUILT_AT`,
+   and full-SHA `IMAGE_TAG`, then runs the non-root worker permission smoke;
+5. recreates worker, API, and static Twitter without touching durable
+   dependencies; if VNC was already running, it recreates VNC too; and
+6. verifies the two workers and API through
+   `found_footy_deploy_git_sha_info{binary,git_sha,image_tag,built_at}`, and
+   verifies Twitter plus an already-running VNC through `/status.build`.
+
+Worker and API also put the identity in their startup log. Twitter puts it in
+`service_starting`. `FIREFOXFLEET_IMAGE` uses the same full-SHA Twitter tag, so
+new event browsers cannot drift from the worker release. The Compose defaults
+remain `unknown`/`latest` so the model can be inspected without release
+variables; those defaults are not a valid production release.
+
+The exact contract and its divergence from the historical deployment sketch
+are recorded in the
+[immutable-release decision](./decisions/2026-08-16-immutable-production-release-identity.md).
 
 ## Workflow scheduling
 

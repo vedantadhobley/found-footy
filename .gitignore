@@ -125,3 +125,8 @@ build-errors.log
 # don't want in git. Keep locally, don't commit.
 docs/api-football/vendor/*_files/
 scratch-*
+
+# Local production-forensics probes. Preserve them on the workstation, but do
+# not make them release inputs or project source without a deliberate intake.
+/scripts/probe_cookie_download/
+/scripts/probe_vision/

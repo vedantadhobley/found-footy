@@ -40,7 +40,7 @@ docker compose -f docker-compose.dev.yml ps
 docker compose -f docker-compose.prod.yml ps
 ```
 
-The Makefile lifecycle targets are dev-only:
+The routine Makefile lifecycle targets are dev-only:
 
 ```bash
 make dev-up
@@ -49,8 +49,9 @@ make dev-ps
 make dev-down
 ```
 
-Do not use a dev target as shorthand for production. Production has no Make
-lifecycle target by design.
+Do not use a dev target as shorthand for production. `make deploy-prod` is the
+single production application release target; it is covered by the explicit
+approval boundary and is not a general lifecycle command.
 
 The dev stack remains down until the locally implemented Firefox scope fix in
 [`FF-001`](./todo.md#ff-001--firefox-fleet-is-not-environment-scoped) is
@@ -316,6 +317,13 @@ extension of a read-only investigation. Before requesting rollout approval:
 5. define observable success and failure markers; and
 6. define a rollback that preserves Postgres, Garage, and the archived Python
    rollback volumes.
+
+The approved application rollout is `make deploy-prod`. It builds the exact
+clean checked-out commit, refuses active production event browsers, runs the
+worker permission smoke, recreates only the application services, and verifies
+the expected identity on every recreated process. It does not update source,
+change schema, restart infrastructure, clean fleet containers, or roll back on
+failure. See the [deployment contract](./deployment.md#deploy-tracking).
 
 For the first FF-001 rollout, list any legacy unscoped `ff-firefox-ev-*`
 containers immediately before deployment. Legacy cleanup and the production

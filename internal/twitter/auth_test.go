@@ -35,8 +35,8 @@ type fakeBrowser struct {
 	getCalls     int64
 
 	// Captured — what was passed on the most recent call.
-	mu               sync.Mutex
-	lastReplacedSet  []Cookie
+	mu              sync.Mutex
+	lastReplacedSet []Cookie
 }
 
 func (f *fakeBrowser) VerifySession(_ context.Context, _ time.Duration) error {
@@ -79,6 +79,35 @@ func newTestService(t *testing.T, fake *fakeBrowser) (*Service, string) {
 		VerifyTimeout: 2 * time.Second,
 	})
 	return svc, cookieFile
+}
+
+// TestStatusExposesBuildIdentity guards the Twitter half of the production
+// release verifier. Worker and API expose the same values through Prometheus.
+func TestStatusExposesBuildIdentity(t *testing.T) {
+	fake := &fakeBrowser{}
+	want := BuildInfo{
+		GitSHA:   "0123456789abcdef",
+		BuiltAt:  "2026-08-17T12:34:56Z",
+		ImageTag: "0123456789abcdef",
+	}
+	svc := NewService(fake, ServiceOptions{Build: want})
+	mux := http.NewServeMux()
+	svc.RegisterHandlers(mux)
+
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/status", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	var response struct {
+		Build BuildInfo `json:"build"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode /status: %v", err)
+	}
+	if response.Build != want {
+		t.Fatalf("build = %+v, want %+v", response.Build, want)
+	}
 }
 
 // TestEnsureAuthenticated_FirstBoot_NoCookieFile — cookie file missing,

@@ -53,7 +53,7 @@ Registered in `service.go RegisterHandlers`:
 | Endpoint | Method | Behavior |
 |---|---|---|
 | `/health` | GET | Liveness — `{"status":"healthy"}`. |
-| `/status` | GET | `{state, reason, busy, cookie_fingerprint, last_auth_check, last_loaded_mtime, started_at}`. Read-only. |
+| `/status` | GET | `{state, reason, busy, cookie_fingerprint, last_auth_check, last_loaded_mtime, started_at, build:{git_sha,built_at,image_tag}}`. Read-only; the release command verifies `build`. |
 | `/search` | POST | `SearchRequest{query, max_age_minutes, exclude_urls}` → `SearchResponse` (below). |
 | `/authenticate` | GET | Read-only auth status + the VNC re-auth pointer. Does **not** force re-auth. |
 | `/auth/verify` | POST | After an operator logs in via VNC, verify the session succeeded → resume the Playwright context. |

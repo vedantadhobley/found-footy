@@ -35,5 +35,9 @@ docs/
 # Claude Code state
 .claude/
 
+# Local production-forensics probes are not application build inputs.
+scripts/probe_cookie_download/
+scripts/probe_vision/
+
 # Node artifacts (in case anyone runs a frontend build here later)
 node_modules/

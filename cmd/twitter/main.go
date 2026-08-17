@@ -106,9 +106,6 @@ var idleCPUFirefoxPrefs = map[string]any{
 }
 
 func main() {
-	_ = gitSHA
-	_ = builtAt
-
 	// Env-driven config with sensible defaults.
 	cookieFile := envOrDefault("TWITTER_COOKIE_FILE", "/config/twitter_cookies.json")
 	listenAddr := envOrDefault("TWITTER_SERVICE_ADDR", ":8888")
@@ -141,6 +138,11 @@ func main() {
 
 	svc := twitter.NewService(browser, twitter.ServiceOptions{
 		CookieFile: cookieFile,
+		Build: twitter.BuildInfo{
+			GitSHA:   gitSHA,
+			BuiltAt:  builtAt,
+			ImageTag: os.Getenv("IMAGE_TAG"),
+		},
 		// AuditEmit — T/b.5 hardening #3. Called on state transitions
 		// to StateUnauthenticated so Grafana/Loki can alert on
 		// action=twitter.auth_expired. Structured JSON per line.
@@ -194,6 +196,9 @@ func main() {
 		"cookie_file": cookieFile,
 		"headless":    envOrDefault("TWITTER_HEADLESS", "true"),
 		"hostname":    os.Getenv("HOSTNAME"),
+		"git_sha":     gitSHA,
+		"built_at":    builtAt,
+		"image_tag":   os.Getenv("IMAGE_TAG"),
 	})
 
 	srv := &http.Server{Addr: listenAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}

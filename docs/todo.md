@@ -271,7 +271,7 @@ against the current branch.
 
 ### FF-019 — production images do not carry verifiable build identity
 
-- **Status:** `confirmed`
+- **Status:** `implemented`; not deployed
 - **Severity:** P2
 - **Observed:** 2026-08-16, live production worker metrics and the current
   production build configuration.
@@ -285,13 +285,20 @@ against the current branch.
 - **Cause:** Both production Dockerfiles accept `GIT_SHA` and `BUILT_AT`, but
   `docker-compose.prod.yml` passes only `BINARY`/`WITH_VNC`. No release command
   supplies the identity arguments or `IMAGE_TAG`. The Twitter command also
-  discards its injected identity instead of exposing the shared deploy metric.
-- **Required fix:** Add one repository-owned release command that resolves a
-  clean committed SHA and UTC build time, passes both build arguments and an
-  immutable image tag to every image, and verifies the running metric against
-  the expected SHA after rollout. Refuse dirty-tree production builds unless
-  an explicit recorded exception exists. Cover argument propagation and
-  document the exact rollout/verification contract.
+  discards its injected identity instead of exposing any verification surface.
+- **Implemented locally; not deployed:** `make deploy-prod` resolves the full
+  SHA of the clean checkout and one UTC build time, rechecks the tree before
+  mutation, and uses that SHA as the image tag across worker, API, Twitter,
+  Twitter VNC, and `FIREFOXFLEET_IMAGE`. It refuses active production event
+  browsers instead of creating a mixed-version fleet. After recreation it
+  verifies both workers and API through the deploy-info gauge and Twitter plus
+  an already-running VNC through `/status.build`. It never fetches, pulls,
+  switches branches, cleans fleet containers, or mutates durable services.
+- **Regression:** The Compose contract test parses the production model and
+  requires all four application images plus the fleet image to carry the same
+  release variables. The Twitter HTTP test requires all three build fields in
+  `/status`. `bash -n`, synthetic `docker compose config --quiet`, and the full
+  test suite cover the remaining release surface.
 - **Source relation:** New release-audit finding. The design and deployment
   ledger describe build identity as shipped, but Compose never completed the
   contract.
