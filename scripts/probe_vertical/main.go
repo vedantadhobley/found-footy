@@ -1,6 +1,6 @@
 // scripts/probe_vertical/main.go — #182 vertical-recovery experiment: do the
 // aspect-rejected VERTICAL clips actually contain goal footage, or is the
-// [1.75,1.82] 16:9 hard-filter correctly discarding reaction cams / phone spam?
+// [1.73,1.82] landscape hard-filter correctly discarding reaction cams / phone spam?
 //
 // The production pipeline rejects any clip outside the aspect band at
 // PRE-DOWNLOAD (prefilter), so a vertical clip (9:16≈0.56, 3:4=0.75) never

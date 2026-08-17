@@ -87,6 +87,18 @@ func TestLoadForWorkerRejectsSemanticErrors(t *testing.T) {
 	}
 }
 
+func TestLoadForWorkerUsesLiveCalibratedAspectDefault(t *testing.T) {
+	setValidWorkerEnvironment(t)
+
+	cfg, err := LoadFor(BinaryWorker)
+	if err != nil {
+		t.Fatalf("LoadFor(worker): %v", err)
+	}
+	if got := cfg.Video.HardFilter.MinAspectRatio; got != 1.73 {
+		t.Errorf("MinAspectRatio default = %v, want 1.73", got)
+	}
+}
+
 func TestLoadForAPIRejectsSharedListenAddress(t *testing.T) {
 	setValidAPIEnvironment(t)
 	t.Setenv("API_LISTEN_ADDR", ":8080")

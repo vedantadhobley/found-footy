@@ -205,7 +205,8 @@ md5)`; the old whole-clip `perceptual_hash` UNIQUE is retired).
 
 Beyond the model, the package owns the dedup + quality logic (pure, table-
 tested): `hash.go` (`DHash`/`DHashPNG`), `match.go` (`Match` — the
-offset-tolerant sliding window), `filter.go` (`HardFilter` pre-download gate),
+offset-tolerant sliding window), `filter.go` (`HardFilter` pre-download gate;
+the live-calibrated landscape aspect band is 1.73–1.82),
 `quality.go` (`IsUpgrade`/`ClipQuality` winner-selection — wired post-vision #171),
 and `rank.go` (`CompareShares` — verified, popularity, size, age, then share-ID
 total order for deterministic frontend ranks; FF-030).

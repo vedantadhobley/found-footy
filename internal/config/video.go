@@ -23,16 +23,16 @@ type VideoConfig struct {
 }
 
 // HardFilterConfig — the pre-hashing metadata gate. Defaults are the
-// video-dedup.md tuned values, with the aspect max loosened 1.80 → 1.82
-// (2026-07-27): real broadcast rips with the scorebug cropped land at
-// ~1.81-1.82, and a two-goal aspect sample (Dybala/Chiesa) showed 1.80
-// clipped the largest cluster of legit landscape clips. The tight band
-// still rejects portrait phone-of-TV recordings + the social remix layer
-// AND keeps aspect consistent so dHash dedup stays reliable.
+// live-calibrated values. The max was loosened 1.80 → 1.82 on 2026-07-27
+// because real scorebug-cropped broadcast rips land at ~1.81-1.82. The min
+// was loosened 1.75 → 1.73 on 2026-08-17 after four Elche clips at 1.739
+// were rejected and at least three were manually confirmed as legitimate.
+// The band still rejects portrait phone-of-TV recordings + the social remix
+// layer AND keeps aspect consistent so dHash dedup stays reliable.
 type HardFilterConfig struct {
 	MinDurationSecs float64 `env:"HARDFILTER_MIN_DURATION_SECS" envDefault:"5"`
 	MaxDurationSecs float64 `env:"HARDFILTER_MAX_DURATION_SECS" envDefault:"90"`
-	MinAspectRatio  float64 `env:"HARDFILTER_MIN_ASPECT" envDefault:"1.75"`
+	MinAspectRatio  float64 `env:"HARDFILTER_MIN_ASPECT" envDefault:"1.73"`
 	MaxAspectRatio  float64 `env:"HARDFILTER_MAX_ASPECT" envDefault:"1.82"`
 	MinShortEdge    int     `env:"HARDFILTER_MIN_SHORT_EDGE" envDefault:"600"`
 	MinFrameRate    float64 `env:"HARDFILTER_MIN_FRAMERATE" envDefault:"20"`

@@ -96,7 +96,7 @@ func (f *fakeS3) Download(context.Context, string) (io.ReadCloser, int64, error)
 func thresholds() dvideo.FilterThresholds {
 	return dvideo.FilterThresholds{
 		MinDurationSecs: 3, MaxDurationSecs: 90,
-		MinAspectRatio: 1.75, MaxAspectRatio: 1.82,
+		MinAspectRatio: 1.73, MaxAspectRatio: 1.82,
 		MinShortEdge: 600, MinFrameRate: 20,
 	}
 }
