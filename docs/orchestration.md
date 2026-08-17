@@ -53,11 +53,15 @@ The current spawn mechanism and retained compatibility boundary are:
 - **EventWorkflow → candidate activities — direct, awaited futures.** New
   executions schedule `DownloadAndStage`, claim the returned exact MD5 in the
   serialized consumer, then schedule one `HashVideo` per distinct byte cluster.
-  Both activity contexts inherit EventWorkflow cancellation. Histories that
+  The producer dispatches candidate processing before awaiting observation
+  inserts, while the consumer requires an evidence-carrying terminal UPSERT
+  before the candidate becomes complete. Both activity contexts inherit
+  EventWorkflow cancellation. Histories that
   began before FF-022 retain the old awaited `VideoWorkflow` child command
-  sequence; the child stays registered solely for replay and completion of
-  those executions. See the
-  [exact-byte ownership decision](./decisions/2026-08-17-exact-md5-ownership-precedes-dense-hashing.md).
+  sequence; histories begun before FF-034 retain their best-effort outcome
+  update. Both compatibility paths stay registered for replay. See the
+  [exact-byte ownership decision](./decisions/2026-08-17-exact-md5-ownership-precedes-dense-hashing.md)
+  and [candidate durability decision](./decisions/2026-08-17-candidate-terminal-state-is-a-workflow-invariant.md).
 
 ```mermaid
 flowchart TD
@@ -438,8 +442,10 @@ timeout):
 (`config.DiscoveryConfig`, default 15 × 60s) of
 `SearchTweets` with per-event `exclude_urls` accumulating across attempts
 (so attempts 2+ stop early on consecutive-already-seen). Each new
-candidate is persisted via `StoreCandidate` (post-hoc query-quality
-learning) AND submits `DownloadAndStage` to the consumer. The activity returns
+candidate becomes workflow-owned as `CandidateEvidence`. The producer submits
+all new candidates to `DownloadAndStage` before awaiting their concurrent
+`StoreCandidate` observation inserts, so Postgres does not gate clip launch.
+The activity returns
 the exact MD5, staging key, and media metadata. The consumer claims that MD5
 before scheduling dense `HashVideo`; simultaneous byte-identical candidates
 wait behind one claimant instead of repeating ffmpeg work. Histories started
@@ -472,6 +478,17 @@ staging key. The compatibility child retains FF-002's correlated unexpected-
 child and typed terminal-output paths. Cancellation bypasses every forensic
 and cleanup command under FF-015.
 
+**Candidate durability contract (FF-034).** The workflow retains each
+candidate's immutable event, query/attempt, tweet, author, age, and video-page
+evidence until processing reaches a terminal outcome. Terminal persistence is
+one idempotent UPSERT: it finishes an observed row or creates the complete row
+if the earlier observation insert never landed. Only that successful activity
+advances workflow ownership from in-flight to terminal. A terminal write that
+exhausts retries fails EventWorkflow, leaves its downstream checklist open, and
+prevents a false successful parent. A failed observation insert does not block
+the already-dispatched clip; it keeps the search attempt uncheckpointed so a
+replacement execution cannot skip evidence that never became durable.
+
 **Cancellation contract (FF-015).** Producer cancellation from an activity or
 the between-attempt `workflow.Sleep` terminates the producer and records its
 error while a deferred close always marks the search side done. The consumer
@@ -487,13 +504,15 @@ unsuccessfully. EventWorkflow has no outer execution timeout: its attempt loop
 is finite, while each activity and Video child retains its own timeout. Before
 new work starts, the replacement run loads active persisted assets, the
 monotonic `attempts_completed` checkpoint from downstream metadata, and every
-persisted candidate. Terminal candidates seed exclusions; candidates still
-marked `pending` are re-driven. Search resumes at the first uncompleted
+persisted candidate with its full evidence. Terminal candidates seed
+exclusions; candidates still observed/pending are re-driven and become
+in-flight in workflow memory. Search resumes at the first uncompleted
 attempt, and each fully scheduled attempt advances the checkpoint. The
 checklist remains open until the replacement run reaches normal finalization.
 A Temporal change marker keeps executions started before FF-007 on their old
 command sequence; every new or replacement execution records version 1 and
-uses recovery.
+uses recovery. FF-034 independently versions the evidence-carrying terminal
+UPSERT so retained histories keep their original activity commands.
 
 **Stale-running recovery contract (FF-025).** Each duplicate start describes
 the current Temporal execution. The process records the exact run ID plus its
@@ -560,7 +579,8 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   bump and a VAR `DestroyEvent` do **not** emit (the latter surfaces as the
   event's absence in the parent's `fixture.update` refetch).
 
-On completion `finalizeEvent` marks the `event_downstream_workflows` row
+On completion—and only after every workflow-owned candidate is durably
+terminal—`finalizeEvent` marks the `event_downstream_workflows` row
 complete with an `outcome_class` (the pg `workflow_type` stays `'discovery'` —
 the internal downstream label). `AssetsKept` is the LIVE count (`len(p.assets)`
 — supersede removes losers), not cumulative promotes. Methodology + rationale:

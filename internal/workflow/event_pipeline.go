@@ -31,6 +31,7 @@ import (
 	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
+	ddiscovery "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 	dvision "github.com/vedantadhobley/found-footy/internal/domain/vision"
 )
@@ -72,6 +73,7 @@ type pipeline struct {
 	maxHamming, minRun, maxGaps int
 	terminalVideoFailures       bool
 	preHashMD5Claim             bool
+	durableCandidates           bool
 
 	// activity option ctxs
 	downloadCtx workflow.Context
@@ -80,13 +82,15 @@ type pipeline struct {
 	persistCtx  workflow.Context
 
 	// state — mutated only in callbacks / spawnCandidate (single-threaded)
-	assets     []clip
-	pending    []clip
-	hashing    map[string]*hashClaim
-	inFlight   int
-	searchDone bool
-	searchErr  error
-	childSeq   int
+	assets      []clip
+	pending     []clip
+	hashing     map[string]*hashClaim
+	inFlight    int
+	searchDone  bool
+	searchErr   error
+	terminalErr error
+	childSeq    int
+	candidates  map[string]candidateOwnership
 
 	// outcome counters (for the workflow output / logs)
 	spawned, passed, rejectedClips, duplicates, verified, unverified, superseded, failed int
@@ -101,6 +105,7 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		maxHamming: cfg.maxHamming, minRun: cfg.minRun, maxGaps: cfg.maxGaps,
 		terminalVideoFailures: cfg.terminalVideoFailures,
 		preHashMD5Claim:       cfg.preHashMD5Claim,
+		durableCandidates:     cfg.durableCandidates,
 		downloadCtx:           videoDownloadActivityContext(ctx),
 		hashCtx:               videoHashActivityContext(ctx),
 		visionCtx: workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -112,7 +117,8 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 			StartToCloseTimeout: 2 * time.Minute, // S3 copy + pg writes
 			RetryPolicy:         &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumAttempts: 5},
 		}),
-		hashing: make(map[string]*hashClaim),
+		hashing:    make(map[string]*hashClaim),
+		candidates: make(map[string]candidateOwnership),
 	}
 }
 
@@ -120,6 +126,15 @@ type pipelineConfig struct {
 	maxHamming, minRun, maxGaps int
 	terminalVideoFailures       bool
 	preHashMD5Claim             bool
+	durableCandidates           bool
+}
+
+// candidateOwnership joins immutable evidence to the workflow-local lifecycle
+// state. Only a successful terminal UPSERT may advance a durable candidate to
+// CandidateTerminal.
+type candidateOwnership struct {
+	evidence ddiscovery.CandidateEvidence
+	state    ddiscovery.CandidateState
 }
 
 // restoreAssets seeds the serialized consumer with durable live assets from a
@@ -142,12 +157,23 @@ func (p *pipeline) restoreAssets(restored []videoactivity.RestoredEventAsset) {
 	}
 }
 
-// spawnCandidate begins one candidate's durable processing. FF-022 schedules
-// DownloadAndStage directly so EventWorkflow can claim its MD5 before dense
-// hashing. The child workflow branch preserves pre-FF-022 histories.
-func (p *pipeline) spawnCandidate(gctx workflow.Context, tweetURL string) {
+// spawnCandidate takes workflow ownership of one candidate and starts its
+// processing immediately. FF-022 schedules DownloadAndStage directly so
+// EventWorkflow can claim its MD5 before dense hashing. The child workflow
+// branch preserves pre-FF-022 histories.
+func (p *pipeline) spawnCandidate(gctx workflow.Context, evidence ddiscovery.CandidateEvidence) {
 	if gctx.Err() != nil {
 		return
+	}
+	tweetURL := evidence.TweetURL
+	if tweetURL == "" {
+		return
+	}
+	if p.durableCandidates {
+		p.candidates[tweetURL] = candidateOwnership{
+			evidence: evidence,
+			state:    ddiscovery.CandidateInFlight,
+		}
 	}
 	p.spawned++
 	if p.preHashMD5Claim {
@@ -317,6 +343,16 @@ func (p *pipeline) finishSearch(err error) {
 func (p *pipeline) run() error {
 	for {
 		if p.searchDone && p.inFlight == 0 {
+			if p.terminalErr != nil {
+				return p.terminalErr
+			}
+			if p.durableCandidates {
+				for tweetURL, candidate := range p.candidates {
+					if candidate.state != ddiscovery.CandidateTerminal {
+						return fmt.Errorf("candidate %s ended in non-terminal state %q", tweetURL, candidate.state)
+					}
+				}
+			}
 			return p.searchErr
 		}
 		if p.selector.HasPending() {
@@ -716,12 +752,32 @@ func (p *pipeline) publishEventVideo() {
 		livefeedactivity.EventVideoInput{EventID: p.in.EventID, FixtureID: p.in.FixtureID}).Get(p.persistCtx, nil)
 }
 
-// recordOutcome stamps a candidate's terminal fate on its event_search_candidates
-// row (#181 forensics). Best-effort — a lost record is only forensic loss, never
-// a pipeline failure — so the error is swallowed, like publishEventVideo. An
-// empty tweetURL (a child that died before returning one) is skipped.
+// recordOutcome persists a candidate's terminal fate. FF-034 histories use one
+// evidence-carrying UPSERT and treat failure as a workflow error; only a
+// successful activity advances workflow ownership to terminal. Older histories
+// retain RecordCandidateOutcome's best-effort UPDATE command sequence.
 func (p *pipeline) recordOutcome(tweetURL string, outcome discoveryactivity.CandidateOutcome, reason string, detail json.RawMessage) {
 	if tweetURL == "" || p.canceled() {
+		return
+	}
+	if p.durableCandidates {
+		candidate, ok := p.candidates[tweetURL]
+		if !ok {
+			p.setTerminalError(fmt.Errorf("candidate evidence missing for %s", tweetURL))
+			return
+		}
+		err := workflow.ExecuteActivity(p.persistCtx,
+			(*discoveryactivity.Activities).UpsertCandidateOutcome,
+			discoveryactivity.UpsertCandidateOutcomeInput{
+				Evidence: candidate.evidence, Outcome: outcome,
+				RejectReason: reason, Detail: detail,
+			}).Get(p.persistCtx, nil)
+		if err != nil {
+			p.setTerminalError(fmt.Errorf("persist terminal candidate %s: %w", tweetURL, err))
+			return
+		}
+		candidate.state = ddiscovery.CandidateTerminal
+		p.candidates[tweetURL] = candidate
 		return
 	}
 	_ = workflow.ExecuteActivity(p.persistCtx,
@@ -730,6 +786,16 @@ func (p *pipeline) recordOutcome(tweetURL string, outcome discoveryactivity.Cand
 			EventID: p.in.EventID, TweetURL: tweetURL,
 			Outcome: outcome, RejectReason: reason, Detail: detail,
 		}).Get(p.persistCtx, nil)
+}
+
+// setTerminalError retains the first durability failure. Later callbacks may
+// finish their own cleanup, but the parent may not report success afterward.
+func (p *pipeline) setTerminalError(err error) {
+	if err == nil || p.terminalErr != nil {
+		return
+	}
+	p.terminalErr = err
+	p.log.Error("candidate terminal persistence failed", "err", err)
 }
 
 // canceled is checked before scheduling every follow-on activity. Cancellation

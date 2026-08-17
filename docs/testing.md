@@ -130,6 +130,13 @@ cleanup, promotion, or finalization commands. A default-version case requires
 pre-FF-022 histories to keep calling the registered VideoWorkflow child and
 never add a direct download activity.
 
+FF-034 workflow tests require candidate processing to launch even when every
+observation-insert retry fails, while the failed attempt remains uncheckpointed
+and the downstream checklist stays open. A separate case exhausts the terminal
+UPSERT and proves EventWorkflow cannot complete. The default-version case
+requires pre-FF-034 histories to retain `StoreCandidate` before launch and the
+legacy best-effort `RecordCandidateOutcome` command sequence.
+
 `PersistActivities` promotion tests inject failures into the durable tail.
 They prove that a rank failure after share insertion is repaired on retry, an
 uncertain staging-delete response does not require a second source copy, and
@@ -143,8 +150,10 @@ Integration coverage currently includes `pg`, `s3`, `nats`, and `temporal`.
 Each covered adapter spins its real container in the test process.
 
 The pg recovery test verifies that `attempts_completed` advances monotonically
-inside downstream metadata and that terminal versus pending candidate state is
-loaded in stable discovery order.
+inside downstream metadata and that terminal versus observed candidate state,
+including complete evidence, loads in stable discovery order. A second FF-034
+case calls the terminal UPSERT without a prior observation row, retries it, and
+requires one complete terminal row.
 
 Enablement mechanics:
 - `--network=host` on the `test` make target — testcontainers-go

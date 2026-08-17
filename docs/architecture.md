@@ -29,8 +29,9 @@ found-footy/
 │   │   ├── video/                       ✓ D3 + V/2 + V/3a: model + Repo + rank + perceptual dHash + Match + hard-filter + tests
 │   │   ├── alias/                       ✓ canonical-team record + shared text operations; resolver removed 2026-08-16
 │   │   ├── team/                        ✓ TrackedTeam set — tracked-teams-cache ingest filter (team.go + repo.go)
-│   │   ├── discovery/                   ✓ Query builder (2026-07-22) + real EventWorkflow (O3/d, 2026-07-23)
+│   │   ├── discovery/                   ✓ Query builder + FF-034 CandidateEvidence and explicit workflow-owned candidate states
 │   │   │   ├── doc.go                   Package doc — query construction, URL extraction, source scoring
+│   │   │   ├── candidate.go             CandidateEvidence + observed/in-flight/terminal ownership vocabulary
 │   │   │   ├── query_builder.go         BuildTwitterQuery, ErrEmptyQuery, ErrEmptyPlayerName (D1/D4b/D4c/D4d/D7 per twitter-search-query.md)
 │   │   │   └── query_builder_test.go    name, particle, dedup, fallback, and safeguard cases
 │   │   ├── vision/                      ✓ D5 (2026-07-28): clock.go + evaluate.go + schema.go + tests — clip-clock validation, wired into EventWorkflow consumer
@@ -52,15 +53,15 @@ found-footy/
 │   │   ├── ingest.go                    ✓ O1c: IngestWorkflow
 │   │   ├── active_poll.go               ✓ O2: ActivePollWorkflow (30s IntervalSpec)
 │   │   ├── staging_poll.go              ✓ O2: StagingPollWorkflow (*/15 cron)
-│   │   ├── event.go                     ✓ #164c + FF-022: EventWorkflow — per-goal discovery producer + candidate submission (ex-DiscoveryWorkflow)
-│   │   ├── event_pipeline.go            ✓ #164c-b + #171 + FF-022: Selector consumer — download/stage → exact-MD5 claim → one dense hash per byte cluster → vision → category-scoped perceptual dedup + IsUpgrade winner-select → promote/supersede → rank; assets/pending/hashing/inFlight state; searchDone&&inFlight==0 completion
+│   │   ├── event.go                     ✓ #164c + FF-022 + FF-034: per-goal discovery producer, immediate candidate launch, durable observation/recovery
+│   │   ├── event_pipeline.go            ✓ #164c-b + #171 + FF-022 + FF-034: Selector consumer — download/stage → exact-MD5 claim → one dense hash per byte cluster → vision → category-scoped perceptual dedup + IsUpgrade winner-select → promote/supersede → rank; terminal candidate durability gates completion
 │   │   └── video.go                     ✓ #165: pre-FF-022 VideoWorkflow child retained for Temporal replay; shared download/hash activity contracts
 │   ├── activity/                        activity packages + shared heartbeat helper
 │   │   ├── ingest/                      ✓ config, roster, fixture fetch/upsert, canonical-team placeholder, and retention activities
 │   │   │   ├── activities.go
 │   │   │   └── activities_test.go
 │   │   ├── monitor/                     ✓ config, activation, staging/live fetch, stable event-identity reconcile (FF-027), and failed-only spawn + stale-running progress-proof recovery (FF-007/FF-025)
-│   │   ├── discovery/                   ✓ config/aliases/search/candidates, durable recovery checkpoints, and downstream completion
+│   │   ├── discovery/                   ✓ config/aliases/search, candidate observation + terminal UPSERT, durable recovery checkpoints, and downstream completion
 │   │   ├── video/                       ✓ DownloadAndStage, HashVideo, live-asset recovery, persistence, teardown, and ranking activities
 │   │   ├── vision/                      ✓ staged-clip frame extraction + model-backed validation
 │   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when fleet disabled (FIREFOXFLEET_ENABLED=false)

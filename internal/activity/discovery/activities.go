@@ -6,13 +6,15 @@
 //     has real inputs.
 //  2. SearchTweets — call the Twitter service's POST /search with
 //     the query builder's output + accumulated exclude_urls.
-//  3. StoreCandidate — persist one candidate tweet to
-//     event_search_candidates. Idempotent via
-//     ON CONFLICT DO NOTHING on (event_id, tweet_url).
+//  3. StoreCandidate — persist one observed candidate tweet to
+//     event_search_candidates. Idempotent via ON CONFLICT DO NOTHING on
+//     (event_id, tweet_url).
 //  4. LoadEventRecoveryState — restore durable search progress and candidate
 //     ownership when a failed EventWorkflow execution restarts.
 //  5. RecordDiscoveryProgress — monotonically checkpoint completed searches.
-//  6. MarkDownstreamComplete — updates event_downstream_workflows
+//  6. UpsertCandidateOutcome — atomically persist the full candidate evidence
+//     and terminal outcome, whether or not observation persistence landed.
+//  7. MarkDownstreamComplete — updates event_downstream_workflows
 //     so FixtureReadyToComplete stops treating this workflow as
 //     pending.
 package discovery
@@ -27,6 +29,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/vedantadhobley/found-footy/internal/activity/heartbeat"
+	ddiscovery "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
 )
@@ -267,21 +270,10 @@ func (a *Activities) SearchTweets(ctx context.Context, in SearchTweetsInput) (Se
 	}, nil
 }
 
-// StoreCandidateInput is one candidate tweet Discovery persists to
-// event_search_candidates. Fields mirror the schema — see schema.sql
-// for the intent.
-type StoreCandidateInput struct {
-	EventID               uuid.UUID
-	FixtureID             int64
-	SearchAttempt         int
-	Query                 string
-	TweetURL              string
-	TweetText             string
-	VideoPageURL          string
-	DurationSeconds       float64
-	Username              string
-	AgeMinutesAtDiscovery float64 // 0 = not extracted; NULL in the DB
-}
+// StoreCandidateInput is the workflow-owned evidence persisted when a
+// candidate is first observed. The alias preserves the registered activity's
+// historical payload shape while keeping one canonical evidence contract.
+type StoreCandidateInput = ddiscovery.CandidateEvidence
 
 // StoreCandidateOutput reports whether the row was inserted or
 // deduplicated. Inserted=false on ON CONFLICT hit — expected during
@@ -329,10 +321,13 @@ func (a *Activities) StoreCandidate(ctx context.Context, in StoreCandidateInput)
 	return StoreCandidateOutput{Inserted: tag.RowsAffected() == 1}, nil
 }
 
-// RecoveryCandidate is one candidate already owned by the event. Pending
-// candidates must be re-driven after an abnormal workflow close; terminal
-// candidates only seed the search exclusion set.
+// RecoveryCandidate is one candidate already owned by the event. Evidence and
+// State are the FF-034 contract. TweetURL and Pending remain populated for
+// replay of histories recorded before that contract existed.
 type RecoveryCandidate struct {
+	Evidence ddiscovery.CandidateEvidence
+	State    ddiscovery.CandidateState
+
 	TweetURL string
 	Pending  bool
 }
@@ -373,7 +368,9 @@ func (a *Activities) LoadEventRecoveryState(
 	}
 
 	rows, err := a.Pool.Query(callCtx, `
-		SELECT tweet_url, outcome_class = 'pending'
+		SELECT fixture_id, search_attempt, query,
+		       tweet_url, tweet_text, video_page_url, duration_seconds,
+		       username, age_minutes_at_discovery, outcome_class
 		FROM event_search_candidates
 		WHERE event_id = $1
 		ORDER BY discovered_at, tweet_url
@@ -384,8 +381,32 @@ func (a *Activities) LoadEventRecoveryState(
 	defer rows.Close()
 	for rows.Next() {
 		var candidate RecoveryCandidate
-		if err := rows.Scan(&candidate.TweetURL, &candidate.Pending); err != nil {
+		var age *float64
+		var outcome CandidateOutcome
+		candidate.Evidence.EventID = in.EventID
+		if err := rows.Scan(
+			&candidate.Evidence.FixtureID,
+			&candidate.Evidence.SearchAttempt,
+			&candidate.Evidence.Query,
+			&candidate.Evidence.TweetURL,
+			&candidate.Evidence.TweetText,
+			&candidate.Evidence.VideoPageURL,
+			&candidate.Evidence.DurationSeconds,
+			&candidate.Evidence.Username,
+			&age,
+			&outcome,
+		); err != nil {
 			return out, fmt.Errorf("discovery.LoadEventRecoveryState: scan event=%s: %w", in.EventID, err)
+		}
+		if age != nil {
+			candidate.Evidence.AgeMinutesAtDiscovery = *age
+		}
+		candidate.TweetURL = candidate.Evidence.TweetURL
+		candidate.Pending = outcome == "pending"
+		if candidate.Pending {
+			candidate.State = ddiscovery.CandidateObserved
+		} else {
+			candidate.State = ddiscovery.CandidateTerminal
 		}
 		out.Candidates = append(out.Candidates, candidate)
 	}
@@ -455,10 +476,101 @@ type RecordCandidateOutcomeInput struct {
 	Detail       json.RawMessage
 }
 
+// UpsertCandidateOutcomeInput joins the immutable observation evidence to one
+// terminal result. A single idempotent activity can therefore create a missing
+// candidate row or finish an existing pending row without a cross-call race.
+type UpsertCandidateOutcomeInput struct {
+	Evidence     ddiscovery.CandidateEvidence
+	Outcome      CandidateOutcome
+	RejectReason string
+	Detail       json.RawMessage
+}
+
+// UpsertCandidateOutcome durably records one terminal candidate state. On a
+// conflict it preserves the first-observation evidence and updates only the
+// terminal fields. The fixture guard turns an impossible identity mismatch
+// into an error instead of attaching an outcome to the wrong event evidence.
+func (a *Activities) UpsertCandidateOutcome(ctx context.Context, in UpsertCandidateOutcomeInput) error {
+	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if in.Evidence.EventID == uuid.Nil || in.Evidence.FixtureID <= 0 ||
+		in.Evidence.SearchAttempt <= 0 || in.Evidence.Query == "" || in.Evidence.TweetURL == "" {
+		return fmt.Errorf("discovery.UpsertCandidateOutcome: incomplete evidence for event=%s tweet=%s",
+			in.Evidence.EventID, in.Evidence.TweetURL)
+	}
+	switch in.Outcome {
+	case OutcomePromoted, OutcomeDuplicate, OutcomeSuperseded, OutcomeRejected, OutcomeFailed:
+	default:
+		return fmt.Errorf("discovery.UpsertCandidateOutcome: non-terminal outcome %q", in.Outcome)
+	}
+
+	var age *float64
+	if in.Evidence.AgeMinutesAtDiscovery > 0 {
+		age = &in.Evidence.AgeMinutesAtDiscovery
+	}
+	var reason *string
+	if in.RejectReason != "" {
+		reason = &in.RejectReason
+	}
+	var detail []byte
+	if len(in.Detail) > 0 {
+		detail = in.Detail
+	}
+
+	tag, err := a.Pool.Exec(callCtx, `
+		INSERT INTO event_search_candidates (
+			event_id, fixture_id, search_attempt, query,
+			tweet_url, tweet_text, video_page_url, duration_seconds,
+			username, age_minutes_at_discovery,
+			outcome_class, reject_reason, outcome_detail, outcome_at
+		) VALUES (
+			$1, $2, $3, $4,
+			$5, $6, $7, $8,
+			$9, $10,
+			$11, $12, $13, NOW()
+		)
+		ON CONFLICT (event_id, tweet_url) DO UPDATE
+		SET outcome_class = EXCLUDED.outcome_class,
+		    reject_reason = EXCLUDED.reject_reason,
+		    outcome_detail = EXCLUDED.outcome_detail,
+		    outcome_at = CASE
+		        WHEN event_search_candidates.outcome_class = EXCLUDED.outcome_class
+		         AND event_search_candidates.reject_reason IS NOT DISTINCT FROM EXCLUDED.reject_reason
+		         AND event_search_candidates.outcome_detail IS NOT DISTINCT FROM EXCLUDED.outcome_detail
+		        THEN COALESCE(event_search_candidates.outcome_at, EXCLUDED.outcome_at)
+		        ELSE EXCLUDED.outcome_at
+		    END
+		WHERE event_search_candidates.fixture_id = EXCLUDED.fixture_id
+	`,
+		in.Evidence.EventID,
+		in.Evidence.FixtureID,
+		in.Evidence.SearchAttempt,
+		in.Evidence.Query,
+		in.Evidence.TweetURL,
+		in.Evidence.TweetText,
+		in.Evidence.VideoPageURL,
+		in.Evidence.DurationSeconds,
+		in.Evidence.Username,
+		age,
+		string(in.Outcome),
+		reason,
+		detail,
+	)
+	if err != nil {
+		return fmt.Errorf("discovery.UpsertCandidateOutcome: event=%s tweet=%s: %w",
+			in.Evidence.EventID, in.Evidence.TweetURL, err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("discovery.UpsertCandidateOutcome: evidence identity mismatch for event=%s tweet=%s",
+			in.Evidence.EventID, in.Evidence.TweetURL)
+	}
+	return nil
+}
+
 // RecordCandidateOutcome stamps a candidate's terminal outcome onto its
-// event_search_candidates row (#181 forensics). Keyed by (event_id, tweet_url);
-// a row not yet present (a race with StoreCandidate) updates zero rows — a
-// no-op, not an error. Idempotent: last write wins, so a retry is safe.
+// event_search_candidates row for histories created before FF-034. New
+// histories use UpsertCandidateOutcome; this compatibility activity retains
+// the old zero-row behavior until those histories have expired.
 func (a *Activities) RecordCandidateOutcome(ctx context.Context, in RecordCandidateOutcomeInput) error {
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
