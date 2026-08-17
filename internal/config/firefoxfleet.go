@@ -19,13 +19,15 @@ type FirefoxFleetConfig struct {
 	// pre-built (docker compose build twitter). Env-specific tag.
 	Image string `env:"FIREFOXFLEET_IMAGE" envDefault:"found-footy-dev-twitter:latest"`
 
-	// Network is the docker network instances attach to so the worker
-	// reaches them by container-name DNS. MUST be a network the worker is
-	// also on. This is the *actual* Docker network name. Both compose files
+	// Network is the Docker network instances attach to so the worker reaches
+	// them by network-alias DNS. It is also the fleet's opaque ownership scope:
+	// names, labels, capacity, and reaping never cross this boundary. The Go
+	// code does not interpret it as dev/prod. MUST be a network the worker is
+	// also on and a Docker-name-safe token. Both compose files
 	// set an explicit `name:` on their network (docker-compose.dev.yml →
 	// `found-footy-dev`), matching Python prod's convention, so the name is
-	// clean rather than Compose's `<project>_<key>` default. Override per-env
-	// via the env var (prod sets `found-footy-prod`).
+	// clean rather than Compose's `<project>_<key>` default. Each Compose file
+	// sets the matching FIREFOXFLEET_NETWORK explicitly.
 	Network string `env:"FIREFOXFLEET_NETWORK" envDefault:"found-footy-dev"`
 
 	// CookieHostPath is the HOST path to the shared cookie file. fleet.go
