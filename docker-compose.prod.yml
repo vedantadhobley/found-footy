@@ -16,6 +16,15 @@
 
 name: found-footy-prod
 
+# FF-021 host-wide CPU contract. Each worker still owns a process-local
+# semaphore; Compose partitions the fixed host budget across fixed replicas.
+# test/release_contract_test.go ties these values to worker.deploy and env.
+x-ffmpeg-stack-budget:
+  hardware_threads: 32
+  worker_replicas: 2
+  max_processes_per_worker: 16
+  threads_per_process: 1
+
 volumes:
   postgres-data:
   temporal-postgres-data:
@@ -163,6 +172,10 @@ services:
       IMAGE_TAG: ${IMAGE_TAG:-latest}
       FIREFOXFLEET_IMAGE: found-footy-prod-twitter:${IMAGE_TAG:-latest} # exact release image the fleet spawns
       FIREFOXFLEET_NETWORK: found-footy-prod              # prod network the fleet attaches to (code default is dev's)
+      # Explicitly override .env's single-worker defaults. Two replicas × 16
+      # processes × one thread = luv's 32-thread stack budget (FF-021).
+      FFMPEG_MAX_CONCURRENT: "16"
+      FFMPEG_THREADS_PER_PROC: "1"
     depends_on:
       postgres:
         condition: service_healthy
@@ -180,6 +193,8 @@ services:
       - found-footy-prod
       - luv-prod
     deploy:
+      # Fixed by x-ffmpeg-stack-budget; changing this requires repartitioning
+      # FFMPEG_MAX_CONCURRENT in the same change.
       replicas: 2  # HA — Temporal distributes tasks across both; workers are stateless
     restart: unless-stopped
 

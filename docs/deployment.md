@@ -32,6 +32,15 @@ targeting prod. Every command must pass `-f docker-compose.{prod,dev}.yml`.
   fleet's image-builder + single fallback, with per-event instances carrying
   the search load.
 
+Production Compose also owns FF-021's fixed host-wide ffmpeg CPU contract. Its
+32-thread budget is partitioned across the two workers as 16 concurrent
+one-thread processes per replica. Explicit worker environment entries override
+the single-worker `.env` defaults. The `x-ffmpeg-stack-budget` declaration and
+the release contract test bind the budget, replica count, semaphore slots, and
+per-process thread count together. Elastic worker counts require a shared
+admission controller or dedicated Temporal queue; a process-local semaphore
+cannot enforce a changing host-wide limit.
+
 **Per-event fleet ownership:** Compose owns the deployment partition through
 the explicit `found-footy-dev` / `found-footy-prod` network and passes its
 actual name as `FIREFOXFLEET_NETWORK`. The Go provisioner treats that string as
