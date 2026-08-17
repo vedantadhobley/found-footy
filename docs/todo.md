@@ -278,6 +278,26 @@ against the current branch.
 - **Source relation:** Not found by the audits. The as-built proposal documents
   that every child hashes, but production disproved its cost premise.
 
+### FF-023 — promotion retry can skip rank rebalance
+
+- **Status:** `confirmed`
+- **Severity:** P2
+- **Source:** Promotes audit 2026-08-13 P3-3 after current-code validation.
+- **Invariant:** A retry must complete every durable step after a partially
+  successful promotion, including rank repair.
+- **Evidence:** `PromoteAndPersist` inserts a new share and then calls
+  `RebalanceRanks`. If rebalance fails, the activity retries, finds the share
+  inserted by the first attempt, and returns immediately without calling
+  rebalance again. The retry therefore converts a transient error into a
+  permanently stale rank order.
+- **Required fix:** Treat an existing share as idempotent progress, not activity
+  completion. Populate the output from it, always run rank rebalance, then
+  perform FF-006 staging cleanup. Add a regression that fails the first
+  rebalance after share insert and proves the retry repairs ranks without a
+  second share.
+- **Rollout:** Couple with FF-006 because both change the same promotion commit
+  tail and retry boundary.
+
 ### FF-006 — promoted clips retain staging objects
 
 - **Status:** `confirmed`
@@ -285,9 +305,17 @@ against the current branch.
 - **Source:** 2026-08-13 P2-4, elevated to P1 by the 2026-08-15 audit.
 - **Evidence:** Promote copies `staging/` to `assets/`; the success path never
   calls `DeleteStaging`. Other terminal paths do.
-- **Required fix:** Delete staging after durable promotion, idempotently, and
-  add a bounded stale-staging sweep as a backstop. Coordinate with FF-002 so
-  every terminal path has an owner.
+- **Retry trap:** Deleting staging immediately before success is insufficient.
+  If deletion succeeds but the activity completion acknowledgement is lost, a
+  retry starts with `Copy(staging, assets)` and fails because its source is
+  gone, even though the deterministic asset and share are already durable.
+- **Required fix:** Derive the asset ID first and query it before copy. A retry
+  that finds the deterministic asset skips copy, ensures the share exists,
+  always rebalances ranks per FF-023, and idempotently deletes staging last.
+  A first attempt still copies before inserting the asset, so an asset row
+  continues to prove that destination bytes were written. Add a bounded stale-
+  staging sweep as a backstop and coordinate with FF-002 so every terminal path
+  has an owner.
 
 ### FF-007 — abnormal EventWorkflow closure can strand a fixture
 
@@ -529,7 +557,6 @@ implementation time.
 | `AUD-0813-P2-16` | monitor | A removed natural key that reappears may be skipped or collide forever instead of being reconciled. | `triage`; related to FF-014 |
 | `AUD-0813-P3-1` | vision | Unknown API minute (`0`) may reject a clock-bearing clip instead of retaining it unverified. | `triage` |
 | `AUD-0813-P3-2` | video | A hash shorter than the configured dedup window can pass while being structurally unable to deduplicate. | `triage` |
-| `AUD-0813-P3-3` | persist | Idempotent promotion retry may skip rank rebalance. | `triage` |
 | `AUD-0813-P3-4` | ranking | Dedup winner selection and public ranking may use inconsistent quality metrics. | `triage` |
 | `AUD-0813-P3-5` | monitor | Reconcile may fetch the same pending-event set twice per fixture per cycle. | `triage` |
 | `AUD-0813-P3-6` | monitor | Discovery recovery may repeat duplicate start/register work every cycle for healthy workflows. | `triage` |
