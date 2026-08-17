@@ -33,18 +33,6 @@ import (
 	"time"
 )
 
-// vncURLEnv is the env var pointing at the VNC container's noVNC
-// endpoint. Surfaced in /authenticate responses so operators can
-// click through to log in without hunting for the URL. Default is
-// empty — deployment sets it in .env.
-const vncURLEnv = "TWITTER_VNC_URL"
-
-// vncStartCmdEnv is the docker/make command the operator runs to
-// start the VNC container when it's not running (per decisions.md
-// 2026-07-21 — VNC is opt-in, not always on). Surfaced verbatim so
-// operators can copy-paste. Default is empty.
-const vncStartCmdEnv = "TWITTER_VNC_START_CMD"
-
 // ErrUnauthenticated signals that the service's cookies are stale
 // or missing and the browser session is not logged in. Callers
 // (search handlers, health checks) use errors.Is against this to
@@ -291,8 +279,8 @@ func (s *Service) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 		"reason": reason,
 	}
 	if state == StateUnauthenticated {
-		vncURL := os.Getenv(vncURLEnv)
-		startCmd := os.Getenv(vncStartCmdEnv)
+		vncURL := s.reauthURL
+		startCmd := s.reauthCommand
 		resp["action_required"] = "manual_reauth"
 		if vncURL != "" {
 			resp["reauth_url"] = vncURL

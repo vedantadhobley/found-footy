@@ -1,9 +1,8 @@
 # Dev stack — Go rebuild.
 #
-# Every Go binary (worker, api, scaler, twitter) uses Dockerfile.dev with
-# air for hot-reload. Source is bind-mounted at /src so edit-save-reload
-# happens in ~2 seconds. All infra containers (postgres, temporal,
-# garage) share the same dev network and speak service-name DNS.
+# Worker and API use Dockerfile.dev with air hot reload. Twitter uses its
+# Playwright image and the scaler is not part of the Go stack. All infra
+# containers share the same dev network and speak service-name DNS.
 #
 # HTTP services fronted by workspace Caddy at:
 #   found-footy-dev-api.luv           → api:8081  (Chi read surface; :8080 is internal metrics)
@@ -18,7 +17,7 @@ name: found-footy-dev
 # ────── shared named volumes for Go module + build cache ──────
 # air rebuilds inside the container; without a persistent GOCACHE +
 # GOMODCACHE, every restart would re-download modules. These live in
-# named docker volumes shared across worker/api/scaler/twitter dev
+# named Docker volumes shared by the worker and API development images.
 # containers. `make clean` (or `docker volume rm found-footy-dev_...`)
 # clears them.
 volumes:
@@ -202,7 +201,7 @@ services:
       - luv-dev  # workspace NATS + cross-project HTTP
     restart: unless-stopped
 
-  # ────── Go: api (HTTP + SSE + webhook delivery) ──────
+  # ────── Go: api (read-only HTTP surface) ──────
   api:
     build:
       context: .
@@ -283,7 +282,7 @@ services:
       # profile lives in the container's writable layer, NOT a shared
       # volume. Firefox's .parentlock guard would refuse to start
       # replicas 2+ if all mounted the same profile dir.
-      - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
+      - ~/.config/found-footy:/config  # parent dir required for atomic cookie replacement
     networks:
       - found-footy-dev
     restart: unless-stopped
@@ -317,7 +316,7 @@ services:
       # Separate profile dir from headless — visible Firefox's SQLite
       # writes shouldn't race with the headless Playwright context.
       - twitter-vnc-profile:/data
-      - ~/.config/found-footy/twitter_cookies.json:/config/twitter_cookies.json
+      - ~/.config/found-footy:/config  # parent dir required for atomic cookie replacement
     networks:
       - found-footy-dev
       - proxy       # Caddy fronts noVNC:6080 as twitter-vnc.luv

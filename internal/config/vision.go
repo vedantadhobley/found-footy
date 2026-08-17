@@ -12,7 +12,7 @@ type VisionConfig struct {
 	// Prompt overrides the built-in domain DefaultPrompt. Empty = use the
 	// validated default (the screen definition + frozen-clock/sub-timer
 	// description are load-bearing — see domain/vision/schema.go).
-	Prompt string `env:"VISION_PROMPT"`
+	Prompt string `env:"VISION_PROMPT" envDefault:""`
 
 	// ToleranceMinutes is the ± window for the clock↔API-minute match.
 	// 1 validated on real clips; do NOT loosen to 2 (two goals can be a

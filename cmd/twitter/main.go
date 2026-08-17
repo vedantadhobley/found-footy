@@ -11,8 +11,10 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"time"
 
+	"github.com/vedantadhobley/found-footy/internal/config"
 	"github.com/vedantadhobley/found-footy/internal/twitter"
 )
 
@@ -108,10 +110,15 @@ var idleCPUFirefoxPrefs = map[string]any{
 }
 
 func main() {
-	// Env-driven config with sensible defaults.
-	cookieFile := envOrDefault("TWITTER_COOKIE_FILE", "/config/twitter_cookies.json")
-	listenAddr := envOrDefault("TWITTER_SERVICE_ADDR", ":8888")
-	headless := envOrDefault("TWITTER_HEADLESS", "true") == "true"
+	cfg, err := config.LoadFor(config.BinaryTwitter)
+	if err != nil {
+		printJSON("startup_error", map[string]string{
+			"stage": "config",
+			"err":   err.Error(),
+		})
+		os.Exit(1)
+	}
+	twitterCfg := cfg.TwitterService
 
 	// Firefox profile lives in the container writable layer for headless
 	// (matches Python-shape — each container gets its own private
@@ -120,13 +127,11 @@ func main() {
 	// own dedicated `twitter-vnc-profile` volume for operator session
 	// persistence — that's a different profile from headless. See
 	// decisions.md 2026-07-23 (ephemeral vs subdirs) for the rationale.
-	profileDir := envOrDefault("TWITTER_PROFILE_DIR", "/data/firefox-profile")
-
 	// Launch browser first — if this fails the service can't do
 	// anything useful, exit non-zero so the orchestrator restarts us.
 	browser, err := twitter.NewBrowser(twitter.NewBrowserOptions{
-		ProfileDir:       profileDir,
-		Headless:         headless,
+		ProfileDir:       twitterCfg.ProfileDir,
+		Headless:         twitterCfg.Headless,
 		FirefoxUserPrefs: idleCPUFirefoxPrefs,
 	})
 	if err != nil {
@@ -139,7 +144,9 @@ func main() {
 	defer func() { _ = browser.Close() }()
 
 	svc := twitter.NewService(browser, twitter.ServiceOptions{
-		CookieFile: cookieFile,
+		CookieFile:    twitterCfg.CookieFile,
+		ReauthURL:     twitterCfg.VNCURL,
+		ReauthCommand: twitterCfg.VNCStartCommand,
 		Build: twitter.BuildInfo{
 			GitSHA:   gitSHA,
 			BuiltAt:  builtAt,
@@ -153,7 +160,7 @@ func main() {
 	// TWITTER_VNC_MODE=true only in the twitter-vnc container (set by
 	// docker-compose). Drives the "open a browser tab so the operator
 	// sees Twitter" behavior below — no effect on headless.
-	vncMode := os.Getenv("TWITTER_VNC_MODE") == "true"
+	vncMode := twitterCfg.VNCMode
 
 	// Kick off first auth check. EnsureAuthenticated handles the full
 	// sequence: mtime check → reload from shared file if newer →
@@ -192,17 +199,17 @@ func main() {
 	svc.RegisterHandlers(mux)
 
 	printJSON("service_starting", map[string]string{
-		"listen":      listenAddr,
-		"profile_dir": profileDir,
-		"cookie_file": cookieFile,
-		"headless":    envOrDefault("TWITTER_HEADLESS", "true"),
+		"listen":      twitterCfg.ListenAddr,
+		"profile_dir": twitterCfg.ProfileDir,
+		"cookie_file": twitterCfg.CookieFile,
+		"headless":    strconv.FormatBool(twitterCfg.Headless),
 		"hostname":    os.Getenv("HOSTNAME"),
 		"git_sha":     gitSHA,
 		"built_at":    builtAt,
 		"image_tag":   os.Getenv("IMAGE_TAG"),
 	})
 
-	srv := &http.Server{Addr: listenAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: twitterCfg.ListenAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- srv.ListenAndServe() }()
 	if err := waitForBrowserOrServer(browser.Done(), serverDone, svc.MarkBrowserExited); err != nil {
@@ -235,13 +242,6 @@ func waitForBrowserOrServer(
 		}
 		return err
 	}
-}
-
-func envOrDefault(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
 }
 
 // printJSON logs a JSON-encoded event to stdout for legacy startup /

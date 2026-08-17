@@ -9,8 +9,8 @@ import "time"
 // filesystem-backed) instead of MinIO; the adapter code doesn't care —
 // both speak the S3 API.
 //
-// Endpoint is not tagged required at the env layer; the adapter constructor
-// returns a descriptive error when a consuming binary starts without it.
+// LoadFor validates the endpoint and credentials before a consuming binary
+// opens external connections. Constructor checks remain as defense in depth.
 type S3Config struct {
 	// Endpoint is the S3 API URL. Example: http://garage:3900. Tests use a
 	// testcontainers-managed S3-compatible endpoint.

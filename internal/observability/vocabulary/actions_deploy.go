@@ -8,7 +8,7 @@ const (
 	ActionStartup         Action = "startup"         // binary starting; carries git_sha + built_at
 	ActionShutdown        Action = "shutdown"        // binary stopping cleanly
 	ActionShutdownForced  Action = "shutdown_forced" // binary killed by second SIGINT/SIGTERM
-	ActionConfigLoaded    Action = "config_loaded"   // config.Load succeeded
+	ActionConfigLoaded    Action = "config_loaded"   // config.LoadFor succeeded
 	ActionConfigLoadError Action = "config_load_error"
 )
 

@@ -9,9 +9,8 @@ import "time"
 // (per-minute burst + daily quota) via response headers; we track them
 // but don't enforce client-side. See docs/api-football/rate-limits.md.
 //
-// BaseURL + APIKey are not tagged required at the env layer; the adapter
-// constructor returns a descriptive error when a consuming binary starts
-// without them.
+// LoadFor validates BaseURL and APIKey before the worker opens external
+// connections. Constructor checks remain as defense in depth for direct use.
 type APIFootballConfig struct {
 	// BaseURL is the API root. Defaults to the api-sports.io v3 host.
 	BaseURL string `env:"API_FOOTBALL_BASE_URL" envDefault:"https://v3.football.api-sports.io"`

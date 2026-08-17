@@ -88,7 +88,7 @@ func Run(binary, gitSHA, builtAt string, work Work) {
 // drained, or before Work starts when the metrics socket cannot be bound.
 func run(binary, gitSHA, builtAt string, work Work) error {
 	// Config load — before logger so we can pick up LogLevel/LogFormat.
-	cfg, err := config.Load()
+	cfg, err := config.LoadFor(config.Binary(binary))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config load failed: %v\n", err)
 		return err

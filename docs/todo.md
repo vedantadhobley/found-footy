@@ -50,7 +50,7 @@ the current branch.
 
 | ID | Severity | Status | Summary |
 |---|---|---|---|
-| FF-035 | P2 | `next` | Validate each binary's configuration and enforce `.env.example`/Compose parity. |
+| FF-043 | P2 | `next` | Remove the public API's unused NATS dependency. |
 
 ## Confirmed issues
 
@@ -197,7 +197,7 @@ the current branch.
 | FF-011 | P2 | `confirmed` | Popularity increments are not idempotent under activity retry. | Retry-safe vote accounting with an invariant test. |
 | FF-013 | P2 | `confirmed` | Schema guard can accept an incomplete schema and evolution is init-file/manual-ALTER based. | Establish ordered migrations and test interrupted/partial state before new constraints. |
 | FF-024 | P2 | `confirmed` | The Garage `staging/` prefix has no bounded orphan sweep after abnormal termination. | Protect active keys and delete only proven age-bounded orphans. |
-| FF-035 | P2 | `next` | Parsed configuration is not semantically validated and `.env.example` does not match the consumed contract. | Per-binary and cross-field validation; generated or tested env/Compose parity. |
+| FF-035 | P2 | `implemented` | Each binary now parses only its owned typed sections and rejects semantic or cross-field violations before external work. A derived contract test keeps Go tags, `.env.example`, Compose overrides, environment scope, and cookie mounts aligned; dead config keys were removed. | Roll out the committed release and verify clean startup for worker, API, Twitter, and one VNC config parse. |
 | FF-036 | P2 | `confirmed` | API completed-fixture reads are unbounded and assembled with N+1 queries. | Separate the public read window from durable URL tombstones and batch assembly. |
 | FF-037 | P2 | `mitigated` | LLM, Temporal, and ffmpeg admission are process-local and share work lanes. | Dedicated task/ffmpeg lanes; checked aggregate limits; shared inference owns global admission. |
 | FF-038 | P2 | `mitigated` | Firefox capacity, leases, and Docker access are not one atomic controller boundary. | HTTP fleet controller with atomic admission, scoped labels, reaping, and no worker socket. |

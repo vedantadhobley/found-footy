@@ -34,9 +34,10 @@ real Twitter.
 - **`found-footy-{env}-twitter-vnc`** — opt-in (`--profile vnc`): same binary +
   Xvfb + x11vnc + noVNC, for the **operator to log in manually** (the only way
   to mint fresh cookies) and for debugging.
-- Both mount the **shared cookie backup file** (`~/.config/found-footy/
-  twitter_cookies.json` → `/config/twitter_cookies.json`) — a host bind mount, so
-  it survives `docker compose down` + container recreation.
+- Both mount the **shared cookie parent directory** (`~/.config/found-footy/`
+  → `/config`); the backup remains `/config/twitter_cookies.json`. The
+  directory mount lets atomic temp-file replacement work and survives
+  container recreation.
 
 The active search path uses the per-event instance model
 ([twitter-scaling.md](./design/proposals/twitter-scaling.md), #160): one
@@ -67,6 +68,12 @@ container layer rebuilds the complete Firefox/Playwright/Go unit and reloads
 the shared cookie backup. Application code does not branch on environment or
 attempt an in-process browser swap. The opt-in VNC container remains
 operator-controlled with `restart: no`.
+
+The service reads its listen address, profile, cookie path, headless/VNC mode,
+and re-auth instructions through the typed Twitter configuration profile.
+Malformed booleans and the impossible VNC-plus-headless combination fail
+before Firefox launches. Re-auth handlers receive immutable validated values;
+they do not reread process environment per request.
 
 ## HTTP contract
 

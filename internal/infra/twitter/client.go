@@ -1,5 +1,5 @@
-// Package twitter is the HTTP client for found-footy's own twitter/
-// container (Firefox+Selenium browser automation). Not a public
+// Package twitter is the HTTP client for found-footy's own twitter
+// container (Firefox through Playwright-Go). Not a public
 // Twitter API client — that lives at internal/infra/syndication/ (for
 // guestpass content) and would live under a hypothetical third
 // adapter for the official Twitter API if we ever wire it up.
@@ -22,11 +22,10 @@ import (
 
 // Client is the internal Twitter service HTTP wrapper.
 type Client struct {
-	http            *http.Client
-	ins             *Instruments
-	baseURL         string
-	searchTimeout   time.Duration
-	downloadTimeout time.Duration
+	http          *http.Client
+	ins           *Instruments
+	baseURL       string
+	searchTimeout time.Duration
 }
 
 // SearchRequest is the JSON body of a POST /search call.
@@ -78,13 +77,12 @@ func NewClient(cfg config.TwitterConfig, ins *Instruments) (*Client, error) {
 		// shorter of the two wins. A 10s cap here strangled every Search: a
 		// real search takes 11–30s+ (empty-detection wait + stealth scroll
 		// jitter), so nothing ever completed. Each method bounds itself via
-		// context instead — Search=SearchTimeout, Download=DownloadTimeout.
+		// context instead — Search uses SearchTimeout.
 		// See decisions.md 2026-08-05.
-		http:            &http.Client{},
-		ins:             ins,
-		baseURL:         strings.TrimRight(cfg.BaseURL, "/"),
-		searchTimeout:   cfg.SearchTimeout,
-		downloadTimeout: cfg.DownloadTimeout,
+		http:          &http.Client{},
+		ins:           ins,
+		baseURL:       strings.TrimRight(cfg.BaseURL, "/"),
+		searchTimeout: cfg.SearchTimeout,
 	}, nil
 }
 

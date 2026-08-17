@@ -16,7 +16,4 @@ type APIConfig struct {
 	// can't hold a connection open indefinitely.
 	ReadTimeout  time.Duration `env:"API_READ_TIMEOUT" envDefault:"15s"`
 	WriteTimeout time.Duration `env:"API_WRITE_TIMEOUT" envDefault:"30s"`
-
-	// ShutdownTimeout bounds graceful drain on SIGTERM.
-	ShutdownTimeout time.Duration `env:"API_SHUTDOWN_TIMEOUT" envDefault:"10s"`
 }

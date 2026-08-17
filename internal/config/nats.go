@@ -6,21 +6,16 @@ import "time"
 // NATSConfig covers the workspace bus used for the environment-scoped live
 // feed. Video bytes never traverse it.
 //
-// URL is not tagged required at the env layer; the adapter constructor returns
-// a descriptive error when a consuming binary starts without it.
+// LoadFor validates URL before a consuming binary opens external connections.
+// Constructor checks remain as defense in depth for direct use.
 type NATSConfig struct {
 	// URL is the NATS server address. Cluster form is comma-separated:
 	//   nats://a:4222,nats://b:4222,nats://c:4222
 	URL string `env:"NATS_URL"`
 
-	// Account is the NATS account this binary authenticates against —
-	// each project on the workspace NATS gets its own isolated account
-	// so subjects like event.detected don't collide across projects.
-	Account string `env:"NATS_ACCOUNT"`
-
 	// CredsFile is a path to the NATS credentials (.creds) file that
 	// authenticates against the account. Empty = no auth (dev/test).
-	CredsFile string `env:"NATS_CREDS_FILE"`
+	CredsFile string `env:"NATS_CREDS_FILE" envDefault:""`
 
 	// ClientName shows up in NATS server logs and monitoring — one per
 	// binary/replica so operators can distinguish "which worker replica
