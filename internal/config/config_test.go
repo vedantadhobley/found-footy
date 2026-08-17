@@ -35,10 +35,24 @@ func TestLoadForDoesNotParseAnotherBinaryEnvironment(t *testing.T) {
 	t.Setenv("DISCOVERY_MAX_ATTEMPTS", "not-an-integer")
 
 	if _, err := LoadFor(BinaryAPI); err != nil {
-		t.Fatalf("API rejected worker-only environment: %v", err)
+		t.Fatalf("API rejected worker-only discovery environment: %v", err)
 	}
 	if _, err := LoadFor(BinaryWorker); err == nil {
 		t.Fatal("worker accepted malformed DISCOVERY_MAX_ATTEMPTS")
+	}
+}
+
+func TestLoadForAPIDoesNotRequireOrParseNATS(t *testing.T) {
+	setValidAPIEnvironment(t)
+	t.Setenv("NATS_MAX_RECONNECTS", "not-an-integer")
+
+	if _, err := LoadFor(BinaryAPI); err != nil {
+		t.Fatalf("API rejected unused NATS environment: %v", err)
+	}
+
+	setValidWorkerEnvironment(t)
+	if _, err := LoadFor(BinaryWorker); err == nil {
+		t.Fatal("worker accepted malformed NATS_MAX_RECONNECTS")
 	}
 }
 
@@ -109,8 +123,6 @@ func TestLoadForRejectsUnknownBinary(t *testing.T) {
 func setValidAPIEnvironment(t *testing.T) {
 	t.Helper()
 	t.Setenv("PG_DSN", "postgres://user:pass@postgres:5432/found_footy")
-	t.Setenv("NATS_URL", "nats://nats:4222")
-	t.Setenv("NATS_CLIENT_NAME", "found-footy-test-api")
 	t.Setenv("S3_ENDPOINT", "http://garage:3900")
 	t.Setenv("S3_BUCKET", "found-footy")
 	t.Setenv("S3_ACCESS_KEY_ID", "test-access")
@@ -120,6 +132,7 @@ func setValidAPIEnvironment(t *testing.T) {
 func setValidWorkerEnvironment(t *testing.T) {
 	t.Helper()
 	setValidAPIEnvironment(t)
+	t.Setenv("NATS_URL", "nats://nats:4222")
 	t.Setenv("NATS_CLIENT_NAME", "found-footy-test-worker")
 	t.Setenv("TEMPORAL_HOSTPORT", "temporal:7233")
 	t.Setenv("LLM_ENDPOINT_URL", "http://joi.luv")

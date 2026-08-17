@@ -50,7 +50,7 @@ the current branch.
 
 | ID | Severity | Status | Summary |
 |---|---|---|---|
-| FF-043 | P2 | `next` | Remove the public API's unused NATS dependency. |
+| FF-034 | P1 | `next` | Make candidate evidence and terminal outcome one durable invariant. |
 
 ## Confirmed issues
 
@@ -167,7 +167,7 @@ the current branch.
 
 ### FF-034 — candidate evidence and terminal outcome are not one invariant
 
-- **Status:** `confirmed`
+- **Status:** `next`
 - **Severity:** P1
 - **Invariant:** An EventWorkflow may report completion only after every
   observed candidate has one durable terminal state, with the evidence needed
@@ -205,7 +205,7 @@ the current branch.
 | FF-040 | P2 | `confirmed` | Live reconciliation omits mutable fixture metadata and activation is not atomic across pollers. | Explicit ownership of mutable fields plus one atomic state transition. |
 | FF-041 | P2 | `confirmed` | Perceptual hash bytes have no algorithm version or minimum viable sequence invariant. | Version hashes and reject too-short streams before FF-005 preprocessing changes. |
 | FF-042 | P2 | `implemented` | Lint/tool versions, formatting, and module state were not reproducible. | Go 1.25.11, golangci-lint 2.12.2, and Air 1.65.3 are pinned; format, tidy, vet, lint, short, full, and race gates pass. |
-| FF-043 | P2 | `confirmed` | The public API connects to unused NATS and fails startup when that dependency is unavailable. | Remove NATS from API startup until the API publishes or subscribes. |
+| FF-043 | P2 | `implemented` | The public API now starts from Postgres and S3 only; NATS remains worker-owned and the BFF subscribes directly. The API profile ignores shared NATS env and Compose drops its API-specific override, while `luv-*` remains for real BFF HTTP calls. | Roll out the committed release and verify API startup plus REST health while the NATS broker is unavailable. |
 | FF-044 | P3 | `confirmed` | Recovery repeats start/describe work every 30 seconds for healthy discovery workflows. | Durable next-check lease or scheduled supervisor with bounded checks. |
 | FF-045 | P3 | `confirmed` | Dormant code/schema surfaces and oversized composition files obscure ownership. | Caller-proven deletion and in-package splits after related behavior fixes. |
 | FF-046 | P2 | `confirmed` | Ancillary persistence blocks the serialized EventWorkflow selector consumer. | Serialize only dedup state; model durable effects with explicit futures/idempotency. |

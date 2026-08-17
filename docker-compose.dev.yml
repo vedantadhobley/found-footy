@@ -210,10 +210,8 @@ services:
         BINARY: api
     image: found-footy-dev-api:latest
     container_name: found-footy-dev-api
-    mem_limit: 2g  # host-budget ceiling (see postgres note); Go HTTP/SSE, tiny at rest
+    mem_limit: 2g  # host-budget ceiling (see postgres note); Go read API, tiny at rest
     env_file: .env
-    environment:
-      NATS_CLIENT_NAME: found-footy-dev-api
     depends_on:
       postgres:
         condition: service_healthy
@@ -227,7 +225,7 @@ services:
     networks:
       - found-footy-dev
       - proxy       # Caddy-fronted
-      - luv-dev     # workspace NATS + vedanta-systems dev
+      - luv-dev     # direct HTTP from vedanta-systems dev
     restart: unless-stopped
 
   # ────── Go: twitter (Playwright browser automation) ──────

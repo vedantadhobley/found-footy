@@ -1,4 +1,4 @@
-// Package api is the HTTP surface: Chi + Huma handlers, SSE stream
-// subscribing to NATS event.> / fixture.> subjects, JetStream-backed
-// webhook delivery worker, share-id redirect endpoint. See §8.
+// Package api is the read-only Chi HTTP surface for fixture, event, search,
+// and stable share-ID video reads. Live events flow from workers through NATS
+// directly to the vedanta-systems BFF; this package does not use NATS.
 package api

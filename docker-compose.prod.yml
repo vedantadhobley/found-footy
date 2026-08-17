@@ -208,10 +208,9 @@ services:
         BUILT_AT: ${BUILT_AT:-unknown}
     image: found-footy-api:${IMAGE_TAG:-latest}
     container_name: found-footy-prod-api
-    mem_limit: 2g  # host-budget ceiling (see postgres note); Go HTTP/SSE, tiny at rest
+    mem_limit: 2g  # host-budget ceiling (see postgres note); Go read API, tiny at rest
     env_file: .env
     environment:
-      NATS_CLIENT_NAME: found-footy-prod-api
       IMAGE_TAG: ${IMAGE_TAG:-latest}
     depends_on:
       postgres:
@@ -219,7 +218,7 @@ services:
     networks:
       - found-footy-prod
       - proxy
-      - luv-prod
+      - luv-prod  # direct HTTP from vedanta-systems prod
     restart: unless-stopped
 
   # Static headless twitter — SINGLE instance (matches dev). In the #160

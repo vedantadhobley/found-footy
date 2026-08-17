@@ -54,6 +54,12 @@ enough, and the template or Compose route when operators must supply or
 override them. Unknown legacy keys in a private `.env` are ignored; remove them
 through a separately approved environment edit.
 
+The API starts from Postgres and S3 only. It does not connect to NATS or
+Temporal: workers publish live-feed events and `vedanta-systems` subscribes to
+them directly. The API retains `luv-dev` / `luv-prod` because the BFF calls
+`found-footy-{env}-api:8081` over that shared network; removing an unused NATS
+client does not remove the real cross-project HTTP route.
+
 Production Compose also owns FF-021's fixed host-wide ffmpeg CPU contract. Its
 32-thread budget is partitioned across the two workers as 16 concurrent
 one-thread processes per replica. Explicit worker environment entries override
