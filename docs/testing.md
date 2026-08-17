@@ -265,6 +265,10 @@ FF-031's domain regression supplies an unknown API minute with both visible and
 absent broadcast clocks. Both valid soccer cases remain unverified with no
 matched minute, while non-soccer and screen-recording gates still reject.
 
+FF-032 makes the LLM mock's captured-request buffer concurrency-safe. The
+adapter's concurrency-cap test now exercises parallel handlers without racing
+inside the harness, so `make test-race` remains a trustworthy release gate.
+
 **Run:** `make test-corpus` — runs just the harness. `make test`
 includes it. `make test-short` excludes it (no docker).
 
