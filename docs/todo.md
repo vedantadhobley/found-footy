@@ -256,6 +256,11 @@ the current branch.
   observation persistence, then evaluate early candidate delivery, hash/vision
   overlap, and asynchronous durable effects only where the evidence justifies
   them.
+- **Rollout:** Commit `0e1bbdf` deployed successfully on 2026-08-17 at
+  14:10 UTC. Both workers, the API, and Twitter reported the exact release
+  identity; all schedules were active, Twitter was authenticated and healthy,
+  and no scoped fleet instance was running or stranded. The first
+  representative EventWorkflow remains to supply live stage measurements.
 - **Completion boundary:** Record before/after critical-path and saturation
   evidence for each accepted change. Prefer the smallest change that removes
   the measured bottleneck; do not add a streaming protocol, queue, service, or
