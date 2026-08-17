@@ -201,14 +201,82 @@ against the current branch.
   hash within its bounded budget or receive a deterministic terminal reason
   without repeating an operation that cannot succeed.
 - **Evidence:** The same 3808×2146, 44.6-second file timed out in dense frame
-  extraction three times for each of two candidate children.
-- **Required work:** Profile the single-pass full-resolution PNG stream,
-  ffmpeg semaphore wait, and dense timeout. Evaluate downscaling/equalization
-  in the extraction path while preserving hash semantics. Classify a proven
-  deterministic extraction timeout as non-retryable.
+  extraction three times for each of two candidate children. The final attempt
+  logged `extract_dense elapsed_ms=100045` and `signal: killed`, exactly the
+  adapter's 100-second dense deadline. The adapter starts that elapsed timer
+  after acquiring its semaphore, so this sample did not spend the measured
+  interval waiting for admission.
+- **Cause:** Dense extraction emits roughly 446 full-resolution lossless PNGs.
+  For every 8.2-megapixel frame, Go then decodes PNG and performs full-frame
+  grayscale conversion, histogram equalization, and area reduction before
+  retaining only a 64-bit dHash. That work is resolution-dependent even though
+  the dedup signal is 9×8. FF-021 host oversubscription aggravates it, and
+  FF-022 repeats it for byte-identical candidates.
+- **Required work:** Preserve the served MP4 at source quality, but normalize
+  the separate hashing stream to a bounded grayscale working resolution before
+  PNG serialization—or replace PNG transport with fixed-size raw grayscale
+  frames. Re-baseline dHash thresholds against the existing transform corpus
+  and the FF-004 live pair because preprocessing changes hash semantics. Keep
+  timeout retries for genuinely transient failures; do not label all dense
+  timeouts non-retryable when host contention can still cause them.
+- **Rollout:** FF-002 makes exhaustion terminal and cleans staging, so this
+  throughput fix does not block the pending rollout.
 - **Source relation:** The 2026-08-13 audit identified heartbeat coverage and
   shared-semaphore contention. It did not demonstrate this post-heartbeat 4K
-  failure.
+  failure or invalidate the full-resolution hashing cost assumption.
+
+### FF-021 — per-replica ffmpeg caps overcommit the host
+
+- **Status:** `confirmed`
+- **Severity:** P1
+- **Observed:** 2026-08-16 production topology during the Huijsen workflow.
+- **Invariant:** A documented host CPU budget must remain a host budget when a
+  worker is replicated.
+- **Evidence:** Production runs two worker replicas. Each process reads
+  `FFMPEG_MAX_CONCURRENT=32` and owns an independent 32-slot semaphore with one
+  ffmpeg thread per process. The stack can therefore admit 64 ffmpeg processes
+  on luv's 32 hardware threads. The 2026-08-06 decision and Compose comments
+  calculate `32 × 1 = 32` as though one worker existed.
+- **Impact:** Match flurries can oversubscribe CPU, stretch dense operations to
+  their deadline, and create retries that add more work to the same bottleneck.
+  The limit also governs fast probe and vision-frame work, so saturation delays
+  latency-sensitive stages beyond hashing.
+- **Required work:** Make the per-replica limit derive from one explicit stack
+  CPU budget and pin the fixed production replica count in the same contract.
+  Add a Compose test that multiplies replicas, per-process slots, and threads.
+  Longer term, move dense work to a dedicated Temporal queue or shared
+  admission controller if worker count becomes elastic; a process-local
+  semaphore cannot enforce a host-wide invariant.
+- **Rollout:** Correcting a prod-loaded limit is a separate production config
+  action. Measure current peak concurrency before selecting the new budget.
+- **Source relation:** Audit 2026-08-13 P2-9 found the shared fast/dense lane,
+  but neither that audit nor the 2026-08-06 decision accounted for replicas.
+
+### FF-022 — byte-identical candidates hash before the MD5 gate
+
+- **Status:** `confirmed`
+- **Severity:** P2
+- **Observed:** Same Huijsen candidates as FF-002 and FF-005.
+- **Invariant:** Once download has produced an exact content hash, only one
+  candidate per event and MD5 should perform dense hashing and vision work.
+- **Evidence:** The two different tweet URLs downloaded the same 108,216,129
+  bytes and produced the same MD5, yet each `VideoWorkflow` ran and retried
+  `HashVideo` three times. `DownloadAndStage` computes MD5 first, but
+  `VideoWorkflow` does not return it to `EventWorkflow` until after hashing.
+  The parent's `matchMD5` gate is therefore pre-vision but not pre-hash.
+- **Impact:** Exact reposts multiply the most expensive local work and can
+  amplify deterministic failures. The 2026-08-09 decision's statement that
+  hashing is cheap and parallel is false for the live 4K sample.
+- **Required work:** Introduce an orchestration boundary after
+  download/fingerprint/stage. The event owner must claim `(event_id, md5)`
+  before launching one hash continuation; duplicates transfer popularity and
+  reclaim their staging objects without hashing. Preserve Temporal replay with
+  a change version and test two simultaneous same-MD5 downloads, winner failure,
+  and cancellation.
+- **Rollout:** Optimization and failure-amplification fix; FF-002 contains its
+  terminal-state consequences, so it does not block the pending rollout.
+- **Source relation:** Not found by the audits. The as-built proposal documents
+  that every child hashes, but production disproved its cost premise.
 
 ### FF-006 — promoted clips retain staging objects
 
