@@ -2,8 +2,8 @@
 
 This file is the canonical project backlog. It contains only current bugs,
 accepted improvements, and deferred decisions or validation. Closed issue
-narratives and the completed documentation-normalization register are preserved
-in the [2026-08-17 release snapshot](./history/issue-register-2026-08-17.md).
+evidence is routed through the [history index](./history/README.md); the
+release-day register remains preserved as a frozen snapshot.
 Point-in-time audits under [`design/audits/`](./design/audits/) are evidence,
 not parallel task lists.
 
@@ -45,12 +45,6 @@ the current branch.
 | `P1` | User-visible correctness failure or material resource/lifecycle leak. |
 | `P2` | Bounded failure-state bug, operability gap, or performance debt. |
 | `P3` | Cleanup or improvement without a current correctness failure. |
-
-## Deployed pending live validation
-
-| ID | Severity | Status | Summary |
-|---|---|---|---|
-| FF-034 | P1 | `implemented` | Candidate evidence and terminal outcome are one durable invariant; the first post-release event remains to validate. |
 
 ## Confirmed issues
 
@@ -165,48 +159,6 @@ the current branch.
   shared-semaphore contention. It did not demonstrate this post-heartbeat 4K
   failure or invalidate the full-resolution hashing cost assumption.
 
-### FF-034 — candidate evidence and terminal outcome are not one invariant
-
-- **Status:** `implemented`
-- **Severity:** P1
-- **Invariant:** An EventWorkflow may report completion only after every
-  observed candidate has one durable terminal state, with the evidence needed
-  to explain and recover that state.
-- **Cause:** `StoreCandidate` blocks child launch but its failure is ignored;
-  `RecordCandidateOutcome` is also best-effort, accepts a zero-row `UPDATE`, and
-  has its error discarded. A parent can therefore complete with a missing row
-  or a row still marked `pending`.
-- **Design:** Introduce a workflow-owned `CandidateEvidence` contract carrying
-  URL, tweet text, username, age, query/attempt, and event context. Observation
-  persistence must not delay clip launch. Terminal persistence must use an
-  idempotent UPSERT and complete before the parent reports success. Recovery
-  must distinguish observed, in-flight, and terminal candidates explicitly.
-- **Implemented:** New executions launch every candidate before awaiting its
-  observation insert, then require an evidence-carrying terminal UPSERT before
-  candidate ownership becomes terminal. A failed observation insert leaves the
-  search attempt uncheckpointed; a failed terminal UPSERT fails the parent and
-  leaves its downstream checklist open. Replacement executions re-drive
-  observed rows, while terminal rows only seed search exclusions. Temporal
-  change ID `ff-034-candidate-durability` preserves older histories' command
-  sequence.
-- **Rollout:** Commit `f70cfea` deployed successfully on 2026-08-17 at
-  13:42 UTC. Both workers, the API, and Twitter reported the exact release
-  identity; workers registered all schedules, Twitter was authenticated and
-  healthy, and no fleet container was active or stranded. The regression test
-  proves an injected terminal persistence failure cannot mark its checklist
-  complete. Production still needs one natural post-release EventWorkflow to
-  prove it completes with no `pending` candidate rows.
-- **Existing data:** The post-release read-only check found 38 candidate rows
-  still `pending` under already-completed workflows, all from before this
-  release. FF-034 prevents new rows in that state; it does not rewrite
-  historical evidence. Any backfill or terminal classification is a separate
-  production-data mutation and requires its own design and approval.
-- **Relation:** This is the durable-state half of the observed “pending after
-  parent workflow” defect and the evidence boundary required for FF-003's
-  semantic validation. It also absorbs `AUD-0813-P2-8`; independently
-  serialized persistence remains FF-046.
-- **Source:** [2026-08-17 Codex audit](./design/audits/audit-2026-08-17-codex.md#ff-034--candidate-evidence-and-terminal-state-are-not-one-invariant).
-
 ## Confirmed and mitigated backlog
 
 | ID | Severity | Status | Summary | Completion condition |
@@ -232,8 +184,7 @@ the current branch.
 | FF-047 | P3 | `confirmed` | Empty tracked-team state still burns fixture lookahead calls whose results are discarded. | Short-circuit before vendor fixture calls and emit degraded-state telemetry. |
 | FF-048 | P2 | `confirmed` | Share minting uses check-then-insert without `(event_id, asset_id)` uniqueness. | Database constraint plus atomic idempotent insert after FF-013. |
 | FF-049 | P3 | `confirmed` | Documentation routing is clean, but several current/reference documents still exceed the shared size standard. | Split the 618-line orchestration ledger and route the 2,869-line Python functional spec plus 604-line video-dedup proposal by topic without rewriting historical claims. |
-| FF-050 | P2 | `investigate` | Correlated replay-safe stage timings and a read-only match-day status view are implemented; representative live evidence is pending. | Capture phase and queue latency under representative concurrency, then simplify or parallelize only the demonstrated bottleneck without weakening correctness or resource caps. |
-| FF-051 | P1 | `implemented` | A strict Playwright locator failure was converted to a successful empty Twitter result whenever multiple tweets rendered before the feed wait resolved. The fix is deployed and passed a known-positive production search. | Confirm the next natural three-minute EventWorkflow reports rendered-feed diagnostics and either candidates or a genuine timeout. |
+| FF-050 | P2 | `investigate` | Live Elche timing shows 23.6 seconds from valid-candidate observation to publication, dominated by 12.6-second hashing and 9.7-second vision; durable effects add milliseconds. | Use FF-041 to version the hash contract, then evaluate FF-005 bounded preprocessing before adding pipeline concurrency. |
 | FF-052 | P1 | `confirmed` | Vision accepted a phone filming a display as a clean Elche broadcast with `screen=false` on all three sampled frames. | Preserve the clip as a regression sample, calibrate the prompt/model against varied display recordings, and prove rejection without increasing clean-broadcast false positives. |
 | FF-053 | P1 | `implemented` | The 1.75 minimum aspect gate discarded four 1.739 Elche candidates before download even though at least three contained legitimate goal footage; the minimum is now 1.73. | Roll out the change and prove a natural 1.73–1.749 candidate reaches download while the known ≤1.72 letterbox band remains rejected. |
 
@@ -269,73 +220,31 @@ the current branch.
   broadcasts so a tighter rubric does not trade this false accept for broad
   clip loss.
 
-### FF-051 — rendered Twitter feeds were reported as empty
-
-- **Incident:** All 45 searches across the three Sassuolo–Cesena
-  EventWorkflows returned zero candidates on 2026-08-17. A known-positive
-  Telemundo Lipani tweet was posted inside attempts 5–7 of the configured
-  three-minute window, and professional clips existed for every goal.
-- **Root cause:** Playwright-Go locators are strict. The initial
-  `article[data-testid='tweet']` wait failed immediately when X rendered
-  multiple matching articles before the wait resolved. The handler treated
-  every wait error as a valid empty feed, so Temporal saw success and did not
-  retry. This produced the observed 1.6–2.1-second false-empty searches despite
-  the ten-second feed timeout.
-- **Implemented fix:** Wait on the first matching article, classify only
-  `playwright.ErrTimeout` as a successful `feed_timeout`, and return other
-  Playwright failures as typed HTTP errors. The app-shell union locator is also
-  strict-safe. Search responses and EventWorkflow measurements now carry
-  `initial_articles`, `tweets_parsed`, and `video_tweets` alongside the stop
-  reason and scroll count.
-- **Age contract preserved:** The X query remains the broad
-  `(player OR team aliases) filter:videos` query in Latest order. It contains
-  no `since:` or `until:` bound; `max_age_minutes=3` remains a local
-  wall-clock-relative parsing cutoff per the 2026-07-23 decision. The rejected
-  server-side bounds previously dropped many proven results.
-- **Isolated proof:** A fresh non-production image and Firefox profile returned
-  13 videos for the broad Lipani/Sassuolo query with a diagnostic 180-minute
-  local window, including the supplied Telemundo tweet; four articles were
-  already rendered at the initial wait. The same broad query with the normal
-  three-minute window stopped locally on `age`. A distinctive no-result query
-  waited 10.67 seconds and returned `feed_timeout`.
-- **Rollout:** Commit `f2da9a6` deployed successfully on 2026-08-17 at
-  19:51 UTC after the release gate waited for the Aubameyang and Vavassori
-  workflows to release their old-image browsers. Both workers, the API, and
-  Twitter exposed the exact release identity; Twitter was authenticated and
-  healthy, and the event fleet was empty. A post-rollout production query with
-  the diagnostic 180-minute local window returned 11 videos, including the
-  supplied Telemundo Lipani clip, from four initially rendered articles. It
-  parsed 15 tweets, classified all 15 as video tweets, and stopped on local
-  `age` after 5.17 seconds. The next natural event remains the production proof
-  of the normal three-minute path.
-
 ### FF-050 — measure and shorten event-to-surface latency
 
 - **Outcome:** Surface the first valid clip as soon as the required evidence is
   available. Preserve search coverage, Temporal durability, exact-byte
   ownership, serialized perceptual-dedup decisions, and the LLM/ffmpeg
   admission limits.
-- **Current boundaries to measure:** Twitter returns a completed scroll batch
-  instead of candidates as they appear; dense hashing completes before vision
-  starts; terminal and ancillary persistence wait inside the serialized
-  selector; and expensive activities share one general Temporal task lane.
-- **Required work:** Add correlated phase and queue timings from provider
-  observation through frontend notification. The code now emits lifecycle,
-  search, observation-persistence, download, hash, vision, promotion,
-  terminal-persistence, and frontend-publication measurements; the read-only
-  `scripts/matchday-status.sh` view correlates fixture, event, workflow,
-  candidate, and share state. Use representative match-day
-  concurrency to separate intentional waits—three-poll event debounce,
-  discovery spacing, Twitter stealth pacing, exact-duplicate ownership, and
-  bounded resource admission—from avoidable waits. Measure FF-034's concurrent
-  observation persistence, then evaluate early candidate delivery, hash/vision
-  overlap, and asynchronous durable effects only where the evidence justifies
-  them.
+- **Live evidence:** Elche event
+  `a80e663d-178a-4b65-99f5-734f724ccf67` began 60.0 seconds after first
+  provider observation, consistent with the three-poll debounce. The first
+  candidates arrived on search attempt 2; the eventual survivor arrived on
+  attempt 3 at event elapsed 126.635 seconds. From that observation to frontend
+  publication took 23.638 seconds: download 1.392 seconds, dense hash 12.575
+  seconds, vision 9.652 seconds, and promotion plus publication 45 milliseconds.
+  Observation and terminal persistence added only tens of milliseconds.
+- **Interpretation:** The post-discovery path does not contain an unexplained
+  queue or persistence pause in this sample. Hashing and vision are the
+  critical path. Running them concurrently could save at most the shorter
+  stage, but would spend vision capacity on candidates that dHash would have
+  collapsed. First bound and version hashing through FF-041/FF-005; reconsider
+  overlap only with representative saturation evidence.
 - **Rollout:** Commit `0e1bbdf` deployed successfully on 2026-08-17 at
   14:10 UTC. Both workers, the API, and Twitter reported the exact release
   identity; all schedules were active, Twitter was authenticated and healthy,
-  and no scoped fleet instance was running or stranded. The first
-  representative EventWorkflow remains to supply live stage measurements.
+  and no scoped fleet instance was running or stranded. The Elche workflow is
+  the first representative production measurement after that rollout.
 - **Completion boundary:** Record before/after critical-path and saturation
   evidence for each accepted change. Prefer the smallest change that removes
   the measured bottleneck; do not add a streaming protocol, queue, service, or
