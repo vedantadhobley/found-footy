@@ -16,10 +16,13 @@ package vision
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/vedantadhobley/found-footy/internal/activity/heartbeat"
 	"github.com/vedantadhobley/found-footy/internal/config"
@@ -32,6 +35,11 @@ import (
 // schema requires exactly 3; more frames = more chances the clock is visible
 // (it hides during replays/close-ups) without extra model calls.
 var framePositions = []float64{0.25, 0.50, 0.75}
+
+// permanentLLMErrorType identifies model/config failures that Temporal must
+// not retry. The sentinels remain in the cause chain for direct callers and
+// tests; the ApplicationError flag controls server-side retry behavior.
+const permanentLLMErrorType = "vision_llm_permanent"
 
 // --- dep interfaces (interface-shaped so tests inject fakes) ---
 
@@ -59,8 +67,9 @@ type Activities struct {
 	Cfg        config.VisionConfig
 }
 
-// ValidateClip validates one staged clip. Infra/model failures return an
-// error (retryable); the verdict itself is always a nil-error Outcome.
+// ValidateClip validates one staged clip. Transient infra/model failures return
+// retryable errors; permanent model/config/response failures return a
+// non-retryable ApplicationError. The verdict is always a nil-error Outcome.
 func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (ValidateClipOutput, error) {
 	var out ValidateClipOutput
 	// One opaque VLM request that can queue behind the joi cap-4 semaphore past
@@ -94,16 +103,15 @@ func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (Va
 
 	resp, err := a.callModel(ctx, images)
 	if err != nil {
-		// llm typed errors (rate-limit/unavailable/etc.) flow up for the
-		// workflow's RetryPolicy — no outcome/error conflation here.
-		return out, fmt.Errorf("vision.ValidateClip: model: %w", err)
+		return out, classifyModelFailure("model", err)
 	}
 
 	var vr dvision.VisionResponse
 	if err := json.Unmarshal([]byte(resp.Content), &vr); err != nil {
-		// Constrained decoding should make this impossible; if it happens
-		// it's a real backend problem worth retrying.
-		return out, fmt.Errorf("vision.ValidateClip: parse response %q: %w", resp.Content, err)
+		// Constrained decoding should make this impossible. Repeating the same
+		// accepted response does not repair it, so fail this activity once.
+		parseErr := fmt.Errorf("%w: %v", llm.ErrInvalidJSON, err)
+		return out, classifyModelFailure("parse response", parseErr)
 	}
 
 	ev := dvision.Evaluate(vr.Frames, dvision.Expected{Elapsed: in.APIElapsed, Extra: in.APIExtra}, a.Cfg.ToleranceMinutes)
@@ -115,6 +123,20 @@ func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (Va
 	out.ExpectedMinute, out.ExpectedPeriod = ev.ExpectedMinute, ev.ExpectedPeriod
 	out.Frames = vr.Frames
 	return out, nil
+}
+
+// classifyModelFailure preserves transient model failures for the workflow's
+// retry policy and marks permanent configuration/response failures as a
+// non-retryable Temporal ApplicationError.
+func classifyModelFailure(stage string, err error) error {
+	wrapped := fmt.Errorf("vision.ValidateClip: %s: %w", stage, err)
+	if errors.Is(err, llm.ErrInvalidJSON) ||
+		errors.Is(err, llm.ErrModelNotFound) ||
+		errors.Is(err, llm.ErrInvalidRequest) ||
+		errors.Is(err, llm.ErrAuthFailed) {
+		return temporal.NewNonRetryableApplicationError(wrapped.Error(), permanentLLMErrorType, wrapped)
+	}
+	return wrapped
 }
 
 // callModel issues the single multi-image structured-output vision call.

@@ -5,7 +5,9 @@
 package llm
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -77,6 +79,15 @@ func classifyError(err error) error {
 		case http.StatusUnauthorized, http.StatusForbidden: // 401/403
 			return joinErr(err, ErrAuthFailed)
 		}
+	}
+
+	// A successful HTTP response with an invalid OpenAI wire body fails while
+	// the SDK decodes JSON, before a ChatResponse exists. Treat that as the
+	// adapter's permanent response-shape error rather than an untyped retry.
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return joinErr(err, ErrInvalidJSON)
 	}
 
 	// Some upstream errors don't hit APIError (transport/DNS) — sniff

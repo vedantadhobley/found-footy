@@ -568,6 +568,52 @@ func TestEventWorkflow_CancelWithVisionPending(t *testing.T) {
 	env.AssertNotCalled(t, "MarkDownstreamComplete", mock.Anything, mock.Anything)
 }
 
+func TestEventWorkflow_PermanentVisionErrorDoesNotRetry(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := visionFailureEnv(&s, temporal.NewNonRetryableApplicationError(
+		"model not found", "vision_llm_permanent", nil,
+	))
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+
+	requireDone(t, env)
+	env.AssertNumberOfCalls(t, "ValidateClip", 1)
+	env.AssertNumberOfCalls(t, "RecordCandidateOutcome", 1)
+	env.AssertNumberOfCalls(t, "DeleteStaging", 1)
+}
+
+func TestEventWorkflow_TransientVisionErrorRetriesThreeTimes(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := visionFailureEnv(&s, errors.New("llm unavailable"))
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+
+	requireDone(t, env)
+	env.AssertNumberOfCalls(t, "ValidateClip", 3)
+	env.AssertNumberOfCalls(t, "RecordCandidateOutcome", 1)
+	env.AssertNumberOfCalls(t, "DeleteStaging", 1)
+}
+
+func visionFailureEnv(s *testsuite.WorkflowTestSuite, visionErr error) *testsuite.TestWorkflowEnvironment {
+	env := baseEventEnv(s)
+	tweetURL := "https://x.com/u/status/1111111111111111111"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{{TweetURL: tweetURL, VideoPageURL: "vp", DurationSeconds: 7}},
+			Count:  1, StopReason: "age",
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil)
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, mock.Anything).
+		Return(passedChild(tweetURL, "md5", "staging/clip.mp4", 1280, 720, 7000, 900_000, []uint64{1}), nil).
+		Once()
+	env.OnActivity("ValidateClip", mock.Anything, mock.Anything).
+		Return(visionactivity.ValidateClipOutput{}, visionErr)
+	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Once()
+	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Once()
+	return env
+}
+
 // strAttempt builds a synthetic 19-digit snowflake ID (valid per
 // MinSnowflakeLen) encoding (attempt, index). Just used to keep
 // per-attempt URLs distinct in the accumulator test.

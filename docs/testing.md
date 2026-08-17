@@ -252,6 +252,11 @@ activity-retry contract: adapter tests distinguish syndication metadata 403
 from CDN byte-download 403, the activity test preserves the terminal/transient
 split, and the workflow test requires all four transient download attempts.
 
+FF-012 similarly spans three unit layers: the LLM adapter types malformed 2xx
+JSON, `ValidateClip` marks all permanent model/config/response sentinels
+non-retryable, and WorkflowTestSuite proves permanent vision failure runs once
+while transient failure runs the configured three attempts.
+
 **Run:** `make test-corpus` — runs just the harness. `make test`
 includes it. `make test-short` excludes it (no docker).
 

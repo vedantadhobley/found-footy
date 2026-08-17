@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/vedantadhobley/found-footy/internal/config"
 	"github.com/vedantadhobley/found-footy/internal/infra/ffmpeg"
@@ -138,18 +139,49 @@ func TestValidateClip_ScreenRejected(t *testing.T) {
 	}
 }
 
-func TestValidateClip_ModelErrorPropagates(t *testing.T) {
+func TestValidateClip_TransientModelErrorRemainsRetryable(t *testing.T) {
 	a, _, _ := newActivities(t, "", llm.ErrRateLimited)
 	_, err := a.ValidateClip(context.Background(), ValidateClipInput{StagingKey: "k", APIElapsed: 71})
 	if !errors.Is(err, llm.ErrRateLimited) {
 		t.Errorf("err = %v, want wraps ErrRateLimited (retryable)", err)
 	}
+	var appErr *temporal.ApplicationError
+	if errors.As(err, &appErr) && appErr.NonRetryable() {
+		t.Fatalf("rate limit became non-retryable: %v", err)
+	}
 }
 
-func TestValidateClip_MalformedResponseErrors(t *testing.T) {
+func TestValidateClip_PermanentModelErrorsAreNonRetryable(t *testing.T) {
+	for _, modelErr := range []error{
+		llm.ErrInvalidJSON,
+		llm.ErrModelNotFound,
+		llm.ErrInvalidRequest,
+		llm.ErrAuthFailed,
+	} {
+		t.Run(modelErr.Error(), func(t *testing.T) {
+			a, _, _ := newActivities(t, "", modelErr)
+			_, err := a.ValidateClip(context.Background(), ValidateClipInput{StagingKey: "k", APIElapsed: 71})
+			assertPermanentLLMError(t, err, modelErr)
+		})
+	}
+}
+
+func TestValidateClip_MalformedResponseIsNonRetryable(t *testing.T) {
 	a, _, _ := newActivities(t, "not json", nil)
 	_, err := a.ValidateClip(context.Background(), ValidateClipInput{StagingKey: "k", APIElapsed: 71})
-	if err == nil {
-		t.Error("malformed model response should error (retryable)")
+	assertPermanentLLMError(t, err, llm.ErrInvalidJSON)
+}
+
+func assertPermanentLLMError(t *testing.T, err, sentinel error) {
+	t.Helper()
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("err = %v, want wraps %v", err, sentinel)
+	}
+	var appErr *temporal.ApplicationError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("err = %v, want Temporal ApplicationError", err)
+	}
+	if !appErr.NonRetryable() || appErr.Type() != permanentLLMErrorType {
+		t.Fatalf("ApplicationError nonretryable/type = %v/%q, want true/%q", appErr.NonRetryable(), appErr.Type(), permanentLLMErrorType)
 	}
 }

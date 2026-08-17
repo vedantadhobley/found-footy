@@ -174,6 +174,12 @@ timeout + retry policy inline — visible at the call site, easier to
 audit. Divergence from plan; logged in
 [decisions.md 2026-07-07](decisions.md).
 
+`ValidateClip` has one error-level exception to the inline numeric retry
+policy: the activity returns a non-retryable `vision_llm_permanent`
+ApplicationError for invalid JSON/request/auth/model failures. Temporal stops
+after the first attempt. Rate-limit, capacity, unavailable, and other transient
+failures retain EventWorkflow's three-attempt policy (FF-012).
+
 ## Testing shape
 
 Client-level: unit tests exercise `NewClient` connection retries +
