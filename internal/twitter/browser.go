@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/mxschmitt/playwright-go"
@@ -24,9 +25,13 @@ import (
 // Browser wraps Playwright's persistent context. The zero value is
 // not usable — call NewBrowser.
 type Browser struct {
-	pw      *playwright.Playwright
-	browser playwright.Browser
-	ctx     playwright.BrowserContext
+	pw        *playwright.Playwright
+	browser   playwright.Browser
+	ctx       playwright.BrowserContext
+	done      chan struct{}
+	doneOnce  sync.Once
+	closeOnce sync.Once
+	closeErr  error
 
 	// Config
 	profileDir string // persistent Firefox profile path
@@ -97,12 +102,41 @@ func NewBrowser(opts NewBrowserOptions) (*Browser, error) {
 		return nil, fmt.Errorf("twitter.NewBrowser: add stealth init script: %w", err)
 	}
 
-	return &Browser{
+	b := &Browser{
 		pw:         pw,
+		browser:    pctx.Browser(),
 		ctx:        pctx,
+		done:       make(chan struct{}),
 		profileDir: opts.ProfileDir,
 		headless:   opts.Headless,
-	}, nil
+	}
+	// The persistent context closes when Firefox exits. Browser disconnect is
+	// registered as a second signal so driver/browser loss cannot leave Go PID 1
+	// serving stale health. Both callbacks converge through doneOnce.
+	pctx.OnClose(func(playwright.BrowserContext) { b.markDone() })
+	if b.browser != nil {
+		b.browser.OnDisconnected(func(playwright.Browser) { b.markDone() })
+		if !b.browser.IsConnected() {
+			b.markDone()
+		}
+	}
+	if pctx.IsClosed() {
+		b.markDone()
+	}
+	return b, nil
+}
+
+// Done closes once when the persistent context or its Firefox browser exits.
+// The service treats this browser as a critical child process and lets the
+// container restart the complete Playwright unit.
+func (b *Browser) Done() <-chan struct{} { return b.done }
+
+func (b *Browser) markDone() {
+	b.doneOnce.Do(func() {
+		if b.done != nil {
+			close(b.done)
+		}
+	})
 }
 
 // Close terminates the browser + Playwright driver. Idempotent —
@@ -110,18 +144,20 @@ func NewBrowser(opts NewBrowserOptions) (*Browser, error) {
 // Browser (won't happen in current NewBrowser, but future variants
 // may).
 func (b *Browser) Close() error {
-	var firstErr error
-	if b.ctx != nil {
-		if err := b.ctx.Close(); err != nil && firstErr == nil {
-			firstErr = err
+	b.closeOnce.Do(func() {
+		if b.ctx != nil {
+			if err := b.ctx.Close(); err != nil && b.closeErr == nil {
+				b.closeErr = err
+			}
 		}
-	}
-	if b.pw != nil {
-		if err := b.pw.Stop(); err != nil && firstErr == nil {
-			firstErr = err
+		if b.pw != nil {
+			if err := b.pw.Stop(); err != nil && b.closeErr == nil {
+				b.closeErr = err
+			}
 		}
-	}
-	return firstErr
+		b.markDone()
+	})
+	return b.closeErr
 }
 
 // Navigate opens a fresh page, goes to url, waits for network idle,

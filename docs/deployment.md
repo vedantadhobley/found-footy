@@ -52,6 +52,14 @@ inspect that ownership before starting or deleting the container. This lets dev
 and prod share one Docker daemon without either stack seeing or removing the
 other's browsers, while preserving existing Temporal workflow addresses.
 
+Each dynamic event container carries Docker `restart: on-failure` (FF-017).
+Firefox/context loss makes the Go service publish failed health and exit PID 1
+non-zero; Docker then rebuilds the process unit in the same container from the
+shared cookie backup. Explicit fleet release uses Docker stop/remove and does
+not trigger the restart policy. Compose-managed headless Twitter retains
+`restart: unless-stopped`; the opt-in VNC service intentionally retains
+`restart: no` because the operator owns that session.
+
 Before the first deployment of FF-001, list legacy
 `ff-firefox-ev-*` containers. Deploy only when none are active on the target
 network. The scoped provisioner intentionally ignores legacy unscoped

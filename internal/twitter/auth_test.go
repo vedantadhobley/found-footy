@@ -28,6 +28,7 @@ type fakeBrowser struct {
 	replaceErr       error
 	getCookiesResult []Cookie
 	getCookiesErr    error
+	done             chan struct{}
 
 	// Call counters (atomic — tests exercise concurrent auth flows).
 	verifyCalls  int64
@@ -38,6 +39,8 @@ type fakeBrowser struct {
 	mu              sync.Mutex
 	lastReplacedSet []Cookie
 }
+
+func (f *fakeBrowser) Done() <-chan struct{} { return f.done }
 
 func (f *fakeBrowser) VerifySession(_ context.Context, _ time.Duration) error {
 	atomic.AddInt64(&f.verifyCalls, 1)
@@ -686,6 +689,62 @@ func TestSetState_NilEmitterIsSafe(t *testing.T) {
 	svc.SetState(StateUnauthenticated, "test")
 	if state, _ := svc.State(); state != StateUnauthenticated {
 		t.Errorf("state = %s, want unauthenticated", state)
+	}
+}
+
+// TestBrowserExitTransitionsHealthAndEmitsOnce covers FF-017's process-loss
+// boundary without launching Firefox. Closing the critical-child signal must
+// make both state and /health fail before the container exits.
+func TestBrowserExitTransitionsHealthAndEmitsOnce(t *testing.T) {
+	fake := &fakeBrowser{done: make(chan struct{})}
+	emits := make(chan string, 2)
+	svc := NewService(fake, ServiceOptions{
+		AuditEmit: func(action string, _ map[string]any) { emits <- action },
+	})
+	svc.SetState(StateHealthy, "verified")
+	close(fake.done)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		state, reason := svc.State()
+		if state == StateFailed {
+			if reason != "browser process exited" {
+				t.Fatalf("failure reason = %q", reason)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("service did not enter failed state after browser exit")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	mux := http.NewServeMux()
+	svc.RegisterHandlers(mux)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("health status = %d, want 503", recorder.Code)
+	}
+	select {
+	case action := <-emits:
+		if action != "twitter.browser_failed" {
+			t.Fatalf("audit action = %q", action)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("browser failure audit was not emitted")
+	}
+	// The main process also marks the state synchronously before exit. It must
+	// not duplicate the watcher event.
+	svc.MarkBrowserExited()
+	svc.SetState(StateHealthy, "late auth completion must not revive a dead browser")
+	if state, _ := svc.State(); state != StateFailed {
+		t.Fatalf("terminal failed state was overwritten by %s", state)
+	}
+	select {
+	case action := <-emits:
+		t.Fatalf("duplicate audit action = %q", action)
+	default:
 	}
 }
 

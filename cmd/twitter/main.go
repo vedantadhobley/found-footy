@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"sort"
@@ -17,8 +18,9 @@ import (
 
 // gitSHA, builtAt are baked in at build time via -ldflags per §11.
 var (
-	gitSHA  = "dev"
-	builtAt = "unknown"
+	gitSHA           = "dev"
+	builtAt          = "unknown"
+	errBrowserExited = errors.New("twitter browser process exited")
 )
 
 // idleCPUFirefoxPrefs — Firefox preferences that reduce idle CPU
@@ -143,9 +145,8 @@ func main() {
 			BuiltAt:  builtAt,
 			ImageTag: os.Getenv("IMAGE_TAG"),
 		},
-		// AuditEmit — T/b.5 hardening #3. Called on state transitions
-		// to StateUnauthenticated so Grafana/Loki can alert on
-		// action=twitter.auth_expired. Structured JSON per line.
+		// AuditEmit — structured auth-expiry and browser-failure transitions
+		// for Grafana/Loki alerting.
 		AuditEmit: emitAudit,
 	})
 
@@ -202,9 +203,37 @@ func main() {
 	})
 
 	srv := &http.Server{Addr: listenAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		printJSON("server_error", map[string]string{"err": err.Error()})
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- srv.ListenAndServe() }()
+	if err := waitForBrowserOrServer(browser.Done(), serverDone, svc.MarkBrowserExited); err != nil {
+		action := "server_error"
+		if errors.Is(err, errBrowserExited) {
+			action = "browser_exited"
+		}
+		printJSON(action, map[string]string{"err": err.Error()})
 		os.Exit(1)
+	}
+}
+
+// waitForBrowserOrServer makes Firefox a critical child of Go PID 1. The
+// service state changes before the caller exits non-zero, allowing health and
+// audit observers to see the cause while Docker restarts the container unit.
+func waitForBrowserOrServer(
+	browserDone <-chan struct{},
+	serverDone <-chan error,
+	markBrowserFailed func(),
+) error {
+	select {
+	case <-browserDone:
+		if markBrowserFailed != nil {
+			markBrowserFailed()
+		}
+		return errBrowserExited
+	case err := <-serverDone:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
 	}
 }
 
@@ -247,10 +276,9 @@ func printJSON(action string, fields map[string]string) {
 // for structured events consumed by Grafana/Loki alerts. Emits one
 // canonical-ordered JSON line per event.
 //
-// Field key `action` is the primary discriminator — Loki queries do
-// `{action="twitter.auth_expired"}` for alerting. Container hostname
-// gets folded in automatically so alerts can identify which replica
-// hit the transition.
+// Field key `action` is the primary discriminator (`twitter.auth_expired` or
+// `twitter.browser_failed`). Container hostname gets folded in automatically
+// so alerts can identify which replica hit the transition.
 func emitAudit(action string, fields map[string]any) {
 	if fields == nil {
 		fields = make(map[string]any)

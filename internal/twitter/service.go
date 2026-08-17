@@ -96,14 +96,13 @@ type ServiceOptions struct {
 	ScrollJitterMax time.Duration
 
 	// AuditEmit is called on structured state transitions that need
-	// external observability (Grafana/Loki alerting). Currently fires
-	// on any-state → StateUnauthenticated with action=
-	// `twitter.auth_expired`. Nil (default) makes it a no-op — tests
-	// and standalone unit runs don't need to plumb an emitter.
+	// external observability (Grafana/Loki alerting). It fires on
+	// any-state → StateUnauthenticated as `twitter.auth_expired` and
+	// any-state → StateFailed as `twitter.browser_failed`. Nil
+	// (default) makes it a no-op.
 	//
-	// Contract: called synchronously from SetState under s.mu, so
-	// implementations MUST NOT block or acquire other locks. Push
-	// events to a channel or write to stdout — no I/O beyond that.
+	// Contract: called synchronously from SetState after s.mu is released.
+	// Implementations still should not block the state transition.
 	AuditEmit func(action string, fields map[string]any)
 }
 
@@ -185,7 +184,7 @@ func NewService(b sessionBrowser, opts ServiceOptions) *Service {
 	if opts.ScrollJitterMax == 0 {
 		opts.ScrollJitterMax = 500 * time.Millisecond
 	}
-	return &Service{
+	svc := &Service{
 		browser:             b,
 		cookieFile:          opts.CookieFile,
 		warmPathTTL:         opts.WarmPathTTL,
@@ -201,20 +200,31 @@ func NewService(b sessionBrowser, opts ServiceOptions) *Service {
 		state:               StateStarting,
 		startedAt:           time.Now().UTC(),
 	}
+	if done := b.Done(); done != nil {
+		go func() {
+			<-done
+			svc.MarkBrowserExited()
+		}()
+	}
+	return svc
 }
 
 // SetState transitions the service to a new state with an
 // optional human-readable reason (surfaced in /status responses).
 // Concurrent-safe.
 //
-// Emits action=`twitter.auth_expired` via auditEmit on any transition
-// FROM a non-unauth state TO StateUnauthenticated. Fires once per
-// transition — repeated SetState(StateUnauthenticated, ...) calls
-// don't re-emit. Alerting hooks (Grafana/Loki `{action="twitter.auth_expired"}`)
-// need this event to know when the fleet degrades.
+// Emits one audit event when crossing into an externally actionable terminal
+// state: `twitter.auth_expired` for StateUnauthenticated and
+// `twitter.browser_failed` for StateFailed. Repeated writes of the same state
+// do not re-emit. StateFailed is terminal for this process; only a fresh
+// container may return it to service.
 func (s *Service) SetState(newState State, reason string) {
 	s.mu.Lock()
 	prevState := s.state
+	if prevState == StateFailed && newState != StateFailed {
+		s.mu.Unlock()
+		return
+	}
 	s.state = newState
 	s.stateReason = reason
 	if newState == StateHealthy || newState == StateUnauthenticated {
@@ -223,17 +233,30 @@ func (s *Service) SetState(newState State, reason string) {
 	lastLoadedMtime := s.lastLoadedMtime
 	s.mu.Unlock()
 
-	// Emit auth-expired event on transition to unauth (fresh transition
-	// only — no re-emission on repeated SetState(unauth) calls). Held
-	// outside the lock because auditEmit's contract allows I/O (stdout
-	// write in prod).
-	if newState == StateUnauthenticated && prevState != StateUnauthenticated && s.auditEmit != nil {
-		s.auditEmit("twitter.auth_expired", map[string]any{
+	if s.auditEmit == nil {
+		return
+	}
+	action := ""
+	switch {
+	case newState == StateUnauthenticated && prevState != StateUnauthenticated:
+		action = "twitter.auth_expired"
+	case newState == StateFailed && prevState != StateFailed:
+		action = "twitter.browser_failed"
+	}
+	if action != "" {
+		s.auditEmit(action, map[string]any{
 			"reason":            reason,
 			"previous_state":    string(prevState),
 			"last_loaded_mtime": lastLoadedMtime.Format(time.RFC3339),
 		})
 	}
+}
+
+// MarkBrowserExited records loss of the service's critical Firefox child.
+// cmd/twitter exits non-zero after this transition so Docker can rebuild the
+// entire Playwright/browser unit from the shared cookie backup.
+func (s *Service) MarkBrowserExited() {
+	s.SetState(StateFailed, "browser process exited")
 }
 
 // State returns the current state + reason without holding the lock

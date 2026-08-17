@@ -528,6 +528,47 @@ against the current branch.
   but it modeled readiness as immutable construction state. The shipped
   per-event fleet and retrying activity boundary require live per-call state.
 
+### FF-017 — Firefox death leaves the Go service alive and unusable
+
+- **Status:** `implemented`; not deployed
+- **Severity:** P2
+- **Source:** Current code; archived Python recovery behavior; the superseded
+  T/g assumption in the per-event scaling proposal.
+- **Invariant:** Loss of the critical Firefox/Playwright child must make the
+  service unhealthy immediately and recover the complete container unit before
+  a later Temporal search retry.
+- **Evidence:** Playwright launched Firefox below the long-lived Go PID 1, but
+  exposed no lifecycle signal to the service or command. An OOM or browser
+  crash therefore left HTTP running with a dead persistent context. Dynamic
+  event containers also used Docker `restart: no`, so neither Compose nor the
+  Docker daemon could replace the failed unit. The archived Python service
+  detected a dead WebDriver and relaunched from the cookie backup.
+- **Cause:** The scaling proposal declared the session watchdog subsumed on the
+  assumption that a per-event browser crash would fail its container. The Go
+  process did not actually exit, and raw Docker API children do not inherit the
+  static Compose service's restart policy.
+- **Implemented locally; not deployed:** Browser context close and browser
+  disconnect converge on a one-shot critical-child signal. The service enters
+  `failed`, `/health` returns 503, and `twitter.browser_failed` emits once. The
+  command then exits PID 1 non-zero. Static headless Twitter retains Compose
+  `unless-stopped`; dynamic event containers now carry Docker `on-failure` and
+  reload the shared cookie backup on restart. VNC remains operator-controlled
+  with `restart: no`. `SearchTweets` retries at roughly 0/10/30/60 seconds so
+  the measured 30-second cold start is covered even on the final outer search.
+  A Temporal version marker preserves the old retry attributes for existing
+  histories. No application branch knows dev versus prod.
+- **Regression:** Browser, service, and command unit tests cover one-shot
+  signaling, failed health, single audit emission, and fatal process result.
+  The in-memory Docker daemon test requires `on-failure` on every provisioned
+  event container. A one-attempt workflow test fails three activity tries and
+  requires the fourth to surface a candidate; its default-version companion
+  preserves the historical three tries. The uncached affected-package run,
+  `make test-short`, `make test`, and `make vet` pass.
+- **Source relation:** This intentionally supersedes only the scaling
+  proposal's “watchdog is subsumed” claim. It preserves the per-event fleet and
+  delegates restart ownership to Docker rather than porting Python's in-process
+  Selenium relaunch loop.
+
 ### FF-018 — production reauthentication command cannot resolve Compose
 
 - **Status:** `implemented`; not deployed
@@ -558,7 +599,6 @@ against the current branch.
 | FF-011 | P2 | Audit 2026-08-15 | Popularity increments are not idempotent under activity retry. | Retry-safe vote accounting with an invariant test. |
 | FF-012 | P2 | Audit 2026-08-15 | Permanent LLM failures such as 401/404/bad JSON are retried. | Typed non-retryable classification and Temporal retry test. |
 | FF-013 | P2 | Audit 2026-08-15 | Schema guard verifies one fingerprint, not the existence of every object after interrupted initialization. | Verify required objects or adopt ordered migrations; test partial schema. |
-| FF-017 | P2 | Current code; legacy #170-adjacent finding | Firefox can die while the Go Twitter service remains alive and unusable because no browser watchdog or fatal-exit path exists. | Make browser death restart or terminate the service, expose correct health, and cover the process-loss transition. |
 | FF-024 | P2 | FF-006 follow-up; current code | The `staging/` prefix has no bounded orphan sweep after abnormal workflow or process termination. | List by prefix with an age floor, protect keys owned by active work, delete only proven orphans, and test both exclusions and bounded cleanup. |
 | FF-025 | P2 | FF-007 recovery boundary | A wedged EventWorkflow can remain `RUNNING`, so failed-only Workflow ID reuse correctly refuses to replace it while the downstream row and Firefox stay pinned. | Inspect Temporal status and age, recover only executions proven stale under a conservative bound, safely terminate/re-drive them, and never bypass score or downstream-completion invariants. |
 

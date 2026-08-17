@@ -431,6 +431,12 @@ staging key instead of failing without correlation data. Wall-clock
 `max_age_minutes` filter
 (decisions.md 2026-07-23).
 
+Each `SearchTweets` activity has four transient-infrastructure attempts at
+roughly 0/10/30/60 seconds. This spans FF-017's measured Firefox cold restart,
+including on the final outer discovery attempt; the minute between successful
+outer attempts remains unchanged. A Temporal version marker preserves the old
+three-try policy for histories started before FF-017.
+
 **Candidate failure contract (FF-002).** `download_error` stamps the persisted
 candidate `failed`; no staging object exists. `hash_error` stamps `failed` and
 calls `DeleteStaging` with the key returned by download. An unexpected failed
