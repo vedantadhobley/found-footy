@@ -72,7 +72,7 @@ lists.
 
 **Where to look for Go rebuild work:**
 
-- [`docs/todo.md`](./docs/todo.md) is the canonical issue register. The latest full audit is [`docs/design/audits/audit-2026-08-15.md`](./docs/design/audits/audit-2026-08-15.md); earlier audits remain evidence snapshots. Validate an old finding against current code before scheduling it, then give accepted work a stable ID in `docs/todo.md`.
+- [`docs/todo.md`](./docs/todo.md) is the canonical issue register. The latest full audit is the independent [`docs/design/audits/audit-2026-08-17-codex.md`](./docs/design/audits/audit-2026-08-17-codex.md); earlier audits remain evidence snapshots. Validate an old finding against current code before scheduling it, then give accepted work a stable ID in `docs/todo.md`.
 - [`docs/design/README.md`](./docs/design/README.md) classifies the rebuild plan,
   proposals, and audits by current disposition. They preserve intent and
   evidence; never implement one without verifying it against code, decisions,

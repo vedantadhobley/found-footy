@@ -21,3 +21,6 @@ code before work begins.
   audit.
 - [`audit-2026-08-15.md`](./audit-2026-08-15.md) — cutover-evening production
   readiness audit.
+- [`audit-2026-08-17-codex.md`](./audit-2026-08-17-codex.md) — independent
+  code-first audit, production-log validation, prior-finding disposition, and
+  staged cleanup plan.

@@ -1,11 +1,16 @@
 # Active work and issue register
 
 This file is the canonical project backlog. It contains only current bugs,
-deferred work, and audit findings that still require validation. Closed issue
+accepted improvements, and deferred decisions or validation. Closed issue
 narratives and the completed documentation-normalization register are preserved
 in the [2026-08-17 release snapshot](./history/issue-register-2026-08-17.md).
 Point-in-time audits under [`design/audits/`](./design/audits/) are evidence,
 not parallel task lists.
+
+The latest independent code-first review is the
+[2026-08-17 Codex audit](./design/audits/audit-2026-08-17-codex.md). It
+revalidated the unresolved 2026-08-13 and 2026-08-15 findings and is the
+evidence source for FF-034 through FF-049.
 
 Code remains the authority for current behavior. Before promoting an audit
 claim into the confirmed backlog, reproduce it or verify the cited path against
@@ -45,7 +50,7 @@ the current branch.
 
 | ID | Severity | Status | Summary |
 |---|---|---|---|
-| — | — | — | No issue selected after the 2026-08-17 production release. |
+| FF-042 | P2 | `next` | Restore a pinned, reproducible format/tidy/lint/vet gate before structural refactors. |
 
 ## Confirmed issues
 
@@ -160,63 +165,74 @@ the current branch.
   shared-semaphore contention. It did not demonstrate this post-heartbeat 4K
   failure or invalidate the full-resolution hashing cost assumption.
 
-## Confirmed lower-priority backlog
+### FF-034 — candidate evidence and terminal outcome are not one invariant
 
-| ID | Severity | Source | Summary | Completion condition |
+- **Status:** `confirmed`
+- **Severity:** P1
+- **Invariant:** An EventWorkflow may report completion only after every
+  observed candidate has one durable terminal state, with the evidence needed
+  to explain and recover that state.
+- **Cause:** `StoreCandidate` blocks child launch but its failure is ignored;
+  `RecordCandidateOutcome` is also best-effort, accepts a zero-row `UPDATE`, and
+  has its error discarded. A parent can therefore complete with a missing row
+  or a row still marked `pending`.
+- **Design:** Introduce a workflow-owned `CandidateEvidence` contract carrying
+  URL, tweet text, username, age, query/attempt, and event context. Observation
+  persistence must not delay clip launch. Terminal persistence must use an
+  idempotent UPSERT and complete before the parent reports success. Recovery
+  must distinguish observed, in-flight, and terminal candidates explicitly.
+- **Relation:** This is the durable-state half of the observed “pending after
+  parent workflow” defect and the evidence boundary required for FF-003's
+  semantic validation. It also absorbs `AUD-0813-P2-8`; independently
+  serialized persistence remains FF-046.
+- **Source:** [2026-08-17 Codex audit](./design/audits/audit-2026-08-17-codex.md#ff-034--candidate-evidence-and-terminal-state-are-not-one-invariant).
+
+## Confirmed and mitigated backlog
+
+| ID | Severity | Status | Summary | Completion condition |
 |---|---|---|---|---|
-| FF-008 | P2 | Audit 2026-08-15 | Worker `/scratch` has no orphan sweep after process/OOM failure. | Bounded startup or scheduled sweep with active-path exclusions and tests. |
-| FF-009 | P2 | Audits 2026-08-13 P2-12 and 2026-08-15 | Temporal schedules are create-only and retention still passes a hardcoded 14 days. | Config value wired; Describe→Update reconciliation tested and documented. |
-| FF-010 | P2 | Audit 2026-08-15 | Completed fixtures are not revisited for late assist backfill. | Bounded completed-fixture refresh policy with vendor-call budget and tests. |
-| FF-011 | P2 | Audit 2026-08-15 | Popularity increments are not idempotent under activity retry. | Retry-safe vote accounting with an invariant test. |
-| FF-013 | P2 | Audit 2026-08-15 | Schema guard verifies one fingerprint, not the existence of every object after interrupted initialization. | Verify required objects or adopt ordered migrations; test partial schema. |
-| FF-024 | P2 | FF-006 follow-up; current code | The `staging/` prefix has no bounded orphan sweep after abnormal workflow or process termination. | List by prefix with an age floor, protect keys owned by active work, delete only proven orphans, and test both exclusions and bounded cleanup. |
+| FF-008 | P2 | `confirmed` | Worker `/scratch` has no orphan sweep after process/OOM failure. | Bounded startup or scheduled sweep with active-path exclusions and tests. |
+| FF-009 | P2 | `confirmed` | Temporal schedules are create-only and retention still passes a hardcoded 14 days. | Config value wired; Describe→Update reconciliation tested and documented. |
+| FF-010 | P2 | `confirmed` | Completed fixtures are not revisited for late assist backfill. | Bounded completed-fixture refresh policy with vendor-call budget and tests. |
+| FF-011 | P2 | `confirmed` | Popularity increments are not idempotent under activity retry. | Retry-safe vote accounting with an invariant test. |
+| FF-013 | P2 | `confirmed` | Schema guard can accept an incomplete schema and evolution is init-file/manual-ALTER based. | Establish ordered migrations and test interrupted/partial state before new constraints. |
+| FF-024 | P2 | `confirmed` | The Garage `staging/` prefix has no bounded orphan sweep after abnormal termination. | Protect active keys and delete only proven age-bounded orphans. |
+| FF-035 | P2 | `confirmed` | Parsed configuration is not semantically validated and `.env.example` does not match the consumed contract. | Per-binary and cross-field validation; generated or tested env/Compose parity. |
+| FF-036 | P2 | `confirmed` | API completed-fixture reads are unbounded and assembled with N+1 queries. | Separate the public read window from durable URL tombstones and batch assembly. |
+| FF-037 | P2 | `mitigated` | LLM, Temporal, and ffmpeg admission are process-local and share work lanes. | Dedicated task/ffmpeg lanes; checked aggregate limits; shared inference owns global admission. |
+| FF-038 | P2 | `mitigated` | Firefox capacity, leases, and Docker access are not one atomic controller boundary. | HTTP fleet controller with atomic admission, scoped labels, reaping, and no worker socket. |
+| FF-039 | P2 | `confirmed` | API/worker/Twitter lifecycle, readiness, metrics identity, and error classification diverge. | Shared lifecycle contract, real readiness, correct error classes, standard identity labels. |
+| FF-040 | P2 | `confirmed` | Live reconciliation omits mutable fixture metadata and activation is not atomic across pollers. | Explicit ownership of mutable fields plus one atomic state transition. |
+| FF-041 | P2 | `confirmed` | Perceptual hash bytes have no algorithm version or minimum viable sequence invariant. | Version hashes and reject too-short streams before FF-005 preprocessing changes. |
+| FF-042 | P2 | `next` | Lint/tool versions, formatting, and module state are not reproducible. | Pin tools; migrate lint config; format/tidy once; enforce non-mutating gates. |
+| FF-043 | P2 | `confirmed` | The public API connects to unused NATS and fails startup when that dependency is unavailable. | Remove NATS from API startup until the API publishes or subscribes. |
+| FF-044 | P3 | `confirmed` | Recovery repeats start/describe work every 30 seconds for healthy discovery workflows. | Durable next-check lease or scheduled supervisor with bounded checks. |
+| FF-045 | P3 | `confirmed` | Dormant code/schema surfaces and oversized composition files obscure ownership. | Caller-proven deletion and in-package splits after related behavior fixes. |
+| FF-046 | P2 | `confirmed` | Ancillary persistence blocks the serialized EventWorkflow selector consumer. | Serialize only dedup state; model durable effects with explicit futures/idempotency. |
+| FF-047 | P3 | `confirmed` | Empty tracked-team state still burns fixture lookahead calls whose results are discarded. | Short-circuit before vendor fixture calls and emit degraded-state telemetry. |
+| FF-048 | P2 | `confirmed` | Share minting uses check-then-insert without `(event_id, asset_id)` uniqueness. | Database constraint plus atomic idempotent insert after FF-013. |
+| FF-049 | P3 | `confirmed` | Documentation routing is clean, but several current/reference documents still exceed the shared size standard. | Split the 618-line orchestration ledger and route the 2,869-line Python functional spec plus 604-line video-dedup proposal by topic without rewriting historical claims. |
 
-## Audit intake requiring current-code validation
+## Deferred decisions and validation
 
-These findings are preserved so they cannot disappear, but they are not yet
-accepted as current bugs. Their source IDs are stable while they remain in
-triage. Validate each against HEAD before assigning an `FF-*` ID or
-implementation time.
+These are not accepted correctness bugs. They stay visible until measurement or
+product direction justifies promotion. The complete prior-audit mapping is in
+the [2026-08-17 Codex audit](./design/audits/audit-2026-08-17-codex.md#prior-audit-disposition).
 
-| Source ID | Area | Candidate finding | Status |
-|---|---|---|---|
-| `AUD-0815-MUTABLE` | ingest/monitor | Player/team display fields and fixture league/round/kickoff may not refresh outside ingest. | `triage` |
-| `AUD-0815-FLEET-TOCTOU` | fleet | Capacity check and provision are not one atomic operation; safe only while callers serialize provisioning. | `triage` |
-| `AUD-0815-SHARE-TOCTOU` | persist | Share mint has a check-then-write race under concurrent promotion. | `triage` |
-| `AUD-0815-ROT` | code/docs | Dormant compatibility vocabulary and zero-caller functions remain after cutover cleanup. | `triage` |
-| `AUD-0813-P2-1` | API | Fixture reads use N+1 event/video queries and the completed bucket is unbounded at the query layer. | `triage` |
-| `AUD-0813-P2-5` | workflow | Serialized selector consumer blocks on persistence I/O that may not require serialization. | `triage` |
-| `AUD-0813-P2-6` | Temporal | One task queue lets LLM semaphore waiters starve I/O-bound activities. | `triage` |
-| `AUD-0813-P2-7` | fleet | Firefox provisioning runs sequentially inside the 30-second active-poll path. | `triage` |
-| `AUD-0813-P2-8` | discovery | Forensic candidate persistence blocks child workflow spawn on the speed-to-clip path. | `triage` |
-| `AUD-0813-P2-9` | ffmpeg | Dense hashing and latency-sensitive probe/frame work share one process lane. | `triage` |
-| `AUD-0813-P2-13` | observability | `calls_total{error_class}` can remain empty because emitted error fields do not populate that label. | `triage` |
-| `AUD-0813-P3-2` | video | A hash shorter than the configured dedup window can pass while being structurally unable to deduplicate. | `triage` |
-| `AUD-0813-P3-4` | ranking | Dedup winner selection and public ranking may use inconsistent quality metrics. | `triage` |
-| `AUD-0813-P3-6` | monitor | Discovery recovery may repeat duplicate start/register work every cycle for healthy workflows. | `triage` |
-| `AUD-0813-P3-7` | eventing | Coincident active/staging polls may emit fixture activation twice. | `triage` |
-| `AUD-0813-P3-9` | ingest | An empty tracked-team cache may still burn lookahead API calls whose results are discarded. | `triage` |
-| `AUD-0813-P3-10` | aliases | National-team resolution may take the club branch after a soft profile failure. | `triage`; may be superseded by resolver removal |
-| `AUD-0813-P3-12` | discovery | `max_age_minutes` has inconsistent fallback defaults. | `triage` |
-| `AUD-0813-P3-13` | dedup | Workflow-replayed perceptual matching allocates per offset and lacks a cheap prefilter. | `triage` |
-| `AUD-0813-P3-14` | ranking | Full rank rebalance runs after every promote and supersede rather than once per settled batch/event. | `triage` |
-| `AUD-0813-P3-16` | observability | S3 download byte accounting occurs on response creation rather than consumed/closed bytes. | `triage` |
-| `AUD-0813-P3-17` | config/docs | Worker shutdown timeout documentation attributes the setting to the wrong mechanism. | `triage` |
-| `AUD-0813-CF-153` | twitter ops | Full cookie expiry still requires an operator-capable raw-browser re-auth and verified fleet propagation path. | `triage` |
-| `AUD-0813-CF-175` | coverage | National-team coverage may require an explicit seed beyond the configured league-derived roster. | `feature scope`; verify current contract |
-| `AUD-0813-CF-179` | video delivery | `ffmpeg.Faststart` exists but has no caller, so staged and promoted assets retain the downloaded MP4 layout. | `triage`; measure playback impact before restoring the historical hard requirement |
-| `AUD-0813-CF-SLO` | observability | Per-match coverage summary and SLO alert were dropped; telemetry storage remains unused. | `triage` |
-| `AUD-0813-CF-SCORE` | data model | Events do not preserve the score snapshot at detection, so clients cannot derive “made it 2–1” reliably. | `triage` |
-| `AUD-DESIGN-COVERAGE` | testing | The historical design called for per-package coverage floors, but current hooks enforce only compilation and passing tests. | `feature scope`; decide whether coverage floors are worth their maintenance cost |
-| `AUD-DESIGN-LOG-CATALOG` | observability | The historical design proposed generated module/action documentation; current practice derives the catalog from vocabulary source. | `feature scope`; add only if source inspection becomes an operational burden |
-| `AUD-DESIGN-TRACING` | observability | The tracing package is a no-op compatibility stub; no OTLP export or trace correlation is wired. | `feature scope`; design only when a concrete cross-service diagnostic need justifies it |
-| `AUD-TWITTER-RATE-LIMIT` | twitter | The scraper has no explicit Twitter rate-limit/interstitial classification or per-instance backoff. | `feature scope`; validate observed failure modes before designing backoff |
+| Source | Decision or evidence still required |
+|---|---|
+| `AUD-0813-CF-153` | On the next real cookie expiry, capture VNC write-back and propagation to new fleet instances end to end. Auth expiry itself is observed and correctly surfaced. |
+| `AUD-0813-CF-175` | Decide whether national-team coverage needs an explicit seed beyond league-derived rosters. |
+| `AUD-0813-CF-179` | Measure public playback before restoring unused `ffmpeg.Faststart`. |
+| `AUD-0813-CF-SLO` | Define a match-coverage SLO before adding summary storage or alerts. |
+| `AUD-0813-CF-SCORE` | Decide whether clients need score-at-detection history. |
+| `AUD-0813-P3-4` | Dedup winner quality and public ranking serve different policies; document them before changing either. |
+| `AUD-0813-P3-14` | Measure rank-rebalance cost at real event sizes before replacing the simpler full rebalance. |
+| `AUD-DESIGN-TRACING` | Add distributed tracing only when a concrete cross-service diagnostic requires it. |
 
-The later audits own the disposition of earlier findings. Do not intake the
-2026-08-05 audit independently. The complete closed, duplicate, superseded,
-and intentional mappings through the release are preserved in the
-[2026-08-17 snapshot](./history/issue-register-2026-08-17.md#audit-intake-requiring-current-code-validation).
-Revalidate a closed mapping only when new production evidence contradicts it.
+Do not schedule global coverage floors, a generated log catalog, or speculative
+Twitter rate-limit backoff. The August 15–17 log sample showed auth expiry but
+no Twitter rate-limit, interstitial, HTTP 429, or browser-failure event.
 
 ## Behavior that is intentional
 
