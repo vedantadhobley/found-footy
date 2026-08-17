@@ -114,27 +114,44 @@ against the current branch.
 - **Source relation:** New finding. Prior audits discussed `HashVideo`
   heartbeats and promoted-object staging leaks, not this terminal-state path.
 
-### FF-003 — exact candidate bleeds across fixture events
+### FF-003 — unverified candidate can be attributed to the wrong event
 
 - **Status:** `confirmed`
 - **Severity:** P1
 - **Observed:** 2026-08-16, Lens–PSG fixture `1546791`.
-- **Invariant:** A short exact video representing one match moment must not be
-  surfaced for two distinct events merely because both searches return it.
+- **Invariant:** An unverified candidate should not be attributed to an event
+  solely because a broad team term matched when stronger available evidence
+  identifies another event. The same tweet or video may legitimately represent
+  multiple events; cross-event reuse is not itself a defect.
 - **Evidence:** Tweet `https://x.com/FH4A/status/2089071008082784644`
-  and `md5=059e019aafd963d208782d35e8d1eb12` were promoted as unverified
-  assets for both Thauvin 32′ and Antonio 39′. The file is 11.9 seconds, so it
-  cannot contain both events seven match-minutes apart.
-- **Constraint:** Event-scoped fuzzy dedup remains intentional; earlier
-  cross-event perceptual dedup collapsed distinct goals. This issue concerns
-  exact candidate/byte ownership and validation, not a return to blanket
-  cross-event fuzzy matching.
-- **Required work:** Design the assignment invariant before coding. Evaluate
-  fixture-scoped exact tweet/MD5 ownership, clock-verdict precedence, and the
-  treatment of genuine compilation tweets. Add a two-event regression.
+  (`md5=059e019aafd963d208782d35e8d1eb12`, 11.9 seconds) was promoted as
+  unverified for both Thauvin's 32′ goal and Antonio's 39′ red card. Its Arabic
+  text explicitly describes Antonio's red card. It appeared immediately after
+  that event and Antonio's `(antonio OR Lens)` search found it on attempt 1.
+  Thauvin's older `(thauvin OR Lens)` workflow found it on attempt 8 through
+  the generic `#lens` match. With no readable broadcast clock, both workflows
+  accepted it as unverified.
+- **Cause:** Search intentionally permits team-only matches for recall. The
+  video validator receives frames plus the expected minute, but not the stored
+  tweet text, and it classifies football/screen/clock rather than semantic
+  relevance to the event's player and type. Independent per-event workflows
+  therefore have no evidence-resolution step when the clock is absent.
+- **Constraints:** Keep event-scoped perceptual dedup; fixture-scoped exact or
+  fuzzy uniqueness would incorrectly reject a goal-plus-card sequence,
+  compilation, or another genuine multi-event clip. Do not implement
+  first-claim-wins ownership.
+- **Design directions:** Evaluate search-query precision separately from
+  downstream validation. Pass tweet text and event context alongside video
+  frames to multimodal validation; combine explicit player/event-type mentions,
+  clock evidence, tweet-time proximity, and visual event semantics. Multiple
+  event assignments must remain valid when evidence supports them; ambiguous
+  candidates need an explicit confidence/fallback policy rather than forced
+  exclusive ownership. Preserve this Lens sample as a two-event regression.
+- **Rollout:** Design work only; this does not block the pending correctness and
+  lifecycle rollout.
 - **Source relation:** Cross-event dedup was discussed and rejected on
-  2026-07-25. This exact-identity bleed through unverified promotion was not
-  identified by the audits.
+  2026-07-25. The audits did not identify this team-only search plus
+  no-clock-validation path.
 
 ### FF-004 — Lens clips evade perceptual dedup
 
