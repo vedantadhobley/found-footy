@@ -425,6 +425,15 @@ awaited) that runs `DownloadAndStage → HashVideo` and returns
 md5 + frame-hash fingerprints. Wall-clock `max_age_minutes` filter
 (decisions.md 2026-07-23).
 
+**Cancellation contract (FF-015).** Producer cancellation from an activity or
+the between-attempt `workflow.Sleep` terminates the producer and records its
+error while a deferred close always marks the search side done. The consumer
+returns any `workflow.Await` error instead of awaiting the canceled context
+again. Cancellation therefore closes the workflow without another search,
+another child spawn, or `finalizeEvent`. The monitor's event-removal
+transaction owns downstream-checklist closure, and its destroy/release path
+owns cleanup for this case.
+
 **Consumer** (`event_pipeline.go`, serialized). Two dedup stages straddle
 vision (#171 shipped 2026-08-09 — the pre-vision, category-blind, keep-first
 gate was replaced):
@@ -469,10 +478,10 @@ When `GetDiscoveryConfig` returns `FleetEnabled=true`, the producer derives
 event ID, no registry lookup — and threads it through every
 `SearchTweetsInput.InstanceAddr`, so this event's searches hit its own dedicated
 Firefox (provisioned back at debounce count=1). Empty when disabled → searches
-fall back to the shared twitter service. `finalizeEvent` (all three exit paths:
-success, search-empty, error) calls `ReleaseFirefox(EventID)` when
-`FleetEnabled`, the happy-path teardown; the monitor's Step 4.5 release covers
-the event that never reaches finalize (decay/VAR). Both are idempotent.
+fall back to the shared twitter service. `finalizeEvent` calls
+`ReleaseFirefox(EventID)` on normal completion when `FleetEnabled`, the
+happy-path teardown; the monitor's Step 4.5 release covers an event that never
+reaches finalize (decay/VAR cancellation). Both are idempotent.
 
 ## Testing shape
 

@@ -148,6 +148,9 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		(*discoveryactivity.Activities).FetchTeamAliases,
 		discoveryactivity.FetchTeamAliasesInput{TeamID: in.TeamID},
 	).Get(fetchCtx, &aliasesOut); err != nil {
+		if temporal.IsCanceledError(err) {
+			return out, err
+		}
 		log.Warn("FetchTeamAliases failed — falling back to TeamName only",
 			"team_id", in.TeamID, "err", err)
 	}
@@ -193,6 +196,11 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 	seenTweetIDs := make(map[string]struct{}, 64)
 
 	workflow.Go(ctx, func(gctx workflow.Context) {
+		var producerErr error
+		defer func() {
+			p.finishSearch(producerErr)
+		}()
+
 		searchOptions := workflow.WithActivityOptions(gctx, workflow.ActivityOptions{
 			StartToCloseTimeout: cfgOut.QueryTimeout,
 			HeartbeatTimeout:    30 * time.Second,
@@ -212,6 +220,10 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 					ExcludeURLs: excludeURLs, MaxAgeMinutes: cfgOut.MaxAgeMinutes,
 					InstanceAddr: instanceAddr,
 				}).Get(searchOptions, &searchOut); err != nil {
+				if temporal.IsCanceledError(err) {
+					producerErr = err
+					return
+				}
 				log.Warn("SearchTweets attempt failed", "attempt", attempt, "err", err)
 			} else {
 				for _, v := range searchOut.Videos {
@@ -233,6 +245,10 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 							VideoPageURL: v.VideoPageURL, DurationSeconds: v.DurationSeconds,
 							Username: v.Username, AgeMinutesAtDiscovery: v.AgeMinutes,
 						}).Get(storeOptions, &storeOut); err != nil {
+						if temporal.IsCanceledError(err) {
+							producerErr = err
+							return
+						}
 						log.Warn("StoreCandidate failed", "tweet_url", v.TweetURL, "err", err)
 					} else if storeOut.Inserted {
 						out.CandidatesFound++
@@ -247,13 +263,20 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 			}
 			out.AttemptsRun = attempt
 			if attempt < cfgOut.MaxAttempts {
-				_ = workflow.Sleep(gctx, cfgOut.AttemptSpacing)
+				if err := workflow.Sleep(gctx, cfgOut.AttemptSpacing); err != nil {
+					producerErr = err
+					return
+				}
 			}
 		}
-		p.searchDone = true
 	})
 
-	p.run() // consumer — blocks until searchDone && inFlight==0
+	// The consumer propagates cancellation instead of repeatedly awaiting an
+	// already-canceled context. That tight loop caused FF-015's Temporal
+	// deadlock detector failures.
+	if err := p.run(); err != nil {
+		return out, err
+	}
 
 	// Live assets only — supersede removes losers from p.assets, so this is the
 	// surviving count (verified+unverified are cumulative promote counts, which

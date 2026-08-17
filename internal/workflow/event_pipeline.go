@@ -68,6 +68,7 @@ type pipeline struct {
 	pending    []clip
 	inFlight   int
 	searchDone bool
+	searchErr  error
 	childSeq   int
 
 	// outcome counters (for the workflow output / logs)
@@ -76,10 +77,10 @@ type pipeline struct {
 
 func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig, log log.Logger) *pipeline {
 	return &pipeline{
-		ctx:       ctx,
-		log:       log,
-		in:        in,
-		selector:  workflow.NewSelector(ctx),
+		ctx:        ctx,
+		log:        log,
+		in:         in,
+		selector:   workflow.NewSelector(ctx),
 		maxHamming: cfg.maxHamming, minRun: cfg.minRun, maxGaps: cfg.maxGaps,
 		visionCtx: workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 			StartToCloseTimeout: 3 * time.Minute, // vision is slow (multi-frame VLM)
@@ -98,6 +99,9 @@ type pipelineConfig struct{ maxHamming, minRun, maxGaps int }
 // spawnChild launches a VideoWorkflow child for one candidate and registers
 // its future on the Selector. Called from the producer coroutine.
 func (p *pipeline) spawnChild(gctx workflow.Context, tweetURL string) {
+	if gctx.Err() != nil {
+		return
+	}
 	p.childSeq++
 	cctx := workflow.WithChildOptions(gctx, workflow.ChildWorkflowOptions{
 		WorkflowID:               fmt.Sprintf("video-%s-%d", p.in.EventID, p.childSeq),
@@ -113,22 +117,34 @@ func (p *pipeline) spawnChild(gctx workflow.Context, tweetURL string) {
 	p.selector.AddFuture(fut, p.onVideoDone)
 }
 
+// finishSearch closes the producer side on every normal or error exit. The
+// consumer owns the workflow's return path and therefore also owns propagating
+// this error after already-ready callbacks have drained.
+func (p *pipeline) finishSearch(err error) {
+	p.searchErr = err
+	p.searchDone = true
+}
+
 // run drives the consumer loop until the producer's search is done AND nothing
 // is in flight. HasPending + Await keeps us from blocking on Select when
 // nothing is ready but the producer is still working (or the event had zero
-// candidates and completes immediately).
-func (p *pipeline) run() {
+// candidates and completes immediately). Await errors are terminal: retrying
+// Await on a canceled context returns immediately and creates a workflow-task
+// busy loop.
+func (p *pipeline) run() error {
 	for {
 		if p.searchDone && p.inFlight == 0 {
-			return
+			return p.searchErr
 		}
 		if p.selector.HasPending() {
 			p.selector.Select(p.ctx) // runs exactly one callback
 			continue
 		}
-		_ = workflow.Await(p.ctx, func() bool {
+		if err := workflow.Await(p.ctx, func() bool {
 			return p.selector.HasPending() || (p.searchDone && p.inFlight == 0)
-		})
+		}); err != nil {
+			return err
+		}
 	}
 }
 
@@ -136,6 +152,9 @@ func (p *pipeline) run() {
 // for a genuinely-new clip. Runs in the consumer coroutine (via Select).
 func (p *pipeline) onVideoDone(f workflow.Future) {
 	p.inFlight-- // decrement FIRST — every path below must not skip this
+	if p.canceled() {
+		return
+	}
 
 	var out VideoWorkflowOutput
 	if err := f.Get(p.ctx, &out); err != nil {
@@ -230,6 +249,9 @@ func (c clip) quality() dvideo.ClipQuality {
 // into its popularity when it promotes (#180). Loser bytes are dropped either
 // way.
 func (p *pipeline) collapse(loser clip, idx int, isAsset bool) {
+	if p.canceled() {
+		return
+	}
 	if isAsset {
 		p.bumpPopularity(p.assets[idx].assetID, loser.popularity)
 	} else {
@@ -240,6 +262,9 @@ func (p *pipeline) collapse(loser clip, idx int, isAsset bool) {
 
 // fireVision runs the single multi-frame validation call for a unique clip.
 func (p *pipeline) fireVision(c clip) {
+	if p.canceled() {
+		return
+	}
 	extra := 0
 	if p.in.Extra != nil {
 		extra = *p.in.Extra
@@ -258,6 +283,9 @@ func (p *pipeline) fireVision(c clip) {
 func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 	return func(f workflow.Future) {
 		p.inFlight--
+		if p.canceled() {
+			return
+		}
 		// The closure captured `c` by value at fireVision; gate md5-dups may have
 		// bumped the LIVE pending entry's popularity since. Re-read it (#180).
 		if pc, ok := p.removePending(c.stagingKey); ok {
@@ -344,6 +372,9 @@ func (p *pipeline) dedupAndPromote(c clip, vout visionactivity.ValidateClipOutpu
 // promote copies the clip staging→assets, records asset+share+rank, and adds it
 // to the kept set so later candidates dedup against it. Returns the new asset id.
 func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid.UUID, bool) {
+	if p.canceled() {
+		return uuid.Nil, false
+	}
 	var pout videoactivity.PromoteAndPersistOutput
 	err := workflow.ExecuteActivity(p.persistCtx,
 		(*videoactivity.PersistActivities).PromoteAndPersist,
@@ -356,6 +387,9 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 			Verified:   c.verified, ExtractedMinute: vout.MatchedMinute,
 		}).Get(p.persistCtx, &pout)
 	if err != nil {
+		if temporal.IsCanceledError(err) {
+			return uuid.Nil, false
+		}
 		p.failed++
 		p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeFailed, "promote_error", nil)
 		p.log.Warn("promote failed", "tweet_url", c.tweetURL, "err", err)
@@ -385,7 +419,7 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 // place (a visible duplicate) rather than corrupting state — the DB is the
 // arbiter and the activity is retried.
 func (p *pipeline) supersede(winnerID uuid.UUID, loserIDs []uuid.UUID) {
-	if len(loserIDs) == 0 {
+	if len(loserIDs) == 0 || p.canceled() {
 		return
 	}
 	if err := workflow.ExecuteActivity(p.persistCtx,
@@ -393,6 +427,9 @@ func (p *pipeline) supersede(winnerID uuid.UUID, loserIDs []uuid.UUID) {
 		videoactivity.SupersedeAssetsInput{
 			EventID: p.in.EventID, WinnerAssetID: winnerID, LoserAssetIDs: loserIDs,
 		}).Get(p.persistCtx, nil); err != nil {
+		if temporal.IsCanceledError(err) {
+			return
+		}
 		p.log.Warn("supersede failed", "winner", winnerID.String(), "losers", len(loserIDs), "err", err)
 		return
 	}
@@ -425,7 +462,7 @@ func (p *pipeline) supersede(winnerID uuid.UUID, loserIDs []uuid.UUID) {
 // bumpPopularity records a collapse onto an already-inserted asset (nil-safe).
 // bumpPopularity adds n votes to an existing asset's popularity (nil/n<1 safe).
 func (p *pipeline) bumpPopularity(assetID uuid.UUID, n int) {
-	if assetID == uuid.Nil || n < 1 {
+	if assetID == uuid.Nil || n < 1 || p.canceled() {
 		return
 	}
 	_ = workflow.ExecuteActivity(p.persistCtx,
@@ -443,7 +480,7 @@ func (p *pipeline) assetIDsAt(idxs []int) []uuid.UUID {
 }
 
 func (p *pipeline) deleteStaging(key string) {
-	if key == "" {
+	if key == "" || p.canceled() {
 		return
 	}
 	_ = workflow.ExecuteActivity(p.persistCtx,
@@ -458,6 +495,9 @@ func (p *pipeline) deleteStaging(key string) {
 // before reaching here — so a consumer that refetches on the signal always
 // sees the new state. See decisions.md 2026-08-14 (N3).
 func (p *pipeline) publishEventVideo() {
+	if p.canceled() {
+		return
+	}
 	_ = workflow.ExecuteActivity(p.persistCtx,
 		(*livefeedactivity.Activities).PublishEventVideo,
 		livefeedactivity.EventVideoInput{EventID: p.in.EventID, FixtureID: p.in.FixtureID}).Get(p.persistCtx, nil)
@@ -468,7 +508,7 @@ func (p *pipeline) publishEventVideo() {
 // a pipeline failure — so the error is swallowed, like publishEventVideo. An
 // empty tweetURL (a child that died before returning one) is skipped.
 func (p *pipeline) recordOutcome(tweetURL string, outcome discoveryactivity.CandidateOutcome, reason string, detail json.RawMessage) {
-	if tweetURL == "" {
+	if tweetURL == "" || p.canceled() {
 		return
 	}
 	_ = workflow.ExecuteActivity(p.persistCtx,
@@ -477,6 +517,13 @@ func (p *pipeline) recordOutcome(tweetURL string, outcome discoveryactivity.Cand
 			EventID: p.in.EventID, TweetURL: tweetURL,
 			Outcome: outcome, RejectReason: reason, Detail: detail,
 		}).Get(p.persistCtx, nil)
+}
+
+// canceled is checked before scheduling every follow-on activity. Cancellation
+// cleanup belongs to the monitor's destroy path, so EventWorkflow must not emit
+// new commands after its root context closes.
+func (p *pipeline) canceled() bool {
+	return p.ctx.Err() != nil
 }
 
 // jsonDetail marshals a small map for outcome_detail; a marshal failure (not
