@@ -464,26 +464,35 @@ gate was replaced):
   dropped; a verified/unverified clip runs **category-scoped perceptual dedup**
   (`matchAssets` — same pool only, ALL matches, dHash isn't transitive) then
   which-to-keep. Unique or cluster quality-winner (`IsUpgrade`) → **promote**
-  (`PromoteAndPersist` copies staging→asset under a deterministic UUID + mints
-  one `video_shares` row). A loser clip collapses (popularity bump); any bridged
-  assets **consolidate** onto the winner (`SupersedeAssets` — `superseded_by`
-  chain + atomic popularity merge + retire loser shares to `'superseded'` +
-  reclaim Garage bytes). **Rank** = `RebalanceRanks` by `CompareShares`
-  (verified → popularity → file_size → oldest); verified always outranks
-  unverified, and pools never cross-compare for dedup.
-- **Emit** (N3): after a promote that mints a new share (`Minted=true`) or a
-  supersede that collapsed losers, the pipeline fires the `event.video`
-  dirty-signal via the `livefeed.PublishEventVideo` activity — best-effort, and
-  only after the change has durably committed (the workflow blocks on the persist
-  activity first), so a consumer that refetches on the signal sees the new state.
-  A popularity-only bump and a VAR `DestroyEvent` do **not** emit (the latter
-  surfaces as the event's absence in the parent's `fixture.update` refetch).
+  (`PromoteAndPersist` derives a deterministic UUID, reuses a matching durable
+  asset or copies staging→asset before inserting it, ensures one
+  `video_shares` row, always rebalances ranks, then deletes staging). A durable
+  asset row proves the destination copy preceded it, so a retry after an
+  uncertain staging-delete response skips the now-impossible source copy. A
+  loser clip collapses (popularity bump); any bridged assets **consolidate**
+  onto the winner (`SupersedeAssets` — `superseded_by` chain + atomic
+  popularity merge + retire loser shares to `'superseded'` + reclaim Garage
+  bytes). **Rank** = `RebalanceRanks` by `CompareShares` (verified → popularity
+  → file_size → oldest); verified always outranks unverified, and pools never
+  cross-compare for dedup.
+- **Emit** (N3): after a successful promotion completion with a durable share
+  (`Minted=true`) or a supersede that collapsed losers, the pipeline fires the
+  `event.video` dirty-signal via the `livefeed.PublishEventVideo` activity —
+  best-effort, and only after the persistence tail has completed. A retry that
+  finds the share created by its failed prior attempt still returns
+  `Minted=true`: Temporal never delivered that failed attempt's result, so the
+  workflow still owes one signal. Consumers refetch current state, making an
+  extra signal from an external workflow re-drive harmless. A popularity-only
+  bump and a VAR `DestroyEvent` do **not** emit (the latter surfaces as the
+  event's absence in the parent's `fixture.update` refetch).
 
 On completion `finalizeEvent` marks the `event_downstream_workflows` row
 complete with an `outcome_class` (the pg `workflow_type` stays `'discovery'` —
 the internal downstream label). `AssetsKept` is the LIVE count (`len(p.assets)`
 — supersede removes losers), not cumulative promotes. Methodology + rationale:
 [decisions.md 2026-08-09](decisions.md) + [`video-dedup.md`](design/proposals/video-dedup.md);
+promotion retry and cleanup contract in
+[`2026-08-16-promotion-retries-complete-durable-tail.md`](decisions/2026-08-16-promotion-retries-complete-durable-tail.md);
 history in [audit-2026-08-05](design/audits/audit-2026-08-05.md) Tier-1 #1.
 
 **Per-event Firefox fleet binding (#160, gated on `FleetEnabled`; live in prod).**

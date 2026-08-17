@@ -5,9 +5,10 @@
 // touching pg + the assets/ prefix.
 //
 //	PromoteAndPersist — copy staging→assets (server-side) + insert the asset
-//	  + mint a share + rebalance ranks. Combined into ONE activity (vs the
-//	  design's two steps) because the asset UUID can't be minted in workflow
-//	  code (non-deterministic), and it drives both the S3 key and the DB row.
+//	  + mint a share + rebalance ranks + delete staging. Combined into ONE
+//	  activity (vs the design's two steps) because the asset UUID can't be
+//	  minted in workflow code (non-deterministic), and it drives both the S3
+//	  key and the DB row.
 //	BumpAssetPopularity — persist a collapse onto an already-inserted asset.
 //	DeleteStaging — drop a staging object (rejected clip / dedup loser).
 //	SupersedeAssets — consolidate loser assets onto a winner (post-vision,
@@ -16,15 +17,18 @@
 //	DestroyEvent — tear down an overturned event's clips (#172): revoke all its
 //	  shares (→ 410) + reclaim its Garage objects. Caller cancels discovery first.
 //
-// Idempotency: the asset UUID is DERIVED from (event_id, md5) via uuid v5, so
-// a retried activity produces the same UUID → the same assets key (copy is a
-// no-op overwrite) and the same row (InsertAsset is ON CONFLICT). The share
-// mint is guarded by a "does a share already exist for this asset?" check so
-// a retry never double-mints. BumpPopularity is the one non-idempotent step
-// (a retry may over-count by one) — benign for a soft vote signal.
+// Idempotency: the asset UUID is DERIVED from (event_id, md5) via uuid v5. A
+// retry first checks that row: when it exists, destination bytes are already
+// durable, so the retry skips Copy even if its prior attempt deleted staging
+// before the completion acknowledgement was delivered. The share mint is
+// guarded by a "does a share already exist for this asset?" check, but an
+// existing share is progress rather than an early return: rank repair and
+// staging cleanup still run. BumpPopularity is the one non-idempotent step (a
+// retry may over-count by one) — benign for a soft vote signal.
 package video
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -81,14 +85,20 @@ type PromoteAndPersistOutput struct {
 	ShareID  string
 	S3Key    string
 	Inserted bool
-	// Minted is true when a NEW share was minted this call (vs an
-	// idempotent-retry no-op that found an existing share). The pipeline
-	// pings event.video only when Minted, so a retry never re-announces.
+	// Minted tells the workflow that this successful activity completion has
+	// a durable share ready to announce. It is also true when a retry finds a
+	// share inserted by its failed prior attempt: the workflow never observed
+	// that failed attempt, so the final success still owes one dirty signal.
+	// Duplicate signals after an external re-drive are harmless; consumers
+	// refetch current event state.
 	Minted bool
 }
 
-// PromoteAndPersist copies the clip into the assets prefix and records the
-// asset + share, all keyed off a deterministic asset UUID for idempotency.
+// PromoteAndPersist copies the clip into the assets prefix, records the asset
+// + share, repairs ranks, then deletes staging. All durable identity is keyed
+// off a deterministic asset UUID. An existing asset proves a prior attempt
+// copied destination bytes before inserting its row, so retries can skip Copy
+// after staging has been deleted.
 func (a *PersistActivities) PromoteAndPersist(ctx context.Context, in PromoteAndPersistInput) (PromoteAndPersistOutput, error) {
 	var out PromoteAndPersistOutput
 
@@ -102,52 +112,90 @@ func (a *PersistActivities) PromoteAndPersist(ctx context.Context, in PromoteAnd
 	dstKey := path.Join(a.AssetsPrefix, fmt.Sprint(in.FixtureID), in.EventID.String(), assetID.String()+".mp4")
 	out.AssetID, out.S3Key = assetID, dstKey
 
-	if err := a.S3.Copy(ctx, in.StagingKey, dstKey); err != nil {
-		return out, fmt.Errorf("video.PromoteAndPersist: copy: %w", err)
-	}
+	existingAsset, err := a.Assets.Get(ctx, assetID)
+	switch {
+	case err == nil:
+		if err := validatePromotionAsset(existingAsset, in, md5Bytes, a.Bucket, dstKey); err != nil {
+			return out, err
+		}
+	case errors.Is(err, dvideo.ErrNotFound):
+		if err := a.S3.Copy(ctx, in.StagingKey, dstKey); err != nil {
+			return out, fmt.Errorf("video.PromoteAndPersist: copy: %w", err)
+		}
 
-	// Build the asset with the deterministic id (NewAsset mints a random one
-	// we override) + the computed key.
-	asset := dvideo.NewAsset(in.EventID, in.FixtureID, a.Bucket, dstKey,
-		md5Bytes, in.FrameHashes, in.Width, in.Height, in.DurationMS, in.FileSizeBytes, time.Now().UTC())
-	asset.ID = assetID
-	asset.Bitrate = in.Bitrate
-	if in.Popularity > 1 {
-		asset.Popularity = in.Popularity // NewAsset defaults to 1; carry accumulated votes
-	}
+		// Build the asset with the deterministic id (NewAsset mints a random
+		// one we override) + the computed key.
+		asset := dvideo.NewAsset(in.EventID, in.FixtureID, a.Bucket, dstKey,
+			md5Bytes, in.FrameHashes, in.Width, in.Height, in.DurationMS, in.FileSizeBytes, time.Now().UTC())
+		asset.ID = assetID
+		asset.Bitrate = in.Bitrate
+		if in.Popularity > 1 {
+			asset.Popularity = in.Popularity // NewAsset defaults to 1; carry accumulated votes
+		}
 
-	inserted, err := a.Assets.InsertAsset(ctx, asset)
-	if err != nil {
-		return out, fmt.Errorf("video.PromoteAndPersist: insert asset: %w", err)
+		inserted, err := a.Assets.InsertAsset(ctx, asset)
+		if err != nil {
+			return out, fmt.Errorf("video.PromoteAndPersist: insert asset: %w", err)
+		}
+		out.Inserted = inserted
+		if !inserted {
+			// A concurrent/idempotent ON CONFLICT must resolve to the same
+			// deterministic row. Verify that invariant before minting its share.
+			existingAsset, err = a.Assets.Get(ctx, assetID)
+			if err != nil {
+				return out, fmt.Errorf("video.PromoteAndPersist: get conflicted asset: %w", err)
+			}
+			if err := validatePromotionAsset(existingAsset, in, md5Bytes, a.Bucket, dstKey); err != nil {
+				return out, err
+			}
+		}
+	default:
+		return out, fmt.Errorf("video.PromoteAndPersist: get asset: %w", err)
 	}
-	out.Inserted = inserted
 
 	// Mint the share unless one already exists for this asset (retry guard).
-	existing, err := a.Shares.GetByEvent(ctx, in.EventID)
+	existingShares, err := a.Shares.GetByEvent(ctx, in.EventID)
 	if err != nil {
 		return out, fmt.Errorf("video.PromoteAndPersist: get shares: %w", err)
 	}
-	for _, s := range existing {
+	for _, s := range existingShares {
 		if s.AssetID == assetID {
 			out.ShareID = s.ID
-			return out, nil // already minted on a prior attempt — idempotent
+			break // prior-attempt progress; rebalance + cleanup are still owed
 		}
 	}
 
-	// Append at the next rank; RebalanceRanks reorders by CompareShares.
-	share, err := dvideo.NewShare(assetID, in.EventID, in.Verified, in.ExtractedMinute, len(existing)+1, time.Now().UTC())
-	if err != nil {
-		return out, fmt.Errorf("video.PromoteAndPersist: new share: %w", err)
-	}
-	if err := a.Shares.Insert(ctx, share); err != nil {
-		return out, fmt.Errorf("video.PromoteAndPersist: insert share: %w", err)
+	if out.ShareID == "" {
+		// Append at the next rank; RebalanceRanks reorders by CompareShares.
+		share, err := dvideo.NewShare(assetID, in.EventID, in.Verified, in.ExtractedMinute, len(existingShares)+1, time.Now().UTC())
+		if err != nil {
+			return out, fmt.Errorf("video.PromoteAndPersist: new share: %w", err)
+		}
+		if err := a.Shares.Insert(ctx, share); err != nil {
+			return out, fmt.Errorf("video.PromoteAndPersist: insert share: %w", err)
+		}
+		out.ShareID = share.ID
 	}
 	if _, err := a.Shares.RebalanceRanks(ctx, in.EventID); err != nil {
 		return out, fmt.Errorf("video.PromoteAndPersist: rebalance: %w", err)
 	}
-	out.ShareID = share.ID
+	if err := a.S3.Delete(ctx, in.StagingKey); err != nil {
+		return out, fmt.Errorf("video.PromoteAndPersist: delete staging: %w", err)
+	}
 	out.Minted = true
 	return out, nil
+}
+
+// validatePromotionAsset rejects a deterministic-ID collision or a row whose
+// immutable storage identity drifted. A retry may trust an existing row only
+// because the activity always copied destination bytes before inserting it.
+func validatePromotionAsset(existing *dvideo.Asset, in PromoteAndPersistInput, md5Bytes []byte, bucket, dstKey string) error {
+	if existing == nil || existing.ID != uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.EventID.String()+":"+in.MD5)) ||
+		existing.EventID != in.EventID || existing.FixtureID != in.FixtureID ||
+		existing.S3Bucket != bucket || existing.S3Key != dstKey || !bytes.Equal(existing.MD5, md5Bytes) {
+		return fmt.Errorf("video.PromoteAndPersist: deterministic asset identity mismatch for %s", dstKey)
+	}
+	return nil
 }
 
 // BumpAssetPopularityInput identifies the asset a candidate collapsed onto.
