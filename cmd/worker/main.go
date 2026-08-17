@@ -106,20 +106,13 @@ func main() {
 		}
 		_ = syndClient // consumed by video activities wired below
 
-		// Twitter is optional at worker startup so database and polling work can
-		// continue during a scraper outage. Client construction is currently
-		// one-shot: a failed startup probe leaves discovery unwired until this
-		// worker restarts (FF-016).
+		// Client construction validates static config but performs no readiness
+		// probe. Twitter and per-event browsers can start or recover independently;
+		// each Search observes current service state under Temporal retry (FF-016).
 		twitterIns := twitter.RegisterMetrics(deps.Metrics, deps.Log)
-		var twitterClient *twitter.Client
-		if c, err := twitter.NewClient(ctx, deps.Cfg.Twitter, twitterIns); err == nil {
-			twitterClient = c
-		} else {
-			deps.Log.Emit(ctx, logging.LevelWarn, vocabulary.ModuleInfraTwitter, vocabulary.ActionTwitterConnectFailed,
-				"twitter service unreachable at startup — Discovery searches will fail until it's up",
-				logging.String("base_url", deps.Cfg.Twitter.BaseURL),
-				logging.Err(err),
-			)
+		twitterClient, err := twitter.NewClient(deps.Cfg.Twitter, twitterIns)
+		if err != nil {
+			return err
 		}
 
 		tempIns := temporal.RegisterMetrics(deps.Metrics, deps.Log)
@@ -199,9 +192,7 @@ func main() {
 			MaxGapFrames: deps.Cfg.Dedup.MaxGapFrames,
 			FleetEnabled: deps.Cfg.FirefoxFleet.Enabled,
 		}
-		if twitterClient != nil {
-			discoveryActs.Twitter = twitterClient
-		}
+		discoveryActs.Twitter = twitterClient
 
 		// Per-candidate video activities run DownloadAndStage and
 		// HashVideo. The ffmpeg client is constructed here,
