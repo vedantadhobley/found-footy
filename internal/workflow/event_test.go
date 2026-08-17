@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +40,43 @@ const (
 	ff034DurabilityChangeIDForTest  = "ff-034-candidate-durability"
 	discoveryPGRetryAttemptsForTest = 5
 )
+
+type workflowLogCapture struct {
+	mu      sync.Mutex
+	entries [][]interface{}
+}
+
+func (*workflowLogCapture) Debug(string, ...interface{}) {}
+func (l *workflowLogCapture) Info(_ string, fields ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, append([]interface{}(nil), fields...))
+}
+func (*workflowLogCapture) Warn(string, ...interface{})  {}
+func (*workflowLogCapture) Error(string, ...interface{}) {}
+
+func (l *workflowLogCapture) actionPhases() (map[string]bool, map[string]bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	actions := make(map[string]bool)
+	phases := make(map[string]bool)
+	for _, entry := range l.entries {
+		for i := 0; i+1 < len(entry); i += 2 {
+			key, ok := entry[i].(string)
+			if !ok {
+				continue
+			}
+			value, _ := entry[i+1].(string)
+			switch key {
+			case "action":
+				actions[value] = true
+			case "phase":
+				phases[value] = true
+			}
+		}
+	}
+	return actions, phases
+}
 
 // newDiscoveryEnv sets up a test env with EventWorkflow +
 // discovery activities registered. Individual tests attach OnActivity
@@ -1015,6 +1053,65 @@ func TestEventWorkflow_Pipeline_PromotePingsEventVideo(t *testing.T) {
 	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
 	requireDone(t, env)
 	env.AssertNumberOfCalls(t, "PublishEventVideo", 1)
+}
+
+// TestEventWorkflow_EmitsCriticalPathMeasurements pins FF-050's current
+// direct pipeline stages without changing the workflow's behavioral asserts.
+func TestEventWorkflow_EmitsCriticalPathMeasurements(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	logger := &workflowLogCapture{}
+	s.SetLogger(logger)
+	env := baseEventEnvWithOptions(&s,
+		discoveryactivity.LoadEventRecoveryStateOutput{},
+		videoactivity.LoadEventAssetsOutput{},
+		true,
+		discoveryactivity.GetDiscoveryConfigOutput{
+			MaxAttempts: 1, AttemptSpacing: time.Minute,
+			MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
+		},
+	)
+	const tweetURL = "https://x.com/u/status/1111111111111111111"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{{TweetURL: tweetURL, VideoPageURL: "vp", DurationSeconds: 7}},
+			Count:  1, StopReason: "age",
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil)
+	env.OnActivity("DownloadAndStage", mock.Anything, mock.Anything).
+		Return(videoactivity.DownloadAndStageOutput{
+			Outcome: videoactivity.OutcomePassed, MD5: "md5a", StagingKey: "staging/a.mp4",
+			Width: 1280, Height: 720, DurationMS: 7000, SizeBytes: 900_000,
+		}, nil)
+	env.OnActivity("HashVideo", mock.Anything, mock.Anything).
+		Return(videoactivity.HashVideoOutput{FrameHashes: []uint64{1, 2, 4, 8, 16, 32}}, nil)
+	env.OnActivity("ValidateClip", mock.Anything, mock.Anything).
+		Return(visionactivity.ValidateClipOutput{Outcome: "verified", MatchedMinute: pInt(71)}, nil)
+	env.OnActivity("PromoteAndPersist", mock.Anything, mock.Anything).
+		Return(videoactivity.PromoteAndPersistOutput{AssetID: uuid.New(), ShareID: "s_x", Inserted: true, Minted: true}, nil)
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity("PublishEventVideo", mock.Anything, mock.Anything).Return(nil)
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	actions, phases := logger.actionPhases()
+	for _, action := range []string{
+		"event_lifecycle_measured", "event_search_measured",
+		"event_candidate_measured", "event_publish_measured",
+	} {
+		if !actions[action] {
+			t.Errorf("missing workflow measurement action %q", action)
+		}
+	}
+	for _, phase := range []string{
+		"workflow_start", "observation_persist", "download", "hash",
+		"vision", "promotion", "terminal_persist", "workflow_complete",
+	} {
+		if !phases[phase] {
+			t.Errorf("missing workflow measurement phase %q", phase)
+		}
+	}
 }
 
 // ─── #171: post-vision category-scoped dedup + quality winner-selection ──────

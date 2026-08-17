@@ -839,13 +839,14 @@ func (a *Activities) registerAndSpawnEvent(ctx context.Context, existing *event.
 	}
 
 	in := discoveryactivity.EventWorkflowInput{
-		EventID:    existing.ID,
-		FixtureID:  fixtureID,
-		PlayerName: playerName(domainEv.Player),
-		TeamName:   domainEv.Team.Name,
-		TeamID:     int64(domainEv.Team.ID),
-		Minute:     domainEv.Minute,
-		Extra:      domainEv.Extra,
+		EventID:     existing.ID,
+		FixtureID:   fixtureID,
+		PlayerName:  playerName(domainEv.Player),
+		TeamName:    domainEv.Team.Name,
+		TeamID:      int64(domainEv.Team.ID),
+		Minute:      domainEv.Minute,
+		Extra:       domainEv.Extra,
+		FirstSeenAt: existing.FirstSeenAt,
 	}
 	if err := a.Spawner.SpawnEvent(ctx, workflowID, in); err != nil {
 		// The pending row exists. Surface the failure in Reconcile output;

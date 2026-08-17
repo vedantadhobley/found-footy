@@ -71,6 +71,10 @@ Each family's actions register via `registerActions(...)` in an
 compile-time enum (e.g. `vocabulary.Action("typo")` synthesized at
 a call site).
 
+`actions_workflow.go` owns FF-050's EventWorkflow measurement actions:
+`event_lifecycle_measured`, `event_search_measured`,
+`event_candidate_measured`, and `event_publish_measured`.
+
 ## Log emission (shipped)
 
 `internal/observability/logging/logging.go` shape:
@@ -89,6 +93,22 @@ func New(cfg config.ObservabilityConfig, m *metrics.Registry) Emitter
 Backing implementation: `slogEmitter` writes JSON via `log/slog` to
 stdout. Promtail on the host scrapes stdout, ships to Loki. Standard
 container log discipline.
+
+Temporal workflows use the SDK's replay-aware logger instead of the application
+emitter. `internal/workflow/telemetry.go` adds the same typed `module` and
+`action` vocabulary to those lines while preserving the SDK's replay
+suppression. These workflow lines do not increment the emitter-derived call
+metrics.
+
+FF-050 emits correlated workflow-observed timings for lifecycle, each Twitter
+search, candidate observation persistence, download, dense hash, vision,
+promotion, terminal persistence, and `event.video` publication. Candidate
+lines carry `event_id`, `fixture_id`, `tweet_url`, `search_attempt`,
+`recovered`, `phase`, `outcome`, `duration_ms`, and `event_elapsed_ms`.
+Publication lines carry the promotion or supersede cause. Durations include
+Temporal queueing and retries; they are not activity CPU timers. They use
+`workflow.Now`, feed logs only, and never affect commands or acceptance. No
+event or tweet identifier is a Prometheus label.
 
 Typed Field helpers: `String`, `Int`, `Int64`, `Float64`, `Bool`,
 `Err`. Callers use these to keep the field map type-safe rather than

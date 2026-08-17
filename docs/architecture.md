@@ -55,6 +55,7 @@ found-footy/
 │   │   ├── staging_poll.go              ✓ O2: StagingPollWorkflow (*/15 cron)
 │   │   ├── event.go                     ✓ #164c + FF-022 + FF-034: per-goal discovery producer, immediate candidate launch, durable observation/recovery
 │   │   ├── event_pipeline.go            ✓ #164c-b + #171 + FF-022 + FF-034: Selector consumer — download/stage → exact-MD5 claim → one dense hash per byte cluster → vision → category-scoped perceptual dedup + IsUpgrade winner-select → promote/supersede → rank; terminal candidate durability gates completion
+│   │   ├── telemetry.go                 ✓ FF-050: typed replay-aware EventWorkflow lifecycle/search/candidate/publication timing envelope
 │   │   └── video.go                     ✓ #165: pre-FF-022 VideoWorkflow child retained for Temporal replay; shared download/hash activity contracts
 │   ├── activity/                        activity packages + shared heartbeat helper
 │   │   ├── ingest/                      ✓ config, roster, fixture fetch/upsert, canonical-team placeholder, and retention activities
@@ -88,6 +89,7 @@ found-footy/
 │   │   └── *_test.go                    cookie, auth, browser-conversion, and search tests
 │   └── usecases/                        ⊘ doc.go stub (build when cross-domain ops surface)
 ├── docker/twitter/                      ✓ T/b: twitter service image + entrypoint (peer of internal/)
+├── scripts/matchday-status.{sh,sql}     ✓ FF-050: environment-scoped, SELECT-only match-day operator snapshot
 │   ├── Dockerfile                       Playwright base + playwright-go driver + optional WITH_VNC layer (~150 MB xvfb+fluxbox+x11vnc+novnc+websockify)
 │   └── entrypoint.sh                    Conditionally boots VNC daemon stack when TWITTER_VNC_MODE=true, otherwise passthrough
 ├── migrations/                          ⊘ EMPTY BY DESIGN (audit P0-3) — flat schema.sql + VerifySchema drift guard, no migration files; first post-cutover in-place change adds one file, squashed back into schema.sql once applied
