@@ -46,11 +46,11 @@ the current branch.
 | `P2` | Bounded failure-state bug, operability gap, or performance debt. |
 | `P3` | Cleanup or improvement without a current correctness failure. |
 
-## Next
+## Implemented pending rollout
 
 | ID | Severity | Status | Summary |
 |---|---|---|---|
-| FF-034 | P1 | `next` | Make candidate evidence and terminal outcome one durable invariant. |
+| FF-034 | P1 | `implemented` | Candidate evidence and terminal outcome are one durable invariant; rollout remains. |
 
 ## Confirmed issues
 
@@ -167,7 +167,7 @@ the current branch.
 
 ### FF-034 — candidate evidence and terminal outcome are not one invariant
 
-- **Status:** `next`
+- **Status:** `implemented`
 - **Severity:** P1
 - **Invariant:** An EventWorkflow may report completion only after every
   observed candidate has one durable terminal state, with the evidence needed
@@ -181,6 +181,17 @@ the current branch.
   persistence must not delay clip launch. Terminal persistence must use an
   idempotent UPSERT and complete before the parent reports success. Recovery
   must distinguish observed, in-flight, and terminal candidates explicitly.
+- **Implemented:** New executions launch every candidate before awaiting its
+  observation insert, then require an evidence-carrying terminal UPSERT before
+  candidate ownership becomes terminal. A failed observation insert leaves the
+  search attempt uncheckpointed; a failed terminal UPSERT fails the parent and
+  leaves its downstream checklist open. Replacement executions re-drive
+  observed rows, while terminal rows only seed search exclusions. Temporal
+  change ID `ff-034-candidate-durability` preserves older histories' command
+  sequence.
+- **Rollout:** Commit and deploy the release, then verify that one completed
+  EventWorkflow has no `pending` candidate rows and that an injected terminal
+  persistence failure cannot mark its checklist complete.
 - **Relation:** This is the durable-state half of the observed “pending after
   parent workflow” defect and the evidence boundary required for FF-003's
   semantic validation. It also absorbs `AUD-0813-P2-8`; independently
@@ -212,6 +223,32 @@ the current branch.
 | FF-047 | P3 | `confirmed` | Empty tracked-team state still burns fixture lookahead calls whose results are discarded. | Short-circuit before vendor fixture calls and emit degraded-state telemetry. |
 | FF-048 | P2 | `confirmed` | Share minting uses check-then-insert without `(event_id, asset_id)` uniqueness. | Database constraint plus atomic idempotent insert after FF-013. |
 | FF-049 | P3 | `confirmed` | Documentation routing is clean, but several current/reference documents still exceed the shared size standard. | Split the 618-line orchestration ledger and route the 2,869-line Python functional spec plus 604-line video-dedup proposal by topic without rewriting historical claims. |
+| FF-050 | P2 | `investigate` | The event-to-surface critical path is not measured end to end and contains possible avoidable serial barriers. | Measure phase and queue latency under representative concurrency, then simplify or parallelize only the demonstrated bottleneck without weakening correctness or resource caps. |
+
+### FF-050 — measure and shorten event-to-surface latency
+
+- **Outcome:** Surface the first valid clip as soon as the required evidence is
+  available. Preserve search coverage, Temporal durability, exact-byte
+  ownership, serialized perceptual-dedup decisions, and the LLM/ffmpeg
+  admission limits.
+- **Current boundaries to measure:** Twitter returns a completed scroll batch
+  instead of candidates as they appear; dense hashing completes before vision
+  starts; terminal and ancillary persistence wait inside the serialized
+  selector; and expensive activities share one general Temporal task lane.
+- **Required work:** Add correlated phase and queue timings from provider
+  observation through frontend notification. Use representative match-day
+  concurrency to separate intentional waits—three-poll event debounce,
+  discovery spacing, Twitter stealth pacing, exact-duplicate ownership, and
+  bounded resource admission—from avoidable waits. Measure FF-034's concurrent
+  observation persistence, then evaluate early candidate delivery, hash/vision
+  overlap, and asynchronous durable effects only where the evidence justifies
+  them.
+- **Completion boundary:** Record before/after critical-path and saturation
+  evidence for each accepted change. Prefer the smallest change that removes
+  the measured bottleneck; do not add a streaming protocol, queue, service, or
+  concurrency layer without a demonstrated benefit. FF-034 owns candidate
+  durability, FF-037 owns work-lane isolation, and FF-046 owns selector-blocking
+  durable effects.
 
 ## Deferred decisions and validation
 

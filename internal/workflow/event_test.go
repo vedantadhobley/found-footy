@@ -13,6 +13,7 @@ package workflow_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,14 +27,17 @@ import (
 	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
+	ddiscovery "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
 
 const (
-	ff007RecoveryChangeIDForTest = "ff-007-failed-run-recovery"
-	ff017RestartChangeIDForTest  = "ff-017-browser-restart-retry"
-	ff022PreHashChangeIDForTest  = "ff-022-pre-hash-md5-claim"
+	ff007RecoveryChangeIDForTest    = "ff-007-failed-run-recovery"
+	ff017RestartChangeIDForTest     = "ff-017-browser-restart-retry"
+	ff022PreHashChangeIDForTest     = "ff-022-pre-hash-md5-claim"
+	ff034DurabilityChangeIDForTest  = "ff-034-candidate-durability"
+	discoveryPGRetryAttemptsForTest = 5
 )
 
 // newDiscoveryEnv sets up a test env with EventWorkflow +
@@ -155,7 +159,7 @@ func newDiscoveryEnv(
 		Return(videoactivity.PromoteAndPersistOutput{AssetID: uuid.New(), ShareID: "s_test", Inserted: true}, nil).Maybe()
 	env.OnActivity("BumpAssetPopularity", mock.Anything, mock.Anything).Return(nil).Maybe()
 	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
-	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
 	return env
 }
 
@@ -296,6 +300,7 @@ func TestEventWorkflow_DedupSameTweetAcrossAttempts(t *testing.T) {
 // existing live asset remains in the dedup/output pool.
 func TestEventWorkflow_FailedRunRestoresDurableProgress(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
+	in := stdDiscoveryInput()
 	const (
 		terminalURL = "https://x.com/u/status/1111111111111111111"
 		pendingURL  = "https://x.com/u/status/2222222222222222222"
@@ -305,8 +310,22 @@ func TestEventWorkflow_FailedRunRestoresDurableProgress(t *testing.T) {
 		discoveryactivity.LoadEventRecoveryStateOutput{
 			AttemptsCompleted: 9,
 			Candidates: []discoveryactivity.RecoveryCandidate{
-				{TweetURL: terminalURL, Pending: false},
-				{TweetURL: pendingURL, Pending: true},
+				{
+					Evidence: ddiscovery.CandidateEvidence{
+						EventID: in.EventID, FixtureID: in.FixtureID,
+						SearchAttempt: 3, Query: "query", TweetURL: terminalURL,
+						VideoPageURL: terminalURL,
+					},
+					State: ddiscovery.CandidateTerminal, TweetURL: terminalURL,
+				},
+				{
+					Evidence: ddiscovery.CandidateEvidence{
+						EventID: in.EventID, FixtureID: in.FixtureID,
+						SearchAttempt: 4, Query: "query", TweetURL: pendingURL,
+						VideoPageURL: pendingURL,
+					},
+					State: ddiscovery.CandidateObserved, TweetURL: pendingURL, Pending: true,
+				},
 			},
 		},
 		videoactivity.LoadEventAssetsOutput{Assets: []videoactivity.RestoredEventAsset{{
@@ -333,9 +352,9 @@ func TestEventWorkflow_FailedRunRestoresDurableProgress(t *testing.T) {
 		env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(url)).
 			Return(workflow.VideoWorkflowOutput{Outcome: workflow.VideoOutcomeRejected, RejectReason: "test"}, nil).Once()
 	}
-	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
 
-	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	env.ExecuteWorkflow(workflow.EventWorkflow, in)
 	requireDone(t, env)
 
 	var out workflow.EventWorkflowOutput
@@ -349,6 +368,120 @@ func TestEventWorkflow_FailedRunRestoresDurableProgress(t *testing.T) {
 	env.AssertNumberOfCalls(t, "VideoWorkflow", 2)
 }
 
+// TestEventWorkflow_ObservationFailureDoesNotGateClipLaunch proves FF-034's
+// critical-path boundary. Every candidate starts processing before the
+// observation inserts are awaited. A failed insert leaves the attempt
+// uncheckpointed and fails the execution only after the launched clip reaches
+// its durable terminal state.
+func TestEventWorkflow_ObservationFailureDoesNotGateClipLaunch(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := baseEventEnvWithRecovery(&s,
+		discoveryactivity.LoadEventRecoveryStateOutput{},
+		videoactivity.LoadEventAssetsOutput{},
+		discoveryactivity.GetDiscoveryConfigOutput{
+			MaxAttempts: 1, AttemptSpacing: time.Minute, MaxAgeMinutes: 3,
+			QueryTimeout: 2 * time.Minute,
+		},
+	)
+	const tweetURL = "https://x.com/u/status/1111111111111111111"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{Videos: []twitter.VideoRef{{
+			TweetURL: tweetURL, TweetText: "goal clip", VideoPageURL: tweetURL,
+			DurationSeconds: 12, Username: "u", AgeMinutes: 0.5,
+		}}, Count: 1}, nil).Once()
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{}, errors.New("postgres unavailable"))
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(tweetURL)).
+		Return(workflow.VideoWorkflowOutput{Outcome: workflow.VideoOutcomeRejected, RejectReason: "test"}, nil).Once()
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything, mock.MatchedBy(
+		func(in discoveryactivity.UpsertCandidateOutcomeInput) bool {
+			return in.Evidence.TweetURL == tweetURL &&
+				in.Evidence.TweetText == "goal clip" &&
+				in.Evidence.Username == "u" &&
+				in.Evidence.SearchAttempt == 1 &&
+				in.Outcome == discoveryactivity.OutcomeRejected
+		},
+	)).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not close after observation failure")
+	}
+	if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), "persist observed candidate") {
+		t.Fatalf("workflow error = %v, want observation durability failure", err)
+	}
+	env.AssertNumberOfCalls(t, "VideoWorkflow", 1)
+	env.AssertNumberOfCalls(t, "StoreCandidate", discoveryPGRetryAttemptsForTest)
+	env.AssertNumberOfCalls(t, "UpsertCandidateOutcome", 1)
+	env.AssertNotCalled(t, "RecordDiscoveryProgress", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "MarkDownstreamComplete", mock.Anything, mock.Anything)
+}
+
+// TestEventWorkflow_TerminalPersistenceFailureBlocksParentCompletion proves
+// the parent cannot report success after a candidate finished only in workflow
+// memory. The terminal UPSERT exhausts its retries and the checklist remains
+// open for failed-run recovery.
+func TestEventWorkflow_TerminalPersistenceFailureBlocksParentCompletion(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := baseEventEnvWithRecovery(&s,
+		discoveryactivity.LoadEventRecoveryStateOutput{},
+		videoactivity.LoadEventAssetsOutput{},
+		discoveryactivity.GetDiscoveryConfigOutput{
+			MaxAttempts: 1, AttemptSpacing: time.Minute, MaxAgeMinutes: 3,
+			QueryTimeout: 2 * time.Minute,
+		},
+	)
+	const tweetURL = "https://x.com/u/status/2222222222222222222"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{Videos: []twitter.VideoRef{{
+			TweetURL: tweetURL, VideoPageURL: tweetURL,
+		}}, Count: 1}, nil).Once()
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil).Once()
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(tweetURL)).
+		Return(workflow.VideoWorkflowOutput{Outcome: workflow.VideoOutcomeRejected, RejectReason: "test"}, nil).Once()
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything, mock.Anything).
+		Return(errors.New("postgres unavailable"))
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not close after terminal persistence failure")
+	}
+	if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), "persist terminal candidate") {
+		t.Fatalf("workflow error = %v, want terminal durability failure", err)
+	}
+	env.AssertNumberOfCalls(t, "UpsertCandidateOutcome", discoveryPGRetryAttemptsForTest)
+	env.AssertNotCalled(t, "MarkDownstreamComplete", mock.Anything, mock.Anything)
+}
+
+// TestEventWorkflow_PreFF034HistoryKeepsLegacyCandidateWrites proves a running
+// history created before FF-034 retains StoreCandidate-before-child and the
+// legacy RecordCandidateOutcome activity rather than gaining a new command.
+func TestEventWorkflow_PreFF034HistoryKeepsLegacyCandidateWrites(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := baseEventEnv(&s)
+	env.OnGetVersion(ff034DurabilityChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(sdkworkflow.DefaultVersion).Once()
+	const tweetURL = "https://x.com/u/status/3333333333333333333"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{Videos: []twitter.VideoRef{{
+			TweetURL: tweetURL, VideoPageURL: tweetURL,
+		}}, Count: 1}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil).Once()
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(tweetURL)).
+		Return(workflow.VideoWorkflowOutput{Outcome: workflow.VideoOutcomeRejected, RejectReason: "test"}, nil).Once()
+	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	env.AssertNumberOfCalls(t, "RecordCandidateOutcome", 1)
+	env.AssertNotCalled(t, "UpsertCandidateOutcome", mock.Anything, mock.Anything)
+}
+
 // TestEventWorkflow_DefaultVersionPreservesPreRecoveryCommandSequence proves
 // a workflow started before FF-007 does not insert recovery activities or
 // progress writes into its existing Temporal history during replay.
@@ -359,6 +492,9 @@ func TestEventWorkflow_DefaultVersionPreservesPreRecoveryCommandSequence(t *test
 		Return(sdkworkflow.DefaultVersion).
 		Once()
 	env.OnGetVersion(ff017RestartChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(sdkworkflow.DefaultVersion).
+		Once()
+	env.OnGetVersion(ff034DurabilityChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
 		Return(sdkworkflow.DefaultVersion).
 		Once()
 	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
@@ -592,7 +728,7 @@ func TestEventWorkflow_CancelWithVisionPending(t *testing.T) {
 	requireCanceled(t, env)
 	env.AssertNumberOfCalls(t, "ValidateClip", 1)
 	env.AssertNotCalled(t, "PromoteAndPersist", mock.Anything, mock.Anything)
-	env.AssertNotCalled(t, "RecordCandidateOutcome", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "UpsertCandidateOutcome", mock.Anything, mock.Anything)
 	env.AssertNotCalled(t, "DeleteStaging", mock.Anything, mock.Anything)
 	env.AssertNotCalled(t, "MarkDownstreamComplete", mock.Anything, mock.Anything)
 }
@@ -607,7 +743,7 @@ func TestEventWorkflow_PermanentVisionErrorDoesNotRetry(t *testing.T) {
 
 	requireDone(t, env)
 	env.AssertNumberOfCalls(t, "ValidateClip", 1)
-	env.AssertNumberOfCalls(t, "RecordCandidateOutcome", 1)
+	env.AssertNumberOfCalls(t, "UpsertCandidateOutcome", 1)
 	env.AssertNumberOfCalls(t, "DeleteStaging", 1)
 }
 
@@ -619,7 +755,7 @@ func TestEventWorkflow_TransientVisionErrorRetriesThreeTimes(t *testing.T) {
 
 	requireDone(t, env)
 	env.AssertNumberOfCalls(t, "ValidateClip", 3)
-	env.AssertNumberOfCalls(t, "RecordCandidateOutcome", 1)
+	env.AssertNumberOfCalls(t, "UpsertCandidateOutcome", 1)
 	env.AssertNumberOfCalls(t, "DeleteStaging", 1)
 }
 
@@ -638,7 +774,7 @@ func visionFailureEnv(s *testsuite.WorkflowTestSuite, visionErr error) *testsuit
 		Once()
 	env.OnActivity("ValidateClip", mock.Anything, mock.Anything).
 		Return(visionactivity.ValidateClipOutput{}, visionErr)
-	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Once()
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Once()
 	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Once()
 	return env
 }
@@ -690,8 +826,8 @@ func failedCandidateEnv(
 
 // failedCandidateIs matches the durable terminal update for one candidate.
 func failedCandidateIs(tweetURL string, reason workflow.VideoWorkflowFailureReason) interface{} {
-	return mock.MatchedBy(func(in discoveryactivity.RecordCandidateOutcomeInput) bool {
-		return in.TweetURL == tweetURL &&
+	return mock.MatchedBy(func(in discoveryactivity.UpsertCandidateOutcomeInput) bool {
+		return in.Evidence.TweetURL == tweetURL &&
 			in.Outcome == discoveryactivity.OutcomeFailed &&
 			in.RejectReason == string(reason)
 	})
@@ -705,7 +841,7 @@ func TestEventWorkflow_DownloadFailureStampsCandidate(t *testing.T) {
 		Outcome:       workflow.VideoOutcomeFailed,
 		FailureReason: workflow.VideoFailureDownload,
 	}, nil)
-	env.OnActivity("RecordCandidateOutcome", mock.Anything,
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything,
 		failedCandidateIs(tweetURL, workflow.VideoFailureDownload)).Return(nil).Once()
 
 	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
@@ -725,7 +861,7 @@ func TestEventWorkflow_HashFailureStampsCandidateAndDeletesStaging(t *testing.T)
 		FailureReason: workflow.VideoFailureHash,
 		StagingKey:    stagingKey,
 	}, nil)
-	env.OnActivity("RecordCandidateOutcome", mock.Anything,
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything,
 		failedCandidateIs(tweetURL, workflow.VideoFailureHash)).Return(nil).Once()
 	env.OnActivity("DeleteStaging", mock.Anything,
 		videoactivity.DeleteStagingInput{StagingKey: stagingKey}).Return(nil).Once()
@@ -741,7 +877,7 @@ func TestEventWorkflow_HashFailureStampsCandidateAndDeletesStaging(t *testing.T)
 func TestEventWorkflow_UnexpectedChildFailureUsesCapturedTweetURL(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env, tweetURL := failedCandidateEnv(&s, workflow.VideoWorkflowOutput{}, errors.New("child panic"))
-	env.OnActivity("RecordCandidateOutcome", mock.Anything,
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything,
 		failedCandidateIs(tweetURL, workflow.VideoFailureUnexpectedChild)).Return(nil).Once()
 
 	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
@@ -759,11 +895,15 @@ func TestEventWorkflow_DefaultVersionPreservesChildFailureCommandSequence(t *tes
 	env.OnGetVersion(ff002ChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
 		Return(sdkworkflow.DefaultVersion).
 		Once()
+	env.OnGetVersion(ff034DurabilityChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(sdkworkflow.DefaultVersion).
+		Once()
 
 	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
 
 	requireDone(t, env)
 	env.AssertNotCalled(t, "RecordCandidateOutcome", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "UpsertCandidateOutcome", mock.Anything, mock.Anything)
 	env.AssertNotCalled(t, "DeleteStaging", mock.Anything, mock.Anything)
 }
 
@@ -785,7 +925,7 @@ func TestEventWorkflow_Pipeline_VerifyAndDedup(t *testing.T) {
 			return nil
 		}).Maybe()
 	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
-	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
 		Return(discoveryactivity.SearchTweetsOutput{
@@ -851,7 +991,7 @@ func TestEventWorkflow_Pipeline_PromotePingsEventVideo(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := baseEventEnv(&s)
 	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
-	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
 	env.OnActivity("BumpAssetPopularity", mock.Anything, mock.Anything).Return(nil).Maybe()
 	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
 		Return(discoveryactivity.SearchTweetsOutput{
@@ -902,8 +1042,8 @@ func hashStagingIs(key string) interface{} {
 }
 
 func candidateOutcomeIs(url string, outcome discoveryactivity.CandidateOutcome) interface{} {
-	return mock.MatchedBy(func(in discoveryactivity.RecordCandidateOutcomeInput) bool {
-		return in.TweetURL == url && in.Outcome == outcome
+	return mock.MatchedBy(func(in discoveryactivity.UpsertCandidateOutcomeInput) bool {
+		return in.Evidence.TweetURL == url && in.Outcome == outcome
 	})
 }
 
@@ -932,7 +1072,7 @@ func requireDone(t *testing.T, env *testsuite.TestWorkflowEnvironment) {
 func twoCandidateEnv(s *testsuite.WorkflowTestSuite) (*testsuite.TestWorkflowEnvironment, string, string) {
 	env := baseEventEnv(s)
 	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
-	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
 	env.OnActivity("BumpAssetPopularity", mock.Anything, mock.Anything).Return(nil).Maybe()
 	t1, t2 := wireTwoCandidateSearch(env)
 	return env, t1, t2
@@ -973,7 +1113,7 @@ func TestEventWorkflow_PreHashExactClaimHashesIdenticalBytesOnce(t *testing.T) {
 	)
 	frames := []uint64{1, 2, 4, 8, 16, 32}
 	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
-	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	env.OnActivity("DownloadAndStage", mock.Anything, downloadTweetIs(t1)).
 		Return(videoactivity.DownloadAndStageOutput{
@@ -1044,9 +1184,9 @@ func TestEventWorkflow_PreHashClaimTransfersAfterHashFailure(t *testing.T) {
 		Return(videoactivity.HashVideoOutput{}, errors.New("garage object unreadable"))
 	env.OnActivity("HashVideo", mock.Anything, hashStagingIs(s2)).
 		Return(videoactivity.HashVideoOutput{FrameHashes: []uint64{1, 2, 4, 8}}, nil).Once()
-	env.OnActivity("RecordCandidateOutcome", mock.Anything,
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything,
 		failedCandidateIs(t1, workflow.VideoFailureHash)).Return(nil).Once()
-	env.OnActivity("RecordCandidateOutcome", mock.Anything,
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything,
 		candidateOutcomeIs(t2, discoveryactivity.OutcomePromoted)).Return(nil).Once()
 	env.OnActivity("DeleteStaging", mock.Anything,
 		videoactivity.DeleteStagingInput{StagingKey: s1}).Return(nil).Once()
@@ -1059,7 +1199,7 @@ func TestEventWorkflow_PreHashClaimTransfersAfterHashFailure(t *testing.T) {
 	requireDone(t, env)
 
 	env.AssertNumberOfCalls(t, "HashVideo", 4)
-	env.AssertNotCalled(t, "RecordCandidateOutcome", mock.Anything,
+	env.AssertNotCalled(t, "UpsertCandidateOutcome", mock.Anything,
 		candidateOutcomeIs(t2, discoveryactivity.OutcomeDuplicate))
 }
 
@@ -1092,7 +1232,7 @@ func TestEventWorkflow_PreHashCancellationEmitsNoFollowOnCommands(t *testing.T) 
 	requireCanceled(t, env)
 	env.AssertNumberOfCalls(t, "HashVideo", 1)
 	env.AssertNotCalled(t, "ValidateClip", mock.Anything, mock.Anything)
-	env.AssertNotCalled(t, "RecordCandidateOutcome", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "UpsertCandidateOutcome", mock.Anything, mock.Anything)
 	env.AssertNotCalled(t, "DeleteStaging", mock.Anything, mock.Anything)
 	env.AssertNotCalled(t, "MarkDownstreamComplete", mock.Anything, mock.Anything)
 }
@@ -1111,7 +1251,7 @@ func TestEventWorkflow_PreFF022HistoryKeepsVideoChild(t *testing.T) {
 		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil).Once()
 	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(tweetURL)).
 		Return(workflow.VideoWorkflowOutput{Outcome: workflow.VideoOutcomeRejected, RejectReason: "test"}, nil).Once()
-	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Once()
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Once()
 
 	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
 	requireDone(t, env)

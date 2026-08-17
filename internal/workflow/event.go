@@ -29,6 +29,7 @@
 package workflow
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,7 +40,7 @@ import (
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	fleetactivity "github.com/vedantadhobley/found-footy/internal/activity/fleet"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
-	querybuilder "github.com/vedantadhobley/found-footy/internal/domain/discovery"
+	ddiscovery "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 )
 
 // EventWorkflowInput re-exports the shared type so callers that
@@ -70,12 +71,14 @@ const (
 	discoveryPGShortActivityTTL = 30 * time.Second
 	discoveryPGRetryAttempts    = 5
 
-	ff007FailedRunRecoveryChangeID = "ff-007-failed-run-recovery"
-	ff007FailedRunRecoveryVersion  = workflow.Version(1)
-	ff017BrowserRestartChangeID    = "ff-017-browser-restart-retry"
-	ff017BrowserRestartVersion     = workflow.Version(1)
-	ff022PreHashMD5ClaimChangeID   = "ff-022-pre-hash-md5-claim"
-	ff022PreHashMD5ClaimVersion    = workflow.Version(1)
+	ff007FailedRunRecoveryChangeID   = "ff-007-failed-run-recovery"
+	ff007FailedRunRecoveryVersion    = workflow.Version(1)
+	ff017BrowserRestartChangeID      = "ff-017-browser-restart-retry"
+	ff017BrowserRestartVersion       = workflow.Version(1)
+	ff022PreHashMD5ClaimChangeID     = "ff-022-pre-hash-md5-claim"
+	ff022PreHashMD5ClaimVersion      = workflow.Version(1)
+	ff034CandidateDurabilityChangeID = "ff-034-candidate-durability"
+	ff034CandidateDurabilityVersion  = workflow.Version(1)
 
 	// A Firefox container needs about 30 seconds to relaunch and reload shared
 	// cookies after FF-017 makes browser death fatal to PID 1. These retries run
@@ -188,7 +191,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 	// for Cincinnati). Canonical name + derived abbrev carry the team. The
 	// resolver + team_aliases.aliases column stay in place but unused, pending a
 	// Phase-2 teardown. See decisions.md 2026-08-16.
-	query, err := querybuilder.Build(in.PlayerName, canonicalName, nil)
+	query, err := ddiscovery.Build(in.PlayerName, canonicalName, nil)
 	if err != nil {
 		log.Warn("query builder rejected input", "err", err,
 			"player", in.PlayerName, "canonical", canonicalName,
@@ -213,10 +216,16 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion,
 		ff022PreHashMD5ClaimVersion,
 	) != workflow.DefaultVersion
+	durableCandidates := workflow.GetVersion(ctx,
+		ff034CandidateDurabilityChangeID,
+		workflow.DefaultVersion,
+		ff034CandidateDurabilityVersion,
+	) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
 		terminalVideoFailures: terminalVideoFailures,
 		preHashMD5Claim:       preHashMD5Claim,
+		durableCandidates:     durableCandidates,
 	}, log)
 
 	// FF-007 recovery: a new execution after failed-only Workflow ID reuse
@@ -271,13 +280,28 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 	excludeURLs := make([]string, 0, len(recoveryOut.Candidates)+64)
 	seenTweetIDs := make(map[string]struct{}, len(recoveryOut.Candidates)+64)
 	for _, candidate := range recoveryOut.Candidates {
-		if candidate.TweetURL == "" {
+		tweetURL := candidate.TweetURL
+		if durableCandidates {
+			tweetURL = candidate.Evidence.TweetURL
+		}
+		if tweetURL == "" {
 			continue
 		}
-		seenTweetIDs[candidate.TweetURL] = struct{}{}
-		excludeURLs = append(excludeURLs, candidate.TweetURL)
-		if candidate.Pending {
-			p.spawnCandidate(ctx, candidate.TweetURL)
+		seenTweetIDs[tweetURL] = struct{}{}
+		excludeURLs = append(excludeURLs, tweetURL)
+		if durableCandidates {
+			switch candidate.State {
+			case ddiscovery.CandidateObserved, ddiscovery.CandidateInFlight:
+				p.spawnCandidate(ctx, candidate.Evidence)
+			case ddiscovery.CandidateTerminal:
+				// Terminal candidates only seed the exclusion set.
+			default:
+				return out, fmt.Errorf("candidate %s has unknown recovery state %q", tweetURL, candidate.State)
+			}
+		} else if candidate.Pending {
+			p.spawnCandidate(ctx, ddiscovery.CandidateEvidence{
+				EventID: in.EventID, FixtureID: in.FixtureID, TweetURL: tweetURL,
+			})
 		}
 	}
 	out.CandidatesFound = len(recoveryOut.Candidates)
@@ -324,6 +348,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 				}
 				log.Warn("SearchTweets attempt failed", "attempt", attempt, "err", err)
 			} else {
+				var observed []ddiscovery.CandidateEvidence
 				for _, v := range searchOut.Videos {
 					if v.TweetURL == "" {
 						continue
@@ -334,15 +359,22 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 					seenTweetIDs[v.TweetURL] = struct{}{}
 					excludeURLs = append(excludeURLs, v.TweetURL)
 
+					evidence := ddiscovery.CandidateEvidence{
+						EventID: in.EventID, FixtureID: in.FixtureID, SearchAttempt: attempt,
+						Query: query, TweetURL: v.TweetURL, TweetText: v.TweetText,
+						VideoPageURL: v.VideoPageURL, DurationSeconds: v.DurationSeconds,
+						Username: v.Username, AgeMinutesAtDiscovery: v.AgeMinutes,
+					}
+					if durableCandidates {
+						observed = append(observed, evidence)
+						out.CandidatesFound++
+						continue
+					}
+
 					var storeOut discoveryactivity.StoreCandidateOutput
 					if err := workflow.ExecuteActivity(storeOptions,
 						(*discoveryactivity.Activities).StoreCandidate,
-						discoveryactivity.StoreCandidateInput{
-							EventID: in.EventID, FixtureID: in.FixtureID, SearchAttempt: attempt,
-							Query: query, TweetURL: v.TweetURL, TweetText: v.TweetText,
-							VideoPageURL: v.VideoPageURL, DurationSeconds: v.DurationSeconds,
-							Username: v.Username, AgeMinutesAtDiscovery: v.AgeMinutes,
-						}).Get(storeOptions, &storeOut); err != nil {
+						evidence).Get(storeOptions, &storeOut); err != nil {
 						if temporal.IsCanceledError(err) {
 							producerErr = err
 							return
@@ -351,10 +383,43 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 					} else if storeOut.Inserted {
 						out.CandidatesFound++
 					}
-					// Submit the candidate regardless of StoreCandidate's result;
-					// persistence is post-hoc learning, while the pipeline owns the
-					// clip's download and validation lifecycle.
-					p.spawnCandidate(gctx, v.TweetURL)
+					p.spawnCandidate(gctx, evidence)
+				}
+
+				if durableCandidates && len(observed) > 0 {
+					// Launch every clip before yielding on Postgres. Download and
+					// observation inserts are then dispatched in the same workflow
+					// task and execute concurrently; no candidate waits behind a
+					// prior candidate's insert.
+					for _, evidence := range observed {
+						p.spawnCandidate(gctx, evidence)
+					}
+					storeFutures := make([]workflow.Future, 0, len(observed))
+					for _, evidence := range observed {
+						storeFutures = append(storeFutures, workflow.ExecuteActivity(storeOptions,
+							(*discoveryactivity.Activities).StoreCandidate, evidence))
+					}
+					var observationErr error
+					for i, future := range storeFutures {
+						var storeOut discoveryactivity.StoreCandidateOutput
+						if err := future.Get(storeOptions, &storeOut); err != nil {
+							if temporal.IsCanceledError(err) {
+								producerErr = err
+								return
+							}
+							log.Warn("StoreCandidate failed", "tweet_url", observed[i].TweetURL, "err", err)
+							if observationErr == nil {
+								observationErr = fmt.Errorf("persist observed candidate %s: %w", observed[i].TweetURL, err)
+							}
+						}
+					}
+					if observationErr != nil {
+						// Do not checkpoint this attempt. The already-launched clips
+						// still drain to terminal UPSERTs; a replacement execution
+						// re-runs the attempt and excludes whatever became durable.
+						producerErr = observationErr
+						return
+					}
 				}
 				log.Info("attempt complete", "attempt", attempt, "videos_returned", searchOut.Count,
 					"cumulative_candidates", out.CandidatesFound, "stop_reason", searchOut.StopReason)
