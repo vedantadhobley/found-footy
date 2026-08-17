@@ -233,6 +233,38 @@ the current branch.
 | FF-048 | P2 | `confirmed` | Share minting uses check-then-insert without `(event_id, asset_id)` uniqueness. | Database constraint plus atomic idempotent insert after FF-013. |
 | FF-049 | P3 | `confirmed` | Documentation routing is clean, but several current/reference documents still exceed the shared size standard. | Split the 618-line orchestration ledger and route the 2,869-line Python functional spec plus 604-line video-dedup proposal by topic without rewriting historical claims. |
 | FF-050 | P2 | `investigate` | Correlated replay-safe stage timings and a read-only match-day status view are implemented; representative live evidence is pending. | Capture phase and queue latency under representative concurrency, then simplify or parallelize only the demonstrated bottleneck without weakening correctness or resource caps. |
+| FF-051 | P1 | `implemented` | A strict Playwright locator failure was converted to a successful empty Twitter result whenever multiple tweets rendered before the feed wait resolved. | Roll out the fix, verify a representative production search, and confirm non-timeout feed failures reach Temporal retry instead of completing empty. |
+
+### FF-051 — rendered Twitter feeds were reported as empty
+
+- **Incident:** All 45 searches across the three Sassuolo–Cesena
+  EventWorkflows returned zero candidates on 2026-08-17. A known-positive
+  Telemundo Lipani tweet was posted inside attempts 5–7 of the configured
+  three-minute window, and professional clips existed for every goal.
+- **Root cause:** Playwright-Go locators are strict. The initial
+  `article[data-testid='tweet']` wait failed immediately when X rendered
+  multiple matching articles before the wait resolved. The handler treated
+  every wait error as a valid empty feed, so Temporal saw success and did not
+  retry. This produced the observed 1.6–2.1-second false-empty searches despite
+  the ten-second feed timeout.
+- **Implemented fix:** Wait on the first matching article, classify only
+  `playwright.ErrTimeout` as a successful `feed_timeout`, and return other
+  Playwright failures as typed HTTP errors. The app-shell union locator is also
+  strict-safe. Search responses and EventWorkflow measurements now carry
+  `initial_articles`, `tweets_parsed`, and `video_tweets` alongside the stop
+  reason and scroll count.
+- **Age contract preserved:** The X query remains the broad
+  `(player OR team aliases) filter:videos` query in Latest order. It contains
+  no `since:` or `until:` bound; `max_age_minutes=3` remains a local
+  wall-clock-relative parsing cutoff per the 2026-07-23 decision. The rejected
+  server-side bounds previously dropped many proven results.
+- **Isolated proof:** A fresh non-production image and Firefox profile returned
+  13 videos for the broad Lipani/Sassuolo query with a diagnostic 180-minute
+  local window, including the supplied Telemundo tweet; four articles were
+  already rendered at the initial wait. The same broad query with the normal
+  three-minute window stopped locally on `age`. A distinctive no-result query
+  waited 10.67 seconds and returned `feed_timeout`.
+- **Rollout:** Pending explicit production approval.
 
 ### FF-050 — measure and shorten event-to-surface latency
 

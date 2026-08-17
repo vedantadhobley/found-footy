@@ -85,7 +85,7 @@ found-footy/
 │   │   ├── service.go                   ✓ T/a + T/b + FF-017: state machine, browser-loss watcher/audit, /health, /status
 │   │   ├── auth.go                      ✓ T/b: EnsureAuthenticated (mtime → warm-path → verify) + BackupCookies + /authenticate + /auth/verify
 │   │   ├── cookies_backup.go            ✓ T/b: Fingerprint, WriteBackup (atomic), ReadBackup, BackupFileMtime, auth_token guard
-│   │   ├── search.go                    ✓ T/c: POST /search + full DOM scrape + 4-condition scroll loop + BackupCookies hook + combined verify+search + stealth jitter
+│   │   ├── search.go                    ✓ T/c + FF-051: POST /search + strict-safe feed classification + local age cutoff + 4-condition scroll loop + extraction diagnostics
 │   │   └── *_test.go                    cookie, auth, browser-conversion, and search tests
 │   └── usecases/                        ⊘ doc.go stub (build when cross-domain ops surface)
 ├── docker/twitter/                      ✓ T/b: twitter service image + entrypoint (peer of internal/)

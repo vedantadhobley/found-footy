@@ -229,13 +229,16 @@ type SearchTweetsInput struct {
 // tweet + CDN + duration triples for downstream Video pipeline. Empty
 // list is a valid outcome (no candidates found — Discovery just
 // completes with count=0). StopReason is the T/c scroll-loop
-// termination class ("age" / "max_scrolls" / "empty" /
-// "consecutive_seen") — kept as observability metadata for Discovery
-// loop logging.
+// termination class. The remaining counters distinguish an absent feed from
+// incomplete media hydration and an exhausted rendered feed.
 type SearchTweetsOutput struct {
-	Videos     []twitter.VideoRef
-	Count      int
-	StopReason string
+	Videos          []twitter.VideoRef
+	Count           int
+	StopReason      string
+	Scrolls         int
+	InitialArticles int
+	TweetsParsed    int
+	VideoTweets     int
 }
 
 // SearchTweets calls the Go Twitter service and returns discovered video tweets.
@@ -253,7 +256,7 @@ func (a *Activities) SearchTweets(ctx context.Context, in SearchTweetsInput) (Se
 	}
 	maxAge := in.MaxAgeMinutes
 	if maxAge == 0 {
-		maxAge = 5
+		maxAge = fallbackMaxAgeMinutes
 	}
 	resp, err := a.Twitter.Search(ctx, in.InstanceAddr, twitter.SearchRequest{
 		Query:         in.Query,
@@ -264,9 +267,13 @@ func (a *Activities) SearchTweets(ctx context.Context, in SearchTweetsInput) (Se
 		return SearchTweetsOutput{}, fmt.Errorf("discovery.SearchTweets: %w", err)
 	}
 	return SearchTweetsOutput{
-		Videos:     resp.Videos,
-		Count:      resp.Count,
-		StopReason: resp.StopReason,
+		Videos:          resp.Videos,
+		Count:           resp.Count,
+		StopReason:      resp.StopReason,
+		Scrolls:         resp.Scrolls,
+		InitialArticles: resp.InitialArticles,
+		TweetsParsed:    resp.TweetsParsed,
+		VideoTweets:     resp.VideoTweets,
 	}, nil
 }
 

@@ -110,6 +110,13 @@ Temporal queueing and retries; they are not activity CPU timers. They use
 `workflow.Now`, feed logs only, and never affect commands or acceptance. No
 event or tweet identifier is a Prometheus label.
 
+FF-051 extends each search line with the configured local `max_age_minutes`,
+`stop_reason`, `scrolls`, `initial_articles`, `tweets_parsed`, and
+`video_tweets`. The Twitter HTTP client emits the same result-shape fields.
+`feed_timeout` therefore means the first article genuinely missed the
+ten-second bound; a rendered-but-exhausted feed is `feed_exhausted`, and
+non-timeout Playwright failures emit an error and retry.
+
 Typed Field helpers: `String`, `Int`, `Int64`, `Float64`, `Bool`,
 `Err`. Callers use these to keep the field map type-safe rather than
 building `map[string]any` inline.

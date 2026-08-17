@@ -88,10 +88,12 @@ Registered in `service.go RegisterHandlers`:
 | `/auth/verify` | POST | After an operator logs in via VNC, verify the session succeeded → resume the Playwright context. |
 
 **`SearchResponse`:** `{status, videos:[VideoRef], count, query, stop_reason,
-scrolls, elapsed}`, where `VideoRef = {tweet_url, tweet_text, video_page_url,
-duration_seconds, username, age_minutes}`. Note `video_page_url` is the tweet
-page — the worker resolves it to media bytes off-browser via the syndication
-adapter; the service returns no CDN URL. The Go client
+scrolls, initial_articles, tweets_parsed, video_tweets, elapsed}`, where
+`VideoRef = {tweet_url, tweet_text, video_page_url, duration_seconds, username,
+age_minutes}`. The three feed counters distinguish no rendered feed from a
+rendered feed with no hydrated video evidence. Note `video_page_url` is the
+tweet page — the worker resolves it to media bytes off-browser via the
+syndication adapter; the service returns no CDN URL. The Go client
 (`internal/infra/twitter/client.go`) exposes only `Search`.
 
 ## State machine
@@ -126,16 +128,29 @@ refreshes its session token), writes the backup file, and every other instance
 picks it up on its next `EnsureAuthenticated` mtime check. Search combines the
 verify inline with the search navigation (T/c) to save ~3–4s per warm call.
 
-## Search scroll-stop conditions
+## Search result and age classification
 
-The scroll loop halts on one of four `stop_reason`s (`search.go`):
+The browser sends the broad query exactly as built by Discovery, plus
+`src=typed_query&f=live`. It never adds `since:` or `until:`. The service parses
+each tweet's timestamp and applies `max_age_minutes` locally; the production
+default remains a wall-clock-relative three minutes. This preserves the
+recall-tested [query decision](./design/proposals/twitter-search-query.md#d4).
+
+The request returns one of five successful `stop_reason`s (`search.go`):
 
 - **`age`** — a tweet older than `max_age_minutes` is reached (results are
   reverse-chronological, so everything past it is older too).
 - **`consecutive_seen`** — N consecutive already-seen tweets (from `exclude_urls`
   accumulated across the event's prior attempts) → the good hits are exhausted.
 - **`max_scrolls`** — the hard scroll cap.
-- **`empty`** — no tweets rendered.
+- **`feed_timeout`** — no tweet article rendered within ten seconds.
+- **`feed_exhausted`** — a feed rendered, then produced no articles after a
+  scroll.
+
+The initial article wait selects the first match because Playwright locators
+are strict. Only `playwright.ErrTimeout` becomes a successful `feed_timeout`;
+locator contract failures, closed pages, browser loss, and other wait errors
+return an `internal` error so the SearchTweets activity can retry.
 
 Scroll jitter is 250–500ms (tightened from 0.5–3s on 2026-08-05).
 

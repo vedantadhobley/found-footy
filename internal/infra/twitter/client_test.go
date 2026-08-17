@@ -52,8 +52,13 @@ func TestNewClient_DoesNotRequireLiveService(t *testing.T) {
 
 func TestSearch_HappyPath(t *testing.T) {
 	srv := mockTwitter(t, twitter.SearchResponse{
-		Status: "success",
-		Count:  2,
+		Status:          "success",
+		Count:           2,
+		StopReason:      "age",
+		Scrolls:         3,
+		InitialArticles: 4,
+		TweetsParsed:    7,
+		VideoTweets:     5,
 		Videos: []twitter.VideoRef{
 			{TweetURL: "https://x.com/a/status/1", VideoPageURL: "http://v1", DurationSeconds: 15.5},
 			{TweetURL: "https://x.com/b/status/2", VideoPageURL: "http://v2", DurationSeconds: 22.0},
@@ -74,6 +79,10 @@ func TestSearch_HappyPath(t *testing.T) {
 	}
 	if res.Count != 2 || len(res.Videos) != 2 {
 		t.Errorf("Search result count = %d, videos = %d", res.Count, len(res.Videos))
+	}
+	if res.StopReason != "age" || res.Scrolls != 3 || res.InitialArticles != 4 ||
+		res.TweetsParsed != 7 || res.VideoTweets != 5 {
+		t.Errorf("Search diagnostics were not preserved: %+v", res)
 	}
 	if !log.HasAction(vocabulary.ModuleInfraTwitter, vocabulary.ActionTwitterSearch) {
 		t.Errorf("expected ActionTwitterSearch; got %+v", log.Snapshot())
