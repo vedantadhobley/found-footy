@@ -21,16 +21,40 @@ targeting prod. Every command must pass `-f docker-compose.{prod,dev}.yml`.
   binaries run via `air` with source bind-mounted; twitter uses the
   reconciled `docker/twitter/Dockerfile` (Playwright base + driver
   install) without air — iterate via `docker compose build twitter`.
-  Three binaries total (worker/api/twitter); there is no scaler. Includes
+  The deployed binaries are worker, API, and Twitter; there is no scaler. Includes
   opt-in `twitter-vnc` service under `profiles: [vnc]` for manual cookie
   re-auth.
 - `docker-compose.prod.yml` — **LIVE.** Runs the Go binaries — worker
   (`replicas: 2`) + api, both built from `./Dockerfile` — on Postgres +
   Garage. The cutover from the Python stack completed 2026-08-15 (La Liga
   match day). Twitter + twitter-vnc build from the reconciled
-  `docker/twitter/Dockerfile`; the static `twitter` service is now the #160
+  `docker/twitter/Dockerfile`; the static `twitter` service is now the fleet
   fleet's image-builder + single fallback, with per-event instances carrying
   the search load.
+
+**Per-event fleet ownership:** Compose owns the deployment partition through
+the explicit `found-footy-dev` / `found-footy-prod` network and passes its
+actual name as `FIREFOXFLEET_NETWORK`. The Go provisioner treats that string as
+an opaque scope; it has no dev/prod branch. Dynamic browsers are raw Docker API
+children rather than Compose service replicas, so the provisioner must stamp
+and enforce their ownership itself:
+
+- daemon-global name: `ff-firefox-<network>-ev-<full-event-uuid>`;
+- ownership label: `found-footy.fleet.scope=<network>`;
+- network-local workflow alias: `ff-firefox-ev-<event-uuid-prefix>`.
+
+Capacity, listing, reaping, and release require the fleet label, scope label,
+and configured network. Lifecycle operations also inspect ownership before
+starting or deleting a named container. This lets dev and prod share one
+Docker daemon without either stack seeing or removing the other's browsers,
+while preserving existing Temporal workflow addresses.
+
+Before the first deployment of FF-001, list legacy
+`ff-firefox-ev-*` containers. Deploy only when none are active on the target
+network. The scoped provisioner intentionally ignores legacy unscoped
+containers because it cannot prove which stack owns them; running old and new
+containers together could also duplicate the preserved network alias. Any
+legacy removal remains a separate, explicitly approved production action.
 
 **Twitter image shape** (per decisions.md 2026-07-22): one Dockerfile
 serves both `twitter` (headless) and `twitter-vnc` (visible display).
@@ -38,7 +62,7 @@ Runtime branches on `TWITTER_VNC_MODE=true` env var —
 `docker/twitter/entrypoint.sh` boots Xvfb + fluxbox + x11vnc +
 websockify+noVNC before exec'ing the binary when set. Build-time
 `WITH_VNC=true` arg gates the ~150 MB of VNC binaries so the headless
-image stays lean. See [decisions.md](decisions.md#2026-07-22)
+image stays lean. See the [one-Dockerfile decision](decisions.md#2026-07-22--twitter-dockerfile-one-file-with_vnc-gated-matches-pythons-shape)
 for full rationale.
 
 **Twitter VNC one-command flow:**
@@ -90,7 +114,7 @@ The prod image (`./Dockerfile`, worker + api) runs **non-root** — `adduser
 then need explicit grants; both bit the 2026-08-15 cutover before they were
 added:
 
-- **docker.sock for the #160 fleet.** The worker provisions/releases per-event
+- **docker.sock for the Firefox fleet.** The worker provisions/releases per-event
   Firefox via the Docker API, so it must write `/var/run/docker.sock`
   (root:docker on the host). The host docker gid can't be baked into the image,
   so the prod compose grants it at runtime: `group_add: ["984"]` (luv's docker

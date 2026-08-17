@@ -77,7 +77,7 @@ func run() error {
 	// Synthetic event — a random UUID so this never collides with a real
 	// fleet member during a live match.
 	eventID := uuid.New()
-	name := firefoxfleet.InstanceName(eventID)
+	name := firefoxfleet.InstanceName(cfg.Network, eventID)
 	addr := firefoxfleet.InstanceAddr(eventID)
 	fmt.Printf("\nsynthetic event=%s\n  name=%s\n  addr=%s\n", eventID, name, addr)
 

@@ -2,12 +2,14 @@
 // Docker API (socket mounted into the worker) to create/start one
 // twitter/Firefox container per active event and stop/rm it on release.
 //
-// Instances are named deterministically from the event ID, so any caller
-// derives an instance's address without a registry — the design's
-// "no router / no registry" property (twitter-scaling.md). Every
-// lifecycle op is idempotent: the happy-path release, the monitor's
-// decay release, and #172's VAR cancel-cleanup may all try to release the
-// same instance, and Provision may be retried by Temporal.
+// Compose selects an explicit Docker network for each stack. The provisioner
+// uses that network as an opaque ownership scope for daemon-global names,
+// labels, capacity, and cleanup; it never branches on dev/prod. Workflows keep
+// deriving an event-only network alias, preserving the design's "no router /
+// no registry" property (twitter-scaling.md). Every lifecycle op is
+// idempotent: the happy-path release, the monitor's decay release, and #172's
+// VAR cancel-cleanup may all try to release the same instance, and Provision
+// may be retried by Temporal.
 package firefoxfleet
 
 import (
@@ -15,14 +17,17 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/google/uuid"
+	specs "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/vedantadhobley/found-footy/internal/config"
 )
@@ -31,15 +36,31 @@ const (
 	// instancePort — the twitter service's fixed listen port (:8888).
 	instancePort = "8888"
 	// labelFleet / labelEvent tag provisioned containers so the cap count
-	// and the (future) reaper can find fleet members without guessing at
-	// names.
+	// and reaper can find fleet members without guessing at names. labelScope
+	// is the Compose-selected Docker network: an opaque deployment partition,
+	// not an application-level dev/prod branch.
 	labelFleet = "found-footy.fleet"
 	labelEvent = "found-footy.fleet.event"
+	labelScope = "found-footy.fleet.scope"
 )
+
+var containerScopePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
+
+// dockerClient is the narrow Docker API surface the fleet owns. Keeping this
+// seam local makes cross-scope lifecycle behavior testable without a daemon.
+type dockerClient interface {
+	ContainerCreate(context.Context, *container.Config, *container.HostConfig, *network.NetworkingConfig, *specs.Platform, string) (container.CreateResponse, error)
+	ContainerInspect(context.Context, string) (types.ContainerJSON, error)
+	ContainerList(context.Context, container.ListOptions) ([]types.Container, error)
+	ContainerRemove(context.Context, string, container.RemoveOptions) error
+	ContainerStart(context.Context, string, container.StartOptions) error
+	ContainerStop(context.Context, string, container.StopOptions) error
+	Close() error
+}
 
 // Fleet provisions + releases per-event Firefox instances via Docker.
 type Fleet struct {
-	cli *client.Client
+	cli dockerClient
 	cfg config.FirefoxFleetConfig
 }
 
@@ -47,6 +68,9 @@ type Fleet struct {
 // (default unix:///var/run/docker.sock — mounted into the worker); API
 // version is negotiated so it works across daemon versions.
 func New(cfg config.FirefoxFleetConfig) (*Fleet, error) {
+	if err := validateScope(cfg.Network); err != nil {
+		return nil, err
+	}
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("firefoxfleet.New: docker client: %w", err)
@@ -54,22 +78,47 @@ func New(cfg config.FirefoxFleetConfig) (*Fleet, error) {
 	return &Fleet{cli: cli, cfg: cfg}, nil
 }
 
+// newWithClient builds a Fleet around an injected Docker client. Tests use it
+// to model multiple Compose networks sharing one daemon.
+func newWithClient(cfg config.FirefoxFleetConfig, cli dockerClient) (*Fleet, error) {
+	if err := validateScope(cfg.Network); err != nil {
+		return nil, err
+	}
+	return &Fleet{cli: cli, cfg: cfg}, nil
+}
+
+// validateScope ensures the Compose-selected network is safe to embed in a
+// daemon-global container name. Refusing ambiguous input is safer than a
+// lossy sanitizer that could collapse two deployment scopes.
+func validateScope(scope string) error {
+	if !containerScopePattern.MatchString(scope) {
+		return fmt.Errorf("firefoxfleet.New: network %q is not a safe fleet scope", scope)
+	}
+	return nil
+}
+
 // Close releases the underlying Docker client.
 func (f *Fleet) Close() error { return f.cli.Close() }
 
-// InstanceName is the deterministic container name for an event. Both
-// Provision (monitor, at debounce count=1) and the EventWorkflow (which
-// derives the address at count=3) compute the same value — that is how
-// the model avoids a registry.
-func InstanceName(eventID uuid.UUID) string {
+// InstanceName is the daemon-global container name for one scoped event. The
+// network comes from Compose, so two stacks can safely hold the same event ID
+// on one Docker daemon.
+func InstanceName(scope string, eventID uuid.UUID) string {
+	return "ff-firefox-" + scope + "-ev-" + eventID.String()
+}
+
+// InstanceAlias is the network-local deterministic hostname workflows use.
+// It intentionally preserves the pre-scope address contract: Docker networks
+// isolate identical aliases, so Temporal histories need no version migration.
+func InstanceAlias(eventID uuid.UUID) string {
 	return "ff-firefox-ev-" + eventID.String()[:8]
 }
 
 // InstanceAddr is the base URL the worker uses to reach the event's
-// instance over the shared docker network (container-name DNS). Pure
+// instance over its Compose-selected Docker network (network-alias DNS). Pure
 // function of the event ID — derivable without provisioning.
 func InstanceAddr(eventID uuid.UUID) string {
-	return "http://" + InstanceName(eventID) + ":" + instancePort
+	return "http://" + InstanceAlias(eventID) + ":" + instancePort
 }
 
 // Provision ensures a running, healthy instance for eventID and returns
@@ -77,11 +126,11 @@ func InstanceAddr(eventID uuid.UUID) string {
 // address without a second create. Blocks-and-waits (bounded by ctx /
 // the activity timeout) when the fleet is at MaxInstances.
 func (f *Fleet) Provision(ctx context.Context, eventID uuid.UUID) (string, error) {
-	name := InstanceName(eventID)
+	name := InstanceName(f.cfg.Network, eventID)
 	addr := InstanceAddr(eventID)
 
 	// Idempotent fast path: already exists → ensure started + healthy.
-	if id, ok, err := f.find(ctx, name); err != nil {
+	if id, ok, err := f.find(ctx, eventID); err != nil {
 		return "", err
 	} else if ok {
 		// Already provisioned — ensure started (create-without-start edge)
@@ -104,6 +153,7 @@ func (f *Fleet) Provision(ctx context.Context, eventID uuid.UUID) (string, error
 		Labels: map[string]string{
 			labelFleet: "firefox",
 			labelEvent: eventID.String(),
+			labelScope: f.cfg.Network,
 		},
 	}
 	host := &container.HostConfig{
@@ -128,7 +178,7 @@ func (f *Fleet) Provision(ctx context.Context, eventID uuid.UUID) (string, error
 	}
 	netcfg := &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
-			f.cfg.Network: {},
+			f.cfg.Network: {Aliases: []string{InstanceAlias(eventID)}},
 		},
 	}
 
@@ -151,8 +201,8 @@ func (f *Fleet) Provision(ctx context.Context, eventID uuid.UUID) (string, error
 // container is success, since the happy path, the VAR cancel-cleanup, and
 // the monitor decay path may all attempt release.
 func (f *Fleet) Release(ctx context.Context, eventID uuid.UUID) error {
-	name := InstanceName(eventID)
-	id, ok, err := f.find(ctx, name)
+	name := InstanceName(f.cfg.Network, eventID)
+	id, ok, err := f.find(ctx, eventID)
 	if err != nil {
 		return err
 	}
@@ -167,9 +217,12 @@ func (f *Fleet) Release(ctx context.Context, eventID uuid.UUID) error {
 	return nil
 }
 
-// find inspects a container by name; returns (id, exists, err). A
-// not-found daemon error is (·, false, nil), not an error.
-func (f *Fleet) find(ctx context.Context, name string) (string, bool, error) {
+// find inspects the scope-qualified container name and verifies its ownership
+// labels plus network before any lifecycle mutation. A not-found daemon error
+// is (·, false, nil), not an error. A same-named foreign container is an error,
+// never something this fleet adopts or removes.
+func (f *Fleet) find(ctx context.Context, eventID uuid.UUID) (string, bool, error) {
+	name := InstanceName(f.cfg.Network, eventID)
 	insp, err := f.cli.ContainerInspect(ctx, name)
 	if err != nil {
 		if client.IsErrNotFound(err) {
@@ -177,7 +230,25 @@ func (f *Fleet) find(ctx context.Context, name string) (string, bool, error) {
 		}
 		return "", false, fmt.Errorf("firefoxfleet.find %s: %w", name, err)
 	}
+	if insp.Config == nil ||
+		insp.Config.Labels[labelFleet] != "firefox" ||
+		insp.Config.Labels[labelScope] != f.cfg.Network ||
+		insp.Config.Labels[labelEvent] != eventID.String() {
+		return "", false, fmt.Errorf("firefoxfleet.find %s: ownership labels do not match scope %q and event %s", name, f.cfg.Network, eventID)
+	}
+	if insp.NetworkSettings == nil || insp.NetworkSettings.Networks[f.cfg.Network] == nil {
+		return "", false, fmt.Errorf("firefoxfleet.find %s: container is not attached to scope network %q", name, f.cfg.Network)
+	}
 	return insp.ID, true, nil
+}
+
+// listFilters selects only fleet containers owned by this Compose network.
+func (f *Fleet) listFilters() filters.Args {
+	return filters.NewArgs(
+		filters.Arg("label", labelFleet+"=firefox"),
+		filters.Arg("label", labelScope+"="+f.cfg.Network),
+		filters.Arg("network", f.cfg.Network),
+	)
 }
 
 // count returns the number of live fleet containers (by label), the cap
@@ -188,7 +259,7 @@ func (f *Fleet) count(ctx context.Context) (int, error) {
 	// browser + no real slot, so it must NOT count against the cap. The reaper
 	// (ListInstances/ReapOrphans) sweeps stopped orphans by label. audit P0-5.
 	list, err := f.cli.ContainerList(ctx, container.ListOptions{
-		Filters: filters.NewArgs(filters.Arg("label", labelFleet+"=firefox")),
+		Filters: f.listFilters(),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("firefoxfleet.count: %w", err)
@@ -210,13 +281,16 @@ type Instance struct {
 func (f *Fleet) ListInstances(ctx context.Context) ([]Instance, error) {
 	list, err := f.cli.ContainerList(ctx, container.ListOptions{
 		All:     true,
-		Filters: filters.NewArgs(filters.Arg("label", labelFleet+"=firefox")),
+		Filters: f.listFilters(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("firefoxfleet.ListInstances: %w", err)
 	}
 	out := make([]Instance, 0, len(list))
 	for _, c := range list {
+		if c.Labels[labelScope] != f.cfg.Network {
+			continue
+		}
 		evID, perr := uuid.Parse(c.Labels[labelEvent])
 		if perr != nil {
 			continue
