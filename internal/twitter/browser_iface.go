@@ -18,6 +18,7 @@ import (
 // Kept minimal on purpose — every additional method here is another
 // thing test fakes have to implement.
 type sessionBrowser interface {
+	Done() <-chan struct{}
 	VerifySession(ctx context.Context, timeout time.Duration) error
 	ReplaceCookies(cookies []Cookie) error
 	GetCookies() ([]Cookie, error)

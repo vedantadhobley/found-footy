@@ -277,7 +277,7 @@ Prefer deterministic self-recovery over an ad-hoc write:
 | Terminal score exceeds surviving goal inventory | Keep the fixture/event evidence together; handle under FF-014. | Mark the fixture complete or classify the absent goal as VAR by hand. |
 | Firefox container stopped or orphaned | Correlate its scoped labels with Postgres and Temporal, then let the reaper act. | Remove it based only on container state. |
 | Twitter `unauthenticated` | Use the VNC procedure above. | Restart the entire stack or delete the cookie file. |
-| Twitter process alive but browser state `failed` | Capture `/status` and logs; handle as a browser-lifecycle incident. | Treat HTTP process liveness as browser health. |
+| `twitter.browser_failed` or event-browser restart | Confirm the same container returns healthy before the next Temporal retry; inspect repeated exits for memory pressure or corrupt profile state. | Treat HTTP process liveness alone as browser health, or manually remove an event browser that Docker is recovering. |
 
 The scheduled workflows use Temporal's `SKIP` overlap policy, so a slow cycle
 does not create a concurrent copy. Schedule registration is create-only.

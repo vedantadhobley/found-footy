@@ -39,6 +39,15 @@ Example — `internal/activity/ingest/activities_test.go` uses in-memory
 same test file (not `internal/testutil/`, per the "build fakes when
 sharing surfaces" rule; see [architecture.md](./architecture.md#as-shipped-tree)).
 
+FF-017 browser-lifecycle tests close an injected critical-child channel and
+require `StateFailed`, `/health` 503, one `twitter.browser_failed` audit, and a
+fatal result at the `cmd/twitter` process boundary. A fleet fake captures the
+Docker host config and requires `on-failure` for every dynamic event browser.
+An EventWorkflow test limits discovery to one outer attempt, fails its first
+three `SearchTweets` activity tries, and requires the fourth to surface a
+candidate after the restart window. Its default-version companion requires the
+historical three-try policy for pre-FF-017 replay.
+
 ## Tier 1.5 — workflow tests
 
 `internal/workflow/ingest_test.go` uses

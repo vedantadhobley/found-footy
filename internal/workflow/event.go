@@ -72,6 +72,16 @@ const (
 
 	ff007FailedRunRecoveryChangeID = "ff-007-failed-run-recovery"
 	ff007FailedRunRecoveryVersion  = workflow.Version(1)
+	ff017BrowserRestartChangeID    = "ff-017-browser-restart-retry"
+	ff017BrowserRestartVersion     = workflow.Version(1)
+
+	// A Firefox container needs about 30 seconds to relaunch and reload shared
+	// cookies after FF-017 makes browser death fatal to PID 1. These retries run
+	// at roughly 0/10/30/60 seconds, so even the final discovery attempt can
+	// reach the recovered service instead of depending on another outer search.
+	twitterSearchRetryInitial  = 10 * time.Second
+	twitterSearchRetryMaximum  = 30 * time.Second
+	twitterSearchRetryAttempts = 4
 )
 
 // EventWorkflow orchestrates the full candidate collection cycle:
@@ -213,6 +223,11 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion,
 		ff007FailedRunRecoveryVersion,
 	) != workflow.DefaultVersion
+	restartSpanningSearchRetries := workflow.GetVersion(ctx,
+		ff017BrowserRestartChangeID,
+		workflow.DefaultVersion,
+		ff017BrowserRestartVersion,
+	) != workflow.DefaultVersion
 	workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
 	var recoveryOut discoveryactivity.LoadEventRecoveryStateOutput
 	if recoveryEnabled {
@@ -266,10 +281,20 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 			p.finishSearch(producerErr)
 		}()
 
+		searchRetry := &temporal.RetryPolicy{
+			InitialInterval:    2 * time.Second,
+			BackoffCoefficient: 2,
+			MaximumAttempts:    3,
+		}
+		if restartSpanningSearchRetries {
+			searchRetry.InitialInterval = twitterSearchRetryInitial
+			searchRetry.MaximumInterval = twitterSearchRetryMaximum
+			searchRetry.MaximumAttempts = twitterSearchRetryAttempts
+		}
 		searchOptions := workflow.WithActivityOptions(gctx, workflow.ActivityOptions{
 			StartToCloseTimeout: cfgOut.QueryTimeout,
 			HeartbeatTimeout:    30 * time.Second,
-			RetryPolicy:         &temporal.RetryPolicy{InitialInterval: 2 * time.Second, BackoffCoefficient: 2, MaximumAttempts: 3},
+			RetryPolicy:         searchRetry,
 		})
 		storeOptions := workflow.WithActivityOptions(gctx, workflow.ActivityOptions{
 			StartToCloseTimeout: discoveryPGShortActivityTTL,

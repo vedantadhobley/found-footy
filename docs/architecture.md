@@ -77,10 +77,10 @@ found-footy/
 │   │   └── tracing/                     ⊘ Noop tracer stub; real OTLP is deferred
 │   ├── testutil/                        ⊘ empty (build as testing needs surface)
 │   ├── twitter/                         Twitter *service* (browser + auth + scrape); imported by cmd/twitter
-│   │   ├── browser.go                   ✓ T/a: Playwright-Go + Firefox persistent context, GetCookies + ReplaceCookies + LoadCookies + VerifySession
+│   │   ├── browser.go                   ✓ T/a + FF-017: Firefox persistent context, cookie/session operations, and critical-child exit signal
 │   │   ├── browser_iface.go             ✓ T/b: sessionBrowser interface — auth flow testable without Playwright
 │   │   ├── stealth.go                   ✓ T/a: navigator.webdriver / plugins / permissions patches
-│   │   ├── service.go                   ✓ T/a + T/b: state machine (starting/loading/healthy/unauthenticated/failed), /health, /status
+│   │   ├── service.go                   ✓ T/a + T/b + FF-017: state machine, browser-loss watcher/audit, /health, /status
 │   │   ├── auth.go                      ✓ T/b: EnsureAuthenticated (mtime → warm-path → verify) + BackupCookies + /authenticate + /auth/verify
 │   │   ├── cookies_backup.go            ✓ T/b: Fingerprint, WriteBackup (atomic), ReadBackup, BackupFileMtime, auth_token guard
 │   │   ├── search.go                    ✓ T/c: POST /search + full DOM scrape + 4-condition scroll loop + BackupCookies hook + combined verify+search + stealth jitter

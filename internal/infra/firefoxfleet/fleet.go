@@ -171,9 +171,11 @@ func (f *Fleet) Provision(ctx context.Context, eventID uuid.UUID) (string, error
 		SecurityOpt: []string{"seccomp=unconfined"},
 		ShmSize:     1 << 30, // 1 GiB — Firefox rendering needs > default 64 MB
 		Resources:   container.Resources{Memory: f.cfg.InstanceMemLimit},
-		// Ephemeral: no restart. A crash fails the search activity (retried)
-		// and the reaper sweeps the container.
-		RestartPolicy: container.RestartPolicy{Name: "no"},
+		// Firefox is a critical child of Go PID 1. If Firefox/Playwright dies,
+		// the service exits non-zero and Docker rebuilds the whole unit from the
+		// shared cookie backup. Explicit Release uses ContainerStop and therefore
+		// does not trigger an on-failure restart.
+		RestartPolicy: container.RestartPolicy{Name: "on-failure"},
 		AutoRemove:    false, // Release does stop+rm explicitly (idempotent)
 	}
 	netcfg := &network.NetworkingConfig{

@@ -98,12 +98,13 @@ func TestValidateScope(t *testing.T) {
 // fakeContainer is the minimum daemon state needed to exercise fleet
 // ownership. A single fakeDocker is shared by dev and prod Fleet objects.
 type fakeContainer struct {
-	id       string
-	name     string
-	labels   map[string]string
-	networks map[string]*network.EndpointSettings
-	created  int64
-	running  bool
+	id            string
+	name          string
+	labels        map[string]string
+	networks      map[string]*network.EndpointSettings
+	created       int64
+	running       bool
+	restartPolicy container.RestartPolicy
 }
 
 // fakeDocker implements the fleet's narrow Docker API without a socket.
@@ -129,7 +130,7 @@ func (d *fakeDocker) lookup(ref string) (*fakeContainer, bool) {
 	return nil, false
 }
 
-func (d *fakeDocker) ContainerCreate(_ context.Context, cfg *container.Config, _ *container.HostConfig, netcfg *network.NetworkingConfig, _ *specs.Platform, name string) (container.CreateResponse, error) {
+func (d *fakeDocker) ContainerCreate(_ context.Context, cfg *container.Config, hostCfg *container.HostConfig, netcfg *network.NetworkingConfig, _ *specs.Platform, name string) (container.CreateResponse, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if _, exists := d.containers[name]; exists {
@@ -149,7 +150,8 @@ func (d *fakeDocker) ContainerCreate(_ context.Context, cfg *container.Config, _
 	id := fmt.Sprintf("fake-%d", d.nextID)
 	d.containers[name] = &fakeContainer{
 		id: id, name: name, labels: labels, networks: networks,
-		created: time.Now().Add(-time.Minute).Unix(),
+		created:       time.Now().Add(-time.Minute).Unix(),
+		restartPolicy: hostCfg.RestartPolicy,
 	}
 	return container.CreateResponse{ID: id}, nil
 }
@@ -297,6 +299,9 @@ func TestFleet_IsolatesComposeNetworks(t *testing.T) {
 		created := daemon.containers[InstanceName(scope, evA)]
 		if created == nil || created.networks[scope] == nil || len(created.networks[scope].Aliases) != 1 || created.networks[scope].Aliases[0] != InstanceAlias(evA) {
 			t.Fatalf("%s network alias not preserved: %#v", scope, created)
+		}
+		if created.restartPolicy.Name != "on-failure" {
+			t.Fatalf("%s restart policy = %q, want on-failure", scope, created.restartPolicy.Name)
 		}
 	}
 

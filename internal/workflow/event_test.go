@@ -30,7 +30,10 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
 
-const ff007RecoveryChangeIDForTest = "ff-007-failed-run-recovery"
+const (
+	ff007RecoveryChangeIDForTest = "ff-007-failed-run-recovery"
+	ff017RestartChangeIDForTest  = "ff-017-browser-restart-retry"
+)
 
 // newDiscoveryEnv sets up a test env with EventWorkflow +
 // discovery activities registered. Individual tests attach OnActivity
@@ -53,6 +56,7 @@ func baseEventEnvWithRecovery(
 	s *testsuite.WorkflowTestSuite,
 	recovery discoveryactivity.LoadEventRecoveryStateOutput,
 	assets videoactivity.LoadEventAssetsOutput,
+	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
 ) *testsuite.TestWorkflowEnvironment {
 	env := s.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(workflow.EventWorkflow)
@@ -63,17 +67,21 @@ func baseEventEnvWithRecovery(
 	env.RegisterActivity(&livefeedactivity.Activities{})
 	// Default GetDiscoveryConfig stub. MaxAttempts=10 matches the
 	// pre-#162 hardcoded value that existing tests were written
-	// against (`want 10` assertions in AttemptsRun tests). Tests
-	// that need a different value override this mock explicitly.
+	// against (`want 10` assertions in AttemptsRun tests). Tests that need a
+	// different value inject it before the mock is registered.
 	// AttemptSpacing stays realistic (60s) but TestWorkflowEnvironment
 	// auto-fires timers so real wall-clock waits don't happen.
+	config := discoveryactivity.GetDiscoveryConfigOutput{
+		MaxAttempts:    10,
+		AttemptSpacing: 60 * time.Second,
+		MaxAgeMinutes:  3,
+		QueryTimeout:   2 * time.Minute,
+	}
+	if len(discoveryConfig) > 0 {
+		config = discoveryConfig[0]
+	}
 	env.OnActivity("GetDiscoveryConfig", mock.Anything, mock.Anything).
-		Return(discoveryactivity.GetDiscoveryConfigOutput{
-			MaxAttempts:    10,
-			AttemptSpacing: 60 * time.Second,
-			MaxAgeMinutes:  3,
-			QueryTimeout:   2 * time.Minute,
-		}, nil).Maybe()
+		Return(config, nil).Maybe()
 	// Default MarkDownstreamComplete + FetchTeamAliases stubs so tests
 	// only need to override the interesting cases.
 	env.OnActivity("MarkDownstreamComplete", mock.Anything, mock.Anything).
@@ -101,8 +109,15 @@ func baseEventEnvWithRecovery(
 // behave: every spawned VideoWorkflow child returns "rejected" (no downstream
 // vision/promote), so those tests exercise only the producer. Pipeline tests
 // use baseEventEnv directly and set their own child/vision/promote mocks.
-func newDiscoveryEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvironment {
-	env := baseEventEnv(s)
+func newDiscoveryEnv(
+	s *testsuite.WorkflowTestSuite,
+	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
+) *testsuite.TestWorkflowEnvironment {
+	env := baseEventEnvWithRecovery(s,
+		discoveryactivity.LoadEventRecoveryStateOutput{},
+		videoactivity.LoadEventAssetsOutput{},
+		discoveryConfig...,
+	)
 	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, mock.Anything).
 		Return(workflow.VideoWorkflowOutput{Outcome: "rejected", RejectReason: "test-default"}, nil).Maybe()
 	env.OnActivity("ValidateClip", mock.Anything, mock.Anything).
@@ -314,6 +329,9 @@ func TestEventWorkflow_DefaultVersionPreservesPreRecoveryCommandSequence(t *test
 	env.OnGetVersion(ff007RecoveryChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
 		Return(sdkworkflow.DefaultVersion).
 		Once()
+	env.OnGetVersion(ff017RestartChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(sdkworkflow.DefaultVersion).
+		Once()
 	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
 		Return(discoveryactivity.SearchTweetsOutput{}, nil)
 
@@ -351,6 +369,68 @@ func TestEventWorkflow_NoResults(t *testing.T) {
 	}
 	if out.AttemptsRun != 10 {
 		t.Errorf("attempts_run = %d, want 10 (full loop even with empty results)", out.AttemptsRun)
+	}
+}
+
+// TestEventWorkflow_SearchRetrySpansBrowserRestart proves FF-017's final
+// attempt can outlive a cold Firefox container. Three fast transport failures
+// would exhaust the old policy; the fourth activity try must still surface the
+// candidate without requiring another outer discovery attempt.
+func TestEventWorkflow_SearchRetrySpansBrowserRestart(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newDiscoveryEnv(&s, discoveryactivity.GetDiscoveryConfigOutput{
+		MaxAttempts: 1, AttemptSpacing: time.Minute, MaxAgeMinutes: 3,
+		QueryTimeout: 2 * time.Minute,
+	})
+	searchCalls := 0
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ discoveryactivity.SearchTweetsInput) (discoveryactivity.SearchTweetsOutput, error) {
+			searchCalls++
+			if searchCalls < 4 {
+				return discoveryactivity.SearchTweetsOutput{}, errors.New("browser restarting")
+			}
+			return discoveryactivity.SearchTweetsOutput{Videos: []twitter.VideoRef{{
+				TweetURL: "https://x.com/u/status/4444444444444444444",
+			}}}, nil
+		})
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+	var out workflow.EventWorkflowOutput
+	if err := env.GetWorkflowResult(&out); err != nil {
+		t.Fatalf("GetWorkflowResult: %v", err)
+	}
+	if searchCalls != 4 || out.AttemptsRun != 1 || out.CandidatesFound != 1 {
+		t.Fatalf("recovery result = calls %d/attempts %d/candidates %d, want 4/1/1",
+			searchCalls, out.AttemptsRun, out.CandidatesFound)
+	}
+}
+
+// TestEventWorkflow_DefaultVersionPreservesPreRestartRetryPolicy proves old
+// histories retain the original three activity attempts. This is the replay
+// complement to the four-attempt FF-017 recovery test above.
+func TestEventWorkflow_DefaultVersionPreservesPreRestartRetryPolicy(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newDiscoveryEnv(&s, discoveryactivity.GetDiscoveryConfigOutput{
+		MaxAttempts: 1, AttemptSpacing: time.Minute, MaxAgeMinutes: 3,
+		QueryTimeout: 2 * time.Minute,
+	})
+	env.OnGetVersion(ff017RestartChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(sdkworkflow.DefaultVersion).
+		Once()
+	searchCalls := 0
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ discoveryactivity.SearchTweetsInput) (discoveryactivity.SearchTweetsOutput, error) {
+			searchCalls++
+			return discoveryactivity.SearchTweetsOutput{}, errors.New("browser unavailable")
+		})
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+	if searchCalls != 3 {
+		t.Fatalf("default-version SearchTweets calls = %d, want historical 3", searchCalls)
 	}
 }
 

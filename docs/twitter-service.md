@@ -52,13 +52,23 @@ workers can therefore start in either order. Each `/search` call observes live
 readiness, and Temporal retries transient startup or connectivity failures
 (FF-016).
 
+Firefox is a critical child of the Go service (FF-017). Playwright context
+closure or browser disconnection immediately changes service state to
+`failed`, emits `twitter.browser_failed`, and makes Go PID 1 exit non-zero.
+Compose-managed headless Twitter already uses `restart: unless-stopped`.
+Dynamically provisioned event containers use Docker `on-failure`, so the
+container layer rebuilds the complete Firefox/Playwright/Go unit and reloads
+the shared cookie backup. Application code does not branch on environment or
+attempt an in-process browser swap. The opt-in VNC container remains
+operator-controlled with `restart: no`.
+
 ## HTTP contract
 
 Registered in `service.go RegisterHandlers`:
 
 | Endpoint | Method | Behavior |
 |---|---|---|
-| `/health` | GET | Liveness — `{"status":"healthy"}`. |
+| `/health` | GET | Browser/auth readiness: 200 only in `healthy`; otherwise 503 with state and reason. |
 | `/status` | GET | `{state, reason, busy, cookie_fingerprint, last_auth_check, last_loaded_mtime, started_at, build:{git_sha,built_at,image_tag}}`. Read-only; the release command verifies `build`. |
 | `/search` | POST | `SearchRequest{query, max_age_minutes, exclude_urls}` → `SearchResponse` (below). |
 | `/authenticate` | GET | Read-only auth status + the VNC re-auth URL and environment-explicit Compose command. Does **not** force re-auth. |
@@ -76,7 +86,9 @@ adapter; the service returns no CDN URL. The Go client
 `State` (`service.go`): `starting` → `loading` (reloading cookies from the shared
 backup) → `healthy` / `unauthenticated` / `failed` (browser dead / unrecoverable).
 `/status.reason` carries the human-readable why (e.g. `verified`,
-`verify failed: …`).
+`verify failed: …`). Browser/context exit drives `failed` without waiting for a
+search request; `failed` is terminal for that process, which then exits so
+Docker can replace the unit.
 
 ## Auth + cookie fleet model
 
@@ -127,11 +139,6 @@ own rate-limit class (`rate_limited`, T/d) is **not built**.
   cookies to arrive via the backup file (an operator VNC login). The Python
   raw-Firefox manual-login subprocess (`_launch_manual_firefox`) is not ported.
   See [`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
-- **FF-017 — Firefox death wedges the service.** Hitting the container `mem_limit`
-  OOM-kills Firefox (the biggest process), **not** the Go PID 1, so the container
-  stays "up" but the browser is gone and there is no relaunch watchdog → every
-  search fails until a manual recreate. See
-  [`todo.md`](./todo.md#confirmed-lower-priority-backlog).
 - **`AUD-TWITTER-RATE-LIMIT` — rate-limit detection and backoff** are unbuilt
   feature scope. See
   [`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
