@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [CDN download denial is transient](./2026-08-17-cdn-download-denial-is-transient.md) — FF-029 separates retryable variant-fetch 403 from terminal metadata 403.
 - [Video redirect cache stays inside the presigned URL lifetime](./2026-08-17-video-redirect-cache-stays-inside-presign.md) — FF-028 derives safe redirect caching from the live S3 TTL.
 - [Event sequences match stored identity instead of provider array position](./2026-08-17-event-sequences-match-stored-identity.md) — FF-027 brace, reorder, and removed-tombstone identity contract.
 - [Browser death restarts the complete container unit](./2026-08-17-browser-death-restarts-container-unit.md) — FF-017 critical-child health, process exit, and Docker restart ownership.

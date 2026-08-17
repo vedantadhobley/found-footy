@@ -183,6 +183,20 @@ func TestDownloadAndStage_RateLimitIsError(t *testing.T) {
 	}
 }
 
+func TestDownloadAndStage_CDNForbiddenIsError(t *testing.T) {
+	s := &fakeSynd{
+		rv:    &syndication.ResolvedVideo{TweetID: "123", VariantURL: "https://v/expired.mp4"},
+		dlErr: syndication.ErrCDNForbidden,
+	}
+	out, err := newActs(t, s, &fakeFFmpeg{}, &fakeS3{}).DownloadAndStage(context.Background(), input())
+	if err == nil {
+		t.Fatal("CDN forbidden should be a retryable error, not a terminal outcome")
+	}
+	if out.Outcome != "" {
+		t.Fatalf("CDN forbidden outcome=%q, want empty retryable result", out.Outcome)
+	}
+}
+
 func TestDownloadAndStage_PostProbeReject(t *testing.T) {
 	// Unknown resolve dims (0) → pre-filter falls through → download → probe
 	// returns a too-low framerate → HardFilter rejects, no stage.

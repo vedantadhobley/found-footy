@@ -683,6 +683,37 @@ against the current branch.
 - **Source relation:** Closes `AUD-0813-P2-11` while preserving the historical
   repeated-play cache benefit.
 
+### FF-029 — CDN download 403 is mistaken for terminal geo-restriction
+
+- **Status:** `implemented`; not deployed
+- **Severity:** P2
+- **Source:** Audit 2026-08-13 P2-3, revalidated against the current
+  syndication adapter and video activity.
+- **Invariant:** A CDN byte-download denial must not discard a candidate while
+  retrying can resolve a fresh variant URL. A syndication metadata denial
+  remains terminal because it proves the tweet itself is inaccessible from the
+  current vantage point.
+- **Evidence:** `ResolveVideo` and `Download` shared `statusToErr`, so both
+  HTTP 403 responses became `ErrGeoRestricted`. `DownloadAndStage` converted
+  that error into a nil-error terminal reject, bypassing the workflow's four
+  transient download attempts. The archived Python implementation made the
+  same conflation even though its CDN message admitted that authentication,
+  rather than geography, could be the cause.
+- **Implemented locally; not deployed:** `Download` now returns the distinct
+  transient `ErrCDNForbidden` without logging the signed variant URL.
+  `DownloadAndStage` propagates it as an activity error. Each Temporal retry
+  reruns `ResolveVideo` before downloading, so it can obtain a refreshed
+  variant URL and makes four total attempts before FF-002 records a correlated
+  `download_error`. Resolve-time HTTP 403 still becomes the terminal
+  `geo_restricted` outcome.
+- **Regression:** Adapter tests distinguish metadata 403 from CDN 403;
+  activity tests prove the split between terminal and retryable outcomes; the
+  workflow test requires four attempts for `ErrCDNForbidden`. Focused uncached
+  tests pass.
+- **Decision:** [CDN download denial is transient](./decisions/2026-08-17-cdn-download-denial-is-transient.md).
+- **Source relation:** Closes `AUD-0813-P2-3` and narrows, rather than removes,
+  the historical non-retryable geo-restriction contract.
+
 ## Confirmed lower-priority backlog
 
 | ID | Severity | Source | Summary | Completion condition |
@@ -710,7 +741,6 @@ implementation time.
 | `AUD-0815-SHARE-TOCTOU` | persist | Share mint has a check-then-write race under concurrent promotion. | `triage` |
 | `AUD-0815-ROT` | code/docs | Dormant compatibility vocabulary and zero-caller functions remain after cutover cleanup. | `triage` |
 | `AUD-0813-P2-1` | API | Fixture reads use N+1 event/video queries and the completed bucket is unbounded at the query layer. | `triage` |
-| `AUD-0813-P2-3` | video | CDN-download HTTP 403 may be classified as terminal geo-restriction when retry could recover it. | `triage` |
 | `AUD-0813-P2-5` | workflow | Serialized selector consumer blocks on persistence I/O that may not require serialization. | `triage` |
 | `AUD-0813-P2-6` | Temporal | One task queue lets LLM semaphore waiters starve I/O-bound activities. | `triage` |
 | `AUD-0813-P2-7` | fleet | Firefox provisioning runs sequentially inside the 30-second active-poll path. | `triage` |

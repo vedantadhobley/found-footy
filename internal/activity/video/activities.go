@@ -253,7 +253,11 @@ func classifySyndication(err error) (reason string, terminal bool) {
 		return "geo_restricted", true
 	case errors.Is(err, syndication.ErrNoVideoVariants):
 		return "no_video_variant", true
-	default: // ErrRateLimited / ErrCDNTimeout / unexpected → transient
+	case errors.Is(err, syndication.ErrCDNForbidden),
+		errors.Is(err, syndication.ErrRateLimited),
+		errors.Is(err, syndication.ErrCDNTimeout):
+		return "", false
+	default: // unexpected infrastructure failures remain transient
 		return "", false
 	}
 }

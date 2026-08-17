@@ -1,6 +1,6 @@
 // errors.go — the typed error taxonomy for video resolution + download.
 // Activities errors.Is against these to classify a candidate's failure
-// (deleted / geo-blocked / rate-limited / CDN-timeout / malformed URL /
+// (deleted / geo-blocked / rate-limited / CDN-forbidden / CDN-timeout / malformed URL /
 // truncated snowflake) and record the right outcome_class, rather than
 // treating every failure as a generic retryable blip. Mirrors Python's
 // VideoNotAvailableError / VideoGeoRestrictedError / VideoCDNTimeoutError /
@@ -25,10 +25,16 @@ var (
 	// Permanent for this candidate.
 	ErrVideoNotAvailable = errors.New("syndication: video not available (deleted or private)")
 
-	// ErrGeoRestricted — 403 from syndication or the CDN: the clip is
-	// geo-blocked from our vantage point. Permanent for this candidate
-	// (a different vantage might succeed, but retrying from here won't).
+	// ErrGeoRestricted — 403 from the syndication metadata endpoint: the
+	// tweet is inaccessible from our vantage point. Permanent for this
+	// candidate (a different vantage might succeed, but retrying from here
+	// is not expected to change the result).
 	ErrGeoRestricted = errors.New("syndication: video geo-restricted (403)")
+
+	// ErrCDNForbidden — 403 while fetching a resolved variant from the CDN.
+	// Transient: retrying DownloadAndStage resolves the tweet again, which
+	// can refresh an expired or edge-rejected variant URL.
+	ErrCDNForbidden = errors.New("syndication: CDN denied video download (403)")
 
 	// ErrRateLimited — 429. Transient; the caller may back off + retry.
 	ErrRateLimited = errors.New("syndication: rate limited (429)")
