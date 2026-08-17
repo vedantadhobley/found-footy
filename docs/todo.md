@@ -788,6 +788,26 @@ against the current branch.
 - **Source relation:** Closes `AUD-0813-P3-1` and restores archived Python
   behavior without changing ordinary known-minute validation.
 
+### FF-032 — LLM concurrency test races on captured request state
+
+- **Status:** `implemented`; not deployed
+- **Severity:** P3
+- **Source:** Pre-build `make test-race` on 2026-08-17.
+- **Invariant:** A concurrency regression test must be race-free itself so a
+  red race gate identifies product code rather than its harness.
+- **Evidence:** `TestChat_ConcurrencyCap` sends concurrent requests to the mock
+  OpenAI-compatible server. Each handler wrote `lastChatBody` without
+  synchronization, and the full race gate reported concurrent writes at that
+  assignment.
+- **Implemented locally; not deployed:** The mock protects captured request
+  state with an RW mutex and exposes a copy-returning accessor. Structured and
+  plain request-shape assertions use the accessor instead of reading the shared
+  slice directly.
+- **Regression:** The uncached targeted LLM package race test passes. The full
+  repository race gate is rerun as the release-candidate gate after this commit.
+- **Source relation:** New test-infrastructure finding; no production behavior
+  changes.
+
 ## Confirmed lower-priority backlog
 
 | ID | Severity | Source | Summary | Completion condition |

@@ -43,6 +43,7 @@ func newTestFixture() *testFixture {
 // wire-format — that's what the adapter's HTTP client actually
 // dispatches; callers of the ADAPTER still only see domain types.
 type mockLLMServer struct {
+	mu                sync.RWMutex
 	srv               *httptest.Server
 	modelsResponse    openai.ModelsList
 	chatDelay         time.Duration
@@ -76,7 +77,9 @@ func newMockLLMServer() *mockLLMServer {
 	})
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		if b, err := io.ReadAll(r.Body); err == nil {
-			m.lastChatBody = b
+			m.mu.Lock()
+			m.lastChatBody = append(m.lastChatBody[:0], b...)
+			m.mu.Unlock()
 		}
 		cur := atomic.AddInt32(&m.concurrentCurrent, 1)
 		defer atomic.AddInt32(&m.concurrentCurrent, -1)
@@ -110,6 +113,11 @@ func (m *mockLLMServer) URL() string { return m.srv.URL }
 func (m *mockLLMServer) Close()      { m.srv.Close() }
 func (m *mockLLMServer) Peak() int   { return int(atomic.LoadInt32(&m.concurrentPeak)) }
 func (m *mockLLMServer) ResetPeak()  { atomic.StoreInt32(&m.concurrentPeak, 0) }
+func (m *mockLLMServer) LastChatBody() []byte {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]byte(nil), m.lastChatBody...)
+}
 
 func newClientAgainst(t *testing.T, ctx context.Context, endpoint string, fx *testFixture, cap int) *llm.Client {
 	t.Helper()
@@ -333,14 +341,15 @@ func TestChat_StructuredOutputAndThinkingToggle(t *testing.T) {
 		t.Fatalf("structured chat: %v", err)
 	}
 
+	body := m.LastChatBody()
 	var sent map[string]any
-	if err := json.Unmarshal(m.lastChatBody, &sent); err != nil {
-		t.Fatalf("unmarshal captured body: %v (body=%s)", err, m.lastChatBody)
+	if err := json.Unmarshal(body, &sent); err != nil {
+		t.Fatalf("unmarshal captured body: %v (body=%s)", err, body)
 	}
 
 	rf, ok := sent["response_format"].(map[string]any)
 	if !ok {
-		t.Fatalf("response_format missing/wrong type in %s", m.lastChatBody)
+		t.Fatalf("response_format missing/wrong type in %s", body)
 	}
 	if rf["type"] != "json_schema" {
 		t.Errorf("response_format.type = %v, want json_schema", rf["type"])
@@ -371,15 +380,16 @@ func TestChat_NoStructuredOutputByDefault(t *testing.T) {
 	if _, err := c.Chat(ctx, simpleChat("hi")); err != nil {
 		t.Fatalf("chat: %v", err)
 	}
+	body := m.LastChatBody()
 	var sent map[string]any
-	if err := json.Unmarshal(m.lastChatBody, &sent); err != nil {
+	if err := json.Unmarshal(body, &sent); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if _, present := sent["response_format"]; present {
-		t.Errorf("plain request leaked response_format: %s", m.lastChatBody)
+		t.Errorf("plain request leaked response_format: %s", body)
 	}
 	if _, present := sent["chat_template_kwargs"]; present {
-		t.Errorf("plain request leaked chat_template_kwargs: %s", m.lastChatBody)
+		t.Errorf("plain request leaked chat_template_kwargs: %s", body)
 	}
 }
 
