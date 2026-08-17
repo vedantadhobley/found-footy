@@ -58,6 +58,7 @@ type pipeline struct {
 
 	// dedup thresholds (from the start-of-workflow config read → deterministic)
 	maxHamming, minRun, maxGaps int
+	terminalVideoFailures       bool
 
 	// activity option ctxs
 	visionCtx  workflow.Context
@@ -82,6 +83,7 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		in:         in,
 		selector:   workflow.NewSelector(ctx),
 		maxHamming: cfg.maxHamming, minRun: cfg.minRun, maxGaps: cfg.maxGaps,
+		terminalVideoFailures: cfg.terminalVideoFailures,
 		visionCtx: workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 			StartToCloseTimeout: 3 * time.Minute, // vision is slow (multi-frame VLM)
 			HeartbeatTimeout:    time.Minute,
@@ -94,7 +96,10 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 	}
 }
 
-type pipelineConfig struct{ maxHamming, minRun, maxGaps int }
+type pipelineConfig struct {
+	maxHamming, minRun, maxGaps int
+	terminalVideoFailures       bool
+}
 
 // spawnChild launches a VideoWorkflow child for one candidate and registers
 // its future on the Selector. Called from the producer coroutine.
@@ -114,7 +119,7 @@ func (p *pipeline) spawnChild(gctx workflow.Context, tweetURL string) {
 	})
 	p.inFlight++
 	p.spawned++
-	p.selector.AddFuture(fut, p.onVideoDone)
+	p.selector.AddFuture(fut, p.onVideoDone(tweetURL))
 }
 
 // finishSearch closes the producer side on every normal or error exit. The
@@ -150,50 +155,79 @@ func (p *pipeline) run() error {
 
 // onVideoDone handles a completed VideoWorkflow child: dedup, then fire vision
 // for a genuinely-new clip. Runs in the consumer coroutine (via Select).
-func (p *pipeline) onVideoDone(f workflow.Future) {
-	p.inFlight-- // decrement FIRST — every path below must not skip this
-	if p.canceled() {
-		return
-	}
+func (p *pipeline) onVideoDone(fallbackTweetURL string) func(workflow.Future) {
+	return func(f workflow.Future) {
+		p.inFlight-- // decrement FIRST — every path below must not skip this
+		if p.canceled() {
+			return
+		}
 
-	var out VideoWorkflowOutput
-	if err := f.Get(p.ctx, &out); err != nil {
-		p.failed++
-		p.log.Warn("video child failed", "err", err)
-		return
-	}
-	if out.Outcome != "passed" {
-		p.rejectedClips++ // hard-filter / geo / deleted — nothing was staged
-		p.recordOutcome(out.TweetURL, discoveryactivity.OutcomeRejected, out.RejectReason, nil)
-		return
-	}
-	p.passed++
+		var out VideoWorkflowOutput
+		if err := f.Get(p.ctx, &out); err != nil {
+			p.failed++
+			p.log.Warn("video child failed", "tweet_url", fallbackTweetURL, "err", err)
+			if p.terminalVideoFailures {
+				p.recordOutcome(fallbackTweetURL, discoveryactivity.OutcomeFailed,
+					string(VideoFailureUnexpectedChild), nil)
+			}
+			return
+		}
 
-	c := clip{
-		tweetURL: out.TweetURL, md5: out.MD5, frameHashes: out.FrameHashes,
-		stagingKey: out.StagingKey, width: out.Width, height: out.Height,
-		durationMS: out.DurationMS, fileSizeBytes: out.SizeBytes, popularity: 1,
-	}
-	if out.Bitrate != 0 {
-		b := out.Bitrate
-		c.bitrate = &b
-	}
+		tweetURL := out.TweetURL
+		if tweetURL == "" {
+			tweetURL = fallbackTweetURL
+		}
+		switch out.Outcome {
+		case VideoOutcomeRejected:
+			p.rejectedClips++ // hard-filter / geo / deleted — nothing was staged
+			p.recordOutcome(tweetURL, discoveryactivity.OutcomeRejected, out.RejectReason, nil)
+			return
+		case VideoOutcomeFailed:
+			p.failed++
+			reason := out.FailureReason
+			if reason == "" {
+				reason = VideoFailureInvalidChildOutput
+			}
+			p.recordOutcome(tweetURL, discoveryactivity.OutcomeFailed, string(reason), nil)
+			p.deleteStaging(out.StagingKey)
+			return
+		case VideoOutcomePassed:
+			p.passed++
+		default:
+			p.failed++
+			p.recordOutcome(tweetURL, discoveryactivity.OutcomeFailed,
+				string(VideoFailureInvalidChildOutput),
+				jsonDetail(map[string]any{"outcome": string(out.Outcome)}))
+			p.deleteStaging(out.StagingKey)
+			return
+		}
 
-	// GATE DEDUP — md5-exact ONLY. Perceptual dedup is category-scoped and runs
-	// POST-vision (a clip's verified/unverified category is unknown until vision;
-	// decisions.md 2026-08-09). md5-identical bytes are the same clip in every
-	// respect — same category — so collapsing them here is always safe.
-	if idx, isAsset, matched := p.matchMD5(c); matched {
-		p.duplicates++
-		p.collapse(c, idx, isAsset)
-		p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeDuplicate, "", nil)
-		return
-	}
+		c := clip{
+			tweetURL: tweetURL, md5: out.MD5, frameHashes: out.FrameHashes,
+			stagingKey: out.StagingKey, width: out.Width, height: out.Height,
+			durationMS: out.DurationMS, fileSizeBytes: out.SizeBytes, popularity: 1,
+		}
+		if out.Bitrate != 0 {
+			b := out.Bitrate
+			c.bitrate = &b
+		}
 
-	// md5-unique → reserve its pending slot (so a later md5-dup collapses onto
-	// it) and fire vision. Perceptual dedup + which-to-keep run when vision lands.
-	p.pending = append(p.pending, c)
-	p.fireVision(c)
+		// GATE DEDUP — md5-exact ONLY. Perceptual dedup is category-scoped and runs
+		// POST-vision (a clip's verified/unverified category is unknown until vision;
+		// decisions.md 2026-08-09). md5-identical bytes are the same clip in every
+		// respect — same category — so collapsing them here is always safe.
+		if idx, isAsset, matched := p.matchMD5(c); matched {
+			p.duplicates++
+			p.collapse(c, idx, isAsset)
+			p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeDuplicate, "", nil)
+			return
+		}
+
+		// md5-unique → reserve its pending slot (so a later md5-dup collapses onto
+		// it) and fire vision. Perceptual dedup + which-to-keep run when vision lands.
+		p.pending = append(p.pending, c)
+		p.fireVision(c)
+	}
 }
 
 // matchMD5 reports whether c is byte-identical to a kept or in-flight clip.

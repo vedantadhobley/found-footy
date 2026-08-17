@@ -12,6 +12,7 @@ package workflow_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+	sdkworkflow "go.temporal.io/sdk/workflow"
 
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
@@ -404,6 +406,109 @@ func requireCanceled(t *testing.T, env *testsuite.TestWorkflowEnvironment) {
 	if err := env.GetWorkflowError(); !temporal.IsCanceledError(err) {
 		t.Fatalf("workflow error = %v, want canceled", err)
 	}
+}
+
+// failedCandidateEnv wires one persisted candidate to one child result. The
+// producer sees the same URL on later attempts, so workflow-local dedup keeps
+// this a single child while the normal discovery loop still completes.
+func failedCandidateEnv(
+	s *testsuite.WorkflowTestSuite,
+	childOut workflow.VideoWorkflowOutput,
+	childErr error,
+) (*testsuite.TestWorkflowEnvironment, string) {
+	env := baseEventEnv(s)
+	tweetURL := "https://x.com/u/status/1111111111111111111"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{{TweetURL: tweetURL, VideoPageURL: "vp", DurationSeconds: 7}},
+			Count:  1,
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil).
+		Once()
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(tweetURL)).
+		Return(childOut, childErr).
+		Once()
+	return env, tweetURL
+}
+
+// failedCandidateIs matches the durable terminal update for one candidate.
+func failedCandidateIs(tweetURL string, reason workflow.VideoWorkflowFailureReason) interface{} {
+	return mock.MatchedBy(func(in discoveryactivity.RecordCandidateOutcomeInput) bool {
+		return in.TweetURL == tweetURL &&
+			in.Outcome == discoveryactivity.OutcomeFailed &&
+			in.RejectReason == string(reason)
+	})
+}
+
+// TestEventWorkflow_DownloadFailureStampsCandidate covers the no-staging
+// failure branch and proves vision and cleanup are not scheduled.
+func TestEventWorkflow_DownloadFailureStampsCandidate(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env, tweetURL := failedCandidateEnv(&s, workflow.VideoWorkflowOutput{
+		Outcome:       workflow.VideoOutcomeFailed,
+		FailureReason: workflow.VideoFailureDownload,
+	}, nil)
+	env.OnActivity("RecordCandidateOutcome", mock.Anything,
+		failedCandidateIs(tweetURL, workflow.VideoFailureDownload)).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+
+	requireDone(t, env)
+	env.AssertNotCalled(t, "DeleteStaging", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "ValidateClip", mock.Anything, mock.Anything)
+}
+
+// TestEventWorkflow_HashFailureStampsCandidateAndDeletesStaging covers the
+// failure branch that owns a Garage staging object.
+func TestEventWorkflow_HashFailureStampsCandidateAndDeletesStaging(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	const stagingKey = "staging/12345/event/tweet.mp4"
+	env, tweetURL := failedCandidateEnv(&s, workflow.VideoWorkflowOutput{
+		Outcome:       workflow.VideoOutcomeFailed,
+		FailureReason: workflow.VideoFailureHash,
+		StagingKey:    stagingKey,
+	}, nil)
+	env.OnActivity("RecordCandidateOutcome", mock.Anything,
+		failedCandidateIs(tweetURL, workflow.VideoFailureHash)).Return(nil).Once()
+	env.OnActivity("DeleteStaging", mock.Anything,
+		videoactivity.DeleteStagingInput{StagingKey: stagingKey}).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+
+	requireDone(t, env)
+	env.AssertNotCalled(t, "ValidateClip", mock.Anything, mock.Anything)
+}
+
+// TestEventWorkflow_UnexpectedChildFailureUsesCapturedTweetURL proves a child
+// workflow error cannot erase the candidate correlation key.
+func TestEventWorkflow_UnexpectedChildFailureUsesCapturedTweetURL(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env, tweetURL := failedCandidateEnv(&s, workflow.VideoWorkflowOutput{}, errors.New("child panic"))
+	env.OnActivity("RecordCandidateOutcome", mock.Anything,
+		failedCandidateIs(tweetURL, workflow.VideoFailureUnexpectedChild)).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+
+	requireDone(t, env)
+	env.AssertNotCalled(t, "DeleteStaging", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "ValidateClip", mock.Anything, mock.Anything)
+}
+
+// TestEventWorkflow_DefaultVersionPreservesChildFailureCommandSequence proves
+// old histories do not gain a new persistence activity during replay.
+func TestEventWorkflow_DefaultVersionPreservesChildFailureCommandSequence(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env, _ := failedCandidateEnv(&s, workflow.VideoWorkflowOutput{}, errors.New("child panic"))
+	env.OnGetVersion(ff002ChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(sdkworkflow.DefaultVersion).
+		Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+
+	requireDone(t, env)
+	env.AssertNotCalled(t, "RecordCandidateOutcome", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "DeleteStaging", mock.Anything, mock.Anything)
 }
 
 // TestEventWorkflow_Pipeline_VerifyAndDedup — the #164c-b consumer path: two

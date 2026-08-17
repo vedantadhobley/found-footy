@@ -18,10 +18,10 @@
 // than re-hitting Twitter.
 //
 // Outcome model mirrors the activities: a definitive "this clip is out"
-// (geo-blocked / deleted / wrong shape) comes back as a nil-error Output
-// with Outcome=rejected; only a transient failure that exhausts retries
-// surfaces as an error, which the parent's Selector callback turns into an
-// inFlight decrement.
+// (geo-blocked / deleted / wrong shape) returns rejected. An activity failure
+// that exhausts retries returns failed with its stage and any staging key so
+// the parent can persist the terminal candidate outcome and reclaim bytes.
+// Cancellation remains an error because it belongs to the event-removal path.
 package workflow
 
 import (
@@ -45,6 +45,9 @@ const (
 	videoActivityHeartbeat = 30 * time.Second
 	videoDownloadRetries   = 4 // transient CDN/rate-limit; terminal rejects return nil-error
 	videoHashRetries       = 3
+
+	ff002TerminalVideoFailuresChangeID = "ff-002-terminal-video-failures"
+	ff002TerminalVideoFailuresVersion  = workflow.Version(1)
 )
 
 // VideoWorkflowInput identifies the one candidate to process. Fields match
@@ -56,16 +59,39 @@ type VideoWorkflowInput struct {
 	TweetURL  string    `json:"tweet_url"`
 }
 
+// VideoWorkflowOutcome is the terminal per-candidate result returned to the
+// parent. Failed is distinct from rejected: a failed clip never received a
+// content verdict because infrastructure exhausted its retries.
+type VideoWorkflowOutcome string
+
+const (
+	VideoOutcomePassed   VideoWorkflowOutcome = "passed"
+	VideoOutcomeRejected VideoWorkflowOutcome = "rejected"
+	VideoOutcomeFailed   VideoWorkflowOutcome = "failed"
+)
+
+// VideoWorkflowFailureReason identifies the stage that exhausted retries.
+// Values are stable slugs persisted in event_search_candidates.reject_reason.
+type VideoWorkflowFailureReason string
+
+const (
+	VideoFailureDownload           VideoWorkflowFailureReason = "download_error"
+	VideoFailureHash               VideoWorkflowFailureReason = "hash_error"
+	VideoFailureUnexpectedChild    VideoWorkflowFailureReason = "video_workflow_error"
+	VideoFailureInvalidChildOutput VideoWorkflowFailureReason = "video_workflow_invalid_outcome"
+)
+
 // VideoWorkflowOutput is the fingerprint bundle the parent's consumer queue
 // deduplicates on. TweetURL echoes back so the parent correlates the result
 // to the candidate. FrameHashes is empty when Outcome != passed.
 type VideoWorkflowOutput struct {
-	TweetURL     string   `json:"tweet_url"`
-	Outcome      string   `json:"outcome"` // "passed" | "rejected"
-	RejectReason string   `json:"reject_reason,omitempty"`
-	MD5          string   `json:"md5,omitempty"`
-	StagingKey   string   `json:"staging_key,omitempty"`
-	FrameHashes  []uint64 `json:"frame_hashes,omitempty"`
+	TweetURL      string                     `json:"tweet_url"`
+	Outcome       VideoWorkflowOutcome       `json:"outcome"`
+	RejectReason  string                     `json:"reject_reason,omitempty"`
+	FailureReason VideoWorkflowFailureReason `json:"failure_reason,omitempty"`
+	MD5           string                     `json:"md5,omitempty"`
+	StagingKey    string                     `json:"staging_key,omitempty"`
+	FrameHashes   []uint64                   `json:"frame_hashes,omitempty"`
 
 	Width      int     `json:"width,omitempty"`
 	Height     int     `json:"height,omitempty"`
@@ -81,6 +107,11 @@ func VideoWorkflow(ctx workflow.Context, in VideoWorkflowInput) (VideoWorkflowOu
 	log.Info("VideoWorkflow started", "event_id", in.EventID, "tweet_url", in.TweetURL)
 
 	out := VideoWorkflowOutput{TweetURL: in.TweetURL}
+	terminalFailures := workflow.GetVersion(ctx,
+		ff002TerminalVideoFailuresChangeID,
+		workflow.DefaultVersion,
+		ff002TerminalVideoFailuresVersion,
+	) != workflow.DefaultVersion
 
 	// Step 1 — download + fingerprint (md5) + probe + hard-filter + stage.
 	// WithActivityOptions returns a child ctx carrying the timeout + retry
@@ -103,9 +134,14 @@ func VideoWorkflow(ctx workflow.Context, in VideoWorkflowInput) (VideoWorkflowOu
 			FixtureID: in.FixtureID,
 			TweetURL:  in.TweetURL,
 		}).Get(dlCtx, &dlOut); err != nil {
-		// Transient failure that exhausted retries — surface as a workflow
-		// error; the parent decrements inFlight on the child future error.
-		return out, err
+		if temporal.IsCanceledError(err) || !terminalFailures {
+			return out, err
+		}
+		out.Outcome = VideoOutcomeFailed
+		out.FailureReason = VideoFailureDownload
+		log.Warn("VideoWorkflow download failed after retries",
+			"tweet_url", in.TweetURL, "err", err)
+		return out, nil
 	}
 
 	// Carry probed metadata regardless of outcome (useful on the candidate
@@ -116,7 +152,7 @@ func VideoWorkflow(ctx workflow.Context, in VideoWorkflowInput) (VideoWorkflowOu
 
 	// Terminal reject (geo / deleted / wrong shape) — no point hashing.
 	if dlOut.Outcome == videoactivity.OutcomeRejected {
-		out.Outcome, out.RejectReason = "rejected", dlOut.RejectReason
+		out.Outcome, out.RejectReason = VideoOutcomeRejected, dlOut.RejectReason
 		log.Info("VideoWorkflow candidate rejected pre-hash",
 			"tweet_url", in.TweetURL, "reason", dlOut.RejectReason)
 		return out, nil
@@ -138,10 +174,17 @@ func VideoWorkflow(ctx workflow.Context, in VideoWorkflowInput) (VideoWorkflowOu
 	if err := workflow.ExecuteActivity(hashCtx,
 		(*videoactivity.Activities).HashVideo,
 		videoactivity.HashVideoInput{StagingKey: dlOut.StagingKey}).Get(hashCtx, &hashOut); err != nil {
-		return out, err
+		if temporal.IsCanceledError(err) || !terminalFailures {
+			return out, err
+		}
+		out.Outcome = VideoOutcomeFailed
+		out.FailureReason = VideoFailureHash
+		log.Warn("VideoWorkflow hash failed after retries",
+			"tweet_url", in.TweetURL, "staging_key", out.StagingKey, "err", err)
+		return out, nil
 	}
 
-	out.Outcome = "passed"
+	out.Outcome = VideoOutcomePassed
 	out.FrameHashes = hashOut.FrameHashes
 	log.Info("VideoWorkflow passed",
 		"tweet_url", in.TweetURL, "staging_key", out.StagingKey,

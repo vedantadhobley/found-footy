@@ -78,7 +78,7 @@ against the current branch.
 
 ### FF-002 — failed video child leaves candidate pending
 
-- **Status:** `confirmed`
+- **Status:** `implemented`; not deployed
 - **Severity:** P1
 - **Observed:** 2026-08-16, Huijsen goal in Schalke–Real Madrid, event
   `b7fe0d77-832d-4664-8aba-0f78b1ca3c7e`.
@@ -94,11 +94,21 @@ against the current branch.
   `Future.Get` fails. The failed future does not populate the output's tweet
   URL, so `RecordCandidateOutcome` is never called. The parent also lacks the
   staged key needed for cleanup.
-- **Required fix:** Make expected exhausted child failures return explicit
-  typed terminal output with tweet URL, reason, and staging key; reclaim
-  staging; stamp `failed`. Capture the tweet URL in the parent callback as a
-  fallback for unexpected child failure. Add workflow tests for download and
-  hash failure.
+- **Implemented locally; not deployed:** Exhausted download and hash activities
+  now return typed child output with `failed`, a stable stage reason, the tweet
+  URL, and any staging key. The parent stamps the candidate and deletes
+  hash-failure staging. Its callback captures the input URL for an unexpected
+  child failure and rejects invalid output explicitly. Cancellation remains an
+  error and schedules none of this work. Temporal change version 1 protects
+  existing EventWorkflow and VideoWorkflow histories; default-version replay
+  retains the old command sequence.
+- **Regression:** Child tests exhaust four download or three hash attempts and
+  assert typed output plus staging correlation. Parent tests assert the exact
+  failed outcome, hash cleanup, unexpected-child URL fallback, no vision call,
+  and the default-version replay path.
+- **Production follow-up:** The two Huijsen candidate rows and any surviving
+  staging objects predate the fix. Inspection and repair remain separate
+  explicitly approved production actions.
 - **Source relation:** New finding. Prior audits discussed `HashVideo`
   heartbeats and promoted-object staging leaks, not this terminal-state path.
 

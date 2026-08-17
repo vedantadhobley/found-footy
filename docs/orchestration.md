@@ -422,8 +422,21 @@ timeout):
 candidate is persisted via `StoreCandidate` (post-hoc query-quality
 learning) AND spawns a `VideoWorkflow` child (`ExecuteChildWorkflow`,
 awaited) that runs `DownloadAndStage → HashVideo` and returns
-md5 + frame-hash fingerprints. Wall-clock `max_age_minutes` filter
+md5 + frame-hash fingerprints. If either activity exhausts retries, the child
+returns a typed terminal failure with the tweet URL, stage reason, and any
+staging key instead of failing without correlation data. Wall-clock
+`max_age_minutes` filter
 (decisions.md 2026-07-23).
+
+**Candidate failure contract (FF-002).** `download_error` stamps the persisted
+candidate `failed`; no staging object exists. `hash_error` stamps `failed` and
+calls `DeleteStaging` with the key returned by download. An unexpected failed
+child future uses the tweet URL captured when the parent registered the future
+and stamps `video_workflow_error`. Invalid output uses
+`video_workflow_invalid_outcome` and also reclaims any returned staging key.
+Cancellation bypasses all of these commands under the FF-015 contract. Both
+workflow sides use Temporal change ID `ff-002-terminal-video-failures`, version
+1; histories without the marker replay the old command sequence.
 
 **Cancellation contract (FF-015).** Producer cancellation from an activity or
 the between-attempt `workflow.Sleep` terminates the producer and records its
