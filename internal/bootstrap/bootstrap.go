@@ -89,7 +89,8 @@ func Run(binary, gitSHA, builtAt string, work Work) {
 	// Emit (§11 four-pillars principle: same emissions drive logs +
 	// metrics).
 	m := metrics.New()
-	m.DeployInfo.WithLabelValues(binary, gitSHA, os.Getenv("IMAGE_TAG"), builtAt).Set(1)
+	imageTag := os.Getenv("IMAGE_TAG")
+	m.DeployInfo.WithLabelValues(binary, gitSHA, imageTag, builtAt).Set(1)
 
 	// Logger init with the registry attached.
 	log := logging.New(cfg.Observability, m)
@@ -124,6 +125,7 @@ func Run(binary, gitSHA, builtAt string, work Work) {
 		logging.String("binary", binary),
 		logging.String("git_sha", gitSHA),
 		logging.String("built_at", builtAt),
+		logging.String("image_tag", imageTag),
 		logging.String("metrics_addr", cfg.Observability.MetricsAddr),
 	)
 

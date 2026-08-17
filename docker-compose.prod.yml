@@ -1,7 +1,9 @@
 # Prod stack — Go rebuild. LIVE deployment target (La Liga cutover).
 #
-# Bring up with:
-#   docker compose -f docker-compose.prod.yml up --build -d
+# Deploy with:
+#   make deploy-prod
+# The release command stamps and verifies one immutable source identity across
+# worker, API, static Twitter, optional VNC, and future fleet instances.
 #
 # Runs the real Go binaries (worker/api built from ./Dockerfile). The
 # #160 per-event Firefox fleet is on (FIREFOXFLEET_ENABLED=true in .env):
@@ -145,7 +147,9 @@ services:
       dockerfile: Dockerfile
       args:
         BINARY: worker
-    image: found-footy-worker:latest
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILT_AT: ${BUILT_AT:-unknown}
+    image: found-footy-worker:${IMAGE_TAG:-latest}
     mem_limit: 16g  # host-budget ceiling; ffmpeg dense-extract is memory-heavy (per-replica cap, not reservation)
     # #160 fleet: the prod image runs as non-root `app`, so grant the host
     # docker group (gid 984 on luv) to reach /var/run/docker.sock. Without this
@@ -156,7 +160,8 @@ services:
     environment:
       NATS_CLIENT_NAME: found-footy-prod-worker
       EVENT_ENV: prod                                     # NATS subject token (found-footy.prod.*) + envelope source stamp
-      FIREFOXFLEET_IMAGE: found-footy-prod-twitter:latest # prod image the fleet spawns (code default is the dev tag)
+      IMAGE_TAG: ${IMAGE_TAG:-latest}
+      FIREFOXFLEET_IMAGE: found-footy-prod-twitter:${IMAGE_TAG:-latest} # exact release image the fleet spawns
       FIREFOXFLEET_NETWORK: found-footy-prod              # prod network the fleet attaches to (code default is dev's)
     depends_on:
       postgres:
@@ -184,13 +189,16 @@ services:
       dockerfile: Dockerfile
       args:
         BINARY: api
-    image: found-footy-api:latest
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILT_AT: ${BUILT_AT:-unknown}
+    image: found-footy-api:${IMAGE_TAG:-latest}
     container_name: found-footy-prod-api
     mem_limit: 2g  # host-budget ceiling (see postgres note); Go HTTP/SSE, tiny at rest
     env_file: .env
     environment:
       NATS_CLIENT_NAME: found-footy-prod-api
       EVENT_ENV: prod  # must match the worker, else the api's live-feed subject diverges to found-footy.dev.*
+      IMAGE_TAG: ${IMAGE_TAG:-latest}
     depends_on:
       postgres:
         condition: service_healthy
@@ -208,11 +216,15 @@ services:
     build:
       context: .
       dockerfile: docker/twitter/Dockerfile
-    image: found-footy-prod-twitter:latest
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILT_AT: ${BUILT_AT:-unknown}
+    image: found-footy-prod-twitter:${IMAGE_TAG:-latest}
     container_name: found-footy-prod-twitter
     mem_limit: 8g  # host-budget ceiling; Firefox is memory-heavy
     env_file: .env
     environment:
+      IMAGE_TAG: ${IMAGE_TAG:-latest}
       # /authenticate response points operators at the VNC container.
       # These get baked into the reauth message so operators see the
       # exact command + URL to click.
@@ -253,12 +265,15 @@ services:
       dockerfile: docker/twitter/Dockerfile
       args:
         WITH_VNC: "true"
-    image: found-footy-prod-twitter-vnc:latest
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILT_AT: ${BUILT_AT:-unknown}
+    image: found-footy-prod-twitter-vnc:${IMAGE_TAG:-latest}
     container_name: found-footy-prod-twitter-vnc
     mem_limit: 8g  # host-budget ceiling (see twitter note); same Firefox shape + VNC stack
     profiles: [vnc]
     env_file: .env
     environment:
+      IMAGE_TAG: ${IMAGE_TAG:-latest}
       TWITTER_VNC_MODE: "true"       # triggers entrypoint's VNC stack
       TWITTER_HEADLESS: "false"      # Playwright uses the Xvfb display
     security_opt:

@@ -20,6 +20,7 @@ updates this doc if it introduces a new test tier or pattern.
 | Workflow tests | `internal/workflow` | Temporal `testsuite.WorkflowTestSuite` with named activity mocks. |
 | Adapter integration | `internal/infra` | Real Postgres, S3-compatible storage, NATS, and Temporal through testcontainers where required. |
 | Scenario corpus | `test/scenarios` | YAML-driven fixture lifecycles against real workflow/activity code and test Postgres. |
+| Release contract | `test/release_contract_test.go` | Parses production Compose without Docker operations and requires immutable identity propagation through every application image and the Firefox fleet image. |
 
 For a live inventory, use `rg -n '^func Test' --glob '*_test.go' internal test`
 and `rg --files test/scenarios -g '*.yaml'`.
@@ -129,6 +130,19 @@ The files divide by responsibility:
 
 The mtime-detection cases deliberately cross one-second filesystem timestamp
 granularity and dominate this package's unit-test runtime.
+
+`TestStatusExposesBuildIdentity` also guards the Twitter `/status.build`
+payload consumed by the production release verifier.
+
+## Release contract test
+
+`test/release_contract_test.go` parses `docker-compose.prod.yml` as data. It
+requires worker, API, Twitter, and Twitter VNC to receive `GIT_SHA`, `BUILT_AT`,
+and `IMAGE_TAG`; it also requires the worker's `FIREFOXFLEET_IMAGE` to carry the
+same immutable tag. This test is in `make test-short` and performs no Docker or
+production operation. Shell syntax is checked separately with
+`bash -n scripts/deploy-prod.sh`, and Compose interpolation is validated with
+synthetic identity values plus `docker compose ... config --quiet`.
 
 ## Tier 3 — synthetic end-to-end scenarios
 

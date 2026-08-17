@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Production releases use one immutable identity from a clean checkout](./2026-08-16-immutable-production-release-identity.md) — FF-019 release provenance and verification contract.
 - [Score evidence gates goal removal and played-fixture completion](./2026-08-16-score-backed-goal-removal.md) — FF-014 correctness guard and remaining terminal-reconciliation boundary.
 
 ## New-decision format

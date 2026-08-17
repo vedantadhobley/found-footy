@@ -30,9 +30,23 @@ const (
 	StateFailed          State = "failed" // browser dead / unrecoverable
 )
 
+// BuildInfo identifies the exact source and image that produced a service.
+// The values are immutable for the process lifetime and surface through
+// /status so the release command can verify Twitter alongside Go services
+// that expose the shared Prometheus deploy-info gauge.
+type BuildInfo struct {
+	GitSHA   string `json:"git_sha"`
+	BuiltAt  string `json:"built_at"`
+	ImageTag string `json:"image_tag"`
+}
+
 // ServiceOptions configures a Service. Defaults land in NewService
 // so callers can pass a zero value for T/a-style usage.
 type ServiceOptions struct {
+	// Build identifies the binary and image running this service. Production
+	// sets every field; zero values remain useful for local unit tests.
+	Build BuildInfo
+
 	// CookieFile is the shared backup file path. Both this instance
 	// and every other instance (headless + VNC) read from and write
 	// to it. Default: /config/twitter_cookies.json.
@@ -122,6 +136,7 @@ type Service struct {
 	scrollJitterMin     time.Duration
 	scrollJitterMax     time.Duration
 	auditEmit           func(string, map[string]any)
+	build               BuildInfo
 
 	// authMu serializes EnsureAuthenticated calls so we don't fire
 	// multiple concurrent VerifySession round-trips on the same browser.
@@ -182,6 +197,7 @@ func NewService(b sessionBrowser, opts ServiceOptions) *Service {
 		scrollJitterMin:     opts.ScrollJitterMin,
 		scrollJitterMax:     opts.ScrollJitterMax,
 		auditEmit:           opts.AuditEmit,
+		build:               opts.Build,
 		state:               StateStarting,
 		startedAt:           time.Now().UTC(),
 	}
@@ -270,12 +286,13 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"state":             string(s.state),
-		"reason":            s.stateReason,
-		"started_at":        s.startedAt,
-		"last_auth_check":   s.lastAuthCheck,
-		"last_loaded_mtime": s.lastLoadedMtime,
+		"state":              string(s.state),
+		"reason":             s.stateReason,
+		"started_at":         s.startedAt,
+		"last_auth_check":    s.lastAuthCheck,
+		"last_loaded_mtime":  s.lastLoadedMtime,
 		"cookie_fingerprint": s.lastFingerprint.Hex(),
-		"busy":              s.busy,
+		"busy":               s.busy,
+		"build":              s.build,
 	})
 }
