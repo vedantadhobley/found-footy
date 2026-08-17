@@ -51,8 +51,9 @@ func TestInstanceName_Deterministic(t *testing.T) {
 	if got1 != got2 {
 		t.Fatalf("InstanceName not deterministic: %q != %q", got1, got2)
 	}
-	if !strings.HasPrefix(got1, "ff-firefox-"+devScope+"-ev-") {
-		t.Errorf("InstanceName %q missing scoped prefix", got1)
+	want := devScope + "-firefox-ev-" + evA.String()
+	if got1 != want {
+		t.Errorf("InstanceName = %q, want workspace-conventional name %q", got1, want)
 	}
 	if !strings.HasSuffix(got1, evA.String()) {
 		t.Errorf("InstanceName %q should end in full event ID %q", got1, evA)
@@ -66,7 +67,7 @@ func TestInstanceName_Deterministic(t *testing.T) {
 }
 
 // TestInstanceAddr pins the address shape the worker dials over the shared
-// network (container-name DNS + fixed :8888), derivable without provisioning.
+// network (network-alias DNS + fixed :8888), derivable without provisioning.
 func TestInstanceAddr(t *testing.T) {
 	addr := InstanceAddr(evA)
 	want := "http://" + InstanceAlias(evA) + ":8888"

@@ -365,10 +365,11 @@ Two hooks straddle the debounce, both gated on the monitor config's
 - **Step 4.4 provision.** `ReconcileFixture` returns `NewNamedEventIDs` — the
   events that *this cycle* first acquired a known scorer (debounce_count went to
   1, so all data needed for a Twitter query now exists). ActivePoll fires
-  `ProvisionFirefox` per ID: create+start a dedicated `ff-firefox-ev-<8hex>`
-  container (no blocking health wait — the ~30s warm-up hides behind the debounce
-  window). Warming at count=1 means the instance is ready when the event
-  *triggers* at count=3.
+  `ProvisionFirefox` per ID: create+start a dedicated
+  `<compose-network>-firefox-ev-<full-event-uuid>` container with the
+  history-compatible `ff-firefox-ev-<8hex>` network alias (no blocking health
+  wait — the ~30s warm-up hides behind the debounce window). Warming at count=1
+  means the instance is ready when the event *triggers* at count=3.
 - **Step 4.5 release.** The same step that runs the VAR destroy also calls
   `ReleaseFirefox` for every `EventsRemovedIDs` member — covering both a
   triggered event decaying to 0 (VAR) and a pre-trigger event that provisioned

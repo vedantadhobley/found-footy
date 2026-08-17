@@ -41,7 +41,7 @@ against the current branch.
 
 | ID | Severity | Status | Summary |
 |---|---|---|---|
-| FF-014 | P1 | `implemented` | Prevent a provider event-array omission from false-removing a goal while the aggregate score still proves that the goal occurred; rollout and data repair remain. |
+| FF-016 | P2 | `confirmed` | Make Twitter discovery recover when the scraper is unavailable during worker startup instead of leaving that worker unwired for its lifetime. |
 
 ## Confirmed issues
 
@@ -61,9 +61,11 @@ against the current branch.
   running production workers still contain the old unscoped implementation.
 - **Resolution:** Compose selects `FIREFOXFLEET_NETWORK`; Go treats that opaque
   network identity as the ownership scope. Dynamic containers use scoped
-  daemon names and labels, while the old event-only hostname survives as a
-  network alias for Temporal compatibility. Count, list, release, and reap
-  require the scope and network; mutation verifies ownership first.
+  daemon names in workspace order
+  (`<project>-<env>-firefox-ev-<full-event-uuid>`) and labels, while the old
+  event-only hostname survives as a network alias for Temporal compatibility.
+  Count, list, release, and reap require the scope and network; mutation
+  verifies ownership first.
 - **Verification:** The in-memory daemon regression provisions the same event
   ID in dev and prod scopes, then proves independent capacity, listing,
   reaping, and release. A foreign-ownership test proves name collision does not
@@ -312,6 +314,35 @@ against the current branch.
 - **Source relation:** New release-audit finding. The design and deployment
   ledger describe build identity as shipped, but Compose never completed the
   contract.
+
+### FF-020 — production release gate can miss active event browsers
+
+- **Status:** `implemented`; not deployed
+- **Severity:** P1
+- **Observed:** 2026-08-16, local review of the FF-019 release command before
+  its first production use.
+- **Invariant:** An application rollout must not recreate workers or Twitter
+  while a production event browser is executing a search against the current
+  release.
+- **Evidence:** The gate matched only the legacy daemon-name prefix
+  `ff-firefox-ev-*`. FF-001 creates workspace-conventional scoped names such as
+  `found-footy-prod-firefox-ev-<uuid>`, so later releases would not see them.
+  The single check also ran before image construction and the permission smoke;
+  an event browser provisioned during that interval could survive the worker
+  recreation on the old image.
+- **Implemented locally; not deployed:** The release command now selects
+  running browsers by `found-footy.fleet=firefox` plus membership in the
+  production network, independent of name generation. It checks once before
+  build work and again immediately before the first mutation. The dynamic
+  daemon name now follows `<project>-<env>-<role>` order; deterministic name
+  lookup is still followed by label, event, scope, and network verification
+  before any lifecycle mutation.
+- **Regression:** Fleet tests pin the exact workspace-conventional name. The
+  release-contract test rejects a legacy prefix selector, requires the label
+  and network filters, and requires a second guard after build but before
+  recreation.
+- **Source relation:** New finding in the not-yet-deployed FF-019 release path;
+  no production release used the faulty gate.
 
 ## Confirmed lower-priority backlog
 

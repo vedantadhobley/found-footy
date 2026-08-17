@@ -41,16 +41,27 @@ assert_clean_checkout
 
 compose=(docker compose -f "$COMPOSE_FILE" --profile vnc)
 
-# A running event browser is executing a search against the current Twitter
-# image. Refuse a mixed-version rollout instead of killing it or silently
-# leaving it behind.
-active_fleet="$({ docker network inspect "$PROD_NETWORK" \
-  --format '{{range .Containers}}{{println .Name}}{{end}}' 2>/dev/null || true; } \
-  | awk '/^ff-firefox-ev-/')"
-if [[ -n "$active_fleet" ]]; then
-  printf 'release failed: production event browsers are active; wait for their workflows to finish:\n%s\n' "$active_fleet" >&2
-  exit 1
-fi
+# A name locates one event browser, but the fleet label plus target network
+# prove that it belongs to this deployment. This catches both legacy unscoped
+# names and FF-001's workspace-conventional scoped names without teaching the
+# release script either naming format.
+list_active_fleet() {
+  docker ps \
+    --filter "network=$PROD_NETWORK" \
+    --filter "label=found-footy.fleet=firefox" \
+    --format '{{.Names}}'
+}
+
+assert_no_active_fleet() {
+  local active_fleet
+  active_fleet="$(list_active_fleet)"
+  if [[ -n "$active_fleet" ]]; then
+    printf 'release failed: production event browsers are active; wait for their workflows to finish:\n%s\n' "$active_fleet" >&2
+    exit 1
+  fi
+}
+
+assert_no_active_fleet
 
 mapfile -t vnc_before < <("${compose[@]}" ps -q twitter-vnc)
 services=(worker api twitter)
@@ -66,8 +77,11 @@ printf 'release identity\n  git_sha: %s\n  built_at: %s\n  image_tag: %s\n' \
 "$REPO_ROOT/scripts/smoke_prod_perms.sh" "found-footy-worker:$IMAGE_TAG"
 
 # Prevent a concurrent edit or checkout from making the labels disagree with
-# the actual build context. Everything above this line is non-disruptive.
+# the actual build context. Recheck the fleet after the potentially long build
+# so a goal detected during that window cannot be stranded on the old image.
+# Everything above this line is non-disruptive.
 assert_clean_checkout
+assert_no_active_fleet
 
 "${compose[@]}" up -d --no-deps --no-build --force-recreate "${services[@]}"
 
