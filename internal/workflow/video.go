@@ -50,6 +50,34 @@ const (
 	ff002TerminalVideoFailuresVersion  = workflow.Version(1)
 )
 
+// videoDownloadActivityContext applies the durable download/stage contract in
+// both the legacy VideoWorkflow child and FF-022's parent-owned pipeline.
+func videoDownloadActivityContext(ctx workflow.Context) workflow.Context {
+	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: videoDownloadTimeout,
+		HeartbeatTimeout:    videoActivityHeartbeat,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    2 * time.Second,
+			BackoffCoefficient: 2,
+			MaximumAttempts:    videoDownloadRetries,
+		},
+	})
+}
+
+// videoHashActivityContext applies the durable dense-hash contract in both
+// candidate orchestration paths.
+func videoHashActivityContext(ctx workflow.Context) workflow.Context {
+	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: videoHashTimeout,
+		HeartbeatTimeout:    videoActivityHeartbeat,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    2 * time.Second,
+			BackoffCoefficient: 2,
+			MaximumAttempts:    videoHashRetries,
+		},
+	})
+}
+
 // VideoWorkflowInput identifies the one candidate to process. Fields match
 // DownloadAndStageInput — the child is a thin durable wrapper over the two
 // activities.
@@ -117,15 +145,7 @@ func VideoWorkflow(ctx workflow.Context, in VideoWorkflowInput) (VideoWorkflowOu
 	// WithActivityOptions returns a child ctx carrying the timeout + retry
 	// policy; ExecuteActivity(...).Get blocks (durably) until the activity
 	// resolves, writing its result into &dlOut.
-	dlCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: videoDownloadTimeout,
-		HeartbeatTimeout:    videoActivityHeartbeat,
-		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:    2 * time.Second,
-			BackoffCoefficient: 2,
-			MaximumAttempts:    videoDownloadRetries,
-		},
-	})
+	dlCtx := videoDownloadActivityContext(ctx)
 	var dlOut videoactivity.DownloadAndStageOutput
 	if err := workflow.ExecuteActivity(dlCtx,
 		(*videoactivity.Activities).DownloadAndStage,
@@ -161,15 +181,7 @@ func VideoWorkflow(ctx workflow.Context, in VideoWorkflowInput) (VideoWorkflowOu
 
 	// Step 2 — dense frame extraction + per-frame perceptual hash. Retries
 	// re-fetch the staged bytes from Garage, never Twitter.
-	hashCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: videoHashTimeout,
-		HeartbeatTimeout:    videoActivityHeartbeat,
-		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:    2 * time.Second,
-			BackoffCoefficient: 2,
-			MaximumAttempts:    videoHashRetries,
-		},
-	})
+	hashCtx := videoHashActivityContext(ctx)
 	var hashOut videoactivity.HashVideoOutput
 	if err := workflow.ExecuteActivity(hashCtx,
 		(*videoactivity.Activities).HashVideo,

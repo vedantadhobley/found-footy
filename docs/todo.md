@@ -254,7 +254,7 @@ against the current branch.
 
 ### FF-022 — byte-identical candidates hash before the MD5 gate
 
-- **Status:** `confirmed`
+- **Status:** `implemented locally`; not deployed
 - **Severity:** P2
 - **Observed:** Same Huijsen candidates as FF-002 and FF-005.
 - **Invariant:** Once download has produced an exact content hash, only one
@@ -273,6 +273,18 @@ against the current branch.
   reclaim their staging objects without hashing. Preserve Temporal replay with
   a change version and test two simultaneous same-MD5 downloads, winner failure,
   and cancellation.
+- **Implementation:** New EventWorkflow executions run `DownloadAndStage`
+  directly, claim the returned MD5 in the serialized consumer, and schedule at
+  most one `HashVideo` activity per active exact-byte cluster. Byte-identical
+  waiters transfer popularity and reclaim staging after the claimant succeeds.
+  If the claimant exhausts hash retries, only that candidate is failed and the
+  next waiter's independent staging object takes ownership. Change ID
+  `ff-022-pre-hash-md5-claim` keeps existing histories on the registered
+  `VideoWorkflow` child path.
+- **Regression:** Workflow tests require one hash for simultaneous identical
+  downloads, a three-failure claimant followed by a successful waiter, no
+  follow-on commands after hash cancellation, and the unchanged child command
+  sequence for pre-FF-022 histories.
 - **Rollout:** Optimization and failure-amplification fix; FF-002 contains its
   terminal-state consequences, so it does not block the pending rollout.
 - **Source relation:** Not found by the audits. The as-built proposal documents

@@ -112,6 +112,15 @@ failure. Explicit `OnGetVersion(...).Return(DefaultVersion)` cases preserve the
 old child-error command sequence for replay of histories created before the
 fix.
 
+FF-022 workflow tests cover the replacement boundary. Two separately staged
+downloads with one MD5 must run `HashVideo` exactly once and preserve both
+popularity votes. If the first claimant exhausts three hash attempts, the next
+claimant must hash its own staging object and reach vision without being marked
+duplicate. Cancellation while that hash is pending must schedule no forensic,
+cleanup, promotion, or finalization commands. A default-version case requires
+pre-FF-022 histories to keep calling the registered VideoWorkflow child and
+never add a direct download activity.
+
 `PersistActivities` promotion tests inject failures into the durable tail.
 They prove that a rank failure after share insertion is repaired on retry, an
 uncertain staging-delete response does not require a second source copy, and

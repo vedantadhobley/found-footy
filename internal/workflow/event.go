@@ -1,6 +1,6 @@
 // EventWorkflow — the per-goal orchestrator. Runs a PRODUCER (the discovery
 // phase: Twitter search + candidate collection) concurrently with a CONSUMER
-// (spawn VideoWorkflow children → dedup → vision → promote → rank) —
+// (download/stage → exact-byte ownership → hash → vision → promote → rank) —
 // #164c + #165, shipped. Renamed from DiscoveryWorkflow (Option 2 rename,
 // decisions.md 2026-08-03: the workflow became the event orchestrator, so
 // "Discovery" undersold it; the discovery *phase* — config + activities —
@@ -74,6 +74,8 @@ const (
 	ff007FailedRunRecoveryVersion  = workflow.Version(1)
 	ff017BrowserRestartChangeID    = "ff-017-browser-restart-retry"
 	ff017BrowserRestartVersion     = workflow.Version(1)
+	ff022PreHashMD5ClaimChangeID   = "ff-022-pre-hash-md5-claim"
+	ff022PreHashMD5ClaimVersion    = workflow.Version(1)
 
 	// A Firefox container needs about 30 seconds to relaunch and reload shared
 	// cookies after FF-017 makes browser death fatal to PID 1. These retries run
@@ -197,8 +199,8 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 	log.Info("query built", "query", query, "length", len(query))
 
 	// Step 3: the pipeline — a PRODUCER coroutine (the discovery search loop,
-	// spawning a VideoWorkflow child per new candidate) running concurrently
-	// with the CONSUMER (the serialized Selector queue: dedup → vision →
+	// submitting each new candidate) running concurrently with the CONSUMER
+	// (the serialized Selector queue: exact-byte ownership → hash → vision →
 	// promote → rank). Temporal owns completion: the consumer returns when
 	// search is done AND nothing is in flight — no idle timeout.
 	terminalVideoFailures := workflow.GetVersion(ctx,
@@ -206,9 +208,15 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion,
 		ff002TerminalVideoFailuresVersion,
 	) != workflow.DefaultVersion
+	preHashMD5Claim := workflow.GetVersion(ctx,
+		ff022PreHashMD5ClaimChangeID,
+		workflow.DefaultVersion,
+		ff022PreHashMD5ClaimVersion,
+	) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
 		terminalVideoFailures: terminalVideoFailures,
+		preHashMD5Claim:       preHashMD5Claim,
 	}, log)
 
 	// FF-007 recovery: a new execution after failed-only Workflow ID reuse
@@ -269,7 +277,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		seenTweetIDs[candidate.TweetURL] = struct{}{}
 		excludeURLs = append(excludeURLs, candidate.TweetURL)
 		if candidate.Pending {
-			p.spawnChild(ctx, candidate.TweetURL)
+			p.spawnCandidate(ctx, candidate.TweetURL)
 		}
 	}
 	out.CandidatesFound = len(recoveryOut.Candidates)
@@ -343,10 +351,10 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 					} else if storeOut.Inserted {
 						out.CandidatesFound++
 					}
-					// Spawn the per-candidate Video child (candidate persistence
-					// is post-hoc learning; the pipeline processes the clip
-					// regardless of the StoreCandidate result).
-					p.spawnChild(gctx, v.TweetURL)
+					// Submit the candidate regardless of StoreCandidate's result;
+					// persistence is post-hoc learning, while the pipeline owns the
+					// clip's download and validation lifecycle.
+					p.spawnCandidate(gctx, v.TweetURL)
 				}
 				log.Info("attempt complete", "attempt", attempt, "videos_returned", searchOut.Count,
 					"cumulative_candidates", out.CandidatesFound, "stop_reason", searchOut.StopReason)
