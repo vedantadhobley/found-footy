@@ -3,13 +3,9 @@
 // → /metrics HTTP listener → signal-handled context, then invokes a
 // per-binary Work function with the resulting dependencies.
 //
-// Each cmd/*/main.go becomes ~10 lines: pass its binary name +
-// build-time ldflags into Run, and inside the callback do binary-
-// specific work (Temporal worker registration, HTTP router setup, etc).
-// Later phases fill in what the Work function does. In Phase S1, every
-// binary's Work is just "block until context canceled" — the point is
-// that startup + shutdown observability is uniform before any real
-// logic exists.
+// Each command passes its binary name and build metadata into Run, then wires
+// binary-specific work in the callback. Startup, health/metrics serving,
+// signal handling, and shutdown ordering stay uniform.
 package bootstrap
 
 import (
@@ -197,8 +193,8 @@ func Run(binary, gitSHA, builtAt string, work Work) {
 func newMetricsMux(m *metrics.Registry) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m.Handler())
-	// /healthz is a bare 200; per §11 real liveness/readiness lands with
-	// Chi + Huma in Phase A. Sufficient for compose healthchecks now.
+	// /healthz is a process-liveness check used by Compose. Dependency
+	// readiness remains the adapters' startup responsibility.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
@@ -206,10 +202,8 @@ func newMetricsMux(m *metrics.Registry) *http.ServeMux {
 	return mux
 }
 
-// BlockUntilDone is a convenience Work function for binaries that
-// don't have anything real to do yet — they just need to stay running
-// so signal + observability plumbing works end-to-end. Every S1 main
-// uses this; adapters replace it as they land.
+// BlockUntilDone is a convenience Work function for a process that needs only
+// the shared bootstrap lifecycle.
 func BlockUntilDone(ctx context.Context, _ *Deps) error {
 	<-ctx.Done()
 	return nil

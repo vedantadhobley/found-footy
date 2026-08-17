@@ -15,17 +15,17 @@ Additionally, the current URL stability mechanism works by **reusing the old S3 
 ## Current Architecture
 
 ### Batch Dedup (Phase 1) — Works Correctly
-**File:** [`src/activities/upload.py`](src/activities/upload.py#L471-L592) (`deduplicate_videos`, Phase 1 section)
+**File:** [`src/activities/upload/dedup.py`](../../src/activities/upload/dedup.py#L275-L364) (`deduplicate_videos`, Phase 1 section)
 
 - Union-find clustering: for each new video, scan all existing clusters for a perceptual hash match.
 - One video can join a cluster with many members → **one winner replaces many**.
 - Winner gets `total_popularity = sum(v.popularity for v in cluster)`.
-- Selection uses `_pick_best_video_from_cluster()` ([L1162](src/activities/upload.py#L1162)): if durations are within 15% → pick largest file (better resolution); if durations differ >15% → pick longest.
+- Selection uses `_pick_best_video_from_cluster()` ([current function](../../src/activities/upload/dedup.py#L479)): if durations are within 15% → pick largest file (better resolution); if durations differ >15% → pick longest.
 
 ### S3 Dedup (Phase 2) — Limited to First Match
-**File:** [`src/activities/upload.py`](src/activities/upload.py#L594-L667) (`deduplicate_videos`, Phase 2 section)
+**File:** [`src/activities/upload/dedup.py`](../../src/activities/upload/dedup.py#L394-L467) (`deduplicate_videos`, Phase 2 section)
 
-The critical limitation is in this loop ([L623-L630](src/activities/upload.py#L623-L630)):
+The critical limitation is in this loop ([current loop](../../src/activities/upload/dedup.py#L414-L423)):
 
 ```python
 matched_existing = None
@@ -43,7 +43,7 @@ After `break`, it compares the new video against only that one S3 video:
 **Other S3 videos that also match are never discovered.**
 
 ### URL Stability Mechanism (1:1 Only)
-**File:** [`src/activities/upload.py`](src/activities/upload.py#L646-L651)
+**File:** [`src/activities/upload/dedup.py`](../../src/activities/upload/dedup.py#L438-L447)
 
 When a replacement is chosen, the old S3 key is passed through:
 ```python
@@ -51,18 +51,18 @@ file_info["_old_s3_key"] = matched_existing.get("_s3_key", "")
 videos_to_replace.append({"new_video": file_info, "old_s3_video": matched_existing})
 ```
 
-In `upload_single_video` ([L728-L733](src/activities/upload.py#L728-L733)):
+In `upload_single_video` ([current function](../../src/activities/upload/core.py#L304-L430)):
 ```python
 if existing_s3_key:
     s3_key = existing_s3_key  # Reuse old key → old URL still works
 ```
 
-The workflow then does an **atomic in-place update** via `update_video_in_place` ([L818-L886](src/activities/upload.py#L818-L886)) so the MongoDB entry is updated without a gap where the video disappears.
+The workflow then does an **atomic in-place update** via `update_video_in_place` ([current function](../../src/activities/upload/core.py#L478)) so the MongoDB entry is updated without a gap where the video disappears.
 
 This only handles **one** old URL. If the new video should replace 3 S3 videos, only one URL survives.
 
 ### S3 Key / URL Format
-**File:** [`src/activities/upload.py`](src/activities/upload.py#L735-L743)
+**File:** [`src/activities/upload/core.py`](../../src/activities/upload/core.py#L351-L361)
 
 ```python
 # Format: {fixture_id}/{event_id}/{event_id}_{md5[:8]}.mp4
@@ -71,15 +71,15 @@ s3_key = f"{fixture_id}/{event_id}/{filename}"
 ```
 
 The URL stored in MongoDB is a proxy path: `/video/footy-videos/{s3_key}`  
-(see [`src/data/s3_store.py`](src/data/s3_store.py#L147))
+(see [`src/data/s3_store.py`](../../src/data/s3_store.py#L147))
 
 ### Ranking
-**File:** [`src/data/mongo_store.py`](src/data/mongo_store.py#L1156-L1224) (`recalculate_video_ranks`)
+**File:** [`src/data/mongo_store.py`](../../src/data/mongo_store.py#L1156-L1224) (`recalculate_video_ranks`)
 
 Sorts by: `(timestamp_verified DESC, popularity DESC, file_size DESC)`. Rank 1 = best.
 
 ### Popularity Bumping
-**File:** [`src/data/mongo_store.py`](src/data/mongo_store.py#L1225-L1270) (`update_video_popularity`)
+**File:** [`src/data/mongo_store.py`](../../src/data/mongo_store.py#L1225-L1270) (`update_video_popularity`)
 
 Updates a single video's popularity by URL, then recalculates ranks.
 
@@ -89,7 +89,7 @@ Updates a single video's popularity by URL, then recalculates ranks.
 
 Replace the first-match `break` pattern with a **cluster approach** identical to batch dedup.
 
-**Change in `deduplicate_videos`** ([L594-L667](src/activities/upload.py#L594-L667)):
+**Change in `deduplicate_videos`** ([current Phase 2](../../src/activities/upload/dedup.py#L394-L467)):
 
 ```python
 # BEFORE: Find first match
@@ -132,7 +132,7 @@ Each key is a **retired URL** and the value is the **surviving video's URL**.
 **Changes needed:**
 
 #### a) New model field
-**File:** [`src/data/models.py`](src/data/models.py#L282) (`EventFields`)
+**File:** [`src/data/models.py`](../../src/data/models.py#L282) (`EventFields`)
 
 Add:
 ```python
@@ -169,11 +169,11 @@ for s3_video in matched_s3_videos:
 winner["popularity"] = total_popularity
 ```
 
-This is already how batch dedup works ([L531](src/activities/upload.py#L531)). The S3 dedup currently only accumulates from the single matched video ([L643-L650](src/activities/upload.py#L643-L650)).
+This is already how batch dedup works ([current cluster loop](../../src/activities/upload/dedup.py#L331)). The S3 dedup currently only accumulates from the single matched video ([current replacement branch](../../src/activities/upload/dedup.py#L432)).
 
 ### 4. S3 Cleanup for Retired Videos
 
-When retiring S3 duplicates, the actual S3 objects should be deleted since the redirect handles URL continuity. Currently `replace_s3_video` ([L888-L958](src/activities/upload.py#L888-L958)) handles single deletions. This needs to support batch deletion.
+When retiring S3 duplicates, the actual S3 objects should be deleted since the redirect handles URL continuity. The current split upload implementation lives in [`archive/src/activities/upload/`](../../src/activities/upload/). This needs to support batch deletion.
 
 **New activity:** `retire_s3_videos`
 ```python
@@ -192,7 +192,7 @@ async def retire_s3_videos(
 
 ### 5. Workflow Changes
 
-**File:** [`src/workflows/upload_workflow.py`](src/workflows/upload_workflow.py)
+**File:** [`src/workflows/upload_workflow.py`](../../src/workflows/upload_workflow.py)
 
 The `_process_batch` method needs to handle the new return shape from `deduplicate_videos`:
 
@@ -215,18 +215,18 @@ The `_process_batch` method needs to handle the new return shape from `deduplica
 
 | File | Change | Scope |
 |------|--------|-------|
-| [`src/data/models.py`](src/data/models.py) | Add `VIDEO_REDIRECTS` field | Small |
-| [`src/activities/upload.py`](src/activities/upload.py) | S3 dedup cluster matching, new `retire_s3_videos` activity, update return types | Large |
-| [`src/workflows/upload_workflow.py`](src/workflows/upload_workflow.py) | Handle 1:N replacements + S3 consolidations, call `retire_s3_videos` | Medium |
-| [`src/data/mongo_store.py`](src/data/mongo_store.py) | Methods for `_video_redirects` CRUD + chain flattening | Medium |
-| [`src/worker.py`](src/worker.py) | Register `retire_s3_videos` activity | Trivial |
+| [`src/data/models.py`](../../src/data/models.py) | Add `VIDEO_REDIRECTS` field | Small |
+| [`src/activities/upload/`](../../src/activities/upload/) | S3 dedup cluster matching, new `retire_s3_videos` activity, update return types | Large |
+| [`src/workflows/upload_workflow.py`](../../src/workflows/upload_workflow.py) | Handle 1:N replacements + S3 consolidations, call `retire_s3_videos` | Medium |
+| [`src/data/mongo_store.py`](../../src/data/mongo_store.py) | Methods for `_video_redirects` CRUD + chain flattening | Medium |
+| [`src/worker.py`](../../src/worker.py) | Register `retire_s3_videos` activity | Trivial |
 | Frontend API (external repo) | Check `_video_redirects`, return 302 if matched | Small |
 
 ## Edge Cases
 
 1. **Race condition:** Two batches for the same event both find the same S3 duplicate. The serialized UploadWorkflow (signal-based FIFO queue) prevents this — only one batch processes at a time per event.
 
-2. **Verified vs unverified scoping:** The workflow already splits dedup into verified/unverified pools ([L340-L345](src/workflows/upload_workflow.py#L340-L345)). The S3 cluster approach must respect this boundary — a verified video should never be consolidated with an unverified one.
+2. **Verified vs unverified scoping:** The workflow already splits dedup into verified/unverified pools ([L340-L345](../../src/workflows/upload_workflow.py#L340-L345)). The S3 cluster approach must respect this boundary — a verified video should never be consolidated with an unverified one.
 
 3. **S3 key reuse vs new key:** When the new video wins and replaces multiple S3 videos, it should get a **fresh S3 key** (based on its own MD5). All old URLs (from retired videos) go into `_video_redirects`. This is simpler than choosing which old key to reuse.
 

@@ -3,7 +3,7 @@
 **Purpose.** As-shipped state of `internal/observability/` and the
 observability substrate — vocabulary enums, structured logging,
 Prometheus metrics, tracing (stub), and the semantic event stream
-(pending).
+(shipped).
 
 Cross-refs [`../rebuild-plan.md`](design/rebuild-plan.md) §11 for the
 full design intent. Divergences from §11 live in
@@ -20,10 +20,10 @@ Shipped state:
 
 | Pillar | Status | Location |
 |---|---|---|
-| Logs | ✓ shipped in S1 | `internal/observability/logging/` |
-| Metrics | ✓ shipped in S1 | `internal/observability/metrics/` |
-| Traces | ⊘ stub (Phase 5+ per plan) | `internal/observability/tracing/tracing.go` |
-| Semantic event stream | ✓ shipped O3/a (composer event_log-only) | `internal/infra/event/` (composer + subjects) |
+| Logs | ✓ shipped | `internal/observability/logging/` |
+| Metrics | ✓ shipped | `internal/observability/metrics/` |
+| Traces | ⊘ no-op stub | `internal/observability/tracing/tracing.go` |
+| Semantic events | ✓ shipped as separate SQL-audit and NATS-live planes | `internal/infra/event/` |
 
 ## The vocabulary substrate
 
@@ -33,29 +33,30 @@ Every `logging.Emit(...)` call takes a `vocabulary.Module` + a
 call site using an undeclared value is a compile error, not a
 runtime "huh why isn't this indexed."
 
-### Module registry (shipped)
+### Module registry (shipped, with compatibility debt)
 
 Full list per `vocabulary.go`:
 
-**Workflows:** IngestWorkflow, MonitorWorkflow, EventWorkflow,
-VideoValidationWorkflow, AssetPersistenceWorkflow. (IngestWorkflow, the
-monitor poll workflows, and EventWorkflow emit today.)
+The registry still carries names from superseded workflow topology. Its
+workflow constants are `IngestWorkflow`, `MonitorWorkflow`, `EventWorkflow`
+(whose string value remains `discovery_workflow`),
+`VideoValidationWorkflow`, and `AssetPersistenceWorkflow`. The shipped
+workflow types are listed in [`orchestration.md`](./orchestration.md); do not
+infer their existence from this compatibility vocabulary.
 
 **Domain:** Fixture, Event, Video, Alias, Discovery, Vision, Session,
 TextAnalysis.
 
 **Adapters:** InfraPG, InfraNATS, InfraEvent, InfraS3, InfraLLM,
-InfraTemporal, InfraAPIFootball, InfraTwitter, InfraSyndication,
-InfraFFmpeg, InfraWikidata, InfraWikipedia.
+InfraTemporal, InfraAPIFootball, InfraTwitter, InfraSyndication, InfraFFmpeg,
+plus the now-unused InfraWikidata and InfraWikipedia constants.
 
 **Cross-cutting:** API, APISSE, WebhookDelivery, Worker,
 APIServer, TwitterService, Migration, Healthz, Deploy.
 
-**Divergence from plan §11 vocabulary block:** the workflow rename
-(TwitterWorkflow → EventWorkflow, DownloadWorkflow →
-VideoValidationWorkflow, UploadWorkflow → AssetPersistenceWorkflow,
-RAGWorkflow folded into Ingest) — logged in
-[decisions.md 2026-07-05 workflow-rename entry](decisions.md).
+Removing or renaming the dormant workflow, Wikidata/Wikipedia, SSE, and webhook
+vocabulary is tracked by `AUD-0815-ROT` in
+[`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
 
 ### Action registry (shipped)
 
@@ -98,16 +99,17 @@ building `map[string]any` inline.
 `workflow_id`, `activity_id`, `duration_ms`, and `error` (from
 `logging.Err`, holding `err.Error()`).
 
-> **Gap (#178 / G6):** `logging.Err` emits a single `error` field, not the
+> **Tracked gap (`AUD-0813-P2-13`):** `logging.Err` emits a single `error` field, not the
 > typed `error_class` the plan's schema names — so the `calls_total{error_class}`
-> metric label reads a key that's never set and is always empty. Tracked in the
-> G6 observability cluster.
+> metric label reads a key that's never set and is always empty. Validate the
+> metric path before promoting the candidate in [`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
 
 **Divergence from plan §11 log-catalog generator:** Plan §11.3 said
 `docs/generated/log-catalog.md` regenerates on every build via
 `go generate` — the complete (module, action) matrix as a discoverable
 markdown table. **NOT SHIPPED.** No generator, no catalog file.
-Logged in [decisions.md 2026-07-07](decisions.md).
+Tracked as feature-scope candidate `AUD-DESIGN-LOG-CATALOG` in
+[`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
 
 ## TestEmitter (shipped)
 
@@ -138,34 +140,37 @@ logging.Emitter) *<Adapter>Instruments` bundles its counters +
 histograms + prometheus.Collector for scrape-time gauges + emits a
 "metrics_registered" log line.
 
-Adapters that have shipped instruments:
-- `pg` — query duration histogram + pool-stats collector
-- `nats` — publish/subscribe counters + queue-depth collector
-- `s3` — operations counter + operation-latency histogram + bytes-transferred counter
-- `llm` — call counter + call-duration histogram + token counter + concurrency & connection-state gauges (no retry counter)
-- `temporal` — worker task counter + workflow-start counter
-- `apifootball` — request counter labeled by endpoint + daily-quota gauge
-- `twitter`, `syndication`, `wikidata` — request counters + latency histograms
+Instrument bundles currently ship for `pg`, `nats`, `s3`, `llm`, `temporal`,
+`apifootball`, `twitter`, `syndication`, `event`, and `ffmpeg`. Their
+`instruments.go` files are the metric-name and label authority; this ledger
+does not duplicate the full mutable catalog.
 
 ## Tracing (stub)
 
-`internal/observability/tracing/tracing.go` — Phase F stub. 20 lines.
-Returns a `Noop() *Tracer{}` sentinel. Adapters that need a Tracer
+`internal/observability/tracing/tracing.go` returns a `Noop() *Tracer{}`
+sentinel. Adapters that need a Tracer
 handle in their signature use this so the interface stabilizes
 without a real OTLP pipeline attached.
 
-Real OTLP wiring lands in Phase 5+ per plan §11 four-pillars table.
+Real OTLP wiring is deferred; the historical plan's phase label is not a
+current schedule. It remains feature-scope candidate `AUD-DESIGN-TRACING` in
+[`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
 
-## Semantic event stream (shipped O3/a)
+## Semantic event and live-feed planes
 
-Plan §11 pillar 4 — the durable semantic-event plane — shipped as the
-`internal/infra/event/` **Composer**. `Publish` appends one row to Postgres
+The SQL audit plane is the `internal/infra/event/` **Composer**. `Publish`
+appends one row to Postgres
 `event_log` (`INSERT ... RETURNING id`) and returns that id; it touches only
 pg. The live-fanout half (the NATS envelope + SSE cursor) is no longer the
 composer's job — per [decisions.md 2026-08-14](decisions.md) it moved out to
 `event.NatsPublisher`. Six `Kind`s: `fixture.activated`, `fixture.completed`,
 `event.detected`, `event.stable`, `event.removed`, `event.rank_recalculated`
 (`subjects.go`).
+
+The separate `NatsPublisher` owns the live fan-out plane. It emits the three
+environment-scoped topics `fixture.clock`, `fixture.update`, and `event.video`
+inside the workspace envelope. Payloads and consumer recovery rules live in
+[`api.md`](./api.md).
 
 Instruments (`found_footy_event_composer_*`): `publishes_total{kind,outcome}`
 (outcome = `success` or `pg_write_failure`) and `publish_duration_seconds{kind}`
@@ -177,4 +182,4 @@ Instruments (`found_footy_event_composer_*`): `publishes_total{kind,outcome}`
 - Vocabulary source — [`internal/observability/vocabulary/vocabulary.go`](../internal/observability/vocabulary/vocabulary.go)
 - Emission spec — [logging.md](./logging.md)
 - Metric names + labels — populated per adapter (see architecture.md)
-- Semantic events (when shipped) — [orchestration.md](./orchestration.md)
+- Semantic events and live feed — [api.md](./api.md) and [orchestration.md](./orchestration.md)

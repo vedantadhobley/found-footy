@@ -1,4 +1,4 @@
-// vision.go — VisionConfig: tuning for the V-phase clip-validation activity
+// vision.go — VisionConfig for the clip-validation activity
 // (soccer/screen gate + clock verification via a vision LLM). The model
 // endpoint + model ID come from the shared LLMConfig (point LLM_ENDPOINT_URL
 // at the vision node, e.g. nexus/gemma-4-12b); this struct holds only the

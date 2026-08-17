@@ -1,9 +1,9 @@
-// activities.go — the V-phase per-candidate activities (rung 3b):
+// activities.go — per-candidate download, staging, metadata, and hashing activities:
 //
-//   DownloadAndStage — external Twitter fetch (once) → pre-download filter →
-//     download to worker-local scratch (md5 inline) → probe → hard-filter →
-//     stage the raw bytes to Garage. Returns md5 + staging pointer + metadata.
-//   HashVideo — internal Garage fetch → dense frame extract → dHash each.
+//	DownloadAndStage — external Twitter fetch (once) → pre-download filter →
+//	  download to worker-local scratch (md5 inline) → probe → hard-filter →
+//	  stage the raw bytes to Garage. Returns md5 + staging pointer + metadata.
+//	HashVideo — internal Garage fetch → dense frame extract → dHash each.
 //
 // Split at the staging boundary so a HashVideo retry re-fetches from Garage
 // (cheap, internal) rather than re-hitting Twitter. Terminal-but-normal
@@ -50,7 +50,7 @@ type s3Client interface {
 	Download(ctx context.Context, key string) (io.ReadCloser, int64, error)
 }
 
-// Activities bundles the V-phase per-candidate activities + their deps.
+// Activities bundles the per-candidate video activities and dependencies.
 type Activities struct {
 	Syndication syndicationClient
 	FFmpeg      ffmpegClient

@@ -1,9 +1,16 @@
 # NATS producer rebuild — the 3-subject live-feed model
 
+> **Shipped execution spec; retained as historical rationale.** The live
+> consumer contract is [`../../api.md`](../../api.md)
+> plus the schemas in the workspace NATS repository. Use the as-built code and
+> those schemas when this document differs.
+
 Rip the 6 transition-subjects out of the eventing layer and replace them with the
 consumer-driven model settled 2026-08-14: **two batch fixture subjects + one
 async event subject**, wrapped in the standard envelope, validated against the
-schemas in [`~/workspace/nats/schemas/`](../../../../nats/schemas/). This doc is
+schemas in `~/workspace/nats/schemas/`; cross-project ownership is recorded in
+the [dhobley messaging topology](../../../../../vedanta-dhobley/docs/topology.md#messaging--events).
+This doc is
 the execution spec — read it, then build it in one pass.
 
 Context: the contract is drafted + validated in the `nats/` repo. The API already

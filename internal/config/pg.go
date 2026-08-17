@@ -8,10 +8,8 @@ import "time"
 // added if a secret manager forces it, but a DSN keeps local dev +
 // tests simple.
 //
-// PG_DSN is not tagged required at the env layer because Phase S1
-// binaries don't need Postgres yet; the pg package's constructor
-// returns a descriptive error when a binary that DOES need it starts
-// without the env var set.
+// PG_DSN is not tagged required at the env layer; the adapter constructor
+// returns a descriptive error when a consuming binary starts without it.
 type PGConfig struct {
 	// DSN is a libpq / pgx connection string. Example:
 	//   postgres://ffuser:ffpass@postgres:5432/found_footy?sslmode=disable
@@ -19,9 +17,8 @@ type PGConfig struct {
 	// .env / .env.example.
 	DSN string `env:"PG_DSN"`
 
-	// MaxConns caps the pool per binary. 10 × 8 worker replicas + api
-	// stays under Postgres's default max_connections=100. Retune
-	// after Phase O has real load data.
+	// MaxConns caps the pool per binary. Reconcile this with the deployed
+	// replica count and Postgres connection budget before raising it.
 	MaxConns int32 `env:"PG_MAX_CONNS" envDefault:"10"`
 
 	// MinConns keeps a warm connection floor to absorb burst without

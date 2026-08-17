@@ -1,7 +1,10 @@
 # V-phase orchestration — the per-event `EventWorkflow` (streaming queue)
 
-**Status:** settled 2026-07-27 over an extended design walkthrough with the
-user. This **supersedes** both the earlier draft of this doc (which was
+**Status:** shipped design rationale, not the live workflow ledger. The shape
+settled 2026-07-27 and later shipped as `EventWorkflow` + `VideoWorkflow`.
+Use [`../orchestration.md`](../orchestration.md) for current behavior and
+[`../todo.md`](../todo.md) for active lifecycle defects, including FF-002,
+FF-007, FF-014, and FF-015. This **supersedes** both the earlier draft of this doc (which was
 batch-ambiguous and left 8 open sub-questions) and the three-workflow fan-out
 in [`proposals/video-dedup.md`](./proposals/video-dedup.md). `video-dedup.md`
 is retained **only** for its dedup-*algorithm* detail (frame hashing,
@@ -179,6 +182,8 @@ in flight*, B won't find A in `assets` yet → both promote → **duplicate.** F
 the instant a clip is judged new, put it in `pending`; dedup checks
 `assets ∪ pending`. Batching hid this by deduping a whole group *before* any
 vision; streaming needs the `pending` set. ~5 lines, load-bearing.
+
+<a id="which-to-keep--quality--is-a-separate-decision"></a>
 
 ### Which-to-keep (quality) is a *separate* decision
 

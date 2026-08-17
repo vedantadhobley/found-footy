@@ -18,9 +18,7 @@ type ObservabilityConfig struct {
 
 	// MetricsAddr is the listen address for the Prometheus /metrics
 	// endpoint that every binary exposes. Defaults to :8080 — each
-	// docker-compose service can override via env if the port collides
-	// with the binary's application HTTP surface (e.g. the api binary
-	// serves the public API on the same port later; the split gets
-	// resolved in Phase A).
+	// docker-compose service can override via env if needed. The API read
+	// surface uses a separate address.
 	MetricsAddr string `env:"METRICS_ADDR" envDefault:":8080"`
 }

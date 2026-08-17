@@ -1,4 +1,4 @@
-// types.go — activity I/O for the V-phase per-candidate pipeline (rung 3b).
+// types.go — activity I/O for the per-candidate video pipeline.
 package video
 
 import "github.com/google/uuid"

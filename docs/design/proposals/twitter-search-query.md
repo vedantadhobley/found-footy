@@ -1,6 +1,11 @@
 # Twitter search query — design proposal
 
-**Status:** design-first draft. Awaiting signoff before Discovery-side implementation lands.
+> **Historical design; implementation has moved on.** Query construction
+> shipped and was revised on 2026-08-15/16: distinctive canonical-name text
+> operations replaced the broad alias OR-set, and resolved aliases are now
+> disconnected. Use `internal/domain/discovery/query_builder.go`, the newest
+> entries in [`../../decisions.md`](../../decisions.md), and
+> [`../../todo.md`](../../todo.md) for current behavior and defects.
 
 **Cross-refs:**
 
@@ -133,6 +138,8 @@ Rationale for not adding event-type vocabulary (`goal` / `"missed penalty"` / `"
 - Video content IS the discriminator. `filter:videos` catches the video; the video shows what happened. LLM validation downstream verifies the content matches the expected event type (planned in Video pipeline V phase).
 
 If empirical data later shows systematic false positives (e.g. player-team match but wrong event), we can consider a per-event-type positive term. Not for MVP.
+
+<a id="d4"></a>
 
 ### D4 — Time bounds
 

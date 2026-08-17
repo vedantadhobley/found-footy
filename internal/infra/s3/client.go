@@ -3,9 +3,8 @@
 // tests run MinIO via testcontainers; both speak the same API and this
 // package doesn't distinguish.
 //
-// Phase S4.1: client wrapper with PutObject / GetObject / HeadObject /
-// DeleteObject / PresignGetObject, each folding metric + log emission
-// around the underlying aws-sdk-go-v2 call.
+// Client wraps PutObject, GetObject, HeadObject, DeleteObject, and presigning
+// with consistent metrics and log emission.
 package s3
 
 import (

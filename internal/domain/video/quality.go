@@ -3,8 +3,8 @@
 // transitive, so a new clip can bridge two assets that don't match each
 // other), this scores the cluster to pick the single highest-quality member.
 //
-// NOTE: BUILT BUT NOT WIRED (#171). The persist path's collapse() is still
-// keep-first, so IsUpgrade below decides nothing in production yet.
+// EventWorkflow's post-vision dedup path uses IsUpgrade to decide whether a
+// challenger supersedes the current keeper.
 //
 // "Quality" is judged from metadata we already capture at download time, in
 // this order:

@@ -1,4 +1,4 @@
-// persist.go — the V-phase consumer-queue activities (#164b): the steps the
+// persist.go — consumer-queue persistence activities: the steps the
 // EventWorkflow's serialized Selector runs AFTER dedup + vision, per unique
 // verified clip. Separate from the per-candidate child activities
 // (DownloadAndStage/HashVideo) because these are parent/cross-candidate work

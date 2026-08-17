@@ -11,45 +11,54 @@ reconstruct from memory.
 |---|---|
 | Data model — tables, columns, constraints | [`../internal/infra/pg/schema.sql`](../internal/infra/pg/schema.sql) |
 | How the system behaves **as built today** | the as-built ledgers in this directory (below) |
-| **Why** a choice was made | [`decisions.md`](./decisions.md) — append-only, newest first |
-| **Target** design / what's planned but unbuilt | [`design/`](./design/) |
+| Active bugs and deferred project work | [`todo.md`](./todo.md) |
+| **Why** a choice was made | [`decisions/README.md`](./decisions/) — current index plus frozen archive |
+| Target designs and point-in-time audit evidence | [`design/`](./design/) |
 | The legacy **Python** system (retired at the 2026-08-15 cutover) | [`../archive/docs/`](../archive/docs/) |
 | External API-Football behavior | [`api-football/`](./api-football/) — frozen vendor reference |
 
 Precedence when sources disagree: **code > ledger** (if a ledger is
-wrong, fix the ledger); **`decisions.md` > design doc** (a landed
+wrong, fix the ledger); **decision record > design doc** (a landed
 decision supersedes an older target design).
 
 ## The three layers
 
 - **`docs/` (here) — as-built.** What has actually shipped in the Go
   rebuild. The ledgers below.
-- **`docs/design/` — to-build.** Target architecture, proposals, and
-  audits for work not yet shipped. Index: [`design/README.md`](./design/README.md).
+- **`docs/design/` — design history and evidence.** Target architecture,
+  proposals, and point-in-time audits. Index: [`design/README.md`](./design/README.md).
 - **`archive/docs/` — legacy.** Frozen Python-era docs, next to the
-  Python code they describe (`archive/`). Still the system-of-record
-  for prod until the cutover.
+  Python code they describe (`archive/`). Use them as behavior and rollback
+  evidence; production runs the Go stack.
 
 ## As-built ledgers (this directory)
 
 - [`architecture.md`](./architecture.md) — `internal/` + `cmd/` tree, per-package status
+- [`api.md`](./api.md) — REST DTOs, playback redirects, NATS subjects, and consumer rules
 - [`orchestration.md`](./orchestration.md) — workflows + activities as shipped
 - [`observability.md`](./observability.md) — vocabulary + logging + metrics substrate
 - [`logging.md`](./logging.md) — Emit reference (how to add a Module/Action)
 - [`temporal.md`](./temporal.md) — Client/Worker adapter + registration flow
 - [`twitter-service.md`](./twitter-service.md) — Playwright-Go scraping service: HTTP contract, state machine, cookie fleet model
-- [`testing.md`](./testing.md) — test tiers (494 tests + 19 scenarios) + the git test gates
-- [`run-flow.md`](./run-flow.md) — narrative walkthrough of shipped Ingest/Monitor cycles
+- [`testing.md`](./testing.md) — test tiers and git test gates
 - [`deployment.md`](./deployment.md) — compose files + Caddy + first-time bootstrap
-- [`roadmap.md`](./roadmap.md) — roadmap to La Liga (2026-08-15)
-- [`decisions.md`](./decisions.md) — **the "why" authority**, append-only (both eras)
+- [`operations.md`](./operations.md) — environment lifecycle, production diagnostics, recovery boundaries, cookie re-auth, and rollout gates
+- [`todo.md`](./todo.md) — canonical active issue register and deferred work
+- [`decisions/`](./decisions/) — **the "why" authority**; individual new records plus the frozen pre-normalization archive
+
+## Historical evidence
+
+- [`history/`](./history/) — completed project roadmaps and delivery snapshots.
+- [`design/`](./design/) — target designs, proposals, and point-in-time audit
+  evidence, classified by [`design/README.md`](./design/README.md).
 
 ## After-session checklist
 
 Before wrapping a session that changed code:
+
 - Does any ledger here now describe something untrue? Update it in the
   same change.
-- Did a decision land (→ [`decisions.md`](./decisions.md)) or work get
-  deferred (→ [`design/`](./design/))?
+- Did a decision land (→ [`decisions/`](./decisions/)) or work get
+  deferred (→ [`todo.md`](./todo.md))?
 - Did you move or rename a doc? Grep for inbound references and fix them
   (broken links rot quietly).

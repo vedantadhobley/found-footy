@@ -39,7 +39,7 @@ type SearchRequest struct {
 // SearchResponse is the parsed body of a successful POST /search.
 // Videos is the list of discovered tweet + video URLs. Extra
 // observability fields (StopReason, Scrolls) are omitempty for
-// backward compat — Python service leaves them zero.
+// backward compatibility — older service versions leave them zero.
 type SearchResponse struct {
 	Status     string     `json:"status"`
 	Videos     []VideoRef `json:"videos"`

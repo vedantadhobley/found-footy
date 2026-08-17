@@ -3,15 +3,11 @@ package config
 
 import "time"
 
-// NATSConfig covers the workspace NATS bus every binary that publishes
-// or subscribes to found-footy events uses. Per decisions.md 2026-07-01,
-// NATS is the metadata plane (SSE fan-out + webhook delivery); video
-// bytes never traverse it.
+// NATSConfig covers the workspace bus used for the environment-scoped live
+// feed. Video bytes never traverse it.
 //
-// URL is not tagged required at the env layer because Phase S1/S2
-// binaries don't need NATS yet; the nats package's constructor returns
-// a descriptive error when a binary that DOES need it starts without
-// the env var set.
+// URL is not tagged required at the env layer; the adapter constructor returns
+// a descriptive error when a consuming binary starts without it.
 type NATSConfig struct {
 	// URL is the NATS server address. Cluster form is comma-separated:
 	//   nats://a:4222,nats://b:4222,nats://c:4222

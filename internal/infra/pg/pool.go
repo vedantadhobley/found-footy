@@ -3,11 +3,8 @@
 // pgxpool directly — that keeps the driver swap-able and lets us layer
 // observability + retry policy in one place.
 //
-// Phase S2.1: pool construction, ping, close.
-// Phase S2.2: initial schema (schema.sql, applied via docker-entrypoint-initdb.d
-// in dev and tcpostgres.WithInitScripts in tests).
-// Phase S2.3: query-level metrics + structured logs via pgx.QueryTracer;
-// pool-stats collector for pgxpool.Stat gauges at scrape time.
+// It owns pool construction, ping/close, schema verification, query-level
+// metrics and logs, and scrape-time pgxpool statistics.
 package pg
 
 import (

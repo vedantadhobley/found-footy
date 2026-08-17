@@ -1,6 +1,11 @@
 # Alias entity-resolution — experiment plan
 
-**Status:** experiment log as of 2026-07-21. Approach A tested and REJECTED. Approach C revised (Wikipedia full-text search, not infobox scrape) and RECOMMENDED. Approach D shelved for post-MVP.
+> **Retired experiment log.** Approach C shipped, but the entire
+> Wikipedia→Wikidata resolver was removed on 2026-08-16 after its resolved
+> aliases proved net-negative for live Twitter recall. Do not revive this
+> design without new measured evidence. Current discovery uses deterministic
+> text operations; see the newest entries in
+> [`../../decisions.md`](../../decisions.md).
 
 **Cross-refs:**
 

@@ -1,17 +1,17 @@
 // Activities for EventWorkflow. Four activities cover the
 // production shape:
 //
-//   1. FetchTeamAliases — pull team_aliases row (canonical_name +
-//      curated aliases) for the scoring team so the query builder
-//      has real inputs.
-//   2. SearchTweets — call the Twitter service's POST /search with
-//      the query builder's output + accumulated exclude_urls.
-//   3. StoreCandidate — persist one candidate tweet to
-//      event_search_candidates. Idempotent via
-//      ON CONFLICT DO NOTHING on (event_id, tweet_url).
-//   4. MarkDownstreamComplete — updates event_downstream_workflows
-//      so FixtureReadyToComplete stops treating this workflow as
-//      pending.
+//  1. FetchTeamAliases — pull team_aliases row (canonical_name +
+//     curated aliases) for the scoring team so the query builder
+//     has real inputs.
+//  2. SearchTweets — call the Twitter service's POST /search with
+//     the query builder's output + accumulated exclude_urls.
+//  3. StoreCandidate — persist one candidate tweet to
+//     event_search_candidates. Idempotent via
+//     ON CONFLICT DO NOTHING on (event_id, tweet_url).
+//  4. MarkDownstreamComplete — updates event_downstream_workflows
+//     so FixtureReadyToComplete stops treating this workflow as
+//     pending.
 package discovery
 
 import (
@@ -202,14 +202,12 @@ func (a *Activities) FetchTeamAliases(ctx context.Context, in FetchTeamAliasesIn
 type SearchTweetsInput struct {
 	EventID   uuid.UUID
 	FixtureID int64
-	// Query is the pre-assembled search string. Discovery-workflow
-	// builds it from (player, team, "goal") for the MVP. Team-alias
-	// OR-syntax expansion via Wikidata RAG lands in a follow-up.
+	// Query is the pre-assembled search string. EventWorkflow builds it from
+	// deterministic player tokens plus the canonical team name.
 	Query string
-	// ExcludeURLs — tweet URLs Discovery has already processed in
-	// prior attempts. Empty on the first attempt. Feeds Python
-	// twitter service's per-tweet skip + (future) consecutive-
-	// already-seen scroll early-stop.
+	// ExcludeURLs — tweet URLs EventWorkflow has already processed in prior
+	// attempts. Empty on the first attempt. The Go Twitter service uses it for
+	// per-tweet skip and the consecutive-seen early stop.
 	ExcludeURLs []string
 	// MaxAgeMinutes bounds how far back Twitter scrolls. Default 5
 	// (Python's default) if zero.
@@ -234,9 +232,7 @@ type SearchTweetsOutput struct {
 	StopReason string
 }
 
-// SearchTweets calls the Twitter service (currently Python's
-// twitter/ container via S7's HTTP client; will point at the Go
-// service once T ships) and returns the discovered video tweets.
+// SearchTweets calls the Go Twitter service and returns discovered video tweets.
 // Errors from the Twitter service surface here — Temporal retries
 // with backoff per the activity registration in EventWorkflow.
 func (a *Activities) SearchTweets(ctx context.Context, in SearchTweetsInput) (SearchTweetsOutput, error) {
@@ -272,15 +268,15 @@ func (a *Activities) SearchTweets(ctx context.Context, in SearchTweetsInput) (Se
 // event_search_candidates. Fields mirror the schema — see schema.sql
 // for the intent.
 type StoreCandidateInput struct {
-	EventID              uuid.UUID
-	FixtureID            int64
-	SearchAttempt        int
-	Query                string
-	TweetURL             string
-	TweetText            string
-	VideoPageURL         string
-	DurationSeconds      float64
-	Username             string
+	EventID               uuid.UUID
+	FixtureID             int64
+	SearchAttempt         int
+	Query                 string
+	TweetURL              string
+	TweetText             string
+	VideoPageURL          string
+	DurationSeconds       float64
+	Username              string
 	AgeMinutesAtDiscovery float64 // 0 = not extracted; NULL in the DB
 }
 

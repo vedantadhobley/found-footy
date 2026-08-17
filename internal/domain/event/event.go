@@ -6,7 +6,7 @@
 //   - id (UUID) — internal, primary key, referenced by video_shares
 //   - natural_key (TEXT) — "{team_id}_{player_id}_{type}_{seq}",
 //     UNIQUE per fixture. This is what prevents concurrent
-//     MonitorWorkflows from double-inserting the same detected goal.
+//     duplicate reconcile attempts from inserting the same detected goal.
 //
 // Both are set at construction and immutable. Player refinement
 // (unknown → known scorer) is handled by orchestration removing the
@@ -59,12 +59,12 @@ func (t Type) Valid() bool {
 //
 // Whitelist per docs/api-football/events-shape.md:
 //
-//   Goal + detail in {Normal Goal, Penalty, Own Goal} + no
-//     "Penalty Shootout" in comments                        → TypeGoal
-//   Goal + detail = Missed Penalty + no "Penalty Shootout"  → TypeMissedPenalty
-//     (a saved penalty in open play is highlight-worthy;
-//     shootout misses are just shootout mechanics, filtered.)
-//   Card + detail = Red Card                                → TypeCard
+//	Goal + detail in {Normal Goal, Penalty, Own Goal} + no
+//	  "Penalty Shootout" in comments                        → TypeGoal
+//	Goal + detail = Missed Penalty + no "Penalty Shootout"  → TypeMissedPenalty
+//	  (a saved penalty in open play is highlight-worthy;
+//	  shootout misses are just shootout mechanics, filtered.)
+//	Card + detail = Red Card                                → TypeCard
 //
 // Everything else (yellow cards, substitutions, VAR events,
 // penalty-shootout goals, or unknown enum values) → skip.

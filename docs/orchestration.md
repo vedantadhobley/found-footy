@@ -13,23 +13,23 @@ is the intent.
 **Update rule.** Every workflow/activity commit updates this doc in
 the same commit. Per the [2026-07-07 working rule](decisions.md).
 
-## Workflow inventory (2026-08-15 — Ingest, Monitor split, EventWorkflow #164c, VideoWorkflow #165 all shipped; #160 fleet live in prod)
+## Workflow inventory
 
 | Workflow | Status | Trigger | Location |
 |---|---|---|---|
-| IngestWorkflow | ✓ O1c shipped + O1e scheduled daily 00:05 UTC | Temporal Schedule `ingest-scheduled-daily` (`5 0 * * *`) | `internal/workflow/ingest.go` |
-| ActivePollWorkflow | ✓ O2 shipped + scheduled 2026-07-11 | Temporal Schedule `active-poll-scheduled` (IntervalSpec 30s) | `internal/workflow/active_poll.go` |
-| StagingPollWorkflow | ✓ O2 shipped 2026-07-11 | Temporal Schedule `staging-poll-scheduled` (cron `*/15 * * * *`, runtime-tunable) | `internal/workflow/staging_poll.go` |
-| EventWorkflow | ✓ #164c shipped 2026-08-04 (ex-DiscoveryWorkflow) | Spawned by Monitor's `ReconcileFixture` via `DownstreamSpawner` (workflow ID `event-{id}`) when `downstream_triggered` flips (2026-07-16 — Temporal-direct spawn, not NATS). **Producer** (`workflow.Go`): discovery search loop, spawns a `VideoWorkflow` child per candidate. **Consumer** (`workflow.Selector`, `event_pipeline.go`): dedup (md5 gate → post-vision category-scoped perceptual + `IsUpgrade` winner-select/supersede, #171) → vision (`ValidateClip`) → promote (`PromoteAndPersist`) → rank, per clip. Temporal-owned completion (`searchDone && inFlight==0`). pg `workflow_type` value stays `'discovery'` (internal label). See [`design/v-phase-orchestration.md`](design/v-phase-orchestration.md). | `internal/workflow/event.go` + `event_pipeline.go` |
-| VideoWorkflow | ✓ shipped 2026-08-03 (#165) | **Child** of `EventWorkflow` — one `ExecuteChildWorkflow` per candidate (awaited). Runs `DownloadAndStage → HashVideo`, returns fingerprints. | `internal/workflow/video.go` |
-| ~~VideoValidationWorkflow~~ / ~~AssetPersistenceWorkflow~~ | ⊘ **superseded** | The old O4/O5 separate-workflow split is dead — validation (`ValidateClip`) + persistence (`Promote`/`InsertAsset`/`Rank`) run as **activities inside EventWorkflow's serialized queue**, not standalone workflows (streaming redesign, 2026-07-27). | — |
+| IngestWorkflow | ✓ scheduled | Temporal Schedule `ingest-scheduled-daily` (`5 0 * * *`) | `internal/workflow/ingest.go` |
+| ActivePollWorkflow | ✓ scheduled | Temporal Schedule `active-poll-scheduled` (IntervalSpec 30s default) | `internal/workflow/active_poll.go` |
+| StagingPollWorkflow | ✓ scheduled | Temporal Schedule `staging-poll-scheduled` (cron `*/15 * * * *` default) | `internal/workflow/staging_poll.go` |
+| EventWorkflow | ✓ spawned | `ReconcileFixture` starts `event-{id}` when `downstream_triggered` flips. | `internal/workflow/event.go` + `event_pipeline.go` |
+| VideoWorkflow | ✓ child | EventWorkflow starts one awaited child per candidate. | `internal/workflow/video.go` |
+| ~~VideoValidationWorkflow~~ / ~~AssetPersistenceWorkflow~~ | ⊘ superseded | Validation and persistence run as activities inside EventWorkflow's serialized queue. | — |
 
 **Note on the ActivePoll + StagingPoll split** (2026-07-11): plan §5 W2
 speced a single `MonitorWorkflow` combining active + staging polling
 via bucket-suppression. During implementation the bucket math emerged
 as a workaround for cramming two cadences into one workflow. Split
 into two workflows on independent Temporal Schedules — see
-[`../decisions.md` 2026-07-11 workflow-split entry](decisions.md)
+the [2026-07-11 workflow-split decision](decisions.md#2026-07-11--split-monitorworkflow-into-activepollworkflow--stagingpollworkflow)
 for the full reasoning (failure isolation, runtime tunability, config
 honesty). `PreActivateUpcoming` renamed to `ActivateUpcoming` at the
 same time — the "Pre" prefix was misleading.
@@ -78,8 +78,8 @@ flowchart TD
 
 Daily fixture ingest. Refreshes the tracked-teams filter, fetches the
 relevant day(s) from api-sports.io with a smart timezone-lookahead,
-categorizes each fixture by API state, upserts to Postgres, ensures +
-resolves alias rows for every team seen, then runs two-part retention
+categorizes each fixture by API state, upserts to Postgres, ensures a
+canonical-name row for every team seen, then runs two-part retention
 (hard-delete clipless completed fixtures + reclaim Garage bytes for
 clip-bearing ones) beyond the retention window.
 
@@ -106,10 +106,6 @@ type IngestWorkflowOutput struct {
     Completed             int
     ExistingAliases       int
     InsertedAliases       int
-    AliasCacheHits        int  // Step 3.5 resolution outcomes ↓
-    AliasesResolved       int
-    AliasNoMatch          int
-    AliasFailed           int
     PrunedFixtures        int  // clipless completed fixtures hard-deleted (Step 4a)
     ReclaimedEvents       int  // clip-bearing events byte-reclaimed via DestroyEvent (Step 4b)
     Errors                []string // aggregated per-fixture/per-team failure context
@@ -134,7 +130,7 @@ simple).
         → {Refreshed, TotalTeams, PerLeagueCounts, PreservedLeagues}
       Re-fetches each tracked league's current-season roster into
       tracked_teams_cache when stale. Non-fatal: on failure fetch proceeds
-      with whatever's cached (possibly empty → fail-open, audit G2/G6).
+      with the preserved cache; an empty cache makes date fetches fail closed.
       Partial-refresh-safe (audit P1-1): a league that errors OR returns an
       empty roster (season rollover) keeps its PRIOR rows + original
       refreshed_at (so it's retried next run) instead of being wiped; only an
@@ -159,11 +155,6 @@ simple).
       → {Staging, Active, Completed, TeamRefs, Errors}
 3.  IF len(TeamRefs) > 0:
       EnsureAliasPlaceholders(TeamRefs) → {Existing, Inserted, Errors}
-3.5 IF len(TeamRefs) > 0:
-      ResolveAliasesForTeams(TeamRefs)                       [15m timeout]
-        → {CacheHits, Resolved, NoMatch, Failed, Errors}
-      Wikipedia CirrusSearch + Wikidata for teams without a wikidata_qid;
-      cache-hit skip, soft-fail per team (see § alias pattern below).
 4.  IF RetentionDays > 0 — two-part retention (#176, decisions.md 2026-08-11):
     4a. PruneOldFixtures(anchor - RetentionDays days)
           → {Deleted, ReclaimEventIDs}
@@ -185,10 +176,10 @@ across replays. Manual-date override propagates through the whole
 workflow (fetch window AND retention cutoff both computed from the
 anchor) so re-ingesting a past date behaves consistently.
 
-All eight activity methods — `GetIngestConfig`,
+The ingest activity methods — `GetIngestConfig`,
 `RefreshTrackedTeamsIfStale`, `FetchFixturesForDay`, `FetchFixturesByIDs`,
 `CategorizeAndUpsertFixtures`, `EnsureAliasPlaceholders`,
-`ResolveAliasesForTeams`, `PruneOldFixtures` — live in
+and `PruneOldFixtures` — live in
 `internal/activity/ingest/activities.go`, registered on the worker as
 methods of `*ingest.Activities`. Step 4b's `DestroyEvent` is the
 video-package `PersistActivities` activity (shared with #172's VAR
@@ -230,7 +221,7 @@ API status:
   `PST`) → `Activate(now)`. Emergency case: API says the match is
   already playing (or paused mid-play, or postponed with maybe-same-
   day resume) but our DB doesn't have it. Land as active so
-  MonitorWorkflow starts polling next cycle. See
+  ActivePollWorkflow starts polling next cycle. See
   [decisions.md 2026-07-07 status bucketing](decisions.md) for
   why SUSP/INT/PST count as Live — matches Python.
 - **Not started** (`NS`, `TBD`, etc.) → check
@@ -240,21 +231,14 @@ API status:
   [decisions.md 2026-07-07 Fixture activation triggers](decisions.md#2026-07-07--fixture-activation-triggers--staging-poll-design)).
   Otherwise stays staging.
 
-### Alias placeholder pattern (RAG deferral)
+### Canonical team-name record
 
-`EnsureAliasPlaceholders` inserts blank-resolution placeholder rows;
-**Step 3.5 `ResolveAliasesForTeams`** (shipped) then resolves them via
-Wikipedia CirrusSearch + Wikidata for teams without a `wikidata_qid`
-(cache-hit skip; soft-fail per team so a Wikidata hiccup doesn't fail
-ingest; NULL-QID teams auto-retry next cycle).
-
-Rationale: keeps IngestWorkflow independent of joi + Wikidata
-availability. If joi is down or the daily LLM quota exhausted,
-ingest still succeeds; only the resolution job pauses.
-
-This is a **deliberate departure** from plan §5 W1 which specified
-`PreCacheAliasesBatch(teams)` doing full RAG resolution inline. See
-[decisions.md 2026-07-07 RAG design deferral](decisions.md).
+`EnsureAliasPlaceholders` creates a `team_aliases` row for each observed team
+when one does not exist. The row supplies a stable canonical API-Football name
+to EventWorkflow. The Wikipedia→Wikidata resolver was removed on 2026-08-16;
+no resolution activity follows this step, and the stored `aliases` array is not
+passed to the query builder. Discovery derives player tokens and a team
+abbreviation with deterministic text operations.
 
 ### Timeouts + retry
 
@@ -265,7 +249,6 @@ Default activity options:
 Per-activity timeout overrides (same retry policy):
 - `RefreshTrackedTeamsIfStale`: 120s (~6 leagues × 2 API calls each)
 - `CategorizeAndUpsertFixtures`: 120s (DB-bound over 100s of fixtures)
-- `ResolveAliasesForTeams`: 15m (~7s/team × up to 100 teams at tournament peak)
 
 No workflow-level retry policy — an ingest failure surfaces to the
 Temporal UI; operator can manually re-run. Rationale: the workflow
@@ -289,8 +272,6 @@ ingestActs := &ingestactivity.Activities{
     FetchWindowFutureDays: cfg.APIFootball.FetchWindowFutureDays,
     ActivationWindow:      cfg.Workflows.ActivationWindow,
     RetentionDays:         cfg.Workflows.RetentionDays,
-    AliasResolver:         aliasResolver, // *alias.Resolver (nil = resolution skipped)
-    AliasThrottle:         500 * time.Millisecond,
 }
 w.RegisterWorkflow(ffwf.IngestWorkflow)
 w.RegisterActivity(ingestActs)
@@ -334,7 +315,7 @@ against the stored row and, on a real delta, calls `UpdateMutableFields` + sets
 `Structural` so the late value rides `fixture.update`. Assists arrive after the goal
 (API-Football fills the assister post-match); minute/extra get VAR-corrected.
 Identity (the `natural_key`) is never touched. Active-fixture only — the
-completed-fixture backfill is the open half of #199.
+completed-fixture backfill is tracked as [`FF-010`](./todo.md#confirmed-lower-priority-backlog).
 
 **Event debounce — scorer-aware 3-state (2026-08-05).** `natural_key` embeds
 `player_id`, so an unknown scorer (`player_id` null) and its later-attributed
@@ -416,7 +397,7 @@ is unconditional. A sweep failure is recorded, never fatal — the next tick
 retries. This is the only thing that cleans up a container the live-path
 provision/release hooks stranded (worker crash, failed release).
 
-## EventWorkflow — as shipped (#164c + #165)
+## EventWorkflow
 
 The per-goal orchestrator (renamed from DiscoveryWorkflow, decisions.md
 2026-08-03 — the workflow became the event orchestrator, so "Discovery"
@@ -433,8 +414,9 @@ consumer returns when search is done AND nothing is in flight (no idle
 timeout):
 
 **Producer** (the discovery search loop). `GetDiscoveryConfig` →
-`FetchTeamAliases` → `querybuilder.Build(player, canonical, aliases)` →
-N attempts × M spacing (`config.DiscoveryConfig`, default 15 × 60s) of
+`FetchTeamAliases` (canonical name only; resolved aliases are disconnected) →
+`querybuilder.Build(player, canonical, nil)` → N attempts × M spacing
+(`config.DiscoveryConfig`, default 15 × 60s) of
 `SearchTweets` with per-event `exclude_urls` accumulating across attempts
 (so attempts 2+ stop early on consecutive-already-seen). Each new
 candidate is persisted via `StoreCandidate` (post-hoc query-quality
@@ -479,7 +461,7 @@ complete with an `outcome_class` (the pg `workflow_type` stays `'discovery'` —
 the internal downstream label). `AssetsKept` is the LIVE count (`len(p.assets)`
 — supersede removes losers), not cumulative promotes. Methodology + rationale:
 [decisions.md 2026-08-09](decisions.md) + [`video-dedup.md`](design/proposals/video-dedup.md);
-history in [audit-2026-08-05](design/audit-2026-08-05.md) Tier-1 #1.
+history in [audit-2026-08-05](design/audits/audit-2026-08-05.md) Tier-1 #1.
 
 **Per-event Firefox fleet binding (#160, gated on `FleetEnabled`; live in prod).**
 When `GetDiscoveryConfig` returns `FleetEnabled=true`, the producer derives
@@ -498,8 +480,8 @@ Two-layer testing pattern matches plan §12:
 
 **Unit tests for activities** —
 `internal/activity/ingest/activities_test.go`. In-memory fake
-`fixture.Repo` + `alias.Repo` + `fixtureFetcher`. Fast (<10ms across
-11 tests). Tests state-transition edge cases (fresh terminal,
+`fixture.Repo` + `alias.Repo` + `fixtureFetcher`. Tests state-transition
+edge cases (fresh terminal,
 existing preserves domain fields, empty input, mixed existing/new
 aliases, prune threshold).
 

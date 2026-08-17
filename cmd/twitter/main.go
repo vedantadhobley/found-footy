@@ -1,13 +1,7 @@
 // Command twitter is the Firefox+Playwright-Go browser-automation
-// service that scrapes Twitter for goal video links. See
-// docs/design/proposals/twitter-port.md for phase T design + PoC gate.
-//
-// T/a scope: Playwright-Go + Firefox launches, stealth patches applied,
-// /health + /status. T/b: auth flow + cookie lifecycle + VNC re-auth
-// path. T/c: full /search endpoint with scroll + DOM extraction. T/b.5:
-// hardening — per-instance profile dir (multi-replica safe), idle-CPU
-// Firefox prefs (~20% container CPU savings), structured
-// twitter.auth_expired event for Grafana alerting.
+// service that scrapes Twitter for goal video links. It owns browser launch,
+// stealth patches, authentication/cookie lifecycle, status endpoints, and the
+// scrolling search surface. See docs/twitter-service.md.
 package main
 
 import (
@@ -69,18 +63,18 @@ var idleCPUFirefoxPrefs = map[string]any{
 	// launch. With Python-shape ephemeral profiles, every container
 	// restart would re-download unless we disable. We don't need
 	// malware/phishing protection for a scraping browser.
-	"browser.safebrowsing.malware.enabled":         false,
-	"browser.safebrowsing.phishing.enabled":        false,
-	"browser.safebrowsing.downloads.enabled":       false,
+	"browser.safebrowsing.malware.enabled":          false,
+	"browser.safebrowsing.phishing.enabled":         false,
+	"browser.safebrowsing.downloads.enabled":        false,
 	"browser.safebrowsing.downloads.remote.enabled": false,
 	// Telemetry / experiments / studies — nothing we need, all costs
 	// bandwidth + CPU on background pings.
-	"toolkit.telemetry.enabled":              false,
-	"toolkit.telemetry.unified":              false,
-	"toolkit.telemetry.archive.enabled":      false,
-	"datareporting.healthreport.uploadEnabled": false,
+	"toolkit.telemetry.enabled":                  false,
+	"toolkit.telemetry.unified":                  false,
+	"toolkit.telemetry.archive.enabled":          false,
+	"datareporting.healthreport.uploadEnabled":   false,
 	"datareporting.policy.dataSubmissionEnabled": false,
-	"app.shield.optoutstudies.enabled":       false,
+	"app.shield.optoutstudies.enabled":           false,
 	// Disk cache — persistent-context stores it, we regenerate it on
 	// every load anyway. Skip the write overhead.
 	"browser.cache.disk.enable": false,

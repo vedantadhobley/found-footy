@@ -1,12 +1,16 @@
 # Design Audit — 2026-06-30
 
+> **Historical pre-rebuild analysis.** Findings here informed the rebuild plan
+> and are not an active backlog. Use [`../../todo.md`](../../todo.md) for current work
+> and the later dated audits for post-rebuild evidence.
+
 A holistic look at what found-footy is, what it does well, what it does
 clumsily, and which clumsy parts are missing a *primitive* (vs which are
 just legacy inertia or solved-but-undeployed). Companion to:
 
-- [`audit.md`](../../archive/docs/audit.md) — file-level correctness audit (May 2026,
+- [`audit.md`](../../../archive/docs/audit.md) — file-level correctness audit (May 2026,
   ~50 findings still mostly open). Asks "what's wrong at this line?"
-- [`roadmap.md`](../roadmap.md) — the committed 7-phase rewrite plan.
+- [`roadmap.md`](../../history/roadmap-2026-08-15.md) — the committed 7-phase rewrite plan.
   Asks "what do we ship this quarter?"
 
 This audit asks **"is this the right shape?"** It's opinionated, and the
@@ -56,13 +60,16 @@ keep:
   validation in P2b). Shape is right; values are tunable.
 - **Caddy-based hostname routing for HTTP services.** The 2026-05
   migration from host ports to `proxy` Caddy was right — see
-  [`decisions.md`](../decisions.md). Don't revisit.
+  [`decisions.md`](../../decisions.md). Don't revisit.
 - **joi via Caddy hostname (`http://llama-small.joi`).** Stable across
   model swaps and port reassignments. Right.
 
 Everything below this point is what's clumsy.
 
 ---
+
+<a id="1"></a>
+<a id="1-the-build-deploy-gap-prod--main"></a>
 
 ## 1. The build–deploy gap: prod ≠ main
 
@@ -115,6 +122,8 @@ actually running this fix?" every session.
 
 ---
 
+<a id="2"></a>
+
 ## 2. Workflow ID conventions and identity
 
 **Current design.** Three patterns coexist:
@@ -166,6 +175,10 @@ fine and Mongo-key concerns (uniqueness, indexing, querying) differ from
 workflow-lifecycle concerns.
 
 ---
+
+<a id="3"></a>
+<a id="3-data-model-mongo-discipline-typing-identity"></a>
+<a id="3-data-model--mongo-vs-postgres-plus-schema-discipline"></a>
 
 ## 3. Data model — Mongo discipline, typing, identity
 
@@ -522,6 +535,8 @@ re-arch) and [§13](#13) (code re-org).
 
 ---
 
+<a id="4"></a>
+
 ## 4. Dedup strategy end-to-end
 
 **Current design.** Per-event scoped dedup (verified vs unverified
@@ -804,6 +819,8 @@ separate workflow scheduling. Hold.
 
 ---
 
+<a id="6"></a>
+
 ## 6. LLM concurrency and serving topology
 
 **Current state.** Two activity types make LLM calls:
@@ -836,6 +853,8 @@ free. Lean header now, queue later if metrics confuse.
 Semaphores after gateway lands.
 
 ---
+
+<a id="7"></a>
 
 ## 7. Error taxonomy and recovery
 
@@ -884,6 +903,9 @@ dominate. After that:
 collecting failure-class distribution now via Loki dashboards.
 
 ---
+
+<a id="8"></a>
+<a id="8-twitter-scraping-strategy"></a>
 
 ## 8. Twitter fleet management
 
@@ -1207,6 +1229,8 @@ account-quality scoring (needs taxonomy + tuning).
 
 ---
 
+<a id="11"></a>
+
 ## 11. Cross-project boundary — vedanta-systems API
 
 **The constraint.** vedanta-systems is the only frontend consumer
@@ -1472,7 +1496,7 @@ URL-path versioning: `/api/v1/...`. When v2 lands:
 - The OpenAPI spec at `/api/v1/openapi.json` keeps documenting the
   v1 shape until sunset; `/api/v2/openapi.json` documents v2.
 
-Versioning policy lives in [`docs/api-contract.md`](./api-contract.md)
+Versioning policy was assigned to the proposed `docs/api-contract.md`
 (empty file today; populated by this work).
 
 ### Migration path
@@ -1548,6 +1572,8 @@ API routes).
 
 ---
 
+<a id="12"></a>
+
 ## 12. Testing strategy
 
 **The constraint.** External dependencies dominate the runtime
@@ -1560,7 +1586,7 @@ that requires a live x.com or a live joi to pass isn't a real test.
 **Current state.** ~5% coverage. `tests/test_clock_parsing.py` and
 `tests/test_activity_registration.py` are the only real tests.
 `tests/test_rag_pipeline.py` is broken at import (per May
-[`audit.md`](../../archive/docs/audit.md)). No fixtures, no factories, no synthetic
+[`audit.md`](../../../archive/docs/audit.md)). No fixtures, no factories, no synthetic
 end-to-end harness. The dev stack is the de-facto test environment;
 "does it work?" is answered by ingesting a fixture and watching a
 real match.
@@ -1586,7 +1612,7 @@ real match.
    write that would have exercised it; the fix sat uncommitted
    because there was no signal it worked.
 4. **The 2026-06-30 video-rank-drift bug** (added to
-   [`todo.md`](../../archive/docs/todo.md)) is exactly the kind of partial-write /
+   [`todo.md`](../../../archive/docs/todo.md)) is exactly the kind of partial-write /
    race condition a unit test of `recalculate_video_ranks` against a
    range of synthetic inputs would have caught. None exists.
 5. **No regression catch on the 2026-06-30 deploy gap.** When
@@ -1889,6 +1915,9 @@ domain's PR is incomplete without its tests" does.
   conflate.
 
 ---
+
+<a id="13"></a>
+<a id="13-code-organization-post-phase-3"></a>
 
 ## 13. Code organization — domain-driven structure post-Phase 3
 
@@ -2226,7 +2255,7 @@ stay on luv (network round-trip costs).
 
 ## 16. Implementation order
 
-Reorganizing the existing [roadmap](../roadmap.md) given this audit:
+Reorganizing the existing [roadmap](../../history/roadmap-2026-08-15.md) given this audit:
 
 ### Phase F-0: Foundation (must-do-first, ~3 days)
 

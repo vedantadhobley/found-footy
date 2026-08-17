@@ -6,14 +6,12 @@ package config
 import "time"
 
 // LLMConfig covers the OpenAI-compatible LLM endpoint the worker binary
-// hits for vision validation + RAG alias selection. Per decisions.md
+// hits for vision validation. Per decisions.md
 // 2026-07-01, the endpoint is intentionally abstracted — the swap to
 // nexus (when it lands) is a config-only change.
 //
-// Endpoint is not tagged required at the env layer because Phase S1-S5
-// binaries don't need LLM yet; the llm package's constructor returns a
-// descriptive error when a binary that DOES need it starts without the
-// env var set.
+// Endpoint is not tagged required at the env layer; the adapter constructor
+// returns a descriptive error when a consuming binary starts without it.
 type LLMConfig struct {
 	// Endpoint is the OpenAI-compatible base URL. Example:
 	//   http://llama-small.joi
@@ -40,8 +38,8 @@ type LLMConfig struct {
 	// hosts multiple.
 	ChatModel string `env:"LLM_CHAT_MODEL"`
 
-	// EmbeddingModel is the model ID for the embedding path. Deferred
-	// until the domain layer needs embeddings; unused in Phase S6.1.
+	// EmbeddingModel reserves a model ID for a future embedding path. Current
+	// production code does not use it.
 	EmbeddingModel string `env:"LLM_EMBEDDING_MODEL"`
 
 	// ChatConcurrencyCap bounds the number of in-flight chat calls this

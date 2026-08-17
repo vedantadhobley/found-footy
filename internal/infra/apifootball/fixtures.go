@@ -1,7 +1,6 @@
 // fixtures.go — the /fixtures endpoint. The IngestWorkflow calls
-// ListFixtures every day at 00:05 UTC for a 3-day rolling window; the
-// MonitorWorkflow uses the batch-by-ID variant to refresh live match
-// state every 30s.
+// ListFixtures for its configured rolling window; ActivePollWorkflow uses the
+// batch-by-ID variant to refresh live match state at active cadence.
 //
 // Response types are DOMAIN-agnostic — they mirror what api-sports.io
 // actually returns and get translated to internal/domain/fixture types
@@ -32,12 +31,12 @@ const IDsBatchLimit = 20
 // json.Decode (the SDK uses reflection + tags). If api-sports.io adds
 // fields we need later, add them here — nothing else changes.
 type APIFixture struct {
-	Fixture  APIFixtureFixture  `json:"fixture"`
-	League   APIFixtureLeague   `json:"league"`
-	Teams    APIFixtureTeams    `json:"teams"`
-	Goals    APIFixtureGoals    `json:"goals"`
-	Score    APIFixtureScore    `json:"score"`
-	Events   []APIFixtureEvent  `json:"events,omitempty"` // present only on GetFixture, not List
+	Fixture APIFixtureFixture `json:"fixture"`
+	League  APIFixtureLeague  `json:"league"`
+	Teams   APIFixtureTeams   `json:"teams"`
+	Goals   APIFixtureGoals   `json:"goals"`
+	Score   APIFixtureScore   `json:"score"`
+	Events  []APIFixtureEvent `json:"events,omitempty"` // present only on GetFixture, not List
 }
 
 // APIFixtureFixture is the "fixture" sub-object — identity + status +
@@ -70,13 +69,13 @@ type APIFixtureStatus struct {
 }
 
 type APIFixtureLeague struct {
-	ID     int    `json:"id"`
-	Name   string `json:"name"`
+	ID      int    `json:"id"`
+	Name    string `json:"name"`
 	Country string `json:"country"`
-	Logo   string `json:"logo"`
-	Flag   string `json:"flag"`
-	Season int    `json:"season"`
-	Round  string `json:"round"`
+	Logo    string `json:"logo"`
+	Flag    string `json:"flag"`
+	Season  int    `json:"season"`
+	Round   string `json:"round"`
 }
 
 type APIFixtureTeams struct {
@@ -85,10 +84,10 @@ type APIFixtureTeams struct {
 }
 
 type APIFixtureTeam struct {
-	ID     int     `json:"id"`
-	Name   string  `json:"name"`
-	Logo   string  `json:"logo"`
-	Winner *bool   `json:"winner"` // null pre-match / on draw
+	ID     int    `json:"id"`
+	Name   string `json:"name"`
+	Logo   string `json:"logo"`
+	Winner *bool  `json:"winner"` // null pre-match / on draw
 }
 
 type APIFixtureGoals struct {

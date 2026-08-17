@@ -101,7 +101,7 @@ docker network create proxy
 ```
 
 Caddy routes live centrally at `~/workspace/proxy/caddy/caddy.d/found-footy.caddy`
-until the glob-import migration lands per workspace TODO. The Go read API (#167)
+until the workspace-owned migration changes that contract. The Go read API
 is fronted at `found-footy-<env>-api.<BASE_DOMAIN>` → `reverse_proxy
 found-footy-<env>-api:8081` — the Chi read surface; `:8080` is internal
 metrics/healthz, never exposed. The in-repo `caddy/found-footy.caddy` is the
@@ -240,11 +240,12 @@ api should log `s3_connected`. Reprovision:
 
 ## Workflow scheduling
 
-MonitorWorkflow was split into two independent Schedules on 2026-07-11
-(decisions.md); the combined poll no longer exists. Both are registered on
+The former MonitorWorkflow was split into two independent schedules on
+2026-07-11; the combined poll no longer exists. Both are registered on
 worker startup via `ensureActivePollSchedule` + `ensureStagingPollSchedule`
-in `cmd/worker/main.go` (O2), idempotently — Create swallows
-`ErrScheduleAlreadyRunning`.
+in `cmd/worker/main.go`, idempotently — Create swallows
+`ErrScheduleAlreadyRunning`. Startup does not reconcile changed definitions;
+that defect is [`FF-009`](./todo.md#confirmed-lower-priority-backlog).
 
 **ActivePollWorkflow** — every 30 seconds. Schedule `active-poll-scheduled`.
 
@@ -265,12 +266,11 @@ in `cmd/worker/main.go` (O2), idempotently — Create swallows
 - Args: empty `StagingPollWorkflowInput{}` — same zero-`ActivationWindow`→
   config fallback (default 5m).
 
-Verified live: ActivePoll cycles firing every 30s exactly. When no active
-fixtures exist (e.g. before today's ingest ran), the cycle completes early
-after `ListActiveFixtureIDs → []`.
+When no active fixtures exist, an ActivePoll cycle completes early after
+`ListActiveFixtureIDs → []`.
 
 **IngestWorkflow** — daily at 00:05 UTC. Registered on worker startup
-via `ensureIngestSchedule` in `cmd/worker/main.go` (O1e/b).
+via `ensureIngestSchedule` in `cmd/worker/main.go`.
 
 - Schedule ID: `ingest-scheduled-daily`
 - Cron: `5 0 * * *` (00:05 UTC)

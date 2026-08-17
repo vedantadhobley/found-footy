@@ -20,19 +20,16 @@ type Repo interface {
 	// BulkGet returns a map of team_id → *TeamAlias for every team_id
 	// in ids that has a cached entry. Missing IDs are simply absent from
 	// the returned map — no error. Used by Ingest's pre-caching step to
-	// skip teams whose aliases already exist.
+	// skip teams whose canonical records already exist.
 	BulkGet(ctx context.Context, ids []int) (map[int]*TeamAlias, error)
 
-	// UpsertVendorFields writes ONLY the phase-1 vendor fields
+	// UpsertVendorFields writes only the active vendor fields
 	// (canonical_name / team_code / country / city / is_national).
-	// If the row exists, phase-2 fields (wikidata_qid / aliases /
-	// resolved_at) are preserved. Used by Ingest's daily refresh —
-	// vendor data changes (team rename, venue move) but resolution
-	// data shouldn't get wiped.
+	// If the row exists, dormant resolver fields are preserved. Used by
+	// Ingest's refresh when vendor data changes.
 	UpsertVendorFields(ctx context.Context, t *TeamAlias) error
 
-	// UpsertResolution writes a full row including phase-2 fields.
-	// Used by the alias resolution activity after SetResolution has
-	// populated wikidata_qid + aliases + resolved_at.
+	// UpsertResolution writes a full row including dormant resolver fields.
+	// Retained for compatibility; production has no caller.
 	UpsertResolution(ctx context.Context, t *TeamAlias) error
 }

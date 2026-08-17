@@ -1,7 +1,9 @@
 # Test corpus + scenario harness — design proposal
 
-**Status:** design-first draft. No code touched. Do not implement
-anything from this doc until it's reviewed + signed off.
+> **Shipped design rationale.** The scenario harness and YAML corpus now live
+> under `test/` and run through `make test-corpus`. Use
+> [`../../testing.md`](../../testing.md) for the current test contract; this
+> proposal preserves the original design and may contain stale examples.
 
 **Purpose:** replace the "we test methods in isolation and hope
 the interactions work in prod" gap with a scenario-based end-to-end

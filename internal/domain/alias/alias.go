@@ -1,21 +1,12 @@
-// Package alias models per-team alias resolution: the words we feed
-// into Twitter advanced-search OR-queries to find goal-video candidates.
-//
-// Pure Go — no HTTP, no DB. Adapters wire Wikidata (lookup + fetch) and
-// pg (cache). The pipeline itself is deterministic, no LLM: multilingual
-// Wikidata aliases (11 Latin-script langs) + P1449 nicknames + P1549
-// demonyms for nationals + word-processing rules (NFD strip diacritics,
-// multilingual skip-list, ≥2-lang keep threshold, venue-city skip for
-// clubs). Design ref: docs/design/proposals/team-aliases.md.
+// Package alias models the canonical team-name record and pure text helpers
+// used by Twitter query construction. It has no HTTP or database dependency.
+// Legacy resolver fields and helpers remain for schema compatibility but have
+// no production writer.
 //
 // Callers:
-//   - Ingest activity: inserts placeholder rows (canonical vendor data
-//     only) as new teams appear; the alias resolution activity fills
-//     in wikidata_qid + aliases + resolved_at asynchronously.
-//   - Discovery activity: reads Aliases for the two teams in a fixture
-//     when building a Twitter search query.
-//   - Normalize helper: exported for shared use by the alias pipeline
-//     and the search-query builder.
+//   - Ingest inserts or refreshes canonical vendor records as teams appear.
+//   - EventWorkflow reads CanonicalName for Twitter query construction.
+//   - Text helpers normalize player and team search terms.
 package alias
 
 import (
@@ -29,16 +20,10 @@ import (
 // TeamAlias is the domain type. Field order aligned with the schema for
 // straightforward scanner mapping in the pg adapter.
 //
-// Two-phase population:
-//
-//	Phase 1 (Ingest):  CanonicalName, TeamCode, Country, City, IsNational
-//	Phase 2 (resolve): WikidataQID, Aliases, ResolvedAt
-//
-// A row can exist with only phase-1 fields populated — that means the
-// resolution pipeline hasn't run yet. Callers gate on IsResolved before
-// consuming Aliases.
+// Canonical vendor fields are active. WikidataQID, Aliases, and ResolvedAt are
+// dormant compatibility fields from the retired resolver.
 type TeamAlias struct {
-	// Phase-1 fields — from API-Football via Ingest.
+	// Active fields — from API-Football via Ingest.
 	TeamID        int
 	CanonicalName string
 	TeamCode      *string // API-Football team.code (3-letter FIFA); often absent
@@ -46,30 +31,22 @@ type TeamAlias struct {
 	City          *string
 	IsNational    bool
 
-	// Phase-2 fields — from the alias resolution pipeline.
+	// Dormant compatibility fields from the retired resolver.
 	//
 	// WikidataQID is cached permanently on first successful resolution
 	// (Wikidata QIDs for football clubs / national teams don't change).
-	// On subsequent 30-day TTL refreshes we skip the expensive fuzzy
-	// wbsearchentities lookup and just re-fetch entity JSON.
 	WikidataQID *string
-	// Aliases is the normalized lowercase word list submitted to Twitter
-	// advanced search as an OR clause. Empty slice means either "not yet
-	// resolved" (ResolvedAt is nil) or "resolved but pipeline yielded
-	// zero surviving tokens" (ResolvedAt is set) — distinguished by
-	// IsResolved().
+	// Aliases contains the former resolver's normalized token set.
 	Aliases []string
-	// ResolvedAt is set when the pipeline completes successfully. Drives
-	// the 30-day TTL check via IsFresh.
+	// ResolvedAt records the former resolver's completion time.
 	ResolvedAt *time.Time
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
-// New constructs a TeamAlias placeholder with only the phase-1 vendor
-// fields populated. Phase-2 fields stay nil / empty — the alias
-// resolution activity fills them in via SetResolution.
+// New constructs a TeamAlias canonical record with legacy resolver fields
+// left nil or empty.
 func New(teamID int, canonicalName string, isNational bool, teamCode, country, city *string, at time.Time) *TeamAlias {
 	utc := at.UTC()
 	return &TeamAlias{
@@ -84,14 +61,11 @@ func New(teamID int, canonicalName string, isNational bool, teamCode, country, c
 	}
 }
 
-// SetResolution records a completed pipeline run: the Wikidata QID that
-// was resolved, the derived alias set, and the resolution timestamp
-// (which anchors the 30-day TTL check).
+// SetResolution populates dormant resolver fields for compatibility tests and
+// archived tooling. Production has no caller.
 //
-// Passing an empty aliases slice is valid — it means "we ran the
-// pipeline and no tokens survived filtering." That's distinct from
-// "we haven't looked yet" (ResolvedAt still nil). Callers should
-// gate on IsResolved rather than len(Aliases).
+// Passing an empty aliases slice is valid and still stamps ResolvedAt, so
+// compatibility callers can distinguish populated-empty from never populated.
 func (t *TeamAlias) SetResolution(qid string, aliases []string, at time.Time) {
 	t.WikidataQID = &qid
 	// Defensive copy so callers who reuse their slice don't mutate our
@@ -102,9 +76,7 @@ func (t *TeamAlias) SetResolution(qid string, aliases []string, at time.Time) {
 	t.UpdatedAt = utc
 }
 
-// IsResolved reports whether the resolution pipeline has run for this
-// team (regardless of outcome — an empty Aliases result with ResolvedAt
-// set still counts as resolved).
+// IsResolved reports whether dormant resolver data was populated.
 func (t *TeamAlias) IsResolved() bool {
 	return t.ResolvedAt != nil
 }

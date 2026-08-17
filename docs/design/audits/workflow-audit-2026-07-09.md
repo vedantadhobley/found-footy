@@ -1,6 +1,10 @@
 # Ingest + Monitor Workflow Audit — 2026-07-09
 
-Cross-referenced current Go IngestWorkflow + MonitorWorkflow implementations
+> **Historical snapshot.** This early rebuild audit is evidence, not a current
+> punch list. Later audits reconciled its surviving findings; use
+> [`../../todo.md`](../../todo.md) for active work.
+
+Cross-referenced the then-current Go IngestWorkflow + MonitorWorkflow implementations
 against Python archive + `docs/design/rebuild-plan.md` §5 W1/W2 + decisions.md
 entries. Punch list at top, per-workflow details below.
 
@@ -49,7 +53,7 @@ own docstring, no surprises.
 
 2. **Fixture completion detection** — ✅ **SHIPPED 2026-07-11** via
    pluggable per-event workflow checklist. Design in
-   [`completion-contract.md`](./completion-contract.md); decision in
+   [`completion-contract.md`](../proposals/completion-contract.md); decision in
    [`../../decisions.md` 2026-07-11 completion-contract entry](../../decisions.md).
    Full contract implemented: Terminal + counter/winner + all events
    settled + no in-flight downstream workflows. Pre-cutover behavior

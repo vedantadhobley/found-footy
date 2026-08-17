@@ -1,10 +1,6 @@
-// Package apifootball is the api-sports.io REST adapter. Backs the
-// ingest + monitor workflows that pull fixture + event data.
-//
-// Phase S7.1: HTTP client wrapper, GET helper with metric/log
-// instrumentation, one sample method (Status) for connectivity
-// verification. Domain-specific methods (ListFixtures, GetEvents, ...)
-// land as Phase D + O activities need them.
+// Package apifootball is the api-sports.io REST adapter used by ingest and the
+// active/staging poll workflows. All routes share authentication, rate-limit
+// parsing, error classification, and instrumentation.
 package apifootball
 
 import (
@@ -91,9 +87,9 @@ type StatusResponse struct {
 		FirstName string `json:"firstname"`
 	} `json:"account"`
 	Subscription struct {
-		Plan     string `json:"plan"`
-		End      string `json:"end"`
-		Active   bool   `json:"active"`
+		Plan   string `json:"plan"`
+		End    string `json:"end"`
+		Active bool   `json:"active"`
 	} `json:"subscription"`
 	Requests struct {
 		Current  int `json:"current"`
@@ -201,8 +197,8 @@ func (c *Client) getJSON(
 // (docs/api-football/rate-limits.md), the API emits two windows with
 // similarly-named-but-distinct headers:
 //
-//   x-ratelimit-requests-remaining — DAILY quota (name has "requests")
-//   X-RateLimit-Remaining          — PER-MINUTE burst (no "requests")
+//	x-ratelimit-requests-remaining — DAILY quota (name has "requests")
+//	X-RateLimit-Remaining          — PER-MINUTE burst (no "requests")
 //
 // Header keys go through Go's canonical form (Textproto), so
 // resp.Header.Get is case-insensitive but exact-key on the canonical.

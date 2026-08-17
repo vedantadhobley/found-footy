@@ -78,7 +78,9 @@ The current archive is **v3.9.3** captured **2026-07-09**.
 | [fixtures-endpoint.md](./fixtures-endpoint.md) | `/fixtures` + `/fixtures?ids=` + response envelope | ✓ 2026-07-09 (PDF pp. 58-62) |
 | [status-codes.md](./status-codes.md) | Fixture status short codes (NS, 1H, HT, FT, PST, ...) | ✓ 2026-07-09 (PDF pp. 58-59) |
 | [rate-limits.md](./rate-limits.md) | Rate-limit headers, quotas, 429 body | ⚠ partial 2026-07-09 (headers only; plans table not in this export) |
-| [examples/](./examples/) | Real captured API responses (JSON) | as-needed |
+
+No captured response examples are retained in this directory; use production
+evidence only after applying the repository's production-safety rules.
 
 ## When agents can't find a value here
 

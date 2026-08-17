@@ -1,4 +1,4 @@
-// VideoWorkflow — the per-candidate child workflow (V-phase rung #165).
+// VideoWorkflow — the per-candidate download-and-hash child workflow.
 //
 // One instance runs per candidate video. It is the ONLY real Temporal
 // parent→child in the V-phase: EventWorkflow spawns one of these per

@@ -14,59 +14,59 @@ and plan match, no entry — silence == alignment.
 an adapter shape, or lands a new domain type updates this doc in
 the SAME commit. Not the next commit. Same commit.
 
-## As-shipped tree (2026-08-15, post Python→Go cutover — video pipeline, Chi api, N1–N8 eventing, retention + VAR all shipped since O3/d + T/c)
+## As-shipped tree
 
 ```
 found-footy/
-├── cmd/                                 3 binaries — each imports from internal/
-│   ├── api/main.go                      Phase 6 — FastAPI-shaped read surface (SSE is vedanta-systems')
+├── cmd/                                 deployable binaries; each imports from internal/
+│   ├── api/main.go                      ✓ Chi read surface (SSE is vedanta-systems')
 │   ├── twitter/main.go                  ✓ T/a+T/b+T/c: real Playwright-Go service (ephemeral profile + idle-CPU prefs)
 │   └── worker/main.go                   Temporal worker; registers Ingest + ActivePoll + StagingPoll + Event + Video workflows
 ├── internal/
-│   ├── domain/                          7 shipped, 2 stubbed
+│   ├── domain/                          active domain logic + explicit extension stubs
 │   │   ├── fixture/                     ✓ D1: model + State + Repo + tests
 │   │   ├── event/                       ✓ D2: model + State + Repo + tests
 │   │   ├── video/                       ✓ D3 + V/2 + V/3a: model + Repo + rank + perceptual dHash + Match + hard-filter + tests
-│   │   ├── alias/                       ✓ D4 (reshaped 2026-07-19): two-phase model + Repo + Normalize + Resolver (lookup pipeline) + tests
+│   │   ├── alias/                       ✓ canonical-team record + shared text operations; resolver removed 2026-08-16
 │   │   ├── team/                        ✓ TrackedTeam set — tracked-teams-cache ingest filter (team.go + repo.go)
 │   │   ├── discovery/                   ✓ Query builder (2026-07-22) + real EventWorkflow (O3/d, 2026-07-23)
 │   │   │   ├── doc.go                   Package doc — query construction, URL extraction, source scoring
 │   │   │   ├── query_builder.go         BuildTwitterQuery, ErrEmptyQuery, ErrEmptyPlayerName (D1/D4b/D4c/D4d/D7 per twitter-search-query.md)
-│   │   │   └── query_builder_test.go    18 tests — D8 name table, particles, dedup, fallback, safeguards
+│   │   │   └── query_builder_test.go    name, particle, dedup, fallback, and safeguard cases
 │   │   ├── vision/                      ✓ D5 (2026-07-28): clock.go + evaluate.go + schema.go + tests — clip-clock validation, wired into EventWorkflow consumer
-│   │   ├── session/                     ⊘ doc.go stub — build when Twitter Go service ports (post-O)
+│   │   ├── session/                     ⊘ unused extension stub; lifecycle lives in infra/firefoxfleet
 │   │   └── textanalysis/                ⊘ doc.go stub — extensibility hook per plan §4
-│   ├── infra/                           13 live
+│   ├── infra/                           live infrastructure adapters
 │   │   ├── pg/                          ✓ S2: pool + instruments + schema.sql + VerifySchema drift guard (audit P0-3) + FixtureRepo + EventRepo + AliasRepo + TeamRepo + AssetRepo/ShareRepo (#164a)
 │   │   ├── nats/                        ✓ S3: client + instruments
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
 │   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
 │   │   ├── temporal/                    ✓ S5: Client (with workerShutdownTimeout) + Worker
 │   │   ├── apifootball/                 ✓ S7 + O1a: /status probe + /fixtures + /fixtures/{ids}
-│   │   ├── twitter/                     ✓ S7: HTTP client + tests against mock (real service is Python)
+│   │   ├── twitter/                     ✓ HTTP client for the Go Twitter service + mock-backed tests
 │   │   ├── syndication/                 ✓ S7 + T/f: FetchJSON + ResolveVideo/Download (cookieless mp4) + typed taxonomy + tests
-│   │   ├── wikidata/                    ✓ S7: SPARQL client + tests
-│   │   ├── wikipedia/                ✓ S7: CirrusSearch entity resolution (per 2026-07-21) + tests
 │   │   ├── event/                       ✓ composer (pg event_log audit ONLY — N2 removed its NATS half; Kind = 6 event_log types) · N1+N5 NatsPublisher — 3-subject live-feed (fixture.clock/update, event.video) + Envelope + source config + golden tests
 │   │   ├── ffmpeg/                      ✓ V/1: probe + single/dense frame extract (single-pass fps) + faststart + semaphore + typed taxonomy + tests
-│   │   └── firefoxfleet/                ✓ #160 (LIVE in prod — FIREFOXFLEET_ENABLED=true in prod .env; envDefault false): per-event Firefox provisioner via Docker API — deterministic name/addr (no registry), idempotent Provision/Release, running-only label-counted cap, ListInstances/ReapOrphans reaper (audit P0-5) + tests
-│   ├── workflow/                        6 shipped
+│   │   └── firefoxfleet/                ✓ #160 + FF-001: per-event Firefox provisioner via Docker API — Compose-network-scoped daemon names/ownership labels/count/list/reap/release; stable event-only network alias keeps workflow addressing registry-free; idempotent lifecycle + two-fleet/one-daemon tests
+│   ├── workflow/                        shipped Temporal workflows
 │   │   ├── ingest.go                    ✓ O1c: IngestWorkflow
 │   │   ├── active_poll.go               ✓ O2: ActivePollWorkflow (30s IntervalSpec)
 │   │   ├── staging_poll.go              ✓ O2: StagingPollWorkflow (*/15 cron)
 │   │   ├── event.go                     ✓ #164c: EventWorkflow — per-goal orchestrator (producer: discovery search + spawn Video children; ex-DiscoveryWorkflow)
 │   │   ├── event_pipeline.go            ✓ #164c-b + #171: Selector consumer — md5 gate → vision → category-scoped perceptual dedup + IsUpgrade winner-select → promote/supersede → rank; assets/pending/inFlight state; searchDone&&inFlight==0 completion
 │   │   └── video.go                     ✓ #165: VideoWorkflow child (download → hash)
-│   ├── activity/                        6 packages shipped
-│   │   ├── ingest/                      ✓ O1b: 4 activities + in-memory fakes + 11 tests
+│   ├── activity/                        activity packages + shared heartbeat helper
+│   │   ├── ingest/                      ✓ config, roster, fixture fetch/upsert, canonical-team placeholder, and retention activities
 │   │   │   ├── activities.go
 │   │   │   └── activities_test.go
-│   │   ├── monitor/                     ✓ O2a: 6 activities (GetMonitorConfig, ActivateUpcoming, PollStagingFixtures, ListActiveFixtureIDs, FetchLiveFixtures, ReconcileFixture) + fakes + tests
-│   │   ├── discovery/                   ✓ O3/d: GetDiscoveryConfig, FetchTeamAliases, SearchTweets, StoreCandidate, MarkDownstreamComplete (no _test.go yet — audit gap)
-│   │   ├── video/                       ✓ V/3b: DownloadAndStage + HashVideo (staging-split + pre-download filter) + fakes + 8 tests
+│   │   ├── monitor/                     ✓ config, activation, staging/live fetch, reconcile, and signal/spawn support
+│   │   ├── discovery/                   ✓ GetDiscoveryConfig, FetchTeamAliases, SearchTweets, StoreCandidate, MarkDownstreamComplete
+│   │   ├── video/                       ✓ DownloadAndStage, HashVideo, persistence, teardown, and ranking activities
+│   │   ├── vision/                      ✓ staged-clip frame extraction + model-backed validation
 │   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when fleet disabled (FIREFOXFLEET_ENABLED=false)
-│   │   └── livefeed/                     ✓ N3+N5: the single publish-activity boundary for all NATS live-feed emits — PublishEventVideo (event.video) + PublishFixtureBatch (fixture.clock + fixture.update); thin wrapper over event.NatsPublisher + tests
-│   ├── api/                             ✓ #167 + N7: Chi read API — 3 data endpoints + a redirect: GET /fixtures(window, no params, OR ?ids= batch) /search?q=(free-text: competition/team/scorer/assist names) /events?ids= (bulk) /videos/{share_id}(302→presign chain). N7 dropped the redundant /fixtures/{id} + /events/{event_id} singles (window/bulk cover them). eventDTO carries derived `phase`+`debounce_count` (layer-2 contract, event.DerivePhase) + `assist`{id,name}|null; fixtureDTO carries league country/round + penalty{home,away}|null + winner (P2-2); dto.go + handlers.go + router.go + tests; SSE is vedanta-systems'
+│   │   ├── livefeed/                     ✓ publish-activity boundary for all NATS live-feed emits
+│   │   └── heartbeat/                    shared time-based activity heartbeat loop
+│   ├── api/                             ✓ Chi read API, DTOs, search, and share redirect; exact contract in docs/api.md; SSE is vedanta-systems'
 │   ├── bootstrap/                       ✓ S1 (NOT IN PLAN — see decisions.md 2026-07-07)
 │   │   └── bootstrap.go                 Deps + LIFO Closer registry; shared binary startup
 │   ├── config/                          ✓ S1: envconfig-based Config with per-adapter sub-structs
@@ -74,7 +74,7 @@ found-footy/
 │   │   ├── vocabulary/                  ✓ S1: typed Module + Action enums
 │   │   ├── logging/                     ✓ S1: slog Emit() + TestEmitter for unit tests
 │   │   ├── metrics/                     ✓ S1: Prometheus registry helper
-│   │   └── tracing/                     ⊘ stub (Noop tracer, ~22 lines; real OTLP Phase 5+)
+│   │   └── tracing/                     ⊘ Noop tracer stub; real OTLP is deferred
 │   ├── testutil/                        ⊘ empty (build as testing needs surface)
 │   ├── twitter/                         Twitter *service* (browser + auth + scrape); imported by cmd/twitter
 │   │   ├── browser.go                   ✓ T/a: Playwright-Go + Firefox persistent context, GetCookies + ReplaceCookies + LoadCookies + VerifySession
@@ -84,27 +84,27 @@ found-footy/
 │   │   ├── auth.go                      ✓ T/b: EnsureAuthenticated (mtime → warm-path → verify) + BackupCookies + /authenticate + /auth/verify
 │   │   ├── cookies_backup.go            ✓ T/b: Fingerprint, WriteBackup (atomic), ReadBackup, BackupFileMtime, auth_token guard
 │   │   ├── search.go                    ✓ T/c: POST /search + full DOM scrape + 4-condition scroll loop + BackupCookies hook + combined verify+search + stealth jitter
-│   │   └── *_test.go                    40 unit tests (10 cookie backup + 16 auth flow + 12 search + 2 more from T/b.5)
+│   │   └── *_test.go                    cookie, auth, browser-conversion, and search tests
 │   └── usecases/                        ⊘ doc.go stub (build when cross-domain ops surface)
 ├── docker/twitter/                      ✓ T/b: twitter service image + entrypoint (peer of internal/)
 │   ├── Dockerfile                       Playwright base + playwright-go driver + optional WITH_VNC layer (~150 MB xvfb+fluxbox+x11vnc+novnc+websockify)
 │   └── entrypoint.sh                    Conditionally boots VNC daemon stack when TWITTER_VNC_MODE=true, otherwise passthrough
 ├── migrations/                          ⊘ EMPTY BY DESIGN (audit P0-3) — flat schema.sql + VerifySchema drift guard, no migration files; first post-cutover in-place change adds one file, squashed back into schema.sql once applied
 │                                          (see decisions.md 2026-07-07)
-├── scripts/                             smoke + trigger scripts (+ probe_* dev one-shots: probe_aliases/query/lookup/vision/cookie_download, trigger_discovery, garage-bootstrap.sh)
+├── scripts/                             dev-only smoke, trigger, verification, and focused probe programs
 │   ├── smoke_repos/main.go              ✓ live pg + repo smoke test (dev only)
 │   ├── trigger_ingest/main.go           ✓ live IngestWorkflow trigger (O1d verification)
 │   ├── smoke_fleet/main.go              ✓ #160: live per-event fleet smoke — provision→healthy→release one instance (dev only; needs docker.sock + dev network)
 │   └── smoke_prod_perms.sh              ✓ non-root prod image perm smoke (fleet + video scratch write paths)
-├── test/                                ✓ scenario harness (Phase T shipped early)
+├── test/                                ✓ YAML-driven scenario harness
 │   ├── harness/                         ✓ testcontainer pg + mock apifootball + assertion engine
 │   ├── scenarios/                       ✓ YAML corpus organized by suite
 │   │   ├── basic/                       ✓ happy paths
-│   │   ├── debounce/                    ✓ 5 scenarios
-│   │   ├── faults/                      ✓ 3 scenarios
-│   │   └── edge_cases/                  ✓ 6 scenarios
+│   │   ├── debounce/                    ✓ counter and removal scenarios
+│   │   ├── faults/                      ✓ vendor-failure scenarios
+│   │   └── edge_cases/                  ✓ lifecycle edge cases
 │   └── scenarios_test.go                ✓ corpus runner (iterates YAML files)
-├── caddy/found-footy.caddy              routing stubs; not yet copied into ~/workspace/proxy/caddy.d/
+├── caddy/found-footy.caddy              non-loaded reference; live routes are owned by the proxy repo
 ├── docker-compose.dev.yml               ✓ dev stack; air hot-reload on all 3 Go binaries
 ├── docker-compose.prod.yml              ✓ runs the GO codebase — LIVE prod as of the 2026-08-15 Python→Go cutover
 ├── Dockerfile / Dockerfile.dev          ✓ multi-stage prod + air-based dev
@@ -114,15 +114,15 @@ found-footy/
 ```
 
 Legend:
-- `✓ <phase>` — shipped in that phase, has real code + tests
-- `⊘` — stubbed (usually a `doc.go` marker), waiting for its dependent phase
+- `✓` — shipped, with tests where the boundary permits deterministic coverage
+- `⊘` — explicit stub or unused extension point
 - No marker — not part of the rebuild (Python-era or config)
 
 ## Domain packages — as-shipped shape
 
-Nine domain packages: **6 with substantial logic** — fixture, event, video,
-alias, vision, team — plus discovery (query builder) and session + textanalysis
-(stubs). The richer ones loosely follow the layout below (matching
+Fixture, event, video, alias, vision, team, and discovery carry active logic;
+session and textanalysis are unused extension stubs. The richer packages
+loosely follow the layout below (matching
 [rebuild-plan.md §4](design/rebuild-plan.md#4-domain-model)), but it isn't
 uniform — notably **only fixture + event have a `state.go`** (the rest aren't
 state machines):
@@ -162,7 +162,8 @@ Repo methods shipped in `internal/infra/pg/fixture_repo.go`:
 `Get`, `Upsert`, `ListByState`, `ListActiveIDs` (cheap ID-only
 projection for ActivePollWorkflow's batched API call),
 `ListStagingBeforeKickoff`, `FixtureReadyToComplete` (the completion-contract
-evaluator, see [completion-contract.md](design/proposals/completion-contract.md)),
+evaluator, including played-result score/stored-goal parity; see the
+[FF-014 decision](decisions/2026-08-16-score-backed-goal-removal.md)),
 and the two-part retention pair (#176): `PruneCompleted` (hard-delete clipless
 aged fixtures) + `ListReclaimableEventIDs` (events of clip-bearing aged fixtures
 with live shares → the workflow's `DestroyEvent` byte-reclaim loop; keeps rows as
@@ -205,149 +206,24 @@ and `rank.go` (`CompareShares` — the deterministic frontend tie-break).
 
 ### alias domain (D4)
 
-Reshaped 2026-07-19 for the deterministic (no-LLM) Wikidata pipeline;
-see [decisions.md 2026-07-19](decisions.md) and
-[proposals/team-aliases.md](design/proposals/team-aliases.md).
+The Wikipedia→Wikidata resolver was removed on 2026-08-16 after live tests
+showed its broad alias set reduced Twitter recall. The package now has two
+active responsibilities:
 
-Core type `alias.TeamAlias`. Two-phase fields:
+- `TeamAlias` and `alias.Repo` retain the `team_aliases` compatibility record.
+  Ingest calls `EnsureAliasPlaceholders` so each observed team has a stable
+  canonical API-Football name. The old resolution columns and methods remain
+  in the schema/API but have no production writer.
+- `TokenizePlayerName` performs the deterministic text normalization used by
+  the discovery query builder: transliterate to ASCII, split punctuation and
+  dashes, drop short/digit/particle noise, and preserve distinct tokens.
 
-- Phase-1 (vendor, Ingest-populated): `team_id`, `canonical_name`,
-  `team_code`, `country`, `city`, `is_national`.
-- Phase-2 (resolution-populated): `wikidata_qid`, `aliases`, `resolved_at`.
-
-Predicates: `IsResolved()`, `IsFresh(now, ttl)` — the 30-day TTL check
-runs at pipeline read-time before Discovery consumes aliases.
-
-Setter: `SetResolution(qid, aliases, at)` writes all three phase-2
-fields atomically + copies the aliases slice defensively.
-
-Normalize helper: NFD Latin-diacritic strip, preserved case. Exported for
-the (future) Twitter search-query builder — **currently no production
-caller** (tests only).
-
-Repo methods shipped: `Get`, `BulkGet`, `UpsertVendorFields`,
-`UpsertResolution`. The Upsert split enforces the invariant that
-Ingest's daily vendor-refresh CANNOT wipe an existing resolution —
-`UpsertVendorFields` writes only phase-1 columns via ON CONFLICT DO
-UPDATE. `UpsertResolution` writes both phases and is the only entry
-point for the (upcoming task #134) resolution activity.
-
-**Selection pipeline (2026-07-20, task #134):** The QID → `[]string`
-aliases step. `Resolver.Select` fetches the team entity, extracts
-multilingual aliases + labels (11 Latin-script langs: en/es/fr/it/pt/de/ca/gl/nl/pl/ro) + P1449 nicknames + canonical name tokens, runs
-the keep rule (≥2 langs OR P1449 OR canonical), rescues single-lang
-English aliases (LFC, CFC, MCFC), and — for clubs — drops the venue
-city token if it's not in the canonical name (Arsenal ≠ London;
-Liverpool ✓ Liverpool). Nationals additionally fetch the linked
-country entity (via P17) and inject English P1549 demonyms
-(Argentina → Argentine + Argentinian + Argentinean).
-
-Skip-list (`skiplist.go`) drops pure organizational descriptors +
-articles across 11 languages. Explicit "never skip" carve-outs for
-team-identifying words that look generic — `united, city, athletic,
-sporting, real, rangers, rovers, borussia, juventus, elftal,
-mannschaft, seleção, seleccion, oranje, azzurri` — so Python's LLM
-over-filtering behavior doesn't recur.
-
-Output is sorted for stable pg storage + human-diffable rows.
-
-**Ingest wiring (2026-07-20, task #134):** New activity
-`ResolveAliasesForTeams` runs after `EnsureAliasPlaceholders` in
-`IngestWorkflow`. Per-team loop: `BulkGet` existing rows → skip
-cache-hits (row has `wikidata_qid` set) → for each miss,
-`AliasResolver.Resolve` (fuzzy lookup) → `AliasResolver.Select`
-(entity fetch + selection) → `AliasRepo.UpsertResolution`. Sequential
-with 500ms throttle between teams (belt-and-braces against vendor
-rate limits — Wikipedia's CirrusSearch handles 200 req/s per IP,
-Wikidata SPARQL is friendlier, but the throttle keeps a runaway
-loop from ever tripping either). Soft-fail
-per team — a Wikidata hiccup leaves the placeholder row and gets
-retried on the next Ingest cycle. Mirrors Python's per-day-fixture-
-team pattern (workflow.execute_activity in a loop; not all tracked
-teams at once). Output counts: cache_hits, resolved, no_match, failed.
-
-**Per-team API-Football enrichment (2026-07-20, task #142):** Each
-cache-miss team in `ResolveAliasesForTeams` first calls the new
-`apifootball.GetTeamProfile(teamID)` — one `GET /teams?id=X` per
-team. Returns `venue.city` (native-language, e.g. "Milano" not
-"Milan"), authoritative `team.country` (works for friendlies where
-`league.country == "World"`), `team.national` (source of truth), and
-`team.code` (3-letter FIFA/UEFA). Enriched vendor fields are upserted
-back to `team_aliases` immediately via `UpsertVendorFields` so the
-row is captured even when Wikidata resolution fails downstream. Then
-the enriched values (city especially — decisive for the club-branch
-scoring's short-circuit) get passed into `alias.LookupInput` for the
-Wikidata pipeline. Ports Python's `get_team_info` call in
-`archive/src/activities/rag.py:555`. Cost: 1 API-Football call per
-team lifetime (cache-hits skip both this call and Wikidata). Soft-fail
-per team — profile fetch error keeps the TeamRef fallback values.
-
-**Lookup pipeline (2026-07-21, task #147):** The name → Wikidata QID
-resolution step. `Resolver` composes a `WikipediaResolver` interface
-(CirrusSearch full-text candidate generation) with a
-`WikidataFetcher` interface (P31 verification + alias extraction) —
-both injected so the domain stays pure Go. Two branches on
-`LookupInput.IsNational`:
-
-- Clubs (`lookup_club.go`): ONE Wikipedia CirrusSearch query with
-  template `{name} {country} football club` → hits with Wikidata
-  QIDs (extracted from `pageprops.wikibase_item`) → ONE SPARQL P31
-  batch verify against Wikidata's ontology (accept: Q476028
-  association football club, Q103229495 men's association football
-  team; reject: Q2412834 reserve team, Q51481377 women's football
-  club) → first Wikipedia-ranked survivor wins. 2 HTTP calls per
-  cache-miss team.
-- Nationals (`lookup_national.go`): same shape, query is `{country}
-  men's national football team` (Wikipedia's article-title convention
-  makes this near-deterministic). P31 accept set adds Q135408445
-  men's national football team and legacy Q6979593; reject Q6997908
-  women's national. USA substituted to "United States" per Wikipedia
-  article-title convention.
-
-Fallback: on SPARQL failure the resolver takes Wikipedia's top hit
-unconditionally rather than cascading to NoMatch. CirrusSearch's
-BM25 + field-boosted ranking is generally good enough that even
-without type verification the top hit is right; graceful degradation
-beats a whole-roster miss during vendor blips.
-
-`ErrNoMatch` when Wikipedia returns zero hits (or zero with valid
-`wikibase_item`) — legitimate for obscure teams not on Wikipedia,
-not a bug. In practice 38 of 38 tracked-league teams resolve on the
-2026-04-26 dev roster.
-
-**P31 batch verification (2026-07-20, task #143):** `wikidata.BatchGetP31([qids])`
-sends ONE SPARQL query (`SELECT ?item ?type WHERE { VALUES ?item { … } ?item wdt:P31 ?type }`)
-and returns QID → P31 type list. Structural type check replaces the
-earlier text heuristics — TV channels, stadiums, museums, disambiguation
-pages, supporters' associations, match instances all get dropped even
-when their descriptions happen to contain "football".
-
-**Why Wikipedia + Wikidata split (design ref
-[`proposals/alias-entity-resolution.md`](design/proposals/alias-entity-resolution.md)):**
-Wikidata's `wbsearchentities` is a label + alias prefix index — misses
-entities whose mention doesn't share a prefix with the canonical label
-(Nice ≠ OGC Nice's prefix). Wikipedia's CirrusSearch (ElasticSearch
-BM25 over article body) finds them via context-augmented queries.
-Wikipedia articles carry `pageprops.wikibase_item` → the Wikidata QID
-bridges cleanly back to the structured KB for aliases, P31, and
-demonyms. **Wikipedia is the entity resolver; Wikidata is the alias
-source.**
-
-Adapter surface consumed by the Resolver:
-- `wikipedia.SearchAndResolve(query, opts)` — one HTTP round-trip
-  (`list=search` + `generator=search` + `prop=pageprops` composed)
-  returning `[]Hit{Title, WikidataQID, Index}`. `internal/infra/wikipedia/`.
-- `wikidata.BatchGetP31(qids)` — one SPARQL query per Resolve.
-- `wikidata.GetEntity(qid)` — used by the SELECT phase for alias
-  extraction (unchanged from earlier).
-
-Shared word-processing in `text.go`: NFD normalize, strip diacritics,
-`ß→ss`, split on whitespace/dashes/slashes, strip periods/commas/
-apostrophes, lowercase, drop ≤2 char / all-digit / CamelCase-concat.
-
-Integration test in `lookup_integration_test.go` verifies real
-Wikipedia + Wikidata resolutions for 4 teams (Liverpool, Man United,
-France, Brazil) — skipped in `-short`.
+`EventWorkflow` reads the stored canonical name, falls back to the event's team
+name, and passes no resolved aliases to `discovery.Build`. The builder combines
+all significant player-name tokens, the quoted canonical team name, and a
+derived team abbreviation. The retired resolver design remains in
+[`team-aliases.md`](design/proposals/team-aliases.md) and
+[`alias-entity-resolution.md`](design/proposals/alias-entity-resolution.md).
 
 ### vision domain (D5) — shipped 2026-07-28
 
@@ -355,8 +231,8 @@ Clip-validation logic, pure + table-tested (no I/O, no model). Ports the Python
 clock parsers with a period-awareness fix.
 
 - `clock.go` — scorebug field parsers (`parseClockField`, `parseAddedField`,
-  `parseStoppageClockField` — the last strips a leading `+`, since gemma returns
-  `01:48` and Qwen `+1:48`) + `periodOf` (the H1/H2/ET1/ET2 map, verified against
+  `parseStoppageClockField` — the last accepts both `01:48` and `+1:48` model
+  output) + `periodOf` (the H1/H2/ET1/ET2 map, verified against
   real API-Football data).
 - `evaluate.go` — `Evaluate(frames, Expected, tol)`: soccer/screen majority
   gates → period-aware clock check → `Outcome` (verified/unverified/rejected).
@@ -425,10 +301,8 @@ Adapter-specific notes:
   `failedIDs`. See decisions.md 2026-07-09 refactor entry.
 
 **Twitter service note.** `internal/infra/twitter/` is the HTTP client;
-tests pass against a mock. The actual twitter container in dev runs
-the real Go Twitter search service (T/a+T/b+T/c shipped 2026-07-23; Python
-`twitter/` in prod). Wire-up deferred until the Go twitter service
-lands.
+tests pass against a mock. Dev and prod Twitter containers run the Go browser
+service. The archived Python service is rollback evidence only.
 
 `twitter.Client.Search(ctx, addr, req)` takes a **per-call base address**
 (#160): empty `addr` → the shared `TwitterConfig.BaseURL` (pre-#160

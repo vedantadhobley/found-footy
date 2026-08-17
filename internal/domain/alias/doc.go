@@ -1,9 +1,6 @@
-// Package alias owns team-alias derivation for Twitter goal-video
-// search queries. Two phases: Ingest inserts placeholder rows keyed by
-// API-Football team_id; the resolution activity runs a deterministic
-// Wikidata pipeline (fuzzy QID lookup + multilingual alias fetch +
-// P1449/P1549 + word-processing rules) and populates aliases. Resolution
-// is permanent (resolve-once — a set wikidata_qid is skipped forever;
-// there is NO TTL). No LLM. Design ref:
-// docs/design/proposals/team-aliases.md.
+// Package alias owns the canonical API-Football team record and deterministic
+// text operations used by Twitter query construction. The former
+// Wikipedia/Wikidata resolver was removed on 2026-08-16; its schema fields and
+// compatibility methods remain dormant pending cleanup. See
+// docs/architecture.md and the historical design proposal.
 package alias

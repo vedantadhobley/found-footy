@@ -40,14 +40,15 @@ Workspace-wide rules, node topology, and cross-project decisions live in [`~/wor
 This file is your front door. Which section applies depends on why you
 landed here:
 
-- **Working on the Go system** (what prod runs now) → read [§ Go system](#go-system-current-active-work) first,
-  then [`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md) is the architecture reference.
+- **Working on the Go system** (what prod runs now) → read [§ Go system](#go-system-current-active-work)
+  and [`docs/README.md`](./docs/README.md), then follow its authority map to the
+  focused as-built ledger for the subsystem.
 - **Consulting the legacy Python reference** (archived at cutover; the
   pre-cutover system-of-record) → skip to [§ Python legacy stack](#python-legacy-stack-archived).
 
 **Current branch context**: `rebuild/go` is the active branch AND what
 prod runs. The Python→Go cutover happened **2026-08-15** (see
-[`docs/decisions.md`](./docs/decisions.md)); prod containers build from
+[`docs/decisions/README.md`](./docs/decisions/)); prod containers build from
 this branch's `Dockerfile`. `main` still holds the Python codebase as the
 preserved rollback (its data volumes are kept, not wiped). A merge of
 `rebuild/go` → `main` is deliberately held until the Go stack proves a
@@ -56,25 +57,30 @@ clean match-day.
 ## Go system (current active work)
 
 Full ground-up rewrite from Python to Go 1.25, **in prod since the
-2026-08-15 cutover**. [`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md)
-is the architecture reference (§1–§16: architecture, schema, adapters,
-workflows, deployment, migration).
+2026-08-15 cutover**. Current authority is code, the focused as-built ledgers,
+the decision log, and the issue register. The original
+[`rebuild plan`](./docs/design/rebuild-plan.md) is historical target evidence;
+large parts of its topology, schema, naming, deployment, and cutover design were
+superseded before production.
 
 The phased-delivery table that used to live here drifted badly (it was
-frozen at 2026-07-07), so this file no longer tracks phase status. For
-current state, use the live sources: the **`TaskList`** is the punch
-list, and the as-built ledgers below describe what actually shipped per
-package / workflow. The rebuild is complete through cutover; remaining
-work is hardening + features (Reddit source, observability backfill, the
-stale-fixture reaper, dev/prod parity) — all tracked in `TaskList`.
+frozen at 2026-07-07), so this file no longer tracks phase status. Use
+[`docs/todo.md`](./docs/todo.md) for active bugs and deferred work. The
+as-built ledgers below describe what actually shipped per package and
+workflow. Point-in-time audits preserve evidence; they are not live task
+lists.
 
 **Where to look for Go rebuild work:**
 
-- **The live punch list is the task tracker** (`TaskList`), kept current as work ships. The latest full audit is [`docs/design/audit-2026-08-15.md`](./docs/design/audit-2026-08-15.md) — the pre-MLS-reset audit (7 code dimensions + a doc-staleness review) with the live fix + follow-up list; the prior [`docs/design/audit-2026-08-05.md`](./docs/design/audit-2026-08-05.md) (Tier 1–4 code gaps → the G-series #173–#180, mostly shipped; doc-restructure plan since executed) remains the code-to-code reference. The older [`docs/design/proposals/workflow-audit-2026-07-09.md`](./docs/design/proposals/workflow-audit-2026-07-09.md) is a **historical O1/O2 (Ingest+Monitor) audit — nearly all P0/P1 SHIPPED**; read it for that era's history only, not as the live list. Don't re-derive an audit that already exists.
-- [`docs/design/proposals/`](./docs/design/proposals/) — **design-first drafts for phases before they're committed.** Look here before proposing designs — all current phase proposals SIGNED OFF: `discovery.md` (O3/a unblocked, 2026-07-16), `twitter-port.md` (T/a unblocked after O3/a-c ship, 2026-07-16), `video-dedup.md` (V/a unblocked after T ships, 2026-07-16), `team-aliases.md` (blocks team-alias domain package, 2026-07-19). `monitor.md` SUPERSEDED — historical only. `workflow-audit-2026-07-09.md` and `api-football-audit-2026-07-09.md` are cross-cutting audits, not phase proposals.
-- [`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md) — **the design bible for the TARGET architecture**. §1-§16 covers architecture, schema, adapters, workflows, deployment, migration. Read the section relevant to what you're touching before starting.
-- [`docs/design/python-functional-spec.md`](./docs/design/python-functional-spec.md) — **behavioral spec of the CURRENT Python system** — WHAT it does, not HOW. Data schema, per-workflow contracts, cross-workflow coordination, failure modes, edge cases, config reference. Authoritative "does Python do X?" reference during Go implementation.
-- [`docs/run-flow.md`](./docs/run-flow.md) — narrative walkthrough of shipped Ingest + Monitor cycles with inline `[GAP]` markers. Reads as connective tissue between the ledgers.
+- [`docs/todo.md`](./docs/todo.md) is the canonical issue register. The latest full audit is [`docs/design/audits/audit-2026-08-15.md`](./docs/design/audits/audit-2026-08-15.md); earlier audits remain evidence snapshots. Validate an old finding against current code before scheduling it, then give accepted work a stable ID in `docs/todo.md`.
+- [`docs/design/README.md`](./docs/design/README.md) classifies the rebuild plan,
+  proposals, and audits by current disposition. They preserve intent and
+  evidence; never implement one without verifying it against code, decisions,
+  the relevant as-built ledger, and `docs/todo.md`.
+- [`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md) — historical
+  target architecture (§1–§16). Consult it when original rationale matters;
+  do not use it as the current implementation contract.
+- [`docs/design/python-functional-spec.md`](./docs/design/python-functional-spec.md) — behavioral spec of the retired Python system — WHAT it did, not HOW. Use it and `archive/` as parity evidence, not as the current architecture.
 - [`docs/design/README.md`](./docs/design/README.md) — routing index for per-topic rebuild docs.
 - [`docs/architecture.md`](./docs/architecture.md) — **as-shipped ledger** of internal/ + cmd/ tree with per-package status.
 - [`docs/orchestration.md`](./docs/orchestration.md) — **as-shipped ledger** of workflows + activities.
@@ -83,36 +89,31 @@ stale-fixture reaper, dev/prod parity) — all tracked in `TaskList`.
 - [`docs/temporal.md`](./docs/temporal.md) — **as-shipped ledger** of Client/Worker adapter + registration flow.
 - [`docs/testing.md`](./docs/testing.md) — **as-shipped ledger** of the test tiers (unit + integration + scenarios).
 - [`docs/deployment.md`](./docs/deployment.md) — compose files + Caddy + first-time bootstrap steps.
-- [`docs/decisions.md`](./docs/decisions.md) — append-only architectural decisions, including divergences from `rebuild-plan.md`.
+- [`docs/decisions/README.md`](./docs/decisions/) — current architectural-decision index and frozen pre-normalization archive.
 - [`internal/observability/vocabulary/vocabulary.go`](./internal/observability/vocabulary/vocabulary.go) — typed enum registry (Module, Action). Every log emission uses these. Adding a new Module or Action = one const declaration.
 - [`internal/infra/pg/`](./internal/infra/pg/) — the **template** all future adapters follow: `Instruments` bundle + `RegisterMetrics` constructor + framework-native tracer + prometheus.Collector for scrape-time stats.
 
 ## Working discipline (mandatory, since 2026-07-07 retro)
 
-Learned the hard way — Phases S1–O1d shipped without living-doc
-updates, and IngestWorkflow drifted from `docs/design/rebuild-plan.md` §5 W1
-in six places before anyone noticed. The retro caught the damage;
-this section prevents recurrence.
+Learned the hard way — early phases shipped without living-doc updates and the
+plan, code, and ledgers diverged silently. The retro caught the damage; this
+section prevents recurrence without treating the now-historical target plan as
+current truth.
 
 **Before writing code** for any workflow, activity, adapter, or
 domain change:
 
-1. **Read the plan §.** `docs/design/rebuild-plan.md` is the design bible.
-   Find the section relevant to what you're about to touch (§2 tree,
-   §3 schema, §4 domain, §5 orchestration, §9 adapters, §11 obs,
-   etc.). Read it before touching code. If you don't know which §,
-   see `docs/design/README.md` for the mapping.
-2. **Read the archive/ Python** — as INPUT, not template. The
-   Python code is the reference implementation for BEHAVIOR ("what
-   was Python doing when X happened?"). It is NOT the template for
-   HOW to write the Go version. The rewrite exists to raise the
-   quality bar: enterprise-grade code, thoughtful concurrency where
-   safe, clean domain boundaries. Copy the behavior, redesign the
-   shape.
-3. **Surface deviations BEFORE coding.** If the plan or Python
-   behavior implies design X and you want to do Y, propose Y to the
-   user with reasoning first. Silent design decisions are the
-   specific failure mode this discipline exists to prevent.
+1. **Read the current authority.** Start at `docs/README.md`, then read the
+   accepted issue, relevant as-built ledger, decisions, and current code. Verify
+   live state when the fact can drift.
+2. **Consult history when it answers a real question.** Use the rebuild plan for
+   original intent and `archive/` Python for prior behavior, never as templates
+   or automatic requirements. Re-verify old audit claims before scheduling
+   them.
+3. **Surface material design changes before coding.** If the requested fix
+   requires changing a current contract or recorded decision, propose the new
+   invariant and its tradeoffs first. Do not create a silent convention from a
+   historical plan or implementation accident.
 
 **When shipping the change:**
 
@@ -121,10 +122,11 @@ domain change:
    temporal, testing, etc.) get updated with what shipped in the same commit
    that ships the code. A code-only commit is treated as incomplete —
    same status as missing tests.
-5. **Log divergences in `docs/decisions.md`.** If what shipped
-   differs from `rebuild-plan.md`, add an append-only entry with
-   date + rationale. Reference the diverged plan § so the doc trail
-   is auditable.
+5. **Record durable decisions.** If a change alters a current contract or
+   supersedes a recorded decision, add an individual record under
+   `docs/decisions/` and route it from that directory's README.
+   Reference historical plan material only when it materially explains the
+   choice.
 6. **Verify `git diff --stat --cached` matches the commit message
    before push.** Write/Edit tool failures produce silent no-ops.
    If the commit message says "filled observability.md" but the diff
@@ -137,7 +139,7 @@ domain change:
 7. **Enterprise-grade > Python-shape.** Python was expedient. The
    rewrite is what production should be. Concrete implications:
      - **Concurrency where safe + beneficial.** `workflow.Go` for
-       per-fixture parallelism in MonitorWorkflow. Goroutines with
+       per-fixture parallelism in ActivePollWorkflow. Goroutines with
        proper error aggregation for pipeline stages. Don't Python-port
        sequential loops when independent work is available.
      - **Typed everything.** Vocabulary enums for logs. Typed errors
@@ -157,7 +159,7 @@ domain change:
 **When in doubt, ask.** The user would rather answer a question
 mid-flow than review a commit that violated their intent.
 
-See the [2026-07-07 doc retro closure](./docs/decisions.md) for the
+See the [2026-07-07 doc retro closure](./docs/decisions.md#2026-07-07--doc-retro-closure) for the
 history that produced these rules.
 
 
@@ -222,9 +224,9 @@ system behaved (Grafana/Loki queries, edge cases, the RAG pipeline).
 - [`archive/docs/rag.md`](./archive/docs/rag.md) — Wikidata + LLM team-alias pipeline
 - [`archive/docs/twitter-auth.md`](./archive/docs/twitter-auth.md) — browser automation, cookie lifecycle, VNC re-auth
 - [`archive/docs/operations.md`](./archive/docs/operations.md) — Python-era runbook
-- [`docs/decisions.md`](./docs/decisions.md) — append-only architectural decisions log (both eras; stays at `docs/`)
-- [`archive/docs/todo.md`](./archive/docs/todo.md) — Python-era active work + open bugs (largely superseded by rebuild but bugs still real in prod)
-- [`archive/docs/roadmap.md`](./archive/docs/roadmap.md), [`archive/docs/sprints.md`](./archive/docs/sprints.md) — Python-era rewrite plan (partially superseded — Phases 1-4 shipped and are in prod)
+- [`docs/decisions/README.md`](./docs/decisions/) — architectural decisions index; the pre-normalization log remains a frozen archive.
+- [`archive/docs/todo.md`](./archive/docs/todo.md) — frozen Python-era work and bug history; re-verify any relevant behavior against the Go system before intake
+- [`archive/docs/roadmap.md`](./archive/docs/roadmap.md), [`archive/docs/sprints.md`](./archive/docs/sprints.md) — historical Python-era delivery plans; no longer production status
 - [`archive/docs/proposals/`](./archive/docs/proposals/) — Python-era feature designs
 - [`archive/deploy/INFRA-NOTES.md`](./archive/deploy/INFRA-NOTES.md) — Caddyfile entries + cross-project network setup
 

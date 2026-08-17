@@ -1,6 +1,10 @@
 # API-Football Adapter Audit — 2026-07-09
 
-Cross-referenced the four seeded `docs/api-football/*.md` reference files
+> **Historical snapshot.** This early adapter audit is evidence, not a current
+> punch list. Revalidate claims against code and the frozen vendor reference;
+> use [`../../todo.md`](../../todo.md) for active work.
+
+Cross-referenced the four then-seeded `docs/api-football/*.md` reference files
 against the Go codebase in one overnight sweep. Findings organized so
 morning triage can move fast.
 

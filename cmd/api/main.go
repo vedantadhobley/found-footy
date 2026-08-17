@@ -1,10 +1,6 @@
-// Command api is the HTTP + SSE service serving the vedanta-systems
-// frontend and any other external callers. Runs Chi + Huma per §8, with
-// SSE fan-out subscribing to workspace NATS (§11 decision 2026-07-01).
-//
-// Phase S2.4: opens the pg pool at startup, blocks until SIGINT/SIGTERM,
-// closes the pool cleanly on shutdown. Chi + Huma router lands in
-// Phase A when the read endpoints are ready to serve real data.
+// Command api serves the read-only Chi HTTP contract consumed by
+// vedanta-systems. It reads Postgres, presigns Garage objects, and does not own
+// SSE fan-out. See docs/api.md.
 package main
 
 import (
@@ -63,14 +59,14 @@ func main() {
 
 		// No Temporal client here. The read API serves fixtures/events/videos
 		// from Postgres + S3 and does not use Temporal. A prior placeholder
-		// (`_ = tempClient`, for future Phase-A on-demand StartWorkflow
+		// (`_ = tempClient`, for hypothetical on-demand StartWorkflow
 		// endpoints) constructed a client whose FATAL health probe took the
 		// whole public API down when Temporal briefly blinked during an air
 		// rebuild (2026-08-14) — a read surface must not die on a service it
 		// doesn't use. Re-add it lazily / non-fatally (cf. #170) when the
 		// StartWorkflow endpoints actually exist. See decisions.md 2026-08-14.
 
-		// Public read-API surface (#167a). Chi router on cfg.API.ListenAddr
+		// Public read-API surface. Chi router on cfg.API.ListenAddr
 		// (Caddy fronts it — container port only). Graceful drain is a closer
 		// so SIGTERM stops accepting + finishes in-flight requests before the
 		// pool/nats deps close (LIFO). A listen failure (e.g. port in

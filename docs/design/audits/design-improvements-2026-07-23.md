@@ -1,5 +1,9 @@
 # Design-improvement notes — 2026-07-23
 
+> **Historical snapshot.** This was an intermediate improvement backlog during
+> the rebuild. It is not current status; surviving work must be represented in
+> [`../../todo.md`](../../todo.md).
+
 Running list of design opportunities surfaced during the rebuild — either
 places where the current implementation is expedient rather than right,
 where new patterns emerged mid-build that the earlier code doesn't reflect
@@ -148,7 +152,7 @@ there. Half-day for a first-pass analytics query.
 ### 6. Cross-event candidate dedup at video-asset level, not per-event
 
 > **REJECTED 2026-07-25.** Cross-event / per-fixture dedup is dead — see
-> [`decisions.md` 2026-07-25](../decisions.md). We tried it in Python and it
+> [`decisions.md` 2026-07-25](../../decisions.md). We tried it in Python and it
 > removed legitimate goals (visually-similar distinct goals collapsed into
 > one). The Miami case below is real, but the fix is **timestamp extraction**
 > — the clock-check rejects the mismatched-minute clip from the wrong event —
@@ -395,13 +399,13 @@ used yt-dlp per video, serially).
 Surfaced during the 2026-07-07 to 2026-07-11 workflow-design conversations
 that produced Monitor + Ingest as they exist today. Deferred at the time,
 still real, some are Aug-14 blocking or near-blocking. Sourced from
-[`docs/design/proposals/monitor.md`](./proposals/monitor.md) §3-4 and
-[`docs/design/proposals/workflow-audit-2026-07-09.md`](./proposals/workflow-audit-2026-07-09.md)
+[`docs/design/proposals/monitor.md`](../proposals/monitor.md) §3-4 and
+[`docs/design/proposals/workflow-audit-2026-07-09.md`](./workflow-audit-2026-07-09.md)
 P1/P2 items that never became tasks.
 
 ### 15. Adaptive staging poll tiering
 
-[`monitor.md`](./proposals/monitor.md#1-adaptive-staging-tiering) proposed a
+[`monitor.md`](../proposals/monitor.md#1-adaptive-staging-tiering) proposed a
 kickoff-proximity tiered poll: within 4h → every 15 min, 4-24h → every
 60 min, 24h+ → daily via Ingest only. Currently we run a flat 15-min
 cron for all staging fixtures regardless of kickoff distance. That's
@@ -418,7 +422,7 @@ Land during a lull.
 
 ### 16. Adaptive debounce thresholds for late-game goals
 
-[`monitor.md` §3](./proposals/monitor.md#3-adaptive-debounce-thresholds-deferred)
+[`monitor.md` §3](../proposals/monitor.md#3-adaptive-debounce-thresholds-deferred)
 flagged this: 92-minute goals are common; a 3-poll × 30s debounce means
 we spawn Discovery ~90s after the final whistle. Missed clip windows.
 
@@ -437,7 +441,7 @@ launch itself is when we'll first accumulate meaningful telemetry.
 
 ### 17. Long-postponement handling (PST design gap)
 
-Currently shipped design (per [`fixture.go:70-80`](../../internal/domain/fixture/fixture.go)):
+Currently shipped design (per [`fixture.go:70-80`](../../../internal/domain/fixture/fixture.go)):
 PST is treated as ACTIVE. The design comment explicitly targets "short
 delays (15-30 min)" — weather postponements that resume within the same
 window. Correct for that case.
@@ -448,7 +452,7 @@ midweek, etc. "Treated as active" means we keep polling a fixture
 that's effectively dead for days. Wasted API calls; also potentially
 confusing state (fixture stuck at api_elapsed=0 forever).
 
-[`monitor.md` §2](./proposals/monitor.md#2-postponed-fixture-handling--new-state)
+[`monitor.md` §2](../proposals/monitor.md#2-postponed-fixture-handling--new-state)
 originally proposed a fourth `fixture.State` value `postponed`. That's
 one option. Another: extend the current active state with a
 `postponed_since` timestamp — if PST persists >6h, back off polling to
@@ -468,7 +472,7 @@ improvements pass should pick between the two options.
 
 ### 18. `/fixtures?live=all` API alternative
 
-[`monitor.md` opened by asking](./proposals/monitor.md) whether to poll
+[`monitor.md` opened by asking](../proposals/monitor.md) whether to poll
 active fixtures via `live=all` (single API call, no ID tracking) or by
 IDs (current path — couples our state to API state cleanly). Kept the
 by-IDs path.
@@ -487,7 +491,7 @@ edge cases this catches are rare.
 
 ### 19. Static national-team fallback (TOP_FIFA_IDS)
 
-[`workflow-audit-2026-07-09` P1 #5](./proposals/workflow-audit-2026-07-09.md#p1--worth-doing-sooner-rather-than-later):
+[`workflow-audit-2026-07-09` P1 #5](./workflow-audit-2026-07-09.md#p1--worth-doing-sooner-rather-than-later):
 Python has a static list of ~15 top FIFA national team IDs unioned into
 the tracked set. Catches Euros, Copa America, Nations League fixtures
 transparently — no per-tournament config edit. Go currently doesn't;
@@ -505,7 +509,7 @@ union-into-tracked in the tracked-teams cache step. ~2 hours.
 
 ### 20. Static UEFA-club fallback for team-fetch failure
 
-[`workflow-audit-2026-07-09` P1 #6](./proposals/workflow-audit-2026-07-09.md#p1--worth-doing-sooner-rather-than-later):
+[`workflow-audit-2026-07-09` P1 #6](./workflow-audit-2026-07-09.md#p1--worth-doing-sooner-rather-than-later):
 Python has `TOP_UEFA_IDS = [15 clubs]` fallback if the top-flight fetch
 completely fails. Go currently returns error → keeps previous cache →
 fail-open (no filter) if cache is empty.
@@ -522,7 +526,7 @@ cache. Otherwise defer.
 
 ### 21. Alias `country` metadata passthrough
 
-[`workflow-audit-2026-07-09` P2 #7](./proposals/workflow-audit-2026-07-09.md#p2--polish):
+[`workflow-audit-2026-07-09` P2 #7](./workflow-audit-2026-07-09.md#p2--polish):
 Python passes `league.country` into RAG (alias resolution). Go's
 `EnsureAliasPlaceholders` stores only `TeamID + TeamName`. Minor —
 RAG can still infer country, just costs one extra API call per team.
@@ -534,7 +538,7 @@ resolution job. ~30 min.
 
 ### 22. Ingest retry constants → config
 
-[`workflow-audit-2026-07-09` P2 #8](./proposals/workflow-audit-2026-07-09.md#p2--polish):
+[`workflow-audit-2026-07-09` P2 #8](./workflow-audit-2026-07-09.md#p2--polish):
 `ingestManualIDsMaxAttempts=3`, `ingestManualIDsBackoffInitial=5s`
 hardcoded in ingest.go. Workflow-scoped so not a drift risk, but
 inconsistent with the just-landed `WorkflowsConfig` pattern (and now
@@ -601,7 +605,7 @@ day**: adopted `gosimple/unidecode` and deleted the drop-non-Latin rule.
 Non-Latin scripts now romanize (Спартак→spartak, 레알→real) instead of
 being discarded; the ≥2-language threshold voting drops romanization
 noise (红魔→"hong mo"). Fully dynamic, no per-script special-casing.
-See [decisions.md 2026-07-24](../decisions.md). Kept here as the record
+See [decisions.md 2026-07-24](../../decisions.md). Kept here as the record
 of the question; no further action.
 
 ### 26. isCamelConcat over-drops Mc/Mac names (McTominay)

@@ -2,8 +2,8 @@
 // 2026-07-01, NATS is the metadata plane — SSE fan-out, webhook
 // delivery, cross-project events. Video bytes never traverse it.
 //
-// Phase S3.1: connection wrapper, Publish/Subscribe helpers,
-// disconnect/reconnect telemetry.
+// Conn adds publish instrumentation and disconnect/reconnect telemetry to the
+// underlying client.
 package nats
 
 import (

@@ -6,7 +6,7 @@
 > category axis, the Python dedup archaeology); do **not** read it as the
 > current system. For what shipped, see
 > [`../../orchestration.md`](../../orchestration.md) (EventWorkflow
-> producer/consumer), [`v-phase-orchestration.md`](./v-phase-orchestration.md),
+> producer/consumer), [`v-phase-orchestration.md`](../v-phase-orchestration.md),
 > [`schema.sql`](../../../internal/infra/pg/schema.sql), and
 > [`../../decisions.md`](../../decisions.md).
 >
