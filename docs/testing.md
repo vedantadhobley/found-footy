@@ -137,6 +137,15 @@ UPSERT and proves EventWorkflow cannot complete. The default-version case
 requires pre-FF-034 histories to retain `StoreCandidate` before launch and the
 legacy best-effort `RecordCandidateOutcome` command sequence.
 
+FF-050 unit coverage pins the typed Temporal workflow log envelope and
+non-negative deterministic duration arithmetic. The existing EventWorkflow
+suite exercises the instrumented search and candidate branches, so any added
+workflow command or reordered behavior remains visible through its activity
+and version assertions. `test/matchday_status_contract_test.go` syntax-checks
+the operator script, requires environment and Firefox scope derivation, and
+rejects mutation statements or a status query without an explicit read-only
+transaction.
+
 `PersistActivities` promotion tests inject failures into the durable tail.
 They prove that a rank failure after share insertion is repaired on retry, an
 uncertain staging-delete response does not require a second source copy, and

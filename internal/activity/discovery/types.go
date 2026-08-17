@@ -5,18 +5,23 @@
 // import internal/activity/discovery instead.
 package discovery
 
-import "github.com/google/uuid"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // EventWorkflowInput carries everything Discovery needs from the
 // spawning site (Monitor's ReconcileFixture activity). Same shape as
 // the workflow's declared input; kept here so the spawner package
 // can construct it without importing internal/workflow.
 type EventWorkflowInput struct {
-	EventID    uuid.UUID `json:"event_id"`
-	FixtureID  int64     `json:"fixture_id"`
-	PlayerName string    `json:"player_name"`
-	TeamName   string    `json:"team_name"`
-	TeamID     int64     `json:"team_id"`
-	Minute     int       `json:"minute"` // API elapsed at the goal
-	Extra      *int      `json:"extra"`  // API stoppage extra (nil outside stoppage) — needed for vision clock validation of 45+N / 90+N goals
+	EventID     uuid.UUID `json:"event_id"`
+	FixtureID   int64     `json:"fixture_id"`
+	PlayerName  string    `json:"player_name"`
+	TeamName    string    `json:"team_name"`
+	TeamID      int64     `json:"team_id"`
+	Minute      int       `json:"minute"`        // API elapsed at the goal
+	Extra       *int      `json:"extra"`         // API stoppage extra (nil outside stoppage) — needed for vision clock validation of 45+N / 90+N goals
+	FirstSeenAt time.Time `json:"first_seen_at"` // vendor observation time; zero for histories created before FF-050
 }

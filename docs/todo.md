@@ -232,7 +232,7 @@ the current branch.
 | FF-047 | P3 | `confirmed` | Empty tracked-team state still burns fixture lookahead calls whose results are discarded. | Short-circuit before vendor fixture calls and emit degraded-state telemetry. |
 | FF-048 | P2 | `confirmed` | Share minting uses check-then-insert without `(event_id, asset_id)` uniqueness. | Database constraint plus atomic idempotent insert after FF-013. |
 | FF-049 | P3 | `confirmed` | Documentation routing is clean, but several current/reference documents still exceed the shared size standard. | Split the 618-line orchestration ledger and route the 2,869-line Python functional spec plus 604-line video-dedup proposal by topic without rewriting historical claims. |
-| FF-050 | P2 | `investigate` | The event-to-surface critical path is not measured end to end and contains possible avoidable serial barriers. | Measure phase and queue latency under representative concurrency, then simplify or parallelize only the demonstrated bottleneck without weakening correctness or resource caps. |
+| FF-050 | P2 | `investigate` | Correlated replay-safe stage timings and a read-only match-day status view are implemented; representative live evidence is pending. | Capture phase and queue latency under representative concurrency, then simplify or parallelize only the demonstrated bottleneck without weakening correctness or resource caps. |
 
 ### FF-050 — measure and shorten event-to-surface latency
 
@@ -245,7 +245,11 @@ the current branch.
   starts; terminal and ancillary persistence wait inside the serialized
   selector; and expensive activities share one general Temporal task lane.
 - **Required work:** Add correlated phase and queue timings from provider
-  observation through frontend notification. Use representative match-day
+  observation through frontend notification. The code now emits lifecycle,
+  search, observation-persistence, download, hash, vision, promotion,
+  terminal-persistence, and frontend-publication measurements; the read-only
+  `scripts/matchday-status.sh` view correlates fixture, event, workflow,
+  candidate, and share state. Use representative match-day
   concurrency to separate intentional waits—three-poll event debounce,
   discovery spacing, Twitter stealth pacing, exact-duplicate ownership, and
   bounded resource admission—from avoidable waits. Measure FF-034's concurrent

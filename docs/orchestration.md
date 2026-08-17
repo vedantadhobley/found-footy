@@ -489,6 +489,17 @@ prevents a false successful parent. A failed observation insert does not block
 the already-dispatched clip; it keeps the search attempt uncheckpointed so a
 replacement execution cannot skip evidence that never became durable.
 
+**Critical-path measurement contract (FF-050).** EventWorkflow records the
+vendor-first-seen to workflow-start interval, every search attempt, and the
+workflow-observed latency of observation persistence, download, dense hash,
+vision, promotion, terminal persistence, and frontend dirty-signal
+publication. Each candidate line is correlated by event, fixture, tweet, and
+search attempt; recovered candidates are explicit. The measurements use
+Temporal's deterministic clock and structured replay-aware logs only. They do
+not add activities, alter retry policies, gate decisions, or change the
+Selector's serialized ownership rules. Activity-stage duration therefore
+includes task-queue admission and retry backoff by design.
+
 **Cancellation contract (FF-015).** Producer cancellation from an activity or
 the between-attempt `workflow.Sleep` terminates the producer and records its
 error while a deferred close always marks the search side done. The consumer

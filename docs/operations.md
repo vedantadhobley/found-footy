@@ -79,6 +79,22 @@ docker exec found-footy-prod-temporal \
 Use `logs -f` only while actively watching an incident. Compose service logs
 cover both worker replicas without guessing their generated container names.
 
+For a match-day overview, use the checked-in read-only report:
+
+```bash
+scripts/matchday-status.sh prod 6
+scripts/matchday-status.sh dev 6
+```
+
+The second argument is the kickoff lookahead in hours, from 0 through 72. The
+report derives the Compose file, Postgres container, and Firefox ownership
+scope from `dev` or `prod`; it does not read or print dotenv values. Its SQL
+runs inside `BEGIN READ ONLY` with a statement timeout. It shows service and
+scoped fleet state, recent/upcoming or active fixtures, event/downstream/
+candidate/share progress, and the count plus ten newest FF-034 durability
+violations. It performs no Temporal describe calls; use the event workflow ID
+from the report for deeper inspection.
+
 For an event incident, collect these identifiers before drawing a conclusion:
 
 - fixture ID;

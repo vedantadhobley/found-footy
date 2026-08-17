@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
@@ -25,6 +26,17 @@ type fakeFetcher struct {
 	failedIDs []int64 // simulate partial failure — set to non-nil to exercise the FailedIDs path
 	err       error
 	lastIDs   []int64
+}
+
+type recordingSpawner struct {
+	workflowID string
+	input      discoveryactivity.EventWorkflowInput
+}
+
+func (s *recordingSpawner) SpawnEvent(_ context.Context, workflowID string, in discoveryactivity.EventWorkflowInput) error {
+	s.workflowID = workflowID
+	s.input = in
+	return nil
 }
 
 func (f *fakeFetcher) ListFixturesByIDs(_ context.Context, ids []int64) (
@@ -336,6 +348,29 @@ func (r *fakeEventRepo) RegisterDownstreamWorkflow(_ context.Context, _ uuid.UUI
 	// reached; returning nil keeps interface satisfaction without
 	// implementing test-side state that the tests don't inspect.
 	return nil
+}
+
+func TestRegisterAndSpawnEventCarriesFirstSeenTimestamp(t *testing.T) {
+	firstSeen := time.Date(2026, 8, 17, 16, 30, 15, 0, time.UTC)
+	playerID, playerName := 111, "M. Salah"
+	existing := &event.Event{ID: uuid.New(), FirstSeenAt: firstSeen}
+	domainEvent := &event.Event{
+		Team:   event.Team{ID: 40, Name: "Liverpool"},
+		Player: event.Player{ID: &playerID, Name: &playerName},
+		Minute: 30,
+	}
+	spawner := &recordingSpawner{}
+	activities := &Activities{EventRepo: newFakeEventRepo(), Spawner: spawner}
+
+	if err := activities.registerAndSpawnEvent(context.Background(), existing, domainEvent, 12345); err != nil {
+		t.Fatalf("registerAndSpawnEvent: %v", err)
+	}
+	if spawner.workflowID != "event-"+existing.ID.String() {
+		t.Fatalf("workflow ID = %q", spawner.workflowID)
+	}
+	if !spawner.input.FirstSeenAt.Equal(firstSeen) {
+		t.Fatalf("FirstSeenAt = %v, want %v", spawner.input.FirstSeenAt, firstSeen)
+	}
 }
 func (r *fakeEventRepo) RegisterVideoValidationWorkflow(context.Context, uuid.UUID, string, string) (int, error) {
 	panic("fakeEventRepo.RegisterVideoValidationWorkflow: not implemented (test scope drift)")

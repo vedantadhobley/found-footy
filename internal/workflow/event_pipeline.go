@@ -34,23 +34,25 @@ import (
 	ddiscovery "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 	dvision "github.com/vedantadhobley/found-footy/internal/domain/vision"
+	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 )
 
 // clip is a candidate's fingerprint + metadata held in workflow memory for
 // the event's lifetime. assets holds kept unique clips; pending holds
 // deduped-new clips whose vision is still in flight (closes the dedup race).
 type clip struct {
-	tweetURL      string
-	md5           string
-	frameHashes   []uint64
-	stagingKey    string
-	width, height int
-	durationMS    int
-	fileSizeBytes int64
-	bitrate       *int
-	popularity    int       // accumulated sightings: own (1) + md5-dups collapsed while pending (#180)
-	verified      bool      // vision verdict; set at promote — the dedup category (verified↔verified only)
-	assetID       uuid.UUID // set once promoted
+	tweetURL        string
+	md5             string
+	frameHashes     []uint64
+	stagingKey      string
+	width, height   int
+	durationMS      int
+	fileSizeBytes   int64
+	bitrate         *int
+	popularity      int       // accumulated sightings: own (1) + md5-dups collapsed while pending (#180)
+	verified        bool      // vision verdict; set at promote — the dedup category (verified↔verified only)
+	assetID         uuid.UUID // set once promoted
+	visionStartedAt time.Time // workflow-observed start of the vision activity
 }
 
 // hashClaim serializes dense hashing for one exact MD5. The primary owns the
@@ -58,16 +60,18 @@ type clip struct {
 // failed primary hands ownership to the next candidate instead of losing the
 // cluster or reusing a potentially bad staging object.
 type hashClaim struct {
-	primary clip
-	waiting []clip
+	primary   clip
+	waiting   []clip
+	startedAt time.Time
 }
 
 // pipeline holds the consumer's state + the pre-built activity contexts.
 type pipeline struct {
-	ctx      workflow.Context
-	log      log.Logger
-	in       EventWorkflowInput
-	selector workflow.Selector
+	ctx       workflow.Context
+	log       log.Logger
+	in        EventWorkflowInput
+	selector  workflow.Selector
+	startedAt time.Time
 
 	// dedup thresholds (from the start-of-workflow config read → deterministic)
 	maxHamming, minRun, maxGaps int
@@ -91,6 +95,7 @@ type pipeline struct {
 	terminalErr error
 	childSeq    int
 	candidates  map[string]candidateOwnership
+	timings     map[string]candidateTiming
 
 	// outcome counters (for the workflow output / logs)
 	spawned, passed, rejectedClips, duplicates, verified, unverified, superseded, failed int
@@ -102,6 +107,7 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		log:        log,
 		in:         in,
 		selector:   workflow.NewSelector(ctx),
+		startedAt:  cfg.startedAt,
 		maxHamming: cfg.maxHamming, minRun: cfg.minRun, maxGaps: cfg.maxGaps,
 		terminalVideoFailures: cfg.terminalVideoFailures,
 		preHashMD5Claim:       cfg.preHashMD5Claim,
@@ -119,6 +125,7 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		}),
 		hashing:    make(map[string]*hashClaim),
 		candidates: make(map[string]candidateOwnership),
+		timings:    make(map[string]candidateTiming),
 	}
 }
 
@@ -127,6 +134,7 @@ type pipelineConfig struct {
 	terminalVideoFailures       bool
 	preHashMD5Claim             bool
 	durableCandidates           bool
+	startedAt                   time.Time
 }
 
 // candidateOwnership joins immutable evidence to the workflow-local lifecycle
@@ -135,6 +143,14 @@ type pipelineConfig struct {
 type candidateOwnership struct {
 	evidence ddiscovery.CandidateEvidence
 	state    ddiscovery.CandidateState
+}
+
+// candidateTiming is workflow-local measurement state. It is never persisted
+// and never participates in a command or acceptance decision.
+type candidateTiming struct {
+	observedAt    time.Time
+	searchAttempt int
+	recovered     bool
 }
 
 // restoreAssets seeds the serialized consumer with durable live assets from a
@@ -161,13 +177,18 @@ func (p *pipeline) restoreAssets(restored []videoactivity.RestoredEventAsset) {
 // processing immediately. FF-022 schedules DownloadAndStage directly so
 // EventWorkflow can claim its MD5 before dense hashing. The child workflow
 // branch preserves pre-FF-022 histories.
-func (p *pipeline) spawnCandidate(gctx workflow.Context, evidence ddiscovery.CandidateEvidence) {
+func (p *pipeline) spawnCandidate(gctx workflow.Context, evidence ddiscovery.CandidateEvidence, recovered bool) {
 	if gctx.Err() != nil {
 		return
 	}
 	tweetURL := evidence.TweetURL
 	if tweetURL == "" {
 		return
+	}
+	if _, exists := p.timings[tweetURL]; !exists {
+		p.timings[tweetURL] = candidateTiming{
+			observedAt: workflow.Now(p.ctx), searchAttempt: evidence.SearchAttempt, recovered: recovered,
+		}
 	}
 	if p.durableCandidates {
 		p.candidates[tweetURL] = candidateOwnership{
@@ -200,6 +221,27 @@ func (p *pipeline) spawnCandidate(gctx workflow.Context, evidence ddiscovery.Can
 	p.selector.AddFuture(fut, p.onVideoDone(tweetURL))
 }
 
+// logCandidatePhase emits one correlated stage measurement. Duration is the
+// workflow-observed wall time, including Temporal queueing and activity
+// retries. It is an operational latency signal, not an activity CPU timer.
+func (p *pipeline) logCandidatePhase(tweetURL, phase, outcome string, startedAt time.Time, fields ...interface{}) {
+	now := workflow.Now(p.ctx)
+	timing := p.timings[tweetURL]
+	base := []interface{}{
+		"event_id", p.in.EventID,
+		"fixture_id", p.in.FixtureID,
+		"tweet_url", tweetURL,
+		"search_attempt", timing.searchAttempt,
+		"recovered", timing.recovered,
+		"phase", phase,
+		"outcome", outcome,
+		"duration_ms", elapsedMilliseconds(startedAt, now),
+		"event_elapsed_ms", elapsedMilliseconds(p.startedAt, now),
+	}
+	emitWorkflowMeasurement(p.log, vocabulary.ActionEventCandidateMeasured,
+		"event candidate stage measured", append(base, fields...)...)
+}
+
 // onDownloadDone claims an exact MD5 before scheduling dense extraction. A
 // duplicate of a kept/pending clip collapses immediately; a duplicate of an
 // active hash waits behind its claimant without consuming an ffmpeg slot.
@@ -212,17 +254,21 @@ func (p *pipeline) onDownloadDone(tweetURL string) func(workflow.Future) {
 
 		var out videoactivity.DownloadAndStageOutput
 		if err := f.Get(p.ctx, &out); err != nil {
+			p.logCandidatePhase(tweetURL, "download", "failed", p.timings[tweetURL].observedAt)
 			p.failed++
 			p.log.Warn("candidate download failed after retries", "tweet_url", tweetURL, "err", err)
 			p.recordOutcome(tweetURL, discoveryactivity.OutcomeFailed, string(VideoFailureDownload), nil)
 			return
 		}
 		if out.Outcome == videoactivity.OutcomeRejected {
+			p.logCandidatePhase(tweetURL, "download", "rejected", p.timings[tweetURL].observedAt,
+				"reason", out.RejectReason)
 			p.rejectedClips++
 			p.recordOutcome(tweetURL, discoveryactivity.OutcomeRejected, out.RejectReason, nil)
 			return
 		}
 		if out.Outcome != videoactivity.OutcomePassed || out.MD5 == "" || out.StagingKey == "" {
+			p.logCandidatePhase(tweetURL, "download", "invalid", p.timings[tweetURL].observedAt)
 			p.failed++
 			p.recordOutcome(tweetURL, discoveryactivity.OutcomeFailed,
 				string(VideoFailureInvalidChildOutput),
@@ -230,6 +276,8 @@ func (p *pipeline) onDownloadDone(tweetURL string) func(workflow.Future) {
 			p.deleteStaging(out.StagingKey)
 			return
 		}
+		p.logCandidatePhase(tweetURL, "download", "passed", p.timings[tweetURL].observedAt,
+			"size_bytes", out.SizeBytes, "duration_media_ms", out.DurationMS)
 
 		c := clipFromDownload(tweetURL, out)
 		if idx, isAsset, matched := p.matchMD5(c); matched {
@@ -257,6 +305,7 @@ func (p *pipeline) fireHash(md5 string) {
 	if !ok {
 		return
 	}
+	claim.startedAt = workflow.Now(p.ctx)
 	fut := workflow.ExecuteActivity(p.hashCtx,
 		(*videoactivity.Activities).HashVideo,
 		videoactivity.HashVideoInput{StagingKey: claim.primary.stagingKey})
@@ -281,6 +330,7 @@ func (p *pipeline) onHashDone(md5 string) func(workflow.Future) {
 		var out videoactivity.HashVideoOutput
 		if err := f.Get(p.ctx, &out); err != nil {
 			failed := claim.primary
+			p.logCandidatePhase(failed.tweetURL, "hash", "failed", claim.startedAt)
 			p.failed++
 			p.log.Warn("candidate hash failed after retries",
 				"tweet_url", failed.tweetURL, "staging_key", failed.stagingKey, "err", err)
@@ -297,6 +347,8 @@ func (p *pipeline) onHashDone(md5 string) func(workflow.Future) {
 		}
 
 		winner := claim.primary
+		p.logCandidatePhase(winner.tweetURL, "hash", "passed", claim.startedAt,
+			"frame_count", len(out.FrameHashes))
 		winner.frameHashes = out.FrameHashes
 		p.passed++
 		for _, duplicate := range claim.waiting {
@@ -378,6 +430,7 @@ func (p *pipeline) onVideoDone(fallbackTweetURL string) func(workflow.Future) {
 
 		var out VideoWorkflowOutput
 		if err := f.Get(p.ctx, &out); err != nil {
+			p.logCandidatePhase(fallbackTweetURL, "legacy_video", "failed", p.timings[fallbackTweetURL].observedAt)
 			p.failed++
 			p.log.Warn("video child failed", "tweet_url", fallbackTweetURL, "err", err)
 			if p.terminalVideoFailures {
@@ -391,6 +444,10 @@ func (p *pipeline) onVideoDone(fallbackTweetURL string) func(workflow.Future) {
 		if tweetURL == "" {
 			tweetURL = fallbackTweetURL
 		}
+		if tweetURL != fallbackTweetURL {
+			p.timings[tweetURL] = p.timings[fallbackTweetURL]
+		}
+		p.logCandidatePhase(tweetURL, "legacy_video", string(out.Outcome), p.timings[tweetURL].observedAt)
 		switch out.Outcome {
 		case VideoOutcomeRejected:
 			p.rejectedClips++ // hard-filter / geo / deleted — nothing was staged
@@ -517,6 +574,7 @@ func (p *pipeline) fireVision(c clip) {
 	if p.in.Extra != nil {
 		extra = *p.in.Extra
 	}
+	c.visionStartedAt = workflow.Now(p.ctx)
 	fut := workflow.ExecuteActivity(p.visionCtx,
 		(*visionactivity.Activities).ValidateClip,
 		visionactivity.ValidateClipInput{
@@ -542,12 +600,15 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 
 		var vout visionactivity.ValidateClipOutput
 		if err := f.Get(p.ctx, &vout); err != nil {
+			p.logCandidatePhase(c.tweetURL, "vision", "failed", c.visionStartedAt)
 			// Vision infra-fail after retries — drop the clip + its staging.
 			p.failed++
 			p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeFailed, "vision_error", nil)
 			p.deleteStaging(c.stagingKey)
 			return
 		}
+		p.logCandidatePhase(c.tweetURL, "vision", vout.Outcome, c.visionStartedAt,
+			"frame_count", len(vout.Frames))
 
 		switch vout.Outcome {
 		case string(dvision.OutcomeVerified), string(dvision.OutcomeUnverified):
@@ -623,6 +684,7 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 	if p.canceled() {
 		return uuid.Nil, false
 	}
+	startedAt := workflow.Now(p.ctx)
 	var pout videoactivity.PromoteAndPersistOutput
 	err := workflow.ExecuteActivity(p.persistCtx,
 		(*videoactivity.PersistActivities).PromoteAndPersist,
@@ -635,6 +697,7 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 			Verified:   c.verified, ExtractedMinute: vout.MatchedMinute,
 		}).Get(p.persistCtx, &pout)
 	if err != nil {
+		p.logCandidatePhase(c.tweetURL, "promotion", "failed", startedAt)
 		if temporal.IsCanceledError(err) {
 			return uuid.Nil, false
 		}
@@ -643,6 +706,8 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 		p.log.Warn("promote failed", "tweet_url", c.tweetURL, "err", err)
 		return uuid.Nil, false
 	}
+	p.logCandidatePhase(c.tweetURL, "promotion", "passed", startedAt,
+		"asset_id", pout.AssetID.String(), "minted", pout.Minted)
 	c.assetID = pout.AssetID
 	p.assets = append(p.assets, c)
 	if c.verified {
@@ -656,7 +721,7 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 	// includes a retry that found the share created by its failed prior attempt:
 	// the workflow never observed that attempt and still owes the dirty signal.
 	if pout.Minted {
-		p.publishEventVideo()
+		p.publishEventVideo(c.tweetURL, "promotion")
 	}
 	return pout.AssetID, true
 }
@@ -684,7 +749,7 @@ func (p *pipeline) supersede(winnerID uuid.UUID, loserIDs []uuid.UUID) {
 	}
 	p.superseded += len(loserIDs)
 	// The winner-select collapse changed this event's surfaced set → announce.
-	p.publishEventVideo()
+	p.publishEventVideo("", "supersede")
 
 	lose := make(map[uuid.UUID]bool, len(loserIDs))
 	for _, id := range loserIDs {
@@ -743,13 +808,28 @@ func (p *pipeline) deleteStaging(key string) {
 // durably committed a clip-set change — the workflow blocks on that activity
 // before reaching here — so a consumer that refetches on the signal always
 // sees the new state. See decisions.md 2026-08-14 (N3).
-func (p *pipeline) publishEventVideo() {
+func (p *pipeline) publishEventVideo(tweetURL, cause string) {
 	if p.canceled() {
 		return
 	}
-	_ = workflow.ExecuteActivity(p.persistCtx,
+	startedAt := workflow.Now(p.ctx)
+	err := workflow.ExecuteActivity(p.persistCtx,
 		(*livefeedactivity.Activities).PublishEventVideo,
 		livefeedactivity.EventVideoInput{EventID: p.in.EventID, FixtureID: p.in.FixtureID}).Get(p.persistCtx, nil)
+	now := workflow.Now(p.ctx)
+	outcome := "passed"
+	if err != nil {
+		outcome = "failed"
+	}
+	emitWorkflowMeasurement(p.log, vocabulary.ActionEventPublishMeasured,
+		"event video publication measured",
+		"event_id", p.in.EventID,
+		"fixture_id", p.in.FixtureID,
+		"tweet_url", tweetURL,
+		"cause", cause,
+		"outcome", outcome,
+		"duration_ms", elapsedMilliseconds(startedAt, now),
+		"event_elapsed_ms", elapsedMilliseconds(p.startedAt, now))
 }
 
 // recordOutcome persists a candidate's terminal fate. FF-034 histories use one
@@ -766,6 +846,7 @@ func (p *pipeline) recordOutcome(tweetURL string, outcome discoveryactivity.Cand
 			p.setTerminalError(fmt.Errorf("candidate evidence missing for %s", tweetURL))
 			return
 		}
+		startedAt := workflow.Now(p.ctx)
 		err := workflow.ExecuteActivity(p.persistCtx,
 			(*discoveryactivity.Activities).UpsertCandidateOutcome,
 			discoveryactivity.UpsertCandidateOutcomeInput{
@@ -773,19 +854,32 @@ func (p *pipeline) recordOutcome(tweetURL string, outcome discoveryactivity.Cand
 				RejectReason: reason, Detail: detail,
 			}).Get(p.persistCtx, nil)
 		if err != nil {
+			p.logCandidatePhase(tweetURL, "terminal_persist", "failed", startedAt,
+				"candidate_outcome", string(outcome))
 			p.setTerminalError(fmt.Errorf("persist terminal candidate %s: %w", tweetURL, err))
 			return
 		}
+		p.logCandidatePhase(tweetURL, "terminal_persist", "passed", startedAt,
+			"candidate_outcome", string(outcome),
+			"candidate_elapsed_ms", elapsedMilliseconds(p.timings[tweetURL].observedAt, workflow.Now(p.ctx)))
 		candidate.state = ddiscovery.CandidateTerminal
 		p.candidates[tweetURL] = candidate
 		return
 	}
-	_ = workflow.ExecuteActivity(p.persistCtx,
+	startedAt := workflow.Now(p.ctx)
+	err := workflow.ExecuteActivity(p.persistCtx,
 		(*discoveryactivity.Activities).RecordCandidateOutcome,
 		discoveryactivity.RecordCandidateOutcomeInput{
 			EventID: p.in.EventID, TweetURL: tweetURL,
 			Outcome: outcome, RejectReason: reason, Detail: detail,
 		}).Get(p.persistCtx, nil)
+	terminalOutcome := "passed"
+	if err != nil {
+		terminalOutcome = "failed"
+	}
+	p.logCandidatePhase(tweetURL, "terminal_persist", terminalOutcome, startedAt,
+		"candidate_outcome", string(outcome),
+		"candidate_elapsed_ms", elapsedMilliseconds(p.timings[tweetURL].observedAt, workflow.Now(p.ctx)))
 }
 
 // setTerminalError retains the first durability failure. Later callbacks may

@@ -41,6 +41,7 @@ import (
 	fleetactivity "github.com/vedantadhobley/found-footy/internal/activity/fleet"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	ddiscovery "github.com/vedantadhobley/found-footy/internal/domain/discovery"
+	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 )
 
 // EventWorkflowInput re-exports the shared type so callers that
@@ -95,6 +96,7 @@ const (
 // candidate → mark the downstream row complete.
 func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOutput, error) {
 	log := workflow.GetLogger(ctx)
+	startedAt := workflow.Now(ctx)
 	log.Info("EventWorkflow started",
 		"event_id", in.EventID,
 		"fixture_id", in.FixtureID,
@@ -103,6 +105,13 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		"team", in.TeamName,
 		"minute", in.Minute,
 	)
+	emitWorkflowMeasurement(log, vocabulary.ActionEventLifecycleMeasured,
+		"event workflow start measured",
+		"event_id", in.EventID,
+		"fixture_id", in.FixtureID,
+		"phase", "workflow_start",
+		"first_seen_present", !in.FirstSeenAt.IsZero(),
+		"first_seen_to_workflow_ms", elapsedMilliseconds(in.FirstSeenAt, startedAt))
 
 	out := EventWorkflowOutput{EventID: in.EventID}
 
@@ -151,7 +160,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 	// outcome_class so we can grep Loki for pipeline bugs.
 	if in.PlayerName == "" {
 		out.OutcomeClass = "unknown_player"
-		return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled)
+		return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled, startedAt)
 	}
 
 	// Step 1: fetch team aliases from pg.
@@ -197,7 +206,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 			"player", in.PlayerName, "canonical", canonicalName,
 			"alias_count", len(aliasesOut.Aliases))
 		out.OutcomeClass = "empty_query"
-		return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled)
+		return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled, startedAt)
 	}
 	log.Info("query built", "query", query, "length", len(query))
 
@@ -226,6 +235,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		terminalVideoFailures: terminalVideoFailures,
 		preHashMD5Claim:       preHashMD5Claim,
 		durableCandidates:     durableCandidates,
+		startedAt:             startedAt,
 	}, log)
 
 	// FF-007 recovery: a new execution after failed-only Workflow ID reuse
@@ -292,7 +302,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		if durableCandidates {
 			switch candidate.State {
 			case ddiscovery.CandidateObserved, ddiscovery.CandidateInFlight:
-				p.spawnCandidate(ctx, candidate.Evidence)
+				p.spawnCandidate(ctx, candidate.Evidence, true)
 			case ddiscovery.CandidateTerminal:
 				// Terminal candidates only seed the exclusion set.
 			default:
@@ -301,7 +311,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		} else if candidate.Pending {
 			p.spawnCandidate(ctx, ddiscovery.CandidateEvidence{
 				EventID: in.EventID, FixtureID: in.FixtureID, TweetURL: tweetURL,
-			})
+			}, true)
 		}
 	}
 	out.CandidatesFound = len(recoveryOut.Candidates)
@@ -335,18 +345,38 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 
 		for attempt := recoveryOut.AttemptsCompleted + 1; attempt <= cfgOut.MaxAttempts; attempt++ {
 			var searchOut discoveryactivity.SearchTweetsOutput
-			if err := workflow.ExecuteActivity(searchOptions,
+			searchStartedAt := workflow.Now(gctx)
+			searchErr := workflow.ExecuteActivity(searchOptions,
 				(*discoveryactivity.Activities).SearchTweets,
 				discoveryactivity.SearchTweetsInput{
 					EventID: in.EventID, FixtureID: in.FixtureID, Query: query,
 					ExcludeURLs: excludeURLs, MaxAgeMinutes: cfgOut.MaxAgeMinutes,
 					InstanceAddr: instanceAddr,
-				}).Get(searchOptions, &searchOut); err != nil {
-				if temporal.IsCanceledError(err) {
-					producerErr = err
+				}).Get(searchOptions, &searchOut)
+			searchOutcome := "passed"
+			if searchErr != nil {
+				searchOutcome = "failed"
+				if temporal.IsCanceledError(searchErr) {
+					searchOutcome = "canceled"
+				}
+			}
+			searchFinishedAt := workflow.Now(gctx)
+			emitWorkflowMeasurement(log, vocabulary.ActionEventSearchMeasured,
+				"event search attempt measured",
+				"event_id", in.EventID,
+				"fixture_id", in.FixtureID,
+				"attempt", attempt,
+				"outcome", searchOutcome,
+				"duration_ms", elapsedMilliseconds(searchStartedAt, searchFinishedAt),
+				"event_elapsed_ms", elapsedMilliseconds(startedAt, searchFinishedAt),
+				"videos_returned", searchOut.Count,
+				"stop_reason", searchOut.StopReason)
+			if searchErr != nil {
+				if temporal.IsCanceledError(searchErr) {
+					producerErr = searchErr
 					return
 				}
-				log.Warn("SearchTweets attempt failed", "attempt", attempt, "err", err)
+				log.Warn("SearchTweets attempt failed", "attempt", attempt, "err", searchErr)
 			} else {
 				var observed []ddiscovery.CandidateEvidence
 				for _, v := range searchOut.Videos {
@@ -383,7 +413,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 					} else if storeOut.Inserted {
 						out.CandidatesFound++
 					}
-					p.spawnCandidate(gctx, evidence)
+					p.spawnCandidate(gctx, evidence, false)
 				}
 
 				if durableCandidates && len(observed) > 0 {
@@ -392,10 +422,12 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 					// task and execute concurrently; no candidate waits behind a
 					// prior candidate's insert.
 					for _, evidence := range observed {
-						p.spawnCandidate(gctx, evidence)
+						p.spawnCandidate(gctx, evidence, false)
 					}
 					storeFutures := make([]workflow.Future, 0, len(observed))
+					storeStartedAt := make([]time.Time, 0, len(observed))
 					for _, evidence := range observed {
+						storeStartedAt = append(storeStartedAt, workflow.Now(gctx))
 						storeFutures = append(storeFutures, workflow.ExecuteActivity(storeOptions,
 							(*discoveryactivity.Activities).StoreCandidate, evidence))
 					}
@@ -403,6 +435,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 					for i, future := range storeFutures {
 						var storeOut discoveryactivity.StoreCandidateOutput
 						if err := future.Get(storeOptions, &storeOut); err != nil {
+							p.logCandidatePhase(observed[i].TweetURL, "observation_persist", "failed", storeStartedAt[i])
 							if temporal.IsCanceledError(err) {
 								producerErr = err
 								return
@@ -411,6 +444,9 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 							if observationErr == nil {
 								observationErr = fmt.Errorf("persist observed candidate %s: %w", observed[i].TweetURL, err)
 							}
+						} else {
+							p.logCandidatePhase(observed[i].TweetURL, "observation_persist", "passed", storeStartedAt[i],
+								"inserted", storeOut.Inserted)
 						}
 					}
 					if observationErr != nil {
@@ -468,7 +504,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		"spawned", p.spawned, "passed", p.passed, "duplicates", p.duplicates,
 		"verified", p.verified, "unverified", p.unverified, "superseded", p.superseded,
 		"assets_kept", out.AssetsKept, "rejected", p.rejectedClips, "failed", p.failed)
-	return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled)
+	return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled, startedAt)
 }
 
 // finalizeEvent is the exit ramp — marks the
@@ -481,6 +517,7 @@ func finalizeEvent(
 	out EventWorkflowOutput,
 	logger log.Logger,
 	fleetEnabled bool,
+	startedAt time.Time,
 ) (EventWorkflowOutput, error) {
 	actCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: discoveryPGShortActivityTTL,
@@ -525,6 +562,15 @@ func finalizeEvent(
 	}
 
 	out.Completed = true
+	finishedAt := workflow.Now(ctx)
+	emitWorkflowMeasurement(logger, vocabulary.ActionEventLifecycleMeasured,
+		"event workflow completion measured",
+		"event_id", in.EventID,
+		"fixture_id", in.FixtureID,
+		"phase", "workflow_complete",
+		"outcome", out.OutcomeClass,
+		"duration_ms", elapsedMilliseconds(startedAt, finishedAt),
+		"first_seen_to_complete_ms", elapsedMilliseconds(in.FirstSeenAt, finishedAt))
 	logger.Info("EventWorkflow finished",
 		"event_id", in.EventID,
 		"attempts_run", out.AttemptsRun,
