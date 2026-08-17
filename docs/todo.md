@@ -161,18 +161,34 @@ against the current branch.
   `1be4d2a5-961f-4cfb-91c9-ce7558017ec0`.
 - **Invariant:** Re-encodes of the same broadcast clip should consolidate
   without raising thresholds enough to merge different footage.
-- **Evidence:** Three user-visible clips appeared to be the same camera angle
-  with grading differences. Production requires a 30-frame window with at
-  least 27 frames at Hamming ≤10. The minimum thresholds needed for the three
-  pairs were 27, 32, and 31; their longest production-threshold windows were
-  only 4, 3, and 3 frames.
-- **Category detail:** Rank 1 was verified; ranks 2 and 3 were unverified, so
-  production did not compare rank 1 across the category boundary. Ranks 2 and
-  3 were compared and still failed at the hash layer.
-- **Required work:** Preserve the three frame-hash sequences and representative
-  frames as a regression corpus. Determine whether crop/overlay, color
-  transformation, or temporal drift causes the distance. Do not raise the
-  threshold toward 31: prior calibration places different footage around 23.
+- **Corrected sample:** Only ranks 1 and 2 are the Thauvin goal pair. Rank 3 is
+  the Antonio red-card candidate described in FF-003; it should not deduplicate
+  with goal footage, and its distances must not tune this matcher. The initial
+  three-way comparison conflated attribution and dedup defects.
+- **Evidence:** Rank 1 is a verified 59.9-second Sport TV clip; rank 2 is an
+  unverified 15.3-second Just Football clip. Both source texts identify
+  Thauvin's goal and both stored assets are 1280×720. Production requires a
+  30-frame window with at least 27 frames at Hamming ≤10. This pair's longest
+  qualifying window is only 4 frames and the minimum per-frame threshold needed
+  for 27 of 30 frames is 27. Across every possible frame pairing, only 1 of
+  rank 2's 152 frames has any rank-1 frame at Hamming ≤10, so integer-offset
+  temporal drift is not the primary failure.
+- **Category detail:** Rank 1 is verified and rank 2 unverified, so production
+  intentionally did not compare them across the category boundary. The stored
+  hashes show that a comparison would not have collapsed them anyway.
+- **Transform checks:** Hash-only probes for contrast inversion, horizontal or
+  vertical mirroring, and 180° rotation did not recover a match. The remaining
+  likely class is a layout-changing crop/zoom/overlay or a color transform that
+  the current grayscale-equalized full-frame dHash does not normalize. Stored
+  hashes cannot distinguish those causes without representative frames.
+- **Required work:** With approval to retrieve the two public source clips,
+  preserve their frame-hash sequences and minimal representative frames as a
+  regression corpus. Measure crop/layout and color-normalization variants before
+  choosing a matcher change. Do not raise the global threshold toward 27: prior
+  calibration places different footage around 23. Preserve category safety and
+  treat cross-category consolidation as a separate evidence-policy decision.
+- **Rollout:** Calibration work only; the safe current failure mode is an extra
+  clip, so this does not block the pending rollout.
 - **Source relation:** New live calibration finding; no prior audit contained
   this sample or failure measurement.
 
