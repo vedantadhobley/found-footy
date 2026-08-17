@@ -765,6 +765,29 @@ against the current branch.
 - **Source relation:** Closes `AUD-0813-P3-15`. It extends the rebuild plan's
   final `created_at` rule only for values the plan left indistinguishable.
 
+### FF-031 — missing API minute rejects clock-bearing soccer clips
+
+- **Status:** `implemented`; not deployed
+- **Severity:** P3
+- **Source:** Audit 2026-08-13 P3-1, revalidated against the Go evaluator and
+  archived Python timestamp guard.
+- **Invariant:** Missing provider timestamp evidence cannot prove that an
+  otherwise valid soccer clip shows the wrong event.
+- **Evidence:** `vision.Evaluate` derived expected minute zero when
+  `Expected.Elapsed` was unset. Soccer footage with any readable broadcast
+  clock then failed the minute/period comparison and was rejected. The retired
+  Python `validate_timestamp` explicitly returned `unverified` when
+  `api_elapsed` was zero.
+- **Implemented locally; not deployed:** After the soccer and screen-recording
+  gates pass, `Elapsed <= 0` now routes the clip to the unverified pool with
+  reason `API minute unavailable`. The content gates still reject non-soccer
+  and phone-of-TV footage; no matched minute is claimed without API evidence.
+- **Regression:** Domain tests cover clock-bearing and no-clock soccer footage,
+  no false matched minute, and preservation of both content gates. Focused
+  uncached domain, activity, and workflow tests pass.
+- **Source relation:** Closes `AUD-0813-P3-1` and restores archived Python
+  behavior without changing ordinary known-minute validation.
+
 ## Confirmed lower-priority backlog
 
 | ID | Severity | Source | Summary | Completion condition |
@@ -797,7 +820,6 @@ implementation time.
 | `AUD-0813-P2-8` | discovery | Forensic candidate persistence blocks child workflow spawn on the speed-to-clip path. | `triage` |
 | `AUD-0813-P2-9` | ffmpeg | Dense hashing and latency-sensitive probe/frame work share one process lane. | `triage` |
 | `AUD-0813-P2-13` | observability | `calls_total{error_class}` can remain empty because emitted error fields do not populate that label. | `triage` |
-| `AUD-0813-P3-1` | vision | Unknown API minute (`0`) may reject a clock-bearing clip instead of retaining it unverified. | `triage` |
 | `AUD-0813-P3-2` | video | A hash shorter than the configured dedup window can pass while being structurally unable to deduplicate. | `triage` |
 | `AUD-0813-P3-4` | ranking | Dedup winner selection and public ranking may use inconsistent quality metrics. | `triage` |
 | `AUD-0813-P3-6` | monitor | Discovery recovery may repeat duplicate start/register work every cycle for healthy workflows. | `triage` |

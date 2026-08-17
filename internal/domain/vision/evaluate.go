@@ -88,6 +88,14 @@ func Evaluate(frames []FrameObservation, exp Expected, tol int) Evaluation {
 		ev.Reason = "screen recording (majority screen vote)"
 		return ev
 	}
+	// A zero API minute means the provider did not supply time evidence. Keep
+	// valid soccer footage in the unverified pool instead of comparing a visible
+	// broadcast clock against a fabricated minute zero.
+	if exp.Elapsed <= 0 {
+		ev.Outcome = OutcomeUnverified
+		ev.Reason = "API minute unavailable"
+		return ev
+	}
 
 	// Clock check. The API reports the minute AFTER the goal, so expected =
 	// elapsed + extra - 1 (never below elapsed).
