@@ -485,57 +485,54 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		return out, fmt.Errorf("monitor.ReconcileFixture: upsert fixture: %w", err)
 	}
 
-	// Step 2-5: diff events.
-	// Read every non-removed event. Presence/absence and score consistency
-	// apply for the fixture's full active lifetime; they must not silently stop
-	// if the dormant monitor_complete/download_complete compatibility flags are
-	// set. A removed natural_key remains protected by the UNIQUE constraint and
-	// the key collection below.
-	storedEvents, err := a.EventRepo.ListByFixture(ctx, f.ID)
+	// Step 2-5: diff events. Read the complete identity history in one query.
+	// Non-removed rows participate in presence/absence voting; removed rows are
+	// immutable sequence tombstones that prevent brace renumbering and key reuse.
+	allEvents, err := a.EventRepo.ListAllByFixture(ctx, f.ID)
 	if err != nil {
-		return out, fmt.Errorf("monitor.ReconcileFixture: list fixture events: %w", err)
-	}
-	// Also read ALL events for the fixture to know which natural_keys
-	// are taken (including removed). We skip re-inserting keys that
-	// already have removed rows — collision-handling shortcut.
-	allKeys, err := a.collectAllNaturalKeys(ctx, f.ID)
-	if err != nil {
-		return out, fmt.Errorf("monitor.ReconcileFixture: collect keys: %w", err)
+		return out, fmt.Errorf("monitor.ReconcileFixture: list fixture event history: %w", err)
 	}
 
-	// Group pending pg events by natural_key for O(1) lookup.
-	pgByKey := make(map[string]*event.Event, len(storedEvents))
-	for _, e := range storedEvents {
-		pgByKey[e.NaturalKey] = e
+	pgByKey := make(map[string]*event.Event, len(allEvents))
+	allKeys := make(map[string]struct{}, len(allEvents))
+	for _, stored := range allEvents {
+		allKeys[stored.NaturalKey] = struct{}{}
+		if !stored.Removed {
+			pgByKey[stored.NaturalKey] = stored
+		}
+	}
+	incompleteGoalTeams := map[int]bool{
+		in.APIFixture.Teams.Home.ID: scoreInventory.scoreRequiresMissingGoal(in.APIFixture.Teams.Home.ID),
+		in.APIFixture.Teams.Away.ID: scoreInventory.scoreRequiresMissingGoal(in.APIFixture.Teams.Away.ID),
+	}
+	eventSequences, err := assignEventSequences(in.APIFixture.Events, allEvents, incompleteGoalTeams)
+	if err != nil {
+		return out, fmt.Errorf("monitor.ReconcileFixture: assign event identities: %w", err)
 	}
 
 	// Build a set of API event natural_keys we've seen this cycle,
 	// so absence votes for pg events NOT in the set are correct.
 	apiKeys := make(map[string]struct{}, len(in.APIFixture.Events))
-	// Per-cycle counter for seq assignment. Keyed by (team_id,
-	// player_id_or_unknown, type). As we iterate API events in
-	// order, this counter increments per (team, player, type) group
-	// — matching Python's approach in archive/src/data/fixtures.py.
-	// API returns events in chronological order, so this counter is
-	// stable across monitor cycles: the min-30 goal always gets seq=1,
-	// a subsequent min-45 goal from the same player always gets seq=2.
-	seqCounter := make(map[string]int)
 
-	for _, apiEv := range in.APIFixture.Events {
+	for apiIndex, apiEv := range in.APIFixture.Events {
 		// Filter to trackable event types via event.TrackableEventType.
 		// Details:
 		//   Goal with detail in {Normal Goal, Penalty, Own Goal} +
 		//     no "Penalty Shootout" in comments → tracked
+		//   Goal with detail Missed Penalty outside a shootout → tracked
 		//   Card with detail = "Red card" → tracked
-		//   Everything else (yellow cards, substitutions, VAR
-		//     announcements, missed penalties, shootout goals) → skip
+		//   Everything else (yellow cards, substitutions, VAR announcements,
+		//     shootout goals/misses) → skip
 		domainType := trackableType(apiEv)
 		if domainType == "" {
 			continue
 		}
-		seqKey := seqCounterKey(apiEv, domainType)
-		seqCounter[seqKey]++
-		domainEv, key, err := a.buildDomainEvent(f, apiEv, domainType, seqCounter[seqKey], now)
+		sequence, ok := eventSequences[apiIndex]
+		if !ok {
+			out.Errors = append(out.Errors, fmt.Sprintf("event identity missing api_index=%d", apiIndex))
+			continue
+		}
+		domainEv, key, err := a.buildDomainEvent(f, apiEv, domainType, sequence, now)
 		if err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("build event: %v", err))
 			continue
@@ -853,45 +850,10 @@ func (a *Activities) registerAndSpawnEvent(ctx context.Context, existing *event.
 	}
 }
 
-// collectAllNaturalKeys reads every natural_key for the fixture,
-// including removed events. Used to skip re-insertion of a
-// natural_key that's terminal (soft-removed).
-func (a *Activities) collectAllNaturalKeys(ctx context.Context, fixtureID int64) (map[string]struct{}, error) {
-	// The event.Repo doesn't have a bulk "give me all natural_keys"
-	// method yet — we use pg directly via a small helper. For now,
-	// this shortcut lives in this activity file; if a second caller
-	// needs it, promote to event.Repo.
-	return collectNaturalKeysForFixture(ctx, a.EventRepo, fixtureID)
-}
-
-// collectNaturalKeysForFixture leans on ListPending (non-removed
-// events) for the "currently-active" set. A separate method for
-// removed events would need a new repo query — for now, we treat
-// only ListPending's set as "taken" for insertion purposes. A
-// previously-removed event that reappears will hit
-// UNIQUE(fixture_id, natural_key), and the Insert failure is caught
-// by the caller. This is defensive — we prefer to fail loud on
-// collision rather than silently skip.
-//
-// TODO: add event.Repo.NaturalKeysForFixture(ctx, fixtureID) that
-// returns all keys (removed too) so the skip-terminal shortcut is
-// clean rather than an insert-then-catch dance.
-func collectNaturalKeysForFixture(ctx context.Context, repo event.Repo, fixtureID int64) (map[string]struct{}, error) {
-	events, err := repo.ListPending(ctx, fixtureID)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]struct{}, len(events))
-	for _, e := range events {
-		out[e.NaturalKey] = struct{}{}
-	}
-	return out, nil
-}
-
 // buildDomainEvent constructs an event.Event from the API payload
 // with the caller-supplied seq. Seq is assigned by the reconcile
-// loop's per-(team, player, type) counter — stable across cycles
-// because api-sports.io returns events in chronological order.
+// identity matcher, which reuses active stored sequences and allocates above
+// the complete active + removed history.
 func (a *Activities) buildDomainEvent(f *fixture.Fixture, apiEv apifootball.APIFixtureEvent, domainType event.Type, seq int, now time.Time) (*event.Event, string, error) {
 	teamID := apiEv.Team.ID
 	teamName := apiEv.Team.Name
@@ -939,16 +901,4 @@ func trackableType(apiEv apifootball.APIFixtureEvent) event.Type {
 	}
 	t, _ := event.TrackableEventType(apiEv.Type, apiEv.Detail, comments)
 	return t
-}
-
-// seqCounterKey returns the key used to increment per-cycle seq for
-// an API event. Matches Python's counter key from
-// archive/src/data/fixtures.py: (player_id, event_type) — team_id is
-// implied since it's part of the event.
-func seqCounterKey(apiEv apifootball.APIFixtureEvent, domainType event.Type) string {
-	pidStr := "unknown"
-	if apiEv.Player.ID != nil {
-		pidStr = fmt.Sprintf("%d", *apiEv.Player.ID)
-	}
-	return fmt.Sprintf("%d_%s_%s", apiEv.Team.ID, pidStr, string(domainType))
 }

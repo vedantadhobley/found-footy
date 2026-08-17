@@ -607,8 +607,8 @@ against the current branch.
   process exit boundary immediately. `Work` and the serving goroutine then run
   under one lifecycle select; a later listener failure cancels `Work`, drains
   registered adapters in LIFO order, and remains the returned fatal error.
-  The public `Run` wrapper is the only `os.Exit(1)` boundary, while the internal
-  lifecycle returns an error and is directly testable.
+  The public `Run` wrapper is bootstrap's only `os.Exit(1)` boundary, while the
+  internal lifecycle returns an error and is directly testable.
 - **Regression:** One test occupies an ephemeral address and proves `Work` is
   never called. A subprocess test requires the public `Run` boundary to exit 1.
   A third test binds an OS-assigned port, runs `Work`, and proves the metrics
@@ -618,6 +618,44 @@ against the current branch.
 - **Source relation:** This closes `AUD-0813-P1-4`. Its suggested non-blocking
   channel check was not used because it can race the listener's bind attempt;
   synchronous socket ownership provides a deterministic startup boundary.
+
+### FF-027 — positional event sequence misidentifies a same-player brace
+
+- **Status:** `implemented`; not deployed
+- **Severity:** P1
+- **Source:** Audit 2026-08-13 P1-2 and P3-8, revalidated against current
+  monitor reconciliation; related P2-16 and P3-5 paths validated in the same
+  code.
+- **Invariant:** Removing or reordering one same-player event must not change
+  another event's durable identity. A new event must not reuse any active or
+  removed natural-key sequence.
+- **Evidence:** Reconcile reset a per-response positional counter for each
+  `(team, player, type)` group. If a player's first goal disappeared, their
+  second goal changed from sequence 2 to sequence 1. The later row then received
+  an absence vote while the removed key blocked or absorbed the survivor. The
+  helper claiming to collect every natural key actually called `ListPending`,
+  which excludes removed rows.
+- **Implemented locally; not deployed:** `ListAllByFixture` returns the complete
+  active and removed identity history. Within each scorer/type group, an
+  order-preserving dynamic-programming match reuses active sequences by nearest
+  effective match clock and detail; unmatched events allocate above the full
+  historical maximum. Score-proven incomplete goal arrays require exact-clock
+  matching to keep a nearby new goal distinct from an omitted one. Exact
+  removed-row reappearances resolve to the terminal tombstone rather than
+  generating a repeated unique-key error. Reconcile now uses this single
+  history query instead of separate active and misleading pending reads.
+- **Regression:** Monitor tests cover first-goal VAR in a brace, a third goal
+  after the tombstone, reversed provider order, and a nearby new goal during an
+  incomplete score/event response. A clock-correction test requires the
+  original key to survive an ordinary one-minute adjustment. A real Postgres
+  integration test proves the history query returns active and removed rows.
+  Focused uncached tests, the targeted race detector, `make test-short`,
+  `make test`, and `make vet` pass.
+- **Decision:** [Event sequences match stored identity instead of provider
+  array position](./decisions/2026-08-17-event-sequences-match-stored-identity.md).
+- **Source relation:** Closes `AUD-0813-P1-2`, its P3-8 duplicate,
+  `AUD-0813-P2-16`, and `AUD-0813-P3-5`. The natural-key format and terminal
+  removal policy remain unchanged.
 
 ## Confirmed lower-priority backlog
 
@@ -645,7 +683,6 @@ implementation time.
 | `AUD-0815-FLEET-TOCTOU` | fleet | Capacity check and provision are not one atomic operation; safe only while callers serialize provisioning. | `triage` |
 | `AUD-0815-SHARE-TOCTOU` | persist | Share mint has a check-then-write race under concurrent promotion. | `triage` |
 | `AUD-0815-ROT` | code/docs | Dormant compatibility vocabulary and zero-caller functions remain after cutover cleanup. | `triage` |
-| `AUD-0813-P1-2` | monitor | Positional natural-key sequence can misidentify a same-player brace after removal or API reorder. | `triage` |
 | `AUD-0813-P2-1` | API | Fixture reads use N+1 event/video queries and the completed bucket is unbounded at the query layer. | `triage` |
 | `AUD-0813-P2-3` | video | CDN-download HTTP 403 may be classified as terminal geo-restriction when retry could recover it. | `triage` |
 | `AUD-0813-P2-5` | workflow | Serialized selector consumer blocks on persistence I/O that may not require serialization. | `triage` |
@@ -655,11 +692,9 @@ implementation time.
 | `AUD-0813-P2-9` | ffmpeg | Dense hashing and latency-sensitive probe/frame work share one process lane. | `triage` |
 | `AUD-0813-P2-11` | API/S3 | Redirect cache lifetime can equal the presign lifetime, creating boundary-expired playback URLs. | `triage` |
 | `AUD-0813-P2-13` | observability | `calls_total{error_class}` can remain empty because emitted error fields do not populate that label. | `triage` |
-| `AUD-0813-P2-16` | monitor | A removed natural key that reappears may be skipped or collide forever instead of being reconciled. | `triage`; related to FF-014 |
 | `AUD-0813-P3-1` | vision | Unknown API minute (`0`) may reject a clock-bearing clip instead of retaining it unverified. | `triage` |
 | `AUD-0813-P3-2` | video | A hash shorter than the configured dedup window can pass while being structurally unable to deduplicate. | `triage` |
 | `AUD-0813-P3-4` | ranking | Dedup winner selection and public ranking may use inconsistent quality metrics. | `triage` |
-| `AUD-0813-P3-5` | monitor | Reconcile may fetch the same pending-event set twice per fixture per cycle. | `triage` |
 | `AUD-0813-P3-6` | monitor | Discovery recovery may repeat duplicate start/register work every cycle for healthy workflows. | `triage` |
 | `AUD-0813-P3-7` | eventing | Coincident active/staging polls may emit fixture activation twice. | `triage` |
 | `AUD-0813-P3-9` | ingest | An empty tracked-team cache may still burn lookahead API calls whose results are discarded. | `triage` |
@@ -688,8 +723,9 @@ audit must not be intaken independently because the later audits already
 reconciled it.
 
 Explicit non-active dispositions from the 2026-08-13 table: P2-4 maps to
-FF-006; P2-12 maps to FF-009; P2-15 is broadened by FF-014; P3-8 duplicates
-P1-2; and P3-11 was superseded when the alias resolver was removed. P0-1
+FF-006; P2-12 maps to FF-009; P2-15 is broadened by FF-014; P3-8 closed with
+P1-2 under FF-027; and P3-11 was superseded when the alias resolver was
+removed. P0-1
 through P0-5, P1-1, P1-3, P2-2, P2-10, and P2-14 are recorded closed by the
 audit's post-fix evidence and dated decisions. Revalidate that closure only if
 new production evidence contradicts it.

@@ -54,6 +54,14 @@ executes the public `Run` boundary in a subprocess and requires exit status 1.
 A third binds an OS-assigned port, runs `Work`, and proves the shared lifecycle
 drains the listener cleanly.
 
+FF-027 monitor tests preserve the second row of a same-player brace when the
+first goal is VAR-removed, require a later goal to allocate above the removed
+tombstone, and reverse the provider array without swapping stored clocks. A
+score-incomplete case proves a nearby new goal is inserted while the omitted
+stored goal remains held, while a coherent one-minute correction must update
+the original key. The Postgres integration test requires the identity-history
+query to return both active and removed rows.
+
 ## Tier 1.5 — workflow tests
 
 `internal/workflow/ingest_test.go` uses

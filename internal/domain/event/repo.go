@@ -82,6 +82,12 @@ type Repo interface {
 	// removal correctness cannot depend on legacy pipeline-completion flags.
 	ListByFixture(ctx context.Context, fixtureID int64) ([]*Event, error)
 
+	// ListAllByFixture returns the complete identity history for a fixture,
+	// including soft-removed rows. Reconciliation uses removed sequences as
+	// immutable tombstones while matching the current provider array to active
+	// events and allocating collision-free sequences for genuinely new events.
+	ListAllByFixture(ctx context.Context, fixtureID int64) ([]*Event, error)
+
 	// EventsAwaitingDiscovery returns events in the fixture that are
 	// confirmed (downstream_triggered) and NOT removed but whose
 	// discovery workflow has not completed — i.e. the spawn failed or is
