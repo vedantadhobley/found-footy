@@ -21,7 +21,7 @@ the same commit. Per the [2026-07-07 working rule](decisions.md).
 | ActivePollWorkflow | ✓ scheduled | Temporal Schedule `active-poll-scheduled` (IntervalSpec 30s default) | `internal/workflow/active_poll.go` |
 | StagingPollWorkflow | ✓ scheduled | Temporal Schedule `staging-poll-scheduled` (cron `*/15 * * * *` default) | `internal/workflow/staging_poll.go` |
 | EventWorkflow | ✓ spawned | `ReconcileFixture` starts `event-{id}` when `downstream_triggered` flips. | `internal/workflow/event.go` + `event_pipeline.go` |
-| VideoWorkflow | ✓ child | EventWorkflow starts one awaited child per candidate. | `internal/workflow/video.go` |
+| VideoWorkflow | ✓ replay compatibility | EventWorkflow histories started before FF-022 retain their awaited child per candidate; new executions schedule the two activities directly around an exact-MD5 claim. | `internal/workflow/video.go` |
 | ~~VideoValidationWorkflow~~ / ~~AssetPersistenceWorkflow~~ | ⊘ superseded | Validation and persistence run as activities inside EventWorkflow's serialized queue. | — |
 
 **Note on the ActivePoll + StagingPoll split** (2026-07-11): plan §5 W2
@@ -36,7 +36,7 @@ same time — the "Pre" prefix was misleading.
 
 ### Spawn + tracking map
 
-Two distinct spawn mechanisms:
+The current spawn mechanism and retained compatibility boundary are:
 
 - **Monitor → EventWorkflow — Temporal client `StartWorkflow`, pg-tracked.**
   The three scheduled workflows are independent Temporal cron Schedules;
@@ -50,10 +50,14 @@ Two distinct spawn mechanisms:
   duplicate starts; a closed unsuccessful execution may reuse the ID and
   restore its durable progress. See the
   [failed-run recovery decision](./decisions/2026-08-17-failed-event-workflows-resume-durable-progress.md).
-- **EventWorkflow → VideoWorkflow — a real Temporal `ExecuteChildWorkflow`.**
-  Each candidate spawns an *awaited* child (with `ParentClosePolicy`), so
-  cancelling the EventWorkflow tears its Video children down with it. This
-  is the one genuine Temporal parent/child link in the system.
+- **EventWorkflow → candidate activities — direct, awaited futures.** New
+  executions schedule `DownloadAndStage`, claim the returned exact MD5 in the
+  serialized consumer, then schedule one `HashVideo` per distinct byte cluster.
+  Both activity contexts inherit EventWorkflow cancellation. Histories that
+  began before FF-022 retain the old awaited `VideoWorkflow` child command
+  sequence; the child stays registered solely for replay and completion of
+  those executions. See the
+  [exact-byte ownership decision](./decisions/2026-08-17-exact-md5-ownership-precedes-dense-hashing.md).
 
 ```mermaid
 flowchart TD
@@ -69,8 +73,8 @@ flowchart TD
     Active -->|"poll live · 3-vote debounce"| PG
 
     Active -->|"goal confirmed →<br/>client StartWorkflow + tracking row"| Disc["EventWorkflow ✓<br/>(per goal · #164c)<br/>producer: inline search"]
-    Disc ==>|"ExecuteChildWorkflow<br/>per candidate (awaited)"| Vid["VideoWorkflow ✓<br/>(per candidate)<br/>download → hash"]
-    Vid ==>|"fingerprints → Selector queue"| Q["EventWorkflow consumer ✓<br/>dedup → vision → promote → rank"]
+    Disc ==>|"DownloadAndStage<br/>per candidate"| Claim["EventWorkflow MD5 claims<br/>one owner per exact byte cluster"]
+    Claim ==>|"HashVideo<br/>per unique MD5"| Q["EventWorkflow consumer ✓<br/>vision → perceptual dedup → promote → rank"]
 
     Disc -.-> PG
     Q -.->|"video_assets + video_shares (what users see)"| PG
@@ -435,11 +439,12 @@ timeout):
 `SearchTweets` with per-event `exclude_urls` accumulating across attempts
 (so attempts 2+ stop early on consecutive-already-seen). Each new
 candidate is persisted via `StoreCandidate` (post-hoc query-quality
-learning) AND spawns a `VideoWorkflow` child (`ExecuteChildWorkflow`,
-awaited) that runs `DownloadAndStage → HashVideo` and returns
-md5 + frame-hash fingerprints. If either activity exhausts retries, the child
-returns a typed terminal failure with the tweet URL, stage reason, and any
-staging key instead of failing without correlation data. Wall-clock
+learning) AND submits `DownloadAndStage` to the consumer. The activity returns
+the exact MD5, staging key, and media metadata. The consumer claims that MD5
+before scheduling dense `HashVideo`; simultaneous byte-identical candidates
+wait behind one claimant instead of repeating ffmpeg work. Histories started
+before FF-022 retain the versioned `VideoWorkflow` child command sequence.
+Wall-clock
 `max_age_minutes` filter
 (decisions.md 2026-07-23).
 
@@ -457,15 +462,15 @@ including on the final outer discovery attempt; the minute between successful
 outer attempts remains unchanged. A Temporal version marker preserves the old
 three-try policy for histories started before FF-017.
 
-**Candidate failure contract (FF-002).** `download_error` stamps the persisted
-candidate `failed`; no staging object exists. `hash_error` stamps `failed` and
-calls `DeleteStaging` with the key returned by download. An unexpected failed
-child future uses the tweet URL captured when the parent registered the future
-and stamps `video_workflow_error`. Invalid output uses
-`video_workflow_invalid_outcome` and also reclaims any returned staging key.
-Cancellation bypasses all of these commands under the FF-015 contract. Both
-workflow sides use Temporal change ID `ff-002-terminal-video-failures`, version
-1; histories without the marker replay the old command sequence.
+**Candidate failure contract (FF-002 + FF-022).** `download_error` stamps the
+persisted candidate `failed`; no staging object exists. `hash_error` stamps
+only the claimant `failed` and calls `DeleteStaging` with its key. A waiting
+exact-byte candidate then receives ownership and its own full hash retry
+budget, so one unreadable staging object cannot discard the cluster. Invalid
+download output uses `video_workflow_invalid_outcome` and reclaims any returned
+staging key. The compatibility child retains FF-002's correlated unexpected-
+child and typed terminal-output paths. Cancellation bypasses every forensic
+and cleanup command under FF-015.
 
 **Cancellation contract (FF-015).** Producer cancellation from an activity or
 the between-attempt `workflow.Sleep` terminates the producer and records its
@@ -492,14 +497,17 @@ uses recovery.
 A genuinely stale `RUNNING` execution needs the separate FF-025 backstop; age
 alone never authorizes fixture completion.
 
-**Consumer** (`event_pipeline.go`, serialized). Two dedup stages straddle
-vision (#171 shipped 2026-08-09 — the pre-vision, category-blind, keep-first
-gate was replaced):
+**Consumer** (`event_pipeline.go`, serialized). Exact-byte ownership precedes
+dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
 
-- **Gate** (`onVideoDone`): **md5-exact dedup only**, against kept + pending
-  clips. An exact byte-dup is dropped, its vote credited to the winner — on the
-  asset row if promoted, or **accumulated in memory** on the winner if it's still
-  pending vision (#180); otherwise the clip fires **vision** (`ValidateClip` on
+- **Exact claim + gate** (`onDownloadDone`, `onHashDone`; `onVideoDone` for old
+  histories): the first staged candidate for an MD5 owns dense hashing. Later
+  arrivals wait; success drops their staging objects and credits every vote to
+  the winner without hashing them. Claimant failure transfers ownership to the
+  next independent staging object. An MD5 already present in kept or pending
+  clips collapses immediately — votes land on the asset row if promoted or
+  accumulate in memory if vision is still pending (#180). A hash-successful
+  unique clip fires **vision** (`ValidateClip` on
   joi — screen-gate + period-aware clock).
   Validation retries transient rate-limit, capacity, unavailable, and
   infrastructure failures up to three attempts. Invalid request/auth/model and

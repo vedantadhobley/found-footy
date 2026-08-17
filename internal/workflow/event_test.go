@@ -33,6 +33,7 @@ import (
 const (
 	ff007RecoveryChangeIDForTest = "ff-007-failed-run-recovery"
 	ff017RestartChangeIDForTest  = "ff-017-browser-restart-retry"
+	ff022PreHashChangeIDForTest  = "ff-022-pre-hash-md5-claim"
 )
 
 // newDiscoveryEnv sets up a test env with EventWorkflow +
@@ -58,13 +59,41 @@ func baseEventEnvWithRecovery(
 	assets videoactivity.LoadEventAssetsOutput,
 	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
 ) *testsuite.TestWorkflowEnvironment {
+	return baseEventEnvWithOptions(s, recovery, assets, false, discoveryConfig...)
+}
+
+// preHashEventEnv activates FF-022 for tests that exercise parent-owned
+// download/stage and exact-MD5 claims. The normal base keeps the old child
+// command sequence so the existing suite also guards replay compatibility.
+func preHashEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvironment {
+	return baseEventEnvWithOptions(s,
+		discoveryactivity.LoadEventRecoveryStateOutput{},
+		videoactivity.LoadEventAssetsOutput{},
+		true,
+	)
+}
+
+func baseEventEnvWithOptions(
+	s *testsuite.WorkflowTestSuite,
+	recovery discoveryactivity.LoadEventRecoveryStateOutput,
+	assets videoactivity.LoadEventAssetsOutput,
+	preHashMD5 bool,
+	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
+) *testsuite.TestWorkflowEnvironment {
 	env := s.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(workflow.EventWorkflow)
 	env.RegisterWorkflow(workflow.VideoWorkflow)
 	env.RegisterActivity(&discoveryactivity.Activities{})
 	env.RegisterActivity(&visionactivity.Activities{})
+	env.RegisterActivity(&videoactivity.Activities{})
 	env.RegisterActivity(&videoactivity.PersistActivities{})
 	env.RegisterActivity(&livefeedactivity.Activities{})
+	version := sdkworkflow.DefaultVersion
+	if preHashMD5 {
+		version = sdkworkflow.Version(1)
+	}
+	env.OnGetVersion(ff022PreHashChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(version).Maybe()
 	// Default GetDiscoveryConfig stub. MaxAttempts=10 matches the
 	// pre-#162 hardcoded value that existing tests were written
 	// against (`want 10` assertions in AttemptsRun tests). Tests that need a
@@ -864,6 +893,20 @@ func stagingIs(key string) interface{} {
 	return mock.MatchedBy(func(in visionactivity.ValidateClipInput) bool { return in.StagingKey == key })
 }
 
+func downloadTweetIs(url string) interface{} {
+	return mock.MatchedBy(func(in videoactivity.DownloadAndStageInput) bool { return in.TweetURL == url })
+}
+
+func hashStagingIs(key string) interface{} {
+	return mock.MatchedBy(func(in videoactivity.HashVideoInput) bool { return in.StagingKey == key })
+}
+
+func candidateOutcomeIs(url string, outcome discoveryactivity.CandidateOutcome) interface{} {
+	return mock.MatchedBy(func(in discoveryactivity.RecordCandidateOutcomeInput) bool {
+		return in.TweetURL == url && in.Outcome == outcome
+	})
+}
+
 // passedChild builds a "passed" VideoWorkflow result for one candidate.
 func passedChild(url, md5, staging string, w, h, durMS int, size int64, frames []uint64) workflow.VideoWorkflowOutput {
 	return workflow.VideoWorkflowOutput{
@@ -891,6 +934,17 @@ func twoCandidateEnv(s *testsuite.WorkflowTestSuite) (*testsuite.TestWorkflowEnv
 	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
 	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
 	env.OnActivity("BumpAssetPopularity", mock.Anything, mock.Anything).Return(nil).Maybe()
+	t1, t2 := wireTwoCandidateSearch(env)
+	return env, t1, t2
+}
+
+func twoCandidatePreHashEnv(s *testsuite.WorkflowTestSuite) (*testsuite.TestWorkflowEnvironment, string, string) {
+	env := preHashEventEnv(s)
+	t1, t2 := wireTwoCandidateSearch(env)
+	return env, t1, t2
+}
+
+func wireTwoCandidateSearch(env *testsuite.TestWorkflowEnvironment) (string, string) {
 	t1 := "https://x.com/u/status/1111111111111111111"
 	t2 := "https://x.com/u/status/2222222222222222222"
 	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
@@ -902,7 +956,168 @@ func twoCandidateEnv(s *testsuite.WorkflowTestSuite) (*testsuite.TestWorkflowEnv
 		}, nil)
 	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
 		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil)
-	return env, t1, t2
+	return t1, t2
+}
+
+// TestEventWorkflow_PreHashExactClaimHashesIdenticalBytesOnce covers FF-022's
+// production failure mode: two separately staged downloads with the same raw
+// MD5 consume one dense ffmpeg extraction, while both sightings contribute to
+// popularity and the loser staging object is reclaimed.
+func TestEventWorkflow_PreHashExactClaimHashesIdenticalBytesOnce(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env, t1, t2 := twoCandidatePreHashEnv(&s)
+	const (
+		md5 = "identical-raw-bytes"
+		s1  = "staging/fixture/event/one.mp4"
+		s2  = "staging/fixture/event/two.mp4"
+	)
+	frames := []uint64{1, 2, 4, 8, 16, 32}
+	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	env.OnActivity("DownloadAndStage", mock.Anything, downloadTweetIs(t1)).
+		Return(videoactivity.DownloadAndStageOutput{
+			Outcome: videoactivity.OutcomePassed, MD5: md5, StagingKey: s1,
+			Width: 1280, Height: 720, DurationMS: 7000, SizeBytes: 900_000,
+		}, nil).Once()
+	env.OnActivity("DownloadAndStage", mock.Anything, downloadTweetIs(t2)).
+		Return(videoactivity.DownloadAndStageOutput{
+			Outcome: videoactivity.OutcomePassed, MD5: md5, StagingKey: s2,
+			Width: 1280, Height: 720, DurationMS: 7000, SizeBytes: 900_000,
+		}, nil).Once()
+	env.OnActivity("HashVideo", mock.Anything, mock.Anything).
+		Return(videoactivity.HashVideoOutput{FrameHashes: frames}, nil).Once()
+	env.OnActivity("ValidateClip", mock.Anything, mock.Anything).
+		Return(visionactivity.ValidateClipOutput{Outcome: "verified", MatchedMinute: pInt(71)}, nil).Once()
+
+	promotedPopularity, bumpedPopularity := 0, 0
+	env.OnActivity("PromoteAndPersist", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, in videoactivity.PromoteAndPersistInput) (videoactivity.PromoteAndPersistOutput, error) {
+			promotedPopularity = in.Popularity
+			return videoactivity.PromoteAndPersistOutput{AssetID: uuid.New(), Inserted: true}, nil
+		}).Once()
+	env.OnActivity("BumpAssetPopularity", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, in videoactivity.BumpAssetPopularityInput) error {
+			bumpedPopularity += in.Count
+			return nil
+		}).Maybe()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	env.AssertNumberOfCalls(t, "HashVideo", 1)
+	env.AssertNumberOfCalls(t, "ValidateClip", 1)
+	env.AssertNumberOfCalls(t, "PromoteAndPersist", 1)
+	env.AssertNotCalled(t, "VideoWorkflow", mock.Anything, mock.Anything)
+	if promotedPopularity+bumpedPopularity != 2 {
+		t.Errorf("total popularity = %d, want 2 exact-byte sightings", promotedPopularity+bumpedPopularity)
+	}
+}
+
+// TestEventWorkflow_PreHashClaimTransfersAfterHashFailure proves a bad first
+// staging object does not poison every exact-byte candidate. The first owner
+// exhausts its three retries and is stamped failed; the waiting claimant then
+// gets a fresh three-attempt budget and reaches vision.
+func TestEventWorkflow_PreHashClaimTransfersAfterHashFailure(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env, t1, t2 := twoCandidatePreHashEnv(&s)
+	const (
+		md5 = "identical-raw-bytes"
+		s1  = "staging/fixture/event/primary.mp4"
+		s2  = "staging/fixture/event/fallback.mp4"
+	)
+
+	env.OnActivity("DownloadAndStage", mock.Anything, downloadTweetIs(t1)).
+		Return(videoactivity.DownloadAndStageOutput{
+			Outcome: videoactivity.OutcomePassed, MD5: md5, StagingKey: s1,
+			Width: 1280, Height: 720, DurationMS: 7000, SizeBytes: 900_000,
+		}, nil).Once()
+	// Ensure t1 owns the claim before t2 becomes ready, while still allowing t2
+	// to join before t1's retry sequence exhausts.
+	env.OnActivity("DownloadAndStage", mock.Anything, downloadTweetIs(t2)).
+		After(time.Second).
+		Return(videoactivity.DownloadAndStageOutput{
+			Outcome: videoactivity.OutcomePassed, MD5: md5, StagingKey: s2,
+			Width: 1280, Height: 720, DurationMS: 7000, SizeBytes: 900_000,
+		}, nil).Once()
+	env.OnActivity("HashVideo", mock.Anything, hashStagingIs(s1)).
+		Return(videoactivity.HashVideoOutput{}, errors.New("garage object unreadable"))
+	env.OnActivity("HashVideo", mock.Anything, hashStagingIs(s2)).
+		Return(videoactivity.HashVideoOutput{FrameHashes: []uint64{1, 2, 4, 8}}, nil).Once()
+	env.OnActivity("RecordCandidateOutcome", mock.Anything,
+		failedCandidateIs(t1, workflow.VideoFailureHash)).Return(nil).Once()
+	env.OnActivity("RecordCandidateOutcome", mock.Anything,
+		candidateOutcomeIs(t2, discoveryactivity.OutcomePromoted)).Return(nil).Once()
+	env.OnActivity("DeleteStaging", mock.Anything,
+		videoactivity.DeleteStagingInput{StagingKey: s1}).Return(nil).Once()
+	env.OnActivity("ValidateClip", mock.Anything, stagingIs(s2)).
+		Return(visionactivity.ValidateClipOutput{Outcome: "verified", MatchedMinute: pInt(71)}, nil).Once()
+	env.OnActivity("PromoteAndPersist", mock.Anything, mock.Anything).
+		Return(videoactivity.PromoteAndPersistOutput{AssetID: uuid.New(), Inserted: true}, nil).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	env.AssertNumberOfCalls(t, "HashVideo", 4)
+	env.AssertNotCalled(t, "RecordCandidateOutcome", mock.Anything,
+		candidateOutcomeIs(t2, discoveryactivity.OutcomeDuplicate))
+}
+
+// TestEventWorkflow_PreHashCancellationEmitsNoFollowOnCommands keeps FF-015's
+// cancellation ownership intact after removing the child boundary.
+func TestEventWorkflow_PreHashCancellationEmitsNoFollowOnCommands(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := preHashEventEnv(&s)
+	const (
+		tweetURL   = "https://x.com/u/status/1111111111111111111"
+		stagingKey = "staging/fixture/event/cancel.mp4"
+	)
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{{TweetURL: tweetURL, VideoPageURL: "vp", DurationSeconds: 7}}, Count: 1,
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil).Once()
+	env.OnActivity("DownloadAndStage", mock.Anything, downloadTweetIs(tweetURL)).
+		Return(videoactivity.DownloadAndStageOutput{
+			Outcome: videoactivity.OutcomePassed, MD5: "md5", StagingKey: stagingKey,
+		}, nil).Once()
+	env.OnActivity("HashVideo", mock.Anything, hashStagingIs(stagingKey)).
+		After(10*time.Minute).
+		Return(videoactivity.HashVideoOutput{FrameHashes: []uint64{1}}, nil).Once()
+	env.RegisterDelayedCallback(env.CancelWorkflow, 30*time.Second)
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+
+	requireCanceled(t, env)
+	env.AssertNumberOfCalls(t, "HashVideo", 1)
+	env.AssertNotCalled(t, "ValidateClip", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "RecordCandidateOutcome", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "DeleteStaging", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "MarkDownstreamComplete", mock.Anything, mock.Anything)
+}
+
+// TestEventWorkflow_PreFF022HistoryKeepsVideoChild proves the version marker
+// leaves already-running histories on their original child workflow path.
+func TestEventWorkflow_PreFF022HistoryKeepsVideoChild(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := baseEventEnv(&s)
+	const tweetURL = "https://x.com/u/status/1111111111111111111"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{{TweetURL: tweetURL, VideoPageURL: "vp", DurationSeconds: 7}}, Count: 1,
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil).Once()
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(tweetURL)).
+		Return(workflow.VideoWorkflowOutput{Outcome: workflow.VideoOutcomeRejected, RejectReason: "test"}, nil).Once()
+	env.OnActivity("RecordCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	env.AssertNumberOfCalls(t, "VideoWorkflow", 1)
+	env.AssertNotCalled(t, "DownloadAndStage", mock.Anything, mock.Anything)
 }
 
 // TestEventWorkflow_Pipeline_CategoryScopedDedup — the load-bearing #171 fix.

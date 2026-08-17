@@ -52,9 +52,9 @@ found-footy/
 │   │   ├── ingest.go                    ✓ O1c: IngestWorkflow
 │   │   ├── active_poll.go               ✓ O2: ActivePollWorkflow (30s IntervalSpec)
 │   │   ├── staging_poll.go              ✓ O2: StagingPollWorkflow (*/15 cron)
-│   │   ├── event.go                     ✓ #164c: EventWorkflow — per-goal orchestrator (producer: discovery search + spawn Video children; ex-DiscoveryWorkflow)
-│   │   ├── event_pipeline.go            ✓ #164c-b + #171: Selector consumer — md5 gate → vision → category-scoped perceptual dedup + IsUpgrade winner-select → promote/supersede → rank; assets/pending/inFlight state; searchDone&&inFlight==0 completion
-│   │   └── video.go                     ✓ #165: VideoWorkflow child (download → hash)
+│   │   ├── event.go                     ✓ #164c + FF-022: EventWorkflow — per-goal discovery producer + candidate submission (ex-DiscoveryWorkflow)
+│   │   ├── event_pipeline.go            ✓ #164c-b + #171 + FF-022: Selector consumer — download/stage → exact-MD5 claim → one dense hash per byte cluster → vision → category-scoped perceptual dedup + IsUpgrade winner-select → promote/supersede → rank; assets/pending/hashing/inFlight state; searchDone&&inFlight==0 completion
+│   │   └── video.go                     ✓ #165: pre-FF-022 VideoWorkflow child retained for Temporal replay; shared download/hash activity contracts
 │   ├── activity/                        activity packages + shared heartbeat helper
 │   │   ├── ingest/                      ✓ config, roster, fixture fetch/upsert, canonical-team placeholder, and retention activities
 │   │   │   ├── activities.go

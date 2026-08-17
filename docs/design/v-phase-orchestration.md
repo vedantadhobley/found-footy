@@ -2,6 +2,15 @@
 
 **Status:** shipped design rationale, not the live workflow ledger. The shape
 settled 2026-07-27 and later shipped as `EventWorkflow` + `VideoWorkflow`.
+
+> **Post-ship correction (2026-08-17):** production showed exact 108 MB reposts
+> repeating dense hash retries, invalidating this design's "hashing is
+> cheap-and-wide" premise. FF-022 now gives EventWorkflow ownership after
+> `DownloadAndStage`: one claimant per MD5 runs `HashVideo`, while the
+> `VideoWorkflow` child remains only for histories started before the versioned
+> change. This document preserves the original signed-off design; the
+> [exact-byte ownership decision](../decisions/2026-08-17-exact-md5-ownership-precedes-dense-hashing.md)
+> records the correction.
 Use [`../orchestration.md`](../orchestration.md) for current behavior and
 [`../todo.md`](../todo.md) for active lifecycle defects, including FF-002,
 FF-007, FF-014, and FF-015. This **supersedes** both the earlier draft of this doc (which was

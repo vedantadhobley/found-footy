@@ -240,8 +240,11 @@ Load-bearing details:
 | `active-poll-scheduled` | IntervalSpec `Every: WORKFLOWS_ACTIVE_FIXTURE_POLL_INTERVAL` (30s) | ActivePollWorkflow |
 | `staging-poll-scheduled` | cron `WORKFLOWS_STAGING_POLL_CRON` (`*/15 * * * *`) | StagingPollWorkflow |
 
-EventWorkflow + VideoWorkflow are **spawned** (client `StartWorkflow` / child
-workflow), not scheduled. EventWorkflow uses its deterministic ID with
+EventWorkflow is **spawned** by client `StartWorkflow`, not scheduled. New
+executions run candidate download and hashing as direct activities around an
+EventWorkflow-owned exact-MD5 claim. VideoWorkflow remains registered because
+pre-FF-022 histories still contain child-workflow commands. EventWorkflow uses
+its deterministic ID with
 `ALLOW_DUPLICATE_FAILED_ONLY`, so running and successful executions remain
 singletons while failed, timed-out, canceled, or terminated executions can
 resume from Postgres checkpoints. Its client start RPC is bounded, but the

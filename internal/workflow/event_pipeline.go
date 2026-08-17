@@ -1,17 +1,20 @@
 // event_pipeline.go — the EventWorkflow consumer engine (#164c-b): the
-// serialized Selector queue that drains completed VideoWorkflow children and
-// vision activities, running dedup → vision → promote → rank per unique clip.
+// serialized Selector queue that drains download, dense-hash, and vision
+// activities, running exact-byte ownership → hash → perceptual dedup → promote
+// → rank per unique clip. The legacy VideoWorkflow child remains replayable.
 //
-// All state (assets / pending / inFlight) lives in the `pipeline` struct and
-// is mutated only inside the Selector callbacks + the producer's spawnChild —
+// All state (assets / pending / hashing / inFlight) lives in the `pipeline`
+// struct and
+// is mutated only inside the Selector callbacks + the producer's
+// spawnCandidate —
 // which, because Temporal coroutines are cooperatively scheduled (one runs at
 // a time, yielding only at Get/Sleep/Select/Await), are automatically
 // race-free. That single-threadedness IS the serialization; no locks.
 //
 // The lone step that MUST be serial is dedup (match against assets∪pending):
 // two clips deciding "am I a dup?" simultaneously would both slip through.
-// Everything else — download/hash (in the child) and vision (fired async) —
-// runs in parallel. See docs/design/v-phase-orchestration.md.
+// Everything else runs in parallel across distinct content. Exact-byte
+// arrivals share one dense hash claim. See the FF-022 decision record.
 package workflow
 
 import (
@@ -49,6 +52,15 @@ type clip struct {
 	assetID       uuid.UUID // set once promoted
 }
 
+// hashClaim serializes dense hashing for one exact MD5. The primary owns the
+// active HashVideo call; waiting candidates are byte-identical fallbacks. A
+// failed primary hands ownership to the next candidate instead of losing the
+// cluster or reusing a potentially bad staging object.
+type hashClaim struct {
+	primary clip
+	waiting []clip
+}
+
 // pipeline holds the consumer's state + the pre-built activity contexts.
 type pipeline struct {
 	ctx      workflow.Context
@@ -59,14 +71,18 @@ type pipeline struct {
 	// dedup thresholds (from the start-of-workflow config read → deterministic)
 	maxHamming, minRun, maxGaps int
 	terminalVideoFailures       bool
+	preHashMD5Claim             bool
 
 	// activity option ctxs
-	visionCtx  workflow.Context
-	persistCtx workflow.Context
+	downloadCtx workflow.Context
+	hashCtx     workflow.Context
+	visionCtx   workflow.Context
+	persistCtx  workflow.Context
 
-	// state — mutated only in callbacks / spawnChild (single-threaded)
+	// state — mutated only in callbacks / spawnCandidate (single-threaded)
 	assets     []clip
 	pending    []clip
+	hashing    map[string]*hashClaim
 	inFlight   int
 	searchDone bool
 	searchErr  error
@@ -84,6 +100,9 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		selector:   workflow.NewSelector(ctx),
 		maxHamming: cfg.maxHamming, minRun: cfg.minRun, maxGaps: cfg.maxGaps,
 		terminalVideoFailures: cfg.terminalVideoFailures,
+		preHashMD5Claim:       cfg.preHashMD5Claim,
+		downloadCtx:           videoDownloadActivityContext(ctx),
+		hashCtx:               videoHashActivityContext(ctx),
 		visionCtx: workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 			StartToCloseTimeout: 3 * time.Minute, // vision is slow (multi-frame VLM)
 			HeartbeatTimeout:    time.Minute,
@@ -93,12 +112,14 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 			StartToCloseTimeout: 2 * time.Minute, // S3 copy + pg writes
 			RetryPolicy:         &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumAttempts: 5},
 		}),
+		hashing: make(map[string]*hashClaim),
 	}
 }
 
 type pipelineConfig struct {
 	maxHamming, minRun, maxGaps int
 	terminalVideoFailures       bool
+	preHashMD5Claim             bool
 }
 
 // restoreAssets seeds the serialized consumer with durable live assets from a
@@ -121,10 +142,22 @@ func (p *pipeline) restoreAssets(restored []videoactivity.RestoredEventAsset) {
 	}
 }
 
-// spawnChild launches a VideoWorkflow child for one candidate and registers
-// its future on the Selector. Called from the producer coroutine.
-func (p *pipeline) spawnChild(gctx workflow.Context, tweetURL string) {
+// spawnCandidate begins one candidate's durable processing. FF-022 schedules
+// DownloadAndStage directly so EventWorkflow can claim its MD5 before dense
+// hashing. The child workflow branch preserves pre-FF-022 histories.
+func (p *pipeline) spawnCandidate(gctx workflow.Context, tweetURL string) {
 	if gctx.Err() != nil {
+		return
+	}
+	p.spawned++
+	if p.preHashMD5Claim {
+		fut := workflow.ExecuteActivity(p.downloadCtx,
+			(*videoactivity.Activities).DownloadAndStage,
+			videoactivity.DownloadAndStageInput{
+				EventID: p.in.EventID, FixtureID: p.in.FixtureID, TweetURL: tweetURL,
+			})
+		p.inFlight++
+		p.selector.AddFuture(fut, p.onDownloadDone(tweetURL))
 		return
 	}
 	p.childSeq++
@@ -138,8 +171,133 @@ func (p *pipeline) spawnChild(gctx workflow.Context, tweetURL string) {
 		TweetURL:  tweetURL,
 	})
 	p.inFlight++
-	p.spawned++
 	p.selector.AddFuture(fut, p.onVideoDone(tweetURL))
+}
+
+// onDownloadDone claims an exact MD5 before scheduling dense extraction. A
+// duplicate of a kept/pending clip collapses immediately; a duplicate of an
+// active hash waits behind its claimant without consuming an ffmpeg slot.
+func (p *pipeline) onDownloadDone(tweetURL string) func(workflow.Future) {
+	return func(f workflow.Future) {
+		p.inFlight--
+		if p.canceled() {
+			return
+		}
+
+		var out videoactivity.DownloadAndStageOutput
+		if err := f.Get(p.ctx, &out); err != nil {
+			p.failed++
+			p.log.Warn("candidate download failed after retries", "tweet_url", tweetURL, "err", err)
+			p.recordOutcome(tweetURL, discoveryactivity.OutcomeFailed, string(VideoFailureDownload), nil)
+			return
+		}
+		if out.Outcome == videoactivity.OutcomeRejected {
+			p.rejectedClips++
+			p.recordOutcome(tweetURL, discoveryactivity.OutcomeRejected, out.RejectReason, nil)
+			return
+		}
+		if out.Outcome != videoactivity.OutcomePassed || out.MD5 == "" || out.StagingKey == "" {
+			p.failed++
+			p.recordOutcome(tweetURL, discoveryactivity.OutcomeFailed,
+				string(VideoFailureInvalidChildOutput),
+				jsonDetail(map[string]any{"outcome": out.Outcome, "md5_present": out.MD5 != "", "staging_present": out.StagingKey != ""}))
+			p.deleteStaging(out.StagingKey)
+			return
+		}
+
+		c := clipFromDownload(tweetURL, out)
+		if idx, isAsset, matched := p.matchMD5(c); matched {
+			p.duplicates++
+			p.collapse(c, idx, isAsset)
+			p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeDuplicate, "", nil)
+			return
+		}
+		if claim, exists := p.hashing[c.md5]; exists {
+			claim.waiting = append(claim.waiting, c)
+			return
+		}
+
+		p.hashing[c.md5] = &hashClaim{primary: c}
+		p.fireHash(c.md5)
+	}
+}
+
+// fireHash schedules the one active dense extraction for an exact-byte claim.
+func (p *pipeline) fireHash(md5 string) {
+	if p.canceled() {
+		return
+	}
+	claim, ok := p.hashing[md5]
+	if !ok {
+		return
+	}
+	fut := workflow.ExecuteActivity(p.hashCtx,
+		(*videoactivity.Activities).HashVideo,
+		videoactivity.HashVideoInput{StagingKey: claim.primary.stagingKey})
+	p.inFlight++
+	p.selector.AddFuture(fut, p.onHashDone(md5))
+}
+
+// onHashDone releases a successful claim to vision, or transfers a failed
+// claim to the next exact-byte staging object. Only candidates whose own hash
+// attempt fails receive hash_error; untried waiters remain recoverable.
+func (p *pipeline) onHashDone(md5 string) func(workflow.Future) {
+	return func(f workflow.Future) {
+		p.inFlight--
+		if p.canceled() {
+			return
+		}
+		claim, ok := p.hashing[md5]
+		if !ok {
+			return
+		}
+
+		var out videoactivity.HashVideoOutput
+		if err := f.Get(p.ctx, &out); err != nil {
+			failed := claim.primary
+			p.failed++
+			p.log.Warn("candidate hash failed after retries",
+				"tweet_url", failed.tweetURL, "staging_key", failed.stagingKey, "err", err)
+			p.recordOutcome(failed.tweetURL, discoveryactivity.OutcomeFailed, string(VideoFailureHash), nil)
+			p.deleteStaging(failed.stagingKey)
+			if len(claim.waiting) == 0 {
+				delete(p.hashing, md5)
+				return
+			}
+			claim.primary = claim.waiting[0]
+			claim.waiting = claim.waiting[1:]
+			p.fireHash(md5)
+			return
+		}
+
+		winner := claim.primary
+		winner.frameHashes = out.FrameHashes
+		p.passed++
+		for _, duplicate := range claim.waiting {
+			winner.popularity += duplicate.popularity
+			p.duplicates++
+			p.recordOutcome(duplicate.tweetURL, discoveryactivity.OutcomeDuplicate, "", nil)
+			p.deleteStaging(duplicate.stagingKey)
+		}
+		delete(p.hashing, md5)
+		p.pending = append(p.pending, winner)
+		p.fireVision(winner)
+	}
+}
+
+// clipFromDownload converts the staged activity result into workflow-owned
+// state without carrying activity structs through later callbacks.
+func clipFromDownload(tweetURL string, out videoactivity.DownloadAndStageOutput) clip {
+	c := clip{
+		tweetURL: tweetURL, md5: out.MD5, stagingKey: out.StagingKey,
+		width: out.Width, height: out.Height, durationMS: out.DurationMS,
+		fileSizeBytes: out.SizeBytes, popularity: 1,
+	}
+	if out.Bitrate != 0 {
+		b := out.Bitrate
+		c.bitrate = &b
+	}
+	return c
 }
 
 // finishSearch closes the producer side on every normal or error exit. The
