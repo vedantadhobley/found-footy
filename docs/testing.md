@@ -20,6 +20,7 @@ updates this doc if it introduces a new test tier or pattern.
 | Workflow tests | `internal/workflow` | Temporal `testsuite.WorkflowTestSuite` with named activity mocks. |
 | Adapter integration | `internal/infra` | Real Postgres, S3-compatible storage, NATS, and Temporal through testcontainers where required. |
 | Scenario corpus | `test/scenarios` | YAML-driven fixture lifecycles against real workflow/activity code and test Postgres. |
+| Configuration contract | `internal/config/contract_test.go` | Derives each binary's env ownership from Go tags and checks `.env.example`, both Compose files, environment routing, and cookie-directory mounts. |
 | Release contract | `test/release_contract_test.go` | Parses production Compose without Docker operations and requires immutable identity propagation plus the stack-wide ffmpeg CPU budget. |
 | Tooling contract | `test/tooling_contract_test.go` | Requires exact Go, golangci-lint, and Air versions across build files plus the intended commit/push hook targets. |
 
@@ -193,7 +194,7 @@ The files divide by responsibility:
   via warm-path**, `BackupCookies` fingerprint dedupe (unchanged
   cookies skip write), `BackupCookies` rewrite-on-rotation, all
   `/authenticate` + `/auth/verify` HTTP paths (POST-only guard,
-  reauth config env-var passthrough, fallback message).
+  immutable reauth-config injection, fallback message).
 - `browser_cookies_test.go` — Playwright→domain cookie
   conversion: nil `SameSite` doesn't panic, `SameSite` preserved,
   round-trip stability.
@@ -210,6 +211,14 @@ granularity and dominate this package's unit-test runtime.
 payload consumed by the production release verifier.
 
 ## Release and tooling contract tests
+
+`internal/config/contract_test.go` derives the complete worker, API, and
+Twitter variable sets from the same struct tags used at startup. It requires
+every non-defaulted Go variable in `.env.example`, rejects stale template keys,
+checks required Compose interpolation, and verifies that application services
+route only owned explicit overrides. It also preserves the environment-scoped
+Firefox network, worker-only `EVENT_ENV`, and parent-directory cookie mount.
+The test parses repository files only and is part of `make test-short`.
 
 `test/release_contract_test.go` parses `docker-compose.prod.yml` as data. It
 requires worker, API, Twitter, and Twitter VNC to receive `GIT_SHA`, `BUILT_AT`,

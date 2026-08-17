@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Configuration is binary-owned and fails before external work](./2026-08-17-configuration-is-binary-owned-and-fail-fast.md) — FF-035 typed profiles, semantic validation, and derived env/Compose contract.
 - [Engineering gates use pinned tool versions](./2026-08-17-engineering-gates-use-pinned-tools.md) — FF-042 exact Go, golangci-lint, and Air versions plus commit/push check contracts.
 - [Compose partitions the fixed ffmpeg host budget](./2026-08-17-compose-partitions-ffmpeg-host-budget.md) — FF-021 stack-wide CPU arithmetic and fixed production replica contract.
 - [Stale EventWorkflow recovery requires Temporal progress proof](./2026-08-17-stale-event-recovery-requires-progress-proof.md) — FF-025 exact-run, two-snapshot termination and FF-007 re-drive contract.

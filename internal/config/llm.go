@@ -10,8 +10,8 @@ import "time"
 // 2026-07-01, the endpoint is intentionally abstracted — the swap to
 // nexus (when it lands) is a config-only change.
 //
-// Endpoint is not tagged required at the env layer; the adapter constructor
-// returns a descriptive error when a consuming binary starts without it.
+// LoadFor validates Endpoint before the worker opens external connections.
+// Constructor checks remain as defense in depth for direct use.
 type LLMConfig struct {
 	// Endpoint is the OpenAI-compatible base URL. Example:
 	//   http://llama-small.joi
@@ -36,11 +36,7 @@ type LLMConfig struct {
 	// = discover from /v1/models at startup (picks the first entry).
 	// Explicit value pins us to a specific model even when the server
 	// hosts multiple.
-	ChatModel string `env:"LLM_CHAT_MODEL"`
-
-	// EmbeddingModel reserves a model ID for a future embedding path. Current
-	// production code does not use it.
-	EmbeddingModel string `env:"LLM_EMBEDDING_MODEL"`
+	ChatModel string `env:"LLM_CHAT_MODEL" envDefault:""`
 
 	// ChatConcurrencyCap bounds the number of in-flight chat calls this
 	// process may have open at once, via a client-side semaphore that

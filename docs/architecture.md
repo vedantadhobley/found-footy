@@ -69,7 +69,7 @@ found-footy/
 │   ├── api/                             ✓ Chi read API, DTOs, search, and share redirect; exact contract in docs/api.md; SSE is vedanta-systems'
 │   ├── bootstrap/                       ✓ S1 + FF-026 (NOT IN PLAN — see decisions.md 2026-07-07)
 │   │   └── bootstrap.go                 Deps + LIFO closer registry; fail-fast metrics/health listener; shared binary lifecycle
-│   ├── config/                          ✓ S1: envconfig-based Config with per-adapter sub-structs
+│   ├── config/                          ✓ S1 + FF-035: per-binary envconfig profiles, semantic/cross-field validation, and env/Compose contract tests
 │   ├── observability/
 │   │   ├── vocabulary/                  ✓ S1: typed Module + Action enums
 │   │   ├── logging/                     ✓ S1: slog Emit() + TestEmitter for unit tests

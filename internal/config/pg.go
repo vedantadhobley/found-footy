@@ -8,8 +8,8 @@ import "time"
 // added if a secret manager forces it, but a DSN keeps local dev +
 // tests simple.
 //
-// PG_DSN is not tagged required at the env layer; the adapter constructor
-// returns a descriptive error when a consuming binary starts without it.
+// LoadFor validates PG_DSN before a consuming binary opens external
+// connections. Constructor checks remain as defense in depth for direct use.
 type PGConfig struct {
 	// DSN is a libpq / pgx connection string. Example:
 	//   postgres://ffuser:ffpass@postgres:5432/found_footy?sslmode=disable

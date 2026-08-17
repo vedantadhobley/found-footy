@@ -48,7 +48,7 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Load()
+	cfg, err := config.LoadFor(config.BinaryWorker)
 	if err != nil {
 		return fmt.Errorf("config load: %w", err)
 	}

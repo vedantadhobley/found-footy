@@ -212,7 +212,6 @@ services:
     env_file: .env
     environment:
       NATS_CLIENT_NAME: found-footy-prod-api
-      EVENT_ENV: prod  # must match the worker, else the api's live-feed subject diverges to found-footy.dev.*
       IMAGE_TAG: ${IMAGE_TAG:-latest}
     depends_on:
       postgres:

@@ -52,6 +52,11 @@ type ServiceOptions struct {
 	// to it. Default: /config/twitter_cookies.json.
 	CookieFile string
 
+	// ReauthURL and ReauthCommand are optional operator instructions returned
+	// by /authenticate when the shared session expires.
+	ReauthURL     string
+	ReauthCommand string
+
 	// WarmPathTTL is the window during which a prior VerifySession
 	// success lets EnsureAuthenticated skip the ~3-4s x.com round-trip
 	// and return healthy immediately. Default: 60s.
@@ -126,6 +131,8 @@ type Service struct {
 
 	// Config (immutable post-construction — no lock needed).
 	cookieFile          string
+	reauthURL           string
+	reauthCommand       string
 	warmPathTTL         time.Duration
 	verifyTimeout       time.Duration
 	pageLoadTimeout     time.Duration
@@ -187,6 +194,8 @@ func NewService(b sessionBrowser, opts ServiceOptions) *Service {
 	svc := &Service{
 		browser:             b,
 		cookieFile:          opts.CookieFile,
+		reauthURL:           opts.ReauthURL,
+		reauthCommand:       opts.ReauthCommand,
 		warmPathTTL:         opts.WarmPathTTL,
 		verifyTimeout:       opts.VerifyTimeout,
 		pageLoadTimeout:     opts.PageLoadTimeout,

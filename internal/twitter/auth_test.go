@@ -495,14 +495,15 @@ func TestHandleAuthenticate_Healthy(t *testing.T) {
 	}
 }
 
-// TestHandleAuthenticate_UnauthenticatedWithReauthConfig — env vars
-// set → response includes the reauth URL + command + message.
+// TestHandleAuthenticate_UnauthenticatedWithReauthConfig verifies configured
+// operator instructions are returned with the unauthenticated state.
 func TestHandleAuthenticate_UnauthenticatedWithReauthConfig(t *testing.T) {
-	t.Setenv(vncURLEnv, "http://twitter-vnc.luv:5900")
-	t.Setenv(vncStartCmdEnv, "make twitter-vnc-up")
-
 	fake := &fakeBrowser{}
-	svc, _ := newTestService(t, fake)
+	svc := NewService(fake, ServiceOptions{
+		CookieFile:    filepath.Join(t.TempDir(), "twitter_cookies.json"),
+		ReauthURL:     "http://twitter-vnc.luv:5900",
+		ReauthCommand: "make twitter-vnc-up",
+	})
 	svc.SetState(StateUnauthenticated, "verify failed: session expired")
 
 	rec := httptest.NewRecorder()
@@ -531,14 +532,9 @@ func TestHandleAuthenticate_UnauthenticatedWithReauthConfig(t *testing.T) {
 	}
 }
 
-// TestHandleAuthenticate_UnauthenticatedNoConfig — env vars unset →
-// response still valid but without URL/command fields, message uses
-// the fallback text.
+// TestHandleAuthenticate_UnauthenticatedNoConfig verifies zero-value operator
+// instructions produce a valid fallback response.
 func TestHandleAuthenticate_UnauthenticatedNoConfig(t *testing.T) {
-	// Explicitly unset (in case parent process has them set).
-	t.Setenv(vncURLEnv, "")
-	t.Setenv(vncStartCmdEnv, "")
-
 	fake := &fakeBrowser{}
 	svc, _ := newTestService(t, fake)
 	svc.SetState(StateUnauthenticated, "no cookies")

@@ -89,6 +89,7 @@ func TestNewMetricsMux_MetricsAndHealth(t *testing.T) {
 // invariant: application work must not begin when /metrics and /healthz cannot
 // own their configured socket.
 func TestRun_RefusesToStartWithoutMetricsListener(t *testing.T) {
+	setValidBootstrapEnvironment(t)
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("reserve metrics address: %v", err)
@@ -98,7 +99,7 @@ func TestRun_RefusesToStartWithoutMetricsListener(t *testing.T) {
 	t.Setenv("LOG_FORMAT", "text")
 
 	workCalled := false
-	err = run("test", "sha", "now", func(context.Context, *Deps) error {
+	err = run("api", "sha", "now", func(context.Context, *Deps) error {
 		workCalled = true
 		return nil
 	})
@@ -115,11 +116,12 @@ func TestRun_RefusesToStartWithoutMetricsListener(t *testing.T) {
 // which must translate the deterministic bind failure into exit status 1.
 func TestRun_OccupiedMetricsAddressExitsOne(t *testing.T) {
 	if os.Getenv("FF_BOOTSTRAP_EXIT_HELPER") == "1" {
-		Run("test", "sha", "now", func(context.Context, *Deps) error {
+		Run("api", "sha", "now", func(context.Context, *Deps) error {
 			return errors.New("Work must not start")
 		})
 		return
 	}
+	setValidBootstrapEnvironment(t)
 
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -146,11 +148,12 @@ func TestRun_OccupiedMetricsAddressExitsOne(t *testing.T) {
 // TestRun_DrainsEphemeralMetricsListener proves the testable lifecycle can
 // bind an OS-assigned port, run application work, and shut the listener down.
 func TestRun_DrainsEphemeralMetricsListener(t *testing.T) {
+	setValidBootstrapEnvironment(t)
 	t.Setenv("METRICS_ADDR", "127.0.0.1:0")
 	t.Setenv("LOG_FORMAT", "text")
 
 	workCalled := false
-	if err := run("test", "sha", "now", func(context.Context, *Deps) error {
+	if err := run("api", "sha", "now", func(context.Context, *Deps) error {
 		workCalled = true
 		return nil
 	}); err != nil {
@@ -159,4 +162,15 @@ func TestRun_DrainsEphemeralMetricsListener(t *testing.T) {
 	if !workCalled {
 		t.Fatal("Work was not called after the metrics listener bound")
 	}
+}
+
+func setValidBootstrapEnvironment(t *testing.T) {
+	t.Helper()
+	t.Setenv("PG_DSN", "postgres://user:pass@postgres:5432/found_footy")
+	t.Setenv("NATS_URL", "nats://nats:4222")
+	t.Setenv("NATS_CLIENT_NAME", "found-footy-test-api")
+	t.Setenv("S3_ENDPOINT", "http://garage:3900")
+	t.Setenv("S3_BUCKET", "found-footy")
+	t.Setenv("S3_ACCESS_KEY_ID", "test-access")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "test-secret")
 }

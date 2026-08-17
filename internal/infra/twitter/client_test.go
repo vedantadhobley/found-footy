@@ -40,7 +40,7 @@ func mockTwitter(t *testing.T, searchResp twitter.SearchResponse) *httptest.Serv
 func TestNewClient_DoesNotRequireLiveService(t *testing.T) {
 	ins, _ := newFixture()
 	c, err := twitter.NewClient(config.TwitterConfig{
-		BaseURL: "http://127.0.0.1:1", SearchTimeout: 50 * time.Millisecond, DownloadTimeout: 30 * time.Second,
+		BaseURL: "http://127.0.0.1:1", SearchTimeout: 50 * time.Millisecond,
 	}, ins)
 	if err != nil {
 		t.Fatalf("NewClient with unavailable service: %v", err)
@@ -63,7 +63,7 @@ func TestSearch_HappyPath(t *testing.T) {
 
 	ins, log := newFixture()
 	c, err := twitter.NewClient(config.TwitterConfig{
-		BaseURL: srv.URL, SearchTimeout: 5 * time.Second, DownloadTimeout: 30 * time.Second,
+		BaseURL: srv.URL, SearchTimeout: 5 * time.Second,
 	}, ins)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -97,7 +97,7 @@ func TestSearch_RecoversAfterServiceBecomesReady(t *testing.T) {
 
 	ins, _ := newFixture()
 	c, err := twitter.NewClient(config.TwitterConfig{
-		BaseURL: srv.URL, SearchTimeout: time.Second, DownloadTimeout: 30 * time.Second,
+		BaseURL: srv.URL, SearchTimeout: time.Second,
 	}, ins)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)

@@ -32,6 +32,28 @@ targeting prod. Every command must pass `-f docker-compose.{prod,dev}.yml`.
   image-builder + single fallback, with per-event instances carrying
   the search load.
 
+### Configuration contract
+
+Compose remains the deployment owner: both stacks inject the repository's
+gitignored `.env` and set environment-specific overrides such as the fleet
+network and event subject token. Application code does not infer dev or prod.
+At startup, `config.LoadFor` selects the sections owned by the worker, API, or
+Twitter binary, parses only those variables, and validates semantic and
+cross-field invariants before opening listeners, external connections, or a
+browser. A malformed worker-only value therefore cannot stop the API, while
+the worker rejects impossible values such as a search attempt beyond the
+database range or an enabled fleet with no capacity.
+
+`.env.example` is the canonical checked template, not a second source of
+runtime defaults. `internal/config/contract_test.go` derives variable ownership
+from Go struct tags and verifies the template, both Compose files, required
+interpolation, explicit per-service overrides, environment-scoped fleet
+network, worker-only `EVENT_ENV`, and cookie-directory mounts. New settings
+must update their typed config, semantic validation when the type alone is not
+enough, and the template or Compose route when operators must supply or
+override them. Unknown legacy keys in a private `.env` are ignored; remove them
+through a separately approved environment edit.
+
 Production Compose also owns FF-021's fixed host-wide ffmpeg CPU contract. Its
 32-thread budget is partitioned across the two workers as 16 concurrent
 one-thread processes per replica. Explicit worker environment entries override
