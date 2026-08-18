@@ -351,14 +351,14 @@ every recreated process. It does not update source, change schema, restart
 infrastructure, clean fleet containers, or roll back on failure. See the
 [deployment contract](./deployment.md#deploy-tracking).
 
-FF-041/FF-005 is an explicit two-mutation release: first apply the additive
+FF-041/FF-005 shipped as an explicit two-mutation release: first the additive
 [`hash_version` migration](../migrations/20260817_01_add_video_asset_hash_version.sql),
-then run the separately approved application rollout. Do not run the new image
-before the migration; its schema guard will refuse startup. During rollback,
-the column may remain because the old binary ignores it, but restore
-`schema_version.schema_hash` to the prior release's embedded hash before
-recreating that binary. Each database statement and application rollout still
-requires its own production approval.
+then separately approved application release `201cdf1`, both completed on
+2026-08-18. Do not reapply the migration as part of routine production
+rollouts. During rollback to a pre-FF-041 image, the column may remain because
+the old binary ignores it, but restore `schema_version.schema_hash` to that
+release's embedded hash before recreating the binary. Any future database
+statement and application rollout still requires its own production approval.
 
 If a legacy unscoped `ff-firefox-ev-*` container appears, stop the rollout and
 identify its workflow and network ownership. The scoped provisioner cannot

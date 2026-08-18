@@ -92,7 +92,7 @@ found-footy/
 ├── scripts/matchday-status.{sh,sql}     ✓ FF-050: environment-scoped, SELECT-only match-day operator snapshot
 │   ├── Dockerfile                       Playwright base + playwright-go driver + optional WITH_VNC layer (~150 MB xvfb+fluxbox+x11vnc+novnc+websockify)
 │   └── entrypoint.sh                    Conditionally boots VNC daemon stack when TWITTER_VNC_MODE=true, otherwise passthrough
-├── migrations/                          one pending additive FF-041 migration; schema-hash contract tested, then folded into schema.sql and removed after every environment applies it
+├── migrations/                          FF-041 operational migration applied to prod; retained with its schema-hash contract until remaining durable environments converge
 ├── scripts/                             dev-only smoke, trigger, verification, and focused probe programs
 │   ├── smoke_repos/main.go              ✓ live pg + repo smoke test (dev only)
 │   ├── trigger_ingest/main.go           ✓ live IngestWorkflow trigger (O1d verification)
