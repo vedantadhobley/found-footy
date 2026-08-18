@@ -1,14 +1,13 @@
 // schema.go — schema.sql embedded at build time + the boot-time drift guard.
 //
-// schema.sql is the flat, authoritative schema (no ordered migration files;
-// decisions.md 2026-08-13 P0-3). It is applied only on a fresh volume (dev
-// initdb) or an ephemeral testcontainer (WithInitScripts), which means an edit
-// to schema.sql silently no-ops against an already-provisioned DB. That
-// footgun bit twice (2026-08-06 stale DB, 2026-08-12 missing `superseded`
-// enum + constraint). VerifySchema converts it from a silent divergence into
-// a loud startup refusal: the live DB records the schema.sql fingerprint it
-// was built from, and a binary whose embedded schema.sql differs will not run
-// against it.
+// schema.sql is the flat, authoritative schema. It is applied only on a fresh
+// volume (dev initdb) or an ephemeral testcontainer (WithInitScripts), which
+// means an edit to schema.sql silently no-ops against an already-provisioned
+// DB. A one-time operational migration may bridge an existing deployment to a
+// new flat schema; it is not an application-side migration runner. VerifySchema
+// converts silent divergence into a loud startup refusal: the live DB records
+// the schema.sql fingerprint it was built from, and a binary whose embedded
+// schema.sql differs will not run against it.
 package pg
 
 import (
@@ -27,11 +26,11 @@ import (
 
 // Schema is the flat, authoritative schema SQL, embedded at build time from
 // schema.sql. Applied on a fresh volume (dev initdb) or testcontainer
-// (WithInitScripts); VerifySchema hashes it to fingerprint the live DB. When
-// a live prod DB eventually needs an in-place change it can't be wiped for,
-// this is where an ordered embed.FS of migration files would land — flattened
-// back into schema.sql and deleted once applied everywhere (decisions.md
-// 2026-08-13 P0-3).
+// (WithInitScripts); VerifySchema hashes it to fingerprint the live DB.
+// In-place changes to an existing deployment use a reviewed operational SQL
+// file under migrations/ and re-stamp this exact fingerprint. The application
+// never discovers or runs migrations at startup; completed migration files are
+// folded back into this flat schema after every environment has converged.
 //
 //go:embed schema.sql
 var Schema string

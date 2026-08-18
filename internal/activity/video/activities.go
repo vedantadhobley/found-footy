@@ -42,7 +42,7 @@ type syndicationClient interface {
 
 type ffmpegClient interface {
 	ProbeMetadata(ctx context.Context, path string) (*ffmpeg.VideoMetadata, error)
-	ExtractDenseFrames(ctx context.Context, path string, intervalSecs float64, quality int, onFrame func(ffmpeg.Frame) error) error
+	ExtractDenseFrames(ctx context.Context, path string, intervalSecs float64, workingWidth int, onFrame func(ffmpeg.Frame) error) error
 }
 
 type s3Client interface {
@@ -60,6 +60,7 @@ type Activities struct {
 	StagingPrefix     string
 	Thresholds        dvideo.FilterThresholds
 	FrameIntervalSecs float64
+	MinHashFrames     int
 }
 
 // ThresholdsFromConfig maps env-driven config onto the domain type, so the
@@ -139,7 +140,9 @@ func (a *Activities) DownloadAndStage(ctx context.Context, in DownloadAndStageIn
 // HashVideo fetches staged bytes from Garage, dense-extracts, and dHashes
 // each frame. Retries re-fetch from Garage (internal) — never Twitter.
 func (a *Activities) HashVideo(ctx context.Context, in HashVideoInput) (HashVideoOutput, error) {
-	var out HashVideoOutput
+	out := HashVideoOutput{
+		HashVersion: dvideo.CurrentFrameHashVersion(a.FrameIntervalSecs),
+	}
 	// Covers the pre-decode Garage fetch + ffmpeg-semaphore wait + the extract;
 	// the old frame-only heartbeat missed the pre-decode waits (#184 audit
 	// P1-3). ffmpeg DenseTimeout + StartToClose remain the real bounds.
@@ -158,11 +161,10 @@ func (a *Activities) HashVideo(ctx context.Context, in HashVideoInput) (HashVide
 		return out, fmt.Errorf("video.HashVideo: fetch %s: %w", in.StagingKey, err)
 	}
 
-	// Stream frames: hash each PNG to an 8-byte dHash the moment it's parsed
-	// off ffmpeg's stdout, so peak memory is ~one frame, not the whole clip's
-	// worth of PNGs (~300 MB for a 90 s 1080p clip × the concurrency cap).
+	// Stream frames: hash each bounded grayscale PNG to an 8-byte dHash the
+	// moment it is parsed off ffmpeg's stdout, so peak memory is one frame.
 	hashes := make([]uint64, 0, 256)
-	err = a.FFmpeg.ExtractDenseFrames(ctx, vidPath, a.FrameIntervalSecs, 0, func(fr ffmpeg.Frame) error {
+	err = a.FFmpeg.ExtractDenseFrames(ctx, vidPath, a.FrameIntervalSecs, dvideo.FrameHashWorkingWidth, func(fr ffmpeg.Frame) error {
 		h, herr := dvideo.DHashPNG(fr.Data)
 		if herr != nil {
 			return nil // skip one unreadable frame rather than fail the clip
@@ -174,6 +176,16 @@ func (a *Activities) HashVideo(ctx context.Context, in HashVideoInput) (HashVide
 		return out, fmt.Errorf("video.HashVideo: extract: %w", err)
 	}
 	out.FrameHashes = hashes
+	minFrames := a.MinHashFrames
+	if minFrames <= 0 {
+		minFrames = 1
+	}
+	if len(hashes) < minFrames {
+		out.Outcome = OutcomeRejected
+		out.RejectReason = RejectInsufficientHashFrames
+		return out, nil
+	}
+	out.Outcome = OutcomePassed
 	return out, nil
 }
 

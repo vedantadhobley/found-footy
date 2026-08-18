@@ -105,6 +105,33 @@ func TestVideoWorkflow_RejectedSkipsHash(t *testing.T) {
 	}
 }
 
+func TestVideoWorkflow_InsufficientHashSequenceIsRejected(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newVideoEnv(&s)
+	env.OnActivity("DownloadAndStage", mock.Anything, mock.Anything).Return(
+		videoactivity.DownloadAndStageOutput{
+			Outcome: videoactivity.OutcomePassed, MD5: "abc123",
+			StagingKey: "staging/1583467/e/t.mp4",
+		}, nil)
+	env.OnActivity("HashVideo", mock.Anything, mock.Anything).Return(
+		videoactivity.HashVideoOutput{
+			Outcome: videoactivity.OutcomeRejected, RejectReason: videoactivity.RejectInsufficientHashFrames,
+		}, nil)
+
+	env.ExecuteWorkflow(workflow.VideoWorkflow, stdVideoInput())
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	var out workflow.VideoWorkflowOutput
+	if err := env.GetWorkflowResult(&out); err != nil {
+		t.Fatalf("GetWorkflowResult: %v", err)
+	}
+	if out.Outcome != workflow.VideoOutcomeRejected || out.RejectReason != videoactivity.RejectInsufficientHashFrames {
+		t.Fatalf("out = %+v, want insufficient-hash rejection", out)
+	}
+}
+
 // TestVideoWorkflow_CDNForbiddenRetriesThenReturnsFailed verifies that a CDN
 // 403 consumes all four activity attempts before becoming a correlated result.
 func TestVideoWorkflow_CDNForbiddenRetriesThenReturnsFailed(t *testing.T) {

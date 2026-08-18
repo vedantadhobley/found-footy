@@ -87,8 +87,9 @@ type Asset struct {
 	S3Bucket string
 	S3Key    string // computed by the S3 client from (fixture_id, id); NOT stored redundantly per §3 principle #3, but IS on the row for read speed
 
-	MD5         []byte   // 16-byte whole-file digest — the exact-dup layer
-	FrameHashes []uint64 // per-frame dHash sequence (one per 0.1s frame); the perceptual-dedup signal, kept opaque
+	MD5              []byte           // 16-byte whole-file digest — the exact-dup layer
+	FrameHashVersion FrameHashVersion // algorithm + preprocessing + sample interval; only equal versions compare
+	FrameHashes      []uint64         // per-frame dHash sequence; the perceptual-dedup signal, kept opaque
 
 	Width         int
 	Height        int
@@ -111,26 +112,28 @@ func NewAsset(
 	fixtureID int64,
 	s3Bucket, s3Key string,
 	md5 []byte,
+	frameHashVersion FrameHashVersion,
 	frameHashes []uint64,
 	width, height, durationMS int,
 	fileSize int64,
 	at time.Time,
 ) *Asset {
 	return &Asset{
-		ID:            uuid.New(),
-		EventID:       eventID,
-		FixtureID:     fixtureID,
-		S3Bucket:      s3Bucket,
-		S3Key:         s3Key,
-		MD5:           md5,
-		FrameHashes:   frameHashes,
-		Width:         width,
-		Height:        height,
-		DurationMS:    durationMS,
-		FileSizeBytes: fileSize,
-		AspectRatio:   computeAspect(width, height),
-		Popularity:    1,
-		FirstSeenAt:   at.UTC(),
+		ID:               uuid.New(),
+		EventID:          eventID,
+		FixtureID:        fixtureID,
+		S3Bucket:         s3Bucket,
+		S3Key:            s3Key,
+		MD5:              md5,
+		FrameHashVersion: NormalizeFrameHashVersion(frameHashVersion),
+		FrameHashes:      frameHashes,
+		Width:            width,
+		Height:           height,
+		DurationMS:       durationMS,
+		FileSizeBytes:    fileSize,
+		AspectRatio:      computeAspect(width, height),
+		Popularity:       1,
+		FirstSeenAt:      at.UTC(),
 	}
 }
 

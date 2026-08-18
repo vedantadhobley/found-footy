@@ -7,7 +7,10 @@ package pg_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
@@ -55,7 +58,7 @@ func setupVideoRepos(t *testing.T) (context.Context, *pg.AssetRepo, *pg.ShareRep
 func newAsset(eventID uuid.UUID, fixtureID int64, md5 string, frames []uint64, size int64) *video.Asset {
 	return video.NewAsset(
 		eventID, fixtureID, "found-footy", "9100/asset.mp4",
-		[]byte(md5), frames, 1280, 720, 6677, size,
+		[]byte(md5), video.CurrentFrameHashVersion(0.1), frames, 1280, 720, 6677, size,
 		time.Date(2026, 8, 3, 12, 5, 0, 0, time.UTC),
 	)
 }
@@ -90,6 +93,9 @@ func TestAssetRepo_InsertIdempotentAndBump(t *testing.T) {
 	if !reflect.DeepEqual(got.FrameHashes, a.FrameHashes) {
 		t.Errorf("FrameHashes round-trip = %v, want %v", got.FrameHashes, a.FrameHashes)
 	}
+	if got.FrameHashVersion != a.FrameHashVersion {
+		t.Errorf("FrameHashVersion round-trip = %q, want %q", got.FrameHashVersion, a.FrameHashVersion)
+	}
 	if got.Popularity != 1 {
 		t.Errorf("Popularity = %d, want 1", got.Popularity)
 	}
@@ -112,6 +118,86 @@ func TestAssetRepo_InsertIdempotentAndBump(t *testing.T) {
 
 	if err := assets.AddPopularity(ctx, uuid.New(), 1); err != video.ErrNotFound {
 		t.Errorf("AddPopularity on missing = %v, want ErrNotFound", err)
+	}
+}
+
+func TestFrameHashVersionMigrationBackfillsLegacyRows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in -short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	connStr := runTestPostgres(ctx, t)
+	fx := newTestFixture()
+	pool, err := pg.New(ctx, config.PGConfig{
+		DSN: connStr, MaxConns: 5, MinConns: 1, ConnectTimeout: 10 * time.Second,
+	}, fx.ins)
+	if err != nil {
+		t.Fatalf("pg.New: %v", err)
+	}
+	defer pool.Close()
+
+	fixtureRepo := pg.NewFixtureRepo(pool)
+	fixture := completedFixture(t, ctx, fixtureRepo, 9101, time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC))
+	eventID, assetID := uuid.New(), uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO events (id, fixture_id, natural_key, event_type, detail,
+			team_id, team_name, minute)
+		VALUES ($1, $2, 'migration_goal_1', 'goal', 'Normal Goal', 1, 'Test', 1)
+	`, eventID, fixture.ID); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "ALTER TABLE video_assets DROP COLUMN hash_version"); err != nil {
+		t.Fatalf("model pre-migration schema: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO video_assets (
+			id, event_id, fixture_id, s3_bucket, s3_key, md5, frame_hashes,
+			width, height, duration_ms, file_size_bytes, popularity, first_seen_at
+		) VALUES ($1,$2,$3,'found-footy','legacy.mp4',$4,$5,1280,720,7000,1000,1,NOW())
+	`, assetID, eventID, fixture.ID, []byte("0123456789abcdef"), make([]byte, 8)); err != nil {
+		t.Fatalf("seed legacy asset: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_version (
+			id int PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+			schema_hash text NOT NULL,
+			applied_at timestamptz NOT NULL DEFAULT now()
+		);
+		INSERT INTO schema_version (id, schema_hash) VALUES (1, 'old-schema')
+		ON CONFLICT (id) DO UPDATE SET schema_hash = EXCLUDED.schema_hash
+	`); err != nil {
+		t.Fatalf("seed schema stamp: %v", err)
+	}
+
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve test source path")
+	}
+	migrationPath := filepath.Join(filepath.Dir(filename), "..", "..", "..", "migrations",
+		"20260817_01_add_video_asset_hash_version.sql")
+	migration, err := os.ReadFile(migrationPath)
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(migration)); err != nil {
+		t.Fatalf("apply migration: %v", err)
+	}
+
+	var version, schemaHash string
+	if err := pool.QueryRow(ctx,
+		"SELECT hash_version FROM video_assets WHERE id = $1", assetID).Scan(&version); err != nil {
+		t.Fatalf("read migrated asset: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		"SELECT schema_hash FROM schema_version WHERE id = 1").Scan(&schemaHash); err != nil {
+		t.Fatalf("read migrated stamp: %v", err)
+	}
+	if version != string(video.LegacyFrameHashVersion) {
+		t.Errorf("legacy version = %q, want %q", version, video.LegacyFrameHashVersion)
+	}
+	if schemaHash != pg.SchemaHash() {
+		t.Errorf("schema stamp = %q, want %q", schemaHash, pg.SchemaHash())
 	}
 }
 

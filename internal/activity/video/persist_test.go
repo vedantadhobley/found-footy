@@ -175,6 +175,7 @@ func stdPromoteInput(eventID uuid.UUID) PromoteAndPersistInput {
 		EventID: eventID, FixtureID: 1583467,
 		StagingKey:  "staging/1583467/e/t.mp4",
 		MD5:         hex.EncodeToString([]byte("md5md5md5md5md5m")),
+		HashVersion: dvideo.CurrentFrameHashVersion(0.1),
 		FrameHashes: []uint64{1, 2, 4, 8}, Width: 1280, Height: 720,
 		DurationMS: 6677, FileSizeBytes: 1_000_000,
 		Verified: true, ExtractedMinute: intp(91),
@@ -228,7 +229,8 @@ func TestLoadEventAssets_RestoresOnlyActiveLiveAssets(t *testing.T) {
 	bitrate := 4_000_000
 	assets.byID[liveID] = &dvideo.Asset{
 		ID: liveID, EventID: eventID, MD5: []byte("0123456789abcdef"),
-		FrameHashes: []uint64{1, 2, 3}, Width: 1280, Height: 720,
+		FrameHashVersion: dvideo.CurrentFrameHashVersion(0.1),
+		FrameHashes:      []uint64{1, 2, 3}, Width: 1280, Height: 720,
 		DurationMS: 8_000, FileSizeBytes: 900_000, Bitrate: &bitrate, Popularity: 4,
 	}
 	assets.byID[supersededID] = &dvideo.Asset{
@@ -252,7 +254,8 @@ func TestLoadEventAssets_RestoresOnlyActiveLiveAssets(t *testing.T) {
 	}
 	got := out.Assets[0]
 	if got.AssetID != liveID || got.MD5 != hex.EncodeToString([]byte("0123456789abcdef")) ||
-		!got.Verified || got.Popularity != 4 || got.Bitrate == nil || *got.Bitrate != bitrate {
+		got.HashVersion != dvideo.CurrentFrameHashVersion(0.1) || !got.Verified ||
+		got.Popularity != 4 || got.Bitrate == nil || *got.Bitrate != bitrate {
 		t.Errorf("restored asset = %+v, want live verified asset", got)
 	}
 }

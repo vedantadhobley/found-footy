@@ -32,6 +32,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
+	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 )
 
 // Timeouts + retries for the two child activities. Hardcoded (not env)
@@ -119,6 +120,7 @@ type VideoWorkflowOutput struct {
 	FailureReason VideoWorkflowFailureReason `json:"failure_reason,omitempty"`
 	MD5           string                     `json:"md5,omitempty"`
 	StagingKey    string                     `json:"staging_key,omitempty"`
+	HashVersion   dvideo.FrameHashVersion    `json:"hash_version,omitempty"`
 	FrameHashes   []uint64                   `json:"frame_hashes,omitempty"`
 
 	Width      int     `json:"width,omitempty"`
@@ -196,7 +198,22 @@ func VideoWorkflow(ctx workflow.Context, in VideoWorkflowInput) (VideoWorkflowOu
 		return out, nil
 	}
 
+	if hashOut.Outcome == videoactivity.OutcomeRejected {
+		out.Outcome, out.RejectReason = VideoOutcomeRejected, hashOut.RejectReason
+		log.Info("VideoWorkflow candidate rejected during hash",
+			"tweet_url", in.TweetURL, "reason", hashOut.RejectReason)
+		return out, nil
+	}
+	if hashOut.Outcome != "" && hashOut.Outcome != videoactivity.OutcomePassed {
+		out.Outcome = VideoOutcomeFailed
+		out.FailureReason = VideoFailureHash
+		log.Warn("VideoWorkflow hash returned invalid outcome",
+			"tweet_url", in.TweetURL, "outcome", hashOut.Outcome)
+		return out, nil
+	}
+
 	out.Outcome = VideoOutcomePassed
+	out.HashVersion = dvideo.NormalizeFrameHashVersion(hashOut.HashVersion)
 	out.FrameHashes = hashOut.FrameHashes
 	log.Info("VideoWorkflow passed",
 		"tweet_url", in.TweetURL, "staging_key", out.StagingKey,

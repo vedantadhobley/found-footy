@@ -559,8 +559,14 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   the winner without hashing them. Claimant failure transfers ownership to the
   next independent staging object. An MD5 already present in kept or pending
   clips collapses immediately — votes land on the asset row if promoted or
-  accumulate in memory if vision is still pending (#180). A hash-successful
-  unique clip fires **vision** (`ValidateClip` on
+  accumulate in memory if vision is still pending (#180). FF-005 bounds dense
+  extraction to 640-pixel-wide grayscale PNGs before Go equalizes and reduces
+  to the final 9×8 dHash. FF-041 carries the algorithm, preprocessing, and
+  sample interval through Temporal and Postgres; sequences with different
+  versions never compare. Fewer than `MinRunFrames` readable hashes returns the
+  deterministic `insufficient_hash_frames` content rejection for every
+  byte-identical waiter without an activity retry. A hash-successful unique
+  clip fires **vision** (`ValidateClip` on
   joi — screen-gate + period-aware clock).
   Validation retries transient rate-limit, capacity, unavailable, and
   infrastructure failures up to three attempts. Invalid request/auth/model and

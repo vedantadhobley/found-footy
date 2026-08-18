@@ -196,11 +196,13 @@ func TestProbeMetadata_InputNotFound(t *testing.T) {
 func TestExtractDenseFrames_FakeRunner(t *testing.T) {
 	c := mustClient(t, config.FFmpegConfig{})
 	stream := bytes.Join([][]byte{tinyPNG(t, 2, 2), tinyPNG(t, 2, 2), tinyPNG(t, 2, 2)}, nil)
-	c.runStream = func(_ context.Context, _ string, _ []string, consume func(io.Reader) error) ([]byte, error) {
+	var gotArgs []string
+	c.runStream = func(_ context.Context, _ string, args []string, consume func(io.Reader) error) ([]byte, error) {
+		gotArgs = append([]string(nil), args...)
 		return nil, consume(bytes.NewReader(stream))
 	}
 	var frames []Frame
-	err := c.ExtractDenseFrames(context.Background(), tempFile(t), 0.1, 0, func(fr Frame) error {
+	err := c.ExtractDenseFrames(context.Background(), tempFile(t), 0.1, 640, func(fr Frame) error {
 		frames = append(frames, fr)
 		return nil
 	})
@@ -215,6 +217,18 @@ func TestExtractDenseFrames_FakeRunner(t *testing.T) {
 		if frames[i].PositionSecs != want {
 			t.Errorf("frame %d pos = %v, want %v", i, frames[i].PositionSecs, want)
 		}
+	}
+	wantFilter := "fps=10,format=gray,scale=640:-2:flags=area"
+	if len(gotArgs) < 4 || gotArgs[3] != wantFilter {
+		t.Fatalf("ffmpeg args = %q, want -vf %q", gotArgs, wantFilter)
+	}
+}
+
+func TestExtractDenseFrames_RejectsInvalidWorkingWidth(t *testing.T) {
+	c := mustClient(t, config.FFmpegConfig{})
+	err := c.ExtractDenseFrames(context.Background(), tempFile(t), 0.1, 0, func(Frame) error { return nil })
+	if !errors.Is(err, ErrExtractionFailed) {
+		t.Fatalf("error = %v, want ErrExtractionFailed", err)
 	}
 }
 

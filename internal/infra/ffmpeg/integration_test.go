@@ -60,7 +60,7 @@ func TestIntegration_RealClips(t *testing.T) {
 
 		t1 := time.Now()
 		var frames []Frame
-		err = c.ExtractDenseFrames(ctx, clip, 0.1, 0, func(f Frame) error {
+		err = c.ExtractDenseFrames(ctx, clip, 0.1, dvideo.FrameHashWorkingWidth, func(f Frame) error {
 			frames = append(frames, f)
 			return nil
 		})
