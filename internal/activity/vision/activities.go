@@ -5,12 +5,13 @@
 //	  (soccer/screen gate + clock OCR) → domain Evaluate against the API
 //	  minute → verdict (verified / unverified / rejected).
 //
-// Runs once per perceptual cluster (after dedup), so it costs one vision
-// call per unique clip, not per candidate — the model node is the throughput
-// bottleneck. The verdict is a nil-error OUTCOME (verified/unverified/
-// rejected all route the clip to a pool); only infra + model-call failures
-// are errors the workflow's RetryPolicy bounds. Model config + prompt were
-// validated on real prod clips in the 2026-07-28 bake-off (see vision.md).
+// Runs once per hash-successful exact-MD5 claimant. Perceptual dedup is
+// category-scoped and therefore runs after this verdict establishes the
+// verified/unverified pool. The model node is the throughput bottleneck. The
+// verdict is a nil-error OUTCOME (verified/unverified/rejected); only infra +
+// model-call failures are errors the workflow's RetryPolicy bounds. Model
+// config + prompt were validated on real prod clips in the 2026-07-28 bake-off
+// (see vision.md).
 package vision
 
 import (
