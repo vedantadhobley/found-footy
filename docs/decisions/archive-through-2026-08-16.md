@@ -1132,14 +1132,15 @@ once rather than one activity call per vote.
 
 ## 2026-08-09 — Category-scoped dedup is post-vision (shipped gate diverged; #171 rescoped)
 
-Re-reading Python + the signed-off [`video-dedup.md`](../design/proposals/video-dedup.md)
+Re-reading Python + the signed-off [`video-dedup.md`](../design/proposals/video-dedup/)
 against the shipped `event_pipeline.go` surfaced that the EventWorkflow consumer
 silently diverged from the intended dedup methodology. This supersedes the narrow
 framing in the **2026-08-05** entry below (#171 was "wire `quality.go`") — the real
 fix reorders the pipeline. Flagged in [audit-2026-08-05](../design/audits/audit-2026-08-05.md)
 (Tier-1 #1 + line 80). The methodology itself was already fully specified —
-[`python-functional-spec.md`](../design/python-functional-spec.md) §3 (verified/unverified
-pools) + §7 (vision-before-perceptual ordering: *"the rebuild should preserve this
+[Python upload spec §3](../design/python-functional-spec/upload-workflow.md#3-verified-vs-unverified-pools)
+(verified/unverified pools) + [core §7](../design/python-functional-spec/video-processing.md#7-upload--asset-persistence-behavior)
+(vision-before-perceptual ordering: *"the rebuild should preserve this
 exact ordering"*), the **(pre-history) Scoped deduplication by `timestamp_verified`**
 entry below (with the real prod case: a Goal-1 clip wrongly replaced by a Goal-2
 clip, ~31′ vs 15′), and [`roadmap.md`](../history/roadmap-2026-08-15.md) — the shipped consumer just
@@ -1206,7 +1207,7 @@ Recording deliberate as-built divergences a future reader might otherwise
   `MinFrameRate` gate was added (broadcast is 24/25/30/50/60); the pre-download
   short-edge check moved into the post-probe `HardFilter`; download is cookieless
   (syndication adapter, not the browser). All intentional — see
-  [`design/proposals/video-dedup.md`](../design/proposals/video-dedup.md) +
+  [`design/proposals/video-dedup.md`](../design/proposals/video-dedup/) +
   [`design/v-phase-orchestration.md`](../design/v-phase-orchestration.md).
 - **Ingest fail-open + national-team scope (G2/G3, parked).** `FetchFixturesForDay`
   fails OPEN on an empty tracked set (returns every fixture) and the default
@@ -1980,7 +1981,7 @@ is a short-lived scheduled workflow and can't parent a ~15-min child).
 
 **Supersedes** the three-workflow (Discovery/Video/Asset) + signal-with-start +
 queue-drain + cross-event-corpus design in
-[`design/proposals/video-dedup.md`](../design/proposals/video-dedup.md). That
+[`design/proposals/video-dedup.md`](../design/proposals/video-dedup/). That
 doc's dedup *algorithm* (dHash, offset-tolerant match, thresholds) is kept; its
 *orchestration* is replaced.
 
@@ -2047,7 +2048,7 @@ did. Cross-event dedup is **dead and not coming back.**
   for these repos is unbuilt, so no ripple beyond types + tests.
 - Supersedes [`rebuild/design-improvements-2026-07-23.md`](../design/audits/design-improvements-2026-07-23.md)
   item #6 (now marked REJECTED) and the cross-event sections of
-  [`rebuild/proposals/video-dedup.md`](../design/proposals/video-dedup.md)
+  [`rebuild/proposals/video-dedup.md`](../design/proposals/video-dedup/)
   (SUPERSEDED banner added; full body rewrite pending the docs reorg).
 
 ---
@@ -3259,7 +3260,7 @@ Deterministic pipeline captures ~90-95% of legit tweet-relevant aliases. Missing
 
 ### Context
 
-Python stores a `rank` column on each video share and recalculates it inside `upload_workflow._process_batch` via `store.recalculate_video_ranks` (see [python-functional-spec.md upload spec §8](../design/python-functional-spec.md)). The pattern has two known production issues:
+Python stores a `rank` column on each video share and recalculates it inside `upload_workflow._process_batch` via `store.recalculate_video_ranks` (see [Python upload spec §8](../design/python-functional-spec/upload-workflow.md#8-rank-recalculation)). The pattern has two known production issues:
 
 1. **`rank=0` bug observed in prod.** `save_video_objects` writes the video record with default `rank=0`. `recalculate_video_ranks` is treated as non-fatal, max-2-retries, log-and-move-on (upload-spec §8). If both retries fail, ranks stay at default silently. User has confirmed seeing rank=0 videos in the current prod frontend.
 2. **Concurrent-batch race window.** Between a video insert in one batch and the rank recalc that follows, another batch's insert can land, showing rank=0 on the frontend until the next batch's recalc fires. On a Champions League night with 10+ concurrent event pipelines, this window is real.

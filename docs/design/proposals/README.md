@@ -23,7 +23,7 @@ work.
 
 - [`monitor.md`](./monitor.md) — superseded single-monitor topology.
 - [`discovery.md`](./discovery.md) — superseded standalone discovery topology.
-- [`video-dedup.md`](./video-dedup.md) — superseded multi-workflow V-phase
+- [`video-dedup/`](./video-dedup/) — superseded multi-workflow V-phase
   topology; some dedup rationale remains useful.
 
 ## Retired subsystem

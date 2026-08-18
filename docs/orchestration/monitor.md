@@ -1,0 +1,128 @@
+# Fixture-monitoring workflows
+
+Current behavior for `ActivePollWorkflow` and `StagingPollWorkflow`. See the
+[orchestration index](./README.md) for the complete workflow map.
+
+## ActivePollWorkflow — as shipped
+
+30s poll of ACTIVE fixtures. Schedule `active-poll-scheduled` (IntervalSpec 30s).
+Per cycle: `GetMonitorConfig` → `ActivateUpcoming` (DB-only staging→active
+promotion) → `ListActiveFixtureIDs` → `FetchLiveFixtures` (batched
+/fixtures?ids=) → `ReconcileFixture` per fixture (the event set-diff +
+3-poll debounce + downstream spawn + completion check). Location:
+`internal/workflow/active_poll.go` + `internal/activity/monitor/`.
+
+**Live-feed classification (N4, decisions.md 2026-08-14).** `ReconcileFixture`
+snapshots the fixture's API-mutable fields before the `Update*` calls and diffs
+after, so `ReconcileFixtureOutput` carries `Minute`/`Extra` + two disjoint
+signals per cycle: **`ClockChanged`** (the minute/extra advanced and nothing
+else) and **`Structural`** (a new/removed/stabilised event, an unknown-scorer
+drop, a score/penalty/winner/status change, or completion — set incrementally so
+it holds at every return path). **Step 5 (N5, shipped)** partitions the cycle's
+reconciles — structural wins, so a fixture is never in both — and fires one
+`PublishFixtureBatch` activity → `fixture.clock` (inline ticks) + `fixture.update`
+(ids to bulk-refetch). Best-effort (a lost batch heals on the consumer's next
+window refetch). Activation (staging→active) is not emitted; the kickoff
+status-flip is captured as Structural on the fixture's first live reconcile.
+
+**Event mutable-field refresh (#199, decisions.md 2026-08-15).** For an existing
+known-scorer event, `ReconcileFixture` also diffs the provider's mutable
+NON-identity fields (`Event.MutableFieldsChanged` — assist, minute, extra, detail)
+against the stored row and, on a real delta, calls `UpdateMutableFields` + sets
+`Structural` so the late value rides `fixture.update`. Assists arrive after the goal
+(API-Football fills the assister post-match); minute/extra get VAR-corrected.
+Identity (the `natural_key`) is never touched. Active-fixture only — the
+completed-fixture backfill is tracked as [`FF-010`](../todo.md#confirmed-and-mitigated-backlog).
+
+**Event debounce — scorer-aware 3-state (2026-08-05).** `natural_key` embeds
+`player_id`, so an unknown scorer (`player_id` null) and its later-attributed
+known scorer are *different* keys. A goal without a scorer is "not a full event
+yet": it lands as a **placeholder at `debounce_count=0`**, casts no presence
+vote, and never spawns a search (no player → no Twitter query). It's pinned at
+0 while present and **hard-deleted the cycle it disappears** (`DeleteUnknownEvent`)
+— normally because the vendor attributed the scorer and a fresh player-keyed
+event superseded it. Only known-scorer events vote, debounce 1→3, flip
+`downstream_triggered`, and (on absence to 0) soft-delete as `var` — which fires
+the **VAR destroy** (#172, decisions.md 2026-08-10): `ActivePollWorkflow` Step 4.5
+cancels the event's discovery, revokes its shares (→ the #167 redirect 410s the
+clips), and reclaims its Garage objects. Mirrors Python (`monitor.py`
+`initial_count` + `unknown_scorer_disappeared` + `mark_event_removed`); see
+[decisions.md](../decisions.md) 2026-08-05. Surfaced per cycle as `unknown_dropped`.
+
+**Stable event sequence identity (FF-027).** Sequence is no longer recomputed
+from each provider array's position. Reconcile reads active and removed rows,
+matches each scorer/type group to active stored events by ordered nearest match
+clock, and allocates unmatched events above the complete historical maximum.
+An incomplete score-backed goal inventory requires exact clock matching so a
+nearby new goal cannot consume an omitted goal's identity. Exact removed-row
+reappearances map to their terminal tombstone. Existing natural keys remain
+unchanged; a late insertion may receive a higher sequence than a chronologically
+later stored event because sequence is durable allocation identity, not display
+order.
+
+**Score-backed goal removal and coherent fixture completion (FF-014).** A
+missing goal no longer receives an absence vote when the aggregate score in
+that same provider response exceeds the current API goal count for its
+beneficiary team. `ReconcileFixture` returns the protected natural keys as
+`GoalAbsencesHeld`, and `ActivePollWorkflow` records them without running VAR
+destroy. A true VAR drops the score and resumes normal absence debounce; a
+replacement scorer/own-goal identity accounts for the unchanged score and lets
+the old identity decay. Missing red cards and missed penalties retain ordinary
+absence behavior because they do not affect the score.
+
+The fixture completion counter now measures coherent terminal snapshots, not
+terminal status alone. For `FT`, `AET`, and `PEN`, a poll advances the counter
+only when the current response contains exact per-team scoring-event parity
+with its reported score; any non-terminal, nil-score, or inconsistent played
+response resets it to zero. `CANC`, `ABD`, `WO`, and `AWD` advance on terminal
+status alone because they do not promise a played-match event inventory.
+Winner flags remain stored result/display facts and cannot bypass the three
+votes.
+
+After the counter reaches three, `FixtureReadyToComplete` independently
+requires exact parity with surviving stored goals, no known event still below
+its trigger, and no incomplete `event_downstream_workflows` row. Unknown-scorer
+goal placeholders count for score parity but do not block the event-settled
+predicate; red cards, missed penalties, and shootout events do not count toward
+the match score. See the
+[decision record](../decisions/2026-08-16-score-backed-goal-removal.md).
+
+**Per-event Firefox fleet lifecycle (#160, gated on `FleetEnabled`; live in prod).**
+Two hooks straddle the debounce, both gated on the monitor config's
+`FleetEnabled` (default false → both inert):
+- **Step 4.4 provision.** `ReconcileFixture` returns `NewNamedEventIDs` — the
+  events that *this cycle* first arrived with a known player (goals, red cards,
+  and missed penalties; debounce_count went to 1, so all data needed for a
+  Twitter query now exists). ActivePoll fires
+  `ProvisionFirefox` per ID: create+start a dedicated
+  `<compose-network>-firefox-ev-<full-event-uuid>` container with the
+  history-compatible `ff-firefox-ev-<8hex>` network alias (no blocking health
+  wait — the ~30s warm-up hides behind the debounce window). Warming at count=1
+  means the instance is ready when the event *triggers* at count=3.
+- **Step 4.5 release.** The same step that runs the VAR destroy also calls
+  `ReleaseFirefox` for every `EventsRemovedIDs` member — covering both a
+  triggered event decaying to 0 (VAR) and a pre-trigger event that provisioned
+  at count=1 but decayed before reaching 3. Release is idempotent, so the
+  overlap with EventWorkflow's own finalize-release (the happy path) is harmless.
+- **Reaper backstop** (StagingPoll, audit P0-5). The provision/release hooks only
+  fire while the worker is alive; a crash between provision and release, or a
+  failed release, strands a container. `ReapOrphanedFirefox` (below) reconciles
+  the labeled container set against the DB every 15 min. See
+  [decisions.md](../decisions.md) 2026-08-13 (audit P0-5) for the KEEP predicate and
+  why the reaper lives in StagingPoll rather than at worker startup.
+
+## StagingPollWorkflow — as shipped
+
+15-min poll of STAGING fixtures. Schedule `staging-poll-scheduled` (cron
+`*/15 * * * *`, runtime-tunable). Fires `PollStagingFixtures`: polls all
+staging fixtures + handles vendor edge cases (kickoff-corrected activation,
+Live()-emergency activation). Location: `internal/workflow/staging_poll.go`.
+
+Also the home of the **fleet orphan reaper** (audit P0-5): each cycle ends with a
+best-effort `ReapOrphanedFirefox` — it diffs the labeled Firefox containers
+against `EventRepo.ListLiveFleetEventIDs` (the KEEP set: not-removed events whose
+fixture is still active OR whose downstream is still in flight) and releases the
+strays past a 120s min-age grace. No-op when the fleet is disabled, so the call
+is unconditional. A sweep failure is recorded, never fatal — the next tick
+retries. This is the only thing that cleans up a container the live-path
+provision/release hooks stranded (worker crash, failed release).

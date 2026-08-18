@@ -59,7 +59,7 @@ This refines the frozen
 [`#164b persistence decision`](./archive-through-2026-08-16.md#2026-08-03--164b-consumer-queue-persist-activities--a-combine-deviation),
 which described retry copy as a harmless overwrite and an existing share as a
 terminal idempotent no-op. Current behavior is recorded in the
-[`orchestration ledger`](../orchestration.md#eventworkflow) and tracked as
+[`EventWorkflow` ledger](../orchestration/event.md#eventworkflow) and tracked as
 [`FF-006`](../history/issue-register-2026-08-17.md#ff-006--promoted-clips-retain-staging-objects)
 and
 [`FF-023`](../history/issue-register-2026-08-17.md#ff-023--promotion-retry-can-skip-rank-rebalance).

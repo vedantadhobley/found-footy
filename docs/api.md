@@ -33,7 +33,7 @@ return `500` without exposing the internal error.
 The unfiltered fixture window currently has no query-layer limit. Retention
 removes some old data, but shared/tombstoned rows can remain. The resulting
 read-amplification issue is tracked as `AUD-0813-P2-1` in
-[`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
+[`todo.md`](./todo.md#deferred-decisions-and-validation).
 
 ### Resource composition
 

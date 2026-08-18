@@ -337,9 +337,9 @@ are recorded in the
 The former MonitorWorkflow was split into two independent schedules on
 2026-07-11; the combined poll no longer exists. Both are registered on
 worker startup via `ensureActivePollSchedule` + `ensureStagingPollSchedule`
-in `cmd/worker/main.go`, idempotently — Create swallows
+in `internal/app/worker/worker.go`, idempotently — Create swallows
 `ErrScheduleAlreadyRunning`. Startup does not reconcile changed definitions;
-that defect is [`FF-009`](./todo.md#confirmed-lower-priority-backlog).
+that defect is [`FF-009`](./todo.md#confirmed-and-mitigated-backlog).
 
 **ActivePollWorkflow** — every 30 seconds. Schedule `active-poll-scheduled`.
 
@@ -364,7 +364,7 @@ When no active fixtures exist, an ActivePoll cycle completes early after
 `ListActiveFixtureIDs → []`.
 
 **IngestWorkflow** — daily at 00:05 UTC. Registered on worker startup
-via `ensureIngestSchedule` in `cmd/worker/main.go`.
+via `ensureIngestSchedule` in `internal/app/worker/worker.go`.
 
 - Schedule ID: `ingest-scheduled-daily`
 - Cron: `5 0 * * *` (00:05 UTC)
@@ -386,7 +386,7 @@ server, not on the worker).
 **EventWorkflow** — NOT scheduled. Monitor's `ReconcileFixture` spawns it
 Temporal-direct (client `StartWorkflow`, deterministic ID `event-{id}`) when a
 goal's `downstream_triggered` flips (2026-07-16). See
-[orchestration.md](./orchestration.md) for the spawn + completion contract.
+[orchestration ledger](./orchestration/) for the spawn + completion contract.
 
 **Manual trigger** for ad-hoc re-ingest (e.g. testing after a code
 change) still works:
@@ -400,5 +400,5 @@ against the current worker.
 
 Cross-refs:
 - [Plan §10 (deployment)](design/rebuild-plan.md#10-deployment) — full deployment spec
-- [orchestration.md](./orchestration.md) — workflow inventory + wire-up
+- [Orchestration ledger](./orchestration/) — workflow inventory + wire-up
 - [temporal.md](./temporal.md) — Client/Worker adapter shape

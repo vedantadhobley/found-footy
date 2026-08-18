@@ -43,7 +43,7 @@
 
 - Decision — [`../../decisions.md`](../../decisions.md) 2026-07-19 + 2026-07-21 entries
 - Wikipedia-first lookup — [`./alias-entity-resolution.md`](./alias-entity-resolution.md) (2026-07-21 supersede)
-- Python behavior — [`../python-functional-spec.md`](../python-functional-spec.md) team-alias RAG section; source code at `archive/src/activities/rag.py`
+- Python behavior — [RAG alias pre-caching](../python-functional-spec/ingest-and-monitor.md#rag-alias-pre-caching); source code at `archive/src/activities/rag.py`
 - Plan intent — [`../../rebuild-plan.md`](../rebuild-plan.md) §5 W3 (DiscoveryWorkflow consumes aliases)
 - Empirical basis — `/tmp/claude-1000/.../scratchpad/alias-eval.md` (session-scoped, results summarized here)
 - Working discipline — [`../../../CLAUDE.md § Working discipline`](../../../CLAUDE.md#working-discipline-mandatory-since-2026-07-07-retro)

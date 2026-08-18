@@ -92,7 +92,7 @@ sections describe a planned shape that diverged.
   - 2026-07-16 Downstream workflow spawn via Temporal-direct + register-on-flip
   - 2026-07-11 Fixture completion contract
 - Upstream — [`./discovery.md`](./discovery.md) Q3 sign-off (stub in O3, port in dedicated T phase)
-- Downstream — [`./video-dedup.md`](./video-dedup.md) V/a (Video pipeline consumes T's search output + calls T's download endpoint)
+- Downstream — [video-dedup proposal](./video-dedup/) V/a (Video pipeline consumes T's search output + calls T's download endpoint)
 - Python reference:
   - `archive/twitter/` — service directory (app.py, session.py, scrape.py, config.py, README.md)
   - `archive/twitter/README.md` — end-user + integration doc, worth reading verbatim
@@ -480,6 +480,6 @@ If any exceed a threshold, escalate from the currently-shipped set (#1-4) to #5-
 
 - **Search-string RAG improvements** — team alias tuning, hashtag combinations, negative filters. Lives in Discovery, not here.
 - **Twitter API (official)** — no dependency on Twitter's paid API tiers. If we ever add one, it lands as a separate adapter under `internal/infra/twitter_api/`, not merged with this service.
-- **Video validation / hashing / dedup** — happens in Video + Asset workflows post-download. See [`./video-dedup.md`](./video-dedup.md).
+- **Video validation / hashing / dedup** — happens in Video + Asset workflows post-download. See the [video-dedup proposal](./video-dedup/).
 - **Cross-instance cookie refresh atomicity** — if two instances re-auth simultaneously via VNC (unlikely but possible), one overwrites the other's cookies. Follow-up phase; document but don't solve now.
 - **Metrics dashboard** — Grafana panels for twitter service. Lands with the monitor/observability roadmap when we build project-specific dashboards.

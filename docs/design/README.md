@@ -15,12 +15,12 @@ see [`../../archive/docs/`](../../archive/docs/).
   cutover material. Use it as historical intent, never as current behavior.
   Project instructions and the docs authority map now classify it as historical
   evidence rather than mandatory implementation authority.
-- [`python-functional-spec.md`](./python-functional-spec.md) — behavioral spec
+- [`python-functional-spec/`](./python-functional-spec/) — behavioral spec
   of the retired Python system. Use it with `archive/` as parity evidence, not
   as the Go architecture.
 - [`v-phase-orchestration.md`](./v-phase-orchestration.md) — rationale for the
   shipped `EventWorkflow`/`VideoWorkflow` shape. Current workflow behavior lives
-  in [`../orchestration.md`](../orchestration.md).
+  in the [`orchestration` ledger](../orchestration/).
 
 ## Point-in-time audits
 

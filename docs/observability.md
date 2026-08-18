@@ -2,7 +2,7 @@
 
 **Purpose.** As-shipped state of `internal/observability/` and the
 observability substrate — vocabulary enums, structured logging,
-Prometheus metrics, tracing (stub), and the semantic event stream
+Prometheus metrics, the deferred tracing boundary, and the semantic event stream
 (shipped).
 
 Cross-refs [`../rebuild-plan.md`](design/rebuild-plan.md) §11 for the
@@ -22,7 +22,7 @@ Shipped state:
 |---|---|---|
 | Logs | ✓ shipped | `internal/observability/logging/` |
 | Metrics | ✓ shipped | `internal/observability/metrics/` |
-| Traces | ⊘ no-op stub | `internal/observability/tracing/tracing.go` |
+| Traces | deferred; no package or runtime surface | `AUD-DESIGN-TRACING` in `todo.md` |
 | Semantic events | ✓ shipped as separate SQL-audit and NATS-live planes | `internal/infra/event/` |
 
 ## The vocabulary substrate
@@ -33,30 +33,19 @@ Every `logging.Emit(...)` call takes a `vocabulary.Module` + a
 call site using an undeclared value is a compile error, not a
 runtime "huh why isn't this indexed."
 
-### Module registry (shipped, with compatibility debt)
+### Module registry (shipped)
 
 Full list per `vocabulary.go`:
 
-The registry still carries names from superseded workflow topology. Its
-workflow constants are `IngestWorkflow`, `MonitorWorkflow`, `EventWorkflow`
-(whose string value remains `discovery_workflow`),
-`VideoValidationWorkflow`, and `AssetPersistenceWorkflow`. The shipped
-workflow types are listed in [`orchestration.md`](./orchestration.md); do not
-infer their existence from this compatibility vocabulary.
+FF-045 removed every zero-caller compatibility constant. The registry now
+contains only labels emitted by current code:
 
-**Domain:** Fixture, Event, Video, Alias, Discovery, Vision, Session,
-TextAnalysis.
-
-**Adapters:** InfraPG, InfraNATS, InfraEvent, InfraS3, InfraLLM,
-InfraTemporal, InfraAPIFootball, InfraTwitter, InfraSyndication, InfraFFmpeg,
-plus the now-unused InfraWikidata and InfraWikipedia constants.
-
-**Cross-cutting:** API, APISSE, WebhookDelivery, Worker,
-APIServer, TwitterService, Migration, Healthz, Deploy.
-
-Removing or renaming the dormant workflow, Wikidata/Wikipedia, SSE, and webhook
-vocabulary is tracked by `AUD-0815-ROT` in
-[`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
+- **Workflow:** EventWorkflow, whose stable wire value remains
+  `discovery_workflow` for log-query compatibility.
+- **Adapters:** InfraPG, InfraNATS, InfraEvent, InfraS3, InfraLLM,
+  InfraTemporal, InfraAPIFootball, InfraTwitter, InfraSyndication, and
+  InfraFFmpeg.
+- **Cross-cutting:** API and Deploy.
 
 ### Action registry (shipped)
 
@@ -129,14 +118,14 @@ building `map[string]any` inline.
 > **Tracked gap (`AUD-0813-P2-13`):** `logging.Err` emits a single `error` field, not the
 > typed `error_class` the plan's schema names — so the `calls_total{error_class}`
 > metric label reads a key that's never set and is always empty. Validate the
-> metric path before promoting the candidate in [`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
+> metric path before promoting the candidate in [`todo.md`](./todo.md#deferred-decisions-and-validation).
 
 **Divergence from plan §11 log-catalog generator:** Plan §11.3 said
 `docs/generated/log-catalog.md` regenerates on every build via
 `go generate` — the complete (module, action) matrix as a discoverable
 markdown table. **NOT SHIPPED.** No generator, no catalog file.
 Tracked as feature-scope candidate `AUD-DESIGN-LOG-CATALOG` in
-[`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
+[`todo.md`](./todo.md#deferred-decisions-and-validation).
 
 ## TestEmitter (shipped)
 
@@ -179,16 +168,13 @@ the application context, drains registered adapters, and returns a failing
 process status. `/metrics` and `/healthz` therefore have the same process
 lifecycle as the binary they describe.
 
-## Tracing (stub)
+## Tracing (deferred)
 
-`internal/observability/tracing/tracing.go` returns a `Noop() *Tracer{}`
-sentinel. Adapters that need a Tracer
-handle in their signature use this so the interface stabilizes
-without a real OTLP pipeline attached.
-
-Real OTLP wiring is deferred; the historical plan's phase label is not a
-current schedule. It remains feature-scope candidate `AUD-DESIGN-TRACING` in
-[`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
+No adapter consumes a tracing contract, so FF-045 deleted the speculative
+no-op package. Real OTLP wiring remains feature-scope candidate
+`AUD-DESIGN-TRACING` in
+[`todo.md`](./todo.md#deferred-decisions-and-validation); it should begin with a
+measured diagnostic need and a concrete interface.
 
 ## Semantic event and live-feed planes
 
@@ -216,4 +202,4 @@ Instruments (`found_footy_event_composer_*`): `publishes_total{kind,outcome}`
 - Vocabulary source — [`internal/observability/vocabulary/vocabulary.go`](../internal/observability/vocabulary/vocabulary.go)
 - Emission spec — [logging.md](./logging.md)
 - Metric names + labels — populated per adapter (see architecture.md)
-- Semantic events and live feed — [api.md](./api.md) and [orchestration.md](./orchestration.md)
+- Semantic events and live feed — [api.md](./api.md) and the [orchestration ledger](./orchestration/)

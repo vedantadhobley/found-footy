@@ -19,7 +19,7 @@ import (
 
 // Client wraps client.Client (a Temporal SDK interface — this is an
 // interface embed, not a struct embed) with lifecycle log emissions +
-// per-StartWorkflow / per-SignalWorkflow metric instrumentation. Same
+// per-StartWorkflow metric instrumentation. Same
 // role as pg.Pool / nats.Conn / s3.Client.
 //
 // The wrapped client is the interface value returned by
@@ -120,9 +120,8 @@ func (c *Client) WorkerShutdownTimeout() time.Duration { return c.workerShutdown
 // instrumentation. Same signature as the SDK method; the wrapper adds
 // no new required arguments.
 //
-// workflowType is the string name the workflow was registered under —
-// used as a bounded metric label (fixed set: Ingest, Monitor, Discovery,
-// VideoValidation, AssetPersistence — per decisions.md 2026-07-07).
+// workflowType is the string name the workflow was registered under and is a
+// bounded metric label for the worker's registered workflow set.
 func (c *Client) StartWorkflow(
 	ctx context.Context,
 	options client.StartWorkflowOptions,
@@ -164,35 +163,6 @@ func (c *Client) StartWorkflow(
 // temporal.ErrScheduleAlreadyRunning as an expected outcome, not an
 // error, on re-startup after the schedule was already created.
 func (c *Client) ScheduleClient() client.ScheduleClient { return c.Client.ScheduleClient() }
-
-// SignalWorkflow wraps client.SignalWorkflow with metric + log
-// instrumentation.
-func (c *Client) SignalWorkflow(
-	ctx context.Context,
-	workflowID string,
-	runID string,
-	signalName string,
-	arg interface{},
-) error {
-	err := c.Client.SignalWorkflow(ctx, workflowID, runID, signalName, arg)
-	if err != nil {
-		c.ins.signals.WithLabelValues("failure").Inc()
-		c.ins.emitEvent(ctx, logging.LevelWarn, vocabulary.ActionTemporalSignalFailed,
-			"temporal signal failed",
-			logging.String("workflow_id", workflowID),
-			logging.String("signal_name", signalName),
-			logging.Err(err),
-		)
-		return err
-	}
-	c.ins.signals.WithLabelValues("success").Inc()
-	c.ins.emitEvent(ctx, logging.LevelDebug, vocabulary.ActionTemporalSignal,
-		"temporal signal ok",
-		logging.String("workflow_id", workflowID),
-		logging.String("signal_name", signalName),
-	)
-	return nil
-}
 
 // Close releases the client's connection pool + emits a lifecycle log
 // line. Idempotent — the SDK's Close is safe to call multiple times.

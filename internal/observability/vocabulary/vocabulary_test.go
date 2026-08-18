@@ -28,11 +28,10 @@ func TestModules_StringValuesMatchExpected(t *testing.T) {
 	// the wire value gets caught (Loki queries + Grafana dashboards
 	// depend on these string values).
 	cases := map[Module]string{
-		ModuleFixture:      "fixture",
-		ModuleInfraNATS:    "infra_nats",
-		ModuleTextAnalysis: "textanalysis",
-		ModuleAPISSE:       "api_sse",
-		ModuleDeploy:       "deploy",
+		ModuleEventWorkflow: "discovery_workflow",
+		ModuleInfraNATS:     "infra_nats",
+		ModuleAPI:           "api",
+		ModuleDeploy:        "deploy",
 	}
 	for m, want := range cases {
 		if string(m) != want {

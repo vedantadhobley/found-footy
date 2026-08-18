@@ -29,17 +29,20 @@ and `rg --files test/scenarios -g '*.yaml'`.
 
 ## Tier 1 — pure Go unit tests
 
-Every domain package + activity package + config + observability
-substrate ships a `*_test.go` file with the same shape:
+Every domain package + activity package + config + observability substrate
+keeps tests in the package they verify. Small packages use one `*_test.go`;
+larger packages split tests by responsibility while sharing package-private
+fakes and setup helpers:
 
 - No adapter imports (fixture/event/video/alias domains verified)
 - In-memory fake repos for anything that would touch a database
 - Table-driven where the case matrix is enum-shaped
 
-Example — `internal/activity/ingest/activities_test.go` uses in-memory
-`fakeFixtureRepo`, `fakeAliasRepo`, `fakeFetcher` — all defined in the
-same test file (not `internal/testutil/`, per the "build fakes when
-sharing surfaces" rule; see [architecture.md](./architecture.md#as-shipped-tree)).
+Example — `internal/activity/ingest/activities_test.go` owns the in-memory
+`fakeFixtureRepo`, `fakeAliasRepo`, and `fakeFetcher`; focused fixture,
+retention, metadata, and tracked-team cases live in sibling test files in the
+same package. There is no speculative `internal/testutil` package. This is the
+standard Go colocated-test layout, not production/test code mixing.
 
 FF-017 browser-lifecycle tests close an injected critical-child channel and
 require `StateFailed`, `/health` 503, one `twitter.browser_failed` audit, and a
@@ -94,6 +97,11 @@ an activity, an awaited child, or vision. They require a canceled workflow
 error and assert that neither a later search nor `MarkDownstreamComplete`
 occurs; the vision case also rejects post-cancel pipeline activities. This
 guards FF-015's producer/consumer yield points without wall-clock sleeps.
+
+The EventWorkflow suite is split into discovery durability/retry, candidate
+failure, publication, pre-hash ownership, and perceptual-dedup files. Shared
+Temporal environment builders stay in `event_test.go`; all files remain in
+`workflow_test` so the split changes organization, not the tested boundary.
 
 FF-007 recovery tests cover both start policy and replacement execution.
 Spawner unit tests require typed `ALLOW_DUPLICATE_FAILED_ONLY`, no workflow
@@ -372,5 +380,5 @@ the gates continue to require all tests to pass.
 
 - Plan §12 — [rebuild-plan.md §12](design/rebuild-plan.md#12-testing)
 - Adapter test template — [architecture.md § Adapters](./architecture.md#adapters--as-shipped-template)
-- Workflow test pattern — [orchestration.md § Testing shape](./orchestration.md#testing-shape)
+- Workflow test pattern — [orchestration testing](./orchestration/testing.md#testing-shape)
 - Live smoke scripts — [`scripts/`](../scripts/)

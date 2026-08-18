@@ -66,6 +66,6 @@ from the frozen
 It preserves the best-effort write policy from the frozen
 [`#181 candidate-outcome decision`](./archive-through-2026-08-16.md#2026-08-15--181-per-candidate-discovery-outcomes-persisted-surfacing-forensics)
 while ensuring that child failure now reaches that write path. Current behavior
-is recorded in the [`orchestration ledger`](../orchestration.md#eventworkflow)
+is recorded in the [`EventWorkflow` ledger](../orchestration/event.md#eventworkflow)
 and tracked as
 [`FF-002`](../history/issue-register-2026-08-17.md#ff-002--failed-video-child-leaves-candidate-pending).

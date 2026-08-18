@@ -1,12 +1,12 @@
 # temporal.md — Go rebuild ledger
 
 **Purpose.** As-shipped state of the Temporal integration —
-`internal/infra/temporal/` adapter shape, `cmd/worker/main.go`
+`internal/infra/temporal/` adapter shape, `internal/app/worker/`
 registration flow, and workflow-level conventions used by whatever
 lives in `internal/workflow/`.
 
 Per-workflow specs (retry policies, signal contracts, spawn patterns)
-live in [orchestration.md](./orchestration.md); this doc covers the
+live in the [orchestration ledger](./orchestration/); this doc covers the
 substrate.
 
 Cross-refs [`../rebuild-plan.md`](design/rebuild-plan.md) §9
@@ -23,7 +23,7 @@ the same commit.
 
 ```
 temporal/
-├── client.go            Client struct + NewClient + accessors + StartWorkflow + SignalWorkflow + Close
+├── client.go            Client struct + NewClient + accessors + StartWorkflow + Close
 ├── worker.go            Worker struct + NewWorker + Start + Stop
 ├── instruments.go       RegisterMetrics(reg, log) → *Instruments (counters + histograms)
 ├── doc.go               package docstring
@@ -50,14 +50,13 @@ func (c *Client) TaskQueue() string
 func (c *Client) WorkerShutdownTimeout() time.Duration
 
 func (c *Client) StartWorkflow(ctx, opts, workflow, args ...) (client.WorkflowRun, error)
-func (c *Client) SignalWorkflow(ctx, workflowID, runID, signalName, arg) error
 func (c *Client) Close()
 ```
 
 **Divergences from plan §9 temporal spec:**
 
 1. **`NewClient` takes `*Instruments`, not `*slog.Logger`.** Instruments
-   carry logger + metrics + tracing handle together. Consistent with
+   carry logger + metrics together. Consistent with
    every other adapter (S2+); the plan's `logger` param would be an
    outlier. **Silent — but retroactively defensible.** Logged in
    [decisions.md 2026-07-07](decisions.md).
@@ -66,13 +65,8 @@ func (c *Client) Close()
    `NewClient(...) (client.Client, error)`. Shipped returns `*Client`
    with our own methods. **Silent — retroactively defensible.**
    Rationale: allows the WorkerShutdownTimeout accessor for graceful
-   shutdown, own the Close hook (with metric emission), later on we
-   can add tracing without changing callers.
-
-3. **`SignalWorkflow` method added.** Not in plan §9. Originally for
-   AssetPersistenceWorkflow signals — that workflow was superseded
-   (collapsed into EventWorkflow), so the method currently has no caller.
-   Kept on the adapter (still metric-instrumented) for future signalling.
+   shutdown and owns the Close hook with metric emission. Future
+   instrumentation can still enter through the same constructor.
 
 ### `Worker` (`worker.go`)
 
@@ -99,7 +93,7 @@ place to configure graceful-shutdown drain time.
 
 ## Registration flow (as-shipped in worker binary)
 
-`cmd/worker/main.go`:
+`internal/app/worker/worker.go`:
 
 ```go
 // 1. Adapter construction (in bootstrap Run's closure).
@@ -115,7 +109,7 @@ w := temporal.NewWorker(tempClient, tempIns, worker.Options{})
 // 3. Workflow + activity registration — BEFORE Start. Each Activities
 //    struct's exported methods become
 //    individually-dispatchable activities). Construction of each *Activities
-//    with its real deps is in orchestration.md's wire-up.
+//    with its real deps is in the orchestration ledger's wire-up.
 w.RegisterWorkflow(ffwf.IngestWorkflow)
 w.RegisterWorkflow(ffwf.ActivePollWorkflow)
 w.RegisterWorkflow(ffwf.StagingPollWorkflow)
@@ -188,12 +182,12 @@ for Temporal itself (heavy; workspace `temporal` dev container serves
 smoke + trigger scripts).
 
 Workflow-level: `testsuite.WorkflowTestSuite` via testify mock —
-see [orchestration.md § Testing shape](./orchestration.md#testing-shape)
+see [orchestration testing](./orchestration/testing.md#testing-shape)
 for the ingest pattern.
 
 ## Schedule registration
 
-**IngestWorkflow** — daily 00:05 UTC. Wired in `cmd/worker/main.go`
+**IngestWorkflow** — daily 00:05 UTC. Wired in `internal/app/worker/worker.go`
 via `ensureIngestSchedule` (O1e/b). Pattern:
 
 ```go
@@ -224,14 +218,14 @@ Load-bearing details:
   **silently ignored on redeploy** until the schedule is manually deleted +
   recreated. Python's `setup_schedules()` UPDATEd every startup specifically to
   avoid this (a stale 25s timeout that persisted); reintroduced here — tracked
-  as [`FF-009`](./todo.md#confirmed-lower-priority-backlog). (Upside: an operator's manual
+  as [`FF-009`](./todo.md#confirmed-and-mitigated-backlog). (Upside: an operator's manual
   `temporal schedule update` survives a redeploy.)
 - **Overlap = SKIP.** If a prior IngestWorkflow run is still
   executing (unusual — ingest is fast, but a Postgres stall could
   cause it), skip the next scheduled run rather than double-firing.
 
 **Three schedules ship** — all via this same idempotent `Create` pattern in
-`cmd/worker/main.go` (`ensureIngestSchedule` / `ensureActivePollSchedule` /
+`internal/app/worker/worker.go` (`ensureIngestSchedule` / `ensureActivePollSchedule` /
 `ensureStagingPollSchedule`):
 
 | Schedule ID | Spec | Workflow |
@@ -255,7 +249,7 @@ state-transition counters for a derived 30-minute-or-greater quiet window may
 terminate that exact run. Activity heartbeats reset the window, and all
 uncertainty fails closed. The replacement then uses the same failed-only ID;
 no recovery path force-completes Postgres state. See
-[orchestration.md](./orchestration.md).
+[orchestration ledger](./orchestration/).
 
 **Adapter surface:** `Client.ScheduleClient() client.ScheduleClient` —
 passthrough to the SDK's ScheduleClient. Not per-op instrumented; schedule ops
@@ -265,5 +259,5 @@ are rare.
 
 - Plan §9 temporal spec — [rebuild-plan.md § internal/infra/temporal](design/rebuild-plan.md#internalinfratemporal)
 - Plan §5 workflow specs — [rebuild-plan.md §5](design/rebuild-plan.md#5-orchestration-layer--temporal-workflows-and-activities)
-- Shipped workflow specs — [orchestration.md](./orchestration.md)
+- Shipped workflow specs — [orchestration ledger](./orchestration/)
 - Adapter template — [architecture.md § Adapters](./architecture.md#adapters--as-shipped-template)

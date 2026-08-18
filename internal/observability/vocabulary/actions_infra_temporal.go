@@ -1,8 +1,8 @@
 // Temporal-adapter Action enum values + init-time registration.
 package vocabulary
 
-// Temporal-adapter actions. Cover client lifecycle + workflow-start /
-// signal outcomes + worker lifecycle. Worker-lifecycle actions land in
+// Temporal-adapter actions. Cover client lifecycle, workflow start, schedule,
+// and worker lifecycle. Worker-lifecycle actions land in
 // S5.2 with the Worker wrapper.
 const (
 	ActionTemporalConnected             Action = "temporal_connected"               // client dialed + health probe passed
@@ -10,8 +10,6 @@ const (
 	ActionTemporalClosed                Action = "temporal_closed"                  // client.Close invoked
 	ActionTemporalStartWorkflow         Action = "temporal_start_workflow"          // StartWorkflow succeeded
 	ActionTemporalStartFailed           Action = "temporal_start_failed"            // StartWorkflow returned an error
-	ActionTemporalSignal                Action = "temporal_signal"                  // SignalWorkflow succeeded
-	ActionTemporalSignalFailed          Action = "temporal_signal_failed"           // SignalWorkflow returned an error
 	ActionTemporalWorkerStarted         Action = "temporal_worker_started"          // Worker.Start returned (background loop running)
 	ActionTemporalWorkerStopped         Action = "temporal_worker_stopped"          // Worker.Stop returned (drain complete)
 	ActionTemporalWorkerFailed          Action = "temporal_worker_failed"           // Worker.Start returned an error
@@ -27,8 +25,6 @@ func init() {
 		ActionTemporalClosed,
 		ActionTemporalStartWorkflow,
 		ActionTemporalStartFailed,
-		ActionTemporalSignal,
-		ActionTemporalSignalFailed,
 		ActionTemporalWorkerStarted,
 		ActionTemporalWorkerStopped,
 		ActionTemporalWorkerFailed,
