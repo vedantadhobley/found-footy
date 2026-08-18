@@ -14,7 +14,7 @@ below for the current deltas from this text.
 > `event_downstream_workflows`, `completion_counter`, the single-query check
 > (`FixtureReadyToComplete` in `internal/infra/pg/fixture_repo.go` /
 > [`schema.sql`](../../../internal/infra/pg/schema.sql)), and the
-> `ReconcileFixture` call (see [`../../orchestration.md`](../../orchestration.md)).
+> `ReconcileFixture` call (see the [monitoring ledger](../../orchestration/monitor.md)).
 > Current deltas from the original proposal:
 > - **Winner data is wired for result display, not completion.**
 >   `ReconcileFixture` calls `Fixture.UpdateWinners` from every active poll, but
@@ -36,7 +36,7 @@ below for the current deltas from this text.
 
 **Cross-refs:**
 - Plan intent — [`../../rebuild-plan.md`](../rebuild-plan.md) §8 (fixture state machine), §5 (workflow coordination)
-- Python behavior spec — [`../python-functional-spec.md`](../python-functional-spec.md) §8 (Fixture Completion Behavior)
+- Python behavior spec — [fixture completion behavior](../python-functional-spec/completion-and-coordination.md#8-fixture-completion-behavior)
 - Prior decisions — [`../../decisions.md`](../../decisions.md):
   - 2026-07-11 workflow split (ActivePoll + StagingPoll)
   - 2026-07-07 symmetric-counter debounce

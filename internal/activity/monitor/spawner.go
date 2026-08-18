@@ -24,7 +24,7 @@ import (
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 
-	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
+	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
 )
 
 // DownstreamSpawner spawns downstream workflows for events that have
@@ -38,7 +38,7 @@ type DownstreamSpawner interface {
 	// deterministic workflow_id ("event-{event_id}") and input.
 	// Nil error means the workflow was newly started, confirmed active or
 	// successful, or conservatively recovered from a proven stale run.
-	SpawnEvent(ctx context.Context, workflowID string, in discoveryactivity.EventWorkflowInput) error
+	SpawnEvent(ctx context.Context, workflowID string, in discoverycontract.EventWorkflowInput) error
 }
 
 // TemporalSpawner is the production DownstreamSpawner backed by the Temporal
@@ -115,7 +115,7 @@ func ConservativeEventStaleAfter(attemptSpacing, queryTimeout time.Duration) tim
 // or state-transition progress for StaleAfter. A newer activity heartbeat also
 // resets the clock. Only then may that exact run be terminated and re-driven;
 // the checklist is never force-completed.
-func (s *TemporalSpawner) SpawnEvent(ctx context.Context, workflowID string, in discoveryactivity.EventWorkflowInput) error {
+func (s *TemporalSpawner) SpawnEvent(ctx context.Context, workflowID string, in discoverycontract.EventWorkflowInput) error {
 	callCtx, cancel := context.WithTimeout(ctx, s.StartTimeout)
 	defer cancel()
 

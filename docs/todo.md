@@ -193,14 +193,27 @@ the current branch.
 | FF-042 | P2 | `implemented` | Lint/tool versions, formatting, and module state were not reproducible. | Go 1.25.11, golangci-lint 2.12.2, and Air 1.65.3 are pinned; format, tidy, vet, lint, short, full, and race gates pass. |
 | FF-043 | P2 | `implemented` | The public API now starts from Postgres and S3 only; NATS remains worker-owned and the BFF subscribes directly. The API profile ignores shared NATS env and Compose drops its API-specific override, while `luv-*` remains for real BFF HTTP calls. | Roll out the committed release and verify API startup plus REST health while the NATS broker is unavailable. |
 | FF-044 | P3 | `confirmed` | Recovery repeats start/describe work every 30 seconds for healthy discovery workflows. | Durable next-check lease or scheduled supervisor with bounded checks. |
-| FF-045 | P3 | `confirmed` | Dormant code/schema surfaces and oversized composition files obscure ownership. | Caller-proven deletion and in-package splits after related behavior fixes. |
+| FF-045 | P3 | `implemented` | Zero-caller packages, Temporal signaling, telemetry vocabulary, and stale comments are removed. `cmd/worker` is thin; worker composition lives in `internal/app/worker`; shared discovery payloads live in `internal/contract/discovery`; event, activity, Twitter-search, Postgres, and large test files are split by responsibility without changing package or Temporal identities. | Fast and full Docker gates pass; rollout has no schema or configuration prerequisite. |
 | FF-046 | P2 | `confirmed` | Ancillary persistence blocks the serialized EventWorkflow selector consumer. | Serialize only dedup state; model durable effects with explicit futures/idempotency. |
 | FF-047 | P3 | `confirmed` | Empty tracked-team state still burns fixture lookahead calls whose results are discarded. | Short-circuit before vendor fixture calls and emit degraded-state telemetry. |
 | FF-048 | P2 | `confirmed` | Share minting uses check-then-insert without `(event_id, asset_id)` uniqueness. | Database constraint plus atomic idempotent insert after FF-013. |
-| FF-049 | P3 | `confirmed` | Documentation routing is clean, but several current/reference documents still exceed the shared size standard. | Split the 618-line orchestration ledger and route the 2,869-line Python functional spec plus 604-line video-dedup proposal by topic without rewriting historical claims. |
+| FF-049 | P3 | `implemented` | The orchestration ledger, Python functional reference, and historical video-dedup proposal are split into routed topic sets whose leaves stay within the shared size standard. The EventWorkflow ledger now also makes the dedup-keeper versus public-ranking boundary explicit, resolving `AUD-0813-P3-4`. | Commit this documentation-only change after the final link check; no runtime rollout applies. |
 | FF-050 | P2 | `investigate` | Live Elche timing shows 23.6 seconds from valid-candidate observation to publication, dominated by 12.6-second hashing and 9.7-second vision; durable effects add milliseconds. | Measure the deployed bounded-hash latency before considering pipeline concurrency. |
 | FF-052 | P1 | `confirmed` | Vision accepted a phone filming a display as a clean Elche broadcast with `screen=false` on all three sampled frames. | Preserve the clip as a regression sample, calibrate the prompt/model against varied display recordings, and prove rejection without increasing clean-broadcast false positives. |
 | FF-053 | P1 | `validating` | The 1.75 minimum aspect gate discarded four 1.739 Elche candidates before download even though at least three contained legitimate goal footage; the minimum is now 1.73 and deployed in `201cdf1`. | Prove a natural 1.73–1.749 candidate reaches download while the known ≤1.72 letterbox band remains rejected. |
+| FF-054 | P3 | `confirmed` | Zero-caller webhook tables and the outbox cursor remain in the flat schema and durable databases. Removing them during FF-045 would create a second schema-hash migration boundary while FF-041 is still converging. | After durable environments converge on FF-041, drop the three tables through one explicit in-place migration, update `schema.sql` and its contract test, then flatten the migration file. |
+
+### FF-054 — remove dormant webhook and outbox schema surfaces
+
+- **Proof:** Production code has no query, repository, handler, or worker for
+  `webhook_subscriptions`, `webhook_deliveries`, or `outbox_cursor`; only
+  `schema.sql` and its schema-shape test reference them.
+- **Boundary:** Deleting them from `schema.sql` changes the embedded hash and
+  blocks worker/API startup against every durable database until an explicit
+  migration drops the live objects and stamps the new hash.
+- **Sequence:** Finish the current FF-041 hash-version migration convergence,
+  then use the existing one-migration-at-a-time flat-schema contract. Do not
+  conceal this operational change inside a code-layout rollout.
 
 ### FF-053 — legitimate 1.739 landscape clips failed the metadata gate
 
@@ -287,7 +300,6 @@ the [2026-08-17 Codex audit](./design/audits/audit-2026-08-17-codex.md#prior-aud
 | `AUD-0813-CF-179` | Measure public playback before restoring unused `ffmpeg.Faststart`. |
 | `AUD-0813-CF-SLO` | Define a match-coverage SLO before adding summary storage or alerts. |
 | `AUD-0813-CF-SCORE` | Decide whether clients need score-at-detection history. |
-| `AUD-0813-P3-4` | Dedup winner quality and public ranking serve different policies; document them before changing either. |
 | `AUD-0813-P3-14` | Measure rank-rebalance cost at real event sizes before replacing the simpler full rebalance. |
 | `AUD-DESIGN-TRACING` | Add distributed tracing only when a concrete cross-service diagnostic requires it. |
 

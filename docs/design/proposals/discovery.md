@@ -3,7 +3,7 @@
 > **Historical and superseded.** O3 shipped, then `DiscoveryWorkflow` was
 > replaced by the current per-event `EventWorkflow` producer/consumer design.
 > Do not implement this topology. Use
-> [`../../orchestration.md`](../../orchestration.md) for current behavior and
+> the [`EventWorkflow` ledger](../../orchestration/event.md) for current behavior and
 > [`../v-phase-orchestration.md`](../v-phase-orchestration.md) plus the decision
 > log for rationale.
 

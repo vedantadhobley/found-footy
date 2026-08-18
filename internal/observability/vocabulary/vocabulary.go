@@ -23,24 +23,8 @@ type Module string
 // compile-time enum (e.g. Module("typo") built at a call site).
 const (
 	// ── Workflows (Temporal orchestration layer) ──
-	// Names per docs/decisions.md 2026-07-07 workflow-rename entry.
-	// RAGWorkflow was folded into IngestWorkflow as a sub-activity;
-	// no separate module for it.
-	ModuleIngestWorkflow           Module = "ingest_workflow"
-	ModuleMonitorWorkflow          Module = "monitor_workflow"
-	ModuleEventWorkflow            Module = "discovery_workflow"
-	ModuleVideoValidationWorkflow  Module = "video_validation_workflow"
-	ModuleAssetPersistenceWorkflow Module = "asset_persistence_workflow"
-
-	// ── Domain packages (internal/domain/...) ──
-	ModuleFixture      Module = "fixture"
-	ModuleEvent        Module = "event"
-	ModuleVideo        Module = "video"
-	ModuleAlias        Module = "alias"
-	ModuleDiscovery    Module = "discovery"
-	ModuleVision       Module = "vision"
-	ModuleSession      Module = "session"
-	ModuleTextAnalysis Module = "textanalysis"
+	// The wire value stays stable for compatibility with existing log queries.
+	ModuleEventWorkflow Module = "discovery_workflow"
 
 	// ── Infrastructure adapters (internal/infra/...) ──
 	ModuleInfraPG          Module = "infra_pg"
@@ -53,39 +37,23 @@ const (
 	ModuleInfraTwitter     Module = "infra_twitter"
 	ModuleInfraSyndication Module = "infra_syndication"
 	ModuleInfraFFmpeg      Module = "infra_ffmpeg"
-	ModuleInfraWikidata    Module = "infra_wikidata"
-	ModuleInfraWikipedia   Module = "infra_wikipedia"
 
 	// ── Cross-cutting subsystems ──
-	ModuleAPI             Module = "api"
-	ModuleAPISSE          Module = "api_sse"
-	ModuleWebhookDelivery Module = "webhook_delivery"
-	ModuleWorker          Module = "worker"          // binary lifecycle
-	ModuleAPIServer       Module = "api_server"      // binary lifecycle
-	ModuleTwitterService  Module = "twitter_service" // binary lifecycle
-	ModuleMigration       Module = "migration"
-	ModuleHealthz         Module = "healthz"
-	ModuleDeploy          Module = "deploy" // startup + shutdown markers
+	ModuleAPI    Module = "api"
+	ModuleDeploy Module = "deploy" // startup + shutdown markers
 )
 
 // ValidModules is the flat list of every declared Module. Consumed by
 // IsKnownModule (lazy-hydrates a set on first call) and by the
 // vocabulary catalog generator per §15.3.
 var ValidModules = []Module{
-	ModuleIngestWorkflow, ModuleMonitorWorkflow, ModuleEventWorkflow,
-	ModuleVideoValidationWorkflow, ModuleAssetPersistenceWorkflow,
-
-	ModuleFixture, ModuleEvent, ModuleVideo, ModuleAlias,
-	ModuleDiscovery, ModuleVision, ModuleSession, ModuleTextAnalysis,
+	ModuleEventWorkflow,
 
 	ModuleInfraPG, ModuleInfraNATS, ModuleInfraEvent, ModuleInfraS3,
 	ModuleInfraLLM, ModuleInfraTemporal, ModuleInfraAPIFootball,
 	ModuleInfraTwitter, ModuleInfraSyndication, ModuleInfraFFmpeg,
-	ModuleInfraWikidata, ModuleInfraWikipedia,
 
-	ModuleAPI, ModuleAPISSE, ModuleWebhookDelivery,
-	ModuleWorker, ModuleAPIServer, ModuleTwitterService,
-	ModuleMigration, ModuleHealthz, ModuleDeploy,
+	ModuleAPI, ModuleDeploy,
 }
 
 // Action identifies the specific event being reported. Actions are

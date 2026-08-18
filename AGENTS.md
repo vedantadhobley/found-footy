@@ -80,10 +80,10 @@ lists.
 - [`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md) — historical
   target architecture (§1–§16). Consult it when original rationale matters;
   do not use it as the current implementation contract.
-- [`docs/design/python-functional-spec.md`](./docs/design/python-functional-spec.md) — behavioral spec of the retired Python system — WHAT it did, not HOW. Use it and `archive/` as parity evidence, not as the current architecture.
+- [`docs/design/python-functional-spec/`](./docs/design/python-functional-spec/) — behavioral spec of the retired Python system — WHAT it did, not HOW. Use it and `archive/` as parity evidence, not as the current architecture.
 - [`docs/design/README.md`](./docs/design/README.md) — routing index for per-topic rebuild docs.
 - [`docs/architecture.md`](./docs/architecture.md) — **as-shipped ledger** of internal/ + cmd/ tree with per-package status.
-- [`docs/orchestration.md`](./docs/orchestration.md) — **as-shipped ledger** of workflows + activities.
+- [`docs/orchestration/`](./docs/orchestration/) — **as-shipped ledger** of workflows + activities.
 - [`docs/observability.md`](./docs/observability.md) — **as-shipped ledger** of vocabulary + logging + metrics substrate.
 - [`docs/logging.md`](./docs/logging.md) — **emission reference** — how to call Emit + add new (Module, Action).
 - [`docs/temporal.md`](./docs/temporal.md) — **as-shipped ledger** of Client/Worker adapter + registration flow.

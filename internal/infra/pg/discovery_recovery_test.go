@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
+	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
 	ddiscovery "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 )
 
@@ -41,9 +42,9 @@ func TestDiscoveryActivities_RecoveryStateRoundTrip(t *testing.T) {
 
 	activities := &discoveryactivity.Activities{Pool: pool}
 	urls := []string{"https://x.com/u/status/1", "https://x.com/u/status/2"}
-	evidence := make([]ddiscovery.CandidateEvidence, 0, len(urls))
+	evidence := make([]discoverycontract.CandidateEvidence, 0, len(urls))
 	for _, url := range urls {
-		candidate := ddiscovery.CandidateEvidence{
+		candidate := discoverycontract.CandidateEvidence{
 			EventID: eventID, FixtureID: fixture.ID, SearchAttempt: 1,
 			Query: "query", TweetURL: url, TweetText: "goal clip",
 			VideoPageURL: "video", Username: "reporter",
@@ -119,7 +120,7 @@ func TestDiscoveryActivities_TerminalUpsertCreatesMissingEvidence(t *testing.T) 
 		t.Fatalf("seed event: %v", err)
 	}
 
-	evidence := ddiscovery.CandidateEvidence{
+	evidence := discoverycontract.CandidateEvidence{
 		EventID: eventID, FixtureID: fixture.ID, SearchAttempt: 6,
 		Query:     "(player OR Team) filter:videos",
 		TweetURL:  "https://x.com/reporter/status/3333333333333333333",

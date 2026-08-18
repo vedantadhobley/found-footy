@@ -27,7 +27,7 @@ flowchart LR
 ```
 
 Perceptual deduplication is intentionally scoped by event and validation
-category. See the [orchestration ledger](./docs/orchestration.md) for the
+category. See the [orchestration ledger](./docs/orchestration/) for the
 shipped workflow contracts.
 
 ## Stack
@@ -73,7 +73,7 @@ make test-corpus
 - [`docs/README.md`](./docs/README.md) — routing index and authority map
 - [`docs/todo.md`](./docs/todo.md) — canonical bugs and deferred work
 - [`docs/architecture.md`](./docs/architecture.md) — as-built package and adapter ledger
-- [`docs/orchestration.md`](./docs/orchestration.md) — workflow and activity contracts
+- [`docs/orchestration/`](./docs/orchestration/) — workflow and activity contracts
 - [`docs/deployment.md`](./docs/deployment.md) — Compose, routing, and bootstrap
 - [`docs/operations.md`](./docs/operations.md) — current safety boundary and runbook status
 - [`docs/decisions/README.md`](./docs/decisions/) — architectural decision index

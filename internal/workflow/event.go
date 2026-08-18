@@ -40,15 +40,14 @@ import (
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	fleetactivity "github.com/vedantadhobley/found-footy/internal/activity/fleet"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
+	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
 	ddiscovery "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 )
 
-// EventWorkflowInput re-exports the shared type so callers that
-// only import internal/workflow don't need a second import for the
-// spawn payload. See internal/activity/discovery/types.go for the
-// canonical declaration.
-type EventWorkflowInput = discoveryactivity.EventWorkflowInput
+// EventWorkflowInput re-exports the shared wire contract for callers that
+// execute EventWorkflow through this package.
+type EventWorkflowInput = discoverycontract.EventWorkflowInput
 
 // EventWorkflowOutput reports the run outcome for observability.
 type EventWorkflowOutput struct {
@@ -309,7 +308,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 				return out, fmt.Errorf("candidate %s has unknown recovery state %q", tweetURL, candidate.State)
 			}
 		} else if candidate.Pending {
-			p.spawnCandidate(ctx, ddiscovery.CandidateEvidence{
+			p.spawnCandidate(ctx, discoverycontract.CandidateEvidence{
 				EventID: in.EventID, FixtureID: in.FixtureID, TweetURL: tweetURL,
 			}, true)
 		}
@@ -383,7 +382,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 				}
 				log.Warn("SearchTweets attempt failed", "attempt", attempt, "err", searchErr)
 			} else {
-				var observed []ddiscovery.CandidateEvidence
+				var observed []discoverycontract.CandidateEvidence
 				for _, v := range searchOut.Videos {
 					if v.TweetURL == "" {
 						continue
@@ -394,7 +393,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 					seenTweetIDs[v.TweetURL] = struct{}{}
 					excludeURLs = append(excludeURLs, v.TweetURL)
 
-					evidence := ddiscovery.CandidateEvidence{
+					evidence := discoverycontract.CandidateEvidence{
 						EventID: in.EventID, FixtureID: in.FixtureID, SearchAttempt: attempt,
 						Query: query, TweetURL: v.TweetURL, TweetText: v.TweetText,
 						VideoPageURL: v.VideoPageURL, DurationSeconds: v.DurationSeconds,

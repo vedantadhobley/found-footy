@@ -11,18 +11,18 @@ settled 2026-07-27 and later shipped as `EventWorkflow` + `VideoWorkflow`.
 > change. This document preserves the original signed-off design; the
 > [exact-byte ownership decision](../decisions/2026-08-17-exact-md5-ownership-precedes-dense-hashing.md)
 > records the correction.
-Use [`../orchestration.md`](../orchestration.md) for current behavior and
+Use the [`EventWorkflow` ledger](../orchestration/event.md) for current behavior and
 [`../todo.md`](../todo.md) for active work. The deployed FF-002, FF-007,
 FF-014, and FF-015 corrections are preserved in the
 [2026-08-17 issue snapshot](../history/issue-register-2026-08-17.md). This
 **supersedes** both the earlier draft of this doc (which was
 batch-ambiguous and left 8 open sub-questions) and the three-workflow fan-out
-in [`proposals/video-dedup.md`](./proposals/video-dedup.md). `video-dedup.md`
+in the [video-dedup proposal](./proposals/video-dedup/). That proposal
 is retained **only** for its dedup-*algorithm* detail (frame hashing,
 offset-tolerant sliding-window match, thresholds); its *workflow shape* is
 dead.
 
-Related: [`../orchestration.md`](../orchestration.md) (as-built workflow map),
+Related: [orchestration index](../orchestration/) (as-built workflow map),
 [`../decisions.md`](../decisions.md) — 2026-07-25 (per-event dedup), 2026-07-16
 (Temporal-direct spawn), and the 2026-07-27 rung entries (ffmpeg, dHash,
 hard-filter, download/hash activities).

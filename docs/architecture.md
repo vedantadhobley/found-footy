@@ -21,24 +21,23 @@ found-footy/
 ├── cmd/                                 deployable binaries; each imports from internal/
 │   ├── api/main.go                      ✓ Chi read surface (SSE is vedanta-systems')
 │   ├── twitter/main.go                  ✓ T/a+T/b+T/c: real Playwright-Go service (ephemeral profile + idle-CPU prefs)
-│   └── worker/main.go                   Temporal worker; registers Ingest + ActivePoll + StagingPoll + Event + Video workflows
+│   └── worker/main.go                   thin executable; delegates worker composition to internal/app/worker
 ├── internal/
-│   ├── domain/                          active domain logic + explicit extension stubs
+│   ├── contract/discovery/              stable EventWorkflowInput + CandidateEvidence shared across workflow, activity, and persistence boundaries
+│   ├── domain/                          active domain logic only
 │   │   ├── fixture/                     ✓ D1: model + State + Repo + tests
 │   │   ├── event/                       ✓ D2: model + State + Repo + tests
 │   │   ├── video/                       ✓ D3 + V/2 + V/3a + FF-041: model + Repo + rank + versioned perceptual dHash + Match + hard-filter + tests
 │   │   ├── alias/                       ✓ canonical-team record + shared text operations; resolver removed 2026-08-16
 │   │   ├── team/                        ✓ TrackedTeam set — tracked-teams-cache ingest filter (team.go + repo.go)
-│   │   ├── discovery/                   ✓ Query builder + FF-034 CandidateEvidence and explicit workflow-owned candidate states
+│   │   ├── discovery/                   ✓ Query builder + explicit workflow-owned candidate states
 │   │   │   ├── doc.go                   Package doc — query construction, URL extraction, source scoring
-│   │   │   ├── candidate.go             CandidateEvidence + observed/in-flight/terminal ownership vocabulary
+│   │   │   ├── candidate.go             observed/in-flight/terminal ownership vocabulary
 │   │   │   ├── query_builder.go         BuildTwitterQuery, ErrEmptyQuery, ErrEmptyPlayerName (D1/D4b/D4c/D4d/D7 per twitter-search-query.md)
 │   │   │   └── query_builder_test.go    name, particle, dedup, fallback, and safeguard cases
-│   │   ├── vision/                      ✓ D5 (2026-07-28): clock.go + evaluate.go + schema.go + tests — clip-clock validation, wired into EventWorkflow consumer
-│   │   ├── session/                     ⊘ unused extension stub; lifecycle lives in infra/firefoxfleet
-│   │   └── textanalysis/                ⊘ doc.go stub — extensibility hook per plan §4
+│   │   └── vision/                      ✓ D5 (2026-07-28): clock.go + evaluate.go + schema.go + tests — clip-clock validation, wired into EventWorkflow consumer
 │   ├── infra/                           live infrastructure adapters
-│   │   ├── pg/                          ✓ S2: pool + instruments + schema.sql + VerifySchema drift guard (audit P0-3) + FixtureRepo + EventRepo + AliasRepo + TeamRepo + AssetRepo/ShareRepo (#164a)
+│   │   ├── pg/                          ✓ S2: pool + instruments + schema.sql + VerifySchema drift guard + focused EventRepo read/write/debounce/tracking files + remaining repos
 │   │   ├── nats/                        ✓ S3: client + instruments
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
 │   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
@@ -54,30 +53,33 @@ found-footy/
 │   │   ├── active_poll.go               ✓ O2: ActivePollWorkflow (30s IntervalSpec)
 │   │   ├── staging_poll.go              ✓ O2: StagingPollWorkflow (*/15 cron)
 │   │   ├── event.go                     ✓ #164c + FF-022 + FF-034: per-goal discovery producer, immediate candidate launch, durable observation/recovery
-│   │   ├── event_pipeline.go            ✓ #164c-b + #171 + FF-022 + FF-034: Selector consumer — download/stage → exact-MD5 claim → one dense hash per byte cluster → vision → category-scoped perceptual dedup + IsUpgrade winner-select → promote/supersede → rank; terminal candidate durability gates completion
+│   │   ├── event_pipeline.go            ✓ shared Selector state, deterministic contexts, restoration, and construction
+│   │   ├── event_pipeline_intake.go     ✓ candidate launch, exact-MD5 ownership, hash claimant failover, and consumer loop
+│   │   ├── event_pipeline_validation.go ✓ legacy replay path, vision, category-scoped perceptual dedup, and winner selection
+│   │   ├── event_pipeline_effects.go    ✓ promotion, supersession, publication, cleanup, and terminal candidate durability
 │   │   ├── telemetry.go                 ✓ FF-050: typed replay-aware EventWorkflow lifecycle/search/candidate/publication timing envelope
 │   │   └── video.go                     ✓ #165: pre-FF-022 VideoWorkflow child retained for Temporal replay; shared download/hash activity contracts
 │   ├── activity/                        activity packages + shared heartbeat helper
 │   │   ├── ingest/                      ✓ config, roster, fixture fetch/upsert, canonical-team placeholder, and retention activities
 │   │   │   ├── activities.go
-│   │   │   └── activities_test.go
-│   │   ├── monitor/                     ✓ config, activation, staging/live fetch, stable event-identity reconcile (FF-027), and failed-only spawn + stale-running progress-proof recovery (FF-007/FF-025)
-│   │   ├── discovery/                   ✓ config/aliases/search, candidate observation + terminal UPSERT, durable recovery checkpoints, and downstream completion
+│   │   │   ├── tracked_teams.go / fetch.go / categorize.go / aliases.go / retention.go
+│   │   │   └── focused colocated test files by responsibility
+│   │   ├── monitor/                     ✓ shared deps/config plus activation.go, reconcile.go, emission.go, and event_identity.go; failed-only spawn recovery remains in spawner.go
+│   │   ├── discovery/                   ✓ shared config/search plus candidates.go durable ownership and completion.go downstream checklist closure
 │   │   ├── video/                       ✓ DownloadAndStage, versioned/minimum-length HashVideo, live-asset recovery, persistence, teardown, and ranking activities
 │   │   ├── vision/                      ✓ staged-clip frame extraction + model-backed validation
 │   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when fleet disabled (FIREFOXFLEET_ENABLED=false)
 │   │   ├── livefeed/                     ✓ publish-activity boundary for all NATS live-feed emits
 │   │   └── heartbeat/                    shared time-based activity heartbeat loop
 │   ├── api/                             ✓ Chi read API over Postgres + S3; no NATS/Temporal dependency; SSE is vedanta-systems'
+│   ├── app/worker/                      ✓ worker composition root + Temporal schedule reconciliation; cmd/worker contains no wiring
 │   ├── bootstrap/                       ✓ S1 + FF-026 (NOT IN PLAN — see decisions.md 2026-07-07)
 │   │   └── bootstrap.go                 Deps + LIFO closer registry; fail-fast metrics/health listener; shared binary lifecycle
 │   ├── config/                          ✓ S1 + FF-035: per-binary envconfig profiles, semantic/cross-field validation, and env/Compose contract tests
 │   ├── observability/
 │   │   ├── vocabulary/                  ✓ S1: typed Module + Action enums
 │   │   ├── logging/                     ✓ S1: slog Emit() + TestEmitter for unit tests
-│   │   ├── metrics/                     ✓ S1: Prometheus registry helper
-│   │   └── tracing/                     ⊘ Noop tracer stub; real OTLP is deferred
-│   ├── testutil/                        ⊘ empty (build as testing needs surface)
+│   │   └── metrics/                     ✓ S1: Prometheus registry helper
 │   ├── twitter/                         Twitter *service* (browser + auth + scrape); imported by cmd/twitter
 │   │   ├── browser.go                   ✓ T/a + FF-017: Firefox persistent context, cookie/session operations, and critical-child exit signal
 │   │   ├── browser_iface.go             ✓ T/b: sessionBrowser interface — auth flow testable without Playwright
@@ -87,7 +89,6 @@ found-footy/
 │   │   ├── cookies_backup.go            ✓ T/b: Fingerprint, WriteBackup (atomic), ReadBackup, BackupFileMtime, auth_token guard
 │   │   ├── search.go                    ✓ T/c + FF-051: POST /search + strict-safe feed classification + local age cutoff + 4-condition scroll loop + extraction diagnostics
 │   │   └── *_test.go                    cookie, auth, browser-conversion, and search tests
-│   └── usecases/                        ⊘ doc.go stub (build when cross-domain ops surface)
 ├── docker/twitter/                      ✓ T/b: twitter service image + entrypoint (peer of internal/)
 ├── scripts/matchday-status.{sh,sql}     ✓ FF-050: environment-scoped, SELECT-only match-day operator snapshot
 │   ├── Dockerfile                       Playwright base + playwright-go driver + optional WITH_VNC layer (~150 MB xvfb+fluxbox+x11vnc+novnc+websockify)
@@ -122,9 +123,11 @@ Legend:
 
 ## Domain packages — as-shipped shape
 
-Fixture, event, video, alias, vision, team, and discovery carry active logic;
-session and textanalysis are unused extension stubs. The richer packages
-loosely follow the layout below (matching
+Fixture, event, video, alias, vision, team, and discovery carry active logic.
+Unused session, text-analysis, tracing, use-case, test-helper, and parent
+activity placeholders were deleted under FF-045; new packages begin when a
+caller and owned behavior exist. The richer packages loosely follow the
+layout below (matching
 [rebuild-plan.md §4](design/rebuild-plan.md#4-domain-model)), but it isn't
 uniform — notably **only fixture + event have a `state.go`** (the rest aren't
 state machines):
@@ -179,7 +182,7 @@ FALSE→TRUE latch, flips the moment DebounceCount first reaches 3), and
 `Removed`/`RemovedReason`/`RemovedAt` (atomic soft-delete on hitZero). Captures
 the 3-poll invariant Python enforced via monitor-cycle registration counts.
 
-Repo methods shipped in `internal/infra/pg/event_repo.go`:
+Repo methods ship across the focused `internal/infra/pg/event_repo*.go` files:
 `Get`, `GetByNaturalKey`, `Insert(ctx, e, workflowID)` (atomic seed —
 `debounce_count=1` + first presence vote for a **known** scorer, but
 `debounce_count=0` + **no** vote for an unknown-scorer placeholder, per G1),
@@ -253,7 +256,7 @@ the unverified pool instead of being compared against minute zero (FF-031).
 
 Consumed by `internal/activity/vision.ValidateClip`: fetch staged clip →
 `ffmpeg.ExtractFrame` @25/50/75% → one multi-image structured-output vision call
-→ `Evaluate`. **Wired into EventWorkflow's consumer** (`event_pipeline.go`, fired
+→ `Evaluate`. **Wired into EventWorkflow's consumer** (`event_pipeline*.go`, fired
 async per unique clip); the LLM adapter's `ResponseFormat` + `DisableThinking`
 fields (rung 1) exist for this call. At the activity boundary, typed permanent
 LLM failures (invalid response/request, missing model, or auth) become
@@ -362,6 +365,6 @@ internal/domain/*/          internal/infra/*/  (adapters)
 - Plan §4 (domain model) — [rebuild-plan.md §4](design/rebuild-plan.md#4-domain-model)
 - Plan §9 (adapters) — [rebuild-plan.md §9](design/rebuild-plan.md#adapter-inventory)
 - Divergences from this baseline live in [decisions.md](decisions.md)
-- Orchestration + workflow ledger: [orchestration.md](./orchestration.md)
+- Orchestration + workflow ledger: [orchestration index](./orchestration/)
 - Observability substrate: [observability.md](./observability.md)
 - Testing patterns: [testing.md](./testing.md)

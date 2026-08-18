@@ -36,7 +36,8 @@ decision supersedes an older target design).
 
 - [`architecture.md`](./architecture.md) — `internal/` + `cmd/` tree, per-package status
 - [`api.md`](./api.md) — REST DTOs, playback redirects, NATS subjects, and consumer rules
-- [`orchestration.md`](./orchestration.md) — workflows + activities as shipped
+- [`orchestration/`](./orchestration/) — workflows + activities as shipped,
+  routed by workflow family
 - [`observability.md`](./observability.md) — vocabulary + logging + metrics substrate
 - [`logging.md`](./logging.md) — Emit reference (how to add a Module/Action)
 - [`temporal.md`](./temporal.md) — Client/Worker adapter + registration flow
@@ -54,8 +55,7 @@ decision supersedes an older target design).
   — closed issue narratives and the completed documentation-normalization
   register from the 2026-08-17 release.
 - [`history/issue-closures-2026-08-17.md`](./history/issue-closures-2026-08-17.md)
-  — post-release production validation and closure evidence for FF-034 and
-  FF-051.
+  — post-release validation and closure evidence for completed issues.
 - [`design/`](./design/) — target designs, proposals, and point-in-time audit
   evidence, classified by [`design/README.md`](./design/README.md).
 

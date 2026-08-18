@@ -20,7 +20,7 @@ scrolls, and returns the video-bearing tweets within an age window. It never
 downloads video bytes (that's the worker's off-browser cookieless syndication
 path) and its browser is never used to *log in* (Twitter blocks login through a
 Playwright-instrumented Firefox — see `AUD-0813-CF-153` in
-[`todo.md`](./todo.md#audit-intake-requiring-current-code-validation)).
+[`todo.md`](./todo.md#deferred-decisions-and-validation)).
 
 The Go client and service are live and have been verified end-to-end against
 real Twitter.
@@ -166,10 +166,10 @@ own rate-limit class (`rate_limited`, T/d) is **not built**.
   fully expire, the service can only report `unauthenticated` and wait for fresh
   cookies to arrive via the backup file (an operator VNC login). The Python
   raw-Firefox manual-login subprocess (`_launch_manual_firefox`) is not ported.
-  See [`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
+  See [`todo.md`](./todo.md#deferred-decisions-and-validation).
 - **`AUD-TWITTER-RATE-LIMIT` — rate-limit detection and backoff** are unbuilt
   feature scope. See
-  [`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
+  [`todo.md`](./todo.md#deferred-decisions-and-validation).
 
 ## Cross-refs
 

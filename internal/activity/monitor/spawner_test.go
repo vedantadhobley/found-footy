@@ -16,7 +16,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
+	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
 )
 
 type fakeWorkflowStarter struct {
@@ -74,7 +74,7 @@ func (f *fakeWorkflowStarter) TerminateWorkflow(
 func TestTemporalSpawner_UsesFailedOnlyReuseWithoutExecutionTimeout(t *testing.T) {
 	starter := &fakeWorkflowStarter{taskQueue: "found-footy"}
 	spawner := NewTemporalSpawner(starter, time.Second, 0)
-	in := discoveryactivity.EventWorkflowInput{FixtureID: 123}
+	in := discoverycontract.EventWorkflowInput{FixtureID: 123}
 
 	if err := spawner.SpawnEvent(context.Background(), "event-abc", in); err != nil {
 		t.Fatalf("SpawnEvent: %v", err)
@@ -103,7 +103,7 @@ func TestTemporalSpawner_DuplicateRunningOrSuccessfulIsIdempotent(t *testing.T) 
 	starter.description = runningDescription("event-abc", "run-1", time.Now(), 10, 10, time.Time{})
 	spawner := NewTemporalSpawner(starter, time.Second, time.Hour)
 
-	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoveryactivity.EventWorkflowInput{}); err != nil {
+	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoverycontract.EventWorkflowInput{}); err != nil {
 		t.Fatalf("duplicate start should be swallowed: %v", err)
 	}
 }
@@ -112,7 +112,7 @@ func TestTemporalSpawner_PropagatesStartFailure(t *testing.T) {
 	starter := &fakeWorkflowStarter{taskQueue: "found-footy", err: errors.New("temporal unavailable")}
 	spawner := NewTemporalSpawner(starter, time.Second, 0)
 
-	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoveryactivity.EventWorkflowInput{}); err == nil {
+	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoverycontract.EventWorkflowInput{}); err == nil {
 		t.Fatal("non-duplicate start failure should propagate")
 	}
 }
@@ -141,7 +141,7 @@ func TestTemporalSpawner_StaleRunRequiresTwoUnchangedSnapshots(t *testing.T) {
 	spawner := NewTemporalSpawner(starter, time.Second, 30*time.Minute)
 	spawner.now = func() time.Time { return now }
 
-	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoveryactivity.EventWorkflowInput{}); err != nil {
+	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoverycontract.EventWorkflowInput{}); err != nil {
 		t.Fatalf("first observation: %v", err)
 	}
 	if starter.terminateCalls != 0 {
@@ -149,7 +149,7 @@ func TestTemporalSpawner_StaleRunRequiresTwoUnchangedSnapshots(t *testing.T) {
 	}
 
 	now = start.Add(32 * time.Minute)
-	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoveryactivity.EventWorkflowInput{}); err != nil {
+	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoverycontract.EventWorkflowInput{}); err != nil {
 		t.Fatalf("stale recovery: %v", err)
 	}
 	if starter.terminateCalls != 1 {
@@ -176,13 +176,13 @@ func TestTemporalSpawner_HistoryProgressResetsStaleClock(t *testing.T) {
 	}
 	spawner := NewTemporalSpawner(starter, time.Second, 30*time.Minute)
 	spawner.now = func() time.Time { return now }
-	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoveryactivity.EventWorkflowInput{}); err != nil {
+	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoverycontract.EventWorkflowInput{}); err != nil {
 		t.Fatal(err)
 	}
 
 	now = start.Add(32 * time.Minute)
 	starter.description = runningDescription("event-abc", "run-1", start, 21, 31, time.Time{})
-	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoveryactivity.EventWorkflowInput{}); err != nil {
+	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoverycontract.EventWorkflowInput{}); err != nil {
 		t.Fatal(err)
 	}
 	if starter.terminateCalls != 0 {
@@ -200,13 +200,13 @@ func TestTemporalSpawner_RecentHeartbeatResetsStaleClock(t *testing.T) {
 	}
 	spawner := NewTemporalSpawner(starter, time.Second, 30*time.Minute)
 	spawner.now = func() time.Time { return now }
-	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoveryactivity.EventWorkflowInput{}); err != nil {
+	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoverycontract.EventWorkflowInput{}); err != nil {
 		t.Fatal(err)
 	}
 
 	now = start.Add(32 * time.Minute)
 	starter.description = runningDescription("event-abc", "run-1", start, 20, 30, start.Add(31*time.Minute))
-	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoveryactivity.EventWorkflowInput{}); err != nil {
+	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoverycontract.EventWorkflowInput{}); err != nil {
 		t.Fatal(err)
 	}
 	if starter.terminateCalls != 0 {
@@ -222,7 +222,7 @@ func TestTemporalSpawner_DescribeFailureFailsClosed(t *testing.T) {
 	}
 	spawner := NewTemporalSpawner(starter, time.Second, time.Minute)
 
-	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoveryactivity.EventWorkflowInput{}); err == nil {
+	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoverycontract.EventWorkflowInput{}); err == nil {
 		t.Fatal("describe failure should propagate")
 	}
 	if starter.terminateCalls != 0 {
@@ -241,11 +241,11 @@ func TestTemporalSpawner_TerminationRaceDoesNotRestart(t *testing.T) {
 	}
 	spawner := NewTemporalSpawner(starter, time.Second, 30*time.Minute)
 	spawner.now = func() time.Time { return now }
-	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoveryactivity.EventWorkflowInput{}); err != nil {
+	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoverycontract.EventWorkflowInput{}); err != nil {
 		t.Fatal(err)
 	}
 	now = start.Add(32 * time.Minute)
-	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoveryactivity.EventWorkflowInput{}); err == nil {
+	if err := spawner.SpawnEvent(context.Background(), "event-abc", discoverycontract.EventWorkflowInput{}); err == nil {
 		t.Fatal("termination race should surface without restarting")
 	}
 	if starter.startCalls != 2 {

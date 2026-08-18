@@ -66,7 +66,7 @@ logging.Err(err error) Field    // sets a single "error" field (err.Error())
 > **Tracked gap (`AUD-0813-P2-13`):** it does not emit a typed `error_class`, so the
 > `calls_total{error_class}` metric label reads a key that's never set and is
 > therefore always empty in production. Validate the metric path before
-> promoting the candidate in [`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
+> promoting the candidate in [`todo.md`](./todo.md#deferred-decisions-and-validation).
 
 ## Testing (TestEmitter)
 
@@ -98,7 +98,7 @@ with expected fields and level guidance. **Not implemented.** Not
 blocking anything today; useful when the emission surface grows
 enough to make "grep the codebase" ergonomically painful. It remains
 feature-scope candidate `AUD-DESIGN-LOG-CATALOG` in
-[`todo.md`](./todo.md#audit-intake-requiring-current-code-validation).
+[`todo.md`](./todo.md#deferred-decisions-and-validation).
 
 ## Cross-refs
 

@@ -381,7 +381,7 @@ a routine rollback.
 - [`twitter-service.md`](./twitter-service.md) owns the scraper HTTP contract,
   browser state machine, and cookie model.
 - [`temporal.md`](./temporal.md) and
-  [`orchestration.md`](./orchestration.md) own workflow registration, retry,
+  the [`orchestration` ledger](./orchestration/) own workflow registration, retry,
   and lifecycle contracts.
 - [`observability.md`](./observability.md) and
   [`logging.md`](./logging.md) own metrics, vocabulary, and log emission.
