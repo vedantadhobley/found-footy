@@ -1,8 +1,8 @@
 # Found Footy issue closures — 2026-08-17 post-release
 
-This snapshot preserves issues removed from the active register after natural
-production workflows satisfied their live-validation conditions. It records
-evidence only; current work remains in [`todo.md`](../todo.md).
+This snapshot preserves issues removed from the active register after their
+production validation conditions were satisfied. It records evidence only;
+current work remains in [`todo.md`](../todo.md).
 
 ## FF-034 — candidate evidence and terminal state are one invariant
 
@@ -53,3 +53,28 @@ evidence only; current work remains in [`todo.md`](../todo.md).
   `age` and `consecutive_seen` stops with rendered-feed counts. This satisfies
   the natural EventWorkflow completion condition and rules out the prior
   false-empty classifier on the observed feed.
+
+## FF-041 — perceptual hashes carry an explicit viable contract
+
+- **Status:** `closed`; migrated and deployed 2026-08-18.
+- **Severity:** P2.
+- **Original defect:** Stored frame-hash sequences omitted their algorithm,
+  preprocessing, and sample interval. Empty or short successful sequences
+  could also promote despite being structurally unable to satisfy the
+  configured 30-frame matcher window.
+- **Implemented contract:** `hash_version` travels through Temporal and
+  Postgres; blank pre-release histories normalize to
+  `dhash-v1-unversioned`, incompatible versions never compare, and sequences
+  shorter than `MinRunFrames` terminate as `insufficient_hash_frames` without
+  retrying byte-identical work.
+- **Migration proof:** The additive transaction committed before application
+  rollout. Production reported a validated non-empty constraint, 235 existing
+  assets backfilled as `dhash-v1-unversioned`, and schema stamp
+  `865995d13040e10857351a130d5eb088e4e857d4ffd1baf6f4515f1eb7ff631b`.
+- **Rollout proof:** Release `201cdf1` deployed at 03:11 UTC. Both workers and
+  the API accepted the migrated schema and exposed the exact release identity;
+  Twitter exposed the same identity and reported authenticated healthy state.
+  API health and fixture reads returned HTTP 200, the active poll schedule ran,
+  and no scoped Firefox instance was stranded.
+- **Relation:** FF-005 remains in live validation for natural 4K latency;
+  FF-004 must re-hash its Lens pair under v2 before matcher tuning.

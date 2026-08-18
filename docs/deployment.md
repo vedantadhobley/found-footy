@@ -213,15 +213,17 @@ instead of silently no-opping. After an *intentional* in-place schema change
 `UPDATE schema_version SET schema_hash = '<new sha256 of schema.sql>'`, or just
 wipe + reprovision (a fresh volume auto-stamps).
 
-The first post-cutover in-place change is the pending additive
+The first post-cutover in-place change is the additive
 [`hash_version` migration](../migrations/20260817_01_add_video_asset_hash_version.sql).
-Its checked-in stamp must equal the embedded `schema.sql` hash. Apply it before
-the FF-041/FF-005 application release; the old binary remains write-compatible
-through the legacy column default. The application deploy script does not run
-schema mutations. After every durable environment has applied the change, fold
-the migration into `schema.sql` by deleting the one-time file and its temporary
-contract test. This preserves the 2026-08-13 flat-schema decision instead of
-starting an unowned migration ledger.
+Its checked-in stamp must equal the embedded `schema.sql` hash. Production
+applied it before release `201cdf1` on 2026-08-18; 235 existing assets were
+backfilled as `dhash-v1-unversioned`, and the new worker/API startup verified
+the stamped schema. The legacy default kept the old binary write-compatible
+during that release window. The application deploy script still does not run
+schema mutations. After every remaining durable environment has applied the
+change or been re-provisioned from `schema.sql`, delete the one-time file and
+its temporary contract test. This preserves the 2026-08-13 flat-schema
+decision instead of starting an unowned migration ledger.
 
 ### NATS
 

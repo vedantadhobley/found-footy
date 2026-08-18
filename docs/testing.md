@@ -135,7 +135,7 @@ FF-041/FF-005 tests require ffmpeg's dense filter to apply grayscale and a
 the interval-specific version, and reject sequences shorter than the matching
 window without an error retry. Workflow tests prove that deterministic rejects
 skip vision, incompatible stored versions never compare, and pre-FF-041 blank
-Temporal fields normalize to the legacy identity. The pending migration
+Temporal fields normalize to the legacy identity. The operational migration
 contract hashes `schema.sql` and requires its VerifySchema stamp to remain
 exact; the Postgres integration test removes the fresh-schema column, seeds an
 old asset, applies the real migration, and verifies both legacy backfill and

@@ -39,6 +39,7 @@ the current branch.
 | `triage` | Preserved from an audit but not yet re-verified against current code. |
 | `mitigated` | Still present in code, with an operational guard reducing current impact. |
 | `implemented` | Code, regression tests, and docs are complete locally; commit or rollout remains. |
+| `validating` | Code and production rollout are complete; a natural workload still owes the stated proof. |
 | `closed` | Fix is committed and its production release completed successfully. |
 | `blocked` | Requires a decision or external dependency before implementation. |
 | `P0` | Active outage, corruption, or broad clip loss. |
@@ -128,7 +129,7 @@ the current branch.
 
 ### FF-005 — high-resolution dense hash extraction times out
 
-- **Status:** `implemented`
+- **Status:** `validating`
 - **Severity:** P2
 - **Observed:** Same Huijsen candidates as FF-002.
 - **Invariant:** A clip that passes download and metadata gates should either
@@ -163,10 +164,12 @@ the current branch.
   0.457 seconds with 139,128 KiB max RSS: 51× less pipe data, 3.4× lower wall
   time, and 9× lower ffmpeg RSS. This isolates preprocessing; the Huijsen source
   remains the required production proof.
-- **Rollout:** Apply the additive version-column migration before recreating
-  worker/API, then validate the 4K source or an equivalent natural candidate.
-  Thresholds and category scoping are unchanged. Re-hash the FF-004 pair under
-  v2 before considering any matcher change.
+- **Rollout:** Migration and release `201cdf1` completed successfully at
+  03:11 UTC on 2026-08-18. The new worker/API processes accepted the schema;
+  both workers, the API, and Twitter exposed the exact release identity. A 4K
+  source or equivalent natural candidate still owes the production latency
+  proof. Thresholds and category scoping are unchanged. Re-hash the FF-004
+  pair under v2 before considering any matcher change.
 - **Source relation:** The 2026-08-13 audit identified heartbeat coverage and
   shared-semaphore contention. It did not demonstrate this post-heartbeat 4K
   failure or invalidate the full-resolution hashing cost assumption.
@@ -187,7 +190,6 @@ the current branch.
 | FF-038 | P2 | `mitigated` | Firefox capacity, leases, and Docker access are not one atomic controller boundary. | HTTP fleet controller with atomic admission, scoped labels, reaping, and no worker socket. |
 | FF-039 | P2 | `confirmed` | API/worker/Twitter lifecycle, readiness, metrics identity, and error classification diverge. | Shared lifecycle contract, real readiness, correct error classes, standard identity labels. |
 | FF-040 | P2 | `confirmed` | Live reconciliation omits mutable fixture metadata and activation is not atomic across pollers. | Explicit ownership of mutable fields plus one atomic state transition. |
-| FF-041 | P2 | `implemented` | Frame hashes now carry algorithm, preprocessing, and sample-interval identity; incompatible versions never compare and too-short sequences terminate as content rejects. | Apply the additive schema migration, roll out with FF-005, and verify recovery treats old rows as legacy without cross-version comparison. |
 | FF-042 | P2 | `implemented` | Lint/tool versions, formatting, and module state were not reproducible. | Go 1.25.11, golangci-lint 2.12.2, and Air 1.65.3 are pinned; format, tidy, vet, lint, short, full, and race gates pass. |
 | FF-043 | P2 | `implemented` | The public API now starts from Postgres and S3 only; NATS remains worker-owned and the BFF subscribes directly. The API profile ignores shared NATS env and Compose drops its API-specific override, while `luv-*` remains for real BFF HTTP calls. | Roll out the committed release and verify API startup plus REST health while the NATS broker is unavailable. |
 | FF-044 | P3 | `confirmed` | Recovery repeats start/describe work every 30 seconds for healthy discovery workflows. | Durable next-check lease or scheduled supervisor with bounded checks. |
@@ -196,9 +198,9 @@ the current branch.
 | FF-047 | P3 | `confirmed` | Empty tracked-team state still burns fixture lookahead calls whose results are discarded. | Short-circuit before vendor fixture calls and emit degraded-state telemetry. |
 | FF-048 | P2 | `confirmed` | Share minting uses check-then-insert without `(event_id, asset_id)` uniqueness. | Database constraint plus atomic idempotent insert after FF-013. |
 | FF-049 | P3 | `confirmed` | Documentation routing is clean, but several current/reference documents still exceed the shared size standard. | Split the 618-line orchestration ledger and route the 2,869-line Python functional spec plus 604-line video-dedup proposal by topic without rewriting historical claims. |
-| FF-050 | P2 | `investigate` | Live Elche timing shows 23.6 seconds from valid-candidate observation to publication, dominated by 12.6-second hashing and 9.7-second vision; durable effects add milliseconds. | Roll out FF-041/FF-005 and measure live hash latency before considering pipeline concurrency. |
+| FF-050 | P2 | `investigate` | Live Elche timing shows 23.6 seconds from valid-candidate observation to publication, dominated by 12.6-second hashing and 9.7-second vision; durable effects add milliseconds. | Measure the deployed bounded-hash latency before considering pipeline concurrency. |
 | FF-052 | P1 | `confirmed` | Vision accepted a phone filming a display as a clean Elche broadcast with `screen=false` on all three sampled frames. | Preserve the clip as a regression sample, calibrate the prompt/model against varied display recordings, and prove rejection without increasing clean-broadcast false positives. |
-| FF-053 | P1 | `implemented` | The 1.75 minimum aspect gate discarded four 1.739 Elche candidates before download even though at least three contained legitimate goal footage; the minimum is now 1.73. | Roll out the change and prove a natural 1.73–1.749 candidate reaches download while the known ≤1.72 letterbox band remains rejected. |
+| FF-053 | P1 | `validating` | The 1.75 minimum aspect gate discarded four 1.739 Elche candidates before download even though at least three contained legitimate goal footage; the minimum is now 1.73 and deployed in `201cdf1`. | Prove a natural 1.73–1.749 candidate reaches download while the known ≤1.72 letterbox band remains rejected. |
 
 ### FF-053 — legitimate 1.739 landscape clips failed the metadata gate
 
@@ -214,7 +216,8 @@ the current branch.
   unchanged. See the [decision record](./decisions/2026-08-17-live-evidence-sets-landscape-aspect-admission.md).
 - **Verification:** Domain tests pin 1.739 and exactly 1.730 as accepted,
   1.729 as rejected, and 16:10 as rejected in both pre- and post-download
-  gates. Production rollout remains a separate approved operation.
+  gates. Release `201cdf1` deployed successfully at 03:11 UTC on 2026-08-18;
+  the next natural candidate in the changed band still owes live proof.
 
 ### FF-052 — phone-of-display clip passed vision validation
 
@@ -261,6 +264,9 @@ the current branch.
   identity; all schedules were active, Twitter was authenticated and healthy,
   and no scoped fleet instance was running or stranded. The Elche workflow is
   the first representative production measurement after that rollout.
+  Bounded hashing then deployed in release `201cdf1` at 03:11 UTC on
+  2026-08-18. Immediate health and schema checks passed; no active fixture was
+  available for the before/after candidate-path measurement.
 - **Completion boundary:** Record before/after critical-path and saturation
   evidence for each accepted change. Prefer the smallest change that removes
   the measured bottleneck; do not add a streaming protocol, queue, service, or

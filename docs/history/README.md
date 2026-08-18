@@ -10,6 +10,6 @@ Use the [`docs` routing index](../README.md) for current ledgers and
 - [`issue-register-2026-08-17.md`](./issue-register-2026-08-17.md) — frozen
   release-day issue register with closed defect narratives, audit dispositions,
   and the DOC-001 through DOC-007 normalization record.
-- [`issue-closures-2026-08-17.md`](./issue-closures-2026-08-17.md) — natural
-  post-release workflow evidence that closes FF-034 candidate durability and
-  FF-051 rendered-feed classification.
+- [`issue-closures-2026-08-17.md`](./issue-closures-2026-08-17.md) — production
+  validation evidence for FF-034 candidate durability, FF-051 rendered-feed
+  classification, and FF-041's versioned frame-hash contract.
