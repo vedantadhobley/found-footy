@@ -285,7 +285,9 @@ CREATE TABLE video_assets (
 
     -- Content identity
     md5 BYTEA NOT NULL,                                     -- 16-byte whole-file digest — the exact-dup layer
-    frame_hashes BYTEA NOT NULL,                            -- per-frame dHash sequence: 8 bytes (big-endian uint64) per 0.1s frame; count = octet_length/8. Record only — dedup is in workflow code.
+    hash_version TEXT NOT NULL DEFAULT 'dhash-v1-unversioned'
+        CHECK (hash_version <> ''),                          -- algorithm + preprocessing + sample interval. Default keeps rolling migration safe for the old binary.
+    frame_hashes BYTEA NOT NULL,                            -- per-frame dHash sequence: 8 bytes (big-endian uint64) each. Record only — dedup is in workflow code.
 
     -- Metadata
     width INT NOT NULL,

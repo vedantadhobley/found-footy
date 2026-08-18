@@ -26,7 +26,7 @@ found-footy/
 │   ├── domain/                          active domain logic + explicit extension stubs
 │   │   ├── fixture/                     ✓ D1: model + State + Repo + tests
 │   │   ├── event/                       ✓ D2: model + State + Repo + tests
-│   │   ├── video/                       ✓ D3 + V/2 + V/3a: model + Repo + rank + perceptual dHash + Match + hard-filter + tests
+│   │   ├── video/                       ✓ D3 + V/2 + V/3a + FF-041: model + Repo + rank + versioned perceptual dHash + Match + hard-filter + tests
 │   │   ├── alias/                       ✓ canonical-team record + shared text operations; resolver removed 2026-08-16
 │   │   ├── team/                        ✓ TrackedTeam set — tracked-teams-cache ingest filter (team.go + repo.go)
 │   │   ├── discovery/                   ✓ Query builder + FF-034 CandidateEvidence and explicit workflow-owned candidate states
@@ -47,7 +47,7 @@ found-footy/
 │   │   ├── twitter/                     ✓ HTTP client for the Go Twitter service + mock-backed tests
 │   │   ├── syndication/                 ✓ S7 + T/f: FetchJSON + ResolveVideo/Download (cookieless mp4) + typed taxonomy + tests
 │   │   ├── event/                       ✓ composer (pg event_log audit ONLY — N2 removed its NATS half; Kind = 6 event_log types) · N1+N5 NatsPublisher — 3-subject live-feed (fixture.clock/update, event.video) + Envelope + source config + golden tests
-│   │   ├── ffmpeg/                      ✓ V/1: probe + single/dense frame extract (single-pass fps) + faststart + semaphore + typed taxonomy + tests
+│   │   ├── ffmpeg/                      ✓ V/1 + FF-005: probe + bounded-grayscale single-pass dense extraction + faststart + semaphore + typed taxonomy + tests
 │   │   └── firefoxfleet/                ✓ #160 + FF-001: per-event Firefox provisioner via Docker API — Compose-network-scoped daemon names/ownership labels/count/list/reap/release; stable event-only network alias keeps workflow addressing registry-free; idempotent lifecycle + two-fleet/one-daemon tests
 │   ├── workflow/                        shipped Temporal workflows
 │   │   ├── ingest.go                    ✓ O1c: IngestWorkflow
@@ -63,7 +63,7 @@ found-footy/
 │   │   │   └── activities_test.go
 │   │   ├── monitor/                     ✓ config, activation, staging/live fetch, stable event-identity reconcile (FF-027), and failed-only spawn + stale-running progress-proof recovery (FF-007/FF-025)
 │   │   ├── discovery/                   ✓ config/aliases/search, candidate observation + terminal UPSERT, durable recovery checkpoints, and downstream completion
-│   │   ├── video/                       ✓ DownloadAndStage, HashVideo, live-asset recovery, persistence, teardown, and ranking activities
+│   │   ├── video/                       ✓ DownloadAndStage, versioned/minimum-length HashVideo, live-asset recovery, persistence, teardown, and ranking activities
 │   │   ├── vision/                      ✓ staged-clip frame extraction + model-backed validation
 │   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when fleet disabled (FIREFOXFLEET_ENABLED=false)
 │   │   ├── livefeed/                     ✓ publish-activity boundary for all NATS live-feed emits
@@ -92,8 +92,7 @@ found-footy/
 ├── scripts/matchday-status.{sh,sql}     ✓ FF-050: environment-scoped, SELECT-only match-day operator snapshot
 │   ├── Dockerfile                       Playwright base + playwright-go driver + optional WITH_VNC layer (~150 MB xvfb+fluxbox+x11vnc+novnc+websockify)
 │   └── entrypoint.sh                    Conditionally boots VNC daemon stack when TWITTER_VNC_MODE=true, otherwise passthrough
-├── migrations/                          ⊘ EMPTY BY DESIGN (audit P0-3) — flat schema.sql + VerifySchema drift guard, no migration files; first post-cutover in-place change adds one file, squashed back into schema.sql once applied
-│                                          (see decisions.md 2026-07-07)
+├── migrations/                          one pending additive FF-041 migration; schema-hash contract tested, then folded into schema.sql and removed after every environment applies it
 ├── scripts/                             dev-only smoke, trigger, verification, and focused probe programs
 │   ├── smoke_repos/main.go              ✓ live pg + repo smoke test (dev only)
 │   ├── trigger_ingest/main.go           ✓ live IngestWorkflow trigger (O1d verification)
@@ -200,8 +199,10 @@ with reason='var'), `RegisterDownstreamWorkflow` (inserts the
 Core types `video.Asset` and `video.Share` — the split from Python's single
 `video` collection that supports the URL-stability + rank invariants
 (`rebuild-plan.md` §3/§4). Post-#166 `Asset` is `event_id`-scoped and carries a
-per-frame `frame_hashes` dHash sequence (md5 exact-match + `UNIQUE(event_id,
-md5)`; the old whole-clip `perceptual_hash` UNIQUE is retired).
+versioned per-frame `frame_hashes` dHash sequence. `FrameHashVersion` includes
+algorithm, preprocessing, and sample interval; only equal versions compare.
+Storage still enforces only md5 exact-match through `UNIQUE(event_id, md5)`;
+the old whole-clip `perceptual_hash` UNIQUE is retired.
 
 Beyond the model, the package owns the dedup + quality logic (pure, table-
 tested): `hash.go` (`DHash`/`DHashPNG`), `match.go` (`Match` — the

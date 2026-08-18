@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"strconv"
 )
 
 // dHash samples a 9-wide × 8-tall grid: 8 horizontal comparisons per row ×
@@ -20,7 +21,46 @@ import (
 const (
 	dhashW = 9
 	dhashH = 8
+
+	// FrameHashWorkingWidth bounds the intermediate grayscale frame before
+	// Go applies histogram equalization and the final 9x8 dHash reduction.
+	// It is part of the persisted hash contract, not an operator tuning knob.
+	FrameHashWorkingWidth = 640
 )
+
+// FrameHashVersion identifies every input-shaping choice that affects a
+// stored frame-hash sequence. Only equal versions may be perceptually
+// compared. The legacy value marks rows written before the Go rebuild stored
+// an explicit version.
+type FrameHashVersion string
+
+const (
+	LegacyFrameHashVersion FrameHashVersion = "dhash-v1-unversioned"
+	frameHashV2Prefix      string           = "dhash-v2-gray640-equalized-area9x8"
+)
+
+// CurrentFrameHashVersion returns the version for the current preprocessing
+// algorithm and sampling interval. FormatFloat canonicalizes equivalent env
+// spellings such as 0.1 and 0.10 to the same durable identity.
+func CurrentFrameHashVersion(intervalSecs float64) FrameHashVersion {
+	interval := strconv.FormatFloat(intervalSecs, 'f', -1, 64)
+	return FrameHashVersion(frameHashV2Prefix + "@" + interval + "s")
+}
+
+// NormalizeFrameHashVersion maps an omitted version from a pre-FF-041
+// Temporal result or database row to the explicit legacy identity.
+func NormalizeFrameHashVersion(v FrameHashVersion) FrameHashVersion {
+	if v == "" {
+		return LegacyFrameHashVersion
+	}
+	return v
+}
+
+// CompatibleFrameHashVersions reports whether two sequences share exactly
+// the same algorithm, preprocessing, and sample interval.
+func CompatibleFrameHashVersions(a, b FrameHashVersion) bool {
+	return NormalizeFrameHashVersion(a) == NormalizeFrameHashVersion(b)
+}
 
 // DHashPNG decodes a PNG-encoded frame (as the ffmpeg adapter emits) and
 // returns its dHash.
@@ -32,9 +72,10 @@ func DHashPNG(data []byte) (uint64, error) {
 	return DHash(img), nil
 }
 
-// DHash computes the difference hash of img: full-res grayscale → in-place
-// histogram equalization → area-average downscale to 9×8 → compare each
-// cell to its right neighbor (1 bit each, MSB-first).
+// DHash computes the difference hash of img: grayscale → in-place histogram
+// equalization → area-average downscale to 9×8 → compare each cell to its
+// right neighbor (1 bit each, MSB-first). Production input is the bounded
+// grayscale working frame identified by FrameHashVersion.
 func DHash(img image.Image) uint64 {
 	g := toGray(img)
 	equalize(g)
@@ -66,6 +107,13 @@ func toGray(img image.Image) *grayImg {
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
 	g := &grayImg{pix: make([]uint8, w*h), w: w, h: h}
+	if src, ok := img.(*image.Gray); ok {
+		for y := 0; y < h; y++ {
+			start := (b.Min.Y+y-src.Rect.Min.Y)*src.Stride + b.Min.X - src.Rect.Min.X
+			copy(g.pix[y*w:(y+1)*w], src.Pix[start:start+w])
+		}
+		return g
+	}
 	i := 0
 	for y := b.Min.Y; y < b.Max.Y; y++ {
 		for x := b.Min.X; x < b.Max.X; x++ {

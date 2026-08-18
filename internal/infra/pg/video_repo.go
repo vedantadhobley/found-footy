@@ -57,7 +57,7 @@ func NewAssetRepo(pool *Pool) *AssetRepo { return &AssetRepo{pool: pool} }
 const assetColumns = `
 	id, event_id, fixture_id,
 	s3_bucket, s3_key,
-	md5, frame_hashes,
+	md5, hash_version, frame_hashes,
 	width, height, duration_ms, file_size_bytes, bitrate,
 	aspect_ratio, popularity, superseded_by, first_seen_at
 `
@@ -65,12 +65,13 @@ const assetColumns = `
 func scanAsset(row rowScanner) (*video.Asset, error) {
 	var a video.Asset
 	var frameBytes []byte
+	var hashVersion string
 	var bitrate *int
 	var supersededBy *uuid.UUID
 	if err := row.Scan(
 		&a.ID, &a.EventID, &a.FixtureID,
 		&a.S3Bucket, &a.S3Key,
-		&a.MD5, &frameBytes,
+		&a.MD5, &hashVersion, &frameBytes,
 		&a.Width, &a.Height, &a.DurationMS, &a.FileSizeBytes, &bitrate,
 		&a.AspectRatio, &a.Popularity, &supersededBy, &a.FirstSeenAt,
 	); err != nil {
@@ -81,6 +82,7 @@ func scanAsset(row rowScanner) (*video.Asset, error) {
 	}
 	a.Bitrate = bitrate
 	a.SupersededBy = supersededBy
+	a.FrameHashVersion = video.NormalizeFrameHashVersion(video.FrameHashVersion(hashVersion))
 	a.FrameHashes = decodeFrameHashes(frameBytes)
 	return &a, nil
 }
@@ -98,13 +100,13 @@ func (r *AssetRepo) InsertAsset(ctx context.Context, a *video.Asset) (bool, erro
 	tag, err := r.pool.Exec(ctx, `
 		INSERT INTO video_assets (
 			id, event_id, fixture_id, s3_bucket, s3_key,
-			md5, frame_hashes,
+			md5, hash_version, frame_hashes,
 			width, height, duration_ms, file_size_bytes, bitrate,
 			popularity, superseded_by, first_seen_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		ON CONFLICT (event_id, md5) DO NOTHING
 	`, a.ID, a.EventID, a.FixtureID, a.S3Bucket, a.S3Key,
-		a.MD5, encodeFrameHashes(a.FrameHashes),
+		a.MD5, video.NormalizeFrameHashVersion(a.FrameHashVersion), encodeFrameHashes(a.FrameHashes),
 		a.Width, a.Height, a.DurationMS, a.FileSizeBytes, a.Bitrate,
 		a.Popularity, a.SupersededBy, a.FirstSeenAt)
 	if err != nil {

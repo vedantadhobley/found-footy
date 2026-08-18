@@ -65,6 +65,7 @@ type PromoteAndPersistInput struct {
 	FixtureID     int64
 	StagingKey    string
 	MD5           string // hex, from DownloadAndStage
+	HashVersion   dvideo.FrameHashVersion
 	FrameHashes   []uint64
 	Width, Height int
 	DurationMS    int
@@ -91,6 +92,7 @@ type LoadEventAssetsInput struct {
 type RestoredEventAsset struct {
 	AssetID       uuid.UUID
 	MD5           string
+	HashVersion   dvideo.FrameHashVersion
 	FrameHashes   []uint64
 	Width         int
 	Height        int
@@ -127,7 +129,8 @@ func (a *PersistActivities) LoadEventAssets(ctx context.Context, in LoadEventAss
 			continue
 		}
 		out.Assets = append(out.Assets, RestoredEventAsset{
-			AssetID: asset.ID, MD5: hex.EncodeToString(asset.MD5), FrameHashes: asset.FrameHashes,
+			AssetID: asset.ID, MD5: hex.EncodeToString(asset.MD5),
+			HashVersion: asset.FrameHashVersion, FrameHashes: asset.FrameHashes,
 			Width: asset.Width, Height: asset.Height, DurationMS: asset.DurationMS,
 			FileSizeBytes: asset.FileSizeBytes, Bitrate: asset.Bitrate,
 			Popularity: asset.Popularity, Verified: share.TimestampVerified,
@@ -184,7 +187,8 @@ func (a *PersistActivities) PromoteAndPersist(ctx context.Context, in PromoteAnd
 		// Build the asset with the deterministic id (NewAsset mints a random
 		// one we override) + the computed key.
 		asset := dvideo.NewAsset(in.EventID, in.FixtureID, a.Bucket, dstKey,
-			md5Bytes, in.FrameHashes, in.Width, in.Height, in.DurationMS, in.FileSizeBytes, time.Now().UTC())
+			md5Bytes, in.HashVersion, in.FrameHashes,
+			in.Width, in.Height, in.DurationMS, in.FileSizeBytes, time.Now().UTC())
 		asset.ID = assetID
 		asset.Bitrate = in.Bitrate
 		if in.Popularity > 1 {
@@ -250,7 +254,8 @@ func (a *PersistActivities) PromoteAndPersist(ctx context.Context, in PromoteAnd
 func validatePromotionAsset(existing *dvideo.Asset, in PromoteAndPersistInput, md5Bytes []byte, bucket, dstKey string) error {
 	if existing == nil || existing.ID != uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.EventID.String()+":"+in.MD5)) ||
 		existing.EventID != in.EventID || existing.FixtureID != in.FixtureID ||
-		existing.S3Bucket != bucket || existing.S3Key != dstKey || !bytes.Equal(existing.MD5, md5Bytes) {
+		existing.S3Bucket != bucket || existing.S3Key != dstKey || !bytes.Equal(existing.MD5, md5Bytes) ||
+		dvideo.NormalizeFrameHashVersion(existing.FrameHashVersion) != dvideo.NormalizeFrameHashVersion(in.HashVersion) {
 		return fmt.Errorf("video.PromoteAndPersist: deterministic asset identity mismatch for %s", dstKey)
 	}
 	return nil

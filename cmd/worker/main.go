@@ -218,6 +218,7 @@ func main() {
 			StagingPrefix:     deps.Cfg.Video.StagingPrefix,
 			Thresholds:        videoactivity.ThresholdsFromConfig(deps.Cfg.Video.HardFilter),
 			FrameIntervalSecs: deps.Cfg.Dedup.FrameIntervalSecs,
+			MinHashFrames:     deps.Cfg.Dedup.MinRunFrames,
 		}
 
 		// Clip validation applies the soccer/screen gate and clock check.

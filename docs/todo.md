@@ -128,7 +128,7 @@ the current branch.
 
 ### FF-005 — high-resolution dense hash extraction times out
 
-- **Status:** `confirmed`
+- **Status:** `implemented`
 - **Severity:** P2
 - **Observed:** Same Huijsen candidates as FF-002.
 - **Invariant:** A clip that passes download and metadata gates should either
@@ -146,15 +146,27 @@ the current branch.
   retaining only a 64-bit dHash. That work is resolution-dependent even though
   the dedup signal is 9×8. FF-021 host oversubscription aggravates it, and
   FF-022 repeats it for byte-identical candidates.
-- **Required work:** Preserve the served MP4 at source quality, but normalize
-  the separate hashing stream to a bounded grayscale working resolution before
-  PNG serialization—or replace PNG transport with fixed-size raw grayscale
-  frames. Re-baseline dHash thresholds against the existing transform corpus
-  and the FF-004 live pair because preprocessing changes hash semantics. Keep
-  timeout retries for genuinely transient failures; do not label all dense
-  timeouts non-retryable when host contention can still cause them.
-- **Rollout:** FF-002 makes exhaustion terminal and cleans staging, so this
-  throughput fix did not block the 2026-08-17 release.
+- **Implemented:** ffmpeg now samples, converts to grayscale, and area-reduces
+  each hashing frame to 640 pixels wide before lossless PNG serialization. Go
+  still performs histogram equalization and the final 9×8 area reduction, so
+  the dHash definition remains grayscale → equalize → 9×8 → adjacent
+  differences. `hash_version` persists the algorithm, preprocessing, and sample
+  interval; only identical versions compare. Existing and rolling-old-binary
+  rows become `dhash-v1-unversioned`. New 0.1-second sequences use
+  `dhash-v2-gray640-equalized-area9x8@0.1s`. A sequence shorter than the
+  configured 30-frame match window returns terminal
+  `insufficient_hash_frames`; byte-identical waiters share that verdict instead
+  of repeating deterministic work.
+- **Bounded benchmark:** On a synthetic five-second 3808×2146 source at 10 fps
+  under four CPUs and 2 GiB, the old ffmpeg stage emitted 40,075 KiB in 1.549
+  seconds with 1,259,812 KiB max RSS. The bounded stage emitted 779 KiB in
+  0.457 seconds with 139,128 KiB max RSS: 51× less pipe data, 3.4× lower wall
+  time, and 9× lower ffmpeg RSS. This isolates preprocessing; the Huijsen source
+  remains the required production proof.
+- **Rollout:** Apply the additive version-column migration before recreating
+  worker/API, then validate the 4K source or an equivalent natural candidate.
+  Thresholds and category scoping are unchanged. Re-hash the FF-004 pair under
+  v2 before considering any matcher change.
 - **Source relation:** The 2026-08-13 audit identified heartbeat coverage and
   shared-semaphore contention. It did not demonstrate this post-heartbeat 4K
   failure or invalidate the full-resolution hashing cost assumption.
@@ -175,7 +187,7 @@ the current branch.
 | FF-038 | P2 | `mitigated` | Firefox capacity, leases, and Docker access are not one atomic controller boundary. | HTTP fleet controller with atomic admission, scoped labels, reaping, and no worker socket. |
 | FF-039 | P2 | `confirmed` | API/worker/Twitter lifecycle, readiness, metrics identity, and error classification diverge. | Shared lifecycle contract, real readiness, correct error classes, standard identity labels. |
 | FF-040 | P2 | `confirmed` | Live reconciliation omits mutable fixture metadata and activation is not atomic across pollers. | Explicit ownership of mutable fields plus one atomic state transition. |
-| FF-041 | P2 | `confirmed` | Perceptual hash bytes have no algorithm version or minimum viable sequence invariant. | Version hashes and reject too-short streams before FF-005 preprocessing changes. |
+| FF-041 | P2 | `implemented` | Frame hashes now carry algorithm, preprocessing, and sample-interval identity; incompatible versions never compare and too-short sequences terminate as content rejects. | Apply the additive schema migration, roll out with FF-005, and verify recovery treats old rows as legacy without cross-version comparison. |
 | FF-042 | P2 | `implemented` | Lint/tool versions, formatting, and module state were not reproducible. | Go 1.25.11, golangci-lint 2.12.2, and Air 1.65.3 are pinned; format, tidy, vet, lint, short, full, and race gates pass. |
 | FF-043 | P2 | `implemented` | The public API now starts from Postgres and S3 only; NATS remains worker-owned and the BFF subscribes directly. The API profile ignores shared NATS env and Compose drops its API-specific override, while `luv-*` remains for real BFF HTTP calls. | Roll out the committed release and verify API startup plus REST health while the NATS broker is unavailable. |
 | FF-044 | P3 | `confirmed` | Recovery repeats start/describe work every 30 seconds for healthy discovery workflows. | Durable next-check lease or scheduled supervisor with bounded checks. |
@@ -184,7 +196,7 @@ the current branch.
 | FF-047 | P3 | `confirmed` | Empty tracked-team state still burns fixture lookahead calls whose results are discarded. | Short-circuit before vendor fixture calls and emit degraded-state telemetry. |
 | FF-048 | P2 | `confirmed` | Share minting uses check-then-insert without `(event_id, asset_id)` uniqueness. | Database constraint plus atomic idempotent insert after FF-013. |
 | FF-049 | P3 | `confirmed` | Documentation routing is clean, but several current/reference documents still exceed the shared size standard. | Split the 618-line orchestration ledger and route the 2,869-line Python functional spec plus 604-line video-dedup proposal by topic without rewriting historical claims. |
-| FF-050 | P2 | `investigate` | Live Elche timing shows 23.6 seconds from valid-candidate observation to publication, dominated by 12.6-second hashing and 9.7-second vision; durable effects add milliseconds. | Use FF-041 to version the hash contract, then evaluate FF-005 bounded preprocessing before adding pipeline concurrency. |
+| FF-050 | P2 | `investigate` | Live Elche timing shows 23.6 seconds from valid-candidate observation to publication, dominated by 12.6-second hashing and 9.7-second vision; durable effects add milliseconds. | Roll out FF-041/FF-005 and measure live hash latency before considering pipeline concurrency. |
 | FF-052 | P1 | `confirmed` | Vision accepted a phone filming a display as a clean Elche broadcast with `screen=false` on all three sampled frames. | Preserve the clip as a regression sample, calibrate the prompt/model against varied display recordings, and prove rejection without increasing clean-broadcast false positives. |
 | FF-053 | P1 | `implemented` | The 1.75 minimum aspect gate discarded four 1.739 Elche candidates before download even though at least three contained legitimate goal footage; the minimum is now 1.73. | Roll out the change and prove a natural 1.73–1.749 candidate reaches download while the known ≤1.72 letterbox band remains rejected. |
 
@@ -238,8 +250,8 @@ the current branch.
   queue or persistence pause in this sample. Hashing and vision are the
   critical path. Running them concurrently could save at most the shorter
   stage, but would spend vision capacity on candidates that dHash would have
-  collapsed. First bound and version hashing through FF-041/FF-005; reconsider
-  overlap only with representative saturation evidence.
+  collapsed. FF-041/FF-005 now bound and version hashing locally; measure the
+  deployed result before reconsidering overlap.
 - **Rollout:** Commit `0e1bbdf` deployed successfully on 2026-08-17 at
   14:10 UTC. Both workers, the API, and Twitter reported the exact release
   identity; all schedules were active, Twitter was authenticated and healthy,

@@ -28,8 +28,8 @@ import (
 )
 
 // Frame is one extracted frame: its position in the clip (seconds) + the
-// encoded image bytes. Dense frames are PNG (lossless, for hash parity);
-// the single vision frame is JPEG.
+// encoded image bytes. Dense frames are bounded grayscale PNG; the single
+// vision frame is JPEG.
 type Frame struct {
 	PositionSecs float64
 	Data         []byte
@@ -54,10 +54,10 @@ type runner func(ctx context.Context, name string, args []string) (stdout, stder
 
 // streamRunner runs a subprocess and hands its LIVE stdout to consume as it
 // arrives, so a large output is never fully buffered. Dense frame extraction
-// uses this: a 90 s 1080p clip is ~300 MB of PNG, and holding it all (plus
-// N of them under the concurrency cap) is what forced the worker memory up —
-// see decisions.md 2026-08-06 (streamed dense extraction). execStreamRun is
-// the production implementation; consume must fully drain (or the runner
+// uses this. Dense output is now bounded grayscale, but streaming still keeps
+// memory proportional to one frame and prevents regression to the former
+// hundreds-of-megabytes buffer — see decisions.md 2026-08-06. execStreamRun
+// is the production implementation; consume must fully drain (or the runner
 // drains the rest) so the child never blocks on a full pipe.
 type streamRunner func(ctx context.Context, name string, args []string, consume func(stdout io.Reader) error) (stderr []byte, err error)
 
@@ -190,23 +190,27 @@ func (c *Client) ExtractFrame(ctx context.Context, videoPath string, positionSec
 }
 
 // ExtractDenseFrames extracts frames at fixed intervalSecs spacing in ONE
-// ffmpeg decode pass (fps filter), emitting lossless PNGs. Feeds rung-2
-// dHash. intervalSecs is a dedup-tuning param supplied by the caller (not
-// baked into the adapter). Position of frame i ≈ i*intervalSecs.
+// ffmpeg decode pass. It converts to grayscale and area-reduces to
+// workingWidth before emitting lossless PNGs, bounding transport and Go-side
+// pixel work independently of source resolution. Histogram equalization and
+// the final 9x8 reduction remain in the dHash domain implementation.
 //
 // STREAMED: rather than buffer the whole PNG stream and return a []Frame,
 // each frame is handed to onFrame the instant it's parsed off ffmpeg's
 // stdout, then its bytes are free to GC. The caller (HashVideo) reduces each
-// frame to an 8-byte dHash on the spot, so peak memory is ~one PNG instead of
-// ~all of them (a 90 s 1080p clip is ~300 MB of PNG × the concurrency cap).
+// frame to an 8-byte dHash on the spot, so peak memory is one bounded PNG
+// rather than the full clip's frame stream.
 // onFrame returning an error aborts extraction with that error. A truncated
 // trailing PNG is dropped silently (matches the old buffered splitPNGs).
-func (c *Client) ExtractDenseFrames(ctx context.Context, videoPath string, intervalSecs float64, quality int, onFrame func(Frame) error) error {
+func (c *Client) ExtractDenseFrames(ctx context.Context, videoPath string, intervalSecs float64, workingWidth int, onFrame func(Frame) error) error {
 	if err := statInput(videoPath); err != nil {
 		return err
 	}
 	if intervalSecs <= 0 {
 		return fmt.Errorf("%w: intervalSecs must be > 0", ErrExtractionFailed)
+	}
+	if workingWidth <= 0 {
+		return fmt.Errorf("%w: workingWidth must be > 0", ErrExtractionFailed)
 	}
 	// Dense extraction gets its own (longer) ceiling — the caller (HashVideo)
 	// heartbeats on frame progress, so Temporal keeps it alive up to the 2-min
@@ -220,7 +224,8 @@ func (c *Client) ExtractDenseFrames(ctx context.Context, videoPath string, inter
 
 	start := time.Now()
 	fps := strconv.FormatFloat(1.0/intervalSecs, 'f', -1, 64)
-	args := []string{"-i", videoPath, "-vf", "fps=" + fps, "-f", "image2pipe", "-vcodec", "png"}
+	filter := "fps=" + fps + ",format=gray,scale=" + strconv.Itoa(workingWidth) + ":-2:flags=area"
+	args := []string{"-i", videoPath, "-vf", filter, "-f", "image2pipe", "-vcodec", "png"}
 	args = append(args, c.threadArgs()...)
 	args = append(args, "-")
 	idx := 0

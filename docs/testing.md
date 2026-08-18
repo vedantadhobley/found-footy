@@ -130,6 +130,17 @@ cleanup, promotion, or finalization commands. A default-version case requires
 pre-FF-022 histories to keep calling the registered VideoWorkflow child and
 never add a direct download activity.
 
+FF-041/FF-005 tests require ffmpeg's dense filter to apply grayscale and a
+640-pixel area reduction before PNG serialization, require `HashVideo` to emit
+the interval-specific version, and reject sequences shorter than the matching
+window without an error retry. Workflow tests prove that deterministic rejects
+skip vision, incompatible stored versions never compare, and pre-FF-041 blank
+Temporal fields normalize to the legacy identity. The pending migration
+contract hashes `schema.sql` and requires its VerifySchema stamp to remain
+exact; the Postgres integration test removes the fresh-schema column, seeds an
+old asset, applies the real migration, and verifies both legacy backfill and
+the new stamp.
+
 FF-034 workflow tests require candidate processing to launch even when every
 observation-insert retry fails, while the failed attempt remains uncheckpointed
 and the downstream checklist stays open. A separate case exhausts the terminal

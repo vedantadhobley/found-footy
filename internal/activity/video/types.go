@@ -1,13 +1,22 @@
 // types.go — activity I/O for the per-candidate video pipeline.
 package video
 
-import "github.com/google/uuid"
+import (
+	"github.com/google/uuid"
+
+	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
+)
 
 // Terminal outcome values for DownloadAndStage. A reject is a normal result
 // (candidate definitively out), not an error.
 const (
 	OutcomePassed   = "passed"
 	OutcomeRejected = "rejected"
+
+	// RejectInsufficientHashFrames is deterministic for the staged bytes: the
+	// sequence cannot satisfy the configured perceptual-match window, so the
+	// activity returns an outcome instead of retrying identical work.
+	RejectInsufficientHashFrames = "insufficient_hash_frames"
 )
 
 // DownloadAndStageInput identifies one candidate to fetch + fingerprint.
@@ -38,8 +47,11 @@ type HashVideoInput struct {
 	StagingKey string
 }
 
-// HashVideoOutput carries the per-frame perceptual-hash sequence (uniform
-// FrameIntervalSecs spacing; index i == time i*interval).
+// HashVideoOutput carries a versioned per-frame perceptual-hash sequence.
+// A too-short sequence is a terminal rejected outcome, not an activity error.
 type HashVideoOutput struct {
-	FrameHashes []uint64
+	Outcome      string
+	RejectReason string
+	HashVersion  dvideo.FrameHashVersion
+	FrameHashes  []uint64
 }

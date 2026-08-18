@@ -19,7 +19,8 @@ func makeAsset(popularity int, fileSize int64) *video.Asset {
 		uuid.New(),
 		5000,
 		"found-footy", "5000/asset123.mp4",
-		[]byte("md5md5md5md5md5m"),                           // 16-byte md5
+		[]byte("md5md5md5md5md5m"), // 16-byte md5
+		video.CurrentFrameHashVersion(0.1),
 		[]uint64{0xabcd1234ef567890, 0x1111, 0x2222, 0x3333}, // per-frame dHash sequence
 		1920, 1080, 45_000,
 		fileSize,
@@ -69,6 +70,9 @@ func TestNewAsset_PopulatesDerivedFields(t *testing.T) {
 	// the per-frame hash sequence is carried through verbatim
 	if len(a.FrameHashes) != 4 || a.FrameHashes[0] != 0xabcd1234ef567890 {
 		t.Errorf("FrameHashes = %v, want [0xabcd1234ef567890 …] (len 4)", a.FrameHashes)
+	}
+	if a.FrameHashVersion != video.CurrentFrameHashVersion(0.1) {
+		t.Errorf("FrameHashVersion = %q, want current 0.1s version", a.FrameHashVersion)
 	}
 	// aspect ratio 1920/1080 ≈ 1.7777...
 	want := float32(1920) / float32(1080)

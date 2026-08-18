@@ -81,6 +81,24 @@ func TestDHashPNG_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestFrameHashVersionIncludesPreprocessingAndInterval(t *testing.T) {
+	a := CurrentFrameHashVersion(0.1)
+	b := CurrentFrameHashVersion(0.10)
+	c := CurrentFrameHashVersion(0.25)
+	if a != b {
+		t.Fatalf("equivalent intervals produced %q and %q", a, b)
+	}
+	if a == c {
+		t.Fatalf("different intervals produced the same version %q", a)
+	}
+	if !CompatibleFrameHashVersions("", LegacyFrameHashVersion) {
+		t.Fatal("omitted pre-FF-041 version should normalize to legacy")
+	}
+	if CompatibleFrameHashVersions(a, LegacyFrameHashVersion) {
+		t.Fatal("bounded and legacy preprocessing must never compare")
+	}
+}
+
 func TestHamming(t *testing.T) {
 	cases := []struct {
 		a, b uint64

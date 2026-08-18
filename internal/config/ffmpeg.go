@@ -38,6 +38,6 @@ type FFmpegConfig struct {
 	ThreadsPerProc int `env:"FFMPEG_THREADS_PER_PROC" envDefault:"2"`
 
 	// FrameQuality is the mjpeg -q:v for single (vision) frames: 2..31,
-	// lower = better. Dense (hash) frames are always lossless PNG.
+	// lower = better. Dense hash frames use bounded lossless grayscale PNG.
 	FrameQuality int `env:"FFMPEG_FRAME_QUALITY" envDefault:"3"`
 }

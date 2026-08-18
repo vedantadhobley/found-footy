@@ -49,12 +49,14 @@ type fakeFFmpeg struct {
 	mdErr     error
 	frames    []ffmpeg.Frame
 	framesErr error
+	workWidth int
 }
 
 func (f *fakeFFmpeg) ProbeMetadata(context.Context, string) (*ffmpeg.VideoMetadata, error) {
 	return f.md, f.mdErr
 }
-func (f *fakeFFmpeg) ExtractDenseFrames(_ context.Context, _ string, _ float64, _ int, onFrame func(ffmpeg.Frame) error) error {
+func (f *fakeFFmpeg) ExtractDenseFrames(_ context.Context, _ string, _ float64, workingWidth int, onFrame func(ffmpeg.Frame) error) error {
+	f.workWidth = workingWidth
 	if f.framesErr != nil {
 		return f.framesErr
 	}
@@ -106,7 +108,7 @@ func newActs(t *testing.T, s *fakeSynd, ff *fakeFFmpeg, s3 *fakeS3) *Activities 
 	return &Activities{
 		Syndication: s, FFmpeg: ff, S3: s3,
 		ScratchDir: t.TempDir(), StagingPrefix: "staging",
-		Thresholds: thresholds(), FrameIntervalSecs: 0.25,
+		Thresholds: thresholds(), FrameIntervalSecs: 0.25, MinHashFrames: 2,
 	}
 }
 
@@ -244,6 +246,24 @@ func TestHashVideo_Success(t *testing.T) {
 	}
 	if len(out.FrameHashes) != 2 {
 		t.Fatalf("got %d hashes, want 2", len(out.FrameHashes))
+	}
+	if out.Outcome != OutcomePassed || out.HashVersion != dvideo.CurrentFrameHashVersion(0.25) {
+		t.Fatalf("outcome/version = %q/%q, want passed/%q", out.Outcome, out.HashVersion, dvideo.CurrentFrameHashVersion(0.25))
+	}
+	if ff.workWidth != dvideo.FrameHashWorkingWidth {
+		t.Fatalf("working width = %d, want %d", ff.workWidth, dvideo.FrameHashWorkingWidth)
+	}
+}
+
+func TestHashVideo_RejectsInsufficientSequenceWithoutError(t *testing.T) {
+	ff := &fakeFFmpeg{frames: []ffmpeg.Frame{{PositionSecs: 0, Data: tinyPNG(t)}}}
+	out, err := newActs(t, &fakeSynd{}, ff, &fakeS3{dlData: []byte("staged-bytes")}).HashVideo(
+		context.Background(), HashVideoInput{StagingKey: "staging/1/e/1.mp4"})
+	if err != nil {
+		t.Fatalf("HashVideo deterministic reject: %v", err)
+	}
+	if out.Outcome != OutcomeRejected || out.RejectReason != RejectInsufficientHashFrames {
+		t.Fatalf("out = %+v, want rejected/%s", out, RejectInsufficientHashFrames)
 	}
 }
 

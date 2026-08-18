@@ -29,6 +29,7 @@ import (
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
 	ddiscovery "github.com/vedantadhobley/found-footy/internal/domain/discovery"
+	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
@@ -1251,6 +1252,44 @@ func TestEventWorkflow_PreHashExactClaimHashesIdenticalBytesOnce(t *testing.T) {
 	}
 }
 
+func TestEventWorkflow_PreHashDeterministicRejectSkipsVision(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := preHashEventEnv(&s)
+	const (
+		tweetURL   = "https://x.com/u/status/1111111111111111111"
+		stagingKey = "staging/fixture/event/short.mp4"
+	)
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{{TweetURL: tweetURL, VideoPageURL: "vp", DurationSeconds: 7}}, Count: 1,
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil).Once()
+	env.OnActivity("DownloadAndStage", mock.Anything, downloadTweetIs(tweetURL)).
+		Return(videoactivity.DownloadAndStageOutput{
+			Outcome: videoactivity.OutcomePassed, MD5: "short", StagingKey: stagingKey,
+		}, nil).Once()
+	env.OnActivity("HashVideo", mock.Anything, hashStagingIs(stagingKey)).
+		Return(videoactivity.HashVideoOutput{
+			Outcome: videoactivity.OutcomeRejected, RejectReason: videoactivity.RejectInsufficientHashFrames,
+		}, nil).Once()
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything,
+		mock.MatchedBy(func(in discoveryactivity.UpsertCandidateOutcomeInput) bool {
+			return in.Evidence.TweetURL == tweetURL &&
+				in.Outcome == discoveryactivity.OutcomeRejected &&
+				in.RejectReason == videoactivity.RejectInsufficientHashFrames
+		})).Return(nil).Once()
+	env.OnActivity("DeleteStaging", mock.Anything,
+		videoactivity.DeleteStagingInput{StagingKey: stagingKey}).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	env.AssertNumberOfCalls(t, "HashVideo", 1)
+	env.AssertNotCalled(t, "ValidateClip", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "PromoteAndPersist", mock.Anything, mock.Anything)
+}
+
 // TestEventWorkflow_PreHashClaimTransfersAfterHashFailure proves a bad first
 // staging object does not poison every exact-byte candidate. The first owner
 // exhausts its three retries and is stamped failed; the waiting claimant then
@@ -1442,16 +1481,47 @@ func TestEventWorkflow_Pipeline_PerceptualDedupWithinPool(t *testing.T) {
 	}
 }
 
+func TestEventWorkflow_Pipeline_DifferentHashVersionsNeverCompare(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env, t1, t2 := twoCandidateEnv(&s)
+	frames := []uint64{1, 2, 4, 8, 16, 32}
+
+	legacy := passedChild(t1, "md5a", "s1", 1280, 720, 7000, 900_000, frames)
+	legacy.HashVersion = dvideo.LegacyFrameHashVersion
+	bounded := passedChild(t2, "md5b", "s2", 1280, 720, 7000, 900_000, frames)
+	bounded.HashVersion = dvideo.CurrentFrameHashVersion(0.1)
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(t1)).Return(legacy, nil)
+	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(t2)).Return(bounded, nil)
+	env.OnActivity("ValidateClip", mock.Anything, mock.Anything).
+		Return(visionactivity.ValidateClipOutput{Outcome: "verified", MatchedMinute: pInt(71)}, nil)
+
+	promoteCalls := 0
+	env.OnActivity("PromoteAndPersist", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, in videoactivity.PromoteAndPersistInput) (videoactivity.PromoteAndPersistOutput, error) {
+			promoteCalls++
+			return videoactivity.PromoteAndPersistOutput{AssetID: uuid.New(), ShareID: "s_" + in.MD5, Inserted: true}, nil
+		})
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	var out workflow.EventWorkflowOutput
+	_ = env.GetWorkflowResult(&out)
+	if out.AssetsKept != 2 || promoteCalls != 2 {
+		t.Fatalf("assets/promotions = %d/%d, want 2/2 for incomparable versions", out.AssetsKept, promoteCalls)
+	}
+}
+
 // TestEventWorkflow_Pipeline_QualitySupersede — two perceptually-identical
-// VERIFIED clips, different md5, DIFFERENT quality. The lower-res clip is
-// processed first (spawn order) and promoted; the higher-res clip then wins the
-// pool and supersedes it. Net: both promoted, one supersede, one asset kept.
+// VERIFIED clips, different md5, DIFFERENT quality. Child completion order is
+// intentionally unconstrained: low-first promotes both then supersedes low;
+// high-first promotes high and collapses low. Both paths must keep high only.
 func TestEventWorkflow_Pipeline_QualitySupersede(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env, t1, t2 := twoCandidateEnv(&s)
 	frames := []uint64{1, 2, 4, 8, 16, 32}
 
-	// t1 low-res (processed first → incumbent), t2 high-res (upgrade → winner).
+	// t1 is low-res and t2 is high-res; Temporal may complete either child first.
 	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(t1)).
 		Return(passedChild(t1, "md5low", "s1", 640, 360, 7000, 400_000, frames), nil)
 	env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(t2)).
@@ -1460,17 +1530,23 @@ func TestEventWorkflow_Pipeline_QualitySupersede(t *testing.T) {
 		Return(visionactivity.ValidateClipOutput{Outcome: "verified", MatchedMinute: pInt(71)}, nil)
 
 	promoteCalls, supersedeCalls, loserCount := 0, 0, 0
+	var promotedMD5s []string
+	promotedIDs := map[string]uuid.UUID{}
+	var supersedeWinner uuid.UUID
 	env.OnActivity("PromoteAndPersist", mock.Anything, mock.Anything).
 		Return(func(_ context.Context, in videoactivity.PromoteAndPersistInput) (videoactivity.PromoteAndPersistOutput, error) {
 			promoteCalls++
 			// Deterministic id per md5 so the winner supersedes the right loser.
 			id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.EventID.String()+":"+in.MD5))
+			promotedMD5s = append(promotedMD5s, in.MD5)
+			promotedIDs[in.MD5] = id
 			return videoactivity.PromoteAndPersistOutput{AssetID: id, ShareID: "s_" + in.MD5, Inserted: true}, nil
 		})
 	env.OnActivity("SupersedeAssets", mock.Anything, mock.Anything).
 		Return(func(_ context.Context, in videoactivity.SupersedeAssetsInput) error {
 			supersedeCalls++
 			loserCount += len(in.LoserAssetIDs)
+			supersedeWinner = in.WinnerAssetID
 			return nil
 		})
 
@@ -1482,10 +1558,17 @@ func TestEventWorkflow_Pipeline_QualitySupersede(t *testing.T) {
 	if out.AssetsKept != 1 {
 		t.Errorf("AssetsKept = %d, want 1 (cluster collapses to the winner)", out.AssetsKept)
 	}
-	if promoteCalls != 2 {
-		t.Errorf("PromoteAndPersist called %d times, want 2 (both promoted; loser then superseded)", promoteCalls)
-	}
-	if supersedeCalls != 1 || loserCount != 1 {
-		t.Errorf("SupersedeAssets calls=%d losers=%d, want 1/1 (higher-res supersedes lower)", supersedeCalls, loserCount)
+	switch promoteCalls {
+	case 1:
+		if len(promotedMD5s) != 1 || promotedMD5s[0] != "md5high" || supersedeCalls != 0 {
+			t.Errorf("high-first path promoted=%v supersedes=%d, want [md5high]/0", promotedMD5s, supersedeCalls)
+		}
+	case 2:
+		if supersedeCalls != 1 || loserCount != 1 || supersedeWinner != promotedIDs["md5high"] {
+			t.Errorf("low-first path supersedes=%d losers=%d winner=%s, want 1/1/high",
+				supersedeCalls, loserCount, supersedeWinner)
+		}
+	default:
+		t.Errorf("PromoteAndPersist called %d times, want 1 or 2", promoteCalls)
 	}
 }

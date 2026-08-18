@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Dense frame hashing uses a versioned bounded working image](./2026-08-17-dense-hashing-uses-versioned-bounded-working-image.md) — FF-041/FF-005 preserve dHash while bounding 4K work, rejecting structurally short sequences, and preventing cross-version comparisons.
 - [Live evidence sets landscape aspect admission to 1.73–1.82](./2026-08-17-live-evidence-sets-landscape-aspect-admission.md) — FF-053 admits legitimate 1.739 Elche clips without widening into the known 1.60–1.72 letterbox band.
 - [Candidate terminal state is a workflow invariant](./2026-08-17-candidate-terminal-state-is-a-workflow-invariant.md) — FF-034 couples complete evidence to an idempotent terminal UPSERT and blocks parent success until it lands.
 - [The read API does not connect to NATS](./2026-08-17-read-api-does-not-connect-to-nats.md) — FF-043 keeps event publication in workers and direct subscription in the BFF without coupling REST startup to the broker.

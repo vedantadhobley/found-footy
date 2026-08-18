@@ -211,8 +211,17 @@ mismatch**. So an edit to `schema.sql` that never reached this DB fails loud
 instead of silently no-opping. After an *intentional* in-place schema change
 (rare — the norm is edit + re-provision), re-stamp:
 `UPDATE schema_version SET schema_hash = '<new sha256 of schema.sql>'`, or just
-wipe + reprovision (a fresh volume auto-stamps). No migration files — see
-[decisions.md](decisions.md) 2026-08-13 (audit P0-3) for why.
+wipe + reprovision (a fresh volume auto-stamps).
+
+The first post-cutover in-place change is the pending additive
+[`hash_version` migration](../migrations/20260817_01_add_video_asset_hash_version.sql).
+Its checked-in stamp must equal the embedded `schema.sql` hash. Apply it before
+the FF-041/FF-005 application release; the old binary remains write-compatible
+through the legacy column default. The application deploy script does not run
+schema mutations. After every durable environment has applied the change, fold
+the migration into `schema.sql` by deleting the one-time file and its temporary
+contract test. This preserves the 2026-08-13 flat-schema decision instead of
+starting an unowned migration ledger.
 
 ### NATS
 
