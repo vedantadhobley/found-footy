@@ -1,7 +1,8 @@
 // event_pipeline.go — the EventWorkflow consumer engine (#164c-b): the
 // serialized Selector queue that drains download, dense-hash, and vision
-// activities, running exact-byte ownership → hash → perceptual dedup → promote
-// → rank per unique clip. The legacy VideoWorkflow child remains replayable.
+// activities, running exact-byte ownership → hash → vision → category-scoped
+// perceptual dedup → promote → rank per unique clip. The legacy VideoWorkflow
+// child remains replayable.
 //
 // All state (assets / pending / hashing / inFlight) lives in the `pipeline`
 // struct and

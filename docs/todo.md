@@ -249,9 +249,13 @@ the current branch.
 - **Interpretation:** The post-discovery path does not contain an unexplained
   queue or persistence pause in this sample. Hashing and vision are the
   critical path. Running them concurrently could save at most the shorter
-  stage, but would spend vision capacity on candidates that dHash would have
-  collapsed. FF-041/FF-005 now bound and version hashing locally; measure the
-  deployed result before reconsidering overlap.
+  stage. Category-scoped perceptual dedup already runs after vision, so every
+  hash-successful MD5-unique clip receives the model call today; overlap would
+  add vision work only for clips whose hash later fails or returns an
+  insufficient sequence. It would still couple the two shared ffmpeg lanes and
+  require a durable per-candidate join/cancellation policy. FF-041/FF-005 now
+  bound and version hashing locally; measure the deployed result before
+  reconsidering overlap.
 - **Rollout:** Commit `0e1bbdf` deployed successfully on 2026-08-17 at
   14:10 UTC. Both workers, the API, and Twitter reported the exact release
   identity; all schedules were active, Twitter was authenticated and healthy,
