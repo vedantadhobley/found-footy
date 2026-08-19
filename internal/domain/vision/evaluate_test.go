@@ -109,8 +109,8 @@ func TestEvaluate_CapturesDetectedClock(t *testing.T) {
 	if rej.DetectedMinute == nil || *rej.DetectedMinute != 10 || rej.DetectedPeriod != "1H" {
 		t.Errorf("detected = %v/%q, want 10/1H", rej.DetectedMinute, rej.DetectedPeriod)
 	}
-	if rej.ExpectedMinute != 71 || rej.ExpectedPeriod != "2H" { // non-stoppage clamps to elapsed
-		t.Errorf("expected = %d/%q, want 71/2H", rej.ExpectedMinute, rej.ExpectedPeriod)
+	if rej.ExpectedMinute != 70 || rej.ExpectedPeriod != "2H" {
+		t.Errorf("expected = %d/%q, want 70/2H", rej.ExpectedMinute, rej.ExpectedPeriod)
 	}
 
 	// No clock visible → DetectedMinute stays nil (distinguishes "no clock"
@@ -127,6 +127,92 @@ func TestEvaluate_CapturesDetectedClock(t *testing.T) {
 	}
 	if ver.DetectedMinute == nil || *ver.DetectedMinute != 70 {
 		t.Errorf("verified detected = %v, want 70", ver.DetectedMinute)
+	}
+}
+
+// TestEvaluate_MinuteNormalization locks the provider-to-broadcast clock
+// contract independently of the verdict. A ±1 verdict alone did not catch the
+// Go-port regression that calculated elapsed-1 and then clamped it to elapsed.
+func TestEvaluate_MinuteNormalization(t *testing.T) {
+	cases := []struct {
+		name       string
+		frames     []FrameObservation
+		exp        Expected
+		want       Outcome
+		wantExpect int
+		wantMatch  int
+	}{
+		{
+			name:       "first-minute-clock-zero",
+			frames:     rep(frame(true, false, "00:30", "", ""), 3),
+			exp:        Expected{Elapsed: 1},
+			want:       OutcomeVerified,
+			wantExpect: 0,
+			wantMatch:  0,
+		},
+		{
+			// Abdelkarim live regression: API 30', sampled clock 28'. The
+			// normalized center is 29, so 28 remains inside the intended ±1.
+			name:       "normal-time-lower-tolerance-edge",
+			frames:     rep(frame(true, false, "28:30", "", ""), 3),
+			exp:        Expected{Elapsed: 30},
+			want:       OutcomeVerified,
+			wantExpect: 29,
+			wantMatch:  28,
+		},
+		{
+			name:       "normal-time-outside-tolerance",
+			frames:     rep(frame(true, false, "27:59", "", ""), 3),
+			exp:        Expected{Elapsed: 30},
+			want:       OutcomeRejected,
+			wantExpect: 29,
+			wantMatch:  -1,
+		},
+		{
+			name:       "first-half-stoppage-second-minute",
+			frames:     rep(frame(true, false, "45:00", "+2", "+1:30"), 3),
+			exp:        Expected{Elapsed: 45, Extra: 2},
+			want:       OutcomeVerified,
+			wantExpect: 46,
+			wantMatch:  46,
+		},
+		{
+			name:       "second-half-forty-seventh-minute",
+			frames:     rep(frame(true, false, "46:30", "", ""), 3),
+			exp:        Expected{Elapsed: 47},
+			want:       OutcomeVerified,
+			wantExpect: 46,
+			wantMatch:  46,
+		},
+		{
+			name:       "second-half-stoppage-fourth-minute",
+			frames:     rep(frame(true, false, "90:00", "+4", "+3:30"), 3),
+			exp:        Expected{Elapsed: 90, Extra: 4},
+			want:       OutcomeVerified,
+			wantExpect: 93,
+			wantMatch:  93,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ev := Evaluate(c.frames, c.exp, tol)
+			if ev.ExpectedMinute != c.wantExpect {
+				t.Errorf("ExpectedMinute = %d, want %d", ev.ExpectedMinute, c.wantExpect)
+			}
+			if ev.Outcome != c.want {
+				t.Fatalf("Outcome = %q (%s), want %q", ev.Outcome, ev.Reason, c.want)
+			}
+			if c.wantMatch < 0 {
+				if ev.MatchedMinute != nil {
+					t.Errorf("MatchedMinute = %d, want nil", *ev.MatchedMinute)
+				}
+				return
+			}
+			if ev.MatchedMinute == nil || *ev.MatchedMinute != c.wantMatch {
+				t.Errorf("MatchedMinute = %v, want %d", ev.MatchedMinute, c.wantMatch)
+			}
+		})
 	}
 }
 

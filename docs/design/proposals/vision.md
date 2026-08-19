@@ -86,9 +86,10 @@ correctness fix** (period-awareness).
 (`90:00 … 02:17` → **92**).
 
 **±1 tolerance:** the API reports the minute *after* the goal, so expected =
-`elapsed + extra − 1`, **clamped to never fall below `elapsed`** (`evaluate.go`:
-`if expectedMinute < elapsed { expectedMinute = elapsed }`). A frame's clock
-counts as verified if it's within ±1 **and in the expected period**.
+`elapsed + extra − 1`. A frame's clock counts as verified if it's within ±1
+**and in the expected period**. The Go port briefly clamped normal-time values
+back to `elapsed`, silently cancelling the normalization; FF-056 removed that
+regression and added explicit expected-minute boundary tests.
 
 **OCR-correction (keep):** in stoppage the model often drops the leading digit
 (reads `92:36` as `02:36`). Since `api_elapsed` *is* the dropped base, rebase:
@@ -115,6 +116,13 @@ already present:
 - **Extracted clock:** the **`+N` added field's presence** = "stoppage of the
   current period"; the frozen base (45/90/105/120) names which period; a bare
   running value with no `+` is the next period.
+
+> **As-built caveat (FF-057):** the shipped parser currently collapses the raw
+> clock to an integer before `Evaluate` derives the period. That loses the
+> distinction described above for explicit period hints, compact stoppage, and
+> bare values at 45/90/105. The ordinary-minute and separate frozen-clock plus
+> stoppage-subtimer paths are correct; the boundary representation remains
+> deferred work rather than being silently folded into FF-056.
 
 Edge case (only boundary goals), but it produces *confidently-wrong* clips, so
 it's worth doing right — and boundary goals are a priority for real-data
