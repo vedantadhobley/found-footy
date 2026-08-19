@@ -204,7 +204,7 @@ the current branch.
 | FF-054 | P3 | `confirmed` | Zero-caller webhook tables and the outbox cursor remain in the flat schema and durable databases. Removing them during FF-045 would create a second schema-hash migration boundary while FF-041 is still converging. | After durable environments converge on FF-041, drop the three tables through one explicit in-place migration, refresh stale schema comments, update `schema.sql` and its contract test, then flatten the migration file. |
 | FF-055 | P1 | `validating` | API-Football winner flags describe the live leader; nil-guarded updates retained an earlier leader when a match returned to a tie, so completed draws could expose the wrong winner. Score-derived state is deployed and the ten stale draws are repaired. | Verify a natural lead-to-tie update clears both winners through the production API and frontend. |
 | FF-056 | P1 | `validating` | The Go vision port computed `elapsed + extra - 1` but then clamped normal-time results back to `elapsed`, shifting the intended ±1 clock window one minute late. Abdelkarim's API-30' goal therefore rejected genuine clips whose sampled clock read 28'. The unclamped normalization is deployed in `136e2d2`. | Verify a natural API-minus-two sampled buildup frame enters the verified pool without admitting an outside-tolerance API-minus-three frame. |
-| FF-057 | P2 | `confirmed` | Vision's clock parser collapses an observation to one integer before period classification, losing whether a boundary value was bare running time, explicit `2H`/`ET`, or compact stoppage. Correctly normalized boundary goals can therefore be assigned to the wrong period. | Model a parsed clock as structured minute + period/stoppage evidence; cover every 45/90/105 transition and retain per-frame readings for rejected-candidate diagnosis. |
+| FF-057 | P1 | `implemented` | The VLM schema discarded visible period labels before the integer clock parser ran. A reset-per-half `05:25 2nd` scorebug therefore became first-half minute 5 and rejected genuine clips for Zizo's API-51′ goal; integer collapse also lost compact-stoppage and boundary provenance. | Deploy the validated implementation, then verify the next natural reset-clock goal. |
 
 ### FF-056 — normal-time clock normalization was cancelled by a clamp
 
@@ -230,23 +230,44 @@ the current branch.
   completed discovery workflows remain historical, and new validations use the
   corrected clock center.
 
-### FF-057 — parsed clock integers lose boundary-period evidence
+### FF-057 — scorebug period evidence was discarded before clock validation
 
-- **Observed in the FF-056 audit:** The signed vision design distinguishes a
-  bare running boundary from the prior period's stoppage display. The shipped
-  evaluator instead calls `periodOf(parsedMinute)` after parsing has discarded
-  that provenance. `2H 00:30` becomes integer 45 and is classified H1;
-  compact `45+2` becomes integer 47 and is classified H2. A normal API-46'
-  event also normalizes to clock minute 45, exposing the same ambiguity.
-- **Scope:** This predates FF-056. Removing the normalization clamp makes the
-  boundary case easier to reach but does not create it. Ordinary minutes and
-  the frozen-main-clock plus separate stoppage-subtimer shape remain covered.
-- **Design direction:** Keep the parser simple but return a structured reading
-  containing the absolute minute plus explicit period/stoppage evidence instead
-  of reconstructing period from the integer. Persist all normalized per-frame
-  readings on rejection; the current candidate record keeps only the last
-  legible minute, which prevented exact reconstruction of the Abdelkarim VLM
-  response.
+- **Live evidence:** The Barcelona–Al Ahly broadcast used a reset clock with an
+  explicit period label. Abdelkarim's API-30′ first-half goal showed
+  `28:56 1st`; Zizo's API-51′ second-half goal showed `05:25 2nd`. The VLM wire
+  contract requested only `MM:SS`, so the latter reached the evaluator as bare
+  minute 5, was classified as first half, and rejected genuine-looking clips.
+- **Earlier boundary evidence:** The integer parser also discarded the
+  distinction between a bare running boundary, explicit `2H`/`ET`, and compact
+  stoppage. `2H 00:30` became integer 45 and was classified H1; compact `45+2`
+  became integer 47 and was classified H2. A normal API-46′ event normalizes to
+  clock minute 45 and exposes the same collision.
+- **Cause:** `FrameObservation` had no period field even though the parser
+  understood period text embedded in `clock`. The constrained prompt required
+  the model to emit only clock digits, guaranteeing that adjacent `1st`/`2nd`
+  evidence disappeared before `Evaluate`.
+- **Implementation:** The model now returns a nullable visible-period enum
+  (`1H`/`2H`/`ET1`/`ET2`) per frame. A structured `ClockReading` retains the
+  normalized absolute minute, pinned period, stoppage precision, frame index,
+  and ambiguity. Visible `05:25 + 2H` normalizes to minute 50; continuous
+  `50:25 + 2H` remains 50. Explicit wrong halves still reject. A plausible
+  relative interpretation without visible period evidence can only enter the
+  lower unverified pool—the API expectation never manufactures verification.
+  Clock rejects persist all raw observations and normalized readings in the
+  existing JSONB outcome detail; no schema migration is required.
+- **Compatibility:** The model call count and 25/50/75 frame strategy are
+  unchanged. The activity output is additive and nullable, so old Temporal
+  payloads decode with `period=nil`; workflow command structure is unchanged.
+- **Verification:** Focused domain, activity, and workflow suites cover both
+  live scorebugs, continuous clocks, explicit conflicts, absent-period
+  ambiguity, compact stoppage provenance, old payload decoding, and diagnostic
+  persistence. On 2026-08-19, the deployed `gemma-4-12b` model accepted the
+  strict nullable-period schema and correctly labelled all nine frames across
+  three production-candidate replays. Abdelkarim's `28:51`–`28:57` frames were
+  labelled `1H` and verified against API 30′; two Zizo clips with
+  `05:24`–`05:29` clocks were labelled `2H`, normalized to minute 50, and
+  verified against API 51′. Natural production validation remains before
+  closure.
 
 ### FF-055 — live leader flags survive a drawn result
 

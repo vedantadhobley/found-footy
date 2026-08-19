@@ -158,7 +158,12 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   failure callback records `vision_error` and deletes staging (FF-012). When
   API-Football supplied no event minute, soccer footage that passes the content
   gates remains unverified rather than becoming a false wrong-clock reject
-  (FF-031).
+  (FF-031). Each model frame carries a nullable visible-period enum. Structured
+  clock normalization supports both continuous and reset-per-period scorebugs;
+  explicit period conflicts reject, while a plausible relative interpretation
+  without visible period evidence can only soft-keep as unverified (FF-057).
+  Clock rejection persists all raw frame observations plus their normalized
+  readings for post-hoc diagnosis.
   Perceptual dedup is deliberately NOT here: a clip's verified/unverified
   category is unknown until vision, and md5-identical bytes are trivially the
   same category.

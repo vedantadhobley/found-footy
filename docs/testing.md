@@ -346,6 +346,15 @@ FF-031's domain regression supplies an unknown API minute with both visible and
 absent broadcast clocks. Both valid soccer cases remain unverified with no
 matched minute, while non-soccer and screen-recording gates still reject.
 
+FF-057 covers both live scorebug families: the Abdelkarim API-30′ event with a
+`28:56 1H` sampled clock, and the Zizo API-51′ event with a reset `05:25 2H`
+clock. Domain tests require the latter to normalize to absolute minute 50,
+retain continuous `50:25 2H`, reject an explicit `05:25 1H` conflict, and
+soft-keep rather than verify the same low clock when period evidence is absent.
+Parser tests retain compact-stoppage period provenance. Activity tests pin the
+nullable period schema and normalized readings; WorkflowTestSuite requires all
+three raw observations and readings in a clock reject's `outcome_detail`.
+
 FF-032 makes the LLM mock's captured-request buffer concurrency-safe. The
 adapter's concurrency-cap test now exercises parallel handlers without racing
 inside the harness, so `make test-race` remains a trustworthy release gate.
