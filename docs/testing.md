@@ -359,7 +359,8 @@ continuous time or API-90′ reset time, and `15:10 ET2` against either ET2
 convention, while retaining the unchanged ±1 tolerance. The candidate-replay
 Postgres integration test proves exact selection, transactional checklist
 registration, prior-verdict preservation, terminal-detail merging, retry
-idempotency, workflow-identity drift rejection, and post-run verification.
+idempotency, workflow-identity drift rejection, JSON-null outcome handling,
+exact malformed-envelope normalization, and post-run verification.
 
 FF-032 makes the LLM mock's captured-request buffer concurrency-safe. The
 adapter's concurrency-cap test now exercises parallel handlers without racing

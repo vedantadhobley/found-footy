@@ -34,6 +34,11 @@ The runner waits for each event and verifies that its checklist closed, its
 selected count is unchanged, and no selected row remains pending before it
 starts the next event.
 
+Candidate detail merge treats both SQL `NULL` and JSON `null` as an empty
+object before attaching the replay envelope. A rerun normalizes only the exact
+legacy `[null, {"replay": ...}]` shape owned by the same workflow identity;
+this makes a stopped repair self-healing without broad JSON rewrites.
+
 The checked-in runner is dry-run by default. Apply mode requires the expected
 event count, enforces a per-event candidate ceiling, uses failed-only Temporal
 Workflow ID reuse, and is idempotent across a process crash between the

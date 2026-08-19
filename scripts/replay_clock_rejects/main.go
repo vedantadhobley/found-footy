@@ -127,9 +127,9 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("[%d/%d] prepared event=%s candidates=%d existing=%t completed=%t workflow=%s\n",
+		fmt.Printf("[%d/%d] prepared event=%s candidates=%d normalized=%d existing=%t completed=%t workflow=%s\n",
 			index+1, len(events), event.Input.EventID, prepared.SelectedCandidates,
-			prepared.AlreadyPrepared, prepared.Completed, workflowID)
+			prepared.NormalizedCandidates, prepared.AlreadyPrepared, prepared.Completed, workflowID)
 		if prepared.Completed {
 			result, err := checkedReplayResult(
 				ctx, store, event.Input.EventID, workflowID, prepared.SelectedCandidates,
