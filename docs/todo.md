@@ -204,7 +204,7 @@ the current branch.
 | FF-054 | P3 | `confirmed` | Zero-caller webhook tables and the outbox cursor remain in the flat schema and durable databases. Removing them during FF-045 would create a second schema-hash migration boundary while FF-041 is still converging. | After durable environments converge on FF-041, drop the three tables through one explicit in-place migration, refresh stale schema comments, update `schema.sql` and its contract test, then flatten the migration file. |
 | FF-055 | P1 | `validating` | API-Football winner flags describe the live leader; nil-guarded updates retained an earlier leader when a match returned to a tie, so completed draws could expose the wrong winner. Score-derived state is deployed and the ten stale draws are repaired. | Verify a natural lead-to-tie update clears both winners through the production API and frontend. |
 | FF-056 | P1 | `validating` | The Go vision port computed `elapsed + extra - 1` but then clamped normal-time results back to `elapsed`, shifting the intended ±1 clock window one minute late. Abdelkarim's API-30' goal therefore rejected genuine clips whose sampled clock read 28'. The unclamped normalization is deployed in `136e2d2`. | Verify a natural API-minus-two sampled buildup frame enters the verified pool without admitting an outside-tolerance API-minus-three frame. |
-| FF-057 | P1 | `implemented` | The VLM schema discarded visible period labels before the integer clock parser ran. A reset-per-half `05:25 2nd` scorebug therefore became first-half minute 5 and rejected genuine clips for Zizo's API-51′ goal; integer collapse also lost compact-stoppage and boundary provenance. | Deploy the validated implementation, then verify the next natural reset-clock goal. |
+| FF-057 | P1 | `validating` | The VLM schema discarded visible period labels before the integer clock parser ran. A reset-per-half `05:25 2nd` scorebug therefore became first-half minute 5 and rejected genuine clips for Zizo's API-51′ goal; structured period-aware validation is deployed in `e9c3c54`. | Verify the next natural reset-clock goal reaches the correct verified pool. |
 
 ### FF-056 — normal-time clock normalization was cancelled by a clamp
 
@@ -268,6 +268,12 @@ the current branch.
   `05:24`–`05:29` clocks were labelled `2H`, normalized to minute 50, and
   verified against API 51′. Natural production validation remains before
   closure.
+- **Rollout:** Release `e9c3c54` deployed successfully on 2026-08-19 at 20:21
+  UTC. Both workers, the API, and Twitter verified the exact immutable release
+  identity. Both workers registered, all three Temporal schedules remained
+  active, and the first post-release active-poll cycle completed with zero
+  errors. The release changed no database schema or object-store state and
+  stranded no Firefox fleet instance.
 
 ### FF-055 — live leader flags survive a drawn result
 
