@@ -253,10 +253,14 @@ the unverified pool instead of being compared against minute zero (FF-031).
 - `clock.go` — scorebug field parsers (`parseClockField`, `parseAddedField`,
   `parseStoppageClockField` — the last accepts both `01:48` and `+1:48` model
   output) + `periodOf` (the H1/H2/ET1/ET2 map, verified against
-  real API-Football data).
+  real API-Football data). The current integer parser loses explicit period and
+  compact-stoppage provenance at exact boundaries; FF-057 tracks the structured
+  reading needed to close that gap.
 - `evaluate.go` — `Evaluate(frames, Expected, tol)`: soccer/screen majority
   gates → period-aware clock check → `Outcome` (verified/unverified/rejected).
-  Strictness: ±1 minute, strict at halftime / lenient at ET (see decisions.md).
+  API ordinal minutes normalize to the broadcast's completed-minute clock as
+  `elapsed + extra - 1` before the ±1 tolerance; the period remains an
+  independent guard. Strict at halftime / lenient at ET (see decisions.md).
 - `schema.go` — `FrameObservation` (per-frame JSON) + `VisionResponse`
   (`{Frames}`, the `response_format` json-schema, exactly-3 positional frames) +
   `DefaultPrompt`.

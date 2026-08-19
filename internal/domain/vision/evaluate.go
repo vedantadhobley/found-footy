@@ -97,12 +97,11 @@ func Evaluate(frames []FrameObservation, exp Expected, tol int) Evaluation {
 		return ev
 	}
 
-	// Clock check. The API reports the minute AFTER the goal, so expected =
-	// elapsed + extra - 1 (never below elapsed).
+	// Clock check. API-Football reports the ordinal minute in play while the
+	// broadcast clock shows completed minutes: a goal at 29:xx is reported as
+	// 30'. Stoppage time follows the same rule (45+2' is 46:xx), so normalize
+	// both forms before applying the configured tolerance.
 	expectedMinute := exp.Elapsed + exp.Extra - 1
-	if expectedMinute < exp.Elapsed {
-		expectedMinute = exp.Elapsed
-	}
 	expectedPeriod := periodOf(exp.Elapsed)
 	expectedStoppage := exp.Extra > 0
 	ev.ExpectedMinute = expectedMinute

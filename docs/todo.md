@@ -203,6 +203,46 @@ the current branch.
 | FF-053 | P1 | `validating` | The 1.75 minimum aspect gate discarded four 1.739 Elche candidates before download even though at least three contained legitimate goal footage; the minimum is now 1.73 and deployed in `201cdf1`. | Prove a natural 1.73–1.749 candidate reaches download while the known ≤1.72 letterbox band remains rejected. |
 | FF-054 | P3 | `confirmed` | Zero-caller webhook tables and the outbox cursor remain in the flat schema and durable databases. Removing them during FF-045 would create a second schema-hash migration boundary while FF-041 is still converging. | After durable environments converge on FF-041, drop the three tables through one explicit in-place migration, refresh stale schema comments, update `schema.sql` and its contract test, then flatten the migration file. |
 | FF-055 | P1 | `validating` | API-Football winner flags describe the live leader; nil-guarded updates retained an earlier leader when a match returned to a tie, so completed draws could expose the wrong winner. Score-derived state is deployed and the ten stale draws are repaired. | Verify a natural lead-to-tie update clears both winners through the production API and frontend. |
+| FF-056 | P1 | `implemented` | The Go vision port computed `elapsed + extra - 1` but then clamped normal-time results back to `elapsed`, shifting the intended ±1 clock window one minute late. Abdelkarim's API-30' goal therefore rejected genuine clips whose sampled clock read 28'. | Roll out, then verify a natural API-minus-two sampled buildup frame enters the verified pool without admitting an outside-tolerance API-minus-three frame. |
+| FF-057 | P2 | `confirmed` | Vision's clock parser collapses an observation to one integer before period classification, losing whether a boundary value was bare running time, explicit `2H`/`ET`, or compact stoppage. Correctly normalized boundary goals can therefore be assigned to the wrong period. | Model a parsed clock as structured minute + period/stoppage evidence; cover every 45/90/105 transition and retain per-frame readings for rejected-candidate diagnosis. |
+
+### FF-056 — normal-time clock normalization was cancelled by a clamp
+
+- **Observed:** Abdelkarim's Barcelona–Al Ahly goal arrived from API-Football
+  as 30'. Thirty rejected candidates retained a last-readable clock of 28',
+  while Barcelona's official timeline labelled the goal 29'. Production
+  checked 28 against a center of 30 and rejected it as two minutes away.
+- **Cause:** The Python baseline and Go design normalize the provider's ordinal
+  minute to the broadcast's completed-minute clock with
+  `elapsed + extra - 1`. The Go implementation then clamped that result to at
+  least `elapsed`; with no stoppage extra, the clamp always undid `-1`.
+- **Implemented:** Remove the clamp without widening the configured ±1
+  tolerance. Tests assert both `ExpectedMinute` and outcome for 1', 30',
+  45+2', 47', and 90+4', including the accepted lower edge and a rejection one
+  minute beyond it.
+- **Validation evidence:** Among the already verified non-stoppage production
+  shares, 143 of 165 sampled clocks were exactly `API elapsed - 1`, 20 equalled
+  the API minute, and two were one minute ahead. This sample is
+  validator-selected but confirms that minus one is the dominant live shape.
+- **Rollout:** Not deployed.
+
+### FF-057 — parsed clock integers lose boundary-period evidence
+
+- **Observed in the FF-056 audit:** The signed vision design distinguishes a
+  bare running boundary from the prior period's stoppage display. The shipped
+  evaluator instead calls `periodOf(parsedMinute)` after parsing has discarded
+  that provenance. `2H 00:30` becomes integer 45 and is classified H1;
+  compact `45+2` becomes integer 47 and is classified H2. A normal API-46'
+  event also normalizes to clock minute 45, exposing the same ambiguity.
+- **Scope:** This predates FF-056. Removing the normalization clamp makes the
+  boundary case easier to reach but does not create it. Ordinary minutes and
+  the frozen-main-clock plus separate stoppage-subtimer shape remain covered.
+- **Design direction:** Keep the parser simple but return a structured reading
+  containing the absolute minute plus explicit period/stoppage evidence instead
+  of reconstructing period from the integer. Persist all normalized per-frame
+  readings on rejection; the current candidate record keeps only the last
+  legible minute, which prevented exact reconstruction of the Abdelkarim VLM
+  response.
 
 ### FF-055 — live leader flags survive a drawn result
 
