@@ -203,7 +203,7 @@ the current branch.
 | FF-053 | P1 | `validating` | The 1.75 minimum aspect gate discarded four 1.739 Elche candidates before download even though at least three contained legitimate goal footage; the minimum is now 1.73 and deployed in `201cdf1`. | Prove a natural 1.73–1.749 candidate reaches download while the known ≤1.72 letterbox band remains rejected. |
 | FF-054 | P3 | `confirmed` | Zero-caller webhook tables and the outbox cursor remain in the flat schema and durable databases. Removing them during FF-045 would create a second schema-hash migration boundary while FF-041 is still converging. | After durable environments converge on FF-041, drop the three tables through one explicit in-place migration, refresh stale schema comments, update `schema.sql` and its contract test, then flatten the migration file. |
 | FF-055 | P1 | `validating` | API-Football winner flags describe the live leader; nil-guarded updates retained an earlier leader when a match returned to a tie, so completed draws could expose the wrong winner. Score-derived state is deployed and the ten stale draws are repaired. | Verify a natural lead-to-tie update clears both winners through the production API and frontend. |
-| FF-056 | P1 | `implemented` | The Go vision port computed `elapsed + extra - 1` but then clamped normal-time results back to `elapsed`, shifting the intended ±1 clock window one minute late. Abdelkarim's API-30' goal therefore rejected genuine clips whose sampled clock read 28'. | Roll out, then verify a natural API-minus-two sampled buildup frame enters the verified pool without admitting an outside-tolerance API-minus-three frame. |
+| FF-056 | P1 | `validating` | The Go vision port computed `elapsed + extra - 1` but then clamped normal-time results back to `elapsed`, shifting the intended ±1 clock window one minute late. Abdelkarim's API-30' goal therefore rejected genuine clips whose sampled clock read 28'. The unclamped normalization is deployed in `136e2d2`. | Verify a natural API-minus-two sampled buildup frame enters the verified pool without admitting an outside-tolerance API-minus-three frame. |
 | FF-057 | P2 | `confirmed` | Vision's clock parser collapses an observation to one integer before period classification, losing whether a boundary value was bare running time, explicit `2H`/`ET`, or compact stoppage. Correctly normalized boundary goals can therefore be assigned to the wrong period. | Model a parsed clock as structured minute + period/stoppage evidence; cover every 45/90/105 transition and retain per-frame readings for rejected-candidate diagnosis. |
 
 ### FF-056 — normal-time clock normalization was cancelled by a clamp
@@ -224,7 +224,11 @@ the current branch.
   shares, 143 of 165 sampled clocks were exactly `API elapsed - 1`, 20 equalled
   the API minute, and two were one minute ahead. This sample is
   validator-selected but confirms that minus one is the dominant live shape.
-- **Rollout:** Not deployed.
+- **Rollout:** Release `136e2d2` deployed successfully on 2026-08-19 at
+  19:10 UTC. Both workers, the API, and Twitter verified the exact immutable
+  release identity. No database or object-store repair was required; existing
+  completed discovery workflows remain historical, and new validations use the
+  corrected clock center.
 
 ### FF-057 — parsed clock integers lose boundary-period evidence
 
