@@ -277,6 +277,49 @@ func TestEvaluate_ResetPerHalfScorebug(t *testing.T) {
 	}
 }
 
+// TestEvaluate_ExplicitPeriodBoundaryConventions verifies that either
+// parser-supported boundary meaning can match without widening tolerance.
+func TestEvaluate_ExplicitPeriodBoundaryConventions(t *testing.T) {
+	cases := []struct {
+		name      string
+		frame     FrameObservation
+		exp       Expected
+		wantMatch int
+	}{
+		{
+			name:  "continuous second-half boundary",
+			frame: withPeriod(frame(true, false, "45:25", "", ""), PeriodSecondHalf),
+			exp:   Expected{Elapsed: 46}, wantMatch: 45,
+		},
+		{
+			name:  "reset second-half boundary for gordon",
+			frame: withPeriod(frame(true, false, "45:25", "", ""), PeriodSecondHalf),
+			exp:   Expected{Elapsed: 90}, wantMatch: 90,
+		},
+		{
+			name:  "reset second-extra-time boundary",
+			frame: withPeriod(frame(true, false, "15:10", "", ""), PeriodExtraSecond),
+			exp:   Expected{Elapsed: 121}, wantMatch: 120,
+		},
+		{
+			name:  "cumulative second-extra-time boundary",
+			frame: withPeriod(frame(true, false, "15:10", "", ""), PeriodExtraSecond),
+			exp:   Expected{Elapsed: 106}, wantMatch: 105,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ev := Evaluate(rep(c.frame, 3), c.exp, tol)
+			if ev.Outcome != OutcomeVerified || ev.MatchedMinute == nil || *ev.MatchedMinute != c.wantMatch {
+				t.Fatalf("evaluation = %+v, want verified minute %d", ev, c.wantMatch)
+			}
+			if len(ev.ClockReadings) != 3 || len(ev.ClockReadings[0].AlternativeMinutes) != 1 {
+				t.Fatalf("readings = %+v, want persisted boundary alternative", ev.ClockReadings)
+			}
+		})
+	}
+}
+
 func TestEvaluate_PeriodGuard(t *testing.T) {
 	// The halftime boundary is clean on both sides → strict reject of the
 	// wrong half; the ET boundary is ambiguous → soft-keep (unverified).

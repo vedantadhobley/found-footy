@@ -354,6 +354,12 @@ soft-keep rather than verify the same low clock when period evidence is absent.
 Parser tests retain compact-stoppage period provenance. Activity tests pin the
 nullable period schema and normalized readings; WorkflowTestSuite requires all
 three raw observations and readings in a clock reject's `outcome_detail`.
+Exact-boundary cases require `45:25 2H` to verify against either API-46′
+continuous time or API-90′ reset time, and `15:10 ET2` against either ET2
+convention, while retaining the unchanged ±1 tolerance. The candidate-replay
+Postgres integration test proves exact selection, transactional checklist
+registration, prior-verdict preservation, terminal-detail merging, retry
+idempotency, workflow-identity drift rejection, and post-run verification.
 
 FF-032 makes the LLM mock's captured-request buffer concurrency-safe. The
 adapter's concurrency-cap test now exercises parallel handlers without racing

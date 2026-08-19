@@ -286,6 +286,67 @@ Production re-auth procedure:
 `make twitter-vnc-logs` operate on dev only. Never use them for production
 reauth.
 
+## Historical candidate replay
+
+`scripts/replay_clock_rejects` is the narrow FF-057 repair runner. It does not
+reset a completed Temporal history, discover new tweets, or directly create an
+asset. It selects only terminal candidates with the exact clock-mismatch
+reason, preserves their prior verdict, and executes a new deterministic
+EventWorkflow identity through the normal download, validation, deduplication,
+ranking, publication, and cleanup path.
+
+The runner requires `FIXTURE_ID` and `EXPECTED_EVENT_COUNT`, limits each event
+to 50 selected candidates by default, and is dry-run unless
+`REPLAY_APPLY=true`. Its Postgres transaction commits before the Temporal
+start. If the process stops in that gap, rerunning the same command finds the
+existing checklist and resumes the same failed-only identity without resetting
+candidate rows again. Events run sequentially. A successful command verifies
+the checklist, selected count, and zero pending replay rows after each event.
+
+Build the runner from the exact reviewed checkout with the pinned toolchain.
+Building is not a production mutation:
+
+```bash
+mkdir -p /tmp/found-footy-replay
+docker run --rm \
+  -e CGO_ENABLED=0 -e GOCACHE=/gocache -e GOMODCACHE=/gomodcache \
+  -v "$PWD":/src:ro -v /tmp/found-footy-replay:/out \
+  -v "$HOME/.cache/found-footy/gocache":/gocache \
+  -v "$HOME/.cache/found-footy/gomodcache":/gomodcache \
+  -w /src golang:1.25.11-bookworm \
+  go build -buildvcs=false -o /out/replay-clock-rejects \
+  ./scripts/replay_clock_rejects
+```
+
+Plan against production without mutation. Replace both placeholders with the
+reviewed values:
+
+```bash
+docker run --rm --network found-footy-prod --env-file .env \
+  -e FIXTURE_ID=<fixture-id> -e EXPECTED_EVENT_COUNT=<count> \
+  -v /tmp/found-footy-replay/replay-clock-rejects:/replay:ro \
+  golang:1.25.11-bookworm /replay
+```
+
+The plan must print the expected event identities and exact candidate count.
+Stop if any event is absent, has zero selected candidates, or exceeds the
+ceiling. Deploy the evaluator fix before applying its historical repair.
+Applying the plan performs Postgres DML and starts Temporal workflows, so it
+requires separate explicit production approval:
+
+```bash
+docker run --rm --network found-footy-prod --env-file .env \
+  -e FIXTURE_ID=<fixture-id> -e EXPECTED_EVENT_COUNT=<count> \
+  -e REPLAY_APPLY=true \
+  -v /tmp/found-footy-replay/replay-clock-rejects:/replay:ro \
+  golang:1.25.11-bookworm /replay
+```
+
+Keep the command output with the incident. The prior and replacement candidate
+evidence remains in `event_search_candidates.outcome_detail.replay`. Existing
+active shares stay live during replay. See the
+[historical replay decision](./decisions/2026-08-19-historical-candidate-repair-reuses-event-workflow.md).
+
 ## Recovery boundaries
 
 Prefer deterministic self-recovery over an ad-hoc write:
@@ -323,9 +384,10 @@ configured league refreshes. Failed or empty leagues retain their prior rows
 for the next daily retry. If the cache is empty, date-based fixture ingest
 fails closed. Do not bypass that guard with a broad vendor import.
 
-Manual trigger programs under `scripts/` are development and diagnosis tools.
-Some insert checklist rows or start deterministic workflow IDs. Do not point
-them at production as a recovery shortcut.
+Manual trigger programs under `scripts/` are development and diagnosis tools
+unless this runbook names a specific guarded operator procedure. Some insert
+checklist rows or start deterministic workflow IDs. Do not point them at
+production as an unreviewed recovery shortcut.
 
 ## Production rollout and rollback gates
 
