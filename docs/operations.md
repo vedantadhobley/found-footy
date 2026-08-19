@@ -300,7 +300,10 @@ to 50 selected candidates by default, and is dry-run unless
 `REPLAY_APPLY=true`. Its Postgres transaction commits before the Temporal
 start. If the process stops in that gap, rerunning the same command finds the
 existing checklist and resumes the same failed-only identity without resetting
-candidate rows again. Events run sequentially. A successful command verifies
+candidate rows again. It also normalizes the exact two-element JSON array shape
+produced by the initial FF-057 replay when a duplicate terminal outcome carried
+a JSON `null` detail; no other candidate detail is rewritten. Events run
+sequentially. A successful command verifies
 the checklist, selected count, and zero pending replay rows after each event.
 
 Build the runner from the exact reviewed checkout with the pinned toolchain.

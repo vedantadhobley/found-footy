@@ -260,6 +260,9 @@ func (a *Activities) UpsertCandidateOutcome(ctx context.Context, in UpsertCandid
 		detail = in.Detail
 	}
 
+	// pgx encodes a nil []byte for a JSONB parameter as JSON null rather than
+	// SQL NULL. NULLIF handles both representations before replay metadata is
+	// merged; otherwise jsonb concatenation produces [null, {"replay": ...}].
 	tag, err := a.Pool.Exec(callCtx, `
 		INSERT INTO event_search_candidates (
 			event_id, fixture_id, search_attempt, query,
@@ -277,7 +280,7 @@ func (a *Activities) UpsertCandidateOutcome(ctx context.Context, in UpsertCandid
 		    reject_reason = EXCLUDED.reject_reason,
 		    outcome_detail = CASE
 		        WHEN event_search_candidates.outcome_detail ? 'replay'
-		        THEN COALESCE(EXCLUDED.outcome_detail, '{}'::jsonb) ||
+		        THEN COALESCE(NULLIF(EXCLUDED.outcome_detail, 'null'::jsonb), '{}'::jsonb) ||
 		             jsonb_build_object('replay', event_search_candidates.outcome_detail->'replay')
 		        ELSE EXCLUDED.outcome_detail
 		    END,
@@ -286,7 +289,7 @@ func (a *Activities) UpsertCandidateOutcome(ctx context.Context, in UpsertCandid
 		         AND event_search_candidates.reject_reason IS NOT DISTINCT FROM EXCLUDED.reject_reason
 		         AND event_search_candidates.outcome_detail IS NOT DISTINCT FROM CASE
 		             WHEN event_search_candidates.outcome_detail ? 'replay'
-		             THEN COALESCE(EXCLUDED.outcome_detail, '{}'::jsonb) ||
+		             THEN COALESCE(NULLIF(EXCLUDED.outcome_detail, 'null'::jsonb), '{}'::jsonb) ||
 		                  jsonb_build_object('replay', event_search_candidates.outcome_detail->'replay')
 		             ELSE EXCLUDED.outcome_detail
 		         END

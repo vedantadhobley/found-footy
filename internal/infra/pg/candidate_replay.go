@@ -141,9 +141,10 @@ type PrepareCandidateReplayInput struct {
 // means an earlier invocation owns this identity; Completed means its normal
 // EventWorkflow checklist has already closed.
 type PrepareCandidateReplayOutput struct {
-	SelectedCandidates int
-	AlreadyPrepared    bool
-	Completed          bool
+	SelectedCandidates   int
+	NormalizedCandidates int
+	AlreadyPrepared      bool
+	Completed            bool
 }
 
 // PrepareCandidateReplay atomically registers a replay checklist and moves
@@ -229,6 +230,23 @@ func (s *CandidateReplayStore) PrepareCandidateReplay(
 				in.WorkflowID, storedKind, storedReason, storedAttempts,
 			)
 		}
+		// The first FF-057 production run exposed pgx's JSON-null encoding on
+		// nil terminal detail. Normalize only the exact two-element envelope
+		// owned by this replay identity; unrelated JSON arrays remain untouched.
+		tag, err := tx.Exec(ctx, `
+			UPDATE event_search_candidates
+			SET outcome_detail = outcome_detail->1
+			WHERE event_id = $1
+			  AND jsonb_typeof(outcome_detail) = 'array'
+			  AND jsonb_array_length(outcome_detail) = 2
+			  AND outcome_detail->0 = 'null'::jsonb
+			  AND outcome_detail#>>'{1,replay,run_id}' = $2
+			  AND outcome_detail#>>'{1,replay,kind}' = $3
+		`, in.EventID, in.WorkflowID, in.ReplayKind)
+		if err != nil {
+			return out, fmt.Errorf("pg.CandidateReplayStore.Prepare: normalize detail event=%s: %w", in.EventID, err)
+		}
+		out.NormalizedCandidates = int(tag.RowsAffected())
 		if err := tx.Commit(ctx); err != nil {
 			return out, fmt.Errorf("pg.CandidateReplayStore.Prepare: commit existing event=%s: %w", in.EventID, err)
 		}

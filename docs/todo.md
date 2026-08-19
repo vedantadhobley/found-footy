@@ -204,7 +204,7 @@ the current branch.
 | FF-054 | P3 | `confirmed` | Zero-caller webhook tables and the outbox cursor remain in the flat schema and durable databases. Removing them during FF-045 would create a second schema-hash migration boundary while FF-041 is still converging. | After durable environments converge on FF-041, drop the three tables through one explicit in-place migration, refresh stale schema comments, update `schema.sql` and its contract test, then flatten the migration file. |
 | FF-055 | P1 | `validating` | API-Football winner flags describe the live leader; nil-guarded updates retained an earlier leader when a match returned to a tie, so completed draws could expose the wrong winner. Score-derived state is deployed and the ten stale draws are repaired. | Verify a natural lead-to-tie update clears both winners through the production API and frontend. |
 | FF-056 | P1 | `validating` | The Go vision port computed `elapsed + extra - 1` but then clamped normal-time results back to `elapsed`, shifting the intended ±1 clock window one minute late. Abdelkarim's API-30' goal therefore rejected genuine clips whose sampled clock read 28'. The unclamped normalization is deployed in `136e2d2`. | Verify a natural API-minus-two sampled buildup frame enters the verified pool without admitting an outside-tolerance API-minus-three frame. |
-| FF-057 | P1 | `validating` | The VLM schema discarded visible period labels before the integer clock parser ran. A reset-per-half `05:25 2nd` scorebug therefore became first-half minute 5. The deployed period schema fixed ordinary reset clocks; a follow-up now retains both valid meanings of exact `45:xx 2H` / `15:xx ET2` boundary displays and provides an auditable exact-reject replay. | Roll out the boundary follow-up, replay Barcelona–Al Ahly's 104 exact clock rejects across four events, and verify the next natural reset-clock goal. |
+| FF-057 | P1 | `validating` | Period-aware reset clocks and exact `45:xx 2H` / `15:xx ET2` boundary alternatives are deployed. Barcelona–Al Ahly replay event 1/4 surfaced a JSON-null audit-envelope bug after successfully promoting a verified Abdelkarim clip; the runner stopped before events 2–4. The correction and exact self-normalization are implemented and fully gated. | Roll out the JSON-null correction, rerun the same identity to normalize 31 rows, process the remaining 65 candidates, and verify the next natural reset-clock goal. |
 
 ### FF-056 — normal-time clock normalization was cancelled by a clamp
 
@@ -284,8 +284,22 @@ the current branch.
   apply mode—registers a separate deterministic checklist, preserves every
   prior verdict in `outcome_detail.replay`, checkpoints all search attempts,
   and runs the normal EventWorkflow sequentially. The Barcelona fixture plan
-  is four events and 104 candidates; deployment and the production mutation
-  remain pending.
+  is four events and 104 candidates.
+- **First replay result:** Release `72f4f81` deployed at 21:12 UTC. The first
+  replay workflow processed all 39 Abdelkarim candidates: 31 duplicates, one
+  promotion, one intermediate promotion subsequently superseded, and six
+  remaining clock rejects. The surviving verified clip is rank 1 at extracted
+  minute 28 with popularity 30; the two prior unverified shares remain active.
+  The runner then failed its audit-count assertion and did not prepare
+  Raphinha, Zizo, or Gordon.
+- **Replay audit boundary:** A nil terminal detail reached Postgres as JSON
+  `null`, not SQL `NULL`. Concatenating the replay object therefore produced
+  `[null, {"replay": ...}]` for 31 duplicate outcomes. No evidence was lost,
+  but the promised object path was malformed. The terminal UPSERT now treats
+  either null representation as an empty object. Rerunning the same identity
+  normalizes only the exact two-element arrays owned by that workflow before
+  verification; focused and full integration gates pass. This correction is
+  not yet deployed, and events 2–4 remain untouched.
 - **Rollout:** Release `e9c3c54` deployed successfully on 2026-08-19 at 20:21
   UTC. Both workers, the API, and Twitter verified the exact immutable release
   identity. Both workers registered, all three Temporal schedules remained

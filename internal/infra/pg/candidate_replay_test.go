@@ -155,10 +155,41 @@ func TestCandidateReplayStore_PrepareIsAuditableAndIdempotent(t *testing.T) {
 	}
 
 	if err := activities.UpsertCandidateOutcome(ctx, discoveryactivity.UpsertCandidateOutcomeInput{
-		Evidence: evidence[1], Outcome: discoveryactivity.OutcomeRejected,
-		RejectReason: "no clock visible", Detail: json.RawMessage(`{"frame_count":3}`),
+		Evidence: evidence[1], Outcome: discoveryactivity.OutcomeDuplicate,
 	}); err != nil {
 		t.Fatalf("finish second candidate: %v", err)
+	}
+	var (
+		detailType string
+		replayRun  string
+	)
+	if err := pool.QueryRow(ctx, `
+		SELECT jsonb_typeof(outcome_detail), outcome_detail#>>'{replay,run_id}'
+		FROM event_search_candidates
+		WHERE event_id = $1 AND tweet_url = $2
+	`, eventID, evidence[1].TweetURL).Scan(&detailType, &replayRun); err != nil {
+		t.Fatalf("read nil-detail replay outcome: %v", err)
+	}
+	if detailType != "object" || replayRun != workflowID {
+		t.Fatalf("nil-detail replay outcome type=%q run=%q", detailType, replayRun)
+	}
+
+	// Simulate the malformed shape produced before JSON null was distinguished
+	// from SQL NULL. Retrying the same repair identity normalizes only its own
+	// two-element [null, replay-object] envelope.
+	if _, err := pool.Exec(ctx, `
+		UPDATE event_search_candidates
+		SET outcome_detail = jsonb_build_array('null'::jsonb, outcome_detail)
+		WHERE event_id = $1 AND tweet_url = $2
+	`, eventID, evidence[1].TweetURL); err != nil {
+		t.Fatalf("seed legacy replay detail: %v", err)
+	}
+	normalized, err := store.PrepareCandidateReplay(ctx, prepareInput)
+	if err != nil {
+		t.Fatalf("normalize PrepareCandidateReplay: %v", err)
+	}
+	if !normalized.AlreadyPrepared || normalized.NormalizedCandidates != 1 {
+		t.Fatalf("normalized = %+v", normalized)
 	}
 	if _, err := pool.Exec(ctx, `
 		UPDATE event_downstream_workflows
