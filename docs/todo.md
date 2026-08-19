@@ -204,7 +204,7 @@ the current branch.
 | FF-054 | P3 | `confirmed` | Zero-caller webhook tables and the outbox cursor remain in the flat schema and durable databases. Removing them during FF-045 would create a second schema-hash migration boundary while FF-041 is still converging. | After durable environments converge on FF-041, drop the three tables through one explicit in-place migration, refresh stale schema comments, update `schema.sql` and its contract test, then flatten the migration file. |
 | FF-055 | P1 | `validating` | API-Football winner flags describe the live leader; nil-guarded updates retained an earlier leader when a match returned to a tie, so completed draws could expose the wrong winner. Score-derived state is deployed and the ten stale draws are repaired. | Verify a natural lead-to-tie update clears both winners through the production API and frontend. |
 | FF-056 | P1 | `validating` | The Go vision port computed `elapsed + extra - 1` but then clamped normal-time results back to `elapsed`, shifting the intended ±1 clock window one minute late. Abdelkarim's API-30' goal therefore rejected genuine clips whose sampled clock read 28'. The unclamped normalization is deployed in `136e2d2`. | Verify a natural API-minus-two sampled buildup frame enters the verified pool without admitting an outside-tolerance API-minus-three frame. |
-| FF-057 | P1 | `validating` | Period-aware reset clocks and exact `45:xx 2H` / `15:xx ET2` boundary alternatives are deployed. Barcelona–Al Ahly replay event 1/4 surfaced a JSON-null audit-envelope bug after successfully promoting a verified Abdelkarim clip; the runner stopped before events 2–4. The correction and exact self-normalization are implemented and fully gated. | Roll out the JSON-null correction, rerun the same identity to normalize 31 rows, process the remaining 65 candidates, and verify the next natural reset-clock goal. |
+| FF-057 | P1 | `validating` | Period-aware reset clocks and exact `45:xx 2H` / `15:xx ET2` boundary alternatives are deployed. The corrected historical replay completed all 104 Barcelona–Al Ahly clock rejects across four events, normalized the 31 malformed audit envelopes from the interrupted first run, closed all four checklists, and left zero pending rows. | Verify the next natural reset-clock goal; the deterministic repair and its production exercise are complete. |
 
 ### FF-056 — normal-time clock normalization was cancelled by a clamp
 
@@ -298,8 +298,19 @@ the current branch.
   but the promised object path was malformed. The terminal UPSERT now treats
   either null representation as an empty object. Rerunning the same identity
   normalizes only the exact two-element arrays owned by that workflow before
-  verification; focused and full integration gates pass. This correction is
-  not yet deployed, and events 2–4 remain untouched.
+  verification; focused and full integration gates pass.
+- **Completed repair:** Release `70fca8f` deployed at 21:27 UTC with its exact
+  identity verified in both workers, the API, and Twitter. The resumed run
+  normalized exactly 31 Abdelkarim envelopes, verified the completed 39-row
+  identity, and processed the remaining 15 Raphinha, 18 Zizo, and 32 Gordon
+  candidates sequentially. All four checklists closed as `assets_surfaced`;
+  the persisted replay counts are `39/15/18/32`, with zero pending candidates
+  and zero malformed arrays. Active shares now number `3/4/3/6` respectively;
+  verified rank-one clips exist for Abdelkarim, Zizo, and Gordon, while
+  Raphinha retains two verified clips at ranks one and two. The workflows
+  emitted every promotion through the normal publication activity, logged no
+  warnings or errors, and created no Firefox fleet container. Natural
+  production validation remains required before closure.
 - **Rollout:** Release `e9c3c54` deployed successfully on 2026-08-19 at 20:21
   UTC. Both workers, the API, and Twitter verified the exact immutable release
   identity. Both workers registered, all three Temporal schedules remained

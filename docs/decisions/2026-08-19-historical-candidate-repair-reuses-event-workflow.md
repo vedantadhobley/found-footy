@@ -62,3 +62,20 @@ separate explicit production mutation from deploying corrected worker code.
 The as-built behavior is recorded in the
 [event orchestration ledger](../orchestration/event.md) and the operator
 procedure is in the [operations runbook](../operations.md#historical-candidate-replay).
+
+## Production exercise
+
+The Barcelona–Al Ahly repair selected 104 exact clock rejects across four
+events. Its first process completed the 39-candidate Abdelkarim workflow, then
+stopped when verification exposed 31 legacy `[null, {"replay": ...}]`
+envelopes. It did not prepare the other three events.
+
+After the null-safe merge and exact self-normalization shipped in `70fca8f`,
+rerunning the same command normalized those 31 rows, verified the completed
+identity, and processed the remaining `15/18/32` candidates sequentially. All
+four checklists completed as `assets_surfaced`; the final database audit found
+the exact `39/15/18/32` replay counts, zero pending rows, and zero malformed
+arrays. The run left no Firefox fleet container and emitted no worker warning
+or error. This exercises the decision's crash-resume and evidence-preservation
+contracts against production state; natural live validation still governs
+FF-057 closure.
