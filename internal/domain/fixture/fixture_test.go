@@ -398,16 +398,65 @@ func TestUpdateFromPoll_IncoherentTerminal_ResetsCompletionCounter(t *testing.T)
 	}
 }
 
-func TestUpdateWinners_NilInputsPreserveExisting(t *testing.T) {
-	f := makeStaging()
-	trueBool := true
-	f.HomeWinner = &trueBool
-
-	// Passing nil should not clear the existing winner.
-	f.UpdateWinners(nil, nil)
-	if f.HomeWinner == nil || *f.HomeWinner != true {
-		t.Errorf("nil-input UpdateWinners cleared HomeWinner: got %v", f.HomeWinner)
+func TestUpdateResult_DerivesPlayedWinnerFromScore(t *testing.T) {
+	tests := []struct {
+		name                 string
+		homeScore, awayScore *int
+		wantHome, wantAway   *bool
+	}{
+		{name: "home leads", homeScore: intPointer(2), awayScore: intPointer(1), wantHome: boolPointer(true), wantAway: boolPointer(false)},
+		{name: "away leads", homeScore: intPointer(0), awayScore: intPointer(1), wantHome: boolPointer(false), wantAway: boolPointer(true)},
+		{name: "tie clears stale leader", homeScore: intPointer(1), awayScore: intPointer(1)},
+		{name: "missing score has no winner", homeScore: nil, awayScore: intPointer(1)},
 	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := makeStaging()
+			f.APIStatus = fixture.APIStatus{Short: apifootball.StatusSecondHalf}
+			f.HomeScore, f.AwayScore = tt.homeScore, tt.awayScore
+			f.HomeWinner, f.AwayWinner = boolPointer(true), boolPointer(false)
+
+			// Contradictory provider flags must not override a played score.
+			f.UpdateResult(boolPointer(false), boolPointer(true))
+			assertBoolPointer(t, "home winner", f.HomeWinner, tt.wantHome)
+			assertBoolPointer(t, "away winner", f.AwayWinner, tt.wantAway)
+		})
+	}
+}
+
+func TestUpdateResult_PenaltyAndExceptionalOutcomes(t *testing.T) {
+	t.Run("penalty winner comes from shootout", func(t *testing.T) {
+		f := makeStaging()
+		f.APIStatus = fixture.APIStatus{Short: apifootball.StatusPenaltyDone}
+		f.HomeScore, f.AwayScore = intPointer(1), intPointer(1)
+		f.HomePenalty, f.AwayPenalty = intPointer(5), intPointer(4)
+		f.UpdateResult(nil, nil)
+		assertBoolPointer(t, "home winner", f.HomeWinner, boolPointer(true))
+		assertBoolPointer(t, "away winner", f.AwayWinner, boolPointer(false))
+	})
+
+	t.Run("tied penalty has no winner", func(t *testing.T) {
+		f := makeStaging()
+		f.APIStatus = fixture.APIStatus{Short: apifootball.StatusPenaltyDone}
+		f.HomePenalty, f.AwayPenalty = intPointer(4), intPointer(4)
+		f.UpdateResult(boolPointer(true), boolPointer(false))
+		assertBoolPointer(t, "home winner", f.HomeWinner, nil)
+		assertBoolPointer(t, "away winner", f.AwayWinner, nil)
+	})
+
+	t.Run("exceptional result uses exact provider flags", func(t *testing.T) {
+		f := makeStaging()
+		f.APIStatus = fixture.APIStatus{Short: apifootball.StatusWalkover}
+		f.HomeScore, f.AwayScore = intPointer(0), intPointer(3)
+		f.UpdateResult(boolPointer(true), boolPointer(false))
+		assertBoolPointer(t, "home winner", f.HomeWinner, boolPointer(true))
+		assertBoolPointer(t, "away winner", f.AwayWinner, boolPointer(false))
+
+		f.UpdateResult(nil, nil)
+		assertBoolPointer(t, "cleared home winner", f.HomeWinner, nil)
+		assertBoolPointer(t, "cleared away winner", f.AwayWinner, nil)
+	})
 }
 
 // Invariant validator ---------------------------------------------
@@ -429,9 +478,8 @@ func TestValidateInvariants_CatchesInconsistentTimestamps(t *testing.T) {
 	}
 }
 
-// TestUpdatePenalty — the shootout result is captured when the vendor reports
-// it, and a later nil poll never clears an already-captured result (nil-guard,
-// mirroring UpdateWinners).
+// TestUpdatePenalty verifies that shootout state mirrors the current provider
+// response, including clearing stale values when the response omits them.
 func TestUpdatePenalty(t *testing.T) {
 	f := makeStaging()
 	if f.HomePenalty != nil || f.AwayPenalty != nil {
@@ -442,9 +490,29 @@ func TestUpdatePenalty(t *testing.T) {
 	if f.HomePenalty == nil || *f.HomePenalty != 5 || f.AwayPenalty == nil || *f.AwayPenalty != 6 {
 		t.Fatalf("after capture = %v/%v, want 5/6", f.HomePenalty, f.AwayPenalty)
 	}
-	// A subsequent nil/nil poll must NOT clear the captured shootout.
+	// A subsequent nil/nil poll clears the captured shootout.
 	f.UpdatePenalty(nil, nil)
-	if f.HomePenalty == nil || *f.HomePenalty != 5 || f.AwayPenalty == nil || *f.AwayPenalty != 6 {
-		t.Errorf("nil poll cleared penalty: %v/%v", f.HomePenalty, f.AwayPenalty)
+	if f.HomePenalty != nil || f.AwayPenalty != nil {
+		t.Errorf("nil poll left stale penalty: %v/%v", f.HomePenalty, f.AwayPenalty)
+	}
+}
+
+// intPointer constructs a score pointer for result-state tables.
+func intPointer(value int) *int { return &value }
+
+// boolPointer constructs a winner pointer for result-state tables.
+func boolPointer(value bool) *bool { return &value }
+
+// assertBoolPointer compares nullable winner values by presence and value.
+func assertBoolPointer(t *testing.T, name string, got, want *bool) {
+	t.Helper()
+	if got == nil || want == nil {
+		if got != nil || want != nil {
+			t.Fatalf("%s = %v, want %v", name, got, want)
+		}
+		return
+	}
+	if *got != *want {
+		t.Fatalf("%s = %v, want %v", name, *got, *want)
 	}
 }

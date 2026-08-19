@@ -142,11 +142,11 @@ type Fixture struct {
 	// — only the shootout number is load-bearing (knockout "who won on pens").
 	HomePenalty *int
 	AwayPenalty *int
-	// Winner data from api teams.home.winner / teams.away.winner.
-	// Vendor sets these to true/false when the result is decided —
-	// usually simultaneously with terminal status, sometimes slightly
-	// earlier. These are result/display facts; they do not bypass the
-	// coherent 3-poll completion counter.
+	// Winner/leader display state. Ordinary play derives this pair from the
+	// current score; a tied or unavailable score is nil/nil. PEN derives it
+	// from the shootout score. Exceptional terminal outcomes use the provider's
+	// explicit result because their aggregate score is not authoritative. These
+	// fields never bypass the coherent 3-poll completion counter.
 	HomeWinner *bool
 	AwayWinner *bool
 

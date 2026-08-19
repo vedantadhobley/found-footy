@@ -63,6 +63,7 @@ type Repo interface {
 	//      (no downstream workflows still writing)
 	//   5. For played terminal statuses, the stored surviving goal inventory
 	//      still matches the reported score exactly per team
+	//   6. PEN additionally has a present, non-tied stored shootout score
 	//
 	// Returns ErrNotFound if the fixture id doesn't exist. Cheap by
 	// design (partial index on event_downstream_workflows_pending +

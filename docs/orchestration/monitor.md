@@ -76,15 +76,26 @@ only when the current response contains exact per-team scoring-event parity
 with its reported score; any non-terminal, nil-score, or inconsistent played
 response resets it to zero. `CANC`, `ABD`, `WO`, and `AWD` advance on terminal
 status alone because they do not promise a played-match event inventory.
-Winner flags remain stored result/display facts and cannot bypass the three
-votes.
+`PEN` additionally requires a present, non-tied penalty score. Winner state is
+result/display data and cannot bypass the three votes.
+
+**Score-derived result state (FF-055).** API-Football's `teams.*.winner`
+fields identify the current live leader, not only the final result. Normal and
+`AET` reconcile therefore derive the nullable winner pair from the aggregate
+score; a tie or incomplete score clears both fields. Terminal `PEN` derives it
+from `score.penalty`. Exceptional `CANC`, `ABD`, `WO`, and `AWD` responses use
+the provider's exact nullable flags because their aggregate scores are not
+authoritative. Ingest applies the same domain operation, so daily refresh and
+live poll cannot disagree. See the
+[decision record](../decisions/2026-08-19-winner-state-is-derived-from-canonical-scores.md).
 
 After the counter reaches three, `FixtureReadyToComplete` independently
 requires exact parity with surviving stored goals, no known event still below
-its trigger, and no incomplete `event_downstream_workflows` row. Unknown-scorer
-goal placeholders count for score parity but do not block the event-settled
-predicate; red cards, missed penalties, and shootout events do not count toward
-the match score. See the
+its trigger, and no incomplete `event_downstream_workflows` row. `PEN` again
+requires a present, non-tied stored shootout score so the provider vote and
+durable gate cannot disagree. Unknown-scorer goal placeholders count for score
+parity but do not block the event-settled predicate; red cards, missed
+penalties, and shootout events do not count toward the match score. See the
 [decision record](../decisions/2026-08-16-score-backed-goal-removal.md).
 
 **Per-event Firefox fleet lifecycle (#160, gated on `FleetEnabled`; live in prod).**

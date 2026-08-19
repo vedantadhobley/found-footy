@@ -67,6 +67,12 @@ stored goal remains held, while a coherent one-minute correction must update
 the original key. The Postgres integration test requires the identity-history
 query to return both active and removed rows.
 
+FF-055 domain tables cover score-derived home, away, tied, incomplete,
+shootout, and exceptional winner states. The monitor regression starts with a
+stored 1–0 leader and requires a later 1–1 response to clear both winner fields
+and emit a structural update. Provider-vote and Postgres completion truth
+tables independently reject `PEN` without a present, non-tied shootout score.
+
 FF-028 API tests require the default five-minute presign to produce a
 four-minute redirect cache, longer presigns to retain the five-minute cap, and
 short or unset lifetimes to disable redirect caching. The handler-level test

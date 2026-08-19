@@ -12,8 +12,9 @@ import (
 // only domain goals: open-play missed penalties and shootout events do not
 // contribute to the match score represented by APIFixture.Goals.
 type scoreEventInventory struct {
-	reportedScore map[int]*int
-	presentGoals  map[int]int
+	reportedScore   map[int]*int
+	reportedPenalty map[int]*int
+	presentGoals    map[int]int
 }
 
 // newScoreEventInventory derives one immutable reconciliation view from a
@@ -24,6 +25,10 @@ func newScoreEventInventory(f apifootball.APIFixture) scoreEventInventory {
 		reportedScore: map[int]*int{
 			f.Teams.Home.ID: f.Goals.Home,
 			f.Teams.Away.ID: f.Goals.Away,
+		},
+		reportedPenalty: map[int]*int{
+			f.Teams.Home.ID: f.Score.Penalty.Home,
+			f.Teams.Away.ID: f.Score.Penalty.Away,
 		},
 		presentGoals: make(map[int]int, 2),
 	}
@@ -76,7 +81,20 @@ func (i scoreEventInventory) completionVote(
 		for _, goals := range i.presentGoals {
 			presentTotal += goals
 		}
-		return presentTotal == *homeScore+*awayScore
+		if presentTotal != *homeScore+*awayScore {
+			return false
+		}
+
+		// A PEN result is not coherent until the provider reports a decided
+		// shootout. The match score is necessarily tied and cannot identify the
+		// winner on its own.
+		if status == apifootball.StatusPenaltyDone {
+			homePenalty, homeKnown := i.reportedPenalty[homeTeamID]
+			awayPenalty, awayKnown := i.reportedPenalty[awayTeamID]
+			return homeKnown && awayKnown && homePenalty != nil && awayPenalty != nil &&
+				*homePenalty != *awayPenalty
+		}
+		return true
 
 	case apifootball.StatusCancelled,
 		apifootball.StatusAbandoned,

@@ -14,9 +14,9 @@ import (
 )
 
 // sideDTO is one side of a fixture (home/away): identity + result. Score and
-// winner are pointers — null until the vendor reports them (pre-kickoff /
-// pre-decision), emitted explicitly (no omitempty) so the frontend can tell
-// "0-0" from "not started".
+// winner are pointers. Winner is derived from the current match score (or a
+// terminal shootout), so it is null before scoring data or while tied. Both are
+// emitted explicitly so the frontend can tell "0-0" from "not started".
 type sideDTO struct {
 	ID     int    `json:"id"`
 	Name   string `json:"name"`

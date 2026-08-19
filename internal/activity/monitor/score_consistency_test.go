@@ -30,7 +30,6 @@ func TestScoreEventInventoryRequiresMissingGoal(t *testing.T) {
 			Events: events,
 		}
 	}
-
 	shootout := goal(apifootball.DetailPenalty, 40)
 	shootout.Comments = strp("Penalty Shootout")
 
@@ -123,6 +122,10 @@ func TestScoreEventInventoryCompletionVote(t *testing.T) {
 			Events: events,
 		}
 	}
+	penalty := func(f apifootball.APIFixture, home, away *int) apifootball.APIFixture {
+		f.Score.Penalty = apifootball.APIFixtureScoreLine{Home: home, Away: away}
+		return f
+	}
 
 	tests := []struct {
 		name    string
@@ -146,6 +149,24 @@ func TestScoreEventInventoryCompletionVote(t *testing.T) {
 			name:    "played result has an extra goal",
 			status:  apifootball.StatusAfterExtra,
 			fixture: base(intp(0), intp(0), goal(40)),
+			want:    false,
+		},
+		{
+			name:    "shootout result exactly matches and is decided",
+			status:  apifootball.StatusPenaltyDone,
+			fixture: penalty(base(intp(1), intp(1), goal(40), goal(42)), intp(5), intp(4)),
+			want:    true,
+		},
+		{
+			name:    "shootout result missing penalties",
+			status:  apifootball.StatusPenaltyDone,
+			fixture: base(intp(1), intp(1), goal(40), goal(42)),
+			want:    false,
+		},
+		{
+			name:    "shootout result has tied penalties",
+			status:  apifootball.StatusPenaltyDone,
+			fixture: penalty(base(intp(1), intp(1), goal(40), goal(42)), intp(4), intp(4)),
 			want:    false,
 		},
 		{

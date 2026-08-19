@@ -148,7 +148,8 @@ structurally.
 ### fixture domain (D1)
 
 Core type `fixture.Fixture` with `State` (staging/active/completed),
-API-mirror fields (`APIStatus`, `APIElapsed`, `APIExtra`, scores), and
+API-mirror fields (`APIStatus`, `APIElapsed`, `APIExtra`, scores), derived
+nullable winner state, and
 domain-managed timestamps (`ActivatedAt`, `CompletedAt`,
 `LastActivityAt`, `LastPolledAt`).
 
@@ -156,8 +157,13 @@ State transitions:
 - `Activate(at) → active` (sets ActivatedAt, LastActivityAt)
 - `Complete(at) → completed` (sets CompletedAt, LastActivityAt)
 - `Reschedule(newKickoff, at) → staging` (clears ActivatedAt; for PST/moved fixtures)
-- `UpdateFromPoll(status, elapsed, extra, scores, at)` — refreshes
-  API-mirror fields + LastPolledAt without changing state
+- `UpdateFromPoll(status, elapsed, extra, scores, completionVote, at)` —
+  refreshes API-mirror fields, LastPolledAt, and the completion counter without
+  changing state
+- `UpdatePenalty(home, away)` — exactly mirrors nullable shootout state
+- `UpdateResult(providerHome, providerAway)` — derives ordinary/AET winners
+  from score and PEN winners from the shootout; exceptional terminal outcomes
+  retain exact provider flags ([FF-055 decision](decisions/2026-08-19-winner-state-is-derived-from-canonical-scores.md))
 
 Predicates: `ShouldActivateNow(now, window)` — used by both the ingest
 activity (at-upsert-time activation for imminent kickoffs) and the
@@ -167,7 +173,8 @@ Repo methods shipped in `internal/infra/pg/fixture_repo.go`:
 `Get`, `Upsert`, `ListByState`, `ListActiveIDs` (cheap ID-only
 projection for ActivePollWorkflow's batched API call),
 `ListStagingBeforeKickoff`, `FixtureReadyToComplete` (the completion-contract
-evaluator, including played-result score/stored-goal parity; see the
+evaluator, including played-result score/stored-goal parity and a decided
+shootout requirement for `PEN`; see the
 [FF-014 decision](decisions/2026-08-16-score-backed-goal-removal.md)),
 and the two-part retention pair (#176): `PruneCompleted` (hard-delete clipless
 aged fixtures) + `ListReclaimableEventIDs` (events of clip-bearing aged fixtures

@@ -10,16 +10,23 @@ below for the current deltas from this text.
 > goal while the score still requires it, and the final gate independently
 > requires reported-score/surviving-goal parity.
 
+> **FF-055 correction implemented 2026-08-19:** provider winner flags describe
+> the current live leader. Played winner state now derives from aggregate score
+> (or terminal shootout score), and `PEN` completion requires a present,
+> non-tied penalty result.
+
 > **⚠ AS-BUILT NOTES (2026-08-06).** The machinery below shipped and is live —
 > `event_downstream_workflows`, `completion_counter`, the single-query check
 > (`FixtureReadyToComplete` in `internal/infra/pg/fixture_repo.go` /
 > [`schema.sql`](../../../internal/infra/pg/schema.sql)), and the
 > `ReconcileFixture` call (see the [monitoring ledger](../../orchestration/monitor.md)).
 > Current deltas from the original proposal:
-> - **Winner data is wired for result display, not completion.**
->   `ReconcileFixture` calls `Fixture.UpdateWinners` from every active poll, but
->   FF-014 removes the winner-data bypass: every fixture requires three
->   coherent terminal votes.
+> - **Winner state is score-derived display data, not completion evidence.**
+>   `ReconcileFixture` calls `Fixture.UpdateResult` after refreshing aggregate
+>   and penalty scores. Normal/AET results derive from aggregate score, PEN
+>   derives from the shootout, and exceptional terminal statuses retain exact
+>   provider flags. FF-014 removes the winner-data bypass: every fixture
+>   requires three coherent terminal votes.
 > - **`RecordPollForCompletion` never existed under that name.** The 3-poll
 >   counter logic shipped as the unexported `updateCompletionCounter()`, called
 >   by `UpdateFromPoll`.
@@ -33,6 +40,8 @@ below for the current deltas from this text.
 >   final gate requires exact per-team equality between the reported score and
 >   surviving stored goals. Exceptional terminal statuses vote on terminal
 >   status alone.
+> - **`PEN` requires a decided shootout (FF-055).** Both the same-response vote
+>   and final durable gate require non-null, non-tied penalty scores.
 
 **Cross-refs:**
 - Plan intent — [`../../rebuild-plan.md`](../rebuild-plan.md) §8 (fixture state machine), §5 (workflow coordination)
@@ -40,6 +49,7 @@ below for the current deltas from this text.
 - Prior decisions — [`../../decisions.md`](../../decisions.md):
   - 2026-07-11 workflow split (ActivePoll + StagingPoll)
   - 2026-07-07 symmetric-counter debounce
+- Current result semantics — [winner state is derived from canonical scores](../../decisions/2026-08-19-winner-state-is-derived-from-canonical-scores.md)
 - Related workflow-audit item — [`workflow-audit-2026-07-09.md`](../audits/workflow-audit-2026-07-09.md) P0 #2 (fixture completion detection)
 - Working discipline — [`../../../AGENTS.md § Working discipline`](../../../AGENTS.md#working-discipline-mandatory-since-2026-07-07-retro)
 
@@ -102,6 +112,8 @@ A fixture is **ready to complete** when all of the following hold:
    reported score equals its count of surviving stored goal events. `CANC`,
    `ABD`, `WO`, and `AWD` bypass parity because they may not represent a played
    result.
+6. **Shootout result decided** — `PEN` additionally requires both penalty
+   scores and they must differ. `FT` and `AET` do not require penalty fields.
 
 ### The pluggable checklist — `event_downstream_workflows`
 
@@ -157,6 +169,8 @@ Symmetric to the debounce counter on events:
 - Reset to 0 when API status is not Terminal.
 - For played results, reset to 0 when the terminal response's score and
   scoring-event array disagree or either score is nil.
+- For `PEN`, also reset to 0 while either penalty score is nil or the shootout
+  remains tied.
 - Increment (capped at 3) on a coherent Terminal response.
 - Fixture is eligible for state transition only when the counter reaches 3.
 
@@ -182,9 +196,11 @@ func (f *Fixture) HasDecidedWinner() bool {
 (New nullable-bool fields on the fixture row, populated from the API
 poll's `teams.home.winner` / `teams.away.winner`.)
 
-This was implemented after the original proposal, then removed by FF-014. The
-winner fields remain populated for consumers, but completion eligibility is
-always `completion_counter >= 3`.
+This was implemented after the original proposal, then removed by FF-014.
+FF-055 later established that these provider fields describe the live leader,
+not a final-only result. The stored winner pair now derives from match score or
+shootout score for played fixtures; exceptional results retain the provider
+flags. Completion eligibility remains `completion_counter >= 3` regardless.
 
 ### The full completion check as one query
 
@@ -198,6 +214,14 @@ SELECT
             f.api_status_short IN ('ft','aet','pen')
             AND f.home_score IS NOT NULL
             AND f.away_score IS NOT NULL
+            AND (
+                f.api_status_short <> 'pen'
+                OR (
+                    f.home_penalty IS NOT NULL
+                    AND f.away_penalty IS NOT NULL
+                    AND f.home_penalty <> f.away_penalty
+                )
+            )
             AND f.home_score = (
                 SELECT COUNT(*) FROM events score_home
                 WHERE score_home.fixture_id = f.id

@@ -175,6 +175,45 @@ func TestFixtureRepo_FixtureReadyToComplete_TruthTable(t *testing.T) {
 	}
 }
 
+// TestFixtureRepo_FixtureReadyToComplete_PenaltyRequiresDecision proves that a
+// PEN status cannot complete on the tied match score alone. The shootout must
+// be present and non-tied in storage.
+func TestFixtureRepo_FixtureReadyToComplete_PenaltyRequiresDecision(t *testing.T) {
+	ctx, _, repo := setupRepo(t)
+	base := time.Date(2026, 8, 19, 15, 0, 0, 0, time.UTC)
+	f := makeStaging(9102, base)
+	if err := f.Activate(base); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	zero := 0
+	f.HomeScore, f.AwayScore = &zero, &zero
+	f.APIStatus = fixture.APIStatus{Short: "pen", Long: "Match Finished After Penalties"}
+	f.CompletionCounter = 3
+
+	assertReady := func(name string, want bool) {
+		t.Helper()
+		if err := repo.Upsert(ctx, f); err != nil {
+			t.Fatalf("%s: upsert: %v", name, err)
+		}
+		got, err := repo.FixtureReadyToComplete(ctx, f.ID)
+		if err != nil {
+			t.Fatalf("%s: ready: %v", name, err)
+		}
+		if got != want {
+			t.Fatalf("%s: ready = %v, want %v", name, got, want)
+		}
+	}
+
+	assertReady("missing shootout", false)
+	f.UpdatePenalty(intPointer(4), intPointer(4))
+	assertReady("tied shootout", false)
+	f.UpdatePenalty(intPointer(5), intPointer(4))
+	assertReady("decided shootout", true)
+}
+
+// intPointer constructs a nullable score value for completion truth tables.
+func intPointer(value int) *int { return &value }
+
 // TestFixtureRepo_FixtureReadyToComplete_NotFound
 func TestFixtureRepo_FixtureReadyToComplete_NotFound(t *testing.T) {
 	ctx, _, repo := setupRepo(t)
