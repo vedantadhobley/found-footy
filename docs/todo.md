@@ -49,16 +49,21 @@ the current branch.
 
 ## Confirmed issues
 
-### FF-003 — unverified candidate can be attributed to the wrong event
+### FF-003 — candidate can pass without exact-event semantic evidence
 
 - **Status:** `confirmed`
 - **Severity:** P1
-- **Observed:** 2026-08-16, Lens–PSG fixture `1546791`.
-- **Invariant:** An unverified candidate should not be attributed to an event
-  solely because a broad team term matched when stronger available evidence
-  identifies another event. The same tweet or video may legitimately represent
-  multiple events; cross-event reuse is not itself a defect.
-- **Evidence:** Tweet `https://x.com/FH4A/status/2089071008082784644`
+- **Observed:** Lens–PSG fixture `1546791` on 2026-08-16,
+  Barcelona–Al Ahly fixture `1604797` on 2026-08-19, and Atletico
+  Madrid–Malaga fixture `1570334` on 2026-08-19.
+- **Invariant:** A candidate should not surface as footage of an exact event
+  solely because a broad team/player term, generic football imagery, or a
+  matching scorebug clock passed independently. Stronger evidence that the
+  media depicts another event, an edited substitution, or a non-match meme
+  must prevent exact-event attribution. The same genuine clip may legitimately
+  represent multiple events; cross-event reuse is not itself a defect.
+- **Cross-event evidence:** Tweet
+  `https://x.com/FH4A/status/2089071008082784644`
   (`md5=059e019aafd963d208782d35e8d1eb12`, 11.9 seconds) was promoted as
   unverified for both Thauvin's 32′ goal and Antonio's 39′ red card. Its Arabic
   text explicitly describes Antonio's red card. It appeared immediately after
@@ -66,27 +71,53 @@ the current branch.
   Thauvin's older `(thauvin OR Lens)` workflow found it on attempt 8 through
   the generic `#lens` match. With no readable broadcast clock, both workflows
   accepted it as unverified.
+- **Edited-event evidence:** Gordon's missed-penalty event
+  `51fcd0ba-fe31-4164-bd7d-676149341652` promoted tweet
+  `https://x.com/ThomX77/status/2090170818001018909` as share
+  `s_531b03a142e9`. It is rank 1, clock-verified at 90′, and has popularity 20.
+  User visual review found that the clip is a meme which edits Gabriel's
+  Champions League penalty miss over Gordon's miss. The clock gate and generic
+  football gate therefore behaved as specified, but the sampled evidence did
+  not establish that the depicted kick was Gordon's event.
+- **Non-event meme evidence:** Lee Kang-in's 70′ goal event
+  `8f04ffe7-9207-4727-b093-98cf3013c6f4` promoted tweet
+  `https://x.com/neferlipa/status/2090176941257044133` as share
+  `s_1a6954f47c3e`. It is rank 2, unverified, and has popularity 7. Its text
+  strongly names Kang-in, but user visual review found a K-pop artist dancing
+  in an Atletico shirt rather than goal footage. Rank 1 remains the legitimate
+  clock-verified goal, so this is a secondary-result precision failure rather
+  than total event coverage loss.
 - **Cause:** Search intentionally permits team-only matches for recall. The
   video validator receives frames plus the expected minute, but not the stored
   tweet text, and it classifies football/screen/clock rather than semantic
-  relevance to the event's player and type. Independent per-event workflows
-  therefore have no evidence-resolution step when the clock is absent.
+  relevance or authenticity for the event's player and action. Independent
+  per-event workflows therefore have no evidence-resolution step when the
+  clock is absent. A matching clock is also only timestamp evidence: the fixed
+  three-frame sample can validate a genuine wrapper while missing an inserted
+  scene, and the pipeline has no edit/scene-consistency check.
 - **Constraints:** Keep event-scoped perceptual dedup; fixture-scoped exact or
   fuzzy uniqueness would incorrectly reject a goal-plus-card sequence,
   compilation, or another genuine multi-event clip. Do not implement
-  first-claim-wins ownership.
+  first-claim-wins ownership. Do not hard-reject on meme keywords or tweet text
+  alone; ordinary football posts use jokes, edits, and unrelated references.
 - **Design directions:** Evaluate search-query precision separately from
   downstream validation. Pass tweet text and event context alongside video
   frames to multimodal validation; combine explicit player/event-type mentions,
-  clock evidence, tweet-time proximity, and visual event semantics. Multiple
-  event assignments must remain valid when evidence supports them; ambiguous
-  candidates need an explicit confidence/fallback policy rather than forced
-  exclusive ownership. Preserve this Lens sample as a two-event regression.
+  clock evidence, tweet-time proximity, scorebug/team evidence, and visual
+  action semantics. Investigate scene-change-aware temporal coverage so one
+  verified wrapper frame cannot authenticate an unsampled edit. Keep
+  `timestamp_verified` scoped to its literal meaning; a matched clock must not
+  imply exact-event authenticity or dominate ranking without a separate
+  semantic result. Multiple event assignments must remain valid when evidence
+  supports them; ambiguous candidates need an explicit confidence/fallback
+  policy rather than forced exclusive ownership. Preserve the Lens, Gordon,
+  and Lee Kang-in assets as three distinct regression classes.
 - **Rollout:** Design work only; this did not block the 2026-08-17 correctness
   and lifecycle release.
 - **Source relation:** Cross-event dedup was discussed and rejected on
-  2026-07-25. The audits did not identify this team-only search plus
-  no-clock-validation path.
+  2026-07-25. The 2026-08-17 audit preserves FF-003's architectural evidence;
+  the two 2026-08-19 meme samples expand its scope from no-clock attribution
+  to exact-event authenticity, including a candidate with a matched clock.
 
 ### FF-004 — Lens clips evade perceptual dedup
 
