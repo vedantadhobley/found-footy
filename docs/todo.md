@@ -202,7 +202,7 @@ the current branch.
 | FF-052 | P1 | `confirmed` | Vision accepted a phone filming a display as a clean Elche broadcast with `screen=false` on all three sampled frames. | Preserve the clip as a regression sample, calibrate the prompt/model against varied display recordings, and prove rejection without increasing clean-broadcast false positives. |
 | FF-053 | P1 | `validating` | The 1.75 minimum aspect gate discarded four 1.739 Elche candidates before download even though at least three contained legitimate goal footage; the minimum is now 1.73 and deployed in `201cdf1`. | Prove a natural 1.73–1.749 candidate reaches download while the known ≤1.72 letterbox band remains rejected. |
 | FF-054 | P3 | `confirmed` | Zero-caller webhook tables and the outbox cursor remain in the flat schema and durable databases. Removing them during FF-045 would create a second schema-hash migration boundary while FF-041 is still converging. | After durable environments converge on FF-041, drop the three tables through one explicit in-place migration, refresh stale schema comments, update `schema.sql` and its contract test, then flatten the migration file. |
-| FF-055 | P1 | `implemented` | API-Football winner flags describe the live leader; nil-guarded updates retained an earlier leader when a match returned to a tie, so completed draws could expose the wrong winner. | Deploy score-derived result state, verify a natural lead-to-tie update clears both winners, then explicitly repair and invalidate stale completed rows. |
+| FF-055 | P1 | `validating` | API-Football winner flags describe the live leader; nil-guarded updates retained an earlier leader when a match returned to a tie, so completed draws could expose the wrong winner. Score-derived state is deployed and the ten stale draws are repaired. | Verify a natural lead-to-tie update clears both winners through the production API and frontend. |
 
 ### FF-055 — live leader flags survive a drawn result
 
@@ -225,10 +225,15 @@ the current branch.
   exceptional outcomes. Monitor regression covers a stored 1–0 leader followed
   by a 1–1 response. Provider-vote and Postgres truth tables cover absent,
   tied, and decided shootouts.
-- **Rollout:** Code, tests, and docs are complete locally. Production deploy,
-  stale-row repair, and `fixture.update` invalidation remain separate approved
-  operations. No startup backfill or production mutation is part of the code
-  change. See the [decision record](./decisions/2026-08-19-winner-state-is-derived-from-canonical-scores.md).
+- **Rollout:** Release `5962dd2` deployed successfully on 2026-08-19 at
+  17:52 UTC. Both workers, the API, and Twitter verified the exact immutable
+  release identity. A guarded transaction then cleared winner state on the ten
+  verified stale `FT` draws and aborted unless all ten still matched the tied
+  score and stale-winner predicates. A single production `fixture.update`
+  invalidation reached the connected subscriber; direct API verification
+  returned `winner: null` for both teams on all ten fixtures. A natural future
+  lead-to-tie transition remains the production behavioral proof. See the
+  [decision record](./decisions/2026-08-19-winner-state-is-derived-from-canonical-scores.md).
 
 ### FF-054 — remove dormant webhook and outbox schema surfaces
 
