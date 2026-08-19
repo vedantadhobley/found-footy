@@ -87,7 +87,7 @@ type APIFixtureTeam struct {
 	ID     int    `json:"id"`
 	Name   string `json:"name"`
 	Logo   string `json:"logo"`
-	Winner *bool  `json:"winner"` // null pre-match / on draw
+	Winner *bool  `json:"winner"` // current leader; null pre-match or while tied
 }
 
 type APIFixtureGoals struct {
@@ -96,7 +96,8 @@ type APIFixtureGoals struct {
 }
 
 // APIFixtureScore includes multiple breakdowns (halftime / fulltime /
-// extratime / penalty). Domain code only reads FullTime for now.
+// extratime / penalty). Domain code reads Penalty; the other breakdowns remain
+// available for transport completeness while aggregate goals drive match score.
 type APIFixtureScore struct {
 	Halftime  APIFixtureScoreLine `json:"halftime"`
 	Fulltime  APIFixtureScoreLine `json:"fulltime"`

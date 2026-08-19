@@ -65,8 +65,8 @@ between `null` and zero.
     "country": "Italy",
     "round": "Regular Season - 1"
   },
-  "home": { "id": 505, "name": "Inter", "score": 2, "winner": null },
-  "away": { "id": 489, "name": "Milan", "score": 1, "winner": null },
+  "home": { "id": 505, "name": "Inter", "score": 2, "winner": true },
+  "away": { "id": 489, "name": "Milan", "score": 1, "winner": false },
   "penalty": null,
   "status": { "short": "2H", "long": "Second Half", "elapsed": 62, "extra": null },
   "last_activity_at": "2026-08-14T16:47:30Z",
@@ -169,7 +169,10 @@ REST. Applying the same refetch more than once must be harmless.
   clip count.
 - `player: null` is a valid unknown-player event. It is not searched until the
   provider supplies a player identity.
-- `score`, `winner`, `elapsed`, `extra`, and `penalty` use `null` for
-  not-reported. Do not render `null` as zero.
+- `score`, `elapsed`, `extra`, and `penalty` use `null` for not-reported. A
+  normal or extra-time `winner` is derived from the current score; a terminal
+  shootout uses `penalty`. A tie or incomplete relevant score returns
+  `winner: null` for both sides. Exceptional terminal outcomes use the
+  provider's explicit result. Do not render any `null` as zero.
 - `video.url` is opaque. Follow the redirect; do not retain or parse the
   presigned target.

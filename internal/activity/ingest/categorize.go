@@ -178,10 +178,8 @@ func (a *Activities) reconcileFixture(
 		}
 		existing.HomeScore = apiFix.Goals.Home
 		existing.AwayScore = apiFix.Goals.Away
-		existing.HomePenalty = apiFix.Score.Penalty.Home
-		existing.AwayPenalty = apiFix.Score.Penalty.Away
-		existing.HomeWinner = apiFix.Teams.Home.Winner
-		existing.AwayWinner = apiFix.Teams.Away.Winner
+		existing.UpdatePenalty(apiFix.Score.Penalty.Home, apiFix.Score.Penalty.Away)
+		existing.UpdateResult(apiFix.Teams.Home.Winner, apiFix.Teams.Away.Winner)
 		existing.LastPolledAt = &now
 		existing.UpdatedAt = now
 
@@ -217,10 +215,8 @@ func (a *Activities) reconcileFixture(
 	f.APIExtra = apiFix.Fixture.Status.Extra
 	f.HomeScore = apiFix.Goals.Home
 	f.AwayScore = apiFix.Goals.Away
-	f.HomePenalty = apiFix.Score.Penalty.Home
-	f.AwayPenalty = apiFix.Score.Penalty.Away
-	f.HomeWinner = apiFix.Teams.Home.Winner
-	f.AwayWinner = apiFix.Teams.Away.Winner
+	f.UpdatePenalty(apiFix.Score.Penalty.Home, apiFix.Score.Penalty.Away)
+	f.UpdateResult(apiFix.Teams.Home.Winner, apiFix.Teams.Away.Winner)
 	// LastPolledAt — ingest just polled api-sports.io; record that.
 	// Set on the fresh Fixture BEFORE state transitions (Activate/
 	// Complete don't touch LastPolledAt so this survives).

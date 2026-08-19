@@ -154,6 +154,49 @@ func TestReconcileFixture_ScoreChange_Structural(t *testing.T) {
 	}
 }
 
+// TestReconcileFixture_TieClearsPriorLeader is the FF-055 regression. The
+// provider reports winner flags for the current live leader, then null/null
+// when an equalizer restores a tie. Result derivation must clear the stale
+// leader from storage and emit a structural update.
+func TestReconcileFixture_TieClearsPriorLeader(t *testing.T) {
+	kickoff := time.Date(2026, 8, 19, 15, 0, 0, 0, time.UTC)
+	now := kickoff.Add(70 * time.Minute)
+	fRepo := newFakeFixtureRepo()
+	f := mkActiveN4Fixture(1001, kickoff, 69, 1, 0)
+	homeWon, awayWon := true, false
+	f.HomeWinner, f.AwayWinner = &homeWon, &awayWon
+	_ = fRepo.Upsert(context.Background(), f)
+
+	apiFix := apifootball.APIFixture{
+		Fixture: apifootball.APIFixtureFixture{
+			ID:     1001,
+			Status: apifootball.APIFixtureStatus{Short: apifootball.StatusSecondHalf, Elapsed: pi(70)},
+		},
+		Teams: apifootball.APIFixtureTeams{
+			Home: apifootball.APIFixtureTeam{ID: 40},
+			Away: apifootball.APIFixtureTeam{ID: 42},
+		},
+		Goals: apifootball.APIFixtureGoals{Home: pi(1), Away: pi(1)},
+	}
+	acts := newActs(&fakeFetcher{}, fRepo, newFakeEventRepo(), now)
+	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{
+		APIFixture: apiFix, WorkflowID: "monitor-equalizer",
+	})
+	if err != nil {
+		t.Fatalf("ReconcileFixture: %v", err)
+	}
+	if !out.Structural {
+		t.Fatal("Structural = false, want true for score and result change")
+	}
+	got, err := fRepo.Get(context.Background(), 1001)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.HomeWinner != nil || got.AwayWinner != nil {
+		t.Fatalf("winner = %v/%v, want nil/nil after equalizer", got.HomeWinner, got.AwayWinner)
+	}
+}
+
 func TestReconcileFixture_ThreeCyclesTriggersDownstream(t *testing.T) {
 	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	now := kickoff.Add(30 * time.Minute)

@@ -161,13 +161,12 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		),
 		now,
 	)
-	// Decision-time vendor flags — present only once the result is settled, so
-	// they ride alongside the poll rather than inside UpdateFromPoll. The live
-	// monitor is the only path that watches a match decide. Winner is display
-	// data; it cannot bypass the coherent three-poll completion debounce.
-	// Penalty captures the shootout result for knockout "who won on pens".
-	f.UpdateWinners(in.APIFixture.Teams.Home.Winner, in.APIFixture.Teams.Away.Winner)
+	// Mirror the nullable shootout before deriving result state: normal/AET
+	// winner state comes from the aggregate score, PEN comes from this shootout,
+	// and exceptional outcomes retain the provider's explicit flags. Result
+	// display data cannot bypass the coherent three-poll completion debounce.
 	f.UpdatePenalty(in.APIFixture.Score.Penalty.Home, in.APIFixture.Score.Penalty.Away)
+	f.UpdateResult(in.APIFixture.Teams.Home.Winner, in.APIFixture.Teams.Away.Winner)
 
 	// N4: classify the non-event changes now (event-driven structural signals +
 	// completion set out.Structural incrementally below). ClockChanged/Minute/

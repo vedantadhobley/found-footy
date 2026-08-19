@@ -201,7 +201,34 @@ the current branch.
 | FF-050 | P2 | `investigate` | Live Elche timing shows 23.6 seconds from valid-candidate observation to publication, dominated by 12.6-second hashing and 9.7-second vision; durable effects add milliseconds. | Measure the deployed bounded-hash latency before considering pipeline concurrency. |
 | FF-052 | P1 | `confirmed` | Vision accepted a phone filming a display as a clean Elche broadcast with `screen=false` on all three sampled frames. | Preserve the clip as a regression sample, calibrate the prompt/model against varied display recordings, and prove rejection without increasing clean-broadcast false positives. |
 | FF-053 | P1 | `validating` | The 1.75 minimum aspect gate discarded four 1.739 Elche candidates before download even though at least three contained legitimate goal footage; the minimum is now 1.73 and deployed in `201cdf1`. | Prove a natural 1.73–1.749 candidate reaches download while the known ≤1.72 letterbox band remains rejected. |
-| FF-054 | P3 | `confirmed` | Zero-caller webhook tables and the outbox cursor remain in the flat schema and durable databases. Removing them during FF-045 would create a second schema-hash migration boundary while FF-041 is still converging. | After durable environments converge on FF-041, drop the three tables through one explicit in-place migration, update `schema.sql` and its contract test, then flatten the migration file. |
+| FF-054 | P3 | `confirmed` | Zero-caller webhook tables and the outbox cursor remain in the flat schema and durable databases. Removing them during FF-045 would create a second schema-hash migration boundary while FF-041 is still converging. | After durable environments converge on FF-041, drop the three tables through one explicit in-place migration, refresh stale schema comments, update `schema.sql` and its contract test, then flatten the migration file. |
+| FF-055 | P1 | `implemented` | API-Football winner flags describe the live leader; nil-guarded updates retained an earlier leader when a match returned to a tie, so completed draws could expose the wrong winner. | Deploy score-derived result state, verify a natural lead-to-tie update clears both winners, then explicitly repair and invalidate stale completed rows. |
+
+### FF-055 — live leader flags survive a drawn result
+
+- **Observed:** A 2026-08-19 production audit found 12 completed draws among 60
+  played completed fixtures. Ten retained a non-null winner inconsistent with
+  their tied score. No sampled non-draw completed fixture had a winner that
+  contradicted its score.
+- **Cause:** API-Football reports `teams.*.winner` for the current leader during
+  live play and returns `null` / `null` while tied. `Fixture.UpdateWinners`
+  ignored null inputs, so an equalizer could not clear the stored leader. The
+  archived Python implementation carried the same incorrect final-only
+  assumption.
+- **Implemented:** Ordinary and `AET` winner state now derives from aggregate
+  score; `PEN` derives from the shootout; ties and incomplete scores produce
+  `null` / `null`. Exceptional terminal results use the provider's exact
+  nullable flags because their scores are not authoritative. Ingest and active
+  reconcile share this domain operation. A `PEN` completion vote and the final
+  SQL readiness check both require present, non-tied penalty scores.
+- **Tests:** Domain tables cover home/away/tied/missing, shootout, and
+  exceptional outcomes. Monitor regression covers a stored 1–0 leader followed
+  by a 1–1 response. Provider-vote and Postgres truth tables cover absent,
+  tied, and decided shootouts.
+- **Rollout:** Code, tests, and docs are complete locally. Production deploy,
+  stale-row repair, and `fixture.update` invalidation remain separate approved
+  operations. No startup backfill or production mutation is part of the code
+  change. See the [decision record](./decisions/2026-08-19-winner-state-is-derived-from-canonical-scores.md).
 
 ### FF-054 — remove dormant webhook and outbox schema surfaces
 
@@ -214,6 +241,11 @@ the current branch.
 - **Sequence:** Finish the current FF-041 hash-version migration convergence,
   then use the existing one-migration-at-a-time flat-schema contract. Do not
   conceal this operational change inside a code-layout rollout.
+- **Schema-comment debt:** `schema.sql` still describes provider winner flags
+  as final-only and mentions the removed completion fast-path. The schema hash
+  fingerprints comments, so correcting those bytes by itself would block every
+  durable environment. Refresh them inside this same planned migration and
+  stamp change rather than manufacture a comment-only production migration.
 
 ### FF-053 — legitimate 1.739 landscape clips failed the metadata gate
 

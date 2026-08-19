@@ -4,6 +4,8 @@ package fixture
 import (
 	"fmt"
 	"time"
+
+	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
 // Activate transitions the fixture from staging to active. Sets
@@ -102,31 +104,64 @@ func (f *Fixture) UpdateFromPoll(
 	f.updateCompletionCounter(completionVote)
 }
 
-// UpdateWinners records vendor-side winner flags from the API poll.
-// Kept separate from UpdateFromPoll since not every poll response
-// includes teams.home.winner / teams.away.winner (they're populated
-// only when the result is decided).
-func (f *Fixture) UpdateWinners(home, away *bool) {
-	if home != nil {
-		f.HomeWinner = home
-	}
-	if away != nil {
-		f.AwayWinner = away
+// UpdateResult derives ordinary and shootout winner state from the canonical
+// score fields. API-Football's teams.*.winner flags describe the current leader
+// during play, so preserving a prior non-nil flag across a later tie stores a
+// false result. Exceptional terminal outcomes do not have a reliable score
+// contract; for those statuses only, the provider's explicit nullable flags are
+// authoritative.
+func (f *Fixture) UpdateResult(providerHome, providerAway *bool) {
+	switch f.APIStatus.Short {
+	case apifootball.StatusPenaltyDone:
+		f.HomeWinner, f.AwayWinner = winnerFromScore(f.HomePenalty, f.AwayPenalty)
+	case apifootball.StatusCancelled,
+		apifootball.StatusAbandoned,
+		apifootball.StatusTechnicalLoss,
+		apifootball.StatusWalkover:
+		f.HomeWinner = cloneBool(providerHome)
+		f.AwayWinner = cloneBool(providerAway)
+	default:
+		f.HomeWinner, f.AwayWinner = winnerFromScore(f.HomeScore, f.AwayScore)
 	}
 }
 
-// UpdatePenalty records the shootout result (api score.penalty) from a poll.
-// Separate from UpdateFromPoll (like UpdateWinners) because a shootout appears
-// only at the end of a knockout that's level — the live-monitor path is the
-// only one that sees it happen. nil-guarded so an ordinary poll never clears a
-// captured result.
+// UpdatePenalty mirrors the nullable shootout result (api score.penalty) from
+// the current poll. Clearing an absent value is intentional: winner derivation
+// and PEN completion must not operate on a stale shootout from an older poll.
 func (f *Fixture) UpdatePenalty(home, away *int) {
-	if home != nil {
-		f.HomePenalty = home
+	f.HomePenalty = cloneInt(home)
+	f.AwayPenalty = cloneInt(away)
+}
+
+// winnerFromScore returns an exact nullable winner pair. A missing or tied
+// score has no winner; a decided score always yields one true and one false.
+func winnerFromScore(home, away *int) (*bool, *bool) {
+	if home == nil || away == nil || *home == *away {
+		return nil, nil
 	}
-	if away != nil {
-		f.AwayPenalty = away
+	homeWon := *home > *away
+	awayWon := !homeWon
+	return &homeWon, &awayWon
+}
+
+// cloneBool copies a nullable boolean so domain state never aliases a transport
+// response field.
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
 	}
+	copy := *value
+	return &copy
+}
+
+// cloneInt copies a nullable integer so domain state never aliases a transport
+// response field.
+func cloneInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 // updateCompletionCounter runs the 3-poll debounce on coherent terminal

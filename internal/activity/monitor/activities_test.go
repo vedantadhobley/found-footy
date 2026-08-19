@@ -134,6 +134,10 @@ func (r *fakeFixtureRepo) FixtureReadyToComplete(_ context.Context, id int64) (b
 	if f.CompletionCounter < 3 {
 		return false, nil
 	}
+	if f.APIStatus.Short == apifootball.StatusPenaltyDone &&
+		(f.HomePenalty == nil || f.AwayPenalty == nil || *f.HomePenalty == *f.AwayPenalty) {
+		return false, nil
+	}
 	// Fake has no events map — the completion check for events
 	// requires the fakeEventRepo. Callers that want event-level
 	// coverage should wire a joint check via a scenario-level fake.

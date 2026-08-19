@@ -279,6 +279,16 @@ func (r *FixtureRepo) FixtureReadyToComplete(ctx context.Context, id int64) (boo
 		            f.api_status_short IN ('ft','aet','pen')
 		            AND f.home_score IS NOT NULL
 		            AND f.away_score IS NOT NULL
+		            -- A completed shootout must include a decided penalty score.
+		            -- FT/AET do not require penalty fields.
+		            AND (
+		                f.api_status_short <> 'pen'
+		                OR (
+		                    f.home_penalty IS NOT NULL
+		                    AND f.away_penalty IS NOT NULL
+		                    AND f.home_penalty <> f.away_penalty
+		                )
+		            )
 		            AND f.home_score = (
 		                SELECT COUNT(*) FROM events score_home
 		                WHERE score_home.fixture_id = f.id
