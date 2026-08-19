@@ -20,9 +20,9 @@ type ValidateClipInput struct {
 }
 
 // ValidateClipOutput is the verdict for one staged clip. Outcome is the domain
-// Outcome as a string (crosses the Temporal boundary); Frames carries the raw
-// per-frame model observations so the workflow can persist them on the
-// candidate record for post-hoc query tuning.
+// Outcome as a string (crosses the Temporal boundary). Frames carries the raw
+// model observations and ClockReadings carries their normalized timing
+// interpretation so the workflow can persist both for post-hoc diagnosis.
 type ValidateClipOutput struct {
 	Outcome       string // "verified" | "unverified" | "rejected"
 	MatchedMinute *int   // set only when verified
@@ -37,4 +37,5 @@ type ValidateClipOutput struct {
 	ExpectedMinute int
 	ExpectedPeriod string
 	Frames         []dvision.FrameObservation
+	ClockReadings  []dvision.ClockReading
 }

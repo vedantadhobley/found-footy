@@ -53,6 +53,7 @@ type Evaluation struct {
 	DetectedPeriod string
 	ExpectedMinute int
 	ExpectedPeriod string
+	ClockReadings  []ClockReading
 }
 
 // Evaluate applies the gates + clock check to a clip's frames. tol is the
@@ -107,58 +108,45 @@ func Evaluate(frames []FrameObservation, exp Expected, tol int) Evaluation {
 	ev.ExpectedMinute = expectedMinute
 	ev.ExpectedPeriod = expectedPeriod.String()
 
-	sawClock := false
-	softKeep := false // numeric-matched but period conflict at an ET boundary
-
-	for _, f := range frames {
-		if f.Clock == nil {
-			continue
-		}
-		base, ok := parseClockField(*f.Clock)
+	readings := make([]ClockReading, 0, len(frames))
+	for i, f := range frames {
+		reading, ok := parseFrameClock(i, f)
 		if !ok {
 			continue
 		}
-		sawClock = true
-
-		stopMin, hasStop := 0, false
-		if f.StoppageClock != nil {
-			if s, sok := parseStoppageClockField(*f.StoppageClock); sok {
-				stopMin, hasStop = s, true
-			}
-		}
-		hasAdded := false
-		if f.Added != nil {
-			if _, aok := parseAddedField(*f.Added); aok {
-				hasAdded = true
-			}
-		}
-		frozen := hasStop || hasAdded
-		absolute := base
-		if hasStop {
-			absolute = base + stopMin
-		}
-		clipPeriod := periodOf(base)
-		// Retain the read clock (last legible one) so a clock-reject records
-		// what the OCR saw, not just that it mismatched (#181).
-		detectedMinute := absolute
+		readings = append(readings, reading)
+		// Retain the last legible reading for the compact summary. The complete
+		// ordered set remains on ClockReadings for post-hoc diagnosis.
+		detectedMinute := reading.Minute
 		ev.DetectedMinute = &detectedMinute
-		ev.DetectedPeriod = clipPeriod.String()
+		ev.DetectedPeriod = reading.Period.String()
+	}
+	ev.ClockReadings = readings
+
+	softKeep := false
+	for _, reading := range readings {
+		if reading.Ambiguous {
+			softKeep = true
+			continue
+		}
+		periodPinned := reading.PeriodPinned || reading.Stoppage
 
 		// Candidate 1 — direct: right period AND within ±tol.
-		if clipPeriod == expectedPeriod && abs(absolute-expectedMinute) <= tol {
-			return ev.verify(absolute, "clock matches minute+period")
+		if reading.ExactMinute && reading.Period == expectedPeriod && abs(reading.Minute-expectedMinute) <= tol {
+			return ev.verify(reading.Minute, "clock matches minute+period")
 		}
 		// Candidate 2 — frozen boundary, no sub-timer to pin the exact
 		// stoppage minute, but the right period's stoppage: accept on
 		// period alone (two goals in one stoppage window are ~never confused).
-		if frozen && !hasStop && expectedStoppage && clipPeriod == expectedPeriod {
-			return ev.verify(base, "frozen-boundary stoppage, period match (minute unpinned)")
+		if reading.Stoppage && !reading.ExactMinute && expectedStoppage && reading.Period == expectedPeriod {
+			return ev.verify(reading.Minute, "frozen-boundary stoppage, period match (minute unpinned)")
 		}
 		// Candidate 3 — OCR leading-digit rebase: the model dropped the
 		// leading digit of a stoppage clock ("92:36"→"02:36"); api elapsed
-		// IS the dropped base. Only when the API expects stoppage.
-		if expectedStoppage {
-			if corrected := exp.Elapsed + absolute; abs(corrected-expectedMinute) <= tol {
+		// IS the dropped base. Only when the API expects stoppage and the
+		// scorebug did not explicitly identify a conflicting period.
+		if expectedStoppage && !reading.PeriodPinned {
+			if corrected := exp.Elapsed + reading.Minute; abs(corrected-expectedMinute) <= tol {
 				return ev.verify(corrected, "OCR leading-digit rebase")
 			}
 		}
@@ -166,25 +154,55 @@ func Evaluate(frames []FrameObservation, exp Expected, tol int) Evaluation {
 		// is involved, the conflict may be a broadcast-rendering artifact →
 		// don't drop; mark for soft-keep. A clean H1/H2 conflict falls
 		// through to reject.
-		if abs(absolute-expectedMinute) <= tol && clipPeriod != expectedPeriod {
-			if isExtraTime(expectedPeriod) || isExtraTime(clipPeriod) {
+		if abs(reading.Minute-expectedMinute) <= tol && reading.Period != expectedPeriod {
+			if (!periodPinned && isPeriodBoundary(reading.Minute)) ||
+				isExtraTime(expectedPeriod) || isExtraTime(reading.Period) {
 				softKeep = true
 			}
+		}
+		// A bare low clock can be a reset-per-period display. The API expectation
+		// may reveal that interpretation, but without a visible period it is not
+		// strong enough to VERIFY the clip. Preserve it in the unverified pool.
+		if !periodPinned && relativeClockCouldMatch(reading.Minute, expectedPeriod, expectedMinute, tol) {
+			softKeep = true
 		}
 	}
 
 	switch {
-	case !sawClock:
+	case len(readings) == 0:
 		ev.Outcome = OutcomeUnverified
 		ev.Reason = "no clock visible"
 	case softKeep:
 		ev.Outcome = OutcomeUnverified
-		ev.Reason = "clock numeric-matches but extra-time period ambiguous — kept, not clock-verified"
+		ev.Reason = "clock interpretation ambiguous — kept, not clock-verified"
 	default:
 		ev.Outcome = OutcomeRejected
 		ev.Reason = "clock present but does not match expected (wrong minute or wrong half)"
 	}
 	return ev
+}
+
+func isPeriodBoundary(minute int) bool {
+	return minute == 45 || minute == 90 || minute == 105 || minute == 120
+}
+
+// relativeClockCouldMatch reports whether a clock with no period evidence has
+// a plausible reset-per-period interpretation matching the expected event.
+// It is deliberately a soft-keep signal only; API context cannot manufacture
+// the visual evidence required for a verified verdict.
+func relativeClockCouldMatch(displayed int, period Period, expected, tol int) bool {
+	match := func(candidate int) bool { return abs(candidate-expected) <= tol }
+	switch period {
+	case PeriodSecondHalf:
+		return displayed < 45 && match(45+displayed)
+	case PeriodExtraFirst:
+		return displayed <= 15 && match(90+displayed)
+	case PeriodExtraSecond:
+		return (displayed <= 15 && match(105+displayed)) ||
+			(displayed <= 30 && match(90+displayed))
+	default:
+		return false
+	}
 }
 
 // verify is a small helper to set the verified outcome + matched minute.

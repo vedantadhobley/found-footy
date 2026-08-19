@@ -250,26 +250,32 @@ clock parsers with a period-awareness fix. Missing API time is absence of
 verification evidence, so soccer footage that passes the content gates enters
 the unverified pool instead of being compared against minute zero (FF-031).
 
-- `clock.go` — scorebug field parsers (`parseClockField`, `parseAddedField`,
-  `parseStoppageClockField` — the last accepts both `01:48` and `+1:48` model
-  output) + `periodOf` (the H1/H2/ET1/ET2 map, verified against
-  real API-Football data). The current integer parser loses explicit period and
-  compact-stoppage provenance at exact boundaries; FF-057 tracks the structured
-  reading needed to close that gap.
+- `clock.go` — typed `Period` (`1H`/`2H`/`ET1`/`ET2`) plus structured
+  `ClockReading` normalization across conventional continuous clocks,
+  reset-per-period clocks, compact stoppage, and frozen-main-clock/sub-timer
+  displays. Visible period evidence rebases `05:25 + 2H` to absolute minute 50;
+  conflicting or unsupported evidence stays ambiguous instead of becoming a
+  confident match. The stoppage parser accepts both `01:48` and `+1:48` model
+  output. `periodOf` remains the fallback for conventional unlabelled clocks.
 - `evaluate.go` — `Evaluate(frames, Expected, tol)`: soccer/screen majority
   gates → period-aware clock check → `Outcome` (verified/unverified/rejected).
   API ordinal minutes normalize to the broadcast's completed-minute clock as
   `elapsed + extra - 1` before the ±1 tolerance; the period remains an
-  independent guard. Strict at halftime / lenient at ET (see decisions.md).
-- `schema.go` — `FrameObservation` (per-frame JSON) + `VisionResponse`
-  (`{Frames}`, the `response_format` json-schema, exactly-3 positional frames) +
-  `DefaultPrompt`.
+  independent guard. An explicit wrong half remains a hard reject; an
+  unlabelled reset-clock interpretation can only soft-keep the clip as
+  unverified. Strict at halftime / lenient at ET (see decisions.md).
+- `schema.go` — `FrameObservation` (per-frame JSON, including nullable visible
+  `period`) + `VisionResponse` (`{Frames}`, the `response_format` json-schema,
+  exactly-3 positional frames) + `DefaultPrompt`. The model must return period
+  only from visible scorebug evidence, never from the clock value alone.
 
 Consumed by `internal/activity/vision.ValidateClip`: fetch staged clip →
 `ffmpeg.ExtractFrame` @25/50/75% → one multi-image structured-output vision call
 → `Evaluate`. **Wired into EventWorkflow's consumer** (`event_pipeline*.go`, fired
 async per unique clip); the LLM adapter's `ResponseFormat` + `DisableThinking`
-fields (rung 1) exist for this call. At the activity boundary, typed permanent
+fields (rung 1) exist for this call. Clock rejections persist all three raw
+frame observations and normalized readings in candidate `outcome_detail`. At
+the activity boundary, typed permanent
 LLM failures (invalid response/request, missing model, or auth) become
 non-retryable Temporal ApplicationErrors; transient model and infrastructure
 classes retain the workflow's bounded retry policy (FF-012).

@@ -76,9 +76,9 @@ func framesJSON(frames ...map[string]any) string {
 func TestValidateClip_VerifiedAndRequestShape(t *testing.T) {
 	// Lauberbach 90+2: frozen 90:00 + sub-timer → minute 91.
 	resp := framesJSON(
-		map[string]any{"soccer": true, "screen": false, "clock": "90:00", "added": "+2", "stoppage_clock": "+1:48"},
-		map[string]any{"soccer": true, "screen": false, "clock": "90:00", "added": "+2", "stoppage_clock": "+1:53"},
-		map[string]any{"soccer": true, "screen": false, "clock": "90:00", "added": "+2", "stoppage_clock": "+1:58"},
+		map[string]any{"soccer": true, "screen": false, "clock": "90:00", "period": "2H", "added": "+2", "stoppage_clock": "+1:48"},
+		map[string]any{"soccer": true, "screen": false, "clock": "90:00", "period": "2H", "added": "+2", "stoppage_clock": "+1:53"},
+		map[string]any{"soccer": true, "screen": false, "clock": "90:00", "period": "2H", "added": "+2", "stoppage_clock": "+1:58"},
 	)
 	a, ff, fl := newActivities(t, resp, nil)
 
@@ -97,6 +97,9 @@ func TestValidateClip_VerifiedAndRequestShape(t *testing.T) {
 	}
 	if len(out.Frames) != 3 {
 		t.Errorf("Frames len = %d, want 3", len(out.Frames))
+	}
+	if len(out.ClockReadings) != 3 || out.ClockReadings[0].Period != "2H" {
+		t.Errorf("ClockReadings = %+v, want three 2H readings", out.ClockReadings)
 	}
 
 	// Frames sampled at 25/50/75% of 6.677s.
@@ -119,15 +122,17 @@ func TestValidateClip_VerifiedAndRequestShape(t *testing.T) {
 	}
 	if fl.lastReq.ResponseFormat == nil || fl.lastReq.ResponseFormat.JSONSchema == nil {
 		t.Error("request should carry a JSONSchema response_format")
+	} else if !bytes.Contains(fl.lastReq.ResponseFormat.JSONSchema.Schema, []byte(`"period"`)) {
+		t.Error("response schema should require per-frame period evidence")
 	}
 }
 
 func TestValidateClip_ScreenRejected(t *testing.T) {
 	// Phone-of-TV: majority screen=true → rejected regardless of clock.
 	resp := framesJSON(
-		map[string]any{"soccer": true, "screen": true, "clock": nil, "added": nil, "stoppage_clock": nil},
-		map[string]any{"soccer": true, "screen": true, "clock": nil, "added": nil, "stoppage_clock": nil},
-		map[string]any{"soccer": true, "screen": true, "clock": nil, "added": nil, "stoppage_clock": nil},
+		map[string]any{"soccer": true, "screen": true, "clock": nil, "period": nil, "added": nil, "stoppage_clock": nil},
+		map[string]any{"soccer": true, "screen": true, "clock": nil, "period": nil, "added": nil, "stoppage_clock": nil},
+		map[string]any{"soccer": true, "screen": true, "clock": nil, "period": nil, "added": nil, "stoppage_clock": nil},
 	)
 	a, _, _ := newActivities(t, resp, nil)
 	out, err := a.ValidateClip(context.Background(), ValidateClipInput{StagingKey: "k", APIElapsed: 90, APIExtra: 2})

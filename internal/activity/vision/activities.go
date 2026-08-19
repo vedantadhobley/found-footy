@@ -10,8 +10,9 @@
 // verified/unverified pool. The model node is the throughput bottleneck. The
 // verdict is a nil-error OUTCOME (verified/unverified/rejected); only infra +
 // model-call failures are errors the workflow's RetryPolicy bounds. Model
-// config + prompt were validated on real prod clips in the 2026-07-28 bake-off
-// (see vision.md).
+// base config + prompt were validated on real prod clips in the 2026-07-28
+// bake-off; FF-057's additive period field has regression coverage and passed
+// three gemma-4-12b replays on 2026-08-19 (see vision.md).
 package vision
 
 import (
@@ -123,6 +124,7 @@ func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (Va
 	out.DetectedMinute, out.DetectedPeriod = ev.DetectedMinute, ev.DetectedPeriod
 	out.ExpectedMinute, out.ExpectedPeriod = ev.ExpectedMinute, ev.ExpectedPeriod
 	out.Frames = vr.Frames
+	out.ClockReadings = ev.ClockReadings
 	return out, nil
 }
 

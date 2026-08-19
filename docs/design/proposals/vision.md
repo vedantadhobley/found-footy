@@ -46,7 +46,7 @@ from the 25% + 75% frames (the 50% frame was *not* used for the clock).
 (modern VLMs accept several images per message). This:
 - **eliminates the tiebreaker round** — the model reasons over all three at once
   and returns **3 per-frame observations** (`{frames: [{soccer, screen, clock,
-  added, stoppage_clock} × 3]}`) that `Evaluate` aggregates by 2/3 vote;
+  period, added, stoppage_clock} × 3]}`) that `Evaluate` aggregates by 2/3 vote;
 - **improves clock recall** — the clock is now read from *three* frames, not two
   (the clock is hidden during replays / graphics / close-ups, so more frames =
   more chances it's visible);
@@ -59,7 +59,7 @@ adapter) on the cluster's staged clip fetched from Garage.
 
 > **As-built:** the shipped wire contract is **per-frame** —
 > `VisionResponse{ Frames []FrameObservation }` with exactly 3
-> `FrameObservation{soccer, screen, clock, added, stoppage_clock}`
+> `FrameObservation{soccer, screen, clock, period, added, stoppage_clock}`
 > ([`internal/domain/vision/schema.go`](../../../internal/domain/vision/schema.go)),
 > driven by the detailed `DefaultPrompt` (not the terse Python one below). The
 > single-object JSON here is the historical Python baseline, kept for lineage.
@@ -117,16 +117,19 @@ already present:
   current period"; the frozen base (45/90/105/120) names which period; a bare
   running value with no `+` is the next period.
 
-> **As-built caveat (FF-057):** the shipped parser currently collapses the raw
-> clock to an integer before `Evaluate` derives the period. That loses the
-> distinction described above for explicit period hints, compact stoppage, and
-> bare values at 45/90/105. The ordinary-minute and separate frozen-clock plus
-> stoppage-subtimer paths are correct; the boundary representation remains
-> deferred work rather than being silently folded into FF-056.
+> **As built after FF-057:** each frame now carries a nullable visible-period
+> enum and the parser returns a structured reading with absolute minute,
+> period/stoppage provenance, precision, and ambiguity. This also supports the
+> live reset-per-half scorebug shape (`05:25 2nd` → absolute minute 50). The
+> model may emit a period only from visible evidence. A plausible relative
+> interpretation without that evidence is soft-kept as unverified, never
+> promoted to verified from API context alone. Clock rejects retain every raw
+> frame and normalized reading in candidate outcome detail.
 
-Edge case (only boundary goals), but it produces *confidently-wrong* clips, so
-it's worth doing right — and boundary goals are a priority for real-data
-validation (synthetic can't cover them).
+The original issue was limited to boundary goals, but reset-per-period
+scorebugs make visible period evidence relevant throughout H2 and extra time.
+Both shapes can produce confidently wrong rejection/verification, so real-data
+validation remains load-bearing rather than relying only on synthetic cases.
 
 ## Three outcomes → the dedup pools
 

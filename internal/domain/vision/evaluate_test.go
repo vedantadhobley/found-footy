@@ -31,6 +31,11 @@ func rep(f FrameObservation, n int) []FrameObservation {
 	return out
 }
 
+func withPeriod(f FrameObservation, period Period) FrameObservation {
+	f.Period = &period
+	return f
+}
+
 const tol = 1
 
 func TestEvaluate_RealProdClips(t *testing.T) {
@@ -211,6 +216,62 @@ func TestEvaluate_MinuteNormalization(t *testing.T) {
 			}
 			if ev.MatchedMinute == nil || *ev.MatchedMinute != c.wantMatch {
 				t.Errorf("MatchedMinute = %v, want %d", ev.MatchedMinute, c.wantMatch)
+			}
+		})
+	}
+}
+
+func TestEvaluate_ResetPerHalfScorebug(t *testing.T) {
+	cases := []struct {
+		name      string
+		frame     FrameObservation
+		exp       Expected
+		want      Outcome
+		wantMatch int
+	}{
+		{
+			name:  "abdelkarim first-half regression",
+			frame: withPeriod(frame(true, false, "28:56", "", ""), PeriodFirstHalf),
+			exp:   Expected{Elapsed: 30}, want: OutcomeVerified, wantMatch: 28,
+		},
+		{
+			name:  "zizo reset second-half clock",
+			frame: withPeriod(frame(true, false, "05:25", "", ""), PeriodSecondHalf),
+			exp:   Expected{Elapsed: 51}, want: OutcomeVerified, wantMatch: 50,
+		},
+		{
+			name:  "continuous second-half clock remains absolute",
+			frame: withPeriod(frame(true, false, "50:25", "", ""), PeriodSecondHalf),
+			exp:   Expected{Elapsed: 51}, want: OutcomeVerified, wantMatch: 50,
+		},
+		{
+			name:  "explicit first-half conflict rejects",
+			frame: withPeriod(frame(true, false, "05:25", "", ""), PeriodFirstHalf),
+			exp:   Expected{Elapsed: 51}, want: OutcomeRejected, wantMatch: -1,
+		},
+		{
+			name:  "missing period cannot manufacture verification",
+			frame: frame(true, false, "05:25", "", ""),
+			exp:   Expected{Elapsed: 51}, want: OutcomeUnverified, wantMatch: -1,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ev := Evaluate(rep(c.frame, 3), c.exp, tol)
+			if ev.Outcome != c.want {
+				t.Fatalf("Outcome = %q (%s), want %q", ev.Outcome, ev.Reason, c.want)
+			}
+			if c.wantMatch < 0 {
+				if ev.MatchedMinute != nil {
+					t.Fatalf("MatchedMinute = %d, want nil", *ev.MatchedMinute)
+				}
+				return
+			}
+			if ev.MatchedMinute == nil || *ev.MatchedMinute != c.wantMatch {
+				t.Fatalf("MatchedMinute = %v, want %d", ev.MatchedMinute, c.wantMatch)
+			}
+			if len(ev.ClockReadings) != 3 {
+				t.Fatalf("ClockReadings len = %d, want 3", len(ev.ClockReadings))
 			}
 		})
 	}

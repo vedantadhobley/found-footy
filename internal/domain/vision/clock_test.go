@@ -28,9 +28,80 @@ func TestParseClockField(t *testing.T) {
 	}
 	for _, c := range cases {
 		got, ok := parseClockField(c.in)
-		if ok != c.ok || (ok && got != c.want) {
-			t.Errorf("parseClockField(%q) = (%d,%v), want (%d,%v)", c.in, got, ok, c.want, c.ok)
+		if ok != c.ok || (ok && got.Minute != c.want) {
+			t.Errorf("parseClockField(%q) = (%+v,%v), want minute (%d,%v)", c.in, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+func TestParseClockFieldRetainsPeriodProvenance(t *testing.T) {
+	cases := []struct {
+		name          string
+		in            string
+		wantMinute    int
+		wantPeriod    Period
+		wantExplicit  bool
+		wantStoppage  bool
+		wantAmbiguous bool
+	}{
+		{name: "continuous", in: "70:17", wantMinute: 70, wantPeriod: PeriodSecondHalf},
+		{name: "embedded relative second half", in: "2H 15:00", wantMinute: 60, wantPeriod: PeriodSecondHalf, wantExplicit: true},
+		{name: "compact first half stoppage", in: "45+2", wantMinute: 47, wantPeriod: PeriodFirstHalf, wantExplicit: true, wantStoppage: true},
+		{name: "compact second half stoppage", in: "90+4", wantMinute: 94, wantPeriod: PeriodSecondHalf, wantExplicit: true, wantStoppage: true},
+		{name: "compact first extra-time stoppage", in: "105+3", wantMinute: 108, wantPeriod: PeriodExtraFirst, wantExplicit: true, wantStoppage: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := parseClockField(c.in)
+			if !ok {
+				t.Fatal("parseClockField returned !ok")
+			}
+			if got.Minute != c.wantMinute || got.Period != c.wantPeriod ||
+				got.PeriodPinned != c.wantExplicit || got.Stoppage != c.wantStoppage ||
+				got.Ambiguous != c.wantAmbiguous {
+				t.Errorf("reading = %+v, want minute=%d period=%q explicit=%v stoppage=%v ambiguous=%v",
+					got, c.wantMinute, c.wantPeriod, c.wantExplicit, c.wantStoppage, c.wantAmbiguous)
+			}
+		})
+	}
+}
+
+func TestNormalizeDisplayedMinuteByVisiblePeriod(t *testing.T) {
+	cases := []struct {
+		name   string
+		minute int
+		period Period
+		want   int
+		ok     bool
+	}{
+		{name: "first half", minute: 28, period: PeriodFirstHalf, want: 28, ok: true},
+		{name: "reset second half", minute: 5, period: PeriodSecondHalf, want: 50, ok: true},
+		{name: "continuous second half", minute: 50, period: PeriodSecondHalf, want: 50, ok: true},
+		{name: "reset first extra time", minute: 5, period: PeriodExtraFirst, want: 95, ok: true},
+		{name: "reset second extra time", minute: 5, period: PeriodExtraSecond, want: 110, ok: true},
+		{name: "cumulative second extra time", minute: 20, period: PeriodExtraSecond, want: 110, ok: true},
+		{name: "continuous second extra time", minute: 110, period: PeriodExtraSecond, want: 110, ok: true},
+		{name: "unsupported extra-time shape", minute: 50, period: PeriodExtraFirst, want: 50, ok: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := normalizeDisplayedMinute(c.minute, c.period)
+			if got != c.want || ok != c.ok {
+				t.Errorf("normalizeDisplayedMinute(%d, %q) = (%d,%v), want (%d,%v)",
+					c.minute, c.period, got, ok, c.want, c.ok)
+			}
+		})
+	}
+}
+
+func TestParseFrameClockUsesVisiblePeriod(t *testing.T) {
+	second := PeriodSecondHalf
+	r, ok := parseFrameClock(1, FrameObservation{Clock: sp("05:25"), Period: &second})
+	if !ok {
+		t.Fatal("parseFrameClock returned !ok")
+	}
+	if r.FrameIndex != 1 || r.Minute != 50 || r.Period != PeriodSecondHalf || !r.PeriodPinned {
+		t.Errorf("reading = %+v, want frame=1 minute=50 period=2H explicit", r)
 	}
 }
 
@@ -96,7 +167,7 @@ func TestPeriodOf(t *testing.T) {
 	}
 	for _, c := range cases {
 		if got := periodOf(c.minute); got != c.want {
-			t.Errorf("periodOf(%d) = %d, want %d", c.minute, got, c.want)
+			t.Errorf("periodOf(%d) = %q, want %q", c.minute, got, c.want)
 		}
 	}
 }
