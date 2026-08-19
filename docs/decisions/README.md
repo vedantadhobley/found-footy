@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Historical candidate repair reuses EventWorkflow](./2026-08-19-historical-candidate-repair-reuses-event-workflow.md) — exact terminal selectors become auditable pending work under a new deterministic checklist; the normal pipeline reprocesses them without a fresh search.
 - [Winner state is derived from canonical scores](./2026-08-19-winner-state-is-derived-from-canonical-scores.md) — FF-055 derives played results from match or shootout scores, clears tied leaders, and requires a decided penalty score for `PEN` completion.
 - [Thin entry points and in-package ownership splits](./2026-08-18-thin-entrypoints-and-in-package-ownership-splits.md) — FF-045 moves worker composition out of `cmd`, splits large files without changing package or Temporal identity, and deletes caller-proven residue.
 - [Dense frame hashing uses a versioned bounded working image](./2026-08-17-dense-hashing-uses-versioned-bounded-working-image.md) — FF-041/FF-005 preserve dHash while bounding 4K work, rejecting structurally short sequences, and preventing cross-version comparisons.

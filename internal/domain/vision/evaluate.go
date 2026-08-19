@@ -131,9 +131,19 @@ func Evaluate(frames []FrameObservation, exp Expected, tol int) Evaluation {
 		}
 		periodPinned := reading.PeriodPinned || reading.Stoppage
 
-		// Candidate 1 — direct: right period AND within ±tol.
-		if reading.ExactMinute && reading.Period == expectedPeriod && abs(reading.Minute-expectedMinute) <= tol {
-			return ev.verify(reading.Minute, "clock matches minute+period")
+		// Candidate 1 — direct: right period AND within ±tol. Exact boundary
+		// clocks may carry a second parser-supported convention; both remain
+		// visual evidence, while the API only selects which one matches.
+		if reading.ExactMinute && reading.Period == expectedPeriod {
+			for i, minute := range possibleMinutes(reading) {
+				if abs(minute-expectedMinute) <= tol {
+					reason := "clock matches minute+period"
+					if i > 0 {
+						reason = "clock matches minute+period via alternate display convention"
+					}
+					return ev.verify(minute, reason)
+				}
+			}
 		}
 		// Candidate 2 — frozen boundary, no sub-timer to pin the exact
 		// stoppage minute, but the right period's stoppage: accept on
@@ -154,10 +164,12 @@ func Evaluate(frames []FrameObservation, exp Expected, tol int) Evaluation {
 		// is involved, the conflict may be a broadcast-rendering artifact →
 		// don't drop; mark for soft-keep. A clean H1/H2 conflict falls
 		// through to reject.
-		if abs(reading.Minute-expectedMinute) <= tol && reading.Period != expectedPeriod {
-			if (!periodPinned && isPeriodBoundary(reading.Minute)) ||
-				isExtraTime(expectedPeriod) || isExtraTime(reading.Period) {
-				softKeep = true
+		for _, minute := range possibleMinutes(reading) {
+			if abs(minute-expectedMinute) <= tol && reading.Period != expectedPeriod {
+				if (!periodPinned && isPeriodBoundary(minute)) ||
+					isExtraTime(expectedPeriod) || isExtraTime(reading.Period) {
+					softKeep = true
+				}
 			}
 		}
 		// A bare low clock can be a reset-per-period display. The API expectation
@@ -180,6 +192,26 @@ func Evaluate(frames []FrameObservation, exp Expected, tol int) Evaluation {
 		ev.Reason = "clock present but does not match expected (wrong minute or wrong half)"
 	}
 	return ev
+}
+
+// possibleMinutes returns the distinct parser-supported interpretations of one
+// visual clock reading, with the primary convention first.
+func possibleMinutes(reading ClockReading) []int {
+	minutes := make([]int, 0, 1+len(reading.AlternativeMinutes))
+	minutes = append(minutes, reading.Minute)
+	for _, candidate := range reading.AlternativeMinutes {
+		duplicate := false
+		for _, existing := range minutes {
+			if candidate == existing {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			minutes = append(minutes, candidate)
+		}
+	}
+	return minutes
 }
 
 func isPeriodBoundary(minute int) bool {

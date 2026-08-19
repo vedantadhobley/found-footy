@@ -37,7 +37,7 @@ found-footy/
 │   │   │   └── query_builder_test.go    name, particle, dedup, fallback, and safeguard cases
 │   │   └── vision/                      ✓ D5 (2026-07-28): clock.go + evaluate.go + schema.go + tests — clip-clock validation, wired into EventWorkflow consumer
 │   ├── infra/                           live infrastructure adapters
-│   │   ├── pg/                          ✓ S2: pool + instruments + schema.sql + VerifySchema drift guard + focused EventRepo read/write/debounce/tracking files + remaining repos
+│   │   ├── pg/                          ✓ S2: pool + instruments + schema.sql + VerifySchema drift guard + focused repos + audited exact-selector candidate-replay store
 │   │   ├── nats/                        ✓ S3: client + instruments
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
 │   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
@@ -94,10 +94,11 @@ found-footy/
 │   ├── Dockerfile                       Playwright base + playwright-go driver + optional WITH_VNC layer (~150 MB xvfb+fluxbox+x11vnc+novnc+websockify)
 │   └── entrypoint.sh                    Conditionally boots VNC daemon stack when TWITTER_VNC_MODE=true, otherwise passthrough
 ├── migrations/                          FF-041 operational migration applied to prod; retained with its schema-hash contract until remaining durable environments converge
-├── scripts/                             dev-only smoke, trigger, verification, and focused probe programs
+├── scripts/                             dev smoke/probe programs plus guarded operator tools
 │   ├── smoke_repos/main.go              ✓ live pg + repo smoke test (dev only)
 │   ├── trigger_ingest/main.go           ✓ live IngestWorkflow trigger (O1d verification)
 │   ├── smoke_fleet/main.go              ✓ #160: live per-event fleet smoke — provision→healthy→release one instance (dev only; needs docker.sock + dev network)
+│   ├── replay_clock_rejects/main.go      ✓ FF-057: dry-run-first exact clock-reject repair through normal EventWorkflow, sequential and idempotent
 │   └── smoke_prod_perms.sh              ✓ non-root prod image perm smoke (fleet + video scratch write paths)
 ├── test/                                ✓ YAML-driven scenario harness
 │   ├── harness/                         ✓ testcontainer pg + mock apifootball + assertion engine
@@ -255,7 +256,9 @@ the unverified pool instead of being compared against minute zero (FF-031).
   reset-per-period clocks, compact stoppage, and frozen-main-clock/sub-timer
   displays. Visible period evidence rebases `05:25 + 2H` to absolute minute 50;
   conflicting or unsupported evidence stays ambiguous instead of becoming a
-  confident match. The stoppage parser accepts both `01:48` and `+1:48` model
+  confident match. Exact reset/continuous collisions retain both supported
+  meanings (`45:xx 2H` → 45/90, `15:xx ET2` → 120/105) without widening the
+  tolerance. The stoppage parser accepts both `01:48` and `+1:48` model
   output. `periodOf` remains the fallback for conventional unlabelled clocks.
 - `evaluate.go` — `Evaluate(frames, Expected, tol)`: soccer/screen majority
   gates → period-aware clock check → `Outcome` (verified/unverified/rejected).

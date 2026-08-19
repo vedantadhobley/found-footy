@@ -36,13 +36,14 @@ const (
 // stoppage sub-clock. Ambiguous readings are diagnostic evidence but may not
 // verify a clip.
 type ClockReading struct {
-	FrameIndex   int    `json:"frame_index"`
-	Minute       int    `json:"minute"`
-	Period       Period `json:"period"`
-	PeriodPinned bool   `json:"period_pinned"`
-	Stoppage     bool   `json:"stoppage"`
-	ExactMinute  bool   `json:"exact_minute"`
-	Ambiguous    bool   `json:"ambiguous"`
+	FrameIndex         int    `json:"frame_index"`
+	Minute             int    `json:"minute"`
+	AlternativeMinutes []int  `json:"alternative_minutes,omitempty"`
+	Period             Period `json:"period"`
+	PeriodPinned       bool   `json:"period_pinned"`
+	Stoppage           bool   `json:"stoppage"`
+	ExactMinute        bool   `json:"exact_minute"`
+	Ambiguous          bool   `json:"ambiguous"`
 }
 
 // periodOf maps a BASE minute (the frozen boundary or the running value,
@@ -161,6 +162,8 @@ func parseClockField(raw string) (ClockReading, bool) {
 	case has2H:
 		if minutes < 45 {
 			r.Minute = 45 + minutes
+		} else if minutes == 45 {
+			r.AlternativeMinutes = []int{90}
 		}
 		r.Period = PeriodSecondHalf
 		r.PeriodPinned = true
@@ -194,8 +197,10 @@ func parseFrameClock(frameIndex int, f FrameObservation) (ClockReading, bool) {
 			r.Period = PeriodUnknown
 			r.Ambiguous = true
 		case !r.PeriodPinned:
-			minute, normalizable := normalizeDisplayedMinute(r.Minute, hint)
+			displayedMinute := r.Minute
+			minute, normalizable := normalizeDisplayedMinute(displayedMinute, hint)
 			r.Minute = minute
+			r.AlternativeMinutes = boundaryAlternatives(displayedMinute, hint, minute)
 			r.Period = hint
 			r.PeriodPinned = true
 			if !normalizable {
@@ -210,6 +215,9 @@ func parseFrameClock(frameIndex int, f FrameObservation) (ClockReading, bool) {
 				r.Ambiguous = true
 			} else {
 				r.Minute += stop
+				for i := range r.AlternativeMinutes {
+					r.AlternativeMinutes[i] += stop
+				}
 				r.Stoppage = true
 				r.ExactMinute = true
 			}
@@ -222,6 +230,28 @@ func parseFrameClock(frameIndex int, f FrameObservation) (ClockReading, bool) {
 		}
 	}
 	return r, true
+}
+
+// boundaryAlternatives preserves clock values that are structurally valid in
+// more than one broadcast convention. A visible 45:xx 2H can be continuous
+// match time at the start of H2 or a reset-per-half clock at the end of H2;
+// 15:xx ET2 has the equivalent reset-versus-cumulative ambiguity. The parser
+// exposes both readings so evaluation can compare evidence without replacing
+// it with API context.
+func boundaryAlternatives(displayed int, period Period, primary int) []int {
+	var candidate int
+	switch {
+	case period == PeriodSecondHalf && displayed == 45:
+		candidate = 90
+	case period == PeriodExtraSecond && displayed == 15:
+		candidate = 105
+	default:
+		return nil
+	}
+	if candidate == primary {
+		return nil
+	}
+	return []int{candidate}
 }
 
 // normalizeDisplayedMinute rebases a period-relative scorebug into the

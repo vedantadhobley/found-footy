@@ -118,6 +118,18 @@ command sequence; every new or replacement execution records version 1 and
 uses recovery. FF-034 independently versions the evidence-carrying terminal
 UPSERT so retained histories keep their original activity commands.
 
+**Historical candidate-repair contract.** A completed EventWorkflow is not
+reset and its Temporal history is not asked to repeat business work. The
+guarded `scripts/replay_clock_rejects` operation registers a new deterministic
+workflow/checklist identity, checkpoints discovery at the configured maximum,
+and moves only its exact terminal selector back to pending. EventWorkflow then
+restores the full candidate and asset state, re-drives those pending rows, and
+performs no fresh search. Candidate terminal UPSERT keeps the previous verdict
+under `outcome_detail.replay`. The runner processes events sequentially and
+requires a closed checklist, the original selected count, and zero selected
+pending rows after each workflow. See the
+[historical repair decision](../decisions/2026-08-19-historical-candidate-repair-reuses-event-workflow.md).
+
 **Stale-running recovery contract (FF-025).** Each duplicate start describes
 the current Temporal execution. The process records the exact run ID plus its
 history-length and state-transition counters. Termination is permitted only
@@ -160,6 +172,8 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   gates remains unverified rather than becoming a false wrong-clock reject
   (FF-031). Each model frame carries a nullable visible-period enum. Structured
   clock normalization supports both continuous and reset-per-period scorebugs;
+  exact displays with two structurally valid conventions retain both readings
+  (`45:xx 2H` as 45/90 and `15:xx ET2` as 120/105);
   explicit period conflicts reject, while a plausible relative interpretation
   without visible period evidence can only soft-keep as unverified (FF-057).
   Clock rejection persists all raw frame observations plus their normalized

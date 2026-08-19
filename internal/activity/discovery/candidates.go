@@ -275,11 +275,21 @@ func (a *Activities) UpsertCandidateOutcome(ctx context.Context, in UpsertCandid
 		ON CONFLICT (event_id, tweet_url) DO UPDATE
 		SET outcome_class = EXCLUDED.outcome_class,
 		    reject_reason = EXCLUDED.reject_reason,
-		    outcome_detail = EXCLUDED.outcome_detail,
+		    outcome_detail = CASE
+		        WHEN event_search_candidates.outcome_detail ? 'replay'
+		        THEN COALESCE(EXCLUDED.outcome_detail, '{}'::jsonb) ||
+		             jsonb_build_object('replay', event_search_candidates.outcome_detail->'replay')
+		        ELSE EXCLUDED.outcome_detail
+		    END,
 		    outcome_at = CASE
 		        WHEN event_search_candidates.outcome_class = EXCLUDED.outcome_class
 		         AND event_search_candidates.reject_reason IS NOT DISTINCT FROM EXCLUDED.reject_reason
-		         AND event_search_candidates.outcome_detail IS NOT DISTINCT FROM EXCLUDED.outcome_detail
+		         AND event_search_candidates.outcome_detail IS NOT DISTINCT FROM CASE
+		             WHEN event_search_candidates.outcome_detail ? 'replay'
+		             THEN COALESCE(EXCLUDED.outcome_detail, '{}'::jsonb) ||
+		                  jsonb_build_object('replay', event_search_candidates.outcome_detail->'replay')
+		             ELSE EXCLUDED.outcome_detail
+		         END
 		        THEN COALESCE(event_search_candidates.outcome_at, EXCLUDED.outcome_at)
 		        ELSE EXCLUDED.outcome_at
 		    END

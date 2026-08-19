@@ -105,6 +105,32 @@ func TestParseFrameClockUsesVisiblePeriod(t *testing.T) {
 	}
 }
 
+// TestParseFrameClockRetainsBoundaryConventions covers the exact values where
+// reset-per-period and cumulative scorebugs render the same display.
+func TestParseFrameClockRetainsBoundaryConventions(t *testing.T) {
+	cases := []struct {
+		name        string
+		clock       string
+		period      Period
+		wantPrimary int
+		wantAlt     int
+	}{
+		{name: "second-half boundary", clock: "45:25", period: PeriodSecondHalf, wantPrimary: 45, wantAlt: 90},
+		{name: "second-extra-time boundary", clock: "15:10", period: PeriodExtraSecond, wantPrimary: 120, wantAlt: 105},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r, ok := parseFrameClock(0, FrameObservation{Clock: sp(c.clock), Period: &c.period})
+			if !ok {
+				t.Fatal("parseFrameClock returned !ok")
+			}
+			if r.Minute != c.wantPrimary || len(r.AlternativeMinutes) != 1 || r.AlternativeMinutes[0] != c.wantAlt {
+				t.Errorf("reading = %+v, want primary=%d alternative=%d", r, c.wantPrimary, c.wantAlt)
+			}
+		})
+	}
+}
+
 func TestParseAddedField(t *testing.T) {
 	cases := []struct {
 		in   string

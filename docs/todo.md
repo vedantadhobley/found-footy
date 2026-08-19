@@ -204,7 +204,7 @@ the current branch.
 | FF-054 | P3 | `confirmed` | Zero-caller webhook tables and the outbox cursor remain in the flat schema and durable databases. Removing them during FF-045 would create a second schema-hash migration boundary while FF-041 is still converging. | After durable environments converge on FF-041, drop the three tables through one explicit in-place migration, refresh stale schema comments, update `schema.sql` and its contract test, then flatten the migration file. |
 | FF-055 | P1 | `validating` | API-Football winner flags describe the live leader; nil-guarded updates retained an earlier leader when a match returned to a tie, so completed draws could expose the wrong winner. Score-derived state is deployed and the ten stale draws are repaired. | Verify a natural lead-to-tie update clears both winners through the production API and frontend. |
 | FF-056 | P1 | `validating` | The Go vision port computed `elapsed + extra - 1` but then clamped normal-time results back to `elapsed`, shifting the intended ±1 clock window one minute late. Abdelkarim's API-30' goal therefore rejected genuine clips whose sampled clock read 28'. The unclamped normalization is deployed in `136e2d2`. | Verify a natural API-minus-two sampled buildup frame enters the verified pool without admitting an outside-tolerance API-minus-three frame. |
-| FF-057 | P1 | `validating` | The VLM schema discarded visible period labels before the integer clock parser ran. A reset-per-half `05:25 2nd` scorebug therefore became first-half minute 5 and rejected genuine clips for Zizo's API-51′ goal; structured period-aware validation is deployed in `e9c3c54`. | Verify the next natural reset-clock goal reaches the correct verified pool. |
+| FF-057 | P1 | `validating` | The VLM schema discarded visible period labels before the integer clock parser ran. A reset-per-half `05:25 2nd` scorebug therefore became first-half minute 5. The deployed period schema fixed ordinary reset clocks; a follow-up now retains both valid meanings of exact `45:xx 2H` / `15:xx ET2` boundary displays and provides an auditable exact-reject replay. | Roll out the boundary follow-up, replay Barcelona–Al Ahly's 104 exact clock rejects across four events, and verify the next natural reset-clock goal. |
 
 ### FF-056 — normal-time clock normalization was cancelled by a clamp
 
@@ -255,6 +255,12 @@ the current branch.
   lower unverified pool—the API expectation never manufactures verification.
   Clock rejects persist all raw observations and normalized readings in the
   existing JSONB outcome detail; no schema migration is required.
+- **Exact reset boundary:** An explicit `45:xx 2H` is structurally ambiguous:
+  it can mean continuous time at the start of H2 or a clock that reset to
+  `00:00` and reached the end of H2. The parser now retains both visual
+  interpretations, 45 and 90, and lets the expected period/minute select a
+  match within the unchanged ±1 tolerance. `15:xx ET2` similarly retains 120
+  and 105. No ordinary minute gains a second interpretation.
 - **Compatibility:** The model call count and 25/50/75 frame strategy are
   unchanged. The activity output is additive and nullable, so old Temporal
   payloads decode with `period=nil`; workflow command structure is unchanged.
@@ -268,6 +274,18 @@ the current branch.
   `05:24`–`05:29` clocks were labelled `2H`, normalized to minute 50, and
   verified against API 51′. Natural production validation remains before
   closure.
+- **Boundary probe:** A real Gordon API-90′ reject was resolved and processed
+  through the current three-frame/model/evaluator path. Gemma read
+  `45:00`, `2H`, and a `00:10` stoppage sub-clock. The follow-up retained
+  `[45, 90]` and verified minute 90; the previous evaluator had retained only
+  45 and rejected the same shape.
+- **Historical repair:** `scripts/replay_clock_rejects` plans the exact
+  `clock present but does not match expected` selection, then—only in explicit
+  apply mode—registers a separate deterministic checklist, preserves every
+  prior verdict in `outcome_detail.replay`, checkpoints all search attempts,
+  and runs the normal EventWorkflow sequentially. The Barcelona fixture plan
+  is four events and 104 candidates; deployment and the production mutation
+  remain pending.
 - **Rollout:** Release `e9c3c54` deployed successfully on 2026-08-19 at 20:21
   UTC. Both workers, the API, and Twitter verified the exact immutable release
   identity. Both workers registered, all three Temporal schedules remained

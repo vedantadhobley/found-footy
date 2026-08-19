@@ -124,7 +124,11 @@ already present:
 > model may emit a period only from visible evidence. A plausible relative
 > interpretation without that evidence is soft-kept as unverified, never
 > promoted to verified from API context alone. Clock rejects retain every raw
-> frame and normalized reading in candidate outcome detail.
+> frame and normalized reading in candidate outcome detail. Exact boundary
+> displays retain both structurally valid visual readings: `45:xx 2H` can be
+> continuous minute 45 or reset-clock minute 90, while `15:xx ET2` can be
+> cumulative minute 105 or reset-clock minute 120. Evaluation still requires
+> the expected period and unchanged ±1 tolerance.
 
 The original issue was limited to boundary goals, but reset-per-period
 scorebugs make visible period evidence relevant throughout H2 and extra time.
