@@ -20,6 +20,7 @@ the SAME commit. Not the next commit. Same commit.
 found-footy/
 ├── cmd/                                 deployable binaries; each imports from internal/
 │   ├── api/main.go                      ✓ Chi read surface (SSE is vedanta-systems')
+│   ├── twitter-auth/main.go             ✓ FF-059: raw-Firefox cookie-capture/status process
 │   ├── twitter/main.go                  ✓ T/a+T/b+T/c: real Playwright-Go service (ephemeral profile + idle-CPU prefs)
 │   └── worker/main.go                   thin executable; delegates worker composition to internal/app/worker
 ├── internal/
@@ -43,7 +44,7 @@ found-footy/
 │   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
 │   │   ├── temporal/                    ✓ S5: Client (with workerShutdownTimeout) + Worker
 │   │   ├── apifootball/                 ✓ S7 + O1a: /status probe + /fixtures + /fixtures/{ids}
-│   │   ├── twitter/                     ✓ HTTP client for the Go Twitter service + mock-backed tests
+│   │   ├── twitter/                     ✓ HTTP Search + forced-Verify client for the Go Twitter service + mock-backed tests
 │   │   ├── syndication/                 ✓ S7 + T/f: FetchJSON + ResolveVideo/Download (cookieless mp4) + typed taxonomy + tests
 │   │   ├── event/                       ✓ composer (pg event_log audit ONLY — N2 removed its NATS half; Kind = 6 event_log types) · N1+N5 NatsPublisher — 3-subject live-feed (fixture.clock/update, event.video) + Envelope + source config + golden tests
 │   │   ├── ffmpeg/                      ✓ V/1 + FF-005: probe + bounded-grayscale single-pass dense extraction + faststart + semaphore + typed taxonomy + tests
@@ -52,6 +53,7 @@ found-footy/
 │   │   ├── ingest.go                    ✓ O1c: IngestWorkflow
 │   │   ├── active_poll.go               ✓ O2: ActivePollWorkflow (30s IntervalSpec)
 │   │   ├── staging_poll.go              ✓ O2: StagingPollWorkflow (*/15 cron)
+│   │   ├── twitter_maintenance.go       ✓ FF-058: six-hour static-session persistence + search-DOM canary
 │   │   ├── event.go                     ✓ #164c + FF-022 + FF-034: per-goal discovery producer, immediate candidate launch, durable observation/recovery
 │   │   ├── event_pipeline.go            ✓ shared Selector state, deterministic contexts, restoration, and construction
 │   │   ├── event_pipeline_intake.go     ✓ candidate launch, exact-MD5 ownership, hash claimant failover, and consumer loop
@@ -70,6 +72,7 @@ found-footy/
 │   │   ├── vision/                      ✓ staged-clip frame extraction + model-backed validation
 │   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when fleet disabled (FIREFOXFLEET_ENABLED=false)
 │   │   ├── livefeed/                     ✓ publish-activity boundary for all NATS live-feed emits
+│   │   ├── twittermaintenance/           ✓ FF-058: forced auth/cookie sync plus minimum-evidence live-search probe
 │   │   └── heartbeat/                    shared time-based activity heartbeat loop
 │   ├── api/                             ✓ Chi read API over Postgres + S3; no NATS/Temporal dependency; SSE is vedanta-systems'
 │   ├── app/worker/                      ✓ worker composition root + Temporal schedule reconciliation; cmd/worker contains no wiring
@@ -84,15 +87,15 @@ found-footy/
 │   │   ├── browser.go                   ✓ T/a + FF-017: Firefox persistent context, cookie/session operations, and critical-child exit signal
 │   │   ├── browser_iface.go             ✓ T/b: sessionBrowser interface — auth flow testable without Playwright
 │   │   ├── stealth.go                   ✓ T/a: navigator.webdriver / plugins / permissions patches
-│   │   ├── service.go                   ✓ T/a + T/b + FF-017: state machine, browser-loss watcher/audit, /health, /status
-│   │   ├── auth.go                      ✓ T/b: EnsureAuthenticated (mtime → warm-path → verify) + BackupCookies + /authenticate + /auth/verify
-│   │   ├── cookies_backup.go            ✓ T/b: Fingerprint, WriteBackup (atomic), ReadBackup, BackupFileMtime, auth_token guard
-│   │   ├── search.go                    ✓ T/c + FF-051: POST /search + strict-safe feed classification + local age cutoff + 4-condition scroll loop + extraction diagnostics
+│   │   ├── service.go                   ✓ T/a + T/b + FF-017 + FF-058: state machine, degraded evidence, browser-loss watcher/audit, cookie-operation status, /health, /status
+│   │   ├── auth.go                      ✓ T/b + FF-058: warm/forced verification, cookie reload/writeback evidence, /authenticate, /auth/verify
+│   │   ├── cookies_backup.go            ✓ T/b + FF-058: full-shape Fingerprint, strict-domain atomic backup, mtime, auth_token guard
+│   │   ├── search.go                    ✓ T/c + FF-051 + FF-058: POST /search + strict-safe feed classification + promoted-safe local age cutoff + cancellable scroll loop + extraction diagnostics
 │   │   └── *_test.go                    cookie, auth, browser-conversion, and search tests
-├── docker/twitter/                      ✓ T/b: twitter service image + entrypoint (peer of internal/)
+│   ├── twitterauth/                     ✓ FF-059: read-only Firefox SQLite capture, strict publication gate, and health/status service
+├── docker/twitter/                      ✓ headless Playwright search image; no VNC packages or runtime branch
+├── docker/twitter-auth/                 ✓ FF-059: raw Firefox ESR + Xvfb/noVNC image and container-local supervisor
 ├── scripts/matchday-status.{sh,sql}     ✓ FF-050: environment-scoped, SELECT-only match-day operator snapshot
-│   ├── Dockerfile                       Playwright base + playwright-go driver + optional WITH_VNC layer (~150 MB xvfb+fluxbox+x11vnc+novnc+websockify)
-│   └── entrypoint.sh                    Conditionally boots VNC daemon stack when TWITTER_VNC_MODE=true, otherwise passthrough
 ├── migrations/                          FF-041 operational migration applied to prod; retained with its schema-hash contract until remaining durable environments converge
 ├── scripts/                             dev smoke/probe programs plus guarded operator tools
 │   ├── smoke_repos/main.go              ✓ live pg + repo smoke test (dev only)
@@ -356,6 +359,10 @@ of the event ID. Client construction validates only static configuration and
 performs no readiness probe. A browser service that is starting or temporarily
 unreachable fails the current activity attempt; a later Temporal retry uses the
 same client and observes the recovered service (FF-016).
+
+`twitter.Client.Verify(ctx)` targets only the configured static service and
+forces `/auth/verify`; `TwitterMaintenanceWorkflow` uses it before its canary
+search so quiet periods still verify and persist the shared session (FF-058).
 
 ## Package dependency direction (audit-verified)
 

@@ -226,18 +226,19 @@ inspect call counts under a mutex.
 
 The files divide by responsibility:
 
-- `cookies_backup_test.go` — fingerprint stability,
-  value-rotation detection, `auth_token` guard on write and read,
-  domain filtering, concurrent writer/reader safety, and mtime advancement.
+- `cookies_backup_test.go` — fingerprint stability, value- and expiry-rotation
+  detection, `auth_token` guard on write and read, strict domain filtering,
+  concurrent writer/reader safety, and mtime advancement.
 - `auth_test.go` — first-boot no-cookies, happy path,
-  warm-path skip, TTL expiry re-verifies, external reload
+  warm-path skip, forced-verify bypass, TTL expiry re-verifies, external reload
   (VNC-container-simulated), verify failure escalates to
   `StateUnauthenticated`, browser failure escalates to `StateFailed`,
   **five concurrent EnsureAuthenticated callers dedupe to 1 verify
   via warm-path**, `BackupCookies` fingerprint dedupe (unchanged
   cookies skip write), `BackupCookies` rewrite-on-rotation, all
   `/authenticate` + `/auth/verify` HTTP paths (POST-only guard,
-  immutable reauth-config injection, fallback message).
+  immutable reauth-config injection, fallback message), degraded-versus-
+  unauthenticated classification, and cookie-persistence status evidence.
 - `browser_cookies_test.go` — Playwright→domain cookie
   conversion: nil `SameSite` doesn't panic, `SameSite` preserved,
   round-trip stability.
@@ -245,7 +246,25 @@ The files divide by responsibility:
   URL extraction, truncated-snowflake detection, exclude-ID
   normalization, result age computation, `/search` HTTP guards
   (method-not-allowed, empty query, malformed JSON), search-URL
-  builder, truncate.
+  builder, rune-safe truncation, promoted age-cutoff handling, equal-bound
+  jitter, and cancellation during jitter.
+
+`internal/activity/twittermaintenance` tests the forced-verify/search order,
+minimum feed/video evidence, and strict status-URL contract. The Temporal
+workflow test proves default inputs, single-attempt activity policy, retained
+output, and failure propagation without a retry burst. These tests use fakes;
+the first deployed run and one natural scheduled run remain the live X proof.
+
+`internal/twitterauth` tests Firefox SQLite JSON conversion, expiry filtering,
+the non-expired `auth_token` publication gate, compatible atomic backup output,
+preservation of the prior backup on unauthenticated profiles, and `/health`
+readiness. The release contract also pins `twitter-vnc` to
+`docker/twitter-auth/Dockerfile` and rejects the retired Playwright VNC
+environment flags. An isolated image smoke test proved Firefox-lock handling,
+post-close empty-profile classification, native-row conversion, mode-0600
+publication, and the secret-free ready status without a network or host mount.
+A real raw-Firefox X login remains FF-059's dev acceptance probe; neither unit
+tests nor the synthetic smoke claim that external proof.
 
 The mtime-detection cases deliberately cross one-second filesystem timestamp
 granularity and dominate this package's unit-test runtime.

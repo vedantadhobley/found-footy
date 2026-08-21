@@ -122,11 +122,11 @@ dev-ps: ## List running dev containers
 #
 # These targets bring up the twitter-vnc container ONLY when an
 # operator needs to log in (cookies expired). The container runs
-# raw Playwright Firefox on a Xvfb display and exposes noVNC over
+# raw Firefox ESR on an Xvfb display and exposes noVNC over
 # http://found-footy-<env>-twitter-vnc.luv — open in a browser,
-# log in, cookies land in the shared file, headless fleet picks
-# them up via mtime and resumes. Then run `make twitter-vnc-down`
-# to reclaim resources.
+# log in, then close Firefox so the capture service can publish the
+# shared file. Verify /status and the static service before running
+# `make twitter-vnc-down` to reclaim resources.
 #
 # The dev target defaults to the dev compose file; prod targets
 # operate against the prod compose file explicitly.
@@ -140,6 +140,7 @@ twitter-vnc-up: ## Bring up the DEV twitter-vnc container for manual cookie re-a
 	docker compose -f $(DEV_COMPOSE) --profile vnc up -d --build twitter-vnc
 	@echo ""
 	@echo "  ✓ twitter-vnc running. Log in at http://found-footy-dev-twitter-vnc.luv"
+	@echo "  Close Firefox after login, then require twitter-vnc /status state=ready."
 	@echo "  When done: make twitter-vnc-down"
 	@echo ""
 

@@ -163,7 +163,7 @@ func waitHealthy(ctx context.Context, addr string, timeout time.Duration) error 
 			case "failed":
 				return fmt.Errorf("instance reached terminal state 'failed': %s", st.Reason)
 			case "unauthenticated":
-				return fmt.Errorf("instance is 'unauthenticated' — the shared cookies need re-auth via the VNC container: %s", st.Reason)
+				return fmt.Errorf("instance is 'unauthenticated' — the shared cookies need raw-Firefox re-auth via the VNC container: %s", st.Reason)
 			}
 		}
 		if time.Now().After(deadline) {

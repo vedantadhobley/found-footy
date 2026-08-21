@@ -123,9 +123,8 @@ func main() {
 	// Firefox profile lives in the container writable layer for headless
 	// (matches Python-shape — each container gets its own private
 	// /data/firefox-profile/ via Docker's copy-on-write, no shared
-	// volume, no cross-instance SQLite locking). VNC container has its
-	// own dedicated `twitter-vnc-profile` volume for operator session
-	// persistence — that's a different profile from headless. See
+	// volume, no cross-instance SQLite locking). The raw-login container owns
+	// the separate `twitter-vnc-profile` volume and only publishes cookies. See
 	// decisions.md 2026-07-23 (ephemeral vs subdirs) for the rationale.
 	// Launch browser first — if this fails the service can't do
 	// anything useful, exit non-zero so the orchestrator restarts us.
@@ -157,41 +156,19 @@ func main() {
 		AuditEmit: emitAudit,
 	})
 
-	// TWITTER_VNC_MODE=true only in the twitter-vnc container (set by
-	// docker-compose). Drives the "open a browser tab so the operator
-	// sees Twitter" behavior below — no effect on headless.
-	vncMode := twitterCfg.VNCMode
-
 	// Kick off first auth check. EnsureAuthenticated handles the full
 	// sequence: mtime check → reload from shared file if newer →
 	// verify. Best-effort in the background — /health reports the
-	// outcome so the orchestrator sees it. Missing cookie
-	// file → StateUnauthenticated, VNC operator needs to log in.
+	// outcome so the orchestrator sees it. Missing cookie file means
+	// StateUnauthenticated; FF-059 owns the raw-Firefox recovery path.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		if err := svc.EnsureAuthenticated(ctx); err != nil {
 			// State is already set by EnsureAuthenticated (unauth /
 			// failed / etc.). Log for visibility; process stays up so
-			// the VNC re-auth path can recover it without a restart.
+			// a new cookie snapshot can recover it without a restart.
 			printJSON("initial_auth_failed", map[string]string{"err": err.Error()})
-		}
-
-		// VNC nicety: keep a Twitter tab open in the visible browser
-		// so the operator lands somewhere useful. If authed → x.com
-		// serves /home. If not → Twitter redirects to /login. Either
-		// way the operator sees Twitter, not Firefox's default new-
-		// tab page. Best-effort — a nav failure here doesn't affect
-		// service health (headless containers skip this block).
-		if vncMode {
-			navCtx, navCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer navCancel()
-			// Deliberately not closing the returned page — leaving
-			// it open is the point. Playwright will close it when
-			// the browser context tears down at process exit.
-			if _, err := browser.Navigate(navCtx, "https://x.com/", 20*time.Second); err != nil {
-				printJSON("vnc_landing_nav_failed", map[string]string{"err": err.Error()})
-			}
 		}
 	}()
 
@@ -262,9 +239,9 @@ func printJSON(action string, fields map[string]string) {
 // for structured events consumed by Grafana/Loki alerts. Emits one
 // canonical-ordered JSON line per event.
 //
-// Field key `action` is the primary discriminator (`twitter.auth_expired` or
-// `twitter.browser_failed`). Container hostname gets folded in automatically
-// so alerts can identify which replica hit the transition.
+// Field key `action` is the primary discriminator for authentication, browser,
+// and cookie-persistence transitions. Container hostname gets folded in
+// automatically so alerts can identify which replica hit the transition.
 func emitAudit(action string, fields map[string]any) {
 	if fields == nil {
 		fields = make(map[string]any)

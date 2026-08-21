@@ -233,9 +233,8 @@ services:
   # via the `vnc` compose profile below (matches prod's shape per
   # decisions.md 2026-07-22, VNC-opt-in reconciliation).
   twitter:
-    # Reconciled 2026-07-22 to use the merged docker/twitter/Dockerfile
-    # (Playwright base + driver install + optional WITH_VNC layer);
-    # the top-level Dockerfile is worker/api/scaler-only.
+    # The search service uses its dedicated Playwright image; operator login
+    # uses the separate raw-Firefox twitter-auth image below.
     build:
       context: .
       dockerfile: docker/twitter/Dockerfile
@@ -288,17 +287,14 @@ services:
   # ────── Go: twitter-vnc (manual cookie re-auth container) ──────
   # Opt-in only. Started via:
   #   docker compose -f docker-compose.dev.yml --profile vnc up -d twitter-vnc
-  # or via `make twitter-vnc-up`. Same twitter binary; entrypoint
-  # boots Xvfb + fluxbox + x11vnc + websockify+noVNC because
-  # TWITTER_VNC_MODE=true, Playwright renders into the visible display.
-  # Operator opens noVNC via found-footy-dev-twitter-vnc.luv, logs in,
-  # cookies land in the shared file, headless picks up via mtime.
+  # or via `make twitter-vnc-up`. The image runs raw Firefox ESR with no
+  # Playwright or WebDriver plus a read-only cookies.sqlite capture service.
+  # Operator opens noVNC via found-footy-dev-twitter-vnc.luv, logs in, then
+  # closes Firefox so the browser-neutral snapshot can land in the shared file.
   twitter-vnc:
     build:
       context: .
-      dockerfile: docker/twitter/Dockerfile
-      args:
-        WITH_VNC: "true"
+      dockerfile: docker/twitter-auth/Dockerfile
     image: found-footy-dev-twitter-vnc:latest
     container_name: found-footy-dev-twitter-vnc
     profiles: [vnc]
@@ -307,9 +303,6 @@ services:
     security_opt:
       - seccomp:unconfined
     shm_size: 1gb
-    environment:
-      TWITTER_VNC_MODE: "true"       # entrypoint boots the VNC stack
-      TWITTER_HEADLESS: "false"      # Playwright uses the Xvfb display
     volumes:
       # Separate profile dir from headless — visible Firefox's SQLite
       # writes shouldn't race with the headless Playwright context.
