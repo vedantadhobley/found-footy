@@ -44,7 +44,7 @@ func TestStatusExposesBuildIdentity(t *testing.T) {
 // TestEnsureAuthenticated_FirstBoot_NoCookieFile — cookie file missing,
 // verify fails (no session). Service goes StateUnauthenticated.
 func TestEnsureAuthenticated_FirstBoot_NoCookieFile(t *testing.T) {
-	fake := &fakeBrowser{verifyErr: errors.New("logged-in indicator missing")}
+	fake := &fakeBrowser{verifyErr: ErrUnauthenticated}
 	svc, _ := newTestService(t, fake)
 
 	err := svc.EnsureAuthenticated(context.Background())
@@ -117,6 +117,23 @@ func TestEnsureAuthenticated_WarmPath(t *testing.T) {
 	}
 }
 
+func TestVerifyAuthenticatedBypassesWarmPath(t *testing.T) {
+	fake := &fakeBrowser{verifyErr: nil}
+	svc, cookieFile := newTestService(t, fake)
+	if err := WriteBackup(cookieFile, validCookies(), time.Now()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := svc.EnsureAuthenticated(context.Background()); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if err := svc.VerifyAuthenticated(context.Background()); err != nil {
+		t.Fatalf("forced call: %v", err)
+	}
+	if got := atomic.LoadInt64(&fake.verifyCalls); got != 2 {
+		t.Fatalf("verify calls = %d, want 2", got)
+	}
+}
+
 // TestEnsureAuthenticated_WarmPathExpires — after warmPathTTL, verify
 // runs again even if cookies haven't changed on disk.
 func TestEnsureAuthenticated_WarmPathExpires(t *testing.T) {
@@ -142,7 +159,7 @@ func TestEnsureAuthenticated_WarmPathExpires(t *testing.T) {
 }
 
 // TestEnsureAuthenticated_ExternalReload — file mtime advances (e.g.,
-// VNC container wrote new cookies). Next EnsureAuthenticated call
+// raw-login capture service wrote new cookies). Next EnsureAuthenticated call
 // reloads even inside the warm-path window.
 func TestEnsureAuthenticated_ExternalReload(t *testing.T) {
 	fake := &fakeBrowser{verifyErr: nil}
@@ -192,7 +209,7 @@ func TestEnsureAuthenticated_ExternalReload(t *testing.T) {
 // successfully but verify fails (Twitter rejected the session).
 // Service goes StateUnauthenticated with a wrapping ErrUnauthenticated.
 func TestEnsureAuthenticated_VerifyFailsAfterReload(t *testing.T) {
-	fake := &fakeBrowser{verifyErr: errors.New("indicator missing")}
+	fake := &fakeBrowser{verifyErr: ErrUnauthenticated}
 	svc, cookieFile := newTestService(t, fake)
 	if err := WriteBackup(cookieFile, validCookies(), time.Now()); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -207,6 +224,25 @@ func TestEnsureAuthenticated_VerifyFailsAfterReload(t *testing.T) {
 	}
 }
 
+func TestEnsureAuthenticated_InconclusiveVerifyIsDegradedNotExpired(t *testing.T) {
+	fake := &fakeBrowser{verifyErr: errors.New("network timeout")}
+	svc, cookieFile := newTestService(t, fake)
+	if err := WriteBackup(cookieFile, validCookies(), time.Now()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	err := svc.EnsureAuthenticated(context.Background())
+	if err == nil {
+		t.Fatal("expected inconclusive verification error")
+	}
+	if errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("infrastructure failure misclassified as auth expiry: %v", err)
+	}
+	if state, _ := svc.State(); state != StateDegraded {
+		t.Fatalf("state = %s, want degraded", state)
+	}
+}
+
 // TestEnsureAuthenticated_UnreadableCookieFile_ProceedsToVerify —
 // a cookie file that exists but is corrupt (bad JSON, missing
 // auth_token, empty) is NOT a hard error. maybeReloadCookies bumps
@@ -217,12 +253,12 @@ func TestEnsureAuthenticated_VerifyFailsAfterReload(t *testing.T) {
 // session) or should flip to unauth.
 //
 // This is the code path that lets the smoke-test flow "move cookie
-// file aside → restart container → operator logs in via VNC" work:
+// file aside → restart container → raw login captures cookies" work:
 // stopped container gets restarted with an unreadable/missing
 // shared file, unauth is reached via verify failure, operator can
 // re-auth without the state getting stuck at StateLoading.
 func TestEnsureAuthenticated_UnreadableCookieFile_ProceedsToVerify(t *testing.T) {
-	fake := &fakeBrowser{verifyErr: errors.New("indicator missing")}
+	fake := &fakeBrowser{verifyErr: ErrUnauthenticated}
 	svc, cookieFile := newTestService(t, fake)
 
 	// Seed a corrupt file (bad JSON) so ReadBackup errors but
@@ -252,7 +288,7 @@ func TestEnsureAuthenticated_UnreadableCookieFile_ProceedsToVerify(t *testing.T)
 // recorded on the first failed read). Prevents log floods + repeated
 // wasted syscalls on a persistently-broken file.
 func TestEnsureAuthenticated_UnreadableCookieFile_MtimeAdvanced(t *testing.T) {
-	fake := &fakeBrowser{verifyErr: errors.New("indicator missing")}
+	fake := &fakeBrowser{verifyErr: ErrUnauthenticated}
 	svc, cookieFile := newTestService(t, fake)
 
 	if err := os.WriteFile(cookieFile, []byte("{not json"), 0o600); err != nil {
@@ -398,5 +434,29 @@ func TestBackupCookies_RewriteOnRotation(t *testing.T) {
 		if c.Name == "ct0" && c.Value != "csrf_ROTATED" {
 			t.Errorf("persisted ct0 = %q, want csrf_ROTATED", c.Value)
 		}
+	}
+}
+
+func TestBackupCookiesFailureIsVisibleInStatus(t *testing.T) {
+	fake := &fakeBrowser{getCookiesErr: errors.New("browser closed")}
+	svc, _ := newTestService(t, fake)
+	if err := svc.BackupCookies(context.Background()); err == nil {
+		t.Fatal("BackupCookies = nil, want error")
+	}
+
+	mux := http.NewServeMux()
+	svc.RegisterHandlers(mux)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/status", nil))
+	var response struct {
+		CookieBackup struct {
+			LastError string `json:"last_error"`
+		} `json:"cookie_backup"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode /status: %v", err)
+	}
+	if response.CookieBackup.LastError == "" {
+		t.Fatal("cookie backup failure missing from /status")
 	}
 }

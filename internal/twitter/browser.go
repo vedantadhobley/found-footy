@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,14 +45,13 @@ type NewBrowserOptions struct {
 	// ProfileDir is the persistent Firefox profile path. Default:
 	// /data/firefox-profile. Lives in the container's writable layer
 	// (headless) — each container has its own private profile, no
-	// shared volume, no cross-instance SQLite locking. VNC container
-	// mounts its own dedicated volume here for operator session
-	// persistence. See decisions.md 2026-07-23 for the ephemeral-vs-
-	// shared rationale.
+	// shared volume, no cross-instance SQLite locking. The raw-login
+	// container owns a different profile and never passes it to Playwright.
+	// See decisions.md 2026-07-23 for the ephemeral-vs-shared rationale.
 	ProfileDir string
 
-	// Headless: true for headless scraping (default), false for VNC
-	// container's manual-login mode where a human interacts.
+	// Headless is true in every deployed search container. False remains useful
+	// for local browser debugging; operator login uses raw Firefox separately.
 	Headless bool
 
 	// FirefoxUserPrefs is a map of Firefox about:config preferences
@@ -308,7 +308,7 @@ func pwSameSite(s string) *playwright.SameSiteAttribute {
 
 // ReplaceCookies clears the current context's cookies and adds the
 // provided set. Used by the auth reload flow when another instance
-// or the VNC container has written fresh cookies to the shared
+// or the raw-login capture service has written fresh cookies to the shared
 // backup file (detected via mtime); we discard our in-memory
 // cookies and adopt the fresh ones before the next verify.
 func (b *Browser) ReplaceCookies(cookies []Cookie) error {
@@ -350,19 +350,29 @@ func (b *Browser) ReplaceCookies(cookies []Cookie) error {
 //
 // Logged-in indicator: presence of the primary column tweet
 // composer (`[data-testid='SideNav_AccountSwitcher_Button']` is the
-// most reliable). Absence signals cookie expiry → VNC re-auth needed.
+// most reliable). A login redirect proves raw-Firefox re-auth is needed.
 func (b *Browser) VerifySession(ctx context.Context, timeout time.Duration) error {
 	page, err := b.Navigate(ctx, "https://x.com/home", timeout)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = page.Close() }()
+	if isLoginURL(page.URL()) {
+		return fmt.Errorf("%w: redirected to %s", ErrUnauthenticated, page.URL())
+	}
 
 	// Give the SPA a moment to render logged-in-vs-logged-out state.
 	if err := page.Locator(`[data-testid='SideNav_AccountSwitcher_Button']`).WaitFor(
 		playwright.LocatorWaitForOptions{Timeout: playwright.Float(float64(timeout / time.Millisecond))},
 	); err != nil {
-		return fmt.Errorf("twitter.Browser.VerifySession: logged-in indicator missing (cookies likely expired): %w", err)
+		if isLoginURL(page.URL()) {
+			return fmt.Errorf("%w: redirected to %s", ErrUnauthenticated, page.URL())
+		}
+		return fmt.Errorf("twitter.Browser.VerifySession: logged-in indicator missing without login redirect: %w", err)
 	}
 	return nil
+}
+
+func isLoginURL(raw string) bool {
+	return strings.Contains(raw, "/login") || strings.Contains(raw, "/flow/")
 }

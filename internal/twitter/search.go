@@ -154,15 +154,19 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 	defer s.setBusy(false)
 
 	// mtime check — reload cookies if the shared file has been updated
-	// since we last loaded (VNC re-auth completed, another instance
+	// since we last loaded (raw re-auth captured, another instance
 	// wrote fresh cookies). No verify hop — we're about to navigate to
 	// the search URL anyway and check the switcher button there.
 	s.mu.RLock()
 	lastLoadedMtime := s.lastLoadedMtime
 	s.mu.RUnlock()
-	// Reload failure is deliberately non-terminal: verification against the
-	// current browser context below decides the real outcome.
-	_, _ = s.maybeReloadCookies(lastLoadedMtime)
+	// A malformed backup is absorbed inside maybeReloadCookies and the current
+	// browser session remains usable. A browser-level replacement failure is
+	// terminal for this process and must not be laundered into an empty search.
+	if _, err := s.maybeReloadCookies(r.Context(), lastLoadedMtime); err != nil {
+		writeSearchError(w, http.StatusInternalServerError, errClassInternal, "reload cookies: "+err.Error())
+		return
+	}
 
 	start := time.Now()
 	searchURL := buildSearchURL(req.Query)
@@ -201,6 +205,11 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 			writeSearchError(w, http.StatusInternalServerError, errClassInternal, "wait for tweet feed: "+err.Error())
 			return
 		}
+		// Authentication was proven on this navigation. Preserve any cookie
+		// refresh even when the feed itself did not render; persistence failure
+		// is exposed through /status and audit logs without discarding a valid
+		// empty search result.
+		_ = s.BackupCookies(r.Context())
 		writeSearchOK(w, SearchResponse{
 			Status:     "success",
 			Videos:     nil,

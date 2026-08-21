@@ -42,6 +42,16 @@ func TestFingerprint_ChangesOnValueRotation(t *testing.T) {
 	}
 }
 
+func TestFingerprint_ChangesOnExpiryRefresh(t *testing.T) {
+	c1 := validCookies()
+	c1[0].Expires = 1_800_000_000
+	c2 := validCookies()
+	c2[0].Expires = 1_900_000_000
+	if Fingerprint(c1) == Fingerprint(c2) {
+		t.Fatal("expiry-only refresh did not change fingerprint")
+	}
+}
+
 // TestFingerprint_EmptyIsZero — empty cookie set gives a distinct
 // zero-value fingerprint; used to bootstrap the in-memory
 // last-fingerprint tracker.
@@ -145,6 +155,17 @@ func TestWriteBackup_FiltersToTwitterDomain(t *testing.T) {
 		if c.Domain == ".google.com" {
 			t.Errorf("google.com cookie leaked through domain filter")
 		}
+	}
+}
+
+func TestWriteBackup_RejectsSubstringLookalikeDomain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "twitter_cookies.json")
+	cookies := []Cookie{
+		{Name: "auth_token", Value: "attacker", Domain: ".notx.com"},
+		{Name: "ct0", Value: "csrf", Domain: ".reallytwitter.com"},
+	}
+	if err := WriteBackup(path, cookies, time.Now()); err == nil {
+		t.Fatal("lookalike domains were accepted")
 	}
 }
 

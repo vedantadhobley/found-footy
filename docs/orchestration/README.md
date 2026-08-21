@@ -20,6 +20,8 @@ the same commit. Per the [2026-07-07 working rule](../decisions.md).
   and fixture completion.
 - [`event.md`](./event.md) — per-event search, candidate processing, validation,
   deduplication, persistence, and completion.
+- [`twitter-maintenance.md`](./twitter-maintenance.md) — fixture-independent
+  authentication persistence and live-search DOM canary.
 - [`testing.md`](./testing.md) — workflow test shape and related references.
 
 ## Workflow inventory
@@ -29,6 +31,7 @@ the same commit. Per the [2026-07-07 working rule](../decisions.md).
 | IngestWorkflow | ✓ scheduled | Temporal Schedule `ingest-scheduled-daily` (`5 0 * * *`) | `internal/workflow/ingest.go` |
 | ActivePollWorkflow | ✓ scheduled | Temporal Schedule `active-poll-scheduled` (IntervalSpec 30s default) | `internal/workflow/active_poll.go` |
 | StagingPollWorkflow | ✓ scheduled | Temporal Schedule `staging-poll-scheduled` (cron `*/15 * * * *` default) | `internal/workflow/staging_poll.go` |
+| TwitterMaintenanceWorkflow | ✓ scheduled | Temporal Schedule `twitter-maintenance-scheduled` (cron `17 */6 * * *` default) | `internal/workflow/twitter_maintenance.go` |
 | EventWorkflow | ✓ spawned | `ReconcileFixture` starts `event-{id}` when `downstream_triggered` flips. | `internal/workflow/event.go` + `event_pipeline*.go` |
 | VideoWorkflow | ✓ replay compatibility | EventWorkflow histories started before FF-022 retain their awaited child per candidate; new executions schedule the two activities directly around an exact-MD5 claim. | `internal/workflow/video.go` |
 | ~~VideoValidationWorkflow~~ / ~~AssetPersistenceWorkflow~~ | ⊘ superseded | Validation and persistence run as activities inside EventWorkflow's serialized queue. | — |
@@ -48,7 +51,7 @@ same time — the "Pre" prefix was misleading.
 The current spawn mechanism and retained compatibility boundary are:
 
 - **Monitor → EventWorkflow — Temporal client `StartWorkflow`, pg-tracked.**
-  The three scheduled workflows are independent Temporal cron Schedules;
+  The four scheduled workflows are independent Temporal Schedules;
   none is a Temporal parent of the others. When a goal's
   `downstream_triggered` flips, `ReconcileFixture` spawns the EventWorkflow
   via the Temporal **client** (`StartWorkflow`, deterministic ID
@@ -79,11 +82,13 @@ flowchart TD
         Ingest["IngestWorkflow<br/>daily 00:05 UTC"]
         Staging["StagingPollWorkflow<br/>cron */15"]
         Active["ActivePollWorkflow<br/>every ~30s"]
+        TwitterMaintenance["TwitterMaintenanceWorkflow<br/>minute 17 every 6h"]
     end
 
     Ingest -->|"upsert fixtures → staging"| PG[("Postgres")]
     Staging -->|"staging → active"| PG
     Active -->|"poll live · 3-vote debounce"| PG
+    TwitterMaintenance -->|"force auth sync + live-search DOM canary"| Twitter["Static Twitter service"]
 
     Active -->|"goal confirmed →<br/>client StartWorkflow + tracking row"| Disc["EventWorkflow ✓<br/>(per goal · #164c)<br/>producer: inline search"]
     Disc ==>|"DownloadAndStage<br/>per candidate"| Claim["EventWorkflow MD5 claims<br/>one owner per exact byte cluster"]
