@@ -50,6 +50,47 @@ type SearchResponse struct {
 	VideoTweets     int        `json:"video_tweets,omitempty"`
 }
 
+// Verify forces the static Twitter service to perform a live authentication
+// check and persist the resulting cookie snapshot. It is intentionally
+// separate from Search: scheduled maintenance must fail when cookie persistence
+// fails, while an event search should still return discovered candidates.
+func (c *Client) Verify(ctx context.Context) error {
+	callCtx, cancel := context.WithTimeout(ctx, c.searchTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, c.baseURL+"/auth/verify", nil)
+	if err != nil {
+		return fmt.Errorf("twitter.Verify: build request: %w", err)
+	}
+	start := time.Now()
+	resp, err := c.http.Do(req)
+	elapsed := time.Since(start)
+	c.ins.callDuration.WithLabelValues("verify").Observe(elapsed.Seconds())
+	if err != nil {
+		c.ins.calls.WithLabelValues("verify", "failure").Inc()
+		c.ins.emitEvent(ctx, logging.LevelWarn, vocabulary.ActionTwitterVerifyFailed,
+			"twitter authentication verification transport error", logging.Err(err))
+		return fmt.Errorf("twitter.Verify: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		c.ins.calls.WithLabelValues("verify", "failure").Inc()
+		c.ins.emitEvent(ctx, logging.LevelWarn, vocabulary.ActionTwitterVerifyFailed,
+			"twitter authentication verification failed",
+			logging.Int("status", resp.StatusCode),
+			logging.String("body_preview", string(respBody)),
+		)
+		return fmt.Errorf("twitter.Verify: %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+	}
+	c.ins.calls.WithLabelValues("verify", "success").Inc()
+	c.ins.emitEvent(ctx, logging.LevelInfo, vocabulary.ActionTwitterVerify,
+		"twitter authentication verification succeeded",
+		logging.Int64("elapsed_ms", elapsed.Milliseconds()),
+	)
+	return nil
+}
+
 // VideoRef is one discovered video from a Twitter search. Extra
 // omitempty fields (Username, AgeMinutes) match the Twitter service's
 // SearchResponse — they're populated by T/c but the older Python

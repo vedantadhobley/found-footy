@@ -113,6 +113,7 @@ w := temporal.NewWorker(tempClient, tempIns, worker.Options{})
 w.RegisterWorkflow(ffwf.IngestWorkflow)
 w.RegisterWorkflow(ffwf.ActivePollWorkflow)
 w.RegisterWorkflow(ffwf.StagingPollWorkflow)
+w.RegisterWorkflow(ffwf.TwitterMaintenanceWorkflow)
 w.RegisterWorkflow(ffwf.EventWorkflow)
 w.RegisterWorkflow(ffwf.VideoWorkflow)
 w.RegisterActivity(ingestActs)     // *ingest.Activities   (8 methods)
@@ -123,6 +124,7 @@ w.RegisterActivity(visionActs)     // *vision.Activities
 w.RegisterActivity(persistActs)    // *video.PersistActivities
 w.RegisterActivity(fleetActs)      // *fleet.Activities
 w.RegisterActivity(livefeedActs)   // *livefeed.Activities
+w.RegisterActivity(twitterMaintenanceActs) // *twittermaintenance.Activities
 
 // 4. Start.
 if err := w.Start(ctx); err != nil { return err }
@@ -224,15 +226,20 @@ Load-bearing details:
   executing (unusual — ingest is fast, but a Postgres stall could
   cause it), skip the next scheduled run rather than double-firing.
 
-**Three schedules ship** — all via this same idempotent `Create` pattern in
+**Four schedules ship** — all via this same idempotent `Create` pattern in
 `internal/app/worker/worker.go` (`ensureIngestSchedule` / `ensureActivePollSchedule` /
-`ensureStagingPollSchedule`):
+`ensureStagingPollSchedule` / `ensureTwitterMaintenanceSchedule`):
 
 | Schedule ID | Spec | Workflow |
 |---|---|---|
 | `ingest-scheduled-daily` | cron `5 0 * * *` (00:05 UTC) | IngestWorkflow (`FetchFuture:true, RetentionDays:14`) |
 | `active-poll-scheduled` | IntervalSpec `Every: WORKFLOWS_ACTIVE_FIXTURE_POLL_INTERVAL` (30s) | ActivePollWorkflow |
 | `staging-poll-scheduled` | cron `WORKFLOWS_STAGING_POLL_CRON` (`*/15 * * * *`) | StagingPollWorkflow |
+| `twitter-maintenance-scheduled` | cron `WORKFLOWS_TWITTER_MAINTENANCE_CRON` (`17 */6 * * *`) | TwitterMaintenanceWorkflow |
+
+TwitterMaintenanceWorkflow targets the static Twitter service. It forces a
+live auth verification and cookie sync, then runs the minimum-evidence search
+DOM canary with one activity attempt. It does not provision an event browser.
 
 EventWorkflow is **spawned** by client `StartWorkflow`, not scheduled. New
 executions run candidate download and hashing as direct activities around an

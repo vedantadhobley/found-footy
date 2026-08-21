@@ -18,6 +18,7 @@ import (
 	ingestactivity "github.com/vedantadhobley/found-footy/internal/activity/ingest"
 	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
 	monitoractivity "github.com/vedantadhobley/found-footy/internal/activity/monitor"
+	twittermaintenanceactivity "github.com/vedantadhobley/found-footy/internal/activity/twittermaintenance"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
@@ -275,9 +276,11 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 		return fmt.Errorf("nats publisher: %w", err)
 	}
 	livefeedActs := &livefeedactivity.Activities{Pub: natsPub}
+	twitterMaintenanceActs := &twittermaintenanceactivity.Activities{Twitter: twitterClient}
 
 	w.RegisterWorkflow(ffwf.ActivePollWorkflow)
 	w.RegisterWorkflow(ffwf.StagingPollWorkflow)
+	w.RegisterWorkflow(ffwf.TwitterMaintenanceWorkflow)
 	w.RegisterWorkflow(ffwf.EventWorkflow)
 	w.RegisterWorkflow(ffwf.VideoWorkflow)
 	w.RegisterActivity(monitorActs)
@@ -287,6 +290,7 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 	w.RegisterActivity(persistActs)
 	w.RegisterActivity(fleetActs)
 	w.RegisterActivity(livefeedActs)
+	w.RegisterActivity(twitterMaintenanceActs)
 
 	if err := w.Start(ctx); err != nil {
 		return err
@@ -306,6 +310,9 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 	if err := ensureIngestSchedule(ctx, tempClient, deps); err != nil {
 		return err
 	}
+	if err := ensureTwitterMaintenanceSchedule(ctx, tempClient, deps); err != nil {
+		return err
+	}
 
 	// Register the two poll workflow schedules. Both are
 	// idempotent (ErrScheduleAlreadyRunning → success). Independent
@@ -319,6 +326,56 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 	}
 
 	<-ctx.Done()
+	return nil
+}
+
+// ensureTwitterMaintenanceSchedule registers the fixture-independent auth and
+// live-search DOM canary. The static fallback browser owns this traffic; the
+// per-event fleet remains zero-warm.
+func ensureTwitterMaintenanceSchedule(
+	ctx context.Context,
+	tempClient *temporal.Client,
+	deps *bootstrap.Deps,
+) error {
+	const scheduleID = "twitter-maintenance-scheduled"
+	cronExpr := deps.Cfg.Workflows.TwitterMaintenanceCron
+
+	_, err := tempClient.ScheduleClient().Create(ctx, client.ScheduleOptions{
+		ID: scheduleID,
+		Spec: client.ScheduleSpec{
+			CronExpressions: []string{cronExpr},
+		},
+		Action: &client.ScheduleWorkflowAction{
+			ID:        "twitter-maintenance-scheduled",
+			Workflow:  ffwf.TwitterMaintenanceWorkflow,
+			TaskQueue: tempClient.TaskQueue(),
+			Args:      []any{ffwf.TwitterMaintenanceWorkflowInput{}},
+		},
+		Overlap: enums.SCHEDULE_OVERLAP_POLICY_SKIP,
+	})
+	if err != nil {
+		if errors.Is(err, sdktemporal.ErrScheduleAlreadyRunning) {
+			deps.Log.Emit(ctx, logging.LevelInfo,
+				vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleAlreadyExists,
+				"TwitterMaintenanceWorkflow schedule already registered",
+				logging.String("schedule_id", scheduleID),
+			)
+			return nil
+		}
+		deps.Log.Emit(ctx, logging.LevelError,
+			vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleFailed,
+			"failed to create TwitterMaintenanceWorkflow schedule",
+			logging.String("schedule_id", scheduleID),
+			logging.Err(err),
+		)
+		return fmt.Errorf("create twitter maintenance schedule: %w", err)
+	}
+	deps.Log.Emit(ctx, logging.LevelInfo,
+		vocabulary.ModuleInfraTemporal, vocabulary.ActionTemporalScheduleCreated,
+		"TwitterMaintenanceWorkflow schedule registered",
+		logging.String("schedule_id", scheduleID),
+		logging.String("cron", cronExpr),
+	)
 	return nil
 }
 

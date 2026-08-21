@@ -5,11 +5,14 @@
 package twitter
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 )
 
 // TestExtractTweetIDFromURL — cases ported from scrape.py's
@@ -262,5 +265,37 @@ func TestTruncate(t *testing.T) {
 	}
 	if got := truncate("short", 200); got != "short" {
 		t.Errorf("short string mangled: %q", got)
+	}
+	unicode := strings.Repeat("⚽", 201)
+	got := truncate(unicode, 200)
+	if !utf8.ValidString(got) || utf8.RuneCountInString(got) != 200 {
+		t.Errorf("Unicode truncate invalid: valid=%v runes=%d", utf8.ValidString(got), utf8.RuneCountInString(got))
+	}
+}
+
+func TestShouldStopAtAgeIgnoresPromotedEntries(t *testing.T) {
+	if shouldStopAtAge(extractedTweet{IsPromoted: true, AgeMinutes: 60}, 3) {
+		t.Fatal("stale promoted entry stopped chronological scan")
+	}
+	if !shouldStopAtAge(extractedTweet{AgeMinutes: 4}, 3) {
+		t.Fatal("stale organic entry did not stop chronological scan")
+	}
+}
+
+func TestNextScrollJitterAllowsEqualBounds(t *testing.T) {
+	if got := nextScrollJitter(250*time.Millisecond, 250*time.Millisecond); got != 250*time.Millisecond {
+		t.Fatalf("jitter = %s, want 250ms", got)
+	}
+}
+
+func TestWaitForScrollHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	if err := waitForScroll(ctx, time.Second); err == nil {
+		t.Fatal("waitForScroll = nil, want cancellation")
+	}
+	if time.Since(start) > 100*time.Millisecond {
+		t.Fatal("canceled jitter wait did not return promptly")
 	}
 }

@@ -10,7 +10,7 @@
 //     or trust a session that's missing the load-bearing cookie.
 //   - Atomic writes via temp + rename — concurrent readers see either
 //     the full old file or the full new one, never a torn partial JSON.
-//   - Fingerprint dedupe — sha256 of sorted (name, value) pairs; skip
+//   - Fingerprint dedupe — sha256 of the complete sorted cookie shape; skip
 //     the write entirely when the cookie set hasn't changed since the
 //     last-in-memory fingerprint. Kills the 60-80% of Python's
 //     redundant writes when Twitter didn't rotate a token.
@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -36,7 +37,7 @@ import (
 const authTokenName = "auth_token"
 
 // CookieFingerprint is a stable hash of a cookie set — sha256 over
-// the sorted (name, value) pairs. Instances keep the fingerprint of
+// the complete sorted cookie shape. Instances keep the fingerprint of
 // what they last wrote in memory; if the current browser fingerprint
 // matches, the write is skipped.
 type CookieFingerprint [sha256.Size]byte
@@ -45,14 +46,15 @@ type CookieFingerprint [sha256.Size]byte
 func (f CookieFingerprint) Hex() string { return hex.EncodeToString(f[:]) }
 
 // Fingerprint computes the deterministic hash of a cookie set.
-// Order-independent — sorts by (name, domain) before hashing so the
+// Order-independent — sorts by every persisted field before hashing so the
 // same logical set always produces the same fingerprint regardless
 // of the order Playwright returned them.
 //
-// Only (name, value, domain) contribute to the hash. Path / expires
-// / secure flags aren't part of "did the session change" — Twitter
-// rotates value on the same (name, domain) when it refreshes a
-// token, which is what we care about.
+// Every persisted attribute contributes to the hash. Twitter can extend a
+// cookie's expiry without rotating its value; ignoring that change would leave
+// the shared backup with the old expiry and undo the refresh on the next cold
+// browser. The complete persisted shape is the simplest definition of "did
+// the cookie snapshot change?".
 func Fingerprint(cookies []Cookie) CookieFingerprint {
 	if len(cookies) == 0 {
 		return CookieFingerprint{}
@@ -63,22 +65,28 @@ func Fingerprint(cookies []Cookie) CookieFingerprint {
 		if sorted[i].Name != sorted[j].Name {
 			return sorted[i].Name < sorted[j].Name
 		}
-		return sorted[i].Domain < sorted[j].Domain
+		if sorted[i].Domain != sorted[j].Domain {
+			return sorted[i].Domain < sorted[j].Domain
+		}
+		if sorted[i].Path != sorted[j].Path {
+			return sorted[i].Path < sorted[j].Path
+		}
+		if sorted[i].Value != sorted[j].Value {
+			return sorted[i].Value < sorted[j].Value
+		}
+		if sorted[i].Expires != sorted[j].Expires {
+			return sorted[i].Expires < sorted[j].Expires
+		}
+		if sorted[i].HTTPOnly != sorted[j].HTTPOnly {
+			return !sorted[i].HTTPOnly
+		}
+		if sorted[i].Secure != sorted[j].Secure {
+			return !sorted[i].Secure
+		}
+		return sorted[i].SameSite < sorted[j].SameSite
 	})
-	h := sha256.New()
-	for _, c := range sorted {
-		// Delimiters between fields prevent adjacent-field collisions
-		// (e.g., ("ab", "cd") vs ("a", "bcd") hashing the same without).
-		_, _ = h.Write([]byte(c.Name))
-		_, _ = h.Write([]byte{0})
-		_, _ = h.Write([]byte(c.Value))
-		_, _ = h.Write([]byte{0})
-		_, _ = h.Write([]byte(c.Domain))
-		_, _ = h.Write([]byte{1}) // record separator
-	}
-	var out CookieFingerprint
-	copy(out[:], h.Sum(nil))
-	return out
+	data, _ := json.Marshal(sorted) // Cookie contains only JSON-safe scalar fields.
+	return sha256.Sum256(data)
 }
 
 // hasAuthToken reports whether the cookie set contains a non-empty
@@ -94,31 +102,23 @@ func hasAuthToken(cookies []Cookie) bool {
 	return false
 }
 
-// filterToTwitterDomain returns only cookies whose Domain contains
-// "x.com" — matches Python's filter (session.py:286). Cookies for
-// unrelated domains that snuck into the Playwright context (e.g.
-// from a redirect) shouldn't get persisted.
+// filterToTwitterDomain returns only exact X/Twitter domains or their
+// subdomains. A substring check would also accept attacker-controlled domains
+// such as notx.com.
 func filterToTwitterDomain(cookies []Cookie) []Cookie {
 	out := make([]Cookie, 0, len(cookies))
 	for _, c := range cookies {
-		if containsAny(c.Domain, "x.com", "twitter.com") {
+		if isTwitterDomain(c.Domain) {
 			out = append(out, c)
 		}
 	}
 	return out
 }
 
-func containsAny(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if len(s) >= len(sub) {
-			for i := 0; i+len(sub) <= len(s); i++ {
-				if s[i:i+len(sub)] == sub {
-					return true
-				}
-			}
-		}
-	}
-	return false
+func isTwitterDomain(domain string) bool {
+	domain = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	return domain == "x.com" || strings.HasSuffix(domain, ".x.com") ||
+		domain == "twitter.com" || strings.HasSuffix(domain, ".twitter.com")
 }
 
 // WriteBackup writes a cookie set to the backup file at path.

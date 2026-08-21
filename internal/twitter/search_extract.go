@@ -126,13 +126,18 @@ func isTruncatedSnowflake(tid string) bool {
 	return len(tid) < MinSnowflakeLen
 }
 
-// truncate returns s truncated to max bytes. Used for tweet text —
-// downstream storage expects ≤200 chars per scrape.py's default.
+// truncate returns s truncated to max Unicode code points. Used for tweet text
+// where downstream storage expects at most 200 characters. Byte slicing could
+// split a multibyte rune and produce text PostgreSQL rejects as invalid UTF-8.
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
-	return s[:max]
+	return string(runes[:max])
 }
 
 // writeSearchOK emits a 200 JSON body.

@@ -26,6 +26,7 @@ const (
 	StateStarting        State = "starting"
 	StateLoading         State = "loading" // reloading cookies from shared backup file
 	StateHealthy         State = "healthy"
+	StateDegraded        State = "degraded" // auth check was inconclusive; retry, do not request login
 	StateUnauthenticated State = "unauthenticated"
 	StateFailed          State = "failed" // browser dead / unrecoverable
 )
@@ -155,8 +156,15 @@ type Service struct {
 	lastAuthCheck   time.Time // last VerifySession attempt (success or fail)
 	lastLoadedMtime time.Time // mtime of cookie file at last successful reload
 	lastFingerprint CookieFingerprint
-	busy            bool // authMu is currently held (surface via /status)
-	startedAt       time.Time
+	busyCount       int // in-flight auth/search operations (surface as bool via /status)
+
+	lastCookieBackupAttempt time.Time
+	lastCookieBackupSuccess time.Time
+	lastCookieBackupError   string
+	lastCookieReloadAttempt time.Time
+	lastCookieReloadSuccess time.Time
+	lastCookieReloadError   string
+	startedAt               time.Time
 }
 
 // NewService constructs a Service in StateStarting. The browser
@@ -236,7 +244,7 @@ func (s *Service) SetState(newState State, reason string) {
 	}
 	s.state = newState
 	s.stateReason = reason
-	if newState == StateHealthy || newState == StateUnauthenticated {
+	if newState == StateHealthy || newState == StateDegraded || newState == StateUnauthenticated {
 		s.lastAuthCheck = time.Now().UTC()
 	}
 	lastLoadedMtime := s.lastLoadedMtime
@@ -285,9 +293,9 @@ func (s *Service) State() (State, string) {
 //	                    503 + reauth instructions (VNC container URL,
 //	                    docker command to start it). Operator-facing.
 //	POST /auth/verify   Forces a full VerifySession bypassing the warm
-//	                    path. Used by the VNC container after manual
-//	                    login to prompt other instances to reload
-//	                    cookies from the shared backup file.
+//	                    path. Used after raw-Firefox capture and by
+//	                    scheduled maintenance to force reload, verification,
+//	                    and cookie persistence.
 func (s *Service) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/status", s.handleStatus)
@@ -324,7 +332,17 @@ func (s *Service) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"last_auth_check":    s.lastAuthCheck,
 		"last_loaded_mtime":  s.lastLoadedMtime,
 		"cookie_fingerprint": s.lastFingerprint.Hex(),
-		"busy":               s.busy,
-		"build":              s.build,
+		"cookie_backup": map[string]any{
+			"last_attempt": s.lastCookieBackupAttempt,
+			"last_success": s.lastCookieBackupSuccess,
+			"last_error":   s.lastCookieBackupError,
+		},
+		"cookie_reload": map[string]any{
+			"last_attempt": s.lastCookieReloadAttempt,
+			"last_success": s.lastCookieReloadSuccess,
+			"last_error":   s.lastCookieReloadError,
+		},
+		"busy":  s.busyCount > 0,
+		"build": s.build,
 	})
 }

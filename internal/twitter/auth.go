@@ -6,8 +6,8 @@
 // Flow (EnsureAuthenticated):
 //
 //  1. mtime check — if the shared cookie file's mtime is newer than
-//     what this instance last loaded, another instance (or the VNC
-//     container's manual re-auth) wrote fresh cookies; reload them
+//     what this instance last loaded, another instance (or the raw-login
+//     capture service) wrote fresh cookies; reload them
 //     into the browser context before verifying.
 //  2. warm path — if the last successful VerifySession was within
 //     warmPathTTL AND no reload happened, skip the ~3-4s round-trip
@@ -15,8 +15,7 @@
 //     the per-search verify cost when the service is hot.
 //  3. full verify — navigate x.com/home, look for the account
 //     switcher button. Success → StateHealthy; failure →
-//     StateUnauthenticated (operator alerted, VNC container needs
-//     to be started for manual re-auth).
+//     StateUnauthenticated (operator alerted, raw Firefox re-auth required).
 //
 // Concurrency: serialized by authMu. Concurrent callers block; the
 // second call typically hits the warm path (first call just refreshed
@@ -36,7 +35,7 @@ import (
 // ErrUnauthenticated signals that the service's cookies are stale
 // or missing and the browser session is not logged in. Callers
 // (search handlers, health checks) use errors.Is against this to
-// distinguish "no session, human needs to re-auth via VNC" from
+// distinguish "no session, human needs raw-Firefox re-auth" from
 // browser/network errors.
 var ErrUnauthenticated = errors.New("twitter: session unauthenticated")
 
@@ -47,12 +46,23 @@ var ErrUnauthenticated = errors.New("twitter: session unauthenticated")
 // returns an error wrapping ErrUnauthenticated and transitions the
 // service to StateUnauthenticated. Callers should propagate the
 // signal so downstream orchestrators (operator alerts) know
-// the fleet is degraded.
+// the fleet is degraded. FF-059 owns the operator recovery implementation.
 //
 // On infra failure (cookie file corrupt, browser dead), returns a
 // wrapping error WITHOUT ErrUnauthenticated — the session state is
 // unknown, not proven bad. Failed browser transitions to StateFailed.
 func (s *Service) EnsureAuthenticated(ctx context.Context) error {
+	return s.ensureAuthenticated(ctx, false)
+}
+
+// VerifyAuthenticated always performs a live x.com verification, even when a
+// recent successful check would qualify for the warm path. Operator re-auth
+// confirmation and scheduled maintenance use this stronger contract.
+func (s *Service) VerifyAuthenticated(ctx context.Context) error {
+	return s.ensureAuthenticated(ctx, true)
+}
+
+func (s *Service) ensureAuthenticated(ctx context.Context, forceVerify bool) error {
 	s.authMu.Lock()
 	s.setBusy(true)
 	defer func() {
@@ -72,7 +82,7 @@ func (s *Service) EnsureAuthenticated(ctx context.Context) error {
 
 	// Step 1: mtime check. If the shared file has been rewritten since
 	// we last loaded, adopt the fresh cookies before deciding anything.
-	reloaded, err := s.maybeReloadCookies(lastLoadedMtime)
+	reloaded, err := s.maybeReloadCookies(ctx, lastLoadedMtime)
 	if err != nil {
 		// Cookie file is present but broken (bad JSON, no auth_token,
 		// browser refused to add cookies). Session state is unknown —
@@ -82,7 +92,7 @@ func (s *Service) EnsureAuthenticated(ctx context.Context) error {
 
 	// Step 2: warm path. If we didn't just reload and the last verify
 	// was recent + successful, trust it — skip the round-trip.
-	if !reloaded && state == StateHealthy && time.Since(lastAuthCheck) < s.warmPathTTL {
+	if !forceVerify && !reloaded && state == StateHealthy && time.Since(lastAuthCheck) < s.warmPathTTL {
 		return nil
 	}
 
@@ -93,21 +103,22 @@ func (s *Service) EnsureAuthenticated(ctx context.Context) error {
 	defer cancel()
 	if err := s.browser.VerifySession(verifyCtx, s.verifyTimeout); err != nil {
 		reason := "verify failed: " + err.Error()
-		s.SetState(StateUnauthenticated, reason)
-		return fmt.Errorf("twitter.EnsureAuthenticated: %w: %v", ErrUnauthenticated, err)
+		if errors.Is(err, ErrUnauthenticated) {
+			s.SetState(StateUnauthenticated, reason)
+			return fmt.Errorf("twitter.EnsureAuthenticated: %w: %v", ErrUnauthenticated, err)
+		}
+		s.SetState(StateDegraded, reason)
+		return fmt.Errorf("twitter.EnsureAuthenticated: verification inconclusive: %w", err)
 	}
 	s.SetState(StateHealthy, "verified")
 
-	// Post-verify: sync browser cookies to the shared backup file.
-	// Closes the loop for the VNC re-auth path — operator logs in via
-	// the visible display, hits POST /auth/verify, verify succeeds
-	// against the freshly-authenticated context, and BackupCookies
-	// persists the new cookies here so the headless fleet picks them
-	// up on their next mtime check. Best-effort: verify already
-	// proved the session works, so backup failure doesn't invalidate
-	// the healthy state — dedupe skips the write if fingerprint
-	// unchanged, empty-cookies case no-ops.
-	_ = s.BackupCookies(ctx)
+	// A live session with failed persistence is usable by this process but not
+	// a successful maintenance/reauth operation: the next cold fleet instance
+	// would still receive stale cookies. Keep StateHealthy (auth is proven) but
+	// return the persistence failure to the caller.
+	if err := s.BackupCookies(ctx); err != nil {
+		return fmt.Errorf("twitter.EnsureAuthenticated: persist verified cookies: %w", err)
+	}
 	return nil
 }
 
@@ -127,15 +138,17 @@ func (s *Service) EnsureAuthenticated(ctx context.Context) error {
 //   - (true, nil) — fresh cookies successfully loaded into browser.
 //   - (_, err) — stat failed with a non-not-exist error, or ReplaceCookies
 //     failed (browser in an unrecoverable state). Caller propagates.
-func (s *Service) maybeReloadCookies(lastLoadedMtime time.Time) (bool, error) {
+func (s *Service) maybeReloadCookies(ctx context.Context, lastLoadedMtime time.Time) (bool, error) {
 	mtime, err := BackupFileMtime(s.cookieFile)
 	if err != nil {
-		// Missing file is normal on first boot before anyone has logged
-		// in via VNC. Not an error — just nothing to reload.
+		// Missing file is normal on first boot before raw login has captured
+		// a session. Not an error — just nothing to reload.
 		if os.IsNotExist(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("stat %s: %w", s.cookieFile, err)
+		err = fmt.Errorf("stat %s: %w", s.cookieFile, err)
+		s.recordCookieReload(ctx, err)
+		return false, err
 	}
 	if !mtime.After(lastLoadedMtime) {
 		return false, nil
@@ -150,13 +163,14 @@ func (s *Service) maybeReloadCookies(lastLoadedMtime time.Time) (bool, error) {
 	//
 	// Bump lastLoadedMtime to the current mtime so we don't retry the
 	// same broken file every EnsureAuthenticated call — next time the
-	// file changes (VNC operator logs in, another instance rewrites)
+	// file changes (raw login captures, another instance rewrites)
 	// mtime advances again and we re-attempt.
 	cookies, _, err := ReadBackup(s.cookieFile)
 	if err != nil {
 		s.mu.Lock()
 		s.lastLoadedMtime = mtime
 		s.mu.Unlock()
+		s.recordCookieReload(ctx, err)
 		return false, nil
 	}
 
@@ -166,7 +180,9 @@ func (s *Service) maybeReloadCookies(lastLoadedMtime time.Time) (bool, error) {
 		// Browser is in a weird state. Escalate to failed — process
 		// restart is cleaner than trying to recover an unknown context.
 		s.SetState(StateFailed, "replace cookies failed: "+err.Error())
-		return false, fmt.Errorf("replace cookies: %w", err)
+		err = fmt.Errorf("replace cookies: %w", err)
+		s.recordCookieReload(ctx, err)
+		return false, err
 	}
 
 	fp := Fingerprint(cookies)
@@ -174,6 +190,7 @@ func (s *Service) maybeReloadCookies(lastLoadedMtime time.Time) (bool, error) {
 	s.lastLoadedMtime = mtime
 	s.lastFingerprint = fp
 	s.mu.Unlock()
+	s.recordCookieReload(ctx, nil)
 	return true, nil
 }
 
@@ -190,14 +207,14 @@ func (s *Service) maybeReloadCookies(lastLoadedMtime time.Time) (bool, error) {
 //
 // No-ops (return nil, no write) when the browser has no Twitter
 // cookies yet — legitimate during a startup race before Playwright
-// fully populates the context, or in the VNC container before the
-// operator has logged in. Not an error case; the next invocation
+// fully populates the context. Not an error case; the next invocation
 // picks up whatever's there.
 //
 // Refuses to write if the browser's current cookies don't include
 // auth_token (WriteBackup's guard fires). Callers can log this as
 // "browser lost auth mid-search" and trigger a re-auth path.
-func (s *Service) BackupCookies(_ context.Context) error {
+func (s *Service) BackupCookies(ctx context.Context) (err error) {
+	defer func() { s.recordCookieBackup(ctx, err) }()
 	cookies, err := s.browser.GetCookies()
 	if err != nil {
 		return fmt.Errorf("twitter.BackupCookies: %w", err)
@@ -236,14 +253,63 @@ func (s *Service) BackupCookies(_ context.Context) error {
 	return nil
 }
 
-// setBusy toggles the busy flag. Held only during EnsureAuthenticated
-// so /status callers can distinguish "quiescent" from "actively
-// checking session." Under s.mu (not authMu) — /status readers should
-// see the current value without waiting on the auth flow.
+// setBusy adjusts the active-operation count. Auth and search may overlap, so
+// a counter keeps /status.busy true until the last operation finishes. It uses
+// s.mu rather than authMu so status reads do not wait on authentication.
 func (s *Service) setBusy(v bool) {
 	s.mu.Lock()
-	s.busy = v
+	if v {
+		s.busyCount++
+	} else if s.busyCount > 0 {
+		s.busyCount--
+	}
 	s.mu.Unlock()
+}
+
+func (s *Service) recordCookieBackup(_ context.Context, err error) {
+	now := time.Now().UTC()
+	s.mu.Lock()
+	previousError := s.lastCookieBackupError
+	s.lastCookieBackupAttempt = now
+	if err == nil {
+		s.lastCookieBackupSuccess = now
+		s.lastCookieBackupError = ""
+	} else {
+		s.lastCookieBackupError = err.Error()
+	}
+	s.mu.Unlock()
+
+	if s.auditEmit == nil {
+		return
+	}
+	if err != nil && previousError != err.Error() {
+		s.auditEmit("twitter.cookie_backup_failed", map[string]any{"error": err.Error()})
+	} else if err == nil && previousError != "" {
+		s.auditEmit("twitter.cookie_backup_recovered", nil)
+	}
+}
+
+func (s *Service) recordCookieReload(_ context.Context, err error) {
+	now := time.Now().UTC()
+	s.mu.Lock()
+	previousError := s.lastCookieReloadError
+	s.lastCookieReloadAttempt = now
+	if err == nil {
+		s.lastCookieReloadSuccess = now
+		s.lastCookieReloadError = ""
+	} else {
+		s.lastCookieReloadError = err.Error()
+	}
+	s.mu.Unlock()
+
+	if s.auditEmit == nil {
+		return
+	}
+	if err != nil && previousError != err.Error() {
+		s.auditEmit("twitter.cookie_reload_failed", map[string]any{"error": err.Error()})
+	} else if err == nil && previousError != "" {
+		s.auditEmit("twitter.cookie_reload_recovered", nil)
+	}
 }
 
 // handleAuthenticate is the operator-facing endpoint that reports
@@ -252,12 +318,8 @@ func (s *Service) setBusy(v bool) {
 // If healthy → 200 { state: "healthy" }.
 //
 // If unauthenticated → 503 { state, action_required, reauth_url,
-// reauth_command, message } — a machine-readable envelope the
-// vedanta-systems portal can render as an alert card, plus a
-// human-readable message an operator can act on directly. Includes
-// the VNC container's URL and the docker command to start it
-// (per decisions.md 2026-07-21: VNC container is opt-in, not always
-// running).
+// reauth_command, message }. The configured URL and command open the raw-
+// Firefox recovery container; its own /status proves capture separately.
 //
 // If starting/loading/failed → 503 with the state but no reauth
 // instructions — either not our problem yet (transient) or a
@@ -310,10 +372,9 @@ func buildReauthMessage(vncURL, startCmd string) string {
 	}
 }
 
-// handleAuthVerify forces a full EnsureAuthenticated cycle. The VNC
-// container calls this after a successful manual login to prompt the
-// headless fleet to reload cookies + verify (rather than waiting for
-// the next warm-path expiry). POST-only — GET responses would let
+// handleAuthVerify forces a full authentication cycle. Maintenance uses this
+// to bypass the warm path; raw-Firefox recovery uses it after publishing a new
+// snapshot. POST-only — GET responses would let
 // dashboard health probes accidentally trigger real x.com traffic.
 //
 // Response mirrors handleAuthenticate: 200 { state: "healthy" } on
@@ -324,7 +385,7 @@ func (s *Service) handleAuthVerify(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	err := s.EnsureAuthenticated(r.Context())
+	err := s.VerifyAuthenticated(r.Context())
 	state, reason := s.State()
 	w.Header().Set("Content-Type", "application/json")
 

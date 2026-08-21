@@ -52,18 +52,22 @@ func (s *Service) scrollAndExtract(
 				stats.videoTweets++
 			}
 
-			// Stop #1: tweet older than max_age_minutes → stop scroll.
+			// Promoted entries are inserted independently of chronological order.
+			// Ignore them before the age stop so one stale ad cannot hide newer
+			// organic results below it.
+			if t.IsPromoted {
+				continue
+			}
+
+			// Stop #1: organic tweet older than max_age_minutes → stop scroll.
 			// Only meaningful if we have an age (t.AgeMinutes > 0);
 			// missing age falls through (rare — Twitter usually renders
 			// the <time datetime> attribute).
-			if t.AgeMinutes > 0 && t.AgeMinutes > float64(maxAgeMinutes) {
+			if shouldStopAtAge(t, maxAgeMinutes) {
 				return videos, stopAge, scrollCount, stats, nil
 			}
 
 			// Filters (silent skips — not stop conditions).
-			if t.IsPromoted {
-				continue
-			}
 			if !t.HasVideo {
 				continue
 			}
@@ -111,12 +115,38 @@ func (s *Service) scrollAndExtract(
 		// Timing jitter — random 250-500ms sleep between scrolls by default.
 		// Baseline stealth #4 per twitter-port.md T/c.
 		// This jitter varies UI cadence; it does not generate a secret or token.
-		jitter := s.scrollJitterMin + time.Duration(rand.IntN(int(s.scrollJitterMax-s.scrollJitterMin))) //nolint:gosec
-		time.Sleep(jitter)
+		if err := waitForScroll(ctx, nextScrollJitter(s.scrollJitterMin, s.scrollJitterMax)); err != nil {
+			return videos, stopReason, scrollCount, stats, err
+		}
 	}
 
 	// Stop #2: max_scrolls exhausted (loop counter fell off the top).
 	return videos, stopMaxScrolls, s.maxScrolls, stats, nil
+}
+
+func shouldStopAtAge(tweet extractedTweet, maxAgeMinutes int) bool {
+	return !tweet.IsPromoted &&
+		tweet.AgeMinutes > 0 &&
+		tweet.AgeMinutes > float64(maxAgeMinutes)
+}
+
+func nextScrollJitter(minimum, maximum time.Duration) time.Duration {
+	delta := maximum - minimum
+	if delta <= 0 {
+		return minimum
+	}
+	return minimum + time.Duration(rand.Int64N(int64(delta))) //nolint:gosec
+}
+
+func waitForScroll(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // extractTweetsJS is the single JS evaluate that pulls every visible

@@ -35,6 +35,12 @@ type WorkflowsConfig struct {
 	// success) and does NOT overwrite runtime updates.
 	StagingPollCron string `env:"WORKFLOWS_STAGING_POLL_CRON" envDefault:"*/15 * * * *"`
 
+	// TwitterMaintenanceCron runs the fixture-independent authentication and
+	// DOM canary against the static fallback browser. Four checks per day keep
+	// the shared session active and bound selector-regression detection without
+	// keeping any per-event Firefox instance warm.
+	TwitterMaintenanceCron string `env:"WORKFLOWS_TWITTER_MAINTENANCE_CRON" envDefault:"17 */6 * * *"`
+
 	// ActivationWindow — kickoff-lookahead used to promote imminent
 	// staging fixtures to active. Three callers:
 	//

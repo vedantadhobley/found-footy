@@ -124,6 +124,51 @@ func TestSearch_RecoversAfterServiceBecomesReady(t *testing.T) {
 	}
 }
 
+func TestVerifyPostsToForcedAuthEndpoint(t *testing.T) {
+	var calls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth/verify", func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ins, log := newFixture()
+	c, err := twitter.NewClient(config.TwitterConfig{BaseURL: srv.URL, SearchTimeout: time.Second}, ins)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := c.Verify(context.Background()); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("verify calls = %d, want 1", calls.Load())
+	}
+	if !log.HasAction(vocabulary.ModuleInfraTwitter, vocabulary.ActionTwitterVerify) {
+		t.Fatalf("expected ActionTwitterVerify; got %+v", log.Snapshot())
+	}
+}
+
+func TestVerifyReturnsNon2xx(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "expired", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	ins, _ := newFixture()
+	c, err := twitter.NewClient(config.TwitterConfig{BaseURL: srv.URL, SearchTimeout: time.Second}, ins)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := c.Verify(context.Background()); err == nil {
+		t.Fatal("Verify = nil, want non-2xx error")
+	}
+}
+
 func TestNewClient_FastFailGuards(t *testing.T) {
 	ins, _ := newFixture()
 	if _, err := twitter.NewClient(
