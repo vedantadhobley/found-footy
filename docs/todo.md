@@ -236,6 +236,73 @@ the current branch.
 | FF-055 | P1 | `validating` | API-Football winner flags describe the live leader; nil-guarded updates retained an earlier leader when a match returned to a tie, so completed draws could expose the wrong winner. Score-derived state is deployed and the ten stale draws are repaired. | Verify a natural lead-to-tie update clears both winners through the production API and frontend. |
 | FF-056 | P1 | `validating` | The Go vision port computed `elapsed + extra - 1` but then clamped normal-time results back to `elapsed`, shifting the intended ±1 clock window one minute late. Abdelkarim's API-30' goal therefore rejected genuine clips whose sampled clock read 28'. The unclamped normalization is deployed in `136e2d2`. | Verify a natural API-minus-two sampled buildup frame enters the verified pool without admitting an outside-tolerance API-minus-three frame. |
 | FF-057 | P1 | `validating` | Period-aware reset clocks and exact `45:xx 2H` / `15:xx ET2` boundary alternatives are deployed. The corrected historical replay completed all 104 Barcelona–Al Ahly clock rejects across four events, normalized the 31 malformed audit envelopes from the interrupted first run, closed all four checklists, and left zero pending rows. | Verify the next natural reset-clock goal; the deterministic repair and its production exercise are complete. |
+| FF-058 | P1 | `implemented` | The zero-warm Firefox model had no fixture-independent cookie maintenance or DOM canary. A six-hour Temporal schedule now forces auth verification and cookie persistence on the static fallback, then requires live-search feed, video-selector, and status-URL evidence. Cookie expiry-only changes and backup/reload failures are observable. | Roll out the release, confirm the new schedule exists, run one explicit probe, and observe one natural scheduled success. |
+| FF-059 | P1 | `implemented` | VNC now uses a separate raw Firefox ESR image and read-only profile-capture service; Playwright remains headless and search-only. Invalid or expired profiles cannot overwrite the shared backup. | Build the VNC image, prove raw login → atomic capture → static `/auth/verify` → fresh fleet-instance reload in dev, then repeat production recovery only on a real authorized expiry. |
+| FF-060 | P2 | `confirmed` | In the 2026-08-19 two-fixture sample, 69 of 742 candidates ended as undifferentiated `download_error`; the durable row cannot distinguish syndication lookup, missing media, CDN response, expiry, or staging failure after ephemeral logs disappear. | Persist a bounded download failure class and stage at the terminal candidate boundary; validate distributions before changing retry or filtering policy. |
+| FF-061 | P1 | `confirmed` | `feed_timeout` launders an unavailable Twitter feed into HTTP success and consumes one of the event's 15 search attempts. The 2026-08-19 MLS burst produced 61 synchronized false-success slots across 12 workflows. | Classify explicit empty, login, rendered, upstream-error, and unknown-timeout page states; retain bounded response evidence; count only usable observations; make exhausted activity errors non-checkpointing; add state metrics and workflow tests. See the [incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md). |
+
+### FF-058 — fixture-independent Twitter maintenance was not implemented
+
+- **Observed:** The signed per-event scaling decision explicitly requires a
+  timer outside fixture polling because a quiet week creates no event browser
+  traffic. The Go worker registered only ingest, active-poll, and staging-poll
+  schedules. The static fallback performed one startup verification, then
+  could remain idle until an event browser failed over to it.
+- **Failure mode:** A server-side session expiry, selector change, cookie-file
+  permission failure, or expiry-only cookie refresh could remain undiscovered
+  until a live event. `/auth/verify` also called the warm-path-aware method, so
+  its documented “forced” verification could return without contacting X.
+- **Implemented:** `TwitterMaintenanceWorkflow` runs at minute 17 every six
+  hours against the already-running static fallback. It forces a live
+  verification, requires cookie sync to succeed, then runs
+  `football goal filter:videos` with a 24-hour local age window and requires
+  rendered articles, parsed tweets, video evidence, and valid status URLs.
+  The activity has one attempt; a failure remains visible instead of producing
+  a retry burst. No dynamic event Firefox is provisioned.
+- **Cookie/search hardening in the same boundary:** fingerprints now include
+  expiry, path, and flags; cookie-domain filtering is exact; backup and reload
+  failures surface in `/status` and transition audit logs; inconclusive
+  network/DOM verification becomes `degraded`, not a false auth-expiry alert;
+  feed-timeout searches still sync cookies; promoted entries cannot trigger
+  the chronological age stop; equal jitter bounds cannot panic; cancellation
+  interrupts jitter waits; tweet text truncates by Unicode code point.
+- **Recovery boundary:** This maintains and detects a valid session. FF-059's
+  raw login terminal owns new credential capture after full expiry.
+
+### FF-059 — VNC recovery uses the login path X already rejected
+
+- **Evidence:** The locked
+  [2026-07-22 decision](./decisions/archive-through-2026-08-16.md#2026-07-22--playwright-login-validation-twitter-blocks-playwright-login-raw-firefox-subprocess-fallback-confirmed-required)
+  records X rejecting the username step in Playwright-instrumented Firefox and
+  requires raw Firefox for login. Compose, the Twitter Dockerfile, entrypoint,
+  and `cmd/twitter` instead ran the same Playwright browser with
+  `headless=false` in VNC mode.
+- **Prior impact:** Existing cookies could scrape and be maintained, but a full
+  expiry could still require an out-of-band cookie import. The documented VNC
+  procedure was not an evidence-backed recovery contract.
+- **Implemented:** The search image is now headless Playwright only. VNC builds
+  from `docker/twitter-auth/Dockerfile`, runs raw Debian Firefox ESR, and uses a
+  two-second read-only SQLite capture loop. Firefox holds an exclusive database
+  lock while open, so the operator closes it after login; the lock is an
+  expected waiting state and capture follows the graceful close. The loop
+  requires a non-expired `auth_token`, filters expired cookies, preserves the
+  full cookie shape, and publishes through the existing strict-domain atomic
+  writer. `/health` and `/status` expose capture evidence and build identity
+  without cookie values. Invalid or unreadable profiles leave the prior backup
+  untouched.
+- **Local proof:** The raw image builds at 358 MB versus 1.03 GB for the
+  existing Playwright search image. A disposable network-isolated container
+  with no mounts proved the open-Firefox lock state, the post-close empty-
+  profile state, and end-to-end conversion of synthetic Firefox rows into a
+  mode-0600 backup plus `state=ready`. The container and fake profile were
+  removed after the test. This does not claim a live X login.
+- **Lifecycle:** The container-local supervisor owns only its raw Firefox and
+  capture service. Raw login and automated search remain different containers;
+  environment/network ownership continues to authorize search-fleet lifecycle.
+- **Proof gate:** From a deliberately logged-out dev profile, authenticate in
+  raw Firefox, require atomic capture, force static `/auth/verify`, then prove a
+  fresh headless instance reloads and searches without copying the profile.
+  Production proof requires separate authorization and a real expiry.
 
 ### FF-056 — normal-time clock normalization was cancelled by a clamp
 
@@ -477,7 +544,8 @@ the [2026-08-17 Codex audit](./design/audits/audit-2026-08-17-codex.md#prior-aud
 
 | Source | Decision or evidence still required |
 |---|---|
-| `AUD-0813-CF-153` | On the next real cookie expiry, capture VNC write-back and propagation to new fleet instances end to end. Auth expiry itself is observed and correctly surfaced. |
+| `AUD-0813-CF-153` | Promoted to FF-059: current VNC contradicts the locked raw-Firefox recovery decision; implement and prove the corrected path before waiting for another expiry. |
+| `AUD-TWITTER-COOKIE-WRITER` | Atomic rename prevents corruption, but concurrent fleet writers remain semantic last-writer-wins. Capture real rotation evidence before adding a cross-container lock or single-writer controller. |
 | `AUD-0813-CF-175` | Decide whether national-team coverage needs an explicit seed beyond league-derived rosters. |
 | `AUD-0813-CF-179` | Measure public playback before restoring unused `ffmpeg.Faststart`. |
 | `AUD-0813-CF-SLO` | Define a match-coverage SLO before adding summary storage or alerts. |
@@ -485,14 +553,17 @@ the [2026-08-17 Codex audit](./design/audits/audit-2026-08-17-codex.md#prior-aud
 | `AUD-0813-P3-14` | Measure rank-rebalance cost at real event sizes before replacing the simpler full rebalance. |
 | `AUD-DESIGN-TRACING` | Add distributed tracing only when a concrete cross-service diagnostic requires it. |
 
-Do not schedule global coverage floors, a generated log catalog, or speculative
-Twitter rate-limit backoff. The August 15–17 log sample showed auth expiry but
-no Twitter rate-limit, interstitial, HTTP 429, or browser-failure event.
+Do not schedule global coverage floors or a generated log catalog. FF-061 now
+provides strong evidence of shared upstream feed suppression, but not its exact
+X response class. Implement page/network classification and correct attempt
+accounting before choosing a global rate limiter or fixed backoff policy.
 
 ## Behavior that is intentional
 
-- Goals, red cards, and missed penalties all run the full discovery workflow,
-  including the configured 15 Twitter search attempts.
+- Goals, red cards, and missed penalties are intended to run the full discovery
+  workflow, including 15 usable Twitter search observations. FF-061 tracks the
+  current violation where an unavailable feed or an exhausted activity error
+  can consume one of those slots.
 - Perceptual dedup is event-scoped and category-scoped. Do not classify the
   lack of general cross-event fuzzy dedup as a bug without new evidence.
 - The archived Python implementation is a behavioral reference, not the Go

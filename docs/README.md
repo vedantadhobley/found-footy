@@ -41,7 +41,7 @@ decision supersedes an older target design).
 - [`observability.md`](./observability.md) — vocabulary + logging + metrics substrate
 - [`logging.md`](./logging.md) — Emit reference (how to add a Module/Action)
 - [`temporal.md`](./temporal.md) — Client/Worker adapter + registration flow
-- [`twitter-service.md`](./twitter-service.md) — Playwright-Go scraping service: HTTP contract, state machine, cookie fleet model
+- [`twitter-service.md`](./twitter-service.md) — Playwright search, raw-Firefox login, maintenance, and shared-cookie fleet contract
 - [`testing.md`](./testing.md) — test tiers and git test gates
 - [`deployment.md`](./deployment.md) — compose files + Caddy + first-time bootstrap
 - [`operations.md`](./operations.md) — environment lifecycle, production diagnostics, recovery boundaries, cookie re-auth, and rollout gates
@@ -51,6 +51,9 @@ decision supersedes an older target design).
 ## Historical evidence
 
 - [`history/`](./history/) — completed project roadmaps and delivery snapshots.
+- [`incidents/2026-08-20-twitter-feed-suppression.md`](./incidents/2026-08-20-twitter-feed-suppression.md)
+  — live MLS evidence for FF-061's synchronized Twitter feed loss, retained
+  resource correlation, and the remaining diagnostic boundary.
 - [`history/issue-register-2026-08-17.md`](./history/issue-register-2026-08-17.md)
   — closed issue narratives and the completed documentation-normalization
   register from the 2026-08-17 release.

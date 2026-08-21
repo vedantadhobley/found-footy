@@ -1,8 +1,8 @@
 # twitter-service.md — Go rebuild ledger
 
-**Purpose.** As-shipped state of the Playwright-Go Twitter scraping service
-(`internal/twitter/` + `cmd/twitter/`) and its Go client
-(`internal/infra/twitter/`). This is the **as-built ledger**; the design intent
+**Purpose.** As-shipped state of the Playwright-Go Twitter scraping service,
+raw-Firefox login terminal, and worker-side Go client. This is the **as-built
+ledger**; the design intent
 + the sub-commit history live in
 [`design/proposals/twitter-port.md`](./design/proposals/twitter-port.md) (T/a–T/c
 shipped) and the signed-off scaling model in
@@ -17,10 +17,10 @@ or error taxonomy updates this doc in the same commit.
 A standalone HTTP service wrapping a **Playwright-Go + Firefox** browser. It
 does **search only** — given a query, it navigates X's live-search results,
 scrolls, and returns the video-bearing tweets within an age window. It never
-downloads video bytes (that's the worker's off-browser cookieless syndication
-path) and its browser is never used to *log in* (Twitter blocks login through a
-Playwright-instrumented Firefox — see `AUD-0813-CF-153` in
-[`todo.md`](./todo.md#deferred-decisions-and-validation)).
+downloads video bytes; the worker uses the off-browser cookieless syndication
+path. Headless event browsers only consume and refresh an existing session.
+The opt-in VNC image runs raw Firefox ESR and a separate cookie-capture service;
+it contains no Playwright or search endpoint.
 
 The Go client and service are live and have been verified end-to-end against
 real Twitter.
@@ -31,9 +31,10 @@ real Twitter.
   Playwright launches Firefox
   headless; the Go service exposes the HTTP surface on `:8888`. Firefox profile
   lives in the container writable layer (regenerated each start).
-- **`found-footy-{env}-twitter-vnc`** — opt-in (`--profile vnc`): same binary +
-  Xvfb + x11vnc + noVNC, for the **operator to log in manually** (the only way
-  to mint fresh cookies) and for debugging.
+- **`found-footy-{env}-twitter-vnc`** — opt-in (`--profile vnc`): raw Debian
+  Firefox ESR + Xvfb/noVNC and `cmd/twitter-auth`. Firefox owns the persistent
+  environment-specific profile; the Go companion reads `cookies.sqlite` and
+  publishes a browser-neutral snapshot. It never searches X.
 - Both mount the **shared cookie parent directory** (`~/.config/found-footy/`
   → `/config`); the backup remains `/config/twitter_cookies.json`. The
   directory mount lets atomic temp-file replacement work and survives
@@ -69,11 +70,10 @@ the shared cookie backup. Application code does not branch on environment or
 attempt an in-process browser swap. The opt-in VNC container remains
 operator-controlled with `restart: no`.
 
-The service reads its listen address, profile, cookie path, headless/VNC mode,
-and re-auth instructions through the typed Twitter configuration profile.
-Malformed booleans and the impossible VNC-plus-headless combination fail
-before Firefox launches. Re-auth handlers receive immutable validated values;
-they do not reread process environment per request.
+The search and auth processes have separate typed configuration profiles.
+Malformed booleans, relative profile/cookie paths, invalid listen addresses,
+and invalid intervals fail before browser work. Re-auth handlers receive
+immutable validated values; they do not reread process environment per request.
 
 ## HTTP contract
 
@@ -82,10 +82,10 @@ Registered in `service.go RegisterHandlers`:
 | Endpoint | Method | Behavior |
 |---|---|---|
 | `/health` | GET | Browser/auth readiness: 200 only in `healthy`; otherwise 503 with state and reason. |
-| `/status` | GET | `{state, reason, busy, cookie_fingerprint, last_auth_check, last_loaded_mtime, started_at, build:{git_sha,built_at,image_tag}}`. Read-only; the release command verifies `build`. |
+| `/status` | GET | State, reason, busy flag, fingerprint and load time, nested cookie backup/reload attempt-success-error evidence, startup time, and build identity. Read-only; the release command verifies `build`. |
 | `/search` | POST | `SearchRequest{query, max_age_minutes, exclude_urls}` → `SearchResponse` (below). |
-| `/authenticate` | GET | Read-only auth status + the VNC re-auth URL and environment-explicit Compose command. Does **not** force re-auth. |
-| `/auth/verify` | POST | After an operator logs in via VNC, verify the session succeeded → resume the Playwright context. |
+| `/authenticate` | GET | Read-only auth status plus the raw-Firefox VNC URL and environment-explicit Compose command. Does **not** force re-auth. |
+| `/auth/verify` | POST | Force a live session check, bypassing the 60-second warm path, and require the verified cookie snapshot to persist. Used by maintenance and eventual operator recovery. |
 
 **`SearchResponse`:** `{status, videos:[VideoRef], count, query, stop_reason,
 scrolls, initial_articles, tweets_parsed, video_tweets, elapsed}`, where
@@ -94,16 +94,32 @@ age_minutes}`. The three feed counters distinguish no rendered feed from a
 rendered feed with no hydrated video evidence. Note `video_page_url` is the
 tweet page — the worker resolves it to media bytes off-browser via the
 syndication adapter; the service returns no CDN URL. The Go client
-(`internal/infra/twitter/client.go`) exposes only `Search`.
+(`internal/infra/twitter/client.go`) exposes `Search` and the static-service
+`Verify` operation.
+
+`feed_timeout` currently proves only that no tweet article appeared within the
+ten-second locator bound. It does not prove an explicit empty result. The HTTP
+surface nevertheless returns it as success; FF-061 tracks that incorrect
+classification and its EventWorkflow attempt-accounting impact. See the
+[2026-08-20 incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md).
 
 ## State machine
 
 `State` (`service.go`): `starting` → `loading` (reloading cookies from the shared
-backup) → `healthy` / `unauthenticated` / `failed` (browser dead / unrecoverable).
+backup) → `healthy` / `degraded` / `unauthenticated` / `failed`.
 `/status.reason` carries the human-readable why (e.g. `verified`,
-`verify failed: …`). Browser/context exit drives `failed` without waiting for a
-search request; `failed` is terminal for that process, which then exits so
-Docker can replace the unit.
+`verify failed: …`). A login redirect proves `unauthenticated`; a network or
+selector failure is `degraded`, because it does not prove cookie expiry.
+Browser/context exit drives `failed` without waiting for a search request;
+`failed` is terminal for that process, which then exits so Docker can replace
+the unit.
+
+The search hot path is currently weaker than the forced verifier: it accepts a
+page with no login redirect even when no positive app-shell selector rendered,
+then marks the service healthy before the tweet feed is known usable. During
+FF-061 this produced healthy services returning synchronized `feed_timeout`
+responses. FF-039 owns the shared readiness contract; FF-061 owns this
+search-specific misclassification and recall loss.
 
 ## Auth + cookie fleet model
 
@@ -119,14 +135,58 @@ is the coordination channel (no NATS / pg NOTIFY — decisions.md 2026-07-21):
 - **Atomic writes** via temp + rename, so concurrent readers never see a torn
   file.
 - **Fingerprint dedupe** (`cookies_backup.go`): `Fingerprint` is a sha256 over
-  the sorted `(name, value)` cookie pairs. An instance keeps the fingerprint it
-  last wrote in memory and **skips the write when nothing changed** — kills the
-  60–80% no-op writes Python did.
+  the complete sorted persisted cookie shape, including expiry, domain, path,
+  and flags. An instance keeps the fingerprint it last wrote in memory and
+  **skips the write when nothing changed**. Expiry-only refreshes therefore
+  reach disk instead of being mistaken for no-ops.
+- **Strict domains.** Only exact `x.com` / `twitter.com` domains and their
+  subdomains can enter the shared snapshot; lookalike substring domains cannot.
+- **Observable persistence.** Backup and reload attempt, success, and last
+  error fields live in `/status`; failure and recovery transitions emit audit
+  events. A verified local session with failed persistence stays `healthy` but
+  the verify request fails, because a new fleet instance would still load stale
+  state.
 
-Net effect: an operator re-auths **once** on the VNC container (or any instance
-refreshes its session token), writes the backup file, and every other instance
-picks it up on its next `EnsureAuthenticated` mtime check. Search combines the
-verify inline with the search navigation (T/c) to save ~3–4s per warm call.
+Net effect: when any authenticated instance refreshes and writes its session,
+every other instance picks it up on its next `EnsureAuthenticated` mtime check.
+The raw-Firefox capture service publishes new credentials through the same file
+contract. Search combines verification inline with search navigation (T/c) to
+save ~3–4s per warm call.
+
+### Raw-Firefox recovery
+
+The opt-in VNC container uses the persistent `/data/firefox-profile` volume and
+opens X's login flow in raw Firefox ESR. Firefox holds an exclusive lock on
+`cookies.sqlite`, so the operator closes Firefox after login. `cmd/twitter-auth`
+polls every two seconds, treats the open-browser lock as an expected
+`waiting_for_login` state, and captures through SQLite's read-only path as soon
+as the graceful close releases it. It requires a non-expired `auth_token`,
+drops expired rows, preserves cookie flags, and calls the same strict-domain
+atomic writer used by search instances. An unauthenticated, missing, busy, or
+malformed profile never overwrites the last known backup.
+
+The capture process exposes read-only `/health` and `/status` on `:8888`.
+Status contains state, reason, attempt/capture timestamps, auth expiry, cookie
+count, fingerprint, last error, and build identity; it never contains values.
+After capture, an operator posts to the static search service's `/auth/verify`
+to prove that Playwright loaded and can use the snapshot. The login terminal is
+profile-gated and uses `restart: no`. Closing Firefox leaves the capture and
+status process running; a capture-process failure ends the incomplete unit.
+
+### Fixture-independent maintenance
+
+`TwitterMaintenanceWorkflow` runs on the independent
+`twitter-maintenance-scheduled` Temporal schedule at minute 17 every six hours
+by default (`WORKFLOWS_TWITTER_MAINTENANCE_CRON`). It uses the always-running
+static fallback; it does not provision an event browser.
+
+One run forces `/auth/verify`, which also writes any rotated cookie state, then
+runs `football goal filter:videos` with a local 24-hour age window. It requires
+a rendered feed, at least three parsed tweets, at least three video-bearing
+results, and structurally valid status URLs. The activity has one attempt, so a
+real failure stays visible in Temporal instead of generating an immediate X
+traffic burst. This closes the quiet-week maintenance and DOM-canary gap.
+Maintenance preserves and diagnoses a session; raw-Firefox VNC owns new login.
 
 ## Search result and age classification
 
@@ -138,8 +198,10 @@ recall-tested [query decision](./design/proposals/twitter-search-query.md#d4).
 
 The request returns one of five successful `stop_reason`s (`search.go`):
 
-- **`age`** — a tweet older than `max_age_minutes` is reached (results are
-  reverse-chronological, so everything past it is older too).
+- **`age`** — a non-promoted tweet older than `max_age_minutes` is reached
+  (results are reverse-chronological, so everything past it is older too).
+  Promoted posts do not terminate the scan because their placement is not
+  chronological.
 - **`consecutive_seen`** — N consecutive already-seen tweets (from `exclude_urls`
   accumulated across the event's prior attempts) → the good hits are exhausted.
 - **`max_scrolls`** — the hard scroll cap.
@@ -152,24 +214,40 @@ are strict. Only `playwright.ErrTimeout` becomes a successful `feed_timeout`;
 locator contract failures, closed pages, browser loss, and other wait errors
 return an `internal` error so the SearchTweets activity can retry.
 
-Scroll jitter is 250–500ms (tightened from 0.5–3s on 2026-08-05).
+`feed_timeout` is an implementation observation, not a legitimate-empty
+classification. The current page has no explicit empty/error/interstitial
+classifier and retains no X timeline response status or rate-limit headers.
+Consequently an explicit empty search, upstream suppression, and an unknown
+broken page can collapse into the same successful response. FF-061 requires
+these states to become distinct before retry or global-backoff policy changes.
+
+Scroll jitter is 250–500ms (tightened from 0.5–3s on 2026-08-05), accepts equal
+bounds without panic, and is cancellable through the request context.
 
 ## Error taxonomy
 
 Six typed `error_class`es (`internal/twitter/`): `auth_expired`, `bad_request`,
 `empty_query`, `method_not_allowed`, `navigation_failed`, `internal`. Twitter's
-own rate-limit class (`rate_limited`, T/d) is **not built**.
+own rate-limit class (`rate_limited`, T/d) is **not built**. FF-061 adds a
+strong production reason to capture upstream response evidence, but the exact
+browser-timeline status remains unproven and must not be guessed from the
+public X API's separate limits.
 
 ## Known gaps
 
-- **`AUD-0813-CF-153` — no self-recovery from full cookie expiry.** If the shared cookies
-  fully expire, the service can only report `unauthenticated` and wait for fresh
-  cookies to arrive via the backup file (an operator VNC login). The Python
-  raw-Firefox manual-login subprocess (`_launch_manual_firefox`) is not ported.
-  See [`todo.md`](./todo.md#deferred-decisions-and-validation).
-- **`AUD-TWITTER-RATE-LIMIT` — rate-limit detection and backoff** are unbuilt
-  feature scope. See
-  [`todo.md`](./todo.md#deferred-decisions-and-validation).
+- **FF-059 rollout proof.** Raw Firefox and cookie capture are implemented, but
+  the deliberately logged-out dev login → capture → static verify → fresh
+  headless reload exercise remains the acceptance gate. See
+  [`todo.md`](./todo.md#ff-059--vnc-recovery-uses-the-login-path-x-already-rejected).
+- **Concurrent writers are semantic last-writer-wins.** Unique temp files and
+  atomic rename prevent corruption, but an older valid browser snapshot could
+  supersede a newer one. `AUD-TWITTER-COOKIE-WRITER` holds this for measured
+  rotation evidence before adding coordination complexity.
+- **FF-061 — unavailable feeds count as successful searches.** The
+  synchronized MLS incident proves the need for page/network classification,
+  non-consuming transient slots, and bounded outcome metrics. A shared global
+  limiter remains a follow-on decision after the upstream response is measured.
+  See the [incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md).
 
 ## Cross-refs
 
@@ -177,4 +255,5 @@ own rate-limit class (`rate_limited`, T/d) is **not built**.
 - Search query construction — [twitter-search-query.md](./design/proposals/twitter-search-query.md)
 - Per-event scaling — [twitter-scaling.md](./design/proposals/twitter-scaling.md) (#160)
 - Cookie-model + login-block decisions — [decisions.md](./decisions.md) 2026-07-21, 2026-07-22
+- Raw login boundary — [Raw Firefox owns operator login](./decisions/2026-08-19-raw-firefox-owns-operator-login.md)
 - Go client + adapter — `internal/infra/twitter/client.go`

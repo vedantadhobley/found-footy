@@ -52,6 +52,16 @@ including on the final outer discovery attempt; the minute between successful
 outer attempts remains unchanged. A Temporal version marker preserves the old
 three-try policy for histories started before FF-017.
 
+**Current search-accounting defect (FF-061).** Twitter returns
+`feed_timeout` as a successful empty response, so EventWorkflow checkpoints it
+and advances the outer attempt. If `SearchTweets` instead returns an error and
+all activity retries exhaust, the workflow logs the failure but still reaches
+the same progress checkpoint. The configured 15 slots therefore do not prove
+15 usable search observations. The fix must distinguish explicit empty results
+from transient page failure and must leave unavailable or exhausted searches
+uncheckpointed within a bounded outage policy. Production evidence is in the
+[2026-08-20 incident report](../incidents/2026-08-20-twitter-feed-suppression.md).
+
 **Candidate failure contract (FF-002 + FF-022).** `download_error` stamps the
 persisted candidate `failed`; no staging object exists. `hash_error` stamps
 only the claimant `failed` and calls `DeleteStaging` with its key. A waiting
