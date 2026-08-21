@@ -244,47 +244,54 @@ request approval for those removals only.
 ## Twitter authentication and cookie re-auth
 
 `GET /status` is the read-only source for browser state, reason, busy flag,
-cookie fingerprint, last authentication check, and last loaded cookie mtime.
+cookie fingerprint, last authentication check, last loaded cookie mtime, and
+nested cookie backup/reload attempt-success-error evidence.
 `GET /authenticate` reports whether manual re-auth is required. `POST
 /auth/verify` is intentionally stateful: it forces session verification and
 writes a successful cookie refresh.
 
-The repository's production `/authenticate.reauth_command` explicitly names
-`docker-compose.prod.yml` (FF-018), and the deployed service advertises that
-explicit command. Starting or removing the VNC service remains a production
-mutation that requires separate approval.
+`twitter-maintenance-scheduled` runs against the static service at minute 17
+every six hours by default. It forces verification and cookie writeback, then
+requires live-search article, video, and status-link evidence. Inspect its most
+recent Temporal execution when an event browser reports auth or DOM trouble.
+This schedule preserves and diagnoses an existing session even during a week
+without events; it cannot create new credentials after full expiry.
 
-Production re-auth procedure:
+The opt-in VNC container runs raw Firefox ESR with no Playwright or WebDriver.
+After the operator closes Firefox, its capture service reads the profile's
+native cookie file through SQLite, requires a
+non-expired `auth_token`, and atomically writes the browser-neutral backup. Its
+read-only `/status` must reach `state=ready`; merely seeing a logged-in page is
+not proof. A `degraded` search state means verification was inconclusive, not
+that credentials are proven expired. A `failed` search browser is a separate
+lifecycle incident.
 
-1. Confirm `unauthenticated` from the production Twitter service and record the
-   reason. A `failed` browser is a different incident; re-auth is not its
-   automatic remedy.
-2. Request approval to start the production VNC service.
-3. After approval, run:
+Dev recovery uses `make twitter-vnc-up`, login through
+`http://found-footy-dev-twitter-vnc.luv`, capture-status inspection, a forced
+POST to the static service's `/auth/verify`, then `make twitter-vnc-down`.
 
-   ```bash
-   docker compose -f docker-compose.prod.yml --profile vnc \
-     up -d --build twitter-vnc
-   ```
+Production recovery remains several separately authorized mutations:
 
-4. Open `http://found-footy-prod-twitter-vnc.luv` and log in to X.
-5. From an already authorized diagnostic client on the production network,
-   send `POST http://found-footy-prod-twitter-vnc:8888/auth/verify`. Require a
-   `200` response with `{"state":"healthy"}`. Do not substitute a `GET`.
-6. Compare `/status` before and after. A new `cookie_fingerprint` or
-   `last_loaded_mtime`, followed by a healthy search instance on its next
-   authentication check, proves propagation.
-7. Request separate approval to stop and remove the production VNC service.
-8. After approval, run:
+1. Read the static service status, the last maintenance execution, and the
+   existing cookie fingerprint. Confirm `unauthenticated`, not merely
+   `degraded`.
+2. Request approval to start `found-footy-prod-twitter-vnc`, then run the exact
+   Compose command returned by `/authenticate`.
+3. Log in through `http://found-footy-prod-twitter-vnc.luv`, then close Firefox
+   normally to release its cookie-database lock. The capture service and noVNC
+   remain running.
+4. Read the auth container's internal `:8888/status` from an authorized
+   diagnostic path. Require `state=ready`, a post-login `last_capture`, a future
+   `auth_expires_at`, and a non-empty fingerprint. Never print cookie values.
+5. Request separate approval to POST the production static service's
+   `/auth/verify`. Require HTTP 200 and a current static backup success.
+6. Let the next natural event prove a fresh event browser reloads and searches;
+   do not create production discovery work only as a probe.
+7. Request separate approval to stop and remove the VNC container.
 
-   ```bash
-   docker compose -f docker-compose.prod.yml --profile vnc stop twitter-vnc
-   docker compose -f docker-compose.prod.yml --profile vnc rm -f twitter-vnc
-   ```
-
-`make twitter-vnc-up`, `make twitter-vnc-down`, and
-`make twitter-vnc-logs` operate on dev only. Never use them for production
-reauth.
+Do not delete the cookie file, repeatedly restart the fleet, copy the Firefox
+profile into a search container, or treat raw capture without static
+verification as complete recovery.
 
 ## Historical candidate replay
 
@@ -362,10 +369,12 @@ Prefer deterministic self-recovery over an ad-hoc write:
 | Workflow canceled or failed with open checklist row | Correlate Temporal history, checklist, and fleet state; handle under FF-007 or FF-015. | Reset, retry, cancel, or close the row without an issue-specific recovery plan. |
 | Terminal score exceeds surviving goal inventory | Keep the fixture/event evidence together; handle under FF-014. | Mark the fixture complete or classify the absent goal as VAR by hand. |
 | Firefox container stopped or orphaned | Correlate its scoped labels with Postgres and Temporal, then let the reaper act. | Remove it based only on container state. |
-| Twitter `unauthenticated` | Use the VNC procedure above. | Restart the entire stack or delete the cookie file. |
+| Twitter `degraded` | Inspect the last maintenance run and `/status` cookie error evidence; distinguish network/DOM failure from auth expiry. | Declare the account unauthenticated without a login redirect. |
+| Twitter `feed_timeout` burst | Treat it as an unavailable or unclassified feed, correlate unrelated event workflows and retained cAdvisor metrics, and handle under FF-061. | Call it an empty query, re-authenticate, increase the ten-second bound, or load-test the production account. |
+| Twitter `unauthenticated` | Use the raw-Firefox capture and static-verify procedure above; production mutations each need approval. | Restart the entire stack, delete the cookie file, or copy a Firefox profile into search. |
 | `twitter.browser_failed` or event-browser restart | Confirm the same container returns healthy before the next Temporal retry; inspect repeated exits for memory pressure or corrupt profile state. | Treat HTTP process liveness alone as browser health, or manually remove an event browser that Docker is recovering. |
 
-The scheduled workflows use Temporal's `SKIP` overlap policy, so a slow cycle
+The four scheduled workflows use Temporal's `SKIP` overlap policy, so a slow cycle
 does not create a concurrent copy. Schedule registration is create-only.
 `ActivePollWorkflow` and API fixture-ID chunks run concurrently within worker
 caps. A total chunk failure leaves that cycle unchanged; the next cycle is the

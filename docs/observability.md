@@ -102,9 +102,33 @@ event or tweet identifier is a Prometheus label.
 FF-051 extends each search line with the configured local `max_age_minutes`,
 `stop_reason`, `scrolls`, `initial_articles`, `tweets_parsed`, and
 `video_tweets`. The Twitter HTTP client emits the same result-shape fields.
-`feed_timeout` therefore means the first article genuinely missed the
-ten-second bound; a rendered-but-exhausted feed is `feed_exhausted`, and
-non-timeout Playwright failures emit an error and retry.
+`feed_timeout` means only that the first article missed the ten-second bound;
+it does not identify why. A rendered-but-exhausted feed is `feed_exhausted`,
+and non-timeout Playwright failures emit an error and retry.
+
+FF-061 records the current observability defect: `feed_timeout` increments the
+generic Twitter success counter, its page/upstream cause is not captured, and
+the attempt outcome survives only in worker logs rather than durable search
+telemetry. The 2026-08-19 MLS incident therefore required Loki plus cAdvisor
+correlation after its Firefox containers were reaped. The required bounded
+state metric and response evidence are specified in the
+[incident report](./incidents/2026-08-20-twitter-feed-suppression.md).
+
+FF-058 adds the typed InfraTwitter `twitter_verify` and
+`twitter_verify_failed` actions for the static-service maintenance call. The
+standalone Twitter service also emits raw JSON transition actions for
+`twitter.cookie_backup_failed`, `twitter.cookie_backup_recovered`,
+`twitter.cookie_reload_failed`, and `twitter.cookie_reload_recovered`; these
+come from `cmd/twitter` rather than the application emitter and therefore are
+not vocabulary constants or call metrics. `/status` retains the corresponding
+last attempt, success, and error evidence in memory.
+
+FF-059's opt-in raw-login process is outside the shared application emitter. It
+writes JSON startup/server errors and exposes the durable operator evidence on
+read-only `/status`: capture attempt and success times, auth expiry, cookie
+count, fingerprint, last error, and build identity. It never logs or returns
+cookie values. Because the process runs only during manual recovery, this
+status surface is the primary proof rather than a new always-on metric family.
 
 Typed Field helpers: `String`, `Int`, `Int64`, `Float64`, `Bool`,
 `Err`. Callers use these to keep the field map type-safe rather than
