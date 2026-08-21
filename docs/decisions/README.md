@@ -14,6 +14,8 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Raw Firefox owns operator login](./2026-08-19-raw-firefox-owns-operator-login.md) — FF-059 separates raw-Firefox credential minting and read-only profile capture from Playwright search.
+- [Twitter maintenance uses the static fallback](./2026-08-19-twitter-maintenance-uses-static-fallback.md) — FF-058 adds a fixture-independent forced-auth, cookie-sync, and live-search DOM canary without warming the dynamic event fleet.
 - [Historical candidate repair reuses EventWorkflow](./2026-08-19-historical-candidate-repair-reuses-event-workflow.md) — exact terminal selectors become auditable pending work under a new deterministic checklist; the normal pipeline reprocesses them without a fresh search.
 - [Winner state is derived from canonical scores](./2026-08-19-winner-state-is-derived-from-canonical-scores.md) — FF-055 derives played results from match or shootout scores, clears tied leaders, and requires a decided penalty score for `PEN` completion.
 - [Thin entry points and in-package ownership splits](./2026-08-18-thin-entrypoints-and-in-package-ownership-splits.md) — FF-045 moves worker composition out of `cmd`, splits large files without changing package or Temporal identity, and deletes caller-proven residue.

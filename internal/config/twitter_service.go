@@ -1,5 +1,5 @@
 // twitter_service.go — process configuration for the Playwright-backed
-// Twitter HTTP service and its optional VNC re-auth mode.
+// Twitter search HTTP service.
 package config
 
 // TwitterServiceConfig configures cmd/twitter itself. TwitterConfig in
@@ -9,7 +9,6 @@ type TwitterServiceConfig struct {
 	CookieFile string `env:"TWITTER_COOKIE_FILE" envDefault:"/config/twitter_cookies.json"`
 	ProfileDir string `env:"TWITTER_PROFILE_DIR" envDefault:"/data/firefox-profile"`
 	Headless   bool   `env:"TWITTER_HEADLESS" envDefault:"true"`
-	VNCMode    bool   `env:"TWITTER_VNC_MODE" envDefault:"false"`
 
 	// VNCURL and VNCStartCommand are optional operator instructions returned
 	// when authentication expires. Per-event headless instances leave both

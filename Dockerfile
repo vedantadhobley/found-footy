@@ -4,9 +4,9 @@
 #   docker build --build-arg BINARY=worker -t found-footy-worker .
 #   docker build --build-arg BINARY=api    -t found-footy-api    .
 #
-# The twitter binary has its own Dockerfile (docker/twitter/Dockerfile)
-# because it needs the Playwright base image + Firefox + optional VNC
-# stack — a substantial delta from what worker/api need.
+# Twitter has separate images: docker/twitter/Dockerfile for Playwright search
+# and docker/twitter-auth/Dockerfile for raw operator login. Both differ
+# substantially from what worker/api need.
 
 # ────── build stage ──────
 # bookworm (not alpine) because we want glibc for CGO-agnostic

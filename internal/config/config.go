@@ -23,9 +23,10 @@ import (
 type Binary string
 
 const (
-	BinaryWorker  Binary = "worker"
-	BinaryAPI     Binary = "api"
-	BinaryTwitter Binary = "twitter"
+	BinaryWorker      Binary = "worker"
+	BinaryAPI         Binary = "api"
+	BinaryTwitter     Binary = "twitter"
+	BinaryTwitterAuth Binary = "twitter-auth"
 )
 
 var binarySections = map[Binary][]string{
@@ -34,8 +35,9 @@ var binarySections = map[Binary][]string{
 		"APIFootball", "Syndication", "Twitter", "FirefoxFleet", "FFmpeg",
 		"Workflows", "Discovery", "Dedup", "Video", "Vision", "Event",
 	},
-	BinaryAPI:     {"Observability", "Postgres", "S3", "API"},
-	BinaryTwitter: {"TwitterService"},
+	BinaryAPI:         {"Observability", "Postgres", "S3", "API"},
+	BinaryTwitter:     {"TwitterService"},
+	BinaryTwitterAuth: {"TwitterAuth"},
 }
 
 // Config is the top-level configuration composed from per-adapter
@@ -85,6 +87,10 @@ type Config struct {
 	// Browser-automation service process settings. This is distinct from
 	// Twitter above, which configures the worker's HTTP client.
 	TwitterService TwitterServiceConfig
+
+	// Raw-Firefox operator-login companion. It reads the Firefox profile's
+	// cookie database and publishes the shared browser-neutral snapshot.
+	TwitterAuth TwitterAuthConfig
 
 	// Eventing/producer layer: the NATS envelope `source` identity
 	// (found-footy-dev / -prod), stamped on every live-feed message.

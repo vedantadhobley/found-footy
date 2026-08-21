@@ -59,6 +59,8 @@ func (c *Config) ValidateFor(binary Binary) error {
 			"API_LISTEN_ADDR must differ from METRICS_ADDR")
 	case BinaryTwitter:
 		validateTwitterService(v, c.TwitterService)
+	case BinaryTwitterAuth:
+		validateTwitterAuth(v, c.TwitterAuth)
 	default:
 		return fmt.Errorf("unknown binary %q", binary)
 	}
@@ -262,11 +264,16 @@ func validateTwitterService(v *validator, cfg TwitterServiceConfig) {
 	validateListenAddress(v, "TWITTER_SERVICE_ADDR", cfg.ListenAddr)
 	v.check(filepath.IsAbs(cfg.CookieFile), "TWITTER_COOKIE_FILE must be an absolute path")
 	v.check(filepath.IsAbs(cfg.ProfileDir), "TWITTER_PROFILE_DIR must be an absolute path")
-	v.check(!cfg.VNCMode || !cfg.Headless,
-		"TWITTER_VNC_MODE=true requires TWITTER_HEADLESS=false")
 	if cfg.VNCURL != "" {
 		validateHTTPURL(v, "TWITTER_VNC_URL", cfg.VNCURL)
 	}
+}
+
+func validateTwitterAuth(v *validator, cfg TwitterAuthConfig) {
+	validateListenAddress(v, "TWITTER_AUTH_ADDR", cfg.ListenAddr)
+	v.check(filepath.IsAbs(cfg.CookieFile), "TWITTER_AUTH_COOKIE_FILE must be an absolute path")
+	v.check(filepath.IsAbs(cfg.ProfileDir), "TWITTER_AUTH_PROFILE_DIR must be an absolute path")
+	positiveDuration(v, "TWITTER_AUTH_POLL_INTERVAL", cfg.PollInterval)
 }
 
 func required(v *validator, name, value string) {

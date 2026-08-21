@@ -108,22 +108,19 @@ func TestLoadForAPIRejectsSharedListenAddress(t *testing.T) {
 	}
 }
 
-func TestLoadForTwitterUsesStrictBooleansAndModeValidation(t *testing.T) {
-	t.Run("malformed bool", func(t *testing.T) {
-		t.Setenv("TWITTER_HEADLESS", "truthy")
-		if _, err := LoadFor(BinaryTwitter); err == nil {
-			t.Fatal("Twitter accepted a malformed boolean")
-		}
-	})
+func TestLoadForTwitterUsesStrictBooleans(t *testing.T) {
+	t.Setenv("TWITTER_HEADLESS", "truthy")
+	if _, err := LoadFor(BinaryTwitter); err == nil {
+		t.Fatal("Twitter accepted a malformed boolean")
+	}
+}
 
-	t.Run("VNC cannot be headless", func(t *testing.T) {
-		t.Setenv("TWITTER_VNC_MODE", "true")
-		t.Setenv("TWITTER_HEADLESS", "true")
-		_, err := LoadFor(BinaryTwitter)
-		if err == nil || !strings.Contains(err.Error(), "requires TWITTER_HEADLESS=false") {
-			t.Fatalf("error = %v, want VNC/headless conflict", err)
-		}
-	})
+func TestLoadForTwitterAuthRejectsRelativePaths(t *testing.T) {
+	t.Setenv("TWITTER_AUTH_PROFILE_DIR", "relative")
+	_, err := LoadFor(BinaryTwitterAuth)
+	if err == nil || !strings.Contains(err.Error(), "TWITTER_AUTH_PROFILE_DIR must be an absolute path") {
+		t.Fatalf("error = %v, want absolute profile path", err)
+	}
 }
 
 func TestLoadForRejectsUnknownBinary(t *testing.T) {

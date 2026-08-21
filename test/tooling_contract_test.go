@@ -35,7 +35,12 @@ func TestToolchainVersionsArePinned(t *testing.T) {
 	}
 
 	wantGoImage := "FROM golang:" + goVersion + "-bookworm"
-	for _, name := range []string{"Dockerfile", "Dockerfile.dev", "docker/twitter/Dockerfile"} {
+	for _, name := range []string{
+		"Dockerfile",
+		"Dockerfile.dev",
+		"docker/twitter/Dockerfile",
+		"docker/twitter-auth/Dockerfile",
+	} {
 		contents := readToolingFile(t, root, name)
 		if !strings.Contains(contents, wantGoImage) {
 			t.Errorf("%s does not use pinned builder %q", name, wantGoImage)

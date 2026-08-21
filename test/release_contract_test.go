@@ -64,13 +64,33 @@ func TestProductionDeployGuardsFleetByOwnership(t *testing.T) {
 
 type releaseService struct {
 	Build struct {
-		Args map[string]string `yaml:"args"`
+		Dockerfile string            `yaml:"dockerfile"`
+		Args       map[string]string `yaml:"args"`
 	} `yaml:"build"`
 	Image       string            `yaml:"image"`
 	Environment map[string]string `yaml:"environment"`
 	Deploy      struct {
 		Replicas int `yaml:"replicas"`
 	} `yaml:"deploy"`
+}
+
+// TestProductionVNCUsesRawFirefoxBoundary prevents operator login from
+// regressing into the Playwright search image that X rejected at login time.
+func TestProductionVNCUsesRawFirefoxBoundary(t *testing.T) {
+	compose := loadProductionCompose(t)
+	vnc, ok := compose.Services["twitter-vnc"]
+	if !ok {
+		t.Fatal("twitter-vnc service is missing")
+	}
+	if vnc.Build.Dockerfile != "docker/twitter-auth/Dockerfile" {
+		t.Fatalf("twitter-vnc dockerfile = %q, want raw Firefox auth image", vnc.Build.Dockerfile)
+	}
+	if _, ok := vnc.Environment["TWITTER_HEADLESS"]; ok {
+		t.Fatal("twitter-vnc still receives Playwright TWITTER_HEADLESS configuration")
+	}
+	if _, ok := vnc.Environment["TWITTER_VNC_MODE"]; ok {
+		t.Fatal("twitter-vnc still receives the retired Playwright VNC mode")
+	}
 }
 
 // loadProductionCompose parses the release model as inert YAML. It does not

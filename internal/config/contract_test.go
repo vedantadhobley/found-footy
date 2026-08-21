@@ -64,7 +64,7 @@ func TestComposeRoutesOnlyOwnedApplicationEnvironment(t *testing.T) {
 		"worker":      BinaryWorker,
 		"api":         BinaryAPI,
 		"twitter":     BinaryTwitter,
-		"twitter-vnc": BinaryTwitter,
+		"twitter-vnc": BinaryTwitterAuth,
 	}
 	allowedMetadata := map[string]struct{}{"IMAGE_TAG": {}}
 

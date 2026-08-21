@@ -262,12 +262,11 @@ services:
 
   # Cookie re-auth container — opt-in via the `vnc` profile:
   #   docker compose -f docker-compose.prod.yml --profile vnc up -d twitter-vnc
-  # Runs the same twitter binary but with Playwright non-headless
-  # (TWITTER_VNC_MODE=true triggers entrypoint.sh to start Xvfb +
-  # fluxbox + x11vnc + websockify+noVNC). Operator opens noVNC in a
-  # browser at found-footy-prod-twitter-vnc.luv, logs in, cookies
-  # land in the shared file, headless fleet picks them up on next
-  # mtime check.
+  # Runs raw distribution Firefox with no Playwright or WebDriver. A focused
+  # capture service reads Firefox's cookies.sqlite after Firefox closes,
+  # requires a non-expired auth_token, and atomically publishes the shared JSON
+  # snapshot. Operator opens noVNC at found-footy-prod-twitter-vnc.luv, logs in,
+  # and closes Firefox; the headless fleet reloads the resulting file by mtime.
   #
   # Shares the same cookie file with headless; separate profile
   # volume (twitter-vnc-profile) so the visible-display Firefox's
@@ -275,9 +274,8 @@ services:
   twitter-vnc:
     build:
       context: .
-      dockerfile: docker/twitter/Dockerfile
+      dockerfile: docker/twitter-auth/Dockerfile
       args:
-        WITH_VNC: "true"
         GIT_SHA: ${GIT_SHA:-unknown}
         BUILT_AT: ${BUILT_AT:-unknown}
     image: found-footy-prod-twitter-vnc:${IMAGE_TAG:-latest}
@@ -287,8 +285,6 @@ services:
     env_file: .env
     environment:
       IMAGE_TAG: ${IMAGE_TAG:-latest}
-      TWITTER_VNC_MODE: "true"       # triggers entrypoint's VNC stack
-      TWITTER_HEADLESS: "false"      # Playwright uses the Xvfb display
     security_opt:
       - seccomp:unconfined
     shm_size: 1gb

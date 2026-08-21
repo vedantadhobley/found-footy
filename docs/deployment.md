@@ -27,9 +27,10 @@ targeting prod. Every command must pass `-f docker-compose.{prod,dev}.yml`.
 - `docker-compose.prod.yml` — **LIVE.** Runs the Go binaries — worker
   (`replicas: 2`) + api, both built from `./Dockerfile` — on Postgres +
   Garage. The cutover from the Python stack completed 2026-08-15 (La Liga
-  match day). Twitter + twitter-vnc build from the reconciled
-  `docker/twitter/Dockerfile`; the static `twitter` service is now the fleet's
-  image-builder + single fallback, with per-event instances carrying
+  match day). Static Twitter and fleet instances build from the headless
+  Playwright `docker/twitter/Dockerfile`; opt-in `twitter-vnc` builds from the
+  raw-Firefox `docker/twitter-auth/Dockerfile`. The static service is the
+  fleet's image builder + single fallback, with per-event instances carrying
   the search load.
 
 ### Configuration contract
@@ -104,20 +105,22 @@ stack owns them; running old and new containers together could also duplicate
 the preserved network alias. Any legacy removal remains a separate, explicitly
 approved production action.
 
-**Twitter image shape** (per decisions.md 2026-07-22): one Dockerfile
-serves both `twitter` (headless) and `twitter-vnc` (visible display).
-Runtime branches on `TWITTER_VNC_MODE=true` env var —
-`docker/twitter/entrypoint.sh` boots Xvfb + fluxbox + x11vnc +
-websockify+noVNC before exec'ing the binary when set. Build-time
-`WITH_VNC=true` arg gates the ~150 MB of VNC binaries so the headless
-image stays lean. See the [one-Dockerfile decision](decisions.md#2026-07-22--twitter-dockerfile-one-file-with_vnc-gated-matches-pythons-shape)
-for full rationale.
+**Twitter image shape:** login and scraping are separate runtime boundaries.
+`docker/twitter/Dockerfile` contains the headless Playwright search service and
+no VNC packages. `docker/twitter-auth/Dockerfile` contains raw Debian Firefox
+ESR, Xvfb/noVNC, SQLite, and the capture-only `cmd/twitter-auth`; it contains no
+Playwright driver or search endpoint. The
+[raw-login decision](./decisions/2026-08-19-raw-firefox-owns-operator-login.md)
+supersedes the 2026-07-22 one-image implementation because X rejected login in
+the instrumented browser.
 
 **Twitter VNC one-command flow:**
 
 ```bash
 make twitter-vnc-up     # brings up twitter-vnc via `docker compose --profile vnc up`
 # operator logs in at http://found-footy-dev-twitter-vnc.luv (dev)
+# operator closes Firefox normally so the capture service can read the profile
+# require /status state=ready, then POST /auth/verify on static twitter
 make twitter-vnc-down   # stops + removes the container when done
 ```
 
@@ -130,14 +133,15 @@ repository deliberately has no default Compose file (FF-018).
 The shared Twitter cookie file lives on the host at `FIREFOXFLEET_COOKIE_HOST_PATH`
 (default `~/.config/found-footy/twitter_cookies.json`), bind-mounted into `twitter`,
 `twitter-vnc`, and the per-event fleet containers. Two requirements — get either
-wrong and the cookie write-back / VNC re-auth silently fails to persist (the write
-error is swallowed; see [decisions.md](decisions.md) 2026-08-15):
+wrong and cookie write-back or VNC capture fails to persist. Search-service
+failures surface in `/status`; the raw capture service reports `degraded`:
 
 1. **Mount the parent DIR, not the file:** `~/.config/found-footy:/config`. `rename(2)`
    onto a single-file bind mountpoint returns EBUSY, and the backup writes atomically
    (temp + rename).
-2. **The dir must be group-writable by the container user.** Playwright runs as
-   `pwuser` (uid 1001), a member of group `users` (gid 100):
+2. **The dir must be writable by the container users.** The Playwright and raw
+   capture images both run unprivileged. On this host the shared `users` group
+   owns the directory:
    ```bash
    chgrp users ~/.config/found-footy && chmod 775 ~/.config/found-footy
    ```
@@ -359,6 +363,21 @@ that defect is [`FF-009`](./todo.md#confirmed-and-mitigated-backlog).
 - Overlap: `SCHEDULE_OVERLAP_POLICY_SKIP`
 - Args: empty `StagingPollWorkflowInput{}` — same zero-`ActivationWindow`→
   config fallback (default 5m).
+
+**TwitterMaintenanceWorkflow** — minute 17 every six hours. Schedule
+`twitter-maintenance-scheduled`.
+
+- Cron: `17 */6 * * *`
+  (`WORKFLOWS_TWITTER_MAINTENANCE_CRON`)
+- Overlap: `SCHEDULE_OVERLAP_POLICY_SKIP`
+- Args: empty `TwitterMaintenanceWorkflowInput{}` — the workflow applies its
+  stable query, 24-hour age, and minimum-evidence defaults
+- Target: the static Twitter service only; the dynamic fleet stays zero-warm
+- Retry: one activity attempt; a failure remains visible until the next tick
+
+The schedule forces a live authentication check and cookie writeback, then
+checks the live-search article, video, and status-link contracts. See the
+[workflow ledger](./orchestration/twitter-maintenance.md).
 
 When no active fixtures exist, an ActivePoll cycle completes early after
 `ListActiveFixtureIDs → []`.
