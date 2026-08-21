@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 )
 
 type extractedTweet struct {
@@ -150,11 +152,26 @@ func writeSearchOK(w http.ResponseWriter, body SearchResponse) {
 // writeSearchError emits a structured error body with the given HTTP
 // status. error_class is a stable enum callers can branch on.
 func writeSearchError(w http.ResponseWriter, status int, class, message string) {
+	writeSearchClassifiedError(w, status, class, message, "", twittercontract.SearchEvidence{})
+}
+
+// writeSearchClassifiedError preserves page-state evidence on a non-2xx
+// response without exposing page bodies or credentials.
+func writeSearchClassifiedError(
+	w http.ResponseWriter,
+	status int,
+	class string,
+	message string,
+	resultState twittercontract.ResultState,
+	evidence twittercontract.SearchEvidence,
+) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(SearchErrorBody{
-		Status:     "error",
-		ErrorClass: class,
-		Message:    message,
+		Status:      "error",
+		ErrorClass:  class,
+		Message:     message,
+		ResultState: resultState,
+		Evidence:    evidence,
 	})
 }

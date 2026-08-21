@@ -13,10 +13,188 @@ import (
 	sdkworkflow "go.temporal.io/sdk/workflow"
 
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
+	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
+
+func TestEventWorkflow_UnavailableProbePreservesLogicalAttempt(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newDiscoveryEnv(&s, discoveryactivity.GetDiscoveryConfigOutput{
+		MaxAttempts: 1, MaxUnavailableAttempts: 2, AttemptSpacing: time.Minute,
+		MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
+	})
+	searchCalls := 0
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ discoveryactivity.SearchTweetsInput) (discoveryactivity.SearchTweetsOutput, error) {
+			searchCalls++
+			if searchCalls == 1 {
+				return discoveryactivity.SearchTweetsOutput{
+					ResultState: twittercontract.ResultUpstreamError,
+					Evidence: twittercontract.SearchEvidence{
+						TimelineSeen: true, TimelineStatus: 429,
+					},
+				}, nil
+			}
+			return discoveryactivity.SearchTweetsOutput{
+				ResultState: twittercontract.ResultRendered,
+			}, nil
+		})
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	var out workflow.EventWorkflowOutput
+	if err := env.GetWorkflowResult(&out); err != nil {
+		t.Fatalf("GetWorkflowResult: %v", err)
+	}
+	if searchCalls != 2 || out.AttemptsRun != 1 || out.UnavailableAttempts != 1 {
+		t.Fatalf("result = calls %d/usable %d/unavailable %d, want 2/1/1",
+			searchCalls, out.AttemptsRun, out.UnavailableAttempts)
+	}
+	if out.SearchOutageExhausted {
+		t.Fatal("recovered search incorrectly exhausted outage budget")
+	}
+}
+
+func TestEventWorkflow_UntypedFeedTimeoutIsUnavailableDuringRollout(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newDiscoveryEnv(&s, discoveryactivity.GetDiscoveryConfigOutput{
+		MaxAttempts: 1, MaxUnavailableAttempts: 2, AttemptSpacing: time.Minute,
+		MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
+	})
+	searchCalls := 0
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, _ discoveryactivity.SearchTweetsInput) (discoveryactivity.SearchTweetsOutput, error) {
+			searchCalls++
+			if searchCalls == 1 {
+				// Browser service from before FF-061: no result_state.
+				return discoveryactivity.SearchTweetsOutput{StopReason: "feed_timeout"}, nil
+			}
+			return discoveryactivity.SearchTweetsOutput{StopReason: "age"}, nil
+		})
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	var out workflow.EventWorkflowOutput
+	_ = env.GetWorkflowResult(&out)
+	if searchCalls != 2 || out.AttemptsRun != 1 || out.UnavailableAttempts != 1 {
+		t.Fatalf("rollout result = calls %d/usable %d/unavailable %d, want 2/1/1",
+			searchCalls, out.AttemptsRun, out.UnavailableAttempts)
+	}
+}
+
+func TestEventWorkflow_ClassifiedActivityFailureRetainsPageState(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newDiscoveryEnv(&s, discoveryactivity.GetDiscoveryConfigOutput{
+		MaxAttempts: 1, MaxUnavailableAttempts: 1, AttemptSpacing: time.Minute,
+		MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
+	})
+	classified := discoveryactivity.SearchTweetsOutput{
+		ResultState: twittercontract.ResultLogin,
+		Evidence: twittercontract.SearchEvidence{
+			FinalURL: "https://x.com/i/flow/login",
+		},
+	}
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{}, temporal.NewApplicationErrorWithOptions(
+			"classified Twitter search unavailable",
+			discoveryactivity.SearchUnavailableErrorType,
+			temporal.ApplicationErrorOptions{Details: []any{classified}},
+		)).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	var out workflow.EventWorkflowOutput
+	_ = env.GetWorkflowResult(&out)
+	if out.LastSearchState != twittercontract.ResultLogin ||
+		out.UnavailableAttempts != 1 || !out.SearchOutageExhausted {
+		t.Fatalf("result = state %q/unavailable %d/exhausted %t, want login/1/true",
+			out.LastSearchState, out.UnavailableAttempts, out.SearchOutageExhausted)
+	}
+}
+
+func TestEventWorkflow_ExplicitEmptyConsumesUsableAttempt(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newDiscoveryEnv(&s, discoveryactivity.GetDiscoveryConfigOutput{
+		MaxAttempts: 2, MaxUnavailableAttempts: 2, AttemptSpacing: time.Minute,
+		MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
+	})
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			ResultState: twittercontract.ResultExplicitEmpty,
+			StopReason:  "explicit_empty",
+		}, nil)
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	var out workflow.EventWorkflowOutput
+	_ = env.GetWorkflowResult(&out)
+	if out.AttemptsRun != 2 || out.UnavailableAttempts != 0 {
+		t.Fatalf("attempts = usable %d/unavailable %d, want 2/0",
+			out.AttemptsRun, out.UnavailableAttempts)
+	}
+	env.AssertNumberOfCalls(t, "SearchTweets", 2)
+}
+
+func TestEventWorkflow_ActivityErrorsExhaustOnlyOutageBudget(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newDiscoveryEnv(&s, discoveryactivity.GetDiscoveryConfigOutput{
+		MaxAttempts: 2, MaxUnavailableAttempts: 2, AttemptSpacing: time.Minute,
+		MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
+	})
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{}, errors.New("browser unavailable"))
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	var out workflow.EventWorkflowOutput
+	_ = env.GetWorkflowResult(&out)
+	if out.AttemptsRun != 0 || out.UnavailableAttempts != 2 || !out.SearchOutageExhausted {
+		t.Fatalf("attempts = usable %d/unavailable %d/exhausted %t, want 0/2/true",
+			out.AttemptsRun, out.UnavailableAttempts, out.SearchOutageExhausted)
+	}
+	if out.OutcomeClass != "twitter_unavailable" {
+		t.Fatalf("outcome = %q, want twitter_unavailable", out.OutcomeClass)
+	}
+	env.AssertNumberOfCalls(t, "SearchTweets", 2)
+}
+
+func TestEventWorkflow_RecoveryRestoresOutageBudget(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := baseEventEnvWithRecovery(&s,
+		discoveryactivity.LoadEventRecoveryStateOutput{
+			AttemptsCompleted: 1, UnavailableAttempts: 1,
+			LastSearchState: twittercontract.ResultUnknownTimeout,
+		},
+		videoactivity.LoadEventAssetsOutput{},
+		discoveryactivity.GetDiscoveryConfigOutput{
+			MaxAttempts: 2, MaxUnavailableAttempts: 2, AttemptSpacing: time.Minute,
+			MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
+		},
+	)
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			ResultState: twittercontract.ResultUnknownTimeout,
+		}, nil).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	var out workflow.EventWorkflowOutput
+	_ = env.GetWorkflowResult(&out)
+	if out.AttemptsRun != 1 || out.UnavailableAttempts != 2 || !out.SearchOutageExhausted {
+		t.Fatalf("recovered attempts = usable %d/unavailable %d/exhausted %t, want 1/2/true",
+			out.AttemptsRun, out.UnavailableAttempts, out.SearchOutageExhausted)
+	}
+	env.AssertNumberOfCalls(t, "SearchTweets", 1)
+}
 
 // TestEventWorkflow_NoResults requires every configured empty attempt to end
 // with a completed no-candidates outcome.
@@ -57,6 +235,8 @@ func TestEventWorkflow_SearchRetrySpansBrowserRestart(t *testing.T) {
 		MaxAttempts: 1, AttemptSpacing: time.Minute, MaxAgeMinutes: 3,
 		QueryTimeout: 2 * time.Minute,
 	})
+	env.OnGetVersion(ff061AvailabilityChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(sdkworkflow.DefaultVersion).Once()
 	searchCalls := 0
 	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
 		Return(func(_ context.Context, _ discoveryactivity.SearchTweetsInput) (discoveryactivity.SearchTweetsOutput, error) {
@@ -84,8 +264,9 @@ func TestEventWorkflow_SearchRetrySpansBrowserRestart(t *testing.T) {
 }
 
 // TestEventWorkflow_DefaultVersionPreservesPreRestartRetryPolicy proves old
-// histories retain the original three activity attempts. This is the replay
-// complement to the four-attempt FF-017 recovery test above.
+// histories retain the original three activity attempts even when the new
+// activity reports classified failure details. This is the replay complement
+// to the four-attempt FF-017 recovery test above.
 func TestEventWorkflow_DefaultVersionPreservesPreRestartRetryPolicy(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newDiscoveryEnv(&s, discoveryactivity.GetDiscoveryConfigOutput{
@@ -95,11 +276,20 @@ func TestEventWorkflow_DefaultVersionPreservesPreRestartRetryPolicy(t *testing.T
 	env.OnGetVersion(ff017RestartChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
 		Return(sdkworkflow.DefaultVersion).
 		Once()
+	env.OnGetVersion(ff061AvailabilityChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(sdkworkflow.DefaultVersion).Once()
 	searchCalls := 0
 	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
 		Return(func(_ context.Context, _ discoveryactivity.SearchTweetsInput) (discoveryactivity.SearchTweetsOutput, error) {
 			searchCalls++
-			return discoveryactivity.SearchTweetsOutput{}, errors.New("browser unavailable")
+			classified := discoveryactivity.SearchTweetsOutput{
+				ResultState: twittercontract.ResultLogin,
+			}
+			return discoveryactivity.SearchTweetsOutput{}, temporal.NewApplicationErrorWithOptions(
+				"classified Twitter search unavailable",
+				discoveryactivity.SearchUnavailableErrorType,
+				temporal.ApplicationErrorOptions{Details: []any{classified}},
+			)
 		})
 
 	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())

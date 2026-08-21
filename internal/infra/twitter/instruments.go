@@ -22,7 +22,8 @@ type Instruments struct {
 }
 
 // RegisterMetrics:
-//   - twitter_calls_total{op, outcome} — op=search|verify.
+//   - twitter_calls_total{op, outcome} — op=search|verify; classified search
+//     outcomes use the bounded twittersearch.ResultState enum.
 //   - twitter_call_duration_seconds{op} — browser calls can take
 //     30-60s+ (browser automation), so histogram spans wider.
 func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Instruments {
@@ -30,7 +31,7 @@ func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Instruments {
 		Namespace: "found_footy",
 		Subsystem: "twitter",
 		Name:      "calls_total",
-		Help:      "Cumulative internal Twitter service calls, by op + outcome.",
+		Help:      "Cumulative internal Twitter service calls, by operation and bounded outcome.",
 	}, []string{"op", "outcome"})
 
 	callDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{

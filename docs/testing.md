@@ -48,10 +48,25 @@ FF-017 browser-lifecycle tests close an injected critical-child channel and
 require `StateFailed`, `/health` 503, one `twitter.browser_failed` audit, and a
 fatal result at the `cmd/twitter` process boundary. A fleet fake captures the
 Docker host config and requires `on-failure` for every dynamic event browser.
-An EventWorkflow test limits discovery to one outer attempt, fails its first
-three `SearchTweets` activity tries, and requires the fourth to surface a
-candidate after the restart window. Its default-version companion requires the
-historical three-try policy for pre-FF-017 replay.
+Pre-FF-061 EventWorkflow replay tests limit discovery to one outer attempt,
+fail the first three `SearchTweets` activity tries, and require FF-017's fourth
+try to surface a candidate; the pre-FF-017 companion retains its historical
+three-try policy.
+
+FF-061 workflow tests prove that upstream and activity failures advance only
+the bounded unavailable counter, an explicit empty result consumes a usable
+attempt, recovery restores both budgets, and exhaustion completes with
+`twitter_unavailable` instead of blocking the fixture. The rolling-release
+path recognizes an untyped historical `feed_timeout` as unavailable. Shared
+contract tests lock the five-state enum. HTTP-client and activity tests retain
+classified non-2xx login evidence in a retryable Temporal application error
+without turning transport errors into page observations. A workflow test
+decodes those details and retains the page state, while replay tests preserve
+the old activity retry policy. The Postgres recovery integration round-trips
+both counters and the latest bounded evidence while rejecting an older
+checkpoint overwrite.
+The maintenance activity retains classified rendered evidence in Temporal and
+rejects every unavailable state as a failed canary.
 
 FF-026 bootstrap tests reserve a real ephemeral TCP address and require an
 occupied metrics socket to reject startup before `Work` runs. A companion test
@@ -247,7 +262,8 @@ The files divide by responsibility:
   normalization, result age computation, `/search` HTTP guards
   (method-not-allowed, empty query, malformed JSON), search-URL
   builder, rune-safe truncation, promoted age-cutoff handling, equal-bound
-  jitter, and cancellation during jitter.
+  jitter, cancellation during jitter, missing-feed classification, timeline
+  URL recognition, and bounded/query-free evidence.
 
 `internal/activity/twittermaintenance` tests the forced-verify/search order,
 minimum feed/video evidence, and strict status-URL contract. The Temporal

@@ -99,8 +99,9 @@ func ConservativeEventStaleAfter(attemptSpacing, queryTimeout time.Duration) tim
 	if timerBound := 2 * attemptSpacing; timerBound > staleAfter {
 		staleAfter = timerBound
 	}
-	// SearchTweets currently has four attempts. Five extra minutes cover its
-	// bounded retry backoff plus scheduling variance.
+	// Pre-FF-061 histories can still have four SearchTweets activity attempts.
+	// Five extra minutes cover that bounded retry chain plus scheduling variance;
+	// current one-attempt histories remain inside the same conservative bound.
 	if searchBound := 4*queryTimeout + 5*time.Minute; searchBound > staleAfter {
 		staleAfter = searchBound
 	}

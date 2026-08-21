@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/vedantadhobley/found-footy/internal/config"
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 	"github.com/vedantadhobley/found-footy/internal/observability/logging"
 	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 )
@@ -28,27 +29,15 @@ type Client struct {
 	searchTimeout time.Duration
 }
 
-// SearchRequest is the JSON body of a POST /search call.
-type SearchRequest struct {
-	Query         string   `json:"query"`
-	ExcludeURLs   []string `json:"exclude_urls,omitempty"`
-	MaxAgeMinutes int      `json:"max_age_minutes,omitempty"`
-}
+const maxSearchErrorBodyBytes = 64 << 10
 
-// SearchResponse is the parsed body of a successful POST /search.
-// Videos is the list of discovered tweet + video URLs. Extra
-// observability fields (StopReason, Scrolls) are omitempty for
-// backward compatibility — older service versions leave them zero.
-type SearchResponse struct {
-	Status          string     `json:"status"`
-	Videos          []VideoRef `json:"videos"`
-	Count           int        `json:"count"`
-	StopReason      string     `json:"stop_reason,omitempty"`
-	Scrolls         int        `json:"scrolls,omitempty"`
-	InitialArticles int        `json:"initial_articles,omitempty"`
-	TweetsParsed    int        `json:"tweets_parsed,omitempty"`
-	VideoTweets     int        `json:"video_tweets,omitempty"`
-}
+// SearchRequest is the JSON body of a POST /search call.
+type SearchRequest = twittercontract.SearchRequest
+
+// SearchResponse is the parsed body of a processed POST /search, including a
+// classified HTTP-200 unavailable page. Videos is the list of discovered tweet
+// and video URLs; older service versions leave classification fields zero.
+type SearchResponse = twittercontract.SearchResponse
 
 // Verify forces the static Twitter service to perform a live authentication
 // check and persist the resulting cookie snapshot. It is intentionally
@@ -96,13 +85,20 @@ func (c *Client) Verify(ctx context.Context) error {
 // SearchResponse — they're populated by T/c but the older Python
 // service leaves them zero, so JSON encoding skips them for backward
 // compat.
-type VideoRef struct {
-	TweetURL        string  `json:"tweet_url"`
-	TweetText       string  `json:"tweet_text"`
-	VideoPageURL    string  `json:"video_page_url"`
-	DurationSeconds float64 `json:"duration_seconds"`
-	Username        string  `json:"username,omitempty"`
-	AgeMinutes      float64 `json:"age_minutes,omitempty"`
+type VideoRef = twittercontract.VideoRef
+
+// SearchError preserves a structured non-2xx browser response. It contains
+// bounded page evidence only; response bodies and credentials never escape.
+type SearchError struct {
+	StatusCode  int
+	ErrorClass  string
+	Message     string
+	ResultState twittercontract.ResultState
+	Evidence    twittercontract.SearchEvidence
+}
+
+func (e *SearchError) Error() string {
+	return fmt.Sprintf("twitter.Search: %d %s (%s)", e.StatusCode, http.StatusText(e.StatusCode), e.ErrorClass)
 }
 
 // NewClient validates static configuration and constructs a recoverable HTTP
@@ -188,15 +184,32 @@ func (c *Client) Search(ctx context.Context, addr string, req SearchRequest) (*S
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		c.ins.calls.WithLabelValues("search", "failure").Inc()
-		c.ins.emitEvent(ctx, logging.LevelWarn, vocabulary.ActionTwitterSearchFailed,
-			"twitter search non-2xx response",
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxSearchErrorBodyBytes))
+		if readErr != nil {
+			c.ins.calls.WithLabelValues("search", "failure").Inc()
+			return nil, fmt.Errorf("twitter.Search: read error response: %w", readErr)
+		}
+		var errorBody twittercontract.SearchErrorBody
+		if err := json.Unmarshal(respBody, &errorBody); err != nil {
+			c.ins.calls.WithLabelValues("search", "failure").Inc()
+			return nil, fmt.Errorf("twitter.Search: decode error response status %d: %w", resp.StatusCode, err)
+		}
+		metricOutcome := resultMetricOutcome(errorBody.ResultState, "failure")
+		c.ins.calls.WithLabelValues("search", metricOutcome).Inc()
+		fields := []logging.Field{
 			logging.String("query", req.Query),
 			logging.Int("status", resp.StatusCode),
-			logging.String("body_preview", string(respBody)),
-		)
-		return nil, fmt.Errorf("twitter.Search: %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+			logging.String("error_class", errorBody.ErrorClass),
+			logging.String("result_state", string(errorBody.ResultState)),
+		}
+		fields = append(fields, logSearchEvidence(errorBody.Evidence)...)
+		c.ins.emitEvent(ctx, logging.LevelWarn, vocabulary.ActionTwitterSearchFailed,
+			"twitter search non-2xx response", fields...)
+		return nil, &SearchError{
+			StatusCode: resp.StatusCode, ErrorClass: errorBody.ErrorClass,
+			Message: errorBody.Message, ResultState: errorBody.ResultState,
+			Evidence: errorBody.Evidence,
+		}
 	}
 
 	var out SearchResponse
@@ -204,10 +217,14 @@ func (c *Client) Search(ctx context.Context, addr string, req SearchRequest) (*S
 		c.ins.calls.WithLabelValues("search", "failure").Inc()
 		return nil, fmt.Errorf("twitter.Search: decode: %w", err)
 	}
-	c.ins.calls.WithLabelValues("search", "success").Inc()
-	c.ins.emitEvent(ctx, logging.LevelInfo, vocabulary.ActionTwitterSearch,
-		"twitter search ok",
+	if out.ResultState != "" && !out.ResultState.Known() {
+		c.ins.calls.WithLabelValues("search", "failure").Inc()
+		return nil, fmt.Errorf("twitter.Search: unknown result_state %q", out.ResultState)
+	}
+	c.ins.calls.WithLabelValues("search", resultMetricOutcome(out.ResultState, "success")).Inc()
+	fields := []logging.Field{
 		logging.String("query", req.Query),
+		logging.String("result_state", string(out.ResultState)),
 		logging.Int("videos_found", out.Count),
 		logging.String("stop_reason", out.StopReason),
 		logging.Int("scrolls", out.Scrolls),
@@ -215,6 +232,39 @@ func (c *Client) Search(ctx context.Context, addr string, req SearchRequest) (*S
 		logging.Int("tweets_parsed", out.TweetsParsed),
 		logging.Int("video_tweets", out.VideoTweets),
 		logging.Int64("elapsed_ms", elapsed.Milliseconds()),
-	)
+	}
+	fields = append(fields, logSearchEvidence(out.Evidence)...)
+	level := logging.LevelInfo
+	action := vocabulary.ActionTwitterSearch
+	message := "twitter search completed"
+	if out.ResultState.Known() && !out.ResultState.Usable() {
+		level = logging.LevelWarn
+		action = vocabulary.ActionTwitterSearchFailed
+		message = "twitter search unavailable"
+	}
+	c.ins.emitEvent(ctx, level, action, message, fields...)
 	return &out, nil
+}
+
+func resultMetricOutcome(state twittercontract.ResultState, fallback string) string {
+	if state.Known() {
+		return string(state)
+	}
+	return fallback
+}
+
+func logSearchEvidence(e twittercontract.SearchEvidence) []logging.Field {
+	return []logging.Field{
+		logging.String("final_url", e.FinalURL),
+		logging.String("page_title", e.PageTitle),
+		logging.Bool("app_shell", e.AppShell),
+		logging.Bool("empty_state", e.EmptyState),
+		logging.Bool("error_state", e.ErrorState),
+		logging.Bool("timeline_seen", e.TimelineSeen),
+		logging.Int("timeline_status", e.TimelineStatus),
+		logging.String("timeline_failure", e.TimelineFailure),
+		logging.String("rate_limit_limit", e.RateLimitLimit),
+		logging.String("rate_limit_remaining", e.RateLimitRemain),
+		logging.String("rate_limit_reset", e.RateLimitReset),
+	}
 }

@@ -182,10 +182,11 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 		// to the workflow via GetDiscoveryConfig activity. Zero-value
 		// safety: GetDiscoveryConfig falls back to hardcoded defaults
 		// per-field if any of these are unset (tests / mis-wired).
-		MaxAttempts:    deps.Cfg.Discovery.MaxAttempts,
-		AttemptSpacing: deps.Cfg.Discovery.AttemptSpacing,
-		MaxAgeMinutes:  deps.Cfg.Discovery.MaxAgeMinutes,
-		QueryTimeout:   deps.Cfg.Discovery.QueryTimeout,
+		MaxAttempts:            deps.Cfg.Discovery.MaxAttempts,
+		MaxUnavailableAttempts: deps.Cfg.Discovery.MaxUnavailableAttempts,
+		AttemptSpacing:         deps.Cfg.Discovery.AttemptSpacing,
+		MaxAgeMinutes:          deps.Cfg.Discovery.MaxAgeMinutes,
+		QueryTimeout:           deps.Cfg.Discovery.QueryTimeout,
 		// Dedup thresholds surfaced to EventWorkflow's in-code video.Match.
 		MaxHamming:   deps.Cfg.Dedup.MaxHamming,
 		MinRunFrames: deps.Cfg.Dedup.MinRunFrames,

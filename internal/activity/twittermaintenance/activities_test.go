@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"go.temporal.io/sdk/temporal"
+
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 	twitterinfra "github.com/vedantadhobley/found-footy/internal/infra/twitter"
 )
 
@@ -25,6 +28,8 @@ func (f *fakeTwitter) Search(
 
 func TestRunTwitterMaintenancePassesWithAuthAndDOMEvidence(t *testing.T) {
 	fake := &fakeTwitter{searchOut: &twitterinfra.SearchResponse{
+		ResultState:     twittercontract.ResultRendered,
+		Evidence:        twittercontract.SearchEvidence{TimelineSeen: true, TimelineStatus: 200},
 		Count:           3,
 		StopReason:      "age",
 		InitialArticles: 5,
@@ -42,7 +47,8 @@ func TestRunTwitterMaintenancePassesWithAuthAndDOMEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTwitterMaintenance: %v", err)
 	}
-	if out.TweetsParsed != 4 || out.VideosFound != 3 {
+	if out.ResultState != twittercontract.ResultRendered || !out.Evidence.TimelineSeen ||
+		out.TweetsParsed != 4 || out.VideosFound != 3 {
 		t.Fatalf("output = %+v", out)
 	}
 }
@@ -56,10 +62,23 @@ func TestRunTwitterMaintenanceFailsBeforeSearchWhenVerifyFails(t *testing.T) {
 }
 
 func TestRunTwitterMaintenanceRejectsMissingFeedEvidence(t *testing.T) {
-	fake := &fakeTwitter{searchOut: &twitterinfra.SearchResponse{StopReason: "feed_timeout"}}
+	fake := &fakeTwitter{searchOut: &twitterinfra.SearchResponse{
+		ResultState: twittercontract.ResultUnknownTimeout,
+		StopReason:  "feed_timeout",
+	}}
 	_, err := (&Activities{Twitter: fake}).RunTwitterMaintenance(context.Background(), RunTwitterMaintenanceInput{MinTweets: 3})
-	if err == nil {
-		t.Fatal("expected missing-feed failure")
+	if err == nil || !strings.Contains(err.Error(), "unknown_timeout") {
+		t.Fatalf("error = %v, want classified missing-feed failure", err)
+	}
+	var applicationErr *temporal.ApplicationError
+	if !errors.As(err, &applicationErr) || applicationErr.Type() != CanaryErrorType ||
+		!applicationErr.NonRetryable() {
+		t.Fatalf("error = %T %v, want non-retrying %s", err, err, CanaryErrorType)
+	}
+	var out RunTwitterMaintenanceOutput
+	if err := applicationErr.Details(&out); err != nil ||
+		out.ResultState != twittercontract.ResultUnknownTimeout {
+		t.Fatalf("canary details = %+v err=%v", out, err)
 	}
 }
 
@@ -75,7 +94,8 @@ func TestRunTwitterMaintenanceRejectsNilSearchResponse(t *testing.T) {
 
 func TestRunTwitterMaintenanceRejectsMalformedStatusURL(t *testing.T) {
 	fake := &fakeTwitter{searchOut: &twitterinfra.SearchResponse{
-		Count: 1, StopReason: "age", InitialArticles: 3, TweetsParsed: 3, VideoTweets: 1,
+		ResultState: twittercontract.ResultRendered,
+		Count:       1, StopReason: "age", InitialArticles: 3, TweetsParsed: 3, VideoTweets: 1,
 		Videos: []twitterinfra.VideoRef{{TweetURL: "https://notx.com/user/status/123"}},
 	}}
 	_, err := (&Activities{Twitter: fake}).RunTwitterMaintenance(context.Background(), RunTwitterMaintenanceInput{MinTweets: 3, MinVideos: 1})

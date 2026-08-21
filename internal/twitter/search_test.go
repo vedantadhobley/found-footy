@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 )
 
 // TestExtractTweetIDFromURL — cases ported from scrape.py's
@@ -297,5 +299,46 @@ func TestWaitForScrollHonorsCancellation(t *testing.T) {
 	}
 	if time.Since(start) > 100*time.Millisecond {
 		t.Fatal("canceled jitter wait did not return promptly")
+	}
+}
+
+func TestClassifyMissingFeed(t *testing.T) {
+	tests := []struct {
+		name     string
+		evidence twittercontract.SearchEvidence
+		want     twittercontract.ResultState
+	}{
+		{name: "explicit empty", evidence: twittercontract.SearchEvidence{EmptyState: true}, want: twittercontract.ResultExplicitEmpty},
+		{name: "error overrides empty", evidence: twittercontract.SearchEvidence{EmptyState: true, TimelineStatus: 429}, want: twittercontract.ResultUpstreamError},
+		{name: "error selector", evidence: twittercontract.SearchEvidence{ErrorState: true}, want: twittercontract.ResultUpstreamError},
+		{name: "timeline request failed", evidence: twittercontract.SearchEvidence{TimelineSeen: true, TimelineFailure: "net::ERR_FAILED"}, want: twittercontract.ResultUpstreamError},
+		{name: "rate limited", evidence: twittercontract.SearchEvidence{TimelineSeen: true, TimelineStatus: 429}, want: twittercontract.ResultUpstreamError},
+		{name: "server error", evidence: twittercontract.SearchEvidence{TimelineSeen: true, TimelineStatus: 503}, want: twittercontract.ResultUpstreamError},
+		{name: "unexplained timeout", evidence: twittercontract.SearchEvidence{AppShell: true}, want: twittercontract.ResultUnknownTimeout},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyMissingFeed(tc.evidence); got != tc.want {
+				t.Fatalf("classifyMissingFeed(%+v) = %q, want %q", tc.evidence, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSearchEvidenceHelpersBoundAndRedact(t *testing.T) {
+	if !isSearchTimelineURL("https://x.com/i/api/graphql/hash/SearchTimeline?variables=secret") {
+		t.Fatal("SearchTimeline URL was not recognized")
+	}
+	if !isSearchTimelineURL("https://x.com/i/search/adaptive.json?q=goal") {
+		t.Fatal("legacy adaptive search URL was not recognized")
+	}
+	if isSearchTimelineURL("https://x.com/i/api/graphql/hash/HomeTimeline") {
+		t.Fatal("unrelated timeline URL was recognized")
+	}
+	if got := boundedPageURL("https://x.com/search?q=player+team&f=live#fragment"); got != "https://x.com/search" {
+		t.Fatalf("boundedPageURL = %q, want query-free route", got)
+	}
+	if got := boundedEvidence(strings.Repeat("x", 200), 16); len(got) != 16 {
+		t.Fatalf("bounded evidence length = %d, want 16", len(got))
 	}
 }

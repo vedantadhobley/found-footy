@@ -22,8 +22,8 @@ timeout):
 
 **Producer** (the discovery search loop). `GetDiscoveryConfig` →
 `FetchTeamAliases` (canonical name only; resolved aliases are disconnected) →
-`querybuilder.Build(player, canonical, nil)` → N attempts × M spacing
-(`config.DiscoveryConfig`, default 15 × 60s) of
+`querybuilder.Build(player, canonical, nil)` → N usable observations × M
+spacing (`config.DiscoveryConfig`, default 15 × 60s) of
 `SearchTweets` with per-event `exclude_urls` accumulating across attempts
 (so attempts 2+ stop early on consecutive-already-seen). Each new
 candidate becomes workflow-owned as `CandidateEvidence`. The producer submits
@@ -46,21 +46,32 @@ rerunning resolution before every download so an expired or edge-rejected
 variant URL can refresh (FF-029). Exhaustion still follows FF-002's correlated
 `download_error` path.
 
-Each `SearchTweets` activity has four transient-infrastructure attempts at
-roughly 0/10/30/60 seconds. This spans FF-017's measured Firefox cold restart,
-including on the final outer discovery attempt; the minute between successful
-outer attempts remains unchanged. A Temporal version marker preserves the old
-three-try policy for histories started before FF-017.
+**Search availability contract (FF-061).** The browser result is one of
+`rendered`, `explicit_empty`, `login`, `upstream_error`, or
+`unknown_timeout`. Only the first two advance `attempts_completed`. New
+histories give `SearchTweets` one activity attempt, then retry unavailable
+probes at the normal one-minute workflow cadence so one logical probe cannot
+multiply browser traffic. `DISCOVERY_MAX_UNAVAILABLE_ATTEMPTS` is a separate
+budget, default 15. With the default 15 usable searches, one new history can
+issue at most 30 SearchTweets activity executions. A failed per-event transport
+can add one static-service HTTP request inside an execution.
 
-**Current search-accounting defect (FF-061).** Twitter returns
-`feed_timeout` as a successful empty response, so EventWorkflow checkpoints it
-and advances the outer attempt. If `SearchTweets` instead returns an error and
-all activity retries exhaust, the workflow logs the failure but still reaches
-the same progress checkpoint. The configured 15 slots therefore do not prove
-15 usable search observations. The fix must distinguish explicit empty results
-from transient page failure and must leave unavailable or exhausted searches
-uncheckpointed within a bounded outage policy. Production evidence is in the
-[2026-08-20 incident report](../incidents/2026-08-20-twitter-feed-suppression.md).
+Every probe checkpoints the monotonic usable/unavailable counters plus the
+latest secret-free page/timeline evidence in downstream metadata. A replacement
+execution restores both budgets. Exhausting the unavailable budget drains
+already-owned candidates and completes with `twitter_unavailable` when none
+were processed; fixture completion cannot wait forever. The
+`ff-061-search-availability` marker leaves pre-FF-061 histories on FF-017's
+three/four-attempt activity policy and historical checkpoint behavior. The
+[decision](../decisions/2026-08-20-twitter-search-attempts-require-usable-observations.md)
+and [incident](../incidents/2026-08-20-twitter-feed-suppression.md) hold the
+rationale and production evidence.
+
+Classified non-2xx browser responses cross the activity boundary as retryable
+Temporal application errors with typed output details. Pre-FF-061 histories
+therefore execute their original retry chain. New histories make one activity
+call, decode those details in EventWorkflow, and advance only the unavailable
+counter.
 
 **Candidate failure contract (FF-002 + FF-022).** `download_error` stamps the
 persisted candidate `failed`; no staging object exists. `hash_error` stamps
@@ -94,14 +105,15 @@ not add activities, alter retry policies, gate decisions, or change the
 Selector's serialized ownership rules. Activity-stage duration therefore
 includes task-queue admission and retry backoff by design.
 
-**Twitter feed-classification contract (FF-051).** Every discovery attempt
+**Twitter feed-classification contract (FF-051 + FF-061).** Every discovery attempt
 sends the same broad Latest query and the configured local age cutoff; the
 workflow does not add server-side time operators or grow the age window across
-attempts. Search measurement lines record `max_age_minutes`, `stop_reason`,
-`scrolls`, `initial_articles`, `tweets_parsed`, and `video_tweets`. A real feed
-timeout is a successful empty observation. Other Playwright wait failures are
-activity errors and follow Temporal's retry policy instead of advancing the
-attempt as an empty success.
+attempts. Search measurement lines record `max_age_minutes`, `result_state`,
+`stop_reason`, `scrolls`, `initial_articles`, `tweets_parsed`, and
+`video_tweets`. An explicit X empty state is usable. A `feed_timeout` is
+`unknown_timeout` and does not advance the logical attempt. The HTTP client
+records the bounded final route/title, selector bits, SearchTimeline
+status/failure, and rate headers; no bodies or credentials are retained.
 
 **Cancellation contract (FF-015).** Producer cancellation from an activity or
 the between-attempt `workflow.Sleep` terminates the producer and records its
@@ -117,12 +129,13 @@ run under the same deterministic Workflow ID only when the prior run closed
 unsuccessfully. EventWorkflow has no outer execution timeout: its attempt loop
 is finite, while each activity and Video child retains its own timeout. Before
 new work starts, the replacement run loads active persisted assets, the
-monotonic `attempts_completed` checkpoint from downstream metadata, and every
+monotonic `attempts_completed` and `unavailable_attempts` checkpoints plus the
+latest classified search evidence from downstream metadata, and every
 persisted candidate with its full evidence. Terminal candidates seed
 exclusions; candidates still observed/pending are re-driven and become
-in-flight in workflow memory. Search resumes at the first uncompleted
-attempt, and each fully scheduled attempt advances the checkpoint. The
-checklist remains open until the replacement run reaches normal finalization.
+in-flight in workflow memory. Search resumes at the first uncompleted usable
+attempt. Unavailable probes advance only their own budget. The checklist remains
+open until the replacement run reaches normal finalization.
 A Temporal change marker keeps executions started before FF-007 on their old
 command sequence; every new or replacement execution records version 1 and
 uses recovery. FF-034 independently versions the evidence-carrying terminal

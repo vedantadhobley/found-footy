@@ -209,6 +209,8 @@ func validateWorkflows(v *validator, cfg WorkflowsConfig) {
 func validateDiscovery(v *validator, cfg DiscoveryConfig) {
 	v.check(cfg.MaxAttempts >= 1 && cfg.MaxAttempts <= maxRecordedSearchAttempt,
 		fmt.Sprintf("DISCOVERY_MAX_ATTEMPTS must be between 1 and %d", maxRecordedSearchAttempt))
+	v.check(cfg.MaxUnavailableAttempts >= 1 && cfg.MaxUnavailableAttempts <= maxRecordedSearchAttempt,
+		fmt.Sprintf("DISCOVERY_MAX_UNAVAILABLE_ATTEMPTS must be between 1 and %d", maxRecordedSearchAttempt))
 	positiveDuration(v, "DISCOVERY_ATTEMPT_SPACING", cfg.AttemptSpacing)
 	v.check(cfg.MaxAgeMinutes > 0, "DISCOVERY_MAX_AGE_MINUTES must be > 0")
 	positiveDuration(v, "DISCOVERY_QUERY_TIMEOUT", cfg.QueryTimeout)

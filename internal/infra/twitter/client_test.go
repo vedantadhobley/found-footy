@@ -4,13 +4,16 @@ package twitter_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/vedantadhobley/found-footy/internal/config"
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
 	"github.com/vedantadhobley/found-footy/internal/observability/logging"
 	"github.com/vedantadhobley/found-footy/internal/observability/metrics"
@@ -52,7 +55,11 @@ func TestNewClient_DoesNotRequireLiveService(t *testing.T) {
 
 func TestSearch_HappyPath(t *testing.T) {
 	srv := mockTwitter(t, twitter.SearchResponse{
-		Status:          "success",
+		Status:      "success",
+		ResultState: twittercontract.ResultRendered,
+		Evidence: twittercontract.SearchEvidence{
+			FinalURL: "https://x.com/search", TimelineSeen: true, TimelineStatus: 200,
+		},
 		Count:           2,
 		StopReason:      "age",
 		Scrolls:         3,
@@ -83,6 +90,10 @@ func TestSearch_HappyPath(t *testing.T) {
 	if res.StopReason != "age" || res.Scrolls != 3 || res.InitialArticles != 4 ||
 		res.TweetsParsed != 7 || res.VideoTweets != 5 {
 		t.Errorf("Search diagnostics were not preserved: %+v", res)
+	}
+	if res.ResultState != twittercontract.ResultRendered ||
+		res.Evidence.TimelineStatus != 200 {
+		t.Errorf("Search classification was not preserved: %+v", res)
 	}
 	if !log.HasAction(vocabulary.ModuleInfraTwitter, vocabulary.ActionTwitterSearch) {
 		t.Errorf("expected ActionTwitterSearch; got %+v", log.Snapshot())
@@ -121,6 +132,67 @@ func TestSearch_RecoversAfterServiceBecomesReady(t *testing.T) {
 	ready.Store(true)
 	if _, err := c.Search(context.Background(), "", twitter.SearchRequest{Query: "goal"}); err != nil {
 		t.Fatalf("Search after service recovery: %v", err)
+	}
+}
+
+func TestSearch_PreservesClassifiedNon2xxEvidence(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(twittercontract.SearchErrorBody{
+			Status:      "error",
+			ErrorClass:  "auth_expired",
+			Message:     strings.Repeat("session unauthenticated ", 256),
+			ResultState: twittercontract.ResultLogin,
+			Evidence: twittercontract.SearchEvidence{
+				FinalURL: "https://x.com/i/flow/login", AppShell: false,
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ins, _ := newFixture()
+	c, err := twitter.NewClient(config.TwitterConfig{
+		BaseURL: srv.URL, SearchTimeout: time.Second,
+	}, ins)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, err = c.Search(context.Background(), "", twitter.SearchRequest{Query: "goal"})
+	var searchErr *twitter.SearchError
+	if !errors.As(err, &searchErr) {
+		t.Fatalf("Search error = %T %v, want *SearchError", err, err)
+	}
+	if searchErr.ResultState != twittercontract.ResultLogin ||
+		searchErr.Evidence.FinalURL != "https://x.com/i/flow/login" {
+		t.Fatalf("classified error = %+v", searchErr)
+	}
+}
+
+func TestSearch_LogsClassifiedHTTP200OutageAsFailure(t *testing.T) {
+	srv := mockTwitter(t, twitter.SearchResponse{
+		Status:      "unavailable",
+		ResultState: twittercontract.ResultUnknownTimeout,
+		Evidence: twittercontract.SearchEvidence{
+			AppShell: true,
+		},
+		StopReason: "feed_timeout",
+	})
+	defer srv.Close()
+
+	ins, log := newFixture()
+	c, err := twitter.NewClient(config.TwitterConfig{
+		BaseURL: srv.URL, SearchTimeout: time.Second,
+	}, ins)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := c.Search(context.Background(), "", twitter.SearchRequest{Query: "goal"}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if !log.HasAction(vocabulary.ModuleInfraTwitter, vocabulary.ActionTwitterSearchFailed) {
+		t.Fatalf("expected ActionTwitterSearchFailed; got %+v", log.Snapshot())
 	}
 }
 

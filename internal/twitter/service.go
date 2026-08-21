@@ -26,7 +26,7 @@ const (
 	StateStarting        State = "starting"
 	StateLoading         State = "loading" // reloading cookies from shared backup file
 	StateHealthy         State = "healthy"
-	StateDegraded        State = "degraded" // auth check was inconclusive; retry, do not request login
+	StateDegraded        State = "degraded" // browser/search availability was inconclusive; retry, do not request login
 	StateUnauthenticated State = "unauthenticated"
 	StateFailed          State = "failed" // browser dead / unrecoverable
 )

@@ -4,10 +4,14 @@ package twittermaintenance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 
+	"go.temporal.io/sdk/temporal"
+
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 	twitterinfra "github.com/vedantadhobley/found-footy/internal/infra/twitter"
 )
 
@@ -33,12 +37,18 @@ type RunTwitterMaintenanceInput struct {
 
 // RunTwitterMaintenanceOutput records the canary evidence retained in Temporal.
 type RunTwitterMaintenanceOutput struct {
+	ResultState     twittercontract.ResultState
+	Evidence        twittercontract.SearchEvidence
 	StopReason      string
 	InitialArticles int
 	TweetsParsed    int
 	VideoTweets     int
 	VideosFound     int
 }
+
+// CanaryErrorType marks a non-retrying maintenance failure whose details
+// retain the classified search output in Temporal history.
+const CanaryErrorType = "twitter_maintenance_canary_failed"
 
 // RunTwitterMaintenance forces a live auth verification and cookie sync, then
 // searches the static fallback browser with a broad evergreen query. It fails
@@ -59,36 +69,65 @@ func (a *Activities) RunTwitterMaintenance(
 		MaxAgeMinutes: in.MaxAgeMinutes,
 	})
 	if err != nil {
+		var searchErr *twitterinfra.SearchError
+		if errors.As(err, &searchErr) && searchErr.ResultState.Known() {
+			out := RunTwitterMaintenanceOutput{
+				ResultState: searchErr.ResultState,
+				Evidence:    searchErr.Evidence,
+			}
+			return out, canaryFailure(out, "twitter maintenance: canary search: "+err.Error(), err)
+		}
 		return RunTwitterMaintenanceOutput{}, fmt.Errorf("twitter maintenance: canary search: %w", err)
 	}
 	if resp == nil {
 		return RunTwitterMaintenanceOutput{}, fmt.Errorf("twitter maintenance: canary search returned no response")
 	}
 	out := RunTwitterMaintenanceOutput{
+		ResultState:     resp.ResultState,
+		Evidence:        resp.Evidence,
 		StopReason:      resp.StopReason,
 		InitialArticles: resp.InitialArticles,
 		TweetsParsed:    resp.TweetsParsed,
 		VideoTweets:     resp.VideoTweets,
 		VideosFound:     resp.Count,
 	}
+	if resp.ResultState.Known() && resp.ResultState != twittercontract.ResultRendered {
+		return out, canaryFailure(out, fmt.Sprintf(
+			"twitter maintenance: search feed state=%s (stop_reason=%s)",
+			resp.ResultState, resp.StopReason), nil)
+	}
 	if resp.StopReason == "feed_timeout" || resp.InitialArticles == 0 {
-		return out, fmt.Errorf("twitter maintenance: no search feed rendered (stop_reason=%s)", resp.StopReason)
+		return out, canaryFailure(out, fmt.Sprintf(
+			"twitter maintenance: no search feed rendered (state=%s stop_reason=%s)",
+			resp.ResultState, resp.StopReason), nil)
 	}
 	if resp.TweetsParsed < in.MinTweets {
-		return out, fmt.Errorf("twitter maintenance: parsed %d tweets, require at least %d", resp.TweetsParsed, in.MinTweets)
+		return out, canaryFailure(out, fmt.Sprintf(
+			"twitter maintenance: parsed %d tweets, require at least %d",
+			resp.TweetsParsed, in.MinTweets), nil)
 	}
 	if resp.VideoTweets < in.MinVideos || len(resp.Videos) < in.MinVideos {
-		return out, fmt.Errorf(
+		return out, canaryFailure(out, fmt.Sprintf(
 			"twitter maintenance: found %d video tweets and returned %d videos, require at least %d",
 			resp.VideoTweets, len(resp.Videos), in.MinVideos,
-		)
+		), nil)
 	}
 	for _, video := range resp.Videos {
 		if !validStatusURL(video.TweetURL) {
-			return out, fmt.Errorf("twitter maintenance: malformed status URL %q", video.TweetURL)
+			return out, canaryFailure(out, fmt.Sprintf(
+				"twitter maintenance: malformed status URL %q", video.TweetURL), nil)
 		}
 	}
 	return out, nil
+}
+
+func canaryFailure(out RunTwitterMaintenanceOutput, message string, cause error) error {
+	return temporal.NewApplicationErrorWithOptions(message, CanaryErrorType,
+		temporal.ApplicationErrorOptions{
+			NonRetryable: true,
+			Cause:        cause,
+			Details:      []any{out},
+		})
 }
 
 func validStatusURL(raw string) bool {

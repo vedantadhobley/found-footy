@@ -87,8 +87,9 @@ Registered in `service.go RegisterHandlers`:
 | `/authenticate` | GET | Read-only auth status plus the raw-Firefox VNC URL and environment-explicit Compose command. Does **not** force re-auth. |
 | `/auth/verify` | POST | Force a live session check, bypassing the 60-second warm path, and require the verified cookie snapshot to persist. Used by maintenance and eventual operator recovery. |
 
-**`SearchResponse`:** `{status, videos:[VideoRef], count, query, stop_reason,
-scrolls, initial_articles, tweets_parsed, video_tweets, elapsed}`, where
+**`SearchResponse`:** `{status, result_state, evidence,
+videos:[VideoRef], count, query, stop_reason, scrolls, initial_articles,
+tweets_parsed, video_tweets, elapsed}`, where
 `VideoRef = {tweet_url, tweet_text, video_page_url, duration_seconds, username,
 age_minutes}`. The three feed counters distinguish no rendered feed from a
 rendered feed with no hydrated video evidence. Note `video_page_url` is the
@@ -97,11 +98,31 @@ syndication adapter; the service returns no CDN URL. The Go client
 (`internal/infra/twitter/client.go`) exposes `Search` and the static-service
 `Verify` operation.
 
-`feed_timeout` currently proves only that no tweet article appeared within the
-ten-second locator bound. It does not prove an explicit empty result. The HTTP
-surface nevertheless returns it as success; FF-061 tracks that incorrect
-classification and its EventWorkflow attempt-accounting impact. See the
-[2026-08-20 incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md).
+The wire types live once in `internal/contract/twittersearch`; the browser
+service and HTTP client use aliases instead of maintaining JSON-compatible
+duplicates. `result_state` is a bounded enum:
+
+| State | Usable search? | Meaning |
+|---|---:|---|
+| `rendered` | yes | At least one tweet article rendered. Zero video candidates remains valid. |
+| `explicit_empty` | yes | X rendered a recognized empty-state selector. |
+| `login` | no | Navigation reached X's login/flow route. |
+| `upstream_error` | no | SearchTimeline failed or returned 4xx/5xx, or a recognized error/interstitial rendered. |
+| `unknown_timeout` | no | No usable feed or explicit state appeared before the bound, or the activity failed without classified page evidence. |
+
+`evidence` retains only the final route with its query removed, a bounded page
+title, app-shell/empty/error selector bits, SearchTimeline status or transport
+failure, and `x-rate-limit-*` values when X supplies them. It never retains
+response bodies, page bodies, request headers, cookies, authorization headers,
+or tokens.
+
+The service installs response listeners before navigation, so fast timeline
+responses cannot race past the collector. It waits for the first article,
+explicit-empty selector, or known error selector. Explicit states therefore
+return immediately; only an unexplained absence consumes the full ten-second
+bound. The historical `stop_reason=feed_timeout` shape remains for
+`unknown_timeout` and rolling compatibility, but it is no longer HTTP success
+for attempt-accounting purposes.
 
 ## State machine
 
@@ -112,14 +133,11 @@ backup) → `healthy` / `degraded` / `unauthenticated` / `failed`.
 selector failure is `degraded`, because it does not prove cookie expiry.
 Browser/context exit drives `failed` without waiting for a search request;
 `failed` is terminal for that process, which then exits so Docker can replace
-the unit.
-
-The search hot path is currently weaker than the forced verifier: it accepts a
-page with no login redirect even when no positive app-shell selector rendered,
-then marks the service healthy before the tweet feed is known usable. During
-FF-061 this produced healthy services returning synchronized `feed_timeout`
-responses. FF-039 owns the shared readiness contract; FF-061 owns this
-search-specific misclassification and recall loss.
+the unit. Search now marks `healthy` only after a rendered or explicit-empty
+observation. A navigation failure, upstream error, or unknown timeout marks the
+service `degraded`; a login redirect remains `unauthenticated`. A later usable
+search restores `healthy`. FF-039 still owns convergence of this service-specific
+state machine with the other binaries' lifecycle contract.
 
 ## Auth + cookie fleet model
 
@@ -196,7 +214,8 @@ each tweet's timestamp and applies `max_age_minutes` locally; the production
 default remains a wall-clock-relative three minutes. This preserves the
 recall-tested [query decision](./design/proposals/twitter-search-query.md#d4).
 
-The request returns one of five successful `stop_reason`s (`search.go`):
+Rendered searches return one of five terminal `stop_reason` values
+(`search.go`):
 
 - **`age`** — a non-promoted tweet older than `max_age_minutes` is reached
   (results are reverse-chronological, so everything past it is older too).
@@ -205,33 +224,29 @@ The request returns one of five successful `stop_reason`s (`search.go`):
 - **`consecutive_seen`** — N consecutive already-seen tweets (from `exclude_urls`
   accumulated across the event's prior attempts) → the good hits are exhausted.
 - **`max_scrolls`** — the hard scroll cap.
-- **`feed_timeout`** — no tweet article rendered within ten seconds.
 - **`feed_exhausted`** — a feed rendered, then produced no articles after a
   scroll.
 
-The initial article wait selects the first match because Playwright locators
-are strict. Only `playwright.ErrTimeout` becomes a successful `feed_timeout`;
-locator contract failures, closed pages, browser loss, and other wait errors
-return an `internal` error so the SearchTweets activity can retry.
-
-`feed_timeout` is an implementation observation, not a legitimate-empty
-classification. The current page has no explicit empty/error/interstitial
-classifier and retains no X timeline response status or rate-limit headers.
-Consequently an explicit empty search, upstream suppression, and an unknown
-broken page can collapse into the same successful response. FF-061 requires
-these states to become distinct before retry or global-backoff policy changes.
+An explicit empty page returns `stop_reason=explicit_empty` and
+`result_state=explicit_empty`. An unexplained miss retains
+`stop_reason=feed_timeout` for operational continuity but returns
+`result_state=unknown_timeout` and is unavailable. Known error selectors or
+SearchTimeline request failures/4xx/5xx return `upstream_error`. Locator contract failures,
+closed pages, and browser loss remain activity errors; EventWorkflow maps an
+exhausted activity call to an unavailable probe.
 
 Scroll jitter is 250–500ms (tightened from 0.5–3s on 2026-08-05), accepts equal
 bounds without panic, and is cancellable through the request context.
 
 ## Error taxonomy
 
-Six typed `error_class`es (`internal/twitter/`): `auth_expired`, `bad_request`,
+Six typed transport/service `error_class` values (`internal/twitter/`):
+`auth_expired`, `bad_request`,
 `empty_query`, `method_not_allowed`, `navigation_failed`, `internal`. Twitter's
-own rate-limit class (`rate_limited`, T/d) is **not built**. FF-061 adds a
-strong production reason to capture upstream response evidence, but the exact
-browser-timeline status remains unproven and must not be guessed from the
-public X API's separate limits.
+own rate-limit error class (`rate_limited`, T/d) is not guessed. A measured
+SearchTimeline 429 is retained as evidence and classified `upstream_error`;
+future policy may split that state only after natural evidence proves the
+browser endpoint's contract.
 
 ## Known gaps
 
@@ -243,11 +258,10 @@ public X API's separate limits.
   atomic rename prevent corruption, but an older valid browser snapshot could
   supersede a newer one. `AUD-TWITTER-COOKIE-WRITER` holds this for measured
   rotation evidence before adding coordination complexity.
-- **FF-061 — unavailable feeds count as successful searches.** The
-  synchronized MLS incident proves the need for page/network classification,
-  non-consuming transient slots, and bounded outcome metrics. A shared global
-  limiter remains a follow-on decision after the upstream response is measured.
-  See the [incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md).
+- **Shared admission policy remains evidence-gated.** FF-061 now preserves
+  actual page/network evidence and prevents unavailable results from consuming
+  logical attempts. A shared account/IP limiter remains a follow-on decision
+  only if natural evidence establishes a rate-bucket contract.
 
 ## Cross-refs
 

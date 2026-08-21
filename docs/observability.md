@@ -101,18 +101,27 @@ event or tweet identifier is a Prometheus label.
 
 FF-051 extends each search line with the configured local `max_age_minutes`,
 `stop_reason`, `scrolls`, `initial_articles`, `tweets_parsed`, and
-`video_tweets`. The Twitter HTTP client emits the same result-shape fields.
-`feed_timeout` means only that the first article missed the ten-second bound;
-it does not identify why. A rendered-but-exhausted feed is `feed_exhausted`,
-and non-timeout Playwright failures emit an error and retry.
+`video_tweets`. FF-061 adds the bounded `result_state` and unavailable-probe
+counter. The Twitter HTTP client emits the same result fields plus bounded,
+secret-free evidence: final route/title, app-shell/empty/error bits,
+SearchTimeline status/failure, and rate-limit headers when present.
 
-FF-061 records the current observability defect: `feed_timeout` increments the
-generic Twitter success counter, its page/upstream cause is not captured, and
-the attempt outcome survives only in worker logs rather than durable search
-telemetry. The 2026-08-19 MLS incident therefore required Loki plus cAdvisor
-correlation after its Firefox containers were reaped. The required bounded
-state metric and response evidence are specified in the
-[incident report](./incidents/2026-08-20-twitter-feed-suppression.md).
+`found_footy_twitter_calls_total{op,outcome}` uses `rendered`,
+`explicit_empty`, `login`, `upstream_error`, or `unknown_timeout` for a
+classified search response; transport/decode failures remain `failure` and an
+older unclassified successful service remains `success` during rollout. These
+are the only allowed search-result labels. Event IDs, queries, player names,
+URLs, and failure text remain log/history fields, never Prometheus labels.
+Usable states emit `twitter.search`; classified unavailable states emit the
+warning-level `twitter.search_failed` action even when the service processed
+the request and returned HTTP 200.
+
+EventWorkflow checkpoints `attempts_completed`, `unavailable_attempts`,
+`last_search_state`, and `last_search_evidence` in its downstream metadata.
+The evidence therefore survives fleet reaping and failed-execution recovery.
+`feed_timeout` now means `unknown_timeout` and cannot consume a usable attempt.
+The [incident report](./incidents/2026-08-20-twitter-feed-suppression.md)
+preserves why this surface exists.
 
 FF-058 adds the typed InfraTwitter `twitter_verify` and
 `twitter_verify_failed` actions for the static-service maintenance call. The
