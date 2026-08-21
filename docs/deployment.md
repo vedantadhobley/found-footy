@@ -45,6 +45,13 @@ browser. A malformed worker-only value therefore cannot stop the API, while
 the worker rejects impossible values such as a search attempt beyond the
 database range or an enabled fleet with no capacity.
 
+Discovery has two independent worker-owned budgets. `DISCOVERY_MAX_ATTEMPTS`
+counts only rendered or explicit-empty X observations.
+`DISCOVERY_MAX_UNAVAILABLE_ATTEMPTS` bounds additional login, upstream-error,
+unknown-timeout, and exhausted-activity probes. Both default to 15 and validate
+to 1–20. At the default one-minute spacing, an outage can extend discovery but
+cannot hold fixture completion indefinitely.
+
 `.env.example` is the canonical checked template, not a second source of
 runtime defaults. `internal/config/contract_test.go` derives variable ownership
 from Go struct tags and verifies the template, both Compose files, required

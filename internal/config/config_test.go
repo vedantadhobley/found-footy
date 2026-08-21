@@ -64,6 +64,7 @@ func TestLoadForWorkerRejectsSemanticErrors(t *testing.T) {
 	}{
 		{name: "zero attempts", values: map[string]string{"DISCOVERY_MAX_ATTEMPTS": "0"}, want: "DISCOVERY_MAX_ATTEMPTS"},
 		{name: "attempt exceeds schema", values: map[string]string{"DISCOVERY_MAX_ATTEMPTS": "21"}, want: "between 1 and 20"},
+		{name: "zero unavailable budget", values: map[string]string{"DISCOVERY_MAX_UNAVAILABLE_ATTEMPTS": "0"}, want: "DISCOVERY_MAX_UNAVAILABLE_ATTEMPTS"},
 		{name: "pool floor exceeds cap", values: map[string]string{"PG_MIN_CONNS": "11"}, want: "PG_MIN_CONNS must be <= PG_MAX_CONNS"},
 		{name: "enabled fleet has no capacity", values: map[string]string{"FIREFOXFLEET_ENABLED": "true", "FIREFOXFLEET_MAX_INSTANCES": "0"}, want: "FIREFOXFLEET_MAX_INSTANCES"},
 		{name: "dedup misses consume window", values: map[string]string{"DEDUP_MAX_GAP_FRAMES": "30"}, want: "DEDUP_MAX_GAP_FRAMES must be < DEDUP_MIN_RUN_FRAMES"},
@@ -96,6 +97,9 @@ func TestLoadForWorkerUsesLiveCalibratedAspectDefault(t *testing.T) {
 	}
 	if got := cfg.Video.HardFilter.MinAspectRatio; got != 1.73 {
 		t.Errorf("MinAspectRatio default = %v, want 1.73", got)
+	}
+	if got := cfg.Discovery.MaxUnavailableAttempts; got != 15 {
+		t.Errorf("MaxUnavailableAttempts default = %d, want 15", got)
 	}
 }
 

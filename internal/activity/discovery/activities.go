@@ -20,13 +20,16 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/vedantadhobley/found-footy/internal/activity/heartbeat"
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
 )
@@ -35,8 +38,8 @@ import (
 // *Activities so tests can inject fakes for the pg pool via a
 // pool-shaped interface (currently just the concrete pg.Pool).
 //
-// Config fields (MaxAttempts, AttemptSpacing, MaxAgeMinutes,
-// QueryTimeout) mirror config.DiscoveryConfig. Populated at
+// Config fields (MaxAttempts, MaxUnavailableAttempts, AttemptSpacing,
+// MaxAgeMinutes, QueryTimeout) mirror config.DiscoveryConfig. Populated at
 // cmd/worker startup — see GetDiscoveryConfig below for the
 // workflow-side accessor.
 type Activities struct {
@@ -47,10 +50,11 @@ type Activities struct {
 	// config.DiscoveryConfig at worker init. Zero values are
 	// treated as "use hardcoded fallback" inside GetDiscoveryConfig
 	// so tests that leave these unset get a valid workflow run.
-	MaxAttempts    int
-	AttemptSpacing time.Duration
-	MaxAgeMinutes  int
-	QueryTimeout   time.Duration
+	MaxAttempts            int
+	MaxUnavailableAttempts int
+	AttemptSpacing         time.Duration
+	MaxAgeMinutes          int
+	QueryTimeout           time.Duration
 
 	// Dedup thresholds (config.DedupConfig), surfaced through this same
 	// start-of-workflow config read so EventWorkflow's in-code video.Match
@@ -77,10 +81,11 @@ type GetDiscoveryConfigInput struct{}
 // (Temporal determinism), so a trivial activity is the standard
 // idiom — matches the ingest.GetIngestConfig pattern.
 type GetDiscoveryConfigOutput struct {
-	MaxAttempts    int
-	AttemptSpacing time.Duration
-	MaxAgeMinutes  int
-	QueryTimeout   time.Duration
+	MaxAttempts            int
+	MaxUnavailableAttempts int
+	AttemptSpacing         time.Duration
+	MaxAgeMinutes          int
+	QueryTimeout           time.Duration
 
 	// Dedup thresholds for EventWorkflow's in-code video.Match.
 	MaxHamming   int
@@ -117,17 +122,21 @@ func (a *Activities) GetDiscoveryConfig(
 	_ context.Context, _ GetDiscoveryConfigInput,
 ) (GetDiscoveryConfigOutput, error) {
 	out := GetDiscoveryConfigOutput{
-		MaxAttempts:    a.MaxAttempts,
-		AttemptSpacing: a.AttemptSpacing,
-		MaxAgeMinutes:  a.MaxAgeMinutes,
-		QueryTimeout:   a.QueryTimeout,
-		MaxHamming:     a.MaxHamming,
-		MinRunFrames:   a.MinRunFrames,
-		MaxGapFrames:   a.MaxGapFrames,
-		FleetEnabled:   a.FleetEnabled,
+		MaxAttempts:            a.MaxAttempts,
+		MaxUnavailableAttempts: a.MaxUnavailableAttempts,
+		AttemptSpacing:         a.AttemptSpacing,
+		MaxAgeMinutes:          a.MaxAgeMinutes,
+		QueryTimeout:           a.QueryTimeout,
+		MaxHamming:             a.MaxHamming,
+		MinRunFrames:           a.MinRunFrames,
+		MaxGapFrames:           a.MaxGapFrames,
+		FleetEnabled:           a.FleetEnabled,
 	}
 	if out.MaxAttempts == 0 {
 		out.MaxAttempts = fallbackMaxAttempts
+	}
+	if out.MaxUnavailableAttempts == 0 {
+		out.MaxUnavailableAttempts = out.MaxAttempts
 	}
 	if out.AttemptSpacing == 0 {
 		out.AttemptSpacing = fallbackAttemptSpacing
@@ -231,12 +240,19 @@ type SearchTweetsInput struct {
 type SearchTweetsOutput struct {
 	Videos          []twitter.VideoRef
 	Count           int
+	ResultState     twittercontract.ResultState
+	Evidence        twittercontract.SearchEvidence
 	StopReason      string
 	Scrolls         int
 	InitialArticles int
 	TweetsParsed    int
 	VideoTweets     int
 }
+
+// SearchUnavailableErrorType identifies retryable classified browser failures.
+// Its details carry SearchTweetsOutput so FF-061 workflows can account for the
+// outage while older histories retain their original activity retry policy.
+const SearchUnavailableErrorType = "twitter_search_unavailable"
 
 // SearchTweets calls the Go Twitter service and returns discovered video tweets.
 // Errors from the Twitter service surface here — Temporal retries
@@ -261,11 +277,28 @@ func (a *Activities) SearchTweets(ctx context.Context, in SearchTweetsInput) (Se
 		MaxAgeMinutes: maxAge,
 	})
 	if err != nil {
+		var searchErr *twitter.SearchError
+		if errors.As(err, &searchErr) && searchErr.ResultState.Known() {
+			classified := SearchTweetsOutput{
+				ResultState: searchErr.ResultState,
+				Evidence:    searchErr.Evidence,
+			}
+			return SearchTweetsOutput{}, temporal.NewApplicationErrorWithOptions(
+				"classified Twitter search unavailable",
+				SearchUnavailableErrorType,
+				temporal.ApplicationErrorOptions{
+					Cause:   err,
+					Details: []any{classified},
+				},
+			)
+		}
 		return SearchTweetsOutput{}, fmt.Errorf("discovery.SearchTweets: %w", err)
 	}
 	return SearchTweetsOutput{
 		Videos:          resp.Videos,
 		Count:           resp.Count,
+		ResultState:     resp.ResultState,
+		Evidence:        resp.Evidence,
 		StopReason:      resp.StopReason,
 		Scrolls:         resp.Scrolls,
 		InitialArticles: resp.InitialArticles,

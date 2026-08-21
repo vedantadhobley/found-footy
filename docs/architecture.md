@@ -25,6 +25,7 @@ found-footy/
 │   └── worker/main.go                   thin executable; delegates worker composition to internal/app/worker
 ├── internal/
 │   ├── contract/discovery/              stable EventWorkflowInput + CandidateEvidence shared across workflow, activity, and persistence boundaries
+│   ├── contract/twittersearch/           ✓ FF-061: one browser/HTTP/activity wire contract for classified search states, evidence, and video refs
 │   ├── domain/                          active domain logic only
 │   │   ├── fixture/                     ✓ D1: model + State + Repo + tests
 │   │   ├── event/                       ✓ D2: model + State + Repo + tests
@@ -44,7 +45,7 @@ found-footy/
 │   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
 │   │   ├── temporal/                    ✓ S5: Client (with workerShutdownTimeout) + Worker
 │   │   ├── apifootball/                 ✓ S7 + O1a: /status probe + /fixtures + /fixtures/{ids}
-│   │   ├── twitter/                     ✓ HTTP Search + forced-Verify client for the Go Twitter service + mock-backed tests
+│   │   ├── twitter/                     ✓ classified HTTP Search + forced-Verify client for the Go Twitter service + mock-backed tests
 │   │   ├── syndication/                 ✓ S7 + T/f: FetchJSON + ResolveVideo/Download (cookieless mp4) + typed taxonomy + tests
 │   │   ├── event/                       ✓ composer (pg event_log audit ONLY — N2 removed its NATS half; Kind = 6 event_log types) · N1+N5 NatsPublisher — 3-subject live-feed (fixture.clock/update, event.video) + Envelope + source config + golden tests
 │   │   ├── ffmpeg/                      ✓ V/1 + FF-005: probe + bounded-grayscale single-pass dense extraction + faststart + semaphore + typed taxonomy + tests
@@ -54,7 +55,7 @@ found-footy/
 │   │   ├── active_poll.go               ✓ O2: ActivePollWorkflow (30s IntervalSpec)
 │   │   ├── staging_poll.go              ✓ O2: StagingPollWorkflow (*/15 cron)
 │   │   ├── twitter_maintenance.go       ✓ FF-058: six-hour static-session persistence + search-DOM canary
-│   │   ├── event.go                     ✓ #164c + FF-022 + FF-034: per-goal discovery producer, immediate candidate launch, durable observation/recovery
+│   │   ├── event.go                     ✓ #164c + FF-022 + FF-034 + FF-061: per-goal producer, classified usable/outage budgets, immediate candidate launch, durable recovery
 │   │   ├── event_pipeline.go            ✓ shared Selector state, deterministic contexts, restoration, and construction
 │   │   ├── event_pipeline_intake.go     ✓ candidate launch, exact-MD5 ownership, hash claimant failover, and consumer loop
 │   │   ├── event_pipeline_validation.go ✓ legacy replay path, vision, category-scoped perceptual dedup, and winner selection
@@ -67,7 +68,7 @@ found-footy/
 │   │   │   ├── tracked_teams.go / fetch.go / categorize.go / aliases.go / retention.go
 │   │   │   └── focused colocated test files by responsibility
 │   │   ├── monitor/                     ✓ shared deps/config plus activation.go, reconcile.go, emission.go, and event_identity.go; failed-only spawn recovery remains in spawner.go
-│   │   ├── discovery/                   ✓ shared config/search plus candidates.go durable ownership and completion.go downstream checklist closure
+│   │   ├── discovery/                   ✓ shared config/classified search plus candidates.go durable candidate/search recovery and completion.go checklist closure
 │   │   ├── video/                       ✓ DownloadAndStage, versioned/minimum-length HashVideo, live-asset recovery, persistence, teardown, and ranking activities
 │   │   ├── vision/                      ✓ staged-clip frame extraction + model-backed validation
 │   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when fleet disabled (FIREFOXFLEET_ENABLED=false)
@@ -84,13 +85,13 @@ found-footy/
 │   │   ├── logging/                     ✓ S1: slog Emit() + TestEmitter for unit tests
 │   │   └── metrics/                     ✓ S1: Prometheus registry helper
 │   ├── twitter/                         Twitter *service* (browser + auth + scrape); imported by cmd/twitter
-│   │   ├── browser.go                   ✓ T/a + FF-017: Firefox persistent context, cookie/session operations, and critical-child exit signal
+│   │   ├── browser.go                   ✓ T/a + FF-017 + FF-061: Firefox context, pre-navigation observers, cookie/session operations, and critical-child exit signal
 │   │   ├── browser_iface.go             ✓ T/b: sessionBrowser interface — auth flow testable without Playwright
 │   │   ├── stealth.go                   ✓ T/a: navigator.webdriver / plugins / permissions patches
 │   │   ├── service.go                   ✓ T/a + T/b + FF-017 + FF-058: state machine, degraded evidence, browser-loss watcher/audit, cookie-operation status, /health, /status
 │   │   ├── auth.go                      ✓ T/b + FF-058: warm/forced verification, cookie reload/writeback evidence, /authenticate, /auth/verify
 │   │   ├── cookies_backup.go            ✓ T/b + FF-058: full-shape Fingerprint, strict-domain atomic backup, mtime, auth_token guard
-│   │   ├── search.go                    ✓ T/c + FF-051 + FF-058: POST /search + strict-safe feed classification + promoted-safe local age cutoff + cancellable scroll loop + extraction diagnostics
+│   │   ├── search.go / search_evidence.go ✓ T/c + FF-051 + FF-061: POST /search, bounded DOM/timeline classification, local age cutoff, cancellable scroll/extraction
 │   │   └── *_test.go                    cookie, auth, browser-conversion, and search tests
 │   ├── twitterauth/                     ✓ FF-059: read-only Firefox SQLite capture, strict publication gate, and health/status service
 ├── docker/twitter/                      ✓ headless Playwright search image; no VNC packages or runtime branch
@@ -357,8 +358,19 @@ This is how one HTTP client fans searches across N per-event Firefox
 containers without a router or registry — the address is a pure function
 of the event ID. Client construction validates only static configuration and
 performs no readiness probe. A browser service that is starting or temporarily
-unreachable fails the current activity attempt; a later Temporal retry uses the
-same client and observes the recovered service (FF-016).
+unreachable fails the current activity call; EventWorkflow's bounded,
+one-minute unavailable-probe loop observes recovery without consuming a usable
+search (FF-016 + FF-061). Pre-FF-061 histories retain their versioned nested
+activity retry policy.
+
+`internal/contract/twittersearch/` owns the request, response, video, bounded
+result-state, and secret-free evidence types used on both sides of the HTTP
+boundary. The client maps a classified non-2xx response to a typed
+`SearchError`; the Discovery activity preserves its page state in a retryable
+Temporal application error. New workflows decode those details after one call
+and own retry cadence, while pre-FF-061 histories retain their activity retry
+chain. Unclassified transport or decode failures remain ordinary activity
+errors.
 
 `twitter.Client.Verify(ctx)` targets only the configured static service and
 forces `/auth/verify`; `TwitterMaintenanceWorkflow` uses it before its canary

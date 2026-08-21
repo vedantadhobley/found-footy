@@ -160,14 +160,22 @@ func (b *Browser) Close() error {
 	return b.closeErr
 }
 
-// Navigate opens a fresh page, goes to url, waits for network idle,
-// and returns the resulting page. Caller closes the page when done.
-// Bounded by the given timeout via a context — long-running loads
-// on a wedged browser surface as an error rather than hanging.
-func (b *Browser) Navigate(_ context.Context, url string, timeout time.Duration) (playwright.Page, error) {
+// Navigate opens a fresh page, installs the optional observer before any
+// request can fire, then goes to url and returns the resulting page. Caller
+// closes the page. Installing network listeners before Goto is load-bearing:
+// X can finish its timeline request before DOMContentLoaded.
+func (b *Browser) Navigate(
+	_ context.Context,
+	url string,
+	timeout time.Duration,
+	beforeNavigation func(playwright.Page),
+) (playwright.Page, error) {
 	page, err := b.ctx.NewPage()
 	if err != nil {
 		return nil, fmt.Errorf("twitter.Browser.Navigate: new page: %w", err)
+	}
+	if beforeNavigation != nil {
+		beforeNavigation(page)
 	}
 	_, err = page.Goto(url, playwright.PageGotoOptions{
 		Timeout:   playwright.Float(float64(timeout / time.Millisecond)),
@@ -352,7 +360,7 @@ func (b *Browser) ReplaceCookies(cookies []Cookie) error {
 // composer (`[data-testid='SideNav_AccountSwitcher_Button']` is the
 // most reliable). A login redirect proves raw-Firefox re-auth is needed.
 func (b *Browser) VerifySession(ctx context.Context, timeout time.Duration) error {
-	page, err := b.Navigate(ctx, "https://x.com/home", timeout)
+	page, err := b.Navigate(ctx, "https://x.com/home", timeout, nil)
 	if err != nil {
 		return err
 	}

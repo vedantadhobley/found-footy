@@ -22,5 +22,5 @@ type sessionBrowser interface {
 	VerifySession(ctx context.Context, timeout time.Duration) error
 	ReplaceCookies(cookies []Cookie) error
 	GetCookies() ([]Cookie, error)
-	Navigate(ctx context.Context, url string, timeout time.Duration) (playwright.Page, error)
+	Navigate(ctx context.Context, url string, timeout time.Duration, beforeNavigation func(playwright.Page)) (playwright.Page, error)
 }

@@ -10,6 +10,7 @@ import (
 
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 	ddiscovery "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 )
 
@@ -61,8 +62,14 @@ func TestDiscoveryActivities_RecoveryStateRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertCandidateOutcome: %v", err)
 	}
+	searchEvidence := twittercontract.SearchEvidence{
+		FinalURL: "https://x.com/search", TimelineSeen: true, TimelineStatus: 429,
+		RateLimitRemain: "0",
+	}
 	if err := activities.RecordDiscoveryProgress(ctx, discoveryactivity.RecordDiscoveryProgressInput{
 		EventID: eventID, WorkflowType: "discovery", WorkflowID: workflowID, Attempt: 7,
+		UnavailableAttempts: 4, LastSearchState: twittercontract.ResultUpstreamError,
+		LastSearchEvidence: &searchEvidence,
 	}); err != nil {
 		t.Fatalf("RecordDiscoveryProgress(7): %v", err)
 	}
@@ -81,6 +88,12 @@ func TestDiscoveryActivities_RecoveryStateRoundTrip(t *testing.T) {
 	}
 	if state.AttemptsCompleted != 7 {
 		t.Errorf("attempts completed = %d, want 7", state.AttemptsCompleted)
+	}
+	if state.UnavailableAttempts != 4 ||
+		state.LastSearchState != twittercontract.ResultUpstreamError ||
+		state.LastSearchEvidence != searchEvidence {
+		t.Errorf("search recovery = unavailable %d/state %q/evidence %+v",
+			state.UnavailableAttempts, state.LastSearchState, state.LastSearchEvidence)
 	}
 	if len(state.Candidates) != 2 {
 		t.Fatalf("candidates = %d, want 2", len(state.Candidates))

@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Twitter search attempts require usable observations](./2026-08-20-twitter-search-attempts-require-usable-observations.md) — FF-061 classifies browser results, separates usable searches from bounded outage probes, and persists secret-free response evidence.
 - [Raw Firefox owns operator login](./2026-08-19-raw-firefox-owns-operator-login.md) — FF-059 separates raw-Firefox credential minting and read-only profile capture from Playwright search.
 - [Twitter maintenance uses the static fallback](./2026-08-19-twitter-maintenance-uses-static-fallback.md) — FF-058 adds a fixture-independent forced-auth, cookie-sync, and live-search DOM canary without warming the dynamic event fleet.
 - [Historical candidate repair reuses EventWorkflow](./2026-08-19-historical-candidate-repair-reuses-event-workflow.md) — exact terminal selectors become auditable pending work under a new deterministic checklist; the normal pipeline reprocesses them without a fresh search.

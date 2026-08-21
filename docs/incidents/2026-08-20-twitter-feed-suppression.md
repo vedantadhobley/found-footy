@@ -19,6 +19,25 @@ search-backend circuit the leading cause. The exact X response remains
 unproven because the browser service retained no page-state or internal-network
 evidence.
 
+## Implemented correction
+
+FF-061 now classifies `rendered`, `explicit_empty`, `login`,
+`upstream_error`, and `unknown_timeout` through one shared browser/worker
+contract. Only the first two consume the 15-search budget. New workflow
+histories issue one activity call per physical probe and maintain a separate
+15-probe unavailable budget at the existing one-minute cadence.
+
+The latest bounded final route/title, selector bits, SearchTimeline
+status/failure, and rate-limit headers persist with both monotonic counters in
+the downstream checklist metadata. No body, request header, cookie, or token is
+retained. Exhausting the unavailable budget completes the checklist instead of
+holding the fixture indefinitely. The next natural burst is the first evidence
+that can refine the incident from shared upstream suppression to a specific
+measured response class.
+
+See the [landed decision](../decisions/2026-08-20-twitter-search-attempts-require-usable-observations.md)
+for retry, replay, and rollout semantics.
+
 ## Production evidence
 
 - **Runtime:** production release

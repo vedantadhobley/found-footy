@@ -64,11 +64,14 @@ func TwitterMaintenanceWorkflow(
 		return out, fmt.Errorf("TwitterMaintenanceWorkflow: %w", err)
 	}
 	workflow.GetLogger(ctx).Info("Twitter maintenance passed",
+		"result_state", out.ResultState,
 		"stop_reason", out.StopReason,
 		"initial_articles", out.InitialArticles,
 		"tweets_parsed", out.TweetsParsed,
 		"video_tweets", out.VideoTweets,
 		"videos_found", out.VideosFound,
+		"timeline_seen", out.Evidence.TimelineSeen,
+		"timeline_status", out.Evidence.TimelineStatus,
 	)
 	return out, nil
 }

@@ -9,9 +9,10 @@
 // Spawned by Monitor's ReconcileFixture via DownstreamSpawner when an
 // event's downstream_triggered flag is flipped (2026-07-16 decision:
 // Temporal-direct spawn + register-on-flip, not NATS-triggered).
-// Runs a fixed N attempts × M spacing (defaults: 15 × 60 s = 15 min
-// lifetime per goal, tunable via config.DiscoveryConfig / DISCOVERY_*
-// env vars — see #162). Each attempt is a full /search call; per-event
+// Runs N usable attempts at M spacing (defaults: 15 × 60 s), plus a bounded
+// unavailable-probe budget (default 15) that preserves logical attempts during
+// an X/browser outage. Tunables live in config.DiscoveryConfig / DISCOVERY_*
+// env vars. Each usable attempt is a full /search observation; per-event
 // exclude_urls accumulate across attempts so the Twitter service's
 // consecutive-already-seen scroll stop terminates attempts 2+ quickly.
 // Every candidate the search surfaces gets persisted to
@@ -29,6 +30,7 @@
 package workflow
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -41,6 +43,7 @@ import (
 	fleetactivity "github.com/vedantadhobley/found-footy/internal/activity/fleet"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 	ddiscovery "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 )
@@ -51,12 +54,15 @@ type EventWorkflowInput = discoverycontract.EventWorkflowInput
 
 // EventWorkflowOutput reports the run outcome for observability.
 type EventWorkflowOutput struct {
-	EventID         uuid.UUID `json:"event_id"`
-	Completed       bool      `json:"completed"`
-	AttemptsRun     int       `json:"attempts_run"`
-	CandidatesFound int       `json:"candidates_found"`
-	AssetsKept      int       `json:"assets_kept"` // verified + unverified clips surfaced
-	OutcomeClass    string    `json:"outcome_class"`
+	EventID               uuid.UUID                   `json:"event_id"`
+	Completed             bool                        `json:"completed"`
+	AttemptsRun           int                         `json:"attempts_run"`
+	CandidatesFound       int                         `json:"candidates_found"`
+	AssetsKept            int                         `json:"assets_kept"` // verified + unverified clips surfaced
+	OutcomeClass          string                      `json:"outcome_class"`
+	UnavailableAttempts   int                         `json:"unavailable_attempts"`
+	SearchOutageExhausted bool                        `json:"search_outage_exhausted"`
+	LastSearchState       twittercontract.ResultState `json:"last_search_state,omitempty"`
 }
 
 // Small-activity infra constants that stay hardcoded — they bound
@@ -64,7 +70,7 @@ type EventWorkflowOutput struct {
 // which are milliseconds in the happy path. Bumping these is a
 // worker-restart concern, not an operator-tuning concern, so no env
 // surface. The tunables that DO care about operator control
-// (MaxAttempts / AttemptSpacing / MaxAgeMinutes / QueryTimeout) live
+// (MaxAttempts / MaxUnavailableAttempts / AttemptSpacing / MaxAgeMinutes / QueryTimeout) live
 // in config.DiscoveryConfig and are read at workflow start via
 // GetDiscoveryConfig.
 const (
@@ -79,11 +85,12 @@ const (
 	ff022PreHashMD5ClaimVersion      = workflow.Version(1)
 	ff034CandidateDurabilityChangeID = "ff-034-candidate-durability"
 	ff034CandidateDurabilityVersion  = workflow.Version(1)
+	ff061SearchAvailabilityChangeID  = "ff-061-search-availability"
+	ff061SearchAvailabilityVersion   = workflow.Version(1)
 
-	// A Firefox container needs about 30 seconds to relaunch and reload shared
-	// cookies after FF-017 makes browser death fatal to PID 1. These retries run
-	// at roughly 0/10/30/60 seconds, so even the final discovery attempt can
-	// reach the recovered service instead of depending on another outer search.
+	// Pre-FF-061 histories retain FF-017's roughly 0/10/30/60 activity retry
+	// chain for replay compatibility. New histories use one activity attempt
+	// and put retries through the bounded, one-minute workflow-level probe loop.
 	twitterSearchRetryInitial  = 10 * time.Second
 	twitterSearchRetryMaximum  = 30 * time.Second
 	twitterSearchRetryAttempts = 4
@@ -140,6 +147,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 	}
 	log.Info("discovery config loaded",
 		"max_attempts", cfgOut.MaxAttempts,
+		"max_unavailable_attempts", cfgOut.MaxUnavailableAttempts,
 		"attempt_spacing", cfgOut.AttemptSpacing,
 		"max_age_minutes", cfgOut.MaxAgeMinutes,
 		"query_timeout", cfgOut.QueryTimeout,
@@ -229,6 +237,11 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion,
 		ff034CandidateDurabilityVersion,
 	) != workflow.DefaultVersion
+	availabilityAwareSearch := workflow.GetVersion(ctx,
+		ff061SearchAvailabilityChangeID,
+		workflow.DefaultVersion,
+		ff061SearchAvailabilityVersion,
+	) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
 		terminalVideoFailures: terminalVideoFailures,
@@ -315,6 +328,8 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 	}
 	out.CandidatesFound = len(recoveryOut.Candidates)
 	out.AttemptsRun = recoveryOut.AttemptsCompleted
+	out.UnavailableAttempts = recoveryOut.UnavailableAttempts
+	out.LastSearchState = recoveryOut.LastSearchState
 
 	workflow.Go(ctx, func(gctx workflow.Context) {
 		var producerErr error
@@ -332,6 +347,12 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 			searchRetry.MaximumInterval = twitterSearchRetryMaximum
 			searchRetry.MaximumAttempts = twitterSearchRetryAttempts
 		}
+		if availabilityAwareSearch {
+			// FF-061 owns retry cadence at the workflow level. One physical
+			// browser probe produces one classified observation; nested activity
+			// retries would multiply X traffic and hide the outage state.
+			searchRetry.MaximumAttempts = 1
+		}
 		searchOptions := workflow.WithActivityOptions(gctx, workflow.ActivityOptions{
 			StartToCloseTimeout: cfgOut.QueryTimeout,
 			HeartbeatTimeout:    30 * time.Second,
@@ -341,8 +362,33 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 			StartToCloseTimeout: discoveryPGShortActivityTTL,
 			RetryPolicy:         &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumAttempts: discoveryPGRetryAttempts},
 		})
+		recordProgress := func(
+			completedAttempts int,
+			unavailableAttempts int,
+			state twittercontract.ResultState,
+			evidence *twittercontract.SearchEvidence,
+		) error {
+			return workflow.ExecuteActivity(storeOptions,
+				(*discoveryactivity.Activities).RecordDiscoveryProgress,
+				discoveryactivity.RecordDiscoveryProgressInput{
+					EventID: in.EventID, WorkflowType: "discovery", WorkflowID: workflowID,
+					Attempt: completedAttempts, UnavailableAttempts: unavailableAttempts,
+					LastSearchState: state, LastSearchEvidence: evidence,
+				},
+			).Get(storeOptions, nil)
+		}
 
-		for attempt := recoveryOut.AttemptsCompleted + 1; attempt <= cfgOut.MaxAttempts; attempt++ {
+		maxUnavailableAttempts := cfgOut.MaxUnavailableAttempts
+		if maxUnavailableAttempts <= 0 {
+			maxUnavailableAttempts = cfgOut.MaxAttempts
+		}
+		attempt := recoveryOut.AttemptsCompleted + 1
+		unavailableAttempts := recoveryOut.UnavailableAttempts
+		if availabilityAwareSearch && unavailableAttempts >= maxUnavailableAttempts {
+			out.SearchOutageExhausted = true
+		}
+		for attempt <= cfgOut.MaxAttempts &&
+			(!availabilityAwareSearch || unavailableAttempts < maxUnavailableAttempts) {
 			var searchOut discoveryactivity.SearchTweetsOutput
 			searchStartedAt := workflow.Now(gctx)
 			searchErr := workflow.ExecuteActivity(searchOptions,
@@ -352,9 +398,45 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 					ExcludeURLs: excludeURLs, MaxAgeMinutes: cfgOut.MaxAgeMinutes,
 					InstanceAddr: instanceAddr,
 				}).Get(searchOptions, &searchOut)
+			if availabilityAwareSearch && searchErr != nil {
+				if classified, ok := classifiedSearchFailure(searchErr); ok {
+					searchOut = classified
+				}
+			}
 			searchOutcome := "passed"
+			resultState := searchOut.ResultState
+			usableObservation := searchErr == nil
+			if availabilityAwareSearch {
+				switch {
+				case searchErr != nil:
+					if !resultState.Known() {
+						resultState = twittercontract.ResultUnknownTimeout
+						searchOut.Evidence.TimelineFailure = "activity_error"
+					}
+					usableObservation = false
+				case resultState == "":
+					// Rolling deploy compatibility: an older browser service has
+					// no result_state. Its historical feed_timeout is unavailable;
+					// every other successful shape remains a usable observation.
+					if searchOut.StopReason == "feed_timeout" {
+						resultState = twittercontract.ResultUnknownTimeout
+						usableObservation = false
+					} else {
+						resultState = twittercontract.ResultRendered
+						usableObservation = true
+					}
+				default:
+					usableObservation = resultState.Usable()
+				}
+				if !usableObservation {
+					searchOutcome = "unavailable"
+				}
+				out.LastSearchState = resultState
+			}
 			if searchErr != nil {
-				searchOutcome = "failed"
+				if !availabilityAwareSearch {
+					searchOutcome = "failed"
+				}
 				if temporal.IsCanceledError(searchErr) {
 					searchOutcome = "canceled"
 				}
@@ -365,7 +447,9 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 				"event_id", in.EventID,
 				"fixture_id", in.FixtureID,
 				"attempt", attempt,
+				"unavailable_attempts", unavailableAttempts,
 				"outcome", searchOutcome,
+				"result_state", resultState,
 				"duration_ms", elapsedMilliseconds(searchStartedAt, searchFinishedAt),
 				"event_elapsed_ms", elapsedMilliseconds(startedAt, searchFinishedAt),
 				"max_age_minutes", cfgOut.MaxAgeMinutes,
@@ -375,11 +459,39 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 				"initial_articles", searchOut.InitialArticles,
 				"tweets_parsed", searchOut.TweetsParsed,
 				"video_tweets", searchOut.VideoTweets)
-			if searchErr != nil {
-				if temporal.IsCanceledError(searchErr) {
-					producerErr = searchErr
+			if searchErr != nil && temporal.IsCanceledError(searchErr) {
+				producerErr = searchErr
+				return
+			}
+			if availabilityAwareSearch && !usableObservation {
+				unavailableAttempts++
+				out.UnavailableAttempts = unavailableAttempts
+				log.Warn("Twitter search unavailable; logical attempt preserved",
+					"attempt", attempt,
+					"unavailable_attempts", unavailableAttempts,
+					"max_unavailable_attempts", maxUnavailableAttempts,
+					"result_state", resultState,
+					"stop_reason", searchOut.StopReason,
+					"err", searchErr)
+				if recoveryEnabled {
+					if err := recordProgress(
+						attempt-1, unavailableAttempts, resultState, &searchOut.Evidence,
+					); err != nil {
+						producerErr = err
+						return
+					}
+				}
+				if unavailableAttempts >= maxUnavailableAttempts {
+					out.SearchOutageExhausted = true
+					break
+				}
+				if err := workflow.Sleep(gctx, cfgOut.AttemptSpacing); err != nil {
+					producerErr = err
 					return
 				}
+				continue
+			}
+			if searchErr != nil {
 				log.Warn("SearchTweets attempt failed", "attempt", attempt, "err", searchErr)
 			} else {
 				var observed []discoverycontract.CandidateEvidence
@@ -465,18 +577,22 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 					"cumulative_candidates", out.CandidatesFound, "stop_reason", searchOut.StopReason)
 			}
 			if recoveryEnabled {
-				if err := workflow.ExecuteActivity(storeOptions,
-					(*discoveryactivity.Activities).RecordDiscoveryProgress,
-					discoveryactivity.RecordDiscoveryProgressInput{
-						EventID: in.EventID, WorkflowType: "discovery", WorkflowID: workflowID, Attempt: attempt,
-					},
-				).Get(storeOptions, nil); err != nil {
+				var state twittercontract.ResultState
+				var evidence *twittercontract.SearchEvidence
+				var unavailable int
+				if availabilityAwareSearch {
+					state = resultState
+					evidence = &searchOut.Evidence
+					unavailable = unavailableAttempts
+				}
+				if err := recordProgress(attempt, unavailable, state, evidence); err != nil {
 					producerErr = err
 					return
 				}
 			}
 			out.AttemptsRun = attempt
-			if attempt < cfgOut.MaxAttempts {
+			attempt++
+			if attempt <= cfgOut.MaxAttempts {
 				if err := workflow.Sleep(gctx, cfgOut.AttemptSpacing); err != nil {
 					producerErr = err
 					return
@@ -501,14 +617,35 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		out.OutcomeClass = "assets_surfaced"
 	case p.spawned > 0:
 		out.OutcomeClass = "candidates_no_assets"
+	case out.SearchOutageExhausted:
+		out.OutcomeClass = "twitter_unavailable"
 	default:
 		out.OutcomeClass = "no_candidates"
 	}
 	log.Info("event pipeline complete",
 		"spawned", p.spawned, "passed", p.passed, "duplicates", p.duplicates,
 		"verified", p.verified, "unverified", p.unverified, "superseded", p.superseded,
-		"assets_kept", out.AssetsKept, "rejected", p.rejectedClips, "failed", p.failed)
+		"assets_kept", out.AssetsKept, "rejected", p.rejectedClips, "failed", p.failed,
+		"unavailable_attempts", out.UnavailableAttempts,
+		"search_outage_exhausted", out.SearchOutageExhausted)
 	return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled, startedAt)
+}
+
+// classifiedSearchFailure extracts the bounded FF-061 observation carried by
+// a retryable activity error. Pre-FF-061 histories still retry that error;
+// availability-aware histories use one activity call and account for it here.
+func classifiedSearchFailure(err error) (discoveryactivity.SearchTweetsOutput, bool) {
+	var applicationErr *temporal.ApplicationError
+	if !errors.As(err, &applicationErr) ||
+		applicationErr.Type() != discoveryactivity.SearchUnavailableErrorType ||
+		!applicationErr.HasDetails() {
+		return discoveryactivity.SearchTweetsOutput{}, false
+	}
+	var out discoveryactivity.SearchTweetsOutput
+	if err := applicationErr.Details(&out); err != nil || !out.ResultState.Known() {
+		return discoveryactivity.SearchTweetsOutput{}, false
+	}
+	return out, true
 }
 
 // finalizeEvent is the exit ramp — marks the

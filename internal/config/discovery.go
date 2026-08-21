@@ -18,10 +18,16 @@ import "time"
 // after the initial burst — see decisions.md 2026-07-23 wall-clock
 // design entry for evidence).
 type DiscoveryConfig struct {
-	// MaxAttempts — how many /search calls EventWorkflow issues
-	// per event. At AttemptSpacing=60s, this is the workflow's total
-	// lifetime in minutes. Default 15.
+	// MaxAttempts is the number of usable rendered or explicit-empty
+	// observations required per event. Default 15.
 	MaxAttempts int `env:"DISCOVERY_MAX_ATTEMPTS" envDefault:"15"`
+
+	// MaxUnavailableAttempts bounds browser/upstream probes that did not
+	// produce a usable rendered or explicit-empty observation. Default 15,
+	// giving a new workflow history at most 30 SearchTweets activity executions
+	// without reducing its 15 usable-search budget. The per-event transport
+	// fallback can add one static-service HTTP request inside an execution.
+	MaxUnavailableAttempts int `env:"DISCOVERY_MAX_UNAVAILABLE_ATTEMPTS" envDefault:"15"`
 
 	// AttemptSpacing — sleep between attempts. Default 60s per
 	// twitter-search-query.md D5. Do not jitter — Twitter's search

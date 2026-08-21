@@ -205,6 +205,12 @@ Interpret these records together:
 - Zero promoted clips after all configured attempts can be legitimate. Confirm
   the search count and terminal candidate reasons before classifying it as a
   discovery failure.
+- For FF-061 histories, `metadata.attempts_completed` counts usable rendered or
+  explicit-empty observations. `metadata.unavailable_attempts` counts bounded
+  probes that did not reduce that budget. Inspect `last_search_state` and
+  `last_search_evidence` before attributing an outage to auth, rate limiting,
+  or X downtime. The evidence intentionally contains no response body or
+  credentials.
 
 ## Firefox fleet diagnosis
 
@@ -370,7 +376,7 @@ Prefer deterministic self-recovery over an ad-hoc write:
 | Terminal score exceeds surviving goal inventory | Keep the fixture/event evidence together; handle under FF-014. | Mark the fixture complete or classify the absent goal as VAR by hand. |
 | Firefox container stopped or orphaned | Correlate its scoped labels with Postgres and Temporal, then let the reaper act. | Remove it based only on container state. |
 | Twitter `degraded` | Inspect the last maintenance run and `/status` cookie error evidence; distinguish network/DOM failure from auth expiry. | Declare the account unauthenticated without a login redirect. |
-| Twitter `feed_timeout` burst | Treat it as an unavailable or unclassified feed, correlate unrelated event workflows and retained cAdvisor metrics, and handle under FF-061. | Call it an empty query, re-authenticate, increase the ten-second bound, or load-test the production account. |
+| Twitter `unknown_timeout` / historical `feed_timeout` burst | Inspect downstream `last_search_evidence` and bounded result-state metrics across unrelated events; let the unavailable budget retry at one-minute cadence. | Call it an empty query, re-authenticate without a login state, increase the ten-second bound, or load-test the production account. |
 | Twitter `unauthenticated` | Use the raw-Firefox capture and static-verify procedure above; production mutations each need approval. | Restart the entire stack, delete the cookie file, or copy a Firefox profile into search. |
 | `twitter.browser_failed` or event-browser restart | Confirm the same container returns healthy before the next Temporal retry; inspect repeated exits for memory pressure or corrupt profile state. | Treat HTTP process liveness alone as browser health, or manually remove an event browser that Docker is recovering. |
 

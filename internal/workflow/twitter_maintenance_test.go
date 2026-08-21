@@ -10,6 +10,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 
 	twittermaintenance "github.com/vedantadhobley/found-footy/internal/activity/twittermaintenance"
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 )
 
 func TestTwitterMaintenanceWorkflowUsesSafeDefaults(t *testing.T) {
@@ -23,7 +24,13 @@ func TestTwitterMaintenanceWorkflowUsesSafeDefaults(t *testing.T) {
 			in.MinTweets == defaultTwitterCanaryMinTweets &&
 			in.MinVideos == defaultTwitterCanaryMinVideos
 	})).Return(func(context.Context, twittermaintenance.RunTwitterMaintenanceInput) (twittermaintenance.RunTwitterMaintenanceOutput, error) {
-		return twittermaintenance.RunTwitterMaintenanceOutput{StopReason: "age", TweetsParsed: 4}, nil
+		return twittermaintenance.RunTwitterMaintenanceOutput{
+			ResultState: twittercontract.ResultRendered,
+			Evidence: twittercontract.SearchEvidence{
+				TimelineSeen: true, TimelineStatus: 200,
+			},
+			StopReason: "age", TweetsParsed: 4,
+		}, nil
 	})
 
 	env.ExecuteWorkflow(TwitterMaintenanceWorkflow, TwitterMaintenanceWorkflowInput{})

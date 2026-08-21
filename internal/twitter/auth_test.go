@@ -58,7 +58,9 @@ func (f *fakeBrowser) GetCookies() ([]Cookie, error) {
 // Navigate isn't used by the auth flow; return nil to satisfy the
 // interface. Search tests that need Navigate go through the real
 // *Browser via testcontainers, not this fake.
-func (f *fakeBrowser) Navigate(_ context.Context, _ string, _ time.Duration) (playwright.Page, error) {
+func (f *fakeBrowser) Navigate(
+	_ context.Context, _ string, _ time.Duration, _ func(playwright.Page),
+) (playwright.Page, error) {
 	return nil, nil
 }
 

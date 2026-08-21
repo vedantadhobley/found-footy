@@ -22,14 +22,16 @@
 //     load. Present → session valid; absent + URL redirected to /login
 //     → transition to StateUnauthenticated. Saves ~3-4s vs a separate
 //     /home verify per the 2026-07-22 design note.
-//  5. Wait for the first tweet — up to 10s. Only a real timeout is a
-//     legitimate empty result; other Playwright failures are errors.
+//  5. Wait for a tweet, explicit-empty selector, or known error selector.
+//     A missing feed is classified from bounded DOM and timeline evidence;
+//     only rendered and explicit-empty states are usable observations.
 //  6. Scroll loop with four stop conditions (age / max_scrolls /
 //     feed_exhausted / consecutive_already_seen). DOM extraction via a single JS
 //     evaluate per scroll for IPC efficiency.
 //  7. BackupCookies on success — persists Twitter's rotated csrf
 //     tokens to the shared file. Fingerprint dedupe skips no-op writes.
-//  8. Return SearchResponse with videos and feed/extraction diagnostics.
+//  8. Return SearchResponse with a bounded result state, secret-free evidence,
+//     videos, and feed/extraction diagnostics.
 //
 // Stealth: random 250–500ms jitter between scroll actions (baseline #4
 // per twitter-port.md T/c). User-Agent + Accept-Language rotation is
@@ -46,59 +48,23 @@ import (
 	"time"
 
 	"github.com/mxschmitt/playwright-go"
+
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 )
 
-// VideoRef is one tweet carrying a video that passed the extraction
-// filters. JSON tag alignment with internal/infra/twitter's client-
-// side VideoRef is load-bearing — that struct decodes what this one
-// encodes.
-type VideoRef struct {
-	TweetURL        string  `json:"tweet_url"`
-	TweetText       string  `json:"tweet_text"`
-	VideoPageURL    string  `json:"video_page_url"`
-	DurationSeconds float64 `json:"duration_seconds"`
+// VideoRef is the shared browser-to-worker video contract.
+type VideoRef = twittercontract.VideoRef
 
-	// Fields NOT on the S7 client's VideoRef today but useful for
-	// observability + LLM validation downstream. omitempty keeps the
-	// wire format backward-compatible (client parses only the fields
-	// it declares).
-	Username   string  `json:"username,omitempty"`
-	AgeMinutes float64 `json:"age_minutes,omitempty"`
-}
+// SearchRequest is the shared JSON body of POST /search.
+type SearchRequest = twittercontract.SearchRequest
 
-// SearchRequest is the JSON body of a POST /search call. Mirrors
-// internal/infra/twitter's client-side SearchRequest 1:1.
-type SearchRequest struct {
-	Query         string   `json:"query"`
-	ExcludeURLs   []string `json:"exclude_urls,omitempty"`
-	MaxAgeMinutes int      `json:"max_age_minutes,omitempty"`
-}
-
-// SearchResponse is the payload returned on a successful search. Extra
-// telemetry fields are omitempty so the
-// S7 client can ignore them without decode errors.
-type SearchResponse struct {
-	Status          string     `json:"status"` // "success"
-	Videos          []VideoRef `json:"videos"`
-	Count           int        `json:"count"`
-	Query           string     `json:"query,omitempty"`
-	StopReason      string     `json:"stop_reason,omitempty"`
-	Scrolls         int        `json:"scrolls,omitempty"`
-	InitialArticles int        `json:"initial_articles,omitempty"`
-	TweetsParsed    int        `json:"tweets_parsed,omitempty"`
-	VideoTweets     int        `json:"video_tweets,omitempty"`
-	Elapsed         string     `json:"elapsed,omitempty"`
-}
+// SearchResponse is the shared classified search payload.
+type SearchResponse = twittercontract.SearchResponse
 
 // SearchErrorBody is the structured error payload. error_class is a
 // stable enum so callers can branch on it without regex-matching
 // error messages. Same taxonomy shape as /authenticate.
-type SearchErrorBody struct {
-	Status     string `json:"status"` // "error"
-	ErrorClass string `json:"error_class"`
-	Message    string `json:"message"`
-	ReauthURL  string `json:"reauth_url,omitempty"`
-}
+type SearchErrorBody = twittercontract.SearchErrorBody
 
 // Stop-reason constants. Kept as an unexported enum-shape rather than
 // a typed enum because the values live inside SearchResponse.StopReason
@@ -107,6 +73,7 @@ const (
 	stopAge             = "age"
 	stopMaxScrolls      = "max_scrolls"
 	stopFeedTimeout     = "feed_timeout"
+	stopExplicitEmpty   = "explicit_empty"
 	stopFeedExhausted   = "feed_exhausted"
 	stopConsecutiveSeen = "consecutive_seen"
 )
@@ -171,9 +138,13 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	searchURL := buildSearchURL(req.Query)
 
-	page, err := s.browser.Navigate(r.Context(), searchURL, s.pageLoadTimeout)
+	evidenceCollector := &searchEvidenceCollector{}
+	page, err := s.browser.Navigate(r.Context(), searchURL, s.pageLoadTimeout, evidenceCollector.observe)
 	if err != nil {
-		writeSearchError(w, http.StatusBadGateway, errClassNavigation, "navigate: "+err.Error())
+		s.SetState(StateDegraded, "search navigation failed")
+		writeSearchClassifiedError(w, http.StatusBadGateway, errClassNavigation,
+			"navigate: "+err.Error(), twittercontract.ResultUnknownTimeout,
+			twittercontract.SearchEvidence{TimelineFailure: "navigation_failed"})
 		return
 	}
 	defer func() { _ = page.Close() }()
@@ -184,44 +155,55 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// dealing with a slow page or an auth redirect.
 	if !verifyOnSearchPage(page) {
 		s.SetState(StateUnauthenticated, "search navigation redirected to login/flow")
-		writeSearchError(w, http.StatusServiceUnavailable, errClassAuthExpired, "session unauthenticated")
+		writeSearchClassifiedError(w, http.StatusServiceUnavailable, errClassAuthExpired,
+			"session unauthenticated", twittercontract.ResultLogin, evidenceCollector.snapshot(page))
 		return
 	}
-	// Verify passed inline on this page load — mark healthy. Bypasses the
-	// separate /home hop that EnsureAuthenticated does.
-	s.SetState(StateHealthy, "verified inline with search")
-
 	articles := page.Locator(`article[data-testid='tweet']`)
-	// Wait for at least one tweet to render. Absent remains a successful empty
-	// result, but gets its own stop class so it cannot be confused with a feed
-	// that rendered and later exhausted.
-	if err := articles.First().WaitFor(
+	// Wait for the first classified DOM state. Explicit empty and known error
+	// states return as soon as X renders them instead of burning the full feed
+	// timeout waiting only for a tweet article.
+	stateErr := page.Locator(
+		`article[data-testid='tweet'], [data-testid='emptyState'], [data-testid='empty_state'], [data-testid='error-detail'], [data-testid='errorDetail']`,
+	).First().WaitFor(
 		playwright.LocatorWaitForOptions{Timeout: playwright.Float(float64(s.tweetFeedTimeout / time.Millisecond))},
-	); err != nil {
-		// Only a real timeout means "no feed rendered." Locator contract
-		// failures, page closure, and other Playwright errors must retry through
-		// Temporal instead of being laundered into a successful empty result.
-		if !errors.Is(err, playwright.ErrTimeout) {
-			writeSearchError(w, http.StatusInternalServerError, errClassInternal, "wait for tweet feed: "+err.Error())
-			return
-		}
-		// Authentication was proven on this navigation. Preserve any cookie
-		// refresh even when the feed itself did not render; persistence failure
-		// is exposed through /status and audit logs without discarding a valid
-		// empty search result.
-		_ = s.BackupCookies(r.Context())
-		writeSearchOK(w, SearchResponse{
-			Status:     "success",
-			Videos:     nil,
-			Count:      0,
-			Query:      req.Query,
-			StopReason: stopFeedTimeout,
-			Scrolls:    0,
-			Elapsed:    time.Since(start).String(),
-		})
+	)
+	if stateErr != nil && !errors.Is(stateErr, playwright.ErrTimeout) {
+		s.SetState(StateDegraded, "search feed locator failed")
+		writeSearchError(w, http.StatusInternalServerError, errClassInternal, "wait for search state: "+stateErr.Error())
 		return
 	}
 	initialArticles, _ := articles.Count()
+	if initialArticles == 0 {
+		// Authentication was proven on this navigation. Preserve any cookie
+		// refresh even when the feed did not render. The explicit page/upstream
+		// state below decides whether this is a usable empty observation.
+		_ = s.BackupCookies(r.Context())
+		evidence := evidenceCollector.snapshot(page)
+		resultState := classifyMissingFeed(evidence)
+		stopReason := stopFeedTimeout
+		status := "unavailable"
+		if resultState == twittercontract.ResultExplicitEmpty {
+			stopReason = stopExplicitEmpty
+			status = "success"
+			s.SetState(StateHealthy, "verified inline with explicit empty search")
+		} else {
+			s.SetState(StateDegraded, "search feed unavailable: "+string(resultState))
+		}
+		writeSearchOK(w, SearchResponse{
+			Status:      status,
+			ResultState: resultState,
+			Evidence:    evidence,
+			Videos:      nil,
+			Count:       0,
+			Query:       req.Query,
+			StopReason:  stopReason,
+			Scrolls:     0,
+			Elapsed:     time.Since(start).String(),
+		})
+		return
+	}
+	s.SetState(StateHealthy, "verified inline with rendered search")
 
 	// Let the first rendered tweet finish painting before extraction. The feed
 	// itself is already proven present above; this short, best-effort wait only
@@ -244,6 +226,8 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	writeSearchOK(w, SearchResponse{
 		Status:          "success",
+		ResultState:     twittercontract.ResultRendered,
+		Evidence:        evidenceCollector.snapshot(page),
 		Videos:          videos,
 		Count:           len(videos),
 		Query:           req.Query,
@@ -278,8 +262,8 @@ func buildSearchURL(query string) string {
 // with the sidebar AccountSwitcher kept as a fallback. If NEITHER positive
 // element appears but there is ALSO no login redirect, the session is
 // almost certainly valid (X would have redirected), so we proceed rather
-// than fail: a genuinely broken page then yields an empty result via the
-// tweet-feed wait instead of a spurious 500.
+// than fail. The feed classifier then distinguishes an explicit empty state
+// from an unavailable page instead of manufacturing a spurious 500.
 //
 // The old code required the AccountSwitcher button specifically, which
 // does not reliably render on the search page under headless — ~17% of
@@ -304,8 +288,8 @@ func verifyOnSearchPage(page playwright.Page) bool {
 	}
 	// No shell element AND no login redirect: logged-out users always get
 	// redirected, so the session is valid — proceed. A broken page falls
-	// through to the tweet-feed wait, which returns an empty result rather
-	// than a spurious 500.
+	// through to the feed classifier and becomes unknown_timeout rather than
+	// either an authentication failure or a usable empty observation.
 	return true
 }
 

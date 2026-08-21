@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 	ddiscovery "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 )
 
@@ -85,8 +86,11 @@ type LoadEventRecoveryStateInput struct {
 // LoadEventRecoveryStateOutput is the durable progress a replacement
 // EventWorkflow execution restores before it starts children or searches.
 type LoadEventRecoveryStateOutput struct {
-	AttemptsCompleted int
-	Candidates        []RecoveryCandidate
+	AttemptsCompleted   int
+	UnavailableAttempts int
+	LastSearchState     twittercontract.ResultState
+	LastSearchEvidence  twittercontract.SearchEvidence
+	Candidates          []RecoveryCandidate
 }
 
 // LoadEventRecoveryState reads the monotonic attempt checkpoint and every
@@ -101,13 +105,26 @@ func (a *Activities) LoadEventRecoveryState(
 	defer cancel()
 
 	var out LoadEventRecoveryStateOutput
+	var evidenceJSON []byte
 	if err := a.Pool.QueryRow(callCtx, `
-		SELECT COALESCE((metadata->>'attempts_completed')::int, 0)
+		SELECT COALESCE((metadata->>'attempts_completed')::int, 0),
+		       COALESCE((metadata->>'unavailable_attempts')::int, 0),
+		       COALESCE(metadata->>'last_search_state', ''),
+		       COALESCE(metadata->'last_search_evidence', '{}'::jsonb)
 		FROM event_downstream_workflows
 		WHERE event_id = $1 AND workflow_type = $2 AND workflow_id = $3
-	`, in.EventID, in.WorkflowType, in.WorkflowID).Scan(&out.AttemptsCompleted); err != nil {
+	`, in.EventID, in.WorkflowType, in.WorkflowID).Scan(
+		&out.AttemptsCompleted,
+		&out.UnavailableAttempts,
+		&out.LastSearchState,
+		&evidenceJSON,
+	); err != nil {
 		return out, fmt.Errorf("discovery.LoadEventRecoveryState: checklist event=%s workflow=%s: %w",
 			in.EventID, in.WorkflowID, err)
+	}
+	if err := json.Unmarshal(evidenceJSON, &out.LastSearchEvidence); err != nil {
+		return out, fmt.Errorf("discovery.LoadEventRecoveryState: search evidence event=%s: %w",
+			in.EventID, err)
 	}
 
 	rows, err := a.Pool.Query(callCtx, `
@@ -159,31 +176,73 @@ func (a *Activities) LoadEventRecoveryState(
 	return out, nil
 }
 
-// RecordDiscoveryProgressInput checkpoints one fully scheduled search attempt.
+// RecordDiscoveryProgressInput checkpoints usable-search and unavailable-probe
+// progress plus the latest bounded search evidence.
 type RecordDiscoveryProgressInput struct {
-	EventID      uuid.UUID
-	WorkflowType string
-	WorkflowID   string
-	Attempt      int
+	EventID             uuid.UUID
+	WorkflowType        string
+	WorkflowID          string
+	Attempt             int
+	UnavailableAttempts int                             `json:"unavailable_attempts,omitempty"`
+	LastSearchState     twittercontract.ResultState     `json:"last_search_state,omitempty"`
+	LastSearchEvidence  *twittercontract.SearchEvidence `json:"last_search_evidence,omitempty"`
 }
 
-// RecordDiscoveryProgress monotonically advances attempts_completed in the
-// checklist metadata. A lower replayed value is a no-op; a missing row is an
-// invariant failure because monitor must register before spawning.
+// RecordDiscoveryProgress monotonically advances both counters. Older replayed
+// progress cannot replace the latest state/evidence. A missing checklist row is
+// an invariant failure because monitor must register before spawning.
 func (a *Activities) RecordDiscoveryProgress(ctx context.Context, in RecordDiscoveryProgressInput) error {
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	evidence := twittercontract.SearchEvidence{}
+	if in.LastSearchEvidence != nil {
+		evidence = *in.LastSearchEvidence
+	}
+	evidenceJSON, err := json.Marshal(evidence)
+	if err != nil {
+		return fmt.Errorf("discovery.RecordDiscoveryProgress: encode evidence: %w", err)
+	}
 	tag, err := a.Pool.Exec(callCtx, `
 		UPDATE event_downstream_workflows
 		SET metadata = jsonb_set(
-			COALESCE(metadata, '{}'::jsonb),
-			'{attempts_completed}',
-			to_jsonb(GREATEST(COALESCE((metadata->>'attempts_completed')::int, 0), $4::int)),
+			jsonb_set(
+				jsonb_set(
+					jsonb_set(
+						COALESCE(metadata, '{}'::jsonb),
+						'{attempts_completed}',
+						to_jsonb(GREATEST(COALESCE((metadata->>'attempts_completed')::int, 0), $4::int)),
+						true
+					),
+					'{unavailable_attempts}',
+					to_jsonb(GREATEST(COALESCE((metadata->>'unavailable_attempts')::int, 0), $5::int)),
+					true
+				),
+				'{last_search_state}',
+				to_jsonb(
+					CASE
+						WHEN $4::int + $5::int >=
+						     COALESCE((metadata->>'attempts_completed')::int, 0) +
+						     COALESCE((metadata->>'unavailable_attempts')::int, 0)
+						THEN $6::text
+						ELSE COALESCE(metadata->>'last_search_state', '')
+					END
+				),
+				true
+			),
+			'{last_search_evidence}',
+			CASE
+				WHEN $4::int + $5::int >=
+				     COALESCE((metadata->>'attempts_completed')::int, 0) +
+				     COALESCE((metadata->>'unavailable_attempts')::int, 0)
+				THEN $7::jsonb
+				ELSE COALESCE(metadata->'last_search_evidence', '{}'::jsonb)
+			END,
 			true
 		)
 		WHERE event_id = $1 AND workflow_type = $2 AND workflow_id = $3
-	`, in.EventID, in.WorkflowType, in.WorkflowID, in.Attempt)
+	`, in.EventID, in.WorkflowType, in.WorkflowID, in.Attempt,
+		in.UnavailableAttempts, in.LastSearchState, evidenceJSON)
 	if err != nil {
 		return fmt.Errorf("discovery.RecordDiscoveryProgress: event=%s attempt=%d: %w", in.EventID, in.Attempt, err)
 	}

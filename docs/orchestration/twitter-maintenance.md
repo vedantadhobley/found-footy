@@ -30,10 +30,13 @@ The workflow calls `RunTwitterMaintenance` with stable defaults:
 3. The activity requires a rendered feed, at least three parsed tweets, at
    least three video-bearing results, and valid HTTPS X/Twitter status URLs.
 
-The output retains stop reason, initial article count, parsed tweet count,
-video-tweet count, and returned-video count in Temporal history. A failure is
-an authentication, persistence, or DOM-canary signal; immediate retries would
-only repeat X traffic, so the activity does not retry.
+The successful output—or a failed canary's non-retrying application-error
+details—retains the bounded FF-061 result state and network/DOM evidence, stop
+reason, initial article count, parsed tweet count, video-tweet count, and
+returned-video count in Temporal history. The canary requires `rendered`; an
+explicit-empty or unavailable state is a failure because maintenance proves
+feed health, not query semantics. An authentication, persistence, or DOM-canary
+failure does not retry immediately because that would only repeat X traffic.
 
 This workflow preserves and diagnoses an existing session. It cannot mint new
 credentials after full expiry. [FF-059](../todo.md#ff-059--vnc-recovery-uses-the-login-path-x-already-rejected)

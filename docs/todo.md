@@ -239,7 +239,37 @@ the current branch.
 | FF-058 | P1 | `implemented` | The zero-warm Firefox model had no fixture-independent cookie maintenance or DOM canary. A six-hour Temporal schedule now forces auth verification and cookie persistence on the static fallback, then requires live-search feed, video-selector, and status-URL evidence. Cookie expiry-only changes and backup/reload failures are observable. | Roll out the release, confirm the new schedule exists, run one explicit probe, and observe one natural scheduled success. |
 | FF-059 | P1 | `implemented` | VNC now uses a separate raw Firefox ESR image and read-only profile-capture service; Playwright remains headless and search-only. Invalid or expired profiles cannot overwrite the shared backup. | Build the VNC image, prove raw login → atomic capture → static `/auth/verify` → fresh fleet-instance reload in dev, then repeat production recovery only on a real authorized expiry. |
 | FF-060 | P2 | `confirmed` | In the 2026-08-19 two-fixture sample, 69 of 742 candidates ended as undifferentiated `download_error`; the durable row cannot distinguish syndication lookup, missing media, CDN response, expiry, or staging failure after ephemeral logs disappear. | Persist a bounded download failure class and stage at the terminal candidate boundary; validate distributions before changing retry or filtering policy. |
-| FF-061 | P1 | `confirmed` | `feed_timeout` launders an unavailable Twitter feed into HTTP success and consumes one of the event's 15 search attempts. The 2026-08-19 MLS burst produced 61 synchronized false-success slots across 12 workflows. | Classify explicit empty, login, rendered, upstream-error, and unknown-timeout page states; retain bounded response evidence; count only usable observations; make exhausted activity errors non-checkpointing; add state metrics and workflow tests. See the [incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md). |
+| FF-061 | P1 | `implemented` | `feed_timeout` laundered an unavailable Twitter feed into HTTP success and consumed one of the event's 15 search attempts. The browser/worker contract now classifies five bounded states, retains secret-free timeline evidence, and separates usable attempts from a durable bounded outage budget. | Roll out the release; verify one rendered search and one maintenance run report the new state/evidence; use the next natural burst to determine whether X exposes 429/rate headers, an error interstitial, or only unknown timeouts. See the [incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md). |
+
+### FF-061 — unavailable Twitter responses consumed usable searches
+
+- **Implemented:** `internal/contract/twittersearch` is the single request,
+  response, candidate, state, and evidence contract shared by the browser
+  service and worker. Only `rendered` and `explicit_empty` are usable;
+  `login`, `upstream_error`, and `unknown_timeout` preserve the logical
+  attempt.
+- **Evidence:** The browser installs SearchTimeline response/failure listeners
+  before navigation, then retains the query-free final route, bounded title,
+  app-shell/empty/error selector bits, response status/failure, and
+  `x-rate-limit-*` values. Bodies, request headers, cookies, and tokens are
+  excluded.
+- **Workflow:** New histories use one SearchTweets activity call per probe and
+  one-minute workflow-level spacing. The usable and unavailable budgets both
+  default to 15. Both counters plus the latest evidence are monotonic
+  `event_downstream_workflows.metadata` state and restore on failed-run
+  recovery. Classified service failures remain retryable Temporal application
+  errors with typed details: new histories decode them after one call, while
+  pre-FF-061 histories keep the prior retry/checkpoint commands. Exhaustion
+  closes normally as `twitter_unavailable` when no candidate ran.
+- **Verification:** Unit and workflow tests cover all result classes, explicit
+  empty accounting, structured non-2xx propagation, activity errors, outage
+  exhaustion, rolling untyped `feed_timeout` compatibility, recovery, evidence
+  redaction/bounds, metric-label bounds, and replay. The Postgres integration
+  test round-trips counters/evidence and prevents an older checkpoint from
+  replacing the latest observation.
+- **Remaining proof:** Production rollout and a natural suppression window.
+  Do not add a global limiter until measured timeline evidence establishes the
+  account/IP policy.
 
 ### FF-058 — fixture-independent Twitter maintenance was not implemented
 
@@ -554,16 +584,17 @@ the [2026-08-17 Codex audit](./design/audits/audit-2026-08-17-codex.md#prior-aud
 | `AUD-DESIGN-TRACING` | Add distributed tracing only when a concrete cross-service diagnostic requires it. |
 
 Do not schedule global coverage floors or a generated log catalog. FF-061 now
-provides strong evidence of shared upstream feed suppression, but not its exact
-X response class. Implement page/network classification and correct attempt
-accounting before choosing a global rate limiter or fixed backoff policy.
+classifies page/network evidence and preserves usable-search accounting, but the
+incident still does not identify X's exact response class. Choose a global rate
+limiter or fixed backoff policy only after a natural recurrence supplies that
+evidence.
 
 ## Behavior that is intentional
 
 - Goals, red cards, and missed penalties are intended to run the full discovery
-  workflow, including 15 usable Twitter search observations. FF-061 tracks the
-  current violation where an unavailable feed or an exhausted activity error
-  can consume one of those slots.
+  workflow, including 15 usable Twitter search observations. FF-061 enforces
+  that contract; unavailable feeds and activity errors consume only the
+  separate bounded outage budget.
 - Perceptual dedup is event-scoped and category-scoped. Do not classify the
   lack of general cross-event fuzzy dedup as a bug without new evidence.
 - The archived Python implementation is a behavioral reference, not the Go
