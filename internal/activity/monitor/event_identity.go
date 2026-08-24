@@ -21,7 +21,6 @@ const eventIdentityClockTolerance = 5
 type eventSequenceGroup struct {
 	providerIndexes []int
 	active          []storedEventSequence
-	removed         []storedEventSequence
 	maxSequence     int
 	sequences       map[int]struct{}
 	teamID          int
@@ -46,9 +45,10 @@ type eventSequenceMatchPlan struct {
 
 // assignEventSequences maps each trackable provider-array element to the
 // immutable sequence used in its natural key. Active stored rows win by nearest
-// clock within a conservative correction window. Exact removed rows retain
-// their terminal key. Every unmatched event allocates above the full active +
-// removed history, so a tombstone can never renumber a surviving brace goal.
+// clock within a conservative correction window. Removed rows reserve their
+// historical sequences but never consume current provider evidence: a
+// post-removal reappearance starts a fresh event generation above the complete
+// active + removed history.
 func assignEventSequences(
 	apiEvents []apifootball.APIFixtureEvent,
 	storedEvents []*event.Event,
@@ -78,9 +78,7 @@ func assignEventSequences(
 			group.maxSequence = sequence
 		}
 		ref := storedEventSequence{event: stored, sequence: sequence}
-		if stored.Removed {
-			group.removed = append(group.removed, ref)
-		} else {
+		if !stored.Removed {
 			group.active = append(group.active, ref)
 		}
 	}
@@ -113,12 +111,7 @@ func assignEventSequences(
 			clockTolerance = 0
 		}
 		matchEventSequences(apiEvents, group.providerIndexes, group.active,
-			clockTolerance, false, assigned)
-		// Removed rows are terminal under the current debounce contract. Only an
-		// exact clock + detail reappearance is mapped back to its tombstoned key;
-		// a later same-player event must receive a fresh sequence.
-		matchEventSequences(apiEvents, group.providerIndexes, group.removed,
-			0, true, assigned)
+			clockTolerance, assigned)
 
 		for _, providerIndex := range group.providerIndexes {
 			if _, exists := assigned[providerIndex]; exists {
@@ -141,7 +134,6 @@ func matchEventSequences(
 	providerIndexes []int,
 	stored []storedEventSequence,
 	clockTolerance int,
-	requireSameDetail bool,
 	assigned map[int]int,
 ) {
 	providers := make([]int, 0, len(providerIndexes))
@@ -191,7 +183,7 @@ func matchEventSequences(
 		distance := absInt(eventClockMinute(apiEvent.Time.Elapsed, apiEvent.Time.Extra) -
 			eventClockMinute(storedEvent.event.Minute, storedEvent.event.Extra))
 		detailDiffers := apiEvent.Detail != storedEvent.event.Detail
-		if distance <= clockTolerance && (!requireSameDetail || !detailDiffers) {
+		if distance <= clockTolerance {
 			tail := best(providerPosition+1, storedPosition+1)
 			matched := eventSequenceMatchPlan{
 				matches: append([]eventSequenceMatch{{

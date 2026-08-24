@@ -200,7 +200,7 @@ Repo methods ship across the focused `internal/infra/pg/event_repo*.go` files:
 `debounce_count=0` + **no** vote for an unknown-scorer placeholder, per G1),
 `DeleteUnknownEvent` (hard-delete a lingering `debounce_count=0` placeholder),
 `UpdateMutableFields`, `Upsert`, `ListPending`, `ListByFixture` (visible rows),
-`ListAllByFixture` (FF-027 active + removed identity history),
+`ListAllByFixture` (FF-027/FF-062 active matching plus removed sequence history),
 `EventsAwaitingDiscovery` (the discovery spawn set),
 `RegisterEventPresence` (increment, cap 3, flips downstream_triggered on first
 hit), `RegisterEventAbsence` (decrement, floor 0, atomic soft-delete on hitZero

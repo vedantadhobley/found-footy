@@ -83,9 +83,10 @@ type Repo interface {
 	ListByFixture(ctx context.Context, fixtureID int64) ([]*Event, error)
 
 	// ListAllByFixture returns the complete identity history for a fixture,
-	// including soft-removed rows. Reconciliation uses removed sequences as
-	// immutable tombstones while matching the current provider array to active
-	// events and allocating collision-free sequences for genuinely new events.
+	// including soft-removed rows. Reconciliation matches the current provider
+	// array only to active events. Removed rows reserve their historical
+	// sequences, so a post-removal reappearance receives a fresh generation
+	// without mutating the audit tombstone.
 	ListAllByFixture(ctx context.Context, fixtureID int64) ([]*Event, error)
 
 	// EventsAwaitingDiscovery returns events in the fixture that are
@@ -128,10 +129,10 @@ type Repo interface {
 	//
 	// Atomic soft-delete on hit-zero: when the decrement brings
 	// debounce_count to 0, the same transaction also sets
-	// removed=TRUE, removed_reason='var', removed_at=NOW(). The event
-	// is FROZEN — subsequent presence votes from later cycles are
-	// rejected via the collision handler in the caller (the removed
-	// row still holds the natural_key, so no fresh Insert either).
+	// removed=TRUE, removed_reason='var', removed_at=NOW(). That event
+	// generation is frozen. If equivalent provider evidence later reappears,
+	// reconciliation allocates a new natural-key sequence and UUID which enters
+	// the ordinary debounce and downstream lifecycle.
 	//
 	// Returns:
 	//   newCount: post-vote debounce_count (0..3). Floored at 0.

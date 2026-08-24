@@ -240,6 +240,34 @@ the current branch.
 | FF-059 | P1 | `implemented` | VNC now uses a separate raw Firefox ESR image and read-only profile-capture service; Playwright remains headless and search-only. Invalid or expired profiles cannot overwrite the shared backup. | Build the VNC image, prove raw login → atomic capture → static `/auth/verify` → fresh fleet-instance reload in dev, then repeat production recovery only on a real authorized expiry. |
 | FF-060 | P2 | `confirmed` | In the 2026-08-19 two-fixture sample, 69 of 742 candidates ended as undifferentiated `download_error`; the durable row cannot distinguish syndication lookup, missing media, CDN response, expiry, or staging failure after ephemeral logs disappear. | Persist a bounded download failure class and stage at the terminal candidate boundary; validate distributions before changing retry or filtering policy. |
 | FF-061 | P1 | `implemented` | `feed_timeout` laundered an unavailable Twitter feed into HTTP success and consumed one of the event's 15 search attempts. The browser/worker contract now classifies five bounded states, retains secret-free timeline evidence, and separates usable attempts from a durable bounded outage budget. | Roll out the release; verify one rendered search and one maintenance run report the new state/evidence; use the next natural burst to determine whether X exposes 429/rate headers, an error interstitial, or only unknown timeouts. See the [incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md). |
+| FF-062 | P1 | `implemented` | A real goal that returned after reaching a removed tombstone was mapped back to that terminal row and skipped. Leipzig fixture `1550681` therefore retained five active goals against API-Football's coherent 0–6 result and could not pass the durable completion gate. | Roll out the release; verify the still-active Leipzig fixture creates a fresh Baku generation if the API still returns it, then prove one natural post-removal reappearance receives a new UUID and completes its own debounce/downstream lifecycle. |
+
+### FF-062 — removed event reappearance was swallowed by its tombstone
+
+- **Observed:** In production fixture `1550681`, Baku's goal appeared, was
+  absent long enough for its first generation to reach
+  `removed_reason='var'`, and then returned in API-Football's score-coherent
+  six-goal inventory. The fixture showed 0–6 and three coherent terminal
+  provider votes, but Postgres held only five surviving goals. The independent
+  durable completion gate therefore kept the fixture active.
+- **Cause:** FF-027 correctly retained removed sequences to prevent key reuse,
+  but it also matched exact returned evidence to the terminal tombstone.
+  Reconcile skipped that key. Temporal durability was not the failure: no new
+  event UUID or EventWorkflow was created for Temporal to run.
+- **Implemented:** Provider evidence now matches only active rows. Removed rows
+  still contribute to the historical maximum, so a reappearance allocates the
+  next sequence and a new UUID. It enters the ordinary count-1→3 debounce and
+  launches a fresh downstream workflow. The old row, removal audit, revoked
+  shares, deleted objects, and Temporal history remain immutable.
+- **Regression:** A focused monitor test reproduces the Baku lifecycle and
+  proves the new generation triggers after three observations. The scenario
+  corpus runs the same appeared→removed→reappeared trace through real activity
+  code and Postgres, retaining both generations with distinct natural keys.
+- **Decision:** [Removed event reappearance starts a new generation](./decisions/2026-08-24-removed-event-reappearance-starts-new-generation.md).
+- **Remaining proof:** Production rollout, automatic repair of fixture
+  `1550681` if its provider inventory remains available, and a natural
+  reappearance. Existing completed or provider-pruned fixtures need an explicit
+  repair path; this change does not synthesize missing provider evidence.
 
 ### FF-061 — unavailable Twitter responses consumed usable searches
 

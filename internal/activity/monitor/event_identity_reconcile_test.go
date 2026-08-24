@@ -9,6 +9,90 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
+// TestReconcileFixture_RemovedGoalReappearanceStartsNewGeneration reproduces
+// the Leipzig failure: a goal appeared, disappeared long enough to become a
+// VAR tombstone, then returned in the provider's score-coherent inventory.
+// Removed history must reserve sequence 1 without swallowing the live event;
+// the reappearance enters ordinary debounce as sequence 2 and triggers a fresh
+// downstream generation after three observations.
+func TestReconcileFixture_RemovedGoalReappearanceStartsNewGeneration(t *testing.T) {
+	kickoff := time.Date(2026, 8, 22, 16, 0, 0, 0, time.UTC)
+	fRepo := newFakeFixtureRepo()
+	_ = fRepo.Upsert(context.Background(), mkActiveFixture(1550681, kickoff))
+	eRepo := newFakeEventRepo()
+	acts := newActs(&fakeFetcher{}, fRepo, eRepo, kickoff.Add(47*time.Minute))
+
+	bakuGoal := apifootball.APIFixture{
+		Fixture: apifootball.APIFixtureFixture{ID: 1550681, Status: apifootball.APIFixtureStatus{Short: "1h"}},
+		Teams: apifootball.APIFixtureTeams{
+			Home: apifootball.APIFixtureTeam{ID: 172},
+			Away: apifootball.APIFixtureTeam{ID: 173},
+		},
+		Goals:  apifootball.APIFixtureGoals{Home: pi(0), Away: pi(1)},
+		Events: []apifootball.APIFixtureEvent{mkAPIGoal(173, 25917, 45)},
+	}
+	if _, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{
+		APIFixture: bakuGoal, WorkflowID: "baku-first",
+	}); err != nil {
+		t.Fatalf("first observation: %v", err)
+	}
+
+	withoutGoal := bakuGoal
+	withoutGoal.Goals.Away = pi(0)
+	withoutGoal.Events = nil
+	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{
+		APIFixture: withoutGoal, WorkflowID: "baku-absent",
+	})
+	if err != nil {
+		t.Fatalf("absence observation: %v", err)
+	}
+	if len(out.EventsRemoved) != 1 || out.EventsRemoved[0] != "173_25917_goal_1" {
+		t.Fatalf("removed = %v, want first Baku generation", out.EventsRemoved)
+	}
+
+	out, err = acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{
+		APIFixture: bakuGoal, WorkflowID: "baku-return-1",
+	})
+	if err != nil {
+		t.Fatalf("first reappearance: %v", err)
+	}
+	if out.NewEventsDetected != 1 {
+		t.Fatalf("new events = %d, want one reappearance generation", out.NewEventsDetected)
+	}
+	removed, err := eRepo.GetByNaturalKey(context.Background(), 1550681, "173_25917_goal_1")
+	if err != nil {
+		t.Fatalf("removed generation: %v", err)
+	}
+	reappeared, err := eRepo.GetByNaturalKey(context.Background(), 1550681, "173_25917_goal_2")
+	if err != nil {
+		t.Fatalf("reappeared generation: %v", err)
+	}
+	if !removed.Removed || reappeared.Removed || reappeared.ID == removed.ID || reappeared.DebounceCount != 1 {
+		t.Fatalf("generations = old(removed=%v id=%s) new(removed=%v id=%s count=%d)",
+			removed.Removed, removed.ID, reappeared.Removed, reappeared.ID, reappeared.DebounceCount)
+	}
+
+	for index, workflowID := range []string{"baku-return-2", "baku-return-3"} {
+		out, err = acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{
+			APIFixture: bakuGoal, WorkflowID: workflowID,
+		})
+		if err != nil {
+			t.Fatalf("reappearance vote %d: %v", index+2, err)
+		}
+	}
+	if len(out.EventsBecameStable) != 1 || out.EventsBecameStable[0] != "173_25917_goal_2" {
+		t.Fatalf("stable events = %v, want reappearance generation", out.EventsBecameStable)
+	}
+	reappeared, err = eRepo.GetByNaturalKey(context.Background(), 1550681, "173_25917_goal_2")
+	if err != nil {
+		t.Fatalf("stable reappearance: %v", err)
+	}
+	if reappeared.DebounceCount != 3 || !reappeared.DownstreamTriggered {
+		t.Fatalf("reappeared state = count %d triggered %v, want 3/true",
+			reappeared.DebounceCount, reappeared.DownstreamTriggered)
+	}
+}
+
 // TestReconcileFixture_ReplacementGoalAllowsOldIdentityToDecay proves that a
 // same-team replacement accounts for the unchanged score while the old player
 // identity follows the absence path.

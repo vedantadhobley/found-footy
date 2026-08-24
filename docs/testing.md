@@ -80,7 +80,10 @@ tombstone, and reverse the provider array without swapping stored clocks. A
 score-incomplete case proves a nearby new goal is inserted while the omitted
 stored goal remains held, while a coherent one-minute correction must update
 the original key. The Postgres integration test requires the identity-history
-query to return both active and removed rows.
+query to return both active and removed rows. FF-062 adds a focused monitor
+regression and a real-activity scenario: equivalent evidence that returns after
+removal allocates a new sequence and UUID, then triggers downstream only after
+its own three presence votes while the old tombstone remains immutable.
 
 FF-055 domain tables cover score-derived home, away, tied, incomplete,
 shootout, and exceptional winner states. The monitor regression starts with a
