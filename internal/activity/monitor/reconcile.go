@@ -113,20 +113,20 @@ type ReconcileFixtureOutput struct {
 
 // ReconcileFixture is the per-fixture per-cycle work:
 //  1. Refresh the fixture row (API-mutable fields + LastPolledAt).
-//  2. Diff API events against pg events (including removed — for
-//     collision-handling of previously-removed natural_keys).
-//  3. For each API event that doesn't exist in pg AND isn't a
-//     previously-removed natural_key: Insert (seeds debounce_count=1
-//     + records this workflow's presence vote).
+//  2. Diff API events against pg events (including removed sequence history).
+//  3. For each API event that doesn't match an active pg event: Insert a fresh
+//     generation (seeds debounce_count=1 + records this workflow's presence
+//     vote). Removed history reserves old sequences but cannot suppress current
+//     provider evidence.
 //  4. For each pg event ALSO in API: RegisterEventPresence
 //     (increments count, may flip downstream_triggered).
 //  5. For each pg event NOT in API: hold a goal when the aggregate score
 //     proves the response omitted one; otherwise RegisterEventAbsence
 //     (decrements count, may hit zero + soft-delete).
 //
-// Removed events are NOT voted against — they're terminal. If the
-// same natural_key appears in the API for a removed event, we skip
-// (see the collision-handling comment in event.Repo.Insert).
+// Removed event generations are NOT voted against or revived. Their sequences
+// remain reserved; equivalent provider evidence starts a new generation with a
+// fresh natural key and UUID.
 func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureInput) (ReconcileFixtureOutput, error) {
 	out := ReconcileFixtureOutput{FixtureID: in.APIFixture.Fixture.ID}
 	now := a.now()
@@ -187,16 +187,15 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 
 	// Step 2-5: diff events. Read the complete identity history in one query.
 	// Non-removed rows participate in presence/absence voting; removed rows are
-	// immutable sequence tombstones that prevent brace renumbering and key reuse.
+	// immutable sequence tombstones that prevent brace renumbering and key reuse
+	// without suppressing a later reappearance generation.
 	allEvents, err := a.EventRepo.ListAllByFixture(ctx, f.ID)
 	if err != nil {
 		return out, fmt.Errorf("monitor.ReconcileFixture: list fixture event history: %w", err)
 	}
 
 	pgByKey := make(map[string]*event.Event, len(allEvents))
-	allKeys := make(map[string]struct{}, len(allEvents))
 	for _, stored := range allEvents {
-		allKeys[stored.NaturalKey] = struct{}{}
 		if !stored.Removed {
 			pgByKey[stored.NaturalKey] = stored
 		}
@@ -286,20 +285,18 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 					out.Structural = true
 				}
 			}
-		} else if _, removedAlready := allKeys[key]; removedAlready {
-			// Terminal — skip. Prior instance of this natural_key was
-			// soft-removed. See package docstring.
-			continue
 		} else {
 			// New event — Insert seeds debounce_count=1 when the player is
 			// known, or 0 (placeholder, no vote) when the player is unknown.
+			// The identity allocator never reuses a removed sequence, so an
+			// exact post-removal reappearance reaches this path with a new
+			// natural key and UUID rather than being swallowed by its tombstone.
 			if err := a.EventRepo.Insert(ctx, domainEv, in.WorkflowID); err != nil {
 				out.Errors = append(out.Errors, fmt.Sprintf("insert event=%s: %v", key, err))
 				continue
 			}
 			out.NewEventsDetected++
 			out.Structural = true
-			allKeys[key] = struct{}{}
 
 			// event.detected is a confirmed-detection signal for durable /
 			// external consumers — don't emit for an unknown-player placeholder

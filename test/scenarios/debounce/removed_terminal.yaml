@@ -1,21 +1,14 @@
-name: debounce-removed-terminal
+name: debounce-removed-reappearance-generation
 description: |
-  Once an event is soft-removed (debounce_count hit zero), it MUST
-  stay removed even if the API brings back the same natural_key.
-  Terminal state semantic — matches decisions.md 2026-07-08 debounce
-  entry.
+  A removed event generation remains immutable history but cannot suppress
+  equivalent provider evidence forever. The original goal appears once and is
+  removed on its absence vote. When it returns, reconciliation allocates the
+  next sequence, starts a fresh debounce, and triggers downstream after three
+  observations.
 
-  Trace: goal detected cycle 1 (count=1), vanishes cycle 2
-  (count=0, hitZero, soft-delete). Cycles 3-4 API brings the goal
-  back in the response. Monitor's reconcile tries to Insert (because
-  ListPending excludes removed events), fails on UNIQUE(fixture_id,
-  natural_key), error surfaced but not fatal. Row stays removed.
-
-  Documents the current implementation shortcut noted in
-  internal/activity/monitor/activities.go — a cleaner path would
-  query all natural_keys (including removed) up front and skip
-  before attempting Insert. Behavior is correct either way; this
-  scenario locks in the observable outcome.
+  Trace: `_goal_1` appears cycle 1 and is removed cycle 2. The same provider
+  event returns in cycles 3-5 as `_goal_2`, whose count climbs 1→2→3. Both rows
+  remain: generation 1 is the VAR audit tombstone; generation 2 is active.
 
 workflow: MonitorWorkflow
 
@@ -50,6 +43,8 @@ _goal_present: &goal_present
       league_id: 39
       league_name: Premier League
       league_season: 2026
+      goals_home: 1
+      goals_away: 0
       events:
         - type: Goal
           detail: Normal Goal
@@ -73,24 +68,25 @@ _goal_absent: &goal_absent
       league_id: 39
       league_name: Premier League
       league_season: 2026
+      goals_home: 0
+      goals_away: 0
       events: []
 
 cycles:
-  # Cycle 1: goal appears. Insert seeds count=1.
+  # Generation 1 appears, then receives an unprotected absence vote and is
+  # preserved as a removed tombstone.
   - t: 2026-07-08T15:30:00Z
     api_responses: {fixtures_by_ids: *goal_present}
-
-  # Cycle 2: absent, count=0, hit-zero soft-delete.
-  # (Insert seeded at 1, one absence brings to 0.)
   - t: 2026-07-08T15:30:30Z
     api_responses: {fixtures_by_ids: *goal_absent}
 
-  # Cycles 3-4: goal reappears in API. Row stays removed —
-  # Insert attempts fail on UNIQUE(fixture_id, natural_key).
-  # No state change on the removed event.
+  # Equivalent provider evidence now allocates generation 2 and follows the
+  # ordinary three-observation trigger path.
   - t: 2026-07-08T15:31:00Z
     api_responses: {fixtures_by_ids: *goal_present}
   - t: 2026-07-08T15:31:30Z
+    api_responses: {fixtures_by_ids: *goal_present}
+  - t: 2026-07-08T15:32:00Z
     api_responses: {fixtures_by_ids: *goal_present}
 
 expected_final_state:
@@ -98,10 +94,15 @@ expected_final_state:
     - fixture_id: 999005
       natural_key: "40_111_goal_1"
       debounce_count: 0
-      downstream_triggered: false    # NEVER triggered — count only reached 1
-      removed: true                  # soft-deleted at cycle 2
+      downstream_triggered: false
+      removed: true
       removed_reason: var
+    - fixture_id: 999005
+      natural_key: "40_111_goal_2"
+      debounce_count: 3
+      downstream_triggered: true
+      removed: false
   counts:
-    events: 1                        # Still just the one event
-    event_monitor_workflows: 1       # Only the cycle-1 Insert recorded a monitor vote
-    event_drop_workflows: 1          # Only the cycle-2 absence recorded a drop vote
+    events: 2
+    event_monitor_workflows: 4
+    event_drop_workflows: 1

@@ -61,3 +61,9 @@ This supersedes the historical plan and Python behavior that treated provider
 array position as stable sequence identity. It does not change scorer
 refinement, three-vote debounce, score-backed absence protection, or terminal
 VAR teardown.
+
+The later
+[removed-event reappearance decision](./2026-08-24-removed-event-reappearance-starts-new-generation.md)
+supersedes step 5 after production evidence showed that API-Football can return
+a real event after the old generation has already reached its VAR tombstone.
+The remaining identity-matching and sequence-allocation contract is unchanged.
