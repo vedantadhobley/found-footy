@@ -236,11 +236,11 @@ the current branch.
 | FF-055 | P1 | `validating` | API-Football winner flags describe the live leader; nil-guarded updates retained an earlier leader when a match returned to a tie, so completed draws could expose the wrong winner. Score-derived state is deployed and the ten stale draws are repaired. | Verify a natural lead-to-tie update clears both winners through the production API and frontend. |
 | FF-056 | P1 | `validating` | The Go vision port computed `elapsed + extra - 1` but then clamped normal-time results back to `elapsed`, shifting the intended ±1 clock window one minute late. Abdelkarim's API-30' goal therefore rejected genuine clips whose sampled clock read 28'. The unclamped normalization is deployed in `136e2d2`. | Verify a natural API-minus-two sampled buildup frame enters the verified pool without admitting an outside-tolerance API-minus-three frame. |
 | FF-057 | P1 | `validating` | Period-aware reset clocks and exact `45:xx 2H` / `15:xx ET2` boundary alternatives are deployed. The corrected historical replay completed all 104 Barcelona–Al Ahly clock rejects across four events, normalized the 31 malformed audit envelopes from the interrupted first run, closed all four checklists, and left zero pending rows. | Verify the next natural reset-clock goal; the deterministic repair and its production exercise are complete. |
-| FF-058 | P1 | `implemented` | The zero-warm Firefox model had no fixture-independent cookie maintenance or DOM canary. A six-hour Temporal schedule now forces auth verification and cookie persistence on the static fallback, then requires live-search feed, video-selector, and status-URL evidence. Cookie expiry-only changes and backup/reload failures are observable. | Roll out the release, confirm the new schedule exists, run one explicit probe, and observe one natural scheduled success. |
-| FF-059 | P1 | `implemented` | VNC now uses a separate raw Firefox ESR image and read-only profile-capture service; Playwright remains headless and search-only. Invalid or expired profiles cannot overwrite the shared backup. | Build the VNC image, prove raw login → atomic capture → static `/auth/verify` → fresh fleet-instance reload in dev, then repeat production recovery only on a real authorized expiry. |
+| FF-058 | P1 | `validating` | The zero-warm Firefox model had no fixture-independent cookie maintenance or DOM canary. A six-hour Temporal schedule now forces auth verification and cookie persistence on the static fallback, then requires live-search feed, video-selector, and status-URL evidence. Cookie expiry-only changes and backup/reload failures are observable. Release `e2143ac` is deployed. | Confirm the new schedule exists, run one explicit probe, and observe one natural scheduled success. |
+| FF-059 | P1 | `implemented` | VNC now uses a separate raw Firefox ESR image and read-only profile-capture service; Playwright remains headless and search-only. Invalid or expired profiles cannot overwrite the shared backup. The immutable production VNC image built successfully in release `e2143ac`, but the optional service was not running and was not recreated. | Prove raw login → atomic capture → static `/auth/verify` → fresh fleet-instance reload in dev, then repeat production recovery only on a real authorized expiry. |
 | FF-060 | P2 | `confirmed` | In the 2026-08-19 two-fixture sample, 69 of 742 candidates ended as undifferentiated `download_error`; the durable row cannot distinguish syndication lookup, missing media, CDN response, expiry, or staging failure after ephemeral logs disappear. | Persist a bounded download failure class and stage at the terminal candidate boundary; validate distributions before changing retry or filtering policy. |
-| FF-061 | P1 | `implemented` | `feed_timeout` laundered an unavailable Twitter feed into HTTP success and consumed one of the event's 15 search attempts. The browser/worker contract now classifies five bounded states, retains secret-free timeline evidence, and separates usable attempts from a durable bounded outage budget. | Roll out the release; verify one rendered search and one maintenance run report the new state/evidence; use the next natural burst to determine whether X exposes 429/rate headers, an error interstitial, or only unknown timeouts. See the [incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md). |
-| FF-062 | P1 | `implemented` | A real goal that returned after reaching a removed tombstone was mapped back to that terminal row and skipped. Leipzig fixture `1550681` therefore retained five active goals against API-Football's coherent 0–6 result and could not pass the durable completion gate. | Roll out the release; verify the still-active Leipzig fixture creates a fresh Baku generation if the API still returns it, then prove one natural post-removal reappearance receives a new UUID and completes its own debounce/downstream lifecycle. |
+| FF-061 | P1 | `validating` | `feed_timeout` laundered an unavailable Twitter feed into HTTP success and consumed one of the event's 15 search attempts. The browser/worker contract now classifies five bounded states, retains secret-free timeline evidence, and separates usable attempts from a durable bounded outage budget. Release `e2143ac` is deployed. | Verify one rendered search and one maintenance run report the new state/evidence; use the next natural burst to determine whether X exposes 429/rate headers, an error interstitial, or only unknown timeouts. See the [incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md). |
+| FF-062 | P1 | `validating` | A real goal that returned after reaching a removed tombstone was mapped back to that terminal row and skipped. Leipzig fixture `1550681` therefore retained five active goals against API-Football's coherent 0–6 result and could not pass the durable completion gate. Release `e2143ac` is deployed. | Verify the still-active Leipzig fixture creates a fresh Baku generation if the API still returns it, then prove one natural post-removal reappearance receives a new UUID and completes its own debounce/downstream lifecycle. |
 
 ### FF-062 — removed event reappearance was swallowed by its tombstone
 
@@ -264,8 +264,11 @@ the current branch.
   corpus runs the same appeared→removed→reappeared trace through real activity
   code and Postgres, retaining both generations with distinct natural keys.
 - **Decision:** [Removed event reappearance starts a new generation](./decisions/2026-08-24-removed-event-reappearance-starts-new-generation.md).
-- **Remaining proof:** Production rollout, automatic repair of fixture
-  `1550681` if its provider inventory remains available, and a natural
+- **Rollout:** Release `e2143ac` deployed successfully on 2026-08-24 at
+  08:30 UTC. Both workers, the API, and static Twitter verified the exact
+  immutable release identity. No schema or object-storage mutation was needed.
+- **Remaining proof:** Automatic repair of fixture `1550681` if its provider
+  inventory remains available, and a natural
   reappearance. Existing completed or provider-pruned fixtures need an explicit
   repair path; this change does not synthesize missing provider evidence.
 
@@ -295,9 +298,12 @@ the current branch.
   redaction/bounds, metric-label bounds, and replay. The Postgres integration
   test round-trips counters/evidence and prevents an older checkpoint from
   replacing the latest observation.
-- **Remaining proof:** Production rollout and a natural suppression window.
-  Do not add a global limiter until measured timeline evidence establishes the
-  account/IP policy.
+- **Rollout:** Release `e2143ac` deployed successfully on 2026-08-24 at
+  08:30 UTC. Both workers, the API, and static Twitter verified the exact
+  immutable release identity.
+- **Remaining proof:** One rendered search, one maintenance run, and a natural
+  suppression window. Do not add a global limiter until measured timeline
+  evidence establishes the account/IP policy.
 
 ### FF-058 — fixture-independent Twitter maintenance was not implemented
 
@@ -326,6 +332,10 @@ the current branch.
   interrupts jitter waits; tweet text truncates by Unicode code point.
 - **Recovery boundary:** This maintains and detects a valid session. FF-059's
   raw login terminal owns new credential capture after full expiry.
+- **Rollout:** Release `e2143ac` deployed successfully on 2026-08-24 at
+  08:30 UTC. Both workers, the API, and static Twitter verified the exact
+  immutable release identity. Schedule existence and canary execution remain
+  separate validation evidence.
 
 ### FF-059 — VNC recovery uses the login path X already rejected
 
@@ -357,6 +367,9 @@ the current branch.
 - **Lifecycle:** The container-local supervisor owns only its raw Firefox and
   capture service. Raw login and automated search remain different containers;
   environment/network ownership continues to authorize search-fleet lifecycle.
+- **Rollout boundary:** The immutable raw-Firefox VNC image built successfully
+  as part of release `e2143ac`. The optional production VNC service was not
+  running, so the release correctly did not create or recreate it.
 - **Proof gate:** From a deliberately logged-out dev profile, authenticate in
   raw Firefox, require atomic capture, force static `/auth/verify`, then prove a
   fresh headless instance reloads and searches without copying the profile.
