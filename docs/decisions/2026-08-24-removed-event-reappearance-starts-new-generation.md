@@ -20,6 +20,15 @@ canceled Temporal lifecycle, and make already-revoked shares ambiguous. Ignoring
 the returned evidence loses a real event and can hold the fixture active
 forever.
 
+Later production evidence qualified the incident without restoring the unsafe
+contract. Before this decision deployed, API-Football corrected Baku's clock
+from the removed generation's 45+2 to 45+1. FF-027 already treated that changed
+clock as a non-exact event, allocated sequence 2, and completed the fixture at
+04:20 UTC. The fixture therefore proves that a removed event can return and can
+be suppressed while its identity stays exact; it is not natural validation of
+this decision's exact-reappearance branch. The regression scenario remains the
+deterministic proof, and a natural exact match is still required.
+
 ## Decision
 
 Treat each post-removal reappearance as a new event generation:
