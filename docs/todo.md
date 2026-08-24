@@ -236,11 +236,12 @@ the current branch.
 | FF-055 | P1 | `validating` | API-Football winner flags describe the live leader; nil-guarded updates retained an earlier leader when a match returned to a tie, so completed draws could expose the wrong winner. Score-derived state is deployed and the ten stale draws are repaired. | Verify a natural lead-to-tie update clears both winners through the production API and frontend. |
 | FF-056 | P1 | `validating` | The Go vision port computed `elapsed + extra - 1` but then clamped normal-time results back to `elapsed`, shifting the intended ±1 clock window one minute late. Abdelkarim's API-30' goal therefore rejected genuine clips whose sampled clock read 28'. The unclamped normalization is deployed in `136e2d2`. | Verify a natural API-minus-two sampled buildup frame enters the verified pool without admitting an outside-tolerance API-minus-three frame. |
 | FF-057 | P1 | `validating` | Period-aware reset clocks and exact `45:xx 2H` / `15:xx ET2` boundary alternatives are deployed. The corrected historical replay completed all 104 Barcelona–Al Ahly clock rejects across four events, normalized the 31 malformed audit envelopes from the interrupted first run, closed all four checklists, and left zero pending rows. | Verify the next natural reset-clock goal; the deterministic repair and its production exercise are complete. |
-| FF-058 | P1 | `validating` | The zero-warm Firefox model had no fixture-independent cookie maintenance or DOM canary. A six-hour Temporal schedule now forces auth verification and cookie persistence on the static fallback, then requires live-search feed, video-selector, and status-URL evidence. Cookie expiry-only changes and backup/reload failures are observable. Release `e2143ac` is deployed. | Confirm the new schedule exists, run one explicit probe, and observe one natural scheduled success. |
+| FF-058 | P1 | `validating` | The zero-warm Firefox model had no fixture-independent cookie maintenance or DOM canary. A six-hour Temporal schedule now forces auth verification and cookie persistence on the static fallback, then requires live-search feed, video-selector, and status-URL evidence. Cookie expiry-only changes and backup/reload failures are observable. Release `e2143ac` is deployed and its unpaused schedule is registered. | Observe the first scheduled maintenance execution and one later natural success. |
 | FF-059 | P1 | `implemented` | VNC now uses a separate raw Firefox ESR image and read-only profile-capture service; Playwright remains headless and search-only. Invalid or expired profiles cannot overwrite the shared backup. The immutable production VNC image built successfully in release `e2143ac`, but the optional service was not running and was not recreated. | Prove raw login → atomic capture → static `/auth/verify` → fresh fleet-instance reload in dev, then repeat production recovery only on a real authorized expiry. |
 | FF-060 | P2 | `confirmed` | In the 2026-08-19 two-fixture sample, 69 of 742 candidates ended as undifferentiated `download_error`; the durable row cannot distinguish syndication lookup, missing media, CDN response, expiry, or staging failure after ephemeral logs disappear. | Persist a bounded download failure class and stage at the terminal candidate boundary; validate distributions before changing retry or filtering policy. |
 | FF-061 | P1 | `validating` | `feed_timeout` laundered an unavailable Twitter feed into HTTP success and consumed one of the event's 15 search attempts. The browser/worker contract now classifies five bounded states, retains secret-free timeline evidence, and separates usable attempts from a durable bounded outage budget. Release `e2143ac` is deployed. | Verify one rendered search and one maintenance run report the new state/evidence; use the next natural burst to determine whether X exposes 429/rate headers, an error interstitial, or only unknown timeouts. See the [incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md). |
-| FF-062 | P1 | `validating` | A real goal that returned after reaching a removed tombstone was mapped back to that terminal row and skipped. Leipzig fixture `1550681` therefore retained five active goals against API-Football's coherent 0–6 result and could not pass the durable completion gate. Release `e2143ac` is deployed. | Verify the still-active Leipzig fixture creates a fresh Baku generation if the API still returns it, then prove one natural post-removal reappearance receives a new UUID and completes its own debounce/downstream lifecycle. |
+| FF-062 | P1 | `validating` | A real goal that returned after reaching a removed tombstone was mapped back to that terminal row and skipped while its identity stayed exact. Leipzig fixture `1550681` initially retained five active goals against API-Football's coherent 0–6 result. Before release `e2143ac`, a provider clock correction from 45+2 to 45+1 made the return non-exact, so old code allocated generation 2 and completed the fixture. | Prove one natural exact-identity post-removal reappearance receives a new UUID and completes its own debounce/downstream lifecycle under `e2143ac`. |
+| FF-063 | P1 | `confirmed` | A played terminal fixture whose provider event inventory remains permanently inconsistent has no bounded recovery state. Zaragoza–Athletic fixture `1607295` remained `active/FT`, 3–1, with zero stored events and completion counter zero three days after kickoff. | Capture the current provider response, then design a bounded terminal reconciliation/backfill or explicit unresolved terminal state that preserves FF-014's no-fabrication invariant. |
 
 ### FF-062 — removed event reappearance was swallowed by its tombstone
 
@@ -267,10 +268,35 @@ the current branch.
 - **Rollout:** Release `e2143ac` deployed successfully on 2026-08-24 at
   08:30 UTC. Both workers, the API, and static Twitter verified the exact
   immutable release identity. No schema or object-storage mutation was needed.
-- **Remaining proof:** Automatic repair of fixture `1550681` if its provider
-  inventory remains available, and a natural
-  reappearance. Existing completed or provider-pruned fixtures need an explicit
-  repair path; this change does not synthesize missing provider evidence.
+- **Pre-release recovery:** Production validation found that fixture `1550681`
+  had already completed at 04:20 UTC. API-Football changed Baku's returned clock
+  from the removed generation's 45+2 to 45+1; FF-027's old matcher therefore
+  treated it as non-exact, allocated `_goal_2`, ran its complete discovery
+  workflow, and completed the fixture. This proves a removed event can return,
+  but it does not naturally exercise FF-062's corrected exact-match branch.
+- **Remaining proof:** A natural exact-identity reappearance under `e2143ac`.
+  Existing completed or provider-pruned fixtures need an explicit repair path;
+  this change does not synthesize missing provider evidence.
+
+### FF-063 — terminal fixture can remain active on a permanently incomplete inventory
+
+- **Observed:** The 2026-08-24 post-release report found Zaragoza–Athletic
+  fixture `1607295` still `active` with API status `FT`, score 3–1,
+  `completion_counter=0`, zero stored events, and a current `last_polled_at`.
+  Kickoff was 2026-08-21, so ordinary polling had not repaired it after three
+  days.
+- **Correct behavior retained:** FF-014 must not complete a played fixture whose
+  scoring events do not explain its score. Fabricating four unknown goals or
+  treating terminal status as sufficient would restore the original silent-data
+  loss bug.
+- **Recovery gap:** The fail-closed state has no age-bounded escalation,
+  historical-event refetch, explicit unresolved terminal state, or operator
+  repair contract. A provider that never returns a coherent event array leaves
+  the fixture active indefinitely.
+- **Next evidence:** Capture the current API-Football fixture response and
+  determine whether the event array is empty at the provider, was transiently
+  unavailable during the match, or was lost before persistence. Design the
+  recovery only after that boundary is known.
 
 ### FF-061 — unavailable Twitter responses consumed usable searches
 
@@ -334,8 +360,10 @@ the current branch.
   raw login terminal owns new credential capture after full expiry.
 - **Rollout:** Release `e2143ac` deployed successfully on 2026-08-24 at
   08:30 UTC. Both workers, the API, and static Twitter verified the exact
-  immutable release identity. Schedule existence and canary execution remain
-  separate validation evidence.
+  immutable release identity. The unpaused `twitter-maintenance-scheduled`
+  schedule exists with its first execution due at the next configured window.
+  Static Twitter was healthy after successful startup cookie reload, auth
+  verification, and backup. Canary execution remains separate evidence.
 
 ### FF-059 — VNC recovery uses the login path X already rejected
 
