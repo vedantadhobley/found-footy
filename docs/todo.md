@@ -241,7 +241,7 @@ the current branch.
 | FF-060 | P2 | `confirmed` | In the 2026-08-19 two-fixture sample, 69 of 742 candidates ended as undifferentiated `download_error`; the durable row cannot distinguish syndication lookup, missing media, CDN response, expiry, or staging failure after ephemeral logs disappear. | Persist a bounded download failure class and stage at the terminal candidate boundary; validate distributions before changing retry or filtering policy. |
 | FF-061 | P1 | `validating` | `feed_timeout` laundered an unavailable Twitter feed into HTTP success and consumed one of the event's 15 search attempts. The browser/worker contract now classifies five bounded states, retains secret-free timeline evidence, and separates usable attempts from a durable bounded outage budget. Release `e2143ac` is deployed. | Verify one rendered search and one maintenance run report the new state/evidence; use the next natural burst to determine whether X exposes 429/rate headers, an error interstitial, or only unknown timeouts. See the [incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md). |
 | FF-062 | P1 | `validating` | A real goal that returned after reaching a removed tombstone was mapped back to that terminal row and skipped while its identity stayed exact. Leipzig fixture `1550681` initially retained five active goals against API-Football's coherent 0–6 result. Before release `e2143ac`, a provider clock correction from 45+2 to 45+1 made the return non-exact, so old code allocated generation 2 and completed the fixture. | Prove one natural exact-identity post-removal reappearance receives a new UUID and completes its own debounce/downstream lifecycle under `e2143ac`. |
-| FF-063 | P1 | `confirmed` | A played terminal fixture whose provider event inventory remains permanently inconsistent has no bounded recovery state. Zaragoza–Athletic fixture `1607295` remained `active/FT`, 3–1, with zero stored events and completion counter zero three days after kickoff. | Capture the current provider response, then design a bounded terminal reconciliation/backfill or explicit unresolved terminal state that preserves FF-014's no-fabrication invariant. |
+| FF-063 | P1 | `confirmed` | A played terminal fixture whose provider event inventory remains permanently inconsistent has no bounded recovery state. Zaragoza–Athletic fixture `1607295` remained `active/FT`, 3–1, with zero stored events and completion counter zero three days after kickoff; both API-Football fixture and dedicated event endpoints return zero events. | Move age-bounded incoherent terminal fixtures out of the 30-second active loop into an explicit unresolved state with slow reconciliation and an auditable repair path, preserving FF-014's no-fabrication invariant. |
 
 ### FF-062 — removed event reappearance was swallowed by its tombstone
 
@@ -293,10 +293,16 @@ the current branch.
   historical-event refetch, explicit unresolved terminal state, or operator
   repair contract. A provider that never returns a coherent event array leaves
   the fixture active indefinitely.
-- **Next evidence:** Capture the current API-Football fixture response and
-  determine whether the event array is empty at the provider, was transiently
-  unavailable during the match, or was lost before persistence. Design the
-  recovery only after that boundary is known.
+- **Provider boundary:** On 2026-08-24, the exact production
+  `/fixtures?ids=1607295` request returned one valid `FT` fixture, score 3–1,
+  and `events=[]`. The dedicated `/fixtures/events?fixture=1607295` endpoint
+  independently returned zero events. The adapter and parser did not discard
+  the inventory; API-Football does not provide it for this match.
+- **Required design:** After a bounded terminal grace period, move the fixture
+  out of the 30-second active loop into an explicit unresolved terminal state.
+  Retry it on a slower reconciliation schedule and retain an auditable repair
+  path if another source later supplies the events. Do not fabricate four
+  unknown goals or mark the ordinary completed state with unexplained score.
 
 ### FF-061 — unavailable Twitter responses consumed usable searches
 
