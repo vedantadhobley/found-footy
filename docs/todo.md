@@ -241,7 +241,7 @@ the current branch.
 | FF-060 | P2 | `confirmed` | In the 2026-08-19 two-fixture sample, 69 of 742 candidates ended as undifferentiated `download_error`; the durable row cannot distinguish syndication lookup, missing media, CDN response, expiry, or staging failure after ephemeral logs disappear. | Persist a bounded download failure class and stage at the terminal candidate boundary; validate distributions before changing retry or filtering policy. |
 | FF-061 | P1 | `validating` | `feed_timeout` laundered an unavailable Twitter feed into HTTP success and consumed one of the event's 15 search attempts. The browser/worker contract now classifies five bounded states, retains secret-free timeline evidence, and separates usable attempts from a durable bounded outage budget. Release `e2143ac` is deployed. | Verify one rendered search and one maintenance run report the new state/evidence; use the next natural burst to determine whether X exposes 429/rate headers, an error interstitial, or only unknown timeouts. See the [incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md). |
 | FF-062 | P1 | `validating` | A real goal that returned after reaching a removed tombstone was mapped back to that terminal row and skipped while its identity stayed exact. Leipzig fixture `1550681` initially retained five active goals against API-Football's coherent 0–6 result. Before release `e2143ac`, a provider clock correction from 45+2 to 45+1 made the return non-exact, so old code allocated generation 2 and completed the fixture. | Prove one natural exact-identity post-removal reappearance receives a new UUID and completes its own debounce/downstream lifecycle under `e2143ac`. |
-| FF-063 | P1 | `implemented` | A played terminal fixture whose provider event inventory remains permanently inconsistent had no bounded exit from active polling. The additive terminal observation field, one-hour grace, settled event/downstream gates, completion audit evidence, stable recency, and frontend regression are implemented. | Apply the reviewed migration, release backend and frontend, then verify one coherent and one incomplete natural terminal fixture before marking validating. Do not remove the rollback-compatible `completion_counter` column until FF-013. |
+| FF-063 | P1 | `validating` | A played terminal fixture whose provider event inventory remains permanently inconsistent had no bounded exit from active polling. The additive terminal observation field, one-hour grace, settled event/downstream gates, completion audit evidence, and stable recency shipped in release `5c105af`. | Verify one coherent and one incomplete natural terminal fixture. Do not remove the rollback-compatible `completion_counter` column until FF-013. |
 | FF-064 | P3 | `implemented` | Production now uses Control's canonical `control-joi.luv` inference identity with `gemma-4-12b` pinned. Both worker replicas were recreated on unchanged release `e2143aca12f90c0891d3afb6b417e29102cba710`; startup dependencies, route initialization, release metrics, scheduler work, the model catalog, and an exact Gemma sentinel passed with zero restarts. | Control retains `joi.luv` as a rollback route until observed legacy use reaches zero; no Found Footy work remains. |
 
 ### FF-062 — removed event reappearance was swallowed by its tombstone
@@ -309,10 +309,12 @@ the current branch.
   classification/order across process rebucketing. See the
   [decision](./decisions/2026-08-25-terminal-observation-grace-bounds-completion.md)
   and [rollout proposal](./design/proposals/terminal-observation-grace.md).
-- **Rollout pending:** Apply
-  `migrations/20260825_01_add_terminal_observed_at.sql` before the new binary,
-  then deploy Found Footy and Vedanta Systems under separate production
-  approvals. No production state has been changed by this implementation.
+- **Rollout:** The additive migration committed successfully on 2026-08-25,
+  then release `5c105af` recreated and verified both workers, the API, and
+  Twitter at 13:03 UTC. Vedanta Systems requires no runtime release for this
+  producer change; its documentation and ordering regression remain a
+  consumer-repository handoff. Natural coherent and incomplete terminal
+  fixtures are the remaining validation evidence.
 
 ### FF-061 — unavailable Twitter responses consumed usable searches
 
