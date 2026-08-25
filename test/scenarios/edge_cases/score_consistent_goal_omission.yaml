@@ -6,9 +6,9 @@ description: |
 
   The score proves that the event array is incomplete, so the stored second
   goal receives no absence votes, is not classified as VAR, and remains in
-  the completion inventory. The three incomplete terminal snapshots cannot
-  advance fixture completion. Once the provider restores both goals, three
-  consecutive coherent terminal snapshots complete the fixture.
+  the completion inventory. Score parity remains audit evidence rather than a
+  permanent gate. The fixture completes one hour after the first uninterrupted
+  terminal observation once the event and downstream gates are settled.
 
 workflow: MonitorWorkflow
 
@@ -122,6 +122,8 @@ cycles:
     api_responses: {fixtures_by_ids: *both_goals_ft}
   - t: 2026-08-16T21:17:00Z
     api_responses: {fixtures_by_ids: *both_goals_ft}
+  - t: 2026-08-16T22:14:30Z
+    api_responses: {fixtures_by_ids: *both_goals_ft}
 
 expected_final_state:
   fixtures:
@@ -129,6 +131,7 @@ expected_final_state:
       state: completed
       api_status_short: ft
       has_completed_at: true
+      has_terminal_observed_at: true
   events:
     - fixture_id: 1564801
       natural_key: "1744_7001_goal_1"

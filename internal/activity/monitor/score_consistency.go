@@ -12,9 +12,8 @@ import (
 // only domain goals: open-play missed penalties and shootout events do not
 // contribute to the match score represented by APIFixture.Goals.
 type scoreEventInventory struct {
-	reportedScore   map[int]*int
-	reportedPenalty map[int]*int
-	presentGoals    map[int]int
+	reportedScore map[int]*int
+	presentGoals  map[int]int
 }
 
 // newScoreEventInventory derives one immutable reconciliation view from a
@@ -25,10 +24,6 @@ func newScoreEventInventory(f apifootball.APIFixture) scoreEventInventory {
 		reportedScore: map[int]*int{
 			f.Teams.Home.ID: f.Goals.Home,
 			f.Teams.Away.ID: f.Goals.Away,
-		},
-		reportedPenalty: map[int]*int{
-			f.Teams.Home.ID: f.Score.Penalty.Home,
-			f.Teams.Away.ID: f.Score.Penalty.Away,
 		},
 		presentGoals: make(map[int]int, 2),
 	}
@@ -52,56 +47,43 @@ func (i scoreEventInventory) scoreRequiresMissingGoal(teamID int) bool {
 	return *reported > i.presentGoals[teamID]
 }
 
-// completionVote reports whether this provider response may advance the
-// fixture's completion debounce. Played terminal results must be internally
-// coherent: both scores are present and exactly equal the non-shootout goal
-// events in the same response, per beneficiary team. Exceptional terminal
-// statuses have no reliable score/event contract and vote on terminal status
-// alone. Non-terminal responses always reset the counter.
-func (i scoreEventInventory) completionVote(
+// scoreEventParity reports whether one provider response's aggregate score
+// exactly matches its non-shootout scoring-event inventory. Completion records
+// this as evidence but does not gate on it; the same inventory still protects
+// stored goals from destructive absence votes.
+func (i scoreEventInventory) scoreEventParity(homeTeamID, awayTeamID int) bool {
+	homeScore, homeKnown := i.reportedScore[homeTeamID]
+	awayScore, awayKnown := i.reportedScore[awayTeamID]
+	if !homeKnown || !awayKnown || homeScore == nil || awayScore == nil {
+		return false
+	}
+	if *homeScore != i.presentGoals[homeTeamID] || *awayScore != i.presentGoals[awayTeamID] {
+		return false
+	}
+
+	// Reject a malformed response that attributes an additional scoring event
+	// to neither fixture team. Per-team equality alone would miss it.
+	presentTotal := 0
+	for _, goals := range i.presentGoals {
+		presentTotal += goals
+	}
+	return presentTotal == *homeScore+*awayScore
+}
+
+// terminalProviderScoreEventParity returns nil for exceptional terminal
+// outcomes and non-terminal responses, where aggregate score parity has no
+// useful completion meaning.
+func (i scoreEventInventory) terminalProviderScoreEventParity(
 	status apifootball.APIStatusCode,
 	homeTeamID, awayTeamID int,
-) bool {
+) *bool {
 	switch status {
 	case apifootball.StatusFullTime,
 		apifootball.StatusAfterExtra,
 		apifootball.StatusPenaltyDone:
-		homeScore, homeKnown := i.reportedScore[homeTeamID]
-		awayScore, awayKnown := i.reportedScore[awayTeamID]
-		if !homeKnown || !awayKnown || homeScore == nil || awayScore == nil {
-			return false
-		}
-		if *homeScore != i.presentGoals[homeTeamID] || *awayScore != i.presentGoals[awayTeamID] {
-			return false
-		}
-
-		// Reject a malformed response that attributes an additional scoring
-		// event to neither fixture team. Per-team equality alone would miss it.
-		presentTotal := 0
-		for _, goals := range i.presentGoals {
-			presentTotal += goals
-		}
-		if presentTotal != *homeScore+*awayScore {
-			return false
-		}
-
-		// A PEN result is not coherent until the provider reports a decided
-		// shootout. The match score is necessarily tied and cannot identify the
-		// winner on its own.
-		if status == apifootball.StatusPenaltyDone {
-			homePenalty, homeKnown := i.reportedPenalty[homeTeamID]
-			awayPenalty, awayKnown := i.reportedPenalty[awayTeamID]
-			return homeKnown && awayKnown && homePenalty != nil && awayPenalty != nil &&
-				*homePenalty != *awayPenalty
-		}
-		return true
-
-	case apifootball.StatusCancelled,
-		apifootball.StatusAbandoned,
-		apifootball.StatusTechnicalLoss,
-		apifootball.StatusWalkover:
-		return true
+		parity := i.scoreEventParity(homeTeamID, awayTeamID)
+		return &parity
 	default:
-		return false
+		return nil
 	}
 }

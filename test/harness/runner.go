@@ -109,11 +109,12 @@ func runActivePoll(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *a
 	// this cheap: we're setting a field production leaves nil.
 	var currentCycleTime time.Time
 	acts := &monitor.Activities{
-		APIFootball:      afClient,
-		FixtureRepo:      pg.NewFixtureRepo(pool),
-		EventRepo:        pg.NewEventRepo(pool),
-		ActivationWindow: 5 * time.Minute,
-		Now:              func() time.Time { return currentCycleTime.UTC() },
+		APIFootball:         afClient,
+		FixtureRepo:         pg.NewFixtureRepo(pool),
+		EventRepo:           pg.NewEventRepo(pool),
+		ActivationWindow:    5 * time.Minute,
+		TerminalGracePeriod: time.Hour,
+		Now:                 func() time.Time { return currentCycleTime.UTC() },
 	}
 
 	// Translate scenario input → workflow input.
@@ -247,15 +248,15 @@ func applySetup(ctx context.Context, pool *pg.Pool, setup Setup) error {
 				id, state, api_status_short, api_status_long,
 				kickoff, home_team_id, home_team_name, away_team_id, away_team_name,
 				league_id, league_name, league_season,
-				activated_at, completed_at, last_polled_at
+				activated_at, completed_at, terminal_observed_at, last_polled_at
 			) VALUES (
 				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-				$13, $14, $15
+				$13, $14, $15, $16
 			)
 		`, sf.ID, sf.State, sf.APIStatusShort, sf.APIStatusLong,
 			sf.Kickoff.UTC(), sf.HomeID, sf.HomeName, sf.AwayID, sf.AwayName,
 			sf.LeagueID, sf.LeagueName, sf.LeagueSeason,
-			sf.ActivatedAt, sf.CompletedAt, sf.LastPolledAt)
+			sf.ActivatedAt, sf.CompletedAt, sf.TerminalObservedAt, sf.LastPolledAt)
 		if err != nil {
 			return err
 		}

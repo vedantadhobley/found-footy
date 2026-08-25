@@ -60,3 +60,7 @@ score evidence remains the played-result authority, and shootout score is now
 also required for `PEN` coherence. Current behavior is recorded in the
 [monitoring ledger](../orchestration/monitor.md) and tracked as
 [`FF-055`](../todo.md#ff-055--live-leader-flags-survive-a-drawn-result).
+
+The later [terminal-grace decision](./2026-08-25-terminal-observation-grace-bounds-completion.md)
+retains score-derived winner display but supersedes a decided shootout as a
+permanent fixture-completion gate; `PEN` decision state is now audit evidence.

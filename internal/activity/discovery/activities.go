@@ -14,7 +14,7 @@
 //  6. UpsertCandidateOutcome — atomically persist the full candidate evidence
 //     and terminal outcome, whether or not observation persistence landed.
 //  7. MarkDownstreamComplete — updates event_downstream_workflows
-//     so FixtureReadyToComplete stops treating this workflow as
+//     so AssessCompletion stops treating this workflow as
 //     pending.
 package discovery
 

@@ -128,21 +128,22 @@ type Setup struct {
 // State determines which fields are required (staging: kickoff only;
 // active: kickoff + activated_at; completed: all three).
 type SetupFixture struct {
-	ID             int64      `yaml:"id"`
-	State          string     `yaml:"state"` // staging | active | completed
-	Kickoff        time.Time  `yaml:"kickoff"`
-	ActivatedAt    *time.Time `yaml:"activated_at,omitempty"`
-	CompletedAt    *time.Time `yaml:"completed_at,omitempty"`
-	LastPolledAt   *time.Time `yaml:"last_polled_at,omitempty"`
-	APIStatusShort string     `yaml:"api_status_short"`
-	APIStatusLong  string     `yaml:"api_status_long"`
-	HomeID         int        `yaml:"home_id"`
-	HomeName       string     `yaml:"home_name"`
-	AwayID         int        `yaml:"away_id"`
-	AwayName       string     `yaml:"away_name"`
-	LeagueID       int        `yaml:"league_id"`
-	LeagueName     string     `yaml:"league_name"`
-	LeagueSeason   int        `yaml:"league_season"`
+	ID                 int64      `yaml:"id"`
+	State              string     `yaml:"state"` // staging | active | completed
+	Kickoff            time.Time  `yaml:"kickoff"`
+	ActivatedAt        *time.Time `yaml:"activated_at,omitempty"`
+	CompletedAt        *time.Time `yaml:"completed_at,omitempty"`
+	TerminalObservedAt *time.Time `yaml:"terminal_observed_at,omitempty"`
+	LastPolledAt       *time.Time `yaml:"last_polled_at,omitempty"`
+	APIStatusShort     string     `yaml:"api_status_short"`
+	APIStatusLong      string     `yaml:"api_status_long"`
+	HomeID             int        `yaml:"home_id"`
+	HomeName           string     `yaml:"home_name"`
+	AwayID             int        `yaml:"away_id"`
+	AwayName           string     `yaml:"away_name"`
+	LeagueID           int        `yaml:"league_id"`
+	LeagueName         string     `yaml:"league_name"`
+	LeagueSeason       int        `yaml:"league_season"`
 }
 
 // SetupTeamAlias pre-seeds a team_aliases row (rarely needed — Ingest
@@ -248,12 +249,13 @@ type ExpectedFinalState struct {
 // engine checks. All fields optional; only declared fields are
 // verified (unset fields not checked).
 type ExpectedFixture struct {
-	ID              int64  `yaml:"id"`
-	State           string `yaml:"state,omitempty"`
-	APIStatusShort  string `yaml:"api_status_short,omitempty"`
-	HasActivatedAt  *bool  `yaml:"has_activated_at,omitempty"` // true = must be non-null, false = must be null
-	HasCompletedAt  *bool  `yaml:"has_completed_at,omitempty"`
-	HasLastPolledAt *bool  `yaml:"has_last_polled_at,omitempty"`
+	ID                    int64  `yaml:"id"`
+	State                 string `yaml:"state,omitempty"`
+	APIStatusShort        string `yaml:"api_status_short,omitempty"`
+	HasActivatedAt        *bool  `yaml:"has_activated_at,omitempty"` // true = must be non-null, false = must be null
+	HasCompletedAt        *bool  `yaml:"has_completed_at,omitempty"`
+	HasTerminalObservedAt *bool  `yaml:"has_terminal_observed_at,omitempty"`
+	HasLastPolledAt       *bool  `yaml:"has_last_polled_at,omitempty"`
 }
 
 // ExpectedTeamAlias verifies a team_aliases row.

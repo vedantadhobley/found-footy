@@ -4,6 +4,12 @@
 began registering rows). The contract is live — see the **As-built notes** banner
 below for the current deltas from this text.
 
+> **Completion boundary superseded by FF-063:** the
+> [terminal-observation grace decision](../../decisions/2026-08-25-terminal-observation-grace-bounds-completion.md)
+> replaces the fixture-level counter and permanent score-parity gate with a
+> one-hour monitored terminal window. This document remains historical design
+> evidence for the downstream checklist, which FF-063 retains.
+
 > **FF-014 correction deployed 2026-08-17:** played terminal
 > responses now advance completion only when their current scoring-event array
 > exactly matches the reported score. The removal path holds an omitted stored

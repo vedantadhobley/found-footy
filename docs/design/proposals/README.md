@@ -7,6 +7,9 @@ work.
 
 ## Shipped rationale
 
+- [`terminal-observation-grace.md`](./terminal-observation-grace.md) — FF-063
+  bounded terminal retirement while retaining event debounce and downstream
+  settlement; application code is complete and production rollout is pending.
 - [`twitter-port.md`](./twitter-port.md) — Go Twitter service port.
 - [`twitter-scaling.md`](./twitter-scaling.md) — per-event Firefox fleet; the
   post-ship environment correction is FF-001.

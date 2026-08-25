@@ -145,7 +145,9 @@ API status:
   `Activate(kickoff)` + `Complete(now)`. Missed-the-match case;
   ended before we noticed. Two-step transition maintains the
   invariant that completed rows have both activated_at and
-  completed_at set.
+  completed_at set. This historical/direct path deliberately does not start
+  terminal grace or set `terminal_observed_at`; FF-010 owns any bounded
+  completed-fixture event repair.
 - **Live** (`1H`, `HT`, `2H`, `ET`, `BT`, `P`, `LIVE`, `SUSP`, `INT`,
   `PST`) → `Activate(now)`. Emergency case: API says the match is
   already playing (or paused mid-play, or postponed with maybe-same-

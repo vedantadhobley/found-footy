@@ -241,7 +241,7 @@ the current branch.
 | FF-060 | P2 | `confirmed` | In the 2026-08-19 two-fixture sample, 69 of 742 candidates ended as undifferentiated `download_error`; the durable row cannot distinguish syndication lookup, missing media, CDN response, expiry, or staging failure after ephemeral logs disappear. | Persist a bounded download failure class and stage at the terminal candidate boundary; validate distributions before changing retry or filtering policy. |
 | FF-061 | P1 | `validating` | `feed_timeout` laundered an unavailable Twitter feed into HTTP success and consumed one of the event's 15 search attempts. The browser/worker contract now classifies five bounded states, retains secret-free timeline evidence, and separates usable attempts from a durable bounded outage budget. Release `e2143ac` is deployed. | Verify one rendered search and one maintenance run report the new state/evidence; use the next natural burst to determine whether X exposes 429/rate headers, an error interstitial, or only unknown timeouts. See the [incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md). |
 | FF-062 | P1 | `validating` | A real goal that returned after reaching a removed tombstone was mapped back to that terminal row and skipped while its identity stayed exact. Leipzig fixture `1550681` initially retained five active goals against API-Football's coherent 0–6 result. Before release `e2143ac`, a provider clock correction from 45+2 to 45+1 made the return non-exact, so old code allocated generation 2 and completed the fixture. | Prove one natural exact-identity post-removal reappearance receives a new UUID and completes its own debounce/downstream lifecycle under `e2143ac`. |
-| FF-063 | P1 | `confirmed` | A played terminal fixture whose provider event inventory remains permanently inconsistent has no bounded recovery state. Zaragoza–Athletic fixture `1607295` remained `active/FT`, 3–1, with zero stored events and completion counter zero three days after kickoff; both API-Football fixture and dedicated event endpoints return zero events. | Move age-bounded incoherent terminal fixtures out of the 30-second active loop into an explicit unresolved state with slow reconciliation and an auditable repair path, preserving FF-014's no-fabrication invariant. |
+| FF-063 | P1 | `implemented` | A played terminal fixture whose provider event inventory remains permanently inconsistent had no bounded exit from active polling. The additive terminal observation field, one-hour grace, settled event/downstream gates, completion audit evidence, stable recency, and frontend regression are implemented. | Apply the reviewed migration, release backend and frontend, then verify one coherent and one incomplete natural terminal fixture before marking validating. Do not remove the rollback-compatible `completion_counter` column until FF-013. |
 | FF-064 | P3 | `implemented` | Production now uses Control's canonical `control-joi.luv` inference identity with `gemma-4-12b` pinned. Both worker replicas were recreated on unchanged release `e2143aca12f90c0891d3afb6b417e29102cba710`; startup dependencies, route initialization, release metrics, scheduler work, the model catalog, and an exact Gemma sentinel passed with zero restarts. | Control retains `joi.luv` as a rollback route until observed legacy use reaches zero; no Found Footy work remains. |
 
 ### FF-062 — removed event reappearance was swallowed by its tombstone
@@ -286,24 +286,33 @@ the current branch.
   `completion_counter=0`, zero stored events, and a current `last_polled_at`.
   Kickoff was 2026-08-21, so ordinary polling had not repaired it after three
   days.
-- **Correct behavior retained:** FF-014 must not complete a played fixture whose
-  scoring events do not explain its score. Fabricating four unknown goals or
-  treating terminal status as sufficient would restore the original silent-data
-  loss bug.
-- **Recovery gap:** The fail-closed state has no age-bounded escalation,
-  historical-event refetch, explicit unresolved terminal state, or operator
-  repair contract. A provider that never returns a coherent event array leaves
-  the fixture active indefinitely.
+- **Correct behavior retained:** FF-014's score-backed absence guard must not
+  classify a stored goal as VAR while the score still requires it. The system
+  must never fabricate four unknown goals to force score parity.
+- **Recovery gap:** The fail-closed state has no age-bounded exit. A provider
+  that never returns a coherent event array leaves the fixture active
+  indefinitely even though continued 30-second polling cannot create missing
+  upstream evidence.
 - **Provider boundary:** On 2026-08-24, the exact production
   `/fixtures?ids=1607295` request returned one valid `FT` fixture, score 3–1,
   and `events=[]`. The dedicated `/fixtures/events?fixture=1607295` endpoint
   independently returned zero events. The adapter and parser did not discard
   the inventory; API-Football does not provide it for this match.
-- **Required design:** After a bounded terminal grace period, move the fixture
-  out of the 30-second active loop into an explicit unresolved terminal state.
-  Retry it on a slower reconciliation schedule and retain an auditable repair
-  path if another source later supplies the events. Do not fabricate four
-  unknown goals or mark the ordinary completed state with unexplained score.
+- **Implemented contract:** `terminal_observed_at` starts on the first
+  successful terminal active poll, survives later terminal responses, and
+  clears on a successful non-terminal response. The typed one-hour grace plus
+  named-event debounce and downstream checklist gates own completion. Provider
+  parity, durable parity, and `PEN` decision state are audit evidence; score
+  still protects goal removal and incomplete-array identity. Historical
+  terminal ingests keep direct completion, public recency stays anchored to the
+  first terminal observation, and Vedanta Systems retains finished
+  classification/order across process rebucketing. See the
+  [decision](./decisions/2026-08-25-terminal-observation-grace-bounds-completion.md)
+  and [rollout proposal](./design/proposals/terminal-observation-grace.md).
+- **Rollout pending:** Apply
+  `migrations/20260825_01_add_terminal_observed_at.sql` before the new binary,
+  then deploy Found Footy and Vedanta Systems under separate production
+  approvals. No production state has been changed by this implementation.
 
 ### FF-061 — unavailable Twitter responses consumed usable searches
 
@@ -537,12 +546,13 @@ the current branch.
   score; `PEN` derives from the shootout; ties and incomplete scores produce
   `null` / `null`. Exceptional terminal results use the provider's exact
   nullable flags because their scores are not authoritative. Ingest and active
-  reconcile share this domain operation. A `PEN` completion vote and the final
-  SQL readiness check both require present, non-tied penalty scores.
+  reconcile share this domain operation. FF-063 later retained `PEN` decision
+  state as completion audit evidence but removed it as a permanent retirement
+  gate.
 - **Tests:** Domain tables cover home/away/tied/missing, shootout, and
   exceptional outcomes. Monitor regression covers a stored 1–0 leader followed
-  by a 1–1 response. Provider-vote and Postgres truth tables cover absent,
-  tied, and decided shootouts.
+  by a 1–1 response. FF-063's completion tests cover absent, tied, and decided
+  shootouts under terminal grace.
 - **Rollout:** Release `5962dd2` deployed successfully on 2026-08-19 at
   17:52 UTC. Both workers, the API, and Twitter verified the exact immutable
   release identity. A guarded transaction then cleared winner state on the ten

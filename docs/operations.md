@@ -135,7 +135,7 @@ Fixture state and completion evidence:
 
 ```sql
 SELECT id, state, api_status_short, home_team_name, away_team_name,
-       home_score, away_score, completion_counter,
+       home_score, away_score, terminal_observed_at,
        last_polled_at, last_activity_at, completed_at
 FROM fixtures
 WHERE id = <fixture-id>;

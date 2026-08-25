@@ -81,6 +81,10 @@ type Activities struct {
 	// from config.Workflows.ActivationWindow at worker startup.
 	ActivationWindow time.Duration
 
+	// TerminalGracePeriod is the minimum uninterrupted terminal observation
+	// window before an active fixture can move to completed.
+	TerminalGracePeriod time.Duration
+
 	// FleetEnabled mirrors config.FirefoxFleetConfig.Enabled (#160). Set
 	// at worker init; surfaced to ActivePollWorkflow via GetMonitorConfig
 	// so it provisions/releases Firefox instances only when the fleet is on.

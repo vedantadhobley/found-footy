@@ -79,3 +79,7 @@ Current behavior is recorded in the
 The later [winner-state decision](./2026-08-19-winner-state-is-derived-from-canonical-scores.md)
 corrects the provider-flag assumption without changing this decision's rule
 that winner display state cannot bypass completion.
+
+The later [terminal-grace decision](./2026-08-25-terminal-observation-grace-bounds-completion.md)
+retains this decision's goal-removal and identity safety rules but supersedes
+permanent score parity as a fixture-completion gate.

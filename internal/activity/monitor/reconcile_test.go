@@ -9,6 +9,7 @@ import (
 
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
+	eventinfra "github.com/vedantadhobley/found-footy/internal/infra/event"
 )
 
 func TestReconcileFixture_NewGoalInserted_CountIs1(t *testing.T) {
@@ -233,10 +234,9 @@ func TestReconcileFixture_ThreeCyclesTriggersDownstream(t *testing.T) {
 	}
 }
 
-// TestReconcileFixture_TerminalWithWinnerRequiresCoherentDebounce proves that
-// vendor winner data remains display/result data and cannot bypass three
-// coherent terminal responses.
-func TestReconcileFixture_TerminalWithWinnerRequiresCoherentDebounce(t *testing.T) {
+// TestReconcileFixture_TerminalWithWinnerRequiresGrace proves that result data
+// cannot bypass the terminal observation grace period.
+func TestReconcileFixture_TerminalWithWinnerRequiresGrace(t *testing.T) {
 	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	now := kickoff.Add(105 * time.Minute) // post-FT
 	fRepo := newFakeFixtureRepo()
@@ -259,19 +259,22 @@ func TestReconcileFixture_TerminalWithWinnerRequiresCoherentDebounce(t *testing.
 		},
 		Goals: apifootball.APIFixtureGoals{Home: pi(0), Away: pi(0)},
 	}
-	acts := newActs(&fakeFetcher{}, fRepo, newFakeEventRepo(), now)
-	for cycle := 1; cycle <= 3; cycle++ {
+	composer := &recordingComposer{}
+	times := []time.Time{now, now.Add(time.Hour - 30*time.Second), now.Add(time.Hour)}
+	for cycle, cycleAt := range times {
+		acts := newActs(&fakeFetcher{}, fRepo, newFakeEventRepo(), cycleAt)
+		acts.Composer = composer
 		out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{
-			APIFixture: apiFix, WorkflowID: fmt.Sprintf("monitor-w%d", cycle),
+			APIFixture: apiFix, WorkflowID: fmt.Sprintf("monitor-w%d", cycle+1),
 		})
 		if err != nil {
-			t.Fatalf("ReconcileFixture cycle %d: %v", cycle, err)
+			t.Fatalf("ReconcileFixture cycle %d: %v", cycle+1, err)
 		}
-		if cycle < 3 && out.Completed {
-			t.Fatalf("cycle %d completed despite counter below 3", cycle)
+		if cycle < 2 && out.Completed {
+			t.Fatalf("cycle %d completed before grace elapsed", cycle+1)
 		}
-		if cycle == 3 && !out.Completed {
-			t.Fatal("cycle 3 did not complete after three coherent terminal snapshots")
+		if cycle == 2 && !out.Completed {
+			t.Fatal("cycle 3 did not complete at grace boundary")
 		}
 	}
 	got, _ := fRepo.Get(context.Background(), 999)
@@ -281,17 +284,33 @@ func TestReconcileFixture_TerminalWithWinnerRequiresCoherentDebounce(t *testing.
 	if got.CompletedAt == nil {
 		t.Error("CompletedAt should be set after completion")
 	}
+	if composer.kind != eventinfra.KindFixtureCompleted {
+		t.Fatalf("completion audit kind = %q, want %q", composer.kind, eventinfra.KindFixtureCompleted)
+	}
+	payload, ok := composer.payload.(eventinfra.FixtureCompletedPayload)
+	if !ok {
+		t.Fatalf("completion audit payload type = %T", composer.payload)
+	}
+	if !payload.TerminalObservedAt.Equal(now) || !payload.CompletedAt.Equal(now.Add(time.Hour)) {
+		t.Errorf("completion audit times = observed %v completed %v", payload.TerminalObservedAt, payload.CompletedAt)
+	}
+	if payload.GraceSeconds != 3600 {
+		t.Errorf("completion audit grace = %d, want 3600", payload.GraceSeconds)
+	}
+	if payload.ProviderScoreEventParity == nil || !*payload.ProviderScoreEventParity ||
+		payload.DurableScoreEventParity == nil || !*payload.DurableScoreEventParity {
+		t.Errorf("completion parity evidence = provider %v durable %v, want true/true",
+			payload.ProviderScoreEventParity, payload.DurableScoreEventParity)
+	}
 }
 
-// TestReconcileFixture_TerminalCounterBelowThreshold_DoesNotComplete —
-// FT status but only 1 Terminal poll observed. Counter is 1, no winner.
-// Fixture should stay in active waiting for more Terminal polls.
-func TestReconcileFixture_TerminalCounterBelowThreshold_DoesNotComplete(t *testing.T) {
+// TestReconcileFixture_FirstTerminalPollStartsGrace verifies that the first
+// successful terminal response persists the stable recency/grace anchor.
+func TestReconcileFixture_FirstTerminalPollStartsGrace(t *testing.T) {
 	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	now := kickoff.Add(95 * time.Minute)
 	fRepo := newFakeFixtureRepo()
 	f := mkActiveFixture(888, kickoff)
-	// No winner data set — must debounce via counter.
 	_ = fRepo.Upsert(context.Background(), f)
 
 	apiFix := apifootball.APIFixture{
@@ -313,14 +332,14 @@ func TestReconcileFixture_TerminalCounterBelowThreshold_DoesNotComplete(t *testi
 		t.Fatalf("ReconcileFixture: %v", err)
 	}
 	if out.Completed {
-		t.Errorf("out.Completed = true, want false (counter = 1, no winner)")
+		t.Errorf("out.Completed = true, want false before grace")
 	}
 	got, _ := fRepo.Get(context.Background(), 888)
 	if got.State != fixture.StateActive {
-		t.Errorf("state = %q, want active (still debouncing)", got.State)
+		t.Errorf("state = %q, want active during grace", got.State)
 	}
-	if got.CompletionCounter != 1 {
-		t.Errorf("CompletionCounter = %d, want 1", got.CompletionCounter)
+	if got.TerminalObservedAt == nil || !got.TerminalObservedAt.Equal(now) {
+		t.Errorf("TerminalObservedAt = %v, want %v", got.TerminalObservedAt, now)
 	}
 }
 

@@ -158,7 +158,7 @@ type Repo interface {
 
 	// RegisterDownstreamWorkflow inserts a fresh row into
 	// event_downstream_workflows so the fixture-completion check
-	// (FixtureRepo.FixtureReadyToComplete) sees the workflow as
+	// (FixtureRepo.AssessCompletion) sees the workflow as
 	// pending. Idempotent via ON CONFLICT DO NOTHING on
 	// (event_id, workflow_type, workflow_id) so activity retries after
 	// partial-success crashes don't double-insert.

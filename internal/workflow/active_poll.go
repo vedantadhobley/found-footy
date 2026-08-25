@@ -26,7 +26,7 @@
 // As-built (O3+):
 //   - EventWorkflow spawn for stable events — SHIPPED (DownstreamSpawner
 //     on the downstream_triggered flip).
-//   - Fixture completion transition — SHIPPED (FixtureReadyToComplete; the
+//   - Fixture completion transition — SHIPPED (AssessCompletion; the
 //     completion contract).
 //   - VAR destroy pipeline (Temporal cancel + revoke shares + reclaim Garage
 //     objects) for overturned events — SHIPPED (#172; Step 4.5 runs it for each

@@ -155,16 +155,16 @@ structurally.
 Core type `fixture.Fixture` with `State` (staging/active/completed),
 API-mirror fields (`APIStatus`, `APIElapsed`, `APIExtra`, scores), derived
 nullable winner state, and
-domain-managed timestamps (`ActivatedAt`, `CompletedAt`,
+domain-managed timestamps (`ActivatedAt`, `TerminalObservedAt`, `CompletedAt`,
 `LastActivityAt`, `LastPolledAt`).
 
 State transitions:
 - `Activate(at) → active` (sets ActivatedAt, LastActivityAt)
 - `Complete(at) → completed` (sets CompletedAt, LastActivityAt)
 - `Reschedule(newKickoff, at) → staging` (clears ActivatedAt; for PST/moved fixtures)
-- `UpdateFromPoll(status, elapsed, extra, scores, completionVote, at)` —
-  refreshes API-mirror fields, LastPolledAt, and the completion counter without
-  changing state
+- `UpdateFromPoll(status, elapsed, extra, scores, at)` — refreshes API-mirror
+  fields and LastPolledAt, starts/preserves a terminal observation, or clears
+  it on a successful non-terminal response without changing state
 - `UpdatePenalty(home, away)` — exactly mirrors nullable shootout state
 - `UpdateResult(providerHome, providerAway)` — derives ordinary/AET winners
   from score and PEN winners from the shootout; exceptional terminal outcomes
@@ -177,10 +177,9 @@ ActivePollWorkflow's `ActivateUpcoming` step.
 Repo methods shipped in `internal/infra/pg/fixture_repo.go`:
 `Get`, `Upsert`, `ListByState`, `ListActiveIDs` (cheap ID-only
 projection for ActivePollWorkflow's batched API call),
-`ListStagingBeforeKickoff`, `FixtureReadyToComplete` (the completion-contract
-evaluator, including played-result score/stored-goal parity and a decided
-shootout requirement for `PEN`; see the
-[FF-014 decision](decisions/2026-08-16-score-backed-goal-removal.md)),
+`ListStagingBeforeKickoff`, `AssessCompletion` (terminal grace plus settled
+event/downstream gates, returning durable parity audit evidence; see the
+[FF-063 decision](decisions/2026-08-25-terminal-observation-grace-bounds-completion.md)),
 and the two-part retention pair (#176): `PruneCompleted` (hard-delete clipless
 aged fixtures) + `ListReclaimableEventIDs` (events of clip-bearing aged fixtures
 with live shares → the workflow's `DestroyEvent` byte-reclaim loop; keeps rows as

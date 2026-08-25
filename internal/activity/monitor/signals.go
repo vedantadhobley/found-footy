@@ -5,6 +5,8 @@
 // (something structural changed). See decisions.md 2026-08-14.
 package monitor
 
+import "time"
+
 // intPtrChanged reports whether two *int differ in presence or value. Both nil →
 // unchanged; exactly one nil → changed; both set → value compare.
 func intPtrChanged(a, b *int) bool {
@@ -28,6 +30,14 @@ func boolPtrChanged(a, b *bool) bool {
 	default:
 		return *a != *b
 	}
+}
+
+// timePtrChanged compares nullable timestamps by instant.
+func timePtrChanged(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a != b
+	}
+	return !a.Equal(*b)
 }
 
 // derefInt returns *p, or 0 if p is nil.

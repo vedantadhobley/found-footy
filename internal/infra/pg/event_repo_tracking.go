@@ -9,7 +9,7 @@ import (
 )
 
 // RegisterDownstreamWorkflow inserts the idempotent pending checklist row that
-// FixtureReadyToComplete treats as in flight.
+// AssessCompletion treats as in flight.
 func (r *EventRepo) RegisterDownstreamWorkflow(ctx context.Context, eventID uuid.UUID, workflowType, workflowID string) error {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO event_downstream_workflows (event_id, workflow_type, workflow_id)

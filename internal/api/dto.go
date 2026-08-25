@@ -171,8 +171,9 @@ func toFixtureDTO(f *fixture.Fixture, events []eventDTO, lastActivityAt *time.Ti
 
 // deriveLastActivity computes last_activity_at at read time — the recency sort
 // key. It is the wall-clock of the fixture's most recent NOTEWORTHY moment: the
-// max of activation, completion, and the first-seen time of any surviving
-// known-scorer goal/card. NOT poll time, clock ticks, or status transitions.
+// max of activation, first terminal observation, and the first-seen time of any
+// surviving known-scorer goal/card. Legacy/direct-complete rows without a
+// terminal observation fall back to completion time. NOT poll time or clocks.
 //
 // events must be the fixture's non-removed events (ListByFixture already excludes
 // removed) — so a VAR overturn reverts the value for free, and unknown-scorer
@@ -189,7 +190,9 @@ func deriveLastActivity(f *fixture.Fixture, events []*event.Event) *time.Time {
 	if f.ActivatedAt != nil {
 		consider(*f.ActivatedAt)
 	}
-	if f.CompletedAt != nil {
+	if f.TerminalObservedAt != nil {
+		consider(*f.TerminalObservedAt)
+	} else if f.State == fixture.StateCompleted && f.CompletedAt != nil {
 		consider(*f.CompletedAt)
 	}
 	for _, e := range events {

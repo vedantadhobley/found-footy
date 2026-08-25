@@ -1,10 +1,9 @@
-name: edge-unobserved-goal-blocks-completion
+name: edge-unobserved-goal-completes-after-grace
 description: |
   The provider reports a 2-0 played result but supplies only one goal event.
-  Even after the event and terminal status both satisfy their three-poll
-  debounces, the fixture must remain active because its surviving goal
-  inventory cannot explain the score. This is the safe state until FF-014's
-  bounded terminal-reconciliation policy is designed.
+  Score parity records the incomplete upstream inventory without trapping the
+  fixture active forever. After one hour of uninterrupted terminal responses,
+  the fixture completes once the one observed event has settled.
 
 workflow: MonitorWorkflow
 
@@ -57,13 +56,16 @@ cycles:
     api_responses: {fixtures_by_ids: *incomplete_result}
   - t: 2026-08-16T21:14:00Z
     api_responses: {fixtures_by_ids: *incomplete_result}
+  - t: 2026-08-16T22:13:00Z
+    api_responses: {fixtures_by_ids: *incomplete_result}
 
 expected_final_state:
   fixtures:
     - id: 1564803
-      state: active
+      state: completed
       api_status_short: ft
-      has_completed_at: false
+      has_completed_at: true
+      has_terminal_observed_at: true
   events:
     - fixture_id: 1564803
       natural_key: "487_8001_goal_1"

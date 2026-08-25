@@ -90,17 +90,42 @@ func (a *Activities) emitEventRemoved(ctx context.Context, evID uuid.UUID, fixtu
 	}
 }
 
-func (a *Activities) emitFixtureCompleted(ctx context.Context, fixtureID int64, completedAt time.Time) {
+func (a *Activities) emitFixtureCompleted(
+	ctx context.Context,
+	f *fixture.Fixture,
+	completedAt time.Time,
+	assessment fixture.CompletionAssessment,
+	providerParity *bool,
+) {
 	if a.Composer == nil {
 		return
 	}
-	payload := eventinfra.FixtureCompletedPayload{
-		FixtureID:   fixtureID,
-		CompletedAt: completedAt,
+	if f.TerminalObservedAt == nil {
+		return
 	}
-	if _, err := a.Composer.Publish(ctx, eventinfra.KindFixtureCompleted, uuid.Nil, fixtureID, payload); err != nil {
+	payload := eventinfra.FixtureCompletedPayload{
+		FixtureID:                f.ID,
+		TerminalObservedAt:       *f.TerminalObservedAt,
+		CompletedAt:              completedAt,
+		GraceSeconds:             int64(a.TerminalGracePeriod / time.Second),
+		ProviderScoreEventParity: providerParity,
+		DurableScoreEventParity:  assessment.DurableScoreEventParity,
+		PenaltyResultDecided:     penaltyResultDecided(f),
+	}
+	if _, err := a.Composer.Publish(ctx, eventinfra.KindFixtureCompleted, uuid.Nil, f.ID, payload); err != nil {
 		_ = err
 	}
+}
+
+// penaltyResultDecided is nil outside PEN and otherwise records whether the
+// current shootout score identifies a winner. It is completion audit evidence,
+// not a permanent gate.
+func penaltyResultDecided(f *fixture.Fixture) *bool {
+	if f.APIStatus.Short != apifootball.StatusPenaltyDone {
+		return nil
+	}
+	decided := f.HomePenalty != nil && f.AwayPenalty != nil && *f.HomePenalty != *f.AwayPenalty
+	return &decided
 }
 
 // playerName returns the Player's name or empty string if unknown.

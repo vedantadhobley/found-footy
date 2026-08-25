@@ -25,6 +25,11 @@ type WorkflowsConfig struct {
 	// an IntervalSpec on the schedule.
 	ActiveFixturePollInterval time.Duration `env:"WORKFLOWS_ACTIVE_FIXTURE_POLL_INTERVAL" envDefault:"30s"`
 
+	// TerminalGracePeriod bounds how long an active fixture remains pollable
+	// after the first uninterrupted successful terminal observation. Event
+	// debounce and downstream-workflow gates must also settle before completion.
+	TerminalGracePeriod time.Duration `env:"WORKFLOWS_TERMINAL_GRACE_PERIOD" envDefault:"1h"`
+
 	// StagingPollCron — when StagingPollWorkflow fires. Default
 	// `*/15 * * * *` = every 15 min at :00 :15 :30 :45. Because
 	// StagingPollWorkflow is its own Temporal Schedule, operators can
