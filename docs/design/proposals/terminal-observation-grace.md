@@ -1,6 +1,7 @@
 # Terminal observation grace for fixture completion
 
-**Status:** shipped in code on 2026-08-25; production rollout remains pending.
+**Status:** deployed in Found Footy release `5c105af` on 2026-08-25; natural
+fixture validation remains open.
 The as-built contract and rationale live in the
 [monitoring ledger](../../orchestration/monitor.md) and
 [decision record](../../decisions/2026-08-25-terminal-observation-grace-bounds-completion.md).

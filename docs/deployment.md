@@ -234,11 +234,12 @@ Reviewed in-place migrations are applied in filename order. The
 [`hash_version` migration](../migrations/20260817_01_add_video_asset_hash_version.sql)
 was applied in production before release `201cdf1` on 2026-08-18. The additive
 [`terminal_observed_at` migration](../migrations/20260825_01_add_terminal_observed_at.sql)
-must run before the FF-063 application release; it leaves
-`completion_counter` intact so the prior binary remains SQL-compatible. Its
-older drift guard still requires an explicit restamp to the prior fingerprint
-before that image can start; the migration file records the exact rollback
-statement. Do not drop the additive column during the rollback window.
+was applied in production before FF-063 release `5c105af` on 2026-08-25. It
+leaves `completion_counter` intact so the prior binary remains SQL-compatible.
+Its older drift guard still requires an explicit restamp to the prior
+fingerprint before that image can start; the migration file records the exact
+rollback statement. Do not drop the additive column during the rollback
+window.
 The newest unapplied migration's checked-in stamp must equal the embedded
 `schema.sql` hash, and the contract test enforces that equality. The application
 deploy script still does not run schema mutations. Completed one-time files are
