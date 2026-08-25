@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Found Footy uses Control's canonical Joi gateway](./2026-08-25-control-joi-is-production-inference-route.md) — production moves from the legacy `joi.luv` identity to `control-joi.luv` without changing its pinned model, concurrency, or application release.
 - [Removed event reappearance starts a new generation](./2026-08-24-removed-event-reappearance-starts-new-generation.md) — FF-062 keeps VAR tombstones immutable while allowing returned provider evidence through a fresh debounce and downstream lifecycle.
 - [Twitter search attempts require usable observations](./2026-08-20-twitter-search-attempts-require-usable-observations.md) — FF-061 classifies browser results, separates usable searches from bounded outage probes, and persists secret-free response evidence.
 - [Raw Firefox owns operator login](./2026-08-19-raw-firefox-owns-operator-login.md) — FF-059 separates raw-Firefox credential minting and read-only profile capture from Playwright search.

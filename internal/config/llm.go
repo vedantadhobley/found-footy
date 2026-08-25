@@ -40,7 +40,7 @@ type LLMConfig struct {
 
 	// ChatConcurrencyCap bounds the number of in-flight chat calls this
 	// process may have open at once, via a client-side semaphore that
-	// tracks the joi.luv gateway's per-node capacity — gemma runs
+	// tracks the configured Joi gateway's per-node capacity — gemma runs
 	// --parallel 4 (gateway max_slots=4), so 4 is the default; wider just
 	// queues on the gateway. STOPGAP pending control-plane request
 	// queueing, after which apps stop managing this — see decisions.md

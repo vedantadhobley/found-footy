@@ -45,6 +45,12 @@ browser. A malformed worker-only value therefore cannot stop the API, while
 the worker rejects impossible values such as a search attempt beyond the
 database range or an enabled fleet with no capacity.
 
+Production routes vision through `http://control-joi.luv` and pins the real
+model ID `gemma-4-12b`. The private `.env` owns the loaded endpoint; the
+checked `.env.example` records the intended value. The legacy `joi.luv` route
+is an external rollback surface, not a second application configuration. See
+the [Control Joi cutover decision](./decisions/2026-08-25-control-joi-is-production-inference-route.md).
+
 Discovery has two independent worker-owned budgets. `DISCOVERY_MAX_ATTEMPTS`
 counts only rendered or explicit-empty X observations.
 `DISCOVERY_MAX_UNAVAILABLE_ATTEMPTS` bounds additional login, upstream-error,
