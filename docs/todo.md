@@ -104,7 +104,7 @@ the current branch.
   downstream validation. Pass tweet text and event context alongside video
   frames to multimodal validation; combine explicit player/event-type mentions,
   clock evidence, tweet-time proximity, scorebug/team evidence, and visual
-  action semantics. Investigate scene-change-aware temporal coverage so one
+  action semantics. Investigate scene-change-aware time coverage so one
   verified wrapper frame cannot authenticate an unsampled edit. Keep
   `timestamp_verified` scoped to its literal meaning; a matched clock must not
   imply exact-event authenticity or dominate ranking without a separate
@@ -138,7 +138,7 @@ the current branch.
   qualifying window is only 4 frames and the minimum per-frame threshold needed
   for 27 of 30 frames is 27. Across every possible frame pairing, only 1 of
   rank 2's 152 frames has any rank-1 frame at Hamming ≤10, so integer-offset
-  temporal drift is not the primary failure.
+  timing drift is not the primary failure.
 - **Category detail:** Rank 1 is verified and rank 2 unverified, so production
   intentionally did not compare them across the category boundary. The stored
   hashes show that a comparison would not have collapsed them anyway.
@@ -242,6 +242,7 @@ the current branch.
 | FF-061 | P1 | `validating` | `feed_timeout` laundered an unavailable Twitter feed into HTTP success and consumed one of the event's 15 search attempts. The browser/worker contract now classifies five bounded states, retains secret-free timeline evidence, and separates usable attempts from a durable bounded outage budget. Release `e2143ac` is deployed. | Verify one rendered search and one maintenance run report the new state/evidence; use the next natural burst to determine whether X exposes 429/rate headers, an error interstitial, or only unknown timeouts. See the [incident evidence](./incidents/2026-08-20-twitter-feed-suppression.md). |
 | FF-062 | P1 | `validating` | A real goal that returned after reaching a removed tombstone was mapped back to that terminal row and skipped while its identity stayed exact. Leipzig fixture `1550681` initially retained five active goals against API-Football's coherent 0–6 result. Before release `e2143ac`, a provider clock correction from 45+2 to 45+1 made the return non-exact, so old code allocated generation 2 and completed the fixture. | Prove one natural exact-identity post-removal reappearance receives a new UUID and completes its own debounce/downstream lifecycle under `e2143ac`. |
 | FF-063 | P1 | `confirmed` | A played terminal fixture whose provider event inventory remains permanently inconsistent has no bounded recovery state. Zaragoza–Athletic fixture `1607295` remained `active/FT`, 3–1, with zero stored events and completion counter zero three days after kickoff; both API-Football fixture and dedicated event endpoints return zero events. | Move age-bounded incoherent terminal fixtures out of the 30-second active loop into an explicit unresolved state with slow reconciliation and an auditable repair path, preserving FF-014's no-fabrication invariant. |
+| FF-064 | P3 | `blocked` | Production uses the legacy `joi.luv` inference identity while Control prepares the canonical `control-joi.luv` endpoint. | After `control-joi.luv` advertises `gemma-4-12b` and passes a production-shaped vision request, obtain separate production approvals to update the loaded endpoint, recreate the workers, and verify startup model discovery before retiring `joi.luv`. |
 
 ### FF-062 — removed event reappearance was swallowed by its tombstone
 
