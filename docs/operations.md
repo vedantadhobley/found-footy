@@ -187,10 +187,12 @@ ORDER BY s.state, s.rank;
 
 Interpret these records together:
 
-- A fixture is not settled merely because API status is terminal. Its event
-  inventory and downstream checklist must also agree. FF-014's deployed
-  score-consistency gate withholds terminal votes until the reported score and
-  stored goal inventory match.
+- A live-polled fixture is not settled merely because API status is terminal.
+  `terminal_observed_at` starts its configured grace period. Completion remains
+  blocked while a named event is debouncing or any downstream checklist is
+  open. Provider and stored-score parity are completion audit evidence, not a
+  completion gate; score still protects a required goal from false VAR
+  removal. Historical terminal ingests retain their direct-complete path.
 - `completed_at IS NULL` in `event_downstream_workflows` means the fixture is
   still waiting on that workflow. It can also indicate abnormal workflow
   closure; see FF-007 and FF-015 before attempting recovery. A still-running

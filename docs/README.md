@@ -53,7 +53,7 @@ decision supersedes an older target design).
 - [`history/`](./history/) — completed project roadmaps and delivery snapshots.
 - [`incidents/2026-08-20-twitter-feed-suppression.md`](./incidents/2026-08-20-twitter-feed-suppression.md)
   — live MLS evidence for FF-061's synchronized Twitter feed loss, retained
-  resource correlation, and the remaining diagnostic boundary.
+  resource correlation, and post-release 429 validation.
 - [`history/issue-register-2026-08-17.md`](./history/issue-register-2026-08-17.md)
   — closed issue narratives and the completed documentation-normalization
   register from the 2026-08-17 release.

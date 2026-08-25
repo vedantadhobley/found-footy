@@ -1,8 +1,9 @@
 # 2026-08-20 Twitter feed suppression
 
 This report preserves the production evidence that confirmed FF-061. It is a
-point-in-time incident record, not a second backlog. The active status and
-completion condition remain in the [canonical issue register](../todo.md).
+point-in-time incident record, not a second backlog. The fix and its natural
+production validation are preserved in the
+[2026-08-25 issue closures](../history/issue-closures-2026-08-25.md).
 
 ## Outcome
 
@@ -31,9 +32,7 @@ The latest bounded final route/title, selector bits, SearchTimeline
 status/failure, and rate-limit headers persist with both monotonic counters in
 the downstream checklist metadata. No body, request header, cookie, or token is
 retained. Exhausting the unavailable budget completes the checklist instead of
-holding the fixture indefinitely. The next natural burst is the first evidence
-that can refine the incident from shared upstream suppression to a specific
-measured response class.
+holding the fixture indefinitely.
 
 See the [landed decision](../decisions/2026-08-20-twitter-search-attempts-require-usable-observations.md)
 for retry, replay, and rollout semantics.
@@ -72,6 +71,23 @@ This rules out a query-specific empty result. It does not prove that a missing
 clip existed during a lost slot, so candidate recall loss is possible rather
 than measurable from the retained data.
 
+## Post-release natural validation
+
+The next match-day burst on 2026-08-24 produced 18 classified unavailable
+probes between 20:16:49 and 20:35:15 UTC across Fulham, Chelsea, Schalke,
+Malaga, and Roma queries. Every probe retained `upstream_error`, HTTP 429,
+`x-rate-limit-limit=50`, `x-rate-limit-remaining=0`, and one of two reset
+epochs: 20:19:48 or 20:35:11 UTC. This measures a shared account/IP timeline
+bucket with a limit of 50 and a roughly 15-minute reset window; it is not a
+query-specific empty feed.
+
+The workflow boundary behaved as designed. All affected events still reached
+15 usable searches, while the 18 unavailable probes were counted separately
+and consumed no logical attempt. Loki reconciled exactly to 3,192 event-search
+successes, five maintenance-canary successes, and 18 classified failures.
+FF-061's production proof is complete. Any coordinated search-admission policy
+now belongs to FF-038's fleet-controller boundary.
+
 ## Resource and lifecycle correlation
 
 Prometheus retained 15-second node-exporter and cAdvisor samples across the
@@ -106,7 +122,7 @@ uses HTTP 429 plus remaining/reset headers. The browser UI uses undocumented
 internal endpoints; the public API limits and response shape must not be
 projected onto this incident without measuring the actual page requests.
 
-## Current code path
+## Pre-fix code path
 
 `internal/twitter/search.go`:
 
@@ -124,7 +140,7 @@ Temporal activity attempts at roughly 0/10/30/60 seconds, but exhaustion is
 also logged and checkpointed instead of failing or preserving the logical
 attempt. The intended 15-search contract is therefore not currently enforced.
 
-## Required correction
+## Implemented requirements
 
 Treat this as one search-boundary fix rather than separate browser, metrics,
 and workflow patches:
@@ -153,22 +169,23 @@ rate-limit policy before the upstream response is measured.
 
 ## Related work
 
-- FF-058's scheduled static canary detects a feed timeout during its own run but
-  does not change event-search classification or restore consumed attempts.
+- FF-058's scheduled static canary independently verifies the session and live
+  feed through the same classified browser boundary. It does not participate
+  in an event workflow's attempt budget.
 - FF-039 owns shared lifecycle/readiness semantics; FF-061 proves the concrete
   false-healthy search path.
-- FF-038 owns the eventual atomic fleet controller. A shared account-level
-  admission budget may belong there only after response evidence establishes
-  the upstream policy.
+- FF-038 owns the eventual atomic fleet controller. The later natural 429
+  evidence makes the shared account/IP admission budget an input to that work.
 - `AUD-TWITTER-COOKIE-WRITER` remains separate. Full credential expiry is ruled
   out here; semantic last-writer-wins cookie rotation was not measured.
 
-## Retrospective boundary
+## Original retrospective boundary
 
 The reaped browser contexts and their network events no longer exist. Loki has
 only service startup lines for those containers. A deliberate production load
 test could recreate suppression but risks prolonging it or damaging the shared
-account, while one low-rate probe would not test the incident condition. The
-maximum safe retrospective conclusion is therefore shared upstream feed
-suppression with an unknown exact response. Instrumentation plus the next
-natural burst is the evidence path.
+account, while one low-rate probe would not test the incident condition. At
+incident time, the maximum safe retrospective conclusion was shared upstream
+feed suppression with an unknown exact response. The later
+[post-release natural validation](#post-release-natural-validation) supplied
+the missing response evidence without a deliberate load test.

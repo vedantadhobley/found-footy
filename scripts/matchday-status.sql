@@ -15,7 +15,11 @@ SELECT
     concat_ws(' ', f.api_elapsed, CASE WHEN f.api_extra > 0 THEN '+' || f.api_extra END) AS clock,
     f.home_team_name || ' vs ' || f.away_team_name AS fixture,
     coalesce(f.home_score::text, '—') || '-' || coalesce(f.away_score::text, '—') AS score,
-    f.completion_counter AS complete_votes,
+    f.terminal_observed_at,
+    CASE
+        WHEN f.terminal_observed_at IS NOT NULL
+        THEN now() - f.terminal_observed_at
+    END AS terminal_age,
     (
         SELECT count(DISTINCT t.team_id)
         FROM tracked_teams_cache AS t
