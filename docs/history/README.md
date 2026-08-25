@@ -13,3 +13,6 @@ Use the [`docs` routing index](../README.md) for current ledgers and
 - [`issue-closures-2026-08-17.md`](./issue-closures-2026-08-17.md) — production
   validation evidence for FF-034 candidate durability, FF-051 rendered-feed
   classification, and FF-041's versioned frame-hash contract.
+- [`issue-closures-2026-08-25.md`](./issue-closures-2026-08-25.md) — production
+  validation evidence for FF-058 Twitter maintenance and FF-061 unavailable
+  search accounting.

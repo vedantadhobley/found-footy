@@ -243,10 +243,11 @@ bounds without panic, and is cancellable through the request context.
 Six typed transport/service `error_class` values (`internal/twitter/`):
 `auth_expired`, `bad_request`,
 `empty_query`, `method_not_allowed`, `navigation_failed`, `internal`. Twitter's
-own rate-limit error class (`rate_limited`, T/d) is not guessed. A measured
-SearchTimeline 429 is retained as evidence and classified `upstream_error`;
-future policy may split that state only after natural evidence proves the
-browser endpoint's contract.
+own rate-limit error class (`rate_limited`, T/d) remains unused. Natural
+production traffic measured SearchTimeline HTTP 429 with limit 50, remaining
+0, and a roughly 15-minute reset window. The bounded browser result remains
+`upstream_error`; split it only if a concrete workflow policy needs a distinct
+semantic state.
 
 ## Known gaps
 
@@ -258,10 +259,11 @@ browser endpoint's contract.
   atomic rename prevent corruption, but an older valid browser snapshot could
   supersede a newer one. `AUD-TWITTER-COOKIE-WRITER` holds this for measured
   rotation evidence before adding coordination complexity.
-- **Shared admission policy remains evidence-gated.** FF-061 now preserves
-  actual page/network evidence and prevents unavailable results from consuming
-  logical attempts. A shared account/IP limiter remains a follow-on decision
-  only if natural evidence establishes a rate-bucket contract.
+- **Shared admission is not coordinated.** FF-061 preserves page/network
+  evidence and prevents unavailable results from consuming logical attempts.
+  Natural traffic has now established a 50-request, roughly 15-minute timeline
+  bucket on the shared account/IP path. FF-038 owns any coordinated admission
+  policy inside the eventual atomic fleet controller.
 
 ## Cross-refs
 
