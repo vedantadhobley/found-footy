@@ -84,6 +84,28 @@ WHERE f.kickoff BETWEEN now() - interval '2 hours'
 ORDER BY f.kickoff, e.minute, e.extra NULLS FIRST, e.first_seen_at;
 
 \echo ''
+\echo 'Download failure taxonomy for those fixtures'
+SELECT
+    coalesce(c.outcome_detail#>>'{failure,stage}', 'legacy_unclassified') AS failure_stage,
+    coalesce(c.outcome_detail#>>'{failure,class}', 'legacy_unclassified') AS failure_class,
+    count(*) AS candidates,
+    count(DISTINCT c.event_id) AS events,
+    min(c.outcome_at) AS first_outcome,
+    max(c.outcome_at) AS last_outcome
+FROM event_search_candidates AS c
+JOIN events AS e ON e.id = c.event_id
+JOIN fixtures AS f ON f.id = e.fixture_id
+WHERE c.outcome_class = 'failed'
+  AND c.reject_reason = 'download_error'
+  AND (
+      f.kickoff BETWEEN now() - interval '2 hours'
+                        AND now() + make_interval(hours => :lookahead_hours)
+      OR f.state = 'active'
+  )
+GROUP BY failure_stage, failure_class
+ORDER BY candidates DESC, failure_stage, failure_class;
+
+\echo ''
 \echo 'Candidate durability violations (completed parent with pending candidate)'
 SELECT count(*) AS total_violations
 FROM event_search_candidates AS c

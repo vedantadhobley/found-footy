@@ -11,8 +11,8 @@
 // tallies the verdicts so we can measure the recall the aspect gate costs us.
 //
 // Reads a TSV from stdin: <tweet_url>\t<elapsed>\t<extra>\t<label>
-// Runs SEQUENTIALLY (one model call in flight) to respect joi's slot cap even
-// while a live match is validating.
+// Runs SEQUENTIALLY (one model call in flight) so it does not crowd Control's
+// shared admission budget during a live match.
 //
 // Verdict buckets (internal/domain/vision):
 //
