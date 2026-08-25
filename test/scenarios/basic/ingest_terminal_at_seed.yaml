@@ -40,6 +40,7 @@ expected_final_state:
       api_status_short: ft
       has_activated_at: true    # Activate(kickoff) fired
       has_completed_at: true    # Complete(now) fired
+      has_terminal_observed_at: false # historical direct-complete path skips grace
       has_last_polled_at: true
   counts:
     fixtures: 1

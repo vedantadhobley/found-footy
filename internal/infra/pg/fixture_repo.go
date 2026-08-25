@@ -37,8 +37,7 @@ const fixtureColumns = `
 	home_team_id, home_team_name, away_team_id, away_team_name,
 	league_id, league_name, league_season,
 	home_score, away_score, home_winner, away_winner,
-	activated_at, completed_at, last_activity_at, last_polled_at,
-	completion_counter,
+	activated_at, completed_at, terminal_observed_at, last_activity_at, last_polled_at,
 	league_country, league_round, home_penalty, away_penalty,
 	created_at, updated_at
 `
@@ -63,8 +62,7 @@ func scanFixture(row rowScanner) (*fixture.Fixture, error) {
 		&f.Home.ID, &f.Home.Name, &f.Away.ID, &f.Away.Name,
 		&f.League.ID, &f.League.Name, &f.League.Season,
 		&f.HomeScore, &f.AwayScore, &f.HomeWinner, &f.AwayWinner,
-		&f.ActivatedAt, &f.CompletedAt, &f.LastActivityAt, &f.LastPolledAt,
-		&f.CompletionCounter,
+		&f.ActivatedAt, &f.CompletedAt, &f.TerminalObservedAt, &f.LastActivityAt, &f.LastPolledAt,
 		&f.League.Country, &f.League.Round, &f.HomePenalty, &f.AwayPenalty,
 		&f.CreatedAt, &f.UpdatedAt,
 	); err != nil {
@@ -101,8 +99,7 @@ func (r *FixtureRepo) Upsert(ctx context.Context, f *fixture.Fixture) error {
 			home_team_id, home_team_name, away_team_id, away_team_name,
 			league_id, league_name, league_season,
 			home_score, away_score, home_winner, away_winner,
-			activated_at, completed_at, last_activity_at, last_polled_at,
-			completion_counter,
+			activated_at, completed_at, terminal_observed_at, last_activity_at, last_polled_at,
 			league_country, league_round, home_penalty, away_penalty
 		) VALUES (
 			$1, $2,
@@ -111,8 +108,7 @@ func (r *FixtureRepo) Upsert(ctx context.Context, f *fixture.Fixture) error {
 			$8, $9, $10, $11,
 			$12, $13, $14,
 			$15, $16, $17, $18,
-			$19, $20, $21, $22,
-			$23,
+			$19, $20, $21, $22, $23,
 			$24, $25, $26, $27
 		)
 		ON CONFLICT (id) DO UPDATE SET
@@ -135,9 +131,9 @@ func (r *FixtureRepo) Upsert(ctx context.Context, f *fixture.Fixture) error {
 			away_winner = EXCLUDED.away_winner,
 			activated_at = EXCLUDED.activated_at,
 			completed_at = EXCLUDED.completed_at,
+			terminal_observed_at = EXCLUDED.terminal_observed_at,
 			last_activity_at = EXCLUDED.last_activity_at,
 			last_polled_at = EXCLUDED.last_polled_at,
-			completion_counter = EXCLUDED.completion_counter,
 			league_country = EXCLUDED.league_country,
 			league_round = EXCLUDED.league_round,
 			home_penalty = EXCLUDED.home_penalty,
@@ -150,8 +146,7 @@ func (r *FixtureRepo) Upsert(ctx context.Context, f *fixture.Fixture) error {
 		f.Home.ID, f.Home.Name, f.Away.ID, f.Away.Name,
 		f.League.ID, f.League.Name, f.League.Season,
 		f.HomeScore, f.AwayScore, f.HomeWinner, f.AwayWinner,
-		f.ActivatedAt, f.CompletedAt, f.LastActivityAt, f.LastPolledAt,
-		f.CompletionCounter,
+		f.ActivatedAt, f.CompletedAt, f.TerminalObservedAt, f.LastActivityAt, f.LastPolledAt,
 		f.League.Country, f.League.Round, f.HomePenalty, f.AwayPenalty,
 	)
 	if err != nil {
@@ -255,56 +250,25 @@ func (r *FixtureRepo) ListStagingBeforeKickoff(ctx context.Context, threshold ti
 	return collectFixtures(rows)
 }
 
-// FixtureReadyToComplete evaluates the full completion contract per
-// docs/design/proposals/completion-contract.md as a single SQL
+// AssessCompletion evaluates the terminal-grace completion contract per
+// docs/decisions/2026-08-25-terminal-observation-grace-bounds-completion.md as a single SQL
 // query. Returns fixture.ErrNotFound if id doesn't exist.
 //
 // Cheap-by-design: the partial index event_downstream_workflows_pending
 // makes the "any workflow in flight" check O(1) when the answer is no,
 // and the events NOT EXISTS clause short-circuits on the events partial
 // index. Runs once per fixture per 30s ActivePoll cycle.
-func (r *FixtureRepo) FixtureReadyToComplete(ctx context.Context, id int64) (bool, error) {
+func (r *FixtureRepo) AssessCompletion(
+	ctx context.Context,
+	id int64,
+	terminalBefore time.Time,
+) (fixture.CompletionAssessment, error) {
 	const query = `
 		SELECT
-		    f.api_status_short IN ('ft','aet','pen','canc','abd','wo','awd')
-		    AND f.completion_counter >= 3
-		    -- A played result must agree exactly with the surviving stored goal
-		    -- inventory. This prevents a transient provider event-array omission
-		    -- from completing an impossible fixture after the removal path closes
-		    -- its own downstream blocker. Exceptional terminal statuses have no
-		    -- reliable event/score parity contract and retain their existing path.
-		    AND (
-		        f.api_status_short IN ('canc','abd','wo','awd')
-		        OR (
-		            f.api_status_short IN ('ft','aet','pen')
-		            AND f.home_score IS NOT NULL
-		            AND f.away_score IS NOT NULL
-		            -- A completed shootout must include a decided penalty score.
-		            -- FT/AET do not require penalty fields.
-		            AND (
-		                f.api_status_short <> 'pen'
-		                OR (
-		                    f.home_penalty IS NOT NULL
-		                    AND f.away_penalty IS NOT NULL
-		                    AND f.home_penalty <> f.away_penalty
-		                )
-		            )
-		            AND f.home_score = (
-		                SELECT COUNT(*) FROM events score_home
-		                WHERE score_home.fixture_id = f.id
-		                  AND score_home.event_type = 'goal'
-		                  AND score_home.team_id = f.home_team_id
-		                  AND score_home.removed = false
-		            )
-		            AND f.away_score = (
-		                SELECT COUNT(*) FROM events score_away
-		                WHERE score_away.fixture_id = f.id
-		                  AND score_away.event_type = 'goal'
-		                  AND score_away.team_id = f.away_team_id
-		                  AND score_away.removed = false
-		            )
-		        )
-		    )
+		    f.state = 'active'
+		    AND f.api_status_short IN ('ft','aet','pen','canc','abd','wo','awd')
+		    AND f.terminal_observed_at IS NOT NULL
+		    AND f.terminal_observed_at <= $2
 		    AND NOT EXISTS (
 		        SELECT 1 FROM events e
 		        WHERE e.fixture_id = f.id
@@ -325,19 +289,41 @@ func (r *FixtureRepo) FixtureReadyToComplete(ctx context.Context, id int64) (boo
 		        JOIN events e ON edw.event_id = e.id
 		        WHERE e.fixture_id = f.id
 		          AND edw.completed_at IS NULL
-		    ) AS ready
+		    ) AS ready,
+		    CASE
+		        WHEN f.api_status_short IN ('canc','abd','wo','awd') THEN NULL
+		        ELSE f.home_score IS NOT NULL
+		          AND f.away_score IS NOT NULL
+		          AND f.home_score = (
+		              SELECT COUNT(*) FROM events score_home
+		              WHERE score_home.fixture_id = f.id
+		                AND score_home.event_type = 'goal'
+		                AND score_home.team_id = f.home_team_id
+		                AND score_home.removed = false
+		          )
+		          AND f.away_score = (
+		              SELECT COUNT(*) FROM events score_away
+		              WHERE score_away.fixture_id = f.id
+		                AND score_away.event_type = 'goal'
+		                AND score_away.team_id = f.away_team_id
+		                AND score_away.removed = false
+		          )
+		    END AS durable_score_event_parity
 		FROM fixtures f
 		WHERE f.id = $1
 	`
-	var ready bool
-	err := r.pool.QueryRow(ctx, query, id).Scan(&ready)
+	var assessment fixture.CompletionAssessment
+	err := r.pool.QueryRow(ctx, query, id, terminalBefore.UTC()).Scan(
+		&assessment.Ready,
+		&assessment.DurableScoreEventParity,
+	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return false, fixture.ErrNotFound
+			return fixture.CompletionAssessment{}, fixture.ErrNotFound
 		}
-		return false, fmt.Errorf("pg.FixtureRepo.FixtureReadyToComplete: %w", err)
+		return fixture.CompletionAssessment{}, fmt.Errorf("pg.FixtureRepo.AssessCompletion: %w", err)
 	}
-	return ready, nil
+	return assessment, nil
 }
 
 // PruneCompleted deletes completed fixtures whose completed_at is

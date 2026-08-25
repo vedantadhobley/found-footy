@@ -200,6 +200,7 @@ func validateFFmpeg(v *validator, cfg FFmpegConfig) {
 
 func validateWorkflows(v *validator, cfg WorkflowsConfig) {
 	positiveDuration(v, "WORKFLOWS_ACTIVE_FIXTURE_POLL_INTERVAL", cfg.ActiveFixturePollInterval)
+	positiveDuration(v, "WORKFLOWS_TERMINAL_GRACE_PERIOD", cfg.TerminalGracePeriod)
 	required(v, "WORKFLOWS_STAGING_POLL_CRON", cfg.StagingPollCron)
 	required(v, "WORKFLOWS_TWITTER_MAINTENANCE_CRON", cfg.TwitterMaintenanceCron)
 	v.check(cfg.ActivationWindow >= 0, "WORKFLOWS_ACTIVATION_WINDOW must be >= 0")

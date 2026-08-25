@@ -174,14 +174,18 @@ func TestFrameHashVersionMigrationBackfillsLegacyRows(t *testing.T) {
 	if !ok {
 		t.Fatal("resolve test source path")
 	}
-	migrationPath := filepath.Join(filepath.Dir(filename), "..", "..", "..", "migrations",
-		"20260817_01_add_video_asset_hash_version.sql")
-	migration, err := os.ReadFile(migrationPath)
-	if err != nil {
-		t.Fatalf("read migration: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(migration)); err != nil {
-		t.Fatalf("apply migration: %v", err)
+	for _, name := range []string{
+		"20260817_01_add_video_asset_hash_version.sql",
+		"20260825_01_add_terminal_observed_at.sql",
+	} {
+		migrationPath := filepath.Join(filepath.Dir(filename), "..", "..", "..", "migrations", name)
+		migration, err := os.ReadFile(migrationPath)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		if _, err := pool.Exec(ctx, string(migration)); err != nil {
+			t.Fatalf("apply migration %s: %v", name, err)
+		}
 	}
 
 	var version, schemaHash string

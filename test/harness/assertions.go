@@ -28,19 +28,21 @@ func assertFixtures(ctx context.Context, t *testing.T, pool *pg.Pool, expected [
 	t.Helper()
 	for _, ef := range expected {
 		var (
-			gotState          string
-			gotAPIStatusShort string
-			hasActivated      bool
-			hasCompleted      bool
-			hasLastPolled     bool
+			gotState            string
+			gotAPIStatusShort   string
+			hasActivated        bool
+			hasCompleted        bool
+			hasTerminalObserved bool
+			hasLastPolled       bool
 		)
 		err := pool.QueryRow(ctx, `
 			SELECT state, api_status_short,
 			       activated_at IS NOT NULL,
 			       completed_at IS NOT NULL,
+			       terminal_observed_at IS NOT NULL,
 			       last_polled_at IS NOT NULL
 			FROM fixtures WHERE id = $1
-		`, ef.ID).Scan(&gotState, &gotAPIStatusShort, &hasActivated, &hasCompleted, &hasLastPolled)
+		`, ef.ID).Scan(&gotState, &gotAPIStatusShort, &hasActivated, &hasCompleted, &hasTerminalObserved, &hasLastPolled)
 		if err != nil {
 			t.Errorf("fixture id=%d not found or unreadable: %v", ef.ID, err)
 			continue
@@ -56,6 +58,9 @@ func assertFixtures(ctx context.Context, t *testing.T, pool *pg.Pool, expected [
 		}
 		if ef.HasCompletedAt != nil && *ef.HasCompletedAt != hasCompleted {
 			t.Errorf("fixture id=%d completed_at populated = %v, want %v", ef.ID, hasCompleted, *ef.HasCompletedAt)
+		}
+		if ef.HasTerminalObservedAt != nil && *ef.HasTerminalObservedAt != hasTerminalObserved {
+			t.Errorf("fixture id=%d terminal_observed_at populated = %v, want %v", ef.ID, hasTerminalObserved, *ef.HasTerminalObservedAt)
 		}
 		if ef.HasLastPolledAt != nil && *ef.HasLastPolledAt != hasLastPolled {
 			t.Errorf("fixture id=%d last_polled_at populated = %v, want %v", ef.ID, hasLastPolled, *ef.HasLastPolledAt)

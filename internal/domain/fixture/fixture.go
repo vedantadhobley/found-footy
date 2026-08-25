@@ -145,26 +145,24 @@ type Fixture struct {
 	// Winner/leader display state. Ordinary play derives this pair from the
 	// current score; a tied or unavailable score is nil/nil. PEN derives it
 	// from the shootout score. Exceptional terminal outcomes use the provider's
-	// explicit result because their aggregate score is not authoritative. These
-	// fields never bypass the coherent 3-poll completion counter.
+	// explicit result because their aggregate score is not authoritative.
 	HomeWinner *bool
 	AwayWinner *bool
 
 	ActivatedAt *time.Time
 	CompletedAt *time.Time
+	// TerminalObservedAt is the first time in the current uninterrupted run of
+	// successful active polls that the provider reported a terminal status. A
+	// successful non-terminal poll clears it. Completion uses this timestamp to
+	// enforce the terminal observation grace period.
+	TerminalObservedAt *time.Time
 	// LastActivityAt — DEPRECATED/unused. The frontend recency key is now DERIVED
-	// at read time (internal/api deriveLastActivity: max of activation, completion,
-	// latest known-scorer event first_seen); nothing writes this field anymore. The
+	// at read time (internal/api deriveLastActivity: max of activation, terminal
+	// observation, latest known-scorer event first_seen, with a legacy completion
+	// fallback); nothing writes this field anymore. The
 	// column is retained-unused — drop at the next schema flatten. decisions.md 2026-08-14.
 	LastActivityAt *time.Time
 	LastPolledAt   *time.Time
-
-	// CompletionCounter — 3-poll debounce on coherent terminal snapshots.
-	// Increments (cap 3) when status is Terminal and the same provider
-	// response's scoring-event inventory matches its reported score; resets to
-	// 0 on any non-Terminal or incoherent Terminal observation.
-	// See docs/design/proposals/completion-contract.md.
-	CompletionCounter int
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -238,15 +236,15 @@ func (f *Fixture) ShouldActivateNow(now time.Time, window time.Duration) bool {
 //
 // The rules (from schema.sql):
 //
-//	staging   → activated_at == nil AND completed_at == nil
+//	staging   → activated_at == nil AND completed_at == nil AND terminal_observed_at == nil
 //	active    → activated_at != nil AND completed_at == nil
 //	completed → activated_at != nil AND completed_at != nil
 func (f *Fixture) ValidateInvariants() error {
 	switch f.State {
 	case StateStaging:
-		if f.ActivatedAt != nil || f.CompletedAt != nil {
-			return fmt.Errorf("%w: staging has activated_at=%v completed_at=%v",
-				ErrStateTimestampMismatch, f.ActivatedAt, f.CompletedAt)
+		if f.ActivatedAt != nil || f.CompletedAt != nil || f.TerminalObservedAt != nil {
+			return fmt.Errorf("%w: staging has activated_at=%v completed_at=%v terminal_observed_at=%v",
+				ErrStateTimestampMismatch, f.ActivatedAt, f.CompletedAt, f.TerminalObservedAt)
 		}
 	case StateActive:
 		if f.ActivatedAt == nil {

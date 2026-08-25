@@ -25,8 +25,13 @@ type FixtureActivatedPayload struct {
 
 // FixtureCompletedPayload — active → completed transition.
 type FixtureCompletedPayload struct {
-	FixtureID   int64     `json:"fixture_id"`
-	CompletedAt time.Time `json:"completed_at"`
+	FixtureID                int64     `json:"fixture_id"`
+	TerminalObservedAt       time.Time `json:"terminal_observed_at"`
+	CompletedAt              time.Time `json:"completed_at"`
+	GraceSeconds             int64     `json:"grace_seconds"`
+	ProviderScoreEventParity *bool     `json:"provider_score_event_parity"`
+	DurableScoreEventParity  *bool     `json:"durable_score_event_parity"`
+	PenaltyResultDecided     *bool     `json:"penalty_result_decided"`
 }
 
 // EventDetectedPayload — first vote for a natural key. Fires on every

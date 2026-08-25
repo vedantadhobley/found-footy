@@ -14,13 +14,14 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Terminal observation grace bounds fixture completion](./2026-08-25-terminal-observation-grace-bounds-completion.md) — FF-063 replaces permanent score-parity completion gating with one hour of terminal observation plus settled event/downstream gates.
 - [Found Footy uses Control's canonical Joi gateway](./2026-08-25-control-joi-is-production-inference-route.md) — production moves from the legacy `joi.luv` identity to `control-joi.luv` without changing its pinned model, concurrency, or application release.
 - [Removed event reappearance starts a new generation](./2026-08-24-removed-event-reappearance-starts-new-generation.md) — FF-062 keeps VAR tombstones immutable while allowing returned provider evidence through a fresh debounce and downstream lifecycle.
 - [Twitter search attempts require usable observations](./2026-08-20-twitter-search-attempts-require-usable-observations.md) — FF-061 classifies browser results, separates usable searches from bounded outage probes, and persists secret-free response evidence.
 - [Raw Firefox owns operator login](./2026-08-19-raw-firefox-owns-operator-login.md) — FF-059 separates raw-Firefox credential minting and read-only profile capture from Playwright search.
 - [Twitter maintenance uses the static fallback](./2026-08-19-twitter-maintenance-uses-static-fallback.md) — FF-058 adds a fixture-independent forced-auth, cookie-sync, and live-search DOM canary without warming the dynamic event fleet.
 - [Historical candidate repair reuses EventWorkflow](./2026-08-19-historical-candidate-repair-reuses-event-workflow.md) — exact terminal selectors become auditable pending work under a new deterministic checklist; the normal pipeline reprocesses them without a fresh search.
-- [Winner state is derived from canonical scores](./2026-08-19-winner-state-is-derived-from-canonical-scores.md) — FF-055 derives played results from match or shootout scores, clears tied leaders, and requires a decided penalty score for `PEN` completion.
+- [Winner state is derived from canonical scores](./2026-08-19-winner-state-is-derived-from-canonical-scores.md) — FF-055 derives played results from match or shootout scores and clears tied leaders; FF-063 later moved `PEN` decision state from a completion gate to audit evidence.
 - [Thin entry points and in-package ownership splits](./2026-08-18-thin-entrypoints-and-in-package-ownership-splits.md) — FF-045 moves worker composition out of `cmd`, splits large files without changing package or Temporal identity, and deletes caller-proven residue.
 - [Dense frame hashing uses a versioned bounded working image](./2026-08-17-dense-hashing-uses-versioned-bounded-working-image.md) — FF-041/FF-005 preserve dHash while bounding 4K work, rejecting structurally short sequences, and preventing cross-version comparisons.
 - [Live evidence sets landscape aspect admission to 1.73–1.82](./2026-08-17-live-evidence-sets-landscape-aspect-admission.md) — FF-053 admits legitimate 1.739 Elche clips without widening into the known 1.60–1.72 letterbox band.
@@ -41,7 +42,7 @@ New decisions after the frozen archive:
 - [Event-browser names follow workspace order while labels authorize lifecycle](./2026-08-16-event-browser-names-follow-workspace-order.md) — FF-020 naming and release-selection correction to FF-001.
 - [Exhausted video activities return terminal candidate results](./2026-08-16-video-failures-are-terminal-results.md) — FF-002 typed failure, cleanup, and Temporal replay contract.
 - [Production releases use one immutable identity from a clean checkout](./2026-08-16-immutable-production-release-identity.md) — FF-019 release provenance and verification contract.
-- [Score evidence gates goal removal and played-fixture completion](./2026-08-16-score-backed-goal-removal.md) — FF-014 correctness guard and remaining terminal-reconciliation boundary.
+- [Score evidence gates goal removal and played-fixture completion](./2026-08-16-score-backed-goal-removal.md) — FF-014's goal-removal guard remains; FF-063 supersedes its permanent completion-parity boundary.
 
 ## New-decision format
 

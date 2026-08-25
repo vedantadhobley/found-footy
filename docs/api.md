@@ -74,10 +74,13 @@ between `null` and zero.
 }
 ```
 
-`last_activity_at` is derived at read time from activation, completion, and the
-latest first-seen time among surviving known-player events. Polls, clock ticks,
-and unknown-player placeholders do not advance it; removing an event can move
-it backward.
+`last_activity_at` is derived at read time from activation, first terminal
+observation, and the latest first-seen time among surviving known-player
+events. A completed row without a terminal observation (historical/direct
+ingest) falls back to completion time. Polls, clock ticks, and unknown-player
+placeholders do not advance it; removing an event can move it backward. The
+later active-to-completed transition therefore does not reorder a fixture that
+already rendered as finished during terminal grace.
 
 ```jsonc
 {

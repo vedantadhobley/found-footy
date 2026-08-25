@@ -99,11 +99,9 @@ func TestScoreEventInventoryRequiresMissingGoal(t *testing.T) {
 	}
 }
 
-// TestScoreEventInventoryCompletionVote proves that only consecutive coherent
-// played-result snapshots may advance fixture completion. Exceptional terminal
-// statuses retain terminal-only voting because they have no score/event parity
-// guarantee.
-func TestScoreEventInventoryCompletionVote(t *testing.T) {
+// TestScoreEventInventoryParity proves provider score/event parity remains
+// available as audit evidence after it stops gating fixture completion.
+func TestScoreEventInventoryParity(t *testing.T) {
 	intp := func(v int) *int { return &v }
 	goal := func(teamID int) apifootball.APIFixtureEvent {
 		return apifootball.APIFixtureEvent{
@@ -122,86 +120,53 @@ func TestScoreEventInventoryCompletionVote(t *testing.T) {
 			Events: events,
 		}
 	}
-	penalty := func(f apifootball.APIFixture, home, away *int) apifootball.APIFixture {
-		f.Score.Penalty = apifootball.APIFixtureScoreLine{Home: home, Away: away}
-		return f
-	}
-
 	tests := []struct {
 		name    string
-		status  apifootball.APIStatusCode
 		fixture apifootball.APIFixture
 		want    bool
 	}{
 		{
 			name:    "played result exactly matches",
-			status:  apifootball.StatusFullTime,
 			fixture: base(intp(1), intp(1), goal(40), goal(42)),
 			want:    true,
 		},
 		{
 			name:    "played result omits a goal",
-			status:  apifootball.StatusFullTime,
 			fixture: base(intp(2), intp(0), goal(40)),
 			want:    false,
 		},
 		{
 			name:    "played result has an extra goal",
-			status:  apifootball.StatusAfterExtra,
 			fixture: base(intp(0), intp(0), goal(40)),
 			want:    false,
 		},
 		{
-			name:    "shootout result exactly matches and is decided",
-			status:  apifootball.StatusPenaltyDone,
-			fixture: penalty(base(intp(1), intp(1), goal(40), goal(42)), intp(5), intp(4)),
-			want:    true,
-		},
-		{
-			name:    "shootout result missing penalties",
-			status:  apifootball.StatusPenaltyDone,
-			fixture: base(intp(1), intp(1), goal(40), goal(42)),
-			want:    false,
-		},
-		{
-			name:    "shootout result has tied penalties",
-			status:  apifootball.StatusPenaltyDone,
-			fixture: penalty(base(intp(1), intp(1), goal(40), goal(42)), intp(4), intp(4)),
-			want:    false,
-		},
-		{
 			name:    "foreign beneficiary is incoherent",
-			status:  apifootball.StatusPenaltyDone,
 			fixture: base(intp(0), intp(0), goal(99)),
 			want:    false,
 		},
 		{
 			name:    "nil played score is not evidence",
-			status:  apifootball.StatusFullTime,
 			fixture: base(nil, nil),
 			want:    false,
-		},
-		{
-			name:    "non-terminal coherent score resets",
-			status:  apifootball.StatusSecondHalf,
-			fixture: base(intp(0), intp(0)),
-			want:    false,
-		},
-		{
-			name:    "exceptional terminal bypasses parity",
-			status:  apifootball.StatusCancelled,
-			fixture: base(nil, nil),
-			want:    true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			inv := newScoreEventInventory(tt.fixture)
-			got := inv.completionVote(tt.status, tt.fixture.Teams.Home.ID, tt.fixture.Teams.Away.ID)
+			got := inv.scoreEventParity(tt.fixture.Teams.Home.ID, tt.fixture.Teams.Away.ID)
 			if got != tt.want {
-				t.Fatalf("completionVote(%q) = %v, want %v", tt.status, got, tt.want)
+				t.Fatalf("scoreEventParity = %v, want %v", got, tt.want)
 			}
 		})
+	}
+
+	inv := newScoreEventInventory(base(intp(0), intp(0)))
+	if got := inv.terminalProviderScoreEventParity(apifootball.StatusFullTime, 40, 42); got == nil || !*got {
+		t.Fatalf("played terminal parity = %v, want true pointer", got)
+	}
+	if got := inv.terminalProviderScoreEventParity(apifootball.StatusCancelled, 40, 42); got != nil {
+		t.Fatalf("exceptional terminal parity = %v, want nil", got)
 	}
 }

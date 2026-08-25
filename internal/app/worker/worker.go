@@ -241,13 +241,14 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 	// Now clock left nil → real wall clock in prod (per the
 	// injectable-clock discipline for scenario testing).
 	monitorActs := &monitoractivity.Activities{
-		APIFootball:      afClient,
-		FixtureRepo:      fixtureRepo,
-		EventRepo:        eventRepo,
-		Composer:         composer,
-		Spawner:          spawner,
-		ActivationWindow: deps.Cfg.Workflows.ActivationWindow,
-		FleetEnabled:     deps.Cfg.FirefoxFleet.Enabled,
+		APIFootball:         afClient,
+		FixtureRepo:         fixtureRepo,
+		EventRepo:           eventRepo,
+		Composer:            composer,
+		Spawner:             spawner,
+		ActivationWindow:    deps.Cfg.Workflows.ActivationWindow,
+		TerminalGracePeriod: deps.Cfg.Workflows.TerminalGracePeriod,
+		FleetEnabled:        deps.Cfg.FirefoxFleet.Enabled,
 	}
 
 	// #160 — per-event Firefox fleet. Constructed only when enabled;

@@ -15,6 +15,15 @@ import (
 // from transport/DB errors.
 var ErrNotFound = errors.New("fixture: not found")
 
+// CompletionAssessment is the storage-backed answer to one active fixture's
+// completion check. DurableScoreEventParity is nil for exceptional terminal
+// outcomes, whose aggregate score is not authoritative; otherwise it records
+// audit evidence without gating completion.
+type CompletionAssessment struct {
+	Ready                   bool
+	DurableScoreEventParity *bool
+}
+
 // Repo is the storage-side port. The pg adapter implements it; test
 // code can substitute an in-memory fake without touching Postgres.
 //
@@ -47,29 +56,27 @@ type Repo interface {
 	// window (default 30 min).
 	ListStagingBeforeKickoff(ctx context.Context, threshold time.Time) ([]*Fixture, error)
 
-	// FixtureReadyToComplete returns true iff the fixture at id
+	// AssessCompletion returns the current completion decision for id
 	// satisfies the full completion contract per
-	// docs/design/proposals/completion-contract.md:
+	// docs/decisions/2026-08-25-terminal-observation-grace-bounds-completion.md:
 	//
 	//   1. api_status_short is in the Terminal set
 	//      (ft, aet, pen, canc, abd, wo, awd)
-	//   2. completion_counter >= 3 (three consecutive terminal provider
-	//      responses whose scoring-event inventory matches the score for played
-	//      results; exceptional terminal statuses vote on status alone)
-	//   3. Every non-removed event has downstream_triggered=true
+	//   2. terminal_observed_at is at or before terminalBefore
+	//   3. Every non-removed named event has settled its debounce
 	//      (debounce settled — no events in flight)
 	//   4. No rows in event_downstream_workflows where
 	//      completed_at IS NULL for any event in this fixture
 	//      (no downstream workflows still writing)
-	//   5. For played terminal statuses, the stored surviving goal inventory
-	//      still matches the reported score exactly per team
-	//   6. PEN additionally has a present, non-tied stored shootout score
+	//
+	// Score/event parity and PEN decision state are audit evidence, not
+	// permanent completion gates. The grace interval bounds upstream lateness.
 	//
 	// Returns ErrNotFound if the fixture id doesn't exist. Cheap by
 	// design (partial index on event_downstream_workflows_pending +
 	// early-exit CHECK constraints); intended to be called from
 	// ReconcileFixture at the end of each per-fixture ActivePoll pass.
-	FixtureReadyToComplete(ctx context.Context, id int64) (bool, error)
+	AssessCompletion(ctx context.Context, id int64, terminalBefore time.Time) (CompletionAssessment, error)
 
 	// PruneCompleted hard-deletes completed fixtures older than threshold
 	// that have NO surviving video_shares — the CLIPLESS half of the

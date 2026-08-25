@@ -88,8 +88,9 @@ its own three presence votes while the old tombstone remains immutable.
 FF-055 domain tables cover score-derived home, away, tied, incomplete,
 shootout, and exceptional winner states. The monitor regression starts with a
 stored 1–0 leader and requires a later 1–1 response to clear both winner fields
-and emit a structural update. Provider-vote and Postgres completion truth
-tables independently reject `PEN` without a present, non-tied shootout score.
+and emit a structural update. FF-063 separately proves that missing or tied
+`PEN` data is retained as completion audit evidence rather than a permanent
+retirement gate.
 
 FF-028 API tests require the default five-minute presign to produce a
 four-minute redirect cache, longer presigns to retain the five-minute cap, and
@@ -362,9 +363,19 @@ in the same change as the behavior.
 
 FF-014 adds two complementary score/event cases: a retained goal omitted from
 the provider array while the score still requires it, and a played terminal
-score containing a goal that was never observed. The former completes from the
-retained stored inventory; the latter remains active because the completion
-parity gate fails.
+score containing a goal that was never observed. The removal guard preserves
+the retained goal in both cases.
+
+FF-063 advances both cases through the one-hour terminal grace. The first keeps
+its durable inventory and completes after its events settle; the second also
+completes rather than polling forever, with false parity retained as audit
+evidence. Unit and Postgres truth tables cover first-observation persistence,
+non-terminal reset, the exact time boundary, named events mid-debounce, open
+downstream rows, unknown-player placeholders, exceptional statuses, and `PEN`
+without a decided shootout. The fresh-terminal ingest scenario proves its
+historical direct-complete path still leaves `terminal_observed_at` null. API
+tests prove new rows use terminal observation for recency while legacy rows
+fall back to completion.
 
 FF-029 is covered below the scenario layer because it is an HTTP-adapter and
 activity-retry contract: adapter tests distinguish syndication metadata 403

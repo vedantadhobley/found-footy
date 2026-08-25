@@ -17,6 +17,7 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
+	eventinfra "github.com/vedantadhobley/found-footy/internal/infra/event"
 )
 
 // ── fakes ──────────────────────────────────────────────────────
@@ -31,6 +32,23 @@ type fakeFetcher struct {
 type recordingSpawner struct {
 	workflowID string
 	input      discoverycontract.EventWorkflowInput
+}
+
+type recordingComposer struct {
+	kind    eventinfra.Kind
+	payload any
+}
+
+func (c *recordingComposer) Publish(
+	_ context.Context,
+	kind eventinfra.Kind,
+	_ uuid.UUID,
+	_ int64,
+	payload any,
+) (int64, error) {
+	c.kind = kind
+	c.payload = payload
+	return 1, nil
 }
 
 func (s *recordingSpawner) SpawnEvent(_ context.Context, workflowID string, in discoverycontract.EventWorkflowInput) error {
@@ -118,31 +136,29 @@ func (r *fakeFixtureRepo) ListReclaimableEventIDs(context.Context, time.Time) ([
 	panic("fakeFixtureRepo.ListReclaimableEventIDs: not implemented (test scope drift)")
 }
 
-// FixtureReadyToComplete — in-memory version of the completion check.
-// Mirrors the pg query semantics so completion tests see the same
-// truth-table shape as production.
-func (r *fakeFixtureRepo) FixtureReadyToComplete(_ context.Context, id int64) (bool, error) {
+// AssessCompletion is the fixture-only portion of the production assessment.
+// Event/downstream truth tables live in the pg integration tests.
+func (r *fakeFixtureRepo) AssessCompletion(
+	_ context.Context,
+	id int64,
+	terminalBefore time.Time,
+) (fixture.CompletionAssessment, error) {
 	r.mu.Lock()
 	f, ok := r.data[id]
 	r.mu.Unlock()
 	if !ok {
-		return false, fixture.ErrNotFound
+		return fixture.CompletionAssessment{}, fixture.ErrNotFound
 	}
-	if !f.APIStatus.Terminal() {
-		return false, nil
+	assessment := fixture.CompletionAssessment{}
+	if f.APIStatus.Short == apifootball.StatusFullTime ||
+		f.APIStatus.Short == apifootball.StatusAfterExtra ||
+		f.APIStatus.Short == apifootball.StatusPenaltyDone {
+		parity := true
+		assessment.DurableScoreEventParity = &parity
 	}
-	if f.CompletionCounter < 3 {
-		return false, nil
-	}
-	if f.APIStatus.Short == apifootball.StatusPenaltyDone &&
-		(f.HomePenalty == nil || f.AwayPenalty == nil || *f.HomePenalty == *f.AwayPenalty) {
-		return false, nil
-	}
-	// Fake has no events map — the completion check for events
-	// requires the fakeEventRepo. Callers that want event-level
-	// coverage should wire a joint check via a scenario-level fake.
-	// For unit tests here we treat "no events" as "all settled."
-	return true, nil
+	assessment.Ready = f.State == fixture.StateActive && f.APIStatus.Terminal() &&
+		f.TerminalObservedAt != nil && !f.TerminalObservedAt.After(terminalBefore)
+	return assessment, nil
 }
 
 // fakeEventRepo — in-memory event.Repo that supports the symmetric
@@ -396,10 +412,11 @@ func mkActiveFixture(id int64, kickoff time.Time) *fixture.Fixture {
 
 func newActs(fetcher fixtureFetcher, fRepo fixture.Repo, eRepo event.Repo, now time.Time) *Activities {
 	return &Activities{
-		APIFootball: fetcher,
-		FixtureRepo: fRepo,
-		EventRepo:   eRepo,
-		Now:         func() time.Time { return now },
+		APIFootball:         fetcher,
+		FixtureRepo:         fRepo,
+		EventRepo:           eRepo,
+		TerminalGracePeriod: time.Hour,
+		Now:                 func() time.Time { return now },
 	}
 }
 

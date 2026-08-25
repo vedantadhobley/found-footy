@@ -1,4 +1,4 @@
-// schema_migration_contract_test.go keeps the pending in-place migration's
+// schema_migration_contract_test.go keeps the current in-place migration's
 // VerifySchema stamp synchronized with the authoritative flat schema.
 package test_test
 
@@ -14,7 +14,7 @@ var migrationSchemaHash = regexp.MustCompile(`schema_hash = '([0-9a-f]{64})'`)
 func TestPendingMigrationStampsEmbeddedSchemaHash(t *testing.T) {
 	root := repositoryRoot(t)
 	schema := readToolingFile(t, root, "internal/infra/pg/schema.sql")
-	migration := readToolingFile(t, root, "migrations/20260817_01_add_video_asset_hash_version.sql")
+	migration := readToolingFile(t, root, "migrations/20260825_01_add_terminal_observed_at.sql")
 
 	match := migrationSchemaHash.FindStringSubmatch(migration)
 	if len(match) != 2 {

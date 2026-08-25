@@ -6,10 +6,8 @@ description: |
       count=3 and trigger (API keeps returning FT events)
     - A score-consistent event omission during FT is protected before any
       absence vote; terminal status alone does not imply VAR.
-    - Fixture COMPLETES at FT once Terminal + completion_counter>=3
-      (completion is wired into the reconcile step per the completion
-      contract; the earlier "Monitor doesn't complete, deferred to O3+"
-      note is obsolete).
+    - Fixture stays pollable for one hour after its first terminal observation,
+      then completes once event debounce and downstream work are settled.
 
   Real-world risk: 89th-minute goal scored, match FT-whistles at
   cycle 3 of debounce. If we treated FT as "no more polling" the
@@ -101,13 +99,19 @@ cycles:
   - t: 2026-07-08T16:36:00Z
     api_responses: {fixtures_by_ids: *goal_ft}
 
+  # Cycle 6: exactly one hour after the first FT observation; completion is now
+  # eligible because the event is stable and no downstream row is pending.
+  - t: 2026-07-08T17:35:00Z
+    api_responses: {fixtures_by_ids: *goal_ft}
+
 expected_final_state:
   fixtures:
     - id: 999012
-      state: completed            # Terminal (ft) + completion_counter>=3 → completes (completion contract)
+      state: completed
       api_status_short: ft         # refreshed
       has_activated_at: true
-      has_completed_at: true       # completed at FT after 3 terminal polls
+      has_completed_at: true
+      has_terminal_observed_at: true
       has_last_polled_at: true
   events:
     - fixture_id: 999012

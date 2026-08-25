@@ -225,7 +225,7 @@ func TestUpdateFromPoll_PopulatesLiveFieldsWithoutStateChange(t *testing.T) {
 	pollAt := at.Add(23 * time.Minute)
 	f.UpdateFromPoll(
 		fixture.APIStatus{Short: "1H", Long: "First Half"},
-		&elapsed, &extra, &hs, &as, false, pollAt,
+		&elapsed, &extra, &hs, &as, pollAt,
 	)
 
 	if f.State != fixture.StateActive {
@@ -253,12 +253,12 @@ func TestUpdateFromPoll_NilScore_LeavesExistingScore(t *testing.T) {
 	first := 1
 	f.UpdateFromPoll(
 		fixture.APIStatus{Short: "1H"},
-		nil, nil, &first, &first, false, at.Add(20*time.Minute),
+		nil, nil, &first, &first, at.Add(20*time.Minute),
 	)
 	// Poll where API drops score field; must not clear the existing score.
 	f.UpdateFromPoll(
 		fixture.APIStatus{Short: "HT"},
-		nil, nil, nil, nil, false, at.Add(45*time.Minute),
+		nil, nil, nil, nil, at.Add(45*time.Minute),
 	)
 	if f.HomeScore == nil || *f.HomeScore != 1 {
 		t.Errorf("HomeScore cleared by nil poll; got %v want 1", f.HomeScore)
@@ -329,72 +329,53 @@ func TestShouldActivateNow_Completed_False(t *testing.T) {
 	}
 }
 
-// Completion counter + winner data --------------------------------
+// Terminal observation + winner data -------------------------------
 
-func TestUpdateFromPoll_CoherentTerminal_IncrementsCompletionCounter(t *testing.T) {
+func TestUpdateFromPoll_TerminalObservationStartsAndIsPreserved(t *testing.T) {
 	f := makeStaging()
 	at := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	mustActivate(t, f, at)
-	if f.CompletionCounter != 0 {
-		t.Fatalf("counter must start at 0, got %d", f.CompletionCounter)
+	first := at.Add(2 * time.Hour)
+	f.UpdateFromPoll(
+		fixture.APIStatus{Short: "ft", Long: "Match Finished"},
+		nil, nil, nil, nil, first,
+	)
+	if f.TerminalObservedAt == nil || !f.TerminalObservedAt.Equal(first) {
+		t.Fatalf("first terminal observation = %v, want %v", f.TerminalObservedAt, first)
 	}
-
-	// Three Terminal polls → counter climbs to 3, then caps.
-	for i := 0; i < 5; i++ {
-		f.UpdateFromPoll(
-			fixture.APIStatus{Short: "ft", Long: "Match Finished"},
-			nil, nil, nil, nil, true, at.Add(time.Duration(i)*30*time.Second),
-		)
-	}
-	if f.CompletionCounter != 3 {
-		t.Errorf("counter after 5 Terminal polls = %d, want 3 (capped)", f.CompletionCounter)
+	f.UpdateFromPoll(
+		fixture.APIStatus{Short: "ft", Long: "Match Finished"},
+		nil, nil, nil, nil, first.Add(30*time.Second),
+	)
+	if f.TerminalObservedAt == nil || !f.TerminalObservedAt.Equal(first) {
+		t.Errorf("later terminal poll moved observation to %v, want %v", f.TerminalObservedAt, first)
 	}
 }
 
-func TestUpdateFromPoll_NonTerminal_ResetsCompletionCounter(t *testing.T) {
+func TestUpdateFromPoll_NonTerminalClearsTerminalObservation(t *testing.T) {
 	f := makeStaging()
 	at := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	mustActivate(t, f, at)
-
-	// Climb to 2.
-	for i := 0; i < 2; i++ {
-		f.UpdateFromPoll(
-			fixture.APIStatus{Short: "ft"},
-			nil, nil, nil, nil, true, at.Add(time.Duration(i)*30*time.Second),
-		)
-	}
-	if f.CompletionCounter != 2 {
-		t.Fatalf("counter after 2 Terminal polls = %d, want 2", f.CompletionCounter)
-	}
-
-	// A single non-Terminal observation (vendor flickered back to 2H)
-	// should reset the counter.
+	f.UpdateFromPoll(fixture.APIStatus{Short: "ft"}, nil, nil, nil, nil, at)
 	f.UpdateFromPoll(
 		fixture.APIStatus{Short: "2h"},
-		nil, nil, nil, nil, false, at.Add(3*30*time.Second),
+		nil, nil, nil, nil, at.Add(30*time.Second),
 	)
-	if f.CompletionCounter != 0 {
-		t.Errorf("counter after non-Terminal poll = %d, want 0 (reset)", f.CompletionCounter)
+	if f.TerminalObservedAt != nil {
+		t.Errorf("non-terminal poll left terminal observation %v", f.TerminalObservedAt)
 	}
 }
 
-func TestUpdateFromPoll_IncoherentTerminal_ResetsCompletionCounter(t *testing.T) {
+func TestRescheduleClearsTerminalObservation(t *testing.T) {
 	f := makeStaging()
 	at := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	mustActivate(t, f, at)
-
-	for i := 0; i < 2; i++ {
-		f.UpdateFromPoll(
-			fixture.APIStatus{Short: "ft"},
-			nil, nil, nil, nil, true, at.Add(time.Duration(i)*30*time.Second),
-		)
+	f.UpdateFromPoll(fixture.APIStatus{Short: "ft"}, nil, nil, nil, nil, at)
+	if err := f.Reschedule(at.Add(24*time.Hour), at.Add(time.Minute)); err != nil {
+		t.Fatalf("Reschedule: %v", err)
 	}
-	f.UpdateFromPoll(
-		fixture.APIStatus{Short: "ft"},
-		nil, nil, nil, nil, false, at.Add(60*time.Second),
-	)
-	if f.CompletionCounter != 0 {
-		t.Errorf("counter after incoherent Terminal poll = %d, want 0", f.CompletionCounter)
+	if f.TerminalObservedAt != nil {
+		t.Errorf("reschedule left terminal observation %v", f.TerminalObservedAt)
 	}
 }
 

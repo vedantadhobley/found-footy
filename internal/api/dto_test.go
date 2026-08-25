@@ -9,14 +9,15 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 )
 
-// TestDeriveLastActivity — last_activity_at is max(activation, completion,
-// latest known-scorer goal/card first-seen); unknown-scorers excluded; nil for a
-// not-yet-activated fixture.
+// TestDeriveLastActivity — last_activity_at is max(activation, first terminal
+// observation, latest known-scorer event); direct-complete legacy rows fall back
+// to completed_at and unknown-scorer placeholders stay excluded.
 func TestDeriveLastActivity(t *testing.T) {
 	t0 := time.Date(2026, 8, 14, 15, 0, 0, 0, time.UTC)
 	tGoal := t0.Add(20 * time.Minute)
 	tLaterUnknown := t0.Add(50 * time.Minute)
 	tDone := t0.Add(100 * time.Minute)
+	tRetired := tDone.Add(time.Hour)
 
 	id, name := 7, "Scorer"
 	known := func(fs time.Time) *event.Event {
@@ -43,10 +44,19 @@ func TestDeriveLastActivity(t *testing.T) {
 	if got := deriveLastActivity(fActive, []*event.Event{known(tGoal), unknown(tLaterUnknown)}); got == nil || !got.Equal(tGoal) {
 		t.Errorf("unknown excluded: got %v, want %v", got, tGoal)
 	}
-	// completion is later than any goal → completed_at wins
-	fDone := &fixture.Fixture{ActivatedAt: &t0, CompletedAt: &tDone}
+	// Graceful completion keeps terminal observation as recency even though the
+	// process row moves to completed an hour later.
+	fDone := &fixture.Fixture{
+		State: fixture.StateCompleted, ActivatedAt: &t0,
+		TerminalObservedAt: &tDone, CompletedAt: &tRetired,
+	}
 	if got := deriveLastActivity(fDone, []*event.Event{known(tGoal)}); got == nil || !got.Equal(tDone) {
-		t.Errorf("completed: got %v, want %v", got, tDone)
+		t.Errorf("graceful completion: got %v, want %v", got, tDone)
+	}
+	// Fresh historical and pre-migration completed rows have no observation.
+	fLegacy := &fixture.Fixture{State: fixture.StateCompleted, ActivatedAt: &t0, CompletedAt: &tDone}
+	if got := deriveLastActivity(fLegacy, nil); got == nil || !got.Equal(tDone) {
+		t.Errorf("legacy completion: got %v, want %v", got, tDone)
 	}
 }
 

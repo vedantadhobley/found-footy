@@ -139,14 +139,20 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	// N4: snapshot the API-mutable fields before the Update* calls so we can
 	// classify this cycle as clock-only vs structural once they mutate f.
 	prevStatus := f.APIStatus.Short
+	prevTerminalObservedAt := f.TerminalObservedAt
 	prevElapsed, prevExtra := f.APIElapsed, f.APIExtra
 	prevHomeScore, prevAwayScore := f.HomeScore, f.AwayScore
 	prevHomeWinner, prevAwayWinner := f.HomeWinner, f.AwayWinner
 	prevHomePen, prevAwayPen := f.HomePenalty, f.AwayPenalty
 	// Score and event-array facts must come from the same provider response.
 	// The immutable view both guards destructive goal-absence votes below and
-	// decides whether this cycle is coherent enough to advance completion.
+	// records provider parity if this cycle completes the fixture.
 	scoreInventory := newScoreEventInventory(in.APIFixture)
+	providerScoreEventParity := scoreInventory.terminalProviderScoreEventParity(
+		in.APIFixture.Fixture.Status.Short,
+		in.APIFixture.Teams.Home.ID,
+		in.APIFixture.Teams.Away.ID,
+	)
 
 	f.UpdateFromPoll(
 		fixture.APIStatus{Short: in.APIFixture.Fixture.Status.Short, Long: in.APIFixture.Fixture.Status.Long},
@@ -154,17 +160,12 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		in.APIFixture.Fixture.Status.Extra,
 		in.APIFixture.Goals.Home,
 		in.APIFixture.Goals.Away,
-		scoreInventory.completionVote(
-			in.APIFixture.Fixture.Status.Short,
-			in.APIFixture.Teams.Home.ID,
-			in.APIFixture.Teams.Away.ID,
-		),
 		now,
 	)
 	// Mirror the nullable shootout before deriving result state: normal/AET
 	// winner state comes from the aggregate score, PEN comes from this shootout,
 	// and exceptional outcomes retain the provider's explicit flags. Result
-	// display data cannot bypass the coherent three-poll completion debounce.
+	// display data does not control terminal-grace eligibility.
 	f.UpdatePenalty(in.APIFixture.Score.Penalty.Home, in.APIFixture.Score.Penalty.Away)
 	f.UpdateResult(in.APIFixture.Teams.Home.Winner, in.APIFixture.Teams.Away.Winner)
 
@@ -174,7 +175,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	out.Minute = derefInt(f.APIElapsed)
 	out.Extra = f.APIExtra
 	out.ClockChanged = intPtrChanged(prevElapsed, f.APIElapsed) || intPtrChanged(prevExtra, f.APIExtra)
-	if prevStatus != f.APIStatus.Short ||
+	if prevStatus != f.APIStatus.Short || timePtrChanged(prevTerminalObservedAt, f.TerminalObservedAt) ||
 		intPtrChanged(prevHomeScore, f.HomeScore) || intPtrChanged(prevAwayScore, f.AwayScore) ||
 		intPtrChanged(prevHomePen, f.HomePenalty) || intPtrChanged(prevAwayPen, f.AwayPenalty) ||
 		boolPtrChanged(prevHomeWinner, f.HomeWinner) || boolPtrChanged(prevAwayWinner, f.AwayWinner) {
@@ -376,17 +377,21 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		}
 	}
 
-	// Step 6: fixture completion check. See
-	// docs/design/proposals/completion-contract.md. Runs at the end so
+	// Step 6: fixture completion check. See the FF-063 terminal-grace decision.
+	// Runs at the end so
 	// any absence votes above that just soft-removed events count toward
 	// "all events settled." Failure to check is non-fatal — the next
 	// cycle will retry.
-	ready, err := a.FixtureRepo.FixtureReadyToComplete(ctx, f.ID)
+	assessment, err := a.FixtureRepo.AssessCompletion(
+		ctx,
+		f.ID,
+		now.Add(-a.TerminalGracePeriod),
+	)
 	if err != nil {
 		out.Errors = append(out.Errors, fmt.Sprintf("completion check: %v", err))
 		return out, nil
 	}
-	if !ready {
+	if !assessment.Ready {
 		return out, nil
 	}
 	if err := f.Complete(now); err != nil {
@@ -402,6 +407,6 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	}
 	out.Completed = true
 	out.Structural = true
-	a.emitFixtureCompleted(ctx, f.ID, now)
+	a.emitFixtureCompleted(ctx, f, now, assessment, providerScoreEventParity)
 	return out, nil
 }

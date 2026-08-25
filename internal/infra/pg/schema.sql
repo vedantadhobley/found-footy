@@ -101,24 +101,20 @@ CREATE TABLE fixtures (
     -- a shootout; the rest of the score breakdown (HT/FT/ET) stays dropped.
     home_penalty INT,
     away_penalty INT,
-    -- Winner data (populated from api teams.home.winner / away.winner).
-    -- Nullable BOOLEAN — vendor sets true/false when result is decided
-    -- (usually simultaneously with terminal status, sometimes slightly
-    -- earlier). Fixture completion has a fast-path on either being
-    -- non-null (skips the 3-poll completion counter).
+    -- Winner data. Ordinary play derives this from score; exceptional terminal
+    -- outcomes use the provider flags because aggregate score is unreliable.
     home_winner BOOLEAN,
     away_winner BOOLEAN,
 
     -- Our enhancement fields
     activated_at TIMESTAMPTZ,                               -- when we moved to 'active'
     completed_at TIMESTAMPTZ,                               -- when we moved to 'completed'
+    terminal_observed_at TIMESTAMPTZ,                       -- first terminal poll in current uninterrupted run
     last_activity_at TIMESTAMPTZ,                           -- for frontend sort ordering
     last_polled_at TIMESTAMPTZ,                             -- most recent monitor cycle
 
-    -- Completion counter — 3-poll debounce on APIStatus.Terminal().
-    -- Increments (cap 3) each ActivePoll cycle where status is Terminal;
-    -- resets to 0 on any non-Terminal observation. See
-    -- docs/design/proposals/completion-contract.md.
+    -- Legacy completion counter retained for one rollback window. The Go
+    -- system no longer reads or writes it; a later cleanup migration drops it.
     completion_counter INT NOT NULL DEFAULT 0
         CHECK (completion_counter >= 0 AND completion_counter <= 3),
 
@@ -129,7 +125,9 @@ CREATE TABLE fixtures (
         (state = 'staging' AND activated_at IS NULL AND completed_at IS NULL) OR
         (state = 'active' AND activated_at IS NOT NULL AND completed_at IS NULL) OR
         (state = 'completed' AND activated_at IS NOT NULL AND completed_at IS NOT NULL)
-    )
+    ),
+    CONSTRAINT fixtures_terminal_observation_state
+        CHECK (terminal_observed_at IS NULL OR state IN ('active', 'completed'))
 );
 
 CREATE INDEX fixtures_staging_by_kickoff ON fixtures (kickoff) WHERE state = 'staging';

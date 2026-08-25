@@ -220,6 +220,12 @@ composer's job — per [decisions.md 2026-08-14](decisions.md) it moved out to
 `event.detected`, `event.stable`, `event.removed`, `event.rank_recalculated`
 (`subjects.go`).
 
+`fixture.completed` records the bounded-retirement evidence: first terminal
+observation, completion time, configured grace seconds, current provider
+score/event parity, durable surviving-goal parity, and nullable `PEN` decision
+state. Parity is nullable for exceptional terminal outcomes. These fields are
+for forensic diagnosis; score quality no longer gates completion after grace.
+
 The separate `NatsPublisher` owns the live fan-out plane. It emits the three
 environment-scoped topics `fixture.clock`, `fixture.update`, and `event.video`
 inside the workspace envelope. Payloads and consumer recovery rules live in

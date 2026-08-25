@@ -64,7 +64,7 @@ later stored event because sequence is durable allocation identity, not display
 order. See the
 [reappearance decision](../decisions/2026-08-24-removed-event-reappearance-starts-new-generation.md).
 
-**Score-backed goal removal and coherent fixture completion (FF-014).** A
+**Score-backed goal removal and terminal observation grace (FF-014/FF-063).** A
 missing goal no longer receives an absence vote when the aggregate score in
 that same provider response exceeds the current API goal count for its
 beneficiary team. `ReconcileFixture` returns the protected natural keys as
@@ -74,14 +74,24 @@ replacement scorer/own-goal identity accounts for the unchanged score and lets
 the old identity decay. Missing red cards and missed penalties retain ordinary
 absence behavior because they do not affect the score.
 
-The fixture completion counter now measures coherent terminal snapshots, not
-terminal status alone. For `FT`, `AET`, and `PEN`, a poll advances the counter
-only when the current response contains exact per-team scoring-event parity
-with its reported score; any non-terminal, nil-score, or inconsistent played
-response resets it to zero. `CANC`, `ABD`, `WO`, and `AWD` advance on terminal
-status alone because they do not promise a played-match event inventory.
-`PEN` additionally requires a present, non-tied penalty score. Winner state is
-result/display data and cannot bypass the three votes.
+The first successful terminal poll in an uninterrupted run sets
+`terminal_observed_at`. Later terminal polls preserve it; a successful
+non-terminal poll clears it. Failed or missing responses neither clear the
+timestamp nor run completion. `WORKFLOWS_TERMINAL_GRACE_PERIOD` defaults to one
+hour. After that interval, `AssessCompletion` requires the current fixture to
+remain active and terminal, no named event to remain mid-debounce, and no open
+`event_downstream_workflows` row. Unknown-player placeholders remain
+non-blocking. A new event near the boundary therefore extends monitoring until
+its event debounce and downstream work settle.
+
+Provider score/event parity, durable surviving-goal parity, and `PEN` decision
+state are recorded in the `fixture.completed` audit payload. They no longer
+trap a terminal fixture in active polling when the provider permanently omits
+events. Score evidence still guards destructive goal absence votes and identity
+matching; the system never fabricates missing events. The legacy
+`completion_counter` column remains only for one rollback window and is not
+read or written by the new binary. See the
+[terminal-grace decision](../decisions/2026-08-25-terminal-observation-grace-bounds-completion.md).
 
 **Score-derived result state (FF-055).** API-Football's `teams.*.winner`
 fields identify the current live leader, not only the final result. Normal and
@@ -92,15 +102,6 @@ the provider's exact nullable flags because their aggregate scores are not
 authoritative. Ingest applies the same domain operation, so daily refresh and
 live poll cannot disagree. See the
 [decision record](../decisions/2026-08-19-winner-state-is-derived-from-canonical-scores.md).
-
-After the counter reaches three, `FixtureReadyToComplete` independently
-requires exact parity with surviving stored goals, no known event still below
-its trigger, and no incomplete `event_downstream_workflows` row. `PEN` again
-requires a present, non-tied stored shootout score so the provider vote and
-durable gate cannot disagree. Unknown-scorer goal placeholders count for score
-parity but do not block the event-settled predicate; red cards, missed
-penalties, and shootout events do not count toward the match score. See the
-[decision record](../decisions/2026-08-16-score-backed-goal-removal.md).
 
 **Per-event Firefox fleet lifecycle (#160, gated on `FleetEnabled`; live in prod).**
 Two hooks straddle the debounce, both gated on the monitor config's

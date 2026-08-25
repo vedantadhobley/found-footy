@@ -64,6 +64,7 @@ func (f *Fixture) Reschedule(newKickoff time.Time, at time.Time) error {
 	}
 	f.State = StateStaging
 	f.ActivatedAt = nil
+	f.TerminalObservedAt = nil
 	f.Kickoff = newKickoff.UTC()
 	utc := at.UTC()
 	f.UpdatedAt = utc
@@ -72,9 +73,9 @@ func (f *Fixture) Reschedule(newKickoff time.Time, at time.Time) error {
 
 // UpdateFromPoll captures a fresh API poll result on an active fixture.
 // Refreshes api_status_*, api_elapsed, api_extra, home/away score,
-// last_polled_at, and the coherent-terminal completion counter without
-// changing state. completionVote is derived by the monitor from the score and
-// event inventory in this same provider response.
+// last_polled_at, and the first terminal observation without changing state.
+// A successful non-terminal observation clears TerminalObservedAt; failed or
+// missing provider responses never call this method and therefore preserve it.
 // State transitions happen through the dedicated methods above.
 //
 // It deliberately does NOT touch last_activity_at: that is the wall-clock of the
@@ -86,7 +87,6 @@ func (f *Fixture) UpdateFromPoll(
 	status APIStatus,
 	elapsed, extra *int,
 	homeScore, awayScore *int,
-	completionVote bool,
 	at time.Time,
 ) {
 	utc := at.UTC()
@@ -101,7 +101,13 @@ func (f *Fixture) UpdateFromPoll(
 	}
 	f.LastPolledAt = &utc
 	f.UpdatedAt = utc
-	f.updateCompletionCounter(completionVote)
+	if status.Terminal() {
+		if f.TerminalObservedAt == nil {
+			f.TerminalObservedAt = &utc
+		}
+	} else {
+		f.TerminalObservedAt = nil
+	}
 }
 
 // UpdateResult derives ordinary and shootout winner state from the canonical
@@ -162,27 +168,6 @@ func cloneInt(value *int) *int {
 	}
 	copy := *value
 	return &copy
-}
-
-// updateCompletionCounter runs the 3-poll debounce on coherent terminal
-// snapshots. Called from UpdateFromPoll after the monitor compares the score
-// with the scoring events in that same provider response.
-//
-// Coherent Terminal observation → increment (cap 3).
-// Non-Terminal or incoherent Terminal observation → reset to 0.
-//
-// Design intentionally symmetric with the debounce_count on events
-// but without the absence-vote path (Terminal is a positive signal,
-// not-Terminal is its absence and resets outright rather than
-// decrementing).
-func (f *Fixture) updateCompletionCounter(completionVote bool) {
-	if f.APIStatus.Terminal() && completionVote {
-		if f.CompletionCounter < 3 {
-			f.CompletionCounter++
-		}
-	} else {
-		f.CompletionCounter = 0
-	}
 }
 
 // RecordStagingPoll captures the result of a passive API poll on a

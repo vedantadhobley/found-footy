@@ -230,17 +230,20 @@ instead of silently no-opping. After an *intentional* in-place schema change
 `UPDATE schema_version SET schema_hash = '<new sha256 of schema.sql>'`, or just
 wipe + reprovision (a fresh volume auto-stamps).
 
-The first post-cutover in-place change is the additive
-[`hash_version` migration](../migrations/20260817_01_add_video_asset_hash_version.sql).
-Its checked-in stamp must equal the embedded `schema.sql` hash. Production
-applied it before release `201cdf1` on 2026-08-18; 235 existing assets were
-backfilled as `dhash-v1-unversioned`, and the new worker/API startup verified
-the stamped schema. The legacy default kept the old binary write-compatible
-during that release window. The application deploy script still does not run
-schema mutations. After every remaining durable environment has applied the
-change or been re-provisioned from `schema.sql`, delete the one-time file and
-its temporary contract test. This preserves the 2026-08-13 flat-schema
-decision instead of starting an unowned migration ledger.
+Reviewed in-place migrations are applied in filename order. The
+[`hash_version` migration](../migrations/20260817_01_add_video_asset_hash_version.sql)
+was applied in production before release `201cdf1` on 2026-08-18. The additive
+[`terminal_observed_at` migration](../migrations/20260825_01_add_terminal_observed_at.sql)
+must run before the FF-063 application release; it leaves
+`completion_counter` intact so the prior binary remains SQL-compatible. Its
+older drift guard still requires an explicit restamp to the prior fingerprint
+before that image can start; the migration file records the exact rollback
+statement. Do not drop the additive column during the rollback window.
+The newest unapplied migration's checked-in stamp must equal the embedded
+`schema.sql` hash, and the contract test enforces that equality. The application
+deploy script still does not run schema mutations. Completed one-time files are
+folded into the flat schema and may be removed after every durable environment
+converges; this does not establish an application-owned migration runner.
 
 ### NATS
 
@@ -368,6 +371,9 @@ that defect is [`FF-009`](./todo.md#confirmed-and-mitigated-backlog).
   reconcile activities.
 - Args: empty `ActivePollWorkflowInput{}` — a zero `ActivationWindow` falls
   back to config (`WORKFLOWS_ACTIVATION_WINDOW`, default 5m).
+- Terminal retirement: activity config
+  `WORKFLOWS_TERMINAL_GRACE_PERIOD` defaults to `1h`; it is not a schedule
+  interval and requires no new Temporal definition.
 
 **StagingPollWorkflow** — every 15 minutes. Schedule `staging-poll-scheduled`.
 
