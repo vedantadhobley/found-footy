@@ -22,12 +22,4 @@ type VisionConfig struct {
 	// FrameQuality is the ffmpeg JPEG quality (-q:v) for the extracted
 	// frames. 3 = high (matches the probe frames used in the bake-off).
 	FrameQuality int `env:"VISION_FRAME_QUALITY" envDefault:"3"`
-
-	// DisableThinking turns off the model's chain-of-thought. True cut
-	// latency ~3x (34s→~13s gemma) with no accuracy loss under the schema
-	// constraint. Off (false) only for debugging model reasoning.
-	DisableThinking bool `env:"VISION_DISABLE_THINKING" envDefault:"true"`
-
-	// Temperature for the vision call. 0 = deterministic (what we ship).
-	Temperature float64 `env:"VISION_TEMPERATURE" envDefault:"0"`
 }

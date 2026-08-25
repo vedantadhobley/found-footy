@@ -63,7 +63,7 @@ func newActivities(t *testing.T, llmResp string, llmErr error) (*Activities, *fa
 		S3:         fakeS3{},
 		LLM:        fl,
 		ScratchDir: t.TempDir(),
-		Cfg:        config.VisionConfig{ToleranceMinutes: 1, FrameQuality: 3, DisableThinking: true},
+		Cfg:        config.VisionConfig{ToleranceMinutes: 1, FrameQuality: 3},
 	}
 	return a, ff, fl
 }
@@ -113,12 +113,13 @@ func TestValidateClip_VerifiedAndRequestShape(t *testing.T) {
 		}
 	}
 
-	// Request carried 3 images, the schema, and thinking-off.
+	// Request carried 3 images, the schema, and the normalized no-reasoning
+	// contract required by Gemma structured output.
 	if got := len(fl.lastReq.Messages[0].Images); got != 3 {
 		t.Errorf("request images = %d, want 3", got)
 	}
-	if !fl.lastReq.DisableThinking {
-		t.Error("request should DisableThinking")
+	if fl.lastReq.ReasoningEffort != llm.ReasoningEffortNone {
+		t.Errorf("request ReasoningEffort = %q, want none", fl.lastReq.ReasoningEffort)
 	}
 	if fl.lastReq.ResponseFormat == nil || fl.lastReq.ResponseFormat.JSONSchema == nil {
 		t.Error("request should carry a JSONSchema response_format")
