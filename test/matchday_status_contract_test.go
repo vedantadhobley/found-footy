@@ -51,6 +51,15 @@ func TestMatchdayStatusSQLIsReadOnly(t *testing.T) {
 	if !strings.Contains(sql, "BEGIN READ ONLY;") {
 		t.Fatal("status SQL must open an explicit read-only transaction")
 	}
+	for _, required := range []string{
+		`outcome_detail#>>'{failure,stage}'`,
+		`outcome_detail#>>'{failure,class}'`,
+		`c.reject_reason = 'download_error'`,
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("status SQL missing FF-060 evidence %q", required)
+		}
+	}
 	mutation := regexp.MustCompile(`(?im)^\s*(insert|update|delete|alter|drop|truncate|create|grant|revoke)\b`)
 	if found := mutation.FindString(sql); found != "" {
 		t.Fatalf("status SQL contains mutation statement %q", strings.TrimSpace(found))

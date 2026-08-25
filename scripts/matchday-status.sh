@@ -7,8 +7,9 @@ usage() {
 Usage: scripts/matchday-status.sh [dev|prod] [lookahead-hours]
 
 Shows Compose service state, scoped Firefox fleet state, upcoming/recent
-fixtures, event/downstream/candidate progress, and candidate durability
-violations. The database transaction is READ ONLY.
+fixtures, event/downstream/candidate progress, bounded download-failure
+classes, and candidate durability violations. The database transaction is
+READ ONLY.
 EOF
 }
 

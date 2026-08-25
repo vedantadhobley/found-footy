@@ -1,6 +1,6 @@
-// Package llm is the OpenAI-compatible LLM adapter. Backs onto joi's
-// llama.cpp server today (Qwen3-VL-8B for vision + RAG); designed to
-// swap transparently to nexus per decisions.md 2026-07-01.
+// Package llm is the OpenAI-compatible adapter for Control-managed model
+// gateways. Found Footy selects a public model contract; Control owns backend
+// placement, admission, defaults, and private runtime translation.
 //
 // The public surface (Chat, ChatRequest, ChatResponse, typed errors)
 // does NOT expose sashabaranov/go-openai types. Callers depend only on
@@ -37,8 +37,7 @@ type Client struct {
 
 // NewClient builds the LLM adapter pointed at cfg.Endpoint. Composes
 // the full base URL as cfg.Endpoint + cfg.APIVersionPath (default "/v1"
-// covers llama.cpp + OpenAI; nexus can override to "/inference/v1" or
-// similar via env).
+// covers Control and standard OpenAI-compatible endpoints).
 //
 // Probes the models endpoint bounded by cfg.ConnectTimeout. Auto-selects
 // the first model when cfg.ChatModel is empty. Fails fast on
@@ -131,14 +130,10 @@ func (c *Client) ChatModel() string { return c.chatModel }
 // semaphore + adapter-imposed timeout, and returns the response
 // translated into domain types.
 //
-// The semaphore tracks the configured Joi gateway's per-node capacity (gemma
-// runs --parallel 4, gateway max_slots=4); fanning out wider just queues
-// on the gateway. Semaphore acquisition is ctx-bounded (caller
-// cancellation releases the wait). STOPGAP: the gateway currently
-// blocks-until-free, so this client-side bound is what stops a busy
-// goal's vision fan-out from timing out + retry-storming; once the
-// control plane owns request queueing it can go away (decisions.md
-// 2026-08-11).
+// The semaphore bounds one worker's local burst and retry surface; Control's
+// gateway separately owns shared admission across callers and backends.
+// Semaphore acquisition is ctx-bounded so caller cancellation releases the
+// wait.
 //
 // Errors are classified via classifyError before returning: callers
 // use errors.Is(err, ErrRateLimited) / ErrCapExceeded / ErrUnavailable

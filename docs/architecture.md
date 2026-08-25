@@ -96,7 +96,7 @@ found-footy/
 │   ├── twitterauth/                     ✓ FF-059: read-only Firefox SQLite capture, strict publication gate, and health/status service
 ├── docker/twitter/                      ✓ headless Playwright search image; no VNC packages or runtime branch
 ├── docker/twitter-auth/                 ✓ FF-059: raw Firefox ESR + Xvfb/noVNC image and container-local supervisor
-├── scripts/matchday-status.{sh,sql}     ✓ FF-050: environment-scoped, SELECT-only match-day operator snapshot
+├── scripts/matchday-status.{sh,sql}     ✓ FF-050/FF-060: environment-scoped, SELECT-only match-day and download-failure snapshot
 ├── migrations/                          FF-041 operational migration applied to prod; retained with its schema-hash contract until remaining durable environments converge
 ├── scripts/                             dev smoke/probe programs plus guarded operator tools
 │   ├── smoke_repos/main.go              ✓ live pg + repo smoke test (dev only)

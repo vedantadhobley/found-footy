@@ -1,5 +1,4 @@
-// Package llm is the config-swappable LLM endpoint client (joi today,
-// nexus later — per decisions.md 2026-07-01). Per-worker-process
-// sync.Semaphore around chat completion calls to respect joi's
-// parallel cap. See §9 llm adapter.
+// Package llm is the OpenAI-compatible client for Control-managed model
+// gateways. A per-worker-process semaphore bounds local chat fan-out while
+// Control independently enforces shared admission. See §9 llm adapter.
 package llm

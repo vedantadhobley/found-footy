@@ -92,8 +92,10 @@ scope from `dev` or `prod`; it does not read or print dotenv values. Its SQL
 runs inside `BEGIN READ ONLY` with a statement timeout. It shows service and
 scoped fleet state, recent/upcoming or active fixtures, event/downstream/
 candidate/share progress, and the count plus ten newest FF-034 durability
-violations. It performs no Temporal describe calls; use the event workflow ID
-from the report for deeper inspection.
+violations. For the same fixture window it groups terminal FF-060 download
+failures by bounded stage/class, retaining `legacy_unclassified` for histories
+that predate the versioned payload. It performs no Temporal describe calls; use
+the event workflow ID from the report for deeper inspection.
 
 For an event incident, collect these identifiers before drawing a conclusion:
 
