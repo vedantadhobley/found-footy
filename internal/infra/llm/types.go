@@ -55,11 +55,10 @@ type ChatImage struct {
 // pins a specific request to a specific model even when the endpoint
 // hosts multiple.
 type ChatRequest struct {
-	Messages    []ChatMessage
-	Model       string
-	Temperature *float64 // 0.0 – 2.0; nil = server default
-	MaxTokens   *int     // nil = model default
-	Stop        []string // optional stop sequences
+	Messages  []ChatMessage
+	Model     string
+	MaxTokens *int     // nil = model default
+	Stop      []string // optional stop sequences
 
 	// ResponseFormat, when non-nil with a JSONSchema, opts this request
 	// into structured output: the server constrains token sampling so the
@@ -68,14 +67,23 @@ type ChatRequest struct {
 	// the vision activity (V/4).
 	ResponseFormat *ResponseFormat
 
-	// DisableThinking turns off the model's chain-of-thought where the
-	// backend supports it (llama.cpp/vLLM `enable_thinking`). The adapter
-	// maps it to chat_template_kwargs so the mechanism stays out of this
-	// domain type. For structured-output vision calls this cut latency ~3x
-	// on the gemma/Qwen bake-off (2026-07-28) with no accuracy loss — the
-	// schema leaves no room for reasoning tokens anyway.
-	DisableThinking bool
+	// ReasoningEffort is the OpenAI-compatible public reasoning control.
+	// Omit it to use the selected model's Control-owned default. Supported
+	// values are model-specific and published by the gateway's /v1/models
+	// response.
+	ReasoningEffort ReasoningEffort
 }
+
+// ReasoningEffort is a normalized public request value. The gateway owns the
+// model-specific supported set and translates it to the pinned runtime.
+type ReasoningEffort string
+
+const (
+	ReasoningEffortNone   ReasoningEffort = "none"
+	ReasoningEffortLow    ReasoningEffort = "low"
+	ReasoningEffortMedium ReasoningEffort = "medium"
+	ReasoningEffortHigh   ReasoningEffort = "high"
+)
 
 // ResponseFormat opts a Chat call into structured output. Only JSONSchema
 // is modeled today (the sole use case); a nil ResponseFormat means prose.

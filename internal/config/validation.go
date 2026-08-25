@@ -248,8 +248,6 @@ func validateVision(v *validator, cfg VisionConfig) {
 	v.check(cfg.ToleranceMinutes >= 0, "VISION_TOLERANCE_MINUTES must be >= 0")
 	v.check(cfg.FrameQuality >= 2 && cfg.FrameQuality <= 31,
 		"VISION_FRAME_QUALITY must be between 2 and 31")
-	v.check(cfg.Temperature >= 0 && cfg.Temperature <= 2,
-		"VISION_TEMPERATURE must be between 0 and 2")
 }
 
 func validateEvent(v *validator, cfg EventConfig) {

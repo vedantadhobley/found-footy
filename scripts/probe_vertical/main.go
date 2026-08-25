@@ -195,11 +195,9 @@ func probeOne(ctx context.Context, synd *syndication.Client, ff *ffmpeg.Client, 
 		images = append(images, llm.ChatImage{Data: jpeg, MimeType: "image/jpeg"})
 	}
 
-	temp := cfg.Vision.Temperature
 	resp, err := llmc.Chat(ctx, llm.ChatRequest{
 		Messages:        []llm.ChatMessage{{Role: llm.RoleUser, Content: prompt, Images: images}},
-		Temperature:     &temp,
-		DisableThinking: cfg.Vision.DisableThinking,
+		ReasoningEffort: llm.ReasoningEffortNone,
 		ResponseFormat: &llm.ResponseFormat{
 			JSONSchema: &llm.JSONSchema{Name: "frame_validation", Schema: dvision.ResponseSchema, Strict: true},
 		},

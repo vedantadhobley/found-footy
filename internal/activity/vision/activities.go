@@ -148,15 +148,13 @@ func (a *Activities) callModel(ctx context.Context, images []llm.ChatImage) (*ll
 	if prompt == "" {
 		prompt = dvision.DefaultPrompt
 	}
-	temp := a.Cfg.Temperature
 	return a.LLM.Chat(ctx, llm.ChatRequest{
 		Messages: []llm.ChatMessage{{
 			Role:    llm.RoleUser,
 			Content: prompt,
 			Images:  images,
 		}},
-		Temperature:     &temp,
-		DisableThinking: a.Cfg.DisableThinking,
+		ReasoningEffort: llm.ReasoningEffortNone,
 		ResponseFormat: &llm.ResponseFormat{
 			JSONSchema: &llm.JSONSchema{
 				Name:   "frame_validation",

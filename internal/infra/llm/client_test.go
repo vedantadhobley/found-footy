@@ -316,11 +316,10 @@ func TestChat_MultimodalRoundtrip(t *testing.T) {
 	}
 }
 
-// TestChat_StructuredOutputAndThinkingToggle — the V/4 plumb: a request
-// carrying ResponseFormat + DisableThinking must reach the wire as an
-// openai response_format=json_schema block and chat_template_kwargs with
-// enable_thinking:false. Asserted by inspecting the captured request body.
-func TestChat_StructuredOutputAndThinkingToggle(t *testing.T) {
+// TestChat_StructuredOutputAndReasoningEffort — the V/4 request must use the
+// normalized public reasoning control and never leak backend-private template
+// kwargs.
+func TestChat_StructuredOutputAndReasoningEffort(t *testing.T) {
 	ctx := context.Background()
 	m := newMockLLMServer()
 	defer m.Close()
@@ -332,7 +331,7 @@ func TestChat_StructuredOutputAndThinkingToggle(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
 	req := llm.ChatRequest{
 		Messages:        []llm.ChatMessage{{Role: llm.RoleUser, Content: "hi"}},
-		DisableThinking: true,
+		ReasoningEffort: llm.ReasoningEffortNone,
 		ResponseFormat: &llm.ResponseFormat{
 			JSONSchema: &llm.JSONSchema{Name: "verdict", Schema: schema, Strict: true},
 		},
@@ -359,14 +358,16 @@ func TestChat_StructuredOutputAndThinkingToggle(t *testing.T) {
 		t.Errorf("json_schema block wrong: %v", rf["json_schema"])
 	}
 
-	ctk, ok := sent["chat_template_kwargs"].(map[string]any)
-	if !ok || ctk["enable_thinking"] != false {
-		t.Errorf("chat_template_kwargs = %v, want enable_thinking:false", sent["chat_template_kwargs"])
+	if sent["reasoning_effort"] != "none" {
+		t.Errorf("reasoning_effort = %v, want none", sent["reasoning_effort"])
+	}
+	if _, present := sent["chat_template_kwargs"]; present {
+		t.Errorf("request leaked chat_template_kwargs: %s", body)
 	}
 }
 
 // TestChat_NoStructuredOutputByDefault — a plain request must NOT carry a
-// response_format or chat_template_kwargs (prose is the default; we don't
+// response_format, reasoning_effort, or chat_template_kwargs (gateway defaults
 // want to accidentally constrain every call).
 func TestChat_NoStructuredOutputByDefault(t *testing.T) {
 	ctx := context.Background()
@@ -387,6 +388,9 @@ func TestChat_NoStructuredOutputByDefault(t *testing.T) {
 	}
 	if _, present := sent["response_format"]; present {
 		t.Errorf("plain request leaked response_format: %s", body)
+	}
+	if _, present := sent["reasoning_effort"]; present {
+		t.Errorf("plain request leaked reasoning_effort: %s", body)
 	}
 	if _, present := sent["chat_template_kwargs"]; present {
 		t.Errorf("plain request leaked chat_template_kwargs: %s", body)

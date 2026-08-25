@@ -1,13 +1,18 @@
 # Vision — soccer/screen validation + clock verification
 
-**Status:** SHIPPED 2026-07-28 (rungs 1–3: `llm` ResponseFormat/DisableThinking
-plumb, `internal/domain/vision`, `internal/activity/vision`; see
+**Status:** SHIPPED 2026-07-28 (rungs 1–3: structured-output and reasoning
+controls in `llm`, `internal/domain/vision`, `internal/activity/vision`; see
 [`../../decisions.md`](../../decisions.md) "V/4 clip validation"). The
 model-dependent bits — previously OPEN — are now **RESOLVED by a real-clip
 bake-off** (findings folded in below). **Wired into EventWorkflow's consumer
 (#164c)** — `event_pipeline.go` fires it (`fireVision → ValidateClip →
 onVisionDone`). Ports the Python clock logic faithfully with a period-awareness
 fix; improves the frame/call strategy.
+
+The 2026-08-25 [Control request-contract migration](../../decisions/2026-08-25-control-model-request-contract.md)
+replaced the original backend-private thinking toggle with public
+`reasoning_effort: none` and moved sampling defaults to Control. The historical
+bake-off evidence below retains the mechanism used at the time.
 
 Where it sits: the `Vision` activity is fired **async** per unique clip, *after*
 dedup (**only dedup is serial** in the Event consumer's Selector queue; the

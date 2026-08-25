@@ -278,8 +278,10 @@ the unverified pool instead of being compared against minute zero (FF-031).
 Consumed by `internal/activity/vision.ValidateClip`: fetch staged clip →
 `ffmpeg.ExtractFrame` @25/50/75% → one multi-image structured-output vision call
 → `Evaluate`. **Wired into EventWorkflow's consumer** (`event_pipeline*.go`, fired
-async per unique clip); the LLM adapter's `ResponseFormat` + `DisableThinking`
-fields (rung 1) exist for this call. Clock rejections persist all three raw
+async per unique clip); the LLM adapter sends `ResponseFormat` plus the public
+`reasoning_effort: none` control required by Control's Gemma structured-output
+contract. Sampling values remain omitted so the selected model profile owns
+their defaults. Clock rejections persist all three raw
 frame observations and normalized readings in candidate `outcome_detail`. At
 the activity boundary, typed permanent
 LLM failures (invalid response/request, missing model, or auth) become
