@@ -131,7 +131,7 @@ func (c *Client) ChatModel() string { return c.chatModel }
 // semaphore + adapter-imposed timeout, and returns the response
 // translated into domain types.
 //
-// The semaphore tracks the joi.luv gateway's per-node capacity (gemma
+// The semaphore tracks the configured Joi gateway's per-node capacity (gemma
 // runs --parallel 4, gateway max_slots=4); fanning out wider just queues
 // on the gateway. Semaphore acquisition is ctx-bounded (caller
 // cancellation releases the wait). STOPGAP: the gateway currently
