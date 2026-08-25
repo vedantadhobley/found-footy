@@ -2,9 +2,11 @@
 package workflow
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
@@ -96,10 +98,21 @@ func (p *pipeline) onDownloadDone(tweetURL string) func(workflow.Future) {
 
 		var out videoactivity.DownloadAndStageOutput
 		if err := f.Get(p.ctx, &out); err != nil {
-			p.logCandidatePhase(tweetURL, "download", "failed", p.timings[tweetURL].observedAt)
+			var detail []byte
+			if p.durableDownloadFailures {
+				failure := downloadFailureDetail(err)
+				detail = jsonDetail(map[string]any{"failure": failure})
+				p.logCandidatePhase(tweetURL, "download", "failed", p.timings[tweetURL].observedAt,
+					"failure_stage", string(failure.Stage), "failure_class", string(failure.Class))
+				p.log.Warn("candidate download failed after retries",
+					"tweet_url", tweetURL, "failure_stage", failure.Stage,
+					"failure_class", failure.Class, "err", err)
+			} else {
+				p.logCandidatePhase(tweetURL, "download", "failed", p.timings[tweetURL].observedAt)
+				p.log.Warn("candidate download failed after retries", "tweet_url", tweetURL, "err", err)
+			}
 			p.failed++
-			p.log.Warn("candidate download failed after retries", "tweet_url", tweetURL, "err", err)
-			p.recordOutcome(tweetURL, discoveryactivity.OutcomeFailed, string(VideoFailureDownload), nil)
+			p.recordOutcome(tweetURL, discoveryactivity.OutcomeFailed, string(VideoFailureDownload), detail)
 			return
 		}
 		if out.Outcome == videoactivity.OutcomeRejected {
@@ -135,6 +148,32 @@ func (p *pipeline) onDownloadDone(tweetURL string) func(workflow.Future) {
 
 		p.hashing[c.md5] = &hashClaim{primary: c}
 		p.fireHash(c.md5)
+	}
+}
+
+// downloadFailureDetail extracts FF-060's bounded failure evidence from the
+// final retryable activity error. Temporal-owned timeouts and unclassified
+// failures receive explicit fallback buckets instead of losing durability.
+func downloadFailureDetail(err error) videoactivity.DownloadFailureDetail {
+	var applicationErr *temporal.ApplicationError
+	if errors.As(err, &applicationErr) &&
+		applicationErr.Type() == videoactivity.DownloadFailureErrorType &&
+		applicationErr.HasDetails() {
+		var detail videoactivity.DownloadFailureDetail
+		if decodeErr := applicationErr.Details(&detail); decodeErr == nil && detail.Valid() {
+			return detail
+		}
+	}
+	var timeoutErr *temporal.TimeoutError
+	if errors.As(err, &timeoutErr) {
+		return videoactivity.DownloadFailureDetail{
+			Stage: videoactivity.DownloadFailureActivity,
+			Class: videoactivity.DownloadFailureTimeout,
+		}
+	}
+	return videoactivity.DownloadFailureDetail{
+		Stage: videoactivity.DownloadFailureActivity,
+		Class: videoactivity.DownloadFailureUnknown,
 	}
 }
 

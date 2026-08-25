@@ -381,6 +381,10 @@ FF-029 is covered below the scenario layer because it is an HTTP-adapter and
 activity-retry contract: adapter tests distinguish syndication metadata 403
 from CDN byte-download 403, the activity test preserves the terminal/transient
 split, and the workflow test requires all four transient download attempts.
+FF-060 extends those layers: adapter tests type invalid responses and stream
+failures, activity tests decode bounded resolve/download/probe/staging detail,
+and EventWorkflow tests require the terminal candidate JSON while a version
+test preserves the pre-FF-060 payload.
 
 FF-012 similarly spans three unit layers: the LLM adapter types malformed 2xx
 JSON, `ValidateClip` marks all permanent model/config/response sentinels

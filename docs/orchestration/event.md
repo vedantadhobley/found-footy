@@ -44,7 +44,8 @@ inside one retryable activity. A 403 from the metadata endpoint is terminal
 `ErrCDNForbidden`. The latter consumes the normal four activity attempts,
 rerunning resolution before every download so an expired or edge-rejected
 variant URL can refresh (FF-029). Exhaustion still follows FF-002's correlated
-`download_error` path.
+`download_error` path. New histories retain FF-060's bounded stage/class in
+`outcome_detail.failure` without persisting the raw error or signed variant.
 
 **Search availability contract (FF-061).** The browser result is one of
 `rendered`, `explicit_empty`, `login`, `upstream_error`, or
@@ -73,15 +74,19 @@ therefore execute their original retry chain. New histories make one activity
 call, decode those details in EventWorkflow, and advance only the unavailable
 counter.
 
-**Candidate failure contract (FF-002 + FF-022).** `download_error` stamps the
-persisted candidate `failed`; no staging object exists. `hash_error` stamps
-only the claimant `failed` and calls `DeleteStaging` with its key. A waiting
-exact-byte candidate then receives ownership and its own full hash retry
-budget, so one unreadable staging object cannot discard the cluster. Invalid
-download output uses `video_workflow_invalid_outcome` and reclaims any returned
-staging key. The compatibility child retains FF-002's correlated unexpected-
-child and typed terminal-output paths. Cancellation bypasses every forensic
-and cleanup command under FF-015.
+**Candidate failure contract (FF-002 + FF-022 + FF-060).** `download_error`
+stamps the persisted candidate `failed`; no staging object exists. New
+histories also persist bounded `outcome_detail.failure.stage/class` evidence
+from the final retryable activity error. The stages cover resolve, scratch,
+CDN download, probe, staging upload, and a workflow fallback; raw errors and
+signed media URLs remain outside Postgres. `hash_error` stamps only the
+claimant `failed` and calls `DeleteStaging` with its key. A waiting exact-byte
+candidate then receives ownership and its own full hash retry budget, so one
+unreadable staging object cannot discard the cluster. Invalid download output
+uses `video_workflow_invalid_outcome` and reclaims any returned staging key.
+The compatibility child retains FF-002's correlated unexpected-child and typed
+terminal-output paths. Cancellation bypasses every forensic and cleanup
+command under FF-015.
 
 **Candidate durability contract (FF-034).** The workflow retains each
 candidate's immutable event, query/attempt, tweet, author, age, and video-page

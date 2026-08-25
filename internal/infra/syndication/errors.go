@@ -43,6 +43,19 @@ var (
 	// time. Transient; retryable.
 	ErrCDNTimeout = errors.New("syndication: CDN/API timeout")
 
+	// ErrTransport — a non-timeout HTTP transport failure while resolving
+	// metadata or fetching video bytes. Transient; retryable.
+	ErrTransport = errors.New("syndication: HTTP transport failure")
+
+	// ErrInvalidResponse — the upstream returned an unexpected status or a
+	// successful response whose JSON could not be decoded. Transient because
+	// edge/backend failures can produce either shape.
+	ErrInvalidResponse = errors.New("syndication: invalid upstream response")
+
+	// ErrCDNStream — the selected video response started but failed while its
+	// body was copied. The caller retries the full resolve-and-download unit.
+	ErrCDNStream = errors.New("syndication: CDN response stream failed")
+
 	// ErrNoVideoVariants — the tweet-result parsed, but carried no usable
 	// mp4 video variant (e.g. an image-only tweet, or amplify content we
 	// can't reach cookieless). Permanent for this candidate.

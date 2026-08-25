@@ -237,10 +237,29 @@ the current branch.
 | FF-056 | P1 | `validating` | The Go vision port computed `elapsed + extra - 1` but then clamped normal-time results back to `elapsed`, shifting the intended ±1 clock window one minute late. Abdelkarim's API-30' goal therefore rejected genuine clips whose sampled clock read 28'. The unclamped normalization is deployed in `136e2d2`. | Verify a natural API-minus-two sampled buildup frame enters the verified pool without admitting an outside-tolerance API-minus-three frame. |
 | FF-057 | P1 | `validating` | Period-aware reset clocks and exact `45:xx 2H` / `15:xx ET2` boundary alternatives are deployed. The corrected historical replay completed all 104 Barcelona–Al Ahly clock rejects across four events, normalized the 31 malformed audit envelopes from the interrupted first run, closed all four checklists, and left zero pending rows. | Verify the next natural reset-clock goal; the deterministic repair and its production exercise are complete. |
 | FF-059 | P1 | `implemented` | VNC now uses a separate raw Firefox ESR image and read-only profile-capture service; Playwright remains headless and search-only. Invalid or expired profiles cannot overwrite the shared backup. The immutable production VNC image built successfully in release `e2143ac`, but the optional service was not running and was not recreated. | Prove raw login → atomic capture → static `/auth/verify` → fresh fleet-instance reload in dev, then repeat production recovery only on a real authorized expiry. |
-| FF-060 | P2 | `confirmed` | In the 2026-08-22 through 2026-08-25 production sample, 1,624 of 11,018 candidates (14.74%) ended as undifferentiated `download_error` across 115 events. Four events lost their complete one- or two-candidate sets to this class. The durable row cannot distinguish syndication lookup, missing media, CDN response, expiry, or staging failure after ephemeral logs disappear. | Persist a bounded download failure class and stage at the terminal candidate boundary; use the measured per-stage distribution before changing retry or filtering policy. |
+| FF-060 | P2 | `implemented` | In the 2026-08-22 through 2026-08-25 production sample, all 1,624 `download_error` candidates were `video.twimg.com` HTTP 403 failures after four attempts. New histories preserve a bounded stage/class through Temporal and persist it under `outcome_detail.failure`; retry and acceptance policy are unchanged. | Roll out, verify a natural failure records `cdn_download/forbidden`, then use the durable distribution to design the separate CDN-denial recovery path. |
 | FF-062 | P1 | `validating` | A real goal that returned after reaching a removed tombstone was mapped back to that terminal row and skipped while its identity stayed exact. Leipzig fixture `1550681` initially retained five active goals against API-Football's coherent 0–6 result. Before release `e2143ac`, a provider clock correction from 45+2 to 45+1 made the return non-exact, so old code allocated generation 2 and completed the fixture. | Prove one natural exact-identity post-removal reappearance receives a new UUID and completes its own debounce/downstream lifecycle under `e2143ac`. |
 | FF-063 | P1 | `validating` | A played terminal fixture whose provider event inventory remains permanently inconsistent had no bounded exit from active polling. The additive terminal observation field, one-hour grace, settled event/downstream gates, completion audit evidence, and stable recency shipped in release `5c105af`. | Verify one coherent and one incomplete natural terminal fixture. Do not remove the rollback-compatible `completion_counter` column until FF-013. |
 | FF-064 | P3 | `implemented` | Production now uses Control's canonical `control-joi.luv` inference identity with `gemma-4-12b` pinned. Both worker replicas were recreated on unchanged release `e2143aca12f90c0891d3afb6b417e29102cba710`; startup dependencies, route initialization, release metrics, scheduler work, the model catalog, and an exact Gemma sentinel passed with zero restarts. | Control retains `joi.luv` as a rollback route until observed legacy use reaches zero; no Found Footy work remains. |
+
+### FF-060 — download failures lost their actionable cause
+
+- **Observed:** Across the 72-hour production audit, 1,624 of 11,018
+  candidates (14.74%) ended as `failed/download_error` across 115 events. Four
+  events lost their complete one- or two-candidate sets.
+- **Retained-log result:** Every one of the 1,624 terminal warnings was
+  `video.twimg.com` HTTP 403 after four `DownloadAndStage` attempts. There were
+  zero exhausted resolve, timeout, scratch, probe, or Garage staging failures
+  in the same window.
+- **Implemented:** The activity now carries a bounded stage and class through
+  a retryable Temporal application error. New EventWorkflow histories persist
+  that value under `outcome_detail.failure` after retry exhaustion and emit the
+  same bounded fields in candidate measurements. Raw errors and signed URLs do
+  not enter Postgres. No schema migration is needed.
+- **Boundary:** This slice changes diagnosis only. It does not reinterpret CDN
+  403 as terminal, change the four-attempt retry unit, or add an unmeasured
+  cookie/variant fallback. See the
+  [decision](./decisions/2026-08-25-download-failures-retain-bounded-stage-and-class.md).
 
 ### FF-062 — removed event reappearance was swallowed by its tombstone
 

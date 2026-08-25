@@ -63,6 +63,8 @@ a call site).
 `actions_workflow.go` owns FF-050's EventWorkflow measurement actions:
 `event_lifecycle_measured`, `event_search_measured`,
 `event_candidate_measured`, and `event_publish_measured`.
+FF-060 download-failure candidate measurements add bounded `failure_stage` and
+`failure_class` fields that match the terminal candidate's durable detail.
 
 ## Log emission (shipped)
 

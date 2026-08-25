@@ -74,6 +74,7 @@ type pipeline struct {
 	terminalVideoFailures       bool
 	preHashMD5Claim             bool
 	durableCandidates           bool
+	durableDownloadFailures     bool
 
 	// activity option ctxs
 	downloadCtx workflow.Context
@@ -105,11 +106,12 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		selector:   workflow.NewSelector(ctx),
 		startedAt:  cfg.startedAt,
 		maxHamming: cfg.maxHamming, minRun: cfg.minRun, maxGaps: cfg.maxGaps,
-		terminalVideoFailures: cfg.terminalVideoFailures,
-		preHashMD5Claim:       cfg.preHashMD5Claim,
-		durableCandidates:     cfg.durableCandidates,
-		downloadCtx:           videoDownloadActivityContext(ctx),
-		hashCtx:               videoHashActivityContext(ctx),
+		terminalVideoFailures:   cfg.terminalVideoFailures,
+		preHashMD5Claim:         cfg.preHashMD5Claim,
+		durableCandidates:       cfg.durableCandidates,
+		durableDownloadFailures: cfg.durableDownloadFailures,
+		downloadCtx:             videoDownloadActivityContext(ctx),
+		hashCtx:                 videoHashActivityContext(ctx),
 		visionCtx: workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 			StartToCloseTimeout: 3 * time.Minute, // vision is slow (multi-frame VLM)
 			HeartbeatTimeout:    time.Minute,
@@ -130,6 +132,7 @@ type pipelineConfig struct {
 	terminalVideoFailures       bool
 	preHashMD5Claim             bool
 	durableCandidates           bool
+	durableDownloadFailures     bool
 	startedAt                   time.Time
 }
 

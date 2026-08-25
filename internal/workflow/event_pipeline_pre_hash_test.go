@@ -3,13 +3,16 @@ package workflow_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+	sdkworkflow "go.temporal.io/sdk/workflow"
 
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
@@ -107,6 +110,81 @@ func TestEventWorkflow_PreHashDeterministicRejectSkipsVision(t *testing.T) {
 	env.AssertNumberOfCalls(t, "HashVideo", 1)
 	env.AssertNotCalled(t, "ValidateClip", mock.Anything, mock.Anything)
 	env.AssertNotCalled(t, "PromoteAndPersist", mock.Anything, mock.Anything)
+}
+
+func TestEventWorkflow_PreHashDownloadFailurePersistsBoundedDetail(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := preHashEventEnv(&s)
+	const tweetURL = "https://x.com/u/status/1111111111111111111"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{{TweetURL: tweetURL, VideoPageURL: "vp", DurationSeconds: 7}}, Count: 1,
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil).Once()
+	failure := videoactivity.DownloadFailureDetail{
+		Stage: videoactivity.DownloadFailureCDNDownload,
+		Class: videoactivity.DownloadFailureForbidden,
+	}
+	env.OnActivity("DownloadAndStage", mock.Anything, downloadTweetIs(tweetURL)).
+		Return(videoactivity.DownloadAndStageOutput{}, temporal.NewApplicationErrorWithOptions(
+			"video download stage failed",
+			videoactivity.DownloadFailureErrorType,
+			temporal.ApplicationErrorOptions{Details: []any{failure}},
+		))
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything,
+		mock.MatchedBy(func(in discoveryactivity.UpsertCandidateOutcomeInput) bool {
+			if in.Evidence.TweetURL != tweetURL ||
+				in.Outcome != discoveryactivity.OutcomeFailed ||
+				in.RejectReason != string(workflow.VideoFailureDownload) {
+				return false
+			}
+			var detail struct {
+				Failure videoactivity.DownloadFailureDetail `json:"failure"`
+			}
+			return json.Unmarshal(in.Detail, &detail) == nil && detail.Failure == failure
+		})).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+
+	env.AssertNumberOfCalls(t, "DownloadAndStage", videoDownloadAttemptsForTest)
+	env.AssertNotCalled(t, "HashVideo", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "ValidateClip", mock.Anything, mock.Anything)
+}
+
+func TestEventWorkflow_PreFF060HistoryOmitsNewDownloadFailureDetail(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := preHashEventEnv(&s)
+	const tweetURL = "https://x.com/u/status/1111111111111111111"
+	env.OnGetVersion(ff060DownloadFailureIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(sdkworkflow.DefaultVersion).Once()
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{{TweetURL: tweetURL, VideoPageURL: "vp", DurationSeconds: 7}}, Count: 1,
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil).Once()
+	failure := videoactivity.DownloadFailureDetail{
+		Stage: videoactivity.DownloadFailureCDNDownload,
+		Class: videoactivity.DownloadFailureForbidden,
+	}
+	env.OnActivity("DownloadAndStage", mock.Anything, downloadTweetIs(tweetURL)).
+		Return(videoactivity.DownloadAndStageOutput{}, temporal.NewApplicationErrorWithOptions(
+			"video download stage failed",
+			videoactivity.DownloadFailureErrorType,
+			temporal.ApplicationErrorOptions{Details: []any{failure}},
+		))
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything,
+		mock.MatchedBy(func(in discoveryactivity.UpsertCandidateOutcomeInput) bool {
+			return in.Evidence.TweetURL == tweetURL &&
+				in.Outcome == discoveryactivity.OutcomeFailed &&
+				in.RejectReason == string(workflow.VideoFailureDownload) &&
+				string(in.Detail) == "null"
+		})).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
 }
 
 // TestEventWorkflow_PreHashClaimTransfersAfterHashFailure proves a bad first

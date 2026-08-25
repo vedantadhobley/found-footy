@@ -167,6 +167,8 @@ Search attempts and candidate outcomes:
 
 ```sql
 SELECT search_attempt, tweet_url, outcome_class, reject_reason,
+       outcome_detail#>>'{failure,stage}' AS failure_stage,
+       outcome_detail#>>'{failure,class}' AS failure_class,
        discovered_at, outcome_at, outcome_detail
 FROM event_search_candidates
 WHERE event_id = '<event-uuid>'
