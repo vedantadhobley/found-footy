@@ -32,6 +32,10 @@ func newClient(t *testing.T, baseURL string) *syndication.Client {
 
 const goodTweet = "https://x.com/user/status/1790000000000000000"
 
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
 func TestResolveVideo_MalformedURL(t *testing.T) {
 	c := newClient(t, "http://unused")
 	if _, err := c.ResolveVideo(context.Background(), "https://x.com/user/no-status"); !errors.Is(err, syndication.ErrMalformedTweetURL) {
@@ -109,6 +113,20 @@ func TestResolveVideo_StatusTaxonomy(t *testing.T) {
 	}
 }
 
+func TestResolveVideo_InvalidResponseTaxonomy(t *testing.T) {
+	for _, handler := range []http.HandlerFunc{
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) },
+		func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("not-json")) },
+	} {
+		srv := httptest.NewServer(handler)
+		_, err := newClient(t, srv.URL).ResolveVideo(context.Background(), goodTweet)
+		srv.Close()
+		if !errors.Is(err, syndication.ErrInvalidResponse) {
+			t.Fatalf("want ErrInvalidResponse, got %v", err)
+		}
+	}
+}
+
 func TestResolveVideo_FallbackVideoField(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"video":{"variants":[
@@ -153,5 +171,16 @@ func TestDownload_CDN403IsTransientForbidden(t *testing.T) {
 	}
 	if errors.Is(err, syndication.ErrGeoRestricted) {
 		t.Fatalf("CDN 403 must not be terminal ErrGeoRestricted: %v", err)
+	}
+}
+
+func TestDownload_StreamFailureTaxonomy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("fake-mp4"))
+	}))
+	defer srv.Close()
+	_, err := newClient(t, "http://unused").Download(context.Background(), srv.URL+"/hi.mp4", failingWriter{})
+	if !errors.Is(err, syndication.ErrCDNStream) {
+		t.Fatalf("want ErrCDNStream, got %v", err)
 	}
 }

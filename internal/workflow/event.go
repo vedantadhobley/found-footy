@@ -85,6 +85,8 @@ const (
 	ff022PreHashMD5ClaimVersion      = workflow.Version(1)
 	ff034CandidateDurabilityChangeID = "ff-034-candidate-durability"
 	ff034CandidateDurabilityVersion  = workflow.Version(1)
+	ff060DownloadFailureChangeID     = "ff-060-download-failure-detail"
+	ff060DownloadFailureVersion      = workflow.Version(1)
 	ff061SearchAvailabilityChangeID  = "ff-061-search-availability"
 	ff061SearchAvailabilityVersion   = workflow.Version(1)
 
@@ -237,6 +239,11 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion,
 		ff034CandidateDurabilityVersion,
 	) != workflow.DefaultVersion
+	durableDownloadFailures := workflow.GetVersion(ctx,
+		ff060DownloadFailureChangeID,
+		workflow.DefaultVersion,
+		ff060DownloadFailureVersion,
+	) != workflow.DefaultVersion
 	availabilityAwareSearch := workflow.GetVersion(ctx,
 		ff061SearchAvailabilityChangeID,
 		workflow.DefaultVersion,
@@ -244,10 +251,11 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 	) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
-		terminalVideoFailures: terminalVideoFailures,
-		preHashMD5Claim:       preHashMD5Claim,
-		durableCandidates:     durableCandidates,
-		startedAt:             startedAt,
+		terminalVideoFailures:   terminalVideoFailures,
+		preHashMD5Claim:         preHashMD5Claim,
+		durableCandidates:       durableCandidates,
+		durableDownloadFailures: durableDownloadFailures,
+		startedAt:               startedAt,
 	}, log)
 
 	// FF-007 recovery: a new execution after failed-only Workflow ID reuse

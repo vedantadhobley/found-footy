@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"go.temporal.io/sdk/temporal"
 
 	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 	"github.com/vedantadhobley/found-footy/internal/infra/ffmpeg"
@@ -125,6 +126,30 @@ func input() DownloadAndStageInput {
 	return DownloadAndStageInput{EventID: uuid.New(), FixtureID: 1589332, TweetURL: "https://x.com/u/status/123"}
 }
 
+func requireDownloadFailure(
+	t *testing.T,
+	err error,
+	wantStage DownloadFailureStage,
+	wantClass DownloadFailureClass,
+) {
+	t.Helper()
+	var applicationErr *temporal.ApplicationError
+	if !errors.As(err, &applicationErr) {
+		t.Fatalf("error = %T %v, want ApplicationError", err, err)
+	}
+	if applicationErr.Type() != DownloadFailureErrorType || applicationErr.NonRetryable() {
+		t.Fatalf("type/nonretryable = %q/%v, want %q/false",
+			applicationErr.Type(), applicationErr.NonRetryable(), DownloadFailureErrorType)
+	}
+	var detail DownloadFailureDetail
+	if err := applicationErr.Details(&detail); err != nil {
+		t.Fatalf("decode failure detail: %v", err)
+	}
+	if detail.Stage != wantStage || detail.Class != wantClass || !detail.Valid() {
+		t.Fatalf("detail = %+v, want stage=%q class=%q", detail, wantStage, wantClass)
+	}
+}
+
 // --- DownloadAndStage ---
 
 func TestDownloadAndStage_Passed(t *testing.T) {
@@ -180,9 +205,11 @@ func TestDownloadAndStage_GeoIsOutcomeNotError(t *testing.T) {
 
 func TestDownloadAndStage_RateLimitIsError(t *testing.T) {
 	s := &fakeSynd{rvErr: syndication.ErrRateLimited}
-	if _, err := newActs(t, s, &fakeFFmpeg{}, &fakeS3{}).DownloadAndStage(context.Background(), input()); err == nil {
+	_, err := newActs(t, s, &fakeFFmpeg{}, &fakeS3{}).DownloadAndStage(context.Background(), input())
+	if err == nil {
 		t.Fatal("rate-limit should be a (retryable) error, not an outcome")
 	}
+	requireDownloadFailure(t, err, DownloadFailureResolve, DownloadFailureRateLimited)
 }
 
 func TestDownloadAndStage_CDNForbiddenIsError(t *testing.T) {
@@ -197,6 +224,30 @@ func TestDownloadAndStage_CDNForbiddenIsError(t *testing.T) {
 	if out.Outcome != "" {
 		t.Fatalf("CDN forbidden outcome=%q, want empty retryable result", out.Outcome)
 	}
+	requireDownloadFailure(t, err, DownloadFailureCDNDownload, DownloadFailureForbidden)
+}
+
+func TestDownloadAndStage_ProbeFailureCarriesDetail(t *testing.T) {
+	s := &fakeSynd{
+		rv:      &syndication.ResolvedVideo{TweetID: "1", Width: 1280, Height: 720, DurationMS: 11000},
+		dlBytes: []byte("x"),
+	}
+	_, err := newActs(t, s, &fakeFFmpeg{mdErr: ffmpeg.ErrExtractionTimeout}, &fakeS3{}).
+		DownloadAndStage(context.Background(), input())
+	requireDownloadFailure(t, err, DownloadFailureProbe, DownloadFailureTimeout)
+}
+
+func TestDownloadAndStage_StagingFailureCarriesDetail(t *testing.T) {
+	s := &fakeSynd{
+		rv:      &syndication.ResolvedVideo{TweetID: "1", Width: 1280, Height: 720, DurationMS: 11000},
+		dlBytes: []byte("x"),
+	}
+	ff := &fakeFFmpeg{md: &ffmpeg.VideoMetadata{
+		Width: 1280, Height: 720, DurationSecs: 11, FrameRate: 25,
+	}}
+	_, err := newActs(t, s, ff, &fakeS3{upErr: errors.New("garage unavailable")}).
+		DownloadAndStage(context.Background(), input())
+	requireDownloadFailure(t, err, DownloadFailureStagingUpload, DownloadFailureStorage)
 }
 
 func TestDownloadAndStage_PostProbeReject(t *testing.T) {

@@ -36,3 +36,9 @@ fast, so genuinely inaccessible tweets do not consume those retries.
 This narrows the historical rebuild-plan contract that treated every
 `ErrGeoRestricted` as non-retryable. It does not change other terminal classes,
 the download retry count, or the FF-002 failure result.
+
+## Later refinement
+
+[FF-060](./2026-08-25-download-failures-retain-bounded-stage-and-class.md)
+retains the same retry policy and `download_error` result while adding bounded
+`cdn_download/forbidden` evidence to the terminal candidate row.

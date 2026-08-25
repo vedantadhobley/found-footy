@@ -69,7 +69,7 @@ found-footy/
 │   │   │   └── focused colocated test files by responsibility
 │   │   ├── monitor/                     ✓ shared deps/config plus activation.go, reconcile.go, emission.go, and event_identity.go; failed-only spawn recovery remains in spawner.go
 │   │   ├── discovery/                   ✓ shared config/classified search plus candidates.go durable candidate/search recovery and completion.go checklist closure
-│   │   ├── video/                       ✓ DownloadAndStage, versioned/minimum-length HashVideo, live-asset recovery, persistence, teardown, and ranking activities
+│   │   ├── video/                       ✓ DownloadAndStage with bounded failure detail, versioned/minimum-length HashVideo, live-asset recovery, persistence, teardown, and ranking activities
 │   │   ├── vision/                      ✓ staged-clip frame extraction + model-backed validation
 │   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when fleet disabled (FIREFOXFLEET_ENABLED=false)
 │   │   ├── livefeed/                     ✓ publish-activity boundary for all NATS live-feed emits
@@ -336,7 +336,9 @@ Adapter-specific notes:
 - **syndication**: metadata resolution and CDN byte download use separate 403
   classes. Metadata 403 is terminal `ErrGeoRestricted`; CDN 403 is transient
   `ErrCDNForbidden`, allowing the enclosing activity retry to resolve a fresh
-  variant URL without exposing the signed URL in errors (FF-029).
+  variant URL without exposing the signed URL in errors (FF-029). Transport,
+  invalid-response, and response-stream sentinels let FF-060 persist bounded
+  stage/class evidence after retry exhaustion.
 - **apifootball**: getJSON helper handles auth (`x-apisports-key` per
   doc) + rate-limit-header parsing (per-minute + daily distinct) +
   error classification. `/fixtures` (single + by-IDs) landed in O1a.

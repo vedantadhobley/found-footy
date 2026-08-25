@@ -159,7 +159,7 @@ func (c *Client) fetchTweetResult(ctx context.Context, id string, dst *tweetResu
 	url := c.baseURL + "/tweet-result?id=" + id + "&token=x"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return fmt.Errorf("syndication.ResolveVideo: build request: %w", err)
+		return fmt.Errorf("%w: build request: %v", ErrInvalidResponse, err)
 	}
 	req.Header.Set("User-Agent", c.userAgent)
 	req.Header.Set("Accept", "application/json")
@@ -170,7 +170,7 @@ func (c *Client) fetchTweetResult(ctx context.Context, id string, dst *tweetResu
 		if isTimeout(err) {
 			return fmt.Errorf("%w: tweet-result id=%s: %v", ErrCDNTimeout, id, err)
 		}
-		return fmt.Errorf("syndication.ResolveVideo: %w", err)
+		return fmt.Errorf("%w: tweet-result id=%s: %v", ErrTransport, id, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -178,7 +178,7 @@ func (c *Client) fetchTweetResult(ctx context.Context, id string, dst *tweetResu
 		return err
 	}
 	if err := json.NewDecoder(resp.Body).Decode(dst); err != nil {
-		return fmt.Errorf("syndication.ResolveVideo: decode: %w", err)
+		return fmt.Errorf("%w: tweet-result decode: %v", ErrInvalidResponse, err)
 	}
 	return nil
 }
@@ -189,7 +189,7 @@ func (c *Client) fetchTweetResult(ctx context.Context, id string, dst *tweetResu
 func (c *Client) Download(ctx context.Context, variantURL string, w io.Writer) (int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, variantURL, nil)
 	if err != nil {
-		return 0, fmt.Errorf("syndication.Download: build request: %w", err)
+		return 0, fmt.Errorf("%w: build download request: %v", ErrInvalidResponse, err)
 	}
 	req.Header.Set("User-Agent", c.userAgent)
 	req.Header.Set("Referer", refererHeader)
@@ -200,7 +200,7 @@ func (c *Client) Download(ctx context.Context, variantURL string, w io.Writer) (
 		if isTimeout(err) {
 			return 0, fmt.Errorf("%w: download: %v", ErrCDNTimeout, err)
 		}
-		return 0, fmt.Errorf("syndication.Download: %w", err)
+		return 0, fmt.Errorf("%w: download: %v", ErrTransport, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -212,7 +212,7 @@ func (c *Client) Download(ctx context.Context, variantURL string, w io.Writer) (
 	}
 	n, err := io.Copy(w, resp.Body)
 	if err != nil {
-		return n, fmt.Errorf("syndication.Download: stream: %w", err)
+		return n, fmt.Errorf("%w: %v", ErrCDNStream, err)
 	}
 	return n, nil
 }
@@ -230,7 +230,7 @@ func statusToErr(code int, id string) error {
 	case http.StatusTooManyRequests:
 		return fmt.Errorf("%w: tweet_id=%s", ErrRateLimited, id)
 	default:
-		return fmt.Errorf("syndication: unexpected status %d %s (tweet_id=%s)", code, http.StatusText(code), id)
+		return fmt.Errorf("%w: status=%d %s tweet_id=%s", ErrInvalidResponse, code, http.StatusText(code), id)
 	}
 }
 

@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Download failures retain bounded stage and class](./2026-08-25-download-failures-retain-bounded-stage-and-class.md) — FF-060 carries retryable download failure evidence through Temporal and persists it without raw errors or a schema migration.
 - [Found Footy uses Control's model request contract](./2026-08-25-control-model-request-contract.md) — vision sends public `reasoning_effort: none`, removes backend-private template controls, and inherits model-owned sampling defaults.
 - [Terminal observation grace bounds fixture completion](./2026-08-25-terminal-observation-grace-bounds-completion.md) — FF-063 replaces permanent score-parity completion gating with one hour of terminal observation plus settled event/downstream gates.
 - [Found Footy uses Control's canonical Joi gateway](./2026-08-25-control-joi-is-production-inference-route.md) — production moves from the legacy `joi.luv` identity to `control-joi.luv` without changing its pinned model, concurrency, or application release.

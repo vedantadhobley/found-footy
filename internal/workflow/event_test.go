@@ -34,6 +34,7 @@ const (
 	ff017RestartChangeIDForTest      = "ff-017-browser-restart-retry"
 	ff022PreHashChangeIDForTest      = "ff-022-pre-hash-md5-claim"
 	ff034DurabilityChangeIDForTest   = "ff-034-candidate-durability"
+	ff060DownloadFailureIDForTest    = "ff-060-download-failure-detail"
 	ff061AvailabilityChangeIDForTest = "ff-061-search-availability"
 	discoveryPGRetryAttemptsForTest  = 5
 )

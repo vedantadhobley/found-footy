@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 
 	"github.com/google/uuid"
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/vedantadhobley/found-footy/internal/activity/heartbeat"
 	"github.com/vedantadhobley/found-footy/internal/config"
@@ -90,7 +91,7 @@ func (a *Activities) DownloadAndStage(ctx context.Context, in DownloadAndStageIn
 		if reason, terminal := classifySyndication(err); terminal {
 			return rejected(reason), nil
 		}
-		return out, fmt.Errorf("video.DownloadAndStage: resolve: %w", err)
+		return out, downloadFailure(DownloadFailureResolve, classifyTransient(err), err)
 	}
 
 	// Pre-download filter — reject portrait / compilation with 0 bytes fetched.
@@ -100,17 +101,17 @@ func (a *Activities) DownloadAndStage(ctx context.Context, in DownloadAndStageIn
 
 	dir := filepath.Join(a.ScratchDir, fmt.Sprint(in.FixtureID), in.EventID.String(), rv.TweetID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return out, fmt.Errorf("video.DownloadAndStage: scratch: %w", err)
+		return out, downloadFailure(DownloadFailureScratch, DownloadFailureFilesystem, err)
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	srcPath := filepath.Join(dir, "source.mp4")
 
-	md5hex, size, derr := a.downloadTo(ctx, rv.VariantURL, srcPath)
+	md5hex, size, failureClass, derr := a.downloadTo(ctx, rv.VariantURL, srcPath)
 	if derr != nil {
 		if reason, terminal := classifySyndication(derr); terminal {
 			return rejected(reason), nil
 		}
-		return out, fmt.Errorf("video.DownloadAndStage: download: %w", derr)
+		return out, downloadFailure(DownloadFailureCDNDownload, failureClass, derr)
 	}
 	out.MD5, out.SizeBytes = md5hex, size
 
@@ -119,7 +120,7 @@ func (a *Activities) DownloadAndStage(ctx context.Context, in DownloadAndStageIn
 		if errors.Is(err, ffmpeg.ErrInputCorrupted) {
 			return rejectedMeta(out, "corrupt"), nil
 		}
-		return out, fmt.Errorf("video.DownloadAndStage: probe: %w", err)
+		return out, downloadFailure(DownloadFailureProbe, classifyProbe(err), err)
 	}
 	out.Width, out.Height = meta.Width, meta.Height
 	out.DurationMS = int(meta.DurationSecs * 1000)
@@ -131,7 +132,7 @@ func (a *Activities) DownloadAndStage(ctx context.Context, in DownloadAndStageIn
 
 	key := a.stagingKey(in.FixtureID, in.EventID, rv.TweetID)
 	if err := a.uploadFile(ctx, srcPath, key, size); err != nil {
-		return out, fmt.Errorf("video.DownloadAndStage: stage: %w", err)
+		return out, downloadFailure(DownloadFailureStagingUpload, DownloadFailureStorage, err)
 	}
 	out.Outcome, out.StagingKey = OutcomePassed, key
 	return out, nil
@@ -192,21 +193,25 @@ func (a *Activities) HashVideo(ctx context.Context, in HashVideoInput) (HashVide
 // --- internal helpers ---
 
 // downloadTo streams the variant into dstPath, computing md5 inline.
-func (a *Activities) downloadTo(ctx context.Context, variantURL, dstPath string) (md5hex string, size int64, err error) {
+func (a *Activities) downloadTo(
+	ctx context.Context,
+	variantURL string,
+	dstPath string,
+) (md5hex string, size int64, failureClass DownloadFailureClass, err error) {
 	f, err := os.Create(dstPath)
 	if err != nil {
-		return "", 0, err
+		return "", 0, DownloadFailureFilesystem, err
 	}
 	h := md5.New() //nolint:gosec // Existing storage identity is intentionally MD5-based.
 	n, derr := a.Syndication.Download(ctx, variantURL, io.MultiWriter(f, h))
 	cerr := f.Close()
 	if derr != nil {
-		return "", 0, derr
+		return "", 0, classifyTransient(derr), derr
 	}
 	if cerr != nil {
-		return "", 0, cerr
+		return "", 0, DownloadFailureFilesystem, cerr
 	}
-	return hex.EncodeToString(h.Sum(nil)), n, nil
+	return hex.EncodeToString(h.Sum(nil)), n, "", nil
 }
 
 func (a *Activities) uploadFile(ctx context.Context, srcPath, key string, size int64) error {
@@ -272,4 +277,59 @@ func classifySyndication(err error) (reason string, terminal bool) {
 	default: // unexpected infrastructure failures remain transient
 		return "", false
 	}
+}
+
+// classifyTransient maps adapter errors onto the bounded durable class. The
+// caller supplies the stage, so the same timeout or transport class remains
+// actionable without encoding adapter error strings into Postgres.
+func classifyTransient(err error) DownloadFailureClass {
+	switch {
+	case errors.Is(err, syndication.ErrCDNForbidden):
+		return DownloadFailureForbidden
+	case errors.Is(err, syndication.ErrRateLimited):
+		return DownloadFailureRateLimited
+	case errors.Is(err, syndication.ErrCDNTimeout):
+		return DownloadFailureTimeout
+	case errors.Is(err, syndication.ErrTransport):
+		return DownloadFailureTransport
+	case errors.Is(err, syndication.ErrInvalidResponse):
+		return DownloadFailureInvalidResponse
+	case errors.Is(err, syndication.ErrCDNStream):
+		return DownloadFailureStream
+	default:
+		return DownloadFailureUnknown
+	}
+}
+
+// classifyProbe retains ffmpeg's existing typed taxonomy without changing its
+// current activity retry policy. FF-060 is diagnostic, not a retry-policy
+// change.
+func classifyProbe(err error) DownloadFailureClass {
+	switch {
+	case errors.Is(err, ffmpeg.ErrExtractionTimeout):
+		return DownloadFailureTimeout
+	case errors.Is(err, ffmpeg.ErrBinaryNotFound):
+		return DownloadFailureBinaryMissing
+	case errors.Is(err, ffmpeg.ErrInputNotFound):
+		return DownloadFailureInputMissing
+	case errors.Is(err, ffmpeg.ErrOutputWriteFailed):
+		return DownloadFailureFilesystem
+	case errors.Is(err, ffmpeg.ErrConcurrencyExhausted):
+		return DownloadFailureConcurrency
+	case errors.Is(err, ffmpeg.ErrProbeFailed):
+		return DownloadFailureProbeFailed
+	default:
+		return DownloadFailureUnknown
+	}
+}
+
+// downloadFailure carries a bounded class through Temporal's retry chain.
+// Cause remains in Temporal history and logs; only Detail is later persisted.
+func downloadFailure(stage DownloadFailureStage, class DownloadFailureClass, cause error) error {
+	detail := DownloadFailureDetail{Stage: stage, Class: class}
+	return temporal.NewApplicationErrorWithOptions(
+		"video download stage failed",
+		DownloadFailureErrorType,
+		temporal.ApplicationErrorOptions{Cause: cause, Details: []any{detail}},
+	)
 }
