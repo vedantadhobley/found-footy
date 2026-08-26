@@ -241,6 +241,7 @@ the current branch.
 | FF-062 | P1 | `validating` | A real goal that returned after reaching a removed tombstone was mapped back to that terminal row and skipped while its identity stayed exact. Leipzig fixture `1550681` initially retained five active goals against API-Football's coherent 0–6 result. Before release `e2143ac`, a provider clock correction from 45+2 to 45+1 made the return non-exact, so old code allocated generation 2 and completed the fixture. | Prove one natural exact-identity post-removal reappearance receives a new UUID and completes its own debounce/downstream lifecycle under `e2143ac`. |
 | FF-063 | P1 | `validating` | A played terminal fixture whose provider event inventory remains permanently inconsistent had no bounded exit from active polling. The additive terminal observation field, one-hour grace, settled event/downstream gates, completion audit evidence, and stable recency shipped in release `5c105af`. | Verify one coherent and one incomplete natural terminal fixture. Do not remove the rollback-compatible `completion_counter` column until FF-013. |
 | FF-064 | P3 | `implemented` | Production uses Control's canonical `control-joi.luv` identity with `gemma-4-12b` pinned. Found Footy release `e4ae2d7` passed its exact three-image request against Control contract-v3 digest `0fc304bc…`; the typed catalog, constrained response, and strict rejection checks all matched the application contract. | Control retains `joi.luv` as a rollback route until observed legacy use reaches zero; no Found Footy work remains. |
+| FF-065 | P2 | `implemented` | Exact-byte followers became terminal `duplicate` while their representative still awaited vision, so a later content rejection left duplicate rows without an asset winner. New histories retain followers until the representative terminates and share its rejection/failure unless an asset actually wins. | Release the worker change and verify a natural rejected exact-byte cluster contains no duplicate outcome, while a promoted cluster retains one validation path and its full popularity. |
 
 ### FF-060 — download failures lost their actionable cause
 
@@ -344,6 +345,40 @@ the current branch.
   settlement gate blocks completion. Its first eligible completion poll is at
   or after 14:04 UTC. This naturally exercises the incomplete-inventory grace
   path but still owes the resulting completion observation.
+
+### FF-065 — exact-byte followers could name a nonexistent winner
+
+- **Observed:** The 2026-08-25 production audit found eight byte-identical
+  Awoniyi candidates stored as `duplicate` even though their representative
+  failed the wrong-clock vision gate and no clip promoted for the event. Across
+  production since the Go cutover, duplicate outcomes appeared on 303 events;
+  that broad count is normal dedup activity. Only six events had duplicate rows
+  without any surviving asset, totaling 22 ambiguous rows.
+- **Impact boundary:** None of those six events had a post-download hash,
+  vision, or promotion infrastructure failure. Their representatives received
+  deterministic content rejections. No unique clip loss is demonstrated, and
+  the exact-byte collapse itself was correct. The defect was durable audit
+  semantics: `duplicate` promises a winner that did not exist.
+- **Cause:** FF-022 retained one representative per MD5 for hashing and vision,
+  but hash-successful waiters and later matches against a vision-pending clip
+  became terminal `duplicate` immediately. Their popularity moved to the
+  representative before its terminal result was known.
+- **Implemented:** New histories still delete redundant staging objects and
+  perform one hash, one vision call, and one promotion attempt unit per exact
+  cluster. The representative now retains follower URLs in workflow memory.
+  A successful promotion records the representative as `promoted` and followers
+  as `duplicate` with `winner_asset_id`. Collapse onto an existing asset records
+  the same winner evidence immediately. Content rejection records every member
+  `rejected` with the shared reason/evidence; exhausted vision or promotion
+  records every member `failed` with the shared bounded reason. Popularity still
+  includes every sighting.
+- **Compatibility and proof:** Change ID `ff-065-exact-follower-outcome`,
+  version 1, keeps in-flight histories on their former command sequence.
+  Workflow tests cover promotion after a late pending match, shared content
+  rejection, one bounded vision retry unit, one bounded promotion retry unit,
+  and the pre-version path. No schema, API, frontend, or historical repair is
+  required; old rows do not retain enough linkage for a deterministic rewrite.
+  See the [decision](./decisions/2026-08-26-exact-followers-inherit-representative-outcome.md).
 
 ### FF-059 — VNC recovery uses the login path X already rejected
 

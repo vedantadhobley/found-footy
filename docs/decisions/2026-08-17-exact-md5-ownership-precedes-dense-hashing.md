@@ -48,3 +48,7 @@ registration remain until no retained history can replay or resume that path.
 - The original V-phase decision to keep download and hash inside every child is
   superseded for new executions. Its rationale remains preserved as historical
   evidence in the design document.
+
+FF-065 later refined step 4's terminal-outcome semantics without changing this
+ownership or work-sharing design. See [Exact-byte followers inherit the
+representative terminal result](./2026-08-26-exact-followers-inherit-representative-outcome.md).

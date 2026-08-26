@@ -261,7 +261,7 @@ type CandidateOutcome string
 
 const (
 	OutcomePromoted   CandidateOutcome = "promoted"   // surfaced as an asset/share
-	OutcomeDuplicate  CandidateOutcome = "duplicate"  // md5/perceptual dup, collapsed onto a winner
+	OutcomeDuplicate  CandidateOutcome = "duplicate"  // md5/perceptual dup, collapsed onto a durable asset winner
 	OutcomeSuperseded CandidateOutcome = "superseded" // promoted, then replaced by a better clip
 	OutcomeRejected   CandidateOutcome = "rejected"   // download-stage or vision reject (reject_reason says which)
 	OutcomeFailed     CandidateOutcome = "failed"     // child/infra error — never got a clean verdict

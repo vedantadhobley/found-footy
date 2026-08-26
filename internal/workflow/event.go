@@ -77,18 +77,20 @@ const (
 	discoveryPGShortActivityTTL = 30 * time.Second
 	discoveryPGRetryAttempts    = 5
 
-	ff007FailedRunRecoveryChangeID   = "ff-007-failed-run-recovery"
-	ff007FailedRunRecoveryVersion    = workflow.Version(1)
-	ff017BrowserRestartChangeID      = "ff-017-browser-restart-retry"
-	ff017BrowserRestartVersion       = workflow.Version(1)
-	ff022PreHashMD5ClaimChangeID     = "ff-022-pre-hash-md5-claim"
-	ff022PreHashMD5ClaimVersion      = workflow.Version(1)
-	ff034CandidateDurabilityChangeID = "ff-034-candidate-durability"
-	ff034CandidateDurabilityVersion  = workflow.Version(1)
-	ff060DownloadFailureChangeID     = "ff-060-download-failure-detail"
-	ff060DownloadFailureVersion      = workflow.Version(1)
-	ff061SearchAvailabilityChangeID  = "ff-061-search-availability"
-	ff061SearchAvailabilityVersion   = workflow.Version(1)
+	ff007FailedRunRecoveryChangeID    = "ff-007-failed-run-recovery"
+	ff007FailedRunRecoveryVersion     = workflow.Version(1)
+	ff017BrowserRestartChangeID       = "ff-017-browser-restart-retry"
+	ff017BrowserRestartVersion        = workflow.Version(1)
+	ff022PreHashMD5ClaimChangeID      = "ff-022-pre-hash-md5-claim"
+	ff022PreHashMD5ClaimVersion       = workflow.Version(1)
+	ff034CandidateDurabilityChangeID  = "ff-034-candidate-durability"
+	ff034CandidateDurabilityVersion   = workflow.Version(1)
+	ff060DownloadFailureChangeID      = "ff-060-download-failure-detail"
+	ff060DownloadFailureVersion       = workflow.Version(1)
+	ff061SearchAvailabilityChangeID   = "ff-061-search-availability"
+	ff061SearchAvailabilityVersion    = workflow.Version(1)
+	ff065ExactFollowerOutcomeChangeID = "ff-065-exact-follower-outcome"
+	ff065ExactFollowerOutcomeVersion  = workflow.Version(1)
 
 	// Pre-FF-061 histories retain FF-017's roughly 0/10/30/60 activity retry
 	// chain for replay compatibility. New histories use one activity attempt
@@ -249,13 +251,19 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion,
 		ff061SearchAvailabilityVersion,
 	) != workflow.DefaultVersion
+	deferExactFollowerOutcomes := workflow.GetVersion(ctx,
+		ff065ExactFollowerOutcomeChangeID,
+		workflow.DefaultVersion,
+		ff065ExactFollowerOutcomeVersion,
+	) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
-		terminalVideoFailures:   terminalVideoFailures,
-		preHashMD5Claim:         preHashMD5Claim,
-		durableCandidates:       durableCandidates,
-		durableDownloadFailures: durableDownloadFailures,
-		startedAt:               startedAt,
+		terminalVideoFailures:      terminalVideoFailures,
+		preHashMD5Claim:            preHashMD5Claim,
+		durableCandidates:          durableCandidates,
+		durableDownloadFailures:    durableDownloadFailures,
+		deferExactFollowerOutcomes: deferExactFollowerOutcomes,
+		startedAt:                  startedAt,
 	}, log)
 
 	// FF-007 recovery: a new execution after failed-only Workflow ID reuse

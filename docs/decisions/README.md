@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Exact-byte followers inherit the representative terminal result](./2026-08-26-exact-followers-inherit-representative-outcome.md) — FF-065 preserves one validation path per MD5 but records followers as duplicates only after an asset wins.
 - [Download failures retain bounded stage and class](./2026-08-25-download-failures-retain-bounded-stage-and-class.md) — FF-060 carries retryable download failure evidence through Temporal and persists it without raw errors or a schema migration.
 - [Found Footy uses Control's model request contract](./2026-08-25-control-model-request-contract.md) — vision sends public `reasoning_effort: none`, removes backend-private template controls, and inherits model-owned sampling defaults.
 - [Terminal observation grace bounds fixture completion](./2026-08-25-terminal-observation-grace-bounds-completion.md) — FF-063 replaces permanent score-parity completion gating with one hour of terminal observation plus settled event/downstream gates.

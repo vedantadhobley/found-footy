@@ -136,9 +136,7 @@ func (p *pipeline) onDownloadDone(tweetURL string) func(workflow.Future) {
 
 		c := clipFromDownload(tweetURL, out)
 		if idx, isAsset, matched := p.matchMD5(c); matched {
-			p.duplicates++
-			p.collapse(c, idx, isAsset)
-			p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeDuplicate, "", nil)
+			p.collapseExact(c, idx, isAsset)
 			return
 		}
 		if claim, exists := p.hashing[c.md5]; exists {
@@ -252,8 +250,12 @@ func (p *pipeline) onHashDone(md5 string) func(workflow.Future) {
 		p.passed++
 		for _, duplicate := range claim.waiting {
 			winner.popularity += duplicate.popularity
-			p.duplicates++
-			p.recordOutcome(duplicate.tweetURL, discoveryactivity.OutcomeDuplicate, "", nil)
+			if p.deferExactFollowerOutcomes {
+				winner.exactFollowers = append(winner.exactFollowers, duplicate.tweetURL)
+			} else {
+				p.duplicates++
+				p.recordOutcome(duplicate.tweetURL, discoveryactivity.OutcomeDuplicate, "", nil)
+			}
 			p.deleteStaging(duplicate.stagingKey)
 		}
 		delete(p.hashing, md5)

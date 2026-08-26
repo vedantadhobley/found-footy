@@ -81,9 +81,7 @@ func (p *pipeline) onVideoDone(fallbackTweetURL string) func(workflow.Future) {
 		// decisions.md 2026-08-09). md5-identical bytes are the same clip in every
 		// respect — same category — so collapsing them here is always safe.
 		if idx, isAsset, matched := p.matchMD5(c); matched {
-			p.duplicates++
-			p.collapse(c, idx, isAsset)
-			p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeDuplicate, "", nil)
+			p.collapseExact(c, idx, isAsset)
 			return
 		}
 
@@ -144,19 +142,28 @@ func (c clip) quality() dvideo.ClipQuality {
 	}
 }
 
-// collapse merges an md5-exact duplicate onto its winner. Against a promoted
-// asset the loser's votes go straight to the DB row; against a still-pending
-// clip (no row yet) they accumulate IN MEMORY on that pending clip and ride
-// into its popularity when it promotes (#180). Loser bytes are dropped either
-// way.
-func (p *pipeline) collapse(loser clip, idx int, isAsset bool) {
+// collapseExact merges a byte-identical candidate onto a promoted or pending
+// representative. A promoted representative is already a winner, so the
+// follower can become duplicate immediately. A pending representative has no
+// winner yet: FF-065 retains the follower URL until the shared validation path
+// reaches its terminal result. Older histories keep the original immediate
+// duplicate command sequence. Loser bytes are dropped in both cases.
+func (p *pipeline) collapseExact(loser clip, idx int, isAsset bool) {
 	if p.canceled() {
 		return
 	}
 	if isAsset {
-		p.bumpPopularity(p.assets[idx].assetID, loser.popularity)
+		winnerID := p.assets[idx].assetID
+		p.bumpPopularity(winnerID, loser.popularity)
+		p.duplicateExactCluster(loser, winnerID)
 	} else {
 		p.pending[idx].popularity += loser.popularity
+		if p.deferExactFollowerOutcomes {
+			p.pending[idx].exactFollowers = append(p.pending[idx].exactFollowers, loser.tweetURL)
+		} else {
+			p.duplicates++
+			p.recordOutcome(loser.tweetURL, discoveryactivity.OutcomeDuplicate, "", nil)
+		}
 	}
 	p.deleteStaging(loser.stagingKey)
 }
@@ -189,17 +196,18 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 			return
 		}
 		// The closure captured `c` by value at fireVision; gate md5-dups may have
-		// bumped the LIVE pending entry's popularity since. Re-read it (#180).
+		// bumped the LIVE pending entry's popularity and attached exact followers
+		// since. Re-read both before resolving the shared terminal result.
 		if pc, ok := p.removePending(c.stagingKey); ok {
 			c.popularity = pc.popularity
+			c.exactFollowers = pc.exactFollowers
 		}
 
 		var vout visionactivity.ValidateClipOutput
 		if err := f.Get(p.ctx, &vout); err != nil {
 			p.logCandidatePhase(c.tweetURL, "vision", "failed", c.visionStartedAt)
 			// Vision infra-fail after retries — drop the clip + its staging.
-			p.failed++
-			p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeFailed, "vision_error", nil)
+			p.failExactCluster(c, "vision_error", nil)
 			p.deleteStaging(c.stagingKey)
 			return
 		}
@@ -211,7 +219,6 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 			c.verified = vout.Outcome == string(dvision.OutcomeVerified)
 			p.dedupAndPromote(c, vout)
 		default: // rejected — not soccer / screen recording / wrong clock
-			p.rejectedClips++
 			detail := map[string]any{
 				"soccer_votes": vout.SoccerVotes, "screen_votes": vout.ScreenVotes,
 				"frame_count": len(vout.Frames), "frame_observations": vout.Frames,
@@ -221,7 +228,7 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 				detail["detected_minute"], detail["detected_period"] = *vout.DetectedMinute, vout.DetectedPeriod
 				detail["expected_minute"], detail["expected_period"] = vout.ExpectedMinute, vout.ExpectedPeriod
 			}
-			p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeRejected, vout.Reason, jsonDetail(detail))
+			p.rejectExactCluster(c, vout.Reason, jsonDetail(detail))
 			p.deleteStaging(c.stagingKey)
 		}
 	}
@@ -264,9 +271,8 @@ func (p *pipeline) dedupAndPromote(c clip, vout visionactivity.ValidateClipOutpu
 
 	// An existing asset wins. c collapses onto it (bump + drop); any OTHER
 	// matched assets (a bridge c revealed) also consolidate onto that winner.
-	p.duplicates++
-	p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeDuplicate, "", nil)
 	winnerID := p.assets[best].assetID
+	p.duplicateExactCluster(c, winnerID)
 	var losers []uuid.UUID
 	for _, idx := range matched {
 		if idx != best {

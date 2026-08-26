@@ -46,6 +46,7 @@ type clip struct {
 	fileSizeBytes   int64
 	bitrate         *int
 	popularity      int       // accumulated sightings: own (1) + md5-dups collapsed while pending (#180)
+	exactFollowers  []string  // byte-identical candidate URLs awaiting the representative's terminal result
 	verified        bool      // vision verdict; set at promote — the dedup category (verified↔verified only)
 	assetID         uuid.UUID // set once promoted
 	visionStartedAt time.Time // workflow-observed start of the vision activity
@@ -75,6 +76,7 @@ type pipeline struct {
 	preHashMD5Claim             bool
 	durableCandidates           bool
 	durableDownloadFailures     bool
+	deferExactFollowerOutcomes  bool
 
 	// activity option ctxs
 	downloadCtx workflow.Context
@@ -106,12 +108,13 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		selector:   workflow.NewSelector(ctx),
 		startedAt:  cfg.startedAt,
 		maxHamming: cfg.maxHamming, minRun: cfg.minRun, maxGaps: cfg.maxGaps,
-		terminalVideoFailures:   cfg.terminalVideoFailures,
-		preHashMD5Claim:         cfg.preHashMD5Claim,
-		durableCandidates:       cfg.durableCandidates,
-		durableDownloadFailures: cfg.durableDownloadFailures,
-		downloadCtx:             videoDownloadActivityContext(ctx),
-		hashCtx:                 videoHashActivityContext(ctx),
+		terminalVideoFailures:      cfg.terminalVideoFailures,
+		preHashMD5Claim:            cfg.preHashMD5Claim,
+		durableCandidates:          cfg.durableCandidates,
+		durableDownloadFailures:    cfg.durableDownloadFailures,
+		deferExactFollowerOutcomes: cfg.deferExactFollowerOutcomes,
+		downloadCtx:                videoDownloadActivityContext(ctx),
+		hashCtx:                    videoHashActivityContext(ctx),
 		visionCtx: workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 			StartToCloseTimeout: 3 * time.Minute, // vision is slow (multi-frame VLM)
 			HeartbeatTimeout:    time.Minute,
@@ -133,6 +136,7 @@ type pipelineConfig struct {
 	preHashMD5Claim             bool
 	durableCandidates           bool
 	durableDownloadFailures     bool
+	deferExactFollowerOutcomes  bool
 	startedAt                   time.Time
 }
 

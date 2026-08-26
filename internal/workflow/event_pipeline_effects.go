@@ -41,8 +41,7 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 		if temporal.IsCanceledError(err) {
 			return uuid.Nil, false
 		}
-		p.failed++
-		p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeFailed, "promote_error", nil)
+		p.failExactCluster(c, "promote_error", nil)
 		p.log.Warn("promote failed", "tweet_url", c.tweetURL, "err", err)
 		return uuid.Nil, false
 	}
@@ -57,6 +56,13 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 	}
 	p.recordOutcome(c.tweetURL, discoveryactivity.OutcomePromoted, "",
 		jsonDetail(map[string]any{"asset_id": pout.AssetID.String(), "verified": c.verified}))
+	if len(c.exactFollowers) > 0 {
+		p.duplicates += len(c.exactFollowers)
+		detail := jsonDetail(map[string]any{"winner_asset_id": pout.AssetID.String()})
+		for _, tweetURL := range c.exactFollowers {
+			p.recordOutcome(tweetURL, discoveryactivity.OutcomeDuplicate, "", detail)
+		}
+	}
 	// A completed promotion with a durable share is ready to announce. This
 	// includes a retry that found the share created by its failed prior attempt:
 	// the workflow never observed that attempt and still owes the dirty signal.
@@ -64,6 +70,43 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 		p.publishEventVideo(c.tweetURL, "promotion")
 	}
 	return pout.AssetID, true
+}
+
+// rejectExactCluster gives every byte-identical candidate the representative's
+// deterministic content verdict. Identical bytes cannot produce a different
+// validation result, but none is a duplicate unless an asset actually wins.
+func (p *pipeline) rejectExactCluster(c clip, reason string, detail json.RawMessage) {
+	p.rejectedClips += 1 + len(c.exactFollowers)
+	p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeRejected, reason, detail)
+	for _, tweetURL := range c.exactFollowers {
+		p.recordOutcome(tweetURL, discoveryactivity.OutcomeRejected, reason, detail)
+	}
+}
+
+// failExactCluster gives every byte-identical candidate the representative's
+// exhausted infrastructure result without multiplying hash, vision, or
+// promotion retry budgets for interchangeable copies.
+func (p *pipeline) failExactCluster(c clip, reason string, detail json.RawMessage) {
+	p.failed += 1 + len(c.exactFollowers)
+	p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeFailed, reason, detail)
+	for _, tweetURL := range c.exactFollowers {
+		p.recordOutcome(tweetURL, discoveryactivity.OutcomeFailed, reason, detail)
+	}
+}
+
+// duplicateExactCluster closes a representative and all retained exact-byte
+// followers onto an existing winner. The winner id makes every duplicate row
+// independently auditable.
+func (p *pipeline) duplicateExactCluster(c clip, winnerID uuid.UUID) {
+	p.duplicates += 1 + len(c.exactFollowers)
+	var detail json.RawMessage
+	if p.deferExactFollowerOutcomes {
+		detail = jsonDetail(map[string]any{"winner_asset_id": winnerID.String()})
+	}
+	p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeDuplicate, "", detail)
+	for _, tweetURL := range c.exactFollowers {
+		p.recordOutcome(tweetURL, discoveryactivity.OutcomeDuplicate, "", detail)
+	}
 }
 
 // supersede consolidates loser assets onto winner via the SupersedeAssets

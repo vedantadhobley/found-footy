@@ -135,6 +135,7 @@ func TestEventWorkflow_EmitsCriticalPathMeasurements(t *testing.T) {
 		discoveryactivity.LoadEventRecoveryStateOutput{},
 		videoactivity.LoadEventAssetsOutput{},
 		true,
+		true,
 		discoveryactivity.GetDiscoveryConfigOutput{
 			MaxAttempts: 1, AttemptSpacing: time.Minute,
 			MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
