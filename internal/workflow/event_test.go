@@ -36,6 +36,7 @@ const (
 	ff034DurabilityChangeIDForTest   = "ff-034-candidate-durability"
 	ff060DownloadFailureIDForTest    = "ff-060-download-failure-detail"
 	ff061AvailabilityChangeIDForTest = "ff-061-search-availability"
+	ff065ExactFollowerIDForTest      = "ff-065-exact-follower-outcome"
 	discoveryPGRetryAttemptsForTest  = 5
 )
 
@@ -99,7 +100,7 @@ func baseEventEnvWithRecovery(
 	assets videoactivity.LoadEventAssetsOutput,
 	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
 ) *testsuite.TestWorkflowEnvironment {
-	return baseEventEnvWithOptions(s, recovery, assets, false, discoveryConfig...)
+	return baseEventEnvWithOptions(s, recovery, assets, false, false, discoveryConfig...)
 }
 
 // preHashEventEnv activates FF-022 for tests that exercise parent-owned
@@ -110,6 +111,19 @@ func preHashEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvi
 		discoveryactivity.LoadEventRecoveryStateOutput{},
 		videoactivity.LoadEventAssetsOutput{},
 		true,
+		true,
+	)
+}
+
+// preFF065PreHashEventEnv keeps FF-022's parent-owned hash path while forcing
+// FF-065 to DefaultVersion, which guards replay of the former immediate
+// follower-duplicate command sequence.
+func preFF065PreHashEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvironment {
+	return baseEventEnvWithOptions(s,
+		discoveryactivity.LoadEventRecoveryStateOutput{},
+		videoactivity.LoadEventAssetsOutput{},
+		true,
+		false,
 	)
 }
 
@@ -118,6 +132,7 @@ func baseEventEnvWithOptions(
 	recovery discoveryactivity.LoadEventRecoveryStateOutput,
 	assets videoactivity.LoadEventAssetsOutput,
 	preHashMD5 bool,
+	deferExactFollowerOutcomes bool,
 	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
 ) *testsuite.TestWorkflowEnvironment {
 	env := s.NewTestWorkflowEnvironment()
@@ -134,6 +149,12 @@ func baseEventEnvWithOptions(
 	}
 	env.OnGetVersion(ff022PreHashChangeIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
 		Return(version).Maybe()
+	exactFollowerVersion := sdkworkflow.DefaultVersion
+	if deferExactFollowerOutcomes {
+		exactFollowerVersion = sdkworkflow.Version(1)
+	}
+	env.OnGetVersion(ff065ExactFollowerIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(exactFollowerVersion).Maybe()
 	// Default GetDiscoveryConfig stub. MaxAttempts=10 matches the
 	// pre-#162 hardcoded value that existing tests were written
 	// against (`want 10` assertions in AttemptsRun tests). Tests that need a

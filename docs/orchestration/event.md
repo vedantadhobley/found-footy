@@ -32,8 +32,10 @@ all new candidates to `DownloadAndStage` before awaiting their concurrent
 The activity returns
 the exact MD5, staging key, and media metadata. The consumer claims that MD5
 before scheduling dense `HashVideo`; simultaneous byte-identical candidates
-wait behind one claimant instead of repeating ffmpeg work. Histories started
-before FF-022 retain the versioned `VideoWorkflow` child command sequence.
+wait behind one claimant instead of repeating ffmpeg work. After a successful
+hash, new histories retain those follower URLs until the shared validation path
+has a real terminal result (FF-065). Histories started before FF-022 retain the
+versioned `VideoWorkflow` child command sequence.
 Wall-clock
 `max_age_minutes` filter
 (decisions.md 2026-07-23).
@@ -87,6 +89,19 @@ uses `video_workflow_invalid_outcome` and reclaims any returned staging key.
 The compatibility child retains FF-002's correlated unexpected-child and typed
 terminal-output paths. Cancellation bypasses every forensic and cleanup
 command under FF-015.
+
+**Exact-follower outcome contract (FF-065).** Exact-byte collapse avoids
+duplicate work; it does not by itself prove a durable winner. A candidate that
+matches an existing promoted asset becomes `duplicate` immediately with
+`winner_asset_id`. A hash waiter or a candidate that matches a vision-pending
+representative contributes popularity and releases its own staging object, but
+its URL stays workflow-owned until that representative terminates. Promotion
+makes followers `duplicate`; deterministic content rejection makes every member
+`rejected` with the shared evidence; exhausted vision or promotion makes every
+member `failed` with the shared reason. These branches share one hash, vision,
+and promotion retry unit. The `ff-065-exact-follower-outcome` marker preserves
+the former immediate-duplicate command sequence for histories already in
+flight.
 
 **Candidate durability contract (FF-034).** The workflow retains each
 candidate's immutable event, query/attempt, tweet, author, age, and video-page
@@ -180,10 +195,11 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
 - **Exact claim + gate** (`onDownloadDone`, `onHashDone`; `onVideoDone` for old
   histories): the first staged candidate for an MD5 owns dense hashing. Later
   arrivals wait; success drops their staging objects and credits every vote to
-  the winner without hashing them. Claimant failure transfers ownership to the
-  next independent staging object. An MD5 already present in kept or pending
-  clips collapses immediately — votes land on the asset row if promoted or
-  accumulate in memory if vision is still pending (#180). FF-005 bounds dense
+  the representative without hashing them. Their terminal outcomes wait for
+  that representative under FF-065. Claimant failure transfers ownership to
+  the next independent staging object. An MD5 already present in a kept asset
+  collapses immediately. A match against a vision-pending clip accumulates its
+  vote and follower URL in memory (#180). FF-005 bounds dense
   extraction to 640-pixel-wide grayscale PNGs before Go equalizes and reduces
   to the final 9×8 dHash. FF-041 carries the algorithm, preprocessing, and
   sample interval through Temporal and Postgres; sequences with different
