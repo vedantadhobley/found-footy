@@ -136,6 +136,7 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 	teamRepo := pg.NewTeamRepo(pool)
 	assetRepo := pg.NewAssetRepo(pool)
 	shareRepo := pg.NewShareRepo(pool)
+	placementRepo := pg.NewPlacementRepo(pool)
 
 	ingestActs := &ingestactivity.Activities{
 		APIFootball:           afClient,
@@ -235,6 +236,7 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 		S3:           s3c,
 		Assets:       assetRepo,
 		Shares:       shareRepo,
+		Placements:   placementRepo,
 		Bucket:       deps.Cfg.S3.Bucket,
 		AssetsPrefix: deps.Cfg.Video.AssetsPrefix,
 	}

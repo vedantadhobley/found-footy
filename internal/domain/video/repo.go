@@ -57,17 +57,17 @@ type ShareRepo interface {
 	Get(ctx context.Context, id string) (*Share, error)
 	GetByEvent(ctx context.Context, eventID uuid.UUID) ([]*Share, error)
 
-	// Insert creates a new share. The (event_id, rank) UNIQUE partial
-	// index means rank collisions with an active share error at write
-	// time — callers RebalanceRanks first if they need a specific rank
-	// slot open.
+	// Insert creates a compatibility share row. The (event_id, rank) UNIQUE
+	// partial index remains for pre-FF-066 histories until the stored column is
+	// removed.
 	Insert(ctx context.Context, s *Share) error
 
 	// Upsert saves state changes (Remove) back to storage.
 	Upsert(ctx context.Context, s *Share) error
 
-	// RebalanceRanks reads all active shares for the event, sorts them
-	// via CompareShares, and rewrites rank 1..N in a single transaction.
+	// RebalanceRanks is the pre-FF-066 compatibility writer. New histories use
+	// PlacementRepo and public reads derive rank without calling this method.
+	// It reads all active shares, sorts via CompareShares, and rewrites rank 1..N.
 	// The transaction is critical — the (event_id, rank) UNIQUE index
 	// only allows one rank value per event at a time in the active
 	// pool, so intermediate states during the rewrite must be atomic.

@@ -1,38 +1,35 @@
 // persist.go — consumer-queue persistence activities: the steps the
-// EventWorkflow's serialized Selector runs AFTER dedup + vision, per unique
-// verified clip. Separate from the per-candidate child activities
+// EventWorkflow's serialized Selector runs AFTER dedup + vision. Separate from
+// the per-candidate child activities
 // (DownloadAndStage/HashVideo) because these are parent/cross-candidate work
 // touching pg + the assets/ prefix.
 //
-//	PromoteAndPersist — copy staging→assets (server-side) + insert the asset
-//	  + mint a share + rebalance ranks + delete staging. Combined into ONE
-//	  activity (vs the design's two steps) because the asset UUID can't be
-//	  minted in workflow code (non-deterministic), and it drives both the S3
-//	  key and the DB row.
+//	CommitClipPlacement — the current FF-066 path: candidate terminal state,
+//	  popularity credit, asset/share mint, and supersession commit in one pg
+//	  transaction; S3 copy and cleanup form its retry-safe activity tail.
 //	LoadEventAssets — restore live persisted assets into a replacement
-//	  EventWorkflow execution so dedup and ranking retain prior progress.
-//	BumpAssetPopularity — persist a collapse onto an already-inserted asset.
+//	  EventWorkflow execution so dedup retains prior progress.
 //	DeleteStaging — drop a staging object (rejected clip / dedup loser).
-//	SupersedeAssets — consolidate loser assets onto a winner (post-vision,
-//	  category-scoped dedup #171): superseded_by chain + popularity merge +
-//	  retire loser shares + reclaim loser bytes + one rank rebalance.
 //	DestroyEvent — tear down an overturned event's clips (#172): revoke all its
 //	  shares (→ 410) + reclaim its Garage objects. Caller cancels discovery first.
+//	PromoteAndPersist, BumpAssetPopularity, and SupersedeAssets — retained only
+//	  for replay of pre-FF-066 Temporal histories.
 //
 // Idempotency: the asset UUID is DERIVED from (event_id, md5) via uuid v5. A
 // retry first checks that row: when it exists, destination bytes are already
 // durable, so the retry skips Copy even if its prior attempt deleted staging
 // before the completion acknowledgement was delivered. The share mint is
 // guarded by a "does a share already exist for this asset?" check, but an
-// existing share is progress rather than an early return: rank repair and
-// staging cleanup still run. BumpPopularity is the one non-idempotent step (a
-// retry may over-count by one) — benign for a soft vote signal.
+// existing share is progress rather than an early return: compatibility rank
+// repair and staging cleanup still run. New histories never call the legacy
+// non-idempotent BumpAssetPopularity activity.
 package video
 
 import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -41,6 +38,7 @@ import (
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/activity"
 
+	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
 	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 )
 
@@ -55,8 +53,139 @@ type PersistActivities struct {
 	S3           s3Promoter
 	Assets       dvideo.AssetRepo
 	Shares       dvideo.ShareRepo
+	Placements   dvideo.PlacementRepo
 	Bucket       string // garage bucket the asset row records
 	AssetsPrefix string // e.g. "assets"
+}
+
+// PlacementCandidateInput carries one accepted candidate's complete evidence
+// and terminal class into the atomic placement transaction.
+type PlacementCandidateInput struct {
+	Evidence discoverycontract.CandidateEvidence
+	Outcome  discoverycontract.CandidateOutcome
+	Detail   json.RawMessage
+}
+
+// CommitClipPlacementInput is one complete post-dedup placement. NewWinner
+// selects deterministic staging→asset promotion; otherwise WinnerAssetID is an
+// existing live asset. Losers consolidate within the same transaction.
+type CommitClipPlacementInput struct {
+	EventID       uuid.UUID
+	FixtureID     int64
+	NewWinner     bool
+	WinnerAssetID uuid.UUID
+	LoserAssetIDs []uuid.UUID
+	Candidates    []PlacementCandidateInput
+
+	StagingKey      string
+	MD5             string
+	HashVersion     dvideo.FrameHashVersion
+	FrameHashes     []uint64
+	Width, Height   int
+	DurationMS      int
+	FileSizeBytes   int64
+	Bitrate         *int
+	Verified        bool
+	ExtractedMinute *int
+}
+
+// CommitClipPlacementOutput identifies the canonical public winner. Announce
+// is true after every successful completion, including a retry that observed
+// its prior commit but whose workflow still owes the dirty signal.
+type CommitClipPlacementOutput struct {
+	WinnerAssetID uuid.UUID
+	ShareID       string
+	WinnerCreated bool
+	Announce      bool
+}
+
+// CommitClipPlacement copies a new winner when needed, commits the complete
+// accepted-candidate database mutation atomically, and then performs
+// idempotent staging/loser-object cleanup. New workflow histories use this
+// instead of the independent promote/bump/supersede/outcome calls.
+func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitClipPlacementInput) (CommitClipPlacementOutput, error) {
+	var out CommitClipPlacementOutput
+	if a.Placements == nil {
+		return out, fmt.Errorf("video.CommitClipPlacement: placement store is required")
+	}
+	if in.EventID == uuid.Nil || in.FixtureID <= 0 || in.StagingKey == "" || len(in.Candidates) == 0 {
+		return out, fmt.Errorf("video.CommitClipPlacement: incomplete placement input")
+	}
+
+	placement := dvideo.ClipPlacement{
+		EventID: in.EventID, FixtureID: in.FixtureID,
+		WinnerAssetID: in.WinnerAssetID,
+		Verified:      in.Verified, ExtractedMinute: in.ExtractedMinute,
+		LoserAssetIDs: append([]uuid.UUID(nil), in.LoserAssetIDs...),
+		CommittedAt:   time.Now().UTC(),
+	}
+	for _, candidate := range in.Candidates {
+		placement.Candidates = append(placement.Candidates, dvideo.PlacementCandidate{
+			Evidence: candidate.Evidence, Outcome: candidate.Outcome, Detail: candidate.Detail,
+		})
+	}
+
+	if in.NewWinner {
+		md5Bytes, err := hex.DecodeString(in.MD5)
+		if err != nil {
+			return out, fmt.Errorf("video.CommitClipPlacement: bad md5 %q: %w", in.MD5, err)
+		}
+		assetID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.EventID.String()+":"+in.MD5))
+		dstKey := path.Join(a.AssetsPrefix, fmt.Sprint(in.FixtureID), in.EventID.String(), assetID.String()+".mp4")
+		existing, err := a.Assets.Get(ctx, assetID)
+		switch {
+		case err == nil:
+			compat := PromoteAndPersistInput{
+				EventID: in.EventID, FixtureID: in.FixtureID, StagingKey: in.StagingKey,
+				MD5: in.MD5, HashVersion: in.HashVersion, FrameHashes: in.FrameHashes,
+				Width: in.Width, Height: in.Height, DurationMS: in.DurationMS,
+				FileSizeBytes: in.FileSizeBytes, Bitrate: in.Bitrate,
+			}
+			if err := validatePromotionAsset(existing, compat, md5Bytes, a.Bucket, dstKey); err != nil {
+				return out, fmt.Errorf("video.CommitClipPlacement: %w", err)
+			}
+		case errors.Is(err, dvideo.ErrNotFound):
+			if err := a.S3.Copy(ctx, in.StagingKey, dstKey); err != nil {
+				return out, fmt.Errorf("video.CommitClipPlacement: copy: %w", err)
+			}
+		default:
+			return out, fmt.Errorf("video.CommitClipPlacement: get winner: %w", err)
+		}
+
+		asset := dvideo.NewAsset(in.EventID, in.FixtureID, a.Bucket, dstKey,
+			md5Bytes, in.HashVersion, in.FrameHashes,
+			in.Width, in.Height, in.DurationMS, in.FileSizeBytes, placement.CommittedAt)
+		asset.ID = assetID
+		asset.Bitrate = in.Bitrate
+		asset.Popularity = 0 // candidate credits in the transaction establish the count
+		placement.Winner = asset
+		placement.WinnerAssetID = uuid.Nil
+	} else if in.WinnerAssetID == uuid.Nil {
+		return out, fmt.Errorf("video.CommitClipPlacement: existing winner id is required")
+	}
+
+	result, err := a.Placements.CommitClipPlacement(ctx, placement)
+	if err != nil {
+		return out, fmt.Errorf("video.CommitClipPlacement: persist: %w", err)
+	}
+	if err := a.S3.Delete(ctx, in.StagingKey); err != nil {
+		return out, fmt.Errorf("video.CommitClipPlacement: delete staging: %w", err)
+	}
+	for _, object := range result.LoserObjects {
+		if object.Key == "" {
+			continue
+		}
+		if err := a.S3.Delete(ctx, object.Key); err != nil {
+			activity.GetLogger(ctx).Warn("placement: loser byte reclaim failed",
+				"key", object.Key, "err", err)
+		}
+	}
+	return CommitClipPlacementOutput{
+		WinnerAssetID: result.WinnerAssetID,
+		ShareID:       result.ShareID,
+		WinnerCreated: result.WinnerCreated,
+		Announce:      true,
+	}, nil
 }
 
 // PromoteAndPersistInput is one verified unique clip ready to surface.
@@ -87,7 +216,7 @@ type LoadEventAssetsInput struct {
 }
 
 // RestoredEventAsset is the workflow-safe projection of one active share and
-// its live asset. It contains exactly the fields the in-memory dedup/ranking
+// its live asset. It contains exactly the fields the in-memory dedup
 // pipeline needs after an abnormal EventWorkflow restart.
 type RestoredEventAsset struct {
 	AssetID       uuid.UUID
@@ -103,14 +232,14 @@ type RestoredEventAsset struct {
 	Verified      bool
 }
 
-// LoadEventAssetsOutput returns rank-ordered live assets for one event.
+// LoadEventAssetsOutput returns the event's live durable dedup state.
 type LoadEventAssetsOutput struct {
 	Assets []RestoredEventAsset
 }
 
 // LoadEventAssets restores the durable portion of EventWorkflow's in-memory
-// state. Active shares are rank ordered by the repo; removed and superseded
-// shares, plus assets already superseded by another asset, are excluded.
+// state. Shares arrive in current-evidence order; removed and superseded shares,
+// plus assets already superseded by another asset, are excluded.
 func (a *PersistActivities) LoadEventAssets(ctx context.Context, in LoadEventAssetsInput) (LoadEventAssetsOutput, error) {
 	var out LoadEventAssetsOutput
 	shares, err := a.Shares.GetByEvent(ctx, in.EventID)
@@ -155,9 +284,10 @@ type PromoteAndPersistOutput struct {
 	Minted bool
 }
 
-// PromoteAndPersist copies the clip into the assets prefix, records the asset
-// + share, repairs ranks, then deletes staging. All durable identity is keyed
-// off a deterministic asset UUID. An existing asset proves a prior attempt
+// PromoteAndPersist is the pre-FF-066 compatibility path. It copies the clip
+// into the assets prefix, records the asset and share, repairs stored rank,
+// then deletes staging. All durable identity is keyed off a deterministic
+// asset UUID. An existing asset proves a prior attempt
 // copied destination bytes before inserting its row, so retries can skip Copy
 // after staging has been deleted.
 func (a *PersistActivities) PromoteAndPersist(ctx context.Context, in PromoteAndPersistInput) (PromoteAndPersistOutput, error) {
@@ -269,8 +399,8 @@ type BumpAssetPopularityInput struct {
 	Count   int
 }
 
-// BumpAssetPopularity persists a collapse onto an already-inserted asset,
-// adding Count (min 1) votes.
+// BumpAssetPopularity is the retry-unsafe pre-FF-066 collapse writer. New
+// histories credit candidates through CommitClipPlacement instead.
 func (a *PersistActivities) BumpAssetPopularity(ctx context.Context, in BumpAssetPopularityInput) error {
 	n := in.Count
 	if n < 1 {
@@ -310,7 +440,7 @@ type SupersedeAssetsInput struct {
 // SupersedeAssets retires each loser onto the winner: atomic superseded_by +
 // popularity merge (Assets.Supersede), retire the loser's active share (still
 // resolves via the chain, but leaves the ranked list), and reclaim the loser's
-// Garage bytes. One RebalanceRanks at the end, after the active pool shrank.
+// Garage bytes. One compatibility RebalanceRanks runs after the pool shrank.
 // Idempotent end-to-end — Supersede, MarkSuperseded, and the S3 delete all
 // no-op on a retry — so the whole activity is safe to replay.
 func (a *PersistActivities) SupersedeAssets(ctx context.Context, in SupersedeAssetsInput) error {

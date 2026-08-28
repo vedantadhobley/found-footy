@@ -98,7 +98,7 @@ type Asset struct {
 	Bitrate       *int
 	AspectRatio   float32 // schema-generated column; carried in domain for read-only use
 
-	Popularity int // starts at 1; bumped on each dedup hit
+	Popularity int // accepted source votes attributed to this live asset
 
 	SupersededBy *uuid.UUID // set when this asset is replaced by a higher-quality re-encode
 
@@ -174,14 +174,16 @@ type Share struct {
 	RemovedReason *RemovalReason
 	RemovedAt     *time.Time
 
-	Rank int // 1-indexed, UNIQUE per event WHERE state='active'
+	// Rank is a pre-FF-066 storage compatibility field. Public reads derive a
+	// fresh 1-indexed rank from current evidence and never trust this value.
+	Rank int
 
 	CreatedAt time.Time
 }
 
 // NewShare mints a fresh share with a cryptographically-random ID.
-// Rank is passed in — computing it needs to know what other shares
-// exist for the event (repo concern, not domain).
+// Rank is passed only for the temporary storage compatibility column. Public
+// ordering is a read-model concern.
 func NewShare(
 	assetID, eventID uuid.UUID,
 	timestampVerified bool,

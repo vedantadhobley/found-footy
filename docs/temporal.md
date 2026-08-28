@@ -245,6 +245,10 @@ EventWorkflow is **spawned** by client `StartWorkflow`, not scheduled. New
 executions run candidate download and hashing as direct activities around an
 EventWorkflow-owned exact-MD5 claim. VideoWorkflow remains registered because
 pre-FF-022 histories still contain child-workflow commands. EventWorkflow uses
+`ff-066-atomic-clip-placement` version 1 to replace independent accepted-path
+promotion, popularity, supersession, candidate-outcome, and rank commands with
+one placement activity. Default-version histories retain the former command
+sequence, so every compatibility activity remains registered. EventWorkflow uses
 its deterministic ID with
 `ALLOW_DUPLICATE_FAILED_ONLY`, so running and successful executions remain
 singletons while failed, timed-out, canceled, or terminated executions can

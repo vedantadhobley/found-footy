@@ -17,8 +17,8 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 )
 
-// promote copies the clip staging→assets, records asset+share+rank, and adds it
-// to the kept set so later candidates dedup against it. Returns the new asset id.
+// promote is the pre-FF-066 replay path. It copies staging→assets, records an
+// asset/share/compatibility rank, and adds the winner to the in-memory set.
 func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid.UUID, bool) {
 	if p.canceled() {
 		return uuid.Nil, false
@@ -156,8 +156,7 @@ func (p *pipeline) supersede(winnerID uuid.UUID, loserIDs []uuid.UUID) {
 	p.assets = kept
 }
 
-// bumpPopularity records a collapse onto an already-inserted asset (nil-safe).
-// bumpPopularity adds n votes to an existing asset's popularity (nil/n<1 safe).
+// bumpPopularity is the pre-FF-066 collapse writer (nil/n<1 safe).
 func (p *pipeline) bumpPopularity(assetID uuid.UUID, n int) {
 	if assetID == uuid.Nil || n < 1 || p.canceled() {
 		return
@@ -187,10 +186,10 @@ func (p *pipeline) deleteStaging(key string) {
 
 // publishEventVideo fires the event.video dirty-signal for this event
 // (best-effort: a lost ping heals on the frontend's next refetch, so failure
-// is swallowed, never propagated). Called only AFTER a promote/supersede has
-// durably committed a clip-set change — the workflow blocks on that activity
-// before reaching here — so a consumer that refetches on the signal always
-// sees the new state. See decisions.md 2026-08-14 (N3).
+// is swallowed, never propagated). Called only after a compatibility
+// promote/supersede or an FF-066 placement has durably committed its public
+// mutation. A consumer that refetches on the signal therefore sees the new
+// state. See decisions.md 2026-08-14 (N3).
 func (p *pipeline) publishEventVideo(tweetURL, cause string) {
 	if p.canceled() {
 		return

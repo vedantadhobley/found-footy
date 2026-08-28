@@ -6,7 +6,8 @@
 package video
 
 // LiveClip is one displayable clip: an active share joined to its LIVE asset
-// (superseded_by IS NULL), rank-ordered by CompareShares (rank 1 = primary).
+// (superseded_by IS NULL), with rank derived from the current verified,
+// popularity, size, age, and share-ID evidence (rank 1 = primary).
 // Backs the `videos` array on the fixture/event reads. Superseded/removed
 // clips never appear here — their old s_<hex> URLs still resolve via the
 // redirect handler (see ResolvedShare).

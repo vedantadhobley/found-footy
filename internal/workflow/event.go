@@ -1,6 +1,6 @@
 // EventWorkflow — the per-goal orchestrator. Runs a PRODUCER (the discovery
 // phase: Twitter search + candidate collection) concurrently with a CONSUMER
-// (download/stage → exact-byte ownership → hash → vision → promote → rank) —
+// (download/stage → exact-byte ownership → hash → vision → atomic placement) —
 // #164c + #165, shipped. Renamed from DiscoveryWorkflow (Option 2 rename,
 // decisions.md 2026-08-03: the workflow became the event orchestrator, so
 // "Discovery" undersold it; the discovery *phase* — config + activities —
@@ -91,6 +91,8 @@ const (
 	ff061SearchAvailabilityVersion    = workflow.Version(1)
 	ff065ExactFollowerOutcomeChangeID = "ff-065-exact-follower-outcome"
 	ff065ExactFollowerOutcomeVersion  = workflow.Version(1)
+	ff066AtomicPlacementChangeID      = "ff-066-atomic-clip-placement"
+	ff066AtomicPlacementVersion       = workflow.Version(1)
 
 	// Pre-FF-061 histories retain FF-017's roughly 0/10/30/60 activity retry
 	// chain for replay compatibility. New histories use one activity attempt
@@ -224,7 +226,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 	// Step 3: the pipeline — a PRODUCER coroutine (the discovery search loop,
 	// submitting each new candidate) running concurrently with the CONSUMER
 	// (the serialized Selector queue: exact-byte ownership → hash → vision →
-	// promote → rank). Temporal owns completion: the consumer returns when
+	// atomic placement). Temporal owns completion: the consumer returns when
 	// search is done AND nothing is in flight — no idle timeout.
 	terminalVideoFailures := workflow.GetVersion(ctx,
 		ff002TerminalVideoFailuresChangeID,
@@ -256,6 +258,11 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion,
 		ff065ExactFollowerOutcomeVersion,
 	) != workflow.DefaultVersion
+	atomicPlacement := workflow.GetVersion(ctx,
+		ff066AtomicPlacementChangeID,
+		workflow.DefaultVersion,
+		ff066AtomicPlacementVersion,
+	) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
 		longMaxHamming: cfgOut.LongMaxHamming, longMinRun: cfgOut.LongMinRunFrames, longMaxGaps: cfgOut.LongMaxGapFrames,
@@ -264,6 +271,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		durableCandidates:          durableCandidates,
 		durableDownloadFailures:    durableDownloadFailures,
 		deferExactFollowerOutcomes: deferExactFollowerOutcomes,
+		atomicPlacement:            atomicPlacement,
 		startedAt:                  startedAt,
 	}, log)
 

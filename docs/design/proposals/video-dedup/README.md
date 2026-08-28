@@ -1,6 +1,6 @@
 # Video dedup redesign — design proposal (O4/O5)
 
-> **⚠ AS-BUILT DIVERGES — HISTORICAL ONLY (updated 2026-08-06).**
+> **⚠ AS-BUILT DIVERGES — HISTORICAL ONLY (status updated 2026-08-28).**
 > This proposal's **topology and schema were largely not built as written.**
 > It's kept for the rationale (the cheap→expensive layering, the binary
 > category axis, the Python dedup archaeology); do **not** read it as the
@@ -39,16 +39,17 @@
 > - **`popularity` derived from `COUNT(video_shares)`.** As-built it's a stored
 >   `INT` counter bumped `+1` per collapse, with exactly **one share per
 >   promoted asset**.
-> - **Rank "derived at read time via a SQL window function."** As-built
->   `video_shares.rank` is a **stored column** rewritten by `RebalanceRanks`
->   (with the `+1,000,000` offset trick to dodge the partial-unique index).
+> - **The proposal's ranking inputs.** FF-066 restored read-derived rank, but
+>   from the shipped share/asset evidence rather than this proposal's
+>   `COUNT(video_shares)`/quality-score model. `video_shares.rank` remains only
+>   as a pre-FF-066 Temporal replay field; new histories never rebalance it.
 >
 > **SURVIVED (the one durable part):** the perceptual-match *algorithm* — dHash
 > + histogram equalization + dense frame sampling + offset-tolerant
 > sliding-window matching. But the params quoted throughout below are **stale**:
-> as-built is **0.1 s** sampling (not 0.25 s), per-frame hamming ≤ 10, a
-> **30-frame (~3 s) `min_run`** window tolerating **3 gap** frames (`max_gaps`)
-> — the gap-tolerant window replaced Python's strict `min_consecutive=3`. Source
+> as-built is **0.1 s** sampling (not 0.25 s) with a tiered match: 27/30 at
+> per-frame Hamming ≤12 with 3 gaps, or 45/50 at Hamming ≤16 with 5 gaps. The
+> gap-tolerant windows replaced Python's strict `min_consecutive=3`. Source
 > of truth: `internal/domain/video/{hash,match}.go` + `config/dedup.go`.
 
 **Status:** historical design proposal — superseded by the as-built (see

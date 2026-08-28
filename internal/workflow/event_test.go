@@ -34,6 +34,7 @@ const (
 	ff017RestartChangeIDForTest      = "ff-017-browser-restart-retry"
 	ff022PreHashChangeIDForTest      = "ff-022-pre-hash-md5-claim"
 	ff034DurabilityChangeIDForTest   = "ff-034-candidate-durability"
+	ff066AtomicPlacementIDForTest    = "ff-066-atomic-clip-placement"
 	ff060DownloadFailureIDForTest    = "ff-060-download-failure-detail"
 	ff061AvailabilityChangeIDForTest = "ff-061-search-availability"
 	ff065ExactFollowerIDForTest      = "ff-065-exact-follower-outcome"
@@ -100,7 +101,7 @@ func baseEventEnvWithRecovery(
 	assets videoactivity.LoadEventAssetsOutput,
 	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
 ) *testsuite.TestWorkflowEnvironment {
-	return baseEventEnvWithOptions(s, recovery, assets, false, false, discoveryConfig...)
+	return baseEventEnvWithOptions(s, recovery, assets, false, false, false, discoveryConfig...)
 }
 
 // preHashEventEnv activates FF-022 for tests that exercise parent-owned
@@ -112,6 +113,7 @@ func preHashEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvi
 		videoactivity.LoadEventAssetsOutput{},
 		true,
 		true,
+		false,
 	)
 }
 
@@ -124,6 +126,7 @@ func preFF065PreHashEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWork
 		videoactivity.LoadEventAssetsOutput{},
 		true,
 		false,
+		false,
 	)
 }
 
@@ -133,6 +136,7 @@ func baseEventEnvWithOptions(
 	assets videoactivity.LoadEventAssetsOutput,
 	preHashMD5 bool,
 	deferExactFollowerOutcomes bool,
+	atomicPlacement bool,
 	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
 ) *testsuite.TestWorkflowEnvironment {
 	env := s.NewTestWorkflowEnvironment()
@@ -155,6 +159,12 @@ func baseEventEnvWithOptions(
 	}
 	env.OnGetVersion(ff065ExactFollowerIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
 		Return(exactFollowerVersion).Maybe()
+	atomicPlacementVersion := sdkworkflow.DefaultVersion
+	if atomicPlacement {
+		atomicPlacementVersion = sdkworkflow.Version(1)
+	}
+	env.OnGetVersion(ff066AtomicPlacementIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(atomicPlacementVersion).Maybe()
 	// Default GetDiscoveryConfig stub. MaxAttempts=10 matches the
 	// pre-#162 hardcoded value that existing tests were written
 	// against (`want 10` assertions in AttemptsRun tests). Tests that need a

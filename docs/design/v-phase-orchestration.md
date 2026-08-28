@@ -11,6 +11,12 @@ settled 2026-07-27 and later shipped as `EventWorkflow` + `VideoWorkflow`.
 > change. This document preserves the original signed-off design; the
 > [exact-byte ownership decision](../decisions/2026-08-17-exact-md5-ownership-precedes-dense-hashing.md)
 > records the correction.
+>
+> **Post-ship correction (2026-08-28):** FF-066 replaces the independent
+> promote/popularity/supersede/rank writes for new histories with one atomic
+> accepted-candidate placement. Public rank is derived on read. The original
+> queue below remains rationale, not the current persistence contract; see the
+> [placement decision](../decisions/2026-08-28-accepted-candidates-commit-as-one-placement.md).
 Use the [`EventWorkflow` ledger](../orchestration/event.md) for current behavior and
 [`../todo.md`](../todo.md) for active work. The deployed FF-002, FF-007,
 FF-014, and FF-015 corrections are preserved in the

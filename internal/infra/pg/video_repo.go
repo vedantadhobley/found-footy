@@ -1,9 +1,10 @@
 // video_repo.go — Postgres implementations of video.AssetRepo +
-// video.ShareRepo. Backs the video pipeline's promote/insert/rank step:
+// video.ShareRepo. Backs the video pipeline's asset/share storage and the
+// read-derived public ordering:
 // InsertAsset writes a clip the EventWorkflow already judged unique
 // (ON CONFLICT (event_id, md5) for exact-dupe/retry idempotency), and
-// RebalanceRanks rewrites the per-event share order atomically via
-// CompareShares. Follows the FixtureRepo/EventRepo pattern (dedicated type
+// RebalanceRanks remains only for pre-FF-066 Temporal histories. Public reads
+// derive rank directly from current evidence. Follows the repo pattern (type
 // over *Pool, constructor injection, pgx.ErrNoRows → domain sentinel).
 package pg
 
@@ -225,10 +226,20 @@ func (r *ShareRepo) Get(ctx context.Context, id string) (*video.Share, error) {
 		"SELECT "+shareColumns+" FROM video_shares WHERE id = $1", id))
 }
 
-// GetByEvent returns all shares for an event, rank-ordered.
+// GetByEvent returns all shares in current-evidence order. Share.Rank remains
+// the stored pre-FF-066 compatibility value; public callers use
+// ListLiveForEvent, which derives both order and rank.
 func (r *ShareRepo) GetByEvent(ctx context.Context, eventID uuid.UUID) ([]*video.Share, error) {
 	rows, err := r.pool.Query(ctx,
-		"SELECT "+shareColumns+" FROM video_shares WHERE event_id = $1 ORDER BY rank", eventID)
+		"SELECT "+shareColumns+` FROM video_shares
+		 WHERE event_id = $1
+		 ORDER BY
+		   CASE WHEN state = 'active' THEN 0 ELSE 1 END,
+		   timestamp_verified DESC,
+		   (SELECT popularity FROM video_assets WHERE id = video_shares.asset_id) DESC,
+		   (SELECT file_size_bytes FROM video_assets WHERE id = video_shares.asset_id) DESC,
+		   created_at,
+		   id`, eventID)
 	if err != nil {
 		return nil, fmt.Errorf("pg.ShareRepo.GetByEvent: %w", err)
 	}
@@ -244,19 +255,32 @@ func (r *ShareRepo) GetByEvent(ctx context.Context, eventID uuid.UUID) ([]*video
 	return out, rows.Err()
 }
 
-// ListLiveForEvent returns the event's displayable clips — active shares joined
-// to their LIVE assets (superseded_by IS NULL) — rank-ordered (#167). This is
-// the read model the API's videos array is built from; superseded/removed
-// shares are excluded (their old URLs still resolve via ResolveShare). Uses the
-// video_shares state='active' + video_assets superseded_by IS NULL indexes.
+// ListLiveForEvent returns the event's displayable clips and derives rank from
+// the current evidence on every read. Stored rank is intentionally ignored:
+// popularity and active membership can change after mint, and a cached order
+// can become stale when any write path misses invalidation (FF-066).
 func (r *ShareRepo) ListLiveForEvent(ctx context.Context, eventID uuid.UUID) ([]video.LiveClip, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT s.id, s.rank, s.timestamp_verified, s.extracted_minute,
-		       a.popularity, a.width, a.height, a.duration_ms
-		FROM video_shares s
-		JOIN video_assets a ON a.id = s.asset_id
-		WHERE s.event_id = $1 AND s.state = 'active' AND a.superseded_by IS NULL
-		ORDER BY s.rank`, eventID)
+		SELECT share_id, rank, timestamp_verified, extracted_minute,
+		       popularity, width, height, duration_ms
+		FROM (
+			SELECT s.id AS share_id,
+			       ROW_NUMBER() OVER (
+				   ORDER BY s.timestamp_verified DESC,
+				            a.popularity DESC,
+				            a.file_size_bytes DESC,
+				            s.created_at,
+				            s.id
+			   )::int AS rank,
+			       s.timestamp_verified, s.extracted_minute,
+			       a.popularity, a.width, a.height, a.duration_ms
+			FROM video_shares s
+			JOIN video_assets a ON a.id = s.asset_id
+			WHERE s.event_id = $1
+			  AND s.state = 'active'
+			  AND a.superseded_by IS NULL
+		) ranked
+		ORDER BY rank`, eventID)
 	if err != nil {
 		return nil, fmt.Errorf("pg.ShareRepo.ListLiveForEvent: %w", err)
 	}

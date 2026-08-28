@@ -240,6 +240,16 @@ Its older drift guard still requires an explicit restamp to the prior
 fingerprint before that image can start; the migration file records the exact
 rollback statement. Do not drop the additive column during the rollback
 window.
+
+The pending additive
+[`atomic clip placement` migration](../migrations/20260828_01_add_atomic_clip_placement.sql)
+adds nullable candidate-to-asset attribution plus its lookup index and the
+unique `(event_id, asset_id)` share identity required by FF-066. It deliberately
+aborts if historical duplicate share identities exist instead of choosing a
+row silently. Apply and verify it as a separately approved database action
+before releasing the FF-066 worker/API pair. The prior binary ignores the
+additive column and index; rollback restores only its expected schema stamp.
+
 The newest unapplied migration's checked-in stamp must equal the embedded
 `schema.sql` hash, and the contract test enforces that equality. The application
 deploy script still does not run schema mutations. Completed one-time files are

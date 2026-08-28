@@ -47,8 +47,10 @@ fixtureDTO
 
 Staging fixtures carry an empty `events` array. Active and completed fixtures
 carry their non-removed events; each event carries active shares joined to
-non-superseded assets, ordered by rank. A batch-event lookup can still return a
-directly requested removed event with `phase: "removed"`.
+non-superseded assets. The query derives `rank` on every read from timestamp
+verification, popularity, file size, creation time, and share ID; the stored
+compatibility rank is never part of the public result. A batch-event lookup can
+still return a directly requested removed event with `phase: "removed"`.
 
 Pointers are emitted explicitly. Consumers must preserve the distinction
 between `null` and zero.
@@ -139,7 +141,7 @@ environment, such as `found-footy.prod.>`, rather than mixing dev and prod.
 |---|---|---|
 | `found-footy.<env>.fixture.clock` | `{"fixtures":[{"fixture_id":1530158,"minute":62,"extra":null}]}` | Apply the clock fields in place. Do not fetch. |
 | `found-footy.<env>.fixture.update` | `{"fixture_ids":[1530158,1530163]}` | Fetch `/api/v1/fixtures?ids=1530158,1530163`; replace by fixture ID and re-bucket by state. |
-| `found-footy.<env>.event.video` | `{"event_id":"<uuid>","fixture_id":1530158}` | Fetch `/api/v1/events?ids=<uuid>`; replace the event inside its fixture. |
+| `found-footy.<env>.event.video` | `{"event_id":"<uuid>","fixture_id":1530158}` | Fetch `/api/v1/events?ids=<uuid>`; replace the event inside its fixture. Emitted after any accepted placement changes membership or a ranking input, including popularity-only duplicates. |
 
 Every payload is wrapped in the version-1 workspace envelope:
 
