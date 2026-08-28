@@ -243,7 +243,13 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   retires loser shares, and returns loser objects for best-effort reclaim.
   Staging deletion remains the required idempotent activity tail. A durable
   deterministic asset row proves the destination copy preceded it, so a retry
-  skips an impossible second source copy.
+  skips an impossible second source copy. FF-067 also reads the event's removed
+  state under this same row lock before any public mutation. A placement that
+  loses to VAR records uncredited cluster members as
+  `rejected/event_removed`, creates no asset/share/popularity change, deletes
+  both its deterministic destination and staging key, and returns a typed
+  non-public result. A placement that commits first remains owned by the
+  monitor's subsequent `DestroyEvent` teardown.
 - **Compatibility:** `ff-066-atomic-clip-placement` version 1 selects that path.
   Older histories retain independent `PromoteAndPersist`,
   `BumpAssetPopularity`, `SupersedeAssets`, terminal-outcome, and
@@ -260,7 +266,8 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   placement still returns `Announce=true`, because the workflow never observed
   the failed activity completion and still owes invalidation. Consumers refetch
   current state, so an extra signal from an external re-drive is harmless. A
-  VAR `DestroyEvent` does not emit; the event disappears through the parent's
+  placement rejected by the FF-067 removal gate does not emit. VAR
+  `DestroyEvent` also does not emit; the event disappears through the parent's
   `fixture.update` refetch.
 
 ### Dedup keeper selection versus public ranking

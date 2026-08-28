@@ -78,6 +78,50 @@ func TestEventWorkflow_AtomicExactDuplicateCommitsAndPublishes(t *testing.T) {
 	env.AssertNumberOfCalls(t, "UpsertCandidateOutcome", 0)
 }
 
+func TestEventWorkflow_RemovedPlacementDoesNotPublish(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	assetID := uuid.New()
+	env := baseEventEnvWithOptions(&s,
+		discoveryactivity.LoadEventRecoveryStateOutput{},
+		videoactivity.LoadEventAssetsOutput{Assets: []videoactivity.RestoredEventAsset{{
+			AssetID: assetID, MD5: "fedcba9876543210fedcba9876543210",
+			HashVersion: dvideo.CurrentFrameHashVersion(0.1),
+			FrameHashes: []uint64{1, 2, 3}, Width: 1280, Height: 720,
+			DurationMS: 7000, FileSizeBytes: 900_000, Popularity: 1, Verified: true,
+		}}},
+		true,
+		true,
+		true,
+		discoveryactivity.GetDiscoveryConfigOutput{
+			MaxAttempts: 1, AttemptSpacing: time.Minute,
+			MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
+		},
+	)
+	const tweetURL = "https://x.com/u/status/2222222222222222222"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{{TweetURL: tweetURL, VideoPageURL: "vp", DurationSeconds: 7}},
+			Count:  1, StopReason: "age",
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil)
+	env.OnActivity("DownloadAndStage", mock.Anything, mock.Anything).
+		Return(videoactivity.DownloadAndStageOutput{
+			Outcome: videoactivity.OutcomePassed,
+			MD5:     "fedcba9876543210fedcba9876543210", StagingKey: "staging/removed.mp4",
+			Width: 1280, Height: 720, DurationMS: 7000, SizeBytes: 900_000,
+		}, nil)
+	env.OnActivity("CommitClipPlacement", mock.Anything, mock.Anything).
+		Return(videoactivity.CommitClipPlacementOutput{EventRemoved: true}, nil).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+	env.AssertNumberOfCalls(t, "CommitClipPlacement", 1)
+	env.AssertNumberOfCalls(t, "PublishEventVideo", 0)
+	env.AssertNumberOfCalls(t, "HashVideo", 0)
+	env.AssertNumberOfCalls(t, "ValidateClip", 0)
+}
+
 // TestEventWorkflow_Pipeline_VerifyAndDedup requires two byte-identical
 // candidates to produce one promoted asset and one popularity vote.
 func TestEventWorkflow_Pipeline_VerifyAndDedup(t *testing.T) {

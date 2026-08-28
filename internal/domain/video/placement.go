@@ -35,14 +35,20 @@ type ClipPlacement struct {
 	CommittedAt     time.Time
 }
 
-// ClipPlacementResult reports the canonical winner and cleanup work after the
-// transaction. A retry returns the same winner/share and remains announceable.
+// ClipPlacementResult reports either the canonical winner and cleanup work or
+// that event removal made the accepted cluster non-public. A committed retry
+// returns the same winner/share and remains announceable.
 type ClipPlacementResult struct {
 	WinnerAssetID uuid.UUID
 	ShareID       string
 	WinnerCreated bool
 	LoserObjects  []ObjectRef
+	EventRemoved  bool
 }
+
+// PlacementRejectEventRemoved is the terminal candidate reason used when VAR
+// removal wins the event-row lock before an accepted clip can commit.
+const PlacementRejectEventRemoved = "event_removed"
 
 // PlacementRepo atomically owns every database mutation caused by an accepted
 // candidate: candidate terminal state, popularity credit, asset/share mint,

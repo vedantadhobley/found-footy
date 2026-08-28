@@ -3,6 +3,7 @@
 package pg_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -235,5 +236,133 @@ func TestPlacementRepo_PromotionSupersedesAtomicallyAndRetries(t *testing.T) {
 	}
 	if winnerCredits != 4 || superseded != 1 {
 		t.Errorf("winner credits/superseded = %d/%d, want 4/1", winnerCredits, superseded)
+	}
+}
+
+func TestPlacementRepo_RemovalLockRejectsLatePlacement(t *testing.T) {
+	pool, placements, _, _, fixtureID, eventID := setupPlacementRepo(t)
+	winner := newAsset(eventID, fixtureID, "placement-md5-removed", []uint64{7, 8, 9}, 1_500_000)
+	winner.S3Key = "9200/removed.mp4"
+	in := video.ClipPlacement{
+		EventID: eventID, FixtureID: fixtureID, Winner: winner, Verified: true,
+		Candidates: []video.PlacementCandidate{{
+			Evidence: placementEvidence(eventID, fixtureID, "3001"),
+			Outcome:  discoverycontract.OutcomePromoted,
+		}},
+		CommittedAt: time.Date(2026, 8, 28, 12, 20, 0, 0, time.UTC),
+	}
+
+	removalTx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin removal: %v", err)
+	}
+	defer func() { _ = removalTx.Rollback(context.Background()) }()
+	if _, err := removalTx.Exec(t.Context(), `
+		UPDATE events
+		SET removed = TRUE, removed_reason = 'var', removed_at = NOW()
+		WHERE id = $1
+	`, eventID); err != nil {
+		t.Fatalf("stage removal: %v", err)
+	}
+
+	type placementCall struct {
+		result video.ClipPlacementResult
+		err    error
+	}
+	started := make(chan struct{})
+	done := make(chan placementCall, 1)
+	go func() {
+		close(started)
+		result, err := placements.CommitClipPlacement(context.Background(), in)
+		done <- placementCall{result: result, err: err}
+	}()
+	<-started
+	select {
+	case call := <-done:
+		t.Fatalf("placement crossed uncommitted removal lock: result=%+v err=%v", call.result, call.err)
+	case <-time.After(250 * time.Millisecond):
+	}
+	if err := removalTx.Commit(t.Context()); err != nil {
+		t.Fatalf("commit removal: %v", err)
+	}
+
+	var call placementCall
+	select {
+	case call = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("placement did not resume after removal commit")
+	}
+	if call.err != nil || !call.result.EventRemoved {
+		t.Fatalf("late placement = %+v, err=%v; want removed result", call.result, call.err)
+	}
+
+	var assets, shares, rejected int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM video_assets WHERE event_id = $1`, eventID).Scan(&assets); err != nil {
+		t.Fatalf("count assets: %v", err)
+	}
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM video_shares WHERE event_id = $1`, eventID).Scan(&shares); err != nil {
+		t.Fatalf("count shares: %v", err)
+	}
+	if err := pool.QueryRow(t.Context(), `
+		SELECT count(*) FROM event_search_candidates
+		WHERE event_id = $1 AND outcome_class = 'rejected'
+		  AND reject_reason = 'event_removed' AND credited_asset_id IS NULL
+	`, eventID).Scan(&rejected); err != nil {
+		t.Fatalf("count rejected candidates: %v", err)
+	}
+	if assets != 0 || shares != 0 || rejected != 1 {
+		t.Fatalf("removed placement state assets/shares/rejected = %d/%d/%d, want 0/0/1", assets, shares, rejected)
+	}
+}
+
+func TestPlacementRepo_RemovalPreservesEarlierCommittedAttribution(t *testing.T) {
+	pool, placements, assets, shares, fixtureID, eventID := setupPlacementRepo(t)
+	winner := insertPlacementAsset(t, assets, eventID, fixtureID, "placed-first", 0)
+	in := video.ClipPlacement{
+		EventID: eventID, FixtureID: fixtureID, WinnerAssetID: winner.ID, Verified: true,
+		Candidates: []video.PlacementCandidate{{
+			Evidence: placementEvidence(eventID, fixtureID, "3002"),
+			Outcome:  discoverycontract.OutcomeDuplicate,
+		}},
+		CommittedAt: time.Date(2026, 8, 28, 12, 25, 0, 0, time.UTC),
+	}
+	first, err := placements.CommitClipPlacement(t.Context(), in)
+	if err != nil {
+		t.Fatalf("placement before removal: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE events SET removed = TRUE, removed_reason = 'var', removed_at = NOW()
+		WHERE id = $1
+	`, eventID); err != nil {
+		t.Fatalf("remove event: %v", err)
+	}
+	if err := shares.RemoveByEvent(t.Context(), eventID, video.RemovalVAR); err != nil {
+		t.Fatalf("revoke committed share: %v", err)
+	}
+
+	retry, err := placements.CommitClipPlacement(t.Context(), in)
+	if err != nil || !retry.EventRemoved {
+		t.Fatalf("retry after removal = %+v, err=%v; want removed", retry, err)
+	}
+	var outcome string
+	var credited uuid.UUID
+	if err := pool.QueryRow(t.Context(), `
+		SELECT outcome_class, credited_asset_id FROM event_search_candidates
+		WHERE event_id = $1 AND tweet_url = $2
+	`, eventID, in.Candidates[0].Evidence.TweetURL).Scan(&outcome, &credited); err != nil {
+		t.Fatalf("read prior attribution: %v", err)
+	}
+	if outcome != string(discoverycontract.OutcomeDuplicate) || credited != winner.ID {
+		t.Fatalf("prior attribution = %s/%s, want duplicate/%s", outcome, credited, winner.ID)
+	}
+	if first.ShareID == "" {
+		t.Fatal("initial placement did not create a share")
+	}
+	live, err := shares.ListLiveForEvent(t.Context(), eventID)
+	if err != nil {
+		t.Fatalf("list live after removal: %v", err)
+	}
+	if len(live) != 0 {
+		t.Fatalf("live shares after teardown = %+v, want none", live)
 	}
 }
