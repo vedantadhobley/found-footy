@@ -29,7 +29,7 @@ found-footy/
 │   ├── domain/                          active domain logic only
 │   │   ├── fixture/                     ✓ D1: model + State + Repo + tests
 │   │   ├── event/                       ✓ D2: model + State + Repo + tests
-│   │   ├── video/                       ✓ D3 + V/2 + V/3a + FF-041: model + Repo + rank + versioned perceptual dHash + tiered Match + hard-filter + tests
+│   │   ├── video/                       ✓ D3 + V/2 + V/3a + FF-041 + FF-066: model + repos + atomic placement contract + read rank + versioned perceptual dHash + tiered Match + hard-filter + tests
 │   │   ├── alias/                       ✓ canonical-team record + shared text operations; resolver removed 2026-08-16
 │   │   ├── team/                        ✓ TrackedTeam set — tracked-teams-cache ingest filter (team.go + repo.go)
 │   │   ├── discovery/                   ✓ Query builder + explicit workflow-owned candidate states
@@ -39,7 +39,7 @@ found-footy/
 │   │   │   └── query_builder_test.go    name, particle, dedup, fallback, and safeguard cases
 │   │   └── vision/                      ✓ D5 (2026-07-28): clock.go + evaluate.go + schema.go + tests — clip-clock validation, wired into EventWorkflow consumer
 │   ├── infra/                           live infrastructure adapters
-│   │   ├── pg/                          ✓ S2: pool + instruments + schema.sql + VerifySchema drift guard + focused repos + audited exact-selector candidate-replay store
+│   │   ├── pg/                          ✓ S2 + FF-066: pool + instruments + schema.sql + VerifySchema drift guard + focused repos + exact-selector replay + event-locked atomic clip placement
 │   │   ├── nats/                        ✓ S3: client + instruments
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
 │   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
@@ -58,7 +58,8 @@ found-footy/
 │   │   ├── event.go                     ✓ #164c + FF-022 + FF-034 + FF-061: per-goal producer, classified usable/outage budgets, immediate candidate launch, durable recovery
 │   │   ├── event_pipeline.go            ✓ shared Selector state, deterministic contexts, restoration, and construction
 │   │   ├── event_pipeline_intake.go     ✓ candidate launch, exact-MD5 ownership, hash claimant failover, and consumer loop
-│   │   ├── event_pipeline_validation.go ✓ legacy replay path, vision, category-scoped perceptual dedup, and winner selection
+│   │   ├── event_pipeline_validation.go ✓ vision, category-scoped perceptual dedup, winner selection, and legacy replay dispatch
+│   │   ├── event_pipeline_placement.go  ✓ FF-066 atomic accepted-candidate placement, attribution, supersession, and invalidation
 │   │   ├── event_pipeline_effects.go    ✓ promotion, supersession, publication, cleanup, and terminal candidate durability
 │   │   ├── telemetry.go                 ✓ FF-050: typed replay-aware EventWorkflow lifecycle/search/candidate/publication timing envelope
 │   │   └── video.go                     ✓ #165: pre-FF-022 VideoWorkflow child retained for Temporal replay; shared download/hash activity contracts
@@ -69,7 +70,7 @@ found-footy/
 │   │   │   └── focused colocated test files by responsibility
 │   │   ├── monitor/                     ✓ shared deps/config plus activation.go, reconcile.go, emission.go, and event_identity.go; failed-only spawn recovery remains in spawner.go
 │   │   ├── discovery/                   ✓ shared config/classified search plus candidates.go durable candidate/search recovery and completion.go checklist closure
-│   │   ├── video/                       ✓ DownloadAndStage with bounded failure detail, versioned/minimum-length HashVideo, live-asset recovery, persistence, teardown, and ranking activities
+│   │   ├── video/                       ✓ DownloadAndStage with bounded failure detail, versioned/minimum-length HashVideo, live-asset recovery, atomic placement, compatibility persistence, and teardown
 │   │   ├── vision/                      ✓ staged-clip frame extraction + model-backed validation
 │   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when fleet disabled (FIREFOXFLEET_ENABLED=false)
 │   │   ├── livefeed/                     ✓ publish-activity boundary for all NATS live-feed emits
@@ -97,7 +98,7 @@ found-footy/
 ├── docker/twitter/                      ✓ headless Playwright search image; no VNC packages or runtime branch
 ├── docker/twitter-auth/                 ✓ FF-059: raw Firefox ESR + Xvfb/noVNC image and container-local supervisor
 ├── scripts/matchday-status.{sh,sql}     ✓ FF-050/FF-060: environment-scoped, SELECT-only match-day and download-failure snapshot
-├── migrations/                          FF-041 operational migration applied to prod; retained with its schema-hash contract until remaining durable environments converge
+├── migrations/                          ordered additive FF-041/FF-063 migrations plus pending FF-066 candidate-attribution/share-identity migration; newest stamp matches the flat schema
 ├── scripts/                             dev smoke/probe programs plus guarded operator tools
 │   ├── smoke_repos/main.go              ✓ live pg + repo smoke test (dev only)
 │   ├── trigger_ingest/main.go           ✓ live IngestWorkflow trigger (O1d verification)
@@ -225,6 +226,13 @@ the live-calibrated landscape aspect band is 1.73–1.82),
 `quality.go` (`IsUpgrade`/`ClipQuality` winner-selection — wired post-vision #171),
 and `rank.go` (`CompareShares` — verified, popularity, size, age, then share-ID
 total order for deterministic frontend ranks; FF-030).
+
+FF-066 adds `ClipPlacement` and `PlacementRepo` as the accepted-candidate write
+boundary. The Postgres adapter locks the event and commits candidate
+attribution, retry-safe popularity, asset/share identity, and optional
+supersession in one transaction. `video_shares.rank` remains a replay-only
+compatibility column; `ShareRepo.ListLiveForEvent` derives the public order
+from current evidence.
 
 ### alias domain (D4)
 

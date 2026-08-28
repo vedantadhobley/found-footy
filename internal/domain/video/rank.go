@@ -1,5 +1,5 @@
-// rank.go — share ranking rules. Encoded as a comparison function so
-// repo code can sort in memory before rewriting ranks atomically.
+// rank.go — canonical public share ordering plus the comparator used to
+// rewrite stored compatibility ranks for pre-FF-066 histories.
 package video
 
 // CompareShares returns:
@@ -13,10 +13,8 @@ package video
 // by CreatedAt (older = better; established shares stay stable), then public
 // share ID so an unordered database read still produces a total order.
 //
-// Callers use it via sort.Slice / sort.SliceStable and then rewrite
-// ranks 1..N atomically. The (event_id, rank) UNIQUE partial index
-// enforces the invariant at write time — the 2026-06-30 rank-drift
-// bug (ranks 0,0,2,3 on Norway-CIV) becomes impossible.
+// The public SQL read model mirrors this order. RebalanceRanks uses the Go
+// comparator only for old Temporal histories.
 //
 // The Asset lookup for popularity + file_size is passed in so this
 // function stays pure — the repo knows how to fetch the asset row for

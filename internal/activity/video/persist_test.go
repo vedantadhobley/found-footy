@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
 	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 )
 
@@ -102,6 +103,37 @@ type fakeShareStore struct {
 	rebalanceFailures int
 }
 
+type fakePlacementStore struct {
+	assets *fakeAssetStore
+	inputs []dvideo.ClipPlacement
+	share  string
+	losers []dvideo.ObjectRef
+}
+
+func (f *fakePlacementStore) CommitClipPlacement(_ context.Context, in dvideo.ClipPlacement) (dvideo.ClipPlacementResult, error) {
+	f.inputs = append(f.inputs, in)
+	created := false
+	winnerID := in.WinnerAssetID
+	if in.Winner != nil {
+		winnerID = in.Winner.ID
+		if _, exists := f.assets.byID[winnerID]; !exists {
+			cp := *in.Winner
+			f.assets.byID[winnerID] = &cp
+			f.assets.byEventMD5[in.EventID.String()+":"+hex.EncodeToString(in.Winner.MD5)] = winnerID
+			created = true
+		}
+	}
+	if f.share == "" {
+		f.share = "s_atomic00001"
+	}
+	return dvideo.ClipPlacementResult{
+		WinnerAssetID: winnerID,
+		ShareID:       f.share,
+		WinnerCreated: created,
+		LoserObjects:  f.losers,
+	}, nil
+}
+
 func (f *fakeShareStore) Get(_ context.Context, id string) (*dvideo.Share, error) {
 	for _, s := range f.shares {
 		if s.ID == id {
@@ -182,7 +214,72 @@ func stdPromoteInput(eventID uuid.UUID) PromoteAndPersistInput {
 	}
 }
 
+func stdPlacementInput(eventID uuid.UUID) CommitClipPlacementInput {
+	evidence := discoverycontract.CandidateEvidence{
+		EventID: eventID, FixtureID: 1583467, SearchAttempt: 1,
+		Query: "Liverpool goal filter:videos", TweetURL: "https://x.com/u/status/1001",
+		VideoPageURL: "https://video.twimg.com/1001.m3u8", DurationSeconds: 7,
+	}
+	return CommitClipPlacementInput{
+		EventID: eventID, FixtureID: 1583467, NewWinner: true,
+		StagingKey:  "staging/1583467/e/t.mp4",
+		MD5:         hex.EncodeToString([]byte("md5md5md5md5md5m")),
+		HashVersion: dvideo.CurrentFrameHashVersion(0.1),
+		FrameHashes: []uint64{1, 2, 4, 8}, Width: 1280, Height: 720,
+		DurationMS: 6677, FileSizeBytes: 1_000_000, Verified: true,
+		Candidates: []PlacementCandidateInput{{
+			Evidence: evidence, Outcome: discoverycontract.OutcomePromoted,
+		}},
+	}
+}
+
 func intp(i int) *int { return &i }
+
+func TestCommitClipPlacement_CompletesRetrySafeDurableTail(t *testing.T) {
+	a, s3, assets, _ := newPersist()
+	placements := &fakePlacementStore{
+		assets: assets,
+		losers: []dvideo.ObjectRef{{Bucket: "found-footy", Key: "assets/old.mp4"}},
+	}
+	a.Placements = placements
+	in := stdPlacementInput(uuid.New())
+
+	first, err := a.CommitClipPlacement(context.Background(), in)
+	if err != nil {
+		t.Fatalf("first placement: %v", err)
+	}
+	if !first.WinnerCreated || !first.Announce || first.ShareID == "" {
+		t.Fatalf("first output = %+v, want created announceable share", first)
+	}
+	if len(placements.inputs) != 1 || placements.inputs[0].Winner == nil ||
+		placements.inputs[0].Winner.Popularity != 0 || len(placements.inputs[0].Candidates) != 1 {
+		t.Fatalf("placement input = %+v, want zero-based winner plus one attributed candidate", placements.inputs)
+	}
+	if len(s3.copies) != 1 {
+		t.Fatalf("copies = %v, want one", s3.copies)
+	}
+	if len(s3.deletes) != 2 || s3.deletes[0] != in.StagingKey || s3.deletes[1] != "assets/old.mp4" {
+		t.Fatalf("deletes = %v, want staging then loser cleanup", s3.deletes)
+	}
+
+	// Model a retry after the first durable commit and staging cleanup. The
+	// existing deterministic asset must suppress a second S3 copy, while the
+	// transaction and cleanup tail run again and remain announceable.
+	s3.copyErr = errors.New("staging source is gone")
+	retry, err := a.CommitClipPlacement(context.Background(), in)
+	if err != nil {
+		t.Fatalf("retry placement: %v", err)
+	}
+	if retry.WinnerCreated || !retry.Announce || retry.ShareID != first.ShareID {
+		t.Fatalf("retry output = %+v, want same existing announceable share", retry)
+	}
+	if len(s3.copies) != 1 {
+		t.Errorf("retry copied staging again: %v", s3.copies)
+	}
+	if len(placements.inputs) != 2 {
+		t.Errorf("placement transaction calls = %d, want 2", len(placements.inputs))
+	}
+}
 
 func TestPromoteAndPersist_HappyPath(t *testing.T) {
 	a, s3, assets, shares := newPersist()

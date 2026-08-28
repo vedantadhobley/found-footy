@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Accepted candidates commit as one placement](./2026-08-28-accepted-candidates-commit-as-one-placement.md) — FF-011/FF-048/FF-066 make attribution, popularity, asset/share mutation, supersession, derived rank, and invalidation one retry-safe contract.
 - [Tiered perceptual dedup requires local or sustained evidence](./2026-08-28-tiered-perceptual-dedup-requires-local-or-sustained-evidence.md) — production-v2 boundaries select replay-safe 12/30/3 or 16/50/5 matching while retaining the three-second hash-admission floor.
 - [Exact-byte followers inherit the representative terminal result](./2026-08-26-exact-followers-inherit-representative-outcome.md) — FF-065 preserves one validation path per MD5 but records followers as duplicates only after an asset wins.
 - [Download failures retain bounded stage and class](./2026-08-25-download-failures-retain-bounded-stage-and-class.md) — FF-060 carries retryable download failure evidence through Temporal and persists it without raw errors or a schema migration.

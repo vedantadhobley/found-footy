@@ -177,6 +177,7 @@ func TestFrameHashVersionMigrationBackfillsLegacyRows(t *testing.T) {
 	for _, name := range []string{
 		"20260817_01_add_video_asset_hash_version.sql",
 		"20260825_01_add_terminal_observed_at.sql",
+		"20260828_01_add_atomic_clip_placement.sql",
 	} {
 		migrationPath := filepath.Join(filepath.Dir(filename), "..", "..", "..", "migrations", name)
 		migration, err := os.ReadFile(migrationPath)
@@ -340,7 +341,13 @@ func TestShareRepo_MarkSuperseded(t *testing.T) {
 	}
 
 	// A removed share must survive MarkSuperseded unchanged (guard on active).
-	rm, _ := video.NewShare(a.ID, eventID, true, nil, 2, now)
+	// Use a second asset: FF-048 enforces one public share per event/asset.
+	removedAsset := newAsset(eventID, fixtureID, "md5-sharexxxxxx2", []uint64{4, 5, 6}, 1_000_000)
+	removedAsset.S3Key = "9100/removed-asset.mp4"
+	if _, err := assets.InsertAsset(ctx, removedAsset); err != nil {
+		t.Fatalf("insert removed asset: %v", err)
+	}
+	rm, _ := video.NewShare(removedAsset.ID, eventID, true, nil, 2, now)
 	if err := shares.Insert(ctx, rm); err != nil {
 		t.Fatalf("Insert rm: %v", err)
 	}

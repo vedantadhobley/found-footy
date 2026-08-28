@@ -1,7 +1,7 @@
 // event_pipeline.go — the EventWorkflow consumer engine (#164c-b): the
 // serialized Selector queue that drains download, dense-hash, and vision
 // activities, running exact-byte ownership → hash → vision → category-scoped
-// perceptual dedup → promote → rank per unique clip. The legacy VideoWorkflow
+// perceptual dedup → atomic placement per unique clip. The legacy VideoWorkflow
 // child remains replayable.
 //
 // All state (assets / pending / hashing / inFlight) lives in the `pipeline`
@@ -79,6 +79,7 @@ type pipeline struct {
 	durableCandidates                       bool
 	durableDownloadFailures                 bool
 	deferExactFollowerOutcomes              bool
+	atomicPlacement                         bool
 
 	// activity option ctxs
 	downloadCtx workflow.Context
@@ -116,6 +117,7 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		durableCandidates:          cfg.durableCandidates,
 		durableDownloadFailures:    cfg.durableDownloadFailures,
 		deferExactFollowerOutcomes: cfg.deferExactFollowerOutcomes,
+		atomicPlacement:            cfg.atomicPlacement,
 		downloadCtx:                videoDownloadActivityContext(ctx),
 		hashCtx:                    videoHashActivityContext(ctx),
 		visionCtx: workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -141,6 +143,7 @@ type pipelineConfig struct {
 	durableCandidates                       bool
 	durableDownloadFailures                 bool
 	deferExactFollowerOutcomes              bool
+	atomicPlacement                         bool
 	startedAt                               time.Time
 }
 
@@ -163,8 +166,8 @@ type candidateTiming struct {
 // restoreAssets seeds the serialized consumer with durable live assets from a
 // prior failed EventWorkflow execution. Without this, a replacement run would
 // forget its exact/perceptual dedup set and could treat an already-surfaced
-// clip as new. The activity projection is rank ordered, which preserves the
-// existing winner order until a later promotion rebalances it.
+// clip as new. The activity projection uses current public evidence order,
+// preserving deterministic winner preference across recovery.
 func (p *pipeline) restoreAssets(restored []videoactivity.RestoredEventAsset) {
 	for _, asset := range restored {
 		popularity := asset.Popularity

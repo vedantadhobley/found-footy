@@ -253,18 +253,16 @@ func (a *Activities) RecordDiscoveryProgress(ctx context.Context, in RecordDisco
 	return nil
 }
 
-// CandidateOutcome is the terminal per-candidate class recorded on
-// event_search_candidates.outcome_class (#181). Coarse by design — the
-// fine-grained "why" rides reject_reason + outcome_detail. Values mirror the
-// schema CHECK constraint.
-type CandidateOutcome string
+// CandidateOutcome is the shared terminal candidate class. The aliases remain
+// here so existing activity and workflow callers keep their package surface.
+type CandidateOutcome = discoverycontract.CandidateOutcome
 
 const (
-	OutcomePromoted   CandidateOutcome = "promoted"   // surfaced as an asset/share
-	OutcomeDuplicate  CandidateOutcome = "duplicate"  // md5/perceptual dup, collapsed onto a durable asset winner
-	OutcomeSuperseded CandidateOutcome = "superseded" // promoted, then replaced by a better clip
-	OutcomeRejected   CandidateOutcome = "rejected"   // download-stage or vision reject (reject_reason says which)
-	OutcomeFailed     CandidateOutcome = "failed"     // child/infra error — never got a clean verdict
+	OutcomePromoted   = discoverycontract.OutcomePromoted   // surfaced as an asset/share
+	OutcomeDuplicate  = discoverycontract.OutcomeDuplicate  // collapsed onto a durable asset winner
+	OutcomeSuperseded = discoverycontract.OutcomeSuperseded // promoted, then replaced by a better clip
+	OutcomeRejected   = discoverycontract.OutcomeRejected   // deterministic content rejection
+	OutcomeFailed     = discoverycontract.OutcomeFailed     // infrastructure failure without a clean verdict
 )
 
 // RecordCandidateOutcomeInput carries a candidate's terminal fate. Detail is a
@@ -300,9 +298,7 @@ func (a *Activities) UpsertCandidateOutcome(ctx context.Context, in UpsertCandid
 		return fmt.Errorf("discovery.UpsertCandidateOutcome: incomplete evidence for event=%s tweet=%s",
 			in.Evidence.EventID, in.Evidence.TweetURL)
 	}
-	switch in.Outcome {
-	case OutcomePromoted, OutcomeDuplicate, OutcomeSuperseded, OutcomeRejected, OutcomeFailed:
-	default:
+	if !in.Outcome.Terminal() {
 		return fmt.Errorf("discovery.UpsertCandidateOutcome: non-terminal outcome %q", in.Outcome)
 	}
 

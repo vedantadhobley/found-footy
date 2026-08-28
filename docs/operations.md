@@ -446,6 +446,14 @@ the old binary ignores it, but restore `schema_version.schema_hash` to that
 release's embedded hash before recreating the binary. Any future database
 statement and application rollout still requires its own production approval.
 
+FF-066 has the same two-action boundary. First apply the reviewed additive
+[`atomic clip placement` migration](../migrations/20260828_01_add_atomic_clip_placement.sql)
+and verify its schema stamp and uniqueness precondition. Then separately
+approve and run the application rollout so the worker writes candidate
+attribution and the API serves read-derived rank. The deploy command does not
+apply this migration, and approval for either action does not authorize the
+other.
+
 If a legacy unscoped `ff-firefox-ev-*` container appears, stop the rollout and
 identify its workflow and network ownership. The scoped provisioner cannot
 safely adopt or remove it. Legacy cleanup and the production rollout require

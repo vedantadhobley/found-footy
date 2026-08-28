@@ -55,6 +55,12 @@ failed attempt and therefore still owes its `event.video` dirty signal.
 
 ## Superseded contract
 
+The [atomic placement decision](./2026-08-28-accepted-candidates-commit-as-one-placement.md)
+supersedes rank rebalance and independent popularity writes for new
+EventWorkflow histories. This decision remains the replay contract for older
+histories and still supplies the deterministic S3 copy/cleanup tail reused by
+the new activity.
+
 This refines the frozen
 [`#164b persistence decision`](./archive-through-2026-08-16.md#2026-08-03--164b-consumer-queue-persist-activities--a-combine-deviation),
 which described retry copy as a harmless overwrite and an existing share as a

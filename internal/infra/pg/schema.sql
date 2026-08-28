@@ -309,7 +309,7 @@ CREATE TABLE video_assets (
 CREATE INDEX video_assets_event_popularity ON video_assets (event_id, popularity DESC)
     WHERE superseded_by IS NULL;
 
--- 7b. video_shares — public share IDs, per-event ranked
+-- 7b. video_shares — public share IDs. Public rank is derived at read time.
 CREATE TABLE video_shares (
     id TEXT PRIMARY KEY,                                    -- 's_<12-hex>', public
     asset_id UUID NOT NULL REFERENCES video_assets(id) ON DELETE RESTRICT,
@@ -324,7 +324,8 @@ CREATE TABLE video_shares (
     removed_reason removal_reason,
     removed_at TIMESTAMPTZ,
 
-    -- Ranking — 1-indexed, unique per event within active state
+    -- Pre-FF-066 ranking compatibility. New histories append a collision-free
+    -- value but public reads ignore it; remove after old histories age out.
     rank INT NOT NULL CHECK (rank >= 1),
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -334,12 +335,16 @@ CREATE TABLE video_shares (
     CHECK ((state IN ('active', 'superseded') AND removed_reason IS NULL) OR (state = 'removed' AND removed_reason IS NOT NULL))
 );
 
--- The partial UNIQUE INDEX on (event_id, rank) WHERE state='active' is the
--- fix for the 2026-06-30 rank-drift bug (ranks 0, 0, 2, 3 on Norway-CIV).
--- Postgres will reject any attempt to write duplicate active ranks per event.
+-- Compatibility invariant for old histories that still rebalance stored rank.
 CREATE UNIQUE INDEX video_shares_event_rank_active
     ON video_shares (event_id, rank)
     WHERE state = 'active';
+
+-- One public share per event/asset. This is the retry and concurrency
+-- invariant for placement; the rank column/index above remains temporarily
+-- for pre-FF-066 Temporal histories, while public rank is derived at read time.
+CREATE UNIQUE INDEX video_shares_event_asset
+    ON video_shares (event_id, asset_id);
 
 CREATE INDEX video_shares_event ON video_shares (event_id);
 CREATE INDEX video_shares_asset ON video_shares (asset_id);
@@ -398,6 +403,11 @@ CREATE TABLE event_search_candidates (
     outcome_detail JSONB,                                   -- specifics: {aspect} / {soccer_votes, screen_votes, frame_count} / {asset_id, verified}
     outcome_at TIMESTAMPTZ,                                 -- when the terminal outcome was recorded; NULL while pending
 
+    -- Canonical asset credited for this source sighting. New FF-066 placement
+    -- histories set it in the same transaction that changes popularity. NULL
+    -- remains valid for rejected/failed and pre-migration audit rows.
+    credited_asset_id UUID REFERENCES video_assets(id) ON DELETE RESTRICT,
+
     UNIQUE (event_id, tweet_url)                            -- same tweet can't re-insert across attempts
 );
 
@@ -407,6 +417,9 @@ CREATE INDEX event_search_candidates_fixture
     ON event_search_candidates (fixture_id);
 CREATE INDEX event_search_candidates_discovered_at
     ON event_search_candidates (discovered_at);
+CREATE INDEX event_search_candidates_credited_asset
+    ON event_search_candidates (credited_asset_id)
+    WHERE credited_asset_id IS NOT NULL;
 
 -- 9. team_aliases — deterministic Wikidata alias cache.
 --

@@ -232,29 +232,36 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   ≤12 or 45 of 50 at Hamming ≤16. The 30-frame route remains hash admission and
   fallback for shorter sequences; a historical config result with no sustained
   fields disables only the 50-frame route. Dedup then runs
-  which-to-keep. Unique or cluster quality-winner (`IsUpgrade`) → **promote**
-  (`PromoteAndPersist` derives a deterministic UUID, reuses a matching durable
-  asset or copies staging→asset before inserting it, ensures one
-  `video_shares` row, always rebalances ranks, then deletes staging). A durable
-  asset row proves the destination copy preceded it, so a retry after an
-  uncertain staging-delete response skips the now-impossible source copy. A
-  loser clip collapses (popularity bump); any bridged assets **consolidate**
-  onto the winner (`SupersedeAssets` — `superseded_by` chain + atomic
-  popularity merge + retire loser shares to `'superseded'` + reclaim Garage
-  bytes). **Rank** = `RebalanceRanks` by `CompareShares` (verified → popularity
-  → file_size → oldest → lexical share ID); the final ID key makes complete
-  ties independent of PostgreSQL row order (FF-030). Verified always outranks
-  unverified, and pools never cross-compare for dedup.
-- **Emit** (N3): after a successful promotion completion with a durable share
-  (`Minted=true`) or a supersede that collapsed losers, the pipeline fires the
-  `event.video` dirty-signal via the `livefeed.PublishEventVideo` activity —
-  best-effort, and only after the persistence tail has completed. A retry that
-  finds the share created by its failed prior attempt still returns
-  `Minted=true`: Temporal never delivered that failed attempt's result, so the
-  workflow still owes one signal. Consumers refetch current state, making an
-  extra signal from an external workflow re-drive harmless. A popularity-only
-  bump and a VAR `DestroyEvent` do **not** emit (the latter surfaces as the
-  event's absence in the parent's `fixture.update` refetch).
+  which-to-keep. New histories send the entire accepted cluster to
+  `CommitClipPlacement`: candidate outcome and asset attribution, newly
+  credited popularity, conflict-safe asset/share creation, and bridged-loser
+  supersession commit under one event-locked Postgres transaction. A unique or
+  better cluster winner uses a deterministic asset UUID and S3 key; the
+  activity copies staging before the transaction. An existing winner receives
+  only previously uncredited source votes. Supersession moves all loser
+  candidate credits to the winner, merges loser popularity exactly once,
+  retires loser shares, and returns loser objects for best-effort reclaim.
+  Staging deletion remains the required idempotent activity tail. A durable
+  deterministic asset row proves the destination copy preceded it, so a retry
+  skips an impossible second source copy.
+- **Compatibility:** `ff-066-atomic-clip-placement` version 1 selects that path.
+  Older histories retain independent `PromoteAndPersist`,
+  `BumpAssetPopularity`, `SupersedeAssets`, terminal-outcome, and
+  `RebalanceRanks` commands. The old activities stay registered until those
+  histories age out.
+- **Rank:** The API derives `ROW_NUMBER()` on every read from active membership,
+  timestamp verification, popularity, file size, creation time, and lexical
+  share ID. New-history writes never rebalance stored rank. The compatibility
+  column remains only because older Temporal histories still write it.
+- **Emit** (N3): after every successful placement, including a
+  popularity-only duplicate, the pipeline fires the `event.video` dirty signal
+  through `livefeed.PublishEventVideo`. Publication waits for the activity's
+  persistence and cleanup tail. A retry that observes an already committed
+  placement still returns `Announce=true`, because the workflow never observed
+  the failed activity completion and still owes invalidation. Consumers refetch
+  current state, so an extra signal from an external re-drive is harmless. A
+  VAR `DestroyEvent` does not emit; the event disappears through the parent's
+  `fixture.update` refetch.
 
 ### Dedup keeper selection versus public ranking
 
@@ -265,11 +272,12 @@ These are separate policies over different sets. Do not merge their criteria:
 | Dedup keeper selection | Perceptually matching clips in the same verified or unverified pool | [`IsUpgrade`](../../internal/domain/video/quality.go): meaningfully longer capped duration, then bits per pixel with an anti-churn margin, then resolution; incumbent wins ties | Chooses which bytes and asset identity survive a duplicate cluster. It never uses popularity. |
 | Public ranking | Distinct active shares for one event after dedup | [`CompareShares`](../../internal/domain/video/rank.go): verified, popularity, file size, older creation time, then share ID | Assigns the frontend order. It does not supersede assets or decide whether two clips are duplicates. |
 
-When a better duplicate supersedes an incumbent, the transaction merges the
-loser's popularity into the keeper and retires the loser's shares. Rank is then
-rebalanced over the surviving active shares. This preserves accumulated source
-votes without allowing popularity to keep inferior duplicate bytes. FF-011
-separately tracks making popularity increments retry-idempotent.
+When a better duplicate supersedes an incumbent, placement merges the loser's
+popularity into the keeper, moves candidate attribution, and retires the
+loser's shares. Read-derived rank immediately reflects the surviving active
+set. This preserves accumulated source votes without allowing popularity to
+keep inferior duplicate bytes. Candidate attribution makes the vote transfer
+and direct duplicate credit retry-idempotent (FF-011/FF-066).
 
 On completion—and only after every workflow-owned candidate is durably
 terminal—`finalizeEvent` marks the `event_downstream_workflows` row

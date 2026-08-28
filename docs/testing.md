@@ -198,12 +198,20 @@ the operator script, requires environment and Firefox scope derivation, and
 rejects mutation statements or a status query without an explicit read-only
 transaction.
 
-`PersistActivities` promotion tests inject failures into the durable tail.
-They prove that a rank failure after share insertion is repaired on retry, an
-uncertain staging-delete response does not require a second source copy, and
-ordinary retries retain exactly one asset and share while still completing
-rank repair, cleanup, and the workflow dirty-signal contract. A pre-existing
-deterministic asset with mismatched immutable storage identity fails closed.
+`PersistActivities` keeps promotion-tail tests for pre-FF-066 replay. They
+prove that a compatibility rank failure after share insertion is repaired on
+retry, an uncertain staging-delete response does not require a second source
+copy, and old-path retries retain exactly one asset and share. FF-066 adds an
+activity-tail test that commits the complete placement, deletes staging and
+loser objects, then retries after the source disappeared without recopying. A
+pre-existing deterministic asset with mismatched immutable storage identity
+still fails closed.
+
+The FF-066 EventWorkflow test forces an exact duplicate against a restored
+asset and requires one `CommitClipPlacement`, one `event.video`, and zero hash,
+vision, popularity-bump, or separate terminal-outcome calls. The default
+version used by the existing suite continues to prove replay of the old
+command graph.
 
 ## Tier 2 — adapter integration (testcontainers)
 
@@ -215,6 +223,14 @@ inside downstream metadata and that terminal versus observed candidate state,
 including complete evidence, loads in stable discovery order. A second FF-034
 case calls the terminal UPSERT without a prior observation row, retries it, and
 requires one complete terminal row.
+
+Placement integration tests use real Postgres to prove two retry boundaries.
+An existing winner receives each candidate vote once and moves to derived rank
+one without stored-rank repair. A new winner supersedes an incumbent, merges
+its popularity once, moves all candidate attribution, retires the loser share,
+and returns the same share on retry. The migration-chain test applies the
+candidate-attribution/share-identity migration after the earlier additive
+migrations and requires the final embedded schema stamp.
 
 Enablement mechanics:
 - `--network=host` on the `test` make target — testcontainers-go

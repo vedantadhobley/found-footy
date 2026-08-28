@@ -8,6 +8,40 @@ import (
 	"github.com/google/uuid"
 )
 
+// CandidateOutcome is the terminal class for one discovered video candidate.
+// It lives in the shared contract package because workflows, activities, and
+// atomic placement persistence all write the same durable vocabulary.
+type CandidateOutcome string
+
+const (
+	OutcomePromoted   CandidateOutcome = "promoted"
+	OutcomeDuplicate  CandidateOutcome = "duplicate"
+	OutcomeSuperseded CandidateOutcome = "superseded"
+	OutcomeRejected   CandidateOutcome = "rejected"
+	OutcomeFailed     CandidateOutcome = "failed"
+)
+
+// Terminal reports whether o is a schema-valid terminal candidate outcome.
+func (o CandidateOutcome) Terminal() bool {
+	switch o {
+	case OutcomePromoted, OutcomeDuplicate, OutcomeSuperseded, OutcomeRejected, OutcomeFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Credited reports whether o represents a candidate sighting assigned to a
+// durable video asset. Superseded candidates retain their vote on the winner.
+func (o CandidateOutcome) Credited() bool {
+	switch o {
+	case OutcomePromoted, OutcomeDuplicate, OutcomeSuperseded:
+		return true
+	default:
+		return false
+	}
+}
+
 // EventWorkflowInput carries the immutable event context supplied by the
 // spawning monitor activity to EventWorkflow.
 type EventWorkflowInput struct {

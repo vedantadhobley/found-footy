@@ -13,9 +13,70 @@ import (
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
+	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
+	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
+
+func TestEventWorkflow_AtomicExactDuplicateCommitsAndPublishes(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	assetID := uuid.New()
+	env := baseEventEnvWithOptions(&s,
+		discoveryactivity.LoadEventRecoveryStateOutput{},
+		videoactivity.LoadEventAssetsOutput{Assets: []videoactivity.RestoredEventAsset{{
+			AssetID: assetID, MD5: "0123456789abcdef0123456789abcdef",
+			HashVersion: dvideo.CurrentFrameHashVersion(0.1),
+			FrameHashes: []uint64{1, 2, 3}, Width: 1280, Height: 720,
+			DurationMS: 7000, FileSizeBytes: 900_000, Popularity: 1, Verified: true,
+		}}},
+		true,
+		true,
+		true,
+		discoveryactivity.GetDiscoveryConfigOutput{
+			MaxAttempts: 1, AttemptSpacing: time.Minute,
+			MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
+		},
+	)
+	const tweetURL = "https://x.com/u/status/1111111111111111111"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{{TweetURL: tweetURL, VideoPageURL: "vp", DurationSeconds: 7}},
+			Count:  1, StopReason: "age",
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil)
+	env.OnActivity("DownloadAndStage", mock.Anything, mock.Anything).
+		Return(videoactivity.DownloadAndStageOutput{
+			Outcome: videoactivity.OutcomePassed,
+			MD5:     "0123456789abcdef0123456789abcdef", StagingKey: "staging/exact.mp4",
+			Width: 1280, Height: 720, DurationMS: 7000, SizeBytes: 900_000,
+		}, nil)
+	var committed videoactivity.CommitClipPlacementInput
+	env.OnActivity("CommitClipPlacement", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, in videoactivity.CommitClipPlacementInput) (videoactivity.CommitClipPlacementOutput, error) {
+			committed = in
+			return videoactivity.CommitClipPlacementOutput{
+				WinnerAssetID: assetID, ShareID: "s_atomic", Announce: true,
+			}, nil
+		}).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+	if committed.NewWinner || committed.WinnerAssetID != assetID || len(committed.Candidates) != 1 {
+		t.Fatalf("atomic placement = %+v, want one candidate on existing winner", committed)
+	}
+	if committed.Candidates[0].Evidence.TweetURL != tweetURL ||
+		committed.Candidates[0].Outcome != discoverycontract.OutcomeDuplicate {
+		t.Errorf("candidate placement = %+v, want attributed duplicate", committed.Candidates[0])
+	}
+	env.AssertNumberOfCalls(t, "CommitClipPlacement", 1)
+	env.AssertNumberOfCalls(t, "PublishEventVideo", 1)
+	env.AssertNumberOfCalls(t, "HashVideo", 0)
+	env.AssertNumberOfCalls(t, "ValidateClip", 0)
+	env.AssertNumberOfCalls(t, "BumpAssetPopularity", 0)
+	env.AssertNumberOfCalls(t, "UpsertCandidateOutcome", 0)
+}
 
 // TestEventWorkflow_Pipeline_VerifyAndDedup requires two byte-identical
 // candidates to produce one promoted asset and one popularity vote.
@@ -136,6 +197,7 @@ func TestEventWorkflow_EmitsCriticalPathMeasurements(t *testing.T) {
 		videoactivity.LoadEventAssetsOutput{},
 		true,
 		true,
+		false,
 		discoveryactivity.GetDiscoveryConfigOutput{
 			MaxAttempts: 1, AttemptSpacing: time.Minute,
 			MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,

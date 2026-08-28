@@ -162,6 +162,13 @@ func (p *pipeline) collapseExact(loser clip, idx int, isAsset bool) {
 	}
 	if isAsset {
 		winnerID := p.assets[idx].assetID
+		if p.atomicPlacement {
+			if _, ok := p.commitClipPlacement(loser, visionactivity.ValidateClipOutput{}, false, winnerID, nil); ok {
+				p.assets[idx].popularity += 1 + len(loser.exactFollowers)
+				p.duplicates += 1 + len(loser.exactFollowers)
+			}
+			return
+		}
 		p.bumpPopularity(winnerID, loser.popularity)
 		p.duplicateExactCluster(loser, winnerID)
 	} else {
@@ -250,6 +257,10 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 // winner, popularity merging. Verified vs unverified never mix (matchAssets
 // scopes by category); across pools it's pure ranking, verified always above.
 func (p *pipeline) dedupAndPromote(c clip, vout visionactivity.ValidateClipOutput) {
+	if p.atomicPlacement {
+		p.dedupAndCommit(c, vout)
+		return
+	}
 	matched := p.matchAssets(c)
 	if len(matched) == 0 {
 		p.promote(c, vout) // unique in its pool

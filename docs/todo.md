@@ -229,7 +229,7 @@ the current branch.
 | FF-008 | P2 | `confirmed` | Worker `/scratch` has no orphan sweep after process/OOM failure. | Bounded startup or scheduled sweep with active-path exclusions and tests. |
 | FF-009 | P2 | `confirmed` | Temporal schedules are create-only and retention still passes a hardcoded 14 days. | Config value wired; Describe→Update reconciliation tested and documented. |
 | FF-010 | P2 | `confirmed` | Completed fixtures are not revisited for late assist backfill. | Bounded completed-fixture refresh policy with vendor-call budget and tests. |
-| FF-011 | P2 | `confirmed` | Popularity increments are not idempotent under activity retry. | Retry-safe vote accounting with an invariant test. |
+| FF-011 | P2 | `implemented` | New placement histories use `(event_id, tweet_url)` candidate attribution as the vote key, so an activity retry observes the prior credit instead of incrementing popularity again. | Apply the FF-066 migration, release worker/API together, and verify a natural duplicate increments once through an induced or observed retry. |
 | FF-013 | P2 | `confirmed` | Schema guard can accept an incomplete schema and evolution is init-file/manual-ALTER based. | Establish ordered migrations and test interrupted/partial state before new constraints. |
 | FF-024 | P2 | `confirmed` | The Garage `staging/` prefix has no bounded orphan sweep after abnormal termination. | Protect active keys and delete only proven age-bounded orphans. |
 | FF-035 | P2 | `implemented` | Each binary now parses only its owned typed sections and rejects semantic or cross-field violations before external work. A derived contract test keeps Go tags, `.env.example`, Compose overrides, environment scope, and cookie mounts aligned; dead config keys were removed. | Roll out the committed release and verify clean startup for worker, API, Twitter, and one VNC config parse. |
@@ -244,7 +244,7 @@ the current branch.
 | FF-045 | P3 | `implemented` | Zero-caller packages, Temporal signaling, telemetry vocabulary, and stale comments are removed. `cmd/worker` is thin; worker composition lives in `internal/app/worker`; shared discovery payloads live in `internal/contract/discovery`; event, activity, Twitter-search, Postgres, and large test files are split by responsibility without changing package or Temporal identities. | Fast and full Docker gates passed; deployed and release-identity verified in `e2e181a`. |
 | FF-046 | P2 | `confirmed` | Ancillary persistence blocks the serialized EventWorkflow selector consumer. | Serialize only dedup state; model durable effects with explicit futures/idempotency. |
 | FF-047 | P3 | `confirmed` | Empty tracked-team state still burns fixture lookahead calls whose results are discarded. | Short-circuit before vendor fixture calls and emit degraded-state telemetry. |
-| FF-048 | P2 | `confirmed` | Share minting uses check-then-insert without `(event_id, asset_id)` uniqueness. | Database constraint plus atomic idempotent insert after FF-013. |
+| FF-048 | P2 | `implemented` | The FF-066 migration adds `(event_id, asset_id)` uniqueness and atomic placement uses conflict-safe share insertion inside the event transaction. The old check-then-insert path remains only for replay. | Apply the migration, release the compatible worker/API, and verify the unique index plus one-share retry invariant in production. |
 | FF-049 | P3 | `implemented` | The orchestration ledger, Python functional reference, and historical video-dedup proposal are split into routed topic sets whose leaves stay within the shared size standard. The EventWorkflow ledger now also makes the dedup-keeper versus public-ranking boundary explicit, resolving `AUD-0813-P3-4`. | Link checks passed and the normalization shipped in `e2e181a`; no separate runtime rollout applies. |
 | FF-050 | P2 | `investigate` | Live Elche timing shows 23.6 seconds from valid-candidate observation to publication, dominated by 12.6-second hashing and 9.7-second vision; durable effects add milliseconds. | Measure the deployed bounded-hash latency before considering pipeline concurrency. |
 | FF-052 | P1 | `confirmed` | Vision accepted a phone filming a display as a clean Elche broadcast with `screen=false` on all three sampled frames. | Preserve the clip as a regression sample, calibrate the prompt/model against varied display recordings, and prove rejection without increasing clean-broadcast false positives. |
@@ -259,6 +259,7 @@ the current branch.
 | FF-063 | P1 | `validating` | A played terminal fixture whose provider event inventory remains permanently inconsistent had no bounded exit from active polling. The additive terminal observation field, one-hour grace, settled event/downstream gates, completion audit evidence, and stable recency shipped in release `5c105af`. | Verify one coherent and one incomplete natural terminal fixture. Do not remove the rollback-compatible `completion_counter` column until FF-013. |
 | FF-064 | P3 | `implemented` | Production uses Control's canonical `control-joi.luv` identity with `gemma-4-12b` pinned. Found Footy release `e4ae2d7` passed its exact three-image request against Control contract-v3 digest `0fc304bc…`; the typed catalog, constrained response, and strict rejection checks all matched the application contract. | Control retains `joi.luv` as a rollback route until observed legacy use reaches zero; no Found Footy work remains. |
 | FF-065 | P2 | `implemented` | Exact-byte followers became terminal `duplicate` while their representative still awaited vision, so a later content rejection left duplicate rows without an asset winner. New histories retain followers until the representative terminates and share its rejection/failure unless an asset actually wins. | Release the worker change and verify a natural rejected exact-byte cluster contains no duplicate outcome, while a promoted cluster retains one validation path and its full popularity. |
+| FF-066 | P2 | `implemented` | Popularity-only duplicate placements changed a public ranking input without rank repair or `event.video`; ten shares across five production events were stale. Accepted clusters now commit attribution, retry-safe popularity, share identity, supersession, and candidate outcome in one transaction; the API derives rank on every read and every successful placement invalidates consumers. | Apply `20260828_01_add_atomic_clip_placement.sql`, release worker/API together, verify schema identity, then prove a natural duplicate changes popularity/order once and emits `event.video`. Remove stored rank only after old Temporal histories age out. |
 
 ### FF-060 — download failures lost their actionable cause
 
@@ -396,6 +397,35 @@ the current branch.
   and the pre-version path. No schema, API, frontend, or historical repair is
   required; old rows do not retain enough linkage for a deterministic rewrite.
   See the [decision](./decisions/2026-08-26-exact-followers-inherit-representative-outcome.md).
+
+### FF-066 — ranking inputs changed outside the public placement contract
+
+- **Observed:** A production read audit found ten misplaced shares across five
+  events. Their stored ranks no longer matched the current verified,
+  popularity, size, age, and share-ID order. Thauvin retained popularity order
+  22, 2, 5 instead of 22, 5, 2.
+- **Cause:** Promotion and supersession rewrote stored ranks and emitted
+  `event.video`, but an exact or perceptual duplicate used the independent
+  `BumpAssetPopularity` activity. That path changed popularity without rank
+  rebalance or publication. Its raw increment was also unsafe under Temporal
+  activity retry (FF-011), while share minting remained check-then-insert
+  without a database event/asset identity (FF-048).
+- **Implemented:** New histories submit one `CommitClipPlacement` activity per
+  accepted candidate cluster. A Postgres event lock and transaction own
+  candidate terminal state plus `credited_asset_id`, newly credited popularity,
+  conflict-safe asset/share creation, and optional loser supersession. Candidate
+  identity makes retry a no-op for vote count. Every success emits
+  `event.video` after the S3 cleanup tail.
+- **Derived view:** `ListLiveForEvent` assigns `ROW_NUMBER()` from current
+  ranking evidence. The old `rank` column remains only for histories selected
+  by Temporal's default version, so existing stale values stop affecting the
+  API immediately without a destructive data rewrite.
+- **Compatibility and proof:** Change ID `ff-066-atomic-clip-placement`, version
+  1, preserves old command histories. Integration tests retry popularity and
+  promotion/supersession placements, require one candidate credit per source,
+  one share per event/asset, a single popularity merge, and fresh read-derived
+  order. Workflow coverage proves an exact duplicate uses only the atomic
+  activity and publishes once. See the [decision](./decisions/2026-08-28-accepted-candidates-commit-as-one-placement.md).
 
 ### FF-059 — VNC recovery uses the login path X already rejected
 

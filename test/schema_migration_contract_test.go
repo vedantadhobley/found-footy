@@ -14,7 +14,7 @@ var migrationSchemaHash = regexp.MustCompile(`schema_hash = '([0-9a-f]{64})'`)
 func TestPendingMigrationStampsEmbeddedSchemaHash(t *testing.T) {
 	root := repositoryRoot(t)
 	schema := readToolingFile(t, root, "internal/infra/pg/schema.sql")
-	migration := readToolingFile(t, root, "migrations/20260825_01_add_terminal_observed_at.sql")
+	migration := readToolingFile(t, root, "migrations/20260828_01_add_atomic_clip_placement.sql")
 
 	match := migrationSchemaHash.FindStringSubmatch(migration)
 	if len(match) != 2 {
