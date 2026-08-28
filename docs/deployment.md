@@ -235,6 +235,9 @@ baseline and final required-object manifest before stamping `schema_version`.
 A failed or interrupted file leaves neither its DDL nor its ledger row. Worker
 and API never mutate schema: `VerifyMigrations` takes a shared lock, checks the
 exact chain, stamp, and required objects, then refuses startup on any mismatch.
+Migrations that add relational constraints preflight existing rows and abort
+with a bounded inconsistency class/count instead of inventing parent identity
+or removal timestamps.
 
 Dev Compose runs the one-shot `migrate` service after Postgres health and gates
 worker/API on successful completion. An existing dev volume is repaired in

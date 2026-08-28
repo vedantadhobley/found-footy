@@ -258,8 +258,8 @@ func TestCommitClipPlacement_CompletesRetrySafeDurableTail(t *testing.T) {
 		t.Fatalf("first output = %+v, want created announceable share", first)
 	}
 	if len(placements.inputs) != 1 || placements.inputs[0].Winner == nil ||
-		placements.inputs[0].Winner.Popularity != 0 || len(placements.inputs[0].Candidates) != 1 {
-		t.Fatalf("placement input = %+v, want zero-based winner plus one attributed candidate", placements.inputs)
+		placements.inputs[0].Winner.Popularity != 1 || len(placements.inputs[0].Candidates) != 1 {
+		t.Fatalf("placement input = %+v, want one seeded vote plus one attributed candidate", placements.inputs)
 	}
 	if len(s3.copies) != 1 {
 		t.Fatalf("copies = %v, want one", s3.copies)

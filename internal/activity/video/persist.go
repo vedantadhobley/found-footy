@@ -161,7 +161,6 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 			in.Width, in.Height, in.DurationMS, in.FileSizeBytes, placement.CommittedAt)
 		asset.ID = assetID
 		asset.Bitrate = in.Bitrate
-		asset.Popularity = 0 // candidate credits in the transaction establish the count
 		placement.Winner = asset
 		placement.WinnerAssetID = uuid.Nil
 	} else if in.WinnerAssetID == uuid.Nil {

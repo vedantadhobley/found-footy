@@ -72,7 +72,7 @@ func (r *PlacementRepo) CommitClipPlacement(ctx context.Context, in video.ClipPl
 				md5, hash_version, frame_hashes,
 				width, height, duration_ms, file_size_bytes, bitrate,
 				popularity, superseded_by, first_seen_at
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,NULL,$14)
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,1,NULL,$14)
 			ON CONFLICT (event_id, md5) DO NOTHING
 		`, in.Winner.ID, in.Winner.EventID, in.Winner.FixtureID,
 			in.Winner.S3Bucket, in.Winner.S3Key, in.Winner.MD5,
@@ -120,15 +120,21 @@ func (r *PlacementRepo) CommitClipPlacement(ctx context.Context, in video.ClipPl
 			addedVotes++
 		}
 	}
-	if addedVotes > 0 {
+	popularityDelta := addedVotes
+	if winnerCreated {
+		if addedVotes == 0 {
+			return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: new winner received no candidate vote")
+		}
+		// The insert establishes the first vote so the row never violates the
+		// durable popularity floor between statements in this transaction.
+		popularityDelta--
+	}
+	if popularityDelta > 0 {
 		if _, err := tx.Exec(ctx, `
 			UPDATE video_assets SET popularity = popularity + $2 WHERE id = $1
-		`, winnerID, addedVotes); err != nil {
+		`, winnerID, popularityDelta); err != nil {
 			return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: add popularity: %w", err)
 		}
-	}
-	if winnerCreated && addedVotes == 0 {
-		return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: new winner received no candidate vote")
 	}
 
 	seenLoser := make(map[uuid.UUID]struct{}, len(loserSet))
@@ -224,6 +230,11 @@ func validateClipPlacement(in video.ClipPlacement) error {
 	}
 	if in.Winner != nil && (in.Winner.ID == uuid.Nil || in.Winner.EventID != in.EventID || in.Winner.FixtureID != in.FixtureID) {
 		return fmt.Errorf("new winner identity does not match placement")
+	}
+	if in.Winner != nil {
+		if err := in.Winner.ValidateInvariants(); err != nil {
+			return fmt.Errorf("new winner: %w", err)
+		}
 	}
 	for _, c := range in.Candidates {
 		if c.Evidence.EventID != in.EventID || c.Evidence.FixtureID != in.FixtureID ||

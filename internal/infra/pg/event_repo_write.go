@@ -32,6 +32,9 @@ func (r *EventRepo) InsertWithAudit(
 }
 
 func (r *EventRepo) insert(ctx context.Context, e *event.Event, workflowID string, record *auditlog.Record) error {
+	if err := e.ValidateInvariants(); err != nil {
+		return fmt.Errorf("pg.EventRepo.Insert: %w", err)
+	}
 	telemetryBytes, err := marshalTelemetry(e.Telemetry)
 	if err != nil {
 		return fmt.Errorf("pg.EventRepo.Insert: telemetry: %w", err)
@@ -199,6 +202,9 @@ func (r *EventRepo) DeleteUnknownEvent(ctx context.Context, id uuid.UUID) error 
 // that need "did I actually update anything?" should either Get first
 // or pipeline this with a RETURNING clause on a future change.
 func (r *EventRepo) Upsert(ctx context.Context, e *event.Event) error {
+	if err := e.ValidateInvariants(); err != nil {
+		return fmt.Errorf("pg.EventRepo.Upsert: %w", err)
+	}
 	telemetryBytes, err := marshalTelemetry(e.Telemetry)
 	if err != nil {
 		return fmt.Errorf("pg.EventRepo.Upsert: telemetry: %w", err)

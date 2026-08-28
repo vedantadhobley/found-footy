@@ -7,6 +7,7 @@ package pg_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"reflect"
 	"testing"
 	"time"
@@ -55,9 +56,10 @@ func setupVideoRepos(t *testing.T) (context.Context, *pg.AssetRepo, *pg.ShareRep
 }
 
 func newAsset(eventID uuid.UUID, fixtureID int64, md5 string, frames []uint64, size int64) *video.Asset {
+	digest := sha256.Sum256([]byte(md5))
 	return video.NewAsset(
 		eventID, fixtureID, "found-footy", "9100/asset.mp4",
-		[]byte(md5), video.CurrentFrameHashVersion(0.1), frames, 1280, 720, 6677, size,
+		digest[:16], video.CurrentFrameHashVersion(0.1), frames, 1280, 720, 6677, size,
 		time.Date(2026, 8, 3, 12, 5, 0, 0, time.UTC),
 	)
 }

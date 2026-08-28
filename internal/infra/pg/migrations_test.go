@@ -4,9 +4,12 @@ package pg_test
 import (
 	"context"
 	"io/fs"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/vedantadhobley/found-footy/migrations"
 
@@ -89,6 +92,10 @@ func TestMigrateRepairsPartiallyAppliedHistoricalChange(t *testing.T) {
 	if _, err := pool.Exec(ctx, `
 		ALTER TABLE event_search_candidates DROP COLUMN credited_asset_id CASCADE;
 		ALTER TABLE fixtures DROP CONSTRAINT fixtures_terminal_observation_state;
+		ALTER TABLE event_search_candidates DROP CONSTRAINT event_search_candidates_event_fixture_fkey;
+		ALTER TABLE video_shares DROP CONSTRAINT video_shares_asset_event_fkey;
+		ALTER TABLE video_assets DROP CONSTRAINT video_assets_superseded_identity_fkey;
+		ALTER TABLE video_assets DROP CONSTRAINT video_assets_event_fixture_fkey;
 	`); err != nil {
 		t.Fatalf("model partial historical schema: %v", err)
 	}
@@ -136,6 +143,46 @@ func TestMigrateRejectsIncompleteBaseline(t *testing.T) {
 	}
 	if ledgerExists {
 		t.Error("failed baseline left a migration ledger behind")
+	}
+}
+
+func TestMigratePreflightRejectsCrossOwnedHistory(t *testing.T) {
+	ctx, pool, _ := setupMigrationPool(t)
+	fixtures := pg.NewFixtureRepo(pool)
+	completedAt := time.Date(2026, 8, 28, 20, 0, 0, 0, time.UTC)
+	first := completedFixture(t, ctx, fixtures, 9401, completedAt)
+	second := completedFixture(t, ctx, fixtures, 9402, completedAt)
+	eventID := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO events (
+			id, fixture_id, natural_key, event_type, detail,
+			team_id, team_name, minute
+		) VALUES ($1, $2, 'migration_preflight_goal', 'goal', 'normal goal', 1, 'Test', 30)
+	`, eventID, first.ID); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE video_assets DROP CONSTRAINT video_assets_event_fixture_fkey`); err != nil {
+		t.Fatalf("remove correlated identity constraint: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO video_assets (
+			id, event_id, fixture_id, s3_bucket, s3_key,
+			md5, frame_hashes, width, height, duration_ms, file_size_bytes
+		) VALUES ($1, $2, $3, 'test', 'cross-owned.mp4', $4, $5, 1280, 720, 7000, 1000000)
+	`, uuid.New(), eventID, second.ID, []byte("0123456789abcdef"), make([]byte, 8)); err != nil {
+		t.Fatalf("seed cross-owned history: %v", err)
+	}
+
+	err := pool.Migrate(ctx, migrations.FS)
+	if err == nil || !strings.Contains(err.Error(), "FF-071 preflight") {
+		t.Fatalf("Migrate error = %v, want FF-071 preflight refusal", err)
+	}
+	var ledgerExists bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.schema_migrations') IS NOT NULL`).Scan(&ledgerExists); err != nil {
+		t.Fatalf("check rolled-back ledger: %v", err)
+	}
+	if ledgerExists {
+		t.Error("failed preflight left a migration ledger behind")
 	}
 }
 

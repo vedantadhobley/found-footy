@@ -6,8 +6,8 @@
 --      volume only — Postgres skips initdb.d when data dir is populated).
 --   2. internal/infra/pg tests: passed to tcpostgres.WithInitScripts()
 --      when spinning up ephemeral test containers.
---   3. Future migration tooling: schema.go embeds this file via
---      //go:embed so it can be applied programmatically.
+--   3. cmd/migrate: ordered SQL files move durable databases between
+--      snapshots; worker/API verify the embedded snapshot and ledger.
 --
 -- Derived from docs/design/rebuild-plan.md §3. This file is authoritative from
 -- S2.2 onward; if the two diverge, this file wins and rebuild-plan.md
@@ -182,7 +182,11 @@ CREATE TABLE events (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     UNIQUE (fixture_id, natural_key),                       -- prevents duplicate detection races
-    CHECK ((removed = FALSE AND removed_reason IS NULL) OR (removed = TRUE AND removed_reason IS NOT NULL))
+    CONSTRAINT events_identity_unique UNIQUE (id, fixture_id),
+    CONSTRAINT events_removed_state CHECK (
+        (removed = FALSE AND removed_reason IS NULL AND removed_at IS NULL) OR
+        (removed = TRUE AND removed_reason IS NOT NULL AND removed_at IS NOT NULL)
+    )
 );
 
 CREATE INDEX events_fixture ON events (fixture_id);
@@ -274,8 +278,8 @@ CREATE TABLE video_assets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     -- event_id is the dedup scope; fixture_id is a denormalized convenience for the
     -- s3 path + prune queries (an event never changes fixtures, so they can't disagree).
-    event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    fixture_id BIGINT NOT NULL REFERENCES fixtures(id) ON DELETE RESTRICT,
+    event_id UUID NOT NULL,
+    fixture_id BIGINT NOT NULL,
 
     -- Storage
     s3_bucket TEXT NOT NULL,
@@ -299,11 +303,30 @@ CREATE TABLE video_assets (
     popularity INT NOT NULL DEFAULT 1,
 
     -- Supersession (dedup-merge / re-encode / higher-quality replacement — within one event)
-    superseded_by UUID REFERENCES video_assets(id) ON DELETE SET NULL,
+    superseded_by UUID,
 
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    UNIQUE (event_id, md5)                                  -- exact-byte dedup + insert idempotency within an event
+    UNIQUE (event_id, md5),                                 -- exact-byte dedup + insert idempotency within an event
+    CONSTRAINT video_assets_identity_event_unique UNIQUE (id, event_id),
+    CONSTRAINT video_assets_identity_event_fixture_unique UNIQUE (id, event_id, fixture_id),
+    CONSTRAINT video_assets_event_fixture_fkey
+        FOREIGN KEY (event_id, fixture_id)
+        REFERENCES events (id, fixture_id) ON DELETE CASCADE,
+    CONSTRAINT video_assets_superseded_identity_fkey
+        FOREIGN KEY (superseded_by, event_id, fixture_id)
+        REFERENCES video_assets (id, event_id, fixture_id)
+        ON DELETE SET NULL (superseded_by),
+    CONSTRAINT video_assets_media_shape CHECK (
+        octet_length(md5) = 16 AND
+        octet_length(frame_hashes) >= 8 AND
+        octet_length(frame_hashes) % 8 = 0 AND
+        width > 0 AND height > 0 AND duration_ms > 0 AND
+        file_size_bytes > 0 AND
+        (bitrate IS NULL OR bitrate > 0)
+    ),
+    CONSTRAINT video_assets_popularity_positive CHECK (popularity >= 1),
+    CONSTRAINT video_assets_supersession_not_self CHECK (superseded_by IS NULL OR superseded_by <> id)
 );
 
 CREATE INDEX video_assets_event_popularity ON video_assets (event_id, popularity DESC)
@@ -312,8 +335,8 @@ CREATE INDEX video_assets_event_popularity ON video_assets (event_id, popularity
 -- 7b. video_shares — public share IDs. Public rank is derived at read time.
 CREATE TABLE video_shares (
     id TEXT PRIMARY KEY,                                    -- 's_<12-hex>', public
-    asset_id UUID NOT NULL REFERENCES video_assets(id) ON DELETE RESTRICT,
-    event_id UUID NOT NULL REFERENCES events(id) ON DELETE RESTRICT,
+    asset_id UUID NOT NULL,
+    event_id UUID NOT NULL,
 
     -- Validation snapshot at share creation time
     timestamp_verified BOOLEAN NOT NULL,
@@ -332,7 +355,13 @@ CREATE TABLE video_shares (
 
     -- 'superseded' = replaced by a higher-quality/consolidated clip; not a
     -- removal (no reason), still resolvable for direct-URL play, just not listed.
-    CHECK ((state IN ('active', 'superseded') AND removed_reason IS NULL) OR (state = 'removed' AND removed_reason IS NOT NULL))
+    CONSTRAINT video_shares_asset_event_fkey
+        FOREIGN KEY (asset_id, event_id)
+        REFERENCES video_assets (id, event_id) ON DELETE RESTRICT,
+    CONSTRAINT video_shares_removed_state CHECK (
+        (state IN ('active', 'superseded') AND removed_reason IS NULL AND removed_at IS NULL) OR
+        (state = 'removed' AND removed_reason IS NOT NULL AND removed_at IS NOT NULL)
+    )
 );
 
 -- Compatibility invariant for old histories that still rebalance stored rank.
@@ -375,8 +404,8 @@ CREATE INDEX video_shares_asset ON video_shares (asset_id);
 -- stamps them at each candidate's terminal branch.
 CREATE TABLE event_search_candidates (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    fixture_id BIGINT NOT NULL REFERENCES fixtures(id) ON DELETE RESTRICT,
+    event_id UUID NOT NULL,
+    fixture_id BIGINT NOT NULL,
 
     -- Search context — which attempt surfaced this candidate.
     search_attempt INT NOT NULL CHECK (search_attempt BETWEEN 1 AND 20),
@@ -406,9 +435,19 @@ CREATE TABLE event_search_candidates (
     -- Canonical asset credited for this source sighting. New FF-066 placement
     -- histories set it in the same transaction that changes popularity. NULL
     -- remains valid for rejected/failed and pre-migration audit rows.
-    credited_asset_id UUID REFERENCES video_assets(id) ON DELETE RESTRICT,
+    credited_asset_id UUID,
 
-    UNIQUE (event_id, tweet_url)                            -- same tweet can't re-insert across attempts
+    UNIQUE (event_id, tweet_url),                           -- same tweet can't re-insert across attempts
+    CONSTRAINT event_search_candidates_event_fixture_fkey
+        FOREIGN KEY (event_id, fixture_id)
+        REFERENCES events (id, fixture_id) ON DELETE CASCADE,
+    CONSTRAINT event_search_candidates_credited_identity_fkey
+        FOREIGN KEY (credited_asset_id, event_id, fixture_id)
+        REFERENCES video_assets (id, event_id, fixture_id) ON DELETE RESTRICT,
+    CONSTRAINT event_search_candidates_duration_nonnegative CHECK (duration_seconds >= 0),
+    CONSTRAINT event_search_candidates_age_nonnegative CHECK (
+        age_minutes_at_discovery IS NULL OR age_minutes_at_discovery >= 0
+    )
 );
 
 CREATE INDEX event_search_candidates_event

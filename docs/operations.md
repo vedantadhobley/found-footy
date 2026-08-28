@@ -446,6 +446,11 @@ mutation and requires its own explicit approval. `make deploy-prod` remains a
 separate approval; worker/API only verify the already-applied chain. If no
 migration is pending, the explicit command is idempotent.
 
+Constraint migrations are deliberately fail-closed. A preflight error means
+the existing rows violate the new invariant; the transaction has not applied
+DDL or recorded a ledger row. Inspect and repair the reported class under a
+separate approved database action, then rerun the same immutable migration.
+
 Rollback must account for the migration ledger as well as SQL compatibility.
 An older binary whose embedded chain does not contain a live ledger row fails
 closed. Do not delete or rewrite ledger rows to force it through; inspect the
