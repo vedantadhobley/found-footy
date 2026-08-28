@@ -8,6 +8,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/vedantadhobley/found-footy/migrations"
+
 	ffapi "github.com/vedantadhobley/found-footy/internal/api"
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
@@ -32,9 +34,9 @@ func main() {
 			pool.Close()
 			return nil
 		})
-		// Refuse to boot against a DB that never received a schema.sql change
-		// (audit P0-3). First run stamps the baseline; a mismatch fails loud.
-		if err := pool.VerifySchema(ctx); err != nil {
+		// The dedicated migrate command owns schema mutation. API startup is a
+		// read-only gate on the exact checksummed ledger and required objects.
+		if err := pool.VerifyMigrations(ctx, migrations.FS); err != nil {
 			return err
 		}
 

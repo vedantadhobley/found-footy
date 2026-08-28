@@ -176,11 +176,11 @@ FF-041/FF-005 tests require ffmpeg's dense filter to apply grayscale and a
 the interval-specific version, and reject sequences shorter than the matching
 window without an error retry. Workflow tests prove that deterministic rejects
 skip vision, incompatible stored versions never compare, and pre-FF-041 blank
-Temporal fields normalize to the legacy identity. The operational migration
-contract hashes `schema.sql` and requires its VerifySchema stamp to remain
-exact; the Postgres integration test removes the fresh-schema column, seeds an
-old asset, applies the real migration, and verifies both legacy backfill and
-the new stamp.
+Temporal fields normalize to the legacy identity. The ordered migration
+contract binds the newest file to `schema.sql`, rejects transaction control,
+and records immutable checksums. Postgres integration removes fresh-schema
+objects to model partial historical application, runs the real embedded chain,
+and verifies repair plus the final stamp.
 
 FF-034 workflow tests require candidate processing to launch even when every
 observation-insert retry fails, while the failed attempt remains uncheckpointed
@@ -228,9 +228,10 @@ Placement integration tests use real Postgres to prove two retry boundaries.
 An existing winner receives each candidate vote once and moves to derived rank
 one without stored-rank repair. A new winner supersedes an incumbent, merges
 its popularity once, moves all candidate attribution, retires the loser share,
-and returns the same share on retry. The migration-chain test applies the
-candidate-attribution/share-identity migration after the earlier additive
-migrations and requires the final embedded schema stamp.
+and returns the same share on retry. Migration integration also requires first
+adoption, idempotent retry, read-only application verification,
+missing-baseline refusal, checksum drift refusal, and full rollback after a
+deliberately failing DDL sequence.
 
 Enablement mechanics:
 - `--network=host` on the `test` make target — testcontainers-go

@@ -7,14 +7,13 @@ package pg_test
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"reflect"
-	"runtime"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/vedantadhobley/found-footy/migrations"
 
 	"github.com/vedantadhobley/found-footy/internal/config"
 	"github.com/vedantadhobley/found-footy/internal/domain/video"
@@ -170,23 +169,8 @@ func TestFrameHashVersionMigrationBackfillsLegacyRows(t *testing.T) {
 		t.Fatalf("seed schema stamp: %v", err)
 	}
 
-	_, filename, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve test source path")
-	}
-	for _, name := range []string{
-		"20260817_01_add_video_asset_hash_version.sql",
-		"20260825_01_add_terminal_observed_at.sql",
-		"20260828_01_add_atomic_clip_placement.sql",
-	} {
-		migrationPath := filepath.Join(filepath.Dir(filename), "..", "..", "..", "migrations", name)
-		migration, err := os.ReadFile(migrationPath)
-		if err != nil {
-			t.Fatalf("read migration %s: %v", name, err)
-		}
-		if _, err := pool.Exec(ctx, string(migration)); err != nil {
-			t.Fatalf("apply migration %s: %v", name, err)
-		}
+	if err := pool.Migrate(ctx, migrations.FS); err != nil {
+		t.Fatalf("apply migration chain: %v", err)
 	}
 
 	var version, schemaHash string

@@ -437,22 +437,19 @@ every recreated process. It does not update source, change schema, restart
 infrastructure, clean fleet containers, or roll back on failure. See the
 [deployment contract](./deployment.md#deploy-tracking).
 
-FF-041/FF-005 shipped as an explicit two-mutation release: first the additive
-[`hash_version` migration](../migrations/20260817_01_add_video_asset_hash_version.sql),
-then separately approved application release `201cdf1`, both completed on
-2026-08-18. Do not reapply the migration as part of routine production
-rollouts. During rollback to a pre-FF-041 image, the column may remain because
-the old binary ignores it, but restore `schema_version.schema_hash` to that
-release's embedded hash before recreating the binary. Any future database
-statement and application rollout still requires its own production approval.
+FF-013 preserves the two-action production boundary in code. `make
+migrate-prod` builds the exact clean commit and runs its dedicated migration
+binary on the production network. It applies the ordered checksummed chain in
+one transaction and prints `migration verified: <sha>` only after the ledger,
+required objects, and schema stamp commit. This is a production database
+mutation and requires its own explicit approval. `make deploy-prod` remains a
+separate approval; worker/API only verify the already-applied chain. If no
+migration is pending, the explicit command is idempotent.
 
-FF-066 has the same two-action boundary. First apply the reviewed additive
-[`atomic clip placement` migration](../migrations/20260828_01_add_atomic_clip_placement.sql)
-and verify its schema stamp and uniqueness precondition. Then separately
-approve and run the application rollout so the worker writes candidate
-attribution and the API serves read-derived rank. The deploy command does not
-apply this migration, and approval for either action does not authorize the
-other.
+Rollback must account for the migration ledger as well as SQL compatibility.
+An older binary whose embedded chain does not contain a live ledger row fails
+closed. Do not delete or rewrite ledger rows to force it through; inspect the
+exact change and choose a compatible image or a reviewed forward repair.
 
 If a legacy unscoped `ff-firefox-ev-*` container appears, stop the rollout and
 identify its workflow and network ownership. The scoped provisioner cannot

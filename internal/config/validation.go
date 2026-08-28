@@ -61,6 +61,9 @@ func (c *Config) ValidateFor(binary Binary) error {
 		validateTwitterService(v, c.TwitterService)
 	case BinaryTwitterAuth:
 		validateTwitterAuth(v, c.TwitterAuth)
+	case BinaryMigrate:
+		validateObservability(v, c.Observability)
+		validatePostgres(v, c.Postgres)
 	default:
 		return fmt.Errorf("unknown binary %q", binary)
 	}

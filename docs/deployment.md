@@ -216,45 +216,36 @@ Docker volumes → surviving `docker compose down`, wiped on
 
 ### Postgres
 
-Automatic. `internal/infra/pg/schema.sql` is bind-mounted into
+Automatic in dev. `internal/infra/pg/schema.sql` is bind-mounted into
 `/docker-entrypoint-initdb.d/01_init.sql`; Postgres runs it on first
 startup with an empty volume. Re-provision: `docker volume rm
 found-footy-dev_postgres-data` then `docker compose up -d postgres`.
 
-**Drift guard (audit P0-3).** `pg.VerifySchema` runs at worker/api startup:
-first boot on a DB stamps the embedded `schema.sql` SHA-256 into a
-`schema_version` row; later boots compare and **refuse to start on a
-mismatch**. So an edit to `schema.sql` that never reached this DB fails loud
-instead of silently no-opping. After an *intentional* in-place schema change
-(rare — the norm is edit + re-provision), re-stamp:
-`UPDATE schema_version SET schema_hash = '<new sha256 of schema.sql>'`, or just
-wipe + reprovision (a fresh volume auto-stamps).
+**Ordered migrations (FF-013).** `schema.sql` remains the authoritative
+fresh-install snapshot. Every durable change also adds one immutable SQL file
+under [`migrations/`](../migrations/). Filenames sort in application order; the
+first line binds the migration to the resulting `schema.sql` SHA-256. The
+runner rejects invalid names, edited applied checksums, unknown newer ledger
+rows, explicit transaction control, concurrent indexes, and a newest target
+that differs from the embedded snapshot.
 
-Reviewed in-place migrations are applied in filename order. The
-[`hash_version` migration](../migrations/20260817_01_add_video_asset_hash_version.sql)
-was applied in production before release `201cdf1` on 2026-08-18. The additive
-[`terminal_observed_at` migration](../migrations/20260825_01_add_terminal_observed_at.sql)
-was applied in production before FF-063 release `5c105af` on 2026-08-25. It
-leaves `completion_counter` intact so the prior binary remains SQL-compatible.
-Its older drift guard still requires an explicit restamp to the prior
-fingerprint before that image can start; the migration file records the exact
-rollback statement. Do not drop the additive column during the rollback
-window.
+`cmd/migrate` applies all pending files and their `schema_migrations` rows in
+one Postgres transaction under an advisory lock. It verifies the pre-adoption
+baseline and final required-object manifest before stamping `schema_version`.
+A failed or interrupted file leaves neither its DDL nor its ledger row. Worker
+and API never mutate schema: `VerifyMigrations` takes a shared lock, checks the
+exact chain, stamp, and required objects, then refuses startup on any mismatch.
 
-The pending additive
-[`atomic clip placement` migration](../migrations/20260828_01_add_atomic_clip_placement.sql)
-adds nullable candidate-to-asset attribution plus its lookup index and the
-unique `(event_id, asset_id)` share identity required by FF-066. It deliberately
-aborts if historical duplicate share identities exist instead of choosing a
-row silently. Apply and verify it as a separately approved database action
-before releasing the FF-066 worker/API pair. The prior binary ignores the
-additive column and index; rollback restores only its expected schema stamp.
+Dev Compose runs the one-shot `migrate` service after Postgres health and gates
+worker/API on successful completion. An existing dev volume is repaired in
+place; an empty volume still receives `schema.sql` through `initdb.d` first.
 
-The newest unapplied migration's checked-in stamp must equal the embedded
-`schema.sql` hash, and the contract test enforces that equality. The application
-deploy script still does not run schema mutations. Completed one-time files are
-folded into the flat schema and may be removed after every durable environment
-converges; this does not establish an application-owned migration runner.
+Production keeps database mutation separate from application rollout. With
+explicit approval for each action, run `make migrate-prod`, verify its exact
+commit and success marker, then separately run `make deploy-prod`. The
+migration script builds the clean commit's image and runs only
+`/usr/local/bin/migrate` on the production network. Routine deploy does not
+apply migrations.
 
 ### NATS
 

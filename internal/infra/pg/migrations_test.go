@@ -1,0 +1,181 @@
+// Integration tests for ordered migration adoption, repair, and rollback.
+package pg_test
+
+import (
+	"context"
+	"io/fs"
+	"testing"
+	"testing/fstest"
+	"time"
+
+	"github.com/vedantadhobley/found-footy/migrations"
+
+	"github.com/vedantadhobley/found-footy/internal/config"
+	"github.com/vedantadhobley/found-footy/internal/infra/pg"
+	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
+)
+
+func setupMigrationPool(t *testing.T) (context.Context, *pg.Pool, *testFixture) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("integration test skipped in -short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	t.Cleanup(cancel)
+	connStr := runTestPostgres(ctx, t)
+	fx := newTestFixture()
+	pool, err := pg.New(ctx, config.PGConfig{
+		DSN: connStr, MaxConns: 5, MinConns: 1, ConnectTimeout: 10 * time.Second,
+	}, fx.ins)
+	if err != nil {
+		t.Fatalf("pg.New: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return ctx, pool, fx
+}
+
+func TestMigrateAdoptsCurrentSchemaAndIsIdempotent(t *testing.T) {
+	ctx, pool, fx := setupMigrationPool(t)
+	if err := pool.VerifyMigrations(ctx, migrations.FS); err == nil {
+		t.Fatal("application verification accepted a missing migration ledger")
+	}
+	if err := pool.Migrate(ctx, migrations.FS); err != nil {
+		t.Fatalf("first Migrate: %v", err)
+	}
+	if !fx.log.HasAction(vocabulary.ModuleInfraPG, vocabulary.ActionMigrationApplied) {
+		t.Fatalf("missing migration-applied log: %+v", fx.log.Snapshot())
+	}
+	var migrationCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
+		t.Fatalf("count migration ledger: %v", err)
+	}
+	entries, err := fs.ReadDir(migrations.FS, ".")
+	if err != nil {
+		t.Fatalf("read embedded migrations: %v", err)
+	}
+	wantMigrationCount := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			wantMigrationCount++
+		}
+	}
+	if migrationCount != wantMigrationCount {
+		t.Fatalf("migration rows = %d, want %d", migrationCount, wantMigrationCount)
+	}
+	var schemaHash string
+	if err := pool.QueryRow(ctx, `SELECT schema_hash FROM schema_version WHERE id = 1`).Scan(&schemaHash); err != nil {
+		t.Fatalf("read schema stamp: %v", err)
+	}
+	if schemaHash != pg.SchemaHash() {
+		t.Fatalf("schema stamp = %s, want %s", schemaHash, pg.SchemaHash())
+	}
+	if err := pool.Migrate(ctx, migrations.FS); err != nil {
+		t.Fatalf("idempotent Migrate: %v", err)
+	}
+	if err := pool.VerifyMigrations(ctx, migrations.FS); err != nil {
+		t.Fatalf("application VerifyMigrations: %v", err)
+	}
+	var retryCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&retryCount); err != nil {
+		t.Fatalf("count retry ledger: %v", err)
+	}
+	if retryCount != migrationCount {
+		t.Fatalf("retry migration rows = %d, want %d", retryCount, migrationCount)
+	}
+}
+
+func TestMigrateRepairsPartiallyAppliedHistoricalChange(t *testing.T) {
+	ctx, pool, _ := setupMigrationPool(t)
+	if _, err := pool.Exec(ctx, `
+		ALTER TABLE event_search_candidates DROP COLUMN credited_asset_id CASCADE;
+		ALTER TABLE fixtures DROP CONSTRAINT fixtures_terminal_observation_state;
+	`); err != nil {
+		t.Fatalf("model partial historical schema: %v", err)
+	}
+	if err := pool.Migrate(ctx, migrations.FS); err != nil {
+		t.Fatalf("repair Migrate: %v", err)
+	}
+	for _, relation := range []string{"video_shares_event_asset", "event_search_candidates_credited_asset"} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `SELECT to_regclass('public.' || $1) IS NOT NULL`, relation).Scan(&exists); err != nil {
+			t.Fatalf("check relation %s: %v", relation, err)
+		}
+		if !exists {
+			t.Errorf("relation %s was not repaired", relation)
+		}
+	}
+	var columnExists bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema='public' AND table_name='event_search_candidates'
+			  AND column_name='credited_asset_id'
+		)
+	`).Scan(&columnExists); err != nil {
+		t.Fatalf("check repaired column: %v", err)
+	}
+	if !columnExists {
+		t.Error("credited_asset_id was not repaired")
+	}
+}
+
+func TestMigrateRejectsIncompleteBaseline(t *testing.T) {
+	ctx, pool, fx := setupMigrationPool(t)
+	if _, err := pool.Exec(ctx, `DROP TABLE event_log CASCADE`); err != nil {
+		t.Fatalf("remove required baseline table: %v", err)
+	}
+	if err := pool.Migrate(ctx, migrations.FS); err == nil {
+		t.Fatal("Migrate accepted an incomplete baseline")
+	}
+	if !fx.log.HasAction(vocabulary.ModuleInfraPG, vocabulary.ActionSchemaDrift) {
+		t.Fatalf("missing schema-drift log: %+v", fx.log.Snapshot())
+	}
+	var ledgerExists bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.schema_migrations') IS NOT NULL`).Scan(&ledgerExists); err != nil {
+		t.Fatalf("check rolled-back ledger: %v", err)
+	}
+	if ledgerExists {
+		t.Error("failed baseline left a migration ledger behind")
+	}
+}
+
+func TestMigrateRollsBackFailedMigrationAndCanRetry(t *testing.T) {
+	ctx, pool, _ := setupMigrationPool(t)
+	version := "20990101_01_interrupted_probe.sql"
+	header := "-- schema-hash: " + pg.SchemaHash() + "\n"
+	broken := fstest.MapFS{
+		version: {Data: []byte(header + "CREATE TABLE interrupted_probe (id int);\nSELECT 1 / 0;\n")},
+	}
+	if err := pool.Migrate(ctx, broken); err == nil {
+		t.Fatal("broken migration unexpectedly succeeded")
+	}
+	var probeExists, ledgerExists bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.interrupted_probe') IS NOT NULL`).Scan(&probeExists); err != nil {
+		t.Fatalf("check probe rollback: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.schema_migrations') IS NOT NULL`).Scan(&ledgerExists); err != nil {
+		t.Fatalf("check ledger rollback: %v", err)
+	}
+	if probeExists || ledgerExists {
+		t.Fatalf("failed migration leaked state: probe=%v ledger=%v", probeExists, ledgerExists)
+	}
+
+	fixed := fstest.MapFS{
+		version: {Data: []byte(header + "CREATE TABLE interrupted_probe (id int);\n")},
+	}
+	if err := pool.Migrate(ctx, fixed); err != nil {
+		t.Fatalf("retry fixed migration: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.interrupted_probe') IS NOT NULL`).Scan(&probeExists); err != nil {
+		t.Fatalf("check retry probe: %v", err)
+	}
+	if !probeExists {
+		t.Error("fixed retry did not commit migration")
+	}
+	mutated := fstest.MapFS{
+		version: {Data: []byte(header + "CREATE TABLE interrupted_probe (id bigint);\n")},
+	}
+	if err := pool.VerifyMigrations(ctx, mutated); err == nil {
+		t.Fatal("verification accepted an edited applied migration")
+	}
+}

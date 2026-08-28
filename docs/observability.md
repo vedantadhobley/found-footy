@@ -42,7 +42,7 @@ contains only labels emitted by current code:
 
 - **Workflow:** EventWorkflow, whose stable wire value remains
   `discovery_workflow` for log-query compatibility.
-- **Adapters:** InfraPG, InfraNATS, InfraEvent, InfraS3, InfraLLM,
+- **Adapters:** InfraPG, InfraNATS, InfraS3, InfraLLM,
   InfraTemporal, InfraAPIFootball, InfraTwitter, InfraSyndication, and
   InfraFFmpeg.
 - **Cross-cutting:** API and Deploy.
@@ -65,6 +65,10 @@ a call site).
 `event_candidate_measured`, and `event_publish_measured`.
 FF-060 download-failure candidate measurements add bounded `failure_stage` and
 `failure_class` fields that match the terminal candidate's durable detail.
+Postgres schema startup emits `migration_applied` only after a migration
+transaction commits, then `schema_verified` after the ledger and required
+object manifest match. Any chain, checksum, stamp, or object mismatch emits
+`schema_drift` and refuses the command or application startup.
 
 ## Log emission (shipped)
 
