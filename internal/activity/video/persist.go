@@ -527,10 +527,10 @@ type DestroyEventInput struct {
 // DestroyEvent tears down an overturned event's clips (#172): revoke ALL its
 // shares to 'removed' (→ ResolveShare returns 'removed', the redirect 410s, so
 // the clips stop serving) then delete its asset objects from Garage (reclaim).
-// The caller (poll workflow) cancels the event's discovery FIRST, so nothing
-// mints new clips after this runs. Idempotent: RemoveByEvent skips already-
-// removed shares; S3 delete no-ops on missing keys. Revoke precedes reclaim so
-// serving stops even if a byte delete lags/fails.
+// The caller asks the event's discovery to cancel; FF-067's event-row gate owns
+// the late-placement race. Idempotent: RemoveByEvent skips already-removed
+// shares and S3 delete no-ops on missing keys. Revoke precedes reclaim so
+// serving stops even when byte deletion must retry.
 func (a *PersistActivities) DestroyEvent(ctx context.Context, in DestroyEventInput) error {
 	reason := dvideo.RemovalReason(in.Reason)
 	if reason == "" {
@@ -543,12 +543,14 @@ func (a *PersistActivities) DestroyEvent(ctx context.Context, in DestroyEventInp
 	if err != nil {
 		return fmt.Errorf("video.DestroyEvent: list object keys: %w", err)
 	}
+	var reclaimErrs []error
 	for _, k := range keys {
 		if err := a.S3.Delete(ctx, k.Key); err != nil {
-			// Best-effort byte reclaim: shares are already revoked (clips no longer
-			// serve), so a failed delete just leaves the object for the prune (#176).
-			activity.GetLogger(ctx).Warn("destroy: object reclaim failed", "key", k.Key, "err", err)
+			reclaimErrs = append(reclaimErrs, fmt.Errorf("delete %s: %w", k.Key, err))
 		}
+	}
+	if err := errors.Join(reclaimErrs...); err != nil {
+		return fmt.Errorf("video.DestroyEvent: reclaim objects: %w", err)
 	}
 	return nil
 }

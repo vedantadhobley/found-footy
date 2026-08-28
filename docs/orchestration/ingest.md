@@ -95,9 +95,12 @@ simple).
     4b. FOR each ReclaimEventID: DestroyEvent(id, reason='policy') [2m timeout]
         Revoke the event's shares → 410 + delete its Garage bytes (the #172
         primitive), KEEPING all rows as tombstones so no shared URL ever
-        404s. Best-effort per event (failures → out.Errors), never aborts
-        ingest; idempotent (reclaimed events drop off tomorrow's list). This
-        is where Garage bytes finally get reclaimed — closes audit G4.
+        404s. Each activity attempt tries every known key and returns aggregate
+        delete failures so Temporal retries after share revocation. Exhausted
+        failures enter out.Errors without aborting unrelated ingest work;
+        FF-024's bounded object reconciliation remains the abnormal-failure
+        net. Successful reclaim is idempotent. This is where Garage bytes
+        finally get reclaimed — closes audit G4.
 ```
 
 Anchor: `ManualDate` if set, else `workflow.Now(ctx)` — deterministic

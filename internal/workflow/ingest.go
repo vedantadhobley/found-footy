@@ -495,9 +495,10 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		// Reclaim Garage bytes for clip-bearing aged events. Sequential:
 		// a daily job over a bounded worklist, and DestroyEvent is
 		// idempotent (revoke skips already-removed shares; S3 delete no-ops
-		// on missing keys), so a mid-loop failure is safe to retry on the
-		// next daily run. A failed reclaim is logged + recorded but does
-		// NOT abort ingest — the event simply reappears on tomorrow's list.
+		// on missing keys). DestroyEvent returns aggregate delete failures so
+		// its activity policy retries every known key. An exhausted reclaim is
+		// logged + recorded but does not abort unrelated ingest work; FF-024's
+		// bounded object reconciliation remains the final abnormal-failure net.
 		if len(pruneOut.ReclaimEventIDs) > 0 {
 			reclaimCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 				StartToCloseTimeout: 2 * time.Minute,
