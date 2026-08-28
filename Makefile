@@ -28,7 +28,7 @@ GO_TEST_RUN      := docker run --rm $(DOCKER_ENV) $(DOCKER_VOLS) $(TEST_DOCKER_A
 .PHONY: help build check check-short test test-short test-race test-corpus hooks \
         lint fmt fmt-check vet tidy tidy-check clean cache-init \
         dev-up dev-down dev-logs dev-restart dev-shell dev-ps \
-        twitter-vnc-up twitter-vnc-down twitter-vnc-logs deploy-prod
+        twitter-vnc-up twitter-vnc-down twitter-vnc-logs migrate-prod deploy-prod
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -135,6 +135,9 @@ PROD_COMPOSE := docker-compose.prod.yml
 
 deploy-prod: ## Build, roll out, and verify the exact clean commit in production
 	./scripts/deploy-prod.sh
+
+migrate-prod: ## Build and run the exact clean commit's migration command in production
+	./scripts/migrate-prod.sh
 
 twitter-vnc-up: ## Bring up the DEV twitter-vnc container for manual cookie re-auth
 	docker compose -f $(DEV_COMPOSE) --profile vnc up -d --build twitter-vnc

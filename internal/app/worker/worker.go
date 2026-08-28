@@ -13,6 +13,8 @@ import (
 	sdktemporal "go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 
+	"github.com/vedantadhobley/found-footy/migrations"
+
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	fleetactivity "github.com/vedantadhobley/found-footy/internal/activity/fleet"
 	ingestactivity "github.com/vedantadhobley/found-footy/internal/activity/ingest"
@@ -49,9 +51,9 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 		pool.Close()
 		return nil
 	})
-	// Refuse to boot against a DB that never received a schema.sql change
-	// (audit P0-3). First run stamps the baseline; a mismatch fails loud.
-	if err := pool.VerifySchema(ctx); err != nil {
+	// The dedicated migrate command owns schema mutation. Worker startup is a
+	// read-only gate on the exact checksummed ledger and required objects.
+	if err := pool.VerifyMigrations(ctx, migrations.FS); err != nil {
 		return err
 	}
 

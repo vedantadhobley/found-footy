@@ -12,9 +12,9 @@ const (
 	ActionQueryFailed       Action = "query_failed"        // query returned pgconn.PgError or transport error
 	ActionPing              Action = "ping"                // health probe succeeded
 	ActionPingFailed        Action = "ping_failed"         // health probe failed
-	ActionSchemaStamped     Action = "schema_stamped"      // first boot on a DB: schema.sql fingerprint recorded
-	ActionSchemaVerified    Action = "schema_verified"     // live DB fingerprint matches the embedded schema.sql
-	ActionSchemaDrift       Action = "schema_drift"        // live DB fingerprint diverges — startup refused (audit P0-3)
+	ActionMigrationApplied  Action = "migration_applied"   // one ordered SQL migration committed
+	ActionSchemaVerified    Action = "schema_verified"     // migration ledger + required objects match this release
+	ActionSchemaDrift       Action = "schema_drift"        // migration/checksum/object contract diverges; startup refused
 )
 
 func init() {
@@ -26,7 +26,7 @@ func init() {
 		ActionQueryFailed,
 		ActionPing,
 		ActionPingFailed,
-		ActionSchemaStamped,
+		ActionMigrationApplied,
 		ActionSchemaVerified,
 		ActionSchemaDrift,
 	)

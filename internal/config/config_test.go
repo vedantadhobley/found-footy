@@ -42,6 +42,15 @@ func TestLoadForDoesNotParseAnotherBinaryEnvironment(t *testing.T) {
 	}
 }
 
+func TestLoadForMigrateOwnsOnlyPostgresAndObservability(t *testing.T) {
+	t.Setenv("PG_DSN", "postgres://ffuser:ffpass@postgres:5432/found_footy?sslmode=disable")
+	t.Setenv("API_LISTEN_ADDR", "not-an-address")
+	t.Setenv("DISCOVERY_MAX_ATTEMPTS", "not-an-integer")
+	if _, err := LoadFor(BinaryMigrate); err != nil {
+		t.Fatalf("LoadFor(migrate): %v", err)
+	}
+}
+
 func TestLoadForAPIDoesNotRequireOrParseNATS(t *testing.T) {
 	setValidAPIEnvironment(t)
 	t.Setenv("NATS_MAX_RECONNECTS", "not-an-integer")

@@ -1,20 +1,38 @@
-// schema_migration_contract_test.go keeps the current in-place migration's
-// VerifySchema stamp synchronized with the authoritative flat schema.
+// schema_migration_contract_test.go keeps the newest ordered migration target
+// synchronized with the authoritative fresh-install schema.
 package test_test
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
+	"strings"
 	"testing"
 )
 
-var migrationSchemaHash = regexp.MustCompile(`schema_hash = '([0-9a-f]{64})'`)
+var migrationSchemaHash = regexp.MustCompile(`(?m)^-- schema-hash: ([0-9a-f]{64})$`)
 
-func TestPendingMigrationStampsEmbeddedSchemaHash(t *testing.T) {
+func TestNewestMigrationTargetsEmbeddedSchemaHash(t *testing.T) {
 	root := repositoryRoot(t)
 	schema := readToolingFile(t, root, "internal/infra/pg/schema.sql")
-	migration := readToolingFile(t, root, "migrations/20260828_01_add_atomic_clip_placement.sql")
+	entries, err := os.ReadDir(filepath.Join(root, "migrations"))
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			names = append(names, entry.Name())
+		}
+	}
+	if len(names) == 0 {
+		t.Fatal("no ordered migrations found")
+	}
+	sort.Strings(names)
+	migration := readToolingFile(t, root, filepath.Join("migrations", names[len(names)-1]))
 
 	match := migrationSchemaHash.FindStringSubmatch(migration)
 	if len(match) != 2 {

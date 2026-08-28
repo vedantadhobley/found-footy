@@ -1,4 +1,4 @@
-# Prod image for the worker + api binaries. Parameterized on BINARY.
+# Prod image for worker or api plus the explicit migration command.
 #
 # Build with:
 #   docker build --build-arg BINARY=worker -t found-footy-worker .
@@ -15,8 +15,7 @@
 FROM golang:1.25.11-bookworm AS build
 
 ARG BINARY
-RUN test -n "$BINARY" || (echo "ERROR: BINARY build arg is required (worker|api)" && exit 1)
-RUN test "$BINARY" != "twitter" || (echo "ERROR: use docker/twitter/Dockerfile for the twitter binary" && exit 1)
+RUN case "$BINARY" in worker|api) ;; *) echo "ERROR: BINARY must be worker or api"; exit 1;; esac
 
 WORKDIR /src
 
@@ -37,6 +36,12 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w -X main.gitSHA=${GIT_SHA} -X main.builtAt=${BUILT_AT}" \
     -o /out/app \
     ./cmd/${BINARY}
+
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -buildvcs=false \
+    -ldflags="-s -w -X main.gitSHA=${GIT_SHA} -X main.builtAt=${BUILT_AT}" \
+    -o /out/migrate \
+    ./cmd/migrate
 
 # ────── runtime stage ──────
 FROM debian:bookworm-slim
@@ -66,5 +71,6 @@ RUN mkdir -p /scratch && chown app:app /scratch
 USER app
 
 COPY --from=build /out/app /usr/local/bin/app
+COPY --from=build /out/migrate /usr/local/bin/migrate
 
 ENTRYPOINT ["/usr/local/bin/app"]

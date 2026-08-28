@@ -27,6 +27,7 @@ const (
 	BinaryAPI         Binary = "api"
 	BinaryTwitter     Binary = "twitter"
 	BinaryTwitterAuth Binary = "twitter-auth"
+	BinaryMigrate     Binary = "migrate"
 )
 
 var binarySections = map[Binary][]string{
@@ -38,6 +39,7 @@ var binarySections = map[Binary][]string{
 	BinaryAPI:         {"Observability", "Postgres", "S3", "API"},
 	BinaryTwitter:     {"TwitterService"},
 	BinaryTwitterAuth: {"TwitterAuth"},
+	BinaryMigrate:     {"Observability", "Postgres"},
 }
 
 // Config is the top-level configuration composed from per-adapter

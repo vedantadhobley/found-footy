@@ -20,6 +20,7 @@ the SAME commit. Not the next commit. Same commit.
 found-footy/
 ├── cmd/                                 deployable binaries; each imports from internal/
 │   ├── api/main.go                      ✓ Chi read surface (SSE is vedanta-systems')
+│   ├── migrate/main.go                  ✓ FF-013 explicit ordered/checksummed Postgres migration command
 │   ├── twitter-auth/main.go             ✓ FF-059: raw-Firefox cookie-capture/status process
 │   ├── twitter/main.go                  ✓ T/a+T/b+T/c: real Playwright-Go service (ephemeral profile + idle-CPU prefs)
 │   └── worker/main.go                   thin executable; delegates worker composition to internal/app/worker
@@ -40,7 +41,7 @@ found-footy/
 │   │   │   └── query_builder_test.go    name, particle, dedup, fallback, and safeguard cases
 │   │   └── vision/                      ✓ D5 (2026-07-28): clock.go + evaluate.go + schema.go + tests — clip-clock validation, wired into EventWorkflow consumer
 │   ├── infra/                           live infrastructure adapters
-│   │   ├── pg/                          ✓ S2 + FF-066/FF-070: pool + instruments + schema guard + focused repos + atomic clip placement + state/transition-audit transactions
+│   │   ├── pg/                          ✓ S2 + FF-013/FF-066/FF-070: pool + instruments + ordered migration/required-object gates + focused repos + atomic placement and transition audit
 │   │   ├── nats/                        ✓ S3: client + instruments
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
 │   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
@@ -99,7 +100,7 @@ found-footy/
 ├── docker/twitter/                      ✓ headless Playwright search image; no VNC packages or runtime branch
 ├── docker/twitter-auth/                 ✓ FF-059: raw Firefox ESR + Xvfb/noVNC image and container-local supervisor
 ├── scripts/matchday-status.{sh,sql}     ✓ FF-050/FF-060: environment-scoped, SELECT-only match-day and download-failure snapshot
-├── migrations/                          ordered additive FF-041/FF-063 migrations plus pending FF-066 candidate-attribution/share-identity migration; newest stamp matches the flat schema
+├── migrations/                          ✓ FF-013 immutable ordered SQL chain + embedded FS; newest target hash must match the fresh schema snapshot
 ├── scripts/                             dev smoke/probe programs plus guarded operator tools
 │   ├── smoke_repos/main.go              ✓ live pg + repo smoke test (dev only)
 │   ├── trigger_ingest/main.go           ✓ live IngestWorkflow trigger (O1d verification)

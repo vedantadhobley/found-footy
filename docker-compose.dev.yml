@@ -152,6 +152,29 @@ services:
       - luv-dev  # shared door: cross-project consumers (vs-api) re-proxy presigned video URLs (host 'garage:3900')
     restart: unless-stopped
 
+  # ────── Go: ordered Postgres migration gate ──────
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        BINARY: migrate
+    image: found-footy-dev-migrate:latest
+    container_name: found-footy-dev-migrate
+    mem_limit: 1g
+    env_file: .env
+    entrypoint: ["go", "run", "-buildvcs=false", "./cmd/migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/src
+      - go-cache:/gocache
+      - go-mod-cache:/gomodcache
+    networks:
+      - found-footy-dev
+    restart: "no"
+
   # ────── Go: worker (Temporal worker) ──────
   worker:
     build:
@@ -179,6 +202,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       temporal:
         condition: service_started
     volumes:
@@ -215,6 +240,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - .:/src
       - go-cache:/gocache

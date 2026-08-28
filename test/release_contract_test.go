@@ -62,6 +62,31 @@ func TestProductionDeployGuardsFleetByOwnership(t *testing.T) {
 	}
 }
 
+func TestProductionMigrationIsExplicitAndSinglePurpose(t *testing.T) {
+	root := repositoryRoot(t)
+	script := readToolingFile(t, root, "scripts/migrate-prod.sh")
+	for _, required := range []string{
+		`[[ -z "$(git status --porcelain --untracked-files=normal)" ]]`,
+		`--network "$PROD_NETWORK"`,
+		`--entrypoint /usr/local/bin/migrate`,
+		`migration verified: %s`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Errorf("production migration script missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"docker compose down", "docker compose up", "--entrypoint /usr/local/bin/app"} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("production migration script contains forbidden application mutation %q", forbidden)
+		}
+	}
+
+	deploy := readToolingFile(t, root, "scripts/deploy-prod.sh")
+	if strings.Contains(deploy, "/usr/local/bin/migrate") || strings.Contains(deploy, "migrate-prod") {
+		t.Fatal("routine application deploy unexpectedly applies database migrations")
+	}
+}
+
 type releaseService struct {
 	Build struct {
 		Dockerfile string            `yaml:"dockerfile"`
