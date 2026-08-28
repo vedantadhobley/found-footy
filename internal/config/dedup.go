@@ -1,10 +1,9 @@
-// DedupConfig — env-tunable perceptual-dedup parameters. Defaults set
-// 2026-07-28 from an empirical bake-off on real footage (see decisions.md):
-// dHash + offset-tolerant sliding window, 0.1 s sampling, a 30-frame (3 s)
-// matching window that tolerates up to 3 mismatched frames, per-frame hamming
-// ≤ 10. All env-tunable because the *final* calibration happens on live
-// match-day data — these are validated-safe starting points, not proven
-// optima.
+// DedupConfig — env-tunable perceptual-dedup parameters. The original
+// single-window policy was calibrated on synthetic transforms, then the
+// tiered policy was calibrated on production v2 hashes and manually reviewed
+// clips: a strict 27/30 local route plus a sustained 45/50 route. All values
+// remain tunable because live match-day evidence, not a generic dHash
+// convention, owns the safe frontier.
 package config
 
 // DedupConfig configures perceptual (dHash) video deduplication.
@@ -14,19 +13,28 @@ type DedupConfig struct {
 	// sliding window better sub-interval temporal alignment.
 	FrameIntervalSecs float64 `env:"DEDUP_FRAME_INTERVAL_SECS" envDefault:"0.1"`
 
-	// MaxHamming is the max per-frame bit-difference (of 64) for two frames
-	// to count as the same frame. True matches sit at ≤10, different footage
-	// at ≥23 — a wide gap.
-	MaxHamming int `env:"DEDUP_MAX_HAMMING" envDefault:"10"`
+	// MaxHamming is the primary route's max per-frame bit-difference (of 64).
+	// Production v2 calibration sets 12: 27 of 30 aligned frames must pass.
+	MaxHamming int `env:"DEDUP_MAX_HAMMING" envDefault:"12"`
 
-	// MinRunFrames is the required length of the matching window. 30 @ 0.1 s
-	// = a 3-second match — a strong "same clip" signal that different footage
-	// never reaches. A precision-favoring choice; the safe failure direction
-	// (too strict → an occasional duplicate shown, not a real clip lost).
+	// MinRunFrames is both the primary matching-window length and minimum
+	// readable-hash admission floor. 30 @ 0.1 s = three seconds.
 	MinRunFrames int `env:"DEDUP_MIN_RUN_FRAMES" envDefault:"30"`
 
-	// MaxGapFrames is how many mismatched frames the window tolerates, so one
-	// bad frame doesn't shatter a real run. Different footage tops out at
-	// exactly this value, so it stays far below MinRunFrames.
+	// MaxGapFrames is how many mismatched frames the primary window tolerates,
+	// so isolated compression or temporal-alignment noise does not shatter a
+	// real run.
 	MaxGapFrames int `env:"DEDUP_MAX_GAP_FRAMES" envDefault:"3"`
+
+	// LongMaxHamming is the sustained route's per-frame threshold. Its looser
+	// value is allowed only across the longer evidence window below.
+	LongMaxHamming int `env:"DEDUP_LONG_MAX_HAMMING" envDefault:"16"`
+
+	// LongMinRunFrames requires five seconds at the default sample interval.
+	// It does not raise hash admission: 30–49-frame clips retain only the
+	// primary route instead of becoming content rejections.
+	LongMinRunFrames int `env:"DEDUP_LONG_MIN_RUN_FRAMES" envDefault:"50"`
+
+	// LongMaxGapFrames yields the calibrated 45-of-50 sustained route.
+	LongMaxGapFrames int `env:"DEDUP_LONG_MAX_GAP_FRAMES" envDefault:"5"`
 }

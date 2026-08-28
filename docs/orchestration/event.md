@@ -203,10 +203,10 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   extraction to 640-pixel-wide grayscale PNGs before Go equalizes and reduces
   to the final 9×8 dHash. FF-041 carries the algorithm, preprocessing, and
   sample interval through Temporal and Postgres; sequences with different
-  versions never compare. Fewer than `MinRunFrames` readable hashes returns the
-  deterministic `insufficient_hash_frames` content rejection for every
-  byte-identical waiter without an activity retry. A hash-successful unique
-  clip fires **vision** (`ValidateClip` on
+  versions never compare. Fewer than the primary `MinRunFrames` (30) readable
+  hashes returns the deterministic `insufficient_hash_frames` content rejection
+  for every byte-identical waiter without an activity retry. A hash-successful
+  unique clip fires **vision** (`ValidateClip` on
   joi — screen-gate + period-aware clock).
   Validation retries transient rate-limit, capacity, unavailable, and
   infrastructure failures up to three attempts. Invalid request/auth/model and
@@ -227,7 +227,11 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   same category.
 - **Post-vision** (`onVisionDone`, `dedupAndPromote`): a rejected clip is
   dropped; a verified/unverified clip runs **category-scoped perceptual dedup**
-  (`matchAssets` — same pool only, ALL matches, dHash isn't transitive) then
+  (`matchAssets` — same pool only, ALL matches, dHash isn't transitive). The
+  replay-safe tiered policy accepts either 27 of 30 aligned frames at Hamming
+  ≤12 or 45 of 50 at Hamming ≤16. The 30-frame route remains hash admission and
+  fallback for shorter sequences; a historical config result with no sustained
+  fields disables only the 50-frame route. Dedup then runs
   which-to-keep. Unique or cluster quality-winner (`IsUpgrade`) → **promote**
   (`PromoteAndPersist` derives a deterministic UUID, reuses a matching durable
   asset or copies staging→asset before inserting it, ensures one

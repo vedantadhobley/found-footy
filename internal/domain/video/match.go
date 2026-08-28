@@ -6,10 +6,9 @@
 // The window is GAP-TOLERANT: it allows up to maxGaps mismatched frames, so a
 // single bad frame (a compression artifact, or a fast-motion frame where the
 // sub-interval temporal jitter spikes) doesn't shatter a real multi-second
-// match into two short runs. Validated 2026-07-28 on real footage under
-// scale / compression / watermark / temporal-offset transforms (see
-// decisions.md): true matches produce windows of 50+ frames, different
-// footage tops out at maxGaps — a huge separation.
+// match into two short runs. Match supplies the mechanism; the caller owns the
+// calibrated evidence policy because safe thresholds depend on window length
+// and production false-match boundaries.
 package video
 
 import "math/bits"

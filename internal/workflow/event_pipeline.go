@@ -70,13 +70,15 @@ type pipeline struct {
 	selector  workflow.Selector
 	startedAt time.Time
 
-	// dedup thresholds (from the start-of-workflow config read → deterministic)
-	maxHamming, minRun, maxGaps int
-	terminalVideoFailures       bool
-	preHashMD5Claim             bool
-	durableCandidates           bool
-	durableDownloadFailures     bool
-	deferExactFollowerOutcomes  bool
+	// Dedup policy (from the start-of-workflow config read → deterministic).
+	// Zero longMinRun disables the sustained route for pre-policy histories.
+	maxHamming, minRun, maxGaps             int
+	longMaxHamming, longMinRun, longMaxGaps int
+	terminalVideoFailures                   bool
+	preHashMD5Claim                         bool
+	durableCandidates                       bool
+	durableDownloadFailures                 bool
+	deferExactFollowerOutcomes              bool
 
 	// activity option ctxs
 	downloadCtx workflow.Context
@@ -108,6 +110,7 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		selector:   workflow.NewSelector(ctx),
 		startedAt:  cfg.startedAt,
 		maxHamming: cfg.maxHamming, minRun: cfg.minRun, maxGaps: cfg.maxGaps,
+		longMaxHamming: cfg.longMaxHamming, longMinRun: cfg.longMinRun, longMaxGaps: cfg.longMaxGaps,
 		terminalVideoFailures:      cfg.terminalVideoFailures,
 		preHashMD5Claim:            cfg.preHashMD5Claim,
 		durableCandidates:          cfg.durableCandidates,
@@ -131,13 +134,14 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 }
 
 type pipelineConfig struct {
-	maxHamming, minRun, maxGaps int
-	terminalVideoFailures       bool
-	preHashMD5Claim             bool
-	durableCandidates           bool
-	durableDownloadFailures     bool
-	deferExactFollowerOutcomes  bool
-	startedAt                   time.Time
+	maxHamming, minRun, maxGaps             int
+	longMaxHamming, longMinRun, longMaxGaps int
+	terminalVideoFailures                   bool
+	preHashMD5Claim                         bool
+	durableCandidates                       bool
+	durableDownloadFailures                 bool
+	deferExactFollowerOutcomes              bool
+	startedAt                               time.Time
 }
 
 // candidateOwnership joins immutable evidence to the workflow-local lifecycle

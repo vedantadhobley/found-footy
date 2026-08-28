@@ -188,10 +188,13 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 		MaxAgeMinutes:          deps.Cfg.Discovery.MaxAgeMinutes,
 		QueryTimeout:           deps.Cfg.Discovery.QueryTimeout,
 		// Dedup thresholds surfaced to EventWorkflow's in-code video.Match.
-		MaxHamming:   deps.Cfg.Dedup.MaxHamming,
-		MinRunFrames: deps.Cfg.Dedup.MinRunFrames,
-		MaxGapFrames: deps.Cfg.Dedup.MaxGapFrames,
-		FleetEnabled: deps.Cfg.FirefoxFleet.Enabled,
+		MaxHamming:       deps.Cfg.Dedup.MaxHamming,
+		MinRunFrames:     deps.Cfg.Dedup.MinRunFrames,
+		MaxGapFrames:     deps.Cfg.Dedup.MaxGapFrames,
+		LongMaxHamming:   deps.Cfg.Dedup.LongMaxHamming,
+		LongMinRunFrames: deps.Cfg.Dedup.LongMinRunFrames,
+		LongMaxGapFrames: deps.Cfg.Dedup.LongMaxGapFrames,
+		FleetEnabled:     deps.Cfg.FirefoxFleet.Enabled,
 	}
 	discoveryActs.Twitter = twitterClient
 
