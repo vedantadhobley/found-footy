@@ -260,6 +260,11 @@ the current branch.
 | FF-064 | P3 | `implemented` | Production uses Control's canonical `control-joi.luv` identity with `gemma-4-12b` pinned. Found Footy release `e4ae2d7` passed its exact three-image request against Control contract-v3 digest `0fc304bc…`; the typed catalog, constrained response, and strict rejection checks all matched the application contract. | Control retains `joi.luv` as a rollback route until observed legacy use reaches zero; no Found Footy work remains. |
 | FF-065 | P2 | `implemented` | Exact-byte followers became terminal `duplicate` while their representative still awaited vision, so a later content rejection left duplicate rows without an asset winner. New histories retain followers until the representative terminates and share its rejection/failure unless an asset actually wins. | Release the worker change and verify a natural rejected exact-byte cluster contains no duplicate outcome, while a promoted cluster retains one validation path and its full popularity. |
 | FF-066 | P2 | `implemented` | Popularity-only duplicate placements changed a public ranking input without rank repair or `event.video`; ten shares across five production events were stale. Accepted clusters now commit attribution, retry-safe popularity, share identity, supersession, and candidate outcome in one transaction; the API derives rank on every read and every successful placement invalidates consumers. | Apply `20260828_01_add_atomic_clip_placement.sql`, release worker/API together, verify schema identity, then prove a natural duplicate changes popularity/order once and emits `event.video`. Remove stored rank only after old Temporal histories age out. |
+| FF-067 | P1 | `implemented` | VAR removal and accepted-clip placement raced through independent operations. The shared event-row lock now makes removal authoritative: a late placement terminalizes uncredited candidates as `rejected/event_removed`, creates no public rows, reclaims destination plus staging bytes, and emits no invalidation. | Release the worker change, then verify a natural VAR cancellation leaves no post-removal active share or Garage object. |
+| FF-068 | P2 | `confirmed` | `DestroyEvent` revokes shares, logs Garage delete failures, and then returns success. Those keys leave the normal reclaim worklist when their shares become removed, so the documented later cleanup does not exist. | Retain retryable cleanup ownership until every known event object is deleted; separately expand FF-024 to reconcile abnormal copy-before-commit orphans. |
+| FF-069 | P2 | `confirmed` | Downstream completion uses `Exec` and treats zero updated rows as success, so a missing checklist row is indistinguishable from an already-completed row and the workflow can report durable completion that was never recorded. | Return and classify row state explicitly; accept an idempotent prior completion but fail a missing or mismatched checklist identity. |
+| FF-070 | P2 | `confirmed` | Fixture/event transition writes and `event_log` audit inserts are separate calls, and audit errors are discarded. A real transition can commit without the row that the observability ledger describes as its durable audit plane. | Commit authoritative state and required audit evidence atomically, or narrow the documented contract and add a durable retry path with visible failure evidence. |
+| FF-071 | P2 | `confirmed` | Independent foreign keys prove that referenced rows exist but do not enforce shared event/fixture identity across candidates, assets, and shares. Several domain invariants also lack schema checks. | After FF-013 establishes ordered migrations, add composite identity constraints and bounded value/state checks with integration coverage. |
 
 ### FF-060 — download failures lost their actionable cause
 
@@ -426,6 +431,83 @@ the current branch.
   one share per event/asset, a single popularity merge, and fresh read-derived
   order. Workflow coverage proves an exact duplicate uses only the atomic
   activity and publishes once. See the [decision](./decisions/2026-08-28-accepted-candidates-commit-as-one-placement.md).
+
+### FF-067 — removed event can accept a late clip placement
+
+- **Race:** `RegisterEventAbsence` can commit `events.removed=true` while an
+  already-started `CommitClipPlacement` activity continues. The monitor asks
+  Temporal to cancel the EventWorkflow before `DestroyEvent`, but cancellation
+  is asynchronous and cannot revoke an activity that has already crossed a
+  durable side-effect boundary.
+- **Missing gate:** Atomic placement locks the event row to serialize candidate
+  votes and ranking mutations, but it currently checks only `(id, fixture_id)`.
+  It can therefore create an asset/share after removal. If `DestroyEvent`
+  already listed the event's objects, the late share and object survive the
+  teardown entirely.
+- **Required invariant:** Removal and placement must serialize on the same
+  event row. If placement commits first, removal waits and its teardown removes
+  the committed share. If removal commits first, placement must terminalize
+  the uncommitted candidates as `event_removed`, publish nothing, and reclaim
+  staging plus any final object copied before the transactional gate.
+- **Boundary:** Temporal cancellation remains useful load shedding. It is not a
+  correctness lock. The database owns whether public placement is still legal.
+- **Implemented:** `CommitClipPlacement` now reads `events.removed` under its
+  existing `FOR UPDATE` lock before any asset, share, popularity, or
+  supersession write. A removed event preserves attribution from a placement
+  that already committed, but terminalizes every uncredited cluster member as
+  `rejected/event_removed`. The activity deletes both the deterministic final
+  key and staging key before returning `EventRemoved`; the workflow treats that
+  result as terminal but neither mutates its keeper set nor emits `event.video`.
+  No schema, API, or frontend change is required.
+- **Proof:** A real-Postgres concurrency test holds the removal update open and
+  proves placement blocks until its commit, then observes removal with zero
+  assets/shares and one rejected candidate. The inverse-order test commits a
+  placement first, removes the event, preserves its audit attribution, and
+  leaves no live share after teardown. Activity and workflow tests prove both
+  object keys are reclaimed and publication is suppressed.
+
+### FF-068 — event teardown can abandon known Garage objects
+
+- **Verified path:** `DestroyEvent` revokes all shares, lists the event's asset
+  keys, logs each delete error, and still returns success. Retention selects
+  reclaimable events through their live shares; after revocation, the failed
+  keys are no longer selected for another teardown attempt.
+- **Required invariant:** A known delete failure must keep the activity
+  retryable without restoring public serving. FF-024 remains the broader
+  age-bounded reconciliation problem for keys whose owning activity died
+  before a durable asset/share record existed.
+
+### FF-069 — missing downstream checklist row is accepted as complete
+
+- **Verified path:** The completion store uses an `UPDATE` through `Exec` but
+  does not inspect `RowsAffected`. `Exec` does not return `pgx.ErrNoRows`, so a
+  nonexistent `(event_id, workflow_type, workflow_id)` row returns nil and the
+  EventWorkflow reports completion.
+- **Required invariant:** Retry of the same completed checklist identity is a
+  success. Absence or identity mismatch is a durable orchestration error, not
+  an idempotent completion.
+
+### FF-070 — durable transition audit is best-effort
+
+- **Verified path:** Monitor emission mutates fixture/event state and inserts
+  `event_log` in separate repository calls. Insert errors are ignored. This
+  allows the state transition to survive while its promised durable audit row
+  is lost permanently.
+- **Required decision:** Either put state plus required audit evidence in one
+  transaction, or explicitly make `event_log` telemetry and give failed audit
+  delivery a separate durable, observable contract. Current code and docs
+  disagree.
+
+### FF-071 — relational identity is only partly schema-enforced
+
+- **Verified path:** Independent foreign keys allow an asset's event and
+  fixture to disagree, a share's event to disagree with its asset, and a
+  candidate's event/fixture/credited asset to cross identities while every
+  referenced row still exists. Some removed-state, media-shape, and popularity
+  bounds also rely only on application code.
+- **Ordering:** Land this after FF-013. These constraints require an ordered,
+  repairable migration and preflight checks over existing rows; they should not
+  be another manual schema-hash boundary.
 
 ### FF-059 — VNC recovery uses the login path X already rejected
 

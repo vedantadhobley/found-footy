@@ -89,14 +89,16 @@ type CommitClipPlacementInput struct {
 	ExtractedMinute *int
 }
 
-// CommitClipPlacementOutput identifies the canonical public winner. Announce
-// is true after every successful completion, including a retry that observed
-// its prior commit but whose workflow still owes the dirty signal.
+// CommitClipPlacementOutput identifies either the canonical public winner or a
+// removed-event discard. Announce is true after every committed placement,
+// including a retry whose workflow still owes the dirty signal; EventRemoved
+// is terminal and never announceable.
 type CommitClipPlacementOutput struct {
 	WinnerAssetID uuid.UUID
 	ShareID       string
 	WinnerCreated bool
 	Announce      bool
+	EventRemoved  bool
 }
 
 // CommitClipPlacement copies a new winner when needed, commits the complete
@@ -125,6 +127,7 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 		})
 	}
 
+	var destinationKey string
 	if in.NewWinner {
 		md5Bytes, err := hex.DecodeString(in.MD5)
 		if err != nil {
@@ -132,6 +135,7 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 		}
 		assetID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.EventID.String()+":"+in.MD5))
 		dstKey := path.Join(a.AssetsPrefix, fmt.Sprint(in.FixtureID), in.EventID.String(), assetID.String()+".mp4")
+		destinationKey = dstKey
 		existing, err := a.Assets.Get(ctx, assetID)
 		switch {
 		case err == nil:
@@ -167,6 +171,21 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 	result, err := a.Placements.CommitClipPlacement(ctx, placement)
 	if err != nil {
 		return out, fmt.Errorf("video.CommitClipPlacement: persist: %w", err)
+	}
+	if result.EventRemoved {
+		var cleanupErrs []error
+		if destinationKey != "" {
+			if err := a.S3.Delete(ctx, destinationKey); err != nil {
+				cleanupErrs = append(cleanupErrs, fmt.Errorf("delete removed destination: %w", err))
+			}
+		}
+		if err := a.S3.Delete(ctx, in.StagingKey); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("delete removed staging: %w", err))
+		}
+		if err := errors.Join(cleanupErrs...); err != nil {
+			return out, fmt.Errorf("video.CommitClipPlacement: event removed cleanup: %w", err)
+		}
+		return CommitClipPlacementOutput{EventRemoved: true}, nil
 	}
 	if err := a.S3.Delete(ctx, in.StagingKey); err != nil {
 		return out, fmt.Errorf("video.CommitClipPlacement: delete staging: %w", err)

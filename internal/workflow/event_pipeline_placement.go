@@ -125,15 +125,27 @@ func (p *pipeline) commitClipPlacement(
 		p.setTerminalError(fmt.Errorf("commit clip placement for %s: %w", c.tweetURL, err))
 		return out, false
 	}
-	p.logCandidatePhase(c.tweetURL, "placement", "passed", startedAt,
+	placementState := "passed"
+	if out.EventRemoved {
+		placementState = "discarded"
+	}
+	p.logCandidatePhase(c.tweetURL, "placement", placementState, startedAt,
 		"asset_id", out.WinnerAssetID.String(), "winner_created", out.WinnerCreated,
-		"losers", len(loserIDs), "candidate_count", len(candidates))
+		"losers", len(loserIDs), "candidate_count", len(candidates),
+		"event_removed", out.EventRemoved)
 	for _, candidate := range candidates {
 		ownership := p.candidates[candidate.Evidence.TweetURL]
 		ownership.state = ddiscovery.CandidateTerminal
 		p.candidates[candidate.Evidence.TweetURL] = ownership
+		candidateOutcome := string(candidate.Outcome)
+		if out.EventRemoved {
+			candidateOutcome = string(discoverycontract.OutcomeRejected)
+		}
 		p.logCandidatePhase(candidate.Evidence.TweetURL, "terminal_persist", "passed", startedAt,
-			"candidate_outcome", string(candidate.Outcome))
+			"candidate_outcome", candidateOutcome)
+	}
+	if out.EventRemoved {
+		return out, false
 	}
 	if out.Announce {
 		p.publishEventVideo(c.tweetURL, "placement")

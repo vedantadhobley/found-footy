@@ -42,14 +42,24 @@ func (r *PlacementRepo) CommitClipPlacement(ctx context.Context, in video.ClipPl
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var locked bool
+	var removed bool
 	if err := tx.QueryRow(ctx, `
-		SELECT true FROM events WHERE id = $1 AND fixture_id = $2 FOR UPDATE
-	`, in.EventID, in.FixtureID).Scan(&locked); err != nil {
+		SELECT removed FROM events WHERE id = $1 AND fixture_id = $2 FOR UPDATE
+	`, in.EventID, in.FixtureID).Scan(&removed); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: event/fixture identity not found")
 		}
 		return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: lock event: %w", err)
+	}
+	if removed {
+		if err := rejectRemovedPlacementCandidates(ctx, tx, in); err != nil {
+			return out, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: commit removed event: %w", err)
+		}
+		out.EventRemoved = true
+		return out, nil
 	}
 
 	winnerID := in.WinnerAssetID
@@ -144,6 +154,65 @@ func (r *PlacementRepo) CommitClipPlacement(ctx context.Context, in video.ClipPl
 	out.ShareID = shareID
 	out.WinnerCreated = winnerCreated
 	return out, nil
+}
+
+// rejectRemovedPlacementCandidates makes a placement that lost the event-row
+// lock terminal without creating public video state. A prior credited outcome
+// is preserved: it belongs to an earlier placement that committed before VAR
+// removal and is owned by DestroyEvent's teardown.
+func rejectRemovedPlacementCandidates(ctx context.Context, tx pgx.Tx, in video.ClipPlacement) error {
+	detail := []byte(`{"reason":"event_removed"}`)
+	for _, candidate := range in.Candidates {
+		e := candidate.Evidence
+		var fixtureID int64
+		var creditedAssetID *uuid.UUID
+		err := tx.QueryRow(ctx, `
+			SELECT fixture_id, credited_asset_id
+			FROM event_search_candidates
+			WHERE event_id = $1 AND tweet_url = $2
+			FOR UPDATE
+		`, in.EventID, e.TweetURL).Scan(&fixtureID, &creditedAssetID)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			var age *float64
+			if e.AgeMinutesAtDiscovery > 0 {
+				age = &e.AgeMinutesAtDiscovery
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO event_search_candidates (
+					event_id, fixture_id, search_attempt, query,
+					tweet_url, tweet_text, video_page_url, duration_seconds,
+					username, age_minutes_at_discovery,
+					outcome_class, reject_reason, outcome_detail, outcome_at,
+					credited_asset_id
+				) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'rejected',$11,$12,$13,NULL)
+			`, e.EventID, e.FixtureID, e.SearchAttempt, e.Query, e.TweetURL,
+				e.TweetText, e.VideoPageURL, e.DurationSeconds, e.Username, age,
+				video.PlacementRejectEventRemoved, detail, in.CommittedAt); err != nil {
+				return fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: reject removed candidate %s: %w", e.TweetURL, err)
+			}
+		case err != nil:
+			return fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: lock removed candidate %s: %w", e.TweetURL, err)
+		case fixtureID != in.FixtureID:
+			return fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: removed candidate fixture mismatch for %s", e.TweetURL)
+		case creditedAssetID != nil:
+			// A complete earlier placement won the lock. Preserve its durable
+			// attribution; DestroyEvent owns revocation and byte cleanup.
+		default:
+			if _, err := tx.Exec(ctx, `
+				UPDATE event_search_candidates
+				SET outcome_class = 'rejected',
+				    reject_reason = $3,
+				    outcome_detail = $4,
+				    outcome_at = $5,
+				    credited_asset_id = NULL
+				WHERE event_id = $1 AND tweet_url = $2
+			`, in.EventID, e.TweetURL, video.PlacementRejectEventRemoved, detail, in.CommittedAt); err != nil {
+				return fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: update removed candidate %s: %w", e.TweetURL, err)
+			}
+		}
+	}
+	return nil
 }
 
 func validateClipPlacement(in video.ClipPlacement) error {

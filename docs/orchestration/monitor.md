@@ -45,7 +45,13 @@ event superseded it. Only known-scorer events vote, debounce 1→3, flip
 `downstream_triggered`, and (on absence to 0) soft-delete as `var` — which fires
 the **VAR destroy** (#172, decisions.md 2026-08-10): `ActivePollWorkflow` Step 4.5
 cancels the event's discovery, revokes its shares (→ the #167 redirect 410s the
-clips), and reclaims its Garage objects. Mirrors Python (`monitor.py`
+clips), and reclaims its Garage objects. Cancellation reduces wasted work but
+does not provide mutual exclusion. FF-067 makes the removal update and atomic
+clip placement serialize on the same event-row lock: a placement that observes
+`removed=true` creates no public state, terminalizes uncredited candidates as
+`rejected/event_removed`, and reclaims its staging and deterministic final
+keys. If placement commits first, removal waits and the ordinary teardown owns
+that share and object. Mirrors Python (`monitor.py`
 `initial_count` + `unknown_scorer_disappeared` + `mark_event_removed`); see
 [decisions.md](../decisions.md) 2026-08-05. Surfaced per cycle as `unknown_dropped`.
 

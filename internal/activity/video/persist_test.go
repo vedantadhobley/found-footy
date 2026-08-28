@@ -104,14 +104,18 @@ type fakeShareStore struct {
 }
 
 type fakePlacementStore struct {
-	assets *fakeAssetStore
-	inputs []dvideo.ClipPlacement
-	share  string
-	losers []dvideo.ObjectRef
+	assets       *fakeAssetStore
+	inputs       []dvideo.ClipPlacement
+	share        string
+	losers       []dvideo.ObjectRef
+	eventRemoved bool
 }
 
 func (f *fakePlacementStore) CommitClipPlacement(_ context.Context, in dvideo.ClipPlacement) (dvideo.ClipPlacementResult, error) {
 	f.inputs = append(f.inputs, in)
+	if f.eventRemoved {
+		return dvideo.ClipPlacementResult{EventRemoved: true}, nil
+	}
 	created := false
 	winnerID := in.WinnerAssetID
 	if in.Winner != nil {
@@ -278,6 +282,31 @@ func TestCommitClipPlacement_CompletesRetrySafeDurableTail(t *testing.T) {
 	}
 	if len(placements.inputs) != 2 {
 		t.Errorf("placement transaction calls = %d, want 2", len(placements.inputs))
+	}
+}
+
+func TestCommitClipPlacement_RemovedEventReclaimsBothObjectKeys(t *testing.T) {
+	a, s3, assets, _ := newPersist()
+	a.Placements = &fakePlacementStore{assets: assets, eventRemoved: true}
+	in := stdPlacementInput(uuid.New())
+
+	out, err := a.CommitClipPlacement(context.Background(), in)
+	if err != nil {
+		t.Fatalf("removed placement: %v", err)
+	}
+	if !out.EventRemoved || out.Announce || out.WinnerAssetID != uuid.Nil || out.ShareID != "" {
+		t.Fatalf("removed output = %+v, want non-public removal result", out)
+	}
+	assetID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.EventID.String()+":"+in.MD5))
+	wantDestination := "assets/1583467/" + in.EventID.String() + "/" + assetID.String() + ".mp4"
+	if len(s3.copies) != 1 || s3.copies[0] != [2]string{in.StagingKey, wantDestination} {
+		t.Fatalf("copies = %v, want staging to deterministic destination", s3.copies)
+	}
+	if len(s3.deletes) != 2 || s3.deletes[0] != wantDestination || s3.deletes[1] != in.StagingKey {
+		t.Fatalf("deletes = %v, want destination then staging", s3.deletes)
+	}
+	if len(assets.byID) != 0 {
+		t.Fatalf("durable assets = %d, want none", len(assets.byID))
 	}
 }
 

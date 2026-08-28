@@ -59,7 +59,7 @@ found-footy/
 │   │   ├── event_pipeline.go            ✓ shared Selector state, deterministic contexts, restoration, and construction
 │   │   ├── event_pipeline_intake.go     ✓ candidate launch, exact-MD5 ownership, hash claimant failover, and consumer loop
 │   │   ├── event_pipeline_validation.go ✓ vision, category-scoped perceptual dedup, winner selection, and legacy replay dispatch
-│   │   ├── event_pipeline_placement.go  ✓ FF-066 atomic accepted-candidate placement, attribution, supersession, and invalidation
+│   │   ├── event_pipeline_placement.go  ✓ FF-066/FF-067 atomic accepted-candidate placement, removal gate, attribution, supersession, and invalidation
 │   │   ├── event_pipeline_effects.go    ✓ promotion, supersession, publication, cleanup, and terminal candidate durability
 │   │   ├── telemetry.go                 ✓ FF-050: typed replay-aware EventWorkflow lifecycle/search/candidate/publication timing envelope
 │   │   └── video.go                     ✓ #165: pre-FF-022 VideoWorkflow child retained for Temporal replay; shared download/hash activity contracts
@@ -70,7 +70,7 @@ found-footy/
 │   │   │   └── focused colocated test files by responsibility
 │   │   ├── monitor/                     ✓ shared deps/config plus activation.go, reconcile.go, emission.go, and event_identity.go; failed-only spawn recovery remains in spawner.go
 │   │   ├── discovery/                   ✓ shared config/classified search plus candidates.go durable candidate/search recovery and completion.go checklist closure
-│   │   ├── video/                       ✓ DownloadAndStage with bounded failure detail, versioned/minimum-length HashVideo, live-asset recovery, atomic placement, compatibility persistence, and teardown
+│   │   ├── video/                       ✓ DownloadAndStage with bounded failure detail, versioned/minimum-length HashVideo, live-asset recovery, atomic placement with removed-event cleanup, compatibility persistence, and teardown
 │   │   ├── vision/                      ✓ staged-clip frame extraction + model-backed validation
 │   │   ├── fleet/                        ✓ #160: ProvisionFirefox / ReleaseFirefox / ReapOrphanedFirefox / InstanceAddr — thin Temporal-activity wrapper over infra/firefoxfleet; nil-Fleet no-op when fleet disabled (FIREFOXFLEET_ENABLED=false)
 │   │   ├── livefeed/                     ✓ publish-activity boundary for all NATS live-feed emits

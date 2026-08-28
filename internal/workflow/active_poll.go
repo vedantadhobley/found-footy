@@ -260,12 +260,13 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 	}
 
 	// ── Step 4.5: VAR destroy (#172) ──
-	// A confirmed event that just debounced to 0 was overturned. Cancel its
-	// in-flight discovery FIRST — so nothing mints a new clip after the teardown
-	// (closes the revoke↔promote race) — then DestroyEvent revokes its shares
-	// (→ the redirect 410s, clips stop serving) + reclaims its Garage objects.
-	// Idempotent + best-effort: a completed event workflow cancels to not-found
-	// (fine), and a failed DestroyEvent is retried by the activity retry policy.
+	// A confirmed event that just debounced to 0 was overturned. Ask its
+	// in-flight discovery to stop, then DestroyEvent revokes its shares (→ the
+	// redirect 410s, clips stop serving) and reclaims its Garage objects. The
+	// request is asynchronous load shedding, not the correctness boundary:
+	// RegisterEventAbsence and CommitClipPlacement serialize on the event row,
+	// and placement rejects removed events even if cancellation arrives late.
+	// A completed workflow cancels to not-found (fine); DestroyEvent is retried.
 	if len(removedEventIDs) > 0 {
 		destroyCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 			StartToCloseTimeout: 2 * time.Minute,
