@@ -153,6 +153,23 @@ the current branch.
   choosing a matcher change. Do not raise the global threshold toward 27: prior
   calibration places different footage around 23. Preserve category safety and
   treat cross-category consolidation as a separate evidence-policy decision.
+- **2026-08-28 calibration:** A read-only production-v2 scan plus whole-video
+  review rejected a single global-threshold increase. Two distinct-composition
+  boundaries now constrain the matcher: N. Pierre's different fan-shot videos
+  first pass 27/30 at Hamming 15 and 45/50 at 19; Raphinha's direct goal clip
+  and tactical-analysis edit first pass at 14 and 18. The accepted policy is
+  therefore **27/30 at 12 OR 45/50 at 16**, retaining two bits of separation
+  from the nearer Raphinha boundary. The Raphinha aligned hashes are preserved
+  as a regression fixture. This improves conservative within-category recall;
+  it does not solve the original Lens crop/layout transform or the intentional
+  verified/unverified boundary.
+- **Remaining semantic/quality work:** Shared-footage containment is not the
+  same as whole-video equivalence, and the keeper comparator cannot penalize a
+  screen recording, player chrome, editorial overlay, or content crop. The
+  selected thresholds avoid the reviewed Raphinha/King boundaries, but a
+  future solution needs explicit coverage/presentation evidence rather than a
+  broader Hamming increase. J. King's rank-2/rank-3 pair proves that current
+  `IsUpgrade` would keep the longer overlay-bearing clip after a correct match.
 - **Rollout:** Calibration work only; the safe current failure mode is an extra
   clip, so this did not block the 2026-08-17 release.
 - **Source relation:** New live calibration finding; no prior audit contained

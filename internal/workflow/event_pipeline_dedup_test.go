@@ -4,11 +4,13 @@ package workflow_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/testsuite"
 
+	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
 	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
@@ -94,6 +96,66 @@ func TestEventWorkflow_Pipeline_PerceptualDedupWithinPool(t *testing.T) {
 	}
 	if supersedeCalls != 0 {
 		t.Errorf("SupersedeAssets called %d times, want 0 (equal quality → keep-first)", supersedeCalls)
+	}
+}
+
+// TestEventWorkflow_Pipeline_TieredPerceptualDedup proves the sustained route
+// admits a 50-frame match that the stricter primary per-frame threshold rejects.
+// A zero-valued sustained route models a pre-change recorded activity result
+// and must retain the original single-route command sequence on replay.
+func TestEventWorkflow_Pipeline_TieredPerceptualDedup(t *testing.T) {
+	cases := []struct {
+		name             string
+		longMaxHamming   int
+		longMinRunFrames int
+		longMaxGapFrames int
+		wantAssets       int
+	}{
+		{name: "sustained route enabled", longMaxHamming: 16, longMinRunFrames: 50, longMaxGapFrames: 5, wantAssets: 1},
+		{name: "old history has no sustained route", wantAssets: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var s testsuite.WorkflowTestSuite
+			env, t1, t2 := twoCandidateEnv(&s, discoveryactivity.GetDiscoveryConfigOutput{
+				MaxAttempts: 10, AttemptSpacing: 60 * time.Second,
+				MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
+				MaxHamming: 12, MinRunFrames: 30, MaxGapFrames: 3,
+				LongMaxHamming: tc.longMaxHamming, LongMinRunFrames: tc.longMinRunFrames,
+				LongMaxGapFrames: tc.longMaxGapFrames,
+			})
+			left := make([]uint64, 50)
+			right := make([]uint64, 50)
+			for i := range right {
+				if i < 45 {
+					right[i] = 0x1fff // Hamming 13: over primary 12, within sustained 16.
+					continue
+				}
+				right[i] = 0x1ffff // Five misses prove the sustained 45/50 boundary.
+			}
+
+			env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(t1)).
+				Return(passedChild(t1, "md5a", "s1", 1280, 720, 7000, 900_000, left), nil)
+			env.OnWorkflow(workflow.VideoWorkflow, mock.Anything, tweetIs(t2)).
+				Return(passedChild(t2, "md5b", "s2", 1280, 720, 7000, 900_000, right), nil)
+			env.OnActivity("ValidateClip", mock.Anything, mock.Anything).
+				Return(visionactivity.ValidateClipOutput{Outcome: "verified", MatchedMinute: pInt(71)}, nil)
+			env.OnActivity("PromoteAndPersist", mock.Anything, mock.Anything).
+				Return(func(_ context.Context, in videoactivity.PromoteAndPersistInput) (videoactivity.PromoteAndPersistOutput, error) {
+					return videoactivity.PromoteAndPersistOutput{AssetID: uuid.New(), ShareID: "s_" + in.MD5, Inserted: true}, nil
+				})
+			env.OnActivity("SupersedeAssets", mock.Anything, mock.Anything).Return(nil).Maybe()
+
+			env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+			requireDone(t, env)
+			var out workflow.EventWorkflowOutput
+			if err := env.GetWorkflowResult(&out); err != nil {
+				t.Fatal(err)
+			}
+			if out.AssetsKept != tc.wantAssets {
+				t.Fatalf("AssetsKept = %d, want %d", out.AssetsKept, tc.wantAssets)
+			}
+		})
 	}
 }
 

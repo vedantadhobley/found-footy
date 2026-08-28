@@ -355,8 +355,15 @@ func requireDone(t *testing.T, env *testsuite.TestWorkflowEnvironment) {
 // post-vision tests: SearchTweets returns t1+t2, StoreCandidate + the noise
 // activities are stubbed. Callers attach the per-candidate child/vision/promote
 // mocks. Returns the env plus the two tweet URLs.
-func twoCandidateEnv(s *testsuite.WorkflowTestSuite) (*testsuite.TestWorkflowEnvironment, string, string) {
-	env := baseEventEnv(s)
+func twoCandidateEnv(
+	s *testsuite.WorkflowTestSuite,
+	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
+) (*testsuite.TestWorkflowEnvironment, string, string) {
+	env := baseEventEnvWithRecovery(s,
+		discoveryactivity.LoadEventRecoveryStateOutput{},
+		videoactivity.LoadEventAssetsOutput{},
+		discoveryConfig...,
+	)
 	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
 	env.OnActivity("UpsertCandidateOutcome", mock.Anything, mock.Anything).Return(nil).Maybe()
 	env.OnActivity("BumpAssetPopularity", mock.Anything, mock.Anything).Return(nil).Maybe()

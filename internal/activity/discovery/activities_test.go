@@ -69,4 +69,12 @@ func TestGetDiscoveryConfigDefaultsUnavailableBudgetToSearchBudget(t *testing.T)
 	if out.MaxUnavailableAttempts != 7 {
 		t.Fatalf("MaxUnavailableAttempts = %d, want 7", out.MaxUnavailableAttempts)
 	}
+	if out.MaxHamming != 12 || out.MinRunFrames != 30 || out.MaxGapFrames != 3 {
+		t.Fatalf("primary dedup = %d/%d/%d, want 12/30/3",
+			out.MaxHamming, out.MinRunFrames, out.MaxGapFrames)
+	}
+	if out.LongMaxHamming != 16 || out.LongMinRunFrames != 50 || out.LongMaxGapFrames != 5 {
+		t.Fatalf("long dedup = %d/%d/%d, want 16/50/5",
+			out.LongMaxHamming, out.LongMinRunFrames, out.LongMaxGapFrames)
+	}
 }

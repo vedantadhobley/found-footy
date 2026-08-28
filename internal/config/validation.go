@@ -225,6 +225,13 @@ func validateDedup(v *validator, cfg DedupConfig) {
 	v.check(cfg.MaxGapFrames > 0, "DEDUP_MAX_GAP_FRAMES must be > 0")
 	v.check(cfg.MaxGapFrames < cfg.MinRunFrames,
 		"DEDUP_MAX_GAP_FRAMES must be < DEDUP_MIN_RUN_FRAMES")
+	v.check(cfg.LongMaxHamming >= 1 && cfg.LongMaxHamming <= 64,
+		"DEDUP_LONG_MAX_HAMMING must be between 1 and 64")
+	v.check(cfg.LongMinRunFrames >= cfg.MinRunFrames,
+		"DEDUP_LONG_MIN_RUN_FRAMES must be >= DEDUP_MIN_RUN_FRAMES")
+	v.check(cfg.LongMaxGapFrames > 0, "DEDUP_LONG_MAX_GAP_FRAMES must be > 0")
+	v.check(cfg.LongMaxGapFrames < cfg.LongMinRunFrames,
+		"DEDUP_LONG_MAX_GAP_FRAMES must be < DEDUP_LONG_MIN_RUN_FRAMES")
 }
 
 func validateVideo(v *validator, cfg VideoConfig) {

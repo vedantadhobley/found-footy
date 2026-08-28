@@ -97,6 +97,14 @@ four-minute redirect cache, longer presigns to retain the five-minute cap, and
 short or unset lifetimes to disable redirect caching. The handler-level test
 also verifies the derived header on a real 302 response.
 
+The video domain carries a production-derived Raphinha 37′ partial-overlap
+fixture. It pins the tiered perceptual-dedup safety boundary: 12/30/3 and
+16/50/5 reject the direct-goal/tactical-analysis pair, while 14/30/3 and
+18/50/5 reproduce the manually classified false match. EventWorkflow tests
+prove the sustained route admits a synthetic 50-frame pair rejected by the
+local threshold and that an old recorded config with zero sustained fields
+keeps the historical single-route behavior.
+
 ## Tier 1.5 — workflow tests
 
 `internal/workflow/ingest_test.go` uses

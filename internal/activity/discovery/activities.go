@@ -60,9 +60,12 @@ type Activities struct {
 	// start-of-workflow config read so EventWorkflow's in-code video.Match
 	// gets them deterministically (recorded in history → replay-safe) rather
 	// than reading env from workflow code.
-	MaxHamming   int
-	MinRunFrames int
-	MaxGapFrames int
+	MaxHamming       int
+	MinRunFrames     int
+	MaxGapFrames     int
+	LongMaxHamming   int
+	LongMinRunFrames int
+	LongMaxGapFrames int
 
 	// FleetEnabled mirrors config.FirefoxFleetConfig.Enabled (#160). Set
 	// at worker init; surfaced to EventWorkflow via GetDiscoveryConfig so
@@ -88,9 +91,12 @@ type GetDiscoveryConfigOutput struct {
 	QueryTimeout           time.Duration
 
 	// Dedup thresholds for EventWorkflow's in-code video.Match.
-	MaxHamming   int
-	MinRunFrames int
-	MaxGapFrames int
+	MaxHamming       int
+	MinRunFrames     int
+	MaxGapFrames     int
+	LongMaxHamming   int
+	LongMinRunFrames int
+	LongMaxGapFrames int
 
 	// FleetEnabled mirrors FirefoxFleetConfig.Enabled (#160). When true,
 	// the EventWorkflow derives its per-event instance address and passes
@@ -109,10 +115,13 @@ const (
 	fallbackAttemptSpacing = 60 * time.Second
 	fallbackMaxAgeMinutes  = 3
 	fallbackQueryTimeout   = 2 * time.Minute
-	// Dedup fallbacks match config.DedupConfig defaults (decisions.md 2026-07-28).
-	fallbackMaxHamming   = 10
-	fallbackMinRunFrames = 30
-	fallbackMaxGapFrames = 3
+	// Dedup fallbacks match config.DedupConfig defaults.
+	fallbackMaxHamming       = 12
+	fallbackMinRunFrames     = 30
+	fallbackMaxGapFrames     = 3
+	fallbackLongMaxHamming   = 16
+	fallbackLongMinRunFrames = 50
+	fallbackLongMaxGapFrames = 5
 )
 
 // GetDiscoveryConfig — trivial config accessor for EventWorkflow.
@@ -130,6 +139,9 @@ func (a *Activities) GetDiscoveryConfig(
 		MaxHamming:             a.MaxHamming,
 		MinRunFrames:           a.MinRunFrames,
 		MaxGapFrames:           a.MaxGapFrames,
+		LongMaxHamming:         a.LongMaxHamming,
+		LongMinRunFrames:       a.LongMinRunFrames,
+		LongMaxGapFrames:       a.LongMaxGapFrames,
 		FleetEnabled:           a.FleetEnabled,
 	}
 	if out.MaxAttempts == 0 {
@@ -155,6 +167,15 @@ func (a *Activities) GetDiscoveryConfig(
 	}
 	if out.MaxGapFrames == 0 {
 		out.MaxGapFrames = fallbackMaxGapFrames
+	}
+	if out.LongMaxHamming == 0 {
+		out.LongMaxHamming = fallbackLongMaxHamming
+	}
+	if out.LongMinRunFrames == 0 {
+		out.LongMinRunFrames = fallbackLongMinRunFrames
+	}
+	if out.LongMaxGapFrames == 0 {
+		out.LongMaxGapFrames = fallbackLongMaxGapFrames
 	}
 	return out, nil
 }

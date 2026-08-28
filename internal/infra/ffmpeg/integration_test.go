@@ -83,8 +83,8 @@ func TestIntegration_RealClips(t *testing.T) {
 		hashMS := time.Since(t2).Milliseconds()
 		seqs[name] = hashes
 
-		// Production dedup params: maxHamming 10, minRun 30 (@0.1s = 3s), maxGaps 3.
-		if !dvideo.Match(hashes, hashes, 10, 30, 3) {
+		// Primary production route: Hamming 12, 27/30 frames (@0.1s = 3s).
+		if !dvideo.Match(hashes, hashes, 12, 30, 3) {
 			t.Errorf("%s should perceptually match itself", name)
 		}
 

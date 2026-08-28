@@ -29,7 +29,7 @@ found-footy/
 │   ├── domain/                          active domain logic only
 │   │   ├── fixture/                     ✓ D1: model + State + Repo + tests
 │   │   ├── event/                       ✓ D2: model + State + Repo + tests
-│   │   ├── video/                       ✓ D3 + V/2 + V/3a + FF-041: model + Repo + rank + versioned perceptual dHash + Match + hard-filter + tests
+│   │   ├── video/                       ✓ D3 + V/2 + V/3a + FF-041: model + Repo + rank + versioned perceptual dHash + tiered Match + hard-filter + tests
 │   │   ├── alias/                       ✓ canonical-team record + shared text operations; resolver removed 2026-08-16
 │   │   ├── team/                        ✓ TrackedTeam set — tracked-teams-cache ingest filter (team.go + repo.go)
 │   │   ├── discovery/                   ✓ Query builder + explicit workflow-owned candidate states

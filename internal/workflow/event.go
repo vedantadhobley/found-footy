@@ -258,6 +258,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 	) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
+		longMaxHamming: cfgOut.LongMaxHamming, longMinRun: cfgOut.LongMinRunFrames, longMaxGaps: cfgOut.LongMaxGapFrames,
 		terminalVideoFailures:      terminalVideoFailures,
 		preHashMD5Claim:            preHashMD5Claim,
 		durableCandidates:          durableCandidates,

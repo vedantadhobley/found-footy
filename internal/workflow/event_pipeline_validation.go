@@ -128,7 +128,15 @@ func (p *pipeline) matchAssets(c clip) []int {
 		if !dvideo.CompatibleFrameHashVersions(c.hashVersion, p.assets[i].hashVersion) {
 			continue // different preprocessing/sample contracts — incomparable
 		}
-		if dvideo.Match(c.frameHashes, p.assets[i].frameHashes, p.maxHamming, p.minRun, p.maxGaps) {
+		primaryMatch := dvideo.Match(
+			c.frameHashes, p.assets[i].frameHashes,
+			p.maxHamming, p.minRun, p.maxGaps,
+		)
+		longMatch := p.longMinRun > 0 && dvideo.Match(
+			c.frameHashes, p.assets[i].frameHashes,
+			p.longMaxHamming, p.longMinRun, p.longMaxGaps,
+		)
+		if primaryMatch || longMatch {
 			out = append(out, i)
 		}
 	}

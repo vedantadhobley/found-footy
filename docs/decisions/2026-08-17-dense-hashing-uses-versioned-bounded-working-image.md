@@ -55,3 +55,7 @@ Rollback does not need to drop the additive column. Restore the prior embedded
 schema hash in `schema_version`, then recreate the prior application image. The
 migration file and its contract test are deleted only after every durable
 environment has applied the flattened schema change.
+
+The [2026-08-28 tiered-match decision](./2026-08-28-tiered-perceptual-dedup-requires-local-or-sustained-evidence.md)
+later supersedes this decision's unchanged-threshold statement. Bounded hash
+generation and version isolation remain current.
