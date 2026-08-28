@@ -180,7 +180,12 @@ Temporal fields normalize to the legacy identity. The ordered migration
 contract binds the newest file to `schema.sql`, rejects transaction control,
 and records immutable checksums. Postgres integration removes fresh-schema
 objects to model partial historical application, runs the real embedded chain,
-and verifies repair plus the final stamp.
+and verifies repair plus the final stamp. FF-071 integration also proves that
+cross-event/cross-fixture assets, shares, candidate credits, and supersession
+links fail at the schema boundary; media/popularity/removal-state violations
+fail independently. A migration preflight case seeds inconsistent historical
+identity, requires a fail-closed result, and verifies that no ledger row leaks
+from the rolled-back transaction.
 
 FF-034 workflow tests require candidate processing to launch even when every
 observation-insert retry fails, while the failed attempt remains uncheckpointed

@@ -264,7 +264,7 @@ the current branch.
 | FF-068 | P2 | `implemented` | `DestroyEvent` previously revoked shares, logged Garage delete failures, and returned success. It now attempts every known key, aggregates failures, and returns an error so the Temporal activity retries after safe revocation. | Release the worker change and induce or observe one transient delete failure followed by a successful retry; FF-024 remains the final reconciliation net after exhausted retries or abnormal termination. |
 | FF-069 | P2 | `implemented` | Downstream completion previously treated zero updated rows as success. The event repository now locks and classifies the exact checklist identity as `completed_now`, `already_completed`, or typed not-found; only the first two succeed. | Release the worker change and verify a natural completion reports its stored outcome; no schema, API, or frontend change is required. |
 | FF-070 | P2 | `implemented` | Typed activation, completion, detection, stability, and removal records now commit inside the owning Postgres state transaction. The standalone Composer and ignored-error call sites are gone; audit failure rolls state back for activity retry. | Release the worker and verify one natural event produces detected/stable rows while an idempotent monitor retry does not duplicate either transition. |
-| FF-071 | P2 | `confirmed` | Independent foreign keys prove that referenced rows exist but do not enforce shared event/fixture identity across candidates, assets, and shares. Several domain invariants also lack schema checks. | After FF-013 establishes ordered migrations, add composite identity constraints and bounded value/state checks with integration coverage. |
+| FF-071 | P2 | `implemented` | Composite foreign keys now enforce event/fixture identity across assets, shares, candidates, credits, and supersession. Named checks enforce complete removal state, media/hash shape, non-negative candidate measurements, and positive popularity; domain validation mirrors local value/state rules. The ordered migration preflights historical rows and refuses ambiguous repair. | Run the FF-071 migration before the application rollout; verify its ledger/stamp and one natural placement under the positive-popularity contract. |
 
 ### FF-060 — download failures lost their actionable cause
 
@@ -534,6 +534,19 @@ the current branch.
 - **Ordering:** Land this after FF-013. These constraints require an ordered,
   repairable migration and preflight checks over existing rows; they should not
   be another manual schema-hash boundary.
+- **Implemented:** Correlated foreign keys now prove asset→event/fixture,
+  share→asset/event, candidate→event/fixture, candidate→credited
+  asset/event/fixture, and supersession→successor/event/fixture identity.
+  Named checks require complete removal reason/timestamp pairs, structurally
+  valid stored media/hash data, non-negative candidate measurements, positive
+  popularity, and no self-supersession. New placements seed the first vote at
+  asset insertion and add only the remaining credited delta, so no statement
+  creates a temporarily invalid zero-popularity row.
+- **Migration behavior:** Existing inconsistent rows abort the whole ordered
+  migration with a bounded preflight class/count. The migration does not guess
+  a fixture, successor, credited asset, or removal timestamp. Real-Postgres
+  tests prove repair of a partial prior shape, fail-closed preflight rollback,
+  and every correlated/value boundary.
 
 ### FF-059 — VNC recovery uses the login path X already rejected
 

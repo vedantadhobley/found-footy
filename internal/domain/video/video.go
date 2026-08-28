@@ -160,6 +160,36 @@ func (a *Asset) SupersededBySet(successorID uuid.UUID) {
 	a.SupersededBy = &successorID
 }
 
+// ValidateInvariants mirrors the storage identity, media-shape, popularity,
+// and self-supersession checks enforced by Postgres.
+func (a *Asset) ValidateInvariants() error {
+	if a.ID == uuid.Nil || a.EventID == uuid.Nil || a.FixtureID <= 0 {
+		return fmt.Errorf("video.Asset.ValidateInvariants: incomplete asset, event, or fixture identity")
+	}
+	if a.S3Bucket == "" || a.S3Key == "" {
+		return fmt.Errorf("video.Asset.ValidateInvariants: storage location is empty")
+	}
+	if len(a.MD5) != 16 {
+		return fmt.Errorf("video.Asset.ValidateInvariants: md5 is %d bytes, must be 16", len(a.MD5))
+	}
+	if NormalizeFrameHashVersion(a.FrameHashVersion) == "" || len(a.FrameHashes) == 0 {
+		return fmt.Errorf("video.Asset.ValidateInvariants: frame-hash contract is empty")
+	}
+	if a.Width <= 0 || a.Height <= 0 || a.DurationMS <= 0 || a.FileSizeBytes <= 0 {
+		return fmt.Errorf("video.Asset.ValidateInvariants: non-positive media shape")
+	}
+	if a.Bitrate != nil && *a.Bitrate <= 0 {
+		return fmt.Errorf("video.Asset.ValidateInvariants: bitrate must be positive when present")
+	}
+	if a.Popularity < 1 {
+		return fmt.Errorf("video.Asset.ValidateInvariants: popularity=%d, must be >= 1", a.Popularity)
+	}
+	if a.SupersededBy != nil && *a.SupersededBy == a.ID {
+		return fmt.Errorf("video.Asset.ValidateInvariants: asset cannot supersede itself")
+	}
+	return nil
+}
+
 // Share is one public link to an Asset in the context of one Event.
 // Public URL is `/api/v1/videos/{ID}` which 302s to a presigned S3 URL.
 type Share struct {
@@ -242,7 +272,7 @@ func (s *Share) Remove(reason RemovalReason, at time.Time) error {
 
 // ValidateInvariants mirrors the schema CHECK:
 //
-//	state=active  → RemovedReason=nil, RemovedAt=nil
+//	state=active/superseded → RemovedReason=nil, RemovedAt=nil
 //	state=removed → RemovedReason!=nil, RemovedAt!=nil
 //	rank >= 1
 func (s *Share) ValidateInvariants() error {
@@ -250,9 +280,9 @@ func (s *Share) ValidateInvariants() error {
 		return fmt.Errorf("video.Share.ValidateInvariants: rank=%d, must be >= 1", s.Rank)
 	}
 	switch s.State {
-	case ShareStateActive:
+	case ShareStateActive, ShareStateSuperseded:
 		if s.RemovedReason != nil || s.RemovedAt != nil {
-			return fmt.Errorf("video.Share.ValidateInvariants: active with RemovedReason/At set")
+			return fmt.Errorf("video.Share.ValidateInvariants: live/superseded with RemovedReason/At set")
 		}
 	case ShareStateRemoved:
 		if s.RemovedReason == nil || s.RemovedAt == nil {

@@ -14,6 +14,7 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Relational identity is one key](./2026-08-28-relational-identity-is-one-key.md) — FF-071 replaces independent existence checks with correlated aggregate keys plus durable value/state bounds.
 - [Ordered migrations own durable schema evolution](./2026-08-28-ordered-migrations-own-durable-schema-evolution.md) — FF-013 replaces manual hash restamps with an explicit transactional migration command and read-only application gate.
 - [Required transition audit commits with state](./2026-08-28-required-transition-audit-commits-with-state.md) — FF-070 replaces the best-effort Composer with repository-owned state-plus-audit transactions.
 - [Accepted candidates commit as one placement](./2026-08-28-accepted-candidates-commit-as-one-placement.md) — FF-011/FF-048/FF-066 make attribution, popularity, asset/share mutation, supersession, derived rank, and invalidation one retry-safe contract.

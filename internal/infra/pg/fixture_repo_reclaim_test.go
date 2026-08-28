@@ -36,8 +36,8 @@ func seedGoalWithShare(t *testing.T, ctx context.Context, pool *pg.Pool, fixture
 	}
 	if shareState == "removed" {
 		if _, err := pool.Exec(ctx, `
-			INSERT INTO video_shares (id, asset_id, event_id, timestamp_verified, rank, state, removed_reason)
-			VALUES ($1, $2, $3, true, 1, 'removed', 'policy')
+			INSERT INTO video_shares (id, asset_id, event_id, timestamp_verified, rank, state, removed_reason, removed_at)
+			VALUES ($1, $2, $3, true, 1, 'removed', 'policy', now())
 		`, shareID, assetID, eventID); err != nil {
 			t.Fatalf("insert removed share: %v", err)
 		}

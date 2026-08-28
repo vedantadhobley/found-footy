@@ -98,6 +98,9 @@ func (r *AssetRepo) Get(ctx context.Context, id uuid.UUID) (*video.Asset, error)
 // DO NOTHING makes it idempotent on the exact layer — a retry or a
 // byte-identical dupe that slipped the in-memory check never doubles a row.
 func (r *AssetRepo) InsertAsset(ctx context.Context, a *video.Asset) (bool, error) {
+	if err := a.ValidateInvariants(); err != nil {
+		return false, fmt.Errorf("pg.AssetRepo.InsertAsset: %w", err)
+	}
 	tag, err := r.pool.Exec(ctx, `
 		INSERT INTO video_assets (
 			id, event_id, fixture_id, s3_bucket, s3_key,
@@ -333,6 +336,9 @@ func (r *ShareRepo) ResolveShare(ctx context.Context, id string) (video.Resolved
 // Insert creates a new share. A rank collision with an active share in the
 // same event violates the partial UNIQUE index and errors here.
 func (r *ShareRepo) Insert(ctx context.Context, s *video.Share) error {
+	if err := s.ValidateInvariants(); err != nil {
+		return fmt.Errorf("pg.ShareRepo.Insert: %w", err)
+	}
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO video_shares (
 			id, asset_id, event_id, timestamp_verified, extracted_minute,
@@ -349,6 +355,9 @@ func (r *ShareRepo) Insert(ctx context.Context, s *video.Share) error {
 // Upsert saves state changes (Remove) back. ON CONFLICT (id) updates the
 // mutable state fields.
 func (r *ShareRepo) Upsert(ctx context.Context, s *video.Share) error {
+	if err := s.ValidateInvariants(); err != nil {
+		return fmt.Errorf("pg.ShareRepo.Upsert: %w", err)
+	}
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO video_shares (
 			id, asset_id, event_id, timestamp_verified, extracted_minute,

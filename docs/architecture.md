@@ -41,7 +41,7 @@ found-footy/
 │   │   │   └── query_builder_test.go    name, particle, dedup, fallback, and safeguard cases
 │   │   └── vision/                      ✓ D5 (2026-07-28): clock.go + evaluate.go + schema.go + tests — clip-clock validation, wired into EventWorkflow consumer
 │   ├── infra/                           live infrastructure adapters
-│   │   ├── pg/                          ✓ S2 + FF-013/FF-066/FF-070: pool + instruments + ordered migration/required-object gates + focused repos + atomic placement and transition audit
+│   │   ├── pg/                          ✓ S2 + FF-013/FF-066/FF-070/FF-071: pool + instruments + ordered migration/required-object gates + focused repos + atomic placement/audit + relational identity constraints
 │   │   ├── nats/                        ✓ S3: client + instruments
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
 │   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
@@ -236,6 +236,15 @@ attribution, retry-safe popularity, asset/share identity, and optional
 supersession in one transaction. `video_shares.rank` remains a replay-only
 compatibility column; `ShareRepo.ListLiveForEvent` derives the public order
 from current evidence.
+
+FF-071 makes the same ownership model a database invariant. Composite foreign
+keys require an asset and candidate to carry their event's fixture, a share to
+carry its asset's event, a credited candidate and superseded asset to stay in
+the same event/fixture, and every durable asset to have valid digest/hash
+encoding, media dimensions, file size, bitrate, and positive popularity.
+Removal reason and timestamp now move together for events and shares. Domain
+validation mirrors the value/state checks; Postgres remains authoritative for
+cross-row identity.
 
 ### alias domain (D4)
 

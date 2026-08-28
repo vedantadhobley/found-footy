@@ -317,7 +317,7 @@ func TestPlacementRepo_RemovalLockRejectsLatePlacement(t *testing.T) {
 
 func TestPlacementRepo_RemovalPreservesEarlierCommittedAttribution(t *testing.T) {
 	pool, placements, assets, shares, fixtureID, eventID := setupPlacementRepo(t)
-	winner := insertPlacementAsset(t, assets, eventID, fixtureID, "placed-first", 0)
+	winner := insertPlacementAsset(t, assets, eventID, fixtureID, "placed-first", 1)
 	in := video.ClipPlacement{
 		EventID: eventID, FixtureID: fixtureID, WinnerAssetID: winner.ID, Verified: true,
 		Candidates: []video.PlacementCandidate{{

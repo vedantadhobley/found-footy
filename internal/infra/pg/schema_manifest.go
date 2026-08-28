@@ -35,6 +35,17 @@ var requiredTriggers = []string{
 	"trg_twitter_sessions_updated_at", "trg_webhook_subs_updated_at",
 }
 
+var requiredConstraints = []string{
+	"fixtures_terminal_observation_state",
+	"events_identity_unique", "events_removed_state",
+	"video_assets_identity_event_unique", "video_assets_identity_event_fixture_unique",
+	"video_assets_event_fixture_fkey", "video_assets_superseded_identity_fkey",
+	"video_assets_media_shape", "video_assets_popularity_positive", "video_assets_supersession_not_self",
+	"video_shares_asset_event_fkey", "video_shares_removed_state",
+	"event_search_candidates_event_fixture_fkey", "event_search_candidates_credited_identity_fkey",
+	"event_search_candidates_duration_nonnegative", "event_search_candidates_age_nonnegative",
+}
+
 func verifyBaselineSchema(ctx context.Context, tx pgx.Tx) error {
 	if err := requireExtension(ctx, tx, "pgcrypto"); err != nil {
 		return err
@@ -105,7 +116,7 @@ func verifyCurrentSchema(ctx context.Context, tx pgx.Tx) error {
 			return fmt.Errorf("required column %s.%s is missing", pair[0], pair[1])
 		}
 	}
-	for _, name := range []string{"video_assets_hash_version_check", "fixtures_terminal_observation_state"} {
+	for _, name := range append([]string{"video_assets_hash_version_check"}, requiredConstraints...) {
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = $1)`, name).Scan(&exists); err != nil {
 			return fmt.Errorf("check constraint %s: %w", name, err)

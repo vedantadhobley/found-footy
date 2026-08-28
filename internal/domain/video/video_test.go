@@ -89,6 +89,34 @@ func TestBumpPopularity(t *testing.T) {
 	}
 }
 
+func TestAsset_ValidateInvariants(t *testing.T) {
+	a := makeAsset(1, 15_000_000)
+	if err := a.ValidateInvariants(); err != nil {
+		t.Fatalf("valid asset: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*video.Asset)
+	}{
+		{"short md5", func(a *video.Asset) { a.MD5 = []byte("short") }},
+		{"empty hashes", func(a *video.Asset) { a.FrameHashes = nil }},
+		{"zero width", func(a *video.Asset) { a.Width = 0 }},
+		{"zero duration", func(a *video.Asset) { a.DurationMS = 0 }},
+		{"zero popularity", func(a *video.Asset) { a.Popularity = 0 }},
+		{"self supersession", func(a *video.Asset) { a.SupersededBy = &a.ID }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := *a
+			tc.mutate(&candidate)
+			if err := candidate.ValidateInvariants(); err == nil {
+				t.Fatal("expected invariant error")
+			}
+		})
+	}
+}
+
 func TestSupersededBySet(t *testing.T) {
 	a := makeAsset(1, 15_000_000)
 	if a.SupersededBy != nil {
@@ -286,5 +314,13 @@ func TestShare_ValidateInvariants_CatchesRemovedWithoutTimestamp(t *testing.T) {
 	s.State = video.ShareStateRemoved
 	if err := s.ValidateInvariants(); err == nil {
 		t.Error("expected error: removed without RemovedReason/At")
+	}
+}
+
+func TestShare_ValidateInvariants_AllowsSupersededWithoutRemoval(t *testing.T) {
+	s, _ := video.NewShare(uuid.New(), uuid.New(), true, nil, 1, time.Now())
+	s.State = video.ShareStateSuperseded
+	if err := s.ValidateInvariants(); err != nil {
+		t.Fatalf("superseded share: %v", err)
 	}
 }
