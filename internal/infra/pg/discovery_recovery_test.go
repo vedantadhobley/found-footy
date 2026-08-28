@@ -20,8 +20,8 @@ func TestDiscoveryActivities_RecoveryStateRoundTrip(t *testing.T) {
 	if err := fixture.Activate(time.Date(2026, 8, 17, 18, 55, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if err := fixtureRepo.Upsert(ctx, fixture); err != nil {
-		t.Fatalf("upsert fixture: %v", err)
+	if err := fixtureRepo.Insert(ctx, fixture); err != nil {
+		t.Fatalf("insert fixture: %v", err)
 	}
 
 	eventID := uuid.New()
@@ -119,8 +119,8 @@ func TestDiscoveryActivities_TerminalUpsertCreatesMissingEvidence(t *testing.T) 
 	if err := fixture.Activate(time.Date(2026, 8, 17, 19, 55, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if err := fixtureRepo.Upsert(ctx, fixture); err != nil {
-		t.Fatalf("upsert fixture: %v", err)
+	if err := fixtureRepo.Insert(ctx, fixture); err != nil {
+		t.Fatalf("insert fixture: %v", err)
 	}
 
 	eventID := uuid.New()

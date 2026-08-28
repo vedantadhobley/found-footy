@@ -14,7 +14,7 @@ import (
 func TestAuditedFixtureTransitionRollsBackWhenAuditInsertFails(t *testing.T) {
 	ctx, pool, repo := setupRepo(t)
 	f := makeStaging(7001, time.Date(2026, 8, 28, 18, 0, 0, 0, time.UTC))
-	if err := repo.Upsert(ctx, f); err != nil {
+	if err := repo.Insert(ctx, f); err != nil {
 		t.Fatalf("seed fixture: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
@@ -36,8 +36,8 @@ func TestAuditedFixtureTransitionRollsBackWhenAuditInsertFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build audit: %v", err)
 	}
-	if _, err := repo.UpsertWithAudit(ctx, f, record); err == nil {
-		t.Fatal("UpsertWithAudit succeeded despite rejected audit insert")
+	if _, err := repo.TransitionWithAudit(ctx, f, record); err == nil {
+		t.Fatal("TransitionWithAudit succeeded despite rejected audit insert")
 	}
 
 	stored, err := repo.Get(ctx, f.ID)

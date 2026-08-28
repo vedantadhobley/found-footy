@@ -92,6 +92,13 @@ and emit a structural update. FF-063 separately proves that missing or tied
 `PEN` data is retained as completion audit evidence rather than a permanent
 retirement gate.
 
+FF-040 activity tests require active and staging polls to persist corrected
+team/league/kickoff metadata and classify active metadata changes as structural.
+Real-Postgres regressions prove a delayed ingest cannot overwrite a newer
+active provider snapshot, a newer ingest can refresh provider fields without
+changing lifecycle timestamps, and delayed staging/active writers become clean
+no-ops after state or observation-version advancement.
+
 FF-028 API tests require the default five-minute presign to produce a
 four-minute redirect cache, longer presigns to retain the five-minute cap, and
 short or unset lifetimes to disable redirect caching. The handler-level test
@@ -249,12 +256,12 @@ Enablement mechanics:
 Example — `internal/infra/pg/fixture_repo_test.go`:
 
 ```go
-func TestFixtureRepo_Upsert_RoundTrip(t *testing.T) {
+func TestFixtureRepo_StoreFromIngest_RoundTrip(t *testing.T) {
     if testing.Short() { t.Skip("integration") }
     pool, cleanup := testPGPool(t)
     defer cleanup()
     repo := pg.NewFixtureRepo(pool)
-    // ...
+    // StoreFromIngest inserts; refresh and transition commands have focused cases.
 }
 ```
 

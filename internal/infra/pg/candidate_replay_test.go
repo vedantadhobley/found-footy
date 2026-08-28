@@ -23,8 +23,8 @@ func TestCandidateReplayStore_PrepareIsAuditableAndIdempotent(t *testing.T) {
 	if err := fixture.Activate(time.Date(2026, 8, 19, 17, 55, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if err := fixtureRepo.Upsert(ctx, fixture); err != nil {
-		t.Fatalf("upsert fixture: %v", err)
+	if err := fixtureRepo.Insert(ctx, fixture); err != nil {
+		t.Fatalf("insert fixture: %v", err)
 	}
 
 	eventID := uuid.New()
@@ -217,8 +217,8 @@ func TestCandidateReplayStore_PrepareRejectsIdentityDrift(t *testing.T) {
 	if err := fixture.Activate(time.Date(2026, 8, 19, 18, 55, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if err := fixtureRepo.Upsert(ctx, fixture); err != nil {
-		t.Fatalf("upsert fixture: %v", err)
+	if err := fixtureRepo.Insert(ctx, fixture); err != nil {
+		t.Fatalf("insert fixture: %v", err)
 	}
 	eventID := uuid.New()
 	if _, err := pool.Exec(ctx, `

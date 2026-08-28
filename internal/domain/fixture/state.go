@@ -139,6 +139,15 @@ func (f *Fixture) UpdatePenalty(home, away *int) {
 	f.AwayPenalty = cloneInt(away)
 }
 
+// UpdateMetadata replaces the provider-owned fixture identity and display
+// fields. Lifecycle state and observation timestamps remain unchanged.
+func (f *Fixture) UpdateMetadata(kickoff time.Time, home, away Team, league League) {
+	f.Kickoff = kickoff.UTC()
+	f.Home = home
+	f.Away = away
+	f.League = league
+}
+
 // winnerFromScore returns an exact nullable winner pair. A missing or tied
 // score has no winner; a decided score always yields one true and one false.
 func winnerFromScore(home, away *int) (*bool, *bool) {

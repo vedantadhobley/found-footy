@@ -25,8 +25,8 @@ func TestFixtureRepo_SearchFixtures(t *testing.T) {
 	if err := fa.Activate(time.Date(2026, 8, 1, 20, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("activate A: %v", err)
 	}
-	if err := repo.Upsert(ctx, fa); err != nil {
-		t.Fatalf("upsert A: %v", err)
+	if err := repo.Insert(ctx, fa); err != nil {
+		t.Fatalf("insert A: %v", err)
 	}
 	insertSearchEvent(t, ctx, pool, 8001, "529_1_goal_1", "R. Lewandowski", "L. Yamal")
 
@@ -38,8 +38,8 @@ func TestFixtureRepo_SearchFixtures(t *testing.T) {
 	if err := fb.Activate(time.Date(2026, 8, 2, 20, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("activate B: %v", err)
 	}
-	if err := repo.Upsert(ctx, fb); err != nil {
-		t.Fatalf("upsert B: %v", err)
+	if err := repo.Insert(ctx, fb); err != nil {
+		t.Fatalf("insert B: %v", err)
 	}
 	insertSearchEvent(t, ctx, pool, 8002, "505_2_goal_1", "L. Martinez", "")
 
@@ -107,8 +107,8 @@ func TestEventSearchCandidate_Outcome(t *testing.T) {
 	if err := f.Activate(time.Date(2026, 8, 1, 20, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if err := repo.Upsert(ctx, f); err != nil {
-		t.Fatalf("upsert: %v", err)
+	if err := repo.Insert(ctx, f); err != nil {
+		t.Fatalf("insert: %v", err)
 	}
 	evID := uuid.New()
 	if _, err := pool.Exec(ctx, `

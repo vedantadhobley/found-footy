@@ -89,6 +89,9 @@ type ActivePollWorkflowOutput struct {
 func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (ActivePollWorkflowOutput, error) {
 	logger := workflow.GetLogger(ctx)
 	out := ActivePollWorkflowOutput{}
+	// Fix the provider-observation version before any activity. A slow older
+	// request cannot become newer merely by finishing after the next cycle.
+	observedAt := workflow.Now(ctx)
 
 	// Default activity options — individual steps may override.
 	baseAO := workflow.ActivityOptions{
@@ -194,6 +197,7 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 				monitor.ReconcileFixtureInput{
 					APIFixture: apiFix,
 					WorkflowID: workflowID,
+					ObservedAt: observedAt,
 				}))
 	}
 	var removedEventIDs []uuid.UUID

@@ -192,11 +192,18 @@ func TestPollStagingFixtures_NoStateChange_JustUpdatesFields(t *testing.T) {
 	staging := stagingFixture(303, now.Add(5*time.Hour))
 	_ = fRepo.Upsert(context.Background(), staging)
 
-	// Vendor confirms status still NS with same kickoff.
+	// Vendor confirms status still NS and refreshes display metadata.
+	apiFixture := mkAPIFixture(303, apifootball.StatusNotStarted, staging.Kickoff)
+	apiFixture.Teams = apifootball.APIFixtureTeams{
+		Home: apifootball.APIFixtureTeam{ID: 40, Name: "Liverpool FC"},
+		Away: apifootball.APIFixtureTeam{ID: 42, Name: "Arsenal FC"},
+	}
+	apiFixture.League = apifootball.APIFixtureLeague{
+		ID: 39, Name: "Premier League", Season: 2026,
+		Country: "England", Round: "Regular Season - 1",
+	}
 	fetcher := &fakeFetcher{
-		response: []apifootball.APIFixture{
-			mkAPIFixture(303, apifootball.StatusNotStarted, staging.Kickoff),
-		},
+		response: []apifootball.APIFixture{apiFixture},
 	}
 	acts := newActs(fetcher, fRepo, newFakeEventRepo(), now)
 
@@ -218,6 +225,9 @@ func TestPollStagingFixtures_NoStateChange_JustUpdatesFields(t *testing.T) {
 	}
 	if got.LastPolledAt == nil {
 		t.Error("LastPolledAt should be set after poll")
+	}
+	if got.Home.Name != "Liverpool FC" || got.League.Round != "Regular Season - 1" {
+		t.Errorf("display metadata not refreshed: home=%q round=%q", got.Home.Name, got.League.Round)
 	}
 	// LastActivityAt should remain nil — RecordStagingPoll intentionally
 	// doesn't touch it (matches Python's semantic).

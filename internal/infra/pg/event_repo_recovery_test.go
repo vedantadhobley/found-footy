@@ -88,8 +88,8 @@ func seedCompletedFixture(t *testing.T, ctx context.Context, repo *pg.FixtureRep
 	if err := f.Complete(kickoff.Add(100 * time.Minute)); err != nil {
 		t.Fatalf("seedCompleted Complete: %v", err)
 	}
-	if err := repo.Upsert(ctx, f); err != nil {
-		t.Fatalf("seedCompleted Upsert: %v", err)
+	if err := repo.Insert(ctx, f); err != nil {
+		t.Fatalf("seedCompleted Insert: %v", err)
 	}
 }
 

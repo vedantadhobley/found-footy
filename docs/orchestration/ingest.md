@@ -7,7 +7,7 @@ Current behavior for `IngestWorkflow`. See the
 
 Daily fixture ingest. Refreshes the tracked-teams filter, fetches the
 relevant day(s) from api-sports.io with a smart timezone-lookahead,
-categorizes each fixture by API state, upserts to Postgres, ensures a
+categorizes each fixture by API state, stores it in Postgres, ensures a
 canonical-name row for every team seen, then runs two-part retention
 (hard-delete clipless completed fixtures + reclaim Garage bytes for
 clip-bearing ones) beyond the retention window.
@@ -82,6 +82,8 @@ simple).
         by the tracked-teams filter) accumulates into the output.
 2.  CategorizeAndUpsertFixtures(fixtures, ActivationWindow) [120s timeout]
       → {Staging, Active, Completed, TeamRefs, Errors}
+      The Temporal activity name remains stable for replay. Its repository
+      write is StoreFromIngest, not a generic full-row upsert.
 3.  IF len(TeamRefs) > 0:
       EnsureAliasPlaceholders(TeamRefs) → {Existing, Inserted, Errors}
 4.  IF RetentionDays > 0 — two-part retention (#176, decisions.md 2026-08-11):
@@ -121,15 +123,17 @@ teardown), not an ingest activity — the workflow calls it by string name.
 
 `CategorizeAndUpsertFixtures` calls `reconcileFixture` per API fixture:
 
-**Existing row present:** refresh only API-mutable fields (Status,
-Elapsed, Extra, Kickoff, Home, Away, League, Scores) + LastPolledAt
-+ UpdatedAt. Preserve domain-managed fields (State, ActivatedAt,
-CompletedAt, LastActivityAt, CreatedAt). Rationale: a fixture already
-active in our DB (activated_at set) MUST NOT have its activated_at
-cleared by the daily 00:05 re-ingest. LastPolledAt DOES get updated
-because ingest is itself a poll. (The planned bucket-suppression that
-would have consulted it was abandoned in the ActivePoll/StagingPoll
-split — see the note above.)
+**Existing row present:** build the current API snapshot (status, clock,
+kickoff, teams, league, score, shootout, and derived result). The repository
+applies those provider fields only when the incoming `last_polled_at` is newer
+than storage. Equality is an idempotent no-op, so an active/staging poll wins a
+same-cycle tie. It never changes State, ActivatedAt, CompletedAt,
+TerminalObservedAt, LastActivityAt, or CreatedAt on conflict. This preserves a
+newer active poll and prevents daily ingest from clearing lifecycle state. The
+workflow fixes that observation timestamp before starting its provider fetch;
+activity latency and retry do not change the ordering. The
+[FF-040 decision](../decisions/2026-08-28-fixture-writers-own-columns.md)
+defines the shared writer contract.
 
 **Live-feed emit (N6, decisions.md 2026-08-14).** `reconcileFixture` also reports
 a `changed` bool — true for a fresh row, or for an existing row whose
@@ -160,7 +164,7 @@ API status:
   why SUSP/INT/PST count as Live — matches Python.
 - **Not started** (`NS`, `TBD`, etc.) → check
   `ShouldActivateNow(now, ActivationWindow)`. If true (kickoff within
-  the activation window), Activate before first Upsert (avoids the "manual ingest at
+  the activation window), Activate before first StoreFromIngest (avoids the "manual ingest at
   14:55 for 15:00 kickoff sits in staging" Python bug — see
   [decisions.md 2026-07-07 Fixture activation triggers](../decisions.md#2026-07-07--fixture-activation-triggers--staging-poll-design)).
   Otherwise stays staging.
@@ -186,7 +190,7 @@ Per-activity timeout overrides (same retry policy):
 
 No workflow-level retry policy — an ingest failure surfaces to the
 Temporal UI; operator can manually re-run. Rationale: the workflow
-is idempotent (UPSERT semantics + reconcile-merge preserve state)
+is idempotent (monotonic provider storage + lifecycle preservation)
 so an aggressive retry adds no value, and hiding failures behind
 auto-retry masks real problems.
 

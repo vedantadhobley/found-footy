@@ -56,7 +56,7 @@ func (a *Activities) ActivateUpcoming(ctx context.Context, in ActivateUpcomingIn
 		if err != nil {
 			return out, err
 		}
-		transitioned, err := store.UpsertWithAudit(ctx, f, audit)
+		transitioned, err := store.TransitionWithAudit(ctx, f, audit)
 		if err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("activate fixture=%d: %v", f.ID, err))
 			continue
@@ -159,6 +159,7 @@ func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixt
 			Long:  af.Fixture.Status.Long,
 		}
 		newKickoff := af.Fixture.Date
+		updateFixtureMetadataFromAPI(f, af)
 
 		activationReason := ""
 		switch {
@@ -198,7 +199,7 @@ func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixt
 				return out, err
 			}
 			var transitioned bool
-			transitioned, err = store.UpsertWithAudit(ctx, f, audit)
+			transitioned, err = store.TransitionWithAudit(ctx, f, audit)
 			if err == nil && transitioned {
 				if activationReason == "already_started" {
 					out.EmergencyActivated++
@@ -207,10 +208,14 @@ func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixt
 				}
 			}
 		} else {
-			err = a.FixtureRepo.Upsert(ctx, f)
+			var refreshed bool
+			refreshed, err = a.FixtureRepo.RefreshStagingPoll(ctx, f)
+			if err == nil && !refreshed {
+				continue
+			}
 		}
 		if err != nil {
-			out.Errors = append(out.Errors, fmt.Sprintf("upsert fixture=%d: %v", f.ID, err))
+			out.Errors = append(out.Errors, fmt.Sprintf("persist fixture=%d: %v", f.ID, err))
 			continue
 		}
 		out.Polled++

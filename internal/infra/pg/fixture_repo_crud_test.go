@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/auditlog"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 )
 
@@ -17,7 +18,7 @@ func TestFixtureRepo_Get_NotFound(t *testing.T) {
 	}
 }
 
-func TestFixtureRepo_UpsertThenGet(t *testing.T) {
+func TestFixtureRepo_InsertThenGet(t *testing.T) {
 	ctx, _, repo := setupRepo(t)
 	original := makeStaging(1001, time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC))
 	// Vendor display + shootout fields (round-2 DTO gaps): must roundtrip.
@@ -27,8 +28,8 @@ func TestFixtureRepo_UpsertThenGet(t *testing.T) {
 	original.HomePenalty, original.AwayPenalty = &ph, &pa
 	original.HomeWinner = &wh
 
-	if err := repo.Upsert(ctx, original); err != nil {
-		t.Fatalf("Upsert: %v", err)
+	if err := repo.Insert(ctx, original); err != nil {
+		t.Fatalf("Insert: %v", err)
 	}
 	got, err := repo.Get(ctx, 1001)
 	if err != nil {
@@ -63,15 +64,13 @@ func TestFixtureRepo_UpsertThenGet(t *testing.T) {
 	}
 }
 
-// Upsert on existing row updates fields but preserves created_at (via
-// the ON CONFLICT DO UPDATE not listing created_at + updated_at,
-// which the trg_fixtures_updated_at trigger maintains automatically).
-func TestFixtureRepo_Upsert_UpdatesExisting_PreservesCreatedAt(t *testing.T) {
+// Lifecycle transitions update their owned fields while preserving created_at.
+func TestFixtureRepo_Transition_PreservesCreatedAt(t *testing.T) {
 	ctx, _, repo := setupRepo(t)
 	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	f := makeStaging(2001, kickoff)
-	if err := repo.Upsert(ctx, f); err != nil {
-		t.Fatalf("first Upsert: %v", err)
+	if err := repo.Insert(ctx, f); err != nil {
+		t.Fatalf("Insert: %v", err)
 	}
 	first, err := repo.Get(ctx, 2001)
 	if err != nil {
@@ -79,13 +78,11 @@ func TestFixtureRepo_Upsert_UpdatesExisting_PreservesCreatedAt(t *testing.T) {
 	}
 	origCreated := first.CreatedAt
 
-	// Transition to active, upsert again.
+	// Transition to active through the atomic state-plus-audit command.
 	if err := first.Activate(kickoff.Add(-15 * time.Minute)); err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
-	if err := repo.Upsert(ctx, first); err != nil {
-		t.Fatalf("second Upsert: %v", err)
-	}
+	transitionFixture(t, ctx, repo, first, auditlog.KindFixtureActivated)
 	after, err := repo.Get(ctx, 2001)
 	if err != nil {
 		t.Fatalf("second Get: %v", err)
@@ -97,26 +94,26 @@ func TestFixtureRepo_Upsert_UpdatesExisting_PreservesCreatedAt(t *testing.T) {
 		t.Fatal("ActivatedAt not persisted")
 	}
 	if !after.CreatedAt.Equal(origCreated) {
-		t.Errorf("CreatedAt changed on Upsert-update: was %v, now %v", origCreated, after.CreatedAt)
+		t.Errorf("CreatedAt changed on transition: was %v, now %v", origCreated, after.CreatedAt)
 	}
 	if !after.UpdatedAt.After(origCreated) {
 		t.Errorf("UpdatedAt should have advanced past CreatedAt: got %v vs %v", after.UpdatedAt, origCreated)
 	}
 }
 
-// The domain's ValidateInvariants runs at Upsert time; a state ↔
+// The domain's ValidateInvariants runs at Insert time; a state ↔
 // timestamp mismatch should be caught before the SQL executes.
-func TestFixtureRepo_Upsert_RejectsInvariantViolation(t *testing.T) {
+func TestFixtureRepo_Insert_RejectsInvariantViolation(t *testing.T) {
 	ctx, _, repo := setupRepo(t)
 	f := makeStaging(3001, time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC))
 	// Bypass domain methods — set State=active but leave ActivatedAt nil.
 	f.State = fixture.StateActive
-	err := repo.Upsert(ctx, f)
+	err := repo.Insert(ctx, f)
 	if err == nil {
 		t.Fatal("expected invariant-mismatch error, got nil")
 	}
 	if !errors.Is(err, fixture.ErrStateTimestampMismatch) {
-		t.Errorf("Upsert returned %v, want ErrStateTimestampMismatch chain", err)
+		t.Errorf("Insert returned %v, want ErrStateTimestampMismatch chain", err)
 	}
 }
 
@@ -127,16 +124,16 @@ func TestFixtureRepo_ListByState(t *testing.T) {
 	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 
 	staging := makeStaging(4001, kickoff)
-	if err := repo.Upsert(ctx, staging); err != nil {
-		t.Fatalf("staging Upsert: %v", err)
+	if err := repo.Insert(ctx, staging); err != nil {
+		t.Fatalf("staging Insert: %v", err)
 	}
 	// Second fixture in active state.
 	active := makeStaging(4002, kickoff)
 	if err := active.Activate(kickoff.Add(-15 * time.Minute)); err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
-	if err := repo.Upsert(ctx, active); err != nil {
-		t.Fatalf("active Upsert: %v", err)
+	if err := repo.Insert(ctx, active); err != nil {
+		t.Fatalf("active Insert: %v", err)
 	}
 
 	stagingList, err := repo.ListByState(ctx, fixture.StateStaging)
@@ -171,22 +168,22 @@ func TestFixtureRepo_ListActiveIDs(t *testing.T) {
 	// Seed a mix: staging, active x2, completed. Only the actives
 	// should come back.
 	staging := makeStaging(6001, kickoff)
-	if err := repo.Upsert(ctx, staging); err != nil {
-		t.Fatalf("staging Upsert: %v", err)
+	if err := repo.Insert(ctx, staging); err != nil {
+		t.Fatalf("staging Insert: %v", err)
 	}
 	activeA := makeStaging(6002, kickoff)
 	if err := activeA.Activate(kickoff.Add(-15 * time.Minute)); err != nil {
 		t.Fatalf("Activate A: %v", err)
 	}
-	if err := repo.Upsert(ctx, activeA); err != nil {
-		t.Fatalf("active A Upsert: %v", err)
+	if err := repo.Insert(ctx, activeA); err != nil {
+		t.Fatalf("active A Insert: %v", err)
 	}
 	activeB := makeStaging(6003, kickoff)
 	if err := activeB.Activate(kickoff.Add(-15 * time.Minute)); err != nil {
 		t.Fatalf("Activate B: %v", err)
 	}
-	if err := repo.Upsert(ctx, activeB); err != nil {
-		t.Fatalf("active B Upsert: %v", err)
+	if err := repo.Insert(ctx, activeB); err != nil {
+		t.Fatalf("active B Insert: %v", err)
 	}
 	completed := makeStaging(6004, kickoff)
 	if err := completed.Activate(kickoff); err != nil {
@@ -195,8 +192,8 @@ func TestFixtureRepo_ListActiveIDs(t *testing.T) {
 	if err := completed.Complete(kickoff.Add(100 * time.Minute)); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if err := repo.Upsert(ctx, completed); err != nil {
-		t.Fatalf("completed Upsert: %v", err)
+	if err := repo.Insert(ctx, completed); err != nil {
+		t.Fatalf("completed Insert: %v", err)
 	}
 
 	ids, err := repo.ListActiveIDs(ctx)
@@ -234,8 +231,8 @@ func TestFixtureRepo_ListStagingBeforeKickoff(t *testing.T) {
 	within := makeStaging(5002, base.Add(25*time.Minute)) // 25 min from base
 	far := makeStaging(5003, base.Add(2*time.Hour))       // 2 hours from base
 	for _, f := range []*fixture.Fixture{near, within, far} {
-		if err := repo.Upsert(ctx, f); err != nil {
-			t.Fatalf("Upsert %d: %v", f.ID, err)
+		if err := repo.Insert(ctx, f); err != nil {
+			t.Fatalf("Insert %d: %v", f.ID, err)
 		}
 	}
 

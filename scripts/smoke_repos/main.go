@@ -20,7 +20,10 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/vedantadhobley/found-footy/internal/config"
+	"github.com/vedantadhobley/found-footy/internal/contract/auditlog"
 	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
@@ -81,10 +84,10 @@ func smokeFixture(ctx context.Context, pool *pg.Pool) {
 		fixture.Team{ID: 42, Name: "Arsenal"},
 		fixture.League{ID: 39, Name: "Premier League", Season: 2026},
 	)
-	if err := repo.Upsert(ctx, f); err != nil {
-		fatal("Upsert insert", err)
+	if state, err := repo.StoreFromIngest(ctx, f); err != nil || state != fixture.StateStaging {
+		fatal("StoreFromIngest insert", err)
 	}
-	fmt.Println("  Upsert insert ✓")
+	fmt.Println("  StoreFromIngest insert ✓")
 
 	got, err := repo.Get(ctx, testID)
 	if err != nil {
@@ -101,8 +104,21 @@ func smokeFixture(ctx context.Context, pool *pg.Pool) {
 	if err := got.Activate(time.Now().UTC()); err != nil {
 		fatal("Activate", err)
 	}
-	if err := repo.Upsert(ctx, got); err != nil {
-		fatal("Upsert update", err)
+	record, err := auditlog.New(
+		auditlog.KindFixtureActivated,
+		uuid.Nil,
+		got.ID,
+		auditlog.FixtureActivatedPayload{
+			FixtureID:   got.ID,
+			ActivatedAt: *got.ActivatedAt,
+			Reason:      "repository_smoke",
+		},
+	)
+	if err != nil {
+		fatal("build activation audit", err)
+	}
+	if transitioned, err := repo.TransitionWithAudit(ctx, got, record); err != nil || !transitioned {
+		fatal("TransitionWithAudit activation", err)
 	}
 	after, err := repo.Get(ctx, testID)
 	if err != nil {
@@ -111,7 +127,7 @@ func smokeFixture(ctx context.Context, pool *pg.Pool) {
 	if after.State != fixture.StateActive || after.ActivatedAt == nil {
 		fatal("post-activate state", fmt.Errorf("state=%q activated_at=%v", after.State, after.ActivatedAt))
 	}
-	fmt.Println("  Upsert update (staging→active) ✓")
+	fmt.Println("  TransitionWithAudit (staging→active) ✓")
 
 	if after.ShouldActivateNow(time.Now().UTC(), 30*time.Minute) {
 		fatal("ShouldActivateNow on active fixture", fmt.Errorf("should be false"))

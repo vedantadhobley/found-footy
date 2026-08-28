@@ -66,7 +66,7 @@ found-footy/
 │   │   ├── telemetry.go                 ✓ FF-050: typed replay-aware EventWorkflow lifecycle/search/candidate/publication timing envelope
 │   │   └── video.go                     ✓ #165: pre-FF-022 VideoWorkflow child retained for Temporal replay; shared download/hash activity contracts
 │   ├── activity/                        activity packages + shared heartbeat helper
-│   │   ├── ingest/                      ✓ config, roster, fixture fetch/upsert, canonical-team placeholder, and retention activities
+│   │   ├── ingest/                      ✓ config, roster, monotonic fixture fetch/store, canonical-team placeholder, and retention activities
 │   │   │   ├── activities.go
 │   │   │   ├── tracked_teams.go / fetch.go / categorize.go / aliases.go / retention.go
 │   │   │   └── focused colocated test files by responsibility
@@ -174,12 +174,22 @@ State transitions:
   retain exact provider flags ([FF-055 decision](decisions/2026-08-19-winner-state-is-derived-from-canonical-scores.md))
 
 Predicates: `ShouldActivateNow(now, window)` — used by both the ingest
-activity (at-upsert-time activation for imminent kickoffs) and the
+activity (at-store-time activation for imminent kickoffs) and the
 ActivePollWorkflow's `ActivateUpcoming` step.
 
 Repo methods shipped in `internal/infra/pg/fixture_repo.go`:
-`Get`, `Upsert`, `ListByState`, `ListActiveIDs` (cheap ID-only
-projection for ActivePollWorkflow's batched API call),
+`Get`, `StoreFromIngest`, `RefreshActivePoll`, `RefreshStagingPoll`, and the
+audited `TransitionWithAudit`; the concrete adapter exposes strict `Insert`
+only for integration setup and its repository smoke test. FF-040 removes the
+generic full-row upsert: ingest snapshots apply only when their
+`last_polled_at` is newer than storage, poll refresh commands require a
+not-older observation and the expected lifecycle state, and transitions lock
+state plus observation version
+before changing only their owned lifecycle fields. Active and staging polls
+also retain current team, league, and kickoff metadata. See the
+[fixture-writer decision](decisions/2026-08-28-fixture-writers-own-columns.md).
+Read methods include `ListByState`, `ListActiveIDs` (cheap ID-only projection
+for ActivePollWorkflow's batched API call),
 `ListStagingBeforeKickoff`, `AssessCompletion` (terminal grace plus settled
 event/downstream gates, returning durable parity audit evidence; see the
 [FF-063 decision](decisions/2026-08-25-terminal-observation-grace-bounds-completion.md)),

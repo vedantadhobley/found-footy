@@ -80,20 +80,20 @@ func TestCategorize_UpdatesLastPolledAt_OnExisting(t *testing.T) {
 
 // ── Errors []string with context ──────────────────────────────
 
-// erroringFixtureRepo — fails every Upsert with a specific error.
+// erroringFixtureRepo — fails every ingest store with a specific error.
 // For the errors-carry-context test; embeds the good fake so
-// non-Upsert methods still work.
+// other methods still work.
 type erroringFixtureRepo struct {
 	*fakeFixtureRepo
 	err error
 }
 
-func (r *erroringFixtureRepo) Upsert(context.Context, *fixture.Fixture) error {
-	return r.err
+func (r *erroringFixtureRepo) StoreFromIngest(context.Context, *fixture.Fixture) (fixture.State, error) {
+	return "", r.err
 }
 
 // TestCategorize_ErrorsCarryFixtureContext — when a per-fixture
-// Upsert fails, the CategorizeOutput.Errors []string entry must
+// storage fails, the CategorizeOutput.Errors []string entry must
 // name the fixture ID so operators can find WHICH one failed
 // without joining logs.
 func TestCategorize_ErrorsCarryFixtureContext(t *testing.T) {

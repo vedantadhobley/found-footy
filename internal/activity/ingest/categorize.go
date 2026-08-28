@@ -13,10 +13,14 @@ import (
 )
 
 // CategorizeInput carries the API response and activation window. The activity
-// translates and upserts each fixture.
+// translates and stores each fixture through the ingest-owned write command.
 type CategorizeInput struct {
 	Fixtures         []apifootball.APIFixture
 	ActivationWindow time.Duration
+	// ObservedAt orders this provider snapshot against active/staging polls.
+	// The workflow fixes it at cycle start so activity delay or retry cannot make
+	// an older request appear newer. Zero retains direct-call compatibility.
+	ObservedAt time.Time
 }
 
 // CategorizeOutput counts landed rows by state + surfaces the unique
@@ -48,12 +52,10 @@ type TeamRef struct {
 	City       *string
 }
 
-// CategorizeAndUpsertFixtures translates each API fixture to a domain
-// fixture, decides initial state, and Upserts. For existing rows,
-// preserves domain-managed fields (activated_at, completed_at,
-// last_polled_at) and only overwrites API-mutable ones — the daily
-// ingest MUST NOT trample state a running fixture accumulated during
-// its match day.
+// CategorizeAndUpsertFixtures translates each API fixture to a domain fixture,
+// decides initial state, and stores it. The repository preserves lifecycle
+// fields on conflict and applies only provider snapshots that are at least as
+// new as last_polled_at; daily ingestion must not trample newer match-day data.
 //
 // Also collects unique team refs across all fixtures for the alias
 // step. A team appearing as home in one fixture + away in another
@@ -62,21 +64,26 @@ func (a *Activities) CategorizeAndUpsertFixtures(ctx context.Context, in Categor
 	out := CategorizeOutput{}
 	teams := make(map[int]TeamRef)
 	now := a.now()
+	observedAt := in.ObservedAt.UTC()
+	if observedAt.IsZero() {
+		observedAt = now
+	}
 
 	for _, apiFix := range in.Fixtures {
-		final, changed, err := a.reconcileFixture(ctx, apiFix, in.ActivationWindow, now)
+		final, changed, err := a.reconcileFixture(ctx, apiFix, in.ActivationWindow, now, observedAt)
 		if err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("reconcile fixture=%d: %v", apiFix.Fixture.ID, err))
 			continue
 		}
-		if err := a.FixtureRepo.Upsert(ctx, final); err != nil {
-			out.Errors = append(out.Errors, fmt.Sprintf("upsert fixture=%d: %v", apiFix.Fixture.ID, err))
+		storedState, err := a.FixtureRepo.StoreFromIngest(ctx, final)
+		if err != nil {
+			out.Errors = append(out.Errors, fmt.Sprintf("store fixture=%d: %v", apiFix.Fixture.ID, err))
 			continue
 		}
 		if changed {
 			out.ChangedIDs = append(out.ChangedIDs, final.ID)
 		}
-		switch final.State {
+		switch storedState {
 		case fixture.StateStaging:
 			out.Staging++
 		case fixture.StateActive:
@@ -132,7 +139,7 @@ func (a *Activities) CategorizeAndUpsertFixtures(ctx context.Context, in Categor
 }
 
 // reconcileFixture is the load-bearing merge step. Returns the
-// Fixture that should be Upserted:
+// Fixture that should be stored:
 //
 //	existing == nil    → fresh row constructed from API, initial
 //	                     state applied (staging / active / completed)
@@ -143,6 +150,7 @@ func (a *Activities) reconcileFixture(
 	apiFix apifootball.APIFixture,
 	activationWindow time.Duration,
 	now time.Time,
+	observedAt time.Time,
 ) (*fixture.Fixture, bool, error) {
 	existing, err := a.FixtureRepo.Get(ctx, apiFix.Fixture.ID)
 	if err != nil && !errors.Is(err, fixture.ErrNotFound) {
@@ -169,18 +177,20 @@ func (a *Activities) reconcileFixture(
 		}
 		existing.APIElapsed = apiFix.Fixture.Status.Elapsed
 		existing.APIExtra = apiFix.Fixture.Status.Extra
-		existing.Kickoff = apiFix.Fixture.Date.UTC()
-		existing.Home = fixture.Team{ID: apiFix.Teams.Home.ID, Name: apiFix.Teams.Home.Name}
-		existing.Away = fixture.Team{ID: apiFix.Teams.Away.ID, Name: apiFix.Teams.Away.Name}
-		existing.League = fixture.League{
-			ID: apiFix.League.ID, Name: apiFix.League.Name, Season: apiFix.League.Season,
-			Country: apiFix.League.Country, Round: apiFix.League.Round,
-		}
+		existing.UpdateMetadata(
+			apiFix.Fixture.Date,
+			fixture.Team{ID: apiFix.Teams.Home.ID, Name: apiFix.Teams.Home.Name},
+			fixture.Team{ID: apiFix.Teams.Away.ID, Name: apiFix.Teams.Away.Name},
+			fixture.League{
+				ID: apiFix.League.ID, Name: apiFix.League.Name, Season: apiFix.League.Season,
+				Country: apiFix.League.Country, Round: apiFix.League.Round,
+			},
+		)
 		existing.HomeScore = apiFix.Goals.Home
 		existing.AwayScore = apiFix.Goals.Away
 		existing.UpdatePenalty(apiFix.Score.Penalty.Home, apiFix.Score.Penalty.Away)
 		existing.UpdateResult(apiFix.Teams.Home.Winner, apiFix.Teams.Away.Winner)
-		existing.LastPolledAt = &now
+		existing.LastPolledAt = &observedAt
 		existing.UpdatedAt = now
 
 		changed := string(prevStatus) != string(existing.APIStatus.Short) ||
@@ -220,7 +230,7 @@ func (a *Activities) reconcileFixture(
 	// LastPolledAt — ingest just polled api-sports.io; record that.
 	// Set on the fresh Fixture BEFORE state transitions (Activate/
 	// Complete don't touch LastPolledAt so this survives).
-	f.LastPolledAt = &now
+	f.LastPolledAt = &observedAt
 
 	// Apply initial state per the API's status:
 	//   Terminal (FT/AET/etc.) → activate at kickoff, then complete now

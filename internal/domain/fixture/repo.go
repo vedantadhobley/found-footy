@@ -33,10 +33,22 @@ type Repo interface {
 	// Get returns the fixture by ID or ErrNotFound.
 	Get(ctx context.Context, id int64) (*Fixture, error)
 
-	// Upsert inserts or updates the fixture. Uses id as the primary key.
-	// Called at ingest time (fresh fixtures land in staging) and at
-	// active/staging poll (existing fixtures get UpdateFromPoll'd).
-	Upsert(ctx context.Context, f *Fixture) error
+	// StoreFromIngest inserts a fixture when it is new. On conflict it applies
+	// the provider snapshot only when last_polled_at is newer than the stored
+	// snapshot, without changing lifecycle state or transition timestamps. The
+	// returned state is the authoritative stored state after the write.
+	StoreFromIngest(ctx context.Context, f *Fixture) (State, error)
+
+	// RefreshActivePoll persists only the provider and terminal-observation
+	// fields owned by active reconciliation. It returns false when the row no
+	// longer exists in active state or the response is older than the stored
+	// provider snapshot.
+	RefreshActivePoll(ctx context.Context, f *Fixture) (bool, error)
+
+	// RefreshStagingPoll persists only the status, kickoff, and poll timestamp
+	// owned by passive staging reconciliation. It returns false when the row no
+	// longer exists in staging state.
+	RefreshStagingPoll(ctx context.Context, f *Fixture) (bool, error)
 
 	// ListByState returns all fixtures currently in the given state,
 	// most recently updated first. Used for callers that need the

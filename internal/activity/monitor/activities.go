@@ -91,7 +91,7 @@ type Activities struct {
 // methods out of the domain CRUD interfaces prevents unrelated callers from
 // pretending that a plain write carries semantic audit evidence.
 type auditedFixtureRepo interface {
-	UpsertWithAudit(context.Context, *fixture.Fixture, auditlog.Record) (bool, error)
+	TransitionWithAudit(context.Context, *fixture.Fixture, auditlog.Record) (bool, error)
 }
 
 type auditedEventRepo interface {
