@@ -262,7 +262,7 @@ the current branch.
 | FF-066 | P2 | `implemented` | Popularity-only duplicate placements changed a public ranking input without rank repair or `event.video`; ten shares across five production events were stale. Accepted clusters now commit attribution, retry-safe popularity, share identity, supersession, and candidate outcome in one transaction; the API derives rank on every read and every successful placement invalidates consumers. | Apply `20260828_01_add_atomic_clip_placement.sql`, release worker/API together, verify schema identity, then prove a natural duplicate changes popularity/order once and emits `event.video`. Remove stored rank only after old Temporal histories age out. |
 | FF-067 | P1 | `implemented` | VAR removal and accepted-clip placement raced through independent operations. The shared event-row lock now makes removal authoritative: a late placement terminalizes uncredited candidates as `rejected/event_removed`, creates no public rows, reclaims destination plus staging bytes, and emits no invalidation. | Release the worker change, then verify a natural VAR cancellation leaves no post-removal active share or Garage object. |
 | FF-068 | P2 | `implemented` | `DestroyEvent` previously revoked shares, logged Garage delete failures, and returned success. It now attempts every known key, aggregates failures, and returns an error so the Temporal activity retries after safe revocation. | Release the worker change and induce or observe one transient delete failure followed by a successful retry; FF-024 remains the final reconciliation net after exhausted retries or abnormal termination. |
-| FF-069 | P2 | `confirmed` | Downstream completion uses `Exec` and treats zero updated rows as success, so a missing checklist row is indistinguishable from an already-completed row and the workflow can report durable completion that was never recorded. | Return and classify row state explicitly; accept an idempotent prior completion but fail a missing or mismatched checklist identity. |
+| FF-069 | P2 | `implemented` | Downstream completion previously treated zero updated rows as success. The event repository now locks and classifies the exact checklist identity as `completed_now`, `already_completed`, or typed not-found; only the first two succeed. | Release the worker change and verify a natural completion reports its stored outcome; no schema, API, or frontend change is required. |
 | FF-070 | P2 | `confirmed` | Fixture/event transition writes and `event_log` audit inserts are separate calls, and audit errors are discarded. A real transition can commit without the row that the observability ledger describes as its durable audit plane. | Commit authoritative state and required audit evidence atomically, or narrow the documented contract and add a durable retry path with visible failure evidence. |
 | FF-071 | P2 | `confirmed` | Independent foreign keys prove that referenced rows exist but do not enforce shared event/fixture identity across candidates, assets, and shares. Several domain invariants also lack schema checks. | After FF-013 establishes ordered migrations, add composite identity constraints and bounded value/state checks with integration coverage. |
 
@@ -494,6 +494,14 @@ the current branch.
 - **Required invariant:** Retry of the same completed checklist identity is a
   success. Absence or identity mismatch is a durable orchestration error, not
   an idempotent completion.
+- **Implemented:** A narrow domain completion port now owns the transition.
+  `pg.EventRepo` locks the exact `(event_id, workflow_type, workflow_id)` row,
+  returns its stored result when already terminal, updates it when pending, and
+  returns typed `ErrDownstreamWorkflowNotFound` when absent. The activity
+  exposes `completed_now` versus `already_completed` plus stored outcome/time;
+  it no longer performs raw SQL or interprets `Exec` behavior. Real-Postgres
+  coverage proves first completion, retry with a conflicting requested outcome
+  preserving the authoritative stored value, and missing-identity failure.
 
 ### FF-070 — durable transition audit is best-effort
 

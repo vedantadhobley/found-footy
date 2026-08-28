@@ -178,7 +178,8 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 	// non-nil (holding a nil pointer), which would defeat the
 	// SearchTweets nil-check and cause a nil-deref panic.
 	discoveryActs := &discoveryactivity.Activities{
-		Pool: pool,
+		Pool:       pool,
+		Downstream: eventRepo,
 		// #162 — Discovery tunables from env-driven config, exposed
 		// to the workflow via GetDiscoveryConfig activity. Zero-value
 		// safety: GetDiscoveryConfig falls back to hardcoded defaults

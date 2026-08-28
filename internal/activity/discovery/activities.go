@@ -13,9 +13,9 @@
 //  5. RecordDiscoveryProgress — monotonically checkpoint completed searches.
 //  6. UpsertCandidateOutcome — atomically persist the full candidate evidence
 //     and terminal outcome, whether or not observation persistence landed.
-//  7. MarkDownstreamComplete — updates event_downstream_workflows
-//     so AssessCompletion stops treating this workflow as
-//     pending.
+//  7. MarkDownstreamComplete — closes one exact event_downstream_workflows
+//     identity so AssessCompletion stops treating it as pending; missing rows
+//     fail rather than masquerading as idempotent completion.
 package discovery
 
 import (
@@ -30,6 +30,7 @@ import (
 
 	"github.com/vedantadhobley/found-footy/internal/activity/heartbeat"
 	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
+	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
 )
@@ -43,8 +44,9 @@ import (
 // cmd/worker startup — see GetDiscoveryConfig below for the
 // workflow-side accessor.
 type Activities struct {
-	Pool    *pg.Pool
-	Twitter twitterClient
+	Pool       *pg.Pool
+	Twitter    twitterClient
+	Downstream event.DownstreamCompletionRepo
 
 	// EventWorkflow tuning knobs, mirrored from
 	// config.DiscoveryConfig at worker init. Zero values are

@@ -205,8 +205,9 @@ Repo methods ship across the focused `internal/infra/pg/event_repo*.go` files:
 `RegisterEventPresence` (increment, cap 3, flips downstream_triggered on first
 hit), `RegisterEventAbsence` (decrement, floor 0, atomic soft-delete on hitZero
 with reason='var'), `RegisterDownstreamWorkflow` (inserts the
-`event_downstream_workflows` checklist row), `RegisterVideoValidationWorkflow`
-(monotonic download-attempt counter). Debounce model per decisions.md
+`event_downstream_workflows` checklist row), `CompleteDownstreamWorkflow`
+(FF-069 exact-row lock plus new/already-complete/not-found classification),
+`RegisterVideoValidationWorkflow` (monotonic download-attempt counter). Debounce model per decisions.md
 2026-07-07 symmetric-counter + 2026-08-05 unknown-scorer entries.
 
 ### video domain (D3)

@@ -3,9 +3,14 @@ package pg
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/vedantadhobley/found-footy/internal/domain/event"
 )
 
 // RegisterDownstreamWorkflow inserts the idempotent pending checklist row that
@@ -20,6 +25,61 @@ func (r *EventRepo) RegisterDownstreamWorkflow(ctx context.Context, eventID uuid
 		return fmt.Errorf("pg.EventRepo.RegisterDownstreamWorkflow: %w", err)
 	}
 	return nil
+}
+
+// CompleteDownstreamWorkflow closes one exact pending checklist row or reports
+// its prior terminal result. Absence is a typed invariant failure.
+func (r *EventRepo) CompleteDownstreamWorkflow(
+	ctx context.Context,
+	eventID uuid.UUID,
+	workflowType, workflowID, outcomeClass string,
+) (event.DownstreamCompletion, error) {
+	var out event.DownstreamCompletion
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return out, fmt.Errorf("pg.EventRepo.CompleteDownstreamWorkflow: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var completedAt *time.Time
+	var storedOutcome *string
+	if err := tx.QueryRow(ctx, `
+		SELECT completed_at, outcome_class
+		FROM event_downstream_workflows
+		WHERE event_id = $1 AND workflow_type = $2 AND workflow_id = $3
+		FOR UPDATE
+	`, eventID, workflowType, workflowID).Scan(&completedAt, &storedOutcome); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return out, fmt.Errorf("pg.EventRepo.CompleteDownstreamWorkflow: %w", event.ErrDownstreamWorkflowNotFound)
+		}
+		return out, fmt.Errorf("pg.EventRepo.CompleteDownstreamWorkflow: lock: %w", err)
+	}
+	if completedAt != nil {
+		if err := tx.Commit(ctx); err != nil {
+			return out, fmt.Errorf("pg.EventRepo.CompleteDownstreamWorkflow: commit read: %w", err)
+		}
+		out.State = event.DownstreamAlreadyCompleted
+		out.CompletedAt = completedAt.UTC()
+		if storedOutcome != nil {
+			out.OutcomeClass = *storedOutcome
+		}
+		return out, nil
+	}
+
+	if err := tx.QueryRow(ctx, `
+		UPDATE event_downstream_workflows
+		SET completed_at = NOW(), outcome_class = $4
+		WHERE event_id = $1 AND workflow_type = $2 AND workflow_id = $3
+		RETURNING completed_at, outcome_class
+	`, eventID, workflowType, workflowID, outcomeClass).Scan(&out.CompletedAt, &out.OutcomeClass); err != nil {
+		return out, fmt.Errorf("pg.EventRepo.CompleteDownstreamWorkflow: update: %w", err)
+	}
+	out.CompletedAt = out.CompletedAt.UTC()
+	out.State = event.DownstreamCompletedNow
+	if err := tx.Commit(ctx); err != nil {
+		return event.DownstreamCompletion{}, fmt.Errorf("pg.EventRepo.CompleteDownstreamWorkflow: commit: %w", err)
+	}
+	return out, nil
 }
 
 // RegisterVideoValidationWorkflow records a download attempt. Unchanged
