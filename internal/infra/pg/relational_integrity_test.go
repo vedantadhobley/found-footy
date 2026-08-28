@@ -53,10 +53,10 @@ func TestRelationalIdentityRejectsCrossOwnedRows(t *testing.T) {
 	first, second := makeStaging(9301, kickoff), makeStaging(9302, kickoff)
 	first.Home = fixture.Team{ID: 1, Name: "First"}
 	second.Home = fixture.Team{ID: 2, Name: "Second"}
-	if err := fixtures.Upsert(ctx, first); err != nil {
+	if err := fixtures.Insert(ctx, first); err != nil {
 		t.Fatalf("seed first fixture: %v", err)
 	}
-	if err := fixtures.Upsert(ctx, second); err != nil {
+	if err := fixtures.Insert(ctx, second); err != nil {
 		t.Fatalf("seed second fixture: %v", err)
 	}
 	firstEvent := seedIntegrityEvent(t, ctx, pool, first.ID, "first")
@@ -106,7 +106,7 @@ func TestRelationalIdentityRejectsCrossOwnedRows(t *testing.T) {
 func TestDurableValueAndStateBoundsRejectInvalidRows(t *testing.T) {
 	ctx, pool, fixtures := setupRepo(t)
 	fixtureRow := makeStaging(9310, time.Date(2026, 8, 28, 18, 0, 0, 0, time.UTC))
-	if err := fixtures.Upsert(ctx, fixtureRow); err != nil {
+	if err := fixtures.Insert(ctx, fixtureRow); err != nil {
 		t.Fatalf("seed fixture: %v", err)
 	}
 	eventID := seedIntegrityEvent(t, ctx, pool, fixtureRow.ID, "bounds")

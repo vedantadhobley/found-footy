@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/auditlog"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 )
 
@@ -16,8 +17,8 @@ func TestFixtureRepo_AssessCompletion_TruthTable(t *testing.T) {
 	observedAt := time.Date(2026, 8, 25, 20, 0, 0, 0, time.UTC)
 	f := makeStaging(9101, observedAt.Add(-2*time.Hour))
 	f.APIStatus = fixture.APIStatus{Short: "ns", Long: "Not Started"}
-	if err := repo.Upsert(ctx, f); err != nil {
-		t.Fatalf("upsert staging: %v", err)
+	if err := repo.Insert(ctx, f); err != nil {
+		t.Fatalf("insert staging: %v", err)
 	}
 
 	assessment, err := repo.AssessCompletion(ctx, f.ID, observedAt)
@@ -28,13 +29,14 @@ func TestFixtureRepo_AssessCompletion_TruthTable(t *testing.T) {
 	if err := f.Activate(observedAt.Add(-2 * time.Hour)); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
+	transitionFixture(t, ctx, repo, f, auditlog.KindFixtureActivated)
 	zero := 0
 	f.UpdateFromPoll(
 		fixture.APIStatus{Short: "ft", Long: "Match Finished"},
 		nil, nil, &zero, &zero, observedAt,
 	)
-	if err := repo.Upsert(ctx, f); err != nil {
-		t.Fatalf("upsert terminal: %v", err)
+	if refreshed, err := repo.RefreshActivePoll(ctx, f); err != nil || !refreshed {
+		t.Fatalf("refresh terminal: refreshed=%v err=%v", refreshed, err)
 	}
 
 	assessment, err = repo.AssessCompletion(ctx, f.ID, observedAt.Add(-time.Nanosecond))
@@ -51,8 +53,8 @@ func TestFixtureRepo_AssessCompletion_TruthTable(t *testing.T) {
 
 	one := 1
 	f.HomeScore = &one
-	if err := repo.Upsert(ctx, f); err != nil {
-		t.Fatalf("upsert 1-0: %v", err)
+	if refreshed, err := repo.RefreshActivePoll(ctx, f); err != nil || !refreshed {
+		t.Fatalf("refresh 1-0: refreshed=%v err=%v", refreshed, err)
 	}
 	eventID := uuid.New()
 	_, err = pool.Exec(ctx, `
@@ -125,8 +127,8 @@ func TestFixtureRepo_AssessCompletion_TruthTable(t *testing.T) {
 	}
 
 	f.APIStatus = fixture.APIStatus{Short: "canc", Long: "Match Cancelled"}
-	if err := repo.Upsert(ctx, f); err != nil {
-		t.Fatalf("upsert exceptional terminal: %v", err)
+	if refreshed, err := repo.RefreshActivePoll(ctx, f); err != nil || !refreshed {
+		t.Fatalf("refresh exceptional terminal: refreshed=%v err=%v", refreshed, err)
 	}
 	assessment, err = repo.AssessCompletion(ctx, f.ID, observedAt)
 	if err != nil || !assessment.Ready || assessment.DurableScoreEventParity != nil {
@@ -146,8 +148,8 @@ func TestFixtureRepo_AssessCompletion_PenaltyDecisionIsEvidenceNotGate(t *testin
 		fixture.APIStatus{Short: "pen", Long: "Match Finished After Penalties"},
 		nil, nil, &zero, &zero, observedAt,
 	)
-	if err := repo.Upsert(ctx, f); err != nil {
-		t.Fatalf("upsert: %v", err)
+	if err := repo.Insert(ctx, f); err != nil {
+		t.Fatalf("insert: %v", err)
 	}
 	assessment, err := repo.AssessCompletion(ctx, f.ID, observedAt)
 	if err != nil || !assessment.Ready {

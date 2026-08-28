@@ -7,7 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/vedantadhobley/found-footy/internal/config"
+	"github.com/vedantadhobley/found-footy/internal/contract/auditlog"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 )
@@ -50,4 +53,21 @@ func makeStaging(id int64, kickoff time.Time) *fixture.Fixture {
 		fixture.Team{ID: 42, Name: "Arsenal"},
 		fixture.League{ID: 39, Name: "Premier League", Season: 2026},
 	)
+}
+
+// transitionFixture applies one lifecycle transition through the same atomic
+// state-plus-audit command used by the monitor.
+func transitionFixture(t *testing.T, ctx context.Context, repo *pg.FixtureRepo, f *fixture.Fixture, kind auditlog.Kind) {
+	t.Helper()
+	record, err := auditlog.New(kind, uuid.Nil, f.ID, map[string]any{"fixture_id": f.ID})
+	if err != nil {
+		t.Fatalf("build %s audit: %v", kind, err)
+	}
+	transitioned, err := repo.TransitionWithAudit(ctx, f, record)
+	if err != nil {
+		t.Fatalf("transition fixture %d to %s: %v", f.ID, f.State, err)
+	}
+	if !transitioned {
+		t.Fatalf("fixture %d did not transition to %s", f.ID, f.State)
+	}
 }

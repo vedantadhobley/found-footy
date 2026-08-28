@@ -129,6 +129,10 @@ type IngestWorkflowOutput struct {
 func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflowOutput, error) {
 	logger := workflow.GetLogger(ctx)
 	out := IngestWorkflowOutput{}
+	// Fix the provider-observation version before fetch. A slow ingest request
+	// must not outrank a newer active/staging poll because categorization ran
+	// later. ManualDate changes the fetch anchor, not this timestamp.
+	observedAt := workflow.Now(ctx)
 
 	// Resolve anchor + defaults. All Now() reads go through
 	// workflow.Now — deterministic across replays.
@@ -415,6 +419,7 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		ingest.CategorizeInput{
 			Fixtures:         fetchOut.Fixtures,
 			ActivationWindow: activationWindow,
+			ObservedAt:       observedAt,
 		},
 	).Get(ctx, &catOut); err != nil {
 		return out, err

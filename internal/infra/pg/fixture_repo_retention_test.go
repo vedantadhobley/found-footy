@@ -25,8 +25,8 @@ func completedFixture(t *testing.T, ctx context.Context, repo *pg.FixtureRepo, i
 	if err := f.Complete(completedAt); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if err := repo.Upsert(ctx, f); err != nil {
-		t.Fatalf("Upsert completed: %v", err)
+	if err := repo.Insert(ctx, f); err != nil {
+		t.Fatalf("Insert completed: %v", err)
 	}
 	return f
 }

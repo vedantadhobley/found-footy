@@ -4,6 +4,7 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -68,6 +69,10 @@ func (a *Activities) FetchLiveFixtures(ctx context.Context, in FetchLiveFixtures
 type ReconcileFixtureInput struct {
 	APIFixture apifootball.APIFixture
 	WorkflowID string
+	// ObservedAt is the poll cycle's start time. It orders overlapping provider
+	// requests independently of response latency and activity retry. Zero keeps
+	// direct callers and historical payloads compatible.
+	ObservedAt time.Time
 }
 
 // ReconcileFixtureOutput reports what happened for this fixture.
@@ -130,6 +135,10 @@ type ReconcileFixtureOutput struct {
 func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureInput) (ReconcileFixtureOutput, error) {
 	out := ReconcileFixtureOutput{FixtureID: in.APIFixture.Fixture.ID}
 	now := a.now()
+	observedAt := in.ObservedAt.UTC()
+	if observedAt.IsZero() {
+		observedAt = now
+	}
 
 	// Step 1: refresh the fixture row.
 	f, err := a.FixtureRepo.Get(ctx, in.APIFixture.Fixture.ID)
@@ -141,6 +150,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	prevStatus := f.APIStatus.Short
 	prevTerminalObservedAt := f.TerminalObservedAt
 	prevElapsed, prevExtra := f.APIElapsed, f.APIExtra
+	prevKickoff, prevHome, prevAway, prevLeague := f.Kickoff, f.Home, f.Away, f.League
 	prevHomeScore, prevAwayScore := f.HomeScore, f.AwayScore
 	prevHomeWinner, prevAwayWinner := f.HomeWinner, f.AwayWinner
 	prevHomePen, prevAwayPen := f.HomePenalty, f.AwayPenalty
@@ -160,8 +170,9 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		in.APIFixture.Fixture.Status.Extra,
 		in.APIFixture.Goals.Home,
 		in.APIFixture.Goals.Away,
-		now,
+		observedAt,
 	)
+	updateFixtureMetadataFromAPI(f, in.APIFixture)
 	// Mirror the nullable shootout before deriving result state: normal/AET
 	// winner state comes from the aggregate score, PEN comes from this shootout,
 	// and exceptional outcomes retain the provider's explicit flags. Result
@@ -176,14 +187,21 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	out.Extra = f.APIExtra
 	out.ClockChanged = intPtrChanged(prevElapsed, f.APIElapsed) || intPtrChanged(prevExtra, f.APIExtra)
 	if prevStatus != f.APIStatus.Short || timePtrChanged(prevTerminalObservedAt, f.TerminalObservedAt) ||
+		!prevKickoff.Equal(f.Kickoff) || prevHome != f.Home || prevAway != f.Away || prevLeague != f.League ||
 		intPtrChanged(prevHomeScore, f.HomeScore) || intPtrChanged(prevAwayScore, f.AwayScore) ||
 		intPtrChanged(prevHomePen, f.HomePenalty) || intPtrChanged(prevAwayPen, f.AwayPenalty) ||
 		boolPtrChanged(prevHomeWinner, f.HomeWinner) || boolPtrChanged(prevAwayWinner, f.AwayWinner) {
 		out.Structural = true
 	}
 
-	if err := a.FixtureRepo.Upsert(ctx, f); err != nil {
-		return out, fmt.Errorf("monitor.ReconcileFixture: upsert fixture: %w", err)
+	refreshed, err := a.FixtureRepo.RefreshActivePoll(ctx, f)
+	if err != nil {
+		return out, fmt.Errorf("monitor.ReconcileFixture: refresh active fixture: %w", err)
+	}
+	if !refreshed {
+		// Another poll already moved the fixture out of active state. Do not
+		// apply event votes or publish signals from this stale provider snapshot.
+		return ReconcileFixtureOutput{FixtureID: f.ID}, nil
 	}
 
 	// Step 2-5: diff events. Read the complete identity history in one query.
@@ -439,9 +457,9 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	if err != nil {
 		return out, err
 	}
-	transitioned, err := store.UpsertWithAudit(ctx, f, audit)
+	transitioned, err := store.TransitionWithAudit(ctx, f, audit)
 	if err != nil {
-		out.Errors = append(out.Errors, fmt.Sprintf("upsert completed fixture: %v", err))
+		out.Errors = append(out.Errors, fmt.Sprintf("transition completed fixture: %v", err))
 		return out, nil
 	}
 	if !transitioned {
@@ -450,4 +468,27 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	out.Completed = true
 	out.Structural = true
 	return out, nil
+}
+
+// updateFixtureMetadataFromAPI applies the full-response identity/display
+// fields. Zero-valued subobjects are ignored so focused tests and any future
+// partial adapter response cannot erase known metadata.
+func updateFixtureMetadataFromAPI(f *fixture.Fixture, apiFix apifootball.APIFixture) {
+	kickoff, home, away, league := f.Kickoff, f.Home, f.Away, f.League
+	if !apiFix.Fixture.Date.IsZero() {
+		kickoff = apiFix.Fixture.Date
+	}
+	if apiFix.Teams.Home.ID != 0 {
+		home = fixture.Team{ID: apiFix.Teams.Home.ID, Name: apiFix.Teams.Home.Name}
+	}
+	if apiFix.Teams.Away.ID != 0 {
+		away = fixture.Team{ID: apiFix.Teams.Away.ID, Name: apiFix.Teams.Away.Name}
+	}
+	if apiFix.League.ID != 0 {
+		league = fixture.League{
+			ID: apiFix.League.ID, Name: apiFix.League.Name, Season: apiFix.League.Season,
+			Country: apiFix.League.Country, Round: apiFix.League.Round,
+		}
+	}
+	f.UpdateMetadata(kickoff, home, away, league)
 }

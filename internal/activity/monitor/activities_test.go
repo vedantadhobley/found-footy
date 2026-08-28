@@ -77,9 +77,42 @@ func (r *fakeFixtureRepo) Upsert(_ context.Context, f *fixture.Fixture) error {
 	r.data[f.ID] = &dup
 	return nil
 }
-func (r *fakeFixtureRepo) UpsertWithAudit(ctx context.Context, f *fixture.Fixture, record auditlog.Record) (bool, error) {
+func (r *fakeFixtureRepo) StoreFromIngest(ctx context.Context, f *fixture.Fixture) (fixture.State, error) {
+	if err := r.Upsert(ctx, f); err != nil {
+		return "", err
+	}
+	return f.State, nil
+}
+func (r *fakeFixtureRepo) RefreshActivePoll(ctx context.Context, f *fixture.Fixture) (bool, error) {
+	r.mu.Lock()
+	stored, ok := r.data[f.ID]
+	r.mu.Unlock()
+	if !ok || stored.State != fixture.StateActive {
+		return false, nil
+	}
+	return true, r.Upsert(ctx, f)
+}
+func (r *fakeFixtureRepo) RefreshStagingPoll(ctx context.Context, f *fixture.Fixture) (bool, error) {
+	r.mu.Lock()
+	stored, ok := r.data[f.ID]
+	r.mu.Unlock()
+	if !ok || stored.State != fixture.StateStaging {
+		return false, nil
+	}
+	return true, r.Upsert(ctx, f)
+}
+func (r *fakeFixtureRepo) TransitionWithAudit(ctx context.Context, f *fixture.Fixture, record auditlog.Record) (bool, error) {
 	if !record.Valid() {
 		return false, errors.New("invalid audit record")
+	}
+	r.mu.Lock()
+	stored, ok := r.data[f.ID]
+	r.mu.Unlock()
+	if !ok {
+		return false, fixture.ErrNotFound
+	}
+	if stored.State == f.State {
+		return false, nil
 	}
 	if err := r.Upsert(ctx, f); err != nil {
 		return false, err

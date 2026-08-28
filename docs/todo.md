@@ -237,7 +237,7 @@ the current branch.
 | FF-037 | P2 | `mitigated` | LLM, Temporal, and ffmpeg admission are process-local and share work lanes. | Dedicated task/ffmpeg lanes; checked aggregate limits; shared inference owns global admission. |
 | FF-038 | P2 | `mitigated` | Firefox capacity, leases, Docker access, and the shared X account/IP search budget are not one atomic controller boundary. Natural FF-061 validation measured an internal timeline bucket with limit 50 and a roughly 15-minute reset window. | HTTP fleet controller with atomic browser and measured search admission, scoped labels, reaping, and no worker socket. |
 | FF-039 | P2 | `confirmed` | API/worker/Twitter lifecycle, readiness, metrics identity, and error classification diverge. | Shared lifecycle contract, real readiness, correct error classes, standard identity labels. |
-| FF-040 | P2 | `confirmed` | Live reconciliation omits mutable fixture metadata and activation is not atomic across pollers. | Explicit ownership of mutable fields plus one atomic state transition. |
+| FF-040 | P2 | `implemented` | Generic fixture upserts let delayed ingestion or poll responses overwrite newer provider state, active/staging polling omitted mutable display metadata, and competing activators lacked one explicit write contract. Fixture storage now separates ingest, active refresh, staging refresh, and audited lifecycle transitions; every provider write is state-guarded and monotonic on a pre-request `last_polled_at` observation version. | Release the worker, then verify a natural team/league/kickoff correction emits `fixture.update` while a delayed response leaves the newer snapshot and lifecycle untouched. No schema migration is required. |
 | FF-042 | P2 | `implemented` | Lint/tool versions, formatting, and module state were not reproducible. | Go 1.25.11, golangci-lint 2.12.2, and Air 1.65.3 are pinned; format, tidy, vet, lint, short, full, and race gates pass. |
 | FF-043 | P2 | `implemented` | The public API now starts from Postgres and S3 only; NATS remains worker-owned and the BFF subscribes directly. The API profile ignores shared NATS env and Compose drops its API-specific override, while `luv-*` remains for real BFF HTTP calls. | Roll out the committed release and verify API startup plus REST health while the NATS broker is unavailable. |
 | FF-044 | P3 | `confirmed` | Recovery repeats start/describe work every 30 seconds for healthy discovery workflows. | Durable next-check lease or scheduled supervisor with bounded checks. |
@@ -265,6 +265,9 @@ the current branch.
 | FF-069 | P2 | `implemented` | Downstream completion previously treated zero updated rows as success. The event repository now locks and classifies the exact checklist identity as `completed_now`, `already_completed`, or typed not-found; only the first two succeed. | Release the worker change and verify a natural completion reports its stored outcome; no schema, API, or frontend change is required. |
 | FF-070 | P2 | `implemented` | Typed activation, completion, detection, stability, and removal records now commit inside the owning Postgres state transaction. The standalone Composer and ignored-error call sites are gone; audit failure rolls state back for activity retry. | Release the worker and verify one natural event produces detected/stable rows while an idempotent monitor retry does not duplicate either transition. |
 | FF-071 | P2 | `implemented` | Composite foreign keys now enforce event/fixture identity across assets, shares, candidates, credits, and supersession. Named checks enforce complete removal state, media/hash shape, non-negative candidate measurements, and positive popularity; domain validation mirrors local value/state rules. The ordered migration preflights historical rows and refuses ambiguous repair. | Run the FF-071 migration before the application rollout; verify its ledger/stamp and one natural placement under the positive-popularity contract. |
+| FF-072 | P2 | `confirmed` | A new accepted candidate is copied from Garage `staging/` to its deterministic final `assets/` key before the placement transaction. An exhausted or ambiguous database failure can therefore leave final bytes without a `video_assets` owner row; FF-024 covers only `staging/`. | Make final-object reconciliation explicit: either prove retry ownership before copy or sweep only age-bounded final keys that have no matching durable asset, without deleting an in-flight placement. |
+| FF-073 | P2 | `confirmed` | Firefox reaping suppresses each release error and reports success. Its broad `active fixture OR pending downstream` keep set can retain a failed normal release until fixture completion, hiding the operational failure from Temporal retry. | Define the exact lease interval, make remove-not-found idempotent under concurrent release, attempt every orphan, aggregate release failures, and return them so the activity retries. |
+| FF-074 | P3 | `confirmed` | The post-release audit must include durable-data minimization, not only code paths: unused tables/columns/indexes, duplicated or derivable fields, compatibility residue, retention gaps, and aggregates that should be combined may still remain after the rebuild. | Run a code-first schema ownership audit plus read-only production cardinality/null/age/index evidence. Turn each accepted removal or combination into a bounded migration issue; do not mutate production during the audit. |
 
 ### FF-060 — download failures lost their actionable cause
 
@@ -547,6 +550,56 @@ the current branch.
   a fixture, successor, credited asset, or removal timestamp. Real-Postgres
   tests prove repair of a partial prior shape, fail-closed preflight rollback,
   and every correlated/value boundary.
+
+### FF-072 — final Garage bytes can outlive a failed placement transaction
+
+- **Verified path:** `CommitClipPlacement` checks for the deterministic asset,
+  copies `staging/` to the final `assets/` key when absent, and only then calls
+  the Postgres placement transaction. A database error returns without deleting
+  that final key because the activity cannot know whether the transaction
+  committed. A retry can adopt a durable asset, but exhausted retries or an
+  ambiguous failure before the row exists leave an unowned final object.
+- **Boundary:** FF-024 is necessary but not sufficient: it names only the
+  `staging/` namespace. VAR/removal cleanup handles a known removed-event
+  result, not an unknown placement result.
+- **Required invariant:** Every final object must have a durable asset owner or
+  remain inside a bounded in-flight grace window. Reconciliation must derive
+  the deterministic asset identity and exclude active/retryable placement work;
+  an eager delete on database error would risk deleting bytes for a transaction
+  that actually committed.
+
+### FF-073 — Firefox reaper acknowledges failed releases
+
+- **Verified path:** `ReapOrphans` continues after each `Release` failure and
+  returns only the successful names with a nil error. The Temporal activity
+  therefore records success and does not retry the failed set. A later
+  15-minute sweep is the only recovery path.
+- **Lease ambiguity:** `ListLiveFleetEventIDs` keeps every non-removed event
+  whose fixture remains active, even after its EventWorkflow should have
+  released the browser. A failed happy-path release may therefore stay outside
+  the orphan set until the fixture completes. The pending-downstream branch is
+  still load-bearing for late-match discovery and must remain.
+- **Required invariant:** The keep set must describe browser lease ownership,
+  not merely event liveness. Reaping must attempt all eligible containers and
+  return aggregated failures. Concurrent/double release must treat Docker
+  remove-not-found as success after ownership has already been established.
+
+### FF-074 — post-release durable-data minimization audit
+
+- **Scope:** Trace every table, column, constraint, and index from schema to
+  current readers/writers. Classify durable values as authoritative,
+  compatibility-only, derived cache, audit evidence, or unowned. Measure
+  production cardinality, null rate, age, and index use through read-only
+  queries where that evidence changes the decision.
+- **Known candidates, not pre-decided deletions:** FF-054's webhook/outbox
+  residue, `fixtures.completion_counter`, deprecated
+  `fixtures.last_activity_at`, stored compatibility rank, legacy event state,
+  redundant identity indexes accepted by FF-071, and candidate evidence whose
+  retention may exceed its operational value.
+- **Output:** Keep the audit as evidence. Give each accepted cleanup a stable
+  issue, migration order, rollback/compatibility boundary, and retention rule.
+  Do not combine unrelated destructive changes into one opaque migration and
+  do not mutate production during discovery.
 
 ### FF-059 — VNC recovery uses the login path X already rejected
 

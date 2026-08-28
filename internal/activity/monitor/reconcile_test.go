@@ -156,6 +156,45 @@ func TestReconcileFixture_ScoreChange_Structural(t *testing.T) {
 	}
 }
 
+func TestReconcileFixture_MetadataChangeIsPersistedAndStructural(t *testing.T) {
+	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+	now := kickoff.Add(45 * time.Minute)
+	fRepo := newFakeFixtureRepo()
+	_ = fRepo.Upsert(context.Background(), mkActiveN4Fixture(999, kickoff, 45, 0, 0))
+
+	correctedKickoff := kickoff.Add(5 * time.Minute)
+	apiFix := apifootball.APIFixture{
+		Fixture: apifootball.APIFixtureFixture{
+			ID: 999, Date: correctedKickoff,
+			Status: apifootball.APIFixtureStatus{Short: "1h", Long: "First Half", Elapsed: pi(45)},
+		},
+		Teams: apifootball.APIFixtureTeams{
+			Home: apifootball.APIFixtureTeam{ID: 40, Name: "Liverpool FC"},
+			Away: apifootball.APIFixtureTeam{ID: 42, Name: "Arsenal FC"},
+		},
+		League: apifootball.APIFixtureLeague{
+			ID: 39, Name: "Premier League", Season: 2026,
+			Country: "England", Round: "Regular Season - 1",
+		},
+		Goals: apifootball.APIFixtureGoals{Home: pi(0), Away: pi(0)},
+	}
+	acts := newActs(&fakeFetcher{}, fRepo, newFakeEventRepo(), now)
+	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{APIFixture: apiFix, WorkflowID: "metadata"})
+	if err != nil {
+		t.Fatalf("ReconcileFixture: %v", err)
+	}
+	if !out.Structural || out.ClockChanged {
+		t.Fatalf("metadata classification: structural=%v clock=%v", out.Structural, out.ClockChanged)
+	}
+	got, err := fRepo.Get(context.Background(), 999)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Kickoff.Equal(correctedKickoff) || got.Home.Name != "Liverpool FC" || got.League.Round != "Regular Season - 1" {
+		t.Fatalf("metadata not persisted: kickoff=%v home=%q round=%q", got.Kickoff, got.Home.Name, got.League.Round)
+	}
+}
+
 // TestReconcileFixture_TieClearsPriorLeader is the FF-055 regression. The
 // provider reports winner flags for the current live leader, then null/null
 // when an equalizer restores a tie. Result derivation must clear the stale

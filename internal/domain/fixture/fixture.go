@@ -206,7 +206,7 @@ var (
 //     Python-era "manual ingest at 14:55 for 15:00 kickoff sits in
 //     staging until the next 15-min monitor cycle, missing the opening
 //     minutes" bug. If ShouldActivateNow is true, the ingest activity
-//     calls Activate before the first Upsert, so the fixture never
+//     calls Activate before the first StoreFromIngest, so the fixture never
 //     lands in the staging bucket in the DB.
 //
 //  2. ActivePollWorkflow's ActivateUpcoming step — every cycle, scan

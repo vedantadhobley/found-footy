@@ -124,6 +124,21 @@ func (r *fakeFixtureRepo) Upsert(_ context.Context, f *fixture.Fixture) error {
 	return nil
 }
 
+func (r *fakeFixtureRepo) StoreFromIngest(ctx context.Context, f *fixture.Fixture) (fixture.State, error) {
+	if err := r.Upsert(ctx, f); err != nil {
+		return "", err
+	}
+	return f.State, nil
+}
+
+func (r *fakeFixtureRepo) RefreshActivePoll(context.Context, *fixture.Fixture) (bool, error) {
+	panic("fakeFixtureRepo.RefreshActivePoll: not implemented (test scope drift)")
+}
+
+func (r *fakeFixtureRepo) RefreshStagingPoll(context.Context, *fixture.Fixture) (bool, error) {
+	panic("fakeFixtureRepo.RefreshStagingPoll: not implemented (test scope drift)")
+}
+
 func (r *fakeFixtureRepo) ListByState(context.Context, fixture.State) ([]*fixture.Fixture, error) {
 	panic("fakeFixtureRepo.ListByState: not implemented (test scope drift)")
 }

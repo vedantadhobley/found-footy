@@ -19,12 +19,25 @@ the fixture/event mutation. Monitor no longer performs a second best-effort
 emit. An audit failure rolls back the transition and lets the Temporal
 activity retry it; idempotent debounce votes create at most one audit row.
 
+**Fixture writer ownership (FF-040).** Active and staging poll responses write
+through separate repository commands. Both require the expected fixture state
+and reject a response older than the stored `last_polled_at`; a rejected active
+refresh stops event voting and publication from that stale snapshot. Activation
+and completion lock the current state plus observation version, update only
+transition-owned fields, and commit their audit in the same transaction.
+Active poll fixes the observation version at workflow-cycle start; staging poll
+fixes it before its provider call, so response latency does not define order.
+Active and staging responses also refresh provider-owned kickoff, team display,
+and league fields. An active metadata correction is `Structural`, so it emits
+`fixture.update`. See the
+[decision](../decisions/2026-08-28-fixture-writers-own-columns.md).
+
 **Live-feed classification (N4, decisions.md 2026-08-14).** `ReconcileFixture`
 snapshots the fixture's API-mutable fields before the `Update*` calls and diffs
 after, so `ReconcileFixtureOutput` carries `Minute`/`Extra` + two disjoint
 signals per cycle: **`ClockChanged`** (the minute/extra advanced and nothing
 else) and **`Structural`** (a new/removed/stabilised event, an unknown-scorer
-drop, a score/penalty/winner/status change, or completion — set incrementally so
+drop, a score/penalty/winner/status/metadata change, or completion — set incrementally so
 it holds at every return path). **Step 5 (N5, shipped)** partitions the cycle's
 reconciles — structural wins, so a fixture is never in both — and fires one
 `PublishFixtureBatch` activity → `fixture.clock` (inline ticks) + `fixture.update`

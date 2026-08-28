@@ -51,8 +51,8 @@ func seedFixture(t *testing.T, ctx context.Context, repo *pg.FixtureRepo, id int
 	if err := f.Activate(time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("seed Activate: %v", err)
 	}
-	if err := repo.Upsert(ctx, f); err != nil {
-		t.Fatalf("seed Upsert: %v", err)
+	if err := repo.Insert(ctx, f); err != nil {
+		t.Fatalf("seed Insert: %v", err)
 	}
 }
 
