@@ -7,7 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+
+	"github.com/vedantadhobley/found-footy/internal/domain/event"
 )
 
 // MarkDownstreamCompleteInput identifies the downstream checklist row by its
@@ -22,40 +23,43 @@ type MarkDownstreamCompleteInput struct {
 	OutcomeClass string
 }
 
-// MarkDownstreamCompleteOutput reports whether a row was actually
-// updated. If not, either the row wasn't inserted (bug in the spawn
-// path) or was already completed (retry, expected).
+// MarkDownstreamCompleteOutput distinguishes a new completion from an
+// idempotent retry and returns the authoritative stored terminal evidence.
 type MarkDownstreamCompleteOutput struct {
-	RowsUpdated int64
+	RowsUpdated        int64
+	State              event.DownstreamCompletionState
+	StoredOutcomeClass string
+	CompletedAt        time.Time
 }
 
-// MarkDownstreamComplete UPDATEs the pending row for the given
-// (event_id, workflow_type, workflow_id) triple, setting completed_at
-// = NOW() and outcome_class. If completed_at is already set (activity
-// retry after the UPDATE landed but the return was lost), leaves it
-// alone. RowsUpdated tells callers which case they hit.
+// MarkDownstreamComplete closes the exact checklist identity. A matching
+// terminal row is idempotent success; a missing row is a typed repository
+// error so the workflow cannot claim completion that was never registered.
 func (a *Activities) MarkDownstreamComplete(ctx context.Context, in MarkDownstreamCompleteInput) (MarkDownstreamCompleteOutput, error) {
+	if a.Downstream == nil {
+		return MarkDownstreamCompleteOutput{}, fmt.Errorf("discovery.MarkDownstreamComplete: downstream store is required")
+	}
+	if in.EventID == uuid.Nil || in.WorkflowType == "" || in.WorkflowID == "" || in.OutcomeClass == "" {
+		return MarkDownstreamCompleteOutput{}, fmt.Errorf("discovery.MarkDownstreamComplete: incomplete checklist identity or outcome")
+	}
 	// Use a short pg-side timeout on top of Temporal's activity
 	// StartToClose — an activity retry is fine but a stuck query is
 	// not. 5s covers the round trip comfortably.
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	tag, err := a.Pool.Exec(callCtx, `
-		UPDATE event_downstream_workflows
-		SET completed_at = NOW(), outcome_class = $4
-		WHERE event_id = $1
-		  AND workflow_type = $2
-		  AND workflow_id = $3
-		  AND completed_at IS NULL
-	`, in.EventID, in.WorkflowType, in.WorkflowID, in.OutcomeClass)
+	result, err := a.Downstream.CompleteDownstreamWorkflow(
+		callCtx, in.EventID, in.WorkflowType, in.WorkflowID, in.OutcomeClass,
+	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			// Not fatal — either the row exists but is already
-			// completed, or it never got inserted. Both are recoverable.
-			return MarkDownstreamCompleteOutput{RowsUpdated: 0}, nil
-		}
 		return MarkDownstreamCompleteOutput{}, fmt.Errorf("discovery.MarkDownstreamComplete: %w", err)
 	}
-	return MarkDownstreamCompleteOutput{RowsUpdated: tag.RowsAffected()}, nil
+	rowsUpdated := int64(0)
+	if result.State == event.DownstreamCompletedNow {
+		rowsUpdated = 1
+	}
+	return MarkDownstreamCompleteOutput{
+		RowsUpdated: rowsUpdated, State: result.State,
+		StoredOutcomeClass: result.OutcomeClass, CompletedAt: result.CompletedAt,
+	}, nil
 }

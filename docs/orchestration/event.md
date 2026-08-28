@@ -289,7 +289,10 @@ and direct duplicate credit retry-idempotent (FF-011/FF-066).
 On completion—and only after every workflow-owned candidate is durably
 terminal—`finalizeEvent` marks the `event_downstream_workflows` row
 complete with an `outcome_class` (the pg `workflow_type` stays `'discovery'` —
-the internal downstream label). `AssetsKept` is the LIVE count (`len(p.assets)`
+the internal downstream label). FF-069 makes this an exact-identity contract:
+the repository locks the checklist row and classifies it as newly completed or
+already completed, preserving the stored outcome on retry; a missing or
+mismatched row fails instead of masquerading as success. `AssetsKept` is the LIVE count (`len(p.assets)`
 — supersede removes losers), not cumulative promotes. Methodology + rationale:
 [decisions.md 2026-08-09](../decisions.md) + [historical video-dedup proposal](../design/proposals/video-dedup/);
 promotion retry and cleanup contract in
