@@ -29,7 +29,6 @@ const (
 	// ── Infrastructure adapters (internal/infra/...) ──
 	ModuleInfraPG          Module = "infra_pg"
 	ModuleInfraNATS        Module = "infra_nats"
-	ModuleInfraEvent       Module = "infra_event"
 	ModuleInfraS3          Module = "infra_s3"
 	ModuleInfraLLM         Module = "infra_llm"
 	ModuleInfraTemporal    Module = "infra_temporal"
@@ -49,7 +48,7 @@ const (
 var ValidModules = []Module{
 	ModuleEventWorkflow,
 
-	ModuleInfraPG, ModuleInfraNATS, ModuleInfraEvent, ModuleInfraS3,
+	ModuleInfraPG, ModuleInfraNATS, ModuleInfraS3,
 	ModuleInfraLLM, ModuleInfraTemporal, ModuleInfraAPIFootball,
 	ModuleInfraTwitter, ModuleInfraSyndication, ModuleInfraFFmpeg,
 

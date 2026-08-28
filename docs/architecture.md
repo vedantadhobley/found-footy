@@ -24,6 +24,7 @@ found-footy/
 │   ├── twitter/main.go                  ✓ T/a+T/b+T/c: real Playwright-Go service (ephemeral profile + idle-CPU prefs)
 │   └── worker/main.go                   thin executable; delegates worker composition to internal/app/worker
 ├── internal/
+│   ├── contract/auditlog/               ✓ FF-070 typed semantic-transition kinds, payloads, and immutable Postgres audit records
 │   ├── contract/discovery/              stable EventWorkflowInput + CandidateEvidence shared across workflow, activity, and persistence boundaries
 │   ├── contract/twittersearch/           ✓ FF-061: one browser/HTTP/activity wire contract for classified search states, evidence, and video refs
 │   ├── domain/                          active domain logic only
@@ -39,7 +40,7 @@ found-footy/
 │   │   │   └── query_builder_test.go    name, particle, dedup, fallback, and safeguard cases
 │   │   └── vision/                      ✓ D5 (2026-07-28): clock.go + evaluate.go + schema.go + tests — clip-clock validation, wired into EventWorkflow consumer
 │   ├── infra/                           live infrastructure adapters
-│   │   ├── pg/                          ✓ S2 + FF-066: pool + instruments + schema.sql + VerifySchema drift guard + focused repos + exact-selector replay + event-locked atomic clip placement
+│   │   ├── pg/                          ✓ S2 + FF-066/FF-070: pool + instruments + schema guard + focused repos + atomic clip placement + state/transition-audit transactions
 │   │   ├── nats/                        ✓ S3: client + instruments
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
 │   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
@@ -47,7 +48,7 @@ found-footy/
 │   │   ├── apifootball/                 ✓ S7 + O1a: /status probe + /fixtures + /fixtures/{ids}
 │   │   ├── twitter/                     ✓ classified HTTP Search + forced-Verify client for the Go Twitter service + mock-backed tests
 │   │   ├── syndication/                 ✓ S7 + T/f: FetchJSON + ResolveVideo/Download (cookieless mp4) + typed taxonomy + tests
-│   │   ├── event/                       ✓ composer (pg event_log audit ONLY — N2 removed its NATS half; Kind = 6 event_log types) · N1+N5 NatsPublisher — 3-subject live-feed (fixture.clock/update, event.video) + Envelope + source config + golden tests
+│   │   ├── event/                       ✓ N1+N5 NatsPublisher — 3-subject live-feed (fixture.clock/update, event.video) + Envelope + source config + golden tests
 │   │   ├── ffmpeg/                      ✓ V/1 + FF-005: probe + bounded-grayscale single-pass dense extraction + faststart + semaphore + typed taxonomy + tests
 │   │   └── firefoxfleet/                ✓ #160 + FF-001: per-event Firefox provisioner via Docker API — Compose-network-scoped daemon names/ownership labels/count/list/reap/release; stable event-only network alias keeps workflow addressing registry-free; idempotent lifecycle + two-fleet/one-daemon tests
 │   ├── workflow/                        shipped Temporal workflows
@@ -406,8 +407,8 @@ internal/domain/*/          internal/infra/*/  (adapters)
 - `internal/domain/*` importing `internal/infra/*` — enforced by review
 - `internal/workflow/*` importing `internal/infra/*` — activities are the boundary
 - `internal/infra/<a>` importing `internal/infra/<b>` — the eventing package
-  (`internal/infra/event/`) is the sole exception: its composer + NatsPublisher
-  import `internal/infra/nats`
+  (`internal/infra/event/`) is the sole exception: its NatsPublisher imports
+  `internal/infra/nats`
 
 ## Cross-refs
 

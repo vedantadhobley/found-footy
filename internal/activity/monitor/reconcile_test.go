@@ -3,13 +3,14 @@ package monitor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/auditlog"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
-	eventinfra "github.com/vedantadhobley/found-footy/internal/infra/event"
 )
 
 func TestReconcileFixture_NewGoalInserted_CountIs1(t *testing.T) {
@@ -259,11 +260,9 @@ func TestReconcileFixture_TerminalWithWinnerRequiresGrace(t *testing.T) {
 		},
 		Goals: apifootball.APIFixtureGoals{Home: pi(0), Away: pi(0)},
 	}
-	composer := &recordingComposer{}
 	times := []time.Time{now, now.Add(time.Hour - 30*time.Second), now.Add(time.Hour)}
 	for cycle, cycleAt := range times {
 		acts := newActs(&fakeFetcher{}, fRepo, newFakeEventRepo(), cycleAt)
-		acts.Composer = composer
 		out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{
 			APIFixture: apiFix, WorkflowID: fmt.Sprintf("monitor-w%d", cycle+1),
 		})
@@ -284,12 +283,16 @@ func TestReconcileFixture_TerminalWithWinnerRequiresGrace(t *testing.T) {
 	if got.CompletedAt == nil {
 		t.Error("CompletedAt should be set after completion")
 	}
-	if composer.kind != eventinfra.KindFixtureCompleted {
-		t.Fatalf("completion audit kind = %q, want %q", composer.kind, eventinfra.KindFixtureCompleted)
+	if len(fRepo.audits) != 1 {
+		t.Fatalf("completion audit count = %d, want 1", len(fRepo.audits))
 	}
-	payload, ok := composer.payload.(eventinfra.FixtureCompletedPayload)
-	if !ok {
-		t.Fatalf("completion audit payload type = %T", composer.payload)
+	record := fRepo.audits[0]
+	if record.Kind() != auditlog.KindFixtureCompleted {
+		t.Fatalf("completion audit kind = %q, want %q", record.Kind(), auditlog.KindFixtureCompleted)
+	}
+	var payload auditlog.FixtureCompletedPayload
+	if err := json.Unmarshal(record.Payload(), &payload); err != nil {
+		t.Fatalf("decode completion audit: %v", err)
 	}
 	if !payload.TerminalObservedAt.Equal(now) || !payload.CompletedAt.Equal(now.Add(time.Hour)) {
 		t.Errorf("completion audit times = observed %v completed %v", payload.TerminalObservedAt, payload.CompletedAt)

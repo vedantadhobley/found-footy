@@ -1,8 +1,8 @@
 // NatsPublisher is the found-footy live-feed producer: it stamps the
 // standard envelope around each of the 3 subjects' payloads and ships
-// them on the core NATS bus. It is the NATS half of the old Composer,
-// extracted so event_log (the audit plane) and NATS (the live-fanout
-// plane) are independent. Publish metrics live on the nats.Conn layer;
+// them on the core NATS bus. Durable transition audit is committed by the
+// Postgres repositories; this package owns only live fanout. Publish metrics
+// live on the nats.Conn layer;
 // this type does not double-count. See decisions.md 2026-08-14.
 package event
 

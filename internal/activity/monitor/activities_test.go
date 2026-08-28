@@ -13,11 +13,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/auditlog"
 	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
-	eventinfra "github.com/vedantadhobley/found-footy/internal/infra/event"
 )
 
 // ── fakes ──────────────────────────────────────────────────────
@@ -34,23 +34,6 @@ type recordingSpawner struct {
 	input      discoverycontract.EventWorkflowInput
 }
 
-type recordingComposer struct {
-	kind    eventinfra.Kind
-	payload any
-}
-
-func (c *recordingComposer) Publish(
-	_ context.Context,
-	kind eventinfra.Kind,
-	_ uuid.UUID,
-	_ int64,
-	payload any,
-) (int64, error) {
-	c.kind = kind
-	c.payload = payload
-	return 1, nil
-}
-
 func (s *recordingSpawner) SpawnEvent(_ context.Context, workflowID string, in discoverycontract.EventWorkflowInput) error {
 	s.workflowID = workflowID
 	s.input = in
@@ -65,8 +48,9 @@ func (f *fakeFetcher) ListFixturesByIDs(_ context.Context, ids []int64) (
 }
 
 type fakeFixtureRepo struct {
-	mu   sync.Mutex
-	data map[int64]*fixture.Fixture
+	mu     sync.Mutex
+	data   map[int64]*fixture.Fixture
+	audits []auditlog.Record
 }
 
 func newFakeFixtureRepo() *fakeFixtureRepo {
@@ -92,6 +76,18 @@ func (r *fakeFixtureRepo) Upsert(_ context.Context, f *fixture.Fixture) error {
 	dup := *f
 	r.data[f.ID] = &dup
 	return nil
+}
+func (r *fakeFixtureRepo) UpsertWithAudit(ctx context.Context, f *fixture.Fixture, record auditlog.Record) (bool, error) {
+	if !record.Valid() {
+		return false, errors.New("invalid audit record")
+	}
+	if err := r.Upsert(ctx, f); err != nil {
+		return false, err
+	}
+	r.mu.Lock()
+	r.audits = append(r.audits, record)
+	r.mu.Unlock()
+	return true, nil
 }
 func (r *fakeFixtureRepo) ListByState(_ context.Context, state fixture.State) ([]*fixture.Fixture, error) {
 	r.mu.Lock()
@@ -170,6 +166,7 @@ type fakeEventRepo struct {
 	byKey    map[string]uuid.UUID // (fixture_id, natural_key) → id
 	presence map[string]struct{}  // (event_id, workflow_id)
 	absence  map[string]struct{}  // (event_id, workflow_id)
+	audits   []auditlog.Record
 }
 
 func newFakeEventRepo() *fakeEventRepo {
@@ -229,6 +226,18 @@ func (r *fakeEventRepo) Insert(_ context.Context, e *event.Event, workflowID str
 	if initial > 0 {
 		r.presence[vkey(e.ID, workflowID)] = struct{}{}
 	}
+	return nil
+}
+func (r *fakeEventRepo) InsertWithAudit(ctx context.Context, e *event.Event, workflowID string, record auditlog.Record) error {
+	if !record.Valid() {
+		return errors.New("invalid audit record")
+	}
+	if err := r.Insert(ctx, e, workflowID); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.audits = append(r.audits, record)
+	r.mu.Unlock()
 	return nil
 }
 
@@ -337,6 +346,15 @@ func (r *fakeEventRepo) RegisterEventPresence(_ context.Context, eventID uuid.UU
 	}
 	return e.DebounceCount, justTriggered, nil
 }
+func (r *fakeEventRepo) RegisterEventPresenceWithAudit(ctx context.Context, eventID uuid.UUID, workflowID string, record auditlog.Record) (int, bool, error) {
+	count, transitioned, err := r.RegisterEventPresence(ctx, eventID, workflowID)
+	if err == nil && transitioned {
+		r.mu.Lock()
+		r.audits = append(r.audits, record)
+		r.mu.Unlock()
+	}
+	return count, transitioned, err
+}
 func (r *fakeEventRepo) RegisterEventAbsence(_ context.Context, eventID uuid.UUID, workflowID string) (int, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -363,8 +381,17 @@ func (r *fakeEventRepo) RegisterEventAbsence(_ context.Context, eventID uuid.UUI
 	}
 	return e.DebounceCount, hitZero, nil
 }
+func (r *fakeEventRepo) RegisterEventAbsenceWithAudit(ctx context.Context, eventID uuid.UUID, workflowID string, record auditlog.Record) (int, bool, error) {
+	count, transitioned, err := r.RegisterEventAbsence(ctx, eventID, workflowID)
+	if err == nil && transitioned {
+		r.mu.Lock()
+		r.audits = append(r.audits, record)
+		r.mu.Unlock()
+	}
+	return count, transitioned, err
+}
 func (r *fakeEventRepo) RegisterDownstreamWorkflow(_ context.Context, _ uuid.UUID, _, _ string) error {
-	// Composer + Spawner nil in these tests → this method is not
+	// Spawner nil in these tests → this method is not
 	// reached; returning nil keeps interface satisfaction without
 	// implementing test-side state that the tests don't inspect.
 	return nil

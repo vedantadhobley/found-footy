@@ -24,8 +24,8 @@
 // decisions.md 2026-07-10 workflow-split entry.
 //
 // Debounce model per decisions.md 2026-07-07 symmetric-counter entry.
-// NATS emissions (via the event composer) and EventWorkflow spawn (via
-// DownstreamSpawner, on the downstream_triggered flip) both SHIPPED in O3.
+// Durable transition audits commit inside Postgres repository transactions;
+// live NATS invalidations and EventWorkflow spawn are separate effects.
 package monitor
 
 import (
@@ -34,10 +34,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/auditlog"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
-	eventinfra "github.com/vedantadhobley/found-footy/internal/infra/event"
 )
 
 // fixtureFetcher is the narrow interface the Monitor activities need
@@ -58,13 +58,6 @@ type Activities struct {
 	APIFootball fixtureFetcher
 	FixtureRepo fixture.Repo
 	EventRepo   event.Repo
-
-	// Composer — durable Postgres audit helper for semantic event emissions
-	// (fixture.activated, fixture.completed, event.detected,
-	// event.stable, event.removed, event.rank_recalculated). Live NATS
-	// signals use separate activities. May be
-	// nil in older tests that don't wire it; emit calls no-op on nil.
-	Composer eventComposer
 
 	// Spawner — starts downstream workflows (Discovery for now) via
 	// Temporal. Bundled with the row-insert into
@@ -93,11 +86,18 @@ type Activities struct {
 	Now func() time.Time
 }
 
-// eventComposer narrows the *eventinfra.Composer surface Monitor calls
-// to exactly the verbs the activity needs. Prod wires the concrete
-// pointer directly; tests inject fakes.
-type eventComposer interface {
-	Publish(ctx context.Context, kind eventinfra.Kind, eventID uuid.UUID, fixtureID int64, payload any) (int64, error)
+// auditedFixtureRepo and auditedEventRepo extend the broad domain repositories
+// only at Monitor's Postgres state/audit transaction boundary. Keeping these
+// methods out of the domain CRUD interfaces prevents unrelated callers from
+// pretending that a plain write carries semantic audit evidence.
+type auditedFixtureRepo interface {
+	UpsertWithAudit(context.Context, *fixture.Fixture, auditlog.Record) (bool, error)
+}
+
+type auditedEventRepo interface {
+	InsertWithAudit(context.Context, *event.Event, string, auditlog.Record) error
+	RegisterEventPresenceWithAudit(context.Context, uuid.UUID, string, auditlog.Record) (int, bool, error)
+	RegisterEventAbsenceWithAudit(context.Context, uuid.UUID, string, auditlog.Record) (int, bool, error)
 }
 
 func (a *Activities) now() time.Time {

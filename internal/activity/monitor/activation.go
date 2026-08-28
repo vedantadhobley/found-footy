@@ -47,12 +47,23 @@ func (a *Activities) ActivateUpcoming(ctx context.Context, in ActivateUpcomingIn
 			out.Errors = append(out.Errors, fmt.Sprintf("activate fixture=%d: %v", f.ID, err))
 			continue
 		}
-		if err := a.FixtureRepo.Upsert(ctx, f); err != nil {
-			out.Errors = append(out.Errors, fmt.Sprintf("upsert fixture=%d: %v", f.ID, err))
+		audit, err := fixtureActivatedAudit(f.ID, now, "kickoff_soon")
+		if err != nil {
+			out.Errors = append(out.Errors, fmt.Sprintf("build activation audit fixture=%d: %v", f.ID, err))
 			continue
 		}
-		out.Activated++
-		a.emitFixtureActivated(ctx, f.ID, now, "kickoff_soon")
+		store, err := a.fixtureAuditStore()
+		if err != nil {
+			return out, err
+		}
+		transitioned, err := store.UpsertWithAudit(ctx, f, audit)
+		if err != nil {
+			out.Errors = append(out.Errors, fmt.Sprintf("activate fixture=%d: %v", f.ID, err))
+			continue
+		}
+		if transitioned {
+			out.Activated++
+		}
 	}
 	return out, nil
 }
@@ -149,6 +160,7 @@ func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixt
 		}
 		newKickoff := af.Fixture.Date
 
+		activationReason := ""
 		switch {
 		case newStatus.Live():
 			// Emergency — API says the match is already live.
@@ -159,8 +171,7 @@ func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixt
 				out.Errors = append(out.Errors, fmt.Sprintf("emergency activate fixture=%d: %v", f.ID, err))
 				continue
 			}
-			out.EmergencyActivated++
-			a.emitFixtureActivated(ctx, f.ID, now, "already_started")
+			activationReason = "already_started"
 
 		default:
 			// Non-Live status. Update the fields, then check if the
@@ -172,12 +183,33 @@ func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixt
 					out.Errors = append(out.Errors, fmt.Sprintf("kickoff activate fixture=%d: %v", f.ID, err))
 					continue
 				}
-				out.KickoffActivated++
-				a.emitFixtureActivated(ctx, f.ID, now, "kickoff_correction")
+				activationReason = "kickoff_correction"
 			}
 		}
 
-		if err := a.FixtureRepo.Upsert(ctx, f); err != nil {
+		if activationReason != "" {
+			audit, err := fixtureActivatedAudit(f.ID, now, activationReason)
+			if err != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("build activation audit fixture=%d: %v", f.ID, err))
+				continue
+			}
+			store, err := a.fixtureAuditStore()
+			if err != nil {
+				return out, err
+			}
+			var transitioned bool
+			transitioned, err = store.UpsertWithAudit(ctx, f, audit)
+			if err == nil && transitioned {
+				if activationReason == "already_started" {
+					out.EmergencyActivated++
+				} else {
+					out.KickoffActivated++
+				}
+			}
+		} else {
+			err = a.FixtureRepo.Upsert(ctx, f)
+		}
+		if err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("upsert fixture=%d: %v", f.ID, err))
 			continue
 		}

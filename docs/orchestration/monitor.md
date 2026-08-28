@@ -12,6 +12,13 @@ promotion) → `ListActiveFixtureIDs` → `FetchLiveFixtures` (batched
 3-poll debounce + downstream spawn + completion check). Location:
 `internal/workflow/active_poll.go` + `internal/activity/monitor/`.
 
+**Durable transition audit (FF-070).** Activation, completion, known-event
+detection, the first stable debounce crossing, and debounce-zero removal each
+commit their typed `event_log` evidence in the same Postgres transaction as
+the fixture/event mutation. Monitor no longer performs a second best-effort
+emit. An audit failure rolls back the transition and lets the Temporal
+activity retry it; idempotent debounce votes create at most one audit row.
+
 **Live-feed classification (N4, decisions.md 2026-08-14).** `ReconcileFixture`
 snapshots the fixture's API-mutable fields before the `Update*` calls and diffs
 after, so `ReconcileFixtureOutput` carries `Minute`/`Extra` + two disjoint

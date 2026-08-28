@@ -152,14 +152,6 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 	w.RegisterWorkflow(ffwf.IngestWorkflow)
 	w.RegisterActivity(ingestActs)
 
-	// The composer writes the Postgres audit plane. Live NATS publishing is
-	// wired separately below.
-	composerIns := eventinfra.RegisterMetrics(deps.Metrics, deps.Log)
-	composer, err := eventinfra.New(pool, composerIns)
-	if err != nil {
-		return err
-	}
-
 	// The spawner starts EventWorkflow and registers its downstream
 	// event_downstream_workflows row insert in the same activity.
 	spawner := monitoractivity.NewTemporalSpawner(
@@ -250,7 +242,6 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 		APIFootball:         afClient,
 		FixtureRepo:         fixtureRepo,
 		EventRepo:           eventRepo,
-		Composer:            composer,
 		Spawner:             spawner,
 		ActivationWindow:    deps.Cfg.Workflows.ActivationWindow,
 		TerminalGracePeriod: deps.Cfg.Workflows.TerminalGracePeriod,
@@ -278,7 +269,7 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 	fleetActs := &fleetactivity.Activities{Fleet: firefoxFleet, LiveEvents: eventRepo}
 
 	// N3 — live-feed NATS producer + its publish-activity boundary. Same
-	// nc as the composer; source stamps dev/prod onto the envelope.
+	// nc as the live-feed transport; source stamps dev/prod onto the envelope.
 	natsPub, err := eventinfra.NewPublisher(nc, deps.Cfg.Event.Environment)
 	if err != nil {
 		return fmt.Errorf("nats publisher: %w", err)

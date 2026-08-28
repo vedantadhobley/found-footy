@@ -11,7 +11,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/auditlog"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 )
 
@@ -88,8 +90,73 @@ func (r *FixtureRepo) Get(ctx context.Context, id int64) (*fixture.Fixture, erro
 // listing it; updated_at is maintained by the trg_fixtures_updated_at
 // trigger. On INSERT the two default to NOW() per schema.
 func (r *FixtureRepo) Upsert(ctx context.Context, f *fixture.Fixture) error {
-	if err := f.ValidateInvariants(); err != nil {
+	if err := upsertFixture(ctx, r.pool, f); err != nil {
 		return fmt.Errorf("pg.FixtureRepo.Upsert: %w", err)
+	}
+	return nil
+}
+
+// UpsertWithAudit commits a fixture transition and its required semantic audit
+// row in one transaction. Monitor uses it only for activation and completion;
+// ordinary poll refreshes remain plain Upsert calls.
+func (r *FixtureRepo) UpsertWithAudit(ctx context.Context, f *fixture.Fixture, record auditlog.Record) (bool, error) {
+	if !record.Valid() {
+		return false, fmt.Errorf("pg.FixtureRepo.UpsertWithAudit: invalid audit record")
+	}
+	if record.FixtureID() != f.ID {
+		return false, fmt.Errorf("pg.FixtureRepo.UpsertWithAudit: audit fixture %d does not match fixture %d", record.FixtureID(), f.ID)
+	}
+	var expected fixture.State
+	switch record.Kind() {
+	case auditlog.KindFixtureActivated:
+		if f.State != fixture.StateActive {
+			return false, fmt.Errorf("pg.FixtureRepo.UpsertWithAudit: activation audit requires active fixture")
+		}
+		expected = fixture.StateStaging
+	case auditlog.KindFixtureCompleted:
+		if f.State != fixture.StateCompleted {
+			return false, fmt.Errorf("pg.FixtureRepo.UpsertWithAudit: completion audit requires completed fixture")
+		}
+		expected = fixture.StateActive
+	default:
+		return false, fmt.Errorf("pg.FixtureRepo.UpsertWithAudit: invalid fixture audit kind %q", record.Kind())
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("pg.FixtureRepo.UpsertWithAudit: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var current string
+	if err := tx.QueryRow(ctx, `SELECT state FROM fixtures WHERE id = $1 FOR UPDATE`, f.ID).Scan(&current); err != nil {
+		return false, fmt.Errorf("pg.FixtureRepo.UpsertWithAudit: lock fixture: %w", err)
+	}
+	if fixture.State(current) == f.State {
+		return false, nil
+	}
+	if fixture.State(current) != expected {
+		return false, fmt.Errorf("pg.FixtureRepo.UpsertWithAudit: transition %s to %s is not allowed", current, f.State)
+	}
+
+	if err := upsertFixture(ctx, tx, f); err != nil {
+		return false, fmt.Errorf("pg.FixtureRepo.UpsertWithAudit: fixture: %w", err)
+	}
+	if err := insertAuditLog(ctx, tx, record); err != nil {
+		return false, fmt.Errorf("pg.FixtureRepo.UpsertWithAudit: audit: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("pg.FixtureRepo.UpsertWithAudit: commit: %w", err)
+	}
+	return true, nil
+}
+
+type fixtureExecer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func upsertFixture(ctx context.Context, exec fixtureExecer, f *fixture.Fixture) error {
+	if err := f.ValidateInvariants(); err != nil {
+		return err
 	}
 	const query = `
 		INSERT INTO fixtures (
@@ -139,7 +206,7 @@ func (r *FixtureRepo) Upsert(ctx context.Context, f *fixture.Fixture) error {
 			home_penalty = EXCLUDED.home_penalty,
 			away_penalty = EXCLUDED.away_penalty
 	`
-	_, err := r.pool.Exec(ctx, query,
+	_, err := exec.Exec(ctx, query,
 		f.ID, string(f.State),
 		f.APIStatus.Short, f.APIStatus.Long, f.APIElapsed, f.APIExtra,
 		f.Kickoff,
@@ -150,7 +217,7 @@ func (r *FixtureRepo) Upsert(ctx context.Context, f *fixture.Fixture) error {
 		f.League.Country, f.League.Round, f.HomePenalty, f.AwayPenalty,
 	)
 	if err != nil {
-		return fmt.Errorf("pg.FixtureRepo.Upsert: %w", err)
+		return err
 	}
 	return nil
 }
