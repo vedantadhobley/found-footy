@@ -263,7 +263,7 @@ the current branch.
 | FF-067 | P1 | `implemented` | VAR removal and accepted-clip placement raced through independent operations. The shared event-row lock now makes removal authoritative: a late placement terminalizes uncredited candidates as `rejected/event_removed`, creates no public rows, reclaims destination plus staging bytes, and emits no invalidation. | Release the worker change, then verify a natural VAR cancellation leaves no post-removal active share or Garage object. |
 | FF-068 | P2 | `implemented` | `DestroyEvent` previously revoked shares, logged Garage delete failures, and returned success. It now attempts every known key, aggregates failures, and returns an error so the Temporal activity retries after safe revocation. | Release the worker change and induce or observe one transient delete failure followed by a successful retry; FF-024 remains the final reconciliation net after exhausted retries or abnormal termination. |
 | FF-069 | P2 | `implemented` | Downstream completion previously treated zero updated rows as success. The event repository now locks and classifies the exact checklist identity as `completed_now`, `already_completed`, or typed not-found; only the first two succeed. | Release the worker change and verify a natural completion reports its stored outcome; no schema, API, or frontend change is required. |
-| FF-070 | P2 | `confirmed` | Fixture/event transition writes and `event_log` audit inserts are separate calls, and audit errors are discarded. A real transition can commit without the row that the observability ledger describes as its durable audit plane. | Commit authoritative state and required audit evidence atomically, or narrow the documented contract and add a durable retry path with visible failure evidence. |
+| FF-070 | P2 | `implemented` | Typed activation, completion, detection, stability, and removal records now commit inside the owning Postgres state transaction. The standalone Composer and ignored-error call sites are gone; audit failure rolls state back for activity retry. | Release the worker and verify one natural event produces detected/stable rows while an idempotent monitor retry does not duplicate either transition. |
 | FF-071 | P2 | `confirmed` | Independent foreign keys prove that referenced rows exist but do not enforce shared event/fixture identity across candidates, assets, and shares. Several domain invariants also lack schema checks. | After FF-013 establishes ordered migrations, add composite identity constraints and bounded value/state checks with integration coverage. |
 
 ### FF-060 — download failures lost their actionable cause
@@ -509,10 +509,20 @@ the current branch.
   `event_log` in separate repository calls. Insert errors are ignored. This
   allows the state transition to survive while its promised durable audit row
   is lost permanently.
-- **Required decision:** Either put state plus required audit evidence in one
-  transaction, or explicitly make `event_log` telemetry and give failed audit
-  delivery a separate durable, observable contract. Current code and docs
-  disagree.
+- **Implemented:** `internal/contract/auditlog` owns the five current kinds and
+  typed payloads. Monitor builds a record before mutation; `FixtureRepo` and
+  `EventRepo` commit it in the same transaction as activation, completion,
+  detection, the first stable crossing, or debounce-zero removal. A failed
+  insert rolls back the state mutation for Temporal retry. Duplicate workflow
+  votes do not create another row.
+- **Simplification:** The standalone Composer, its nil-safe ignored-error
+  surface, the unused `event.rank_recalculated` audit kind, and composer-only
+  metrics/vocabulary were removed. Live NATS invalidation remains the separate
+  `infra/event.NatsPublisher` path.
+- **Proof:** Real-Postgres coverage forces an `event_log` constraint failure
+  and observes the fixture transition roll back. A second test drives
+  detected→stable→removed, retries the transition votes, and requires exactly
+  one row of each kind.
 
 ### FF-071 — relational identity is only partly schema-enforced
 

@@ -213,14 +213,13 @@ measured diagnostic need and a concrete interface.
 
 ## Semantic event and live-feed planes
 
-The SQL audit plane is the `internal/infra/event/` **Composer**. `Publish`
-appends one row to Postgres
-`event_log` (`INSERT ... RETURNING id`) and returns that id; it touches only
-pg. The live-fanout half (the NATS envelope + SSE cursor) is no longer the
-composer's job — per [decisions.md 2026-08-14](decisions.md) it moved out to
-`event.NatsPublisher`. Six `Kind`s: `fixture.activated`, `fixture.completed`,
-`event.detected`, `event.stable`, `event.removed`, `event.rank_recalculated`
-(`subjects.go`).
+The SQL audit plane is the `event_log` table. Typed records live in
+`internal/contract/auditlog`; the owning Postgres repository inserts each row
+inside the same transaction as its authoritative state transition. The five
+current kinds are `fixture.activated`, `fixture.completed`, `event.detected`,
+`event.stable`, and `event.removed`. A failed audit insert rolls back the state
+transition, so the Temporal activity retries the complete unit. Duplicate
+presence/absence workflow votes do not repeat transition rows.
 
 `fixture.completed` records the bounded-retirement evidence: first terminal
 observation, completion time, configured grace seconds, current provider
@@ -228,14 +227,14 @@ score/event parity, durable surviving-goal parity, and nullable `PEN` decision
 state. Parity is nullable for exceptional terminal outcomes. These fields are
 for forensic diagnosis; score quality no longer gates completion after grace.
 
-The separate `NatsPublisher` owns the live fan-out plane. It emits the three
+The independent `NatsPublisher` owns the live fan-out plane. It emits the three
 environment-scoped topics `fixture.clock`, `fixture.update`, and `event.video`
 inside the workspace envelope. Payloads and consumer recovery rules live in
 [`api.md`](./api.md).
 
-Instruments (`found_footy_event_composer_*`): `publishes_total{kind,outcome}`
-(outcome = `success` or `pg_write_failure`) and `publish_duration_seconds{kind}`
-(the `event_log` INSERT wall-clock).
+The former standalone Composer and `found_footy_event_composer_*` metrics were
+removed with FF-070 because they allowed a split write. Audit inserts now ride
+the ordinary Postgres query tracing, error logging, and transaction metrics.
 
 ## Cross-refs
 

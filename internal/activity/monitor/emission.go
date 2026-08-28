@@ -9,21 +9,31 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/auditlog"
 	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
-	eventinfra "github.com/vedantadhobley/found-footy/internal/infra/event"
 )
 
-// Audit emissions are nil-safe for focused tests. Publish failures remain
-// non-fatal because fixture and event rows, not audit-log rows, own
-// reconciliation state.
-func (a *Activities) emitEventDetected(ctx context.Context, evID uuid.UUID, fixtureID int64, e *event.Event) {
-	if a.Composer == nil {
-		return
+func (a *Activities) fixtureAuditStore() (auditedFixtureRepo, error) {
+	repo, ok := a.FixtureRepo.(auditedFixtureRepo)
+	if !ok {
+		return nil, fmt.Errorf("monitor: fixture repository lacks atomic audit support")
 	}
-	payload := eventinfra.EventDetectedPayload{
+	return repo, nil
+}
+
+func (a *Activities) eventAuditStore() (auditedEventRepo, error) {
+	repo, ok := a.EventRepo.(auditedEventRepo)
+	if !ok {
+		return nil, fmt.Errorf("monitor: event repository lacks atomic audit support")
+	}
+	return repo, nil
+}
+
+func eventDetectedAudit(evID uuid.UUID, fixtureID int64, e *event.Event) (auditlog.Record, error) {
+	payload := auditlog.EventDetectedPayload{
 		EventID:    evID,
 		FixtureID:  fixtureID,
 		EventType:  string(e.Type),
@@ -35,17 +45,11 @@ func (a *Activities) emitEventDetected(ctx context.Context, evID uuid.UUID, fixt
 		TeamName:   e.Team.Name,
 		Counter:    1,
 	}
-	if _, err := a.Composer.Publish(ctx, eventinfra.KindEventDetected, evID, fixtureID, payload); err != nil {
-		// Non-fatal per Option B — log + continue.
-		_ = err
-	}
+	return auditlog.New(auditlog.KindEventDetected, evID, fixtureID, payload)
 }
 
-func (a *Activities) emitEventStable(ctx context.Context, evID uuid.UUID, fixtureID int64, e *event.Event) {
-	if a.Composer == nil {
-		return
-	}
-	payload := eventinfra.EventStablePayload{
+func eventStableAudit(evID uuid.UUID, fixtureID int64, e *event.Event) (auditlog.Record, error) {
+	payload := auditlog.EventStablePayload{
 		EventID:    evID,
 		FixtureID:  fixtureID,
 		EventType:  string(e.Type),
@@ -56,54 +60,38 @@ func (a *Activities) emitEventStable(ctx context.Context, evID uuid.UUID, fixtur
 		TeamID:     int64(e.Team.ID),
 		TeamName:   e.Team.Name,
 	}
-	if _, err := a.Composer.Publish(ctx, eventinfra.KindEventStable, evID, fixtureID, payload); err != nil {
-		_ = err
-	}
+	return auditlog.New(auditlog.KindEventStable, evID, fixtureID, payload)
 }
 
-func (a *Activities) emitFixtureActivated(ctx context.Context, fixtureID int64, activatedAt time.Time, reason string) {
-	if a.Composer == nil {
-		return
-	}
-	payload := eventinfra.FixtureActivatedPayload{
+func fixtureActivatedAudit(fixtureID int64, activatedAt time.Time, reason string) (auditlog.Record, error) {
+	payload := auditlog.FixtureActivatedPayload{
 		FixtureID:   fixtureID,
 		ActivatedAt: activatedAt,
 		Reason:      reason,
 	}
-	if _, err := a.Composer.Publish(ctx, eventinfra.KindFixtureActivated, uuid.Nil, fixtureID, payload); err != nil {
-		_ = err
-	}
+	return auditlog.New(auditlog.KindFixtureActivated, uuid.Nil, fixtureID, payload)
 }
 
-func (a *Activities) emitEventRemoved(ctx context.Context, evID uuid.UUID, fixtureID int64, removedAt time.Time) {
-	if a.Composer == nil {
-		return
-	}
-	payload := eventinfra.EventRemovedPayload{
+func eventRemovedAudit(evID uuid.UUID, fixtureID int64, removedAt time.Time) (auditlog.Record, error) {
+	payload := auditlog.EventRemovedPayload{
 		EventID:   evID,
 		FixtureID: fixtureID,
 		RemovedAt: removedAt,
 		Reason:    "debounce_zero",
 	}
-	if _, err := a.Composer.Publish(ctx, eventinfra.KindEventRemoved, evID, fixtureID, payload); err != nil {
-		_ = err
-	}
+	return auditlog.New(auditlog.KindEventRemoved, evID, fixtureID, payload)
 }
 
-func (a *Activities) emitFixtureCompleted(
-	ctx context.Context,
+func (a *Activities) fixtureCompletedAudit(
 	f *fixture.Fixture,
 	completedAt time.Time,
 	assessment fixture.CompletionAssessment,
 	providerParity *bool,
-) {
-	if a.Composer == nil {
-		return
-	}
+) (auditlog.Record, error) {
 	if f.TerminalObservedAt == nil {
-		return
+		return auditlog.Record{}, fmt.Errorf("fixture %d completed without terminal observation", f.ID)
 	}
-	payload := eventinfra.FixtureCompletedPayload{
+	payload := auditlog.FixtureCompletedPayload{
 		FixtureID:                f.ID,
 		TerminalObservedAt:       *f.TerminalObservedAt,
 		CompletedAt:              completedAt,
@@ -112,9 +100,7 @@ func (a *Activities) emitFixtureCompleted(
 		DurableScoreEventParity:  assessment.DurableScoreEventParity,
 		PenaltyResultDecided:     penaltyResultDecided(f),
 	}
-	if _, err := a.Composer.Publish(ctx, eventinfra.KindFixtureCompleted, uuid.Nil, f.ID, payload); err != nil {
-		_ = err
-	}
+	return auditlog.New(auditlog.KindFixtureCompleted, uuid.Nil, f.ID, payload)
 }
 
 // penaltyResultDecided is nil outside PEN and otherwise records whether the

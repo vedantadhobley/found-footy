@@ -1,4 +1,4 @@
-// Package event owns the durable Postgres event-log composer and the separate
-// NATS live-feed publisher. Callers choose the required delivery boundary;
-// neither adapter hides a dual write.
+// Package event owns the NATS live-feed publisher and its wire contracts.
+// Durable state-transition audit records belong to contract/auditlog and are
+// committed inside the owning Postgres repository transaction.
 package event

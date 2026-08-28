@@ -251,7 +251,16 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 				continue
 			}
 			// Event exists — register presence vote.
-			_, justTriggered, err := a.EventRepo.RegisterEventPresence(ctx, existing.ID, in.WorkflowID)
+			audit, err := eventStableAudit(existing.ID, in.APIFixture.Fixture.ID, domainEv)
+			if err != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("build stable audit event=%s: %v", key, err))
+				continue
+			}
+			store, err := a.eventAuditStore()
+			if err != nil {
+				return out, err
+			}
+			_, justTriggered, err := store.RegisterEventPresenceWithAudit(ctx, existing.ID, in.WorkflowID, audit)
 			if err != nil {
 				out.Errors = append(out.Errors, fmt.Sprintf("presence event=%s: %v", key, err))
 				continue
@@ -270,7 +279,6 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 				if err := a.registerAndSpawnEvent(ctx, existing, domainEv, in.APIFixture.Fixture.ID); err != nil {
 					out.Errors = append(out.Errors, fmt.Sprintf("spawn event=%s: %v", key, err))
 				}
-				a.emitEventStable(ctx, existing.ID, in.APIFixture.Fixture.ID, domainEv)
 			}
 
 			// #199: re-persist provider-mutable fields that arrive/change AFTER
@@ -292,8 +300,23 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			// The identity allocator never reuses a removed sequence, so an
 			// exact post-removal reappearance reaches this path with a new
 			// natural key and UUID rather than being swallowed by its tombstone.
-			if err := a.EventRepo.Insert(ctx, domainEv, in.WorkflowID); err != nil {
-				out.Errors = append(out.Errors, fmt.Sprintf("insert event=%s: %v", key, err))
+			var insertErr error
+			if domainEv.Player.Known() {
+				audit, err := eventDetectedAudit(domainEv.ID, in.APIFixture.Fixture.ID, domainEv)
+				if err != nil {
+					out.Errors = append(out.Errors, fmt.Sprintf("build detected audit event=%s: %v", key, err))
+					continue
+				}
+				store, err := a.eventAuditStore()
+				if err != nil {
+					return out, err
+				}
+				insertErr = store.InsertWithAudit(ctx, domainEv, in.WorkflowID, audit)
+			} else {
+				insertErr = a.EventRepo.Insert(ctx, domainEv, in.WorkflowID)
+			}
+			if insertErr != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("insert event=%s: %v", key, insertErr))
 				continue
 			}
 			out.NewEventsDetected++
@@ -303,9 +326,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			// external consumers — don't emit for an unknown-player placeholder
 			// (it may vanish and be replaced by an attributed event). The
 			// known-player insert that supersedes it emits detected then.
-			// External fan-out only; Composer nil in tests → no-op.
 			if domainEv.Player.Known() {
-				a.emitEventDetected(ctx, domainEv.ID, in.APIFixture.Fixture.ID, domainEv)
 				// #160: known player at count=1 → we have all the data needed for
 				// any searchable event type; warm this event's Firefox now so it
 				// is ready when debounce settles and search begins at count=3.
@@ -346,7 +367,16 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			out.GoalAbsencesHeld = append(out.GoalAbsencesHeld, key)
 			continue
 		}
-		_, hitZero, err := a.EventRepo.RegisterEventAbsence(ctx, pgEv.ID, in.WorkflowID)
+		audit, err := eventRemovedAudit(pgEv.ID, in.APIFixture.Fixture.ID, now)
+		if err != nil {
+			out.Errors = append(out.Errors, fmt.Sprintf("build removal audit event=%s: %v", key, err))
+			continue
+		}
+		store, err := a.eventAuditStore()
+		if err != nil {
+			return out, err
+		}
+		_, hitZero, err := store.RegisterEventAbsenceWithAudit(ctx, pgEv.ID, in.WorkflowID, audit)
 		if err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("absence event=%s: %v", key, err))
 			continue
@@ -355,7 +385,6 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			out.EventsRemoved = append(out.EventsRemoved, key)
 			out.EventsRemovedIDs = append(out.EventsRemovedIDs, pgEv.ID)
 			out.Structural = true
-			a.emitEventRemoved(ctx, pgEv.ID, in.APIFixture.Fixture.ID, now)
 		}
 	}
 
@@ -401,12 +430,24 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		out.Errors = append(out.Errors, fmt.Sprintf("complete transition: %v", err))
 		return out, nil
 	}
-	if err := a.FixtureRepo.Upsert(ctx, f); err != nil {
+	audit, err := a.fixtureCompletedAudit(f, now, assessment, providerScoreEventParity)
+	if err != nil {
+		out.Errors = append(out.Errors, fmt.Sprintf("build completion audit: %v", err))
+		return out, nil
+	}
+	store, err := a.fixtureAuditStore()
+	if err != nil {
+		return out, err
+	}
+	transitioned, err := store.UpsertWithAudit(ctx, f, audit)
+	if err != nil {
 		out.Errors = append(out.Errors, fmt.Sprintf("upsert completed fixture: %v", err))
+		return out, nil
+	}
+	if !transitioned {
 		return out, nil
 	}
 	out.Completed = true
 	out.Structural = true
-	a.emitFixtureCompleted(ctx, f, now, assessment, providerScoreEventParity)
 	return out, nil
 }

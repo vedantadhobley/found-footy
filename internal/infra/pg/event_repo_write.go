@@ -7,12 +7,31 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/auditlog"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 )
 
 // Insert creates a new event row. A natural-key collision is the concurrent
 // detection-race signal; callers re-read the winning row and continue.
 func (r *EventRepo) Insert(ctx context.Context, e *event.Event, workflowID string) error {
+	return r.insert(ctx, e, workflowID, nil)
+}
+
+// InsertWithAudit commits a known-player event's first debounce vote and its
+// event.detected evidence in the same transaction.
+func (r *EventRepo) InsertWithAudit(
+	ctx context.Context,
+	e *event.Event,
+	workflowID string,
+	record auditlog.Record,
+) error {
+	if !record.Valid() || record.Kind() != auditlog.KindEventDetected || record.EventID() != e.ID || record.FixtureID() != e.FixtureID {
+		return fmt.Errorf("pg.EventRepo.InsertWithAudit: audit identity does not match detected event")
+	}
+	return r.insert(ctx, e, workflowID, &record)
+}
+
+func (r *EventRepo) insert(ctx context.Context, e *event.Event, workflowID string, record *auditlog.Record) error {
 	telemetryBytes, err := marshalTelemetry(e.Telemetry)
 	if err != nil {
 		return fmt.Errorf("pg.EventRepo.Insert: telemetry: %w", err)
@@ -99,6 +118,14 @@ func (r *EventRepo) Insert(ctx context.Context, e *event.Event, workflowID strin
 		`
 		if _, err := tx.Exec(ctx, insertVote, e.ID, workflowID); err != nil {
 			return fmt.Errorf("pg.EventRepo.Insert: seed vote: %w", err)
+		}
+	}
+	if record != nil {
+		if initialCount == 0 {
+			return fmt.Errorf("pg.EventRepo.InsertWithAudit: placeholder event cannot emit detected audit")
+		}
+		if err := insertAuditLog(ctx, tx, *record); err != nil {
+			return fmt.Errorf("pg.EventRepo.InsertWithAudit: audit: %w", err)
 		}
 	}
 
