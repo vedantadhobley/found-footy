@@ -101,9 +101,10 @@ type Repo interface {
 	// shared URL ever 404s (rebuild-plan §3 URL-stability, revised
 	// 2026-08-11); the GB-sized video bytes are the real reclaimable cost.
 	//
-	// Filtering on state <> 'removed' makes the daily job idempotent: once
-	// an event's shares are revoked it drops off this list, so DestroyEvent
-	// never re-runs against it. Returns event IDs (uuid) — DestroyEvent is
-	// event-scoped — not fixture IDs.
+	// Filtering on state <> 'removed' makes successful daily reclaim idempotent:
+	// once an event's shares are revoked it drops off this list. DestroyEvent
+	// therefore must return any object-delete failure so its Temporal activity
+	// retry retains the known-key cleanup attempt. Returns event IDs (uuid) —
+	// DestroyEvent is event-scoped — not fixture IDs.
 	ListReclaimableEventIDs(ctx context.Context, threshold time.Time) ([]uuid.UUID, error)
 }

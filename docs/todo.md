@@ -261,7 +261,7 @@ the current branch.
 | FF-065 | P2 | `implemented` | Exact-byte followers became terminal `duplicate` while their representative still awaited vision, so a later content rejection left duplicate rows without an asset winner. New histories retain followers until the representative terminates and share its rejection/failure unless an asset actually wins. | Release the worker change and verify a natural rejected exact-byte cluster contains no duplicate outcome, while a promoted cluster retains one validation path and its full popularity. |
 | FF-066 | P2 | `implemented` | Popularity-only duplicate placements changed a public ranking input without rank repair or `event.video`; ten shares across five production events were stale. Accepted clusters now commit attribution, retry-safe popularity, share identity, supersession, and candidate outcome in one transaction; the API derives rank on every read and every successful placement invalidates consumers. | Apply `20260828_01_add_atomic_clip_placement.sql`, release worker/API together, verify schema identity, then prove a natural duplicate changes popularity/order once and emits `event.video`. Remove stored rank only after old Temporal histories age out. |
 | FF-067 | P1 | `implemented` | VAR removal and accepted-clip placement raced through independent operations. The shared event-row lock now makes removal authoritative: a late placement terminalizes uncredited candidates as `rejected/event_removed`, creates no public rows, reclaims destination plus staging bytes, and emits no invalidation. | Release the worker change, then verify a natural VAR cancellation leaves no post-removal active share or Garage object. |
-| FF-068 | P2 | `confirmed` | `DestroyEvent` revokes shares, logs Garage delete failures, and then returns success. Those keys leave the normal reclaim worklist when their shares become removed, so the documented later cleanup does not exist. | Retain retryable cleanup ownership until every known event object is deleted; separately expand FF-024 to reconcile abnormal copy-before-commit orphans. |
+| FF-068 | P2 | `implemented` | `DestroyEvent` previously revoked shares, logged Garage delete failures, and returned success. It now attempts every known key, aggregates failures, and returns an error so the Temporal activity retries after safe revocation. | Release the worker change and induce or observe one transient delete failure followed by a successful retry; FF-024 remains the final reconciliation net after exhausted retries or abnormal termination. |
 | FF-069 | P2 | `confirmed` | Downstream completion uses `Exec` and treats zero updated rows as success, so a missing checklist row is indistinguishable from an already-completed row and the workflow can report durable completion that was never recorded. | Return and classify row state explicitly; accept an idempotent prior completion but fail a missing or mismatched checklist identity. |
 | FF-070 | P2 | `confirmed` | Fixture/event transition writes and `event_log` audit inserts are separate calls, and audit errors are discarded. A real transition can commit without the row that the observability ledger describes as its durable audit plane. | Commit authoritative state and required audit evidence atomically, or narrow the documented contract and add a durable retry path with visible failure evidence. |
 | FF-071 | P2 | `confirmed` | Independent foreign keys prove that referenced rows exist but do not enforce shared event/fixture identity across candidates, assets, and shares. Several domain invariants also lack schema checks. | After FF-013 establishes ordered migrations, add composite identity constraints and bounded value/state checks with integration coverage. |
@@ -476,6 +476,14 @@ the current branch.
   retryable without restoring public serving. FF-024 remains the broader
   age-bounded reconciliation problem for keys whose owning activity died
   before a durable asset/share record existed.
+- **Implemented:** Share revocation still commits first. The activity then
+  attempts every event object, aggregates all failures with their bounded keys,
+  and returns an error after the loop. Temporal retries the idempotent activity;
+  already-removed shares and already-deleted objects are harmless. A unit test
+  proves one attempt reaches every key, returns failure, retains removed shares,
+  and succeeds when the full key set is retried. FF-024 still owns exhausted
+  retries and process-death orphans; FF-068 no longer falsely acknowledges a
+  known failed delete.
 
 ### FF-069 — missing downstream checklist row is accepted as complete
 

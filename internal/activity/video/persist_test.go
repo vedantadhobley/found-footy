@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -655,5 +657,39 @@ func TestDestroyEvent(t *testing.T) {
 	}
 	if liveShare.State != dvideo.ShareStateRemoved {
 		t.Errorf("retry mutated a removed share")
+	}
+}
+
+func TestDestroyEvent_DeleteFailureRetriesAfterRevocation(t *testing.T) {
+	a, s3, assets, shares := newPersist()
+	eventID := uuid.New()
+	for i, key := range []string{"assets/one.mp4", "assets/two.mp4", "assets/three.mp4"} {
+		assetID := uuid.New()
+		assets.byID[assetID] = &dvideo.Asset{ID: assetID, EventID: eventID, S3Key: key}
+		shares.shares = append(shares.shares, &dvideo.Share{
+			ID: fmt.Sprintf("s_delete_%d", i), AssetID: assetID, EventID: eventID,
+			State: dvideo.ShareStateActive, Rank: i + 1,
+		})
+	}
+	s3.deleteFailures = 2
+
+	err := a.DestroyEvent(context.Background(), DestroyEventInput{EventID: eventID})
+	if err == nil || !strings.Contains(err.Error(), "reclaim objects") {
+		t.Fatalf("first DestroyEvent error = %v, want aggregate reclaim failure", err)
+	}
+	if len(s3.deletes) != 3 {
+		t.Fatalf("first delete attempts = %v, want every object attempted", s3.deletes)
+	}
+	for _, share := range shares.shares {
+		if share.State != dvideo.ShareStateRemoved {
+			t.Fatalf("share %s state = %s, want removed before retry", share.ID, share.State)
+		}
+	}
+
+	if err := a.DestroyEvent(context.Background(), DestroyEventInput{EventID: eventID}); err != nil {
+		t.Fatalf("DestroyEvent retry: %v", err)
+	}
+	if len(s3.deletes) != 6 {
+		t.Fatalf("delete attempts after retry = %v, want every key retried", s3.deletes)
 	}
 }
