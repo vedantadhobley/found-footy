@@ -5,6 +5,12 @@ rationale but do not own current status. Use the as-built ledgers under
 [`docs/`](../..) for shipped behavior and [`todo.md`](../../todo.md) for active
 work.
 
+## Active proposals
+
+- [`provider-integrity-circuit-breaker.md`](./provider-integrity-circuit-breaker.md)
+  — FF-075 data-quality state machine that keeps polling and positive discovery
+  active while suppressing untrusted destructive provider mutations.
+
 ## Shipped rationale
 
 - [`terminal-observation-grace.md`](./terminal-observation-grace.md) — FF-063

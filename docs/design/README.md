@@ -30,8 +30,8 @@ backlogs. Surviving findings resolve through [`../todo.md`](../todo.md).
 
 ## Proposal disposition
 
-[`proposals/README.md`](./proposals/README.md) classifies every proposal as
-shipped rationale, superseded topology, or a retired subsystem.
+[`proposals/README.md`](./proposals/README.md) classifies every proposal as an
+active design, shipped rationale, superseded topology, or a retired subsystem.
 
 ## Convention
 
