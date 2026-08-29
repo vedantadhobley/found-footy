@@ -65,7 +65,7 @@ Per `internal/domain/event/event.go` `TrackableEventType`:
 | `Goal` / `Normal Goal`              | ✓        | Regular open-play goal           |
 | `Goal` / `Penalty`                  | ✓        | Penalty kick converted           |
 | `Goal` / `Own Goal`                 | ✓        | See attribution note below       |
-| `Goal` / `Missed Penalty`           | ✗        | Type=Goal but not a goal          |
+| `Goal` / `Missed Penalty`           | ✓        | Stored as domain `missed penalty`; shootouts remain filtered |
 | `Goal` / \* + `comments` ∋ `Penalty Shootout` | ✗ | Shootout goals, not match goals |
 | `Card` / `Red card`                 | ✓        | Dismissal event                  |
 | `Card` / `Yellow Card`              | ✗        | Noise; too many per match         |
@@ -121,9 +121,15 @@ the team. The preserved sample and original analysis live in the archived
 
 ### `player` and `assist`
 
-- `id` can be `null` when the API hasn't identified the scorer yet
-  (early notifications). Our `event.ComposeNaturalKey` substitutes
-  `"unknown"` in that case.
+- `id` can be `null` when the API has not supplied a stable player identity
+  (early notifications and, sometimes, the complete live event). Our
+  `event.ComposeNaturalKey` substitutes `"unknown"` in that case.
+- `name` is not guaranteed to share `id`'s nullability. Production fixture
+  `1550100` supplied `player.name="Gabriele Bracaglia"` with `player.id=null`
+  for Frosinone's 38′ goal on 2026-08-29. Current code therefore retains the
+  available name in Postgres but classifies the event as an unknown-player
+  placeholder; [`FF-076`](../todo.md#ff-076--scorer-name-without-provider-id-is-treated-as-anonymous)
+  owns the correction.
 - `assist.id` is `null` for unassisted goals (penalties, direct free
   kicks, own goals).
 

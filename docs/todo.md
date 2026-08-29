@@ -49,6 +49,72 @@ the current branch.
 
 ## Confirmed issues
 
+### FF-075 — successful provider responses can destructively regress live state
+
+- **Status:** `confirmed`
+- **Severity:** P1
+- **Observed:** On 2026-08-29, API-Football continued returning nominally
+  successful active-fixture responses while event, score, and status state
+  regressed across several unrelated fixtures. Ten confirmed events reached
+  debounce zero, 26 public shares were revoked, and their Garage objects were
+  reclaimed. The omitted state returned roughly 75 minutes later.
+- **Cause:** The adapter does not validate envelope `errors`, `results`, paging,
+  or exact requested-ID coverage. More importantly, ActivePoll passes each
+  freshly decoded fixture directly to reconciliation. `last_polled_at` rejects
+  response reordering but accepts a newer semantically corrupt snapshot. The
+  three-poll absence debounce measures persistence, so persistent bad data is
+  incorrectly treated as correction evidence.
+- **Invariant:** Provider observations must receive a trust policy before any
+  write. A systemic or isolated anomaly may not cast absence votes, regress
+  canonical fixture state, remove events, destroy public assets, or complete a
+  fixture. Polling and positive event discovery must continue so recovery and
+  new real events remain observable.
+- **Accepted design direction:** Use a durable provider-integrity circuit plus
+  per-fixture quarantine. States are `closed`, `open`, `recovering`, and
+  operator `forced_open`; mutation policies are `trusted`, `positive_only`,
+  and `rejected`. Open-state polls are probes. Three consecutive clean complete
+  observations close the global circuit, while unresolved causal fixtures stay
+  quarantined. Timer expiry and HTTP 200 alone are not recovery evidence.
+- **Implementation order:** Validate the transport envelope and exact ID/event
+  coverage; ship a pure semantic evaluator in metrics-only mode; review the
+  regression corpus; then add the Postgres migration, enforcement, telemetry,
+  and audited operator controls. Do not wrap the fetch in an in-memory breaker
+  that suppresses calls.
+- **Design:** [API-Football provider-integrity circuit breaker](./design/proposals/provider-integrity-circuit-breaker.md).
+
+### FF-076 — scorer name without provider ID is treated as anonymous
+
+- **Status:** `confirmed`
+- **Severity:** P1
+- **Observed:** Fiorentina–Frosinone fixture `1550100`, Frosinone 38′ goal,
+  event `d93cbb8a-33e0-47b2-a0e1-973731550828`, first observed
+  2026-08-29 17:12 UTC. API-Football supplied
+  `player.name="Gabriele Bracaglia"` but `player.id=null`. Production stores
+  that name, yet the event remains `512_unknown_goal_1`, debounce 0, with no
+  downstream workflow. The read API emits `player:null`, so the portal also
+  hides the available name. Frosinone's Antonio Raimondo searches belong to
+  separate 26′ and 68′ goals.
+- **Cause:** `event.Player.Known()` requires both ID and name. That one predicate
+  currently controls identity completeness, debounce eligibility, discovery,
+  public DTO population, recency, placeholder deletion, and completion. A
+  usable name with a missing provider ID is therefore treated exactly like no
+  scorer evidence.
+- **Impact:** Unless the provider later adds an ID before fixture retirement,
+  this real named goal never runs the required 15-search discovery workflow.
+  It can retire after terminal grace because a debounce-0 placeholder is
+  intentionally non-blocking.
+- **Required design:** Separate at least `Searchable` (nonblank player name)
+  from provider `Identified` (ID plus name). A name-only event should be able to
+  debounce, search, emit its name publicly, and block completion while work is
+  pending. The implementation must also define stable identity when a later
+  provider ID arrives, so refinement cannot create a duplicate event/workflow
+  or reuse a natural key incorrectly. The API DTO must represent a present
+  player name with nullable ID instead of collapsing the whole player to null.
+- **Prior-decision boundary:** The 2026-08-05 placeholder decision rejected a
+  noisy team-only fallback for events with no scorer. This event does have a
+  player search term, so that rationale does not apply. Do not weaken searches
+  to team-only queries as the fix.
+
 ### FF-003 — candidate can pass without exact-event semantic evidence
 
 - **Status:** `confirmed`
