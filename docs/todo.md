@@ -185,6 +185,74 @@ the current branch.
   popularity bump emits `event.video` and causes an already-open consumer to
   replace the event with the newly pruned, contiguous list.
 
+### FF-079 — shareless fixture retention destroys failure evidence
+
+- **Status:** `confirmed`
+- **Severity:** P1
+- **Observed:** The daily IngestWorkflow runs retention at 00:05 UTC with a
+  hardcoded 14-day cutoff. `PruneCompleted` hard-deletes every completed
+  fixture older than that cutoff when no `video_shares` row exists below it.
+  The fixture delete cascades through events, candidate observations,
+  downstream-workflow records, and assets. "No share" therefore means only
+  that no candidate entered the public clip set; it does not mean that the
+  fixture contains no operational or product evidence.
+- **Production evidence:** A read-only 2026-08-30 audit of the next eligible
+  set found two shareless fixtures. Liverpool–Como (`1550631`) contains no
+  events or candidates. Tottenham–Hoffenheim (`1598622`) contains five events
+  and 36 rejected candidate records. The current policy treats both fixture
+  hierarchies identically and would permanently erase the latter failure
+  corpus on the next eligible retention pass.
+- **Cause:** Retention uses public URL existence as the root-row durability
+  test. That is sufficient to decide whether deleting a share would produce a
+  `404`, but it is not sufficient to decide whether fixture, event, search, or
+  validation history has durable value. The policy systematically retains
+  successful discovery histories while deleting failures, biasing the corpus
+  used to improve search and validation.
+- **Accepted contract:** Separate four independent concerns:
+  1. The unfiltered public snapshot includes active and staging fixtures plus
+     at least the most recent 14 distinct fixture-bearing completed dates. The
+     cutoff is a read-model rule, not a delete boundary. Its canonical date
+     basis must match the presentation consumer; do not silently replace it
+     with elapsed `14 * 24h` time.
+  2. Media remains available while its fixture is inside that public window.
+     After the fixture exits, shares become durable `410` tombstones and
+     Garage bytes are reclaimed.
+  3. Fixture, event, candidate, validation-outcome, and workflow rows remain
+     durable. Do not cascade-delete the fixture root during routine retention.
+     Any later audit-data expiration requires measured growth, its own explicit
+     policy, and a narrower deletion/archive boundary.
+  4. Every minted share row remains indefinitely so a known public URL never
+     changes from `410` to `404`.
+- **Reclaim durability gap:** `ListReclaimableEventIDs` currently selects an
+  event through a non-removed share. `DestroyEvent` removes shares before it
+  deletes Garage objects. If object deletion exhausts its Temporal retries,
+  the removed share can keep the event off the next daily worklist even though
+  bytes remain. An asset created before public share placement is also not a
+  share-derived work item. Share state is therefore not durable proof of byte
+  reclamation.
+- **Implementation direction:** Remove `PruneCompleted` from scheduled
+  retention. Add an explicit per-asset reclamation fact, such as
+  `video_assets.object_reclaimed_at`. Build the expired-media worklist from
+  unreclaimed assets below fixtures that have left the public window,
+  regardless of share existence or state. Revoke any shares first, delete
+  each object idempotently, and stamp only the assets whose delete succeeded;
+  retries and later daily passes must continue to select every unstamped
+  asset. FF-036 owns the bounded and batched public fixture read. FF-024 still
+  owns abandoned `staging/` objects, while FF-072 owns final objects that never
+  acquired a database owner.
+- **Required regressions:** Prove that an old shareless fixture with rejected
+  candidates and an old empty fixture both retain their rows; an unshared
+  asset is reclaimed without deleting its audit hierarchy; a shared asset
+  produces a removed share plus a reclaimed object marker; a partial Garage
+  failure leaves only failed assets eligible for retry; and the unfiltered API
+  window is bounded without affecting targeted retained-row lookup or direct
+  share resolution.
+- **Completion condition:** Land the schema migration, asset-based idempotent
+  reclaim, removal of fixture hard deletion, FF-036 public-window query, tests,
+  and updated as-built ledgers. Deploy the migration and application through
+  their separately approved production actions, then verify a natural expiry
+  preserves SQL history while reclaiming only media outside the public window.
+
 ### FF-003 — candidate can pass without exact-event semantic evidence
 
 - **Status:** `confirmed`
