@@ -90,7 +90,7 @@ type fixtureDTO struct {
 	ID      int64     `json:"id"`
 	State   string    `json:"state"`
 	Kickoff time.Time `json:"kickoff"`
-	// Projection is embedded so REST and fixture.presentation expose the
+	// Projection is embedded so REST and fixture.status expose the
 	// identical presentation_state/clock/status/display field set.
 	fixturepresentation.Projection
 	League         leagueDTO   `json:"league"`

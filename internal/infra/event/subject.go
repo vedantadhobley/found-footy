@@ -1,5 +1,5 @@
 // subject.go — the topic/subject model for the found-footy live-feed producer.
-// A Topic is the env-agnostic message kind (fixture.presentation, fixture.update,
+// A Topic is the env-agnostic message kind (fixture.status, fixture.update,
 // event.video); the full NATS subject on the wire is found-footy.<env>.<topic>.
 //
 // Env is a SUBJECT token, not merely the envelope `source` field — so a consumer
@@ -21,11 +21,11 @@ const projectPrefix = "found-footy"
 type Topic string
 
 const (
-	// TopicFixturePresentation — batch of complete inline presentation
+	// TopicFixtureStatus — batch of complete inline presentation
 	// projections. It covers clock movement and status changes that stay within
-	// one presentation state. Payload: FixturePresentationPayload. Disjoint from
+	// one presentation state. Payload: FixtureStatusPayload. Disjoint from
 	// TopicFixtureUpdate per cycle.
-	TopicFixturePresentation Topic = "fixture.presentation"
+	TopicFixtureStatus Topic = "fixture.status"
 
 	// TopicFixtureUpdate — batch of fixture ids whose authoritative snapshot
 	// changed this cycle (new/removed event, kickoff, FT, score, result, metadata).
@@ -53,7 +53,7 @@ func (t Topic) String() string { return string(t) }
 // publisher against a typo before a message reaches the bus.
 func (t Topic) Valid() bool {
 	switch t {
-	case TopicFixturePresentation, TopicFixtureUpdate, TopicEventVideo:
+	case TopicFixtureStatus, TopicFixtureUpdate, TopicEventVideo:
 		return true
 	default:
 		return false

@@ -113,7 +113,7 @@ FF-077 contract tables cover every documented provider status, fail unknown
 codes closed to deferred/status, select a clock only for timed play with a
 reported minute, normalize display status casing, and compare nullable clocks
 by value. Monitor regressions require minute movement, halftime, and the
-extra-time break to emit `fixture.presentation`; kickoff, final whistle, and a
+extra-time break to emit `fixture.status`; kickoff, final whistle, and a
 postponed reschedule must emit `fixture.update`. A typed workflow partition test
 proves one fixture cannot enter both batches. REST and NATS golden tests require
 the identical `presentation_state`/`clock`/`status`/`display` projection.

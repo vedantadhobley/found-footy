@@ -16,10 +16,10 @@ import (
 
 // fakePublisher records calls + returns a configurable error.
 type fakePublisher struct {
-	calls               []EventVideoInput
-	presentationBatches [][]event.FixturePresentation
-	updateBatches       [][]int64
-	err                 error
+	calls         []EventVideoInput
+	statusBatches [][]event.FixtureStatus
+	updateBatches [][]int64
+	err           error
 }
 
 func (f *fakePublisher) PublishEventVideo(eventID uuid.UUID, fixtureID int64) error {
@@ -27,8 +27,8 @@ func (f *fakePublisher) PublishEventVideo(eventID uuid.UUID, fixtureID int64) er
 	return f.err
 }
 
-func (f *fakePublisher) PublishFixturePresentation(fixtures []event.FixturePresentation) error {
-	f.presentationBatches = append(f.presentationBatches, fixtures)
+func (f *fakePublisher) PublishFixtureStatus(fixtures []event.FixtureStatus) error {
+	f.statusBatches = append(f.statusBatches, fixtures)
 	return f.err
 }
 
@@ -64,13 +64,13 @@ func TestPublishEventVideoSurfacesError(t *testing.T) {
 }
 
 // TestPublishFixtureBatchForwards confirms the batch activity converts the
-// activity-layer projection entries to event.FixturePresentation and forwards
+// activity-layer projection entries to event.FixtureStatus and forwards
 // both subjects.
 func TestPublishFixtureBatchForwards(t *testing.T) {
 	f := &fakePublisher{}
 	a := &Activities{Pub: f}
 	in := FixtureBatchInput{
-		Presentation: []FixturePresentationEntry{{
+		Statuses: []FixtureStatusEntry{{
 			FixtureID: 1530158,
 			Projection: fixturepresentation.Projection{
 				PresentationState: fixturepresentation.StatePlaying,
@@ -84,10 +84,10 @@ func TestPublishFixtureBatchForwards(t *testing.T) {
 	if err := a.PublishFixtureBatch(context.Background(), in); err != nil {
 		t.Fatalf("PublishFixtureBatch: %v", err)
 	}
-	if len(f.presentationBatches) != 1 || len(f.presentationBatches[0]) != 1 ||
-		f.presentationBatches[0][0].FixtureID != 1530158 ||
-		*f.presentationBatches[0][0].Clock.Minute != 62 {
-		t.Errorf("presentation batch = %+v, want fixture 1530158 at minute 62", f.presentationBatches)
+	if len(f.statusBatches) != 1 || len(f.statusBatches[0]) != 1 ||
+		f.statusBatches[0][0].FixtureID != 1530158 ||
+		*f.statusBatches[0][0].Clock.Minute != 62 {
+		t.Errorf("status batch = %+v, want fixture 1530158 at minute 62", f.statusBatches)
 	}
 	if len(f.updateBatches) != 1 || len(f.updateBatches[0]) != 2 {
 		t.Errorf("update batch = %+v, want one [1530162 1530163]", f.updateBatches)

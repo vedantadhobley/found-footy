@@ -123,7 +123,7 @@ func pi(n int) *int { return &n }
 func stringp(value string) *string { return &value }
 
 // TestReconcileFixture_ClockAdvance_PresentationOnly proves a clock tick uses
-// the inline fixture.presentation route.
+// the inline fixture.status route.
 func TestReconcileFixture_ClockAdvance_PresentationOnly(t *testing.T) {
 	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	now := kickoff.Add(46 * time.Minute)
@@ -139,8 +139,8 @@ func TestReconcileFixture_ClockAdvance_PresentationOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileFixture: %v", err)
 	}
-	if out.FeedAction != FixtureFeedPresentation {
-		t.Errorf("FeedAction = %q, want presentation", out.FeedAction)
+	if out.FeedAction != FixtureFeedStatus {
+		t.Errorf("FeedAction = %q, want status", out.FeedAction)
 	}
 	if out.Presentation.Clock.Minute == nil || *out.Presentation.Clock.Minute != 46 {
 		t.Errorf("presentation minute = %v, want 46", out.Presentation.Clock.Minute)
@@ -189,8 +189,8 @@ func TestReconcileFixture_Halftime_PresentationOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileFixture: %v", err)
 	}
-	if out.FeedAction != FixtureFeedPresentation {
-		t.Errorf("FeedAction = %q, want presentation", out.FeedAction)
+	if out.FeedAction != FixtureFeedStatus {
+		t.Errorf("FeedAction = %q, want status", out.FeedAction)
 	}
 	if out.Presentation.PresentationState != "playing" || out.Presentation.Display != "status" || out.Presentation.Status.Short != "HT" {
 		t.Errorf("presentation = %+v, want playing/status/HT", out.Presentation)
@@ -212,7 +212,7 @@ func TestReconcileFixture_StatusTransitionRouting(t *testing.T) {
 			to: apifootball.APIFixtureStatus{
 				Short: apifootball.StatusBreakTime, Long: "Break Time", Elapsed: pi(105),
 			},
-			wantAction: FixtureFeedPresentation, wantState: "playing", wantDisplay: "status",
+			wantAction: FixtureFeedStatus, wantState: "playing", wantDisplay: "status",
 		},
 		{
 			name: "final whistle crosses into finished",

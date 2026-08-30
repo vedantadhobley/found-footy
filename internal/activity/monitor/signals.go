@@ -8,16 +8,16 @@ import "time"
 type FixtureFeedAction string
 
 const (
-	FixtureFeedNone         FixtureFeedAction = ""
-	FixtureFeedPresentation FixtureFeedAction = "presentation"
-	FixtureFeedUpdate       FixtureFeedAction = "update"
+	FixtureFeedNone   FixtureFeedAction = ""
+	FixtureFeedStatus FixtureFeedAction = "status"
+	FixtureFeedUpdate FixtureFeedAction = "update"
 )
 
-// markPresentation selects the inline route unless a snapshot refresh already
+// markStatus selects the inline route unless a snapshot refresh already
 // won. Reconcile may discover stronger evidence after classifying the status.
-func (out *ReconcileFixtureOutput) markPresentation() {
+func (out *ReconcileFixtureOutput) markStatus() {
 	if out.FeedAction != FixtureFeedUpdate {
-		out.FeedAction = FixtureFeedPresentation
+		out.FeedAction = FixtureFeedStatus
 	}
 }
 

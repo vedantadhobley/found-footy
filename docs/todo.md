@@ -148,7 +148,7 @@ the current branch.
   provider-code sets. Found Footy's processing state remains separate.
 - **Implemented locally (2026-08-30):** `internal/contract/fixturepresentation`
   derives the shared REST/NATS projection. Monitor emits one typed action:
-  `presentation`, `update`, or no-op. `fixture.presentation` replaces
+  `status`, `update`, or no-op. `fixture.status` replaces
   `fixture.clock`; `fixture.update` remains an ID-only targeted invalidation.
   `1H -> HT -> 2H` and `ET -> BT -> ET` stay inline, while `NS -> 1H`,
   `2H -> FT`, `P -> PEN`, and `PST -> NS` require a snapshot.

@@ -159,7 +159,7 @@ func TestActivePollWorkflow_LiveFeedPartition(t *testing.T) {
 		mock.MatchedBy(func(in monitor.ReconcileFixtureInput) bool { return in.APIFixture.Fixture.ID == 102 })).
 		Return(monitor.ReconcileFixtureOutput{
 			FixtureID:  102,
-			FeedAction: monitor.FixtureFeedPresentation,
+			FeedAction: monitor.FixtureFeedStatus,
 			Presentation: fixturepresentation.Projection{
 				PresentationState: fixturepresentation.StatePlaying,
 				Clock:             fixturepresentation.Clock{Minute: &minute},
@@ -185,9 +185,9 @@ func TestActivePollWorkflow_LiveFeedPartition(t *testing.T) {
 	if len(captured.UpdateIDs) != 1 || captured.UpdateIDs[0] != 101 {
 		t.Errorf("UpdateIDs = %v, want [101]", captured.UpdateIDs)
 	}
-	if len(captured.Presentation) != 1 || captured.Presentation[0].FixtureID != 102 ||
-		captured.Presentation[0].Clock.Minute == nil || *captured.Presentation[0].Clock.Minute != 62 {
-		t.Errorf("Presentation = %+v, want fixture 102 at minute 62", captured.Presentation)
+	if len(captured.Statuses) != 1 || captured.Statuses[0].FixtureID != 102 ||
+		captured.Statuses[0].Clock.Minute == nil || *captured.Statuses[0].Clock.Minute != 62 {
+		t.Errorf("Statuses = %+v, want fixture 102 at minute 62", captured.Statuses)
 	}
 	env.AssertExpectations(t)
 }
