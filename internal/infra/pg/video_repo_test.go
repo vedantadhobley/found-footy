@@ -430,6 +430,82 @@ func TestShareRepo_ReadPath(t *testing.T) {
 	}
 }
 
+// TestShareRepo_ListLiveForEventPopularityVisibility proves the asymmetric
+// FF-078 policy: unverified popularity evidence affects only its own tier,
+// while verified evidence can suppress singletons across both tiers. Filtering
+// is reversible read behavior, so omitted shares stay active and resolvable.
+func TestShareRepo_ListLiveForEventPopularityVisibility(t *testing.T) {
+	ctx, assets, shares, fixtureID, eventID := setupVideoRepos(t)
+	when := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	minute := 67
+	storageRank := 0
+
+	add := func(label string, verified bool, popularity int) *video.Share {
+		t.Helper()
+		storageRank++
+		a := newAsset(eventID, fixtureID, "visibility-"+label,
+			[]uint64{uint64(storageRank)}, int64(storageRank)*1_000_000)
+		a.S3Key = "9100/visibility-" + label + ".mp4"
+		a.Popularity = popularity
+		if _, err := assets.InsertAsset(ctx, a); err != nil {
+			t.Fatalf("insert %s asset: %v", label, err)
+		}
+		var extracted *int
+		if verified {
+			extracted = &minute
+		}
+		s, err := video.NewShare(a.ID, eventID, verified, extracted, storageRank,
+			when.Add(time.Duration(storageRank)*time.Second))
+		if err != nil {
+			t.Fatalf("new %s share: %v", label, err)
+		}
+		if err := shares.Insert(ctx, s); err != nil {
+			t.Fatalf("insert %s share: %v", label, err)
+		}
+		return s
+	}
+
+	assertVisible := func(want ...*video.Share) {
+		t.Helper()
+		got, err := shares.ListLiveForEvent(ctx, eventID)
+		if err != nil {
+			t.Fatalf("ListLiveForEvent: %v", err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("visible clips = %+v, want %d", got, len(want))
+		}
+		for i := range want {
+			if got[i].ShareID != want[i].ID || got[i].Rank != i+1 {
+				t.Errorf("visible[%d] = %+v, want share %s at rank %d",
+					i, got[i], want[i].ID, i+1)
+			}
+		}
+	}
+
+	verifiedOne := add("verified-one", true, 1)
+	verifiedTwo := add("verified-two", true, 2)
+	unverifiedOne := add("unverified-one", false, 1)
+	unverifiedTwo := add("unverified-two", false, 2)
+	assertVisible(verifiedTwo, verifiedOne, unverifiedTwo, unverifiedOne)
+
+	// Unverified threshold evidence hides only the unverified singleton.
+	unverifiedThree := add("unverified-three", false, 3)
+	assertVisible(verifiedTwo, verifiedOne, unverifiedThree, unverifiedTwo)
+	gotHidden, err := shares.Get(ctx, unverifiedOne.ID)
+	if err != nil || gotHidden.State != video.ShareStateActive {
+		t.Fatalf("hidden unverified singleton = %+v, %v; want active share", gotHidden, err)
+	}
+
+	// Verified threshold evidence hides both singleton tiers. Popularity-two
+	// alternatives remain visible and the public ranks are reassigned 1..N.
+	verifiedThree := add("verified-three", true, 3)
+	assertVisible(verifiedThree, verifiedTwo, unverifiedThree, unverifiedTwo)
+	gotHidden, err = shares.Get(ctx, verifiedOne.ID)
+	if err != nil || gotHidden.State != video.ShareStateActive {
+		t.Fatalf("hidden verified singleton = %+v, %v; want active share", gotHidden, err)
+	}
+}
+
 // TestShareRepo_RemoveByEvent covers the VAR destroy repo primitives (#172):
 // ListObjectKeysByEvent returns every asset object (live + superseded), and
 // RemoveByEvent revokes ALL the event's shares → 'removed'/var, after which

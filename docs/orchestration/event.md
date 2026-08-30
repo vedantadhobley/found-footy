@@ -255,7 +255,11 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   `BumpAssetPopularity`, `SupersedeAssets`, terminal-outcome, and
   `RebalanceRanks` commands. The old activities stay registered until those
   histories age out.
-- **Rank:** The API derives `ROW_NUMBER()` on every read from active membership,
+- **Visibility and rank:** The API derives both from current evidence on every
+  read. A verified clip at popularity three suppresses all popularity-one
+  clips; an unverified clip at three suppresses only unverified
+  popularity-one clips. The durable shares remain active and resolvable. The
+  query filters first, then assigns contiguous `ROW_NUMBER()` values from
   timestamp verification, popularity, file size, creation time, and lexical
   share ID. New-history writes never rebalance stored rank. The compatibility
   column remains only because older Temporal histories still write it.
@@ -270,21 +274,24 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   `DestroyEvent` also does not emit; the event disappears through the parent's
   `fixture.update` refetch.
 
-### Dedup keeper selection versus public ranking
+### Dedup keeper selection, public visibility, and ranking
 
 These are separate policies over different sets. Do not merge their criteria:
 
 | Policy | Set being ordered | Comparator | Effect |
 |---|---|---|---|
 | Dedup keeper selection | Perceptually matching clips in the same verified or unverified pool | [`IsUpgrade`](../../internal/domain/video/quality.go): meaningfully longer capped duration, then bits per pixel with an anti-churn margin, then resolution; incumbent wins ties | Chooses which bytes and asset identity survive a duplicate cluster. It never uses popularity. |
-| Public ranking | Distinct active shares for one event after dedup | [`CompareShares`](../../internal/domain/video/rank.go): verified, popularity, file size, older creation time, then share ID | Assigns the frontend order. It does not supersede assets or decide whether two clips are duplicates. |
+| Public visibility | Distinct active shares for one event after dedup | Verified popularity ≥3 suppresses every popularity-one share; unverified popularity ≥3 suppresses only unverified popularity-one shares | Omits low-evidence alternatives from the event projection without changing durable state or direct URLs. |
+| Public ranking | Shares that survive public visibility | [`CompareShares`](../../internal/domain/video/rank.go): verified, popularity, file size, older creation time, then share ID | Assigns contiguous frontend order. It does not supersede assets or decide whether two clips are duplicates. |
 
 When a better duplicate supersedes an incumbent, placement merges the loser's
 popularity into the keeper, moves candidate attribution, and retires the
 loser's shares. Read-derived rank immediately reflects the surviving active
 set. This preserves accumulated source votes without allowing popularity to
 keep inferior duplicate bytes. Candidate attribution makes the vote transfer
-and direct duplicate credit retry-idempotent (FF-011/FF-066).
+and direct duplicate credit retry-idempotent (FF-011/FF-066). FF-078 visibility
+is recalculated rather than latched, so a singleton becomes public again if
+the threshold clip leaves the active set.
 
 On completion—and only after every workflow-owned candidate is durably
 terminal—`finalizeEvent` marks the `event_downstream_workflows` row

@@ -258,32 +258,59 @@ func (r *ShareRepo) GetByEvent(ctx context.Context, eventID uuid.UUID) ([]*video
 	return out, rows.Err()
 }
 
-// ListLiveForEvent returns the event's displayable clips and derives rank from
-// the current evidence on every read. Stored rank is intentionally ignored:
-// popularity and active membership can change after mint, and a cached order
-// can become stale when any write path misses invalidation (FF-066).
+// ListLiveForEvent returns the event's displayable clips and derives visibility
+// plus rank from the current evidence on every read. A verified clip at the
+// popularity threshold suppresses every singleton; an unverified threshold
+// clip suppresses only unverified singletons. The omitted shares remain active
+// and directly resolvable. Stored rank is intentionally ignored: popularity
+// and active membership can change after mint, and a cached order can become
+// stale when any write path misses invalidation (FF-066/FF-078).
 func (r *ShareRepo) ListLiveForEvent(ctx context.Context, eventID uuid.UUID) ([]video.LiveClip, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT share_id, rank, timestamp_verified, extracted_minute,
-		       popularity, width, height, duration_ms
-		FROM (
+		WITH live AS (
 			SELECT s.id AS share_id,
-			       ROW_NUMBER() OVER (
-				   ORDER BY s.timestamp_verified DESC,
-				            a.popularity DESC,
-				            a.file_size_bytes DESC,
-				            s.created_at,
-				            s.id
-			   )::int AS rank,
 			       s.timestamp_verified, s.extracted_minute,
-			       a.popularity, a.width, a.height, a.duration_ms
+			       a.popularity, a.width, a.height, a.duration_ms,
+			       a.file_size_bytes, s.created_at
 			FROM video_shares s
 			JOIN video_assets a ON a.id = s.asset_id
 			WHERE s.event_id = $1
 			  AND s.state = 'active'
 			  AND a.superseded_by IS NULL
-		) ranked
-		ORDER BY rank`, eventID)
+		), evidence AS (
+			SELECT
+				COALESCE(BOOL_OR(timestamp_verified AND popularity >= $2), FALSE)
+					AS has_verified_threshold,
+				COALESCE(BOOL_OR(NOT timestamp_verified AND popularity >= $2), FALSE)
+					AS has_unverified_threshold
+			FROM live
+		), visible AS (
+			SELECT live.*
+			FROM live
+			CROSS JOIN evidence
+			WHERE live.popularity <> $3
+			   OR NOT (
+				   evidence.has_verified_threshold
+				   OR (NOT live.timestamp_verified AND evidence.has_unverified_threshold)
+			   )
+		), ranked AS (
+			SELECT share_id,
+			       ROW_NUMBER() OVER (
+				   ORDER BY timestamp_verified DESC,
+				            popularity DESC,
+				            file_size_bytes DESC,
+				            created_at,
+				            share_id
+			       )::int AS rank,
+			       timestamp_verified, extracted_minute,
+			       popularity, width, height, duration_ms
+			FROM visible
+		)
+		SELECT share_id, rank, timestamp_verified, extracted_minute,
+		       popularity, width, height, duration_ms
+		FROM ranked
+		ORDER BY rank`, eventID, video.PublicVisibilityPopularityThreshold,
+		video.PublicVisibilitySingletonPopularity)
 	if err != nil {
 		return nil, fmt.Errorf("pg.ShareRepo.ListLiveForEvent: %w", err)
 	}
